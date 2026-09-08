@@ -1,0 +1,53 @@
+import { Card, List, Tag, Typography } from 'antd'
+import dayjs from 'dayjs'
+import { useScanStore } from '../stores/scanStore'
+
+const { Text } = Typography
+
+const typeMap: Record<string, { label: string; color: string }> = {
+  scheduled: { label: '定时', color: 'blue' },
+  manual: { label: '手动', color: 'orange' },
+}
+
+const statusMap: Record<string, { label: string; color: string }> = {
+  running: { label: '运行中', color: 'processing' },
+  completed: { label: '已完成', color: 'success' },
+  failed: { label: '失败', color: 'error' },
+}
+
+export default function HistoryList() {
+  const { history, fetchResults } = useScanStore()
+
+  return (
+    <Card title="历史扫描记录" size="small">
+      <List
+        dataSource={history}
+        locale={{ emptyText: '暂无历史记录' }}
+        renderItem={(item) => {
+          const t = typeMap[item.scan_type] || typeMap.manual
+          const s = statusMap[item.status] || statusMap.completed
+          return (
+            <List.Item
+              style={{ cursor: 'pointer' }}
+              onClick={() => fetchResults(item.id)}
+            >
+              <List.Item.Meta
+                title={
+                  <span>
+                    <Tag color={t.color}>{t.label}</Tag>
+                    <Tag color={s.color}>{s.label}</Tag>
+                    <Text>命中 {item.hit_count} 个</Text>
+                    <Text type="secondary" style={{ marginLeft: 12 }}>
+                      扫描 {item.coin_count} 个
+                    </Text>
+                  </span>
+                }
+                description={dayjs(item.started_at).format('YYYY-MM-DD HH:mm:ss')}
+              />
+            </List.Item>
+          )
+        }}
+      />
+    </Card>
+  )
+}
