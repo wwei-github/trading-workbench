@@ -230,7 +230,7 @@ export default function ResultTable() {
       loading={loading}
       pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条`, size: 'small' }}
       locale={{ emptyText: <Empty description="暂无命中币种" /> }}
-      scroll={{ x: 1300, y: 'calc(100vh - 300px)' }}
+      scroll={{ x: 1300, y: 'calc(100vh - 400px)' }}
       expandable={{
         expandedRowKeys,
         onExpand: (expanded, record) => {

@@ -6,20 +6,18 @@ import ResultTable from '../components/ResultTable'
 import HistoryList from '../components/HistoryList'
 import ScanConfigPanel from '../components/ScanConfigPanel'
 import { useScanStore } from '../stores/scanStore'
-import { scanApi } from '../api/scan'
 
 export default function ScanResult() {
   const {
     fetchStatus,
     fetchResults,
     fetchHistory,
+    fetchConfig,
     triggerScan,
     status,
     aiConfig,
     toggleAi,
     currentScanId,
-    triggerAiAnalysis,
-    fetchAiAnalyses,
   } = useScanStore()
 
   const wasScanning = useRef(false)
@@ -27,17 +25,9 @@ export default function ScanResult() {
   useEffect(() => {
     // 初始加载：状态、配置、结果、历史
     fetchStatus()
-    scanApi.getConfig().then((cfg) => {
-      useScanStore.setState({ aiConfig: cfg })
-      // 如果 AI 开启，加载已有的 AI 分析
-      if (cfg.ai_analysis_enabled) {
-        fetchResults().then(() => {
-          const scanId = useScanStore.getState().currentScanId
-          if (scanId) fetchAiAnalyses(scanId)
-        })
-      } else {
-        fetchResults()
-      }
+    fetchConfig().then(() => {
+      // fetchResults 内部会根据 AI 开关自动加载/触发 AI 分析
+      fetchResults()
     })
     fetchHistory()
 
@@ -52,17 +42,10 @@ export default function ScanResult() {
   useEffect(() => {
     const isScanning = !!status?.is_scanning
     const aiEnabled = !!aiConfig?.ai_analysis_enabled
-    // 扫描完成时自动触发 AI 分析
+    // 扫描完成时刷新结果（fetchResults 内部会自动触发 AI 分析）
     if (wasScanning.current && !isScanning && aiEnabled && currentScanId) {
-      // 先刷新结果
       fetchResults(currentScanId).then(() => {
-        triggerAiAnalysis(currentScanId)
-          .then(() => {
-            message.success('扫描完成，已自动触发 AI 分析')
-          })
-          .catch((e: any) => {
-            message.error(e?.message || 'AI 分析触发失败')
-          })
+        message.success('扫描完成，已自动触发 AI 分析')
       })
     }
     // 扫描进行中时持续刷新结果
