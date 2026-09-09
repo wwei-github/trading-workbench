@@ -1,4 +1,4 @@
-import { Table, Tag, Tooltip, Empty, Button, Descriptions, Typography, message, Row, Col, Alert, Progress, Space } from 'antd'
+import { Table, Tag, Tooltip, Empty, Button, Descriptions, Typography, message, Row, Col, Alert, Space } from 'antd'
 import { RobotOutlined, CopyOutlined, LoadingOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { bj } from '../utils/dayjs'
@@ -25,20 +25,13 @@ export default function ResultTable() {
     resultsPageSize,
     currentScanId,
     aiAnalyses,
-    aiLoading,
-    aiPolling,
-    aiPollingTimeout,
+    analyzingMap,
     triggerAiAnalysis,
     fetchResults,
     aiConfig,
   } = useScanStore()
 
   const aiEnabled = !!aiConfig?.ai_analysis_enabled
-  // AI 分析进度：已分析数 / 总命中数（用后端 total，非当前页数）
-  const aiProgress = useMemo(() => {
-    if (total === 0) return 0
-    return Math.round((aiAnalyses.length / total) * 100)
-  }, [aiAnalyses, total])
 
   // 跟踪展开的行
   const [expandedRowKeys, setExpandedRowKeys] = useState<string[]>([])
@@ -246,6 +239,9 @@ export default function ResultTable() {
         },
         expandedRowRender: (record: ScanResult) => {
           const ai = aiMap[record.id]
+          const rowState = analyzingMap[record.id]
+          const isLoading = !!rowState?.loading
+          const rowError = rowState?.error
           return (
             <Row gutter={16}>
               {/* 左侧：AI 分析 */}
@@ -254,27 +250,22 @@ export default function ResultTable() {
                   <div style={{ textAlign: 'center', padding: '20px 0' }}>
                     <Text type="secondary">AI 分析未开启</Text>
                   </div>
+                ) : isLoading ? (
+                  <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                    <LoadingOutlined style={{ fontSize: 24 }} />
+                    <div style={{ marginTop: 8 }}>
+                      <Text type="secondary">AI 正在分析中，请稍候...</Text>
+                    </div>
+                  </div>
                 ) : !ai ? (
                   <div style={{ textAlign: 'center', padding: '20px 0' }}>
-                    {aiPolling ? (
-                      <>
-                        <Text type="secondary">AI 正在批量分析中，请稍候...</Text>
-                        <div style={{ marginTop: 8, padding: '0 20px' }}>
-                          <Progress percent={aiProgress} size="small" status="active" />
-                        </div>
-                        <div style={{ marginTop: 4 }}>
-                          <Text type="secondary" style={{ fontSize: 12 }}>
-                            已完成 {aiProgress}%
-                          </Text>
-                        </div>
-                      </>
-                    ) : aiPollingTimeout ? (
+                    {rowError ? (
                       <Alert
-                        type="warning"
-                        message="AI 分析超时"
-                        description="90 秒内未完成分析，可能是 AI 服务响应慢或分析任务较多"
+                        type="error"
+                        message="AI 分析失败"
+                        description={rowError}
                         showIcon
-                        style={{ marginBottom: 12 }}
+                        style={{ marginBottom: 12, textAlign: 'left' }}
                       />
                     ) : (
                       <Text type="secondary">暂无 AI 分析结果</Text>
@@ -284,7 +275,7 @@ export default function ResultTable() {
                         type="primary"
                         ghost
                         icon={<RobotOutlined />}
-                        loading={aiLoading}
+                        loading={isLoading}
                         onClick={() => handleReAnalyze(record)}
                       >
                         AI 分析
@@ -293,13 +284,13 @@ export default function ResultTable() {
                   </div>
                 ) : (
                   <div>
-                    {aiPolling && (
+                    {isLoading && (
                       <Alert
                         type="info"
                         message={
                           <Space>
                             <LoadingOutlined />
-                            <span>AI 重新分析中... {aiProgress}%</span>
+                            <span>AI 重新分析中...</span>
                           </Space>
                         }
                         style={{ marginBottom: 8 }}
@@ -331,12 +322,21 @@ export default function ResultTable() {
                         <Paragraph style={{ margin: 0 }}>{ai.analysis || '-'}</Paragraph>
                       </Descriptions.Item>
                     </Descriptions>
+                    {rowError && (
+                      <Alert
+                        type="error"
+                        message="上次重新分析失败"
+                        description={rowError}
+                        showIcon
+                        style={{ marginTop: 8, textAlign: 'left' }}
+                      />
+                    )}
                     <div style={{ marginTop: 8, textAlign: 'center' }}>
                       <Button
                         type="primary"
                         ghost
                         icon={<RobotOutlined />}
-                        loading={aiLoading}
+                        loading={isLoading}
                         onClick={() => handleReAnalyze(record)}
                       >
                         重新分析

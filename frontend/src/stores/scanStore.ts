@@ -16,9 +16,8 @@ interface ScanState {
   currentScanId: string | null
   aiConfig: SystemConfig | null
   aiAnalyses: AIAnalysis[]
-  aiLoading: boolean
-  aiPolling: boolean
-  aiPollingTimeout: boolean
+  // 按行跟踪 AI 分析状态：scanResultId -> { loading, error }
+  analyzingMap: Record<string, { loading: boolean; error: string | null }>
   fetchStatus: () => Promise<void>
   fetchResults: (scanId?: string, page?: number, pageSize?: number) => Promise<void>
   fetchHistory: (page?: number, pageSize?: number) => Promise<void>
@@ -27,43 +26,56 @@ interface ScanState {
   toggleAi: (enabled: boolean) => Promise<void>
   updateConfig: (data: Partial<SystemConfig>) => Promise<void>
   fetchAiAnalyses: (scanId: string) => Promise<void>
-  triggerAiAnalysis: (scanId: string, scanResultId?: string) => Promise<void>
+  triggerAiAnalysis: (scanId: string, scanResultId: string) => Promise<void>
 }
 
-// AI 分析轮询计时器
-let aiPollTimer: ReturnType<typeof setInterval> | null = null
+// 每行的轮询计时器：scanResultId -> timer
+const aiPollTimers: Record<string, ReturnType<typeof setInterval>> = {}
 
-function stopAiPolling() {
-  if (aiPollTimer) {
-    clearInterval(aiPollTimer)
-    aiPollTimer = null
+function stopRowPolling(scanResultId: string) {
+  if (aiPollTimers[scanResultId]) {
+    clearInterval(aiPollTimers[scanResultId])
+    delete aiPollTimers[scanResultId]
   }
-  useScanStore.setState({ aiPolling: false })
+  useScanStore.setState((s) => ({
+    analyzingMap: {
+      ...s.analyzingMap,
+      [scanResultId]: { loading: false, error: null },
+    },
+  }))
 }
 
-function startAiPolling(scanId: string, store: () => ScanState) {
-  stopAiPolling()
-  useScanStore.setState({ aiPolling: true, aiPollingTimeout: false })
+function startRowPolling(scanId: string, scanResultId: string) {
+  // 先停掉该行已有的轮询
+  stopRowPolling(scanResultId)
+  useScanStore.setState((s) => ({
+    analyzingMap: {
+      ...s.analyzingMap,
+      [scanResultId]: { loading: true, error: null },
+    },
+  }))
   let attempts = 0
-  const maxAttempts = 30 // 最多轮询 30 次 × 3 秒 = 90 秒
-  aiPollTimer = setInterval(async () => {
+  const maxAttempts = 20 // 最多轮询 20 次 × 3 秒 = 60 秒
+  aiPollTimers[scanResultId] = setInterval(async () => {
     attempts++
     try {
-      await store().fetchAiAnalyses(scanId)
-      const analyses = store().aiAnalyses
-      const resultsLen = store().results.length
-      // 如果已有分析结果且全部完成，停止轮询
-      if (analyses.length > 0 && resultsLen > 0) {
-        const analyzedIds = new Set(analyses.map((a) => a.scan_result_id))
-        const allDone = store().results.every((r) => analyzedIds.has(r.id))
-        if (allDone) {
-          stopAiPolling()
-        }
+      await useScanStore.getState().fetchAiAnalyses(scanId)
+      const analyses = useScanStore.getState().aiAnalyses
+      const found = analyses.find((a) => a.scan_result_id === scanResultId)
+      if (found) {
+        // 该行分析完成
+        stopRowPolling(scanResultId)
+        return
       }
-      // 超时停止
+      // 超时
       if (attempts >= maxAttempts) {
-        useScanStore.setState({ aiPolling: false, aiPollingTimeout: true })
-        stopAiPolling()
+        useScanStore.setState((s) => ({
+          analyzingMap: {
+            ...s.analyzingMap,
+            [scanResultId]: { loading: false, error: 'AI 分析超时，请重试' },
+          },
+        }))
+        stopRowPolling(scanResultId)
       }
     } catch {
       // 忽略轮询错误
@@ -85,9 +97,7 @@ export const useScanStore = create<ScanState>((set, get) => ({
   currentScanId: null,
   aiConfig: null,
   aiAnalyses: [],
-  aiLoading: false,
-  aiPolling: false,
-  aiPollingTimeout: false,
+  analyzingMap: {},
 
   fetchStatus: async () => {
     try {
@@ -176,8 +186,12 @@ export const useScanStore = create<ScanState>((set, get) => ({
           await get().fetchAiAnalyses(scanId)
         }
       } else {
-        set({ aiAnalyses: [] })
-        stopAiPolling()
+        set({ aiAnalyses: [], analyzingMap: {} })
+        // 清理所有行的轮询计时器
+        for (const id of Object.keys(aiPollTimers)) {
+          clearInterval(aiPollTimers[id])
+          delete aiPollTimers[id]
+        }
       }
     } catch (e: any) {
       console.error('更新 AI 配置失败', e)
@@ -204,21 +218,20 @@ export const useScanStore = create<ScanState>((set, get) => ({
     }
   },
 
-  triggerAiAnalysis: async (scanId: string, scanResultId?: string) => {
-    // 立即标记 polling，防止 fetchResults 重复触发
-    set({ aiLoading: true, aiPolling: true, aiPollingTimeout: false })
+  triggerAiAnalysis: async (scanId: string, scanResultId: string) => {
     try {
       await scanApi.triggerAi(scanId, scanResultId)
-      // 启动轮询，持续刷新 AI 分析结果
-      const storeFn = () => get()
-      startAiPolling(scanId, storeFn)
+      // 启动该行的轮询
+      startRowPolling(scanId, scanResultId)
     } catch (e: any) {
-      // 触发失败，重置 polling 状态
-      set({ aiPolling: false })
       const detail = e?.response?.data?.detail || '触发 AI 分析失败'
+      useScanStore.setState((s) => ({
+        analyzingMap: {
+          ...s.analyzingMap,
+          [scanResultId]: { loading: false, error: detail },
+        },
+      }))
       throw new Error(detail)
-    } finally {
-      set({ aiLoading: false })
     }
   },
 }))
