@@ -6,13 +6,13 @@ const { Title } = Typography
 
 export default function App() {
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Header style={{ background: '#001529', display: 'flex', alignItems: 'center' }}>
+    <Layout style={{ height: '100vh', overflow: 'hidden' }}>
+      <Header style={{ background: '#001529', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
         <Title level={4} style={{ color: '#fff', margin: 0 }}>
           币安币种筛选工作台
         </Title>
       </Header>
-      <Content style={{ padding: 24 }}>
+      <Content style={{ padding: 16, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <ScanResult />
       </Content>
     </Layout>

@@ -1,5 +1,5 @@
-import { Table, Tag, Tooltip, Empty, Button, Descriptions, Typography, message, Row, Col } from 'antd'
-import { RobotOutlined, CopyOutlined } from '@ant-design/icons'
+import { Table, Tag, Tooltip, Empty, Button, Descriptions, Typography, message, Row, Col, Alert, Progress, Space } from 'antd'
+import { RobotOutlined, CopyOutlined, LoadingOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { bj } from '../utils/dayjs'
 import { useScanStore } from '../stores/scanStore'
@@ -24,12 +24,20 @@ export default function ResultTable() {
     currentScanId,
     aiAnalyses,
     aiLoading,
+    aiPolling,
+    aiPollingTimeout,
     triggerAiAnalysis,
-    fetchAiAnalyses,
     aiConfig,
   } = useScanStore()
 
   const aiEnabled = !!aiConfig?.ai_analysis_enabled
+  // AI 分析进度：已分析数 / 总数
+  const aiProgress = useMemo(() => {
+    if (results.length === 0) return 0
+    const analyzedIds = new Set(aiAnalyses.map((a) => a.scan_result_id))
+    const done = results.filter((r) => analyzedIds.has(r.id)).length
+    return Math.round((done / results.length) * 100)
+  }, [aiAnalyses, results])
 
   // 跟踪展开的行
   const [expandedRowKeys, setExpandedRowKeys] = useState<string[]>([])
@@ -214,12 +222,13 @@ export default function ResultTable() {
   ]
 
   return (
+    <div className="result-table" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
     <Table
       rowKey="id"
       columns={columns}
       dataSource={results}
       loading={loading}
-      pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+      pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条`, size: 'small' }}
       locale={{ emptyText: <Empty description="暂无命中币种" /> }}
       scroll={{ x: 1300 }}
       expandable={{
@@ -237,13 +246,43 @@ export default function ResultTable() {
                   <div style={{ textAlign: 'center', padding: '20px 0' }}>
                     <Text type="secondary">AI 分析未开启</Text>
                   </div>
+                ) : aiPolling && !ai ? (
+                  <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                    <LoadingOutlined style={{ fontSize: 20, color: '#1677ff' }} />
+                    <div style={{ marginTop: 8 }}>
+                      <Text type="secondary">AI 分析中...</Text>
+                    </div>
+                    <div style={{ marginTop: 8, padding: '0 20px' }}>
+                      <Progress percent={aiProgress} size="small" status="active" />
+                    </div>
+                    <div style={{ marginTop: 4 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        已完成 {aiProgress}%（每 3 秒自动刷新）
+                      </Text>
+                    </div>
+                  </div>
+                ) : aiPollingTimeout && !ai ? (
+                  <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                    <Alert
+                      type="warning"
+                      message="AI 分析超时"
+                      description="90 秒内未完成分析，可能是 AI 服务响应慢或分析任务较多"
+                      showIcon
+                      style={{ marginBottom: 12 }}
+                    />
+                    <Button
+                      type="primary"
+                      ghost
+                      icon={<RobotOutlined />}
+                      loading={aiLoading}
+                      onClick={() => handleReAnalyze(record)}
+                    >
+                      重新分析
+                    </Button>
+                  </div>
                 ) : !ai ? (
                   <div style={{ textAlign: 'center', padding: '20px 0' }}>
                     <Text type="secondary">暂无 AI 分析结果</Text>
-                    <br />
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      分析结果将自动刷新
-                    </Text>
                     <div style={{ marginTop: 12, textAlign: 'center' }}>
                       <Button
                         type="primary"
@@ -258,6 +297,18 @@ export default function ResultTable() {
                   </div>
                 ) : (
                   <div>
+                    {aiPolling && (
+                      <Alert
+                        type="info"
+                        message={
+                          <Space>
+                            <LoadingOutlined />
+                            <span>AI 重新分析中... {aiProgress}%</span>
+                          </Space>
+                        }
+                        style={{ marginBottom: 8 }}
+                      />
+                    )}
                     <Descriptions bordered size="small" column={2}>
                       <Descriptions.Item label="入场价">
                         {fmtPrice(ai.entry_price)}
@@ -321,5 +372,6 @@ export default function ResultTable() {
         style: { cursor: 'pointer' },
       })}
     />
+    </div>
   )
 }

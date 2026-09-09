@@ -106,8 +106,8 @@ export default function ScanResult() {
   const aiConfigured = !!aiConfig?.ai_configured
 
   return (
-    <Space direction="vertical" size="large" style={{ width: '100%' }}>
-      <Card>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+      <Card style={{ flexShrink: 0, marginBottom: 12 }}>
         <Row justify="space-between" align="middle">
           <Col>
             <ScanStatus />
@@ -152,19 +152,21 @@ export default function ScanResult() {
 
       <Tabs
         defaultActiveKey="results"
+        style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
+        tabBarStyle={{ flexShrink: 0 }}
         items={[
           {
             key: 'results',
             label: '扫描结果',
-            children: <ResultTable />,
+            children: <div style={{ height: '100%', overflow: 'hidden' }}><ResultTable /></div>,
           },
           {
             key: 'history',
             label: '历史记录',
-            children: <HistoryList />,
+            children: <div style={{ height: '100%', overflow: 'hidden' }}><HistoryList /></div>,
           },
         ]}
       />
-    </Space>
+    </div>
   )
 }

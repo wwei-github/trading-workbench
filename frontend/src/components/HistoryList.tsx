@@ -26,36 +26,43 @@ export default function HistoryList() {
   } = useScanStore()
 
   return (
-    <Card title="历史扫描记录" size="small">
-      <List
-        dataSource={history}
-        locale={{ emptyText: <Empty description="暂无历史记录（仅显示最近 24 小时）" /> }}
-        renderItem={(item) => {
-          const t = typeMap[item.scan_type] || typeMap.manual
-          const s = statusMap[item.status] || statusMap.completed
-          return (
-            <List.Item
-              style={{ cursor: 'pointer' }}
-              onClick={() => fetchResults(item.id)}
-            >
-              <List.Item.Meta
-                title={
-                  <span>
-                    <Tag color={t.color}>{t.label}</Tag>
-                    <Tag color={s.color}>{s.label}</Tag>
-                    <Text>命中 {item.hit_count} 个</Text>
-                    <Text type="secondary" style={{ marginLeft: 12 }}>
-                      扫描 {item.coin_count} 个
-                    </Text>
-                  </span>
-                }
-                description={bj(item.started_at).format('YYYY-MM-DD HH:mm:ss')}
-              />
-            </List.Item>
-          )
-        }}
-      />
-      <div style={{ marginTop: 16, textAlign: 'right' }}>
+    <Card
+      title="历史扫描记录"
+      size="small"
+      className="history-card"
+      style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+    >
+      <div className="history-list">
+        <List
+          dataSource={history}
+          locale={{ emptyText: <Empty description="暂无历史记录（仅显示最近 24 小时）" /> }}
+          renderItem={(item) => {
+            const t = typeMap[item.scan_type] || typeMap.manual
+            const s = statusMap[item.status] || statusMap.completed
+            return (
+              <List.Item
+                style={{ cursor: 'pointer' }}
+                onClick={() => fetchResults(item.id)}
+              >
+                <List.Item.Meta
+                  title={
+                    <span>
+                      <Tag color={t.color}>{t.label}</Tag>
+                      <Tag color={s.color}>{s.label}</Tag>
+                      <Text>命中 {item.hit_count} 个</Text>
+                      <Text type="secondary" style={{ marginLeft: 12 }}>
+                        扫描 {item.coin_count} 个
+                      </Text>
+                    </span>
+                  }
+                  description={bj(item.started_at).format('YYYY-MM-DD HH:mm:ss')}
+                />
+              </List.Item>
+            )
+          }}
+        />
+      </div>
+      <div style={{ flexShrink: 0, paddingTop: 8, borderTop: '1px solid #f0f0f0', textAlign: 'right' }}>
         <Pagination
           current={historyPage}
           pageSize={historyPageSize}

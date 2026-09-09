@@ -15,6 +15,8 @@ interface ScanState {
   aiConfig: SystemConfig | null
   aiAnalyses: AIAnalysis[]
   aiLoading: boolean
+  aiPolling: boolean
+  aiPollingTimeout: boolean
   fetchStatus: () => Promise<void>
   fetchResults: (scanId?: string) => Promise<void>
   fetchHistory: (page?: number, pageSize?: number) => Promise<void>
@@ -29,8 +31,17 @@ interface ScanState {
 // AI 分析轮询计时器
 let aiPollTimer: ReturnType<typeof setInterval> | null = null
 
+function stopAiPolling() {
+  if (aiPollTimer) {
+    clearInterval(aiPollTimer)
+    aiPollTimer = null
+  }
+  useScanStore.setState({ aiPolling: false })
+}
+
 function startAiPolling(scanId: string, store: () => ScanState) {
   stopAiPolling()
+  useScanStore.setState({ aiPolling: true, aiPollingTimeout: false })
   let attempts = 0
   const maxAttempts = 30 // 最多轮询 30 次 × 3 秒 = 90 秒
   aiPollTimer = setInterval(async () => {
@@ -38,27 +49,24 @@ function startAiPolling(scanId: string, store: () => ScanState) {
     try {
       await store().fetchAiAnalyses(scanId)
       const analyses = store().aiAnalyses
-      // 如果已有分析结果且数量匹配结果数，停止轮询
-      if (analyses.length > 0 && store().results.length > 0) {
+      const resultsLen = store().results.length
+      // 如果已有分析结果且全部完成，停止轮询
+      if (analyses.length > 0 && resultsLen > 0) {
         const analyzedIds = new Set(analyses.map((a) => a.scan_result_id))
         const allDone = store().results.every((r) => analyzedIds.has(r.id))
-        if (allDone || attempts >= maxAttempts) {
+        if (allDone) {
           stopAiPolling()
         }
-      } else if (attempts >= maxAttempts) {
+      }
+      // 超时停止
+      if (attempts >= maxAttempts) {
+        useScanStore.setState({ aiPolling: false, aiPollingTimeout: true })
         stopAiPolling()
       }
     } catch {
       // 忽略轮询错误
     }
   }, 3000)
-}
-
-function stopAiPolling() {
-  if (aiPollTimer) {
-    clearInterval(aiPollTimer)
-    aiPollTimer = null
-  }
 }
 
 export const useScanStore = create<ScanState>((set, get) => ({
@@ -74,6 +82,8 @@ export const useScanStore = create<ScanState>((set, get) => ({
   aiConfig: null,
   aiAnalyses: [],
   aiLoading: false,
+  aiPolling: false,
+  aiPollingTimeout: false,
 
   fetchStatus: async () => {
     try {
