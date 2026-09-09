@@ -63,3 +63,18 @@ export interface AIAnalysis {
   position_pct: number | null;
   created_at: string;
 }
+
+export interface Kline {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface KlineData {
+  symbol: string;
+  interval: string;
+  klines: Kline[];
+}

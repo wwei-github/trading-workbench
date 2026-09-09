@@ -18,7 +18,7 @@ celery_app.conf.update(
     beat_schedule={
         "hourly-scan": {
             "task": "app.tasks.scan_tasks.run_scan_task",
-            "schedule": crontab(minute=0),  # 每小时整点
+            "schedule": crontab(minute=2),  # 每小时第2分钟执行，等待K线收盘
             "kwargs": {"scan_type": "scheduled"},
         },
     },

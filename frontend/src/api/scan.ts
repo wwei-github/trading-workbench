@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AIAnalysis, ListResponse, ScanRecord, ScanResult, ScanStatus } from '../types'
+import type { AIAnalysis, KlineData, ListResponse, ScanRecord, ScanResult, ScanStatus } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -37,5 +37,10 @@ export const scanApi = {
       .post<{ scan_id: string; status: string }>(`/scans/${scanId}/ai-analyses`, {
         scan_result_id: scanResultId ?? null,
       })
+      .then((r) => r.data),
+
+  klines: (symbol: string, limit = 100) =>
+    api
+      .get<KlineData>(`/scans/klines/${symbol}`, { params: { limit } })
       .then((r) => r.data),
 }

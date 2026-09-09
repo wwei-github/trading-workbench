@@ -17,42 +17,56 @@ export default function ScanResult() {
     aiEnabled,
     setAiEnabled,
     currentScanId,
-    aiAnalyses,
-    fetchAiAnalyses,
     triggerAiAnalysis,
+    fetchAiAnalyses,
   } = useScanStore()
 
   const wasScanning = useRef(false)
 
   useEffect(() => {
+    // 初始加载
     fetchStatus()
-    fetchResults()
+    fetchResults().then(() => {
+      // fetchResults 完成后，如果有 currentScanId 且 AI 开启，会自动加载 AI 分析
+    })
     fetchHistory()
-    if (currentScanId) fetchAiAnalyses(currentScanId)
+
     // 每 30 秒刷新状态
     const timer = setInterval(() => {
       fetchStatus()
-      if (status?.is_scanning) fetchResults()
     }, 30000)
     return () => clearInterval(timer)
   }, [])
 
-  // 扫描完成时自动触发 AI 分析
+  // 扫描状态变化处理
   useEffect(() => {
-    if (wasScanning.current && !status?.is_scanning && aiEnabled && currentScanId) {
-      triggerAiAnalysis(currentScanId)
-        .then(() => {
-          message.success('扫描完成，已自动触发 AI 分析')
-          setTimeout(() => fetchAiAnalyses(currentScanId), 5000)
-        })
-        .catch((e: any) => {
-          message.error(e?.message || 'AI 分析触发失败')
-        })
+    const isScanning = !!status?.is_scanning
+    // 扫描完成时自动触发 AI 分析
+    if (wasScanning.current && !isScanning && aiEnabled && currentScanId) {
+      // 先刷新结果
+      fetchResults(currentScanId).then(() => {
+        triggerAiAnalysis(currentScanId)
+          .then(() => {
+            message.success('扫描完成，已自动触发 AI 分析')
+          })
+          .catch((e: any) => {
+            message.error(e?.message || 'AI 分析触发失败')
+          })
+      })
     }
-    wasScanning.current = !!status?.is_scanning
+    // 扫描进行中时持续刷新结果
+    if (isScanning) {
+      fetchResults()
+    }
+    wasScanning.current = isScanning
   }, [status?.is_scanning])
 
   const handleTrigger = async () => {
+    // 前端也检查是否正在扫描
+    if (status?.is_scanning) {
+      message.warning('扫描进行中，请等待完成')
+      return
+    }
     try {
       await triggerScan()
       message.success('扫描任务已提交，请稍候...')
@@ -65,8 +79,9 @@ export default function ScanResult() {
     fetchStatus()
     fetchResults()
     fetchHistory()
-    if (currentScanId) fetchAiAnalyses(currentScanId)
   }
+
+  const isScanning = !!status?.is_scanning
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
@@ -95,9 +110,10 @@ export default function ScanResult() {
                 type="primary"
                 icon={<ThunderboltOutlined />}
                 onClick={handleTrigger}
-                loading={status?.is_scanning}
+                disabled={isScanning}
+                loading={isScanning}
               >
-                立即扫描
+                {isScanning ? '扫描中...' : '立即扫描'}
               </Button>
             </Space>
           </Col>

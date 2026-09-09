@@ -42,7 +42,7 @@ def run_ai_analysis_task(
         for r in results:
             try:
                 klines = client.get_klines(
-                    r.symbol, settings.KLINE_INTERVAL, settings.KLINE_WINDOW
+                    r.symbol, settings.KLINE_INTERVAL, 100
                 )
                 signal = {
                     "symbol": r.symbol,

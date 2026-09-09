@@ -19,6 +19,7 @@ from app.schemas.scan import (
     AIAnalysisListResponse,
     AIAnalysisTriggerRequest,
 )
+from app.services.binance_client import BinanceClient
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
 
@@ -195,3 +196,27 @@ def trigger_ai_analysis(
         str(body.scan_result_id) if body.scan_result_id else None,
     )
     return ScanTriggerResponse(scan_id=scan_id, status="analyzing")
+
+
+# ===== K 线数据 =====
+
+@router.get("/klines/{symbol}")
+def get_klines(symbol: str, limit: int = Query(100, ge=1, le=500)):
+    """获取指定币种的最新 K 线数据（用于前端展示）"""
+    client = BinanceClient()
+    try:
+        klines = client.get_klines(symbol, settings.KLINE_INTERVAL, limit)
+        # 返回精简格式: [{time, open, high, low, close, volume}, ...]
+        result = []
+        for k in klines:
+            result.append({
+                "time": int(k[0]),
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+            })
+        return {"symbol": symbol, "interval": settings.KLINE_INTERVAL, "klines": result}
+    finally:
+        client.close()
