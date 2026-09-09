@@ -44,7 +44,7 @@ def run_ai_analysis_task(
         for r in results:
             try:
                 klines = client.get_klines(
-                    r.symbol, cfg.kline_interval, 100
+                    r.symbol, cfg.kline_interval, 250
                 )
                 signal = {
                     "symbol": r.symbol,
@@ -82,6 +82,7 @@ def _upsert_ai_analysis(db, scan_result_id: UUID, symbol: str, ai_result: dict):
     ).scalars().first()
 
     if existing:
+        existing.direction = ai_result.get("direction")
         existing.analysis = ai_result.get("analysis")
         existing.entry_price = ai_result.get("entry_price")
         existing.stop_loss = ai_result.get("stop_loss")
@@ -89,11 +90,13 @@ def _upsert_ai_analysis(db, scan_result_id: UUID, symbol: str, ai_result: dict):
         existing.take_profit_2 = ai_result.get("take_profit_2")
         existing.risk_reward_ratio = ai_result.get("risk_reward_ratio")
         existing.position_pct = ai_result.get("position_pct")
+        existing.recommendation = ai_result.get("recommendation")
     else:
         db.add(
             AIAnalysis(
                 scan_result_id=scan_result_id,
                 symbol=symbol,
+                direction=ai_result.get("direction"),
                 analysis=ai_result.get("analysis"),
                 entry_price=ai_result.get("entry_price"),
                 stop_loss=ai_result.get("stop_loss"),
@@ -101,5 +104,6 @@ def _upsert_ai_analysis(db, scan_result_id: UUID, symbol: str, ai_result: dict):
                 take_profit_2=ai_result.get("take_profit_2"),
                 risk_reward_ratio=ai_result.get("risk_reward_ratio"),
                 position_pct=ai_result.get("position_pct"),
+                recommendation=ai_result.get("recommendation"),
             )
         )

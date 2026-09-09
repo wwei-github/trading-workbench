@@ -78,6 +78,7 @@ class AIAnalysisOut(BaseModel):
     id: UUID
     scan_result_id: UUID
     symbol: str
+    direction: Optional[str] = None  # long / short
     analysis: Optional[str] = None
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
@@ -85,6 +86,7 @@ class AIAnalysisOut(BaseModel):
     take_profit_2: Optional[float] = None
     risk_reward_ratio: Optional[float] = None
     position_pct: Optional[float] = None
+    recommendation: Optional[float] = None  # 推荐程度 0-100
     created_at: datetime
 
     class Config:

@@ -1,9 +1,9 @@
-import { Table, Tag, Tooltip, Empty, Button, Descriptions, Typography, message, Row, Col, Alert, Space } from 'antd'
+import { Table, Tag, Tooltip, Empty, Button, Descriptions, Typography, message, Alert, Space } from 'antd'
 import { RobotOutlined, CopyOutlined, LoadingOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { bj } from '../utils/dayjs'
 import { useScanStore } from '../stores/scanStore'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import KlineChart from './KlineChart'
 import type { AIAnalysis, ScanResult } from '../types'
 
@@ -33,8 +33,19 @@ export default function ResultTable() {
 
   const aiEnabled = !!aiConfig?.ai_analysis_enabled
 
-  // 跟踪展开的行
+  // 展开行：同时控制左侧 AI 分析折叠和右侧图表
   const [expandedRowKeys, setExpandedRowKeys] = useState<string[]>([])
+
+  // 默认展开第一行
+  useEffect(() => {
+    if (results.length > 0) {
+      setExpandedRowKeys(prev => {
+        // 保留当前展开的行（如果还在结果中）
+        const stillValid = prev.filter(id => results.find(r => r.id === id))
+        return stillValid.length > 0 ? stillValid : [results[0].id]
+      })
+    }
+  }, [results])
 
   // 按 scan_result_id 索引 AI 分析
   const aiMap: Record<string, AIAnalysis> = useMemo(() => {
@@ -44,6 +55,10 @@ export default function ResultTable() {
     }
     return m
   }, [aiAnalyses])
+
+  // 图表跟随展开的行
+  const selectedRecord = results.find(r => expandedRowKeys.includes(r.id)) || null
+  const selectedAi = selectedRecord ? aiMap[selectedRecord.id] : undefined
 
   const handleReAnalyze = async (record: ScanResult) => {
     if (!currentScanId) {
@@ -73,7 +88,6 @@ export default function ResultTable() {
       title: '币种',
       dataIndex: 'symbol',
       key: 'symbol',
-      width: 150,
       render: (v: string) => (
         <span>
           <strong>{v.replace('USDT', '')}/USDT</strong>
@@ -91,13 +105,6 @@ export default function ResultTable() {
       title: '信号类型',
       dataIndex: 'signal_type',
       key: 'signal_type',
-      width: 110,
-      filters: [
-        { text: '下跌突破', value: 'downtrend_breakout' },
-        { text: '区间震荡', value: 'range_bound' },
-        { text: '上涨回调', value: 'uptrend_pullback' },
-      ],
-      onFilter: (value, record) => record.signal_type === value,
       render: (v: string) => {
         const map: Record<string, { label: string; color: string }> = {
           downtrend_breakout: { label: '下跌突破', color: 'red' },
@@ -112,7 +119,6 @@ export default function ResultTable() {
       title: 'K线形态',
       dataIndex: 'pattern',
       key: 'pattern',
-      width: 120,
       render: (v: string | null, record: ScanResult) => {
         if (!v) return <span style={{ color: '#999' }}>-</span>
         const map: Record<string, string> = {
@@ -136,7 +142,6 @@ export default function ResultTable() {
       title: '当前价格',
       dataIndex: 'current_price',
       key: 'current_price',
-      width: 140,
       render: (v: number) =>
         v < 1 ? v.toFixed(6) : v < 100 ? v.toFixed(4) : v.toFixed(2),
     },
@@ -144,7 +149,6 @@ export default function ResultTable() {
       title: '24h成交额',
       dataIndex: 'volume_24h',
       key: 'volume_24h',
-      width: 130,
       sorter: (a, b) => a.volume_24h - b.volume_24h,
       defaultSortOrder: 'descend',
       render: (v: number) => {
@@ -157,7 +161,6 @@ export default function ResultTable() {
     {
       title: 'K线量能',
       key: 'volume_type',
-      width: 120,
       sorter: (a, b) => a.volume - b.volume,
       render: (_: unknown, r: ScanResult) => {
         const colorMap: Record<string, string> = {
@@ -167,18 +170,10 @@ export default function ResultTable() {
           缩量: 'blue',
           地量: 'gray',
         }
-        const volStr =
-          r.volume >= 1e6
-            ? (r.volume / 1e6).toFixed(2) + 'M'
-            : r.volume >= 1e3
-            ? (r.volume / 1e3).toFixed(1) + 'K'
-            : r.volume.toFixed(0)
         return (
-          <Tooltip title={`最新收盘量: ${volStr}`}>
-            <Tag color={colorMap[r.volume_type] || 'default'}>
-              {r.volume_type}
-            </Tag>
-          </Tooltip>
+          <Tag color={colorMap[r.volume_type] || 'default'}>
+            {r.volume_type}
+          </Tag>
         )
       },
     },
@@ -186,7 +181,6 @@ export default function ResultTable() {
       title: '突破幅度',
       dataIndex: 'breakout_pct',
       key: 'breakout_pct',
-      width: 120,
       sorter: (a, b) => a.breakout_pct - b.breakout_pct,
       render: (v: number) => (
         <span style={{ color: '#52c41a', fontWeight: 600 }}>
@@ -198,59 +192,61 @@ export default function ResultTable() {
       title: '状态',
       dataIndex: 'is_repeat',
       key: 'is_repeat',
-      width: 100,
       render: (v: boolean) =>
         v ? (
-          <Tag color="default">重复命中</Tag>
+          <Tag color="default">重复</Tag>
         ) : (
-          <Tag color="green">新命中</Tag>
+          <Tag color="green">新</Tag>
         ),
-    },
-    {
-      title: '命中时间',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      width: 180,
-      render: (v: string) => bj(v).format('YYYY-MM-DD HH:mm:ss'),
     },
   ]
 
   return (
-    <Table
-      rowKey="id"
-      className="result-table"
-      columns={columns}
-      dataSource={results}
-      loading={loading}
-      pagination={{
-        current: resultsPage,
-        pageSize: resultsPageSize,
-        total,
-        showTotal: (t) => `共 ${t} 条`,
-        size: 'small',
-        onChange: (page, pageSize) => fetchResults(undefined, page, pageSize),
-      }}
-      locale={{ emptyText: <Empty description="暂无命中币种" /> }}
-      scroll={{ x: 1300, y: 'calc(100vh - 400px)' }}
-      expandable={{
-        expandedRowKeys,
-        onExpand: (expanded, record) => {
-          setExpandedRowKeys(expanded ? [record.id] : [])
-        },
-        expandedRowRender: (record: ScanResult) => {
-          const ai = aiMap[record.id]
-          const rowState = analyzingMap[record.id]
-          const isLoading = !!rowState?.loading
-          const rowError = rowState?.error
-          return (
-            <Row gutter={16}>
-              {/* 左侧：AI 分析 */}
-              <Col span={10}>
-                {!aiEnabled ? (
+    <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
+      {/* 左侧：结果列表 + 折叠 AI 分析 */}
+      <div style={{ flex: '0 0 55%', overflow: 'auto', paddingRight: 8 }}>
+        <Table
+          rowKey="id"
+          className="result-table"
+          columns={columns}
+          dataSource={results}
+          loading={loading}
+          size="small"
+          pagination={{
+            current: resultsPage,
+            pageSize: resultsPageSize,
+            total,
+            showTotal: (t) => `共 ${t} 条`,
+            size: 'small',
+            onChange: (page, pageSize) => fetchResults(undefined, page, pageSize),
+          }}
+          locale={{ emptyText: <Empty description="暂无命中币种" /> }}
+          onRow={(record) => ({
+            onClick: () => {
+              setExpandedRowKeys(prev =>
+                prev.includes(record.id)
+                  ? prev.filter(k => k !== record.id)
+                  : [record.id]
+              )
+            },
+            style: { cursor: 'pointer' },
+          })}
+          expandable={{
+            expandedRowKeys,
+            onExpand: (expanded, record) => {
+              setExpandedRowKeys(expanded ? [record.id] : [])
+            },
+            expandedRowRender: (record: ScanResult) => {
+              const ai = aiMap[record.id]
+              const rowState = analyzingMap[record.id]
+              const isLoading = !!rowState?.loading
+              const rowError = rowState?.error
+              return (
+                !aiEnabled ? (
                   <div style={{ textAlign: 'center', padding: '20px 0' }}>
                     <Text type="secondary">AI 分析未开启</Text>
                   </div>
-                ) : isLoading ? (
+                ) : isLoading && !ai ? (
                   <div style={{ textAlign: 'center', padding: '20px 0' }}>
                     <LoadingOutlined style={{ fontSize: 24 }} />
                     <div style={{ marginTop: 8 }}>
@@ -259,7 +255,7 @@ export default function ResultTable() {
                   </div>
                 ) : !ai ? (
                   <div style={{ textAlign: 'center', padding: '20px 0' }}>
-                    {rowError ? (
+                    {rowError && (
                       <Alert
                         type="error"
                         message="AI 分析失败"
@@ -267,20 +263,17 @@ export default function ResultTable() {
                         showIcon
                         style={{ marginBottom: 12, textAlign: 'left' }}
                       />
-                    ) : (
-                      <Text type="secondary">暂无 AI 分析结果</Text>
                     )}
-                    <div style={{ marginTop: 12, textAlign: 'center' }}>
-                      <Button
-                        type="primary"
-                        ghost
-                        icon={<RobotOutlined />}
-                        loading={isLoading}
-                        onClick={() => handleReAnalyze(record)}
-                      >
-                        AI 分析
-                      </Button>
-                    </div>
+                    <Button
+                      type="primary"
+                      ghost
+                      size="small"
+                      icon={<RobotOutlined />}
+                      loading={isLoading}
+                      onClick={() => handleReAnalyze(record)}
+                    >
+                      AI 分析
+                    </Button>
                   </div>
                 ) : (
                   <div>
@@ -297,8 +290,35 @@ export default function ResultTable() {
                       />
                     )}
                     <Descriptions bordered size="small" column={2}>
+                      <Descriptions.Item label="方向">
+                        {ai.direction === 'long' ? (
+                          <Tag color="green">做多 (Long)</Tag>
+                        ) : ai.direction === 'short' ? (
+                          <Tag color="red">做空 (Short)</Tag>
+                        ) : (
+                          <span style={{ color: '#999' }}>-</span>
+                        )}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="推荐程度">
+                        {ai.recommendation != null ? (
+                          <span style={{
+                            fontWeight: 700,
+                            color: ai.recommendation >= 80 ? '#ff4d4f' : ai.recommendation >= 60 ? '#fa8c16' : ai.recommendation >= 40 ? '#faad14' : '#8c8c8c',
+                          }}>
+                            {ai.recommendation}分
+                          </span>
+                        ) : (
+                          <span style={{ color: '#999' }}>-</span>
+                        )}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="盈亏比">
+                        {ai.risk_reward_ratio != null ? `${ai.risk_reward_ratio.toFixed(2)}` : '-'}
+                      </Descriptions.Item>
                       <Descriptions.Item label="入场价">
                         {fmtPrice(ai.entry_price)}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="仓位建议">
+                        {ai.position_pct != null ? `${ai.position_pct}%` : '-'}
                       </Descriptions.Item>
                       <Descriptions.Item label="止损价">
                         <span style={{ color: '#ff4d4f' }}>{fmtPrice(ai.stop_loss)}</span>
@@ -306,14 +326,8 @@ export default function ResultTable() {
                       <Descriptions.Item label="止盈1">
                         <span style={{ color: '#52c41a' }}>{fmtPrice(ai.take_profit_1)}</span>
                       </Descriptions.Item>
-                      <Descriptions.Item label="止盈2">
+                      <Descriptions.Item label="止盈2" span={2}>
                         <span style={{ color: '#52c41a' }}>{fmtPrice(ai.take_profit_2)}</span>
-                      </Descriptions.Item>
-                      <Descriptions.Item label="盈亏比">
-                        {ai.risk_reward_ratio != null ? `${ai.risk_reward_ratio.toFixed(2)}` : '-'}
-                      </Descriptions.Item>
-                      <Descriptions.Item label="仓位建议">
-                        {ai.position_pct != null ? `${ai.position_pct}%` : '-'}
                       </Descriptions.Item>
                       <Descriptions.Item label="分析时间" span={2}>
                         {bj(ai.created_at).format('YYYY-MM-DD HH:mm:ss')}
@@ -335,6 +349,7 @@ export default function ResultTable() {
                       <Button
                         type="primary"
                         ghost
+                        size="small"
                         icon={<RobotOutlined />}
                         loading={isLoading}
                         onClick={() => handleReAnalyze(record)}
@@ -343,30 +358,22 @@ export default function ResultTable() {
                       </Button>
                     </div>
                   </div>
-                )}
-              </Col>
-              {/* 右侧：K 线图 */}
-              <Col span={14}>
-                <div style={{ textAlign: 'center', fontWeight: 600, marginBottom: 4 }}>
-                  {record.symbol} 最近100根K线
-                </div>
-                <KlineChart symbol={record.symbol} limit={100} />
-              </Col>
-            </Row>
-          )
-        },
-        rowExpandable: () => true,
-      }}
-      onRow={(record) => ({
-        onClick: () => {
-          setExpandedRowKeys((prev) =>
-            prev.includes(record.id)
-              ? prev.filter((k) => k !== record.id)
-              : [...prev, record.id]
-          )
-        },
-        style: { cursor: 'pointer' },
-      })}
-    />
+                )
+              )
+            },
+            rowExpandable: () => true,
+          }}
+        />
+      </div>
+
+      {/* 右侧：K线图 */}
+      <div style={{ flex: '1 1 45%', overflow: 'auto', paddingLeft: 8, borderLeft: '1px solid #f0f0f0' }}>
+        {!selectedRecord ? (
+          <Empty description="请点击一行查看图表" style={{ marginTop: 80 }} />
+        ) : (
+          <KlineChart symbol={selectedRecord.symbol} limit={250} ai={selectedAi} />
+        )}
+      </div>
+    </div>
   )
 }

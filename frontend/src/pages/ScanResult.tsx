@@ -69,9 +69,15 @@ export default function ScanResult() {
     }
   }
 
-  const handleRefresh = () => {
-    fetchStatus()
-    fetchResults()
+  const handleRefresh = async () => {
+    // 先刷新状态拿到最新扫描记录 ID，再拉取该扫描的结果
+    await fetchStatus()
+    const latestScanId = useScanStore.getState().status?.last_scan?.id
+    if (latestScanId) {
+      await fetchResults(latestScanId)
+    } else {
+      fetchResults()
+    }
     fetchHistory()
   }
 

@@ -54,6 +54,7 @@ export interface AIAnalysis {
   id: string;
   scan_result_id: string;
   symbol: string;
+  direction: string | null; // 'long' | 'short'
   analysis: string | null;
   entry_price: number | null;
   stop_loss: number | null;
@@ -61,6 +62,7 @@ export interface AIAnalysis {
   take_profit_2: number | null;
   risk_reward_ratio: number | null;
   position_pct: number | null;
+  recommendation: number | null; // 0-100
   created_at: string;
 }
 

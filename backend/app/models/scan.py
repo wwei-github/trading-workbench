@@ -60,6 +60,7 @@ class AIAnalysis(Base):
         UUID(as_uuid=True), ForeignKey("scan_results.id"), nullable=False, index=True
     )
     symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    direction: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)  # long / short
     analysis: Mapped[Optional[str]] = mapped_column(String(4000), nullable=True)
     entry_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
     stop_loss: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
@@ -67,6 +68,7 @@ class AIAnalysis(Base):
     take_profit_2: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
     risk_reward_ratio: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
     position_pct: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)
+    recommendation: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)  # 推荐程度 0-100
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")

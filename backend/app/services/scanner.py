@@ -72,6 +72,10 @@ class Scanner:
 
     def run(self, scan_record_id: UUID) -> None:
         db = SessionLocal()
+        status = "failed"
+        hit_count = 0
+        error_count = 0
+        coin_count = 0
         try:
             record = db.get(ScanRecord, scan_record_id)
             if not record:
@@ -87,17 +91,9 @@ class Scanner:
             logger.info("开始扫描 #%s (interval=%s, window=%d)", scan_record_id, kline_interval, kline_window)
 
             # 1. 获取合约交易对列表（按 24h 成交额降序）
-            try:
-                symbols_data = self.client.get_futures_symbols_with_volume()
-            except Exception as e:
-                logger.exception("获取合约交易对列表失败: %s", e)
-                record.status = "failed"
-                record.finished_at = datetime.utcnow()
-                db.commit()
-                return
+            symbols_data = self.client.get_futures_symbols_with_volume()
 
-            record.coin_count = len(symbols_data)
-            db.commit()
+            coin_count = len(symbols_data)
             logger.info("共 %d 个合约交易对待扫描（按24h成交额降序）", len(symbols_data))
 
             # 构建 symbol -> volume 映射
@@ -106,7 +102,6 @@ class Scanner:
 
             # 2. 线程池并发扫描每个币种
             hits: list[dict] = []
-            errors = 0
 
             def scan_one(symbol: str) -> tuple[str, list[dict], bool]:
                 """返回 (symbol, [signals...], is_error)"""
@@ -140,23 +135,55 @@ class Scanner:
                 for future in as_completed(futures):
                     symbol, signals, is_error = future.result()
                     if is_error:
-                        errors += 1
+                        error_count += 1
                     for sig in signals:
                         sig["volume_24h"] = volume_map.get(symbol, 0)
                         hits.append({"symbol": symbol, **sig})
 
-            record.error_count = errors
-
             # 3. 按 24h 成交额降序排列命中结果
             hits.sort(key=lambda x: x.get("volume_24h", 0), reverse=True)
 
-            # 4. 标记重复命中
+            # 4. 标记重复命中（用独立 session 避免死锁）
             hit_symbols = [h["symbol"] for h in hits]
-            repeat_symbols = self._get_repeat_symbols(db, hit_symbols, repeat_window_hours)
+            repeat_symbols = self._get_repeat_symbols_safe(hit_symbols, repeat_window_hours)
 
-            # 5. 写入结果
+            # 5. 写入结果（用独立 session，避免长时间扫描后主 session 连接失效）
+            self._save_results(scan_record_id, hits, repeat_symbols)
+
+            hit_count = len(hits)
+            status = "completed"
+
+            logger.info(
+                "扫描完成 #%s: 扫描%d个, 命中%d个",
+                scan_record_id,
+                len(symbols),
+                len(hits),
+            )
+        except Exception as e:
+            logger.exception("扫描异常 #%s: %s", scan_record_id, e)
+        finally:
+            # 确保扫描状态总是更新（用独立 session 避免事务已中止）
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            self._update_scan_status(scan_record_id, status, hit_count, error_count, coin_count)
+            self.client.close()
+            db.close()
+
+    @staticmethod
+    def _save_results(
+        scan_record_id: UUID,
+        hits: list[dict],
+        repeat_symbols: set[str],
+    ) -> None:
+        """用独立 session 写入扫描结果，避免主 session 连接失效或死锁"""
+        if not hits:
+            return
+        sdb = SessionLocal()
+        try:
             for h in hits:
-                db.add(
+                sdb.add(
                     ScanResult(
                         scan_record_id=scan_record_id,
                         symbol=h["symbol"],
@@ -173,28 +200,65 @@ class Scanner:
                         is_repeat=h["symbol"] in repeat_symbols,
                     )
                 )
-
-            record.hit_count = len(hits)
-            record.status = "completed"
-            record.finished_at = datetime.utcnow()
-            db.commit()
-
-            logger.info(
-                "扫描完成 #%s: 扫描%d个, 命中%d个",
-                scan_record_id,
-                len(symbols),
-                len(hits),
-            )
+            sdb.commit()
+            logger.info("写入 %d 条扫描结果 #%s", len(hits), scan_record_id)
         except Exception as e:
-            logger.exception("扫描异常 #%s: %s", scan_record_id, e)
-            record = db.get(ScanRecord, scan_record_id)
-            if record:
-                record.status = "failed"
-                record.finished_at = datetime.utcnow()
-                db.commit()
+            logger.exception("写入扫描结果失败 #%s: %s", scan_record_id, e)
+            sdb.rollback()
+            raise
         finally:
-            self.client.close()
-            db.close()
+            sdb.close()
+
+    @staticmethod
+    def _update_scan_status(
+        scan_record_id: UUID,
+        status: str,
+        hit_count: int,
+        error_count: int,
+        coin_count: int,
+    ) -> None:
+        """独立 session 更新扫描状态，确保即使主事务失败也能写入"""
+        sdb = SessionLocal()
+        try:
+            record = sdb.get(ScanRecord, scan_record_id)
+            if record:
+                record.status = status
+                record.hit_count = hit_count
+                record.error_count = error_count
+                if coin_count:
+                    record.coin_count = coin_count
+                record.finished_at = datetime.utcnow()
+                sdb.commit()
+        except Exception as e:
+            logger.exception("更新扫描状态失败 #%s: %s", scan_record_id, e)
+            sdb.rollback()
+        finally:
+            sdb.close()
+
+    @staticmethod
+    def _get_repeat_symbols_safe(symbols: list[str], repeat_window_hours: int) -> set[str]:
+        """检查重复命中，用独立 session 避免与主事务死锁"""
+        if not symbols:
+            return set()
+        sdb = SessionLocal()
+        try:
+            since = datetime.utcnow() - timedelta(hours=repeat_window_hours)
+            rows = (
+                sdb.execute(
+                    select(ScanResult.symbol)
+                    .where(ScanResult.symbol.in_(symbols), ScanResult.created_at >= since)
+                    .distinct()
+                )
+                .scalars()
+                .all()
+            )
+            return set(rows)
+        except Exception as e:
+            logger.warning("查询重复命中失败（忽略）: %s", e)
+            sdb.rollback()
+            return set()
+        finally:
+            sdb.close()
 
     @staticmethod
     def _get_repeat_symbols(db: Session, symbols: list[str], repeat_window_hours: int) -> set[str]:
