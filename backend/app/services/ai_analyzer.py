@@ -62,4 +62,12 @@ def analyze_coin(signal: dict, klines: list) -> dict:
     )
 
     content = resp.choices[0].message.content
+    logger.info("AI 返回原始内容: %s", content)
+    # 容错处理：去掉可能的 markdown 包裹
+    content = content.strip()
+    if content.startswith("```"):
+        lines = content.split("\n")
+        # 去掉首尾 ``` 行
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        content = "\n".join(lines)
     return json.loads(content)
