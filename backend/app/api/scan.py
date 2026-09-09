@@ -54,10 +54,17 @@ def list_scans(
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    total = db.execute(select(func.count()).select_from(ScanRecord)).scalar_one()
+    # 仅保留最近 24 小时内的扫描记录
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+    total = db.execute(
+        select(func.count())
+        .select_from(ScanRecord)
+        .where(ScanRecord.started_at >= cutoff)
+    ).scalar_one()
     items = (
         db.execute(
             select(ScanRecord)
+            .where(ScanRecord.started_at >= cutoff)
             .order_by(desc(ScanRecord.started_at))
             .offset((page - 1) * page_size)
             .limit(page_size)

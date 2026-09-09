@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, InputNumber, Select, Input, message, Button } from 'antd'
+import { Modal, Form, InputNumber, Select, message, Button, Spin } from 'antd'
 import { SettingOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
@@ -8,8 +8,19 @@ export default function ScanConfigPanel() {
   const [open, setOpen] = useState(false)
   const [form] = Form.useForm()
   const [saving, setSaving] = useState(false)
-  const { aiConfig, updateConfig } = useScanStore()
+  const [loading, setLoading] = useState(false)
+  const { aiConfig, updateConfig, fetchConfig } = useScanStore()
 
+  // 每次打开 Modal 时，从后端拉取最新配置数据
+  useEffect(() => {
+    if (!open) return
+    setLoading(true)
+    fetchConfig().finally(() => {
+      setLoading(false)
+    })
+  }, [open, fetchConfig])
+
+  // 拿到最新配置后赋值给表单
   useEffect(() => {
     if (open && aiConfig) {
       form.setFieldsValue({
@@ -28,7 +39,6 @@ export default function ScanConfigPanel() {
     try {
       const values = await form.validateFields()
       setSaving(true)
-      // 转换 breakout_threshold 为小数比例（用户输入 0.5%，存储 0.005）
       const data: Partial<SystemConfig> = {
         kline_interval: values.kline_interval,
         kline_window: values.kline_window,
@@ -64,6 +74,7 @@ export default function ScanConfigPanel() {
         confirmLoading={saving}
         width={500}
       >
+        <Spin spinning={loading}>
         <Form form={form} layout="vertical">
           <Form.Item
             label="K线周期"
@@ -133,6 +144,7 @@ export default function ScanConfigPanel() {
             <InputNumber step={0.01} min={0} max={1} style={{ width: '100%' }} />
           </Form.Item>
         </Form>
+        </Spin>
       </Modal>
     </>
   )

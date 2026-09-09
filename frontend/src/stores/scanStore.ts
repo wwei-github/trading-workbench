@@ -8,13 +8,17 @@ interface ScanState {
   total: number
   loading: boolean
   history: ScanRecord[]
+  historyTotal: number
+  historyPage: number
+  historyPageSize: number
   currentScanId: string | null
   aiConfig: SystemConfig | null
   aiAnalyses: AIAnalysis[]
   aiLoading: boolean
   fetchStatus: () => Promise<void>
   fetchResults: (scanId?: string) => Promise<void>
-  fetchHistory: () => Promise<void>
+  fetchHistory: (page?: number, pageSize?: number) => Promise<void>
+  fetchConfig: () => Promise<void>
   triggerScan: () => Promise<void>
   toggleAi: (enabled: boolean) => Promise<void>
   updateConfig: (data: Partial<SystemConfig>) => Promise<void>
@@ -63,6 +67,9 @@ export const useScanStore = create<ScanState>((set, get) => ({
   total: 0,
   loading: false,
   history: [],
+  historyTotal: 0,
+  historyPage: 1,
+  historyPageSize: 10,
   currentScanId: null,
   aiConfig: null,
   aiAnalyses: [],
@@ -99,12 +106,28 @@ export const useScanStore = create<ScanState>((set, get) => ({
     }
   },
 
-  fetchHistory: async () => {
+  fetchHistory: async (page?: number, pageSize?: number) => {
     try {
-      const data = await scanApi.list(1, 10)
-      set({ history: data.items })
+      const p = page ?? get().historyPage
+      const ps = pageSize ?? get().historyPageSize
+      const data = await scanApi.list(p, ps)
+      set({
+        history: data.items,
+        historyTotal: data.total,
+        historyPage: p,
+        historyPageSize: ps,
+      })
     } catch (e) {
       console.error('获取历史记录失败', e)
+    }
+  },
+
+  fetchConfig: async () => {
+    try {
+      const data = await scanApi.getConfig()
+      set({ aiConfig: data })
+    } catch (e) {
+      console.error('获取系统配置失败', e)
     }
   },
 

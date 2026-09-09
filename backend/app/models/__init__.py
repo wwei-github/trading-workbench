@@ -1,3 +1,4 @@
 from app.models.scan import ScanRecord, ScanResult, AIAnalysis
+from app.models.system_config import SystemConfig
 
-__all__ = ["ScanRecord", "ScanResult", "AIAnalysis"]
+__all__ = ["ScanRecord", "ScanResult", "AIAnalysis", "SystemConfig"]

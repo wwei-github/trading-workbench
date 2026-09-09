@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Card, Row, Col, Button, Space, Switch, Tooltip, message } from 'antd'
+import { Card, Row, Col, Button, Space, Switch, Tooltip, Tabs, message } from 'antd'
 import { ReloadOutlined, ThunderboltOutlined, RobotOutlined } from '@ant-design/icons'
 import ScanStatus from '../components/ScanStatus'
 import ResultTable from '../components/ResultTable'
@@ -150,9 +150,21 @@ export default function ScanResult() {
         </Row>
       </Card>
 
-      <ResultTable />
-
-      <HistoryList />
+      <Tabs
+        defaultActiveKey="results"
+        items={[
+          {
+            key: 'results',
+            label: '扫描结果',
+            children: <ResultTable />,
+          },
+          {
+            key: 'history',
+            label: '历史记录',
+            children: <HistoryList />,
+          },
+        ]}
+      />
     </Space>
   )
 }

@@ -56,7 +56,8 @@ export default function ResultTable() {
     }
   }
 
-  const handleCopySymbol = (symbol: string) => {
+  const handleCopySymbol = (e: React.MouseEvent, symbol: string) => {
+    e.stopPropagation()
     const text = symbol + '.P'
     navigator.clipboard.writeText(text).then(() => {
       message.success(`已复制: ${text}`)
@@ -78,7 +79,7 @@ export default function ResultTable() {
             type="text"
             size="small"
             icon={<CopyOutlined />}
-            onClick={() => handleCopySymbol(v)}
+            onClick={(e) => handleCopySymbol(e, v)}
             style={{ marginLeft: 4, padding: '0 4px' }}
           />
         </span>
@@ -309,6 +310,16 @@ export default function ResultTable() {
         },
         rowExpandable: () => true,
       }}
+      onRow={(record) => ({
+        onClick: () => {
+          setExpandedRowKeys((prev) =>
+            prev.includes(record.id)
+              ? prev.filter((k) => k !== record.id)
+              : [...prev, record.id]
+          )
+        },
+        style: { cursor: 'pointer' },
+      })}
     />
   )
 }
