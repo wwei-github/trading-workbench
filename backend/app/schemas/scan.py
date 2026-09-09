@@ -28,6 +28,11 @@ class ScanResultOut(BaseModel):
     breakout_pct: float
     trend_slope: float
     r_squared: float
+    pattern: Optional[str] = None
+    signal_reason: Optional[str] = None
+    volume_24h: float
+    volume: float
+    volume_type: str
     is_repeat: bool
     created_at: datetime
 
@@ -65,3 +70,31 @@ class ScanStatusResponse(BaseModel):
     last_scan: Optional[ScanRecordOut] = None
     is_scanning: bool
     config: ScanConfig
+
+
+# ===== AI 分析 =====
+
+class AIAnalysisOut(BaseModel):
+    id: UUID
+    scan_result_id: UUID
+    symbol: str
+    analysis: Optional[str] = None
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit_1: Optional[float] = None
+    take_profit_2: Optional[float] = None
+    risk_reward_ratio: Optional[float] = None
+    position_pct: Optional[float] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AIAnalysisListResponse(BaseModel):
+    items: list[AIAnalysisOut]
+    total: int
+
+
+class AIAnalysisTriggerRequest(BaseModel):
+    scan_result_id: Optional[UUID] = None  # None = 全量分析, 有值 = 单币分析

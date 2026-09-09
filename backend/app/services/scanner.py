@@ -16,6 +16,33 @@ from app.services.strategy import detect_all_signals
 logger = logging.getLogger(__name__)
 
 
+def classify_volume(klines: list[list]) -> tuple[float, str]:
+    """提取最新已收盘 K 线成交量并分类。
+
+    klines[-1] 是未收盘 K 线，用 klines[-2]；前 20 根用 klines[-22:-2]。
+    返回 (volume, volume_type)。
+    """
+    if len(klines) < 22:
+        return 0.0, "平量"
+    vol = float(klines[-2][5])
+    prev_vols = [float(k[5]) for k in klines[-22:-2]]
+    avg = sum(prev_vols) / len(prev_vols)
+    if avg <= 0:
+        return vol, "平量"
+    ratio = vol / avg
+    if ratio < 0.5:
+        vt = "地量"
+    elif ratio < 0.8:
+        vt = "缩量"
+    elif ratio <= 1.2:
+        vt = "平量"
+    elif ratio < 2.0:
+        vt = "放量"
+    else:
+        vt = "倍量"
+    return vol, vt
+
+
 class Scanner:
     """扫描编排器（同步 + 线程池并发）"""
 
@@ -33,19 +60,23 @@ class Scanner:
 
             logger.info("开始扫描 #%s", scan_record_id)
 
-            # 1. 获取交易对列表
+            # 1. 获取合约交易对列表（按 24h 成交额降序）
             try:
-                symbols = self.client.get_usdt_symbols()
+                symbols_data = self.client.get_futures_symbols_with_volume()
             except Exception as e:
-                logger.exception("获取交易对列表失败: %s", e)
+                logger.exception("获取合约交易对列表失败: %s", e)
                 record.status = "failed"
                 record.finished_at = datetime.utcnow()
                 db.commit()
                 return
 
-            record.coin_count = len(symbols)
+            record.coin_count = len(symbols_data)
             db.commit()
-            logger.info("共 %d 个交易对待扫描", len(symbols))
+            logger.info("共 %d 个合约交易对待扫描（按24h成交额降序）", len(symbols_data))
+
+            # 构建 symbol -> volume 映射
+            volume_map = {s["symbol"]: s["volume_24h"] for s in symbols_data}
+            symbols = [s["symbol"] for s in symbols_data]
 
             # 2. 线程池并发扫描每个币种
             hits: list[dict] = []
@@ -66,8 +97,13 @@ class Scanner:
                         "r_squared_threshold": settings.R_SQUARED_THRESHOLD,
                         "pullback_tolerance": settings.PULLBACK_TOLERANCE,
                         "max_trend_slope": 0.005,
+                        "max_consecutive_bull": 1,
                     }
                     signals = detect_all_signals(klines, config)
+                    vol, vol_type = classify_volume(klines)
+                    for sig in signals:
+                        sig["volume"] = vol
+                        sig["volume_type"] = vol_type
                     return symbol, signals, False
                 except Exception as e:
                     logger.warning("扫描 %s 失败: %s", symbol, e)
@@ -80,15 +116,19 @@ class Scanner:
                     if is_error:
                         errors += 1
                     for sig in signals:
+                        sig["volume_24h"] = volume_map.get(symbol, 0)
                         hits.append({"symbol": symbol, **sig})
 
             record.error_count = errors
 
-            # 3. 标记重复命中
+            # 3. 按 24h 成交额降序排列命中结果
+            hits.sort(key=lambda x: x.get("volume_24h", 0), reverse=True)
+
+            # 4. 标记重复命中
             hit_symbols = [h["symbol"] for h in hits]
             repeat_symbols = self._get_repeat_symbols(db, hit_symbols)
 
-            # 4. 写入结果
+            # 5. 写入结果
             for h in hits:
                 db.add(
                     ScanResult(
@@ -99,6 +139,11 @@ class Scanner:
                         breakout_pct=h["breakout_pct"],
                         trend_slope=h.get("trend_slope", 0),
                         r_squared=h.get("r_squared", 0),
+                        pattern=h.get("pattern"),
+                        signal_reason=h.get("signal_reason"),
+                        volume_24h=h.get("volume_24h", 0),
+                        volume=h.get("volume", 0),
+                        volume_type=h.get("volume_type", "平量"),
                         is_repeat=h["symbol"] in repeat_symbols,
                     )
                 )

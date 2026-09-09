@@ -1,5 +1,5 @@
 import { Card, List, Tag, Typography } from 'antd'
-import dayjs from 'dayjs'
+import { bj } from '../utils/dayjs'
 import { useScanStore } from '../stores/scanStore'
 
 const { Text } = Typography
@@ -42,7 +42,7 @@ export default function HistoryList() {
                     </Text>
                   </span>
                 }
-                description={dayjs(item.started_at).format('YYYY-MM-DD HH:mm:ss')}
+                description={bj(item.started_at).format('YYYY-MM-DD HH:mm:ss')}
               />
             </List.Item>
           )

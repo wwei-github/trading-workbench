@@ -1,5 +1,5 @@
 import { Statistic, Row, Col, Tag } from 'antd'
-import dayjs from 'dayjs'
+import { bj } from '../utils/dayjs'
 import { useScanStore } from '../stores/scanStore'
 
 export default function ScanStatus() {
@@ -32,7 +32,7 @@ export default function ScanStatus() {
           title="最近扫描时间"
           valueRender={() =>
             last?.finished_at
-              ? dayjs(last.finished_at).format('MM-DD HH:mm')
+              ? bj(last.finished_at).format('MM-DD HH:mm')
               : '-'
           }
         />

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     # 币安
     BINANCE_BASE_URL: str = os.getenv("BINANCE_BASE_URL", "https://api.binance.com")
+    BINANCE_FUTURES_URL: str = os.getenv("BINANCE_FUTURES_URL", "https://fapi.binance.com")
     BINANCE_TIMEOUT: int = 15
     BINANCE_CONCURRENCY: int = 8
 
@@ -36,6 +37,12 @@ class Settings(BaseSettings):
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]
     QUOTE_ASSET: str = "USDT"
+
+    # AI 分析（OpenAI 兼容接口）
+    AI_ENABLED: bool = False
+    AI_API_KEY: str = ""
+    AI_BASE_URL: str = "https://api.openai.com/v1"
+    AI_MODEL: str = "gpt-4o-mini"
 
     class Config:
         env_file = ".env"

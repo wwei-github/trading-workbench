@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Optional
 from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Numeric, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
@@ -34,12 +35,38 @@ class ScanResult(Base):
     breakout_pct: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False)
     trend_slope: Mapped[float] = mapped_column(Numeric(20, 10), nullable=False)
     r_squared: Mapped[float] = mapped_column(Numeric(10, 6), nullable=False)
+    pattern: Mapped[str] = mapped_column(String(32), nullable=True)
+    signal_reason: Mapped[str] = mapped_column(String(128), nullable=True)
+    volume_24h: Mapped[float] = mapped_column(Numeric(20, 2), nullable=False, default=0)
+    volume: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False, default=0)
+    volume_type: Mapped[str] = mapped_column(String(16), nullable=False, default="平量", index=True)
     is_repeat: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_record: Mapped[ScanRecord] = relationship(back_populates="results")
+    ai_analysis: Mapped[Optional["AIAnalysis"]] = relationship(back_populates="scan_result", uselist=False)
 
     __table_args__ = (
         Index("ix_scan_results_symbol_created", "symbol", "created_at"),
         Index("ix_scan_results_scan_record_id", "scan_record_id"),
     )
+
+
+class AIAnalysis(Base):
+    __tablename__ = "ai_analyses"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scan_result_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scan_results.id"), nullable=False, index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    analysis: Mapped[Optional[str]] = mapped_column(String(4000), nullable=True)
+    entry_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+    stop_loss: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+    take_profit_1: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+    take_profit_2: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+    risk_reward_ratio: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
+    position_pct: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")

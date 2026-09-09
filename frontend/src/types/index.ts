@@ -19,6 +19,11 @@ export interface ScanResult {
   breakout_pct: number;
   trend_slope: number;
   r_squared: number;
+  pattern: string | null;
+  signal_reason: string | null;
+  volume_24h: number;
+  volume: number;
+  volume_type: string;
   is_repeat: boolean;
   created_at: string;
 }
@@ -43,4 +48,18 @@ export interface ListResponse<T> {
   total: number;
   page?: number;
   page_size?: number;
+}
+
+export interface AIAnalysis {
+  id: string;
+  scan_result_id: string;
+  symbol: string;
+  analysis: string | null;
+  entry_price: number | null;
+  stop_loss: number | null;
+  take_profit_1: number | null;
+  take_profit_2: number | null;
+  risk_reward_ratio: number | null;
+  position_pct: number | null;
+  created_at: string;
 }

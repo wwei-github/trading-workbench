@@ -1,10 +1,9 @@
 """策略一：下跌趋势突破
 
-逻辑：
-1. 识别下跌趋势：连续 LH（更低高点）+ LL（更跌低点），即摆动高点和摆动低点均下移
-2. 用最近的摆动高点拟合下跌趋势线（斜率 < 0）
-3. 最新收盘价向上突破该趋势线，或形成 HH（更高高点）打破 LH 序列
-4. 重点关注：LH 序列被打破（出现第一个 HH）
+优化逻辑：
+1. 用摆动点识别历史下跌趋势（LH+LL），这部分仍需 order 确认
+2. 只看最后一根已收盘 K 线是否突破下跌趋势线
+3. 突破必须是刚发生的：前一根 K 线收盘价在趋势线下方
 """
 from __future__ import annotations
 
@@ -14,9 +13,9 @@ from typing import Optional
 from app.services.strategy.swing import (
     find_swing_points,
     merge_swings,
-    classify_structure,
     linear_regression,
 )
+from app.services.strategy.candlestick import detect_all_patterns
 from app.services.strategy.types import DOWNTREND_BREAKOUT
 
 
@@ -29,34 +28,42 @@ def detect(klines: list[list], config: dict) -> Optional[dict]:
     if n < config.get("min_klines", 30):
         return None
 
+    # 摆动点用收盘价计算，过滤影线毛刺
     order = config.get("swing_order", 3)
-    high_idx, low_idx = find_swing_points(highs, lows, order)
-    swings = merge_swings(high_idx, low_idx, highs, lows)
+    high_idx, low_idx = find_swing_points(closes, closes, order)
+    swings = merge_swings(high_idx, low_idx, closes, closes)
 
     if len(swings) < 4:
         return None
 
-    struct = classify_structure(swings)
-    highs_seq = struct["highs_seq"]
-    lows_seq = struct["lows_seq"]
+    highs_seq = [p for p in swings if p[1] == "H"]
+    lows_seq = [p for p in swings if p[1] == "L"]
 
-    if len(highs_seq) < 3 or len(lows_seq) < 3:
+    if len(highs_seq) < 2 or len(lows_seq) < 2:
         return None
 
-    close_last = float(closes[-1])
+    # 用最后一根已收盘 K 线（klines[-2]），不用未收盘的 klines[-1]
+    close_last = float(closes[-2])
+    close_prev = float(closes[-3])  # 倒数第 2 根已收盘
+    n_closed = n - 1
 
-    # 条件1：近期为下跌趋势（LH + LL）
-    # 检查最近 3 个摆动高点是否连续下移
-    recent_highs = highs_seq[-3:]
-    is_lh_sequence = all(recent_highs[i][2] > recent_highs[i + 1][2] for i in range(len(recent_highs) - 1))
+    # === 条件1：确认历史下跌趋势 ===
+    recent_highs = highs_seq[-3:] if len(highs_seq) >= 3 else highs_seq[-2:]
+    is_lh_sequence = all(
+        recent_highs[i][2] > recent_highs[i + 1][2]
+        for i in range(len(recent_highs) - 1)
+    )
 
-    recent_lows = lows_seq[-3:]
-    is_ll_sequence = all(recent_lows[i][2] > recent_lows[i + 1][2] for i in range(len(recent_lows) - 1))
+    recent_lows = lows_seq[-3:] if len(lows_seq) >= 3 else lows_seq[-2:]
+    is_ll_sequence = all(
+        recent_lows[i][2] > recent_lows[i + 1][2]
+        for i in range(len(recent_lows) - 1)
+    )
 
     if not (is_lh_sequence or is_ll_sequence):
         return None
 
-    # 条件2：用最近的摆动高点拟合下跌趋势线
+    # === 条件2：拟合下跌趋势线 ===
     x = np.array([p[0] for p in recent_highs], dtype=float)
     y = np.array([p[2] for p in recent_highs], dtype=float)
     slope, intercept, r2 = linear_regression(x, y)
@@ -68,37 +75,49 @@ def detect(klines: list[list], config: dict) -> Optional[dict]:
     if r2 < r2_threshold:
         return None
 
-    # 趋势线在当前位置的预测值
-    trend_value = slope * (n - 1) + intercept
-    if trend_value <= 0 or trend_value < close_last * 0.1:
+    # 趋势线在最后已收盘 K 线位置的预测值
+    trend_value_now = slope * n_closed + intercept
+    # 趋势线在前一根已收盘 K 线位置的预测值
+    trend_value_prev = slope * (n_closed - 1) + intercept
+
+    if trend_value_now <= 0:
         return None
 
-    # 条件3：突破判定（二选一）
+    # === 条件3：最新已收盘 K 线突破趋势线 ===
     breakout_threshold = config.get("breakout_threshold", 0.005)
-    breakout_pct = (close_last - trend_value) / trend_value
-
-    # 方式A：收盘价突破趋势线
+    breakout_pct = (close_last - trend_value_now) / trend_value_now
     broke_trendline = breakout_pct >= breakout_threshold
 
-    # 方式B：形成 HH（最近摆动高点 > 前一个摆动高点），打破 LH 序列
-    formed_hh = False
-    if len(highs_seq) >= 2:
-        formed_hh = highs_seq[-1][2] > highs_seq[-2][2]
+    if not broke_trendline:
+        return None
 
-    if not (broke_trendline or formed_hh):
+    # === 条件4：突破必须是刚发生的 ===
+    # 前一根收盘价在趋势线下方（或刚好在趋势线上），说明是最新这根刚突破
+    prev_vs_trend = (close_prev - trend_value_prev) / trend_value_prev
+    was_below_trend = prev_vs_trend < breakout_threshold
+
+    if not was_below_trend:
+        # 前一根已经突破了，不是新突破
         return None
 
     # 限制异常突破
     if breakout_pct > 5.0:
         return None
 
-    strength = 0.0
-    if formed_hh and broke_trendline:
-        strength = 1.0
-    elif formed_hh:
-        strength = 0.7
-    else:
-        strength = 0.5
+    # === 形态加分（可选）===
+    patterns = detect_all_patterns(klines, idx=-2)
+    pattern = None
+    for p in patterns:
+        if p["direction"] == "bullish":
+            pattern = p
+            break
+
+    strength = 0.7
+    signal_reason = "突破下跌趋势线"
+
+    if pattern:
+        strength = min(pattern["strength"] + 0.3, 1.0)
+        signal_reason = f"突破趋势线 + {pattern['pattern']}"
 
     return {
         "signal_type": DOWNTREND_BREAKOUT,
@@ -106,7 +125,9 @@ def detect(klines: list[list], config: dict) -> Optional[dict]:
         "breakout_pct": float(breakout_pct * 100),
         "trend_slope": float(slope),
         "r_squared": float(r2),
-        "formed_hh": formed_hh,
-        "broke_trendline": broke_trendline,
+        "formed_hh": True,
+        "broke_trendline": True,
+        "pattern": pattern["pattern"] if pattern else None,
+        "signal_reason": signal_reason,
         "strength": strength,
     }

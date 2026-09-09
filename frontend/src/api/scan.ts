@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { ListResponse, ScanRecord, ScanResult, ScanStatus } from '../types'
+import type { AIAnalysis, ListResponse, ScanRecord, ScanResult, ScanStatus } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -11,14 +11,14 @@ export const scanApi = {
       .get<ListResponse<ScanRecord>>('/scans', { params: { page, page_size: pageSize } })
       .then((r) => r.data),
 
-  results: (scanId: string, page = 1, pageSize = 20, sortBy = 'breakout_pct', order = 'desc') =>
+  results: (scanId: string, page = 1, pageSize = 20, sortBy = 'volume_24h', order = 'desc') =>
     api
       .get<ListResponse<ScanResult>>(`/scans/${scanId}/results`, {
         params: { page, page_size: pageSize, sort_by: sortBy, order },
       })
       .then((r) => r.data),
 
-  latestResults: (page = 1, pageSize = 20, sortBy = 'breakout_pct', order = 'desc') =>
+  latestResults: (page = 1, pageSize = 20, sortBy = 'volume_24h', order = 'desc') =>
     api
       .get<ListResponse<ScanResult>>('/scans/latest/results', {
         params: { page, page_size: pageSize, sort_by: sortBy, order },
@@ -26,4 +26,16 @@ export const scanApi = {
       .then((r) => r.data),
 
   status: () => api.get<ScanStatus>('/scans/status').then((r) => r.data),
+
+  aiAnalyses: (scanId: string) =>
+    api
+      .get<{ items: AIAnalysis[]; total: number }>(`/scans/${scanId}/ai-analyses`)
+      .then((r) => r.data),
+
+  triggerAi: (scanId: string, scanResultId?: string) =>
+    api
+      .post<{ scan_id: string; status: string }>(`/scans/${scanId}/ai-analyses`, {
+        scan_result_id: scanResultId ?? null,
+      })
+      .then((r) => r.data),
 }
