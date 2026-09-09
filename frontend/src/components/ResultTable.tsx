@@ -21,23 +21,24 @@ export default function ResultTable() {
     results,
     total,
     loading,
+    resultsPage,
+    resultsPageSize,
     currentScanId,
     aiAnalyses,
     aiLoading,
     aiPolling,
     aiPollingTimeout,
     triggerAiAnalysis,
+    fetchResults,
     aiConfig,
   } = useScanStore()
 
   const aiEnabled = !!aiConfig?.ai_analysis_enabled
-  // AI 分析进度：已分析数 / 总数
+  // AI 分析进度：已分析数 / 总命中数（用后端 total，非当前页数）
   const aiProgress = useMemo(() => {
-    if (results.length === 0) return 0
-    const analyzedIds = new Set(aiAnalyses.map((a) => a.scan_result_id))
-    const done = results.filter((r) => analyzedIds.has(r.id)).length
-    return Math.round((done / results.length) * 100)
-  }, [aiAnalyses, results])
+    if (total === 0) return 0
+    return Math.round((aiAnalyses.length / total) * 100)
+  }, [aiAnalyses, total])
 
   // 跟踪展开的行
   const [expandedRowKeys, setExpandedRowKeys] = useState<string[]>([])
@@ -228,7 +229,14 @@ export default function ResultTable() {
       columns={columns}
       dataSource={results}
       loading={loading}
-      pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条`, size: 'small' }}
+      pagination={{
+        current: resultsPage,
+        pageSize: resultsPageSize,
+        total,
+        showTotal: (t) => `共 ${t} 条`,
+        size: 'small',
+        onChange: (page, pageSize) => fetchResults(undefined, page, pageSize),
+      }}
       locale={{ emptyText: <Empty description="暂无命中币种" /> }}
       scroll={{ x: 1300, y: 'calc(100vh - 400px)' }}
       expandable={{

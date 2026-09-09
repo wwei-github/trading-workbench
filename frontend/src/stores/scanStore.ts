@@ -7,6 +7,8 @@ interface ScanState {
   results: ScanResult[]
   total: number
   loading: boolean
+  resultsPage: number
+  resultsPageSize: number
   history: ScanRecord[]
   historyTotal: number
   historyPage: number
@@ -18,7 +20,7 @@ interface ScanState {
   aiPolling: boolean
   aiPollingTimeout: boolean
   fetchStatus: () => Promise<void>
-  fetchResults: (scanId?: string) => Promise<void>
+  fetchResults: (scanId?: string, page?: number, pageSize?: number) => Promise<void>
   fetchHistory: (page?: number, pageSize?: number) => Promise<void>
   fetchConfig: () => Promise<void>
   triggerScan: () => Promise<void>
@@ -74,6 +76,8 @@ export const useScanStore = create<ScanState>((set, get) => ({
   results: [],
   total: 0,
   loading: false,
+  resultsPage: 1,
+  resultsPageSize: 20,
   history: [],
   historyTotal: 0,
   historyPage: 1,
@@ -94,16 +98,26 @@ export const useScanStore = create<ScanState>((set, get) => ({
     }
   },
 
-  fetchResults: async (scanId?: string) => {
+  fetchResults: async (scanId?: string, page?: number, pageSize?: number) => {
     set({ loading: true })
     try {
       const id = scanId || get().currentScanId
+      // scanId 变化时重置到第 1 页
+      const scanChanged = scanId && scanId !== get().currentScanId
+      const p = scanChanged ? 1 : (page ?? get().resultsPage)
+      const ps = pageSize ?? get().resultsPageSize
       const data = id
-        ? await scanApi.results(id)
-        : await scanApi.latestResults()
+        ? await scanApi.results(id, p, ps)
+        : await scanApi.latestResults(p, ps)
       // 优先用传入的 id，否则从结果的 scan_record_id 推断
       const newScanId = id || data.items[0]?.scan_record_id || null
-      set({ results: data.items, total: data.total, currentScanId: newScanId })
+      set({
+        results: data.items,
+        total: data.total,
+        resultsPage: p,
+        resultsPageSize: ps,
+        currentScanId: newScanId,
+      })
       // 如果 AI 开启且有扫描 ID，先加载已有 AI 分析
       const cfg = get().aiConfig
       if (cfg?.ai_analysis_enabled && newScanId) {
