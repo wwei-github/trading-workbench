@@ -222,15 +222,15 @@ export default function ResultTable() {
   ]
 
   return (
-    <div className="result-table" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
     <Table
       rowKey="id"
+      className="result-table"
       columns={columns}
       dataSource={results}
       loading={loading}
       pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条`, size: 'small' }}
       locale={{ emptyText: <Empty description="暂无命中币种" /> }}
-      scroll={{ x: 1300 }}
+      scroll={{ x: 1300, y: 'calc(100vh - 300px)' }}
       expandable={{
         expandedRowKeys,
         onExpand: (expanded, record) => {
@@ -372,6 +372,5 @@ export default function ResultTable() {
         style: { cursor: 'pointer' },
       })}
     />
-    </div>
   )
 }

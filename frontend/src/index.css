@@ -20,31 +20,6 @@ html, body, #root {
   height: 100%;
 }
 
-/* 扫描结果 Table 占满高度，内部滚动 */
-.result-table .ant-table-wrapper {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-.result-table .ant-table {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-.result-table .ant-table-container {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-.result-table .ant-table-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto !important;
-}
-
 /* 历史记录列表占满高度，内部滚动 */
 .history-card .ant-card-body {
   height: calc(100% - 40px);
