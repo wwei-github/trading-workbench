@@ -7,6 +7,7 @@ celery_app = Celery(
     "trading_workbench",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
+    include=["app.tasks.scan_tasks", "app.tasks.ai_tasks"],
 )
 
 celery_app.conf.update(
@@ -25,6 +26,3 @@ celery_app.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
 )
-
-# 导入任务
-celery_app.autodiscover_tasks(["app.tasks"])
