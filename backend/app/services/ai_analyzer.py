@@ -56,7 +56,6 @@ def analyze_coin(signal: dict, klines: list) -> dict:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
-        response_format={"type": "json_object"},
         temperature=0.3,
         max_tokens=800,
     )
