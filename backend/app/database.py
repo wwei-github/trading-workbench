@@ -34,6 +34,17 @@ def _run_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_scan_results_volume_type "
             "ON scan_results (volume_type)"
         ))
+        # Feature 2: system_config 加扫描策略列（若表已存在但缺列）
+        conn.execute(text("""
+            ALTER TABLE system_config
+              ADD COLUMN IF NOT EXISTS kline_interval VARCHAR(8) NOT NULL DEFAULT '1h',
+              ADD COLUMN IF NOT EXISTS kline_window INTEGER NOT NULL DEFAULT 240,
+              ADD COLUMN IF NOT EXISTS breakout_threshold NUMERIC(10,6) NOT NULL DEFAULT 0.005,
+              ADD COLUMN IF NOT EXISTS r_squared_threshold NUMERIC(10,6) NOT NULL DEFAULT 0.5,
+              ADD COLUMN IF NOT EXISTS repeat_window_hours INTEGER NOT NULL DEFAULT 24,
+              ADD COLUMN IF NOT EXISTS swing_order INTEGER NOT NULL DEFAULT 3,
+              ADD COLUMN IF NOT EXISTS pullback_tolerance NUMERIC(10,6) NOT NULL DEFAULT 0.03
+        """))
         # 确保系统配置表有默认行（初始值从 env 注入）
         conn.execute(text(
             "INSERT INTO system_config "
