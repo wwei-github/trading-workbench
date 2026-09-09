@@ -9,7 +9,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的突破信号与近期K线数据，给出结构化的交易建议。
-严格只输出 JSON，不要输出 JSON 以外的任何内容。字段如下：
+直接输出JSON，不要思考过程，不要markdown包裹。字段如下：
 - entry_price: 建议入场价（接近当前价，数值）
 - stop_loss: 止损价（入场价下方，基于结构位，数值）
 - take_profit_1: 第一档止盈价（盈亏比≥1.5，数值）
@@ -57,7 +57,7 @@ def analyze_coin(signal: dict, klines: list) -> dict:
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.3,
-        max_tokens=800,
+        max_tokens=2000,
     )
 
     content = resp.choices[0].message.content
