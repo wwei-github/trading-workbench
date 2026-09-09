@@ -199,13 +199,16 @@ export const useScanStore = create<ScanState>((set, get) => ({
   },
 
   triggerAiAnalysis: async (scanId: string, scanResultId?: string) => {
-    set({ aiLoading: true })
+    // 立即标记 polling，防止 fetchResults 重复触发
+    set({ aiLoading: true, aiPolling: true, aiPollingTimeout: false })
     try {
       await scanApi.triggerAi(scanId, scanResultId)
       // 启动轮询，持续刷新 AI 分析结果
       const storeFn = () => get()
       startAiPolling(scanId, storeFn)
     } catch (e: any) {
+      // 触发失败，重置 polling 状态
+      set({ aiPolling: false })
       const detail = e?.response?.data?.detail || '触发 AI 分析失败'
       throw new Error(detail)
     } finally {
