@@ -42,10 +42,10 @@ export default function ScanResult() {
   useEffect(() => {
     const isScanning = !!status?.is_scanning
     const aiEnabled = !!aiConfig?.ai_analysis_enabled
-    // 扫描完成时刷新结果（fetchResults 内部会自动触发 AI 分析）
+    // 扫描完成时刷新结果
     if (wasScanning.current && !isScanning && aiEnabled && currentScanId) {
       fetchResults(currentScanId).then(() => {
-        message.success('扫描完成，已自动触发 AI 分析')
+        message.success('扫描完成')
       })
     }
     // 扫描进行中时持续刷新结果

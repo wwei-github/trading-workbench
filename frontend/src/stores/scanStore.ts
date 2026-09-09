@@ -118,15 +118,10 @@ export const useScanStore = create<ScanState>((set, get) => ({
         resultsPageSize: ps,
         currentScanId: newScanId,
       })
-      // 如果 AI 开启且有扫描 ID，先加载已有 AI 分析
+      // 如果 AI 开启且有扫描 ID，只加载已有 AI 分析结果（不自动触发）
       const cfg = get().aiConfig
       if (cfg?.ai_analysis_enabled && newScanId) {
         await get().fetchAiAnalyses(newScanId)
-        // 如果没有已存在的分析结果，自动触发全量 AI 分析
-        const existing = get().aiAnalyses
-        if (existing.length === 0 && !get().aiPolling) {
-          get().triggerAiAnalysis(newScanId).catch(() => {})
-        }
       }
     } catch (e) {
       console.error('获取扫描结果失败', e)
@@ -177,11 +172,8 @@ export const useScanStore = create<ScanState>((set, get) => ({
       if (enabled) {
         const scanId = get().currentScanId
         if (scanId) {
-          // 先加载已有分析，没有则自动触发全量分析
+          // 只加载已有分析结果，不自动触发
           await get().fetchAiAnalyses(scanId)
-          if (get().aiAnalyses.length === 0 && !get().aiPolling) {
-            get().triggerAiAnalysis(scanId).catch(() => {})
-          }
         }
       } else {
         set({ aiAnalyses: [] })
