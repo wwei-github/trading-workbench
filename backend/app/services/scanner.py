@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import SessionLocal
 from app.models.scan import ScanRecord, ScanResult
+from app.models.system_config import SystemConfig
 from app.services.binance_client import BinanceClient
 from app.services.strategy import detect_all_signals
 
@@ -43,6 +44,25 @@ def classify_volume(klines: list[list]) -> tuple[float, str]:
     return vol, vt
 
 
+def _get_scan_config(db) -> SystemConfig:
+    """从数据库读取扫描策略配置"""
+    cfg = db.get(SystemConfig, 1)
+    if not cfg:
+        # 回退到 env 默认值
+        cfg = SystemConfig(
+            id=1,
+            ai_analysis_enabled=False,
+            kline_interval=settings.KLINE_INTERVAL,
+            kline_window=settings.KLINE_WINDOW,
+            breakout_threshold=settings.BREAKOUT_THRESHOLD,
+            r_squared_threshold=settings.R_SQUARED_THRESHOLD,
+            repeat_window_hours=settings.REPEAT_WINDOW_HOURS,
+            swing_order=settings.SWING_ORDER,
+            pullback_tolerance=settings.PULLBACK_TOLERANCE,
+        )
+    return cfg
+
+
 class Scanner:
     """扫描编排器（同步 + 线程池并发）"""
 
@@ -58,7 +78,13 @@ class Scanner:
                 logger.error("扫描记录不存在: %s", scan_record_id)
                 return
 
-            logger.info("开始扫描 #%s", scan_record_id)
+            # 从数据库读取扫描策略配置
+            cfg = _get_scan_config(db)
+            kline_interval = cfg.kline_interval
+            kline_window = cfg.kline_window
+            repeat_window_hours = cfg.repeat_window_hours
+
+            logger.info("开始扫描 #%s (interval=%s, window=%d)", scan_record_id, kline_interval, kline_window)
 
             # 1. 获取合约交易对列表（按 24h 成交额降序）
             try:
@@ -87,15 +113,15 @@ class Scanner:
                 try:
                     klines = self.client.get_klines(
                         symbol,
-                        interval=settings.KLINE_INTERVAL,
-                        limit=settings.KLINE_WINDOW,
+                        interval=kline_interval,
+                        limit=kline_window,
                     )
                     config = {
                         "min_klines": 30,
-                        "swing_order": settings.SWING_ORDER,
-                        "breakout_threshold": settings.BREAKOUT_THRESHOLD,
-                        "r_squared_threshold": settings.R_SQUARED_THRESHOLD,
-                        "pullback_tolerance": settings.PULLBACK_TOLERANCE,
+                        "swing_order": cfg.swing_order,
+                        "breakout_threshold": float(cfg.breakout_threshold),
+                        "r_squared_threshold": float(cfg.r_squared_threshold),
+                        "pullback_tolerance": float(cfg.pullback_tolerance),
                         "max_trend_slope": 0.005,
                         "max_consecutive_bull": 1,
                     }
@@ -126,7 +152,7 @@ class Scanner:
 
             # 4. 标记重复命中
             hit_symbols = [h["symbol"] for h in hits]
-            repeat_symbols = self._get_repeat_symbols(db, hit_symbols)
+            repeat_symbols = self._get_repeat_symbols(db, hit_symbols, repeat_window_hours)
 
             # 5. 写入结果
             for h in hits:
@@ -171,11 +197,11 @@ class Scanner:
             db.close()
 
     @staticmethod
-    def _get_repeat_symbols(db: Session, symbols: list[str]) -> set[str]:
-        """检查哪些币种在 REPEAT_WINDOW_HOURS 内已有命中记录"""
+    def _get_repeat_symbols(db: Session, symbols: list[str], repeat_window_hours: int) -> set[str]:
+        """检查哪些币种在 repeat_window_hours 内已有命中记录"""
         if not symbols:
             return set()
-        since = datetime.utcnow() - timedelta(hours=settings.REPEAT_WINDOW_HOURS)
+        since = datetime.utcnow() - timedelta(hours=repeat_window_hours)
         rows = db.execute(
             select(ScanResult.symbol)
             .where(ScanResult.symbol.in_(symbols), ScanResult.created_at >= since)

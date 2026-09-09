@@ -4,7 +4,9 @@ import { ReloadOutlined, ThunderboltOutlined, RobotOutlined } from '@ant-design/
 import ScanStatus from '../components/ScanStatus'
 import ResultTable from '../components/ResultTable'
 import HistoryList from '../components/HistoryList'
+import ScanConfigPanel from '../components/ScanConfigPanel'
 import { useScanStore } from '../stores/scanStore'
+import { scanApi } from '../api/scan'
 
 export default function ScanResult() {
   const {
@@ -12,10 +14,9 @@ export default function ScanResult() {
     fetchResults,
     fetchHistory,
     triggerScan,
-    loading,
     status,
-    aiEnabled,
-    setAiEnabled,
+    aiConfig,
+    toggleAi,
     currentScanId,
     triggerAiAnalysis,
     fetchAiAnalyses,
@@ -24,10 +25,19 @@ export default function ScanResult() {
   const wasScanning = useRef(false)
 
   useEffect(() => {
-    // 初始加载
+    // 初始加载：状态、配置、结果、历史
     fetchStatus()
-    fetchResults().then(() => {
-      // fetchResults 完成后，如果有 currentScanId 且 AI 开启，会自动加载 AI 分析
+    scanApi.getConfig().then((cfg) => {
+      useScanStore.setState({ aiConfig: cfg })
+      // 如果 AI 开启，加载已有的 AI 分析
+      if (cfg.ai_analysis_enabled) {
+        fetchResults().then(() => {
+          const scanId = useScanStore.getState().currentScanId
+          if (scanId) fetchAiAnalyses(scanId)
+        })
+      } else {
+        fetchResults()
+      }
     })
     fetchHistory()
 
@@ -41,6 +51,7 @@ export default function ScanResult() {
   // 扫描状态变化处理
   useEffect(() => {
     const isScanning = !!status?.is_scanning
+    const aiEnabled = !!aiConfig?.ai_analysis_enabled
     // 扫描完成时自动触发 AI 分析
     if (wasScanning.current && !isScanning && aiEnabled && currentScanId) {
       // 先刷新结果
@@ -81,7 +92,18 @@ export default function ScanResult() {
     fetchHistory()
   }
 
+  const handleAiToggle = async (checked: boolean) => {
+    try {
+      await toggleAi(checked)
+      message.success(checked ? 'AI 分析已开启' : 'AI 分析已关闭')
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '切换 AI 开关失败')
+    }
+  }
+
   const isScanning = !!status?.is_scanning
+  const aiEnabled = !!aiConfig?.ai_analysis_enabled
+  const aiConfigured = !!aiConfig?.ai_configured
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
@@ -92,17 +114,25 @@ export default function ScanResult() {
           </Col>
           <Col>
             <Space>
-              <Tooltip title="开启后，每次扫描完成自动将命中币种发给 AI 分析">
+              <Tooltip
+                title={
+                  aiConfigured
+                    ? '开启后，每次扫描完成自动将命中币种发给 AI 分析'
+                    : '后端未配置 AI_API_KEY，无法使用 AI 分析'
+                }
+              >
                 <Space>
                   <RobotOutlined style={{ fontSize: 16 }} />
                   <Switch
                     checkedChildren="AI"
                     unCheckedChildren="AI"
                     checked={aiEnabled}
-                    onChange={setAiEnabled}
+                    onChange={handleAiToggle}
+                    disabled={!aiConfigured}
                   />
                 </Space>
               </Tooltip>
+              <ScanConfigPanel />
               <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
                 刷新
               </Button>

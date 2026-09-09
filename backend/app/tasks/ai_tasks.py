@@ -10,6 +10,7 @@ from app.celery_app import celery_app
 from app.config import settings
 from app.database import SessionLocal
 from app.models.scan import ScanResult, AIAnalysis
+from app.models.system_config import SystemConfig
 from app.services.ai_analyzer import analyze_coin
 from app.services.binance_client import BinanceClient
 
@@ -25,13 +26,14 @@ def run_ai_analysis_task(
     scan_record_id: 扫描记录 ID
     only_scan_result_id: 若提供，只分析该单个 ScanResult（用于手动重新分析）
     """
-    if not settings.AI_ENABLED or not settings.AI_API_KEY:
-        logger.warning("AI 分析未启用，跳过")
-        return
-
     db = SessionLocal()
     client = BinanceClient()
     try:
+        # 从数据库读取 AI 开关
+        cfg = db.get(SystemConfig, 1)
+        if not cfg or not cfg.ai_analysis_enabled or not settings.AI_API_KEY:
+            logger.warning("AI 分析未启用，跳过")
+            return
         q = select(ScanResult).where(ScanResult.scan_record_id == UUID(scan_record_id))
         if only_scan_result_id:
             q = q.where(ScanResult.id == UUID(only_scan_result_id))
@@ -42,7 +44,7 @@ def run_ai_analysis_task(
         for r in results:
             try:
                 klines = client.get_klines(
-                    r.symbol, settings.KLINE_INTERVAL, 100
+                    r.symbol, cfg.kline_interval, 100
                 )
                 signal = {
                     "symbol": r.symbol,

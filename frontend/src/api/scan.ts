@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AIAnalysis, KlineData, ListResponse, ScanRecord, ScanResult, ScanStatus } from '../types'
+import type { AIAnalysis, KlineData, ListResponse, ScanRecord, ScanResult, ScanStatus, SystemConfig } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -43,4 +43,9 @@ export const scanApi = {
     api
       .get<KlineData>(`/scans/klines/${symbol}`, { params: { limit } })
       .then((r) => r.data),
+
+  getConfig: () => api.get<SystemConfig>('/scans/config').then((r) => r.data),
+
+  updateConfig: (data: Partial<SystemConfig>) =>
+    api.put<SystemConfig>('/scans/config', data).then((r) => r.data),
 }

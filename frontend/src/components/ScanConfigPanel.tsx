@@ -1,0 +1,139 @@
+import { useState, useEffect } from 'react'
+import { Modal, Form, InputNumber, Select, Input, message, Button } from 'antd'
+import { SettingOutlined } from '@ant-design/icons'
+import { useScanStore } from '../stores/scanStore'
+import type { SystemConfig } from '../types'
+
+export default function ScanConfigPanel() {
+  const [open, setOpen] = useState(false)
+  const [form] = Form.useForm()
+  const [saving, setSaving] = useState(false)
+  const { aiConfig, updateConfig } = useScanStore()
+
+  useEffect(() => {
+    if (open && aiConfig) {
+      form.setFieldsValue({
+        kline_interval: aiConfig.kline_interval,
+        kline_window: aiConfig.kline_window,
+        breakout_threshold: aiConfig.breakout_threshold,
+        r_squared_threshold: aiConfig.r_squared_threshold,
+        repeat_window_hours: aiConfig.repeat_window_hours,
+        swing_order: aiConfig.swing_order,
+        pullback_tolerance: aiConfig.pullback_tolerance,
+      })
+    }
+  }, [open, aiConfig, form])
+
+  const handleSave = async () => {
+    try {
+      const values = await form.validateFields()
+      setSaving(true)
+      // 转换 breakout_threshold 为小数比例（用户输入 0.5%，存储 0.005）
+      const data: Partial<SystemConfig> = {
+        kline_interval: values.kline_interval,
+        kline_window: values.kline_window,
+        breakout_threshold: values.breakout_threshold,
+        r_squared_threshold: values.r_squared_threshold,
+        repeat_window_hours: values.repeat_window_hours,
+        swing_order: values.swing_order,
+        pullback_tolerance: values.pullback_tolerance,
+      }
+      await updateConfig(data)
+      message.success('配置已保存')
+      setOpen(false)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <>
+      <Button
+        icon={<SettingOutlined />}
+        onClick={() => setOpen(true)}
+      >
+        策略配置
+      </Button>
+      <Modal
+        title="扫描策略配置"
+        open={open}
+        onCancel={() => setOpen(false)}
+        onOk={handleSave}
+        confirmLoading={saving}
+        width={500}
+      >
+        <Form form={form} layout="vertical">
+          <Form.Item
+            label="K线周期"
+            name="kline_interval"
+            rules={[{ required: true }]}
+            tooltip="K线的时间周期"
+          >
+            <Select
+              options={[
+                { value: '1m', label: '1分钟' },
+                { value: '5m', label: '5分钟' },
+                { value: '15m', label: '15分钟' },
+                { value: '30m', label: '30分钟' },
+                { value: '1h', label: '1小时' },
+                { value: '2h', label: '2小时' },
+                { value: '4h', label: '4小时' },
+                { value: '1d', label: '1天' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item
+            label="K线数量"
+            name="kline_window"
+            rules={[{ required: true }]}
+            tooltip="每次扫描获取的K线根数"
+          >
+            <InputNumber min={30} max={1500} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            label="突破阈值"
+            name="breakout_threshold"
+            rules={[{ required: true }]}
+            tooltip="突破幅度阈值，0.005 = 0.5%"
+          >
+            <InputNumber step={0.001} min={0} max={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            label="R² 阈值"
+            name="r_squared_threshold"
+            rules={[{ required: true }]}
+            tooltip="趋势线拟合度阈值，越大要求越严格"
+          >
+            <InputNumber step={0.05} min={0} max={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            label="重复命中窗口（小时）"
+            name="repeat_window_hours"
+            rules={[{ required: true }]}
+            tooltip="在此时间窗口内的命中视为重复"
+          >
+            <InputNumber min={1} max={168} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            label="摆动点阶数"
+            name="swing_order"
+            rules={[{ required: true }]}
+            tooltip="计算摆动点时的左右比较根数"
+          >
+            <InputNumber min={1} max={10} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            label="回调容差"
+            name="pullback_tolerance"
+            rules={[{ required: true }]}
+            tooltip="上涨回调策略的容差比例，0.03 = 3%"
+          >
+            <InputNumber step={0.01} min={0} max={1} style={{ width: '100%' }} />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </>
+  )
+}

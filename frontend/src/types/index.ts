@@ -78,3 +78,15 @@ export interface KlineData {
   interval: string;
   klines: Kline[];
 }
+
+export interface SystemConfig {
+  ai_analysis_enabled: boolean;
+  ai_configured: boolean;
+  kline_interval: string;
+  kline_window: number;
+  breakout_threshold: number;
+  r_squared_threshold: number;
+  repeat_window_hours: number;
+  swing_order: number;
+  pullback_tolerance: number;
+}

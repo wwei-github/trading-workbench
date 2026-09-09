@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.models.scan import ScanRecord, ScanResult, AIAnalysis
 from app.schemas.scan import (
     ScanListResponse,
     ScanRecordOut,
@@ -18,10 +17,14 @@ from app.schemas.scan import (
     AIAnalysisOut,
     AIAnalysisListResponse,
     AIAnalysisTriggerRequest,
+    SystemConfigOut,
+    SystemConfigUpdate,
 )
 from app.services.binance_client import BinanceClient
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
+from app.models.scan import ScanRecord, ScanResult, AIAnalysis
+from app.models.system_config import SystemConfig
 
 router = APIRouter(prefix="/api/scans", tags=["scans"])
 
@@ -117,13 +120,15 @@ def scan_status(db: Session = Depends(get_db)):
         ).scalar_one()
         > 0
     )
+    # 从数据库读取策略配置
+    cfg = _get_system_config(db)
     config = ScanConfig(
         interval_hours=settings.SCAN_INTERVAL_HOURS,
-        kline_interval=settings.KLINE_INTERVAL,
-        window=settings.KLINE_WINDOW,
-        breakout_threshold=settings.BREAKOUT_THRESHOLD,
-        r_squared_threshold=settings.R_SQUARED_THRESHOLD,
-        repeat_window_hours=settings.REPEAT_WINDOW_HOURS,
+        kline_interval=cfg.kline_interval,
+        window=cfg.kline_window,
+        breakout_threshold=float(cfg.breakout_threshold),
+        r_squared_threshold=float(cfg.r_squared_threshold),
+        repeat_window_hours=cfg.repeat_window_hours,
     )
     return ScanStatusResponse(
         last_scan=ScanRecordOut.model_validate(last_scan) if last_scan else None,
@@ -177,6 +182,17 @@ def list_ai_analyses(scan_id: UUID, db: Session = Depends(get_db)):
     )
 
 
+def _get_system_config(db: Session) -> SystemConfig:
+    """获取系统配置（保证存在 id=1 的行）"""
+    cfg = db.get(SystemConfig, 1)
+    if not cfg:
+        cfg = SystemConfig(id=1, ai_analysis_enabled=False)
+        db.add(cfg)
+        db.commit()
+        db.refresh(cfg)
+    return cfg
+
+
 @router.post("/{scan_id}/ai-analyses", response_model=ScanTriggerResponse)
 def trigger_ai_analysis(
     scan_id: UUID,
@@ -184,8 +200,10 @@ def trigger_ai_analysis(
     db: Session = Depends(get_db),
 ):
     """触发 AI 分析（全量或单币）"""
-    if not settings.AI_ENABLED or not settings.AI_API_KEY:
-        raise HTTPException(status_code=403, detail="AI 分析未启用")
+    cfg = _get_system_config(db)
+    # 检查：数据库开关打开 + 后端已配置 API_KEY
+    if not cfg.ai_analysis_enabled or not settings.AI_API_KEY:
+        raise HTTPException(status_code=403, detail="AI 分析未启用或未配置 API Key")
 
     record = db.get(ScanRecord, scan_id)
     if not record:
@@ -198,14 +216,82 @@ def trigger_ai_analysis(
     return ScanTriggerResponse(scan_id=scan_id, status="analyzing")
 
 
+# ===== 系统配置（AI 开关 + 扫描策略） =====
+
+@router.get("/config", response_model=SystemConfigOut)
+def get_system_config(db: Session = Depends(get_db)):
+    """获取系统配置（AI 开关 + 扫描策略）"""
+    cfg = _get_system_config(db)
+    return SystemConfigOut(
+        ai_analysis_enabled=cfg.ai_analysis_enabled,
+        ai_configured=bool(settings.AI_API_KEY),
+        kline_interval=cfg.kline_interval,
+        kline_window=cfg.kline_window,
+        breakout_threshold=float(cfg.breakout_threshold),
+        r_squared_threshold=float(cfg.r_squared_threshold),
+        repeat_window_hours=cfg.repeat_window_hours,
+        swing_order=cfg.swing_order,
+        pullback_tolerance=float(cfg.pullback_tolerance),
+    )
+
+
+@router.put("/config", response_model=SystemConfigOut)
+def update_system_config(
+    body: SystemConfigUpdate,
+    db: Session = Depends(get_db),
+):
+    """更新系统配置（AI 开关 + 扫描策略）"""
+    cfg = _get_system_config(db)
+
+    # AI 开关
+    if body.ai_analysis_enabled is not None:
+        if body.ai_analysis_enabled and not settings.AI_API_KEY:
+            raise HTTPException(
+                status_code=400,
+                detail="后端未配置 AI_API_KEY，无法开启 AI 分析",
+            )
+        cfg.ai_analysis_enabled = body.ai_analysis_enabled
+
+    # 扫描策略字段
+    if body.kline_interval is not None:
+        cfg.kline_interval = body.kline_interval
+    if body.kline_window is not None:
+        cfg.kline_window = body.kline_window
+    if body.breakout_threshold is not None:
+        cfg.breakout_threshold = body.breakout_threshold
+    if body.r_squared_threshold is not None:
+        cfg.r_squared_threshold = body.r_squared_threshold
+    if body.repeat_window_hours is not None:
+        cfg.repeat_window_hours = body.repeat_window_hours
+    if body.swing_order is not None:
+        cfg.swing_order = body.swing_order
+    if body.pullback_tolerance is not None:
+        cfg.pullback_tolerance = body.pullback_tolerance
+
+    db.commit()
+    db.refresh(cfg)
+    return SystemConfigOut(
+        ai_analysis_enabled=cfg.ai_analysis_enabled,
+        ai_configured=bool(settings.AI_API_KEY),
+        kline_interval=cfg.kline_interval,
+        kline_window=cfg.kline_window,
+        breakout_threshold=float(cfg.breakout_threshold),
+        r_squared_threshold=float(cfg.r_squared_threshold),
+        repeat_window_hours=cfg.repeat_window_hours,
+        swing_order=cfg.swing_order,
+        pullback_tolerance=float(cfg.pullback_tolerance),
+    )
+
+
 # ===== K 线数据 =====
 
 @router.get("/klines/{symbol}")
-def get_klines(symbol: str, limit: int = Query(100, ge=1, le=500)):
+def get_klines(symbol: str, limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
     """获取指定币种的最新 K 线数据（用于前端展示）"""
+    cfg = _get_system_config(db)
     client = BinanceClient()
     try:
-        klines = client.get_klines(symbol, settings.KLINE_INTERVAL, limit)
+        klines = client.get_klines(symbol, cfg.kline_interval, limit)
         # 返回精简格式: [{time, open, high, low, close, volume}, ...]
         result = []
         for k in klines:
@@ -217,6 +303,6 @@ def get_klines(symbol: str, limit: int = Query(100, ge=1, le=500)):
                 "close": float(k[4]),
                 "volume": float(k[5]),
             })
-        return {"symbol": symbol, "interval": settings.KLINE_INTERVAL, "klines": result}
+        return {"symbol": symbol, "interval": cfg.kline_interval, "klines": result}
     finally:
         client.close()

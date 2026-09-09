@@ -98,3 +98,37 @@ class AIAnalysisListResponse(BaseModel):
 
 class AIAnalysisTriggerRequest(BaseModel):
     scan_result_id: Optional[UUID] = None  # None = 全量分析, 有值 = 单币分析
+
+
+# ===== 系统配置（AI 开关 + 扫描策略） =====
+
+class SystemConfigOut(BaseModel):
+    # AI 分析
+    ai_analysis_enabled: bool
+    ai_configured: bool  # 后端是否已配置 AI_API_KEY（不返回 key 本身）
+
+    # 扫描策略
+    kline_interval: str
+    kline_window: int
+    breakout_threshold: float
+    r_squared_threshold: float
+    repeat_window_hours: int
+    swing_order: int
+    pullback_tolerance: float
+
+    class Config:
+        from_attributes = True
+
+
+class SystemConfigUpdate(BaseModel):
+    # AI 分析开关
+    ai_analysis_enabled: Optional[bool] = None
+
+    # 扫描策略（均为可选，只更新传入的字段）
+    kline_interval: Optional[str] = None
+    kline_window: Optional[int] = None
+    breakout_threshold: Optional[float] = None
+    r_squared_threshold: Optional[float] = None
+    repeat_window_hours: Optional[int] = None
+    swing_order: Optional[int] = None
+    pullback_tolerance: Optional[float] = None

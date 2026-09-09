@@ -1,5 +1,5 @@
 import { Table, Tag, Tooltip, Empty, Button, Descriptions, Typography, message, Row, Col } from 'antd'
-import { RobotOutlined } from '@ant-design/icons'
+import { RobotOutlined, CopyOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { bj } from '../utils/dayjs'
 import { useScanStore } from '../stores/scanStore'
@@ -26,8 +26,10 @@ export default function ResultTable() {
     aiLoading,
     triggerAiAnalysis,
     fetchAiAnalyses,
-    aiEnabled,
+    aiConfig,
   } = useScanStore()
+
+  const aiEnabled = !!aiConfig?.ai_analysis_enabled
 
   // 跟踪展开的行
   const [expandedRowKeys, setExpandedRowKeys] = useState<string[]>([])
@@ -54,13 +56,33 @@ export default function ResultTable() {
     }
   }
 
+  const handleCopySymbol = (symbol: string) => {
+    const text = symbol + '.P'
+    navigator.clipboard.writeText(text).then(() => {
+      message.success(`已复制: ${text}`)
+    }).catch(() => {
+      message.error('复制失败')
+    })
+  }
+
   const columns: ColumnsType<ScanResult> = [
     {
       title: '币种',
       dataIndex: 'symbol',
       key: 'symbol',
-      width: 120,
-      render: (v: string) => <strong>{v.replace('USDT', '')}/USDT</strong>,
+      width: 150,
+      render: (v: string) => (
+        <span>
+          <strong>{v.replace('USDT', '')}/USDT</strong>
+          <Button
+            type="text"
+            size="small"
+            icon={<CopyOutlined />}
+            onClick={() => handleCopySymbol(v)}
+            style={{ marginLeft: 4, padding: '0 4px' }}
+          />
+        </span>
+      ),
     },
     {
       title: '信号类型',
@@ -210,18 +232,6 @@ export default function ResultTable() {
             <Row gutter={16}>
               {/* 左侧：AI 分析 */}
               <Col span={10}>
-                <div style={{ marginBottom: 8, textAlign: 'right' }}>
-                  {aiEnabled && (
-                    <Button
-                      type="link"
-                      icon={<RobotOutlined />}
-                      loading={aiLoading}
-                      onClick={() => handleReAnalyze(record)}
-                    >
-                      {ai ? '重新分析' : 'AI 分析'}
-                    </Button>
-                  )}
-                </div>
                 {!aiEnabled ? (
                   <div style={{ textAlign: 'center', padding: '20px 0' }}>
                     <Text type="secondary">AI 分析未开启</Text>
@@ -233,34 +243,58 @@ export default function ResultTable() {
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       分析结果将自动刷新
                     </Text>
+                    <div style={{ marginTop: 12, textAlign: 'center' }}>
+                      <Button
+                        type="primary"
+                        ghost
+                        icon={<RobotOutlined />}
+                        loading={aiLoading}
+                        onClick={() => handleReAnalyze(record)}
+                      >
+                        AI 分析
+                      </Button>
+                    </div>
                   </div>
                 ) : (
-                  <Descriptions bordered size="small" column={2}>
-                    <Descriptions.Item label="入场价">
-                      {fmtPrice(ai.entry_price)}
-                    </Descriptions.Item>
-                    <Descriptions.Item label="止损价">
-                      <span style={{ color: '#ff4d4f' }}>{fmtPrice(ai.stop_loss)}</span>
-                    </Descriptions.Item>
-                    <Descriptions.Item label="止盈1">
-                      <span style={{ color: '#52c41a' }}>{fmtPrice(ai.take_profit_1)}</span>
-                    </Descriptions.Item>
-                    <Descriptions.Item label="止盈2">
-                      <span style={{ color: '#52c41a' }}>{fmtPrice(ai.take_profit_2)}</span>
-                    </Descriptions.Item>
-                    <Descriptions.Item label="盈亏比">
-                      {ai.risk_reward_ratio != null ? `${ai.risk_reward_ratio.toFixed(2)}` : '-'}
-                    </Descriptions.Item>
-                    <Descriptions.Item label="仓位建议">
-                      {ai.position_pct != null ? `${ai.position_pct}%` : '-'}
-                    </Descriptions.Item>
-                    <Descriptions.Item label="分析时间" span={2}>
-                      {bj(ai.created_at).format('YYYY-MM-DD HH:mm:ss')}
-                    </Descriptions.Item>
-                    <Descriptions.Item label="AI 推理" span={2}>
-                      <Paragraph style={{ margin: 0 }}>{ai.analysis || '-'}</Paragraph>
-                    </Descriptions.Item>
-                  </Descriptions>
+                  <div>
+                    <Descriptions bordered size="small" column={2}>
+                      <Descriptions.Item label="入场价">
+                        {fmtPrice(ai.entry_price)}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="止损价">
+                        <span style={{ color: '#ff4d4f' }}>{fmtPrice(ai.stop_loss)}</span>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="止盈1">
+                        <span style={{ color: '#52c41a' }}>{fmtPrice(ai.take_profit_1)}</span>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="止盈2">
+                        <span style={{ color: '#52c41a' }}>{fmtPrice(ai.take_profit_2)}</span>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="盈亏比">
+                        {ai.risk_reward_ratio != null ? `${ai.risk_reward_ratio.toFixed(2)}` : '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="仓位建议">
+                        {ai.position_pct != null ? `${ai.position_pct}%` : '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="分析时间" span={2}>
+                        {bj(ai.created_at).format('YYYY-MM-DD HH:mm:ss')}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="AI 推理" span={2}>
+                        <Paragraph style={{ margin: 0 }}>{ai.analysis || '-'}</Paragraph>
+                      </Descriptions.Item>
+                    </Descriptions>
+                    <div style={{ marginTop: 8, textAlign: 'center' }}>
+                      <Button
+                        type="primary"
+                        ghost
+                        icon={<RobotOutlined />}
+                        loading={aiLoading}
+                        onClick={() => handleReAnalyze(record)}
+                      >
+                        重新分析
+                      </Button>
+                    </div>
+                  </div>
                 )}
               </Col>
               {/* 右侧：K 线图 */}

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AIAnalysis, ScanRecord, ScanResult, ScanStatus } from '../types'
+import type { AIAnalysis, ScanRecord, ScanResult, ScanStatus, SystemConfig } from '../types'
 import { scanApi } from '../api/scan'
 
 interface ScanState {
@@ -9,14 +9,15 @@ interface ScanState {
   loading: boolean
   history: ScanRecord[]
   currentScanId: string | null
-  aiEnabled: boolean
+  aiConfig: SystemConfig | null
   aiAnalyses: AIAnalysis[]
   aiLoading: boolean
   fetchStatus: () => Promise<void>
   fetchResults: (scanId?: string) => Promise<void>
   fetchHistory: () => Promise<void>
   triggerScan: () => Promise<void>
-  setAiEnabled: (v: boolean) => void
+  toggleAi: (enabled: boolean) => Promise<void>
+  updateConfig: (data: Partial<SystemConfig>) => Promise<void>
   fetchAiAnalyses: (scanId: string) => Promise<void>
   triggerAiAnalysis: (scanId: string, scanResultId?: string) => Promise<void>
 }
@@ -63,7 +64,7 @@ export const useScanStore = create<ScanState>((set, get) => ({
   loading: false,
   history: [],
   currentScanId: null,
-  aiEnabled: localStorage.getItem('aiEnabled') === '1',
+  aiConfig: null,
   aiAnalyses: [],
   aiLoading: false,
 
@@ -83,10 +84,12 @@ export const useScanStore = create<ScanState>((set, get) => ({
       const data = id
         ? await scanApi.results(id)
         : await scanApi.latestResults()
-      const newScanId = id || null
+      // 优先用传入的 id，否则从结果的 scan_record_id 推断
+      const newScanId = id || data.items[0]?.scan_record_id || null
       set({ results: data.items, total: data.total, currentScanId: newScanId })
       // 如果 AI 开启且有扫描 ID，自动加载 AI 分析
-      if (get().aiEnabled && newScanId) {
+      const cfg = get().aiConfig
+      if (cfg?.ai_analysis_enabled && newScanId) {
         get().fetchAiAnalyses(newScanId)
       }
     } catch (e) {
@@ -115,18 +118,32 @@ export const useScanStore = create<ScanState>((set, get) => ({
     }
   },
 
-  setAiEnabled: (v: boolean) => {
-    localStorage.setItem('aiEnabled', v ? '1' : '0')
-    set({ aiEnabled: v })
-    // 开启 AI 时，如果有当前扫描结果，自动加载已有的 AI 分析
-    if (v) {
-      const scanId = get().currentScanId
-      if (scanId) {
-        get().fetchAiAnalyses(scanId)
+  toggleAi: async (enabled: boolean) => {
+    try {
+      const data = await scanApi.updateConfig({ ai_analysis_enabled: enabled })
+      set({ aiConfig: data })
+      if (enabled) {
+        const scanId = get().currentScanId
+        if (scanId) {
+          get().fetchAiAnalyses(scanId)
+        }
+      } else {
+        set({ aiAnalyses: [] })
+        stopAiPolling()
       }
-    } else {
-      set({ aiAnalyses: [] })
-      stopAiPolling()
+    } catch (e: any) {
+      console.error('更新 AI 配置失败', e)
+      throw e
+    }
+  },
+
+  updateConfig: async (data: Partial<SystemConfig>) => {
+    try {
+      const resp = await scanApi.updateConfig(data)
+      set({ aiConfig: resp })
+    } catch (e: any) {
+      console.error('更新配置失败', e)
+      throw e
     }
   },
 
