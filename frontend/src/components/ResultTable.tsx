@@ -246,43 +246,31 @@ export default function ResultTable() {
                   <div style={{ textAlign: 'center', padding: '20px 0' }}>
                     <Text type="secondary">AI 分析未开启</Text>
                   </div>
-                ) : aiPolling && !ai ? (
-                  <div style={{ textAlign: 'center', padding: '20px 0' }}>
-                    <LoadingOutlined style={{ fontSize: 20, color: '#1677ff' }} />
-                    <div style={{ marginTop: 8 }}>
-                      <Text type="secondary">AI 分析中...</Text>
-                    </div>
-                    <div style={{ marginTop: 8, padding: '0 20px' }}>
-                      <Progress percent={aiProgress} size="small" status="active" />
-                    </div>
-                    <div style={{ marginTop: 4 }}>
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        已完成 {aiProgress}%（每 3 秒自动刷新）
-                      </Text>
-                    </div>
-                  </div>
-                ) : aiPollingTimeout && !ai ? (
-                  <div style={{ textAlign: 'center', padding: '20px 0' }}>
-                    <Alert
-                      type="warning"
-                      message="AI 分析超时"
-                      description="90 秒内未完成分析，可能是 AI 服务响应慢或分析任务较多"
-                      showIcon
-                      style={{ marginBottom: 12 }}
-                    />
-                    <Button
-                      type="primary"
-                      ghost
-                      icon={<RobotOutlined />}
-                      loading={aiLoading}
-                      onClick={() => handleReAnalyze(record)}
-                    >
-                      重新分析
-                    </Button>
-                  </div>
                 ) : !ai ? (
                   <div style={{ textAlign: 'center', padding: '20px 0' }}>
-                    <Text type="secondary">暂无 AI 分析结果</Text>
+                    {aiPolling ? (
+                      <>
+                        <Text type="secondary">AI 正在批量分析中，请稍候...</Text>
+                        <div style={{ marginTop: 8, padding: '0 20px' }}>
+                          <Progress percent={aiProgress} size="small" status="active" />
+                        </div>
+                        <div style={{ marginTop: 4 }}>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            已完成 {aiProgress}%
+                          </Text>
+                        </div>
+                      </>
+                    ) : aiPollingTimeout ? (
+                      <Alert
+                        type="warning"
+                        message="AI 分析超时"
+                        description="90 秒内未完成分析，可能是 AI 服务响应慢或分析任务较多"
+                        showIcon
+                        style={{ marginBottom: 12 }}
+                      />
+                    ) : (
+                      <Text type="secondary">暂无 AI 分析结果</Text>
+                    )}
                     <div style={{ marginTop: 12, textAlign: 'center' }}>
                       <Button
                         type="primary"
