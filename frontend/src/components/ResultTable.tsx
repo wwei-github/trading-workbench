@@ -113,7 +113,9 @@ export default function ResultTable() {
     }
   };
 
-  // 服务端过滤：antd 列头筛选 onChange -> store -> 重新请求
+  // 服务端过滤：列只声明 filters + 受控 filteredValue，
+  // 实际筛选动作在 Table 的 onChange（action === "filter"）里统一提交。
+  // 注意：antd 列级没有 onChange 属性，写在列上会被静默忽略。
   const filterProps = (
     key: "signal_type" | "position" | "pattern" | "ema_state",
     options: { text: string; value: string }[],
@@ -121,9 +123,24 @@ export default function ResultTable() {
     filters: options,
     filterMultiple: false,
     filteredValue: filters[key] ? [filters[key]] : null,
-    onChange: (vals: React.Key[] | null) =>
-      setFilters({ ...filters, [key]: (vals?.[0] as string) || undefined }),
   });
+
+  const handleTableChange: NonNullable<
+    React.ComponentProps<typeof Table<ScanResult>>["onChange"]
+  > = (
+    _pagination,
+    tableFilters,
+    _sorter,
+    extra,
+  ) => {
+    if (extra.action !== "filter") return;
+    setFilters({
+      signal_type: (tableFilters.signal_type?.[0] as string) || undefined,
+      position: (tableFilters.position?.[0] as string) || undefined,
+      pattern: (tableFilters.pattern?.[0] as string) || undefined,
+      ema_state: (tableFilters.ema_state?.[0] as string) || undefined,
+    });
+  };
 
   const handleCopySymbol = (e: React.MouseEvent, symbol: string) => {
     e.stopPropagation();
@@ -324,6 +341,7 @@ export default function ResultTable() {
           dataSource={results}
           loading={loading}
           size="small"
+          onChange={handleTableChange}
           pagination={{
             current: resultsPage,
             pageSize: resultsPageSize,
