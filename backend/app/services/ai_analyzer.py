@@ -66,23 +66,36 @@ def analyze_coin(signal: dict, klines: list, strategy_prompt: Optional[str] = No
         )
 
     client = _get_client()
-    resp = client.chat.completions.create(
-        model=settings.AI_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.3,
-        max_tokens=2000,
-    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
 
-    content = resp.choices[0].message.content
-    logger.info("AI 返回原始内容: %s", content)
-    # 容错处理：去掉可能的 markdown 包裹
-    content = content.strip()
-    if content.startswith("```"):
-        lines = content.split("\n")
-        # 去掉首尾 ``` 行
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        content = "\n".join(lines)
-    return json.loads(content)
+    # GLM 系列为思考型模型，reasoning tokens 也计入 max_tokens，
+    # 配额太小会导致正文为空或被截断（finish_reason=length），这里放大配额并失败重试一次
+    last_err: Exception = ValueError("AI 分析未执行")
+    for attempt in range(2):
+        resp = client.chat.completions.create(
+            model=settings.AI_MODEL,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=12000,
+        )
+        finish = resp.choices[0].finish_reason
+        content = (resp.choices[0].message.content or "").strip()
+        logger.info(
+            "AI 返回原始内容(第%d次, finish=%s): %s",
+            attempt + 1, finish, content[:300],
+        )
+        if not content:
+            last_err = ValueError(f"AI 返回空内容 (finish_reason={finish})")
+            continue
+        # 容错处理：去掉可能的 markdown 包裹
+        if content.startswith("```"):
+            lines = [l for l in content.split("\n") if not l.strip().startswith("```")]
+            content = "\n".join(lines).strip()
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            last_err = e
+    raise last_err

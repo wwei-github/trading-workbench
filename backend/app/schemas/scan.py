@@ -104,6 +104,52 @@ class AIAnalysisTriggerRequest(BaseModel):
     scan_result_id: Optional[UUID] = None  # None = 全量分析, 有值 = 单币分析
 
 
+# ===== 手动搜索 AI 分析 =====
+
+class ManualAnalyzeRequest(BaseModel):
+    symbol: str
+
+
+class ManualAnalysisOut(BaseModel):
+    """手动搜索币种的 AI 分析结果（无 scan_result_id）"""
+    id: UUID
+    symbol: str
+    trade_decision: Optional[str] = None  # suggest / skip
+    skip_reason: Optional[str] = None
+    direction: Optional[str] = None  # long / short
+    analysis: Optional[str] = None
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit_1: Optional[float] = None
+    take_profit_2: Optional[float] = None
+    risk_reward_ratio: Optional[float] = None
+    position_pct: Optional[float] = None
+    recommendation: Optional[float] = None  # 推荐程度 0-100
+    created_at: datetime
+
+
+# ===== 关注列表 =====
+
+class WatchlistItemOut(BaseModel):
+    id: UUID
+    symbol: str
+    note: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class WatchlistListResponse(BaseModel):
+    items: list[WatchlistItemOut]
+    total: int
+
+
+class WatchlistAddRequest(BaseModel):
+    symbol: str
+    note: Optional[str] = None
+
+
 # ===== 系统配置（AI 开关 + 扫描策略） =====
 
 class SystemConfigOut(BaseModel):

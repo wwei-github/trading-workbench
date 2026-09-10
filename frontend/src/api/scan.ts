@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AIAnalysis, KlineData, ListResponse, ScanRecord, ScanResult, ScanStatus, SystemConfig } from '../types'
+import type { AIAnalysis, KlineData, ListResponse, ScanRecord, ScanResult, ScanStatus, SystemConfig, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -48,4 +48,20 @@ export const scanApi = {
 
   updateConfig: (data: Partial<SystemConfig>) =>
     api.put<SystemConfig>('/scans/config', data).then((r) => r.data),
+
+  // 手动搜索币种 AI 分析（同步调用，AI 思考耗时较长，放宽超时）
+  analyzeCoin: (symbol: string) =>
+    api
+      .post<AIAnalysis>('/scans/analyze', { symbol }, { timeout: 180000 })
+      .then((r) => r.data),
+
+  // 关注列表
+  watchlist: {
+    list: () =>
+      api.get<ListResponse<WatchlistItem>>('/watchlist').then((r) => r.data),
+    add: (symbol: string) =>
+      api.post<WatchlistItem>('/watchlist', { symbol }).then((r) => r.data),
+    remove: (symbol: string) =>
+      api.delete<{ ok: boolean; symbol: string }>(`/watchlist/${symbol}`).then((r) => r.data),
+  },
 }

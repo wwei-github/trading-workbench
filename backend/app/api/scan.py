@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, select, func
+from sqlalchemy import delete, desc, select, func
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -17,10 +17,15 @@ from app.schemas.scan import (
     AIAnalysisOut,
     AIAnalysisListResponse,
     AIAnalysisTriggerRequest,
+    ManualAnalyzeRequest,
+    ManualAnalysisOut,
     SystemConfigOut,
     SystemConfigUpdate,
 )
 from app.services.binance_client import BinanceClient
+from app.services.scanner import classify_volume
+from app.services.ai_analyzer import analyze_coin
+from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
 from app.models.scan import ScanRecord, ScanResult, AIAnalysis
@@ -216,6 +221,15 @@ def trigger_ai_analysis(
     if not record:
         raise HTTPException(status_code=404, detail="扫描记录不存在")
 
+    # 单币重新分析：先删除旧结果，前端轮询以"新记录出现"为完成标志
+    if body.scan_result_id:
+        db.execute(
+            delete(AIAnalysis).where(
+                AIAnalysis.scan_result_id == body.scan_result_id
+            )
+        )
+        db.commit()
+
     run_ai_analysis_task.delay(
         str(scan_id),
         str(body.scan_result_id) if body.scan_result_id else None,
@@ -323,3 +337,68 @@ def get_klines(symbol: str, limit: int = Query(100, ge=1, le=500), db: Session =
         return {"symbol": symbol, "interval": cfg.kline_interval, "klines": result}
     finally:
         client.close()
+
+
+# ===== 手动搜索 AI 分析 =====
+
+@router.post("/analyze", response_model=ManualAnalysisOut)
+def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
+    """手动分析任意币种（搜索币种页签）：拉取 K 线后同步调用 AI，返回结构化建议"""
+    cfg = _get_system_config(db)
+    if not cfg.ai_analysis_enabled or not settings.AI_API_KEY:
+        raise HTTPException(status_code=403, detail="AI 分析未启用或未配置 API Key")
+
+    symbol = normalize_symbol(body.symbol)
+    client = BinanceClient()
+    try:
+        try:
+            klines = client.get_klines(symbol, cfg.kline_interval, 250)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"币种 {symbol} 不存在或不可交易")
+    finally:
+        client.close()
+
+    if len(klines) < 2:
+        raise HTTPException(status_code=400, detail=f"币种 {symbol} K线数据不足")
+
+    vol, volume_type = classify_volume(klines)
+    # 24h 成交额（USDT）：最近 24 根已收盘 K 线的计价成交量之和
+    volume_24h = sum(float(k[7]) for k in klines[-25:-1] if len(k) > 7)
+    signal = {
+        "symbol": symbol,
+        "signal_type": "manual_search",
+        "current_price": float(klines[-2][4]),
+        "breakout_pct": 0.0,
+        "pattern": None,
+        "signal_reason": "手动搜索，无预设信号，请根据K线结构自行判断",
+        "volume_type": volume_type,
+        "volume": vol,
+        "volume_24h": volume_24h,
+    }
+
+    strategy_prompt = (
+        cfg.strategy_prompt
+        if cfg.strategy_prompt_enabled and cfg.strategy_prompt
+        else None
+    )
+    try:
+        ai_result = analyze_coin(signal, klines, strategy_prompt=strategy_prompt)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI 分析失败: {e}")
+
+    return ManualAnalysisOut(
+        id=uuid4(),
+        symbol=symbol,
+        trade_decision=ai_result.get("trade_decision"),
+        skip_reason=ai_result.get("skip_reason"),
+        direction=ai_result.get("direction"),
+        analysis=ai_result.get("analysis"),
+        entry_price=ai_result.get("entry_price"),
+        stop_loss=ai_result.get("stop_loss"),
+        take_profit_1=ai_result.get("take_profit_1"),
+        take_profit_2=ai_result.get("take_profit_2"),
+        risk_reward_ratio=ai_result.get("risk_reward_ratio"),
+        position_pct=ai_result.get("position_pct"),
+        recommendation=ai_result.get("recommendation"),
+        created_at=datetime.utcnow(),
+    )

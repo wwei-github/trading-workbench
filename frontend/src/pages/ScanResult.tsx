@@ -6,6 +6,8 @@ import ResultTable from '../components/ResultTable'
 import HistoryList from '../components/HistoryList'
 import ScanConfigPanel from '../components/ScanConfigPanel'
 import StrategyPromptPanel from '../components/StrategyPromptPanel'
+import WatchlistPanel from '../components/WatchlistPanel'
+import SearchPanel from '../components/SearchPanel'
 import { useScanStore } from '../stores/scanStore'
 
 export default function ScanResult() {
@@ -181,9 +183,14 @@ export default function ScanResult() {
             children: <div style={{ height: '100%', overflow: 'hidden' }}><ResultTable /></div>,
           },
           {
-            key: 'history',
-            label: '历史记录',
-            children: <div style={{ height: '100%', overflow: 'hidden' }}><HistoryList /></div>,
+            key: 'watchlist',
+            label: '关注列表',
+            children: <div style={{ height: '100%', overflow: 'hidden' }}><WatchlistPanel /></div>,
+          },
+          {
+            key: 'search',
+            label: '搜索币种',
+            children: <div style={{ height: '100%', overflow: 'hidden' }}><SearchPanel /></div>,
           },
           {
             key: 'strategy',
@@ -193,6 +200,11 @@ export default function ScanResult() {
                 <StrategyPromptPanel />
               </div>
             ),
+          },
+          {
+            key: 'history',
+            label: '历史记录',
+            children: <div style={{ height: '100%', overflow: 'hidden' }}><HistoryList /></div>,
           },
         ]}
       />

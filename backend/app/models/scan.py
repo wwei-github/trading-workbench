@@ -95,3 +95,14 @@ class KlineCache(Base):
     __table_args__ = (
         UniqueConstraint("symbol", "interval", "kline_hour", name="uq_kline_cache_key"),
     )
+
+
+class Watchlist(Base):
+    """关注列表：用户手动关注的币种，持久保存"""
+
+    __tablename__ = "watchlist"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    note: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

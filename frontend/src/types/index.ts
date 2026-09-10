@@ -52,7 +52,7 @@ export interface ListResponse<T> {
 
 export interface AIAnalysis {
   id: string;
-  scan_result_id: string;
+  scan_result_id: string | null; // 手动搜索分析时为 null
   symbol: string;
   trade_decision: string | null; // 'suggest' | 'skip'
   skip_reason: string | null;
@@ -65,6 +65,13 @@ export interface AIAnalysis {
   risk_reward_ratio: number | null;
   position_pct: number | null;
   recommendation: number | null; // 0-100
+  created_at: string;
+}
+
+export interface WatchlistItem {
+  id: string;
+  symbol: string;
+  note: string | null;
   created_at: string;
 }
 

@@ -1,26 +1,29 @@
-import { Table, Tag, Tooltip, Empty, Button, Descriptions, Typography, message, Alert, Space } from 'antd'
-import { RobotOutlined, CopyOutlined, LoadingOutlined } from '@ant-design/icons'
-import type { ColumnsType } from 'antd/es/table'
-import { bj } from '../utils/dayjs'
-import { useScanStore } from '../stores/scanStore'
-import { useState, useMemo, useEffect } from 'react'
-import KlineChart from './KlineChart'
-import type { AIAnalysis, ScanResult } from '../types'
+import {
+  Table,
+  Tag,
+  Tooltip,
+  Empty,
+  Button,
+  Typography,
+  message,
+  Alert,
+  Space,
+} from "antd";
+import {
+  RobotOutlined,
+  CopyOutlined,
+  LoadingOutlined,
+  StarOutlined,
+  StarFilled,
+} from "@ant-design/icons";
+import type { ColumnsType } from "antd/es/table";
+import { useScanStore } from "../stores/scanStore";
+import { useState, useMemo, useEffect } from "react";
+import KlineChart from "./KlineChart";
+import AiAnalysisCard from "./AiAnalysisCard";
+import type { AIAnalysis, ScanResult } from "../types";
 
-const { Text, Paragraph } = Typography
-
-function fmtPrice(v: number | null | undefined): string {
-  if (v == null) return '-'
-  if (v < 1) return v.toFixed(6)
-  if (v < 100) return v.toFixed(4)
-  return v.toFixed(2)
-}
-
-// AI 交易细节表：标签列统一宽度，保证左右两栏对齐
-const descCell = {
-  labelStyle: { width: "18%" },
-  contentStyle: { width: "32%" },
-};
+const { Text } = Typography;
 
 export default function ResultTable() {
   const {
@@ -35,9 +38,16 @@ export default function ResultTable() {
     triggerAiAnalysis,
     fetchResults,
     aiConfig,
+    watchlist,
+    addToWatchlist,
+    removeFromWatchlist,
   } = useScanStore();
 
   const aiEnabled = !!aiConfig?.ai_analysis_enabled;
+  const watchedSymbols = useMemo(
+    () => new Set(watchlist.map((w) => w.symbol)),
+    [watchlist],
+  );
 
   // 展开行：同时控制左侧 AI 分析折叠和右侧图表
   const [expandedRowKeys, setExpandedRowKeys] = useState<string[]>([]);
@@ -59,7 +69,7 @@ export default function ResultTable() {
   const aiMap: Record<string, AIAnalysis> = useMemo(() => {
     const m: Record<string, AIAnalysis> = {};
     for (const a of aiAnalyses) {
-      m[a.scan_result_id] = a;
+      if (a.scan_result_id) m[a.scan_result_id] = a;
     }
     return m;
   }, [aiAnalyses]);
@@ -68,30 +78,6 @@ export default function ResultTable() {
   const selectedRecord =
     results.find((r) => expandedRowKeys.includes(r.id)) || null;
   const selectedAi = selectedRecord ? aiMap[selectedRecord.id] : undefined;
-
-  // 计算实际决策：综合 trade_decision、recommendation、direction 兜底判断
-  // - AI 明确 skip → skip
-  // - recommendation ≤ 30 → skip（分数太低不值得做）
-  // - direction 为空 且 trade_decision 也不是 suggest → skip（无明确方向）
-  // - 以上都不是 → suggest
-  const getEffectiveDecision = (
-    ai?: AIAnalysis,
-  ): { decision: string; reason: string } => {
-    if (!ai) return { decision: "", reason: "" };
-    if (ai.trade_decision === "skip") {
-      return { decision: "skip", reason: ai.skip_reason || "AI 不建议开单" };
-    }
-    if (ai.recommendation != null && ai.recommendation <= 30) {
-      return {
-        decision: "skip",
-        reason: `推荐程度仅 ${ai.recommendation} 分，不值得开单${ai.skip_reason ? "；" + ai.skip_reason : ""}`,
-      };
-    }
-    if (!ai.direction && ai.trade_decision !== "suggest") {
-      return { decision: "skip", reason: "AI 未给出明确交易方向" };
-    }
-    return { decision: "suggest", reason: "" };
-  };
 
   const handleReAnalyze = async (record: ScanResult) => {
     if (!currentScanId) {
@@ -119,20 +105,50 @@ export default function ResultTable() {
       });
   };
 
+  const handleToggleWatch = async (e: React.MouseEvent, record: ScanResult) => {
+    e.stopPropagation();
+    try {
+      if (watchedSymbols.has(record.symbol)) {
+        await removeFromWatchlist(record.symbol);
+        message.info(`已取消关注 ${record.symbol}`);
+      } else {
+        await addToWatchlist(record.symbol);
+        message.success(`已关注 ${record.symbol}`);
+      }
+    } catch (err: any) {
+      message.error(err?.response?.data?.detail || "关注操作失败");
+    }
+  };
+
   const columns: ColumnsType<ScanResult> = [
     {
       title: "币种",
       dataIndex: "symbol",
       key: "symbol",
-      render: (v: string) => (
+      render: (v: string, record: ScanResult) => (
         <span>
           <strong>{v.replace("USDT", "")}/USDT</strong>
+          <Tooltip title={watchedSymbols.has(v) ? "取消关注" : "加入关注列表"}>
+            <Button
+              type="text"
+              size="small"
+              icon={
+                watchedSymbols.has(v) ? (
+                  <StarFilled style={{ color: "#faad14" }} />
+                ) : (
+                  <StarOutlined />
+                )
+              }
+              onClick={(e) => handleToggleWatch(e, record)}
+              style={{ marginLeft: 2, padding: "0 4px" }}
+            />
+          </Tooltip>
           <Button
             type="text"
             size="small"
             icon={<CopyOutlined />}
             onClick={(e) => handleCopySymbol(e, v)}
-            style={{ marginLeft: 4, padding: "0 4px" }}
+            style={{ marginLeft: 2, padding: "0 4px" }}
           />
         </span>
       ),
@@ -327,123 +343,7 @@ export default function ResultTable() {
                       style={{ marginBottom: 8 }}
                     />
                   )}
-                  {/* 计算实际决策 */}
-                  {(() => {
-                    const eff = getEffectiveDecision(ai);
-                    const isSkip = eff.decision === "skip";
-                    return (
-                      <>
-                        {/* AI 决策标签 */}
-                        {isSkip ? (
-                          <Alert
-                            type="error"
-                            showIcon
-                            message={
-                              <strong style={{ fontSize: 14 }}>
-                                ❌ 不建议开单
-                              </strong>
-                            }
-                            description={eff.reason}
-                            style={{ marginBottom: 8 }}
-                          />
-                        ) : (
-                          <Alert
-                            type="success"
-                            showIcon
-                            message={
-                              <strong style={{ fontSize: 14 }}>
-                                ✅ 建议开单
-                              </strong>
-                            }
-                            description={ai.skip_reason || ""}
-                            style={{ marginBottom: 8 }}
-                          />
-                        )}
-
-                        {/* 交易细节：仅 suggest 时展示 */}
-                        {!isSkip && (
-                          <Descriptions bordered size="small" column={2}>
-                            <Descriptions.Item label="方向" {...descCell}>
-                              {ai.direction === "long" ? (
-                                <Tag color="green">做多 (Long)</Tag>
-                              ) : ai.direction === "short" ? (
-                                <Tag color="red">做空 (Short)</Tag>
-                              ) : (
-                                <span style={{ color: "#999" }}>-</span>
-                              )}
-                            </Descriptions.Item>
-                            <Descriptions.Item label="推荐程度" {...descCell}>
-                              {ai.recommendation != null ? (
-                                <span
-                                  style={{
-                                    fontWeight: 700,
-                                    color:
-                                      ai.recommendation >= 80
-                                        ? "#ff4d4f"
-                                        : ai.recommendation >= 60
-                                          ? "#fa8c16"
-                                          : ai.recommendation >= 40
-                                            ? "#faad14"
-                                            : "#8c8c8c",
-                                  }}>
-                                  {ai.recommendation}分
-                                </span>
-                              ) : (
-                                <span style={{ color: "#999" }}>-</span>
-                              )}
-                            </Descriptions.Item>
-                            <Descriptions.Item label="盈亏比" {...descCell}>
-                              {ai.risk_reward_ratio != null
-                                ? `${ai.risk_reward_ratio.toFixed(2)}`
-                                : "-"}
-                            </Descriptions.Item>
-                            <Descriptions.Item label="入场价" {...descCell}>
-                              {fmtPrice(ai.entry_price)}
-                            </Descriptions.Item>
-                            <Descriptions.Item label="仓位建议" {...descCell}>
-                              {ai.position_pct != null
-                                ? `${ai.position_pct}%`
-                                : "-"}
-                            </Descriptions.Item>
-                            <Descriptions.Item label="止损价" {...descCell}>
-                              <span style={{ color: "#ff4d4f" }}>
-                                {fmtPrice(ai.stop_loss)}
-                              </span>
-                            </Descriptions.Item>
-                            <Descriptions.Item label="止盈1" {...descCell}>
-                              <span style={{ color: "#52c41a" }}>
-                                {fmtPrice(ai.take_profit_1)}
-                              </span>
-                            </Descriptions.Item>
-                            <Descriptions.Item label="止盈2" span={2}>
-                              <span style={{ color: "#52c41a" }}>
-                                {fmtPrice(ai.take_profit_2)}
-                              </span>
-                            </Descriptions.Item>
-                            <Descriptions.Item label="分析时间" span={2}>
-                              {bj(ai.created_at).format("YYYY-MM-DD HH:mm:ss")}
-                            </Descriptions.Item>
-                            <Descriptions.Item label="AI 推理" span={2}>
-                              <Paragraph style={{ margin: 0 }}>
-                                {ai.analysis || "-"}
-                              </Paragraph>
-                            </Descriptions.Item>
-                          </Descriptions>
-                        )}
-
-                        {/* skip 时只显示 AI 推理 */}
-                        {isSkip && ai.analysis && (
-                          <Descriptions bordered size="small" column={1}>
-                            <Descriptions.Item label="AI 推理">
-                              <Paragraph style={{ margin: 0 }}>
-                                {ai.analysis}
-                              </Paragraph>
-                            </Descriptions.Item>
-                          </Descriptions>
-                        )}
-                      </>
-                    );
-                  })()}
+                  <AiAnalysisCard ai={ai} />
                   {rowError && (
                     <Alert
                       type="error"

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AIAnalysis, ScanRecord, ScanResult, ScanStatus, SystemConfig } from '../types'
+import type { AIAnalysis, ScanRecord, ScanResult, ScanStatus, SystemConfig, WatchlistItem } from '../types'
 import { scanApi } from '../api/scan'
 
 interface ScanState {
@@ -27,6 +27,11 @@ interface ScanState {
   updateConfig: (data: Partial<SystemConfig>) => Promise<void>
   fetchAiAnalyses: (scanId: string) => Promise<void>
   triggerAiAnalysis: (scanId: string, scanResultId: string) => Promise<void>
+  // 关注列表
+  watchlist: WatchlistItem[]
+  fetchWatchlist: () => Promise<void>
+  addToWatchlist: (symbol: string) => Promise<void>
+  removeFromWatchlist: (symbol: string) => Promise<void>
 }
 
 // 每行的轮询计时器：scanResultId -> timer
@@ -55,7 +60,7 @@ function startRowPolling(scanId: string, scanResultId: string) {
     },
   }))
   let attempts = 0
-  const maxAttempts = 20 // 最多轮询 20 次 × 3 秒 = 60 秒
+  const maxAttempts = 40 // 最多轮询 40 次 × 3 秒 = 120 秒（思考型模型分析较慢，且可能内部重试）
   aiPollTimers[scanResultId] = setInterval(async () => {
     attempts++
     try {
@@ -67,15 +72,15 @@ function startRowPolling(scanId: string, scanResultId: string) {
         stopRowPolling(scanResultId)
         return
       }
-      // 超时
+      // 超时（先停轮询再写错误，避免被 stopRowPolling 清掉）
       if (attempts >= maxAttempts) {
+        stopRowPolling(scanResultId)
         useScanStore.setState((s) => ({
           analyzingMap: {
             ...s.analyzingMap,
             [scanResultId]: { loading: false, error: 'AI 分析超时，请重试' },
           },
         }))
-        stopRowPolling(scanResultId)
       }
     } catch {
       // 忽略轮询错误
@@ -98,6 +103,7 @@ export const useScanStore = create<ScanState>((set, get) => ({
   aiConfig: null,
   aiAnalyses: [],
   analyzingMap: {},
+  watchlist: [],
 
   fetchStatus: async () => {
     try {
@@ -233,5 +239,31 @@ export const useScanStore = create<ScanState>((set, get) => ({
       }))
       throw new Error(detail)
     }
+  },
+
+  // ===== 关注列表 =====
+  fetchWatchlist: async () => {
+    try {
+      const data = await scanApi.watchlist.list()
+      set({ watchlist: data.items })
+    } catch (e) {
+      console.error('获取关注列表失败', e)
+    }
+  },
+
+  addToWatchlist: async (symbol: string) => {
+    const item = await scanApi.watchlist.add(symbol)
+    set((s) => {
+      // 幂等：避免重复
+      if (s.watchlist.find((w) => w.symbol === item.symbol)) return s
+      return { watchlist: [item, ...s.watchlist] }
+    })
+  },
+
+  removeFromWatchlist: async (symbol: string) => {
+    await scanApi.watchlist.remove(symbol)
+    set((s) => ({
+      watchlist: s.watchlist.filter((w) => w.symbol !== symbol),
+    }))
   },
 }))
