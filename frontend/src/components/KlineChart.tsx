@@ -412,21 +412,34 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
             borderRadius: 6,
             padding: '4px 8px',
           }}>
-          {[...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => (
-            <Tag.CheckableTag
-              key={kind}
-              checked={!hiddenKinds.has(kind)}
-              onChange={(checked) =>
-                setHiddenKinds((prev) => {
-                  const next = new Set(prev)
-                  if (checked) next.delete(kind)
-                  else next.add(kind)
-                  return next
-                })
-              }>
-              {KIND_LABEL[kind] || kind}
-            </Tag.CheckableTag>
-          ))}
+          {[...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => {
+            const visible = !hiddenKinds.has(kind)
+            // 未选中态必须显式配色：antd 亮色主题下默认是深色文字 + 无背景，
+            // 叠在深色工具栏背景上会完全看不见
+            const style = visible
+              ? { color: '#fff' }
+              : {
+                  color: '#9aa3b2',
+                  background: 'rgba(255, 255, 255, 0.06)',
+                  border: '1px dashed #3a3f4d',
+                }
+            return (
+              <Tag.CheckableTag
+                key={kind}
+                checked={visible}
+                style={style}
+                onChange={(checked) =>
+                  setHiddenKinds((prev) => {
+                    const next = new Set(prev)
+                    if (checked) next.delete(kind)
+                    else next.add(kind)
+                    return next
+                  })
+                }>
+                {KIND_LABEL[kind] || kind}
+              </Tag.CheckableTag>
+            )
+          })}
         </div>
       )}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
