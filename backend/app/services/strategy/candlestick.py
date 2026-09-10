@@ -15,6 +15,8 @@ from __future__ import annotations
 import numpy as np
 from typing import Optional
 
+from app.services.strategy.talib_verify import boost_with_talib
+
 
 def _body(open_: float, close: float) -> float:
     """实体大小"""
@@ -507,6 +509,10 @@ def detect_all_patterns(klines: list[list], idx: int = -2) -> list[dict]:
         except Exception:
             continue
     results.sort(key=lambda x: x["strength"], reverse=True)
+
+    # TA-Lib 双源校验：方向一致时提升 strength（未安装则原样返回）
+    results = boost_with_talib(klines, results, idx)
+
     return results
 
 
