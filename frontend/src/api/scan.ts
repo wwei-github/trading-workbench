@@ -59,6 +59,12 @@ export const scanApi = {
   watchlist: {
     list: () =>
       api.get<ListResponse<WatchlistItem>>('/watchlist').then((r) => r.data),
+    quotes: () =>
+      api
+        .get<{ items: { symbol: string; price: number; volume_24h: number }[] }>(
+          '/watchlist/quotes',
+        )
+        .then((r) => r.data),
     add: (symbol: string) =>
       api.post<WatchlistItem>('/watchlist', { symbol }).then((r) => r.data),
     remove: (symbol: string) =>

@@ -30,13 +30,15 @@ class ScanResult(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     scan_record_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("scan_records.id"), nullable=False)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    signal_type: Mapped[str] = mapped_column(String(32), nullable=False, default="downtrend_breakout", index=True)
+    signal_type: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown", index=True)
     current_price: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
     breakout_pct: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False)
     trend_slope: Mapped[float] = mapped_column(Numeric(20, 10), nullable=False)
     r_squared: Mapped[float] = mapped_column(Numeric(10, 6), nullable=False)
     pattern: Mapped[str] = mapped_column(String(32), nullable=True)
     signal_reason: Mapped[str] = mapped_column(String(128), nullable=True)
+    position: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # 12金K出现的位置
+    key_levels: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)  # 命中的关键位明细
     volume_24h: Mapped[float] = mapped_column(Numeric(20, 2), nullable=False, default=0)
     volume: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False, default=0)
     volume_type: Mapped[str] = mapped_column(String(16), nullable=False, default="平量", index=True)

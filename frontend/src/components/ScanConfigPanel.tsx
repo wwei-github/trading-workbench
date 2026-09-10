@@ -143,6 +143,22 @@ export default function ScanConfigPanel() {
           >
             <InputNumber step={0.01} min={0} max={1} style={{ width: '100%' }} />
           </Form.Item>
+          <Form.Item
+            label="关键位区域半宽"
+            name="key_level_tolerance"
+            rules={[{ required: true }]}
+            tooltip="关键位是区域：中心价 ± 半宽，0.005 = ±0.5%，价格进入区域即算到位"
+          >
+            <InputNumber step={0.001} min={0} max={0.1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            label="支撑/压力聚类合并阈值"
+            name="level_merge_threshold"
+            rules={[{ required: true }]}
+            tooltip="相互距离 ≤ 阈值的摆动点合并为一个水平区域，0.005 = 0.5%"
+          >
+            <InputNumber step={0.001} min={0} max={0.1} style={{ width: '100%' }} />
+          </Form.Item>
         </Form>
         </Spin>
       </Modal>

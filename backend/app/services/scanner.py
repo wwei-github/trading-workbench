@@ -117,8 +117,9 @@ class Scanner:
                         "breakout_threshold": float(cfg.breakout_threshold),
                         "r_squared_threshold": float(cfg.r_squared_threshold),
                         "pullback_tolerance": float(cfg.pullback_tolerance),
+                        "key_level_tolerance": float(cfg.key_level_tolerance),
+                        "level_merge_threshold": float(cfg.level_merge_threshold),
                         "max_trend_slope": 0.005,
-                        "max_consecutive_bull": 1,
                     }
                     signals = detect_all_signals(klines, config)
                     vol, vol_type = classify_volume(klines)
@@ -187,13 +188,15 @@ class Scanner:
                     ScanResult(
                         scan_record_id=scan_record_id,
                         symbol=h["symbol"],
-                        signal_type=h.get("signal_type", "downtrend_breakout"),
+                        signal_type=h.get("signal_type", "unknown"),
                         current_price=h["current_price"],
                         breakout_pct=h["breakout_pct"],
                         trend_slope=h.get("trend_slope", 0),
                         r_squared=h.get("r_squared", 0),
                         pattern=h.get("pattern"),
                         signal_reason=h.get("signal_reason"),
+                        position=h.get("position"),
+                        key_levels=h.get("key_levels"),
                         volume_24h=h.get("volume_24h", 0),
                         volume=h.get("volume", 0),
                         volume_type=h.get("volume_type", "平量"),

@@ -6,8 +6,19 @@ from typing import Optional
 from openai import OpenAI
 
 from app.config import settings
+from app.services.strategy.types import POSITION_LABEL_MAP
 
 logger = logging.getLogger(__name__)
+
+# 信号类型中文对照（关键位重构后的结构分类）
+SIGNAL_TYPE_LABELS = {
+    "uptrend": "上涨趋势（HH+HL）",
+    "downtrend": "下跌趋势（LH+LL）",
+    "trend_reversal": "趋势反转（收盘价破前高/前低）",
+    "range_bound": "震荡区间",
+    "unknown": "未分类",
+    "manual_search": "手动搜索",
+}
 
 SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信号与近期K线数据，给出是否开单的建议。
 直接输出JSON，不要思考过程，不要markdown包裹。字段如下：
@@ -33,7 +44,8 @@ def _get_client() -> OpenAI:
 def analyze_coin(signal: dict, klines: list, strategy_prompt: Optional[str] = None) -> dict:
     """对单个币种进行 AI 分析，返回结构化建议 dict。
 
-    signal: 包含 symbol/signal_type/current_price/breakout_pct/pattern/signal_reason/volume_type/volume/volume_24h
+    signal: 包含 symbol/signal_type/current_price/breakout_pct/pattern/signal_reason/
+            position/key_levels/volume_type/volume/volume_24h
     klines: 原始 K 线数据 [[open_time, open, high, low, close, volume, ...], ...]
     strategy_prompt: 用户自定义交易策略（MD 格式），提供时附加到系统提示词供 AI 参考
     """
@@ -43,13 +55,29 @@ def analyze_coin(signal: dict, klines: list, strategy_prompt: Optional[str] = No
         f"{int(k[0]/1000)},{k[1]},{k[2]},{k[3]},{k[4]},{k[5]}" for k in recent
     )
 
+    # 关键位明细（12金K出现的位置 + 全部关键位）
+    position_label = POSITION_LABEL_MAP.get(signal.get("position") or "", "")
+    levels_summary = ""
+    if signal.get("key_levels"):
+        lines = []
+        for lv in signal["key_levels"]:
+            kind = POSITION_LABEL_MAP.get(lv.get("kind"), lv.get("kind", "?"))
+            role = "支撑" if lv.get("role") == "support" else "压力"
+            lines.append(
+                f"  {kind}: {lv['price']:.6g} ({role}, 触及{lv.get('touches', 1)}次, "
+                f"区域{lv['zone_low']:.6g}~{lv['zone_high']:.6g})"
+            )
+        levels_summary = "关键位列表:\n" + "\n".join(lines) + "\n"
+
     user_prompt = (
         f"币种: {signal['symbol']}\n"
-        f"信号类型: {signal['signal_type']}\n"
+        f"信号类型: {SIGNAL_TYPE_LABELS.get(signal['signal_type'], signal['signal_type'])}（{signal['signal_type']}）\n"
         f"当前价格: {signal['current_price']}\n"
         f"突破幅度: {signal['breakout_pct']:.2f}%\n"
         f"K线形态: {signal.get('pattern') or '无'}\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
+        f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
+        f"{levels_summary}"
         f"量能分类: {signal.get('volume_type', '未知')} (成交量={signal.get('volume', 0)})\n"
         f"24h成交额: {signal.get('volume_24h', 0)}\n"
         f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol):\n{kline_summary}"

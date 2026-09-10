@@ -18,6 +18,12 @@ import {
 } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { useScanStore } from "../stores/scanStore";
+import {
+  SIGNAL_TYPE_MAP,
+  POSITION_LABEL_MAP,
+  POSITION_SUPPORT_KINDS,
+  patternStyle,
+} from "../constants/labels";
 import { useState, useMemo, useEffect } from "react";
 import KlineChart from "./KlineChart";
 import AiAnalysisCard from "./AiAnalysisCard";
@@ -158,13 +164,27 @@ export default function ResultTable() {
       dataIndex: "signal_type",
       key: "signal_type",
       render: (v: string) => {
-        const map: Record<string, { label: string; color: string }> = {
-          downtrend_breakout: { label: "下跌突破", color: "red" },
-          range_bound: { label: "区间震荡", color: "orange" },
-          uptrend_pullback: { label: "上涨回调", color: "green" },
-        };
-        const cfg = map[v] || { label: v, color: "default" };
+        const cfg = SIGNAL_TYPE_MAP[v] || { label: v, color: "default" };
         return <Tag color={cfg.color}>{cfg.label}</Tag>;
+      },
+    },
+    {
+      title: "位置",
+      dataIndex: "position",
+      key: "position",
+      render: (v: string | null, record: ScanResult) => {
+        if (!v) return <span style={{ color: "#999" }}>-</span>;
+        const label = POSITION_LABEL_MAP[v] || v;
+        const color = POSITION_SUPPORT_KINDS.has(v) ? "green" : "red";
+        const hit = record.key_levels?.find((lv) => lv.kind === v);
+        const tip = hit
+          ? `${POSITION_LABEL_MAP[hit.kind] || hit.kind} ${hit.price}，${hit.role === "support" ? "支撑" : "压力"}，触及 ${hit.touches} 次`
+          : undefined;
+        return (
+          <Tooltip title={tip}>
+            <Tag color={color}>{label}</Tag>
+          </Tooltip>
+        );
       },
     },
     {
@@ -173,19 +193,10 @@ export default function ResultTable() {
       key: "pattern",
       render: (v: string | null, record: ScanResult) => {
         if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const map: Record<string, string> = {
-          hammer: "锤形线",
-          inverted_hammer: "倒锤形线",
-          bullish_engulfing: "看涨吞没",
-          bearish_engulfing: "看跌吞没",
-          morning_star: "启明星",
-          piercing_line: "刺透线",
-          close_above_prev_high: "收盘破前高",
-        };
-        const label = map[v] || v;
+        const { label, color } = patternStyle(v);
         return (
           <Tooltip title={record.signal_reason || undefined}>
-            <Tag color="blue">{label}</Tag>
+            <Tag color={color}>{label}</Tag>
           </Tooltip>
         );
       },
@@ -230,13 +241,18 @@ export default function ResultTable() {
       },
     },
     {
-      title: "突破幅度",
+      title: "距关键位",
       dataIndex: "breakout_pct",
       key: "breakout_pct",
       sorter: (a, b) => a.breakout_pct - b.breakout_pct,
       render: (v: number) => (
-        <span style={{ color: "#52c41a", fontWeight: 600 }}>
-          +{v.toFixed(2)}%
+        <span
+          style={{
+            color: v >= 0 ? "#52c41a" : "#ef5350",
+            fontWeight: 600,
+          }}>
+          {v >= 0 ? "+" : ""}
+          {v.toFixed(2)}%
         </span>
       ),
     },
@@ -389,6 +405,7 @@ export default function ResultTable() {
             symbol={selectedRecord.symbol}
             limit={250}
             ai={selectedAi}
+            keyLevels={selectedRecord.key_levels ?? undefined}
           />
         )}
       </div>

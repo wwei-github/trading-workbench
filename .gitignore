@@ -70,3 +70,6 @@ celerybeat.pid
 
 # ===== OS =====
 Thumbs.db
+
+# ===== Claude Code =====
+.claude/

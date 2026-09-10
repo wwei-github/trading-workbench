@@ -1,17 +1,44 @@
-"""信号类型枚举"""
+"""信号类型、位置、形态枚举"""
 from __future__ import annotations
 
-# 下跌趋势突破
+# ===== 市场结构分类（新逻辑，见 docs/04-关键位筛选重构需求.md）=====
+UPTREND = "uptrend"                # 上涨趋势（HH+HL）
+DOWNTREND = "downtrend"            # 下跌趋势（LH+LL）
+TREND_REVERSAL = "trend_reversal"  # 趋势反转（趋势中收盘破前高/前低，123法则第②步）
+RANGE_BOUND = "range_bound"        # 震荡区间（水平/收敛/高低点方向冲突）
+UNKNOWN = "unknown"                # 未分类（摆动点不足或无法识别）
+
+# ===== 旧版类型（仅用于历史数据兼容展示）=====
 DOWNTREND_BREAKOUT = "downtrend_breakout"
-# 区间震荡
-RANGE_BOUND = "range_bound"
-# 上涨趋势回调
 UPTREND_PULLBACK = "uptrend_pullback"
 
-ALL_TYPES = [DOWNTREND_BREAKOUT, RANGE_BOUND, UPTREND_PULLBACK]
+STRUCTURE_TYPES = [UPTREND, DOWNTREND, TREND_REVERSAL, RANGE_BOUND, UNKNOWN]
+ALL_TYPES = STRUCTURE_TYPES + [DOWNTREND_BREAKOUT, UPTREND_PULLBACK]
 
 LABEL_MAP = {
+    UPTREND: "上涨趋势",
+    DOWNTREND: "下跌趋势",
+    TREND_REVERSAL: "趋势反转",
+    RANGE_BOUND: "震荡区间",
+    UNKNOWN: "未分类",
+    # 旧值（历史数据）
     DOWNTREND_BREAKOUT: "下跌突破",
-    RANGE_BOUND: "区间震荡",
     UPTREND_PULLBACK: "上涨回调",
+}
+
+# ===== 关键位类型（scan_results.position 取值）=====
+POS_PREV_HIGH = "prev_high"          # 前高
+POS_PREV_LOW = "prev_low"            # 前低
+POS_SUPPORT = "support"              # 支撑位（历史摆动低点聚类）
+POS_RESISTANCE = "resistance"        # 压力位（历史摆动高点聚类）
+POS_RANGE_TOP = "range_top"          # 区间顶部
+POS_RANGE_BOTTOM = "range_bottom"    # 区间底部
+
+POSITION_LABEL_MAP = {
+    POS_PREV_HIGH: "前高",
+    POS_PREV_LOW: "前低",
+    POS_SUPPORT: "支撑位",
+    POS_RESISTANCE: "压力位",
+    POS_RANGE_TOP: "区间顶部",
+    POS_RANGE_BOTTOM: "区间底部",
 }

@@ -65,6 +65,40 @@ def add_watchlist(body: WatchlistAddRequest, db: Session = Depends(get_db)):
     return WatchlistItemOut.model_validate(item)
 
 
+@router.get("/quotes")
+def get_quotes(db: Session = Depends(get_db)):
+    """关注币种的实时行情（当前价 + 24h 成交额），供关注列表表格展示"""
+    symbols = [
+        row[0]
+        for row in db.execute(select(Watchlist.symbol)).all()
+    ]
+    if not symbols:
+        return {"items": []}
+
+    client = BinanceClient()
+    try:
+        tickers = {t.get("symbol"): t for t in client.get_24h_tickers()}
+    finally:
+        client.close()
+
+    items = []
+    for sym in symbols:
+        t = tickers.get(sym)
+        if not t:
+            continue
+        try:
+            items.append(
+                {
+                    "symbol": sym,
+                    "price": float(t.get("lastPrice", 0)),
+                    "volume_24h": float(t.get("quoteVolume", 0)),
+                }
+            )
+        except (ValueError, TypeError):
+            continue
+    return {"items": items}
+
+
 @router.delete("/{symbol}")
 def delete_watchlist(symbol: str, db: Session = Depends(get_db)):
     """删除关注（按币种名）"""

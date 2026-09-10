@@ -237,6 +237,250 @@ def detect_piercing_line(klines: list[list], idx: int = -1) -> Optional[dict]:
     return {"pattern": "piercing_line", "direction": "bullish", "strength": strength}
 
 
+def detect_evening_star(klines: list[list], idx: int = -1) -> Optional[dict]:
+    """黄昏星（三根 K 线，启明星的顶部镜像）
+
+    条件：
+    1. 第一根：阳线
+    2. 第二根：小实体（星）
+    3. 第三根：阴线，收盘深入第一根实体下半部
+    """
+    if len(klines) < abs(idx) + 2:
+        return None
+
+    k1 = klines[idx - 2]
+    k2 = klines[idx - 1]
+    k3 = klines[idx]
+    o1, c1 = float(k1[1]), float(k1[4])
+    o2, c2 = float(k2[1]), float(k2[4])
+    o3, c3 = float(k3[1]), float(k3[4])
+
+    body1 = _body(o1, c1)
+    body2 = _body(o2, c2)
+    body3 = _body(o3, c3)
+
+    if body1 < 1e-12 or body3 < 1e-12:
+        return None
+
+    if not _is_bullish(o1, c1):
+        return None
+
+    avg_body = (body1 + body3) / 2
+    if body2 >= avg_body * 0.5:
+        return None
+
+    if not _is_bearish(o3, c3):
+        return None
+
+    midpoint1 = (o1 + c1) / 2
+    if c3 >= midpoint1:
+        return None
+
+    strength = 0.7
+    if c3 <= o1:
+        strength = 0.9
+
+    return {"pattern": "evening_star", "direction": "bearish", "strength": strength}
+
+
+def detect_dark_cloud_cover(klines: list[list], idx: int = -1) -> Optional[dict]:
+    """乌云盖顶（两根 K 线，刺透线的顶部镜像）
+
+    条件：
+    1. 第一根：阳线
+    2. 第二根：阴线，开盘高于前根最高价，收盘深入前根实体下半部
+    """
+    if len(klines) < abs(idx) + 1:
+        return None
+
+    k1 = klines[idx - 1]
+    k2 = klines[idx]
+    o1, h1, c1 = float(k1[1]), float(k1[2]), float(k1[4])
+    o2, c2 = float(k2[1]), float(k2[4])
+
+    body1 = _body(o1, c1)
+    if body1 < 1e-12:
+        return None
+
+    if not _is_bullish(o1, c1):
+        return None
+
+    if not _is_bearish(o2, c2):
+        return None
+
+    # 开盘高于前根最高价（跳空高开）
+    if o2 <= h1:
+        return None
+
+    # 收盘深入前根实体下半部（低于中点）
+    midpoint1 = (o1 + c1) / 2
+    if c2 >= midpoint1:
+        return None
+
+    # 但不能完全吞没（否则是看跌吞没）
+    if c2 <= o1:
+        return None
+
+    strength = 0.6
+    if c2 <= o1 * 0.7 + c1 * 0.3:
+        strength = 0.8
+
+    return {"pattern": "dark_cloud_cover", "direction": "bearish", "strength": strength}
+
+
+def _detect_doji(klines: list[list], idx: int) -> Optional[dict]:
+    """十字形态公共判定：蜻蜓（长下影） bullish / 墓碑（长上影） bearish"""
+    k = klines[idx]
+    o, h, l, c = float(k[1]), float(k[2]), float(k[3]), float(k[4])
+    body = _body(o, c)
+    lower = _lower_shadow(o, l, c)
+    upper = _upper_shadow(o, h, c)
+    total = h - l
+
+    if total <= 0:
+        return None
+
+    # 十字：开收接近，实体占比极小
+    if body > total * 0.1:
+        return None
+
+    # 蜻蜓十字：下影长、上影几乎无（探底回升）
+    if lower >= total * 0.6 and upper <= total * 0.15:
+        return {"pattern": "dragonfly_doji", "direction": "bullish", "strength": 0.6}
+
+    # 墓碑十字：上影长、下影几乎无（冲高回落）
+    if upper >= total * 0.6 and lower <= total * 0.15:
+        return {"pattern": "gravestone_doji", "direction": "bearish", "strength": 0.6}
+
+    return None
+
+
+def detect_doji(klines: list[list], idx: int = -1) -> Optional[dict]:
+    """蜻蜓/墓碑十字"""
+    return _detect_doji(klines, idx)
+
+
+def detect_hanging_man(klines: list[list], idx: int = -1) -> Optional[dict]:
+    """上吊线：锤子形状但出现在上涨末端顶部（预示反转下跌）
+
+    在锤形线形状基础上，要求当前收盘处于最近 10 根 K 线区间上部（前 30%），
+    用于与锤形线（底部）区分。
+    """
+    shape = detect_hammer(klines, idx)
+    if not shape:
+        return None
+
+    n = len(klines)
+    window = klines[-min(11, n):-1] if idx == -1 else klines[max(0, idx - 10):idx]
+    if len(window) < 5:
+        return None
+    hi = max(float(k[2]) for k in window)
+    lo = min(float(k[3]) for k in window)
+    if hi <= lo:
+        return None
+
+    c = float(klines[idx][4])
+    pos = (c - lo) / (hi - lo)
+    if pos >= 0.7:
+        return {"pattern": "hanging_man", "direction": "bearish", "strength": shape["strength"]}
+
+    return None
+
+
+def detect_harami_breakout(klines: list[list], idx: int = -1) -> Optional[dict]:
+    """孕线突破（三根 K 线）
+
+    条件（以看涨为例）：
+    1. 母线：大实体 K 线
+    2. 内包线：实体完全在母线实体内（孕线，多空拉锯）
+    3. 突破线：收盘突破母线实体高点（看涨）/低点（看跌）
+    """
+    if len(klines) < abs(idx) + 2:
+        return None
+
+    k1 = klines[idx - 2]  # 母线
+    k2 = klines[idx - 1]  # 内包线
+    k3 = klines[idx]      # 突破线
+    o1, c1 = float(k1[1]), float(k1[4])
+    o2, c2 = float(k2[1]), float(k2[4])
+    o3, c3 = float(k3[1]), float(k3[4])
+
+    body1 = _body(o1, c1)
+    body2 = _body(o2, c2)
+    body3 = _body(o3, c3)
+
+    if body1 < 1e-12 or body3 < 1e-12:
+        return None
+
+    hi1, lo1 = max(o1, c1), min(o1, c1)
+
+    # 母线要有足够实体（占该根 K 线振幅 30% 以上）
+    total1 = float(k1[2]) - float(k1[3])
+    if total1 <= 0 or body1 < total1 * 0.3:
+        return None
+
+    # 内包线：实体完全在母线实体内
+    if not (max(o2, c2) < hi1 and min(o2, c2) > lo1):
+        return None
+    if body2 >= body1:
+        return None
+
+    mother_high = hi1
+    mother_low = lo1
+
+    # 看涨孕线突破：突破线收盘上破母线实体高点
+    if c3 > mother_high and body3 >= body2:
+        strength = 0.6
+        if body3 >= body1:
+            strength = 0.8
+        return {"pattern": "bullish_harami", "direction": "bullish", "strength": strength}
+
+    # 看跌孕线突破：突破线收盘下破母线实体低点
+    if c3 < mother_low and body3 >= body2:
+        strength = 0.6
+        if body3 >= body1:
+            strength = 0.8
+        return {"pattern": "bearish_harami", "direction": "bearish", "strength": strength}
+
+    return None
+
+
+# ===== 12 金K 清单（与 docs/03-交易系统.md §6.2 对齐）=====
+GOLDEN_12 = {
+    # 看涨 6 种
+    "hammer",              # 锤形线
+    "bullish_engulfing",   # 看涨吞没
+    "morning_star",        # 启明星
+    "piercing_line",       # 刺透线
+    "bullish_harami",      # 看涨孕线突破
+    "dragonfly_doji",      # 长下影十字（蜻蜓）
+    # 看跌 6 种
+    "hanging_man",         # 上吊线
+    "bearish_engulfing",   # 看跌吞没
+    "evening_star",        # 黄昏星
+    "dark_cloud_cover",    # 乌云盖顶
+    "bearish_harami",      # 看跌孕线突破
+    "gravestone_doji",     # 长上影十字（墓碑）
+}
+
+PATTERN_LABEL_MAP = {
+    "hammer": "锤形线",
+    "inverted_hammer": "倒锤形线",
+    "bullish_engulfing": "看涨吞没",
+    "bearish_engulfing": "看跌吞没",
+    "morning_star": "启明星",
+    "evening_star": "黄昏星",
+    "piercing_line": "刺透线",
+    "dark_cloud_cover": "乌云盖顶",
+    "bullish_harami": "看涨孕线突破",
+    "bearish_harami": "看跌孕线突破",
+    "dragonfly_doji": "蜻蜓十字",
+    "gravestone_doji": "墓碑十字",
+    "hanging_man": "上吊线",
+    "close_above_prev_high": "收盘破前高",
+}
+
+
 def detect_all_patterns(klines: list[list], idx: int = -2) -> list[dict]:
     """检测指定位置的所有形态
 
@@ -244,7 +488,18 @@ def detect_all_patterns(klines: list[list], idx: int = -2) -> list[dict]:
     返回命中的形态列表，按 strength 降序
     """
     results = []
-    for detector in [detect_hammer, detect_inverted_hammer, detect_engulfing, detect_morning_star, detect_piercing_line]:
+    for detector in [
+        detect_hammer,
+        detect_inverted_hammer,
+        detect_engulfing,
+        detect_morning_star,
+        detect_evening_star,
+        detect_piercing_line,
+        detect_dark_cloud_cover,
+        detect_doji,
+        detect_hanging_man,
+        detect_harami_breakout,
+    ]:
         try:
             r = detector(klines, idx)
             if r:

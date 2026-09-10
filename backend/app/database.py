@@ -45,7 +45,16 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS swing_order INTEGER NOT NULL DEFAULT 3,
               ADD COLUMN IF NOT EXISTS pullback_tolerance NUMERIC(10,6) NOT NULL DEFAULT 0.03,
               ADD COLUMN IF NOT EXISTS strategy_prompt_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-              ADD COLUMN IF NOT EXISTS strategy_prompt TEXT NOT NULL DEFAULT ''
+              ADD COLUMN IF NOT EXISTS strategy_prompt TEXT NOT NULL DEFAULT '',
+              ADD COLUMN IF NOT EXISTS key_level_tolerance NUMERIC(10,6) NOT NULL DEFAULT 0.005,
+              ADD COLUMN IF NOT EXISTS level_merge_threshold NUMERIC(10,6) NOT NULL DEFAULT 0.005,
+              ADD COLUMN IF NOT EXISTS fib_enabled BOOLEAN NOT NULL DEFAULT FALSE
+        """))
+        # Feature 3: 关键位筛选重构（docs/04）—— scan_results 加位置与关键位明细
+        conn.execute(text("""
+            ALTER TABLE scan_results
+              ADD COLUMN IF NOT EXISTS position VARCHAR(32),
+              ADD COLUMN IF NOT EXISTS key_levels JSON
         """))
         # 确保系统配置表有默认行（初始值从 env 注入）
         conn.execute(text(

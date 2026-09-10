@@ -10,22 +10,24 @@ import {
   type IPriceLine,
 } from 'lightweight-charts'
 import { scanApi } from '../api/scan'
-import type { AIAnalysis, Kline } from '../types'
+import type { AIAnalysis, Kline, KeyLevel } from '../types'
 
 interface Props {
   symbol: string
   limit?: number
   ai?: AIAnalysis
+  keyLevels?: KeyLevel[]
 }
 
 const CHART_HEIGHT = 560 // 容器无高度时的兜底值
 
-export default function KlineChart({ symbol, limit = 100, ai }: Props) {
+export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const priceLinesRef = useRef<IPriceLine[]>([])
+  const keyLineLinesRef = useRef<IPriceLine[]>([])
   const redrawFnRef = useRef<(() => void) | null>(null)
 
   // 初始化图表 + 拉取数据
@@ -115,6 +117,59 @@ export default function KlineChart({ symbol, limit = 100, ai }: Props) {
       seriesRef.current = null
     }
   }, [symbol, limit])
+
+  // 绘制关键位水平线（支撑绿 / 压力红 虚线 + 轴上价格标签）
+  useEffect(() => {
+    const series = seriesRef.current
+    if (!series) return
+
+    // 清除旧关键位线
+    keyLineLinesRef.current.forEach((l) => {
+      try {
+        series.removePriceLine(l)
+      } catch {
+        /* series 已销毁 */
+      }
+    })
+    keyLineLinesRef.current = []
+
+    if (!keyLevels || keyLevels.length === 0) return
+
+    const KIND_LABEL: Record<string, string> = {
+      prev_high: '前高',
+      prev_low: '前低',
+      support: '支撑',
+      resistance: '压力',
+      range_top: '区间顶',
+      range_bottom: '区间底',
+    }
+
+    for (const lv of keyLevels) {
+      const line = series.createPriceLine({
+        price: lv.price,
+        color: lv.role === 'support' ? '#26a69a' : '#ef5350',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: KIND_LABEL[lv.kind] || lv.kind,
+      })
+      keyLineLinesRef.current.push(line)
+    }
+
+    return () => {
+      const s = seriesRef.current
+      if (s) {
+        keyLineLinesRef.current.forEach((l) => {
+          try {
+            s.removePriceLine(l)
+          } catch {
+            /* series 已销毁 */
+          }
+        })
+      }
+      keyLineLinesRef.current = []
+    }
+  }, [keyLevels, symbol, limit])
 
   // 更新 AI 价格线 + 区域色块（TradingView 仓位标注风格）
   useEffect(() => {

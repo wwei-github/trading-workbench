@@ -62,6 +62,8 @@ def run_ai_analysis_task(
                     "breakout_pct": float(r.breakout_pct),
                     "pattern": r.pattern,
                     "signal_reason": r.signal_reason,
+                    "position": r.position,
+                    "key_levels": r.key_levels,
                     "volume_type": r.volume_type,
                     "volume": float(r.volume),
                     "volume_24h": float(r.volume_24h),

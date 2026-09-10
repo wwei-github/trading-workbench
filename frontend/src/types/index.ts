@@ -10,6 +10,15 @@ export interface ScanRecord {
   created_at: string;
 }
 
+export interface KeyLevel {
+  kind: string; // prev_high / prev_low / support / resistance / range_top / range_bottom
+  price: number;
+  zone_low: number;
+  zone_high: number;
+  touches: number;
+  role: string; // support / resistance
+}
+
 export interface ScanResult {
   id: string;
   scan_record_id: string;
@@ -21,6 +30,8 @@ export interface ScanResult {
   r_squared: number;
   pattern: string | null;
   signal_reason: string | null;
+  position: string | null; // 12金K出现的位置（关键位类型）
+  key_levels: KeyLevel[] | null; // 命中的关键位明细
   volume_24h: number;
   volume: number;
   volume_type: string;
@@ -102,4 +113,7 @@ export interface SystemConfig {
   repeat_window_hours: number;
   swing_order: number;
   pullback_tolerance: number;
+  key_level_tolerance?: number; // 关键位区域半宽（±x）
+  level_merge_threshold?: number; // 支撑/压力聚类合并阈值
+  fib_enabled?: boolean; // 斐波那契位开关（二期）
 }

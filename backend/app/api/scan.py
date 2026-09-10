@@ -255,6 +255,9 @@ def get_system_config(db: Session = Depends(get_db)):
         repeat_window_hours=cfg.repeat_window_hours,
         swing_order=cfg.swing_order,
         pullback_tolerance=float(cfg.pullback_tolerance),
+        key_level_tolerance=float(cfg.key_level_tolerance),
+        level_merge_threshold=float(cfg.level_merge_threshold),
+        fib_enabled=cfg.fib_enabled,
     )
 
 
@@ -296,6 +299,12 @@ def update_system_config(
         cfg.swing_order = body.swing_order
     if body.pullback_tolerance is not None:
         cfg.pullback_tolerance = body.pullback_tolerance
+    if body.key_level_tolerance is not None:
+        cfg.key_level_tolerance = body.key_level_tolerance
+    if body.level_merge_threshold is not None:
+        cfg.level_merge_threshold = body.level_merge_threshold
+    if body.fib_enabled is not None:
+        cfg.fib_enabled = body.fib_enabled
 
     db.commit()
     db.refresh(cfg)
@@ -311,6 +320,9 @@ def update_system_config(
         repeat_window_hours=cfg.repeat_window_hours,
         swing_order=cfg.swing_order,
         pullback_tolerance=float(cfg.pullback_tolerance),
+        key_level_tolerance=float(cfg.key_level_tolerance),
+        level_merge_threshold=float(cfg.level_merge_threshold),
+        fib_enabled=bool(cfg.fib_enabled),
     )
 
 

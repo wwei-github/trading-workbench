@@ -26,4 +26,9 @@ class SystemConfig(Base):
     swing_order: Mapped[int] = mapped_column(Integer, default=3)
     pullback_tolerance: Mapped[float] = mapped_column(Numeric(10, 6), default=0.03)
 
+    # 关键位参数（关键位筛选重构，见 docs/04）
+    key_level_tolerance: Mapped[float] = mapped_column(Numeric(10, 6), default=0.005)  # 关键位区域半宽 ±0.5%
+    level_merge_threshold: Mapped[float] = mapped_column(Numeric(10, 6), default=0.005)  # 支撑/压力聚类合并阈值
+    fib_enabled: Mapped[bool] = mapped_column(Boolean, default=False)  # 斐波那契位开关（二期）
+
     notes: Mapped[str] = mapped_column(String(255), default="系统运行时配置")
