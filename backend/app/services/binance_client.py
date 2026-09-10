@@ -1,14 +1,10 @@
 import logging
 import time
-from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
-from sqlalchemy import select
 
 from app.config import settings
-from app.database import SessionLocal
-from app.models.scan import KlineCache
 
 logger = logging.getLogger(__name__)
 
@@ -181,109 +177,6 @@ class BinanceClient:
         # 按 24h 成交额降序
         result.sort(key=lambda x: x["volume_24h"], reverse=True)
         return result
-
-    def get_klines(
-        self, symbol: str, interval: str = "1h", limit: int = 240
-    ) -> list[list]:
-        """获取合约 K 线数据（带小时级缓存）
-
-        - 同一 symbol+interval 在同一 K 线周期内命中缓存
-        - 跨 K 线周期自动拉取新数据
-        - 缓存查询失败降级为直接请求币安
-
-        返回: [[open_time, open, high, low, close, volume, ...], ...]
-        """
-        kline_hour = self._calc_kline_hour(interval)
-
-        # 1. 查缓存
-        try:
-            cached = self._get_cached_klines(symbol, interval, kline_hour)
-            if cached is not None:
-                logger.debug("K线缓存命中: %s %s @ %s (len=%d)", symbol, interval, kline_hour, len(cached))
-                return cached
-        except Exception as e:
-            logger.warning("K线缓存查询失败（降级直连币安）: %s", e)
-
-        # 2. 请求币安
-        resp = self._request(
-            self.futures_client,
-            "/fapi/v1/klines",
-            params={"symbol": symbol, "interval": interval, "limit": limit},
-        )
-        klines = resp.json()
-
-        # 3. 写入缓存（忽略错误，不影响主流程）
-        try:
-            self._upsert_kline_cache(symbol, interval, kline_hour, klines)
-        except Exception as e:
-            logger.warning("K线缓存写入失败（忽略）: %s", e)
-
-        return klines
-
-    @staticmethod
-    def _calc_kline_hour(interval: str) -> datetime:
-        """根据 interval 计算当前 K 线周期的起点（UTC，对齐到整点）
-
-        1h → 当前 UTC 时间去掉分秒毫秒；
-        4h → 对齐到 0/4/8/12/16/20 点；
-        其他周期同理。
-        """
-        minutes = _INTERVAL_MINUTES.get(interval, 60)
-        now = datetime.now(timezone.utc)
-        # 对齐到 interval 起点
-        total_minutes = now.hour * 60 + now.minute
-        aligned_minutes = (total_minutes // minutes) * minutes
-        h = aligned_minutes // 60
-        m = aligned_minutes % 60
-        return now.replace(hour=h, minute=m, second=0, microsecond=0, tzinfo=None)
-
-    @staticmethod
-    def _get_cached_klines(symbol: str, interval: str, kline_hour: datetime) -> Optional[list]:
-        """查缓存，命中返回 klines 列表，未命中返回 None"""
-        sdb = SessionLocal()
-        try:
-            row = sdb.execute(
-                select(KlineCache).where(
-                    KlineCache.symbol == symbol,
-                    KlineCache.interval == interval,
-                    KlineCache.kline_hour == kline_hour,
-                )
-            ).scalars().first()
-            if row:
-                return row.klines
-            return None
-        finally:
-            sdb.close()
-
-    @staticmethod
-    def _upsert_kline_cache(symbol: str, interval: str, kline_hour: datetime, klines: list) -> None:
-        """写入或更新缓存"""
-        sdb = SessionLocal()
-        try:
-            row = sdb.execute(
-                select(KlineCache).where(
-                    KlineCache.symbol == symbol,
-                    KlineCache.interval == interval,
-                    KlineCache.kline_hour == kline_hour,
-                )
-            ).scalars().first()
-            if row:
-                row.klines = klines
-                row.updated_at = datetime.utcnow()
-            else:
-                row = KlineCache(
-                    symbol=symbol,
-                    interval=interval,
-                    kline_hour=kline_hour,
-                    klines=klines,
-                )
-                sdb.add(row)
-            sdb.commit()
-        except Exception:
-            sdb.rollback()
-            raise
-        finally:
-            sdb.close()
 
     # ── 现货 API（保留备用）──
 

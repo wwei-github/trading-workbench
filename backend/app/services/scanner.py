@@ -12,6 +12,7 @@ from app.database import SessionLocal
 from app.models.scan import ScanRecord, ScanResult
 from app.models.system_config import SystemConfig
 from app.services.binance_client import BinanceClient
+from app.services.exchange_pool import ExchangePool
 from app.services.strategy import detect_all_signals
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ class Scanner:
 
     def __init__(self):
         self.client = BinanceClient()
+        self.pool = ExchangePool()
         self.concurrency = settings.BINANCE_CONCURRENCY
 
     def run(self, scan_record_id: UUID) -> None:
@@ -106,7 +108,7 @@ class Scanner:
             def scan_one(symbol: str) -> tuple[str, list[dict], bool]:
                 """返回 (symbol, [signals...], is_error)"""
                 try:
-                    klines = self.client.get_klines(
+                    klines = self.pool.get_klines(
                         symbol,
                         interval=kline_interval,
                         limit=kline_window,

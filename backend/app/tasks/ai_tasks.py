@@ -12,7 +12,7 @@ from app.database import SessionLocal
 from app.models.scan import ScanResult, AIAnalysis
 from app.models.system_config import SystemConfig
 from app.services.ai_analyzer import analyze_coin
-from app.services.binance_client import BinanceClient
+from app.services.exchange_pool import ExchangePool
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def run_ai_analysis_task(
     only_scan_result_id: 若提供，只分析该单个 ScanResult（用于手动重新分析）
     """
     db = SessionLocal()
-    client = BinanceClient()
+    pool = ExchangePool()
     try:
         # 从数据库读取 AI 开关
         cfg = db.get(SystemConfig, 1)
@@ -52,7 +52,7 @@ def run_ai_analysis_task(
 
         for r in results:
             try:
-                klines = client.get_klines(
+                klines = pool.get_klines(
                     r.symbol, cfg.kline_interval, 250
                 )
                 signal = {
@@ -82,7 +82,6 @@ def run_ai_analysis_task(
     except Exception as e:
         logger.exception("AI 分析任务失败: %s", e)
     finally:
-        client.close()
         db.close()
 
 

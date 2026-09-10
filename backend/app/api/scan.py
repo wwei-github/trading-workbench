@@ -22,7 +22,7 @@ from app.schemas.scan import (
     SystemConfigOut,
     SystemConfigUpdate,
 )
-from app.services.binance_client import BinanceClient
+from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services.scanner import classify_volume
 from app.services.ai_analyzer import analyze_coin
 from app.api.watchlist import normalize_symbol
@@ -330,25 +330,29 @@ def update_system_config(
 
 @router.get("/klines/{symbol}")
 def get_klines(symbol: str, limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
-    """获取指定币种的最新 K 线数据（用于前端展示）"""
+    """获取指定币种的最新 K 线数据（用于前端展示）
+
+    多交易所故障转移（币安→欧易→Bitget）；全部失败时降级返回旧缓存，
+    仍失败则 503，detail 含各交易所失败原因与解禁时长。
+    """
     cfg = _get_system_config(db)
-    client = BinanceClient()
+    pool = ExchangePool()
     try:
-        klines = client.get_klines(symbol, cfg.kline_interval, limit)
-        # 返回精简格式: [{time, open, high, low, close, volume}, ...]
-        result = []
-        for k in klines:
-            result.append({
-                "time": int(k[0]),
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-            })
-        return {"symbol": symbol, "interval": cfg.kline_interval, "klines": result}
-    finally:
-        client.close()
+        klines = pool.get_klines(symbol, cfg.kline_interval, limit, allow_stale=True)
+    except AllExchangesFailed as e:
+        raise HTTPException(status_code=503, detail=f"K线获取失败（{e.summary}）")
+    # 返回精简格式: [{time, open, high, low, close, volume}, ...]
+    result = []
+    for k in klines:
+        result.append({
+            "time": int(k[0]),
+            "open": float(k[1]),
+            "high": float(k[2]),
+            "low": float(k[3]),
+            "close": float(k[4]),
+            "volume": float(k[5]),
+        })
+    return {"symbol": symbol, "interval": cfg.kline_interval, "klines": result}
 
 
 # ===== 手动搜索 AI 分析 =====
@@ -361,14 +365,14 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=403, detail="AI 分析未启用或未配置 API Key")
 
     symbol = normalize_symbol(body.symbol)
-    client = BinanceClient()
+    pool = ExchangePool()
     try:
-        try:
-            klines = client.get_klines(symbol, cfg.kline_interval, 250)
-        except Exception:
-            raise HTTPException(status_code=400, detail=f"币种 {symbol} 不存在或不可交易")
-    finally:
-        client.close()
+        klines = pool.get_klines(symbol, cfg.kline_interval, 250)
+    except AllExchangesFailed as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"K线获取失败，无法分析（{e.summary}）",
+        )
 
     if len(klines) < 2:
         raise HTTPException(status_code=400, detail=f"币种 {symbol} K线数据不足")

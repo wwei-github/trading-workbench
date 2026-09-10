@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { Alert } from 'antd'
 import {
   createChart,
   CandlestickSeries,
@@ -29,6 +30,7 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
   const priceLinesRef = useRef<IPriceLine[]>([])
   const keyLineLinesRef = useRef<IPriceLine[]>([])
   const redrawFnRef = useRef<(() => void) | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   // 初始化图表 + 拉取数据
   useEffect(() => {
@@ -88,11 +90,13 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
         }))
         seriesRef.current.setData(candleData)
         chart.timeScale().fitContent()
+        setError(null)
         // 数据加载完成后触发 AI 仓位标注重绘（等待布局完成）
         requestAnimationFrame(() => redrawFnRef.current?.())
       })
-      .catch(() => {
-        /* ignore */
+      .catch((e) => {
+        // 展示后端 503/4xx 的 detail（如交易所封禁时长）
+        setError(e?.response?.data?.detail || 'K线数据加载失败')
       })
 
     // 自适应容器宽高
@@ -358,6 +362,15 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 360 }}>
+      {error && (
+        <Alert
+          type="warning"
+          showIcon
+          message="K线数据获取失败"
+          description={error}
+          style={{ marginBottom: 8 }}
+        />
+      )}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
       <svg
         ref={svgRef}

@@ -11,6 +11,7 @@ from app.schemas.scan import (
     WatchlistListResponse,
 )
 from app.services.binance_client import BinanceClient
+from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
@@ -42,15 +43,15 @@ def add_watchlist(body: WatchlistAddRequest, db: Session = Depends(get_db)):
     """添加关注（幂等：已存在时直接返回）"""
     symbol = normalize_symbol(body.symbol)
 
-    # 校验币种在币安合约市场存在（拉 2 根 K 线即可）
-    client = BinanceClient()
+    # 校验币种在任一交易所合约市场存在（拉 2 根 K 线即可，多链路故障转移）
+    pool = ExchangePool()
     try:
-        try:
-            client.get_klines(symbol, "1h", 2)
-        except Exception:
-            raise HTTPException(status_code=400, detail=f"币种 {symbol} 不存在或不可交易")
-    finally:
-        client.close()
+        pool.get_klines(symbol, "1h", 2)
+    except AllExchangesFailed as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"币种 {symbol} 不存在或不可交易（{e.summary}）",
+        )
 
     existing = db.execute(
         select(Watchlist).where(Watchlist.symbol == symbol)
