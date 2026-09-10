@@ -26,6 +26,8 @@ import {
   POSITION_FILTERS,
   POSITION_SUPPORT_KINDS,
   PATTERN_FILTERS,
+  EMA_STATE_MAP,
+  EMA_STATE_FILTERS,
   patternStyle,
 } from "../constants/labels";
 import { useState, useMemo, useEffect } from "react";
@@ -113,7 +115,7 @@ export default function ResultTable() {
 
   // 服务端过滤：antd 列头筛选 onChange -> store -> 重新请求
   const filterProps = (
-    key: "signal_type" | "position" | "pattern",
+    key: "signal_type" | "position" | "pattern" | "ema_state",
     options: { text: string; value: string }[],
   ) => ({
     filters: options,
@@ -227,6 +229,17 @@ export default function ResultTable() {
             <Tag color={color}>{label}</Tag>
           </Tooltip>
         );
+      },
+    },
+    {
+      title: "EMA",
+      dataIndex: "ema_state",
+      key: "ema_state",
+      ...filterProps("ema_state", EMA_STATE_FILTERS),
+      render: (v: string | null) => {
+        if (!v) return <span style={{ color: "#999" }}>-</span>;
+        const cfg = EMA_STATE_MAP[v] || { label: v, color: "default" };
+        return <Tag color={cfg.color}>{cfg.label}</Tag>;
       },
     },
     {
@@ -449,7 +462,7 @@ export default function ResultTable() {
         ) : (
           <KlineChart
             symbol={selectedRecord.symbol}
-            limit={250}
+            limit={500}
             ai={selectedAi}
             keyLevels={selectedRecord.key_levels ?? undefined}
           />

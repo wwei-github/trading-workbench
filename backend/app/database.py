@@ -56,6 +56,15 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS position VARCHAR(32),
               ADD COLUMN IF NOT EXISTS key_levels JSON
         """))
+        # Feature 4: EMA 均线形态状态
+        conn.execute(text("""
+            ALTER TABLE scan_results
+              ADD COLUMN IF NOT EXISTS ema_state VARCHAR(16)
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_scan_results_ema_state "
+            "ON scan_results (ema_state)"
+        ))
         # 确保系统配置表有默认行（初始值从 env 注入）
         conn.execute(text(
             "INSERT INTO system_config "

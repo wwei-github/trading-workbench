@@ -73,3 +73,18 @@ export const PATTERN_FILTERS = Object.keys({
   ...BEARISH_PATTERNS,
   ...OTHER_PATTERNS,
 }).map((v) => ({ text: patternStyle(v).label, value: v }));
+
+// ===== EMA 均线形态状态 =====
+export const EMA_STATE_MAP: Record<string, { label: string; color: string }> = {
+  bullish_align: { label: "多头排列", color: "green" },
+  bearish_align: { label: "空头排列", color: "red" },
+  bullish_cross: { label: "金叉", color: "cyan" },
+  bearish_cross: { label: "死叉", color: "magenta" },
+  turning_up: { label: "拐头向上", color: "lime" },
+  turning_down: { label: "拐头向下", color: "volcano" },
+  mixed: { label: "纠缠", color: "default" },
+};
+
+export const EMA_STATE_FILTERS = Object.entries(EMA_STATE_MAP).map(
+  ([value, cfg]) => ({ text: cfg.label, value }),
+);

@@ -55,7 +55,7 @@ def run_ai_analysis_task(
         for r in results:
             try:
                 klines = pool.get_klines(
-                    r.symbol, cfg.kline_interval, 250
+                    r.symbol, cfg.kline_interval, 500
                 )
                 signal = {
                     "symbol": r.symbol,

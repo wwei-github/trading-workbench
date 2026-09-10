@@ -30,6 +30,7 @@ export interface ScanResult {
   r_squared: number;
   pattern: string | null;
   signal_reason: string | null;
+  ema_state: string | null; // 均线形态状态（bullish_align / bearish_cross 等）
   position: string | null; // 12金K出现的位置（关键位类型）
   key_levels: KeyLevel[] | null; // 命中的关键位明细
   volume_24h: number;

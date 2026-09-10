@@ -37,6 +37,7 @@ class ScanResult(Base):
     r_squared: Mapped[float] = mapped_column(Numeric(10, 6), nullable=False)
     pattern: Mapped[str] = mapped_column(String(32), nullable=True)
     signal_reason: Mapped[str] = mapped_column(String(128), nullable=True)
+    ema_state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)  # 均线形态状态
     position: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # 12金K出现的位置
     key_levels: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)  # 命中的关键位明细
     volume_24h: Mapped[float] = mapped_column(Numeric(20, 2), nullable=False, default=0)

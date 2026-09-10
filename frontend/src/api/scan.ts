@@ -8,6 +8,7 @@ export interface ResultFilters {
   signal_type?: string
   position?: string
   pattern?: string
+  ema_state?: string
 }
 
 export const scanApi = {

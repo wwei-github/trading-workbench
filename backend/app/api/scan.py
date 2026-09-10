@@ -94,6 +94,7 @@ def latest_scan_results(
     signal_type: str = Query(None),
     position: str = Query(None),
     pattern: str = Query(None),
+    ema_state: str = Query(None),
     db: Session = Depends(get_db),
 ):
     latest = db.execute(
@@ -107,6 +108,7 @@ def latest_scan_results(
     return _get_results(
         latest.id, page, page_size, sort_by, order, db,
         signal_type=signal_type, position=position, pattern=pattern,
+        ema_state=ema_state,
     )
 
 
@@ -120,6 +122,7 @@ def scan_results(
     signal_type: str = Query(None),
     position: str = Query(None),
     pattern: str = Query(None),
+    ema_state: str = Query(None),
     db: Session = Depends(get_db),
 ):
     record = db.get(ScanRecord, scan_id)
@@ -128,6 +131,7 @@ def scan_results(
     return _get_results(
         scan_id, page, page_size, sort_by, order, db,
         signal_type=signal_type, position=position, pattern=pattern,
+        ema_state=ema_state,
     )
 
 
@@ -164,6 +168,7 @@ def scan_status(db: Session = Depends(get_db)):
 def _get_results(
     scan_id: UUID, page: int, page_size: int, sort_by: str, order: str, db: Session,
     signal_type: str = None, position: str = None, pattern: str = None,
+    ema_state: str = None,
 ):
     allowed_sort = {"breakout_pct", "created_at", "symbol", "r_squared", "volume_24h", "volume", "volume_type"}
     if sort_by not in allowed_sort:
@@ -178,6 +183,8 @@ def _get_results(
         conds.append(ScanResult.position == position)
     if pattern:
         conds.append(ScanResult.pattern == pattern)
+    if ema_state:
+        conds.append(ScanResult.ema_state == ema_state)
 
     total = db.execute(
         select(func.count()).select_from(ScanResult).where(*conds)
@@ -391,7 +398,7 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
     symbol = normalize_symbol(body.symbol)
     pool = ExchangePool()
     try:
-        klines = pool.get_klines(symbol, cfg.kline_interval, 250)
+        klines = pool.get_klines(symbol, cfg.kline_interval, 500)
     except AllExchangesFailed as e:
         raise HTTPException(
             status_code=503,

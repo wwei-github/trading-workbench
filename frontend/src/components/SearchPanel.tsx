@@ -115,7 +115,7 @@ export default function SearchPanel() {
         {/* 左：K线图 */}
         <div style={{ flex: "1 1 55%", minWidth: 0, display: "flex", flexDirection: "column" }}>
           {symbol ? (
-            <KlineChart key={chartKey} symbol={symbol} limit={300} ai={chartAi || undefined} />
+            <KlineChart key={chartKey} symbol={symbol} limit={500} ai={chartAi || undefined} />
           ) : (
             <Empty description="输入币种名称开始搜索" style={{ marginTop: 120 }} />
           )}

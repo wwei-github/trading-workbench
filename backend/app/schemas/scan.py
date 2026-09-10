@@ -30,6 +30,7 @@ class ScanResultOut(BaseModel):
     r_squared: float
     pattern: Optional[str] = None
     signal_reason: Optional[str] = None
+    ema_state: Optional[str] = None  # 均线形态状态（bullish_align 等）
     position: Optional[str] = None  # 12金K出现的位置（关键位类型）
     key_levels: Optional[list] = None  # 命中的关键位明细
     volume_24h: float

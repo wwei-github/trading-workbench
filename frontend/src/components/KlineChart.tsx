@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Tag } from 'antd'
+import { Alert, InputNumber, Tag } from 'antd'
 import {
   createChart,
   CandlestickSeries,
+  LineSeries,
   LineStyle,
   CrosshairMode,
   type IChartApi,
@@ -35,19 +36,43 @@ const KIND_LABEL: Record<string, string> = {
 // 每个角色（支撑/压力）最多显示的关键位条数：只画距当前价最近的
 const MAX_LINES_PER_ROLE = 2
 
-export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props) {
+// EMA 三线默认周期与配色（快→慢：黄 / 青 / 橙）
+const DEFAULT_EMA_PERIODS = [21, 55, 144]
+const EMA_COLORS = ['#f0b90b', '#00bcd4', '#ff9800']
+
+// 前端 EMA：SMA 种子 + 递推；未达到周期数的位置为 null
+function calcEmaSeries(closes: number[], period: number): (number | null)[] {
+  const out: (number | null)[] = new Array(closes.length).fill(null)
+  if (period < 2 || closes.length < period) return out
+  let sum = 0
+  for (let i = 0; i < period; i++) sum += closes[i]
+  out[period - 1] = sum / period
+  const k = 2 / (period + 1)
+  for (let i = period; i < closes.length; i++) {
+    const prev = out[i - 1]
+    if (prev != null) out[i] = closes[i] * k + prev * (1 - k)
+  }
+  return out
+}
+
+export default function KlineChart({ symbol, limit = 500, ai, keyLevels }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const priceLinesRef = useRef<IPriceLine[]>([])
   const keyLineLinesRef = useRef<IPriceLine[]>([])
+  const emaSeriesRef = useRef<ISeriesApi<'Line'>[]>([])
   const redrawFnRef = useRef<(() => void) | null>(null)
   const [error, setError] = useState<string | null>(null)
   // K 线最新收盘价（作为"当前价"，用于挑选最近的关键位）
   const [lastClose, setLastClose] = useState<number | null>(null)
   // 隐藏的关键位类型（勾选开关）
   const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set())
+  // EMA 均线周期（页面上可修改）
+  const [emaPeriods, setEmaPeriods] = useState<number[]>([...DEFAULT_EMA_PERIODS])
+  // 已加载的 K 线（时间 + 收盘价），用于前端计算 EMA
+  const [candlePoints, setCandlePoints] = useState<{ time: UTCTimestamp; close: number }[]>([])
 
   // 初始化图表 + 拉取数据
   useEffect(() => {
@@ -108,6 +133,7 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
         seriesRef.current.setData(candleData)
         chart.timeScale().fitContent()
         setLastClose(candleData[candleData.length - 1]?.close ?? null)
+        setCandlePoints(candleData.map((d) => ({ time: d.time, close: d.close })))
         setError(null)
         // 数据加载完成后触发 AI 仓位标注重绘（等待布局完成）
         requestAnimationFrame(() => redrawFnRef.current?.())
@@ -199,6 +225,41 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
       keyLineLinesRef.current = []
     }
   }, [keyLevels, hiddenKinds, lastClose, symbol, limit])
+
+  // 绘制 EMA 均线（周期页面可编辑，前端根据已加载 K 线实时计算）
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+
+    // 清除旧 EMA 线（图表实例可能已重建，句柄失效时忽略）
+    emaSeriesRef.current.forEach((s) => {
+      try {
+        chart.removeSeries(s)
+      } catch {
+        /* 旧图表已销毁 */
+      }
+    })
+    emaSeriesRef.current = []
+
+    if (candlePoints.length === 0) return
+    const closes = candlePoints.map((c) => c.close)
+
+    emaPeriods.forEach((period, i) => {
+      const ema = calcEmaSeries(closes, period)
+      const line = chart.addSeries(LineSeries, {
+        color: EMA_COLORS[i % EMA_COLORS.length],
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      })
+      const data = candlePoints
+        .map((c, j) => ({ time: c.time, value: ema[j] }))
+        .filter((d): d is { time: UTCTimestamp; value: number } => d.value != null)
+      line.setData(data)
+      emaSeriesRef.current.push(line)
+    })
+  }, [candlePoints, emaPeriods])
 
   // 更新 AI 价格线 + 区域色块（TradingView 仓位标注风格）
   useEffect(() => {
@@ -396,23 +457,52 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
           style={{ marginBottom: 8 }}
         />
       )}
-      {keyLevels && keyLevels.length > 0 && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 8,
-            left: 8,
-            zIndex: 20,
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 4,
-            maxWidth: 'calc(100% - 16px)',
-            background: 'rgba(19, 23, 34, 0.78)',
-            border: '1px solid #2a2e39',
-            borderRadius: 6,
-            padding: '4px 8px',
-          }}>
-          {[...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => {
+      {/* 左上角工具栏：EMA 周期（可编辑）+ 关键位类型开关 */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 8,
+          left: 8,
+          zIndex: 20,
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          gap: 4,
+          maxWidth: 'calc(100% - 16px)',
+          background: 'rgba(19, 23, 34, 0.78)',
+          border: '1px solid #2a2e39',
+          borderRadius: 6,
+          padding: '4px 8px',
+        }}>
+        <span style={{ color: '#9aa3b2', fontSize: 12, marginRight: 2 }}>EMA</span>
+        {emaPeriods.map((p, i) => (
+          <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 2,
+                background: EMA_COLORS[i % EMA_COLORS.length],
+                display: 'inline-block',
+                flexShrink: 0,
+              }}
+            />
+            <InputNumber
+              size="small"
+              min={2}
+              max={499}
+              value={p}
+              style={{ width: 56 }}
+              onChange={(v) =>
+                setEmaPeriods((prev) =>
+                  prev.map((x, j) => (j === i ? (v ?? x) : x)),
+                )
+              }
+            />
+          </span>
+        ))}
+        {keyLevels && keyLevels.length > 0 &&
+          [...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => {
             const visible = !hiddenKinds.has(kind)
             // 未选中态必须显式配色：antd 亮色主题下默认是深色文字 + 无背景，
             // 叠在深色工具栏背景上会完全看不见
@@ -441,7 +531,6 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
             )
           })}
         </div>
-      )}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
       <svg
         ref={svgRef}

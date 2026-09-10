@@ -418,10 +418,10 @@ class ExchangePool:
     ) -> list[list]:
         kline_hour = _calc_kline_hour(interval)
 
-        # 1. 查缓存
+        # 1. 查缓存（缓存条数少于请求条数时视为未命中，重新拉取覆盖）
         try:
             cached = _get_cached_klines(symbol, interval, kline_hour)
-            if cached is not None:
+            if cached is not None and len(cached) >= limit:
                 return cached
         except Exception as e:
             logger.warning("K线缓存查询失败（降级直连交易所）: %s", e)

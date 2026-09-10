@@ -13,6 +13,7 @@ from app.models.scan import ScanRecord, ScanResult
 from app.models.system_config import SystemConfig
 from app.services.exchange_pool import ExchangePool
 from app.services.strategy import detect_all_signals
+from app.services.strategy.ema import analyze_ema
 
 logger = logging.getLogger(__name__)
 
@@ -106,10 +107,11 @@ class Scanner:
             def scan_one(symbol: str) -> tuple[str, list[dict], bool]:
                 """返回 (symbol, [signals...], is_error)"""
                 try:
+                    # EMA144 需要足够的历史数据做暖机，至少拉 300 根
                     klines = self.pool.get_klines(
                         symbol,
                         interval=kline_interval,
-                        limit=kline_window,
+                        limit=max(kline_window, 300),
                     )
                     config = {
                         "min_klines": 30,
@@ -123,9 +125,12 @@ class Scanner:
                     }
                     signals = detect_all_signals(klines, config)
                     vol, vol_type = classify_volume(klines)
+                    ema = analyze_ema(klines)
+                    ema_state = ema["state"] if ema else None
                     for sig in signals:
                         sig["volume"] = vol
                         sig["volume_type"] = vol_type
+                        sig["ema_state"] = ema_state
                     return symbol, signals, False
                 except Exception as e:
                     logger.warning("扫描 %s 失败: %s", symbol, e)
@@ -194,6 +199,7 @@ class Scanner:
                         r_squared=h.get("r_squared", 0),
                         pattern=h.get("pattern"),
                         signal_reason=h.get("signal_reason"),
+                        ema_state=h.get("ema_state"),
                         position=h.get("position"),
                         key_levels=h.get("key_levels"),
                         volume_24h=h.get("volume_24h", 0),

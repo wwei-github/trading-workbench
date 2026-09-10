@@ -25,6 +25,8 @@ import {
   POSITION_FILTERS,
   POSITION_SUPPORT_KINDS,
   PATTERN_FILTERS,
+  EMA_STATE_MAP,
+  EMA_STATE_FILTERS,
   patternStyle,
 } from "../constants/labels";
 import KlineChart from "./KlineChart";
@@ -184,6 +186,19 @@ export default function WatchlistPanel() {
       },
     },
     {
+      title: "EMA",
+      key: "ema_state",
+      filters: EMA_STATE_FILTERS,
+      filterMultiple: false,
+      onFilter: (value, r) => r.scan?.ema_state === value,
+      render: (_: unknown, r: WatchRow) => {
+        const v = r.scan?.ema_state;
+        if (!v) return <span style={{ color: "#999" }}>-</span>;
+        const cfg = EMA_STATE_MAP[v] || { label: v, color: "default" };
+        return <Tag color={cfg.color}>{cfg.label}</Tag>;
+      },
+    },
+    {
       title: "当前价格",
       key: "price",
       render: (_: unknown, r: WatchRow) =>
@@ -304,7 +319,7 @@ export default function WatchlistPanel() {
         ) : (
           <KlineChart
             symbol={selectedSymbol}
-            limit={250}
+            limit={500}
             keyLevels={
               rows.find((r) => r.symbol === selectedSymbol)?.scan?.key_levels ??
               undefined

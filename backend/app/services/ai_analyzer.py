@@ -6,6 +6,7 @@ from typing import Optional
 from openai import OpenAI
 
 from app.config import settings
+from app.services.strategy.ema import analyze_ema
 from app.services.strategy.types import POSITION_LABEL_MAP
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,10 @@ SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信�
 - recommendation: 推荐程度，0-100的整数。skip 时≤30，suggest 时≥50
 - analysis: ≤200字中文推理过程，说明判断依据和风险点
 
-所有价格为数值，单位 USDT。"""
+所有价格为数值，单位 USDT。
+均线形态是重要趋势背景：多头排列支撑做多逻辑，空头排列支撑做空逻辑；
+金叉/死叉与拐头是动能转换信号；若均线形态与关键位信号方向矛盾，
+需谨慎评估并在 analysis 中说明理由。"""
 
 
 def _get_client() -> OpenAI:
@@ -73,6 +77,12 @@ def analyze_coin(
             )
         levels_summary = "关键位列表:\n" + "\n".join(lines) + "\n"
 
+    # 均线形态（EMA21/55/144 状态判定，基于已收盘 K 线实时计算）
+    ema = analyze_ema(klines)
+    ema_summary = ""
+    if ema:
+        ema_summary = f"均线形态: {ema['state_label']}（{ema['detail']}）\n"
+
     user_prompt = (
         f"币种: {signal['symbol']}\n"
         f"信号类型: {SIGNAL_TYPE_LABELS.get(signal['signal_type'], signal['signal_type'])}（{signal['signal_type']}）\n"
@@ -82,6 +92,7 @@ def analyze_coin(
         f"信号理由: {signal.get('signal_reason') or ''}\n"
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
         f"{levels_summary}"
+        f"{ema_summary}"
         f"量能分类: {signal.get('volume_type', '未知')} (成交量={signal.get('volume', 0)})\n"
         f"24h成交额: {signal.get('volume_24h', 0)}\n"
         f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol):\n{kline_summary}"
