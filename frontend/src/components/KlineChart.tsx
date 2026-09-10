@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, InputNumber, Tag } from 'antd'
+import { Alert, InputNumber, Segmented, Tag } from 'antd'
 import {
   createChart,
   CandlestickSeries,
@@ -12,6 +12,7 @@ import {
   type IPriceLine,
 } from 'lightweight-charts'
 import { scanApi } from '../api/scan'
+import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import type { AIAnalysis, Kline, KeyLevel } from '../types'
 
 interface Props {
@@ -40,6 +41,13 @@ const MAX_LINES_PER_ROLE = 2
 const DEFAULT_EMA_PERIODS = [21, 55, 144]
 const EMA_COLORS = ['#f0b90b', '#00bcd4', '#ff9800']
 
+// 涨跌配色方案：红涨绿跌（国内习惯，默认）/ 绿涨红跌（国际习惯）
+// 仅作用于 K 线实体；关键位/AI 仓位线保持语义色不变
+const CANDLE_COLORS: Record<ColorScheme, { up: string; down: string }> = {
+  'red-up': { up: '#ef5350', down: '#26a69a' },
+  'green-up': { up: '#26a69a', down: '#ef5350' },
+}
+
 // 前端 EMA：SMA 种子 + 递推；未达到周期数的位置为 null
 function calcEmaSeries(closes: number[], period: number): (number | null)[] {
   const out: (number | null)[] = new Array(closes.length).fill(null)
@@ -56,6 +64,9 @@ function calcEmaSeries(closes: number[], period: number): (number | null)[] {
 }
 
 export default function KlineChart({ symbol, limit = 500, ai, keyLevels }: Props) {
+  // 全局涨跌配色（store 共享，切换后所有图表同步生效）
+  const colorScheme = useScanStore((s) => s.colorScheme)
+  const setColorScheme = useScanStore((s) => s.setColorScheme)
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -107,12 +118,13 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels }: Props
       height: container.clientHeight || CHART_HEIGHT,
     })
 
+    const candleColors = CANDLE_COLORS[colorScheme]
     const series = chart.addSeries(CandlestickSeries, {
-      upColor: '#26a69a',
-      downColor: '#ef5350',
+      upColor: candleColors.up,
+      downColor: candleColors.down,
       borderVisible: false,
-      wickUpColor: '#26a69a',
-      wickDownColor: '#ef5350',
+      wickUpColor: candleColors.up,
+      wickDownColor: candleColors.down,
     })
 
     chartRef.current = chart
@@ -165,6 +177,17 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels }: Props
       seriesRef.current = null
     }
   }, [symbol, limit])
+
+  // 切换涨跌配色：直接改 series 选项，所有图表实例同步生效，无需重建图表
+  useEffect(() => {
+    const c = CANDLE_COLORS[colorScheme]
+    seriesRef.current?.applyOptions({
+      upColor: c.up,
+      downColor: c.down,
+      wickUpColor: c.up,
+      wickDownColor: c.down,
+    })
+  }, [colorScheme])
 
   // 绘制关键位水平线：只画距当前价最近的 N 条支撑 + N 条压力，可按类型勾选隐藏
   useEffect(() => {
@@ -530,6 +553,17 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels }: Props
               </Tag.CheckableTag>
             )
           })}
+        {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效） */}
+        <Segmented
+          size="small"
+          value={colorScheme}
+          options={[
+            { label: '红涨绿跌', value: 'red-up' },
+            { label: '绿涨红跌', value: 'green-up' },
+          ]}
+          onChange={(v) => setColorScheme(v as ColorScheme)}
+          style={{ marginLeft: 4 }}
+        />
         </div>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
       <svg

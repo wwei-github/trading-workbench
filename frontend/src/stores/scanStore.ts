@@ -2,6 +2,19 @@ import { create } from 'zustand'
 import type { AIAnalysis, ScanRecord, ScanResult, ScanStatus, SystemConfig, WatchlistItem } from '../types'
 import { scanApi, type ResultFilters } from '../api/scan'
 
+// 图表涨跌配色（全局）：红涨绿跌（国内习惯，默认）/ 绿涨红跌（国际习惯）
+export type ColorScheme = 'red-up' | 'green-up'
+
+const COLOR_SCHEME_KEY = 'chart-color-scheme'
+
+function loadColorScheme(): ColorScheme {
+  try {
+    return localStorage.getItem(COLOR_SCHEME_KEY) === 'green-up' ? 'green-up' : 'red-up'
+  } catch {
+    return 'red-up'
+  }
+}
+
 interface ScanState {
   status: ScanStatus | null
   results: ScanResult[]
@@ -35,6 +48,9 @@ interface ScanState {
   fetchWatchlist: () => Promise<void>
   addToWatchlist: (symbol: string) => Promise<void>
   removeFromWatchlist: (symbol: string) => Promise<void>
+  // 图表涨跌配色（全局切换，localStorage 持久化）
+  colorScheme: ColorScheme
+  setColorScheme: (scheme: ColorScheme) => void
 }
 
 // 每行的轮询计时器：scanResultId -> timer
@@ -274,5 +290,16 @@ export const useScanStore = create<ScanState>((set, get) => ({
     set((s) => ({
       watchlist: s.watchlist.filter((w) => w.symbol !== symbol),
     }))
+  },
+
+  // ===== 图表涨跌配色 =====
+  colorScheme: loadColorScheme(),
+  setColorScheme: (scheme) => {
+    set({ colorScheme: scheme })
+    try {
+      localStorage.setItem(COLOR_SCHEME_KEY, scheme)
+    } catch {
+      /* 隐私模式等场景下忽略 */
+    }
   },
 }))

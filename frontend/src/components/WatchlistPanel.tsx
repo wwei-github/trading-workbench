@@ -169,6 +169,19 @@ export default function WatchlistPanel() {
       },
     },
     {
+      title: "EMA",
+      key: "ema_state",
+      filters: EMA_STATE_FILTERS,
+      filterMultiple: false,
+      onFilter: (value, r) => r.scan?.ema_state === value,
+      render: (_: unknown, r: WatchRow) => {
+        const v = r.scan?.ema_state;
+        if (!v) return <span style={{ color: "#999" }}>-</span>;
+        const cfg = EMA_STATE_MAP[v] || { label: v, color: "default" };
+        return <Tag color={cfg.color}>{cfg.label}</Tag>;
+      },
+    },
+    {
       title: "K线形态",
       key: "pattern",
       filters: PATTERN_FILTERS,
@@ -183,19 +196,6 @@ export default function WatchlistPanel() {
             <Tag color={color}>{label}</Tag>
           </Tooltip>
         );
-      },
-    },
-    {
-      title: "EMA",
-      key: "ema_state",
-      filters: EMA_STATE_FILTERS,
-      filterMultiple: false,
-      onFilter: (value, r) => r.scan?.ema_state === value,
-      render: (_: unknown, r: WatchRow) => {
-        const v = r.scan?.ema_state;
-        if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const cfg = EMA_STATE_MAP[v] || { label: v, color: "default" };
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
       },
     },
     {

@@ -235,6 +235,17 @@ export default function ResultTable() {
       },
     },
     {
+      title: "EMA",
+      dataIndex: "ema_state",
+      key: "ema_state",
+      ...filterProps("ema_state", EMA_STATE_FILTERS),
+      render: (v: string | null) => {
+        if (!v) return <span style={{ color: "#999" }}>-</span>;
+        const cfg = EMA_STATE_MAP[v] || { label: v, color: "default" };
+        return <Tag color={cfg.color}>{cfg.label}</Tag>;
+      },
+    },
+    {
       title: "K线形态",
       dataIndex: "pattern",
       key: "pattern",
@@ -247,17 +258,6 @@ export default function ResultTable() {
             <Tag color={color}>{label}</Tag>
           </Tooltip>
         );
-      },
-    },
-    {
-      title: "EMA",
-      dataIndex: "ema_state",
-      key: "ema_state",
-      ...filterProps("ema_state", EMA_STATE_FILTERS),
-      render: (v: string | null) => {
-        if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const cfg = EMA_STATE_MAP[v] || { label: v, color: "default" };
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
       },
     },
     {

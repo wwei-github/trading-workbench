@@ -113,6 +113,7 @@ class Scanner:
                         interval=kline_interval,
                         limit=max(kline_window, 300),
                     )
+                    ema = analyze_ema(klines)
                     config = {
                         "min_klines": 30,
                         "swing_order": cfg.swing_order,
@@ -122,10 +123,11 @@ class Scanner:
                         "key_level_tolerance": float(cfg.key_level_tolerance),
                         "level_merge_threshold": float(cfg.level_merge_threshold),
                         "max_trend_slope": 0.005,
+                        # EMA 形态门控：反向否决、同向加权（见 strategy/_detect）
+                        "ema": ema,
                     }
                     signals = detect_all_signals(klines, config)
                     vol, vol_type = classify_volume(klines)
-                    ema = analyze_ema(klines)
                     ema_state = ema["state"] if ema else None
                     for sig in signals:
                         sig["volume"] = vol
