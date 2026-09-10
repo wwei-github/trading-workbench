@@ -20,6 +20,8 @@ interface Props {
   limit?: number
   ai?: AIAnalysis
   keyLevels?: KeyLevel[]
+  // 变化时强制重新拉取 K 线（关注列表手动刷新用）
+  refreshKey?: number
 }
 
 const CHART_HEIGHT = 560 // 容器无高度时的兜底值
@@ -63,7 +65,7 @@ function calcEmaSeries(closes: number[], period: number): (number | null)[] {
   return out
 }
 
-export default function KlineChart({ symbol, limit = 500, ai, keyLevels }: Props) {
+export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refreshKey = 0 }: Props) {
   // 全局涨跌配色（store 共享，切换后所有图表同步生效）
   const colorScheme = useScanStore((s) => s.colorScheme)
   const setColorScheme = useScanStore((s) => s.setColorScheme)
@@ -176,7 +178,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels }: Props
       chartRef.current = null
       seriesRef.current = null
     }
-  }, [symbol, limit])
+  }, [symbol, limit, refreshKey])
 
   // 切换涨跌配色：直接改 series 选项，所有图表实例同步生效，无需重建图表
   useEffect(() => {

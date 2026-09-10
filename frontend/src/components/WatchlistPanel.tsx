@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Table,
   Tag,
@@ -13,6 +13,7 @@ import {
   CopyOutlined,
   DeleteOutlined,
   ReloadOutlined,
+  SyncOutlined,
   StarFilled,
 } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
@@ -30,7 +31,8 @@ import {
   patternStyle,
 } from "../constants/labels";
 import KlineChart from "./KlineChart";
-import type { ScanResult, WatchlistItem } from "../types";
+import AiExpandContent from "./AiExpandContent";
+import type { AIAnalysis, ScanResult, WatchlistItem } from "../types";
 
 const { Text } = Typography;
 
@@ -50,6 +52,9 @@ const fmtVol = (v: number) => {
 const fmtPrice = (v: number) =>
   v < 1 ? v.toFixed(6) : v < 100 ? v.toFixed(4) : v.toFixed(2);
 
+const fmtTime = (v: string | null) =>
+  v ? v.slice(0, 16).replace("T", " ") : "-";
+
 export default function WatchlistPanel() {
   const {
     watchlist,
@@ -58,12 +63,31 @@ export default function WatchlistPanel() {
     results,
     loading,
     fetchResults,
+    aiConfig,
   } = useScanStore();
 
   const [quotes, setQuotes] = useState<
     Record<string, { price: number; volume_24h: number }>
   >({});
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
+  // 折叠行（单开，与扫描结果一致）
+  const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
+
+  // ===== K 线手动刷新 =====
+  const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
+  // 每币种的图表重拉计数（刷新成功后 +1，触发 KlineChart 重新拉数据）
+  const [refreshKeys, setRefreshKeys] = useState<Record<string, number>>({});
+  // 刷新成功后的更新时间覆盖（避免整表重拉）
+  const [updatedAtOverride, setUpdatedAtOverride] = useState<Record<string, string>>({});
+
+  // ===== AI 分析（按币种管理，与扫描结果行展开布局一致） =====
+  const aiEnabled = !!aiConfig?.ai_analysis_enabled;
+  const [aiMap, setAiMap] = useState<Record<string, AIAnalysis>>({});
+  const [analyzing, setAnalyzing] = useState<
+    Record<string, { loading: boolean; error: string | null }>
+  >({});
+  const [userInputs, setUserInputs] = useState<Record<string, string>>({});
+  const pollTimersRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
   const loadData = async () => {
     fetchWatchlist();
@@ -84,14 +108,25 @@ export default function WatchlistPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 组装行数据：watchlist + 行情 + 最新扫描信号
+  // 组件卸载时清理 AI 轮询计时器
+  useEffect(() => {
+    const timers = pollTimersRef.current;
+    return () => {
+      for (const id of Object.keys(timers)) {
+        clearInterval(timers[id]);
+        delete timers[id];
+      }
+    };
+  }, []);
+
+  // 组装行数据：行情 + 信号信息（当前扫描结果优先，其次后端嵌入的最近扫描结果）
   const rows: WatchRow[] = useMemo(
     () =>
       watchlist.map((w) => ({
         ...w,
         price: quotes[w.symbol]?.price ?? null,
         volume_24h: quotes[w.symbol]?.volume_24h ?? null,
-        scan: results.find((r) => r.symbol === w.symbol) || null,
+        scan: results.find((r) => r.symbol === w.symbol) || w.latest_scan || null,
       })),
     [watchlist, quotes, results],
   );
@@ -112,6 +147,116 @@ export default function WatchlistPanel() {
       .writeText(text)
       .then(() => message.success(`已复制: ${text}`))
       .catch(() => message.error("复制失败"));
+  };
+
+  // ===== K 线手动刷新：强制拉取最新 K 线写回缓存 =====
+  const handleRefresh = async (e: React.MouseEvent, symbol: string) => {
+    e.stopPropagation();
+    setRefreshing((prev) => ({ ...prev, [symbol]: true }));
+    try {
+      const d = await scanApi.watchlist.refresh(symbol);
+      setUpdatedAtOverride((prev) => ({ ...prev, [symbol]: d.updated_at }));
+      setRefreshKeys((prev) => ({ ...prev, [symbol]: (prev[symbol] ?? 0) + 1 }));
+      message.success(`${symbol} K线已更新（${d.kline_count}根）`);
+    } catch (err: any) {
+      message.error(err?.response?.data?.detail || "K线刷新失败");
+    } finally {
+      setRefreshing((prev) => ({ ...prev, [symbol]: false }));
+    }
+  };
+
+  // ===== AI 分析 =====
+  const stopPolling = (symbol: string) => {
+    if (pollTimersRef.current[symbol]) {
+      clearInterval(pollTimersRef.current[symbol]);
+      delete pollTimersRef.current[symbol];
+    }
+  };
+
+  const setRowState = (
+    symbol: string,
+    state: { loading: boolean; error: string | null },
+  ) => {
+    setAnalyzing((prev) => ({ ...prev, [symbol]: state }));
+  };
+
+  // 触发后轮询该扫描记录的分析列表，直到目标 scan_result_id 的分析出现
+  const startPolling = (
+    symbol: string,
+    scanRecordId: string,
+    scanResultId: string,
+  ) => {
+    stopPolling(symbol);
+    setRowState(symbol, { loading: true, error: null });
+    let attempts = 0;
+    const maxAttempts = 40; // 40 次 × 3 秒 = 120 秒
+    pollTimersRef.current[symbol] = setInterval(async () => {
+      attempts++;
+      try {
+        const d = await scanApi.aiAnalyses(scanRecordId);
+        const found = d.items.find((a) => a.scan_result_id === scanResultId);
+        if (found) {
+          setAiMap((prev) => ({ ...prev, [symbol]: found }));
+          stopPolling(symbol);
+        } else if (attempts >= maxAttempts) {
+          stopPolling(symbol);
+          setRowState(symbol, { loading: false, error: "AI 分析超时，请重试" });
+        }
+      } catch {
+        // 忽略轮询错误
+      }
+    }, 3000);
+  };
+
+  // 触发分析：有扫描结果走异步任务 + 轮询；无扫描结果走同步手动分析
+  const handleAnalyze = async (r: WatchRow) => {
+    if (!r.scan?.id || !r.scan?.scan_record_id) {
+      // 从未被扫描命中过：走手动搜索的同步分析（拉最新 K 线 + AI）
+      setRowState(r.symbol, { loading: true, error: null });
+      try {
+        const ai = await scanApi.analyzeCoin(r.symbol);
+        setAiMap((prev) => ({ ...prev, [r.symbol]: ai }));
+        setRowState(r.symbol, { loading: false, error: null });
+      } catch (e: any) {
+        setRowState(r.symbol, {
+          loading: false,
+          error: e?.response?.data?.detail || "AI 分析失败",
+        });
+      }
+      return;
+    }
+
+    const scanRecordId = r.scan.scan_record_id;
+    const scanResultId = r.scan.id;
+    try {
+      await scanApi.triggerAi(scanRecordId, scanResultId, userInputs[r.symbol]?.trim() || undefined);
+      startPolling(r.symbol, scanRecordId, scanResultId);
+    } catch (e: any) {
+      setRowState(r.symbol, {
+        loading: false,
+        error: e?.response?.data?.detail || "触发 AI 分析失败",
+      });
+    }
+  };
+
+  // 行点击：选中图表 + 切换折叠；首次展开时加载该币种已有的 AI 分析
+  const handleRowClick = (symbol: string) => {
+    setSelectedSymbol(symbol);
+    setExpandedKeys((prev) =>
+      prev.includes(symbol) ? prev.filter((s) => s !== symbol) : [symbol],
+    );
+    if (!aiMap[symbol]) {
+      const scan = rows.find((r) => r.symbol === symbol)?.scan;
+      if (scan?.id && scan?.scan_record_id) {
+        scanApi
+          .aiAnalyses(scan.scan_record_id)
+          .then((d) => {
+            const found = d.items.find((a) => a.scan_result_id === scan.id);
+            if (found) setAiMap((prev) => ({ ...prev, [symbol]: found }));
+          })
+          .catch(() => undefined);
+      }
+    }
   };
 
   const columns: ColumnsType<WatchRow> = [
@@ -229,43 +374,59 @@ export default function WatchlistPanel() {
       },
     },
     {
-      title: "添加时间",
-      dataIndex: "created_at",
-      key: "created_at",
-      render: (v: string) => (
-        <Text type="secondary">{v.slice(0, 16).replace("T", " ")}</Text>
+      title: (
+        <Tooltip title="刚添加时为添加时间；点「更新」拉取最新K线后为刷新时间">
+          更新时间
+        </Tooltip>
+      ),
+      key: "updated_at",
+      render: (_: unknown, r: WatchRow) => (
+        <Text type="secondary">
+          {fmtTime(updatedAtOverride[r.symbol] ?? r.updated_at)}
+        </Text>
       ),
     },
     {
       title: "操作",
       key: "action",
-      width: 90,
+      width: 130,
       render: (_: unknown, r: WatchRow) => (
-        <Popconfirm
-          title="确认删除该关注？"
-          onConfirm={(e) => {
-            e?.stopPropagation();
-            handleDelete(r.symbol);
-          }}
-          onCancel={(e) => e?.stopPropagation()}
-        >
-          <Button
-            type="text"
-            danger
-            size="small"
-            icon={<DeleteOutlined />}
-            onClick={(e) => e.stopPropagation()}
-          >
-            删除
-          </Button>
-        </Popconfirm>
+        <span onClick={(e) => e.stopPropagation()}>
+          <Tooltip title="拉取最新K线并缓存">
+            <Button
+              type="text"
+              size="small"
+              icon={<SyncOutlined spin={!!refreshing[r.symbol]} />}
+              loading={refreshing[r.symbol]}
+              onClick={(e) => handleRefresh(e, r.symbol)}
+              style={{ padding: "0 6px" }}>
+              更新
+            </Button>
+          </Tooltip>
+          <Popconfirm
+            title="确认删除该关注？"
+            onConfirm={(e) => {
+              e?.stopPropagation();
+              handleDelete(r.symbol);
+            }}
+            onCancel={(e) => e?.stopPropagation()}>
+            <Button
+              type="text"
+              danger
+              size="small"
+              icon={<DeleteOutlined />}
+              onClick={(e) => e.stopPropagation()}>
+              删除
+            </Button>
+          </Popconfirm>
+        </span>
       ),
     },
   ];
 
   return (
     <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
-      {/* 左侧：关注列表（与扫描结果同布局） */}
+      {/* 左侧：关注列表（与扫描结果同布局，行可折叠看 AI 分析） */}
       <div
         style={{
           flex: "0 0 55%",
@@ -283,7 +444,7 @@ export default function WatchlistPanel() {
             刷新
           </Button>
           <Text type="secondary" style={{ marginLeft: 12 }}>
-            在"扫描结果"中点击币种旁的 ★ 即可加入关注
+            在"扫描结果"中点击币种旁的 ★ 即可加入关注；点击行展开 AI 分析
           </Text>
         </div>
         <Table
@@ -295,12 +456,36 @@ export default function WatchlistPanel() {
           pagination={false}
           locale={{ emptyText: <Empty description="暂无关注币种" /> }}
           onRow={(record) => ({
-            onClick: () => setSelectedSymbol(record.symbol),
+            onClick: () => handleRowClick(record.symbol),
             style: { cursor: "pointer" },
           })}
           rowClassName={(record) =>
             record.symbol === selectedSymbol ? "ant-table-row-selected" : ""
           }
+          expandable={{
+            expandedRowKeys: expandedKeys,
+            onExpand: (expanded, record) => {
+              if (expanded) handleRowClick(record.symbol);
+              else
+                setExpandedKeys((prev) =>
+                  prev.filter((s) => s !== record.symbol),
+                );
+            },
+            expandedRowRender: (record: WatchRow) => (
+              <AiExpandContent
+                aiEnabled={aiEnabled}
+                ai={aiMap[record.symbol]}
+                loading={!!analyzing[record.symbol]?.loading}
+                error={analyzing[record.symbol]?.error}
+                userInput={userInputs[record.symbol] ?? ""}
+                onUserInput={(v) =>
+                  setUserInputs((m) => ({ ...m, [record.symbol]: v }))
+                }
+                onTrigger={() => handleAnalyze(record)}
+              />
+            ),
+            rowExpandable: () => true,
+          }}
         />
       </div>
 
@@ -320,6 +505,7 @@ export default function WatchlistPanel() {
           <KlineChart
             symbol={selectedSymbol}
             limit={500}
+            refreshKey={refreshKeys[selectedSymbol] ?? 0}
             keyLevels={
               rows.find((r) => r.symbol === selectedSymbol)?.scan?.key_levels ??
               undefined

@@ -109,3 +109,5 @@ class Watchlist(Base):
     symbol: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     note: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # K 线最近一次手动刷新时间；刚添加时等于 created_at
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, default=datetime.utcnow)

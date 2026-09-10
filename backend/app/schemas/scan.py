@@ -139,6 +139,10 @@ class WatchlistItemOut(BaseModel):
     symbol: str
     note: Optional[str] = None
     created_at: datetime
+    # K 线最近一次手动刷新时间（刚添加时等于 created_at）
+    updated_at: Optional[datetime] = None
+    # 该币种最近一次扫描命中结果（无命中或从未扫描时为 None）
+    latest_scan: Optional[ScanResultOut] = None
 
     class Config:
         from_attributes = True

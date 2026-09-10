@@ -414,17 +414,23 @@ class ExchangePool:
 
     def get_klines(
         self, symbol: str, interval: str = "1h", limit: int = 240,
-        allow_stale: bool = False,
+        allow_stale: bool = False, force_refresh: bool = False,
     ) -> list[list]:
+        """拉取 K 线（带缓存）。
+
+        force_refresh=True 时跳过缓存读取直接请求交易所（关注列表手动刷新用），
+        结果仍写入缓存供后续复用。
+        """
         kline_hour = _calc_kline_hour(interval)
 
         # 1. 查缓存（缓存条数少于请求条数时视为未命中，重新拉取覆盖）
-        try:
-            cached = _get_cached_klines(symbol, interval, kline_hour)
-            if cached is not None and len(cached) >= limit:
-                return cached
-        except Exception as e:
-            logger.warning("K线缓存查询失败（降级直连交易所）: %s", e)
+        if not force_refresh:
+            try:
+                cached = _get_cached_klines(symbol, interval, kline_hour)
+                if cached is not None and len(cached) >= limit:
+                    return cached
+            except Exception as e:
+                logger.warning("K线缓存查询失败（降级直连交易所）: %s", e)
 
         # 2. 依次尝试各交易所
         errors: list[str] = []

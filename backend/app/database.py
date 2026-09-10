@@ -65,6 +65,14 @@ def _run_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_scan_results_ema_state "
             "ON scan_results (ema_state)"
         ))
+        # Feature 5: 关注列表 K 线刷新时间（历史行回填为添加时间）
+        conn.execute(text("""
+            ALTER TABLE watchlist
+              ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP
+        """))
+        conn.execute(text(
+            "UPDATE watchlist SET updated_at = created_at WHERE updated_at IS NULL"
+        ))
         # 确保系统配置表有默认行（初始值从 env 注入）
         conn.execute(text(
             "INSERT INTO system_config "

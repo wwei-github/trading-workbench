@@ -78,5 +78,12 @@ export const scanApi = {
       api.post<WatchlistItem>('/watchlist', { symbol }).then((r) => r.data),
     remove: (symbol: string) =>
       api.delete<{ ok: boolean; symbol: string }>(`/watchlist/${symbol}`).then((r) => r.data),
+    // 手动刷新：强制拉取最新 K 线并写回缓存，返回刷新时间
+    refresh: (symbol: string) =>
+      api
+        .post<{ symbol: string; updated_at: string; kline_count: number; last_close: number | null }>(
+          `/watchlist/${symbol}/refresh`,
+        )
+        .then((r) => r.data),
   },
 }

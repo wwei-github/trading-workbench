@@ -85,6 +85,10 @@ export interface WatchlistItem {
   symbol: string;
   note: string | null;
   created_at: string;
+  // K 线最近一次手动刷新时间（刚添加时等于 created_at）
+  updated_at: string | null;
+  // 该币种最近一次扫描命中结果（EMA/趋势等列的数据来源）
+  latest_scan: ScanResult | null;
 }
 
 export interface Kline {
