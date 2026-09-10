@@ -15,6 +15,7 @@
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Optional
 
 import httpx
 from sqlalchemy import select
@@ -95,19 +96,24 @@ def _cooldown(name: str, seconds: float, reason: str) -> None:
 # ── 各交易所 K 线拉取（统一返回 [ts, o, h, l, c, base_vol, close_time, quote_vol]）──
 
 
+def _raise_if_rate_limited(resp: httpx.Response, name: str = "binance") -> None:
+    """418/429 统一处理：记录冷却期并抛出 ExchangeError"""
+    if resp.status_code == 418:
+        wait = _parse_retry_after(resp)
+        _cooldown(name, wait, f"IP 封禁，约 {wait:.0f}s 后解禁")
+        raise ExchangeError(f"IP 封禁，约 {wait:.0f}s 后解禁")
+    if resp.status_code == 429:
+        wait = _parse_retry_after(resp)
+        _cooldown(name, wait, f"限流，约 {wait:.0f}s 后恢复")
+        raise ExchangeError(f"限流，约 {wait:.0f}s 后恢复")
+
+
 def _fetch_binance(symbol: str, interval: str, limit: int) -> list[list]:
     resp = _get_client("binance").get(
         "/fapi/v1/klines",
         params={"symbol": symbol, "interval": interval, "limit": limit},
     )
-    if resp.status_code == 418:
-        wait = _parse_retry_after(resp)
-        _cooldown("binance", wait, f"IP 封禁，约 {wait:.0f}s 后解禁")
-        raise ExchangeError(f"IP 封禁，约 {wait:.0f}s 后解禁")
-    if resp.status_code == 429:
-        wait = _parse_retry_after(resp)
-        _cooldown("binance", wait, f"限流，约 {wait:.0f}s 后恢复")
-        raise ExchangeError(f"限流，约 {wait:.0f}s 后恢复")
+    _raise_if_rate_limited(resp)
     if resp.status_code >= 400:
         raise ExchangeError(f"HTTP {resp.status_code}")
     rows = resp.json()
@@ -184,6 +190,147 @@ _FETCHERS = {
 }
 
 
+# ── USDT 永续合约列表 + 24h 成交额（多链路，供扫描器取币种清单）──
+
+_STABLE_BASES = {"USDC", "BUSD", "DAI", "FDUSD", "TUSD", "USDP", "PAX"}
+
+
+def _base_ok(base: str) -> bool:
+    """排除稳定币和关键词命中的基础资产"""
+    return base not in _STABLE_BASES and not any(
+        kw in base for kw in settings.EXCLUDE_KEYWORDS
+    )
+
+
+def _fetch_symbols_binance() -> list[dict]:
+    c = _get_client("binance")
+    resp = c.get("/fapi/v1/exchangeInfo")
+    _raise_if_rate_limited(resp)
+    if resp.status_code >= 400:
+        raise ExchangeError(f"HTTP {resp.status_code}")
+
+    valid = set()
+    for s in resp.json().get("symbols", []):
+        if s.get("status") != "TRADING":
+            continue
+        if s.get("quoteAsset") != settings.QUOTE_ASSET:
+            continue
+        if s.get("contractType") != "PERPETUAL":
+            continue
+        if not _base_ok(s.get("baseAsset", "")):
+            continue
+        valid.add(s["symbol"])
+
+    resp = c.get("/fapi/v1/ticker/24hr")
+    _raise_if_rate_limited(resp)
+    if resp.status_code >= 400:
+        raise ExchangeError(f"ticker HTTP {resp.status_code}")
+
+    out = []
+    for t in resp.json():
+        sym = t.get("symbol", "")
+        if sym not in valid:
+            continue
+        try:
+            vol = float(t.get("quoteVolume", 0))
+            price = float(t.get("lastPrice", 0))
+        except (TypeError, ValueError):
+            continue
+        if vol <= 0:
+            continue
+        out.append({"symbol": sym, "volume_24h": vol, "last_price": price})
+    out.sort(key=lambda x: x["volume_24h"], reverse=True)
+    return out
+
+
+def _fetch_symbols_okx() -> list[dict]:
+    c = _get_client("okx")
+    quote = settings.QUOTE_ASSET
+    suffix = f"-{quote}-SWAP"
+
+    resp = c.get("/api/v5/public/instruments", params={"instType": "SWAP"})
+    if resp.status_code != 200:
+        raise ExchangeError(f"HTTP {resp.status_code}")
+    body = resp.json()
+    if body.get("code") != "0":
+        raise ExchangeError(f"instruments code={body.get('code')}")
+
+    valid = set()
+    for s in body.get("data", []):
+        inst = s.get("instId", "")
+        if s.get("state") != "live" or not inst.endswith(suffix):
+            continue
+        base = inst[: -len(suffix)]
+        if not _base_ok(base):
+            continue
+        valid.add(inst)
+
+    resp = c.get("/api/v5/market/tickers", params={"instType": "SWAP"})
+    if resp.status_code != 200:
+        raise ExchangeError(f"tickers HTTP {resp.status_code}")
+    body = resp.json()
+    if body.get("code") != "0":
+        raise ExchangeError(f"tickers code={body.get('code')}")
+
+    out = []
+    for t in body.get("data", []):
+        inst = t.get("instId", "")
+        if inst not in valid:
+            continue
+        try:
+            price = float(t.get("last", 0))
+            base_vol = float(t.get("volCcy24h", 0))
+        except (TypeError, ValueError):
+            continue
+        vol = base_vol * price  # OKX 合约 24h 量为基础币数量，换算成计价额
+        if vol <= 0:
+            continue
+        out.append({
+            "symbol": inst[: -len(suffix)] + quote,
+            "volume_24h": vol,
+            "last_price": price,
+        })
+    out.sort(key=lambda x: x["volume_24h"], reverse=True)
+    return out
+
+
+def _fetch_symbols_bitget() -> list[dict]:
+    c = _get_client("bitget")
+    quote = settings.QUOTE_ASSET
+
+    resp = c.get("/api/v2/mix/market/tickers", params={"productType": "USDT-FUTURES"})
+    if resp.status_code != 200:
+        raise ExchangeError(f"HTTP {resp.status_code}")
+    body = resp.json()
+    if body.get("code") != "00000":
+        raise ExchangeError(f"code={body.get('code')} {str(body.get('msg'))[:80]}")
+
+    out = []
+    for t in body.get("data", []):
+        sym = t.get("symbol", "")
+        if not sym.endswith(quote):
+            continue
+        if not _base_ok(sym[: -len(quote)]):
+            continue
+        try:
+            vol = float(t.get("quoteVolume", 0))
+            price = float(t.get("lastPr", 0))
+        except (TypeError, ValueError):
+            continue
+        if vol <= 0:
+            continue
+        out.append({"symbol": sym, "volume_24h": vol, "last_price": price})
+    out.sort(key=lambda x: x["volume_24h"], reverse=True)
+    return out
+
+
+_SYMBOL_FETCHERS = {
+    "binance": _fetch_symbols_binance,
+    "okx": _fetch_symbols_okx,
+    "bitget": _fetch_symbols_bitget,
+}
+
+
 def _ordered_names() -> list[str]:
     """币安优先；处于冷却期的交易所排到最后（可能已提前恢复，仍作兜底尝试）"""
     now = time.time()
@@ -204,7 +351,7 @@ def _calc_kline_hour(interval: str) -> datetime:
     return now.replace(hour=aligned // 60, minute=aligned % 60, second=0, microsecond=0)
 
 
-def _get_cached_klines(symbol: str, interval: str, kline_hour: datetime) -> list | None:
+def _get_cached_klines(symbol: str, interval: str, kline_hour: datetime) -> Optional[list]:
     sdb = SessionLocal()
     try:
         row = sdb.execute(
@@ -219,7 +366,7 @@ def _get_cached_klines(symbol: str, interval: str, kline_hour: datetime) -> list
         sdb.close()
 
 
-def _get_latest_cached_klines(symbol: str, interval: str) -> list | None:
+def _get_latest_cached_klines(symbol: str, interval: str) -> Optional[list]:
     """最近一份缓存（不限周期），全交易所失败时兜底展示用"""
     sdb = SessionLocal()
     try:
@@ -306,6 +453,24 @@ class ExchangePool:
                     "所有交易所获取 %s %s 失败，降级返回旧缓存", symbol, interval
                 )
                 return stale
+        raise AllExchangesFailed("；".join(errors) or "未知错误")
+
+    def get_usdt_swap_symbols_with_volume(self) -> list[dict]:
+        """获取 USDT 永续合约列表（多链路故障转移）
+
+        返回: [{symbol, volume_24h, last_price}, ...] 按 24h 成交额降序
+        """
+        errors: list[str] = []
+        for name in _ordered_names():
+            try:
+                return _SYMBOL_FETCHERS[name]()
+            except ExchangeError as e:
+                errors.append(f"{_LABELS[name]}: {e}")
+                continue
+            except Exception as e:
+                _cooldown(name, _DEFAULT_COOLDOWN, str(e)[:120])
+                errors.append(f"{_LABELS[name]}: {str(e)[:120]}")
+                continue
         raise AllExchangesFailed("；".join(errors) or "未知错误")
 
 

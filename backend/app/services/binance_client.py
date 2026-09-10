@@ -133,51 +133,6 @@ class BinanceClient:
         resp = self._request(self.futures_client, "/fapi/v1/ticker/24hr")
         return resp.json()
 
-    def get_futures_symbols_with_volume(self) -> list[dict]:
-        """获取 USDT 永续合约交易对，按 24h 成交额降序排列
-
-        返回: [{symbol, volume_24h, last_price}, ...]
-        """
-        info = self.get_futures_exchange_info()
-        exclude_kw = settings.EXCLUDE_KEYWORDS
-        stable_quotes = {"USDC", "BUSD", "DAI", "FDUSD", "TUSD", "USDP", "PAX"}
-
-        # 筛选 TRADING 状态的 USDT 永续合约
-        valid_symbols = set()
-        for s in info.get("symbols", []):
-            if s.get("status") != "TRADING":
-                continue
-            if s.get("quoteAsset") != settings.QUOTE_ASSET:
-                continue
-            if s.get("contractType") != "PERPETUAL":
-                continue
-            base = s.get("baseAsset", "")
-            if base in stable_quotes:
-                continue
-            if any(kw in base for kw in exclude_kw):
-                continue
-            valid_symbols.add(s["symbol"])
-
-        # 获取 24h 行情
-        tickers = self.get_24h_tickers()
-        result = []
-        for t in tickers:
-            sym = t.get("symbol", "")
-            if sym not in valid_symbols:
-                continue
-            try:
-                vol = float(t.get("quoteVolume", 0))
-                price = float(t.get("lastPrice", 0))
-            except (ValueError, TypeError):
-                continue
-            if vol <= 0:
-                continue
-            result.append({"symbol": sym, "volume_24h": vol, "last_price": price})
-
-        # 按 24h 成交额降序
-        result.sort(key=lambda x: x["volume_24h"], reverse=True)
-        return result
-
     # ── 现货 API（保留备用）──
 
     def get_exchange_info(self) -> dict:

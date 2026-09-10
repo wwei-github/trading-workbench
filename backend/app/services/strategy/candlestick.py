@@ -44,8 +44,8 @@ def detect_hammer(klines: list[list], idx: int = -1) -> Optional[dict]:
 
     条件：
     1. 下影线 >= 2 * 实体
-    2. 上影线 <= 实体 * 0.3
-    3. 实体占整根 K 线的比例较小
+    2. 上影线必须很短（<= 总振幅的 15%，可以有）
+    3. 开收不同（body≈0 的十字由蜻蜓十字负责，避免重复命中）
     """
     k = klines[idx]
     o, h, l, c = float(k[1]), float(k[2]), float(k[3]), float(k[4])
@@ -58,9 +58,6 @@ def detect_hammer(klines: list[list], idx: int = -1) -> Optional[dict]:
         return None
 
     if body < 1e-12:
-        # 十字星锤形（下影线很长）
-        if lower > total * 0.6 and upper < total * 0.1:
-            return {"pattern": "hammer", "direction": "bullish", "strength": 0.6}
         return None
 
     if lower >= body * 2 and upper <= total * 0.15:
@@ -194,7 +191,9 @@ def detect_piercing_line(klines: list[list], idx: int = -1) -> Optional[dict]:
 
     条件：
     1. 第一根：阴线
-    2. 第二根：阳线，开盘低于前低，收盘深入前根实体上半部
+    2. 第二根：阳线，开盘不高于前根收盘（加密货币 7x24 连续交易无跳空，
+       经典定义的"低于前低"在此几乎不可能出现，放宽为平开或低开），
+       收盘深入前根实体上半部
     """
     if len(klines) < abs(idx) + 1:
         return None
@@ -217,8 +216,8 @@ def detect_piercing_line(klines: list[list], idx: int = -1) -> Optional[dict]:
     if not _is_bullish(o2, c2):
         return None
 
-    # 开盘低于前低
-    if o2 >= l1:
+    # 开盘不高于前根收盘（连续交易下平开即满足；高于前收盘则不成立）
+    if o2 > c1:
         return None
 
     # 收盘深入前根实体上半部（超过中点）
@@ -288,7 +287,8 @@ def detect_dark_cloud_cover(klines: list[list], idx: int = -1) -> Optional[dict]
 
     条件：
     1. 第一根：阳线
-    2. 第二根：阴线，开盘高于前根最高价，收盘深入前根实体下半部
+    2. 第二根：阴线，开盘不低于前根收盘（连续交易放宽，同刺透线），
+       收盘深入前根实体下半部
     """
     if len(klines) < abs(idx) + 1:
         return None
@@ -308,8 +308,8 @@ def detect_dark_cloud_cover(klines: list[list], idx: int = -1) -> Optional[dict]
     if not _is_bearish(o2, c2):
         return None
 
-    # 开盘高于前根最高价（跳空高开）
-    if o2 <= h1:
+    # 开盘不低于前根收盘（连续交易下平开即满足；低于前收盘则不成立）
+    if o2 < c1:
         return None
 
     # 收盘深入前根实体下半部（低于中点）

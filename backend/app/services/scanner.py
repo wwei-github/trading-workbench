@@ -11,7 +11,6 @@ from app.config import settings
 from app.database import SessionLocal
 from app.models.scan import ScanRecord, ScanResult
 from app.models.system_config import SystemConfig
-from app.services.binance_client import BinanceClient
 from app.services.exchange_pool import ExchangePool
 from app.services.strategy import detect_all_signals
 
@@ -68,7 +67,6 @@ class Scanner:
     """扫描编排器（同步 + 线程池并发）"""
 
     def __init__(self):
-        self.client = BinanceClient()
         self.pool = ExchangePool()
         self.concurrency = settings.BINANCE_CONCURRENCY
 
@@ -93,7 +91,7 @@ class Scanner:
             logger.info("开始扫描 #%s (interval=%s, window=%d)", scan_record_id, kline_interval, kline_window)
 
             # 1. 获取合约交易对列表（按 24h 成交额降序）
-            symbols_data = self.client.get_futures_symbols_with_volume()
+            symbols_data = self.pool.get_usdt_swap_symbols_with_volume()
 
             coin_count = len(symbols_data)
             logger.info("共 %d 个合约交易对待扫描（按24h成交额降序）", len(symbols_data))
@@ -171,7 +169,6 @@ class Scanner:
             except Exception:
                 pass
             self._update_scan_status(scan_record_id, status, hit_count, error_count, coin_count)
-            self.client.close()
             db.close()
 
     @staticmethod
