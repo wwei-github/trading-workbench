@@ -44,7 +44,6 @@ export default function ResultTable() {
     loading,
     resultsPage,
     resultsPageSize,
-    filters,
     setFilters,
     currentScanId,
     aiAnalyses,
@@ -113,33 +112,35 @@ export default function ResultTable() {
     }
   };
 
-  // 服务端过滤：列只声明 filters + 受控 filteredValue，
-  // 实际筛选动作在 Table 的 onChange（action === "filter"）里统一提交。
-  // 注意：antd 列级没有 onChange 属性，写在列上会被静默忽略。
+  // 服务端过滤（antd 官方模式）：列只声明 filters（非受控，不传 filteredValue），
+  // 筛选/翻页统一在 Table 的 onChange 里按 extra.action 分发。
+  // 注意1：antd 列级没有 onChange 属性，写在列上会被静默忽略。
+  // 注意2：pagination 不要传 onChange——antd 筛选确认时会额外回调它，
+  // 导致带着旧 filters 的重复请求竞态（UI 停留在重置前状态）。
   const filterProps = (
     key: "signal_type" | "position" | "pattern" | "ema_state",
     options: { text: string; value: string }[],
   ) => ({
     filters: options,
     filterMultiple: false,
-    filteredValue: filters[key] ? [filters[key]] : null,
   });
 
   const handleTableChange: NonNullable<
     React.ComponentProps<typeof Table<ScanResult>>["onChange"]
-  > = (
-    _pagination,
-    tableFilters,
-    _sorter,
-    extra,
-  ) => {
-    if (extra.action !== "filter") return;
-    setFilters({
-      signal_type: (tableFilters.signal_type?.[0] as string) || undefined,
-      position: (tableFilters.position?.[0] as string) || undefined,
-      pattern: (tableFilters.pattern?.[0] as string) || undefined,
-      ema_state: (tableFilters.ema_state?.[0] as string) || undefined,
-    });
+  > = (tablePagination, tableFilters, _sorter, extra) => {
+    if (extra.action === "filter") {
+      setFilters({
+        signal_type: (tableFilters.signal_type?.[0] as string) || undefined,
+        position: (tableFilters.position?.[0] as string) || undefined,
+        pattern: (tableFilters.pattern?.[0] as string) || undefined,
+        ema_state: (tableFilters.ema_state?.[0] as string) || undefined,
+      });
+      return;
+    }
+    if (extra.action === "paginate") {
+      fetchResults(undefined, tablePagination.current ?? 1, tablePagination.pageSize);
+    }
+    // sort 走客户端排序，无需处理
   };
 
   const handleCopySymbol = (e: React.MouseEvent, symbol: string) => {
@@ -348,8 +349,6 @@ export default function ResultTable() {
             total,
             showTotal: (t) => `共 ${t} 条`,
             size: "small",
-            onChange: (page, pageSize) =>
-              fetchResults(undefined, page, pageSize),
           }}
           locale={{ emptyText: <Empty description="暂无命中币种" /> }}
           onRow={(record) => ({
