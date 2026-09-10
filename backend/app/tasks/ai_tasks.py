@@ -82,6 +82,8 @@ def _upsert_ai_analysis(db, scan_result_id: UUID, symbol: str, ai_result: dict):
     ).scalars().first()
 
     if existing:
+        existing.trade_decision = ai_result.get("trade_decision")
+        existing.skip_reason = ai_result.get("skip_reason")
         existing.direction = ai_result.get("direction")
         existing.analysis = ai_result.get("analysis")
         existing.entry_price = ai_result.get("entry_price")
@@ -96,6 +98,8 @@ def _upsert_ai_analysis(db, scan_result_id: UUID, symbol: str, ai_result: dict):
             AIAnalysis(
                 scan_result_id=scan_result_id,
                 symbol=symbol,
+                trade_decision=ai_result.get("trade_decision"),
+                skip_reason=ai_result.get("skip_reason"),
                 direction=ai_result.get("direction"),
                 analysis=ai_result.get("analysis"),
                 entry_price=ai_result.get("entry_price"),

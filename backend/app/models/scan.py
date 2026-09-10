@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Numeric, Index
+from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Numeric, Index, JSON, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -60,6 +60,8 @@ class AIAnalysis(Base):
         UUID(as_uuid=True), ForeignKey("scan_results.id"), nullable=False, index=True
     )
     symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    trade_decision: Mapped[Optional[str]] = mapped_column(String(8), nullable=True, index=True)  # suggest / skip
+    skip_reason: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     direction: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)  # long / short
     analysis: Mapped[Optional[str]] = mapped_column(String(4000), nullable=True)
     entry_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
@@ -72,3 +74,24 @@ class AIAnalysis(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")
+
+
+class KlineCache(Base):
+    """K 线小时级缓存表
+
+    同一小时内相同 symbol+interval 多次请求直接命中缓存；
+    跨小时自动拉取新数据覆盖。
+    """
+    __tablename__ = "kline_caches"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    interval: Mapped[str] = mapped_column(String(8), nullable=False, default="1h")
+    kline_hour: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    klines: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "interval", "kline_hour", name="uq_kline_cache_key"),
+    )

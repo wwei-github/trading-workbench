@@ -78,6 +78,8 @@ class AIAnalysisOut(BaseModel):
     id: UUID
     scan_result_id: UUID
     symbol: str
+    trade_decision: Optional[str] = None  # suggest / skip
+    skip_reason: Optional[str] = None
     direction: Optional[str] = None  # long / short
     analysis: Optional[str] = None
     entry_price: Optional[float] = None

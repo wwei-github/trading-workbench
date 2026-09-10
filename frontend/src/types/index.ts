@@ -54,6 +54,8 @@ export interface AIAnalysis {
   id: string;
   scan_result_id: string;
   symbol: string;
+  trade_decision: string | null; // 'suggest' | 'skip'
+  skip_reason: string | null;
   direction: string | null; // 'long' | 'short'
   analysis: string | null;
   entry_price: number | null;
