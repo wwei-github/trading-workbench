@@ -52,9 +52,6 @@ const fmtVol = (v: number) => {
 const fmtPrice = (v: number) =>
   v < 1 ? v.toFixed(6) : v < 100 ? v.toFixed(4) : v.toFixed(2);
 
-const fmtTime = (v: string | null) =>
-  v ? v.slice(0, 16).replace("T", " ") : "-";
-
 export default function WatchlistPanel() {
   const {
     watchlist,
@@ -77,8 +74,6 @@ export default function WatchlistPanel() {
   const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
   // 每币种的图表重拉计数（刷新成功后 +1，触发 KlineChart 重新拉数据）
   const [refreshKeys, setRefreshKeys] = useState<Record<string, number>>({});
-  // 刷新成功后的更新时间覆盖（避免整表重拉）
-  const [updatedAtOverride, setUpdatedAtOverride] = useState<Record<string, string>>({});
 
   // ===== AI 分析（按币种管理，与扫描结果行展开布局一致） =====
   const aiEnabled = !!aiConfig?.ai_analysis_enabled;
@@ -155,7 +150,6 @@ export default function WatchlistPanel() {
     setRefreshing((prev) => ({ ...prev, [symbol]: true }));
     try {
       const d = await scanApi.watchlist.refresh(symbol);
-      setUpdatedAtOverride((prev) => ({ ...prev, [symbol]: d.updated_at }));
       setRefreshKeys((prev) => ({ ...prev, [symbol]: (prev[symbol] ?? 0) + 1 }));
       message.success(`${symbol} K线已更新（${d.kline_count}根）`);
     } catch (err: any) {
@@ -197,7 +191,9 @@ export default function WatchlistPanel() {
         const found = d.items.find((a) => a.scan_result_id === scanResultId);
         if (found) {
           setAiMap((prev) => ({ ...prev, [symbol]: found }));
+          // 必须复位 loading，否则卡片上方一直挂着"AI 重新分析中..."
           stopPolling(symbol);
+          setRowState(symbol, { loading: false, error: null });
         } else if (attempts >= maxAttempts) {
           stopPolling(symbol);
           setRowState(symbol, { loading: false, error: "AI 分析超时，请重试" });
@@ -372,19 +368,6 @@ export default function WatchlistPanel() {
         };
         return <Tag color={colorMap[v] || "default"}>{v}</Tag>;
       },
-    },
-    {
-      title: (
-        <Tooltip title="刚添加时为添加时间；点「更新」拉取最新K线后为刷新时间">
-          更新时间
-        </Tooltip>
-      ),
-      key: "updated_at",
-      render: (_: unknown, r: WatchRow) => (
-        <Text type="secondary">
-          {fmtTime(updatedAtOverride[r.symbol] ?? r.updated_at)}
-        </Text>
-      ),
     },
     {
       title: "操作",

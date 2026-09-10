@@ -15,6 +15,38 @@ function loadColorScheme(): ColorScheme {
   }
 }
 
+// 图表技术指标开关（全局，TradingView 风格自选；VOL 默认开启）
+export type IndicatorKey = 'boll' | 'vol' | 'macd' | 'rsi' | 'kdj'
+export type IndicatorState = Record<IndicatorKey, boolean>
+
+export const INDICATOR_LABELS: Record<IndicatorKey, string> = {
+  boll: 'BOLL',
+  vol: 'VOL',
+  macd: 'MACD',
+  rsi: 'RSI',
+  kdj: 'KDJ',
+}
+
+const INDICATORS_KEY = 'chart-indicators'
+
+const DEFAULT_INDICATORS: IndicatorState = {
+  boll: false,
+  vol: true,
+  macd: false,
+  rsi: false,
+  kdj: false,
+}
+
+function loadIndicators(): IndicatorState {
+  try {
+    const raw = localStorage.getItem(INDICATORS_KEY)
+    if (raw) return { ...DEFAULT_INDICATORS, ...JSON.parse(raw) }
+  } catch {
+    /* 忽略 */
+  }
+  return { ...DEFAULT_INDICATORS }
+}
+
 interface ScanState {
   status: ScanStatus | null
   results: ScanResult[]
@@ -51,6 +83,9 @@ interface ScanState {
   // 图表涨跌配色（全局切换，localStorage 持久化）
   colorScheme: ColorScheme
   setColorScheme: (scheme: ColorScheme) => void
+  // 图表技术指标开关（全局，localStorage 持久化）
+  indicators: IndicatorState
+  toggleIndicator: (key: IndicatorKey) => void
 }
 
 // 每行的轮询计时器：scanResultId -> timer
@@ -298,6 +333,18 @@ export const useScanStore = create<ScanState>((set, get) => ({
     set({ colorScheme: scheme })
     try {
       localStorage.setItem(COLOR_SCHEME_KEY, scheme)
+    } catch {
+      /* 隐私模式等场景下忽略 */
+    }
+  },
+
+  // ===== 图表技术指标 =====
+  indicators: loadIndicators(),
+  toggleIndicator: (key) => {
+    const next = { ...get().indicators, [key]: !get().indicators[key] }
+    set({ indicators: next })
+    try {
+      localStorage.setItem(INDICATORS_KEY, JSON.stringify(next))
     } catch {
       /* 隐私模式等场景下忽略 */
     }

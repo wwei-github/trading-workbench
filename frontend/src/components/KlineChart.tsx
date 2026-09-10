@@ -1,18 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, InputNumber, Segmented, Tag } from 'antd'
+import { Alert, Button, Dropdown, InputNumber, Segmented, Tag } from 'antd'
+import { PlusOutlined } from '@ant-design/icons'
 import {
   createChart,
   CandlestickSeries,
+  HistogramSeries,
   LineSeries,
   LineStyle,
   CrosshairMode,
   type IChartApi,
   type ISeriesApi,
+  type SeriesType,
   type UTCTimestamp,
   type IPriceLine,
 } from 'lightweight-charts'
 import { scanApi } from '../api/scan'
-import { useScanStore, type ColorScheme } from '../stores/scanStore'
+import {
+  useScanStore,
+  INDICATOR_LABELS,
+  type ColorScheme,
+  type IndicatorKey,
+} from '../stores/scanStore'
+import { calcBoll, calcMacd, calcRsi, calcKdj } from '../utils/indicators'
 import type { AIAnalysis, Kline, KeyLevel } from '../types'
 
 interface Props {
@@ -50,6 +59,12 @@ const CANDLE_COLORS: Record<ColorScheme, { up: string; down: string }> = {
   'green-up': { up: '#26a69a', down: '#ef5350' },
 }
 
+// 副图指标的固定排列顺序（开启后按此顺序分配 pane 1,2,3…）
+const SUB_INDICATORS: IndicatorKey[] = ['vol', 'macd', 'rsi', 'kdj']
+
+// MACD/KDJ/EMA 线共用配色（快→慢：黄 / 青 / 红）
+const IND_COLORS = { fast: '#f0b90b', slow: '#00bcd4', extra: '#ef5350', rsi: '#b39ddb', ref: '#5a6472' }
+
 // 前端 EMA：SMA 种子 + 递推；未达到周期数的位置为 null
 function calcEmaSeries(closes: number[], period: number): (number | null)[] {
   const out: (number | null)[] = new Array(closes.length).fill(null)
@@ -66,9 +81,11 @@ function calcEmaSeries(closes: number[], period: number): (number | null)[] {
 }
 
 export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refreshKey = 0 }: Props) {
-  // 全局涨跌配色（store 共享，切换后所有图表同步生效）
+  // 全局涨跌配色 / 技术指标（store 共享，切换后所有图表同步生效）
   const colorScheme = useScanStore((s) => s.colorScheme)
   const setColorScheme = useScanStore((s) => s.setColorScheme)
+  const indicators = useScanStore((s) => s.indicators)
+  const toggleIndicator = useScanStore((s) => s.toggleIndicator)
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -76,6 +93,8 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
   const priceLinesRef = useRef<IPriceLine[]>([])
   const keyLineLinesRef = useRef<IPriceLine[]>([])
   const emaSeriesRef = useRef<ISeriesApi<'Line'>[]>([])
+  // 技术指标 series（BOLL/MACD/VOL/RSI/KDJ），effect 重建时统一清理
+  const indicatorSeriesRef = useRef<ISeriesApi<SeriesType>[]>([])
   const redrawFnRef = useRef<(() => void) | null>(null)
   const [error, setError] = useState<string | null>(null)
   // K 线最新收盘价（作为"当前价"，用于挑选最近的关键位）
@@ -84,8 +103,10 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
   const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set())
   // EMA 均线周期（页面上可修改）
   const [emaPeriods, setEmaPeriods] = useState<number[]>([...DEFAULT_EMA_PERIODS])
-  // 已加载的 K 线（时间 + 收盘价），用于前端计算 EMA
-  const [candlePoints, setCandlePoints] = useState<{ time: UTCTimestamp; close: number }[]>([])
+  // 已加载的 K 线（完整 OHLCV），用于前端计算 EMA 与技术指标
+  const [candlePoints, setCandlePoints] = useState<
+    { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }[]
+  >([])
 
   // 初始化图表 + 拉取数据
   useEffect(() => {
@@ -147,7 +168,17 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
         seriesRef.current.setData(candleData)
         chart.timeScale().fitContent()
         setLastClose(candleData[candleData.length - 1]?.close ?? null)
-        setCandlePoints(candleData.map((d) => ({ time: d.time, close: d.close })))
+        // 直接从原始数据取完整 OHLCV（candleData 是给 series 用的精简结构）
+        setCandlePoints(
+          data.klines.map((k: Kline) => ({
+            time: Math.floor(k.time / 1000) as UTCTimestamp,
+            open: k.open,
+            high: k.high,
+            low: k.low,
+            close: k.close,
+            volume: k.volume,
+          })),
+        )
         setError(null)
         // 数据加载完成后触发 AI 仓位标注重绘（等待布局完成）
         requestAnimationFrame(() => redrawFnRef.current?.())
@@ -285,6 +316,162 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
       emaSeriesRef.current.push(line)
     })
   }, [candlePoints, emaPeriods])
+
+  // 绘制技术指标：BOLL 叠加主图；VOL/MACD/RSI/KDJ 各占独立副图 pane
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+
+    // 清除旧指标 series
+    indicatorSeriesRef.current.forEach((s) => {
+      try {
+        chart.removeSeries(s)
+      } catch {
+        /* 旧图表已销毁 */
+      }
+    })
+    indicatorSeriesRef.current = []
+    // 删除已无内容的副图 pane（从后往前删，pane 0 主图保留）
+    for (let i = chart.panes().length - 1; i >= 1; i--) {
+      try {
+        chart.removePane(i)
+      } catch {
+        /* 已不存在 */
+      }
+    }
+
+    if (candlePoints.length === 0) return
+
+    const closes = candlePoints.map((c) => c.close)
+    const highs = candlePoints.map((c) => c.high)
+    const lows = candlePoints.map((c) => c.low)
+    const cc = CANDLE_COLORS[colorScheme]
+
+    const toLineData = (arr: (number | null)[]) =>
+      candlePoints
+        .map((c, j) => ({ time: c.time, value: arr[j] }))
+        .filter((d): d is { time: UTCTimestamp; value: number } => d.value != null)
+
+    const addLine = (
+      data: { time: UTCTimestamp; value: number }[],
+      paneIndex: number,
+      color: string,
+    ) => {
+      const line = chart.addSeries(
+        LineSeries,
+        {
+          color,
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        },
+        paneIndex,
+      )
+      line.setData(data)
+      indicatorSeriesRef.current.push(line)
+    }
+
+    // 为副图指标按固定顺序分配 pane（1 起）
+    const subPane: Partial<Record<IndicatorKey, number>> = {}
+    let nextPane = 1
+    for (const key of SUB_INDICATORS) {
+      if (indicators[key]) subPane[key] = nextPane++
+    }
+
+    // BOLL（主图叠加，三线）
+    if (indicators.boll) {
+      const { mid, upper, lower } = calcBoll(closes)
+      addLine(toLineData(upper), 0, '#4d8ef7')
+      addLine(toLineData(mid), 0, '#d1d4dc')
+      addLine(toLineData(lower), 0, '#4d8ef7')
+    }
+
+    // VOL（成交量柱，涨跌跟随全局配色）
+    if (subPane.vol != null) {
+      const p = subPane.vol
+      const hist = chart.addSeries(
+        HistogramSeries,
+        {
+          priceLineVisible: false,
+          lastValueVisible: false,
+          priceFormat: { type: 'volume' },
+        },
+        p,
+      )
+      hist.setData(
+        candlePoints.map((c) => ({
+          time: c.time,
+          value: c.volume,
+          color: c.close >= c.open ? cc.up : cc.down,
+        })),
+      )
+      indicatorSeriesRef.current.push(hist)
+    }
+
+    // MACD（DIF/DEA 线 + 能量柱）
+    if (subPane.macd != null) {
+      const p = subPane.macd
+      const { dif, dea, hist } = calcMacd(closes)
+      const bars = chart.addSeries(
+        HistogramSeries,
+        { priceLineVisible: false, lastValueVisible: false },
+        p,
+      )
+      bars.setData(
+        candlePoints
+          .map((c, j) => ({
+            time: c.time,
+            value: hist[j],
+            color: (hist[j] ?? 0) >= 0 ? cc.up : cc.down,
+          }))
+          .filter((d) => d.value != null),
+      )
+      indicatorSeriesRef.current.push(bars)
+      addLine(toLineData(dif), p, IND_COLORS.fast)
+      addLine(toLineData(dea), p, IND_COLORS.slow)
+    }
+
+    // RSI（14，30/70 参考线）
+    if (subPane.rsi != null) {
+      const p = subPane.rsi
+      const line = chart.addSeries(
+        LineSeries,
+        {
+          color: IND_COLORS.rsi,
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        },
+        p,
+      )
+      line.setData(toLineData(calcRsi(closes)))
+      indicatorSeriesRef.current.push(line)
+      for (const level of [30, 70]) {
+        line.createPriceLine({
+          price: level,
+          color: IND_COLORS.ref,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: false,
+          title: '',
+        })
+      }
+    }
+
+    // KDJ（9,3,3 三线）
+    if (subPane.kdj != null) {
+      const p = subPane.kdj
+      const { k, d, j } = calcKdj(highs, lows, closes)
+      addLine(toLineData(k), p, IND_COLORS.fast)
+      addLine(toLineData(d), p, IND_COLORS.slow)
+      addLine(toLineData(j), p, IND_COLORS.extra)
+    }
+
+    // 主图 : 副图 = 3 : 1（逐个设置拉伸比例）
+    chart.panes().forEach((pn, i) => pn.setStretchFactor(i === 0 ? 3 : 1))
+  }, [candlePoints, indicators, colorScheme])
 
   // 更新 AI 价格线 + 区域色块（TradingView 仓位标注风格）
   useEffect(() => {
@@ -555,6 +742,25 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
               </Tag.CheckableTag>
             )
           })}
+        {/* 技术指标选择（TradingView 风格自选，全局生效） */}
+        <Dropdown
+          trigger={['click']}
+          menu={{
+            items: (Object.keys(INDICATOR_LABELS) as IndicatorKey[]).map((k) => ({
+              key: k,
+              label: INDICATOR_LABELS[k],
+            })),
+            selectable: true,
+            multiple: true,
+            selectedKeys: (Object.keys(indicators) as IndicatorKey[]).filter(
+              (k) => indicators[k],
+            ),
+            onClick: ({ key }) => toggleIndicator(key as IndicatorKey),
+          }}>
+          <Button size="small" ghost icon={<PlusOutlined />}>
+            指标
+          </Button>
+        </Dropdown>
         {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效） */}
         <Segmented
           size="small"
