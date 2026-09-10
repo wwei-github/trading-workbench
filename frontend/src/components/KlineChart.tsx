@@ -1,28 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, Dropdown, InputNumber, Segmented, Tag } from 'antd'
-import { PlusOutlined } from '@ant-design/icons'
+import { Alert, Button, Checkbox, Dropdown, InputNumber, Segmented, Tag, Typography } from 'antd'
+import { SettingOutlined } from '@ant-design/icons'
 import {
-  createChart,
-  CandlestickSeries,
-  HistogramSeries,
-  LineSeries,
-  LineStyle,
-  CrosshairMode,
-  type IChartApi,
-  type ISeriesApi,
-  type SeriesType,
-  type UTCTimestamp,
-  type IPriceLine,
-} from 'lightweight-charts'
+  init,
+  dispose,
+  registerOverlay,
+  utils,
+  type Chart,
+  type OverlayFigure,
+  type SmoothLineStyle,
+} from 'klinecharts'
 import { scanApi } from '../api/scan'
 import {
   useScanStore,
-  INDICATOR_LABELS,
+  INDICATOR_CATALOG,
   type ColorScheme,
-  type IndicatorKey,
+  type IndicatorSetting,
 } from '../stores/scanStore'
-import { calcBoll, calcMacd, calcRsi, calcKdj } from '../utils/indicators'
 import type { AIAnalysis, Kline, KeyLevel } from '../types'
+
+const { Text } = Typography
 
 interface Props {
   symbol: string
@@ -33,9 +30,7 @@ interface Props {
   refreshKey?: number
 }
 
-const CHART_HEIGHT = 560 // 容器无高度时的兜底值
-
-// 关键位 kind → 中文标签（图表线条/勾选开关共用）
+// 关键位 kind → 中文标签
 const KIND_LABEL: Record<string, string> = {
   prev_high: '前高',
   prev_low: '前低',
@@ -48,615 +43,430 @@ const KIND_LABEL: Record<string, string> = {
 // 每个角色（支撑/压力）最多显示的关键位条数：只画距当前价最近的
 const MAX_LINES_PER_ROLE = 2
 
-// EMA 三线默认周期与配色（快→慢：黄 / 青 / 橙）
-const DEFAULT_EMA_PERIODS = [21, 55, 144]
-const EMA_COLORS = ['#f0b90b', '#00bcd4', '#ff9800']
-
 // 涨跌配色方案：红涨绿跌（国内习惯，默认）/ 绿涨红跌（国际习惯）
-// 仅作用于 K 线实体；关键位/AI 仓位线保持语义色不变
+// 仅作用于 K 线实体与成交量/MACD 柱；关键位/AI 仓位线保持语义色不变
 const CANDLE_COLORS: Record<ColorScheme, { up: string; down: string }> = {
   'red-up': { up: '#ef5350', down: '#26a69a' },
   'green-up': { up: '#26a69a', down: '#ef5350' },
 }
 
-// 副图指标的固定排列顺序（开启后按此顺序分配 pane 1,2,3…）
-const SUB_INDICATORS: IndicatorKey[] = ['vol', 'macd', 'rsi', 'kdj']
+// 指标多线通用配色（快→慢循环）
+const LINE_COLORS = ['#f0b90b', '#00bcd4', '#ff9800', '#b39ddb', '#ef5350']
 
-// MACD/KDJ/EMA 线共用配色（快→慢：黄 / 青 / 红）
-const IND_COLORS = { fast: '#f0b90b', slow: '#00bcd4', extra: '#ef5350', rsi: '#b39ddb', ref: '#5a6472' }
+const fmtPrice = (p: number) =>
+  p < 1 ? p.toFixed(6) : p < 100 ? p.toFixed(4) : p.toFixed(2)
 
-// 前端 EMA：SMA 种子 + 递推；未达到周期数的位置为 null
-function calcEmaSeries(closes: number[], period: number): (number | null)[] {
-  const out: (number | null)[] = new Array(closes.length).fill(null)
-  if (period < 2 || closes.length < period) return out
-  let sum = 0
-  for (let i = 0; i < period; i++) sum += closes[i]
-  out[period - 1] = sum / period
-  const k = 2 / (period + 1)
-  for (let i = period; i < closes.length; i++) {
-    const prev = out[i - 1]
-    if (prev != null) out[i] = closes[i] * k + prev * (1 - k)
+// ===== 自定义 overlay：关键位水平线（全宽虚线 + 左上标签 + 右侧价格轴标签）=====
+interface KeyLevelExt {
+  label: string
+  color: string
+  priceText: string
+}
+
+registerOverlay<KeyLevelExt>({
+  name: 'keyLevelLine',
+  totalStep: 2,
+  needDefaultPointFigure: false,
+  needDefaultXAxisFigure: false,
+  needDefaultYAxisFigure: false,
+  createPointFigures: ({ overlay, coordinates, bounding }) => {
+    const y = coordinates[0]?.y
+    if (!Number.isFinite(y)) return []
+    const { label, color, priceText } = overlay.extendData
+    return [
+      {
+        type: 'line',
+        attrs: { coordinates: [{ x: bounding.left, y }, { x: bounding.right, y }] },
+        styles: { color, style: 'dashed', size: 1, dashedValue: [4, 3] },
+      },
+      {
+        type: 'text',
+        attrs: { x: bounding.left + 6, y: y - 3, text: `${label} ${priceText}`, baseline: 'bottom' },
+        styles: {
+          color: '#fff',
+          size: 10,
+          family: 'monospace',
+          backgroundColor: color,
+          borderRadius: 2,
+          paddingLeft: 4,
+          paddingRight: 4,
+          paddingTop: 1,
+          paddingBottom: 1,
+        },
+      },
+    ]
+  },
+  // 右侧价格轴上的价位标签
+  createYAxisFigures: ({ overlay, coordinates, bounding }) => {
+    const y = coordinates[0]?.y
+    if (!Number.isFinite(y)) return []
+    const { color, priceText } = overlay.extendData
+    return [
+      {
+        type: 'text',
+        attrs: { x: bounding.left + 2, y, text: priceText, align: 'left', baseline: 'middle' },
+        styles: { color: '#fff', size: 10, backgroundColor: color, borderRadius: 2, paddingLeft: 2, paddingRight: 2 },
+      },
+    ]
+  },
+})
+
+// ===== 自定义 overlay：AI 仓位标注（入场/止损/止盈线 + 区间色块 + 标签盒）=====
+interface AiPosExt {
+  lines: { label: string; price: number; priceText: string; color: string; dashed: boolean }[]
+  zones: { from: number; to: number; color: string }[]
+}
+
+const AI_MARK_W = 140 // 线条/色块宽度（贴右侧价格轴）
+
+registerOverlay<AiPosExt>({
+  name: 'aiPosition',
+  totalStep: 2,
+  needDefaultPointFigure: false,
+  needDefaultXAxisFigure: false,
+  needDefaultYAxisFigure: false,
+  createPointFigures: ({ overlay, coordinates, bounding }) => {
+    const figs: OverlayFigure[] = []
+    const ys = coordinates.map((c) => c?.y)
+    for (const z of overlay.extendData.zones) {
+      const y0 = ys[z.from]
+      const y1 = ys[z.to]
+      if (!Number.isFinite(y0) || !Number.isFinite(y1) || y0 === y1) continue
+      figs.push({
+        type: 'rect',
+        attrs: { x: bounding.right - AI_MARK_W, y: Math.min(y0, y1), width: AI_MARK_W, height: Math.abs(y1 - y0) },
+        styles: { style: 'fill', color: z.color },
+      })
+    }
+    overlay.extendData.lines.forEach((ln, i) => {
+      const y = ys[i]
+      if (!Number.isFinite(y)) return
+      figs.push({
+        type: 'line',
+        attrs: { coordinates: [{ x: bounding.right - AI_MARK_W, y }, { x: bounding.right, y }] },
+        styles: { color: ln.color, style: ln.dashed ? 'dashed' : 'solid', size: 1, dashedValue: [5, 3] },
+      })
+      const text = `${ln.label} ${ln.priceText}`
+      const w = utils.calcTextWidth(text, 10, 'bold', 'monospace') + 10
+      figs.push({
+        type: 'rect',
+        attrs: { x: bounding.right - w, y: y - 8, width: w, height: 16 },
+        styles: { style: 'fill', color: ln.color, borderRadius: 2 },
+      })
+      figs.push({
+        type: 'text',
+        attrs: { x: bounding.right - w + 5, y, text, align: 'left', baseline: 'middle' },
+        styles: { color: '#fff', size: 10, weight: 'bold', family: 'monospace' },
+      })
+    })
+    return figs
+  },
+})
+
+// 指标线样式（klinecharts 要求完整字段）
+const lineStyle = (color: string, size = 1): SmoothLineStyle => ({
+  size,
+  color,
+  style: 'solid',
+  dashedValue: [2, 2],
+  smooth: false,
+})
+
+// 指标柱样式（涨跌跟随全局配色）
+const barStyle = (cc: { up: string; down: string }) => ({
+  style: 'fill' as const,
+  upColor: cc.up,
+  downColor: cc.down,
+  noChangeColor: '#888888',
+})
+
+// 各指标的个性化配色（叠加在库内置样式之上）
+function indicatorStyles(name: string, cc: { up: string; down: string }, params: number[]) {
+  switch (name) {
+    case 'EMA':
+    case 'MA':
+    case 'WR':
+      return { lines: params.map((_, i) => lineStyle(LINE_COLORS[i % LINE_COLORS.length])) }
+    case 'BOLL':
+      // 中轨灰、上下轨蓝（顺序以库实现为准，中轨居中）
+      return { lines: [lineStyle('#4d8ef7'), lineStyle('#d1d4dc'), lineStyle('#4d8ef7')] }
+    case 'BBI':
+      return { lines: [lineStyle('#ef5350'), lineStyle('#f0b90b'), lineStyle('#00bcd4'), lineStyle('#b39ddb')] }
+    case 'VOL':
+      return { bars: [barStyle(cc)] }
+    case 'MACD':
+      return { bars: [barStyle(cc)], lines: [lineStyle('#f0b90b'), lineStyle('#00bcd4')] }
+    case 'KDJ':
+      return { lines: [lineStyle('#f0b90b'), lineStyle('#00bcd4'), lineStyle('#ef5350')] }
+    case 'RSI':
+      return { lines: [lineStyle('#b39ddb'), lineStyle('#00bcd4'), lineStyle('#ff9800')] }
+    case 'SAR':
+      return { circles: [barStyle(cc)] }
+    default:
+      return { lines: params.map((_, i) => lineStyle(LINE_COLORS[i % LINE_COLORS.length])) }
   }
-  return out
 }
 
 export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refreshKey = 0 }: Props) {
   // 全局涨跌配色 / 技术指标（store 共享，切换后所有图表同步生效）
   const colorScheme = useScanStore((s) => s.colorScheme)
   const setColorScheme = useScanStore((s) => s.setColorScheme)
-  const indicators = useScanStore((s) => s.indicators)
+  const indicatorSettings = useScanStore((s) => s.indicatorSettings)
   const toggleIndicator = useScanStore((s) => s.toggleIndicator)
+  const setIndicatorParams = useScanStore((s) => s.setIndicatorParams)
+
   const containerRef = useRef<HTMLDivElement>(null)
-  const svgRef = useRef<SVGSVGElement>(null)
-  const chartRef = useRef<IChartApi | null>(null)
-  const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
-  const priceLinesRef = useRef<IPriceLine[]>([])
-  const keyLineLinesRef = useRef<IPriceLine[]>([])
-  const emaSeriesRef = useRef<ISeriesApi<'Line'>[]>([])
-  // 技术指标 series（BOLL/MACD/VOL/RSI/KDJ），effect 重建时统一清理
-  const indicatorSeriesRef = useRef<ISeriesApi<SeriesType>[]>([])
-  const redrawFnRef = useRef<(() => void) | null>(null)
+  const chartRef = useRef<Chart | null>(null)
+  const keyOverlayIdsRef = useRef<string[]>([])
+  const aiOverlayIdRef = useRef<string | null>(null)
+
   const [error, setError] = useState<string | null>(null)
   // K 线最新收盘价（作为"当前价"，用于挑选最近的关键位）
   const [lastClose, setLastClose] = useState<number | null>(null)
+  // 数据是否已加载（指标/overlay 依赖坐标转换，须等数据就绪）
+  const [loaded, setLoaded] = useState(false)
   // 隐藏的关键位类型（勾选开关）
   const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set())
-  // EMA 均线周期（页面上可修改）
-  const [emaPeriods, setEmaPeriods] = useState<number[]>([...DEFAULT_EMA_PERIODS])
-  // 已加载的 K 线（完整 OHLCV），用于前端计算 EMA 与技术指标
-  const [candlePoints, setCandlePoints] = useState<
-    { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }[]
-  >([])
 
-  // 初始化图表 + 拉取数据
+  // 初始化图表 + 拉取数据（klinecharts v10 通过 DataLoader 注入数据）
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
 
-    const chart = createChart(container, {
-      layout: {
-        background: { color: '#131722' },
-        textColor: '#d1d4dc',
-        fontFamily: 'monospace',
-      },
-      grid: {
-        vertLines: { color: '#1e222d' },
-        horzLines: { color: '#1e222d' },
-      },
-      rightPriceScale: {
-        borderColor: '#2b2b43',
-        scaleMargins: { top: 0.05, bottom: 0.05 },
-      },
-      timeScale: {
-        borderColor: '#2b2b43',
-        timeVisible: false,
-        secondsVisible: false,
-      },
-      crosshair: {
-        mode: CrosshairMode.Normal,
-        vertLine: { color: '#758696', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#758696' },
-        horzLine: { color: '#758696', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#758696' },
-      },
-      width: container.clientWidth || 520,
-      height: container.clientHeight || CHART_HEIGHT,
-    })
+    let disposed = false
+    const cc = CANDLE_COLORS[useScanStore.getState().colorScheme]
 
-    const candleColors = CANDLE_COLORS[colorScheme]
-    const series = chart.addSeries(CandlestickSeries, {
-      upColor: candleColors.up,
-      downColor: candleColors.down,
-      borderVisible: false,
-      wickUpColor: candleColors.up,
-      wickDownColor: candleColors.down,
+    const chart = init(container, {
+      styles: {
+        grid: {
+          show: true,
+          horizontal: { show: true, color: '#1e222d', size: 1, style: 'solid', dashedValue: [4, 4] },
+          vertical: { show: true, color: '#1e222d', size: 1, style: 'solid', dashedValue: [4, 4] },
+        },
+        candle: {
+          bar: {
+            upColor: cc.up,
+            downColor: cc.down,
+            noChangeColor: '#888888',
+            upBorderColor: cc.up,
+            downBorderColor: cc.down,
+            noChangeBorderColor: '#888888',
+            upWickColor: cc.up,
+            downWickColor: cc.down,
+            noChangeWickColor: '#888888',
+          },
+          priceMark: {
+            high: { show: false },
+            low: { show: false },
+            last: {
+              // 线颜色跟随涨跌配色（类型上不支持自定义 color）
+              line: { show: true, style: 'dashed', size: 1, dashedValue: [4, 3] },
+              text: { show: true, color: '#fff', size: 10 },
+            },
+          },
+        },
+        xAxis: {
+          axisLine: { show: true, color: '#2b2b43' },
+          tickLine: { show: true, color: '#2b2b43', length: 3 },
+          tickText: { show: true, color: '#9aa3b2', size: 10 },
+        },
+        yAxis: {
+          axisLine: { show: true, color: '#2b2b43' },
+          tickLine: { show: true, color: '#2b2b43', length: 3 },
+          tickText: { show: true, color: '#9aa3b2', size: 10 },
+        },
+        separator: { size: 1, color: '#2b2b43', fill: true, activeBackgroundColor: '#1e222d' },
+        crosshair: {
+          horizontal: {
+            line: { show: true, color: '#758696', style: 'dashed', size: 1, dashedValue: [4, 3] },
+            text: { show: true, color: '#fff', backgroundColor: '#758696', size: 10 },
+          },
+          vertical: {
+            line: { show: true, color: '#758696', style: 'dashed', size: 1, dashedValue: [4, 3] },
+            text: { show: true, color: '#fff', backgroundColor: '#758696', size: 10 },
+          },
+        },
+      },
     })
-
+    if (!chart) return
     chartRef.current = chart
-    seriesRef.current = series
+    chart.setPeriod({ type: 'hour', span: 1 })
 
-    let cancelled = false
     scanApi
       .klines(symbol, limit)
       .then((data) => {
-        if (cancelled || !seriesRef.current) return
-        const candleData = data.klines.map((k: Kline) => ({
-          time: Math.floor(k.time / 1000) as UTCTimestamp,
-          open: k.open,
-          high: k.high,
-          low: k.low,
-          close: k.close,
+        if (disposed || !chartRef.current) return
+        const list = data.klines.map((k: Kline) => ({
+          timestamp: k.time,
+          open: Number(k.open),
+          high: Number(k.high),
+          low: Number(k.low),
+          close: Number(k.close),
+          volume: Number(k.volume),
         }))
-        seriesRef.current.setData(candleData)
-        chart.timeScale().fitContent()
-        setLastClose(candleData[candleData.length - 1]?.close ?? null)
-        // 直接从原始数据取完整 OHLCV（candleData 是给 series 用的精简结构）
-        setCandlePoints(
-          data.klines.map((k: Kline) => ({
-            time: Math.floor(k.time / 1000) as UTCTimestamp,
-            open: k.open,
-            high: k.high,
-            low: k.low,
-            close: k.close,
-            volume: k.volume,
-          })),
-        )
+        const last = list[list.length - 1]?.close ?? 0
+        // 按价格量级设置精度（setSymbol 必须在 setDataLoader 之前，避免二次加载）
+        const pricePrecision = last > 0 ? (last < 1 ? 8 : last < 100 ? 4 : 2) : 2
+        chart.setSymbol({ ticker: symbol, pricePrecision, volumePrecision: 2 })
+        chart.setDataLoader({
+          getBars: ({ callback }) => {
+            callback(list, false)
+          },
+        })
+        setLastClose(last)
+        setLoaded(true)
         setError(null)
-        // 数据加载完成后触发 AI 仓位标注重绘（等待布局完成）
-        requestAnimationFrame(() => redrawFnRef.current?.())
       })
       .catch((e) => {
         // 展示后端 503/4xx 的 detail（如交易所封禁时长）
         setError(e?.response?.data?.detail || 'K线数据加载失败')
       })
 
-    // 自适应容器宽高
-    const resize = () => {
-      if (container && chartRef.current) {
-        chartRef.current.applyOptions({
-          width: container.clientWidth,
-          height: container.clientHeight || CHART_HEIGHT,
-        })
-      }
-    }
-    const ro = new ResizeObserver(resize)
+    const ro = new ResizeObserver(() => chartRef.current?.resize())
     ro.observe(container)
 
     return () => {
-      cancelled = true
+      disposed = true
       ro.disconnect()
-      priceLinesRef.current.forEach((l) => series.removePriceLine(l))
-      priceLinesRef.current = []
-      chart.remove()
+      dispose(container)
       chartRef.current = null
-      seriesRef.current = null
+      keyOverlayIdsRef.current = []
+      aiOverlayIdRef.current = null
+      setLoaded(false)
+      setLastClose(null)
     }
   }, [symbol, limit, refreshKey])
 
-  // 切换涨跌配色：直接改 series 选项，所有图表实例同步生效，无需重建图表
+  // 切换涨跌配色：直接改 K 线样式，无需重建图表
   useEffect(() => {
-    const c = CANDLE_COLORS[colorScheme]
-    seriesRef.current?.applyOptions({
-      upColor: c.up,
-      downColor: c.down,
-      wickUpColor: c.up,
-      wickDownColor: c.down,
+    const cc = CANDLE_COLORS[colorScheme]
+    chartRef.current?.setStyles({
+      candle: {
+        bar: {
+          upColor: cc.up,
+          downColor: cc.down,
+          upBorderColor: cc.up,
+          downBorderColor: cc.down,
+          upWickColor: cc.up,
+          downWickColor: cc.down,
+        },
+      },
     })
   }, [colorScheme])
 
+  // 同步技术指标：创建/更新参数/移除（全部为 klinecharts 内置指标，无手写计算）
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart || !loaded) return
+    const cc = CANDLE_COLORS[colorScheme]
+    for (const item of INDICATOR_CATALOG) {
+      const setting: IndicatorSetting | undefined = indicatorSettings[item.name]
+      const exists = chart.getIndicators({ name: item.name }).length > 0
+      if (setting?.enabled) {
+        const createOpts = {
+          name: item.name,
+          calcParams: setting.params,
+          styles: indicatorStyles(item.name, cc, setting.params),
+        }
+        if (exists) {
+          chart.overrideIndicator(createOpts)
+        } else {
+          chart.createIndicator(createOpts, item.isStack)
+        }
+      } else if (exists) {
+        chart.removeIndicator({ name: item.name })
+      }
+    }
+  }, [indicatorSettings, colorScheme, loaded, symbol])
+
   // 绘制关键位水平线：只画距当前价最近的 N 条支撑 + N 条压力，可按类型勾选隐藏
   useEffect(() => {
-    const series = seriesRef.current
-    if (!series) return
+    const chart = chartRef.current
+    if (!chart || !loaded || lastClose == null) return
 
-    // 清除旧关键位线
-    keyLineLinesRef.current.forEach((l) => {
+    // 清除旧关键位 overlay
+    for (const id of keyOverlayIdsRef.current) {
       try {
-        series.removePriceLine(l)
+        chart.removeOverlay({ id })
       } catch {
-        /* series 已销毁 */
+        /* 已销毁 */
       }
-    })
-    keyLineLinesRef.current = []
+    }
+    keyOverlayIdsRef.current = []
 
     if (!keyLevels || keyLevels.length === 0) return
-    // K 线未加载完成时先不画，加载后 lastClose 变化会重跑本 effect
-    if (lastClose == null) return
 
     // 按角色取距当前价最近的 N 条
     const pickNearest = (role: 'support' | 'resistance') =>
       keyLevels
         .filter((lv) => lv.role === role)
-        .sort(
-          (a, b) => Math.abs(a.price - lastClose) - Math.abs(b.price - lastClose),
-        )
+        .sort((a, b) => Math.abs(a.price - lastClose) - Math.abs(b.price - lastClose))
         .slice(0, MAX_LINES_PER_ROLE)
 
-    const nearest = [
-      ...pickNearest('support'),
-      ...pickNearest('resistance'),
-    ].filter((lv) => !hiddenKinds.has(lv.kind))
+    const nearest = [...pickNearest('support'), ...pickNearest('resistance')].filter(
+      (lv) => !hiddenKinds.has(lv.kind),
+    )
 
     for (const lv of nearest) {
-      const line = series.createPriceLine({
-        price: lv.price,
-        color: lv.role === 'support' ? '#26a69a' : '#ef5350',
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: KIND_LABEL[lv.kind] || lv.kind,
-      })
-      keyLineLinesRef.current.push(line)
+      const id = chart.createOverlay({
+        name: 'keyLevelLine',
+        points: [{ value: lv.price }],
+        extendData: {
+          label: KIND_LABEL[lv.kind] || lv.kind,
+          color: lv.role === 'support' ? '#26a69a' : '#ef5350',
+          priceText: fmtPrice(lv.price),
+        },
+      }) as string | null
+      if (id) keyOverlayIdsRef.current.push(id)
     }
+  }, [keyLevels, hiddenKinds, lastClose, loaded, symbol])
 
-    return () => {
-      const s = seriesRef.current
-      if (s) {
-        keyLineLinesRef.current.forEach((l) => {
-          try {
-            s.removePriceLine(l)
-          } catch {
-            /* series 已销毁 */
-          }
-        })
-      }
-      keyLineLinesRef.current = []
-    }
-  }, [keyLevels, hiddenKinds, lastClose, symbol, limit])
-
-  // 绘制 EMA 均线（周期页面可编辑，前端根据已加载 K 线实时计算）
+  // 绘制 AI 仓位标注（入场/止损/止盈线 + 区间色块）
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
 
-    // 清除旧 EMA 线（图表实例可能已重建，句柄失效时忽略）
-    emaSeriesRef.current.forEach((s) => {
+    if (aiOverlayIdRef.current) {
       try {
-        chart.removeSeries(s)
+        chart.removeOverlay({ id: aiOverlayIdRef.current })
       } catch {
-        /* 旧图表已销毁 */
+        /* 已销毁 */
       }
-    })
-    emaSeriesRef.current = []
-
-    if (candlePoints.length === 0) return
-    const closes = candlePoints.map((c) => c.close)
-
-    emaPeriods.forEach((period, i) => {
-      const ema = calcEmaSeries(closes, period)
-      const line = chart.addSeries(LineSeries, {
-        color: EMA_COLORS[i % EMA_COLORS.length],
-        lineWidth: 1,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      })
-      const data = candlePoints
-        .map((c, j) => ({ time: c.time, value: ema[j] }))
-        .filter((d): d is { time: UTCTimestamp; value: number } => d.value != null)
-      line.setData(data)
-      emaSeriesRef.current.push(line)
-    })
-  }, [candlePoints, emaPeriods])
-
-  // 绘制技术指标：BOLL 叠加主图；VOL/MACD/RSI/KDJ 各占独立副图 pane
-  useEffect(() => {
-    const chart = chartRef.current
-    if (!chart) return
-
-    // 清除旧指标 series
-    indicatorSeriesRef.current.forEach((s) => {
-      try {
-        chart.removeSeries(s)
-      } catch {
-        /* 旧图表已销毁 */
-      }
-    })
-    indicatorSeriesRef.current = []
-    // 删除已无内容的副图 pane（从后往前删，pane 0 主图保留）
-    for (let i = chart.panes().length - 1; i >= 1; i--) {
-      try {
-        chart.removePane(i)
-      } catch {
-        /* 已不存在 */
-      }
+      aiOverlayIdRef.current = null
     }
 
-    if (candlePoints.length === 0) return
-
-    const closes = candlePoints.map((c) => c.close)
-    const highs = candlePoints.map((c) => c.high)
-    const lows = candlePoints.map((c) => c.low)
-    const cc = CANDLE_COLORS[colorScheme]
-
-    const toLineData = (arr: (number | null)[]) =>
-      candlePoints
-        .map((c, j) => ({ time: c.time, value: arr[j] }))
-        .filter((d): d is { time: UTCTimestamp; value: number } => d.value != null)
-
-    const addLine = (
-      data: { time: UTCTimestamp; value: number }[],
-      paneIndex: number,
-      color: string,
-    ) => {
-      const line = chart.addSeries(
-        LineSeries,
-        {
-          color,
-          lineWidth: 1,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        },
-        paneIndex,
-      )
-      line.setData(data)
-      indicatorSeriesRef.current.push(line)
-    }
-
-    // 为副图指标按固定顺序分配 pane（1 起）
-    const subPane: Partial<Record<IndicatorKey, number>> = {}
-    let nextPane = 1
-    for (const key of SUB_INDICATORS) {
-      if (indicators[key]) subPane[key] = nextPane++
-    }
-
-    // BOLL（主图叠加，三线）
-    if (indicators.boll) {
-      const { mid, upper, lower } = calcBoll(closes)
-      addLine(toLineData(upper), 0, '#4d8ef7')
-      addLine(toLineData(mid), 0, '#d1d4dc')
-      addLine(toLineData(lower), 0, '#4d8ef7')
-    }
-
-    // VOL（成交量柱，涨跌跟随全局配色）
-    if (subPane.vol != null) {
-      const p = subPane.vol
-      const hist = chart.addSeries(
-        HistogramSeries,
-        {
-          priceLineVisible: false,
-          lastValueVisible: false,
-          priceFormat: { type: 'volume' },
-        },
-        p,
-      )
-      hist.setData(
-        candlePoints.map((c) => ({
-          time: c.time,
-          value: c.volume,
-          color: c.close >= c.open ? cc.up : cc.down,
-        })),
-      )
-      indicatorSeriesRef.current.push(hist)
-    }
-
-    // MACD（DIF/DEA 线 + 能量柱）
-    if (subPane.macd != null) {
-      const p = subPane.macd
-      const { dif, dea, hist } = calcMacd(closes)
-      const bars = chart.addSeries(
-        HistogramSeries,
-        { priceLineVisible: false, lastValueVisible: false },
-        p,
-      )
-      bars.setData(
-        candlePoints
-          .map((c, j) => ({
-            time: c.time,
-            value: hist[j],
-            color: (hist[j] ?? 0) >= 0 ? cc.up : cc.down,
-          }))
-          .filter((d) => d.value != null),
-      )
-      indicatorSeriesRef.current.push(bars)
-      addLine(toLineData(dif), p, IND_COLORS.fast)
-      addLine(toLineData(dea), p, IND_COLORS.slow)
-    }
-
-    // RSI（14，30/70 参考线）
-    if (subPane.rsi != null) {
-      const p = subPane.rsi
-      const line = chart.addSeries(
-        LineSeries,
-        {
-          color: IND_COLORS.rsi,
-          lineWidth: 1,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        },
-        p,
-      )
-      line.setData(toLineData(calcRsi(closes)))
-      indicatorSeriesRef.current.push(line)
-      for (const level of [30, 70]) {
-        line.createPriceLine({
-          price: level,
-          color: IND_COLORS.ref,
-          lineWidth: 1,
-          lineStyle: LineStyle.Dashed,
-          axisLabelVisible: false,
-          title: '',
-        })
-      }
-    }
-
-    // KDJ（9,3,3 三线）
-    if (subPane.kdj != null) {
-      const p = subPane.kdj
-      const { k, d, j } = calcKdj(highs, lows, closes)
-      addLine(toLineData(k), p, IND_COLORS.fast)
-      addLine(toLineData(d), p, IND_COLORS.slow)
-      addLine(toLineData(j), p, IND_COLORS.extra)
-    }
-
-    // 主图 : 副图 = 3 : 1（逐个设置拉伸比例）
-    chart.panes().forEach((pn, i) => pn.setStretchFactor(i === 0 ? 3 : 1))
-  }, [candlePoints, indicators, colorScheme])
-
-  // 更新 AI 价格线 + 区域色块（TradingView 仓位标注风格）
-  useEffect(() => {
-    const chart = chartRef.current
-    const series = seriesRef.current
-    const svg = svgRef.current
-    if (!chart || !series || !svg) return
-
-    // 清除旧价格线
-    priceLinesRef.current.forEach((l) => series.removePriceLine(l))
-    priceLinesRef.current = []
-
-    if (!ai) {
-      redrawFnRef.current = null
-      return
-    }
-
-    // 辅助：创建 SVG 元素
-    const NS = 'http://www.w3.org/2000/svg'
-    const el = (tag: string) => document.createElementNS(NS, tag)
-
-    const fmt = (p: number) =>
-      p < 1 ? p.toFixed(6) : p < 100 ? p.toFixed(4) : p.toFixed(2)
+    if (!ai || ai.entry_price == null || !loaded) return
 
     const isLong = ai.direction !== 'short'
+    // lines 顺序 = overlay points 顺序，zones 用下标引用
+    const lines: AiPosExt['lines'] = []
+    const zones: AiPosExt['zones'] = []
+    const pushLine = (label: string, price: number, color: string, dashed: boolean) => {
+      lines.push({ label, price, priceText: fmtPrice(price), color, dashed })
+      return lines.length - 1
+    }
 
-    // 颜色配置
-    const colorEntry = isLong ? '#26a69a' : '#ef5350'
-    const colorSL = '#ef5350'
-    const colorTP1 = '#26a69a'
-    const colorTP2 = '#00bcd4'
-    const labelEntry = isLong ? '做多' : '做空'
-
-    // 固定标注宽度：放在右侧价格轴左边，向左延伸
-    const MARK_W = 140       // 区域/线条固定宽度
-
-    const drawPosition = () => {
-      while (svg.firstChild) svg.removeChild(svg.firstChild)
-      const fullWidth = containerRef.current?.clientWidth || svg.clientWidth || 520
-      const height = containerRef.current?.clientHeight || CHART_HEIGHT
-      // K 线主区域右边界 = 总宽 - 右侧价格轴宽度
-      const priceScaleWidth = chart.priceScale('right').width()
-      const rightEdge = Math.max(MARK_W, fullWidth - priceScaleWidth)
-      const x0 = rightEdge - MARK_W  // 线条左端
-      const x1 = rightEdge           // 线条右端（紧贴价格轴）
-      svg.setAttribute('width', String(fullWidth))
-      svg.setAttribute('height', String(height))
-      svg.setAttribute('viewBox', `0 0 ${fullWidth} ${height}`)
-
-      if (ai.entry_price == null) return
-      const yEntry = series.priceToCoordinate(ai.entry_price)
-      if (yEntry == null) return
-
-      // 先画区域色块（固定宽度，右侧）
-      // 止损区：入场 → 止损（红色半透明）
-      if (ai.stop_loss != null) {
-        const ySL = series.priceToCoordinate(ai.stop_loss)
-        if (ySL != null) {
-          const top = Math.min(yEntry, ySL)
-          const h = Math.abs(ySL - yEntry)
-          const r = el('rect')
-          r.setAttribute('x', String(x0))
-          r.setAttribute('y', String(top))
-          r.setAttribute('width', String(MARK_W))
-          r.setAttribute('height', String(h))
-          r.setAttribute('fill', 'rgba(239, 83, 80, 0.15)')
-          svg.appendChild(r)
-        }
-      }
-      // 止盈1区：入场 → 止盈1（绿色半透明）
-      if (ai.take_profit_1 != null) {
-        const yTP1 = series.priceToCoordinate(ai.take_profit_1)
-        if (yTP1 != null) {
-          const top = Math.min(yEntry, yTP1)
-          const h = Math.abs(yTP1 - yEntry)
-          const r = el('rect')
-          r.setAttribute('x', String(x0))
-          r.setAttribute('y', String(top))
-          r.setAttribute('width', String(MARK_W))
-          r.setAttribute('height', String(h))
-          r.setAttribute('fill', 'rgba(38, 166, 154, 0.15)')
-          svg.appendChild(r)
-        }
-      }
-      // 止盈2区：止盈1 → 止盈2（更浅绿）
-      if (ai.take_profit_1 != null && ai.take_profit_2 != null) {
-        const yTP1 = series.priceToCoordinate(ai.take_profit_1)
-        const yTP2 = series.priceToCoordinate(ai.take_profit_2)
-        if (yTP1 != null && yTP2 != null) {
-          const top = Math.min(yTP1, yTP2)
-          const h = Math.abs(yTP2 - yTP1)
-          const r = el('rect')
-          r.setAttribute('x', String(x0))
-          r.setAttribute('y', String(top))
-          r.setAttribute('width', String(MARK_W))
-          r.setAttribute('height', String(h))
-          r.setAttribute('fill', 'rgba(38, 166, 154, 0.08)')
-          svg.appendChild(r)
-        }
-      }
-
-      // 画水平线 + 右侧标签
-      const drawLine = (
-        y: number,
-        color: string,
-        label: string,
-        price: number,
-        dashed: boolean
-      ) => {
-        // 线（固定宽度，从左到右到价格轴左边界）
-        const line = el('line')
-        line.setAttribute('x1', String(x0))
-        line.setAttribute('y1', String(y))
-        line.setAttribute('x2', String(x1))
-        line.setAttribute('y2', String(y))
-        line.setAttribute('stroke', color)
-        line.setAttribute('stroke-width', '1')
-        line.setAttribute('shape-rendering', 'crispEdges')
-        if (dashed) line.setAttribute('stroke-dasharray', '5,3')
-        svg.appendChild(line)
-
-        // 右侧标签盒
-        const text = `${label} ${fmt(price)}`
-        const font = 'bold 10px monospace'
-        const ctx2 = document.createElement('canvas').getContext('2d')!
-        ctx2.font = font
-        const tw = ctx2.measureText(text).width
-        const padX = 4
-        const boxH = 13
-        const boxW = tw + padX * 2
-        const boxX = x1 - boxW  // 右对齐到线条右端
-
-        const rect = el('rect')
-        rect.setAttribute('x', String(boxX))
-        rect.setAttribute('y', String(y - boxH / 2))
-        rect.setAttribute('width', String(boxW))
-        rect.setAttribute('height', String(boxH))
-        rect.setAttribute('fill', color)
-        svg.appendChild(rect)
-
-        const t = el('text')
-        t.setAttribute('x', String(boxX + padX))
-        t.setAttribute('y', String(y + 3))
-        t.setAttribute('fill', '#fff')
-        t.setAttribute('font-size', '10')
-        t.setAttribute('font-family', 'monospace')
-        t.setAttribute('font-weight', 'bold')
-        t.textContent = text
-        svg.appendChild(t)
-      }
-
-      // 入场线（实线，带方向标签）
-      drawLine(yEntry, colorEntry, labelEntry, ai.entry_price, false)
-      // 止损线（虚线）
-      if (ai.stop_loss != null) {
-        const ySL = series.priceToCoordinate(ai.stop_loss)
-        if (ySL != null) drawLine(ySL, colorSL, '止损', ai.stop_loss, true)
-      }
-      // 止盈1线（虚线）
-      if (ai.take_profit_1 != null) {
-        const yTP1 = series.priceToCoordinate(ai.take_profit_1)
-        if (yTP1 != null) drawLine(yTP1, colorTP1, '止盈1', ai.take_profit_1, true)
-      }
-      // 止盈2线（虚线）
+    const idxEntry = pushLine(isLong ? '做多' : '做空', ai.entry_price, isLong ? '#26a69a' : '#ef5350', false)
+    if (ai.stop_loss != null) {
+      const idxSL = pushLine('止损', ai.stop_loss, '#ef5350', true)
+      zones.push({ from: idxEntry, to: idxSL, color: 'rgba(239, 83, 80, 0.15)' })
+    }
+    if (ai.take_profit_1 != null) {
+      const idxTP1 = pushLine('止盈1', ai.take_profit_1, '#26a69a', true)
+      zones.push({ from: idxEntry, to: idxTP1, color: 'rgba(38, 166, 154, 0.15)' })
       if (ai.take_profit_2 != null) {
-        const yTP2 = series.priceToCoordinate(ai.take_profit_2)
-        if (yTP2 != null) drawLine(yTP2, colorTP2, '止盈2', ai.take_profit_2, true)
+        const idxTP2 = pushLine('止盈2', ai.take_profit_2, '#00bcd4', true)
+        zones.push({ from: idxTP1, to: idxTP2, color: 'rgba(38, 166, 154, 0.08)' })
       }
     }
 
-    redrawFnRef.current = drawPosition
-    requestAnimationFrame(() => drawPosition())
-
-    // 用 rAF 循环持续重绘，确保价格轴缩放/时间轴缩放/平移时区域都能同步
-    let rafId = 0
-    const loop = () => {
-      drawPosition()
-      rafId = requestAnimationFrame(loop)
-    }
-    rafId = requestAnimationFrame(loop)
-
-    return () => {
-      cancelAnimationFrame(rafId)
-    }
-  }, [ai])
+    const id = chart.createOverlay({
+      name: 'aiPosition',
+      points: lines.map((ln) => ({ value: ln.price })),
+      extendData: { lines, zones },
+    }) as string | null
+    if (id) aiOverlayIdRef.current = id
+  }, [ai, loaded, symbol])
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 360 }}>
@@ -669,7 +479,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           style={{ marginBottom: 8 }}
         />
       )}
-      {/* 左上角工具栏：EMA 周期（可编辑）+ 关键位类型开关 */}
+      {/* 左上角工具栏：指标选择 + 关键位类型开关 + 涨跌配色切换 */}
       <div
         style={{
           position: 'absolute',
@@ -686,33 +496,65 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           borderRadius: 6,
           padding: '4px 8px',
         }}>
-        <span style={{ color: '#9aa3b2', fontSize: 12, marginRight: 2 }}>EMA</span>
-        {emaPeriods.map((p, i) => (
-          <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-            <span
+        {/* 技术指标面板：全部内置指标，开关 + 参数（全局生效，localStorage 持久化） */}
+        <Dropdown
+          trigger={['click']}
+          destroyPopupOnHide
+          dropdownRender={() => (
+            <div
               style={{
-                width: 8,
-                height: 8,
-                borderRadius: 2,
-                background: EMA_COLORS[i % EMA_COLORS.length],
-                display: 'inline-block',
-                flexShrink: 0,
-              }}
-            />
-            <InputNumber
-              size="small"
-              min={2}
-              max={499}
-              value={p}
-              style={{ width: 56 }}
-              onChange={(v) =>
-                setEmaPeriods((prev) =>
-                  prev.map((x, j) => (j === i ? (v ?? x) : x)),
-                )
-              }
-            />
-          </span>
-        ))}
+                background: '#1b1f2a',
+                border: '1px solid #2a2e39',
+                borderRadius: 6,
+                padding: '10px 12px',
+                width: 250,
+                maxHeight: 420,
+                overflowY: 'auto',
+              }}>
+              {[true, false].map((stack) => (
+                <div key={String(stack)} style={stack ? { marginBottom: 10 } : undefined}>
+                  <Text style={{ color: '#9aa3b2', fontSize: 11 }}>
+                    {stack ? '主图指标' : '副图指标'}
+                  </Text>
+                  {INDICATOR_CATALOG.filter((it) => it.isStack === stack).map((it) => {
+                    const setting = indicatorSettings[it.name]
+                    return (
+                      <div key={it.name} style={{ marginTop: 4 }}>
+                        <Checkbox
+                          checked={!!setting?.enabled}
+                          onChange={() => toggleIndicator(it.name)}>
+                          <span style={{ color: '#d1d4dc', fontSize: 12 }}>{it.label}</span>
+                        </Checkbox>
+                        {setting?.enabled && it.paramLabels.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginLeft: 22, marginTop: 2 }}>
+                            {it.paramLabels.map((pl, i) => (
+                              <InputNumber
+                                key={i}
+                                size="small"
+                                min={1}
+                                max={499}
+                                value={setting.params[i]}
+                                style={{ width: 56 }}
+                                onChange={(v) => {
+                                  const params = [...setting.params]
+                                  params[i] = v ?? params[i]
+                                  setIndicatorParams(it.name, params)
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+            </div>
+          )}>
+          <Button size="small" ghost icon={<SettingOutlined />}>
+            指标
+          </Button>
+        </Dropdown>
         {keyLevels && keyLevels.length > 0 &&
           [...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => {
             const visible = !hiddenKinds.has(kind)
@@ -742,25 +584,6 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
               </Tag.CheckableTag>
             )
           })}
-        {/* 技术指标选择（TradingView 风格自选，全局生效） */}
-        <Dropdown
-          trigger={['click']}
-          menu={{
-            items: (Object.keys(INDICATOR_LABELS) as IndicatorKey[]).map((k) => ({
-              key: k,
-              label: INDICATOR_LABELS[k],
-            })),
-            selectable: true,
-            multiple: true,
-            selectedKeys: (Object.keys(indicators) as IndicatorKey[]).filter(
-              (k) => indicators[k],
-            ),
-            onClick: ({ key }) => toggleIndicator(key as IndicatorKey),
-          }}>
-          <Button size="small" ghost icon={<PlusOutlined />}>
-            指标
-          </Button>
-        </Dropdown>
         {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效） */}
         <Segmented
           size="small"
@@ -772,22 +595,8 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           onChange={(v) => setColorScheme(v as ColorScheme)}
           style={{ marginLeft: 4 }}
         />
-        </div>
+      </div>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-      <svg
-        ref={svgRef}
-        width="100%"
-        height="100%"
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          pointerEvents: 'none',
-          zIndex: 10,
-        }}
-      />
     </div>
   )
 }
