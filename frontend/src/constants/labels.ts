@@ -58,3 +58,18 @@ export function patternStyle(v: string): { label: string; color: string } {
   if (BEARISH_PATTERNS[v]) return { label: BEARISH_PATTERNS[v], color: "red" };
   return { label: OTHER_PATTERNS[v] || v, color: "blue" };
 }
+
+// ===== 表格列过滤选项（服务端/客户端过滤共用）=====
+export const SIGNAL_TYPE_FILTERS = Object.entries(SIGNAL_TYPE_MAP).map(
+  ([value, cfg]) => ({ text: cfg.label, value }),
+);
+
+export const POSITION_FILTERS = Object.entries(POSITION_LABEL_MAP).map(
+  ([value, text]) => ({ text, value }),
+);
+
+export const PATTERN_FILTERS = Object.keys({
+  ...BULLISH_PATTERNS,
+  ...BEARISH_PATTERNS,
+  ...OTHER_PATTERNS,
+}).map((v) => ({ text: patternStyle(v).label, value: v }));

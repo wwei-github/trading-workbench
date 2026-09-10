@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { AIAnalysis, ScanRecord, ScanResult, ScanStatus, SystemConfig, WatchlistItem } from '../types'
-import { scanApi } from '../api/scan'
+import { scanApi, type ResultFilters } from '../api/scan'
 
 interface ScanState {
   status: ScanStatus | null
@@ -9,6 +9,8 @@ interface ScanState {
   loading: boolean
   resultsPage: number
   resultsPageSize: number
+  // 结果列表过滤条件（服务端过滤）
+  filters: ResultFilters
   history: ScanRecord[]
   historyTotal: number
   historyPage: number
@@ -20,13 +22,14 @@ interface ScanState {
   analyzingMap: Record<string, { loading: boolean; error: string | null }>
   fetchStatus: () => Promise<void>
   fetchResults: (scanId?: string, page?: number, pageSize?: number) => Promise<void>
+  setFilters: (filters: ResultFilters) => Promise<void>
   fetchHistory: (page?: number, pageSize?: number) => Promise<void>
   fetchConfig: () => Promise<void>
   triggerScan: () => Promise<void>
   toggleAi: (enabled: boolean) => Promise<void>
   updateConfig: (data: Partial<SystemConfig>) => Promise<void>
   fetchAiAnalyses: (scanId: string) => Promise<void>
-  triggerAiAnalysis: (scanId: string, scanResultId: string) => Promise<void>
+  triggerAiAnalysis: (scanId: string, scanResultId: string, userInput?: string) => Promise<void>
   // 关注列表
   watchlist: WatchlistItem[]
   fetchWatchlist: () => Promise<void>
@@ -95,6 +98,7 @@ export const useScanStore = create<ScanState>((set, get) => ({
   loading: false,
   resultsPage: 1,
   resultsPageSize: 20,
+  filters: {},
   history: [],
   historyTotal: 0,
   historyPage: 1,
@@ -123,8 +127,8 @@ export const useScanStore = create<ScanState>((set, get) => ({
       const p = scanChanged ? 1 : (page ?? get().resultsPage)
       const ps = pageSize ?? get().resultsPageSize
       const data = id
-        ? await scanApi.results(id, p, ps)
-        : await scanApi.latestResults(p, ps)
+        ? await scanApi.results(id, p, ps, 'volume_24h', 'desc', get().filters)
+        : await scanApi.latestResults(p, ps, 'volume_24h', 'desc', get().filters)
       // 优先用传入的 id，否则从结果的 scan_record_id 推断
       const newScanId = id || data.items[0]?.scan_record_id || null
       set({
@@ -144,6 +148,11 @@ export const useScanStore = create<ScanState>((set, get) => ({
     } finally {
       set({ loading: false })
     }
+  },
+
+  setFilters: async (filters: ResultFilters) => {
+    set({ filters, resultsPage: 1 })
+    await get().fetchResults(undefined, 1)
   },
 
   fetchHistory: async (page?: number, pageSize?: number) => {
@@ -224,9 +233,9 @@ export const useScanStore = create<ScanState>((set, get) => ({
     }
   },
 
-  triggerAiAnalysis: async (scanId: string, scanResultId: string) => {
+  triggerAiAnalysis: async (scanId: string, scanResultId: string, userInput?: string) => {
     try {
-      await scanApi.triggerAi(scanId, scanResultId)
+      await scanApi.triggerAi(scanId, scanResultId, userInput)
       // 启动该行的轮询
       startRowPolling(scanId, scanResultId)
     } catch (e: any) {

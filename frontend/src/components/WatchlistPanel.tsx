@@ -20,8 +20,11 @@ import { useScanStore } from "../stores/scanStore";
 import { scanApi } from "../api/scan";
 import {
   SIGNAL_TYPE_MAP,
+  SIGNAL_TYPE_FILTERS,
   POSITION_LABEL_MAP,
+  POSITION_FILTERS,
   POSITION_SUPPORT_KINDS,
+  PATTERN_FILTERS,
   patternStyle,
 } from "../constants/labels";
 import KlineChart from "./KlineChart";
@@ -131,6 +134,9 @@ export default function WatchlistPanel() {
     {
       title: "信号类型",
       key: "signal_type",
+      filters: SIGNAL_TYPE_FILTERS,
+      filterMultiple: false,
+      onFilter: (value, r) => r.scan?.signal_type === value,
       render: (_: unknown, r: WatchRow) => {
         const v = r.scan?.signal_type;
         if (!v) return <span style={{ color: "#999" }}>-</span>;
@@ -141,6 +147,9 @@ export default function WatchlistPanel() {
     {
       title: "位置",
       key: "position",
+      filters: POSITION_FILTERS,
+      filterMultiple: false,
+      onFilter: (value, r) => r.scan?.position === value,
       render: (_: unknown, r: WatchRow) => {
         const v = r.scan?.position;
         if (!v) return <span style={{ color: "#999" }}>-</span>;
@@ -160,6 +169,9 @@ export default function WatchlistPanel() {
     {
       title: "K线形态",
       key: "pattern",
+      filters: PATTERN_FILTERS,
+      filterMultiple: false,
+      onFilter: (value, r) => r.scan?.pattern === value,
       render: (_: unknown, r: WatchRow) => {
         const v = r.scan?.pattern;
         if (!v) return <span style={{ color: "#999" }}>-</span>;

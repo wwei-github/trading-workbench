@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert } from 'antd'
+import { Alert, Tag } from 'antd'
 import {
   createChart,
   CandlestickSeries,
@@ -22,6 +22,19 @@ interface Props {
 
 const CHART_HEIGHT = 560 // 容器无高度时的兜底值
 
+// 关键位 kind → 中文标签（图表线条/勾选开关共用）
+const KIND_LABEL: Record<string, string> = {
+  prev_high: '前高',
+  prev_low: '前低',
+  support: '支撑',
+  resistance: '压力',
+  range_top: '区间顶',
+  range_bottom: '区间底',
+}
+
+// 每个角色（支撑/压力）最多显示的关键位条数：只画距当前价最近的
+const MAX_LINES_PER_ROLE = 2
+
 export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
@@ -31,6 +44,10 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
   const keyLineLinesRef = useRef<IPriceLine[]>([])
   const redrawFnRef = useRef<(() => void) | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // K 线最新收盘价（作为"当前价"，用于挑选最近的关键位）
+  const [lastClose, setLastClose] = useState<number | null>(null)
+  // 隐藏的关键位类型（勾选开关）
+  const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set())
 
   // 初始化图表 + 拉取数据
   useEffect(() => {
@@ -90,6 +107,7 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
         }))
         seriesRef.current.setData(candleData)
         chart.timeScale().fitContent()
+        setLastClose(candleData[candleData.length - 1]?.close ?? null)
         setError(null)
         // 数据加载完成后触发 AI 仓位标注重绘（等待布局完成）
         requestAnimationFrame(() => redrawFnRef.current?.())
@@ -122,7 +140,7 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
     }
   }, [symbol, limit])
 
-  // 绘制关键位水平线（支撑绿 / 压力红 虚线 + 轴上价格标签）
+  // 绘制关键位水平线：只画距当前价最近的 N 条支撑 + N 条压力，可按类型勾选隐藏
   useEffect(() => {
     const series = seriesRef.current
     if (!series) return
@@ -138,17 +156,24 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
     keyLineLinesRef.current = []
 
     if (!keyLevels || keyLevels.length === 0) return
+    // K 线未加载完成时先不画，加载后 lastClose 变化会重跑本 effect
+    if (lastClose == null) return
 
-    const KIND_LABEL: Record<string, string> = {
-      prev_high: '前高',
-      prev_low: '前低',
-      support: '支撑',
-      resistance: '压力',
-      range_top: '区间顶',
-      range_bottom: '区间底',
-    }
+    // 按角色取距当前价最近的 N 条
+    const pickNearest = (role: 'support' | 'resistance') =>
+      keyLevels
+        .filter((lv) => lv.role === role)
+        .sort(
+          (a, b) => Math.abs(a.price - lastClose) - Math.abs(b.price - lastClose),
+        )
+        .slice(0, MAX_LINES_PER_ROLE)
 
-    for (const lv of keyLevels) {
+    const nearest = [
+      ...pickNearest('support'),
+      ...pickNearest('resistance'),
+    ].filter((lv) => !hiddenKinds.has(lv.kind))
+
+    for (const lv of nearest) {
       const line = series.createPriceLine({
         price: lv.price,
         color: lv.role === 'support' ? '#26a69a' : '#ef5350',
@@ -173,7 +198,7 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
       }
       keyLineLinesRef.current = []
     }
-  }, [keyLevels, symbol, limit])
+  }, [keyLevels, hiddenKinds, lastClose, symbol, limit])
 
   // 更新 AI 价格线 + 区域色块（TradingView 仓位标注风格）
   useEffect(() => {
@@ -370,6 +395,39 @@ export default function KlineChart({ symbol, limit = 100, ai, keyLevels }: Props
           description={error}
           style={{ marginBottom: 8 }}
         />
+      )}
+      {keyLevels && keyLevels.length > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 8,
+            left: 8,
+            zIndex: 20,
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 4,
+            maxWidth: 'calc(100% - 16px)',
+            background: 'rgba(19, 23, 34, 0.78)',
+            border: '1px solid #2a2e39',
+            borderRadius: 6,
+            padding: '4px 8px',
+          }}>
+          {[...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => (
+            <Tag.CheckableTag
+              key={kind}
+              checked={!hiddenKinds.has(kind)}
+              onChange={(checked) =>
+                setHiddenKinds((prev) => {
+                  const next = new Set(prev)
+                  if (checked) next.delete(kind)
+                  else next.add(kind)
+                  return next
+                })
+              }>
+              {KIND_LABEL[kind] || kind}
+            </Tag.CheckableTag>
+          ))}
+        </div>
       )}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
       <svg

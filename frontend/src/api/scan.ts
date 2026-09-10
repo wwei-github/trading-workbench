@@ -3,6 +3,13 @@ import type { AIAnalysis, KlineData, ListResponse, ScanRecord, ScanResult, ScanS
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
+// 结果列表过滤条件（服务端过滤）
+export interface ResultFilters {
+  signal_type?: string
+  position?: string
+  pattern?: string
+}
+
 export const scanApi = {
   trigger: () => api.post<{ scan_id: string; status: string }>('/scans').then((r) => r.data),
 
@@ -11,17 +18,17 @@ export const scanApi = {
       .get<ListResponse<ScanRecord>>('/scans', { params: { page, page_size: pageSize } })
       .then((r) => r.data),
 
-  results: (scanId: string, page = 1, pageSize = 20, sortBy = 'volume_24h', order = 'desc') =>
+  results: (scanId: string, page = 1, pageSize = 20, sortBy = 'volume_24h', order = 'desc', filters?: ResultFilters) =>
     api
       .get<ListResponse<ScanResult>>(`/scans/${scanId}/results`, {
-        params: { page, page_size: pageSize, sort_by: sortBy, order },
+        params: { page, page_size: pageSize, sort_by: sortBy, order, ...(filters || {}) },
       })
       .then((r) => r.data),
 
-  latestResults: (page = 1, pageSize = 20, sortBy = 'volume_24h', order = 'desc') =>
+  latestResults: (page = 1, pageSize = 20, sortBy = 'volume_24h', order = 'desc', filters?: ResultFilters) =>
     api
       .get<ListResponse<ScanResult>>('/scans/latest/results', {
-        params: { page, page_size: pageSize, sort_by: sortBy, order },
+        params: { page, page_size: pageSize, sort_by: sortBy, order, ...(filters || {}) },
       })
       .then((r) => r.data),
 
@@ -32,10 +39,11 @@ export const scanApi = {
       .get<{ items: AIAnalysis[]; total: number }>(`/scans/${scanId}/ai-analyses`)
       .then((r) => r.data),
 
-  triggerAi: (scanId: string, scanResultId?: string) =>
+  triggerAi: (scanId: string, scanResultId?: string, userInput?: string) =>
     api
       .post<{ scan_id: string; status: string }>(`/scans/${scanId}/ai-analyses`, {
         scan_result_id: scanResultId ?? null,
+        user_input: userInput || null,
       })
       .then((r) => r.data),
 

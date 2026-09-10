@@ -19,12 +19,14 @@ logger = logging.getLogger(__name__)
 
 @celery_app.task(name="app.tasks.ai_tasks.run_ai_analysis_task", bind=True, max_retries=0)
 def run_ai_analysis_task(
-    self, scan_record_id: str, only_scan_result_id: Optional[str] = None
+    self, scan_record_id: str, only_scan_result_id: Optional[str] = None,
+    user_input: Optional[str] = None,
 ):
     """对指定扫描记录的命中币种执行 AI 分析。
 
     scan_record_id: 扫描记录 ID
     only_scan_result_id: 若提供，只分析该单个 ScanResult（用于手动重新分析）
+    user_input: 用户补充说明（单币分析时随请求传入），附加到 AI 提示词
     """
     db = SessionLocal()
     pool = ExchangePool()
@@ -68,7 +70,11 @@ def run_ai_analysis_task(
                     "volume": float(r.volume),
                     "volume_24h": float(r.volume_24h),
                 }
-                ai_result = analyze_coin(signal, klines, strategy_prompt=strategy_prompt)
+                ai_result = analyze_coin(
+                    signal, klines,
+                    strategy_prompt=strategy_prompt,
+                    user_input=user_input if only_scan_result_id else None,
+                )
                 _upsert_ai_analysis(db, r.id, r.symbol, ai_result)
                 db.commit()
                 logger.info("AI 分析完成: %s", r.symbol)

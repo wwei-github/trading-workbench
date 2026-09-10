@@ -91,6 +91,9 @@ def latest_scan_results(
     page_size: int = Query(20, ge=1, le=100),
     sort_by: str = Query("breakout_pct"),
     order: str = Query("desc"),
+    signal_type: str = Query(None),
+    position: str = Query(None),
+    pattern: str = Query(None),
     db: Session = Depends(get_db),
 ):
     latest = db.execute(
@@ -101,7 +104,10 @@ def latest_scan_results(
     ).scalars().first()
     if not latest:
         return ScanResultListResponse(items=[], total=0)
-    return _get_results(latest.id, page, page_size, sort_by, order, db)
+    return _get_results(
+        latest.id, page, page_size, sort_by, order, db,
+        signal_type=signal_type, position=position, pattern=pattern,
+    )
 
 
 @router.get("/{scan_id}/results", response_model=ScanResultListResponse)
@@ -111,12 +117,18 @@ def scan_results(
     page_size: int = Query(20, ge=1, le=100),
     sort_by: str = Query("breakout_pct"),
     order: str = Query("desc"),
+    signal_type: str = Query(None),
+    position: str = Query(None),
+    pattern: str = Query(None),
     db: Session = Depends(get_db),
 ):
     record = db.get(ScanRecord, scan_id)
     if not record:
         raise HTTPException(status_code=404, detail="扫描记录不存在")
-    return _get_results(scan_id, page, page_size, sort_by, order, db)
+    return _get_results(
+        scan_id, page, page_size, sort_by, order, db,
+        signal_type=signal_type, position=position, pattern=pattern,
+    )
 
 
 @router.get("/status", response_model=ScanStatusResponse)
@@ -149,20 +161,31 @@ def scan_status(db: Session = Depends(get_db)):
     )
 
 
-def _get_results(scan_id: UUID, page: int, page_size: int, sort_by: str, order: str, db: Session):
+def _get_results(
+    scan_id: UUID, page: int, page_size: int, sort_by: str, order: str, db: Session,
+    signal_type: str = None, position: str = None, pattern: str = None,
+):
     allowed_sort = {"breakout_pct", "created_at", "symbol", "r_squared", "volume_24h", "volume", "volume_type"}
     if sort_by not in allowed_sort:
         sort_by = "breakout_pct"
     column = getattr(ScanResult, sort_by)
     order_col = desc(column) if order == "desc" else column
 
+    conds = [ScanResult.scan_record_id == scan_id]
+    if signal_type:
+        conds.append(ScanResult.signal_type == signal_type)
+    if position:
+        conds.append(ScanResult.position == position)
+    if pattern:
+        conds.append(ScanResult.pattern == pattern)
+
     total = db.execute(
-        select(func.count()).select_from(ScanResult).where(ScanResult.scan_record_id == scan_id)
+        select(func.count()).select_from(ScanResult).where(*conds)
     ).scalar_one()
     items = (
         db.execute(
             select(ScanResult)
-            .where(ScanResult.scan_record_id == scan_id)
+            .where(*conds)
             .order_by(order_col)
             .offset((page - 1) * page_size)
             .limit(page_size)
@@ -233,6 +256,7 @@ def trigger_ai_analysis(
     run_ai_analysis_task.delay(
         str(scan_id),
         str(body.scan_result_id) if body.scan_result_id else None,
+        (body.user_input or "").strip() or None,
     )
     return ScanTriggerResponse(scan_id=scan_id, status="analyzing")
 

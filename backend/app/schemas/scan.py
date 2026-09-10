@@ -104,6 +104,7 @@ class AIAnalysisListResponse(BaseModel):
 
 class AIAnalysisTriggerRequest(BaseModel):
     scan_result_id: Optional[UUID] = None  # None = 全量分析, 有值 = 单币分析
+    user_input: Optional[str] = None  # 用户补充说明，随分析一起传给 AI
 
 
 # ===== 手动搜索 AI 分析 =====

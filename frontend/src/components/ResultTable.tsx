@@ -8,6 +8,7 @@ import {
   message,
   Alert,
   Space,
+  Input,
 } from "antd";
 import {
   RobotOutlined,
@@ -20,8 +21,11 @@ import type { ColumnsType } from "antd/es/table";
 import { useScanStore } from "../stores/scanStore";
 import {
   SIGNAL_TYPE_MAP,
+  SIGNAL_TYPE_FILTERS,
   POSITION_LABEL_MAP,
+  POSITION_FILTERS,
   POSITION_SUPPORT_KINDS,
+  PATTERN_FILTERS,
   patternStyle,
 } from "../constants/labels";
 import { useState, useMemo, useEffect } from "react";
@@ -38,6 +42,8 @@ export default function ResultTable() {
     loading,
     resultsPage,
     resultsPageSize,
+    filters,
+    setFilters,
     currentScanId,
     aiAnalyses,
     analyzingMap,
@@ -85,18 +91,37 @@ export default function ResultTable() {
     results.find((r) => expandedRowKeys.includes(r.id)) || null;
   const selectedAi = selectedRecord ? aiMap[selectedRecord.id] : undefined;
 
+  // 每行的 AI 补充说明输入（scanResultId -> 输入内容）
+  const [userInputs, setUserInputs] = useState<Record<string, string>>({});
+
   const handleReAnalyze = async (record: ScanResult) => {
     if (!currentScanId) {
       message.warning("无当前扫描记录");
       return;
     }
     try {
-      await triggerAiAnalysis(currentScanId, record.id);
+      await triggerAiAnalysis(
+        currentScanId,
+        record.id,
+        userInputs[record.id]?.trim() || undefined,
+      );
       message.success("AI 分析已提交，请稍候...");
     } catch (e: any) {
       message.error(e?.message || "AI 分析失败");
     }
   };
+
+  // 服务端过滤：antd 列头筛选 onChange -> store -> 重新请求
+  const filterProps = (
+    key: "signal_type" | "position" | "pattern",
+    options: { text: string; value: string }[],
+  ) => ({
+    filters: options,
+    filterMultiple: false,
+    filteredValue: filters[key] ? [filters[key]] : null,
+    onChange: (vals: React.Key[] | null) =>
+      setFilters({ ...filters, [key]: (vals?.[0] as string) || undefined }),
+  });
 
   const handleCopySymbol = (e: React.MouseEvent, symbol: string) => {
     e.stopPropagation();
@@ -163,6 +188,7 @@ export default function ResultTable() {
       title: "信号类型",
       dataIndex: "signal_type",
       key: "signal_type",
+      ...filterProps("signal_type", SIGNAL_TYPE_FILTERS),
       render: (v: string) => {
         const cfg = SIGNAL_TYPE_MAP[v] || { label: v, color: "default" };
         return <Tag color={cfg.color}>{cfg.label}</Tag>;
@@ -172,6 +198,7 @@ export default function ResultTable() {
       title: "位置",
       dataIndex: "position",
       key: "position",
+      ...filterProps("position", POSITION_FILTERS),
       render: (v: string | null, record: ScanResult) => {
         if (!v) return <span style={{ color: "#999" }}>-</span>;
         const label = POSITION_LABEL_MAP[v] || v;
@@ -191,6 +218,7 @@ export default function ResultTable() {
       title: "K线形态",
       dataIndex: "pattern",
       key: "pattern",
+      ...filterProps("pattern", PATTERN_FILTERS),
       render: (v: string | null, record: ScanResult) => {
         if (!v) return <span style={{ color: "#999" }}>-</span>;
         const { label, color } = patternStyle(v);
@@ -335,6 +363,15 @@ export default function ResultTable() {
                       style={{ marginBottom: 12, textAlign: "left" }}
                     />
                   )}
+                  <Input.TextArea
+                    rows={2}
+                    placeholder="补充说明（可选）：你的判断或对 AI 的要求，将随分析一起提交"
+                    value={userInputs[record.id] ?? ""}
+                    onChange={(e) =>
+                      setUserInputs((m) => ({ ...m, [record.id]: e.target.value }))
+                    }
+                    style={{ marginBottom: 8 }}
+                  />
                   <Button
                     type="primary"
                     ghost
@@ -369,7 +406,16 @@ export default function ResultTable() {
                       style={{ marginTop: 8, textAlign: "left" }}
                     />
                   )}
-                  <div style={{ marginTop: 8, textAlign: "center" }}>
+                  <Input.TextArea
+                    rows={2}
+                    placeholder="补充说明（可选）：你的判断或对 AI 的要求，将随分析一起提交"
+                    value={userInputs[record.id] ?? ""}
+                    onChange={(e) =>
+                      setUserInputs((m) => ({ ...m, [record.id]: e.target.value }))
+                    }
+                    style={{ marginTop: 8, marginBottom: 8 }}
+                  />
+                  <div style={{ textAlign: "center" }}>
                     <Button
                       type="primary"
                       ghost

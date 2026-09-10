@@ -41,13 +41,17 @@ def _get_client() -> OpenAI:
     return OpenAI(api_key=settings.AI_API_KEY, base_url=settings.AI_BASE_URL)
 
 
-def analyze_coin(signal: dict, klines: list, strategy_prompt: Optional[str] = None) -> dict:
+def analyze_coin(
+    signal: dict, klines: list,
+    strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
+) -> dict:
     """对单个币种进行 AI 分析，返回结构化建议 dict。
 
     signal: 包含 symbol/signal_type/current_price/breakout_pct/pattern/signal_reason/
             position/key_levels/volume_type/volume/volume_24h
     klines: 原始 K 线数据 [[open_time, open, high, low, close, volume, ...], ...]
     strategy_prompt: 用户自定义交易策略（MD 格式），提供时附加到系统提示词供 AI 参考
+    user_input: 本次分析的用户补充说明（要求/持仓计划/个人观点），附加到用户提示词
     """
     # 取最近 30 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-31:-1]）
     recent = klines[-31:-1] if len(klines) >= 31 else klines[:-1]
@@ -82,6 +86,12 @@ def analyze_coin(signal: dict, klines: list, strategy_prompt: Optional[str] = No
         f"24h成交额: {signal.get('volume_24h', 0)}\n"
         f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol):\n{kline_summary}"
     )
+
+    if user_input:
+        user_prompt += (
+            "\n\n用户补充说明（用户基于自身判断提供的信息或要求，请结合其内容进行分析）：\n"
+            f"{user_input.strip()}"
+        )
 
     system_prompt = SYSTEM_PROMPT
     if strategy_prompt:
