@@ -111,6 +111,10 @@ class SystemConfigOut(BaseModel):
     ai_analysis_enabled: bool
     ai_configured: bool  # 后端是否已配置 AI_API_KEY（不返回 key 本身）
 
+    # 自定义策略提示词
+    strategy_prompt_enabled: bool
+    strategy_prompt: str
+
     # 扫描策略
     kline_interval: str
     kline_window: int
@@ -127,6 +131,10 @@ class SystemConfigOut(BaseModel):
 class SystemConfigUpdate(BaseModel):
     # AI 分析开关
     ai_analysis_enabled: Optional[bool] = None
+
+    # 自定义策略提示词
+    strategy_prompt_enabled: Optional[bool] = None
+    strategy_prompt: Optional[str] = None
 
     # 扫描策略（均为可选，只更新传入的字段）
     kline_interval: Optional[str] = None

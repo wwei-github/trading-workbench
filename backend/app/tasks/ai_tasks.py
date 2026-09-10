@@ -41,6 +41,15 @@ def run_ai_analysis_task(
 
         logger.info("开始 AI 分析，共 %d 个币种", len(results))
 
+        # 策略开关打开且有自定义策略时，携带给 AI 参考
+        strategy_prompt = (
+            cfg.strategy_prompt
+            if cfg.strategy_prompt_enabled and cfg.strategy_prompt
+            else None
+        )
+        if strategy_prompt:
+            logger.info("AI 分析携带自定义策略提示词（%d 字）", len(strategy_prompt))
+
         for r in results:
             try:
                 klines = client.get_klines(
@@ -57,7 +66,7 @@ def run_ai_analysis_task(
                     "volume": float(r.volume),
                     "volume_24h": float(r.volume_24h),
                 }
-                ai_result = analyze_coin(signal, klines)
+                ai_result = analyze_coin(signal, klines, strategy_prompt=strategy_prompt)
                 _upsert_ai_analysis(db, r.id, r.symbol, ai_result)
                 db.commit()
                 logger.info("AI 分析完成: %s", r.symbol)

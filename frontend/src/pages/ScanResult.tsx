@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react'
 import { Card, Row, Col, Button, Space, Switch, Tooltip, Tabs, message } from 'antd'
-import { ReloadOutlined, ThunderboltOutlined, RobotOutlined } from '@ant-design/icons'
+import { ReloadOutlined, ThunderboltOutlined, RobotOutlined, FileTextOutlined } from '@ant-design/icons'
 import ScanStatus from '../components/ScanStatus'
 import ResultTable from '../components/ResultTable'
 import HistoryList from '../components/HistoryList'
 import ScanConfigPanel from '../components/ScanConfigPanel'
+import StrategyPromptPanel from '../components/StrategyPromptPanel'
 import { useScanStore } from '../stores/scanStore'
 
 export default function ScanResult() {
@@ -13,7 +14,9 @@ export default function ScanResult() {
     fetchResults,
     fetchHistory,
     fetchConfig,
+    fetchAiAnalyses,
     triggerScan,
+    updateConfig,
     status,
     aiConfig,
     toggleAi,
@@ -26,7 +29,7 @@ export default function ScanResult() {
     // 初始加载：状态、配置、结果、历史
     fetchStatus()
     fetchConfig().then(() => {
-      // fetchResults 内部会根据 AI 开关自动加载/触发 AI 分析
+      // fetchResults 内部会根据 AI 开关加载已有 AI 分析结果（不自动触发）
       fetchResults()
     })
     fetchHistory()
@@ -90,9 +93,20 @@ export default function ScanResult() {
     }
   }
 
+  const handleStrategyToggle = async (checked: boolean) => {
+    try {
+      await updateConfig({ strategy_prompt_enabled: checked })
+      message.success(checked ? '策略开关已开启，AI 分析时将携带策略' : '策略开关已关闭')
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '切换策略开关失败')
+    }
+  }
+
   const isScanning = !!status?.is_scanning
   const aiEnabled = !!aiConfig?.ai_analysis_enabled
   const aiConfigured = !!aiConfig?.ai_configured
+  const strategyEnabled = !!aiConfig?.strategy_prompt_enabled
+  const hasStrategy = !!aiConfig?.strategy_prompt
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
@@ -106,7 +120,7 @@ export default function ScanResult() {
               <Tooltip
                 title={
                   aiConfigured
-                    ? '开启后，每次扫描完成自动将命中币种发给 AI 分析'
+                    ? '开启后展示各币种的 AI 分析结果（展开行查看），可在展开行中点击"AI 分析"手动触发'
                     : '后端未配置 AI_API_KEY，无法使用 AI 分析'
                 }
               >
@@ -118,6 +132,23 @@ export default function ScanResult() {
                     checked={aiEnabled}
                     onChange={handleAiToggle}
                     disabled={!aiConfigured}
+                  />
+                </Space>
+              </Tooltip>
+              <Tooltip
+                title={
+                  hasStrategy
+                    ? '开启后，AI 分析时将"策略提示词"一并发给 AI 参考'
+                    : '请先在"策略提示词"页签中编写并保存策略'
+                }
+              >
+                <Space>
+                  <FileTextOutlined style={{ fontSize: 16 }} />
+                  <Switch
+                    checkedChildren="策略"
+                    unCheckedChildren="策略"
+                    checked={strategyEnabled}
+                    onChange={handleStrategyToggle}
                   />
                 </Space>
               </Tooltip>
@@ -153,6 +184,15 @@ export default function ScanResult() {
             key: 'history',
             label: '历史记录',
             children: <div style={{ height: '100%', overflow: 'hidden' }}><HistoryList /></div>,
+          },
+          {
+            key: 'strategy',
+            label: '策略提示词',
+            children: (
+              <div style={{ height: '100%', overflow: 'auto' }}>
+                <StrategyPromptPanel />
+              </div>
+            ),
           },
         ]}
       />

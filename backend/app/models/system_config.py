@@ -1,5 +1,5 @@
 """系统配置模型（单行表，存储运行时可变配置：AI 开关 + 扫描策略）"""
-from sqlalchemy import Boolean, String, Integer, Numeric
+from sqlalchemy import Boolean, String, Integer, Numeric, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -12,6 +12,10 @@ class SystemConfig(Base):
 
     # AI 分析开关
     ai_analysis_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # 自定义策略提示词（MD 格式，AI 分析时可选携带）
+    strategy_prompt_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    strategy_prompt: Mapped[str] = mapped_column(Text, default="")
 
     # 扫描策略（运行时可修改，初始值从 env 注入）
     kline_interval: Mapped[str] = mapped_column(String(8), default="1h")

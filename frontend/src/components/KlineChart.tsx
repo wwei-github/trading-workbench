@@ -18,7 +18,7 @@ interface Props {
   ai?: AIAnalysis
 }
 
-const CHART_HEIGHT = 560
+const CHART_HEIGHT = 560 // 容器无高度时的兜底值
 
 export default function KlineChart({ symbol, limit = 100, ai }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -58,7 +58,7 @@ export default function KlineChart({ symbol, limit = 100, ai }: Props) {
         horzLine: { color: '#758696', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#758696' },
       },
       width: container.clientWidth || 520,
-      height: CHART_HEIGHT,
+      height: container.clientHeight || CHART_HEIGHT,
     })
 
     const series = chart.addSeries(CandlestickSeries, {
@@ -93,10 +93,13 @@ export default function KlineChart({ symbol, limit = 100, ai }: Props) {
         /* ignore */
       })
 
-    // 自适应容器宽度
+    // 自适应容器宽高
     const resize = () => {
       if (container && chartRef.current) {
-        chartRef.current.applyOptions({ width: container.clientWidth })
+        chartRef.current.applyOptions({
+          width: container.clientWidth,
+          height: container.clientHeight || CHART_HEIGHT,
+        })
       }
     }
     const ro = new ResizeObserver(resize)
@@ -151,7 +154,7 @@ export default function KlineChart({ symbol, limit = 100, ai }: Props) {
     const drawPosition = () => {
       while (svg.firstChild) svg.removeChild(svg.firstChild)
       const fullWidth = containerRef.current?.clientWidth || svg.clientWidth || 520
-      const height = CHART_HEIGHT
+      const height = containerRef.current?.clientHeight || CHART_HEIGHT
       // K 线主区域右边界 = 总宽 - 右侧价格轴宽度
       const priceScaleWidth = chart.priceScale('right').width()
       const rightEdge = Math.max(MARK_W, fullWidth - priceScaleWidth)
@@ -299,18 +302,18 @@ export default function KlineChart({ symbol, limit = 100, ai }: Props) {
   }, [ai])
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: CHART_HEIGHT }}>
-      <div ref={containerRef} style={{ width: '100%', height: CHART_HEIGHT }} />
+    <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 360 }}>
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
       <svg
         ref={svgRef}
         width="100%"
-        height={CHART_HEIGHT}
+        height="100%"
         style={{
           position: 'absolute',
           top: 0,
           left: 0,
           width: '100%',
-          height: CHART_HEIGHT,
+          height: '100%',
           pointerEvents: 'none',
           zIndex: 10,
         }}

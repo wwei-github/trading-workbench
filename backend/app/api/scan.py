@@ -227,11 +227,13 @@ def trigger_ai_analysis(
 
 @router.get("/config", response_model=SystemConfigOut)
 def get_system_config(db: Session = Depends(get_db)):
-    """获取系统配置（AI 开关 + 扫描策略）"""
+    """获取系统配置（AI 开关 + 策略提示词 + 扫描策略）"""
     cfg = _get_system_config(db)
     return SystemConfigOut(
         ai_analysis_enabled=cfg.ai_analysis_enabled,
         ai_configured=bool(settings.AI_API_KEY),
+        strategy_prompt_enabled=cfg.strategy_prompt_enabled,
+        strategy_prompt=cfg.strategy_prompt or "",
         kline_interval=cfg.kline_interval,
         kline_window=cfg.kline_window,
         breakout_threshold=float(cfg.breakout_threshold),
@@ -259,6 +261,12 @@ def update_system_config(
             )
         cfg.ai_analysis_enabled = body.ai_analysis_enabled
 
+    # 策略提示词
+    if body.strategy_prompt_enabled is not None:
+        cfg.strategy_prompt_enabled = body.strategy_prompt_enabled
+    if body.strategy_prompt is not None:
+        cfg.strategy_prompt = body.strategy_prompt
+
     # 扫描策略字段
     if body.kline_interval is not None:
         cfg.kline_interval = body.kline_interval
@@ -280,6 +288,8 @@ def update_system_config(
     return SystemConfigOut(
         ai_analysis_enabled=cfg.ai_analysis_enabled,
         ai_configured=bool(settings.AI_API_KEY),
+        strategy_prompt_enabled=cfg.strategy_prompt_enabled,
+        strategy_prompt=cfg.strategy_prompt or "",
         kline_interval=cfg.kline_interval,
         kline_window=cfg.kline_window,
         breakout_threshold=float(cfg.breakout_threshold),

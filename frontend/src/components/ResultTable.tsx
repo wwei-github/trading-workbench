@@ -16,6 +16,12 @@ function fmtPrice(v: number | null | undefined): string {
   return v.toFixed(2)
 }
 
+// AI 交易细节表：标签列统一宽度，保证左右两栏对齐
+const descCell = {
+  labelStyle: { width: "18%" },
+  contentStyle: { width: "32%" },
+};
+
 export default function ResultTable() {
   const {
     results,
@@ -229,8 +235,15 @@ export default function ResultTable() {
 
   return (
     <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
-      {/* 左侧：结果列表 + 折叠 AI 分析 */}
-      <div style={{ flex: "0 0 55%", overflow: "auto", paddingRight: 8 }}>
+      {/* 左侧：结果列表 + 折叠 AI 分析（固定高度，表格区内部滚动） */}
+      <div
+        style={{
+          flex: "0 0 55%",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          paddingRight: 8,
+        }}>
         <Table
           rowKey="id"
           className="result-table"
@@ -350,7 +363,7 @@ export default function ResultTable() {
                         {/* 交易细节：仅 suggest 时展示 */}
                         {!isSkip && (
                           <Descriptions bordered size="small" column={2}>
-                            <Descriptions.Item label="方向">
+                            <Descriptions.Item label="方向" {...descCell}>
                               {ai.direction === "long" ? (
                                 <Tag color="green">做多 (Long)</Tag>
                               ) : ai.direction === "short" ? (
@@ -359,7 +372,7 @@ export default function ResultTable() {
                                 <span style={{ color: "#999" }}>-</span>
                               )}
                             </Descriptions.Item>
-                            <Descriptions.Item label="推荐程度">
+                            <Descriptions.Item label="推荐程度" {...descCell}>
                               {ai.recommendation != null ? (
                                 <span
                                   style={{
@@ -379,25 +392,25 @@ export default function ResultTable() {
                                 <span style={{ color: "#999" }}>-</span>
                               )}
                             </Descriptions.Item>
-                            <Descriptions.Item label="盈亏比">
+                            <Descriptions.Item label="盈亏比" {...descCell}>
                               {ai.risk_reward_ratio != null
                                 ? `${ai.risk_reward_ratio.toFixed(2)}`
                                 : "-"}
                             </Descriptions.Item>
-                            <Descriptions.Item label="入场价">
+                            <Descriptions.Item label="入场价" {...descCell}>
                               {fmtPrice(ai.entry_price)}
                             </Descriptions.Item>
-                            <Descriptions.Item label="仓位建议">
+                            <Descriptions.Item label="仓位建议" {...descCell}>
                               {ai.position_pct != null
                                 ? `${ai.position_pct}%`
                                 : "-"}
                             </Descriptions.Item>
-                            <Descriptions.Item label="止损价">
+                            <Descriptions.Item label="止损价" {...descCell}>
                               <span style={{ color: "#ff4d4f" }}>
                                 {fmtPrice(ai.stop_loss)}
                               </span>
                             </Descriptions.Item>
-                            <Descriptions.Item label="止盈1">
+                            <Descriptions.Item label="止盈1" {...descCell}>
                               <span style={{ color: "#52c41a" }}>
                                 {fmtPrice(ai.take_profit_1)}
                               </span>
@@ -459,11 +472,13 @@ export default function ResultTable() {
         />
       </div>
 
-      {/* 右侧：K线图 */}
+      {/* 右侧：K线图（填满剩余高度，与左栏对齐） */}
       <div
         style={{
           flex: "1 1 45%",
-          overflow: "auto",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
           paddingLeft: 8,
           borderLeft: "1px solid #f0f0f0",
         }}>

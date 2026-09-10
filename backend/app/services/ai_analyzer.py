@@ -1,6 +1,7 @@
 """AI 分析服务：调用 OpenAI 兼容接口，为命中币种生成开单建议"""
 import json
 import logging
+from typing import Optional
 
 from openai import OpenAI
 
@@ -29,11 +30,12 @@ def _get_client() -> OpenAI:
     return OpenAI(api_key=settings.AI_API_KEY, base_url=settings.AI_BASE_URL)
 
 
-def analyze_coin(signal: dict, klines: list) -> dict:
+def analyze_coin(signal: dict, klines: list, strategy_prompt: Optional[str] = None) -> dict:
     """对单个币种进行 AI 分析，返回结构化建议 dict。
 
     signal: 包含 symbol/signal_type/current_price/breakout_pct/pattern/signal_reason/volume_type/volume/volume_24h
     klines: 原始 K 线数据 [[open_time, open, high, low, close, volume, ...], ...]
+    strategy_prompt: 用户自定义交易策略（MD 格式），提供时附加到系统提示词供 AI 参考
     """
     # 取最近 30 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-31:-1]）
     recent = klines[-31:-1] if len(klines) >= 31 else klines[:-1]
@@ -53,11 +55,21 @@ def analyze_coin(signal: dict, klines: list) -> dict:
         f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol):\n{kline_summary}"
     )
 
+    system_prompt = SYSTEM_PROMPT
+    if strategy_prompt:
+        system_prompt += (
+            "\n\n以下是用户自定义交易策略，请优先遵循其规则进行分析，"
+            "与默认规则冲突时以自定义策略为准：\n"
+            "===== 自定义策略开始 =====\n"
+            f"{strategy_prompt}\n"
+            "===== 自定义策略结束 ====="
+        )
+
     client = _get_client()
     resp = client.chat.completions.create(
         model=settings.AI_MODEL,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.3,

@@ -86,6 +86,8 @@ export interface KlineData {
 export interface SystemConfig {
   ai_analysis_enabled: boolean;
   ai_configured: boolean;
+  strategy_prompt_enabled: boolean;
+  strategy_prompt: string;
   kline_interval: string;
   kline_window: number;
   breakout_threshold: number;
