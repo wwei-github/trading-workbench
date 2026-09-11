@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { Alert, Button, Checkbox, Dropdown, InputNumber, Segmented, Tag, Typography } from 'antd'
+import { Alert, Button, Checkbox, Dropdown, InputNumber, Typography } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import {
   createChart,
@@ -55,6 +55,17 @@ const KIND_LABEL: Record<string, string> = {
 
 // 每个角色（支撑/压力）最多显示的关键位条数：只画距当前价最近的
 const MAX_LINES_PER_ROLE = 2
+
+// 关键位类型语义色：开关按钮圆点与图表线条颜色同源（支撑/压力保持红绿语义，
+// 前高/前低/区间顶/区间底各配独立色相，便于一眼区分）
+const KIND_COLORS: Record<string, string> = {
+  prev_high: '#ff9800',
+  prev_low: '#00bcd4',
+  support: '#26a69a',
+  resistance: '#ef5350',
+  range_top: '#f0b90b',
+  range_bottom: '#b39ddb',
+}
 
 // 涨跌配色方案：红涨绿跌（国内习惯，默认）/ 绿涨红跌（国际习惯）
 // 仅作用于 K 线实体；关键位/AI 仓位线保持语义色不变
@@ -359,7 +370,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
     for (const lv of nearest) {
       const line = series.createPriceLine({
         price: lv.price,
-        color: lv.role === 'support' ? '#26a69a' : '#ef5350',
+        color: KIND_COLORS[lv.kind] ?? (lv.role === 'support' ? '#26a69a' : '#ef5350'),
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: true,
@@ -821,43 +832,101 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           {keyLevels && keyLevels.length > 0 &&
             [...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => {
               const visible = !hiddenKinds.has(kind)
-              // 未选中态必须显式配色：antd 亮色主题下默认是深色文字 + 无背景，
-              // 叠在深色工具栏背景上会完全看不见
-              const style = visible
-                ? { color: '#fff' }
-                : {
-                    color: '#9aa3b2',
-                    background: 'rgba(255, 255, 255, 0.06)',
-                    border: '1px dashed #3a3f4d',
-                  }
+              const color = KIND_COLORS[kind] ?? '#9aa3b2'
               return (
-                <Tag.CheckableTag
+                <span
                   key={kind}
-                  checked={visible}
-                  style={style}
-                  onChange={(checked) =>
+                  onClick={() =>
                     setHiddenKinds((prev) => {
                       const next = new Set(prev)
-                      if (checked) next.delete(kind)
-                      else next.add(kind)
+                      if (visible) next.add(kind)
+                      else next.delete(kind)
                       return next
                     })
-                  }>
+                  }
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    fontSize: 11,
+                    lineHeight: '16px',
+                    padding: '2px 9px',
+                    borderRadius: 999,
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    transition: 'all 0.2s',
+                    ...(visible
+                      ? {
+                          color: '#fff',
+                          background: `${color}2b`,
+                          border: `1px solid ${color}99`,
+                          boxShadow: `0 0 6px ${color}33`,
+                        }
+                      : { color: '#6b7385', background: 'transparent', border: '1px dashed #3a3f4d' }),
+                  }}>
+                  <span
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      flexShrink: 0,
+                      background: visible ? color : '#4a5164',
+                      boxShadow: visible ? `0 0 4px ${color}` : 'none',
+                      transition: 'all 0.2s',
+                    }}
+                  />
                   {KIND_LABEL[kind] || kind}
-                </Tag.CheckableTag>
+                </span>
               )
             })}
-          {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效） */}
-          <Segmented
-            size="small"
-            value={colorScheme}
-            options={[
-              { label: '红涨绿跌', value: 'red-up' },
-              { label: '绿涨红跌', value: 'green-up' },
-            ]}
-            onChange={(v) => setColorScheme(v as ColorScheme)}
-            style={{ marginLeft: 4 }}
-          />
+          {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效）：
+              药丸形分段控件，选中项带涨跌语义色底色，圆点直观示意红绿顺序 */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              background: 'rgba(255, 255, 255, 0.06)',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              borderRadius: 999,
+              padding: 2,
+              marginLeft: 4,
+            }}>
+            {(
+              [
+                { value: 'red-up', label: '红涨绿跌', tint: 'rgba(239, 83, 80, 0.30)', dots: ['#ef5350', '#26a69a'] },
+                { value: 'green-up', label: '绿涨红跌', tint: 'rgba(38, 166, 154, 0.30)', dots: ['#26a69a', '#ef5350'] },
+              ] as const
+            ).map((opt) => {
+              const active = colorScheme === opt.value
+              return (
+                <span
+                  key={opt.value}
+                  onClick={() => setColorScheme(opt.value)}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    fontSize: 11,
+                    lineHeight: '16px',
+                    padding: '2px 8px',
+                    borderRadius: 999,
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    transition: 'all 0.2s',
+                    color: active ? '#fff' : '#8b93a7',
+                    background: active ? opt.tint : 'transparent',
+                  }}>
+                  <span
+                    style={{ width: 5, height: 5, borderRadius: '50%', background: opt.dots[0] }}
+                  />
+                  <span
+                    style={{ width: 5, height: 5, borderRadius: '50%', background: opt.dots[1] }}
+                  />
+                  {opt.label}
+                </span>
+              )
+            })}
+          </div>
         </div>
         {/* 图例：OHLC + 涨跌幅 + 成交量 + 指标数值（十字线联动，纯展示不挡操作） */}
         {legendData && !error && (
