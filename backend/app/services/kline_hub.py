@@ -4,6 +4,8 @@
   按 (symbol, interval) 频道动态 SUBSCRIBE/UNSUBSCRIBE，所有浏览器/图表共享
 - 断线：指数退避重连 3 次（1/2/4s）→ 降级 REST 轮询（3s/次，缓存双旁路），
   REST 期间每 30s 探测 WS 恢复；WS_OK 态看门狗对 30s 无事件的频道 REST 兜底一帧
+- 中文合约（牛来USDT 等非 ASCII 符号）：币安 WS 订阅 ACK 成功但永不推帧（静默），
+  这类频道不进 WS 订阅，由看门狗按 REST 周期（3s）轮询兜底
 - 下游：SSE 端点为每条连接注册一个 asyncio.Queue（maxsize=64），满则丢最旧
   （latest-wins：kline 帧是当前 bar 的完整替换，幂等无信息损失）
 - 归属：仅 uvicorn API 进程启动（惰性：首个订阅才连上游）；celery 容器不 import app.main
@@ -27,9 +29,8 @@ ChannelKey = tuple[str, str]  # (symbol_lower, interval)
 _QUEUE_SIZE = 64          # 每个订阅者的下行信箱深度（≈16s 的 WS 帧缓冲）
 _BACKOFF_S = [1, 2, 4, 8, 16, 30]   # WS 重连退避序列
 _WS_MAX_ATTEMPTS = 3      # 连续失败该次数后进入 REST 降级
-_REST_POLL_S = 3          # REST 降级轮询周期
+_REST_POLL_S = 3          # REST 降级轮询周期；亦是 WS_OK 态看门狗巡检周期
 _WS_PROBE_S = 30          # REST 降级期间探测 WS 恢复的间隔
-_WATCHDOG_TICK_S = 10     # 看门狗巡检周期
 _WATCHDOG_STALE_S = 30    # WS_OK 态频道无事件判定阈值（如下架符号）
 
 
@@ -118,8 +119,9 @@ class KlineHub:
                         self._ws = ws
                         self._ws_attempt = 0
                         self._state = "ws"
-                        await self._send_subscribe(sorted(self._desired))
-                        logger.info("KlineHub 币安 WS 已连接，订阅 %d 频道", len(self._desired))
+                        sub_ch = [c for c in sorted(self._desired) if c[0].isascii()]
+                        await self._send_subscribe(sub_ch)
+                        logger.info("KlineHub 币安 WS 已连接，订阅 %d 频道", len(sub_ch))
                         async for raw in ws:
                             self._handle_ws_message(raw)
                 except asyncio.CancelledError:
@@ -185,6 +187,9 @@ class KlineHub:
         await self._send_sub_msg("UNSUBSCRIBE", channels)
 
     async def _send_sub_msg(self, method: str, channels: list[ChannelKey]) -> None:
+        # 非 ASCII 符号不进 WS：订阅能 ACK 但币安永不推帧，且异常 stream name
+        # 可能触发 1008 整连接踢出（殃及其他频道），统一走 REST 轮询
+        channels = [c for c in channels if c[0].isascii()]
         if not channels or self._ws is None:
             return
         self._req_id += 1
@@ -237,7 +242,7 @@ class KlineHub:
                     await asyncio.sleep(_REST_POLL_S)
                 elif self._state == "ws":
                     await self._sweep_watchdog()
-                    await asyncio.sleep(_WATCHDOG_TICK_S)
+                    await asyncio.sleep(_REST_POLL_S)
                 else:
                     await asyncio.sleep(1)
             except asyncio.CancelledError:
@@ -256,16 +261,18 @@ class KlineHub:
             self._publish(ch, bar)
 
     async def _sweep_watchdog(self) -> None:
-        """看门狗：WS_OK 态下 30s 无事件的频道（断流/下架符号）REST 兜底一帧"""
+        """看门狗：WS_OK 态下兜底推帧——非 ASCII 符号每次巡检都 REST 轮询
+        （币安 WS 静默无数据），其余频道 30s 无事件（断流/下架）才兜底一帧"""
         now = time.monotonic()
-        stale = [
+        due = [
             ch for ch in list(self._subs.keys())
-            if now - self._last_event_ts.get(ch, 0) >= _WATCHDOG_STALE_S
+            if not ch[0].isascii()
+            or now - self._last_event_ts.get(ch, 0) >= _WATCHDOG_STALE_S
         ]
-        if not stale:
+        if not due:
             return
         pool = ExchangePool()
-        for ch in stale:
+        for ch in due:
             bar = await self._rest_bar(pool, ch)
             if bar is not None:
                 self._publish(ch, bar)
