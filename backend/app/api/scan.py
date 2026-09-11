@@ -468,16 +468,24 @@ def skill_detail(name: str):
 # ===== K 线数据 =====
 
 @router.get("/klines/{symbol}")
-def get_klines(symbol: str, limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
+def get_klines(
+    symbol: str,
+    limit: int = Query(100, ge=1, le=500),
+    force_refresh: bool = Query(False, description="跳过缓存直接拉取交易所最新数据并重置缓存"),
+    db: Session = Depends(get_db),
+):
     """获取指定币种的最新 K 线数据（用于前端展示）
 
     多交易所故障转移（币安→欧易→Bitget）；全部失败时降级返回旧缓存，
     仍失败则 503，detail 含各交易所失败原因与解禁时长。
+    force_refresh=True 时跳过缓存直连交易所（图表"更新"按钮），结果回写缓存。
     """
     cfg = _get_system_config(db)
     pool = ExchangePool()
     try:
-        klines = pool.get_klines(symbol, cfg.kline_interval, limit, allow_stale=True)
+        klines = pool.get_klines(
+            symbol, cfg.kline_interval, limit, allow_stale=True, force_refresh=force_refresh
+        )
     except AllExchangesFailed as e:
         raise HTTPException(status_code=503, detail=f"K线获取失败（{e.summary}）")
     # 返回精简格式: [{time, open, high, low, close, volume}, ...]

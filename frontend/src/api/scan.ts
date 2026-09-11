@@ -48,9 +48,11 @@ export const scanApi = {
       })
       .then((r) => r.data),
 
-  klines: (symbol: string, limit = 100) =>
+  klines: (symbol: string, limit = 100, forceRefresh = false) =>
     api
-      .get<KlineData>(`/scans/klines/${symbol}`, { params: { limit } })
+      .get<KlineData>(`/scans/klines/${symbol}`, {
+        params: forceRefresh ? { limit, force_refresh: true } : { limit },
+      })
       .then((r) => r.data),
 
   getConfig: () => api.get<SystemConfig>('/scans/config').then((r) => r.data),

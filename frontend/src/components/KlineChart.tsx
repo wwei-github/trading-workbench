@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { Alert, Button, Checkbox, Dropdown, InputNumber, Typography } from 'antd'
-import { PlusOutlined } from '@ant-design/icons'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { Alert, Button, Checkbox, Dropdown, InputNumber, Tooltip, Typography } from 'antd'
+import { PlusOutlined, SyncOutlined } from '@ant-design/icons'
 import {
   createChart,
   createTextWatermark,
@@ -13,7 +13,9 @@ import {
   CrosshairMode,
   type IChartApi,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
   type SeriesType,
+  type Time,
   type SeriesMarker,
   type UTCTimestamp,
   type IPriceLine,
@@ -30,7 +32,7 @@ import {
   type IndicatorContext,
   type IndicatorResult,
 } from '../constants/indicators'
-import type { AIAnalysis, Kline } from '../types'
+import type { AIAnalysis, Kline, KlineData } from '../types'
 
 const { Text } = Typography
 
@@ -122,13 +124,90 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
     { series: ISeriesApi<SeriesType>; name: string; color: string; lastValue: number | null }[]
   >([])
   const redrawFnRef = useRef<(() => void) | null>(null)
+  // 摆动结构标注插件实例（更新数据时用 setMarkers 原位替换，不重复创建）
+  const markersApiRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // "更新"按钮进行中状态
+  const [updating, setUpdating] = useState(false)
   // 已加载的 K 线（完整 OHLCV），供指标计算与标注使用
   const [candlePoints, setCandlePoints] = useState<
     { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }[]
   >([])
   // 图例数据：null 表示未悬浮 → 显示最新一根 K 线
   const [legend, setLegend] = useState<LegendData | null>(null)
+
+  // 将拉取到的 K 线应用到图表（初始化加载与"更新"按钮共用）
+  const applyKlineData = useCallback((data: KlineData) => {
+    const series = seriesRef.current
+    const chart = chartRef.current
+    if (!series || !chart) return
+    const candleData = data.klines.map((k: Kline) => ({
+      time: Math.floor(k.time / 1000) as UTCTimestamp,
+      open: k.open,
+      high: k.high,
+      low: k.low,
+      close: k.close,
+    }))
+    series.setData(candleData)
+    // 默认显示最近约 130 根（更易读），往左滚动可看全量历史
+    const from = Math.max(0, candleData.length - 130)
+    chart.timeScale().setVisibleLogicalRange({ from, to: candleData.length + 4 })
+    // 直接从原始数据取完整 OHLCV（candleData 是给 series 用的精简结构）
+    setCandlePoints(
+      data.klines.map((k: Kline) => ({
+        time: Math.floor(k.time / 1000) as UTCTimestamp,
+        open: k.open,
+        high: k.high,
+        low: k.low,
+        close: k.close,
+        volume: k.volume,
+      })),
+    )
+    setError(null)
+    // 摆动结构标注（借鉴 Pine 结构标签：高点 HH/LH，低点 HL/LL，各取 5 个）
+    const sw = data.swings
+    const fmtP = (p: number) =>
+      p < 1 ? p.toFixed(6) : p < 100 ? p.toFixed(4) : p.toFixed(2)
+    const UP = '#22ab94'
+    const DOWN = '#f23645'
+    const markers: SeriesMarker<UTCTimestamp>[] = [
+      ...(sw?.highs ?? []).map((s) => ({
+        time: Math.floor(s.time / 1000) as UTCTimestamp,
+        position: 'aboveBar' as const,
+        shape: 'arrowDown' as const,
+        color: s.label === 'LH' ? DOWN : UP,
+        text: `${s.label} ${fmtP(s.price)}`,
+        size: 1,
+      })),
+      ...(sw?.lows ?? []).map((s) => ({
+        time: Math.floor(s.time / 1000) as UTCTimestamp,
+        position: 'belowBar' as const,
+        shape: 'arrowUp' as const,
+        color: s.label === 'HL' ? UP : DOWN,
+        text: `${s.label} ${fmtP(s.price)}`,
+        size: 1,
+      })),
+    ].sort((a, b) => (a.time as number) - (b.time as number))
+    if (markersApiRef.current) {
+      markersApiRef.current.setMarkers(markers)
+    } else {
+      markersApiRef.current = createSeriesMarkers(series, markers)
+    }
+    // 数据加载完成后触发 AI 仓位标注重绘（等待布局完成）
+    requestAnimationFrame(() => redrawFnRef.current?.())
+  }, [])
+
+  // "更新"按钮：跳过缓存直连交易所拉最新 K 线，交易所返回后回写重置缓存
+  const handleUpdate = async () => {
+    setUpdating(true)
+    try {
+      applyKlineData(await scanApi.klines(symbol, limit, true))
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'K线更新失败')
+    } finally {
+      setUpdating(false)
+    }
+  }
 
   // 初始化图表 + 拉取数据
   useEffect(() => {
@@ -245,62 +324,11 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
       .klines(symbol, limit)
       .then((data) => {
         if (cancelled || !seriesRef.current) return
-        const candleData = data.klines.map((k: Kline) => ({
-          time: Math.floor(k.time / 1000) as UTCTimestamp,
-          open: k.open,
-          high: k.high,
-          low: k.low,
-          close: k.close,
-        }))
-        seriesRef.current.setData(candleData)
-        // 默认显示最近约 130 根（更易读），往左滚动可看全量历史
-        const from = Math.max(0, candleData.length - 130)
-        chart.timeScale().setVisibleLogicalRange({ from, to: candleData.length + 4 })
-        // 直接从原始数据取完整 OHLCV（candleData 是给 series 用的精简结构）
-        setCandlePoints(
-          data.klines.map((k: Kline) => ({
-            time: Math.floor(k.time / 1000) as UTCTimestamp,
-            open: k.open,
-            high: k.high,
-            low: k.low,
-            close: k.close,
-            volume: k.volume,
-          })),
-        )
-        setError(null)
-        // 摆动结构标注（借鉴 Pine 结构标签：高点 HH/LH，低点 HL/LL，各取 5 个）
-        const sw = data.swings
-        if (sw && (sw.highs?.length || sw.lows?.length)) {
-          const fmtP = (p: number) =>
-            p < 1 ? p.toFixed(6) : p < 100 ? p.toFixed(4) : p.toFixed(2)
-          const UP = '#22ab94'
-          const DOWN = '#f23645'
-          const markers: SeriesMarker<UTCTimestamp>[] = [
-            ...sw.highs.map((s) => ({
-              time: Math.floor(s.time / 1000) as UTCTimestamp,
-              position: 'aboveBar' as const,
-              shape: 'arrowDown' as const,
-              color: s.label === 'LH' ? DOWN : UP,
-              text: `${s.label} ${fmtP(s.price)}`,
-              size: 1,
-            })),
-            ...sw.lows.map((s) => ({
-              time: Math.floor(s.time / 1000) as UTCTimestamp,
-              position: 'belowBar' as const,
-              shape: 'arrowUp' as const,
-              color: s.label === 'HL' ? UP : DOWN,
-              text: `${s.label} ${fmtP(s.price)}`,
-              size: 1,
-            })),
-          ].sort((a, b) => (a.time as number) - (b.time as number))
-          createSeriesMarkers(seriesRef.current, markers)
-        }
-        // 数据加载完成后触发 AI 仓位标注重绘（等待布局完成）
-        requestAnimationFrame(() => redrawFnRef.current?.())
+        applyKlineData(data)
       })
       .catch((e) => {
         // 展示后端 503/4xx 的 detail（如交易所封禁时长）
-        setError(e?.response?.data?.detail || 'K线数据加载失败')
+        if (!cancelled) setError(e?.response?.data?.detail || 'K线数据加载失败')
       })
 
     // 自适应容器宽高
@@ -324,9 +352,10 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
       chart.remove()
       chartRef.current = null
       seriesRef.current = null
+      markersApiRef.current = null
       setLegend(null)
     }
-  }, [symbol, limit, refreshKey])
+  }, [symbol, limit, refreshKey, applyKlineData])
 
   // 切换涨跌配色：直接改 series 选项，所有图表实例同步生效，无需重建图表
   useEffect(() => {
@@ -779,6 +808,17 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
               指标
             </Button>
           </Dropdown>
+          {/* 更新按钮：跳过缓存直连交易所拉最新 K 线，并用新数据重置缓存 */}
+          <Tooltip title="直连交易所拉取最新K线并重置缓存">
+            <Button
+              size="small"
+              ghost
+              icon={<SyncOutlined spin={updating} />}
+              loading={updating}
+              onClick={handleUpdate}>
+              更新
+            </Button>
+          </Tooltip>
           {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效）：
               药丸形分段控件，选中项带涨跌语义色底色，圆点直观示意红绿顺序 */}
           <div
