@@ -56,6 +56,11 @@ const KIND_LABEL: Record<string, string> = {
 // 每个角色（支撑/压力）最多显示的关键位条数：只画距当前价最近的
 const MAX_LINES_PER_ROLE = 2
 
+// 关键位默认只显示前高/前低，其余类型默认隐藏（工具栏药丸可随时打开）
+const DEFAULT_VISIBLE_KINDS = new Set(['prev_high', 'prev_low'])
+const defaultHiddenKinds = () =>
+  new Set(Object.keys(KIND_LABEL).filter((k) => !DEFAULT_VISIBLE_KINDS.has(k)))
+
 // 关键位类型语义色：开关按钮圆点与图表线条颜色同源（支撑/压力保持红绿语义，
 // 前高/前低/区间顶/区间底各配独立色相，便于一眼区分）
 const KIND_COLORS: Record<string, string> = {
@@ -149,8 +154,8 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
   const [error, setError] = useState<string | null>(null)
   // K 线最新收盘价（作为"当前价"，用于挑选最近的关键位）
   const [lastClose, setLastClose] = useState<number | null>(null)
-  // 隐藏的关键位类型（勾选开关）
-  const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set())
+  // 隐藏的关键位类型（默认仅显示前高/前低，其余关闭）
+  const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(defaultHiddenKinds)
   // 已加载的 K 线（完整 OHLCV），供指标计算与标注使用
   const [candlePoints, setCandlePoints] = useState<
     { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }[]
@@ -171,6 +176,12 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
         fontFamily:
           "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif",
         attributionLogo: false,
+        // 主图与指标副图之间的分隔线调暗：平时与网格同色系，拖动悬停时轻微提亮
+        panes: {
+          enableResize: true,
+          separatorColor: '#1d2332',
+          separatorHoverColor: 'rgba(90, 100, 130, 0.25)',
+        },
       },
       grid: {
         vertLines: { color: '#1d2332' },
@@ -333,6 +344,11 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
       wickDownColor: c.down,
     })
   }, [colorScheme])
+
+  // 切换币种时恢复关键位默认开关状态（仅前高/前低显示），避免上个币种的开关选择残留
+  useEffect(() => {
+    setHiddenKinds(defaultHiddenKinds())
+  }, [symbol])
 
   // 绘制关键位水平线：只画距当前价最近的 N 条支撑 + N 条压力，可按类型勾选隐藏
   useEffect(() => {
@@ -533,7 +549,10 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
     priceLinesRef.current.forEach((l) => series.removePriceLine(l))
     priceLinesRef.current = []
 
-    if (!ai) {
+    // 无 AI 建议或 AI 属于其他币种：清空 SVG 上残留的仓位阴影/标签，
+    // 否则切换到没有开单信息的币种时，上一个币种的红绿阴影会一直留在图上
+    if (!ai || ai.symbol !== symbol) {
+      while (svg.firstChild) svg.removeChild(svg.firstChild)
       redrawFnRef.current = null
       return
     }
@@ -702,7 +721,8 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
     return () => {
       cancelAnimationFrame(rafId)
     }
-  }, [ai])
+    // refreshKey 变化会重建图表，effect 需重跑以重新绑定新 chart/series
+  }, [ai, symbol, refreshKey])
 
   // ===== 图例渲染数据：悬浮时用图例状态，否则用最新一根 K 线 =====
   const lastCandle = candlePoints[candlePoints.length - 1]
