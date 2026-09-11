@@ -91,6 +91,16 @@ def _run_migrations(engine):
             ALTER TABLE system_config
               ADD COLUMN IF NOT EXISTS ai_pipeline_enabled BOOLEAN NOT NULL DEFAULT FALSE
         """))
+        # Feature 8: P2 闭环——AI trace + 复盘记忆/双评委开关（docs/04 P2）
+        conn.execute(text("""
+            ALTER TABLE ai_analyses
+              ADD COLUMN IF NOT EXISTS stage_trace JSON
+        """))
+        conn.execute(text("""
+            ALTER TABLE system_config
+              ADD COLUMN IF NOT EXISTS memory_injection_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+              ADD COLUMN IF NOT EXISTS dual_judge_enabled BOOLEAN NOT NULL DEFAULT FALSE
+        """))
         # 确保系统配置表有默认行（初始值从 env 注入）
         conn.execute(text(
             "INSERT INTO system_config "

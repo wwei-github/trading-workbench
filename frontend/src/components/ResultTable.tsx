@@ -298,6 +298,31 @@ export default function ResultTable() {
       render: (v: boolean) =>
         v ? <Tag color="default">重复</Tag> : <Tag color="green">新</Tag>,
     },
+    {
+      // 复盘列：AI 建议开单 24h 后逐K回放定论（数据来自 aiMap，AI 开关关闭时为空显示 -）
+      title: (
+        <Tooltip title="AI 建议开单 24h 后逐K回放结果：先触止损=负，触止盈=胜，24h内未触任何价位=超时">
+          <span>复盘</span>
+        </Tooltip>
+      ),
+      key: "review",
+      render: (_: unknown, record: ScanResult) => {
+        const status = aiMap[record.id]?.review_status;
+        if (!status) return <span style={{ color: "#999" }}>-</span>;
+        switch (status) {
+          case "win_tp1":
+            return <Tag color="green">胜·TP1</Tag>;
+          case "win_tp2":
+            return <Tag color="green">胜·TP2</Tag>;
+          case "loss":
+            return <Tag color="red">负·止损</Tag>;
+          case "expired":
+            return <Tag color="default">超时</Tag>;
+          default:
+            return <span style={{ color: "#999" }}>-</span>;
+        }
+      },
+    },
   ];
 
   return (

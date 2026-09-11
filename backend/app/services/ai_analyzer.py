@@ -216,17 +216,3 @@ def analyze_with_guard(
         })
 
     return build_forced_skip("AI 输出多次未通过风控校验", last_violations)
-
-
-def _build_messages(
-    signal: dict, klines: list,
-    strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
-    market_facts: Optional[dict] = None,
-) -> list:
-    """构造 LLM messages（与 analyze_coin 共用拼装逻辑）"""
-    # 简单实现：复用 analyze_coin 的拼装（它返回时已生成 messages 之前的部分）
-    # 这里直接内联一份，避免重复调用 LLM；prompt 文本与 analyze_coin 保持同源
-    from app.services.ai_analyzer import SYSTEM_PROMPT  # noqa: PLC0415
-
-    # 委托 analyze_coin 生成 prompt 会造成一次额外调用，故此处直接实现
-    raise NotImplementedError

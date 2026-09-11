@@ -191,6 +191,8 @@ class SystemConfigUpdate(BaseModel):
     # AI 分析开关
     ai_analysis_enabled: Optional[bool] = None
     ai_pipeline_enabled: Optional[bool] = None
+    memory_injection_enabled: Optional[bool] = None
+    dual_judge_enabled: Optional[bool] = None
 
     # 自定义策略提示词
     strategy_prompt_enabled: Optional[bool] = None
@@ -209,3 +211,41 @@ class SystemConfigUpdate(BaseModel):
     key_level_tolerance: Optional[float] = None
     level_merge_threshold: Optional[float] = None
     fib_enabled: Optional[bool] = None
+
+
+# ===== 复盘统计（docs/04 §10 P2） =====
+
+class ReviewGroupStats(BaseModel):
+    signal_type: Optional[str] = None
+    position: Optional[str] = None
+    ema_state: Optional[str] = None
+    total: int
+    win_tp1: int = 0
+    win_tp2: int = 0
+    loss: int = 0
+    expired: int = 0
+    win_rate: float = 0.0  # (win_tp1+win_tp2)/(win+loss)，expired 不计
+
+
+class ReviewStatsResponse(BaseModel):
+    days: int
+    total: int = 0
+    win_tp1: int = 0
+    win_tp2: int = 0
+    loss: int = 0
+    expired: int = 0
+    win_rate: float = 0.0
+    groups: list[ReviewGroupStats] = []
+
+
+# ===== 技能库（docs/04 §6，只读） =====
+
+class SkillOut(BaseModel):
+    name: str
+    description: str = ""
+    use_when: str = ""
+    version: str = "1"
+
+
+class SkillDetailOut(SkillOut):
+    body: str = ""

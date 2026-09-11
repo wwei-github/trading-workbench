@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { Card, Row, Col, Button, Space, Switch, Tooltip, Tabs, message } from 'antd'
-import { ReloadOutlined, ThunderboltOutlined, RobotOutlined, FileTextOutlined } from '@ant-design/icons'
+import { ReloadOutlined, ThunderboltOutlined, RobotOutlined, FileTextOutlined, ApiOutlined } from '@ant-design/icons'
 import ScanStatus from '../components/ScanStatus'
 import ResultTable from '../components/ResultTable'
 import HistoryList from '../components/HistoryList'
@@ -8,6 +8,7 @@ import ScanConfigPanel from '../components/ScanConfigPanel'
 import StrategyPromptPanel from '../components/StrategyPromptPanel'
 import WatchlistPanel from '../components/WatchlistPanel'
 import SearchPanel from '../components/SearchPanel'
+import ReviewStatsPanel from '../components/ReviewStatsPanel'
 import { useScanStore } from '../stores/scanStore'
 
 export default function ScanResult() {
@@ -104,6 +105,19 @@ export default function ScanResult() {
     }
   }
 
+  const handleAgentToggle = async (checked: boolean) => {
+    try {
+      await updateConfig({ ai_pipeline_enabled: checked })
+      message.success(
+        checked
+          ? 'Agent 管线已开启：工具循环 + 结构位锚点 + 技能库'
+          : 'Agent 管线已关闭：使用单次调用 + 校验回炉',
+      )
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '切换 Agent 管线失败')
+    }
+  }
+
   const isScanning = !!status?.is_scanning
   const aiEnabled = !!aiConfig?.ai_analysis_enabled
   const aiConfigured = !!aiConfig?.ai_configured
@@ -151,6 +165,25 @@ export default function ScanResult() {
                     unCheckedChildren="策略"
                     checked={strategyEnabled}
                     onChange={handleStrategyToggle}
+                  />
+                </Space>
+              </Tooltip>
+              {/* Agent 管线开关：工具循环 + 结构位锚点 + 技能库 */}
+              <Tooltip
+                title={
+                  aiConfig?.ai_pipeline_enabled
+                    ? 'Agent 管线已开启：工具循环 + 结构位锚点 + 技能库'
+                    : 'Agent 管线已关闭：单次调用 + 校验回炉'
+                }
+              >
+                <Space>
+                  <ApiOutlined style={{ fontSize: 16 }} />
+                  <Switch
+                    checkedChildren="Agent"
+                    unCheckedChildren="Agent"
+                    checked={!!aiConfig?.ai_pipeline_enabled}
+                    onChange={handleAgentToggle}
+                    disabled={!aiConfigured}
                   />
                 </Space>
               </Tooltip>

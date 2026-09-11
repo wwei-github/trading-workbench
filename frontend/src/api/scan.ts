@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AIAnalysis, KlineData, ListResponse, ScanRecord, ScanResult, ScanStatus, SystemConfig, WatchlistItem } from '../types'
+import type { AIAnalysis, KlineData, ListResponse, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -63,6 +63,29 @@ export const scanApi = {
     api
       .post<AIAnalysis>('/scans/analyze', { symbol }, { timeout: 180000 })
       .then((r) => r.data),
+
+  // ===== AI 建议复盘系统（P2）=====
+
+  // 复盘统计（days 为统计窗口，expired 不计入胜率分母）
+  reviewStats: (days = 30) =>
+    api
+      .get<ReviewStats>('/scans/review/stats', { params: { days } })
+      .then((r) => r.data),
+
+  // Agent 工具循环轨迹（404 = 分析记录不存在；stage_trace 为 null = 单次调用管线生成）
+  aiTrace: (analysisId: string) =>
+    api
+      .get<{ analysis_id: string; stage_trace: StageTrace | null }>(
+        `/scans/ai-trace/${analysisId}`,
+      )
+      .then((r) => r.data),
+
+  // 技能库列表（只读，不含全文 body）
+  skills: () => api.get<SkillInfo[]>('/scans/skills').then((r) => r.data),
+
+  // 技能详情（含全文 body markdown，404 = 技能不存在）
+  skillDetail: (name: string) =>
+    api.get<SkillInfo>(`/scans/skills/${encodeURIComponent(name)}`).then((r) => r.data),
 
   // 关注列表
   watchlist: {

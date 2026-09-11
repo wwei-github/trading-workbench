@@ -76,9 +76,16 @@ class AIAnalysis(Base):
     position_pct: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)
     recommendation: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)  # 推荐程度 0-100
     fingerprint: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)  # 信号指纹（缓存复用）
+    stage_trace: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # Agent 工具循环 trace（docs/04 §5.9）
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")
+    trade_review: Mapped[Optional["TradeReview"]] = relationship(back_populates="ai_analysis", uselist=False)
+
+    @property
+    def review_status(self) -> Optional[str]:
+        """复盘状态：loss / win_tp1 / win_tp2 / expired / None（未到观察期或 skip）"""
+        return self.trade_review.outcome if self.trade_review else None
 
 
 class KlineCache(Base):
@@ -100,6 +107,35 @@ class KlineCache(Base):
     __table_args__ = (
         UniqueConstraint("symbol", "interval", "kline_hour", name="uq_kline_cache_key"),
     )
+
+
+class TradeReview(Base):
+    """AI 建议复盘：suggest 决策 24h 后逐 K 回放定论（docs/04 §4 Stage 6）
+
+    outcome: loss / win_tp1 / win_tp2 / expired（触 tp1 后又触止损仍计 win_tp1）
+    """
+    __tablename__ = "trade_reviews"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ai_analysis_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("ai_analyses.id"), nullable=False, unique=True, index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    direction: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    tp1_hit: Mapped[bool] = mapped_column(Boolean, default=False)
+    bars_to_exit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 触发时经过的已收盘K线数
+
+    # 分析时点的统计维度快照（分组统计用）
+    signal_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    position: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    ema_state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)
+    recommendation: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)
+
+    checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    ai_analysis: Mapped["AIAnalysis"] = relationship(back_populates="trade_review")
 
 
 class Watchlist(Base):

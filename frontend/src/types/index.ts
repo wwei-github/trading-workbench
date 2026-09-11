@@ -78,6 +78,7 @@ export interface AIAnalysis {
   position_pct: number | null;
   recommendation: number | null; // 0-100
   created_at: string;
+  review_status?: string | null; // 复盘结果：win_tp1 / win_tp2 / loss / expired（24h 后回放定论）
 }
 
 export interface WatchlistItem {
@@ -108,6 +109,7 @@ export interface KlineData {
 
 export interface SystemConfig {
   ai_analysis_enabled: boolean;
+  ai_pipeline_enabled: boolean;
   ai_configured: boolean;
   strategy_prompt_enabled: boolean;
   strategy_prompt: string;
@@ -121,4 +123,55 @@ export interface SystemConfig {
   key_level_tolerance?: number; // 关键位区域半宽（±x）
   level_merge_threshold?: number; // 支撑/压力聚类合并阈值
   fib_enabled?: boolean; // 斐波那契位开关（二期）
+  memory_injection_enabled?: boolean; // 复盘记忆注入：把近30天胜率统计注入 AI 系统提示词
+  dual_judge_enabled?: boolean; // 双评委辩论：对 suggest 决策做多空辩论复核
+}
+
+// ===== AI 建议复盘系统（P2）=====
+
+// 单个维度分组的复盘统计（groups 数组每个元素只有一个维度字段非空）
+export interface ReviewGroupStat {
+  signal_type: string | null;
+  position: string | null;
+  ema_state: string | null;
+  total: number;
+  win_tp1: number;
+  win_tp2: number;
+  loss: number;
+  expired: number;
+  win_rate: number;
+}
+
+// 复盘统计汇总（expired 不计入胜率分母）
+export interface ReviewStats {
+  days: number;
+  total: number;
+  win_tp1: number;
+  win_tp2: number;
+  loss: number;
+  expired: number;
+  win_rate: number;
+  groups: ReviewGroupStat[];
+}
+
+// 技能库条目（列表不含 body，详情接口返回全文）
+export interface SkillInfo {
+  name: string;
+  description: string;
+  use_when: string;
+  version: string;
+  body?: string;
+}
+
+// Agent 工具循环轨迹（stage_trace 为 null 表示单次调用管线生成）
+export interface StageTrace {
+  rounds: number;
+  tool_calls: number;
+  elapsed_ms: number;
+  steps: {
+    round: number;
+    llm_ms: number;
+    tools: string[];
+    calls?: { tool: string; args: Record<string, string>; result_len: number; ms: number }[];
+  }[];
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, InputNumber, Select, message, Button, Spin } from 'antd'
+import { Modal, Form, InputNumber, Select, message, Button, Spin, Divider, Switch } from 'antd'
 import { SettingOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
@@ -47,6 +47,9 @@ export default function ScanConfigPanel() {
         repeat_window_hours: values.repeat_window_hours,
         swing_order: values.swing_order,
         pullback_tolerance: values.pullback_tolerance,
+        // P2 实验开关
+        memory_injection_enabled: values.memory_injection_enabled,
+        dual_judge_enabled: values.dual_judge_enabled,
       }
       await updateConfig(data)
       message.success('配置已保存')
@@ -158,6 +161,27 @@ export default function ScanConfigPanel() {
             tooltip="相互距离 ≤ 阈值的摆动点合并为一个水平区域，0.005 = 0.5%"
           >
             <InputNumber step={0.001} min={0} max={0.1} style={{ width: '100%' }} />
+          </Form.Item>
+
+          {/* AI 实验功能（P2，默认关闭） */}
+          <Divider style={{ margin: '8px 0 16px' }}>
+            <span style={{ fontSize: 13, color: '#999' }}>AI 实验功能（默认关闭）</span>
+          </Divider>
+          <Form.Item
+            label="复盘记忆注入"
+            name="memory_injection_enabled"
+            valuePropName="checked"
+            tooltip="把近30天复盘胜率统计注入AI系统提示词（建议复盘数据积累2~4周后再开启，避免小样本误导）"
+          >
+            <Switch />
+          </Form.Item>
+          <Form.Item
+            label="双评委辩论"
+            name="dual_judge_enabled"
+            valuePropName="checked"
+            tooltip="对'建议开单'的决策做多空辩论复核，裁判可否决（额外3次LLM调用，仅Agent/单次管线的suggest决策生效）"
+          >
+            <Switch />
           </Form.Item>
         </Form>
         </Spin>

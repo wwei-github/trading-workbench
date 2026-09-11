@@ -201,8 +201,12 @@ def analyze_coin_agent(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     market_facts: Optional[dict] = None, pool=None,
+    review_digest: Optional[str] = None,
 ) -> dict:
-    """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）"""
+    """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
+
+    返回值额外带 "stage_trace" 键（工具循环 trace，docs/04 §5.9），落库时一并存储。
+    """
     client = OpenAI(api_key=settings.AI_API_KEY, base_url=settings.AI_BASE_URL)
 
     # 布尔事实（技能 use_when 判定）
@@ -216,6 +220,11 @@ def analyze_coin_agent(
         rr_min=settings.AI_RR_MIN, stop_max=settings.RISK_STOP_MAX_PCT * 100,
         skill_index=skill_index,
     )
+    if review_digest:
+        system += (
+            "\n\n近期复盘记忆（你自己过去建议的统计结果，供校准参考，勿过度拟合）：\n"
+            f"{review_digest}"
+        )
     if strategy_prompt:
         system += (
             "\n\n用户自定义交易策略（冲突时以自定义策略为准）：\n"
@@ -233,9 +242,11 @@ def analyze_coin_agent(
     ctx = {"signal": signal, "klines": klines, "pool": pool}
     fixed: Optional[dict] = None
     tool_rounds = 0
+    trace: list[dict] = []
     t0 = time.time()
 
     for rnd in range(1, MAX_ROUNDS + 1):
+        rt = time.time()
         resp = client.chat.completions.create(
             model=settings.AI_MODEL,
             messages=messages,
@@ -245,6 +256,11 @@ def analyze_coin_agent(
         )
         msg = resp.choices[0].message
         tool_calls = msg.tool_calls or []
+        trace.append({
+            "round": rnd,
+            "llm_ms": int((time.time() - rt) * 1000),
+            "tools": [tc.function.name for tc in tool_calls],
+        })
         logger.info(
             "Agent %s round%d: tools=%d content=%dB",
             signal.get("symbol"), rnd, len(tool_calls), len(msg.content or ""),
@@ -265,8 +281,15 @@ def analyze_coin_agent(
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
                 args = {}
+            tt = time.time()
             done, result, decision = _dispatch_tool(tc.function.name, args, ctx)
             tool_rounds += 1
+            trace[-1].setdefault("calls", []).append({
+                "tool": tc.function.name,
+                "args": {k: (str(v)[:80]) for k, v in args.items()},
+                "result_len": len(result),
+                "ms": int((time.time() - tt) * 1000),
+            })
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
@@ -280,6 +303,12 @@ def analyze_coin_agent(
     if not fixed:
         fixed = build_forced_skip(f"Agent {MAX_ROUNDS} 轮内未提交有效决策")
 
+    fixed["stage_trace"] = {
+        "rounds": len(trace),
+        "tool_calls": tool_rounds,
+        "elapsed_ms": int((time.time() - t0) * 1000),
+        "steps": trace,
+    }
     logger.info(
         "Agent 完成 %s: %s rr=%s rounds=%d %.1fs",
         signal.get("symbol"), fixed.get("trade_decision"),

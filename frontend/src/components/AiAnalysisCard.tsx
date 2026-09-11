@@ -1,6 +1,20 @@
-import { Alert, Descriptions, Tag } from 'antd'
+import { useState } from 'react'
+import {
+  Alert,
+  Button,
+  Collapse,
+  Descriptions,
+  Modal,
+  Space,
+  Spin,
+  Statistic,
+  Tag,
+  message,
+} from 'antd'
+import { ApiOutlined } from '@ant-design/icons'
 import { bj } from '../utils/dayjs'
-import type { AIAnalysis } from '../types'
+import { scanApi } from '../api/scan'
+import type { AIAnalysis, StageTrace } from '../types'
 
 // AI 交易细节表：标签列统一宽度，保证左右两栏对齐
 const descCell = {
@@ -26,6 +40,91 @@ function analysisLines(text?: string | null): string[] {
     .split('\n')
     .map((l) => l.trim())
     .filter(Boolean)
+}
+
+interface Props {
+  ai: AIAnalysis
+}
+
+/** Agent 运行轨迹弹窗：打开时拉取工具循环 trace，逐轮展示 LLM 与工具调用明细 */
+function TraceModal({ open, onClose, ai }: { open: boolean; onClose: () => void; ai: AIAnalysis }) {
+  const [loading, setLoading] = useState(false)
+  const [trace, setTrace] = useState<StageTrace | null | undefined>(undefined)
+
+  // 每次打开时拉取轨迹数据
+  const fetchTrace = () => {
+    setLoading(true)
+    scanApi
+      .aiTrace(ai.id)
+      .then((data) => setTrace(data.stage_trace))
+      .catch((e: any) => {
+        setTrace(undefined)
+        message.error(e?.response?.data?.detail || e?.message || '获取运行轨迹失败')
+      })
+      .finally(() => setLoading(false))
+  }
+
+  return (
+    <Modal
+      title="Agent 运行轨迹"
+      open={open}
+      onCancel={onClose}
+      footer={null}
+      width={640}
+      afterOpenChange={(visible) => {
+        // 打开动画结束后再拉数据，避免弹窗未展示时请求
+        if (visible) fetchTrace()
+      }}
+    >
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: '40px 0' }}>
+          <Spin />
+        </div>
+      ) : trace === null ? (
+        // 单次调用管线生成，无工具循环轨迹
+        <Alert type="info" message="该分析由单次调用管线生成，无工具循环轨迹" />
+      ) : trace ? (
+        <>
+          {/* 顶部统计：轮数 / 工具调用 / 总耗时 */}
+          <Space size={32} style={{ marginBottom: 12 }}>
+            <Statistic title="轮数" value={trace.rounds} valueStyle={{ fontSize: 20 }} />
+            <Statistic title="工具调用" value={trace.tool_calls} valueStyle={{ fontSize: 20 }} />
+            <Statistic
+              title="总耗时"
+              value={(trace.elapsed_ms / 1000).toFixed(1)}
+              suffix="s"
+              valueStyle={{ fontSize: 20 }}
+            />
+          </Space>
+          {/* 逐轮展开：LLM 耗时 + 工具列表 + 调用明细 */}
+          <Collapse
+            size="small"
+            defaultActiveKey={trace.steps.map((s) => String(s.round))}
+            items={trace.steps.map((step) => ({
+              key: String(step.round),
+              label: `Round ${step.round} · LLM ${step.llm_ms}ms · ${step.tools.join(', ') || '无工具调用'}`,
+              children: (
+                <div>
+                  {(step.calls || []).length === 0 ? (
+                    <span style={{ color: '#999', fontSize: 12 }}>本轮无工具调用明细</span>
+                  ) : (
+                    (step.calls || []).map((c, i) => (
+                      <div
+                        key={i}
+                        style={{ color: '#888', fontSize: 12, lineHeight: 1.9, fontFamily: 'monospace' }}
+                      >
+                        {c.tool}({JSON.stringify(c.args)}) → {c.result_len}B · {c.ms}ms
+                      </div>
+                    ))
+                  )}
+                </div>
+              ),
+            }))}
+          />
+        </>
+      ) : null}
+    </Modal>
+  )
 }
 
 /** AI 推理逐条展示（序号换行，整齐排版） */
@@ -73,6 +172,8 @@ interface Props {
 export default function AiAnalysisCard({ ai }: Props) {
   const eff = getEffectiveDecision(ai);
   const isSkip = eff.decision === "skip";
+  // 运行轨迹弹窗开关（仅 Agent 生成的分析可查看）
+  const [traceOpen, setTraceOpen] = useState(false);
 
   return (
     <>
@@ -179,6 +280,22 @@ export default function AiAnalysisCard({ ai }: Props) {
             <NumberedText text={ai.analysis} />
           </Descriptions.Item>
         </Descriptions>
+      )}
+
+      {/* 运行轨迹入口：仅 AI Agent 生成的分析（scan_result_id 非空）展示；手动搜索结果不显示 */}
+      {ai.scan_result_id && (
+        <>
+          <Button
+            type="link"
+            size="small"
+            icon={<ApiOutlined />}
+            style={{ marginTop: 4, paddingLeft: 0 }}
+            onClick={() => setTraceOpen(true)}
+          >
+            运行轨迹
+          </Button>
+          <TraceModal open={traceOpen} onClose={() => setTraceOpen(false)} ai={ai} />
+        </>
       )}
     </>
   );

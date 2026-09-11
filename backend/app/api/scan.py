@@ -21,14 +21,17 @@ from app.schemas.scan import (
     ManualAnalysisOut,
     SystemConfigOut,
     SystemConfigUpdate,
+    ReviewGroupStats,
+    ReviewStatsResponse,
 )
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services.scanner import classify_volume
 from app.services.ai_analyzer import analyze_coin
+from app.services.skill_library import list_skills
 from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
-from app.models.scan import ScanRecord, ScanResult, AIAnalysis
+from app.models.scan import ScanRecord, ScanResult, AIAnalysis, TradeReview
 from app.models.system_config import SystemConfig
 
 router = APIRouter(prefix="/api/scans", tags=["scans"])
@@ -277,6 +280,8 @@ def get_system_config(db: Session = Depends(get_db)):
     return SystemConfigOut(
         ai_analysis_enabled=cfg.ai_analysis_enabled,
         ai_pipeline_enabled=cfg.ai_pipeline_enabled,
+        memory_injection_enabled=cfg.memory_injection_enabled,
+        dual_judge_enabled=cfg.dual_judge_enabled,
         ai_configured=bool(settings.AI_API_KEY),
         strategy_prompt_enabled=cfg.strategy_prompt_enabled,
         strategy_prompt=cfg.strategy_prompt or "",
@@ -309,6 +314,12 @@ def update_system_config(
                 detail="后端未配置 AI_API_KEY，无法开启 AI 分析",
             )
         cfg.ai_analysis_enabled = body.ai_analysis_enabled
+    if body.ai_pipeline_enabled is not None:
+        cfg.ai_pipeline_enabled = body.ai_pipeline_enabled
+    if body.memory_injection_enabled is not None:
+        cfg.memory_injection_enabled = body.memory_injection_enabled
+    if body.dual_judge_enabled is not None:
+        cfg.dual_judge_enabled = body.dual_judge_enabled
 
     # 策略提示词
     if body.strategy_prompt_enabled is not None:
@@ -343,6 +354,8 @@ def update_system_config(
     return SystemConfigOut(
         ai_analysis_enabled=cfg.ai_analysis_enabled,
         ai_pipeline_enabled=cfg.ai_pipeline_enabled,
+        memory_injection_enabled=cfg.memory_injection_enabled,
+        dual_judge_enabled=cfg.dual_judge_enabled,
         ai_configured=bool(settings.AI_API_KEY),
         strategy_prompt_enabled=cfg.strategy_prompt_enabled,
         strategy_prompt=cfg.strategy_prompt or "",
@@ -357,6 +370,70 @@ def update_system_config(
         level_merge_threshold=float(cfg.level_merge_threshold),
         fib_enabled=bool(cfg.fib_enabled),
     )
+
+
+# ===== 复盘统计（docs/04 §10 P2） =====
+
+def _agg_stats(rows: list[TradeReview]) -> dict:
+    wins = sum(1 for r in rows if r.outcome in ("win_tp1", "win_tp2"))
+    losses = sum(1 for r in rows if r.outcome == "loss")
+    return {
+        "win_tp1": sum(1 for r in rows if r.outcome == "win_tp1"),
+        "win_tp2": sum(1 for r in rows if r.outcome == "win_tp2"),
+        "loss": losses,
+        "expired": sum(1 for r in rows if r.outcome == "expired"),
+        "win_rate": round(wins / (wins + losses), 4) if (wins + losses) else 0.0,
+    }
+
+
+@router.get("/review/stats", response_model=ReviewStatsResponse)
+def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_db)):
+    """AI 建议复盘统计：整体 + 按 signal_type/position/ema_state 分组胜率"""
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    rows = db.execute(
+        select(TradeReview).where(TradeReview.created_at >= cutoff)
+    ).scalars().all()
+
+    resp = ReviewStatsResponse(days=days, **_agg_stats(rows), groups=[])
+
+    for dim in ("signal_type", "position", "ema_state"):
+        buckets: dict[str, list[TradeReview]] = {}
+        for r in rows:
+            key = getattr(r, dim)
+            if key:
+                buckets.setdefault(key, []).append(r)
+        for key, items in sorted(buckets.items()):
+            agg = _agg_stats(items)
+            resp.groups.append(ReviewGroupStats(**{dim: key, **agg}))
+    return resp
+
+
+# ===== Agent trace 查询（docs/04 §5.9） =====
+
+@router.get("/ai-trace/{analysis_id}")
+def get_ai_trace(analysis_id: UUID, db: Session = Depends(get_db)):
+    """查询某次 AI 分析的 Agent 工具循环 trace（P0 管线无 trace，返回 null）"""
+    a = db.get(AIAnalysis, analysis_id)
+    if not a:
+        raise HTTPException(status_code=404, detail="分析记录不存在")
+    return {"analysis_id": a.id, "stage_trace": a.stage_trace}
+
+
+# ===== 技能库（只读，docs/04 §6.5） =====
+
+@router.get("/skills")
+def skills():
+    return [{"name": s["name"], "description": s["description"],
+             "use_when": s["use_when"], "version": s["version"]}
+            for s in list_skills()]
+
+
+@router.get("/skills/{name}")
+def skill_detail(name: str):
+    for s in list_skills():
+        if s["name"] == name:
+            return s
+    raise HTTPException(status_code=404, detail="技能不存在")
 
 
 # ===== K 线数据 =====

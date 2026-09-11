@@ -1,9 +1,127 @@
 import { useEffect, useState } from 'react'
-import { Button, Card, Space, Tooltip, Typography, message } from 'antd'
+import {
+  Button,
+  Card,
+  Drawer,
+  Empty,
+  List,
+  Space,
+  Spin,
+  Tabs,
+  Tag,
+  Tooltip,
+  Typography,
+  message,
+} from 'antd'
 import { SaveOutlined, QuestionCircleOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
+import { scanApi } from '../api/scan'
+import type { SkillInfo } from '../types'
 
 const { Text } = Typography
+
+/** 技能库 Tab：展示只读技能列表，点击查看全文（技能是可插拔的交易打法文件） */
+function SkillsTab() {
+  const [skills, setSkills] = useState<SkillInfo[]>([])
+  const [loading, setLoading] = useState(false)
+  // 当前打开详情的技能名 + 全文内容
+  const [activeName, setActiveName] = useState<string | null>(null)
+  const [detail, setDetail] = useState<SkillInfo | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+
+  // 初始加载技能列表
+  useEffect(() => {
+    setLoading(true)
+    scanApi
+      .skills()
+      .then((list) => setSkills(list))
+      .catch((e: any) => message.error(e?.response?.data?.detail || '获取技能库失败'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  // 打开抽屉时拉取技能全文
+  const openDetail = (name: string) => {
+    setActiveName(name)
+    setDetail(null)
+    setDetailLoading(true)
+    scanApi
+      .skillDetail(name)
+      .then((info) => setDetail(info))
+      .catch((e: any) => message.error(e?.response?.data?.detail || '获取技能详情失败'))
+      .finally(() => setDetailLoading(false))
+  }
+
+  return (
+    <div>
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        技能是可插拔的交易打法文件，AI Agent 决策时按触发条件按需加载（只读）
+      </Text>
+      <Spin spinning={loading}>
+        {skills.length === 0 && !loading ? (
+          <Empty description="技能库为空（backend/skills/ 目录）" style={{ marginTop: 40 }} />
+        ) : (
+          <List
+            size="small"
+            dataSource={skills}
+            renderItem={(s) => (
+              <List.Item
+                style={{ cursor: 'pointer' }}
+                onClick={() => openDetail(s.name)}
+              >
+                <div>
+                  <Space wrap size={8}>
+                    <Text strong>{s.name}</Text>
+                    <Tag>v{s.version}</Tag>
+                  </Space>
+                  <div style={{ marginTop: 4 }}>{s.description}</div>
+                  <div style={{ marginTop: 4 }}>
+                    <code
+                      style={{
+                        fontSize: 12,
+                        background: '#f5f5f5',
+                        padding: '1px 6px',
+                        borderRadius: 4,
+                      }}
+                    >
+                      触发：{s.use_when}
+                    </code>
+                  </div>
+                </div>
+              </List.Item>
+            )}
+          />
+        )}
+      </Spin>
+
+      {/* 技能全文抽屉 */}
+      <Drawer
+        title={activeName}
+        width={520}
+        open={!!activeName}
+        onClose={() => setActiveName(null)}
+      >
+        {detailLoading ? (
+          <div style={{ textAlign: 'center', marginTop: 40 }}>
+            <Spin />
+          </div>
+        ) : detail?.body ? (
+          <pre
+            style={{
+              whiteSpace: 'pre-wrap',
+              fontFamily: 'monospace',
+              fontSize: 12,
+              margin: 0,
+            }}
+          >
+            {detail.body}
+          </pre>
+        ) : (
+          <Empty description="无技能内容" />
+        )}
+      </Drawer>
+    </div>
+  )
+}
 
 const DEFAULT_PROMPT = `# 我的交易策略
 
@@ -22,6 +140,7 @@ const DEFAULT_PROMPT = `# 我的交易策略
 /**
  * 策略提示词 Tab：Markdown 格式编辑、保存。
  * 策略开关在顶部工具栏（AI 开关旁），开启后 AI 分析时携带此策略。
+ * 外层 Tabs：'策略提示词'（编辑）+ '技能库'（只读浏览）。
  */
 export default function StrategyPromptPanel() {
   const { aiConfig, fetchConfig, updateConfig } = useScanStore()
@@ -58,7 +177,13 @@ export default function StrategyPromptPanel() {
   }
 
   return (
-    <Card
+    <Tabs
+      items={[
+        {
+          key: 'prompt',
+          label: '策略提示词',
+          children: (
+            <Card
       size="small"
       title={
         <Space>
@@ -125,6 +250,15 @@ export default function StrategyPromptPanel() {
           )}
         </Space>
       </div>
-    </Card>
+            </Card>
+          ),
+        },
+        {
+          key: 'skills',
+          label: '技能库',
+          children: <SkillsTab />,
+        },
+      ]}
+    />
   )
 }

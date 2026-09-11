@@ -27,8 +27,10 @@ from app.database import SessionLocal
 from app.models.scan import ScanResult, AIAnalysis
 from app.models.system_config import SystemConfig
 from app.services import market_data
+from app.services import review_memory
 from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
+from app.services.dual_judge import run_dual_judge
 from app.services.exchange_pool import ExchangePool
 from app.services.narrator import generate_narrative
 from app.services.risk_guard import build_forced_skip, calc_atr
@@ -204,18 +206,36 @@ def run_ai_analysis_single(
                 _copy(db, r, r.symbol, repeat, fp, "🔁 24h 内重复信号，沿用已有结论")
                 return
 
-        # ── Stage 2：LLM 分析 + Risk Guard 校验回炉 ──
+        # ── Stage 2：LLM 分析（P1 Agent 工具循环 / P0 单次调用）+ Risk Guard 校验 ──
         market_facts = {
             "funding": market_data.get_funding(r.symbol),
             "market_breadth": market_data.get_market_breadth(ExchangePool()),
             "fear_greed": market_data.get_fear_greed(),
         }
-        ai_result = analyze_with_guard(
-            signal, klines,
-            strategy_prompt=strategy_prompt,
-            user_input=user_input,
-            market_facts=market_facts,
+        # 复盘记忆注入（P2，默认关）：近期复盘统计摘要进系统提示词
+        review_digest = (
+            review_memory.build_review_digest(db)
+            if cfg.memory_injection_enabled else None
         )
+        if cfg.ai_pipeline_enabled:
+            ai_result = analyze_coin_agent(
+                signal, klines,
+                strategy_prompt=strategy_prompt,
+                user_input=user_input,
+                market_facts=market_facts,
+                pool=pool,
+                review_digest=review_digest,
+            )
+        else:
+            ai_result = analyze_with_guard(
+                signal, klines,
+                strategy_prompt=strategy_prompt,
+                user_input=user_input,
+                market_facts=market_facts,
+            )
+        # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto
+        if cfg.dual_judge_enabled:
+            ai_result = run_dual_judge(ai_result, signal, market_facts)
         _finish(db, r, r.symbol, ai_result, fp)
     except Exception as e:
         logger.warning("AI 分析 %s 失败: %s", scan_result_id, e)
@@ -298,6 +318,7 @@ def _upsert_ai_analysis(
         "position_pct": ai_result.get("position_pct"),
         "recommendation": ai_result.get("recommendation"),
         "fingerprint": fingerprint,
+        "stage_trace": ai_result.get("stage_trace"),
     }
     existing = db.execute(
         select(AIAnalysis).where(AIAnalysis.scan_result_id == scan_result_id)
