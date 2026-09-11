@@ -252,7 +252,8 @@ def run_ai_analysis_single(
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto
         if cfg.dual_judge_enabled:
-            ai_progress.push(r.id, "gate", note="⚖️ 双评委辩论复核中…")
+            if ai_result.get("trade_decision") == "suggest":
+                ai_progress.push(r.id, "gate", note="⚖️ 双评委辩论复核中…")
             ai_result = run_dual_judge(ai_result, signal, market_facts)
         _finish(db, r, r.symbol, ai_result, fp)
         ai_progress.push_done(
