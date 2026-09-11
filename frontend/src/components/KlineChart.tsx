@@ -190,7 +190,8 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
       rightPriceScale: {
         borderColor: '#252b3b',
         entireTextOnly: true,
-        scaleMargins: { top: 0.08, bottom: 0.08 },
+        // 顶部留白 18%：避开左上角悬浮的工具栏/图例，最高 K 线不被遮挡
+        scaleMargins: { top: 0.18, bottom: 0.08 },
       },
       timeScale: {
         borderColor: '#252b3b',
@@ -534,8 +535,9 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
     }
     indicatorMetaRef.current = metas
 
-    // 主图 : 副图 = 3 : 1（逐个设置拉伸比例）
-    chart.panes().forEach((pn, i) => pn.setStretchFactor(i === 0 ? 3 : 1))
+    // 主图 : 副图 = 5 : 1（副图指标默认压低，给主图 K 线留更多高度；
+    // 分隔线可拖动，用户可自行调整）
+    chart.panes().forEach((pn, i) => pn.setStretchFactor(i === 0 ? 5 : 1))
   }, [candlePoints, indicatorSettings, colorScheme])
 
   // 更新 AI 价格线 + 区域色块（TradingView 仓位标注风格）
