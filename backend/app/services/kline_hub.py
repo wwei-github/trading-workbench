@@ -3,7 +3,8 @@
 - 上游：单条币安 USDT-M WebSocket（wss://fstream.binance.com/ws raw 端点），
   按 (symbol, interval) 频道动态 SUBSCRIBE/UNSUBSCRIBE，所有浏览器/图表共享
 - 断线：指数退避重连 3 次（1/2/4s）→ 降级 REST 轮询（3s/次，缓存双旁路），
-  REST 期间每 30s 探测 WS 恢复；WS_OK 态看门狗对 30s 无事件的频道 REST 兜底一帧
+  REST 期间每 30s 探测 WS 恢复；WS_OK 态看门狗对 10s 无事件的频道转 REST 兜底
+  （币安 fstream 会整类静默：实测 bookTicker 有帧而 kline/aggTrade/markPrice 零帧）
 - 中文合约（牛来USDT 等非 ASCII 符号）：币安 WS 订阅 ACK 成功但永不推帧（静默），
   这类频道不进 WS 订阅，由看门狗按 REST 周期（3s）轮询兜底
 - 下游：SSE 端点为每条连接注册一个 asyncio.Queue（maxsize=64），满则丢最旧
@@ -31,7 +32,7 @@ _BACKOFF_S = [1, 2, 4, 8, 16, 30]   # WS 重连退避序列
 _WS_MAX_ATTEMPTS = 3      # 连续失败该次数后进入 REST 降级
 _REST_POLL_S = 3          # REST 降级轮询周期；亦是 WS_OK 态看门狗巡检周期
 _WS_PROBE_S = 30          # REST 降级期间探测 WS 恢复的间隔
-_WATCHDOG_STALE_S = 30    # WS_OK 态频道无事件判定阈值（如下架符号）
+_WATCHDOG_STALE_S = 10    # WS_OK 态频道无事件判定阈值（上游静默/下架符号），超时转 REST 兜底
 
 
 class KlineHub:
@@ -213,6 +214,7 @@ class KlineHub:
         ch = (str(payload.get("s", "")).lower(), str(k.get("i", "")))
         if ch not in self._desired:
             return
+        self._last_degraded_msg.pop(ch, None)  # WS 帧已恢复，清除降级提示
         self._publish(ch, {
             "t": int(k["t"]), "o": float(k["o"]), "h": float(k["h"]),
             "l": float(k["l"]), "c": float(k["c"]), "v": float(k["v"]),
@@ -262,7 +264,8 @@ class KlineHub:
 
     async def _sweep_watchdog(self) -> None:
         """看门狗：WS_OK 态下兜底推帧——非 ASCII 符号每次巡检都 REST 轮询
-        （币安 WS 静默无数据），其余频道 30s 无事件（断流/下架）才兜底一帧"""
+        （币安 WS 静默无数据），其余频道 10s 无事件转 REST 兜底并告知订阅者
+        （覆盖 fstream 交易流故障期与下架符号；WS 帧恢复后提示自动清除）"""
         now = time.monotonic()
         due = [
             ch for ch in list(self._subs.keys())
@@ -273,6 +276,8 @@ class KlineHub:
             return
         pool = ExchangePool()
         for ch in due:
+            if ch[0].isascii():
+                self._push_degraded(ch, "币安合约WS无K线数据，已降级REST轮询（约10s/帧）")
             bar = await self._rest_bar(pool, ch)
             if bar is not None:
                 self._publish(ch, bar)
