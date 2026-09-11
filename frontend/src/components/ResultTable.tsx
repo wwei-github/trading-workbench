@@ -196,6 +196,60 @@ export default function ResultTable() {
       ),
     },
     {
+      // AI 方向列：开多/开空。扫描完成后自动分析（按24h成交额取前 AI_MAX_PER_SCAN 个）
+      title: (
+        <Tooltip title="AI 分析方向：开多/开空。扫描完成后自动分析成交额前 10 的命中币种">
+          <span>AI方向</span>
+        </Tooltip>
+      ),
+      key: "ai_direction",
+      render: (_: unknown, record: ScanResult) => {
+        const ai = aiMap[record.id];
+        if (!ai) {
+          return analyzingMap[record.id]?.loading ? (
+            <Tag color="processing">分析中</Tag>
+          ) : (
+            <span style={{ color: "#999" }}>-</span>
+          );
+        }
+        if (ai.trade_decision !== "suggest") {
+          return (
+            <Tooltip title={ai.skip_reason || undefined}>
+              <Tag color="default">跳过</Tag>
+            </Tooltip>
+          );
+        }
+        if (ai.direction === "long") return <Tag color="green">多</Tag>;
+        if (ai.direction === "short") return <Tag color="red">空</Tag>;
+        return <span style={{ color: "#999" }}>-</span>;
+      },
+    },
+    {
+      // AI 推荐度列：0-100，仅 suggest 结论有值
+      title: (
+        <Tooltip title="AI 推荐度（0-100，仅建议开单时有值）">
+          <span>推荐度</span>
+        </Tooltip>
+      ),
+      key: "ai_recommendation",
+      render: (_: unknown, record: ScanResult) => {
+        const ai = aiMap[record.id];
+        if (!ai) {
+          return analyzingMap[record.id]?.loading ? (
+            <Tag color="processing">分析中</Tag>
+          ) : (
+            <span style={{ color: "#999" }}>-</span>
+          );
+        }
+        if (ai.trade_decision !== "suggest") {
+          return <span style={{ color: "#999" }}>-</span>;
+        }
+        const rec =
+          ai.recommendation != null ? Math.round(ai.recommendation) : null;
+        return rec != null ? <strong>{rec}</strong> : <span style={{ color: "#999" }}>-</span>;
+      },
+    },
+    {
       title: "信号类型",
       dataIndex: "signal_type",
       key: "signal_type",
@@ -292,60 +346,6 @@ export default function ResultTable() {
       key: "is_repeat",
       render: (v: boolean) =>
         v ? <Tag color="default">重复</Tag> : <Tag color="green">新</Tag>,
-    },
-    {
-      // AI 方向列：开多/开空。扫描完成后自动分析（按24h成交额取前 AI_MAX_PER_SCAN 个）
-      title: (
-        <Tooltip title="AI 分析方向：开多/开空。扫描完成后自动分析成交额前 10 的命中币种">
-          <span>AI方向</span>
-        </Tooltip>
-      ),
-      key: "ai_direction",
-      render: (_: unknown, record: ScanResult) => {
-        const ai = aiMap[record.id];
-        if (!ai) {
-          return analyzingMap[record.id]?.loading ? (
-            <Tag color="processing">分析中</Tag>
-          ) : (
-            <span style={{ color: "#999" }}>-</span>
-          );
-        }
-        if (ai.trade_decision !== "suggest") {
-          return (
-            <Tooltip title={ai.skip_reason || undefined}>
-              <Tag color="default">跳过</Tag>
-            </Tooltip>
-          );
-        }
-        if (ai.direction === "long") return <Tag color="green">多</Tag>;
-        if (ai.direction === "short") return <Tag color="red">空</Tag>;
-        return <span style={{ color: "#999" }}>-</span>;
-      },
-    },
-    {
-      // AI 推荐度列：0-100，仅 suggest 结论有值
-      title: (
-        <Tooltip title="AI 推荐度（0-100，仅建议开单时有值）">
-          <span>推荐度</span>
-        </Tooltip>
-      ),
-      key: "ai_recommendation",
-      render: (_: unknown, record: ScanResult) => {
-        const ai = aiMap[record.id];
-        if (!ai) {
-          return analyzingMap[record.id]?.loading ? (
-            <Tag color="processing">分析中</Tag>
-          ) : (
-            <span style={{ color: "#999" }}>-</span>
-          );
-        }
-        if (ai.trade_decision !== "suggest") {
-          return <span style={{ color: "#999" }}>-</span>;
-        }
-        const rec =
-          ai.recommendation != null ? Math.round(ai.recommendation) : null;
-        return rec != null ? <strong>{rec}</strong> : <span style={{ color: "#999" }}>-</span>;
-      },
     },
     {
       // 复盘列：AI 建议开单 24h 后逐K回放定论（数据来自 aiMap，AI 开关关闭时为空显示 -）
