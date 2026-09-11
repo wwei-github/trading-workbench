@@ -292,22 +292,6 @@ export default function ResultTable() {
       },
     },
     {
-      title: "距关键位",
-      dataIndex: "breakout_pct",
-      key: "breakout_pct",
-      sorter: (a, b) => a.breakout_pct - b.breakout_pct,
-      render: (v: number) => (
-        <span
-          style={{
-            color: v >= 0 ? "#52c41a" : "#ef5350",
-            fontWeight: 600,
-          }}>
-          {v >= 0 ? "+" : ""}
-          {v.toFixed(2)}%
-        </span>
-      ),
-    },
-    {
       title: "状态",
       dataIndex: "is_repeat",
       key: "is_repeat",
@@ -343,16 +327,6 @@ export default function ResultTable() {
             size: "small",
           }}
           locale={{ emptyText: <Empty description="暂无命中币种" /> }}
-          onRow={(record) => ({
-            onClick: () => {
-              setExpandedRowKeys((prev) =>
-                prev.includes(record.id)
-                  ? prev.filter((k) => k !== record.id)
-                  : [record.id],
-              );
-            },
-            style: { cursor: "pointer" },
-          })}
           expandable={{
             expandedRowKeys,
             onExpand: (expanded, record) => {
