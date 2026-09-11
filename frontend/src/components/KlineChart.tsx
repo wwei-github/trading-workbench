@@ -22,6 +22,7 @@ import {
   type IndicatorKey,
 } from '../stores/scanStore'
 import { calcBoll, calcMacd, calcRsi, calcKdj } from '../utils/indicators'
+import TvWidgetChart from './TvWidgetChart'
 import type { AIAnalysis, Kline, KeyLevel } from '../types'
 
 interface Props {
@@ -97,6 +98,11 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
   const indicatorSeriesRef = useRef<ISeriesApi<SeriesType>[]>([])
   const redrawFnRef = useRef<(() => void) | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // 图表模式：'tv' = TradingView 嵌入看盘（全量内置指标，无本系统标注）；'draw' = 自绘标注图（关键位/AI 仓位标注）
+  // 将来自托管 Charting Library 审批通过后，'tv' 模式升级为 Charting Library 实现
+  const [mode, setMode] = useState<'tv' | 'draw'>(() =>
+    localStorage.getItem('chart-mode') === 'draw' ? 'draw' : 'tv',
+  )
   // K 线最新收盘价（作为"当前价"，用于挑选最近的关键位）
   const [lastClose, setLastClose] = useState<number | null>(null)
   // 隐藏的关键位类型（勾选开关）
@@ -108,10 +114,11 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
     { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }[]
   >([])
 
-  // 初始化图表 + 拉取数据
+  // 初始化图表 + 拉取数据（TV 看盘模式下图表是 TradingView iframe，不自建实例）
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
+    if (mode === 'tv') return
 
     const chart = createChart(container, {
       layout: {
@@ -209,7 +216,17 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
       chartRef.current = null
       seriesRef.current = null
     }
-  }, [symbol, limit, refreshKey])
+  }, [symbol, limit, refreshKey, mode])
+
+  // 切换图表模式（localStorage 持久化）
+  const switchMode = (m: 'tv' | 'draw') => {
+    setMode(m)
+    try {
+      localStorage.setItem('chart-mode', m)
+    } catch {
+      /* 隐私模式等场景下忽略 */
+    }
+  }
 
   // 切换涨跌配色：直接改 series 选项，所有图表实例同步生效，无需重建图表
   useEffect(() => {
@@ -660,7 +677,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 360 }}>
-      {error && (
+      {error && mode === 'draw' && (
         <Alert
           type="warning"
           showIcon
@@ -669,7 +686,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           style={{ marginBottom: 8 }}
         />
       )}
-      {/* 左上角工具栏：EMA 周期（可编辑）+ 关键位类型开关 */}
+      {/* 左上角工具栏：图表模式切换 + （标注图）EMA 周期/关键位开关/指标/配色 */}
       <div
         style={{
           position: 'absolute',
@@ -686,108 +703,128 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           borderRadius: 6,
           padding: '4px 8px',
         }}>
-        <span style={{ color: '#9aa3b2', fontSize: 12, marginRight: 2 }}>EMA</span>
-        {emaPeriods.map((p, i) => (
-          <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-            <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: 2,
-                background: EMA_COLORS[i % EMA_COLORS.length],
-                display: 'inline-block',
-                flexShrink: 0,
-              }}
-            />
-            <InputNumber
-              size="small"
-              min={2}
-              max={499}
-              value={p}
-              style={{ width: 56 }}
-              onChange={(v) =>
-                setEmaPeriods((prev) =>
-                  prev.map((x, j) => (j === i ? (v ?? x) : x)),
-                )
-              }
-            />
-          </span>
-        ))}
-        {keyLevels && keyLevels.length > 0 &&
-          [...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => {
-            const visible = !hiddenKinds.has(kind)
-            // 未选中态必须显式配色：antd 亮色主题下默认是深色文字 + 无背景，
-            // 叠在深色工具栏背景上会完全看不见
-            const style = visible
-              ? { color: '#fff' }
-              : {
-                  color: '#9aa3b2',
-                  background: 'rgba(255, 255, 255, 0.06)',
-                  border: '1px dashed #3a3f4d',
-                }
-            return (
-              <Tag.CheckableTag
-                key={kind}
-                checked={visible}
-                style={style}
-                onChange={(checked) =>
-                  setHiddenKinds((prev) => {
-                    const next = new Set(prev)
-                    if (checked) next.delete(kind)
-                    else next.add(kind)
-                    return next
-                  })
-                }>
-                {KIND_LABEL[kind] || kind}
-              </Tag.CheckableTag>
-            )
-          })}
-        {/* 技术指标选择（TradingView 风格自选，全局生效） */}
-        <Dropdown
-          trigger={['click']}
-          menu={{
-            items: (Object.keys(INDICATOR_LABELS) as IndicatorKey[]).map((k) => ({
-              key: k,
-              label: INDICATOR_LABELS[k],
-            })),
-            selectable: true,
-            multiple: true,
-            selectedKeys: (Object.keys(indicators) as IndicatorKey[]).filter(
-              (k) => indicators[k],
-            ),
-            onClick: ({ key }) => toggleIndicator(key as IndicatorKey),
-          }}>
-          <Button size="small" ghost icon={<PlusOutlined />}>
-            指标
-          </Button>
-        </Dropdown>
-        {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效） */}
+        {/* 图表模式：TV 看盘（全量指标）/ 标注图（关键位 + AI 仓位标注） */}
         <Segmented
           size="small"
-          value={colorScheme}
+          value={mode}
           options={[
-            { label: '红涨绿跌', value: 'red-up' },
-            { label: '绿涨红跌', value: 'green-up' },
+            { label: 'TV看盘', value: 'tv' },
+            { label: '标注图', value: 'draw' },
           ]}
-          onChange={(v) => setColorScheme(v as ColorScheme)}
-          style={{ marginLeft: 4 }}
+          onChange={(v) => switchMode(v as 'tv' | 'draw')}
         />
+        {mode === 'draw' && (
+          <>
+            <span style={{ color: '#9aa3b2', fontSize: 12, marginRight: 2 }}>EMA</span>
+            {emaPeriods.map((p, i) => (
+              <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 2,
+                    background: EMA_COLORS[i % EMA_COLORS.length],
+                    display: 'inline-block',
+                    flexShrink: 0,
+                  }}
+                />
+                <InputNumber
+                  size="small"
+                  min={2}
+                  max={499}
+                  value={p}
+                  style={{ width: 56 }}
+                  onChange={(v) =>
+                    setEmaPeriods((prev) =>
+                      prev.map((x, j) => (j === i ? (v ?? x) : x)),
+                    )
+                  }
+                />
+              </span>
+            ))}
+            {keyLevels && keyLevels.length > 0 &&
+              [...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => {
+                const visible = !hiddenKinds.has(kind)
+                // 未选中态必须显式配色：antd 亮色主题下默认是深色文字 + 无背景，
+                // 叠在深色工具栏背景上会完全看不见
+                const style = visible
+                  ? { color: '#fff' }
+                  : {
+                      color: '#9aa3b2',
+                      background: 'rgba(255, 255, 255, 0.06)',
+                      border: '1px dashed #3a3f4d',
+                    }
+                return (
+                  <Tag.CheckableTag
+                    key={kind}
+                    checked={visible}
+                    style={style}
+                    onChange={(checked) =>
+                      setHiddenKinds((prev) => {
+                        const next = new Set(prev)
+                        if (checked) next.delete(kind)
+                        else next.add(kind)
+                        return next
+                      })
+                    }>
+                    {KIND_LABEL[kind] || kind}
+                  </Tag.CheckableTag>
+                )
+              })}
+            {/* 技术指标选择（TradingView 风格自选，全局生效） */}
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: (Object.keys(INDICATOR_LABELS) as IndicatorKey[]).map((k) => ({
+                  key: k,
+                  label: INDICATOR_LABELS[k],
+                })),
+                selectable: true,
+                multiple: true,
+                selectedKeys: (Object.keys(indicators) as IndicatorKey[]).filter(
+                  (k) => indicators[k],
+                ),
+                onClick: ({ key }) => toggleIndicator(key as IndicatorKey),
+              }}>
+              <Button size="small" ghost icon={<PlusOutlined />}>
+                指标
+              </Button>
+            </Dropdown>
+            {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效） */}
+            <Segmented
+              size="small"
+              value={colorScheme}
+              options={[
+                { label: '红涨绿跌', value: 'red-up' },
+                { label: '绿涨红跌', value: 'green-up' },
+              ]}
+              onChange={(v) => setColorScheme(v as ColorScheme)}
+              style={{ marginLeft: 4 }}
+            />
+          </>
+        )}
         </div>
-      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-      <svg
-        ref={svgRef}
-        width="100%"
-        height="100%"
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          pointerEvents: 'none',
-          zIndex: 10,
-        }}
-      />
+      {mode === 'tv' ? (
+        <TvWidgetChart symbol={symbol} />
+      ) : (
+        <>
+          <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+          <svg
+            ref={svgRef}
+            width="100%"
+            height="100%"
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+              pointerEvents: 'none',
+              zIndex: 10,
+            }}
+          />
+        </>
+      )}
     </div>
   )
 }
