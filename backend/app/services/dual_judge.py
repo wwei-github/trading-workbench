@@ -13,11 +13,11 @@
 """
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
-from openai import OpenAI
-
 from app.config import settings
+from app.services.llm_client import get_client
 from app.services.risk_guard import build_forced_skip
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ def run_dual_judge(
     if decision.get("trade_decision") != "suggest":
         return decision
 
-    client = OpenAI(api_key=settings.AI_API_KEY, base_url=settings.AI_BASE_URL)
+    client = get_client()
     d_text = _fmt_decision(decision)
     facts = _fmt_facts(signal, market_facts)
 
@@ -111,8 +111,12 @@ def run_dual_judge(
         return (resp.choices[0].message.content or "").strip()
 
     try:
-        bull = _ask(BULL_PROMPT.format(decision=d_text, facts=facts))
-        bear = _ask(BEAR_PROMPT.format(decision=d_text, facts=facts))
+        # 多空评委互不依赖，并行取论据（原串行 = 两次完整调用时长相加）
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            fut_bull = ex.submit(_ask, BULL_PROMPT.format(decision=d_text, facts=facts))
+            fut_bear = ex.submit(_ask, BEAR_PROMPT.format(decision=d_text, facts=facts))
+        bull = fut_bull.result()
+        bear = fut_bear.result()
         raw = _ask(JUDGE_PROMPT.format(decision=d_text, bull=bull, bear=bear))
         if raw.startswith("```"):
             raw = "\n".join(

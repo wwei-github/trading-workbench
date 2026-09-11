@@ -34,7 +34,6 @@ from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
 from app.services.dual_judge import run_dual_judge
 from app.services.exchange_pool import ExchangePool
-from app.services.narrator import generate_narrative
 from app.services.risk_guard import build_forced_skip, calc_atr
 
 logger = logging.getLogger(__name__)
@@ -266,17 +265,8 @@ def run_ai_analysis_single(
             if ai_result.get("trade_decision") == "suggest":
                 ai_progress.push(r.id, "gate", note="⚖️ 双评委辩论复核中…")
             ai_result = run_dual_judge(ai_result, signal, market_facts)
-        # Narrator 叙述分离（docs/04 §5）：Agent 管线的 analysis 只是模型一句话依据，
-        # suggest 时用轻量调用生成"1. 2. 3."分点叙述；单次调用管线已自带分点，不再生成
-        if (
-            cfg.ai_pipeline_enabled
-            and ai_result.get("trade_decision") == "suggest"
-        ):
-            ai_result["analysis"] = generate_narrative(
-                signal, ai_result,
-                agent_reason=str(ai_result.get("analysis") or ""),
-                market_facts=market_facts,
-            )
+        # Narrator 已下线（提速）：submit_decision 的 reason 直接承载完整分点分析
+        # （工具 schema 强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返
         _finish(db, r, r.symbol, ai_result, fp)
         ai_progress.push_done(
             r.id, ai_result.get("trade_decision"),

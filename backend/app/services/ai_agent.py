@@ -9,13 +9,13 @@
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
-
-from openai import OpenAI
 
 from app.config import settings
 from app.services import market_data
 from app.services import skill_library
+from app.services.llm_client import get_client
 from app.services.risk_guard import (
     TRADE_TYPES,
     TradeDecision,
@@ -28,7 +28,7 @@ from app.services.strategy.types import POSITION_LABEL_MAP
 
 logger = logging.getLogger(__name__)
 
-MAX_ROUNDS = 8
+MAX_ROUNDS = 5
 
 # 锚点枚举：关键位 kind + market（市价锚，兜底表达力）
 LEVEL_REFS = (
@@ -52,9 +52,11 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    n_structure N字结构（回踩后同向延续）/ rule_2b 2B法则（假突破前高/低后反向）/
    range_edge 区间边缘反转。
 6. "可用技能"列表中标注【当前命中】的技能，建议先 load_skill 阅读再决策。
-7. **效率**：事实包已含决策所需核心数据（30根K线/关键位/ATR/资金费率/大盘/恐贪），
-   能直接决策就直接 submit_decision，不要为用工具而用工具；一般 2~3 轮内完成。
-8. 输出文字尽量少，只用于说明查询意图；不要在文字里给决策，只用 submit_decision。
+7. **效率（重要）**：事实包已含决策所需核心数据（30根K线/关键位/ATR/资金费率/大盘/恐贪），
+   首轮即可直接 submit_decision；确需补充数据时，把所需工具在同一轮一次性批量调用，
+   不要为用工具而用工具，也不要每轮只查一个工具。
+8. 不要输出不带工具调用的纯文字回复（会浪费一轮）；文字只用于简短说明查询意图，
+   决策一律通过 submit_decision 提交。
 9. 盈亏比铁律 ≥{rr_min}；止损距离 ≤{stop_max:.0f}%；仓位数不要自己报，程序按风险预算计算。
 
 {skill_index}"""
@@ -111,7 +113,14 @@ TOOLS_SCHEMA = [
             "tp2_ref": {"type": "string", "enum": list(LEVEL_REFS), "description": "止盈2锚点（可选）"},
             "tp2_offset_pct": {"type": "number", "description": "止盈2偏移%"},
             "recommendation": {"type": "integer", "description": "推荐程度 0-100，skip≤30，suggest≥50"},
-            "reason": {"type": "string", "description": "一句话决策核心依据"},
+            "reason": {
+                "type": "string",
+                "description": (
+                    "决策分析，≤300字中文，直接作为分析结果落库展示。必须用\"1. 2. 3.\"序号分点、"
+                    "每条一行（JSON 字符串内换行写\\n）：先逐条列满足的条件，再列风险点，"
+                    "最后一条写明确结论。"
+                ),
+            },
         }, "required": ["trade_decision"]},
     }},
 ]
@@ -232,7 +241,7 @@ def analyze_coin_agent(
     返回值额外带 "stage_trace" 键（工具循环 trace，docs/04 §5.9），落库时一并存储。
     progress_cb: 可选回调，接收 {"t": round/tool, ...} 进度事件供前端流式展示。
     """
-    client = OpenAI(api_key=settings.AI_API_KEY, base_url=settings.AI_BASE_URL)
+    client = get_client()
 
     # 布尔事实（技能 use_when 判定）
     ema = analyze_ema(klines)
@@ -301,19 +310,27 @@ def analyze_coin_agent(
             "content": msg.content or "",
             "tool_calls": [tc.model_dump() for tc in tool_calls],
         })
-        for tc in tool_calls:
+
+        def _run_tool(tc):
             try:
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
                 args = {}
             tt = time.time()
             done, result, decision = _dispatch_tool(tc.function.name, args, ctx)
+            return tc, args, done, result, decision, int((time.time() - tt) * 1000)
+
+        # 轮内多工具并行执行（GLM 常在一轮里同时要数据工具+技能），结果按 tool_call 顺序回填
+        with ThreadPoolExecutor(max_workers=min(4, len(tool_calls))) as ex:
+            outcomes = list(ex.map(_run_tool, tool_calls))
+
+        for tc, args, done, result, decision, ms in outcomes:
             tool_rounds += 1
             trace[-1].setdefault("calls", []).append({
                 "tool": tc.function.name,
                 "args": {k: (str(v)[:80]) for k, v in args.items()},
                 "result_len": len(result),
-                "ms": int((time.time() - tt) * 1000),
+                "ms": ms,
             })
             if progress_cb:
                 progress_cb({

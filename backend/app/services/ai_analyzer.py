@@ -6,6 +6,8 @@ from typing import Optional
 from openai import OpenAI
 
 from app.config import settings
+from app.services.llm_client import get_client
+from app.services.risk_guard import build_forced_skip, parse_and_validate
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.types import POSITION_LABEL_MAP
 
@@ -51,7 +53,8 @@ SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信�
 
 
 def _get_client() -> OpenAI:
-    return OpenAI(api_key=settings.AI_API_KEY, base_url=settings.AI_BASE_URL)
+    # 共享单例：复用连接池，统一超时与重试策略（见 llm_client）
+    return get_client()
 
 
 def analyze_coin(
