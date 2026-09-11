@@ -33,6 +33,7 @@ _WS_MAX_ATTEMPTS = 3      # 连续失败该次数后进入 REST 降级
 _REST_POLL_S = 3          # REST 降级轮询周期；亦是 WS_OK 态看门狗巡检周期
 _WS_PROBE_S = 30          # REST 降级期间探测 WS 恢复的间隔
 _WATCHDOG_STALE_S = 10    # WS_OK 态频道无事件判定阈值（上游静默/下架符号），超时转 REST 兜底
+_REST_BAR_TIMEOUT_S = 20  # 单频道 REST 兜底整体限时（3 家故障转移最坏 3×15s，超时放弃本轮）
 
 
 class KlineHub:
@@ -254,18 +255,18 @@ class KlineHub:
                 await asyncio.sleep(_REST_POLL_S)
 
     async def _sweep_rest(self) -> None:
-        """REST 轮询：逐频道取最新一根（缓存双旁路），全失败推 degraded"""
+        """REST 轮询：各频道并发取最新一根（缓存双旁路），慢请求不拖累其他频道"""
         pool = ExchangePool()
-        for ch in sorted(self._desired):
-            bar = await self._rest_bar(pool, ch)
-            if bar is None:
-                continue
-            self._publish(ch, bar)
+        await asyncio.gather(
+            *(self._rest_publish(pool, ch) for ch in sorted(self._desired)),
+            return_exceptions=True,
+        )
 
     async def _sweep_watchdog(self) -> None:
         """看门狗：WS_OK 态下兜底推帧——非 ASCII 符号每次巡检都 REST 轮询
         （币安 WS 静默无数据），其余频道 10s 无事件转 REST 兜底并告知订阅者
-        （覆盖 fstream 交易流故障期与下架符号；WS 帧恢复后提示自动清除）"""
+        （覆盖 fstream 交易流故障期与下架符号；WS 帧恢复后提示自动清除）；
+        各频道并发执行，单频道慢/挂起不阻塞其他频道兜底"""
         now = time.monotonic()
         due = [
             ch for ch in list(self._subs.keys())
@@ -275,20 +276,40 @@ class KlineHub:
         if not due:
             return
         pool = ExchangePool()
-        for ch in due:
-            if ch[0].isascii():
-                self._push_degraded(ch, "币安合约WS无K线数据，已降级REST轮询（约10s/帧）")
-            bar = await self._rest_bar(pool, ch)
-            if bar is not None:
-                self._publish(ch, bar)
+        await asyncio.gather(
+            *(self._fallback_once(pool, ch) for ch in due),
+            return_exceptions=True,
+        )
+
+    async def _fallback_once(self, pool: ExchangePool, ch: ChannelKey) -> None:
+        """单频道兜底：ASCII 频道首次转兜底时推 degraded 并记日志（均去重）；
+        已有 REST 失败类 degraded 时保留之（其信息量更大），不回退覆盖成静默消息"""
+        if ch[0].isascii():
+            silence = "币安合约WS无K线数据，已降级REST轮询（约10s/帧）"
+            cur = self._last_degraded_msg.get(ch)
+            if cur in (None, silence) and self._push_degraded(ch, silence):
+                logger.info("KlineHub 频道 %s 无 WS 事件，转 REST 兜底（约%ds/帧）",
+                            ch, _WATCHDOG_STALE_S)
+        await self._rest_publish(pool, ch)
+
+    async def _rest_publish(self, pool: ExchangePool, ch: ChannelKey) -> None:
+        bar = await self._rest_bar(pool, ch)
+        if bar is not None:
+            self._publish(ch, bar)
 
     async def _rest_bar(self, pool: ExchangePool, ch: ChannelKey) -> dict | None:
-        """REST 取最新一根 bar；失败推 degraded（按频道去重）"""
+        """REST 取最新一根 bar（整体限时，防故障转移链挂起拖垮 sweep）；失败推 degraded"""
         symbol, interval = ch
         try:
-            klines = await asyncio.to_thread(
-                pool.get_recent_klines, symbol.upper(), interval, 2
+            klines = await asyncio.wait_for(
+                asyncio.to_thread(
+                    pool.get_recent_klines, symbol.upper(), interval, 2
+                ),
+                timeout=_REST_BAR_TIMEOUT_S,
             )
+        except asyncio.TimeoutError:
+            self._push_degraded(ch, f"REST兜底请求超过{_REST_BAR_TIMEOUT_S}s未返回")
+            return None
         except Exception as e:
             self._push_degraded(ch, str(e)[:200])
             return None
@@ -309,13 +330,14 @@ class KlineHub:
         for q in list(self._subs.get(ch, ())):
             self._offer(q, ("bar", bar))
 
-    def _push_degraded(self, ch: ChannelKey, message: str) -> None:
-        """降级消息按频道去重：内容不变不重发，避免轮询失败期间刷屏"""
+    def _push_degraded(self, ch: ChannelKey, message: str) -> bool:
+        """降级消息按频道去重：内容不变不重发，避免轮询失败期间刷屏；返回是否实际发送"""
         if self._last_degraded_msg.get(ch) == message:
-            return
+            return False
         self._last_degraded_msg[ch] = message
         for q in list(self._subs.get(ch, ())):
             self._offer(q, ("degraded", {"message": message}))
+        return True
 
     @staticmethod
     def _offer(q: asyncio.Queue, item) -> None:
