@@ -1,7 +1,7 @@
 """信号类型、位置、形态枚举"""
 from __future__ import annotations
 
-# ===== 市场结构分类（新逻辑，见 docs/04-关键位筛选重构需求.md）=====
+# ===== 市场结构分类（新逻辑，见 docs/03-关键位筛选重构需求.md）=====
 UPTREND = "uptrend"                # 上涨趋势（HH+HL）
 DOWNTREND = "downtrend"            # 下跌趋势（LH+LL）
 TREND_REVERSAL = "trend_reversal"  # 趋势反转（趋势中收盘破前高/前低，123法则第②步）

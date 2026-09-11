@@ -50,7 +50,7 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS level_merge_threshold NUMERIC(10,6) NOT NULL DEFAULT 0.005,
               ADD COLUMN IF NOT EXISTS fib_enabled BOOLEAN NOT NULL DEFAULT FALSE
         """))
-        # Feature 3: 关键位筛选重构（docs/04）—— scan_results 加位置与关键位明细
+        # Feature 3: 关键位筛选重构（docs/03）—— scan_results 加位置与关键位明细
         conn.execute(text("""
             ALTER TABLE scan_results
               ADD COLUMN IF NOT EXISTS position VARCHAR(32),
