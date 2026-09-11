@@ -28,7 +28,6 @@ from app.database import SessionLocal
 from app.models.scan import ScanResult, AIAnalysis
 from app.models.system_config import SystemConfig
 from app.services import market_data
-from app.services import review_memory
 from app.services import ai_progress
 from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
@@ -234,11 +233,7 @@ def run_ai_analysis_single(
             "market_breadth": fut_breadth.result(),
             "fear_greed": fut_fng.result(),
         }
-        # 复盘记忆注入（P2，默认关）：近期复盘统计摘要进系统提示词
-        review_digest = (
-            review_memory.build_review_digest(db)
-            if cfg.memory_injection_enabled else None
-        )
+        # 复盘记忆注入已下线：功能移除（分析提示词不再携带历史复盘统计）
         if cfg.ai_pipeline_enabled:
             def _cb(ev: dict) -> None:
                 ai_progress.push(r.id, ev.pop("t"), **ev)
@@ -249,7 +244,6 @@ def run_ai_analysis_single(
                 user_input=user_input,
                 market_facts=market_facts,
                 pool=pool,
-                review_digest=review_digest,
                 progress_cb=_cb,
             )
         else:

@@ -124,7 +124,6 @@ export interface SystemConfig {
   key_level_tolerance?: number; // 关键位区域半宽（±x）
   level_merge_threshold?: number; // 支撑/压力聚类合并阈值
   fib_enabled?: boolean; // 斐波那契位开关（二期）
-  memory_injection_enabled?: boolean; // 复盘记忆注入：把近30天胜率统计注入 AI 系统提示词
   dual_judge_enabled?: boolean; // 双评委辩论：对 suggest 决策做多空辩论复核
 }
 

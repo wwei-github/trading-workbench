@@ -233,7 +233,6 @@ def analyze_coin_agent(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     market_facts: Optional[dict] = None, pool=None,
-    review_digest: Optional[str] = None,
     progress_cb=None,
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
@@ -254,11 +253,6 @@ def analyze_coin_agent(
         rr_min=settings.AI_RR_MIN, stop_max=settings.RISK_STOP_MAX_PCT * 100,
         skill_index=skill_index,
     )
-    if review_digest:
-        system += (
-            "\n\n近期复盘记忆（你自己过去建议的统计结果，供校准参考，勿过度拟合）：\n"
-            f"{review_digest}"
-        )
     if strategy_prompt:
         system += (
             "\n\n用户自定义交易策略（冲突时以自定义策略为准）：\n"

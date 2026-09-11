@@ -167,7 +167,6 @@ class SystemConfigOut(BaseModel):
     ai_analysis_enabled: bool
     ai_configured: bool  # 后端是否已配置 AI_API_KEY（不返回 key 本身）
     ai_pipeline_enabled: bool = False  # Agent 管线开关
-    memory_injection_enabled: bool = False  # 复盘记忆注入（P2）
     dual_judge_enabled: bool = False  # 双评委辩论（P2）
 
     # 自定义策略提示词
@@ -196,7 +195,6 @@ class SystemConfigUpdate(BaseModel):
     # AI 分析开关
     ai_analysis_enabled: Optional[bool] = None
     ai_pipeline_enabled: Optional[bool] = None
-    memory_injection_enabled: Optional[bool] = None
     dual_judge_enabled: Optional[bool] = None
 
     # 自定义策略提示词

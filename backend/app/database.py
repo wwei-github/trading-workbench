@@ -91,15 +91,19 @@ def _run_migrations(engine):
             ALTER TABLE system_config
               ADD COLUMN IF NOT EXISTS ai_pipeline_enabled BOOLEAN NOT NULL DEFAULT FALSE
         """))
-        # Feature 8: P2 闭环——AI trace + 复盘记忆/双评委开关（docs/04 P2）
+        # Feature 8: P2 闭环——AI trace + 双评委开关（docs/04 P2）
         conn.execute(text("""
             ALTER TABLE ai_analyses
               ADD COLUMN IF NOT EXISTS stage_trace JSON
         """))
         conn.execute(text("""
             ALTER TABLE system_config
-              ADD COLUMN IF NOT EXISTS memory_injection_enabled BOOLEAN NOT NULL DEFAULT FALSE,
               ADD COLUMN IF NOT EXISTS dual_judge_enabled BOOLEAN NOT NULL DEFAULT FALSE
+        """))
+        # Feature 11: 移除复盘记忆注入功能，清理残留列
+        conn.execute(text("""
+            ALTER TABLE system_config
+              DROP COLUMN IF EXISTS memory_injection_enabled
         """))
         # Feature 9: 开单类型（结构打法归类：顺势/123法则/N字/2B/区间边缘）
         conn.execute(text("""

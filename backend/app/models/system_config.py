@@ -14,8 +14,6 @@ class SystemConfig(Base):
     ai_analysis_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # Agent 管线开关：开=工具循环+锚点+技能（docs/04 P1），关=单次调用+校验回炉（P0）
     ai_pipeline_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    # 复盘记忆注入（docs/04 P2）：把近期复盘摘要注入 AI 系统提示词；数据积累不足时保持关闭
-    memory_injection_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # 双评委辩论（docs/04 P2，移植 TradingAgents prompts）：对 suggest 决策做多空辩论复核；默认关
     dual_judge_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
