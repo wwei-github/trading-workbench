@@ -155,6 +155,7 @@
 
 - **K线缓存复用**：扫描任务拉取的 500 根 K 线按 `symbol+interval` 存入内存/Redis 短期缓存（TTL = 1 根 K 线周期 + 余量），AI 阶段直接命中，不再打交易所（解决 E2）
 - **指标预算**（一次算好供全程使用）：EMA21/55/144 状态（复用 `analyze_ema`）、ATR(14) 及其占价比、量能 20 根分位、距最近关键位距离
+- **布尔事实**（供技能 `use_when` 程序化判定，避免模型自行估算）：`pin_bar`（当前K线影线 > 2×实体）、`funding_extreme`（|funding| > 0.1%）、`narrow_range`（区间高度 < 1.5×ATR）等
 - **信号指纹**：`sha1(symbol + signal_type + position + pattern + 收盘价按0.3%分桶 + 最新关键位价格)`。指纹相同 → 视为同一信号（解决 E4 的缓存键）
 
 ### Stage 1 — 规则闸门（纯程序，0 token）
@@ -225,8 +226,8 @@ class TradeDecision(BaseModel):
 - Schema 合法（Pydantic）
 - 方向-价格一致性：long 要求 `stop < entry < tp1 < tp2`；short 反之
 - 锚点存在性：`*_level_ref` 必须在关键位列表中
-- **盈亏比复算**：`rr = |tp1-entry| / |entry-stop|`，要求 ≥1.2 才允许 suggest（AI 声称值一律不信，用复算值落库）
-- 止损合理性：`|entry-stop|` ∈ [0.3×ATR, 3×ATR]（太近易扫损、太远盈亏比崩）
+- **盈亏比复算**：`rr = |tp1-entry| / |entry-stop|`，要求 ≥**1.5** 才允许 suggest（对齐交易系统六问铁律；AI 声称值一律不信，用复算值落库）
+- 止损合理性：`|entry-stop|` ∈ [0.3×ATR, 3×ATR]（太近易扫损、太远盈亏比崩）；且绝对红线 `|entry-stop|/entry ≤ 3%`（交易系统统一止损，5% 为绝对上限）
 - 仓位公式化：`position_pct = clamp(风险预算% / (|entry-stop|/entry), 0.5, 10)` —— AI 不再自报仓位
 - skip 一致性：suggest 时 `skip_reason` 必须为空，反之亦然
 
@@ -369,8 +370,8 @@ return FORCE_SKIP                              # 步数耗尽 保险③
 - Schema 合法（Pydantic）
 - 方向-价格一致性（long：`stop < entry < tp1 < tp2`；short 反之）
 - 锚点存在性（所有 `*_level_ref` 必须在 get_key_levels 返回中）
-- 盈亏比复算 ≥ 1.2（AI 声称值不信，用复算值落库）
-- 止损距离 ∈ [0.3, 3]×ATR
+- 盈亏比复算 ≥ 1.5（对齐交易系统铁律；AI 声称值不信，用复算值落库）
+- 止损距离 ∈ [0.3, 3]×ATR，且绝对红线 ≤ 3%
 - 仓位公式化（AI 不自报）
 
 不合格时，**把"违规第 2 条：做多止损高于入场价"作为工具返回值送回循环**——模型亲眼看到错在哪再改，比外层 if/else 硬重试效果好得多。这是 ReAct 循环里天然的"反思"（Reflection）。
@@ -390,7 +391,7 @@ return FORCE_SKIP                              # 步数耗尽 保险③
 
 ### 5.9 可观测性
 
-每个 Run 落 `stage_trace`（JSON）：每一步调了什么工具、入参摘要、返回大小、耗时、token 数（含 load_skill 加载了哪些技能），外加最终决策与各阶段耗时分布。前端统计页可按 Run 查看——Agent 循环行为不确定，trace 是调试和复盘的唯一抓手。
+每个 Run 落 `stage_trace`（JSON）：每一步调了什么工具、入参摘要、返回大小、耗时、token 数（含 load_skill 加载了哪些技能），外加最终决策与各阶段耗时分布。前端统计页可按 Run 查看——Agent 循环行为不确定，trace 是调试和复盘的唯一抓手。**体积控制**：工具返回只记条数/字节数/摘要哈希，不落全文；单条 trace 超 32KB 截断。
 
 ### 5.10 PydanticAI 实现草图（推荐框架，示意）
 
@@ -410,7 +411,7 @@ class AnalysisDeps(dict):        # 运行上下文（事实包 + 缓存 + 记忆
     skills: SkillLibrary         # §6.3：技能索引 + 全文缓存
 
 trade_agent = Agent(
-    model="openai:glm-4.7",      # OpenAI 兼容网关（AI_BASE_URL 可配）
+    model=settings.AI_MODEL,     # 如 glm-5.3-flash，走 OpenAI 兼容网关（AI_BASE_URL 可配）
     system_prompt=TRADER_PROMPT, # 含技能索引段（启动时生成）
     deps_type=AnalysisDeps,
     output_type=TradeDecision,
@@ -670,9 +671,10 @@ MCP 服务器是"别人写好的现成工具包"，挂上即可用。目录：[m
 **引入节奏**：
 
 1. **P0 不用框架**——Schema 校验、并行、缓存、规则闸门都是纯程序逻辑，Celery 直接实现
-2. **P1 引入 PydanticAI，只用于 Trader Agent 节点**（§5.10）——工具循环 + 结构化输出 + 校验重试是它最擅长的；外层编排仍留在 Celery（社区验证过的混合模式）；**Skills 文本机制随 P1 一起交付**（§6）
-3. **MCP 按梯队接入**（§7.4），不是一次性全挂
-4. **迁 LangGraph 的触发条件**（出现任一再迁）：需要"分析中途暂停人工确认再继续"；需要全链路追踪面板；流程复杂到 if/else 编排难维护。阶段边界已在 §4/§5 划清，图结构迁移成本可控
+2. **P1 前置 spike（必做）**：用 §5.5 的 40 行手写循环对 GLM 思考模型（AI_MODEL，如 glm-5.3-flash）做工具循环验证——3~5 个真实信号，记录每步 token（含 reasoning token）与 tool_calls 稳定性。重点确认：多轮循环下 content 不为空（本项目在单次调用已踩过 reasoning token 挤占 max_tokens 的坑）、思考 token 随轮次累积可控。**拿到数据后**再决定是否引入 PydanticAI
+3. **P1 引入 PydanticAI，只用于 Trader Agent 节点**（§5.10）——工具循环 + 结构化输出 + 校验重试是它最擅长的；外层编排仍留在 Celery（社区验证过的混合模式）；**Skills 文本机制随 P1 一起交付**（§6）
+4. **MCP 按梯队接入**（§7.4），不是一次性全挂
+5. **迁 LangGraph 的触发条件**（出现任一再迁）：需要"分析中途暂停人工确认再继续"；需要全链路追踪面板；流程复杂到 if/else 编排难维护。阶段边界已在 §4/§5 划清，图结构迁移成本可控
 
 ---
 
@@ -710,16 +712,17 @@ MCP 服务器是"别人写好的现成工具包"，挂上即可用。目录：[m
 | 期 | 内容 | 解决 | 备注 |
 |---|---|---|---|
 | **P0 立柱子**（纯程序，无框架） | Pydantic Schema + Risk Guard 校验回炉；K线缓存复用；批量并行 + 信号量；指纹缓存；**第一梯队数据源①②**（资金费率/Fear&Greed，纯 HTTP） | A1 A2 E1 E2 + 部分 A8 | 收益最大风险最小；即使不拆角色，校验+并行+缓存也直接消灭一半痛点 |
-| **P1 单 Agent 化** | PydanticAI Trader Agent（工具循环 + output validator，§5.10）；Narrator 独立轻量调用；结构位锚点替代裸价格；**Skills 文本机制 + 首批 5 个内置技能**（§6.6）；**第一梯队③新闻 MCP 接入** | E3 E4 E5 A3 A7 A8 A9 | 框架只进 Trader 节点；保留单次调用 fallback；技能先纯文本，无脚本 |
+| **P1 单 Agent 化** | PydanticAI Trader Agent（工具循环 + output validator，§5.10）；Narrator 独立轻量调用；结构位锚点替代裸价格；**Skills 文本机制 + 首批 5 个内置技能**（§6.6）；**第一梯队③新闻 MCP 接入** | E3 E4 E5 A3 A7 A8 A9 | **开工前先做 GLM tool-calling spike**（§8.2 第 2 条）；框架只进 Trader 节点；保留单次调用 fallback；技能先纯文本，无脚本 |
 | **P2 闭环 + 富化** | trade_review 复盘任务 + 统计页 + 记忆注入；**双评委辩论**（移植 TradingAgents prompts）；**第二梯队**（CoinGecko MCP）；**技能脚本机制 + 技能 UI 编辑**（§6.4/§6.5） | A4 A6 | 复盘数据积累 2~4 周后再开记忆注入，避免小样本误导；技能上线后用 trace 统计"加载技能 vs 胜率"做优胜劣汰 |
 
 ---
 
 ## 12. 风险与权衡
 
+- **GLM 思考模型 tool loop 兼容性**：reasoning token 随轮次累积不可控、tool_calls 与思考内容混排可能导致 content 为空（本项目单次调用已踩过 reasoning 挤占 max_tokens 的坑）→ P1 前必做 spike（§8.2 第 2 条）；循环内保持 max_tokens 上限 + 空 content 按失败重试/降级
 - **锚点模式限制表达力**：AI 只能选关键位做锚点，极端行情想挂"突破追多"价时表达受限 → 保留 `entry_offset_pct` 弹性 + 极端情况允许 `level_ref="market"`（市价锚）
 - **多阶段引入新的失败面**：每阶段都有超时与降级（Analyst 失败→直接进 Trader；Narrator 失败→模板叙述；Agent 循环异常→回退单次调用；Trader 重试耗尽→skip），最坏等价现状
-- **轻量模型误读**：Analyst 打分偏低会压制 suggest 率 → 四要素分数进复盘统计，长期可回归校准阈值
+- **轻量模型误读**：Analyst 打分偏低会压制 suggest 率（仅流水线/降级形态存在）→ 打分阈值按实测校准，四要素分数不进复盘统计（复盘分组只依赖规则层字段，见 §4 Stage 2）
 - **复盘观察点的主观性**：先到止损还是先到止盈在插针行情受 tick 粒度影响 → 复盘只做趋势性统计，不做逐条定责
 - **Agent 循环不确定性**：同信号两次分析路径可能不同 → temperature 0.2~0.3 + 护栏保证"出口结构必须合法"，路径差异由 stage_trace 记录可查
 - **技能被滥用/写坏**：用户写的技能可能包含错误打法或过大体积 → 信任链设计（§6.7：技能 < 硬校验）、大小截断、格式校验跳过、trace 统计"加载技能 vs 胜率"暴露坏技能
