@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     RISK_STOP_MAX_PCT: float = 0.03   # 止损距离绝对红线（3%，交易系统统一止损）
     FINGERPRINT_TTL_MIN: int = 60     # 指纹缓存复用窗口（分钟，0.3% 价格分桶）
     ATR_SPIKE_MULT: float = 5.0       # 当前K线振幅 > N×ATR 熔断，直接 skip
+    AI_MAX_PER_SCAN: int = 10         # 单次扫描批量 AI 分析上限（按24h成交额取前N）
+    MIN_VOLUME_24H: float = 3_000_000  # 扫描候选池 24h 成交额下限（USDT），低于此不进扫描
 
     class Config:
         env_file = ".env"

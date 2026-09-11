@@ -3,7 +3,7 @@
 - 上游：单条币安 USDT-M WebSocket（wss://fstream.binance.com/ws raw 端点），
   按 (symbol, interval) 频道动态 SUBSCRIBE/UNSUBSCRIBE，所有浏览器/图表共享
 - 断线：指数退避重连 3 次（1/2/4s）→ 降级 REST 轮询（3s/次，缓存双旁路），
-  REST 期间每 30s 探测 WS 恢复；WS_OK 态看门狗对 10s 无事件的频道转 REST 兜底
+  REST 期间每 30s 探测 WS 恢复；WS_OK 态看门狗对 5s 无事件的频道转 REST 兜底
   （币安 fstream 会整类静默：实测 bookTicker 有帧而 kline/aggTrade/markPrice 零帧）
 - 中文合约（牛来USDT 等非 ASCII 符号）：币安 WS 订阅 ACK 成功但永不推帧（静默），
   这类频道不进 WS 订阅，由看门狗按 REST 周期（3s）轮询兜底
@@ -32,7 +32,7 @@ _BACKOFF_S = [1, 2, 4, 8, 16, 30]   # WS 重连退避序列
 _WS_MAX_ATTEMPTS = 3      # 连续失败该次数后进入 REST 降级
 _REST_POLL_S = 3          # REST 降级轮询周期；亦是 WS_OK 态看门狗巡检周期
 _WS_PROBE_S = 30          # REST 降级期间探测 WS 恢复的间隔
-_WATCHDOG_STALE_S = 10    # WS_OK 态频道无事件判定阈值（上游静默/下架符号），超时转 REST 兜底
+_WATCHDOG_STALE_S = 5     # WS_OK 态频道无事件判定阈值（上游静默/下架符号），超时转 REST 兜底
 _REST_BAR_TIMEOUT_S = 20  # 单频道 REST 兜底整体限时（3 家故障转移最坏 3×15s，超时放弃本轮）
 
 
@@ -285,7 +285,7 @@ class KlineHub:
         """单频道兜底：ASCII 频道首次转兜底时推 degraded 并记日志（均去重）；
         已有 REST 失败类 degraded 时保留之（其信息量更大），不回退覆盖成静默消息"""
         if ch[0].isascii():
-            silence = "币安合约WS无K线数据，已降级REST轮询（约10s/帧）"
+            silence = f"币安合约WS无K线数据，已降级REST轮询（约{_WATCHDOG_STALE_S}s/帧）"
             cur = self._last_degraded_msg.get(ch)
             if cur in (None, silence) and self._push_degraded(ch, silence):
                 logger.info("KlineHub 频道 %s 无 WS 事件，转 REST 兜底（约%ds/帧）",

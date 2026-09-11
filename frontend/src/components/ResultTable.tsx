@@ -294,6 +294,44 @@ export default function ResultTable() {
         v ? <Tag color="default">重复</Tag> : <Tag color="green">新</Tag>,
     },
     {
+      // AI 结论列：方向 + 推荐度。扫描完成后自动分析（按24h成交额取前 AI_MAX_PER_SCAN 个）
+      title: (
+        <Tooltip title="AI 分析结论：开多/开空 + 推荐度(0-100)。扫描完成后自动分析成交额前 10 的命中币种">
+          <span>AI</span>
+        </Tooltip>
+      ),
+      key: "ai",
+      render: (_: unknown, record: ScanResult) => {
+        const ai = aiMap[record.id];
+        if (!ai) {
+          return analyzingMap[record.id]?.loading ? (
+            <Tag color="processing">分析中</Tag>
+          ) : (
+            <span style={{ color: "#999" }}>-</span>
+          );
+        }
+        if (ai.trade_decision !== "suggest") {
+          return (
+            <Tooltip title={ai.skip_reason || undefined}>
+              <Tag color="default">跳过</Tag>
+            </Tooltip>
+          );
+        }
+        const rec =
+          ai.recommendation != null ? Math.round(ai.recommendation) : null;
+        return (
+          <span style={{ whiteSpace: "nowrap" }}>
+            {ai.direction === "long" ? (
+              <Tag color="green" style={{ marginInlineEnd: 4 }}>多</Tag>
+            ) : ai.direction === "short" ? (
+              <Tag color="red" style={{ marginInlineEnd: 4 }}>空</Tag>
+            ) : null}
+            <strong>{rec != null ? rec : "-"}</strong>
+          </span>
+        );
+      },
+    },
+    {
       // 复盘列：AI 建议开单 24h 后逐K回放定论（数据来自 aiMap，AI 开关关闭时为空显示 -）
       title: (
         <Tooltip title="AI 建议开单 24h 后逐K回放结果：先触止损=负，触止盈=胜，24h内未触任何价位=超时">

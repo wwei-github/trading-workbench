@@ -97,6 +97,18 @@ class Scanner:
             coin_count = len(symbols_data)
             logger.info("共 %d 个合约交易对待扫描（按24h成交额降序）", len(symbols_data))
 
+            # 24h 成交额过滤：流动性差的合约不进扫描（省K线请求，剔除不可交易标的）
+            min_vol = settings.MIN_VOLUME_24H
+            before = len(symbols_data)
+            symbols_data = [
+                s for s in symbols_data
+                if float(s.get("volume_24h") or 0) >= min_vol
+            ]
+            logger.info(
+                "24h成交额 ≥ %s USDT 过滤：%d → %d",
+                f"{min_vol:,.0f}", before, len(symbols_data),
+            )
+
             # 构建 symbol -> volume 映射
             volume_map = {s["symbol"]: s["volume_24h"] for s in symbols_data}
             symbols = [s["symbol"] for s in symbols_data]
@@ -157,6 +169,13 @@ class Scanner:
 
             # 5. 写入结果（用独立 session，避免长时间扫描后主 session 连接失效）
             self._save_results(scan_record_id, hits, repeat_symbols)
+
+            # 6. 触发 AI 分析（任务内自检开关；批量按24h成交额取前 AI_MAX_PER_SCAN 个）
+            from app.tasks.ai_tasks import run_ai_analysis_task
+            try:
+                run_ai_analysis_task.delay(str(scan_record_id))
+            except Exception as e:
+                logger.warning("AI 分析分发失败（忽略）: %s", e)
 
             hit_count = len(hits)
             status = "completed"
