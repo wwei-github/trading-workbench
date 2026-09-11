@@ -1,18 +1,22 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Alert, Button, Checkbox, Dropdown, InputNumber, Segmented, Tag, Typography } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import {
   createChart,
+  createTextWatermark,
   CandlestickSeries,
   HistogramSeries,
   LineSeries,
   LineStyle,
+  ColorType,
   CrosshairMode,
   type IChartApi,
   type ISeriesApi,
   type SeriesType,
   type UTCTimestamp,
   type IPriceLine,
+  type MouseEventParams,
+  type CandlestickData,
 } from 'lightweight-charts'
 import { scanApi } from '../api/scan'
 import {
@@ -59,6 +63,59 @@ const CANDLE_COLORS: Record<ColorScheme, { up: string; down: string }> = {
   'green-up': { up: '#26a69a', down: '#ef5350' },
 }
 
+// ===== 数值格式化（图例/AI 标注共用）=====
+const fmtPrice = (p: number) => (p < 1 ? p.toFixed(6) : p < 100 ? p.toFixed(4) : p.toFixed(2))
+const fmtVol = (v: number) =>
+  v >= 1e9
+    ? `${(v / 1e9).toFixed(2)}B`
+    : v >= 1e6
+      ? `${(v / 1e6).toFixed(2)}M`
+      : v >= 1e3
+        ? `${(v / 1e3).toFixed(2)}K`
+        : v.toFixed(2)
+const fmtTime = (sec: number) => {
+  const d = new Date(sec * 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+// 从序列尾部找最后一个有效值（指标前段常有空值）
+const lastFinite = (values: (number | null)[]): number | null => {
+  for (let i = values.length - 1; i >= 0; i--) {
+    const v = values[i]
+    if (v != null && Number.isFinite(v)) return v
+  }
+  return null
+}
+
+// 悬浮玻璃拟态面板（工具栏/图例共用）
+const GLASS: CSSProperties = {
+  background: 'rgba(19, 23, 34, 0.72)',
+  backdropFilter: 'blur(10px)',
+  WebkitBackdropFilter: 'blur(10px)',
+  border: '1px solid rgba(66, 74, 96, 0.45)',
+  borderRadius: 8,
+  boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
+}
+
+// 图例中的一条指标线（悬浮时取悬浮位置的值，未悬浮取最新值）
+interface LegendIndicator {
+  name: string
+  color: string
+  value: number | null
+}
+
+interface LegendData {
+  time: number
+  o: number
+  h: number
+  l: number
+  c: number
+  v: number | null
+  chg: number
+  inds: LegendIndicator[]
+}
+
 export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refreshKey = 0 }: Props) {
   // 全局涨跌配色 / 技术指标（store 共享，切换后所有图表同步生效）
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -72,8 +129,11 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const priceLinesRef = useRef<IPriceLine[]>([])
   const keyLineLinesRef = useRef<IPriceLine[]>([])
-  // 技术指标 series（目录驱动），effect 重建时统一清理
+  // 技术指标 series + 图例元信息（目录驱动），effect 重建时统一清理
   const indicatorSeriesRef = useRef<ISeriesApi<SeriesType>[]>([])
+  const indicatorMetaRef = useRef<
+    { series: ISeriesApi<SeriesType>; name: string; color: string; lastValue: number | null }[]
+  >([])
   const redrawFnRef = useRef<(() => void) | null>(null)
   const [error, setError] = useState<string | null>(null)
   // K 线最新收盘价（作为"当前价"，用于挑选最近的关键位）
@@ -84,6 +144,8 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
   const [candlePoints, setCandlePoints] = useState<
     { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }[]
   >([])
+  // 图例数据：null 表示未悬浮 → 显示最新一根 K 线
+  const [legend, setLegend] = useState<LegendData | null>(null)
 
   // 初始化图表 + 拉取数据
   useEffect(() => {
@@ -92,30 +154,53 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
 
     const chart = createChart(container, {
       layout: {
-        background: { color: '#131722' },
-        textColor: '#d1d4dc',
-        fontFamily: 'monospace',
+        // 上下渐变背景，比纯色更有层次
+        background: { type: ColorType.VerticalGradient, topColor: '#1c2231', bottomColor: '#12151f' },
+        textColor: '#c9cfdd',
+        fontFamily:
+          "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif",
+        attributionLogo: false,
       },
       grid: {
-        vertLines: { color: '#1e222d' },
-        horzLines: { color: '#1e222d' },
+        vertLines: { color: '#1d2332' },
+        horzLines: { color: '#1d2332' },
       },
       rightPriceScale: {
-        borderColor: '#2b2b43',
-        scaleMargins: { top: 0.05, bottom: 0.05 },
+        borderColor: '#252b3b',
+        entireTextOnly: true,
+        scaleMargins: { top: 0.08, bottom: 0.08 },
       },
       timeScale: {
-        borderColor: '#2b2b43',
+        borderColor: '#252b3b',
         timeVisible: false,
         secondsVisible: false,
+        rightOffset: 4,
+        lockVisibleTimeRangeOnResize: true,
       },
       crosshair: {
         mode: CrosshairMode.Normal,
-        vertLine: { color: '#758696', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#758696' },
-        horzLine: { color: '#758696', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#758696' },
+        vertLine: { color: '#758696', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#363c4e' },
+        horzLine: { color: '#758696', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#363c4e' },
+      },
+      localization: {
+        // 加密货币价格跨度大（0.00001 ~ 100000），按量级适配小数位
+        priceFormatter: (p: number) => fmtPrice(p),
       },
       width: container.clientWidth || 520,
       height: container.clientHeight || CHART_HEIGHT,
+    })
+
+    // 主图中央水印（币种名）
+    createTextWatermark(chart.panes()[0], {
+      lines: [
+        {
+          text: symbol,
+          color: 'rgba(148, 158, 184, 0.09)',
+          fontSize: 48,
+          fontStyle: 'bold',
+          fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        },
+      ],
     })
 
     const candleColors = CANDLE_COLORS[useScanStore.getState().colorScheme]
@@ -130,6 +215,41 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
     chartRef.current = chart
     seriesRef.current = series
 
+    // 图例联动：十字线悬浮时显示该根 K 线的 OHLC/成交量 + 各指标线在该位置的值
+    const handleCrosshair = (param: MouseEventParams) => {
+      if (!param.time || !param.point) {
+        setLegend(null)
+        return
+      }
+      const cd = param.seriesData.get(series) as CandlestickData | undefined
+      if (!cd) {
+        setLegend(null)
+        return
+      }
+      const volMeta = indicatorMetaRef.current.find((m) => m.name === 'VOL')
+      let v: number | null = null
+      if (volMeta) {
+        const vd = param.seriesData.get(volMeta.series) as { value: number } | undefined
+        if (vd) v = vd.value
+      }
+      setLegend({
+        time: param.time as number,
+        o: cd.open,
+        h: cd.high,
+        l: cd.low,
+        c: cd.close,
+        v,
+        chg: cd.open !== 0 ? ((cd.close - cd.open) / cd.open) * 100 : 0,
+        inds: indicatorMetaRef.current
+          .filter((m) => m.name !== 'VOL')
+          .map((m) => {
+            const d = param.seriesData.get(m.series) as { value: number } | undefined
+            return { name: m.name, color: m.color, value: d ? d.value : null }
+          }),
+      })
+    }
+    chart.subscribeCrosshairMove(handleCrosshair)
+
     let cancelled = false
     scanApi
       .klines(symbol, limit)
@@ -143,7 +263,9 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           close: k.close,
         }))
         seriesRef.current.setData(candleData)
-        chart.timeScale().fitContent()
+        // 默认显示最近约 130 根（更易读），往左滚动可看全量历史
+        const from = Math.max(0, candleData.length - 130)
+        chart.timeScale().setVisibleLogicalRange({ from, to: candleData.length + 4 })
         setLastClose(candleData[candleData.length - 1]?.close ?? null)
         // 直接从原始数据取完整 OHLCV（candleData 是给 series 用的精简结构）
         setCandlePoints(
@@ -180,11 +302,13 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
     return () => {
       cancelled = true
       ro.disconnect()
+      chart.unsubscribeCrosshairMove(handleCrosshair)
       priceLinesRef.current.forEach((l) => series.removePriceLine(l))
       priceLinesRef.current = []
       chart.remove()
       chartRef.current = null
       seriesRef.current = null
+      setLegend(null)
     }
   }, [symbol, limit, refreshKey])
 
@@ -274,6 +398,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
       }
     })
     indicatorSeriesRef.current = []
+    indicatorMetaRef.current = []
     for (let i = chart.panes().length - 1; i >= 1; i--) {
       try {
         chart.removePane(i)
@@ -307,6 +432,9 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           (d): d is { time: UTCTimestamp; value: number } =>
             d.value != null && Number.isFinite(d.value),
         )
+
+    // 汇总图例元信息（effect 末尾一次性写入 ref）
+    const metas: typeof indicatorMetaRef.current = []
 
     for (const def of INDICATOR_CATALOG) {
       const setting = indicatorSettings[def.key]
@@ -342,6 +470,12 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
         )
         line.setData(toLineData(ln.values))
         indicatorSeriesRef.current.push(line)
+        metas.push({
+          series: line,
+          name: ln.name ?? def.label,
+          color: ln.color,
+          lastValue: lastFinite(ln.values),
+        })
       }
 
       if (out.bars && out.bars.length > 0) {
@@ -360,8 +494,18 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
             .filter((d) => d.value != null && Number.isFinite(d.value)),
         )
         indicatorSeriesRef.current.push(bars)
+        // 成交量进图例（MACD/AO 柱已有线表达趋势，不重复展示）
+        if (def.volumeFormat) {
+          metas.push({
+            series: bars,
+            name: 'VOL',
+            color: '#8b93a7',
+            lastValue: lastFinite(out.bars.map((b) => b.value)),
+          })
+        }
       }
     }
+    indicatorMetaRef.current = metas
 
     // 主图 : 副图 = 3 : 1（逐个设置拉伸比例）
     chart.panes().forEach((pn, i) => pn.setStretchFactor(i === 0 ? 3 : 1))
@@ -387,9 +531,6 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
     const NS = 'http://www.w3.org/2000/svg'
     const el = (tag: string) => document.createElementNS(NS, tag)
 
-    const fmt = (p: number) =>
-      p < 1 ? p.toFixed(6) : p < 100 ? p.toFixed(4) : p.toFixed(2)
-
     const isLong = ai.direction !== 'short'
 
     // 颜色配置
@@ -400,7 +541,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
     const labelEntry = isLong ? '做多' : '做空'
 
     // 固定标注宽度：放在右侧价格轴左边，向左延伸
-    const MARK_W = 140       // 区域/线条固定宽度
+    const MARK_W = 140 // 区域/线条固定宽度
 
     const drawPosition = () => {
       while (svg.firstChild) svg.removeChild(svg.firstChild)
@@ -409,8 +550,8 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
       // K 线主区域右边界 = 总宽 - 右侧价格轴宽度
       const priceScaleWidth = chart.priceScale('right').width()
       const rightEdge = Math.max(MARK_W, fullWidth - priceScaleWidth)
-      const x0 = rightEdge - MARK_W  // 线条左端
-      const x1 = rightEdge           // 线条右端（紧贴价格轴）
+      const x0 = rightEdge - MARK_W // 线条左端
+      const x1 = rightEdge // 线条右端（紧贴价格轴）
       svg.setAttribute('width', String(fullWidth))
       svg.setAttribute('height', String(height))
       svg.setAttribute('viewBox', `0 0 ${fullWidth} ${height}`)
@@ -488,7 +629,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
         svg.appendChild(line)
 
         // 右侧标签盒
-        const text = `${label} ${fmt(price)}`
+        const text = `${label} ${fmtPrice(price)}`
         const font = 'bold 10px monospace'
         const ctx2 = document.createElement('canvas').getContext('2d')!
         ctx2.font = font
@@ -496,7 +637,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
         const padX = 4
         const boxH = 13
         const boxW = tw + padX * 2
-        const boxX = x1 - boxW  // 右对齐到线条右端
+        const boxX = x1 - boxW // 右对齐到线条右端
 
         const rect = el('rect')
         rect.setAttribute('x', String(boxX))
@@ -552,6 +693,31 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
     }
   }, [ai])
 
+  // ===== 图例渲染数据：悬浮时用图例状态，否则用最新一根 K 线 =====
+  const lastCandle = candlePoints[candlePoints.length - 1]
+  const scheme = CANDLE_COLORS[colorScheme]
+  const legendData: LegendData | null =
+    legend ??
+    (lastCandle
+      ? {
+          time: lastCandle.time as number,
+          o: lastCandle.open,
+          h: lastCandle.high,
+          l: lastCandle.low,
+          c: lastCandle.close,
+          v: lastCandle.volume,
+          chg:
+            lastCandle.open !== 0
+              ? ((lastCandle.close - lastCandle.open) / lastCandle.open) * 100
+              : 0,
+          inds: indicatorMetaRef.current
+            .filter((m) => m.name !== 'VOL')
+            .map((m) => ({ name: m.name, color: m.color, value: m.lastValue })),
+        }
+      : null)
+  // 悬浮时成交量取悬浮值；未悬浮时固定显示最新成交量（VOL 指标关闭则隐藏）
+  const legendVol = legend ? legend.v : lastCandle && indicatorMetaRef.current.some((m) => m.name === 'VOL') ? lastCandle.volume : null
+
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 360 }}>
       {error && (
@@ -563,7 +729,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           style={{ marginBottom: 8 }}
         />
       )}
-      {/* 左上角工具栏：指标选择 + 关键位类型开关 + 涨跌配色切换 */}
+      {/* 左上角悬浮层：工具栏 + 图例（垂直堆叠，自适应换行） */}
       <div
         style={{
           position: 'absolute',
@@ -571,123 +737,198 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           left: 8,
           zIndex: 20,
           display: 'flex',
-          flexWrap: 'wrap',
-          alignItems: 'center',
+          flexDirection: 'column',
+          alignItems: 'flex-start',
           gap: 4,
           maxWidth: 'calc(100% - 16px)',
-          background: 'rgba(19, 23, 34, 0.78)',
-          border: '1px solid #2a2e39',
-          borderRadius: 6,
-          padding: '4px 8px',
         }}>
-        {/* 技术指标面板（indicatorts 计算，主图/副图分组，开关 + 参数，全局生效） */}
-        <Dropdown
-          trigger={['click']}
-          destroyPopupOnHide
-          dropdownRender={() => (
-            <div
+        {/* 工具栏：指标选择 + 关键位类型开关 + 涨跌配色切换 */}
+        <div
+          style={{
+            ...GLASS,
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: 4,
+            padding: '4px 8px',
+          }}>
+          {/* 技术指标面板（indicatorts 计算，主图/副图分组，开关 + 参数，全局生效） */}
+          <Dropdown
+            trigger={['click']}
+            destroyPopupOnHide
+            dropdownRender={() => (
+              <div
+                style={{
+                  background: '#1b1f2a',
+                  border: '1px solid #2a2e39',
+                  borderRadius: 6,
+                  padding: '10px 12px',
+                  width: 250,
+                  maxHeight: 420,
+                  overflowY: 'auto',
+                }}>
+                {(['main', 'sub'] as const).map((pane) => (
+                  <div key={pane} style={pane === 'main' ? { marginBottom: 10 } : undefined}>
+                    <Text style={{ color: '#9aa3b2', fontSize: 11 }}>
+                      {pane === 'main' ? '主图指标' : '副图指标'}
+                    </Text>
+                    {INDICATOR_CATALOG.filter((d) => d.pane === pane).map((def) => {
+                      const setting = indicatorSettings[def.key]
+                      return (
+                        <div key={def.key} style={{ marginTop: 4 }}>
+                          <Checkbox
+                            checked={!!setting?.enabled}
+                            onChange={() => toggleIndicator(def.key)}>
+                            <span style={{ color: '#d1d4dc', fontSize: 12 }}>{def.label}</span>
+                          </Checkbox>
+                          {setting?.enabled && def.paramLabels.length > 0 && (
+                            <div
+                              style={{
+                                display: 'flex',
+                                flexWrap: 'wrap',
+                                gap: 4,
+                                marginLeft: 22,
+                                marginTop: 2,
+                              }}>
+                              {def.paramLabels.map((pl, i) => (
+                                <InputNumber
+                                  key={i}
+                                  size="small"
+                                  min={1}
+                                  max={499}
+                                  value={setting.params[i]}
+                                  style={{ width: 56 }}
+                                  onChange={(v) => {
+                                    const params = [...setting.params]
+                                    params[i] = v ?? params[i]
+                                    setIndicatorParams(def.key, params)
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ))}
+              </div>
+            )}>
+            <Button size="small" ghost icon={<PlusOutlined />}>
+              指标
+            </Button>
+          </Dropdown>
+          {keyLevels && keyLevels.length > 0 &&
+            [...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => {
+              const visible = !hiddenKinds.has(kind)
+              // 未选中态必须显式配色：antd 亮色主题下默认是深色文字 + 无背景，
+              // 叠在深色工具栏背景上会完全看不见
+              const style = visible
+                ? { color: '#fff' }
+                : {
+                    color: '#9aa3b2',
+                    background: 'rgba(255, 255, 255, 0.06)',
+                    border: '1px dashed #3a3f4d',
+                  }
+              return (
+                <Tag.CheckableTag
+                  key={kind}
+                  checked={visible}
+                  style={style}
+                  onChange={(checked) =>
+                    setHiddenKinds((prev) => {
+                      const next = new Set(prev)
+                      if (checked) next.delete(kind)
+                      else next.add(kind)
+                      return next
+                    })
+                  }>
+                  {KIND_LABEL[kind] || kind}
+                </Tag.CheckableTag>
+              )
+            })}
+          {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效） */}
+          <Segmented
+            size="small"
+            value={colorScheme}
+            options={[
+              { label: '红涨绿跌', value: 'red-up' },
+              { label: '绿涨红跌', value: 'green-up' },
+            ]}
+            onChange={(v) => setColorScheme(v as ColorScheme)}
+            style={{ marginLeft: 4 }}
+          />
+        </div>
+        {/* 图例：OHLC + 涨跌幅 + 成交量 + 指标数值（十字线联动，纯展示不挡操作） */}
+        {legendData && !error && (
+          <div
+            style={{
+              ...GLASS,
+              padding: '4px 10px',
+              fontSize: 11,
+              lineHeight: '18px',
+              pointerEvents: 'none',
+              maxWidth: '100%',
+              display: 'flex',
+              flexWrap: 'wrap',
+              columnGap: 10,
+              rowGap: 1,
+            }}>
+            <span style={{ color: '#e8ebf2', fontWeight: 600 }}>{symbol}</span>
+            <span style={{ color: '#8b93a7' }}>{fmtTime(legendData.time)}</span>
+            {(
+              [
+                ['开', legendData.o],
+                ['高', legendData.h],
+                ['低', legendData.l],
+                ['收', legendData.c],
+              ] as [string, number][]
+            ).map(([label, val]) => (
+              <span key={label} style={{ color: '#8b93a7' }}>
+                {label}{' '}
+                <span style={{ color: legendData.chg >= 0 ? scheme.up : scheme.down }}>
+                  {fmtPrice(val)}
+                </span>
+              </span>
+            ))}
+            <span
               style={{
-                background: '#1b1f2a',
-                border: '1px solid #2a2e39',
-                borderRadius: 6,
-                padding: '10px 12px',
-                width: 250,
-                maxHeight: 420,
-                overflowY: 'auto',
+                color: '#fff',
+                background: legendData.chg >= 0 ? scheme.up : scheme.down,
+                borderRadius: 3,
+                padding: '0 5px',
+                fontWeight: 600,
               }}>
-              {(['main', 'sub'] as const).map((pane) => (
-                <div key={pane} style={pane === 'main' ? { marginBottom: 10 } : undefined}>
-                  <Text style={{ color: '#9aa3b2', fontSize: 11 }}>
-                    {pane === 'main' ? '主图指标' : '副图指标'}
-                  </Text>
-                  {INDICATOR_CATALOG.filter((d) => d.pane === pane).map((def) => {
-                    const setting = indicatorSettings[def.key]
-                    return (
-                      <div key={def.key} style={{ marginTop: 4 }}>
-                        <Checkbox
-                          checked={!!setting?.enabled}
-                          onChange={() => toggleIndicator(def.key)}>
-                          <span style={{ color: '#d1d4dc', fontSize: 12 }}>{def.label}</span>
-                        </Checkbox>
-                        {setting?.enabled && def.paramLabels.length > 0 && (
-                          <div
-                            style={{
-                              display: 'flex',
-                              flexWrap: 'wrap',
-                              gap: 4,
-                              marginLeft: 22,
-                              marginTop: 2,
-                            }}>
-                            {def.paramLabels.map((pl, i) => (
-                              <InputNumber
-                                key={i}
-                                size="small"
-                                min={1}
-                                max={499}
-                                value={setting.params[i]}
-                                style={{ width: 56 }}
-                                onChange={(v) => {
-                                  const params = [...setting.params]
-                                  params[i] = v ?? params[i]
-                                  setIndicatorParams(def.key, params)
-                                }}
-                              />
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              ))}
-            </div>
-          )}>
-          <Button size="small" ghost icon={<PlusOutlined />}>
-            指标
-          </Button>
-        </Dropdown>
-        {keyLevels && keyLevels.length > 0 &&
-          [...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => {
-            const visible = !hiddenKinds.has(kind)
-            // 未选中态必须显式配色：antd 亮色主题下默认是深色文字 + 无背景，
-            // 叠在深色工具栏背景上会完全看不见
-            const style = visible
-              ? { color: '#fff' }
-              : {
-                  color: '#9aa3b2',
-                  background: 'rgba(255, 255, 255, 0.06)',
-                  border: '1px dashed #3a3f4d',
-                }
-            return (
-              <Tag.CheckableTag
-                key={kind}
-                checked={visible}
-                style={style}
-                onChange={(checked) =>
-                  setHiddenKinds((prev) => {
-                    const next = new Set(prev)
-                    if (checked) next.delete(kind)
-                    else next.add(kind)
-                    return next
-                  })
-                }>
-                {KIND_LABEL[kind] || kind}
-              </Tag.CheckableTag>
-            )
-          })}
-        {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效） */}
-        <Segmented
-          size="small"
-          value={colorScheme}
-          options={[
-            { label: '红涨绿跌', value: 'red-up' },
-            { label: '绿涨红跌', value: 'green-up' },
-          ]}
-          onChange={(v) => setColorScheme(v as ColorScheme)}
-          style={{ marginLeft: 4 }}
-        />
+              {legendData.chg >= 0 ? '+' : ''}
+              {legendData.chg.toFixed(2)}%
+            </span>
+            {legendVol != null && (
+              <span style={{ color: '#8b93a7' }}>
+                量 <span style={{ color: '#c9cfdd' }}>{fmtVol(legendVol)}</span>
+              </span>
+            )}
+            {/* 指标数值：色点 + 短名 + 当前值 */}
+            {legendData.inds.map((ind, i) => (
+              <span key={`${ind.name}-${i}`} style={{ color: '#8b93a7' }}>
+                <span style={{ color: ind.color }}>●</span> {ind.name}{' '}
+                <span style={{ color: ind.color }}>
+                  {ind.value != null && Number.isFinite(ind.value) ? fmtPrice(ind.value) : '—'}
+                </span>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
-      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      <div
+        ref={containerRef}
+        style={{
+          width: '100%',
+          height: '100%',
+          borderRadius: 8,
+          overflow: 'hidden',
+          border: '1px solid #232838',
+        }}
+      />
       <svg
         ref={svgRef}
         width="100%"

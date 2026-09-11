@@ -35,6 +35,8 @@ export interface IndicatorLine {
   color: string
   values: (number | null)[]
   lineStyle?: 'solid' | 'dotted' | 'dashed'
+  // 图例短名（如 EMA21 / K / DIF）；缺省用指标 label
+  name?: string
 }
 
 export interface IndicatorBar {
@@ -60,16 +62,18 @@ export interface IndicatorDef {
 
 const LINE_COLORS = ['#f0b90b', '#00bcd4', '#ff9800', '#b39ddb', '#ef5350']
 
-// 多周期均线通用适配（EMA/MA）：每个周期一条线
+// 多周期均线通用适配（EMA/MA）：每个周期一条线，图例显示 EMA21 / MA60 等短名
 const periodLines = (
   closes: number[],
   periods: number[],
-  calc: (values: number[], period: number) => number[],
+  calc: (values: number[], period: number) => (number | null)[],
   colors: string[] = LINE_COLORS,
+  nameOf?: (period: number) => string,
 ): IndicatorLine[] =>
   periods.map((period, i) => ({
     color: colors[i % colors.length],
     values: calc(closes, period),
+    ...(nameOf ? { name: nameOf(period) } : {}),
   }))
 
 // SAR 点位着色：上涨点/下跌点区分（trends: 1 上涨 / -1 下跌）
@@ -81,8 +85,8 @@ const sarLines = (r: { trends: Trend[]; psarResult: number[] }): IndicatorLine[]
     down.push(r.trends[i] === -1 ? v : null)
   })
   return [
-    { color: '#26a69a', values: up, lineStyle: 'dotted' },
-    { color: '#ef5350', values: down, lineStyle: 'dotted' },
+    { color: '#26a69a', values: up, lineStyle: 'dotted', name: 'SAR ↑' },
+    { color: '#ef5350', values: down, lineStyle: 'dotted', name: 'SAR ↓' },
   ]
 }
 
@@ -100,6 +104,7 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
         periods,
         (v, period) => ema(v, { period }),
         ['#f0b90b', '#00bcd4', '#ff9800'],
+        (p) => `EMA${p}`,
       ),
     }),
   },
@@ -110,7 +115,7 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     defaults: [5, 10, 30, 60],
     paramLabels: ['周期1', '周期2', '周期3', '周期4'],
     compute: (ctx, periods) => ({
-      lines: periodLines(ctx.closes, periods, (v, period) => sma(v, { period })),
+      lines: periodLines(ctx.closes, periods, (v, period) => sma(v, { period }), LINE_COLORS, (p) => `MA${p}`),
     }),
   },
   {
@@ -123,9 +128,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
       const r = bb(ctx.closes, { period })
       return {
         lines: [
-          { color: '#4d8ef7', values: r.upper },
-          { color: '#d1d4dc', values: r.middle },
-          { color: '#4d8ef7', values: r.lower },
+          { color: '#4d8ef7', values: r.upper, name: '上轨' },
+          { color: '#d1d4dc', values: r.middle, name: '中轨' },
+          { color: '#4d8ef7', values: r.lower, name: '下轨' },
         ],
       }
     },
@@ -140,9 +145,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
       const r = kc(ctx.highs, ctx.lows, ctx.closes, { period })
       return {
         lines: [
-          { color: '#00bcd4', values: r.upper },
-          { color: '#d1d4dc', values: r.middle },
-          { color: '#00bcd4', values: r.lower },
+          { color: '#00bcd4', values: r.upper, name: '上轨' },
+          { color: '#d1d4dc', values: r.middle, name: '中轨' },
+          { color: '#00bcd4', values: r.lower, name: '下轨' },
         ],
       }
     },
@@ -158,9 +163,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
       const r = donchianChannel(ctx.closes, { period })
       return {
         lines: [
-          { color: '#ef5350', values: r.upper },
-          { color: '#f0b90b', values: r.middle },
-          { color: '#26a69a', values: r.lower },
+          { color: '#ef5350', values: r.upper, name: '上轨' },
+          { color: '#f0b90b', values: r.middle, name: '中轨' },
+          { color: '#26a69a', values: r.lower, name: '下轨' },
         ],
       }
     },
@@ -199,8 +204,8 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
       const r = macd(ctx.closes, { fast, slow, signal })
       return {
         lines: [
-          { color: '#f0b90b', values: r.macdLine },
-          { color: '#00bcd4', values: r.signalLine },
+          { color: '#f0b90b', values: r.macdLine, name: 'DIF' },
+          { color: '#00bcd4', values: r.signalLine, name: 'DEA' },
         ],
         // 库只给两线，柱 = DIF - DEA（标准 MACD 定义，一行差值）
         bars: r.macdLine.map((v, i) => {
@@ -225,9 +230,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
       })
       return {
         lines: [
-          { color: '#f0b90b', values: r.k },
-          { color: '#00bcd4', values: r.d },
-          { color: '#ef5350', values: r.j },
+          { color: '#f0b90b', values: r.k, name: 'K' },
+          { color: '#00bcd4', values: r.d, name: 'D' },
+          { color: '#ef5350', values: r.j, name: 'J' },
         ],
       }
     },
@@ -239,7 +244,7 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     defaults: [14],
     paramLabels: ['周期'],
     compute: (ctx, [period]) => ({
-      lines: [{ color: '#b39ddb', values: rsi(ctx.closes, { period }) }],
+      lines: [{ color: '#b39ddb', values: rsi(ctx.closes, { period }), name: 'RSI' }],
     }),
   },
   {
@@ -249,7 +254,13 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     defaults: [14],
     paramLabels: ['周期'],
     compute: (ctx, [period]) => ({
-      lines: [{ color: '#00bcd4', values: williamsR(ctx.highs, ctx.lows, ctx.closes, { period }) }],
+      lines: [
+        {
+          color: '#00bcd4',
+          values: williamsR(ctx.highs, ctx.lows, ctx.closes, { period }),
+          name: 'WR',
+        },
+      ],
     }),
   },
   {
@@ -259,7 +270,7 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     defaults: [20],
     paramLabels: ['周期'],
     compute: (ctx, [period]) => ({
-      lines: [{ color: '#f0b90b', values: cci(ctx.highs, ctx.lows, ctx.closes, { period }) }],
+      lines: [{ color: '#f0b90b', values: cci(ctx.highs, ctx.lows, ctx.closes, { period }), name: 'CCI' }],
     }),
   },
   {
@@ -269,7 +280,13 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     defaults: [14],
     paramLabels: ['周期'],
     compute: (ctx, [period]) => ({
-      lines: [{ color: '#ff9800', values: atr(ctx.highs, ctx.lows, ctx.closes, { period }).atrLine }],
+      lines: [
+        {
+          color: '#ff9800',
+          values: atr(ctx.highs, ctx.lows, ctx.closes, { period }).atrLine,
+          name: 'ATR',
+        },
+      ],
     }),
   },
   {
@@ -279,7 +296,7 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     defaults: [],
     paramLabels: [],
     compute: (ctx) => ({
-      lines: [{ color: '#b39ddb', values: obv(ctx.closes, ctx.volumes) }],
+      lines: [{ color: '#b39ddb', values: obv(ctx.closes, ctx.volumes), name: 'OBV' }],
     }),
   },
   {
@@ -290,7 +307,11 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     paramLabels: ['周期'],
     compute: (ctx, [period]) => ({
       lines: [
-        { color: '#00bcd4', values: mfi(ctx.highs, ctx.lows, ctx.closes, ctx.volumes, { period }) },
+        {
+          color: '#00bcd4',
+          values: mfi(ctx.highs, ctx.lows, ctx.closes, ctx.volumes, { period }),
+          name: 'MFI',
+        },
       ],
     }),
   },
@@ -301,7 +322,7 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     defaults: [12],
     paramLabels: ['周期'],
     compute: (ctx, [period]) => ({
-      lines: [{ color: '#f0b90b', values: roc(ctx.closes, { period }) }],
+      lines: [{ color: '#f0b90b', values: roc(ctx.closes, { period }), name: 'ROC' }],
     }),
   },
   {
