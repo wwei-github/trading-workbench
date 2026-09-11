@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # 币安
     BINANCE_BASE_URL: str = os.getenv("BINANCE_BASE_URL", "https://api.binance.com")
     BINANCE_FUTURES_URL: str = os.getenv("BINANCE_FUTURES_URL", "https://fapi.binance.com")
+    BINANCE_WS_URL: str = os.getenv("BINANCE_WS_URL", "wss://fstream.binance.com")
     BINANCE_TIMEOUT: int = 15
     BINANCE_CONCURRENCY: int = 8
 

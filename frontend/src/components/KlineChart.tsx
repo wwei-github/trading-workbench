@@ -23,6 +23,7 @@ import {
   type CandlestickData,
 } from 'lightweight-charts'
 import { scanApi } from '../api/scan'
+import { openKlineStream, type KlineBar } from '../api/klineStream'
 import {
   useScanStore,
   type ColorScheme,
@@ -129,6 +130,11 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
   const [error, setError] = useState<string | null>(null)
   // "更新"按钮进行中状态
   const [updating, setUpdating] = useState(false)
+  // 实时流周期：来自最近一次整包数据的响应（订阅永远晚于数据落图，无竞态）
+  const [streamInterval, setStreamInterval] = useState('')
+  // 收盘全量刷新的去抖与互斥（与手动"更新"按钮共用）
+  const lastFullRefreshRef = useRef(0)
+  const refreshingRef = useRef(false)
   // 已加载的 K 线（完整 OHLCV），供指标计算与标注使用
   const [candlePoints, setCandlePoints] = useState<
     { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }[]
@@ -138,6 +144,7 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
 
   // 将拉取到的 K 线应用到图表（初始化加载与"更新"按钮共用）
   const applyKlineData = useCallback((data: KlineData) => {
+    setStreamInterval(data.interval)
     const series = seriesRef.current
     const chart = chartRef.current
     if (!series || !chart) return
@@ -200,14 +207,48 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
   // "更新"按钮：跳过缓存直连交易所拉最新 K 线，交易所返回后回写重置缓存
   const handleUpdate = async () => {
     setUpdating(true)
+    refreshingRef.current = true
     try {
       applyKlineData(await scanApi.klines(symbol, limit, true))
+      lastFullRefreshRef.current = Date.now()
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'K线更新失败')
     } finally {
+      refreshingRef.current = false
       setUpdating(false)
     }
   }
+
+  // 实时 bar 原位更新最后一根 K 线（不碰 candlePoints，避免指标 effect 每 tick 全量重建）
+  const applyBar = useCallback((bar: KlineBar) => {
+    const series = seriesRef.current
+    if (!series) return
+    const time = Math.floor(bar.t / 1000) as UTCTimestamp
+    series.update({ time, open: bar.o, high: bar.h, low: bar.l, close: bar.c })
+    // VOL 副图同步（若启用）；颜色规则与 indicators.ts 一致：收 >= 开 用涨色
+    const vol = indicatorMetaRef.current.find((m) => m.name === 'VOL')
+    if (vol) {
+      const cc = CANDLE_COLORS[useScanStore.getState().colorScheme]
+      vol.series.update({ time, value: bar.v, color: bar.c >= bar.o ? cc.up : cc.down })
+    }
+  }, [])
+
+  // 收盘（x=true）后全量刷新一次，同步摆动点/指标/图例（20s 去抖防重连重放重复触发）
+  const scheduleFullRefresh = useCallback(() => {
+    void (async () => {
+      if (refreshingRef.current) return // 手动"更新"进行中则让路
+      if (Date.now() - lastFullRefreshRef.current < 20_000) return
+      refreshingRef.current = true
+      try {
+        applyKlineData(await scanApi.klines(symbol, limit))
+        lastFullRefreshRef.current = Date.now()
+      } catch {
+        /* 保留现有画面，下个收盘周期再试 */
+      } finally {
+        refreshingRef.current = false
+      }
+    })()
+  }, [applyKlineData, symbol, limit])
 
   // 初始化图表 + 拉取数据
   useEffect(() => {
@@ -356,6 +397,21 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
       setLegend(null)
     }
   }, [symbol, limit, refreshKey, applyKlineData])
+
+  // 实时推送订阅：bar 原位更新最后一根；收盘帧触发一次全量刷新（摆动点/指标重算）
+  useEffect(() => {
+    if (!streamInterval) return
+    return openKlineStream(symbol, streamInterval, {
+      onSnapshot: (bar) => {
+        if (bar) applyBar(bar)
+      },
+      onBar: (bar) => {
+        applyBar(bar)
+        if (bar.x) scheduleFullRefresh()
+      },
+      onDegraded: (msg) => console.warn(`[${symbol}] kline stream degraded: ${msg}`),
+    })
+  }, [symbol, streamInterval, applyBar, scheduleFullRefresh])
 
   // 切换涨跌配色：直接改 series 选项，所有图表实例同步生效，无需重建图表
   useEffect(() => {

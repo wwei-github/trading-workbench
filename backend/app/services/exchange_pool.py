@@ -461,6 +461,29 @@ class ExchangePool:
                 return stale
         raise AllExchangesFailed("；".join(errors) or "未知错误")
 
+    def get_recent_klines(
+        self, symbol: str, interval: str = "1h", limit: int = 2,
+    ) -> list[list]:
+        """拉取最近 limit 根 K 线（缓存读写双旁路，实时流降级/快照专用，docs/07）
+
+        不读缓存（limit=2 会命中整周期的 500 根旧缓存）、不写缓存
+        （避免 2 根覆盖整周期全量缓存），直接按故障转移链路请求交易所。
+        """
+        errors: list[str] = []
+        for name in _ordered_names():
+            try:
+                klines = _FETCHERS[name](symbol, interval, limit)
+                _last_error.pop(name, None)
+                return klines
+            except ExchangeError as e:
+                errors.append(f"{_LABELS[name]}: {e}")
+                continue
+            except Exception as e:
+                _cooldown(name, _DEFAULT_COOLDOWN, str(e)[:120])
+                errors.append(f"{_LABELS[name]}: {str(e)[:120]}")
+                continue
+        raise AllExchangesFailed("；".join(errors) or "未知错误")
+
     def get_usdt_swap_symbols_with_volume(self) -> list[dict]:
         """获取 USDT 永续合约列表（多链路故障转移）
 
