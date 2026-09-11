@@ -134,7 +134,7 @@ def run_ai_analysis_task(
         db.close()
 
 
-@celery_app.task(name="app.tasks.ai_tasks.run_ai_analysis_single", bind=True, max_retries=0)
+@celery_app.task(name="app.tasks.ai_tasks.run_ai_analysis_single", bind=True, max_retries=2)
 def run_ai_analysis_single(
     self, scan_result_id: str, scan_record_id: str,
     user_input: Optional[str] = None, force: bool = False,
@@ -221,6 +221,11 @@ def run_ai_analysis_single(
                 return
 
         # ── Stage 2：LLM 分析（P1 Agent 工具循环 / P0 单次调用）+ Risk Guard 校验 ──
+        # LLM 长调用（数分钟）期间不持有 DB 连接——任务开头取出的连接可能中途被
+        # 网络层掐断（pool_pre_ping 只在取出时探测），落库前换新会话并重取行
+        db.close()
+        db = SessionLocal()
+        r = db.get(ScanResult, r.id)
         # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
         # Agent 管线由模型按需调用工具自行获取
         if cfg.ai_pipeline_enabled:
@@ -254,9 +259,20 @@ def run_ai_analysis_single(
             str(ai_result.get("analysis") or "")[:80],
         )
     except Exception as e:
+        # 网关超时（延迟波动剧烈，实测 130s~>240s 随机）：延迟自动重试，不推 error 事件
+        if "timed out" in str(e).lower() or "timeout" in str(e).lower():
+            logger.warning(
+                "AI 分析 %s 网关超时，%ds 后自动重试（第 %d/2 次）",
+                scan_result_id, 90, self.request.retries + 1,
+            )
+            ai_progress.push(scan_result_id, "gate", note="⏳ 网关超时，90s 后自动重试")
+            raise self.retry(countdown=90)
         logger.warning("AI 分析 %s 失败: %s", scan_result_id, e)
         ai_progress.push(scan_result_id, "error", note=str(e)[:200])
-        db.rollback()
+        try:
+            db.rollback()
+        except Exception:
+            pass  # 连接已死时 rollback 也会抛，吞掉以保住原始错误信息
     finally:
         db.close()
         _sem_release(sem)

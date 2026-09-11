@@ -79,8 +79,8 @@ def _build_messages(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）"""
-    # 取最近 100 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-101:-1]）
-    recent = klines[-101:-1] if len(klines) >= 101 else klines[:-1]
+    # 取最近 60 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-61:-1]）
+    recent = klines[-61:-1] if len(klines) >= 61 else klines[:-1]
     # 每根K线自带成交量与成交额（quote_vol，USDT），与 Agent 管线同格式
     kline_summary = "\n".join(
         f"{int(k[0]/1000)},{k[1]},{k[2]},{k[3]},{k[4]},{k[5]},{k[7]}" for k in recent

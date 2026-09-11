@@ -437,7 +437,13 @@ def get_ai_progress(scan_result_id: UUID, db: Session = Depends(get_db)):
         select(AIAnalysis.id).where(AIAnalysis.scan_result_id == scan_result_id)
     ).first() is not None
     events = ai_progress.get_events(scan_result_id)
-    status = "done" if done else ("running" if events else "idle")
+    # 终态感知：落库=done，末事件为 error=error（否则 error 后仍显示 running，像卡住）
+    if done:
+        status = "done"
+    elif events and events[-1].get("t") == "error":
+        status = "error"
+    else:
+        status = "running" if events else "idle"
     return {"scan_result_id": str(scan_result_id), "status": status, "events": events}
 
 

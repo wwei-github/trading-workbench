@@ -52,7 +52,7 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    n_structure N字结构（回踩后同向延续）/ rule_2b 2B法则（假突破前高/低后反向）/
    range_edge 区间边缘反转。
 6. "可用技能"列表中标注【当前命中】的技能，建议先 load_skill 阅读再决策。
-7. **效率与数据边界（重要）**：事实包只含信号与行情数据（100根K线含每根成交量与成交额/关键位/均线形态/ATR），
+7. **效率与数据边界（重要）**：事实包只含信号与行情数据（60根K线含每根成交量与成交额/关键位/均线形态/ATR），
    首轮即可直接 submit_decision；资金费率、大盘状态、恐贪指数等环境数据**不在**事实包中，
    确需时在同一轮一次性批量调用 get_funding / get_market_breadth / get_fear_greed 自行获取
    （如资金费率极端可 load_skill 阅读 funding-extreme-handling）；不要为用工具而用工具，
@@ -66,7 +66,7 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 TOOLS_SCHEMA = [
     {"type": "function", "function": {
         "name": "get_recent_klines",
-        "description": "获取该币种最近 N 根已收盘K线（事实包里已有100根摘要，需要更长历史时用）。列与事实包相同：timestamp,open,high,low,close,vol,quote_vol(USDT)",
+        "description": "获取该币种最近 N 根已收盘K线（事实包里已有60根摘要，需要更长历史时用）。列与事实包相同：timestamp,open,high,low,close,vol,quote_vol(USDT)",
         "parameters": {"type": "object", "properties": {
             "n": {"type": "integer", "description": "根数，30~200"},
         }, "required": ["n"]},
@@ -396,7 +396,7 @@ def _build_user_msg(
     user_input: Optional[str],
 ) -> str:
     closed = klines[:-1] if len(klines) >= 2 else klines
-    recent = closed[-100:]
+    recent = closed[-60:]
     # 每根K线自带成交量与成交额（quote_vol，USDT），不再给汇总口径
     kline_summary = "\n".join(
         f"{int(k[0]/1000)},{k[1]},{k[2]},{k[3]},{k[4]},{k[5]},{k[7]}" for k in recent
