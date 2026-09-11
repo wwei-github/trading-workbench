@@ -52,7 +52,7 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    n_structure N字结构（回踩后同向延续）/ rule_2b 2B法则（假突破前高/低后反向）/
    range_edge 区间边缘反转。
 6. "可用技能"列表中标注【当前命中】的技能，建议先 load_skill 阅读再决策。
-7. **效率与数据边界（重要）**：事实包只含信号与行情数据（30根K线/关键位/均线形态/ATR/量能），
+7. **效率与数据边界（重要）**：事实包只含信号与行情数据（100根K线含每根成交量与成交额/关键位/均线形态/ATR），
    首轮即可直接 submit_decision；资金费率、大盘状态、恐贪指数等环境数据**不在**事实包中，
    确需时在同一轮一次性批量调用 get_funding / get_market_breadth / get_fear_greed 自行获取
    （如资金费率极端可 load_skill 阅读 funding-extreme-handling）；不要为用工具而用工具，
@@ -66,7 +66,7 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 TOOLS_SCHEMA = [
     {"type": "function", "function": {
         "name": "get_recent_klines",
-        "description": "获取该币种最近 N 根已收盘K线（事实包里已有30根摘要，需要更长历史时用）",
+        "description": "获取该币种最近 N 根已收盘K线（事实包里已有100根摘要，需要更长历史时用）。列与事实包相同：timestamp,open,high,low,close,vol,quote_vol(USDT)",
         "parameters": {"type": "object", "properties": {
             "n": {"type": "integer", "description": "根数，30~200"},
         }, "required": ["n"]},
@@ -208,13 +208,15 @@ def _handle_submit(args: dict, signal: dict, klines: list) -> tuple[bool, str, O
 def _dispatch_tool(name: str, args: dict, ctx: dict) -> tuple[bool, str, Optional[dict]]:
     """执行工具。返回 (done, result_text, fixed_decision)"""
     if name == "get_recent_klines":
-        n = max(30, min(int(args.get("n", 60)), 200))
+        n = max(30, min(int(args.get("n", 100)), 200))
         closed = ctx["klines"][: len(ctx["klines"]) - 1]  # 去掉未收盘
         rows = closed[-n:] if len(closed) > n else closed
-        return False, json.dumps([
-            {"ts": int(k[0]), "o": k[1], "h": k[2], "l": k[3], "c": k[4], "v": k[5]}
+        # 与事实包同列的 CSV（紧凑，200根 ≈ 11k 字符，在工具结果截断上限内）
+        body = "\n".join(
+            f"{int(k[0]/1000)},{k[1]},{k[2]},{k[3]},{k[4]},{k[5]},{k[7]}"
             for k in rows
-        ]), None
+        )
+        return False, "ts,open,high,low,close,vol,quote_vol(USDT)\n" + body, None
     if name == "get_funding":
         f = market_data.get_funding(ctx["signal"]["symbol"])
         return False, json.dumps(f or {"error": "不可用"}, ensure_ascii=False), None
@@ -336,7 +338,7 @@ def analyze_coin_agent(
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
-                "content": result[:6000],
+                "content": result[:12000],
             })
             if done:
                 fixed = decision
@@ -394,9 +396,10 @@ def _build_user_msg(
     user_input: Optional[str],
 ) -> str:
     closed = klines[:-1] if len(klines) >= 2 else klines
-    recent = closed[-30:]
+    recent = closed[-100:]
+    # 每根K线自带成交量与成交额（quote_vol，USDT），不再给汇总口径
     kline_summary = "\n".join(
-        f"{int(k[0]/1000)},{k[1]},{k[2]},{k[3]},{k[4]},{k[5]}" for k in recent
+        f"{int(k[0]/1000)},{k[1]},{k[2]},{k[3]},{k[4]},{k[5]},{k[7]}" for k in recent
     )
     levels = []
     for lv in signal.get("key_levels") or []:
@@ -413,12 +416,10 @@ def _build_user_msg(
         f"{POSITION_LABEL_MAP.get(signal.get('position') or '', signal.get('position') or '未知')}）\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
         f"信号强度: {signal.get('strength', '—')}\n"
-        f"量能分类: {signal.get('volume_type', '未知')} (成交量={signal.get('volume', 0)})\n"
-        f"24h成交额: {signal.get('volume_24h', 0)}\n"
         f"ATR(14): {atr:.6g}\n"
         + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
         + "关键位（锚点参考，价格程序可换算）:\n" + "\n".join(levels) + "\n"
-        + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol):\n{kline_summary}"
+        + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
     )
     if user_input:
         msg += (
