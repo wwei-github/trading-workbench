@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { AIAnalysis, ScanRecord, ScanResult, ScanStatus, SystemConfig, WatchlistItem } from '../types'
 import { scanApi, type ResultFilters } from '../api/scan'
+import { INDICATOR_CATALOG } from '../constants/indicators'
 
 // 图表涨跌配色（全局）：红涨绿跌（国内习惯，默认）/ 绿涨红跌（国际习惯）
 export type ColorScheme = 'red-up' | 'green-up'
@@ -15,36 +16,52 @@ function loadColorScheme(): ColorScheme {
   }
 }
 
-// 图表技术指标开关（全局，TradingView 风格自选；VOL 默认开启）
-export type IndicatorKey = 'boll' | 'vol' | 'macd' | 'rsi' | 'kdj'
-export type IndicatorState = Record<IndicatorKey, boolean>
-
-export const INDICATOR_LABELS: Record<IndicatorKey, string> = {
-  boll: 'BOLL',
-  vol: 'VOL',
-  macd: 'MACD',
-  rsi: 'RSI',
-  kdj: 'KDJ',
+// 图表技术指标（开源库 indicatorts 计算，目录见 constants/indicators.ts；开关 + 参数，localStorage 持久化）
+export interface IndicatorSetting {
+  enabled: boolean
+  params: number[]
 }
 
-const INDICATORS_KEY = 'chart-indicators'
+export type IndicatorSettings = Record<string, IndicatorSetting>
 
-const DEFAULT_INDICATORS: IndicatorState = {
-  boll: false,
-  vol: true,
-  macd: false,
-  rsi: false,
-  kdj: false,
+const INDICATORS_KEY = 'chart-indicator-settings'
+
+function defaultIndicatorSettings(): IndicatorSettings {
+  const base: IndicatorSettings = {}
+  for (const def of INDICATOR_CATALOG) {
+    // 默认开启 EMA（与后端趋势判断周期一致）和 VOL
+    base[def.key] = {
+      enabled: def.key === 'ema' || def.key === 'vol',
+      params: [...def.defaults],
+    }
+  }
+  return base
 }
 
-function loadIndicators(): IndicatorState {
+function loadIndicatorSettings(): IndicatorSettings {
+  const base = defaultIndicatorSettings()
   try {
     const raw = localStorage.getItem(INDICATORS_KEY)
-    if (raw) return { ...DEFAULT_INDICATORS, ...JSON.parse(raw) }
+    if (raw) {
+      const saved = JSON.parse(raw)
+      for (const def of INDICATOR_CATALOG) {
+        const s = saved[def.key]
+        if (!s) continue
+        if (typeof s.enabled === 'boolean') base[def.key].enabled = s.enabled
+        // 参数个数与目录一致才接受，避免旧格式残留
+        if (
+          Array.isArray(s.params) &&
+          s.params.length === def.defaults.length &&
+          s.params.every((v: unknown) => typeof v === 'number' && Number.isFinite(v))
+        ) {
+          base[def.key].params = s.params
+        }
+      }
+    }
   } catch {
     /* 忽略 */
   }
-  return { ...DEFAULT_INDICATORS }
+  return base
 }
 
 interface ScanState {
@@ -83,9 +100,10 @@ interface ScanState {
   // 图表涨跌配色（全局切换，localStorage 持久化）
   colorScheme: ColorScheme
   setColorScheme: (scheme: ColorScheme) => void
-  // 图表技术指标开关（全局，localStorage 持久化）
-  indicators: IndicatorState
-  toggleIndicator: (key: IndicatorKey) => void
+  // 图表技术指标（全局，开关 + 参数，localStorage 持久化）
+  indicatorSettings: IndicatorSettings
+  toggleIndicator: (key: string) => void
+  setIndicatorParams: (key: string, params: number[]) => void
 }
 
 // 每行的轮询计时器：scanResultId -> timer
@@ -339,10 +357,23 @@ export const useScanStore = create<ScanState>((set, get) => ({
   },
 
   // ===== 图表技术指标 =====
-  indicators: loadIndicators(),
+  indicatorSettings: loadIndicatorSettings(),
   toggleIndicator: (key) => {
-    const next = { ...get().indicators, [key]: !get().indicators[key] }
-    set({ indicators: next })
+    const cur = get().indicatorSettings
+    if (!cur[key]) return
+    const next = { ...cur, [key]: { ...cur[key], enabled: !cur[key].enabled } }
+    set({ indicatorSettings: next })
+    try {
+      localStorage.setItem(INDICATORS_KEY, JSON.stringify(next))
+    } catch {
+      /* 隐私模式等场景下忽略 */
+    }
+  },
+  setIndicatorParams: (key, params) => {
+    const cur = get().indicatorSettings
+    if (!cur[key]) return
+    const next = { ...cur, [key]: { ...cur[key], params } }
+    set({ indicatorSettings: next })
     try {
       localStorage.setItem(INDICATORS_KEY, JSON.stringify(next))
     } catch {

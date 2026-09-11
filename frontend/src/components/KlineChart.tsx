@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, Dropdown, InputNumber, Segmented, Tag } from 'antd'
+import { Alert, Button, Checkbox, Dropdown, InputNumber, Segmented, Tag, Typography } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import {
   createChart,
@@ -17,13 +17,16 @@ import {
 import { scanApi } from '../api/scan'
 import {
   useScanStore,
-  INDICATOR_LABELS,
   type ColorScheme,
-  type IndicatorKey,
 } from '../stores/scanStore'
-import { calcBoll, calcMacd, calcRsi, calcKdj } from '../utils/indicators'
-import TvWidgetChart from './TvWidgetChart'
+import {
+  INDICATOR_CATALOG,
+  type IndicatorContext,
+  type IndicatorResult,
+} from '../constants/indicators'
 import type { AIAnalysis, Kline, KeyLevel } from '../types'
+
+const { Text } = Typography
 
 interface Props {
   symbol: string
@@ -49,10 +52,6 @@ const KIND_LABEL: Record<string, string> = {
 // 每个角色（支撑/压力）最多显示的关键位条数：只画距当前价最近的
 const MAX_LINES_PER_ROLE = 2
 
-// EMA 三线默认周期与配色（快→慢：黄 / 青 / 橙）
-const DEFAULT_EMA_PERIODS = [21, 55, 144]
-const EMA_COLORS = ['#f0b90b', '#00bcd4', '#ff9800']
-
 // 涨跌配色方案：红涨绿跌（国内习惯，默认）/ 绿涨红跌（国际习惯）
 // 仅作用于 K 线实体；关键位/AI 仓位线保持语义色不变
 const CANDLE_COLORS: Record<ColorScheme, { up: string; down: string }> = {
@@ -60,65 +59,36 @@ const CANDLE_COLORS: Record<ColorScheme, { up: string; down: string }> = {
   'green-up': { up: '#26a69a', down: '#ef5350' },
 }
 
-// 副图指标的固定排列顺序（开启后按此顺序分配 pane 1,2,3…）
-const SUB_INDICATORS: IndicatorKey[] = ['vol', 'macd', 'rsi', 'kdj']
-
-// MACD/KDJ/EMA 线共用配色（快→慢：黄 / 青 / 红）
-const IND_COLORS = { fast: '#f0b90b', slow: '#00bcd4', extra: '#ef5350', rsi: '#b39ddb', ref: '#5a6472' }
-
-// 前端 EMA：SMA 种子 + 递推；未达到周期数的位置为 null
-function calcEmaSeries(closes: number[], period: number): (number | null)[] {
-  const out: (number | null)[] = new Array(closes.length).fill(null)
-  if (period < 2 || closes.length < period) return out
-  let sum = 0
-  for (let i = 0; i < period; i++) sum += closes[i]
-  out[period - 1] = sum / period
-  const k = 2 / (period + 1)
-  for (let i = period; i < closes.length; i++) {
-    const prev = out[i - 1]
-    if (prev != null) out[i] = closes[i] * k + prev * (1 - k)
-  }
-  return out
-}
-
 export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refreshKey = 0 }: Props) {
   // 全局涨跌配色 / 技术指标（store 共享，切换后所有图表同步生效）
   const colorScheme = useScanStore((s) => s.colorScheme)
   const setColorScheme = useScanStore((s) => s.setColorScheme)
-  const indicators = useScanStore((s) => s.indicators)
+  const indicatorSettings = useScanStore((s) => s.indicatorSettings)
   const toggleIndicator = useScanStore((s) => s.toggleIndicator)
+  const setIndicatorParams = useScanStore((s) => s.setIndicatorParams)
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const priceLinesRef = useRef<IPriceLine[]>([])
   const keyLineLinesRef = useRef<IPriceLine[]>([])
-  const emaSeriesRef = useRef<ISeriesApi<'Line'>[]>([])
-  // 技术指标 series（BOLL/MACD/VOL/RSI/KDJ），effect 重建时统一清理
+  // 技术指标 series（目录驱动），effect 重建时统一清理
   const indicatorSeriesRef = useRef<ISeriesApi<SeriesType>[]>([])
   const redrawFnRef = useRef<(() => void) | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // 图表模式：'tv' = TradingView 嵌入看盘（全量内置指标，无本系统标注）；'draw' = 自绘标注图（关键位/AI 仓位标注）
-  // 将来自托管 Charting Library 审批通过后，'tv' 模式升级为 Charting Library 实现
-  const [mode, setMode] = useState<'tv' | 'draw'>(() =>
-    localStorage.getItem('chart-mode') === 'draw' ? 'draw' : 'tv',
-  )
   // K 线最新收盘价（作为"当前价"，用于挑选最近的关键位）
   const [lastClose, setLastClose] = useState<number | null>(null)
   // 隐藏的关键位类型（勾选开关）
   const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set())
-  // EMA 均线周期（页面上可修改）
-  const [emaPeriods, setEmaPeriods] = useState<number[]>([...DEFAULT_EMA_PERIODS])
-  // 已加载的 K 线（完整 OHLCV），用于前端计算 EMA 与技术指标
+  // 已加载的 K 线（完整 OHLCV），供指标计算与标注使用
   const [candlePoints, setCandlePoints] = useState<
     { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }[]
   >([])
 
-  // 初始化图表 + 拉取数据（TV 看盘模式下图表是 TradingView iframe，不自建实例）
+  // 初始化图表 + 拉取数据
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
-    if (mode === 'tv') return
 
     const chart = createChart(container, {
       layout: {
@@ -148,7 +118,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
       height: container.clientHeight || CHART_HEIGHT,
     })
 
-    const candleColors = CANDLE_COLORS[colorScheme]
+    const candleColors = CANDLE_COLORS[useScanStore.getState().colorScheme]
     const series = chart.addSeries(CandlestickSeries, {
       upColor: candleColors.up,
       downColor: candleColors.down,
@@ -216,17 +186,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
       chartRef.current = null
       seriesRef.current = null
     }
-  }, [symbol, limit, refreshKey, mode])
-
-  // 切换图表模式（localStorage 持久化）
-  const switchMode = (m: 'tv' | 'draw') => {
-    setMode(m)
-    try {
-      localStorage.setItem('chart-mode', m)
-    } catch {
-      /* 隐私模式等场景下忽略 */
-    }
-  }
+  }, [symbol, limit, refreshKey])
 
   // 切换涨跌配色：直接改 series 选项，所有图表实例同步生效，无需重建图表
   useEffect(() => {
@@ -299,47 +259,13 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
     }
   }, [keyLevels, hiddenKinds, lastClose, symbol, limit])
 
-  // 绘制 EMA 均线（周期页面可编辑，前端根据已加载 K 线实时计算）
+  // 渲染技术指标：目录驱动（indicatorts 计算库 + 通用渲染层），无手写指标数学
+  // 主图叠加（pane 0）/ 副图（按目录顺序自动分配 pane 1,2,3…）
   useEffect(() => {
     const chart = chartRef.current
-    if (!chart) return
+    if (!chart || candlePoints.length === 0) return
 
-    // 清除旧 EMA 线（图表实例可能已重建，句柄失效时忽略）
-    emaSeriesRef.current.forEach((s) => {
-      try {
-        chart.removeSeries(s)
-      } catch {
-        /* 旧图表已销毁 */
-      }
-    })
-    emaSeriesRef.current = []
-
-    if (candlePoints.length === 0) return
-    const closes = candlePoints.map((c) => c.close)
-
-    emaPeriods.forEach((period, i) => {
-      const ema = calcEmaSeries(closes, period)
-      const line = chart.addSeries(LineSeries, {
-        color: EMA_COLORS[i % EMA_COLORS.length],
-        lineWidth: 1,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      })
-      const data = candlePoints
-        .map((c, j) => ({ time: c.time, value: ema[j] }))
-        .filter((d): d is { time: UTCTimestamp; value: number } => d.value != null)
-      line.setData(data)
-      emaSeriesRef.current.push(line)
-    })
-  }, [candlePoints, emaPeriods])
-
-  // 绘制技术指标：BOLL 叠加主图；VOL/MACD/RSI/KDJ 各占独立副图 pane
-  useEffect(() => {
-    const chart = chartRef.current
-    if (!chart) return
-
-    // 清除旧指标 series
+    // 清理旧指标 series 与已空的副图 pane（pane 0 主图保留）
     indicatorSeriesRef.current.forEach((s) => {
       try {
         chart.removeSeries(s)
@@ -348,7 +274,6 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
       }
     })
     indicatorSeriesRef.current = []
-    // 删除已无内容的副图 pane（从后往前删，pane 0 主图保留）
     for (let i = chart.panes().length - 1; i >= 1; i--) {
       try {
         chart.removePane(i)
@@ -357,138 +282,90 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
       }
     }
 
-    if (candlePoints.length === 0) return
-
-    const closes = candlePoints.map((c) => c.close)
-    const highs = candlePoints.map((c) => c.high)
-    const lows = candlePoints.map((c) => c.low)
-    const cc = CANDLE_COLORS[colorScheme]
-
-    const toLineData = (arr: (number | null)[]) =>
-      candlePoints
-        .map((c, j) => ({ time: c.time, value: arr[j] }))
-        .filter((d): d is { time: UTCTimestamp; value: number } => d.value != null)
-
-    const addLine = (
-      data: { time: UTCTimestamp; value: number }[],
-      paneIndex: number,
-      color: string,
-    ) => {
-      const line = chart.addSeries(
-        LineSeries,
-        {
-          color,
-          lineWidth: 1,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        },
-        paneIndex,
-      )
-      line.setData(data)
-      indicatorSeriesRef.current.push(line)
+    const ctx: IndicatorContext = {
+      opens: candlePoints.map((c) => c.open),
+      highs: candlePoints.map((c) => c.high),
+      lows: candlePoints.map((c) => c.low),
+      closes: candlePoints.map((c) => c.close),
+      volumes: candlePoints.map((c) => c.volume),
+      cc: CANDLE_COLORS[colorScheme],
     }
 
-    // 为副图指标按固定顺序分配 pane（1 起）
-    const subPane: Partial<Record<IndicatorKey, number>> = {}
+    // 为开启的副图指标按目录顺序分配 pane（1 起）
+    const subPane: Record<string, number> = {}
     let nextPane = 1
-    for (const key of SUB_INDICATORS) {
-      if (indicators[key]) subPane[key] = nextPane++
-    }
-
-    // BOLL（主图叠加，三线）
-    if (indicators.boll) {
-      const { mid, upper, lower } = calcBoll(closes)
-      addLine(toLineData(upper), 0, '#4d8ef7')
-      addLine(toLineData(mid), 0, '#d1d4dc')
-      addLine(toLineData(lower), 0, '#4d8ef7')
-    }
-
-    // VOL（成交量柱，涨跌跟随全局配色）
-    if (subPane.vol != null) {
-      const p = subPane.vol
-      const hist = chart.addSeries(
-        HistogramSeries,
-        {
-          priceLineVisible: false,
-          lastValueVisible: false,
-          priceFormat: { type: 'volume' },
-        },
-        p,
-      )
-      hist.setData(
-        candlePoints.map((c) => ({
-          time: c.time,
-          value: c.volume,
-          color: c.close >= c.open ? cc.up : cc.down,
-        })),
-      )
-      indicatorSeriesRef.current.push(hist)
-    }
-
-    // MACD（DIF/DEA 线 + 能量柱）
-    if (subPane.macd != null) {
-      const p = subPane.macd
-      const { dif, dea, hist } = calcMacd(closes)
-      const bars = chart.addSeries(
-        HistogramSeries,
-        { priceLineVisible: false, lastValueVisible: false },
-        p,
-      )
-      bars.setData(
-        candlePoints
-          .map((c, j) => ({
-            time: c.time,
-            value: hist[j],
-            color: (hist[j] ?? 0) >= 0 ? cc.up : cc.down,
-          }))
-          .filter((d) => d.value != null),
-      )
-      indicatorSeriesRef.current.push(bars)
-      addLine(toLineData(dif), p, IND_COLORS.fast)
-      addLine(toLineData(dea), p, IND_COLORS.slow)
-    }
-
-    // RSI（14，30/70 参考线）
-    if (subPane.rsi != null) {
-      const p = subPane.rsi
-      const line = chart.addSeries(
-        LineSeries,
-        {
-          color: IND_COLORS.rsi,
-          lineWidth: 1,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        },
-        p,
-      )
-      line.setData(toLineData(calcRsi(closes)))
-      indicatorSeriesRef.current.push(line)
-      for (const level of [30, 70]) {
-        line.createPriceLine({
-          price: level,
-          color: IND_COLORS.ref,
-          lineWidth: 1,
-          lineStyle: LineStyle.Dashed,
-          axisLabelVisible: false,
-          title: '',
-        })
+    for (const def of INDICATOR_CATALOG) {
+      if (def.pane === 'sub' && indicatorSettings[def.key]?.enabled) {
+        subPane[def.key] = nextPane++
       }
     }
 
-    // KDJ（9,3,3 三线）
-    if (subPane.kdj != null) {
-      const p = subPane.kdj
-      const { k, d, j } = calcKdj(highs, lows, closes)
-      addLine(toLineData(k), p, IND_COLORS.fast)
-      addLine(toLineData(d), p, IND_COLORS.slow)
-      addLine(toLineData(j), p, IND_COLORS.extra)
+    const toLineData = (values: (number | null)[]) =>
+      candlePoints
+        .map((c, j) => ({ time: c.time, value: values[j] ?? null }))
+        .filter(
+          (d): d is { time: UTCTimestamp; value: number } =>
+            d.value != null && Number.isFinite(d.value),
+        )
+
+    for (const def of INDICATOR_CATALOG) {
+      const setting = indicatorSettings[def.key]
+      if (!setting?.enabled) continue
+
+      let out: IndicatorResult
+      try {
+        out = def.compute(ctx, setting.params)
+      } catch (e) {
+        console.error(`指标 ${def.label} 计算失败`, e)
+        continue
+      }
+
+      const paneIndex = def.pane === 'main' ? 0 : subPane[def.key]
+
+      for (const ln of out.lines) {
+        const line = chart.addSeries(
+          LineSeries,
+          {
+            color: ln.color,
+            lineWidth: 1,
+            lineStyle:
+              ln.lineStyle === 'dotted'
+                ? LineStyle.Dotted
+                : ln.lineStyle === 'dashed'
+                  ? LineStyle.Dashed
+                  : LineStyle.Solid,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+          },
+          paneIndex,
+        )
+        line.setData(toLineData(ln.values))
+        indicatorSeriesRef.current.push(line)
+      }
+
+      if (out.bars && out.bars.length > 0) {
+        const bars = chart.addSeries(
+          HistogramSeries,
+          {
+            priceLineVisible: false,
+            lastValueVisible: false,
+            ...(def.volumeFormat ? { priceFormat: { type: 'volume' as const } } : {}),
+          },
+          paneIndex,
+        )
+        bars.setData(
+          out.bars
+            .map((b, j) => ({ time: candlePoints[j].time, value: b.value, color: b.color }))
+            .filter((d) => d.value != null && Number.isFinite(d.value)),
+        )
+        indicatorSeriesRef.current.push(bars)
+      }
     }
 
     // 主图 : 副图 = 3 : 1（逐个设置拉伸比例）
     chart.panes().forEach((pn, i) => pn.setStretchFactor(i === 0 ? 3 : 1))
-  }, [candlePoints, indicators, colorScheme])
+  }, [candlePoints, indicatorSettings, colorScheme])
 
   // 更新 AI 价格线 + 区域色块（TradingView 仓位标注风格）
   useEffect(() => {
@@ -677,7 +554,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 360 }}>
-      {error && mode === 'draw' && (
+      {error && (
         <Alert
           type="warning"
           showIcon
@@ -686,7 +563,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           style={{ marginBottom: 8 }}
         />
       )}
-      {/* 左上角工具栏：图表模式切换 + （标注图）EMA 周期/关键位开关/指标/配色 */}
+      {/* 左上角工具栏：指标选择 + 关键位类型开关 + 涨跌配色切换 */}
       <div
         style={{
           position: 'absolute',
@@ -703,128 +580,128 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           borderRadius: 6,
           padding: '4px 8px',
         }}>
-        {/* 图表模式：TV 看盘（全量指标）/ 标注图（关键位 + AI 仓位标注） */}
+        {/* 技术指标面板（indicatorts 计算，主图/副图分组，开关 + 参数，全局生效） */}
+        <Dropdown
+          trigger={['click']}
+          destroyPopupOnHide
+          dropdownRender={() => (
+            <div
+              style={{
+                background: '#1b1f2a',
+                border: '1px solid #2a2e39',
+                borderRadius: 6,
+                padding: '10px 12px',
+                width: 250,
+                maxHeight: 420,
+                overflowY: 'auto',
+              }}>
+              {(['main', 'sub'] as const).map((pane) => (
+                <div key={pane} style={pane === 'main' ? { marginBottom: 10 } : undefined}>
+                  <Text style={{ color: '#9aa3b2', fontSize: 11 }}>
+                    {pane === 'main' ? '主图指标' : '副图指标'}
+                  </Text>
+                  {INDICATOR_CATALOG.filter((d) => d.pane === pane).map((def) => {
+                    const setting = indicatorSettings[def.key]
+                    return (
+                      <div key={def.key} style={{ marginTop: 4 }}>
+                        <Checkbox
+                          checked={!!setting?.enabled}
+                          onChange={() => toggleIndicator(def.key)}>
+                          <span style={{ color: '#d1d4dc', fontSize: 12 }}>{def.label}</span>
+                        </Checkbox>
+                        {setting?.enabled && def.paramLabels.length > 0 && (
+                          <div
+                            style={{
+                              display: 'flex',
+                              flexWrap: 'wrap',
+                              gap: 4,
+                              marginLeft: 22,
+                              marginTop: 2,
+                            }}>
+                            {def.paramLabels.map((pl, i) => (
+                              <InputNumber
+                                key={i}
+                                size="small"
+                                min={1}
+                                max={499}
+                                value={setting.params[i]}
+                                style={{ width: 56 }}
+                                onChange={(v) => {
+                                  const params = [...setting.params]
+                                  params[i] = v ?? params[i]
+                                  setIndicatorParams(def.key, params)
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+            </div>
+          )}>
+          <Button size="small" ghost icon={<PlusOutlined />}>
+            指标
+          </Button>
+        </Dropdown>
+        {keyLevels && keyLevels.length > 0 &&
+          [...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => {
+            const visible = !hiddenKinds.has(kind)
+            // 未选中态必须显式配色：antd 亮色主题下默认是深色文字 + 无背景，
+            // 叠在深色工具栏背景上会完全看不见
+            const style = visible
+              ? { color: '#fff' }
+              : {
+                  color: '#9aa3b2',
+                  background: 'rgba(255, 255, 255, 0.06)',
+                  border: '1px dashed #3a3f4d',
+                }
+            return (
+              <Tag.CheckableTag
+                key={kind}
+                checked={visible}
+                style={style}
+                onChange={(checked) =>
+                  setHiddenKinds((prev) => {
+                    const next = new Set(prev)
+                    if (checked) next.delete(kind)
+                    else next.add(kind)
+                    return next
+                  })
+                }>
+                {KIND_LABEL[kind] || kind}
+              </Tag.CheckableTag>
+            )
+          })}
+        {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效） */}
         <Segmented
           size="small"
-          value={mode}
+          value={colorScheme}
           options={[
-            { label: 'TV看盘', value: 'tv' },
-            { label: '标注图', value: 'draw' },
+            { label: '红涨绿跌', value: 'red-up' },
+            { label: '绿涨红跌', value: 'green-up' },
           ]}
-          onChange={(v) => switchMode(v as 'tv' | 'draw')}
+          onChange={(v) => setColorScheme(v as ColorScheme)}
+          style={{ marginLeft: 4 }}
         />
-        {mode === 'draw' && (
-          <>
-            <span style={{ color: '#9aa3b2', fontSize: 12, marginRight: 2 }}>EMA</span>
-            {emaPeriods.map((p, i) => (
-              <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                <span
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: 2,
-                    background: EMA_COLORS[i % EMA_COLORS.length],
-                    display: 'inline-block',
-                    flexShrink: 0,
-                  }}
-                />
-                <InputNumber
-                  size="small"
-                  min={2}
-                  max={499}
-                  value={p}
-                  style={{ width: 56 }}
-                  onChange={(v) =>
-                    setEmaPeriods((prev) =>
-                      prev.map((x, j) => (j === i ? (v ?? x) : x)),
-                    )
-                  }
-                />
-              </span>
-            ))}
-            {keyLevels && keyLevels.length > 0 &&
-              [...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => {
-                const visible = !hiddenKinds.has(kind)
-                // 未选中态必须显式配色：antd 亮色主题下默认是深色文字 + 无背景，
-                // 叠在深色工具栏背景上会完全看不见
-                const style = visible
-                  ? { color: '#fff' }
-                  : {
-                      color: '#9aa3b2',
-                      background: 'rgba(255, 255, 255, 0.06)',
-                      border: '1px dashed #3a3f4d',
-                    }
-                return (
-                  <Tag.CheckableTag
-                    key={kind}
-                    checked={visible}
-                    style={style}
-                    onChange={(checked) =>
-                      setHiddenKinds((prev) => {
-                        const next = new Set(prev)
-                        if (checked) next.delete(kind)
-                        else next.add(kind)
-                        return next
-                      })
-                    }>
-                    {KIND_LABEL[kind] || kind}
-                  </Tag.CheckableTag>
-                )
-              })}
-            {/* 技术指标选择（TradingView 风格自选，全局生效） */}
-            <Dropdown
-              trigger={['click']}
-              menu={{
-                items: (Object.keys(INDICATOR_LABELS) as IndicatorKey[]).map((k) => ({
-                  key: k,
-                  label: INDICATOR_LABELS[k],
-                })),
-                selectable: true,
-                multiple: true,
-                selectedKeys: (Object.keys(indicators) as IndicatorKey[]).filter(
-                  (k) => indicators[k],
-                ),
-                onClick: ({ key }) => toggleIndicator(key as IndicatorKey),
-              }}>
-              <Button size="small" ghost icon={<PlusOutlined />}>
-                指标
-              </Button>
-            </Dropdown>
-            {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效） */}
-            <Segmented
-              size="small"
-              value={colorScheme}
-              options={[
-                { label: '红涨绿跌', value: 'red-up' },
-                { label: '绿涨红跌', value: 'green-up' },
-              ]}
-              onChange={(v) => setColorScheme(v as ColorScheme)}
-              style={{ marginLeft: 4 }}
-            />
-          </>
-        )}
-        </div>
-      {mode === 'tv' ? (
-        <TvWidgetChart symbol={symbol} />
-      ) : (
-        <>
-          <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-          <svg
-            ref={svgRef}
-            width="100%"
-            height="100%"
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: '100%',
-              height: '100%',
-              pointerEvents: 'none',
-              zIndex: 10,
-            }}
-          />
-        </>
-      )}
+      </div>
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      <svg
+        ref={svgRef}
+        width="100%"
+        height="100%"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          pointerEvents: 'none',
+          zIndex: 10,
+        }}
+      />
     </div>
   )
 }
