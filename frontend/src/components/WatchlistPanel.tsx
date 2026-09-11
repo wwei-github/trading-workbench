@@ -22,13 +22,12 @@ import { scanApi } from "../api/scan";
 import {
   SIGNAL_TYPE_MAP,
   SIGNAL_TYPE_FILTERS,
-  POSITION_LABEL_MAP,
   POSITION_FILTERS,
-  POSITION_SUPPORT_KINDS,
   PATTERN_FILTERS,
   EMA_STATE_MAP,
   EMA_STATE_FILTERS,
   patternStyle,
+  positionTag,
 } from "../constants/labels";
 import KlineChart from "./KlineChart";
 import AiExpandContent from "./AiExpandContent";
@@ -342,12 +341,8 @@ export default function WatchlistPanel() {
       render: (_: unknown, r: WatchRow) => {
         const v = r.scan?.position;
         if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const label = POSITION_LABEL_MAP[v] || v;
-        const color = POSITION_SUPPORT_KINDS.has(v) ? "green" : "red";
-        const hit = r.scan?.key_levels?.find((lv) => lv.kind === v);
-        const tip = hit
-          ? `${POSITION_LABEL_MAP[hit.kind] || hit.kind} ${hit.price}，${hit.role === "support" ? "支撑" : "压力"}，触及 ${hit.touches} 次`
-          : undefined;
+        // 颜色/标签跟随关键位实际角色（跌破的支撑位显示"支撑位→压力"并标红）
+        const { label, color, tip } = positionTag(v, r.scan?.key_levels);
         return (
           <Tooltip title={tip}>
             <Tag color={color}>{label}</Tag>

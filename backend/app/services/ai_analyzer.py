@@ -46,10 +46,8 @@ SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信�
 均线形态是重要趋势背景：多头排列支撑做多逻辑，空头排列支撑做空逻辑；
 金叉/死叉与拐头是动能转换信号；若均线形态与关键位信号方向矛盾，
 需谨慎评估并在 analysis 中说明理由。
-市场环境信息（资金费率/持仓量/大盘状态/恐贪指数）用于交叉验证：
-- 资金费率极端（|费率|>0.1%）说明该方向拥挤，警惕反向挤压；开仓方向与高费率同向时应更谨慎或降级
-- 大盘（BTC/ETH）趋势与信号方向矛盾时，提高 skip 倾向并在 analysis 中说明
-- 恐贪指数极度贪婪时谨慎追多、极度恐惧时谨慎追空（逆向参考）"""
+资金费率/持仓量/大盘状态/恐贪指数等市场环境数据未随消息提供，请勿臆测：
+仅基于给定的 K 线、均线、量能与关键位数据进行分析。"""
 
 
 def _get_client() -> OpenAI:
@@ -60,7 +58,6 @@ def _get_client() -> OpenAI:
 def analyze_coin(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
-    market_facts: Optional[dict] = None,
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -69,19 +66,17 @@ def analyze_coin(
     klines: 原始 K 线数据 [[open_time, open, high, low, close, volume, ...], ...]
     strategy_prompt: 用户自定义交易策略（MD 格式），提供时附加到系统提示词供 AI 参考
     user_input: 本次分析的用户补充说明（要求/持仓计划/个人观点），附加到用户提示词
-    market_facts: 市场环境事实包（funding/fear_greed/market_breadth，来自 market_data）
     """
     client = _get_client()
     return _call_llm(
         client,
-        _build_messages(signal, klines, strategy_prompt, user_input, market_facts),
+        _build_messages(signal, klines, strategy_prompt, user_input),
     )
 
 
 def _build_messages(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
-    market_facts: Optional[dict] = None,
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）"""
     # 取最近 30 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-31:-1]）
@@ -110,23 +105,7 @@ def _build_messages(
     if ema:
         ema_summary = f"均线形态: {ema['state_label']}（{ema['detail']}）\n"
 
-    # 市场环境事实（资金费率/恐贪/大盘，来自 market_data，全部可缺失）
-    facts_summary = ""
-    if market_facts:
-        f = market_facts.get("funding")
-        if f:
-            facts_summary += f"资金费率: {f.get('funding_rate_pct')}%\n"
-        fg = market_facts.get("fear_greed")
-        if fg:
-            facts_summary += f"恐贪指数: {fg['value']}({fg['label']})\n"
-        b = market_facts.get("market_breadth")
-        if b:
-            seg = [
-                f"{s} {v.get('ema_label') or '—'} 24h{v['change_24h_pct']:+.1f}%"
-                for s, v in b.items()
-            ]
-            facts_summary += "大盘: " + " | ".join(seg) + "\n"
-
+    # 市场环境（资金费率/恐贪/大盘）不再注入——单次调用管线无工具，模型仅凭给定数据分析
     user_prompt = (
         f"币种: {signal['symbol']}\n"
         f"信号类型: {SIGNAL_TYPE_LABELS.get(signal['signal_type'], signal['signal_type'])}（{signal['signal_type']}）\n"
@@ -137,7 +116,6 @@ def _build_messages(
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
         f"{levels_summary}"
         f"{ema_summary}"
-        f"{facts_summary}"
         f"量能分类: {signal.get('volume_type', '未知')} (成交量={signal.get('volume', 0)})\n"
         f"24h成交额: {signal.get('volume_24h', 0)}\n"
         f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol):\n{kline_summary}"
@@ -191,7 +169,6 @@ def _call_llm(client: OpenAI, messages: list) -> dict:
 def analyze_with_guard(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
-    market_facts: Optional[dict] = None,
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -199,7 +176,6 @@ def analyze_with_guard(
     """
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
-        market_facts=market_facts,
     )
     client = _get_client()
 

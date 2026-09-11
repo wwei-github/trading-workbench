@@ -1,6 +1,6 @@
 ---
 name: funding-extreme-handling
-description: 资金费率极端（|费率|>0.1%）时拥挤方向的逆向处理
+description: 资金费率极端（|费率|>0.1%，用 get_funding 自查）时拥挤方向的逆向处理
 use_when: funding_extreme == true
 version: 1
 ---

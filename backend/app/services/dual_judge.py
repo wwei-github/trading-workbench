@@ -52,25 +52,13 @@ JUDGE_PROMPT = """你是交易裁判。一笔已通过风控校验的建议如�
 空头论据: {bear}"""
 
 
-def _fmt_facts(signal: dict, market_facts: Optional[dict]) -> str:
+def _fmt_facts(signal: dict) -> str:
     lines = [
         f"币种: {signal.get('symbol')}",
         f"信号类型: {signal.get('signal_type')}",
         f"当前价格: {signal.get('current_price')}",
         f"信号理由: {signal.get('signal_reason') or ''}",
     ]
-    if market_facts:
-        f = market_facts.get("funding")
-        if f:
-            lines.append(f"资金费率: {f.get('funding_rate_pct')}%")
-        fg = market_facts.get("fear_greed")
-        if fg:
-            lines.append(f"恐贪指数: {fg.get('value')}({fg.get('label')})")
-        b = market_facts.get("market_breadth")
-        if b:
-            lines.append("大盘: " + " | ".join(
-                f"{s} 24h{v.get('change_24h_pct', 0):+.1f}%" for s, v in b.items()
-            ))
     return "\n".join(lines)
 
 
@@ -88,7 +76,7 @@ def _fmt_decision(d: dict) -> str:
 
 
 def run_dual_judge(
-    decision: dict, signal: dict, market_facts: Optional[dict] = None,
+    decision: dict, signal: dict,
 ) -> dict:
     """多空辩论复核。返回原决策（keep）或 forced skip（veto，skip_reason 附裁决理由）。
 
@@ -99,7 +87,7 @@ def run_dual_judge(
 
     client = get_client()
     d_text = _fmt_decision(decision)
-    facts = _fmt_facts(signal, market_facts)
+    facts = _fmt_facts(signal)
 
     def _ask(prompt: str) -> str:
         resp = client.chat.completions.create(

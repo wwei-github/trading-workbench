@@ -1,6 +1,6 @@
 """Trader Agent：GLM 工具循环 + submit_decision 校验即工具（docs/04 §5 P1）
 
-- 事实包（信号/关键位/EMA/ATR/量能/市场环境）随首条 user 消息给足，程序能算的不让模型算
+- 事实包（信号/关键位/EMA/ATR/量能）随首条 user 消息给足，程序能算的不让模型算
 - 工具只做"补充查询"：更多K线、资金费率、大盘、恐贪、技能阅读
 - 结构位锚点：模型不报绝对价格，报 (ref, offset_pct)，程序换算后过 Risk Guard——消灭幻觉价位
 - 校验即工具：submit_decision 内嵌 Risk Guard，违规明细作为工具结果返回，模型看着错处改（Reflection）
@@ -52,9 +52,11 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    n_structure N字结构（回踩后同向延续）/ rule_2b 2B法则（假突破前高/低后反向）/
    range_edge 区间边缘反转。
 6. "可用技能"列表中标注【当前命中】的技能，建议先 load_skill 阅读再决策。
-7. **效率（重要）**：事实包已含决策所需核心数据（30根K线/关键位/ATR/资金费率/大盘/恐贪），
-   首轮即可直接 submit_decision；确需补充数据时，把所需工具在同一轮一次性批量调用，
-   不要为用工具而用工具，也不要每轮只查一个工具。
+7. **效率与数据边界（重要）**：事实包只含信号与行情数据（30根K线/关键位/均线形态/ATR/量能），
+   首轮即可直接 submit_decision；资金费率、大盘状态、恐贪指数等环境数据**不在**事实包中，
+   确需时在同一轮一次性批量调用 get_funding / get_market_breadth / get_fear_greed 自行获取
+   （如资金费率极端可 load_skill 阅读 funding-extreme-handling）；不要为用工具而用工具，
+   也不要每轮只查一个工具。
 8. 不要输出不带工具调用的纯文字回复（会浪费一轮）；文字只用于简短说明查询意图，
    决策一律通过 submit_decision 提交。
 9. 盈亏比铁律 ≥{rr_min}；止损距离 ≤{stop_max:.0f}%；仓位数不要自己报，程序按风险预算计算。
@@ -232,7 +234,7 @@ def _dispatch_tool(name: str, args: dict, ctx: dict) -> tuple[bool, str, Optiona
 def analyze_coin_agent(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
-    market_facts: Optional[dict] = None, pool=None,
+    pool=None,
     progress_cb=None,
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
@@ -245,7 +247,7 @@ def analyze_coin_agent(
     # 布尔事实（技能 use_when 判定）
     ema = analyze_ema(klines)
     atr = calc_atr(klines) or 0.0
-    facts = _build_facts(signal, klines, atr, market_facts)
+    facts = _build_facts(signal, klines, atr)
 
     skill_index = skill_library.render_index(facts)
     system = AGENT_SYSTEM.format(
@@ -261,7 +263,7 @@ def analyze_coin_agent(
             "===== 自定义策略结束 ====="
         )
 
-    user_msg = _build_user_msg(signal, klines, ema, atr, market_facts, user_input)
+    user_msg = _build_user_msg(signal, klines, ema, atr, user_input)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
@@ -358,8 +360,12 @@ def analyze_coin_agent(
     return fixed
 
 
-def _build_facts(signal: dict, klines: list, atr: float, market_facts: Optional[dict]) -> dict:
-    """技能 use_when 判定用的布尔事实（程序算，不让模型猜）"""
+def _build_facts(signal: dict, klines: list, atr: float) -> dict:
+    """技能 use_when 判定用的布尔事实（程序算，不让模型猜）
+
+    funding_extreme 恒为 False（市场环境数据不再预取，资金费率由 Agent 调 get_funding 自查），
+    依赖它的技能不会自动标注命中，但仍会出现在技能索引中由 Agent 按需加载。
+    """
     facts: dict = {
         "signal_type": signal.get("signal_type") or "unknown",
         "pin_bar": False,
@@ -380,16 +386,12 @@ def _build_facts(signal: dict, klines: list, atr: float, market_facts: Optional[
         body = abs(c - o)
         shadow = max(h - o, h - c) + max(o - l, c - l)  # 上下影线之和
         facts["pin_bar"] = body > 0 and shadow > 2 * body
-    # funding 极端
-    f = (market_facts or {}).get("funding")
-    if f:
-        facts["funding_extreme"] = abs(f.get("funding_rate_pct", 0)) > 0.1
     return facts
 
 
 def _build_user_msg(
     signal: dict, klines: list, ema: Optional[dict], atr: float,
-    market_facts: Optional[dict], user_input: Optional[str],
+    user_input: Optional[str],
 ) -> str:
     closed = klines[:-1] if len(klines) >= 2 else klines
     recent = closed[-30:]
@@ -411,22 +413,13 @@ def _build_user_msg(
         f"{POSITION_LABEL_MAP.get(signal.get('position') or '', signal.get('position') or '未知')}）\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
         f"信号强度: {signal.get('strength', '—')}\n"
+        f"量能分类: {signal.get('volume_type', '未知')} (成交量={signal.get('volume', 0)})\n"
+        f"24h成交额: {signal.get('volume_24h', 0)}\n"
         f"ATR(14): {atr:.6g}\n"
         + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
         + "关键位（锚点参考，价格程序可换算）:\n" + "\n".join(levels) + "\n"
+        + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol):\n{kline_summary}"
     )
-    if market_facts:
-        f = market_facts.get("funding")
-        if f:
-            msg += f"资金费率: {f['funding_rate_pct']}%\n"
-        fg = market_facts.get("fear_greed")
-        if fg:
-            msg += f"恐贪指数: {fg['value']}({fg['label']})\n"
-        b = market_facts.get("market_breadth")
-        if b:
-            seg = [f"{s} {v.get('ema_label') or '—'} 24h{v['change_24h_pct']:+.1f}%" for s, v in b.items()]
-            msg += "大盘: " + " | ".join(seg) + "\n"
-    msg += f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol):\n{kline_summary}"
     if user_input:
         msg += (
             "\n\n用户补充说明（请结合其内容进行分析）：\n"

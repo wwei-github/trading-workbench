@@ -13,7 +13,6 @@ import hashlib
 import logging
 import math
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID, uuid4
@@ -27,7 +26,6 @@ from app.config import settings
 from app.database import SessionLocal
 from app.models.scan import ScanResult, AIAnalysis
 from app.models.system_config import SystemConfig
-from app.services import market_data
 from app.services import ai_progress
 from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
@@ -223,17 +221,8 @@ def run_ai_analysis_single(
                 return
 
         # ── Stage 2：LLM 分析（P1 Agent 工具循环 / P0 单次调用）+ Risk Guard 校验 ──
-        # 市场环境事实并行获取（各自带 TTL 缓存；串行 3 次 HTTP 并行后只等最慢的一个）
-        with ThreadPoolExecutor(max_workers=3) as ex:
-            fut_funding = ex.submit(market_data.get_funding, r.symbol)
-            fut_breadth = ex.submit(market_data.get_market_breadth, ExchangePool())
-            fut_fng = ex.submit(market_data.get_fear_greed)
-        market_facts = {
-            "funding": fut_funding.result(),
-            "market_breadth": fut_breadth.result(),
-            "fear_greed": fut_fng.result(),
-        }
-        # 复盘记忆注入已下线：功能移除（分析提示词不再携带历史复盘统计）
+        # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
+        # Agent 管线由模型按需调用工具自行获取
         if cfg.ai_pipeline_enabled:
             def _cb(ev: dict) -> None:
                 ai_progress.push(r.id, ev.pop("t"), **ev)
@@ -242,7 +231,6 @@ def run_ai_analysis_single(
                 signal, klines,
                 strategy_prompt=strategy_prompt,
                 user_input=user_input,
-                market_facts=market_facts,
                 pool=pool,
                 progress_cb=_cb,
             )
@@ -252,13 +240,12 @@ def run_ai_analysis_single(
                 signal, klines,
                 strategy_prompt=strategy_prompt,
                 user_input=user_input,
-                market_facts=market_facts,
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto
         if cfg.dual_judge_enabled:
             if ai_result.get("trade_decision") == "suggest":
                 ai_progress.push(r.id, "gate", note="⚖️ 双评委辩论复核中…")
-            ai_result = run_dual_judge(ai_result, signal, market_facts)
+            ai_result = run_dual_judge(ai_result, signal)
         # Narrator 已下线（提速）：submit_decision 的 reason 直接承载完整分点分析
         # （工具 schema 强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返
         _finish(db, r, r.symbol, ai_result, fp)

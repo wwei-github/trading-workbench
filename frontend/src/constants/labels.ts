@@ -1,4 +1,5 @@
 // 信号类型 / 关键位位置 / K线形态 标签映射（扫描结果与关注列表共用）
+import type { KeyLevel } from "../types";
 
 export const SIGNAL_TYPE_MAP: Record<string, { label: string; color: string }> = {
   // 新结构分类（关键位重构）
@@ -27,6 +28,26 @@ export const POSITION_SUPPORT_KINDS = new Set([
   "support",
   "range_bottom",
 ]);
+
+// 位置标签：颜色跟随关键位的实际角色（kind 仅表示来源结构）。
+// 关键位被突破后角色互换（docs/03）：如支撑位跌破后位于现价上方，实际是压力（回抽），
+// 此时标签显示"支撑位→压力"并标红，避免"支撑位+空头排列"这类看似矛盾的展示。
+export function positionTag(
+  kind: string,
+  keyLevels?: KeyLevel[] | null,
+): { label: string; color: string; tip?: string } {
+  const base = POSITION_LABEL_MAP[kind] || kind;
+  const hit = keyLevels?.find((lv) => lv.kind === kind);
+  const role = hit?.role ?? (POSITION_SUPPORT_KINDS.has(kind) ? "support" : "resistance");
+  const isSupportRole = role === "support";
+  // kind 来源侧与实际角色不一致 → 已发生角色互换
+  const flipped = hit != null && isSupportRole !== POSITION_SUPPORT_KINDS.has(kind);
+  const label = flipped ? `${base}→${isSupportRole ? "支撑" : "压力"}` : base;
+  const tip = hit
+    ? `${base} ${hit.price}，${isSupportRole ? "支撑" : "压力"}，触及 ${hit.touches} 次`
+    : undefined;
+  return { label, color: isSupportRole ? "green" : "red", tip };
+}
 
 // 12 金K + 历史形态映射
 const BULLISH_PATTERNS: Record<string, string> = {

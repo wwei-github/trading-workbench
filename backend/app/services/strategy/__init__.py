@@ -5,7 +5,7 @@
 2. 计算关键位（前高/前低/支撑/压力/区间顶底）
 3. 最新已收盘 K 线触及关键位区域？→ position
 4. 该 K 线出现 12 金K？→ pattern（方向需与关键位角色匹配）
-5. EMA 均线形态门控：与信号方向相反 → 否决；同向 → 加权
+5. EMA 均线形态严格门控：仅认可多头/空头排列、金叉/死叉 4 态，且方向须与位置一致
 6. 输出信号
 """
 from __future__ import annotations
@@ -37,15 +37,16 @@ __all__ = [
 ]
 
 
-# EMA 状态 → 趋势偏向（mixed 纠结视为中性，不参与门控）
+# EMA 状态 → 趋势偏向
 EMA_BIAS = {
     "bullish_align": "bullish",
     "bullish_cross": "bullish",
-    "turning_up": "bullish",
     "bearish_align": "bearish",
     "bearish_cross": "bearish",
-    "turning_down": "bearish",
 }
+
+# 严格筛选（用户规则）：仅认可 4 种趋势态——拐头向上/向下、纠缠、未知一律不出信号
+EMA_ALLOWED = {"bullish_align", "bearish_align", "bullish_cross", "bearish_cross"}
 
 
 def detect_all_signals(klines: list[list], config: dict) -> list[dict]:
@@ -102,14 +103,17 @@ def _detect(klines: list[list], config: dict) -> Optional[dict]:
     if pattern is None:
         return None
 
-    # 5. EMA 均线形态门控：权重高于单根 K 线形态
-    #    反向（如 EMA 空头排列 + 看涨吞没）→ 直接否决；同向 → 加权；纠结 → 不干预
+    # 5. EMA 严格门控（权重高于单根 K 线形态）：
+    #    a) 仅 4 种趋势态可出信号（拐头/纠缠/未知 → 过滤）
+    #    b) 位置合理性：EMA 偏向必须与位置方向一致——空头排列/死叉下触及支撑位无效，
+    #       多头排列/金叉下触及压力位无效
     ema = config.get("ema")
     if ema is None:
         ema = analyze_ema(klines)
     ema_state = ema["state"] if ema else None
-    ema_bias = EMA_BIAS.get(ema_state or "")
-    if ema_bias is not None and ema_bias != wanted:
+    if ema_state not in EMA_ALLOWED:
+        return None
+    if EMA_BIAS[ema_state] != wanted:
         return None
 
     # 6. 组装信号
@@ -127,8 +131,7 @@ def _detect(klines: list[list], config: dict) -> Optional[dict]:
         strength += 0.1  # 多次触及的关键位更可靠
     if signal_type == TREND_REVERSAL:
         strength += 0.1  # 反转结构加权
-    if ema_bias == wanted:
-        strength += 0.1  # 均线形态与信号同向（趋势背景一致）
+    strength += 0.1  # 均线形态与信号同向（严格门控后必然同向）
     strength = min(strength, 1.0)
 
     return {
