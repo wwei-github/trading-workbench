@@ -149,6 +149,7 @@ export default function ScanConfigPanel() {
           <Form.Item
             label="关键位区域半宽"
             name="key_level_tolerance"
+            initialValue={0.005}
             rules={[{ required: true }]}
             tooltip="关键位是区域：中心价 ± 半宽，0.005 = ±0.5%，价格进入区域即算到位"
           >

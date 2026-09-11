@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AIAnalysis, KlineData, ListResponse, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, WatchlistItem } from '../types'
+import type { AIAnalysis, AiProgress, KlineData, ListResponse, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -61,7 +61,13 @@ export const scanApi = {
   // 手动搜索币种 AI 分析（同步调用，AI 思考耗时较长，放宽超时）
   analyzeCoin: (symbol: string) =>
     api
-      .post<AIAnalysis>('/scans/analyze', { symbol }, { timeout: 180000 })
+      .post<AIAnalysis>('/scans/analyze', { symbol }, { timeout: 600000 })
+      .then((r) => r.data),
+
+  // AI 分析进度事件流（展开区域流式展示分析过程，2s 轮询）
+  aiProgress: (scanResultId: string) =>
+    api
+      .get<AiProgress>(`/scans/ai-progress/${scanResultId}`)
       .then((r) => r.data),
 
   // ===== AI 建议复盘系统（P2）=====

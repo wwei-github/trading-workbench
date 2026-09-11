@@ -165,13 +165,28 @@ export interface SkillInfo {
 
 // Agent 工具循环轨迹（stage_trace 为 null 表示单次调用管线生成）
 export interface StageTrace {
-  rounds: number;
-  tool_calls: number;
-  elapsed_ms: number;
-  steps: {
-    round: number;
-    llm_ms: number;
-    tools: string[];
-    calls?: { tool: string; args: Record<string, string>; result_len: number; ms: number }[];
-  }[];
+  rounds: number
+  tool_calls: number
+  elapsed_ms: number
+  steps: { round: number; llm_ms: number; tools: string[]; calls?: { tool: string; args: Record<string, string>; result_len: number; ms: number }[] }[]
+}
+
+// AI 分析进度事件（后端 Redis 事件流，前端 2s 轮询）
+export interface AiProgressEvent {
+  t: 'start' | 'gate' | 'round' | 'tool' | 'done' | 'error'
+  ts: number
+  symbol?: string
+  pipeline?: string
+  round?: number
+  tools?: string[]
+  tool?: string
+  args?: string
+  note?: string
+  decision?: string
+}
+
+export interface AiProgress {
+  scan_result_id: string
+  status: 'done' | 'running' | 'idle'
+  events: AiProgressEvent[]
 }

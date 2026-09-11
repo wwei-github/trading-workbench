@@ -174,36 +174,47 @@ def run_ai_analysis_single(
         logger.info(
             "AI 分析开始: %s strength=%s fp=%s", r.symbol, r.strength, fp[:8]
         )
+        # 进度事件：start（前端流式展示分析过程）
+        ai_progress.push_start(r.id, r.symbol, "agent")
 
         # ── Stage 1 闸门（无 LLM 成本）──
         # 1) 强度不足
         if r.strength is not None and float(r.strength) < settings.AI_MIN_STRENGTH:
-            _finish(db, r, r.symbol, build_forced_skip(
-                f"信号强度 {float(r.strength):.2f} 低于阈值 {settings.AI_MIN_STRENGTH}，程序判定跳过"
-            ), fp)
+            reason = f"信号强度 {float(r.strength):.2f} 低于阈值 {settings.AI_MIN_STRENGTH}，程序判定跳过"
+            ai_progress.push(r.id, "gate", note=reason)
+            _finish(db, r, r.symbol, build_forced_skip(reason), fp)
+            ai_progress.push_done(r.id, "skip", reason)
             return
         # 2) 振幅熔断（当前已收盘K线振幅 > N×ATR，插针/异常行情不出建议）
-        klines = ExchangePool().get_klines(r.symbol, cfg.kline_interval, 500)
+        pool = ExchangePool()
+        klines = pool.get_klines(r.symbol, cfg.kline_interval, 500)
         atr = calc_atr(klines)
         if atr and len(klines) >= 2:
             closed = klines[-2]
             kline_range = float(closed[2]) - float(closed[3])  # high - low
             if kline_range > settings.ATR_SPIKE_MULT * atr:
-                _finish(db, r, r.symbol, build_forced_skip(
-                    f"当前K线振幅超过 {settings.ATR_SPIKE_MULT:g}×ATR，行情异常熔断"
-                ), fp)
+                reason = f"当前K线振幅超过 {settings.ATR_SPIKE_MULT:g}×ATR，行情异常熔断"
+                ai_progress.push(r.id, "gate", note=reason)
+                _finish(db, r, r.symbol, build_forced_skip(reason), fp)
+                ai_progress.push_done(r.id, "skip", reason)
                 return
         # 3) 指纹缓存：TTL 内同指纹沿用旧结论（手动重分析不短路）
         if not force and settings.FINGERPRINT_TTL_MIN > 0:
             cached = _find_recent(db, r.symbol, fp, settings.FINGERPRINT_TTL_MIN)
             if cached:
-                _copy(db, r, r.symbol, cached, fp, "⏱️ 沿用近期同信号结论")
+                note = "⏱️ 沿用近期同信号结论"
+                ai_progress.push(r.id, "gate", note=note)
+                _copy(db, r, r.symbol, cached, fp, note)
+                ai_progress.push_done(r.id, cached.trade_decision, note)
                 return
         # 4) 重复信号沿用：24h 内同币种已有 suggest 且本行为重复命中
         if not force and r.is_repeat:
             repeat = _find_recent_suggest(db, r.symbol, 24 * 60)
             if repeat:
-                _copy(db, r, r.symbol, repeat, fp, "🔁 24h 内重复信号，沿用已有结论")
+                note = "🔁 24h 内重复信号，沿用已有结论"
+                ai_progress.push(r.id, "gate", note=note)
+                _copy(db, r, r.symbol, repeat, fp, note)
+                ai_progress.push_done(r.id, repeat.trade_decision, note)
                 return
 
         # ── Stage 2：LLM 分析（P1 Agent 工具循环 / P0 单次调用）+ Risk Guard 校验 ──
@@ -218,6 +229,9 @@ def run_ai_analysis_single(
             if cfg.memory_injection_enabled else None
         )
         if cfg.ai_pipeline_enabled:
+            def _cb(ev: dict) -> None:
+                ai_progress.push(r.id, ev.pop("t"), **ev)
+
             ai_result = analyze_coin_agent(
                 signal, klines,
                 strategy_prompt=strategy_prompt,
@@ -225,8 +239,10 @@ def run_ai_analysis_single(
                 market_facts=market_facts,
                 pool=pool,
                 review_digest=review_digest,
+                progress_cb=_cb,
             )
         else:
+            ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
             ai_result = analyze_with_guard(
                 signal, klines,
                 strategy_prompt=strategy_prompt,
@@ -235,10 +251,16 @@ def run_ai_analysis_single(
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto
         if cfg.dual_judge_enabled:
+            ai_progress.push(r.id, "gate", note="⚖️ 双评委辩论复核中…")
             ai_result = run_dual_judge(ai_result, signal, market_facts)
         _finish(db, r, r.symbol, ai_result, fp)
+        ai_progress.push_done(
+            r.id, ai_result.get("trade_decision"),
+            str(ai_result.get("analysis") or "")[:80],
+        )
     except Exception as e:
         logger.warning("AI 分析 %s 失败: %s", scan_result_id, e)
+        ai_progress.push(scan_result_id, "error", note=str(e)[:200])
         db.rollback()
     finally:
         db.close()

@@ -132,7 +132,8 @@ function startRowPolling(scanId: string, scanResultId: string) {
     },
   }))
   let attempts = 0
-  const maxAttempts = 40 // 最多轮询 40 次 × 3 秒 = 120 秒（思考型模型分析较慢，且可能内部重试）
+  // Agent 管线单次分析可达 2~5 分钟，120s 会误报超时；放宽到 10 分钟
+  const maxAttempts = 200 // 200 次 × 3 秒 = 600 秒
   aiPollTimers[scanResultId] = setInterval(async () => {
     attempts++
     try {

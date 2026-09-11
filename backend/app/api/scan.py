@@ -262,6 +262,9 @@ def trigger_ai_analysis(
             )
         )
         db.commit()
+        # 清空旧进度事件，保证事件流只属于本次分析（前端流式展示依赖）
+        from app.services import ai_progress
+        ai_progress.clear(body.scan_result_id)
 
     run_ai_analysis_task.delay(
         str(scan_id),
@@ -417,6 +420,23 @@ def get_ai_trace(analysis_id: UUID, db: Session = Depends(get_db)):
     if not a:
         raise HTTPException(status_code=404, detail="分析记录不存在")
     return {"analysis_id": a.id, "stage_trace": a.stage_trace}
+
+
+# ===== AI 分析进度（流式展示，前端 2s 轮询 Redis 事件流） =====
+
+@router.get("/ai-progress/{scan_result_id}")
+def get_ai_progress(scan_result_id: UUID, db: Session = Depends(get_db)):
+    """单个扫描结果的 AI 分析进度事件。
+    status: done=分析已落库 / running=进行中 / idle=无事件（未开始或已过期）
+    """
+    from app.services import ai_progress
+
+    done = db.execute(
+        select(AIAnalysis.id).where(AIAnalysis.scan_result_id == scan_result_id)
+    ).first() is not None
+    events = ai_progress.get_events(scan_result_id)
+    status = "done" if done else ("running" if events else "idle")
+    return {"scan_result_id": str(scan_result_id), "status": status, "events": events}
 
 
 # ===== 技能库（只读，docs/04 §6.5） =====

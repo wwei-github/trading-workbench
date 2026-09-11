@@ -183,7 +183,8 @@ export default function WatchlistPanel() {
     stopPolling(symbol);
     setRowState(symbol, { loading: true, error: null });
     let attempts = 0;
-    const maxAttempts = 40; // 40 次 × 3 秒 = 120 秒
+    // Agent 管线单次分析可达 2~5 分钟，放宽到 10 分钟
+    const maxAttempts = 200; // 200 次 × 3 秒 = 600 秒
     pollTimersRef.current[symbol] = setInterval(async () => {
       attempts++;
       try {
@@ -235,12 +236,10 @@ export default function WatchlistPanel() {
     }
   };
 
-  // 行点击：选中图表 + 切换折叠；首次展开时加载该币种已有的 AI 分析
-  const handleRowClick = (symbol: string) => {
+  // 展开某行（显式单开）：选中图表 + 首次展开时预加载该币种已有的 AI 分析
+  const expandRow = (symbol: string) => {
     setSelectedSymbol(symbol);
-    setExpandedKeys((prev) =>
-      prev.includes(symbol) ? prev.filter((s) => s !== symbol) : [symbol],
-    );
+    setExpandedKeys([symbol]);
     if (!aiMap[symbol]) {
       const scan = rows.find((r) => r.symbol === symbol)?.scan;
       if (scan?.id && scan?.scan_record_id) {
@@ -252,6 +251,15 @@ export default function WatchlistPanel() {
           })
           .catch(() => undefined);
       }
+    }
+  };
+
+  // 行点击：已展开则折叠，否则展开（显式判断，避免与展开图标双触发）
+  const handleRowClick = (symbol: string) => {
+    if (expandedKeys.includes(symbol)) {
+      setExpandedKeys([]);
+    } else {
+      expandRow(symbol);
     }
   };
 
@@ -460,6 +468,7 @@ export default function WatchlistPanel() {
                 ai={aiMap[record.symbol]}
                 loading={!!analyzing[record.symbol]?.loading}
                 error={analyzing[record.symbol]?.error}
+                scanResultId={record.scan?.id}
                 userInput={userInputs[record.symbol] ?? ""}
                 onUserInput={(v) =>
                   setUserInputs((m) => ({ ...m, [record.symbol]: v }))

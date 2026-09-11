@@ -202,10 +202,12 @@ def analyze_coin_agent(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     market_facts: Optional[dict] = None, pool=None,
     review_digest: Optional[str] = None,
+    progress_cb=None,
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
     返回值额外带 "stage_trace" 键（工具循环 trace，docs/04 §5.9），落库时一并存储。
+    progress_cb: 可选回调，接收 {"t": round/tool, ...} 进度事件供前端流式展示。
     """
     client = OpenAI(api_key=settings.AI_API_KEY, base_url=settings.AI_BASE_URL)
 
@@ -290,6 +292,11 @@ def analyze_coin_agent(
                 "result_len": len(result),
                 "ms": int((time.time() - tt) * 1000),
             })
+            if progress_cb:
+                progress_cb({
+                    "t": "tool", "tool": tc.function.name,
+                    "args": "; ".join(f"{k}={v}" for k, v in args.items())[:60],
+                })
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,

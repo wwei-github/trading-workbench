@@ -352,6 +352,14 @@ export default function ResultTable() {
             size: "small",
           }}
           locale={{ emptyText: <Empty description="暂无命中币种" /> }}
+          onRow={(record) => ({
+            // 点击行 = 聚焦图表 + 展开该行（单开，与展开图标一致）；行内按钮已 stopPropagation
+            onClick: () =>
+              setExpandedRowKeys((prev) =>
+                prev.includes(record.id) ? [] : [record.id],
+              ),
+            style: { cursor: "pointer" },
+          })}
           expandable={{
             expandedRowKeys,
             onExpand: (expanded, record) => {
@@ -366,6 +374,7 @@ export default function ResultTable() {
                   ai={ai}
                   loading={!!rowState?.loading}
                   error={rowState?.error}
+                  scanResultId={record.id}
                   userInput={userInputs[record.id] ?? ""}
                   onUserInput={(v) =>
                     setUserInputs((m) => ({ ...m, [record.id]: v }))
