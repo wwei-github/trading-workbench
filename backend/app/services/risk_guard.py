@@ -14,6 +14,16 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# 开单类型（结构打法归类，docs/04 §4 Stage 3；skip 时为空）
+TRADE_TYPE_LABELS = {
+    "trend_follow": "顺势交易",
+    "rule_123": "123法则",
+    "n_structure": "N字结构",
+    "rule_2b": "2B法则",
+    "range_edge": "区间边缘反转",
+}
+TRADE_TYPES = tuple(TRADE_TYPE_LABELS)
+
 
 class TradeDecision(BaseModel):
     """AI 决策契约（P0：AI 报绝对价格；P1 升级为结构位锚点 level_ref+offset）"""
@@ -21,6 +31,7 @@ class TradeDecision(BaseModel):
     trade_decision: Literal["suggest", "skip"]
     skip_reason: str = ""
     direction: Optional[Literal["long", "short"]] = None
+    trade_type: Optional[str] = None  # 开单类型：trend_follow / rule_123 / n_structure / rule_2b / range_edge
     entry_price: float = 0.0
     stop_loss: float = 0.0
     take_profit_1: float = 0.0
@@ -88,6 +99,7 @@ def validate_decision(
             "trade_decision": "skip",
             "skip_reason": d.skip_reason.strip(),
             "direction": None,
+            "trade_type": None,
             "analysis": d.analysis or "",
             "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
             "take_profit_2": 0, "risk_reward_ratio": 0,
@@ -99,6 +111,10 @@ def validate_decision(
     close = float(signal.get("current_price") or 0)
     if not d.direction:
         violations.append("suggest 时必须给出 direction (long/short)")
+    if d.trade_type not in TRADE_TYPES:
+        violations.append(
+            f"suggest 时必须归类开单类型 trade_type（{'/'.join(TRADE_TYPES)} 之一）"
+        )
     if d.entry_price <= 0 or d.stop_loss <= 0 or d.take_profit_1 <= 0:
         violations.append("suggest 时 entry/stop_loss/tp1 必须为正数价格")
     if violations:
@@ -161,6 +177,7 @@ def validate_decision(
         "trade_decision": "suggest",
         "skip_reason": "",
         "direction": d.direction,
+        "trade_type": d.trade_type,
         "analysis": d.analysis or "",
         "entry_price": round(d.entry_price, 8),
         "stop_loss": round(d.stop_loss, 8),

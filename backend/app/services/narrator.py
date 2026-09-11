@@ -10,6 +10,7 @@ from typing import Optional
 from openai import OpenAI
 
 from app.config import settings
+from app.services.risk_guard import TRADE_TYPE_LABELS
 from app.services.strategy.types import POSITION_LABEL_MAP
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 _NARRATOR_SYSTEM = """你是交易叙述员。根据给定的决策与事实，输出 ≤300 字中文推理，格式：
 先逐条列出满足的条件（如：1. EMA多头排列，趋势向上 2. 回踩支撑位企稳，触及2次）；
 再列出不满足的条件或风险点；最后一条写明确结论。
-每条独占一行（JSON 内换行写\\n），只输出纯文本，不要 JSON、不要 markdown。"""
+每条必须用"1. 2. 3."序号开头且每条独占一行，只输出纯文本，不要 JSON、不要 markdown。"""
 
 
 def _template(signal: dict, decision: dict, reason: str) -> str:
@@ -48,6 +49,9 @@ def generate_narrative(
             f"止损 {decision.get('stop_loss')}，止盈1 {decision.get('take_profit_1')}，"
             f"盈亏比 {decision.get('risk_reward_ratio')}，仓位 {decision.get('position_pct')}%",
         ]
+        tt = TRADE_TYPE_LABELS.get(decision.get("trade_type") or "")
+        if tt:
+            facts.append(f"开单类型: {tt}（叙述中体现该打法的逻辑）")
         if agent_reason:
             facts.append(f"Agent 核心依据: {agent_reason}")
         f = (market_facts or {}).get("funding")

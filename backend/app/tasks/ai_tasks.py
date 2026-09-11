@@ -13,6 +13,7 @@ import hashlib
 import logging
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID, uuid4
@@ -199,6 +200,11 @@ def run_ai_analysis_single(
                 _finish(db, r, r.symbol, build_forced_skip(reason), fp)
                 ai_progress.push_done(r.id, "skip", reason)
                 return
+
+        # 分析时刻最新价（未收盘K线的现价）：信号里的 current_price 是扫描时价格，
+        # 扫描到分析之间可能已明显移动——所有锚点换算、入场价校验都以最新价为基准
+        if klines:
+            signal["current_price"] = float(klines[-1][4])
         # 3) 指纹缓存：TTL 内同指纹沿用旧结论（手动重分析不短路）
         if not force and settings.FINGERPRINT_TTL_MIN > 0:
             cached = _find_recent(db, r.symbol, fp, settings.FINGERPRINT_TTL_MIN)
@@ -219,10 +225,15 @@ def run_ai_analysis_single(
                 return
 
         # ── Stage 2：LLM 分析（P1 Agent 工具循环 / P0 单次调用）+ Risk Guard 校验 ──
+        # 市场环境事实并行获取（各自带 TTL 缓存；串行 3 次 HTTP 并行后只等最慢的一个）
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            fut_funding = ex.submit(market_data.get_funding, r.symbol)
+            fut_breadth = ex.submit(market_data.get_market_breadth, ExchangePool())
+            fut_fng = ex.submit(market_data.get_fear_greed)
         market_facts = {
-            "funding": market_data.get_funding(r.symbol),
-            "market_breadth": market_data.get_market_breadth(ExchangePool()),
-            "fear_greed": market_data.get_fear_greed(),
+            "funding": fut_funding.result(),
+            "market_breadth": fut_breadth.result(),
+            "fear_greed": fut_fng.result(),
         }
         # 复盘记忆注入（P2，默认关）：近期复盘统计摘要进系统提示词
         review_digest = (
@@ -255,6 +266,17 @@ def run_ai_analysis_single(
             if ai_result.get("trade_decision") == "suggest":
                 ai_progress.push(r.id, "gate", note="⚖️ 双评委辩论复核中…")
             ai_result = run_dual_judge(ai_result, signal, market_facts)
+        # Narrator 叙述分离（docs/04 §5）：Agent 管线的 analysis 只是模型一句话依据，
+        # suggest 时用轻量调用生成"1. 2. 3."分点叙述；单次调用管线已自带分点，不再生成
+        if (
+            cfg.ai_pipeline_enabled
+            and ai_result.get("trade_decision") == "suggest"
+        ):
+            ai_result["analysis"] = generate_narrative(
+                signal, ai_result,
+                agent_reason=str(ai_result.get("analysis") or ""),
+                market_facts=market_facts,
+            )
         _finish(db, r, r.symbol, ai_result, fp)
         ai_progress.push_done(
             r.id, ai_result.get("trade_decision"),
@@ -299,11 +321,15 @@ def _find_recent_suggest(db, symbol: str, ttl_min: int) -> Optional[AIAnalysis]:
 
 
 def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str) -> None:
-    """沿用旧结论：复制到新 scan_result_id（analysis 加沿用说明）"""
+    """沿用旧结论：复制到新 scan_result_id（analysis 加沿用说明）。
+
+    必须提交：前端行级轮询以"分析记录出现"为完成标志，不提交会导致轮询挂满超时。
+    """
     result = {
         "trade_decision": src.trade_decision,
         "skip_reason": src.skip_reason,
         "direction": src.direction,
+        "trade_type": src.trade_type,
         "analysis": (note + "\n" + (src.analysis or "")).strip(),
         "entry_price": float(src.entry_price or 0),
         "stop_loss": float(src.stop_loss or 0),
@@ -313,7 +339,7 @@ def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str) -
         "position_pct": float(src.position_pct or 0),
         "recommendation": float(src.recommendation or 0),
     }
-    _finish(db, r, symbol, result, fp, commit=False)
+    _finish(db, r, symbol, result, fp)
     logger.info("AI 结论沿用: %s ← %s", symbol, src.id)
 
 
@@ -333,6 +359,7 @@ def _upsert_ai_analysis(
         "trade_decision": ai_result.get("trade_decision"),
         "skip_reason": ai_result.get("skip_reason"),
         "direction": ai_result.get("direction"),
+        "trade_type": ai_result.get("trade_type"),
         "analysis": ai_result.get("analysis"),
         "entry_price": ai_result.get("entry_price"),
         "stop_loss": ai_result.get("stop_loss"),

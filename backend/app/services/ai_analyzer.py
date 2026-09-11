@@ -26,7 +26,10 @@ SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信�
 - trade_decision: 是否建议开单，"suggest"（建议开单）或 "skip"（不建议开单）
 - skip_reason: 当 trade_decision="skip" 时必填，用"1. 2. 3."序号逐条列出不建议开单的主要原因（如：1. 信号强度不足 2. 盈亏比不佳），最多3条，每条一行，JSON内换行写\\n。suggest 时输出空字符串。
 - direction: 交易方向，"long"（做多）或 "short"（做空）。skip 时为空字符串。
-- entry_price: 建议入场价（接近当前价）。skip 时为 0。
+- trade_type: 开单类型（结构打法归类），suggest 时必填其一：trend_follow（顺势交易）/ rule_123（123法则，破前高/低后回踩确认反转）/ n_structure（N字结构，回踩后同向延续）/ rule_2b（2B法则，假突破前高/低后反向）/ range_edge（区间边缘反转）。skip 时为空字符串。
+- entry_price: 建议入场价。必须以"当前价格"（分析时刻最新价）为基准：顺势追势时入场贴近现价；
+  计划等回踩时给回踩锚定价并在 analysis 中写明"等回踩"；若现价已显著离开信号关键位且无合理入场计划，应 skip。
+  skip 时为 0。
 - stop_loss: 止损价，做多时低于入场价，做空时高于入场价，基于结构位。skip 时为 0。
 - take_profit_1: 第一档止盈价，盈亏比≥1.5。skip 时为 0。
 - take_profit_2: 第二档止盈价，盈亏比≥3。skip 时为 0。
@@ -103,6 +106,23 @@ def _build_messages(
     ema_summary = ""
     if ema:
         ema_summary = f"均线形态: {ema['state_label']}（{ema['detail']}）\n"
+
+    # 市场环境事实（资金费率/恐贪/大盘，来自 market_data，全部可缺失）
+    facts_summary = ""
+    if market_facts:
+        f = market_facts.get("funding")
+        if f:
+            facts_summary += f"资金费率: {f.get('funding_rate_pct')}%\n"
+        fg = market_facts.get("fear_greed")
+        if fg:
+            facts_summary += f"恐贪指数: {fg['value']}({fg['label']})\n"
+        b = market_facts.get("market_breadth")
+        if b:
+            seg = [
+                f"{s} {v.get('ema_label') or '—'} 24h{v['change_24h_pct']:+.1f}%"
+                for s, v in b.items()
+            ]
+            facts_summary += "大盘: " + " | ".join(seg) + "\n"
 
     user_prompt = (
         f"币种: {signal['symbol']}\n"

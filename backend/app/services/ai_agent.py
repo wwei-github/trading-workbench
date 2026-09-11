@@ -16,7 +16,13 @@ from openai import OpenAI
 from app.config import settings
 from app.services import market_data
 from app.services import skill_library
-from app.services.risk_guard import TradeDecision, build_forced_skip, calc_atr, validate_decision
+from app.services.risk_guard import (
+    TRADE_TYPES,
+    TradeDecision,
+    build_forced_skip,
+    calc_atr,
+    validate_decision,
+)
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.types import POSITION_LABEL_MAP
 
@@ -38,9 +44,18 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    ref 取值: {_ref_desc}；offset_pct 为相对锚点的百分比偏移（如支撑下方 0.5×ATR 用负 offset）。
 3. 决策必须通过 submit_decision 工具提交，提交后程序会做风控校验：
    校验不通过时工具会返回违规明细，请按明细修正后重新提交。
-4. "可用技能"列表中标注【当前命中】的技能，建议先 load_skill 阅读再决策。
-5. 输出文字尽量少，只用于说明查询意图；不要在文字里给决策，只用 submit_decision。
-6. 盈亏比铁律 ≥{rr_min}；止损距离 ≤{stop_max:.0f}%；仓位数不要自己报，程序按风险预算计算。
+4. **入场价纪律**：当前价格是分析时刻的最新价。顺势追势时 entry 用 market 锚（offset 0 附近）；
+   计划等回踩时 entry 锚定回踩结构位并在 reason 写明"等回踩"；若现价已显著离开信号关键位
+   且无合理入场计划 → 直接 skip，不要给出既不贴近现价也不贴近结构位的模糊入场价。
+5. 开单类型归类（trade_type，suggest 必填其一）：
+   trend_follow 顺势交易 / rule_123 123法则（破前高/低后回踩确认反转）/
+   n_structure N字结构（回踩后同向延续）/ rule_2b 2B法则（假突破前高/低后反向）/
+   range_edge 区间边缘反转。
+6. "可用技能"列表中标注【当前命中】的技能，建议先 load_skill 阅读再决策。
+7. **效率**：事实包已含决策所需核心数据（30根K线/关键位/ATR/资金费率/大盘/恐贪），
+   能直接决策就直接 submit_decision，不要为用工具而用工具；一般 2~3 轮内完成。
+8. 输出文字尽量少，只用于说明查询意图；不要在文字里给决策，只用 submit_decision。
+9. 盈亏比铁律 ≥{rr_min}；止损距离 ≤{stop_max:.0f}%；仓位数不要自己报，程序按风险预算计算。
 
 {skill_index}"""
 
@@ -81,6 +96,12 @@ TOOLS_SCHEMA = [
             "trade_decision": {"type": "string", "enum": ["suggest", "skip"]},
             "skip_reason": {"type": "string", "description": "skip 时必填，1. 2. 3. 序号列原因，最多3条"},
             "direction": {"type": "string", "enum": ["long", "short"], "description": "suggest 时必填"},
+            "trade_type": {
+                "type": "string",
+                "enum": list(TRADE_TYPES),
+                "description": "开单类型归类，suggest 时必填：trend_follow 顺势交易 / rule_123 123法则 / "
+                               "n_structure N字结构 / rule_2b 2B法则 / range_edge 区间边缘反转",
+            },
             "entry_ref": {"type": "string", "enum": list(LEVEL_REFS), "description": "入场锚点"},
             "entry_offset_pct": {"type": "number", "description": "入场相对锚点偏移%，默认0"},
             "stop_ref": {"type": "string", "enum": list(LEVEL_REFS), "description": "止损锚点"},
@@ -130,6 +151,7 @@ def _handle_submit(args: dict, signal: dict, klines: list) -> tuple[bool, str, O
             "trade_decision": "skip",
             "skip_reason": args["skip_reason"].strip(),
             "direction": None,
+            "trade_type": None,
             "analysis": "",
             "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
             "take_profit_2": 0, "risk_reward_ratio": 0,
@@ -156,6 +178,7 @@ def _handle_submit(args: dict, signal: dict, klines: list) -> tuple[bool, str, O
     d = TradeDecision(
         trade_decision="suggest",
         direction=args.get("direction"),
+        trade_type=args.get("trade_type"),
         entry_price=entry, stop_loss=stop,
         take_profit_1=tp1,
         take_profit_2=tp2 or 0.0,

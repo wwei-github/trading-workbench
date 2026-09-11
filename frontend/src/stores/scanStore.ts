@@ -137,13 +137,39 @@ function startRowPolling(scanId: string, scanResultId: string) {
   aiPollTimers[scanResultId] = setInterval(async () => {
     attempts++
     try {
-      await useScanStore.getState().fetchAiAnalyses(scanId)
-      const analyses = useScanStore.getState().aiAnalyses
-      const found = analyses.find((a) => a.scan_result_id === scanResultId)
-      if (found) {
-        // 该行分析完成
-        stopRowPolling(scanResultId)
-        return
+      // 主判定走进度事件（Redis，轻量）：分析进程一结束（done/error）立即停轮询，
+      // 不再死等结果列表出现或耗满超时
+      const prog = await scanApi.aiProgress(scanResultId).catch(() => null)
+      if (prog) {
+        const errEv = prog.events.find((e) => e.t === 'error')
+        if (errEv || prog.status === 'done') {
+          if (errEv) {
+            stopRowPolling(scanResultId)
+            useScanStore.setState((s) => ({
+              analyzingMap: {
+                ...s.analyzingMap,
+                [scanResultId]: {
+                  loading: false,
+                  error: errEv.note || 'AI 分析失败',
+                },
+              },
+            }))
+          } else {
+            await useScanStore.getState().fetchAiAnalyses(scanId)
+            stopRowPolling(scanResultId)
+          }
+          return
+        }
+      }
+      // 兜底：进度事件可能丢失（Redis 重启等），每 5 轮查一次结果列表
+      if (attempts % 5 === 0) {
+        await useScanStore.getState().fetchAiAnalyses(scanId)
+        const analyses = useScanStore.getState().aiAnalyses
+        const found = analyses.find((a) => a.scan_result_id === scanResultId)
+        if (found) {
+          stopRowPolling(scanResultId)
+          return
+        }
       }
       // 超时（先停轮询再写错误，避免被 stopRowPolling 清掉）
       if (attempts >= maxAttempts) {

@@ -174,7 +174,8 @@ export default function WatchlistPanel() {
     setAnalyzing((prev) => ({ ...prev, [symbol]: state }));
   };
 
-  // 触发后轮询该扫描记录的分析列表，直到目标 scan_result_id 的分析出现
+  // 触发后轮询：进度事件（Redis）判定分析进程结束（done/error）立即停止，
+  // 兜底每 5 轮查一次结果列表（进度事件丢失时仍能拿到结果）
   const startPolling = (
     symbol: string,
     scanRecordId: string,
@@ -188,14 +189,34 @@ export default function WatchlistPanel() {
     pollTimersRef.current[symbol] = setInterval(async () => {
       attempts++;
       try {
-        const d = await scanApi.aiAnalyses(scanRecordId);
-        const found = d.items.find((a) => a.scan_result_id === scanResultId);
-        if (found) {
-          setAiMap((prev) => ({ ...prev, [symbol]: found }));
-          // 必须复位 loading，否则卡片上方一直挂着"AI 重新分析中..."
+        const prog = await scanApi.aiProgress(scanResultId).catch(() => null);
+        const errEv = prog?.events.find((e) => e.t === "error");
+        if (errEv || prog?.status === "done") {
           stopPolling(symbol);
-          setRowState(symbol, { loading: false, error: null });
-        } else if (attempts >= maxAttempts) {
+          if (errEv) {
+            setRowState(symbol, {
+              loading: false,
+              error: errEv.note || "AI 分析失败",
+            });
+          } else {
+            const d = await scanApi.aiAnalyses(scanRecordId);
+            const found = d.items.find((a) => a.scan_result_id === scanResultId);
+            if (found) setAiMap((prev) => ({ ...prev, [symbol]: found }));
+            setRowState(symbol, { loading: false, error: null });
+          }
+          return;
+        }
+        if (attempts % 5 === 0) {
+          const d = await scanApi.aiAnalyses(scanRecordId);
+          const found = d.items.find((a) => a.scan_result_id === scanResultId);
+          if (found) {
+            setAiMap((prev) => ({ ...prev, [symbol]: found }));
+            stopPolling(symbol);
+            setRowState(symbol, { loading: false, error: null });
+            return;
+          }
+        }
+        if (attempts >= maxAttempts) {
           stopPolling(symbol);
           setRowState(symbol, { loading: false, error: "AI 分析超时，请重试" });
         }

@@ -513,7 +513,8 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
     signal = {
         "symbol": symbol,
         "signal_type": "manual_search",
-        "current_price": float(klines[-2][4]),
+        # 分析时刻最新价（未收盘K线的现价），入场价锚定基准
+        "current_price": float(klines[-1][4]),
         "breakout_pct": 0.0,
         "pattern": None,
         "signal_reason": "手动搜索，无预设信号，请根据K线结构自行判断",
@@ -538,6 +539,7 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         trade_decision=ai_result.get("trade_decision"),
         skip_reason=ai_result.get("skip_reason"),
         direction=ai_result.get("direction"),
+        trade_type=ai_result.get("trade_type"),
         analysis=ai_result.get("analysis"),
         entry_price=ai_result.get("entry_price"),
         stop_loss=ai_result.get("stop_loss"),

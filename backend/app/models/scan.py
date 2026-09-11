@@ -67,6 +67,7 @@ class AIAnalysis(Base):
     trade_decision: Mapped[Optional[str]] = mapped_column(String(8), nullable=True, index=True)  # suggest / skip
     skip_reason: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     direction: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)  # long / short
+    trade_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # 开单类型：trend_follow/rule_123/n_structure/rule_2b/range_edge
     analysis: Mapped[Optional[str]] = mapped_column(String(4000), nullable=True)
     entry_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
     stop_loss: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)

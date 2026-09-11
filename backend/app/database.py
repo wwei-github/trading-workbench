@@ -101,6 +101,11 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS memory_injection_enabled BOOLEAN NOT NULL DEFAULT FALSE,
               ADD COLUMN IF NOT EXISTS dual_judge_enabled BOOLEAN NOT NULL DEFAULT FALSE
         """))
+        # Feature 9: 开单类型（结构打法归类：顺势/123法则/N字/2B/区间边缘）
+        conn.execute(text("""
+            ALTER TABLE ai_analyses
+              ADD COLUMN IF NOT EXISTS trade_type VARCHAR(16)
+        """))
         # 确保系统配置表有默认行（初始值从 env 注入）
         conn.execute(text(
             "INSERT INTO system_config "

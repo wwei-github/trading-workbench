@@ -84,6 +84,7 @@ class AIAnalysisOut(BaseModel):
     trade_decision: Optional[str] = None  # suggest / skip
     skip_reason: Optional[str] = None
     direction: Optional[str] = None  # long / short
+    trade_type: Optional[str] = None  # 开单类型：trend_follow / rule_123 / n_structure / rule_2b / range_edge
     analysis: Optional[str] = None
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
@@ -121,6 +122,7 @@ class ManualAnalysisOut(BaseModel):
     trade_decision: Optional[str] = None  # suggest / skip
     skip_reason: Optional[str] = None
     direction: Optional[str] = None  # long / short
+    trade_type: Optional[str] = None  # 开单类型：trend_follow / rule_123 / n_structure / rule_2b / range_edge
     analysis: Optional[str] = None
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None

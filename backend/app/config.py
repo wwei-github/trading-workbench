@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     AI_MODEL: str = "gpt-4o-mini"
 
     # AI 管线（P0，docs/04 §10）
-    LLM_CONCURRENCY: int = 3          # LLM 全局并发上限（Redis 信号量）
+    LLM_CONCURRENCY: int = 4          # LLM 全局并发上限（Redis 信号量）
     AI_MIN_STRENGTH: float = 0.4      # 信号强度低于此值直接程序 skip，不调 LLM
     AI_RR_MIN: float = 1.5            # 盈亏比复算下限（交易系统铁律）
     RISK_BUDGET_PCT: float = 1.0      # 单笔风险预算（%资金），仓位 = 预算/止损距离%

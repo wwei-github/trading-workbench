@@ -69,6 +69,7 @@ export interface AIAnalysis {
   trade_decision: string | null; // 'suggest' | 'skip'
   skip_reason: string | null;
   direction: string | null; // 'long' | 'short'
+  trade_type: string | null; // 开单类型：trend_follow / rule_123 / n_structure / rule_2b / range_edge
   analysis: string | null;
   entry_price: number | null;
   stop_loss: number | null;
