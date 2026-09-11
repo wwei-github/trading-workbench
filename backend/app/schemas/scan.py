@@ -190,6 +190,7 @@ class SystemConfigOut(BaseModel):
 class SystemConfigUpdate(BaseModel):
     # AI 分析开关
     ai_analysis_enabled: Optional[bool] = None
+    ai_pipeline_enabled: Optional[bool] = None
 
     # 自定义策略提示词
     strategy_prompt_enabled: Optional[bool] = None

@@ -27,8 +27,10 @@ from app.database import SessionLocal
 from app.models.scan import ScanResult, AIAnalysis
 from app.models.system_config import SystemConfig
 from app.services import market_data
+from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
 from app.services.exchange_pool import ExchangePool
+from app.services.narrator import generate_narrative
 from app.services.risk_guard import build_forced_skip, calc_atr
 
 logger = logging.getLogger(__name__)

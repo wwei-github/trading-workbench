@@ -672,6 +672,7 @@ MCP 服务器是"别人写好的现成工具包"，挂上即可用。目录：[m
 
 1. **P0 不用框架**——Schema 校验、并行、缓存、规则闸门都是纯程序逻辑，Celery 直接实现
 2. **P1 前置 spike（必做）**：用 §5.5 的 40 行手写循环对 GLM 思考模型（AI_MODEL，如 glm-5.3-flash）做工具循环验证——3~5 个真实信号，记录每步 token（含 reasoning token）与 tool_calls 稳定性。重点确认：多轮循环下 content 不为空（本项目在单次调用已踩过 reasoning token 挤占 max_tokens 的坑）、思考 token 随轮次累积可控。**拿到数据后**再决定是否引入 PydanticAI
+   - **spike 结果（2026-09-11，glm-5.3-flash，3 样本）**：3/3 通过 submit_decision 提交；均 2 轮收敛（第 1 轮并行调用 3 个查询工具、第 2 轮提交）；无空 content/无纯文本拒绝；reasoning token 每轮 75~950 可控；总 token ≈3.8k/次、耗时 ≈40s。**结论：手写循环足够，P1 不引入 PydanticAI（零新依赖）**
 3. **P1 引入 PydanticAI，只用于 Trader Agent 节点**（§5.10）——工具循环 + 结构化输出 + 校验重试是它最擅长的；外层编排仍留在 Celery（社区验证过的混合模式）；**Skills 文本机制随 P1 一起交付**（§6）
 4. **MCP 按梯队接入**（§7.4），不是一次性全挂
 5. **迁 LangGraph 的触发条件**（出现任一再迁）：需要"分析中途暂停人工确认再继续"；需要全链路追踪面板；流程复杂到 if/else 编排难维护。阶段边界已在 §4/§5 划清，图结构迁移成本可控

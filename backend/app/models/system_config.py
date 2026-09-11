@@ -12,6 +12,8 @@ class SystemConfig(Base):
 
     # AI 分析开关
     ai_analysis_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Agent 管线开关：开=工具循环+锚点+技能（docs/04 P1），关=单次调用+校验回炉（P0）
+    ai_pipeline_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # 自定义策略提示词（MD 格式，AI 分析时可选携带）
     strategy_prompt_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

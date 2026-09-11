@@ -276,6 +276,7 @@ def get_system_config(db: Session = Depends(get_db)):
     cfg = _get_system_config(db)
     return SystemConfigOut(
         ai_analysis_enabled=cfg.ai_analysis_enabled,
+        ai_pipeline_enabled=cfg.ai_pipeline_enabled,
         ai_configured=bool(settings.AI_API_KEY),
         strategy_prompt_enabled=cfg.strategy_prompt_enabled,
         strategy_prompt=cfg.strategy_prompt or "",
@@ -341,6 +342,7 @@ def update_system_config(
     db.refresh(cfg)
     return SystemConfigOut(
         ai_analysis_enabled=cfg.ai_analysis_enabled,
+        ai_pipeline_enabled=cfg.ai_pipeline_enabled,
         ai_configured=bool(settings.AI_API_KEY),
         strategy_prompt_enabled=cfg.strategy_prompt_enabled,
         strategy_prompt=cfg.strategy_prompt or "",

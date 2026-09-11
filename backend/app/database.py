@@ -86,6 +86,11 @@ def _run_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_ai_analyses_fingerprint "
             "ON ai_analyses (fingerprint)"
         ))
+        # Feature 7: Agent 管线开关（docs/04 P1）
+        conn.execute(text("""
+            ALTER TABLE system_config
+              ADD COLUMN IF NOT EXISTS ai_pipeline_enabled BOOLEAN NOT NULL DEFAULT FALSE
+        """))
         # 确保系统配置表有默认行（初始值从 env 注入）
         conn.execute(text(
             "INSERT INTO system_config "
