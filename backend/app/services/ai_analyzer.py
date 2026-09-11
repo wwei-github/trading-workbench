@@ -79,10 +79,11 @@ def _build_messages(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）"""
-    # 取最近 30 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-31:-1]）
-    recent = klines[-31:-1] if len(klines) >= 31 else klines[:-1]
+    # 取最近 100 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-101:-1]）
+    recent = klines[-101:-1] if len(klines) >= 101 else klines[:-1]
+    # 每根K线自带成交量与成交额（quote_vol，USDT），与 Agent 管线同格式
     kline_summary = "\n".join(
-        f"{int(k[0]/1000)},{k[1]},{k[2]},{k[3]},{k[4]},{k[5]}" for k in recent
+        f"{int(k[0]/1000)},{k[1]},{k[2]},{k[3]},{k[4]},{k[5]},{k[7]}" for k in recent
     )
 
     # 关键位明细（12金K出现的位置 + 全部关键位）
@@ -116,9 +117,7 @@ def _build_messages(
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
         f"{levels_summary}"
         f"{ema_summary}"
-        f"量能分类: {signal.get('volume_type', '未知')} (成交量={signal.get('volume', 0)})\n"
-        f"24h成交额: {signal.get('volume_24h', 0)}\n"
-        f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol):\n{kline_summary}"
+        f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
     )
 
     if user_input:
