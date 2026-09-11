@@ -37,6 +37,7 @@ class ScanResult(Base):
     r_squared: Mapped[float] = mapped_column(Numeric(10, 6), nullable=False)
     pattern: Mapped[str] = mapped_column(String(32), nullable=True)
     signal_reason: Mapped[str] = mapped_column(String(128), nullable=True)
+    strength: Mapped[Optional[float]] = mapped_column(Numeric(6, 4), nullable=True)  # 信号强度 0-1
     ema_state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)  # 均线形态状态
     position: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # 12金K出现的位置
     key_levels: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)  # 命中的关键位明细
@@ -74,6 +75,7 @@ class AIAnalysis(Base):
     risk_reward_ratio: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
     position_pct: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)
     recommendation: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)  # 推荐程度 0-100
+    fingerprint: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)  # 信号指纹（缓存复用）
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")

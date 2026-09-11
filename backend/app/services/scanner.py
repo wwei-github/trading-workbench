@@ -201,6 +201,7 @@ class Scanner:
                         r_squared=h.get("r_squared", 0),
                         pattern=h.get("pattern"),
                         signal_reason=h.get("signal_reason"),
+                        strength=h.get("strength"),
                         ema_state=h.get("ema_state"),
                         position=h.get("position"),
                         key_levels=h.get("key_levels"),

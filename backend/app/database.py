@@ -73,6 +73,19 @@ def _run_migrations(engine):
         conn.execute(text(
             "UPDATE watchlist SET updated_at = created_at WHERE updated_at IS NULL"
         ))
+        # Feature 6: AI 管线 P0——扫描结果强度 + AI 决策指纹（docs/04）
+        conn.execute(text("""
+            ALTER TABLE scan_results
+              ADD COLUMN IF NOT EXISTS strength NUMERIC(6, 4)
+        """))
+        conn.execute(text("""
+            ALTER TABLE ai_analyses
+              ADD COLUMN IF NOT EXISTS fingerprint VARCHAR(40)
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_ai_analyses_fingerprint "
+            "ON ai_analyses (fingerprint)"
+        ))
         # 确保系统配置表有默认行（初始值从 env 注入）
         conn.execute(text(
             "INSERT INTO system_config "
