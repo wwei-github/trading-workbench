@@ -15,92 +15,36 @@ function loadColorScheme(): ColorScheme {
   }
 }
 
-// 图表技术指标（klinecharts 内置指标全量目录，开关 + 参数，localStorage 持久化）
-export interface IndicatorSetting {
-  enabled: boolean
-  params: number[] // calcParams，多值即多线
+// 图表技术指标开关（全局，TradingView 风格自选；VOL 默认开启）
+export type IndicatorKey = 'boll' | 'vol' | 'macd' | 'rsi' | 'kdj'
+export type IndicatorState = Record<IndicatorKey, boolean>
+
+export const INDICATOR_LABELS: Record<IndicatorKey, string> = {
+  boll: 'BOLL',
+  vol: 'VOL',
+  macd: 'MACD',
+  rsi: 'RSI',
+  kdj: 'KDJ',
 }
 
-export interface IndicatorCatalogItem {
-  name: string // klinecharts 内置指标名
-  label: string
-  isStack: boolean // true = 叠加主图，false = 独立副图
-  defaults: number[] // 默认参数（与库内置一致；EMA 定制为 21/55/144）
-  paramLabels: string[]
+const INDICATORS_KEY = 'chart-indicators'
+
+const DEFAULT_INDICATORS: IndicatorState = {
+  boll: false,
+  vol: true,
+  macd: false,
+  rsi: false,
+  kdj: false,
 }
 
-export const INDICATOR_CATALOG: IndicatorCatalogItem[] = [
-  // 主图叠加
-  { name: 'EMA', label: 'EMA 指数均线', isStack: true, defaults: [21, 55, 144], paramLabels: ['周期1', '周期2', '周期3'] },
-  { name: 'MA', label: 'MA 移动平均', isStack: true, defaults: [5, 10, 30, 60], paramLabels: ['周期1', '周期2', '周期3', '周期4'] },
-  { name: 'BOLL', label: 'BOLL 布林带', isStack: true, defaults: [20, 2], paramLabels: ['周期', '倍数'] },
-  { name: 'BBI', label: 'BBI 多空指标', isStack: true, defaults: [3, 6, 12, 24], paramLabels: ['周期1', '周期2', '周期3', '周期4'] },
-  { name: 'SAR', label: 'SAR 抛物线', isStack: true, defaults: [2, 2, 20], paramLabels: ['步长', '增量', '上限'] },
-  // 副图
-  { name: 'VOL', label: 'VOL 成交量', isStack: false, defaults: [5, 10, 20], paramLabels: ['MA1', 'MA2', 'MA3'] },
-  { name: 'MACD', label: 'MACD', isStack: false, defaults: [12, 26, 9], paramLabels: ['快线', '慢线', '信号'] },
-  { name: 'KDJ', label: 'KDJ 随机指标', isStack: false, defaults: [9, 3, 3], paramLabels: ['N', 'M1', 'M2'] },
-  { name: 'RSI', label: 'RSI 相对强弱', isStack: false, defaults: [6, 12, 24], paramLabels: ['周期1', '周期2', '周期3'] },
-  { name: 'WR', label: 'WR 威廉指标', isStack: false, defaults: [6, 10, 14], paramLabels: ['周期1', '周期2', '周期3'] },
-  { name: 'CCI', label: 'CCI 顺势指标', isStack: false, defaults: [20], paramLabels: ['周期'] },
-  { name: 'DMI', label: 'DMI 趋向指标', isStack: false, defaults: [14, 6], paramLabels: ['周期', '平滑'] },
-  { name: 'OBV', label: 'OBV 能量潮', isStack: false, defaults: [30], paramLabels: ['MA周期'] },
-  { name: 'BIAS', label: 'BIAS 乖离率', isStack: false, defaults: [6, 12, 24], paramLabels: ['周期1', '周期2', '周期3'] },
-  { name: 'BRAR', label: 'BRAR 情绪指标', isStack: false, defaults: [26], paramLabels: ['周期'] },
-  { name: 'CR', label: 'CR 能量指标', isStack: false, defaults: [26, 10, 20, 40, 60], paramLabels: ['周期', 'MA1', 'MA2', 'MA3', 'MA4'] },
-  { name: 'PSY', label: 'PSY 心理线', isStack: false, defaults: [12, 6], paramLabels: ['周期', 'MA周期'] },
-  { name: 'MTM', label: 'MTM 动量指标', isStack: false, defaults: [12, 6], paramLabels: ['周期', 'MA周期'] },
-  { name: 'ROC', label: 'ROC 变动率', isStack: false, defaults: [12, 6], paramLabels: ['周期', 'MA周期'] },
-  { name: 'TRIX', label: 'TRIX 三重指数', isStack: false, defaults: [12, 9], paramLabels: ['周期', 'MA周期'] },
-  { name: 'DMA', label: 'DMA 平均线差', isStack: false, defaults: [10, 50, 10], paramLabels: ['短期', '长期', 'M周期'] },
-  { name: 'EMV', label: 'EMV 简易波动', isStack: false, defaults: [14, 9], paramLabels: ['周期', 'MA周期'] },
-  { name: 'VR', label: 'VR 成交量比率', isStack: false, defaults: [26, 6], paramLabels: ['周期', 'MA周期'] },
-  { name: 'AO', label: 'AO 动量震荡', isStack: false, defaults: [5, 34], paramLabels: ['短期', '长期'] },
-  { name: 'SMA', label: 'SMA 加权移动平均', isStack: false, defaults: [12, 2], paramLabels: ['周期', '权重'] },
-  { name: 'AVP', label: 'AVP 均价', isStack: false, defaults: [], paramLabels: [] },
-  { name: 'PVT', label: 'PVT 价量趋势', isStack: false, defaults: [], paramLabels: [] },
-]
-
-export type IndicatorSettings = Record<string, IndicatorSetting>
-
-const INDICATORS_KEY = 'chart-indicator-settings-v2'
-
-function defaultIndicatorSettings(): IndicatorSettings {
-  const base: IndicatorSettings = {}
-  for (const it of INDICATOR_CATALOG) {
-    // 默认开启 EMA（与后端趋势判断周期一致）和 VOL
-    base[it.name] = {
-      enabled: it.name === 'EMA' || it.name === 'VOL',
-      params: [...it.defaults],
-    }
-  }
-  return base
-}
-
-function loadIndicatorSettings(): IndicatorSettings {
-  const base = defaultIndicatorSettings()
+function loadIndicators(): IndicatorState {
   try {
     const raw = localStorage.getItem(INDICATORS_KEY)
-    if (raw) {
-      const saved = JSON.parse(raw)
-      for (const it of INDICATOR_CATALOG) {
-        const s = saved[it.name]
-        if (!s) continue
-        if (typeof s.enabled === 'boolean') base[it.name].enabled = s.enabled
-        // 参数个数与目录一致才接受，避免旧格式残留
-        if (
-          Array.isArray(s.params) &&
-          s.params.length === it.defaults.length &&
-          s.params.every((v: unknown) => typeof v === 'number' && Number.isFinite(v))
-        ) {
-          base[it.name].params = s.params
-        }
-      }
-    }
+    if (raw) return { ...DEFAULT_INDICATORS, ...JSON.parse(raw) }
   } catch {
     /* 忽略 */
   }
-  return base
+  return { ...DEFAULT_INDICATORS }
 }
 
 interface ScanState {
@@ -139,10 +83,9 @@ interface ScanState {
   // 图表涨跌配色（全局切换，localStorage 持久化）
   colorScheme: ColorScheme
   setColorScheme: (scheme: ColorScheme) => void
-  // 图表技术指标（klinecharts 内置指标，开关 + 参数，localStorage 持久化）
-  indicatorSettings: IndicatorSettings
-  toggleIndicator: (name: string) => void
-  setIndicatorParams: (name: string, params: number[]) => void
+  // 图表技术指标开关（全局，localStorage 持久化）
+  indicators: IndicatorState
+  toggleIndicator: (key: IndicatorKey) => void
 }
 
 // 每行的轮询计时器：scanResultId -> timer
@@ -396,23 +339,10 @@ export const useScanStore = create<ScanState>((set, get) => ({
   },
 
   // ===== 图表技术指标 =====
-  indicatorSettings: loadIndicatorSettings(),
-  toggleIndicator: (name) => {
-    const cur = get().indicatorSettings
-    if (!cur[name]) return
-    const next = { ...cur, [name]: { ...cur[name], enabled: !cur[name].enabled } }
-    set({ indicatorSettings: next })
-    try {
-      localStorage.setItem(INDICATORS_KEY, JSON.stringify(next))
-    } catch {
-      /* 隐私模式等场景下忽略 */
-    }
-  },
-  setIndicatorParams: (name, params) => {
-    const cur = get().indicatorSettings
-    if (!cur[name]) return
-    const next = { ...cur, [name]: { ...cur[name], params } }
-    set({ indicatorSettings: next })
+  indicators: loadIndicators(),
+  toggleIndicator: (key) => {
+    const next = { ...get().indicators, [key]: !get().indicators[key] }
+    set({ indicators: next })
     try {
       localStorage.setItem(INDICATORS_KEY, JSON.stringify(next))
     } catch {
