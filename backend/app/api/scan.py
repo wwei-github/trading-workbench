@@ -28,6 +28,7 @@ from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services.scanner import classify_volume
 from app.services.ai_analyzer import analyze_coin
 from app.services.skill_library import list_skills
+from app.services.strategy import recent_swings
 from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
@@ -490,7 +491,21 @@ def get_klines(symbol: str, limit: int = Query(100, ge=1, le=500), db: Session =
             "close": float(k[4]),
             "volume": float(k[5]),
         })
-    return {"symbol": symbol, "interval": cfg.kline_interval, "klines": result}
+    # 近期摆动点（图表标注用，各 5 个；bars_ago 换算回时间戳）
+    sw = recent_swings(klines, order=cfg.swing_order, n=5)
+    n_bars = len(klines)
+    swings = {
+        kind: [
+            {
+                "time": int(klines[n_bars - 1 - it["bars_ago"]][0]),
+                "price": it["price"],
+                "label": it["label"],
+            }
+            for it in sw[kind]
+        ]
+        for kind in ("highs", "lows")
+    }
+    return {"symbol": symbol, "interval": cfg.kline_interval, "klines": result, "swings": swings}
 
 
 # ===== 手动搜索 AI 分析 =====
@@ -529,6 +544,8 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         "volume_type": volume_type,
         "volume": vol,
         "volume_24h": volume_24h,
+        # 近期摆动结构（HH/LH/HL/LL），与图表标注同源
+        "recent_swings": recent_swings(klines, order=cfg.swing_order, n=2),
     }
 
     strategy_prompt = (

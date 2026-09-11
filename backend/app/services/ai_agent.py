@@ -408,6 +408,24 @@ def _build_user_msg(
             f"  {POSITION_LABEL_MAP.get(lv.get('kind'), lv.get('kind'))}: {lv['price']:.6g} "
             f"({role}, 触及{lv.get('touches', 1)}次)"
         )
+    # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点）
+    sw = signal.get("recent_swings") or {}
+    swings_section = ""
+    if sw.get("highs") or sw.get("lows"):
+        sw_lines = ["近期摆动结构(收盘价摆动点,新→旧):"]
+        if sw.get("highs"):
+            sw_lines.append(
+                "  高点: " + ", ".join(
+                    f"{h['label']} {h['price']:.6g}（{h['bars_ago']}根前）" for h in sw["highs"]
+                )
+            )
+        if sw.get("lows"):
+            sw_lines.append(
+                "  低点: " + ", ".join(
+                    f"{lv['label']} {lv['price']:.6g}（{lv['bars_ago']}根前）" for lv in sw["lows"]
+                )
+            )
+        swings_section = "\n".join(sw_lines) + "\n"
     msg = (
         f"币种: {signal['symbol']}\n"
         f"信号类型: {signal['signal_type']}\n"
@@ -418,6 +436,7 @@ def _build_user_msg(
         f"信号强度: {signal.get('strength', '—')}\n"
         f"ATR(14): {atr:.6g}\n"
         + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
+        + swings_section
         + "关键位（锚点参考，价格程序可换算）:\n" + "\n".join(levels) + "\n"
         + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
     )

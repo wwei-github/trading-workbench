@@ -32,6 +32,7 @@ from app.services.strategy.types import (
 __all__ = [
     "detect_all_signals",
     "detect_any_signal",
+    "recent_swings",
     "GOLDEN_12",
     "LABEL_MAP",
 ]
@@ -47,6 +48,41 @@ EMA_BIAS = {
 
 # 严格筛选（用户规则）：仅认可 4 种趋势态——拐头向上/向下、纠缠、未知一律不出信号
 EMA_ALLOWED = {"bullish_align", "bearish_align", "bullish_cross", "bearish_cross"}
+
+
+def recent_swings(klines: list[list], order: int = 3, n: int = 2) -> dict:
+    """最近 n 个已确认摆动高点/低点，附 HH/LH/HL/LL 结构分类。
+
+    与 _detect 同源（收盘价摆动点，两侧各 order 根确认）。
+    返回: {"highs": [{"label","price","bars_ago"}...新→旧], "lows": [...]}
+    分类规则与 Pine 结构标签一致：高点 HH(高于前高点)/LH(低于)，无前参照为 H；
+    低点 HL(高于前低点)/LL(低于)，无前参照为 L。bars_ago 以最新一根（含未收盘）为 0。
+    """
+    closes = np.array([float(k[4]) for k in klines], dtype=float)
+    if len(closes) < 2 * order + 1:
+        return {"highs": [], "lows": []}
+    high_idx, low_idx = find_swing_points(closes, closes, order)
+    swings = merge_swings(high_idx, low_idx, closes, closes)
+    n_bars = len(klines)
+
+    def _build(seq: list[tuple[int, str, float]], kind: str) -> list[dict]:
+        out: list[dict] = []
+        for i in range(len(seq) - 1, -1, -1):  # 新 → 旧
+            if len(out) >= n:
+                break
+            idx, _, price = seq[i]
+            prev = seq[i - 1][2] if i > 0 else None
+            if kind == "H":
+                label = "H" if prev is None else ("HH" if price > prev else "LH")
+            else:
+                label = "L" if prev is None else ("HL" if price > prev else "LL")
+            out.append({"label": label, "price": price, "bars_ago": n_bars - 1 - idx})
+        return out
+
+    return {
+        "highs": _build([s for s in swings if s[1] == "H"], "H"),
+        "lows": _build([s for s in swings if s[1] == "L"], "L"),
+    }
 
 
 def detect_all_signals(klines: list[list], config: dict) -> list[dict]:

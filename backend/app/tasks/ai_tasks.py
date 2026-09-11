@@ -32,6 +32,7 @@ from app.services.ai_analyzer import analyze_with_guard
 from app.services.dual_judge import run_dual_judge
 from app.services.exchange_pool import ExchangePool
 from app.services.risk_guard import build_forced_skip, calc_atr
+from app.services.strategy import recent_swings
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +227,8 @@ def run_ai_analysis_single(
         db.close()
         db = SessionLocal()
         r = db.get(ScanResult, r.id)
+        # 近期摆动结构（HH/LH/HL/LL）随事实包给 AI，与图表标注同源
+        signal["recent_swings"] = recent_swings(klines, order=cfg.swing_order, n=2)
         # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
         # Agent 管线由模型按需调用工具自行获取
         if cfg.ai_pipeline_enabled:

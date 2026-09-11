@@ -106,6 +106,25 @@ def _build_messages(
     if ema:
         ema_summary = f"均线形态: {ema['state_label']}（{ema['detail']}）\n"
 
+    # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点，与 Agent 管线同源）
+    sw = signal.get("recent_swings") or {}
+    swings_summary = ""
+    if sw.get("highs") or sw.get("lows"):
+        sw_lines = ["近期摆动结构(收盘价摆动点,新→旧):"]
+        if sw.get("highs"):
+            sw_lines.append(
+                "  高点: " + ", ".join(
+                    f"{h['label']} {h['price']:.6g}（{h['bars_ago']}根前）" for h in sw["highs"]
+                )
+            )
+        if sw.get("lows"):
+            sw_lines.append(
+                "  低点: " + ", ".join(
+                    f"{lv['label']} {lv['price']:.6g}（{lv['bars_ago']}根前）" for lv in sw["lows"]
+                )
+            )
+        swings_summary = "\n".join(sw_lines) + "\n"
+
     # 市场环境（资金费率/恐贪/大盘）不再注入——单次调用管线无工具，模型仅凭给定数据分析
     user_prompt = (
         f"币种: {signal['symbol']}\n"
@@ -117,6 +136,7 @@ def _build_messages(
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
         f"{levels_summary}"
         f"{ema_summary}"
+        f"{swings_summary}"
         f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
     )
 

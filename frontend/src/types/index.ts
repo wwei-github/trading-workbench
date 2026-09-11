@@ -102,10 +102,17 @@ export interface Kline {
   volume: number;
 }
 
+export interface SwingPoint {
+  time: number; // ms 时间戳
+  price: number;
+  label: string; // HH / LH / H / HL / LL / L
+}
+
 export interface KlineData {
   symbol: string;
   interval: string;
   klines: Kline[];
+  swings?: { highs: SwingPoint[]; lows: SwingPoint[] };
 }
 
 export interface SystemConfig {

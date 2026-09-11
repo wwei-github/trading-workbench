@@ -4,6 +4,7 @@ import { PlusOutlined } from '@ant-design/icons'
 import {
   createChart,
   createTextWatermark,
+  createSeriesMarkers,
   CandlestickSeries,
   HistogramSeries,
   LineSeries,
@@ -13,6 +14,7 @@ import {
   type IChartApi,
   type ISeriesApi,
   type SeriesType,
+  type SeriesMarker,
   type UTCTimestamp,
   type IPriceLine,
   type MouseEventParams,
@@ -302,6 +304,33 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           })),
         )
         setError(null)
+        // 摆动结构标注（借鉴 Pine 结构标签：高点 HH/LH，低点 HL/LL，各取 5 个）
+        const sw = data.swings
+        if (sw && (sw.highs?.length || sw.lows?.length)) {
+          const fmtP = (p: number) =>
+            p < 1 ? p.toFixed(6) : p < 100 ? p.toFixed(4) : p.toFixed(2)
+          const UP = '#22ab94'
+          const DOWN = '#f23645'
+          const markers: SeriesMarker<UTCTimestamp>[] = [
+            ...sw.highs.map((s) => ({
+              time: Math.floor(s.time / 1000) as UTCTimestamp,
+              position: 'aboveBar' as const,
+              shape: 'arrowDown' as const,
+              color: s.label === 'LH' ? DOWN : UP,
+              text: `${s.label} ${fmtP(s.price)}`,
+              size: 1,
+            })),
+            ...sw.lows.map((s) => ({
+              time: Math.floor(s.time / 1000) as UTCTimestamp,
+              position: 'belowBar' as const,
+              shape: 'arrowUp' as const,
+              color: s.label === 'HL' ? UP : DOWN,
+              text: `${s.label} ${fmtP(s.price)}`,
+              size: 1,
+            })),
+          ].sort((a, b) => (a.time as number) - (b.time as number))
+          createSeriesMarkers(seriesRef.current, markers)
+        }
         // 数据加载完成后触发 AI 仓位标注重绘（等待布局完成）
         requestAnimationFrame(() => redrawFnRef.current?.())
       })
