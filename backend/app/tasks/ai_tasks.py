@@ -28,6 +28,7 @@ from app.models.scan import ScanResult, AIAnalysis
 from app.models.system_config import SystemConfig
 from app.services import market_data
 from app.services import review_memory
+from app.services import ai_progress
 from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
 from app.services.dual_judge import run_dual_judge
