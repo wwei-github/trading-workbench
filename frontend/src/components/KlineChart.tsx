@@ -141,6 +141,9 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
   >([])
   // 图例数据：null 表示未悬浮 → 显示最新一根 K 线
   const [legend, setLegend] = useState<LegendData | null>(null)
+  // 实时推送的最后一根 bar（每秒节流写入，仅供图例数字跳动；不进 candlePoints，指标 effect 不重建）
+  const [liveBar, setLiveBar] = useState<{ t: number; o: number; h: number; l: number; c: number; v: number } | null>(null)
+  const liveTickRef = useRef(0)
 
   // 将拉取到的 K 线应用到图表（初始化加载与"更新"按钮共用）
   const applyKlineData = useCallback((data: KlineData) => {
@@ -171,6 +174,8 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
       })),
     )
     setError(null)
+    // 整包数据已落图，实时图例清零，以新数据为准（下一帧推送 ≤1s 内重新填充）
+    setLiveBar(null)
     // 摆动结构标注（借鉴 Pine 结构标签：高点 HH/LH，低点 HL/LL，各取 5 个）
     const sw = data.swings
     const fmtP = (p: number) =>
@@ -230,6 +235,11 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
     if (vol) {
       const cc = CANDLE_COLORS[useScanStore.getState().colorScheme]
       vol.series.update({ time, value: bar.v, color: bar.c >= bar.o ? cc.up : cc.down })
+    }
+    // 图例逐秒节流刷新（推送 250ms/帧，全量 setState 无必要）
+    if (Date.now() - liveTickRef.current >= 1000) {
+      liveTickRef.current = Date.now()
+      setLiveBar({ t: time, o: bar.o, h: bar.h, l: bar.l, c: bar.c, v: bar.v })
     }
   }, [])
 
@@ -395,6 +405,7 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
       seriesRef.current = null
       markersApiRef.current = null
       setLegend(null)
+      setLiveBar(null)
     }
   }, [symbol, limit, refreshKey, applyKlineData])
 
@@ -740,21 +751,27 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
   }, [ai, symbol, refreshKey])
 
   // ===== 图例渲染数据：悬浮时用图例状态，否则用最新一根 K 线 =====
+  // 未悬浮时优先取实时推送的最后一根（每秒节流刷新，图例数字跟着跳）；
+  // liveBar 时间早于整包数据（手动更新后）则视为过期，回落 candlePoints
   const lastCandle = candlePoints[candlePoints.length - 1]
+  const liveShown =
+    liveBar && lastCandle && liveBar.t >= (lastCandle.time as number)
+      ? { time: liveBar.t, open: liveBar.o, high: liveBar.h, low: liveBar.l, close: liveBar.c, volume: liveBar.v }
+      : lastCandle
   const scheme = CANDLE_COLORS[colorScheme]
   const legendData: LegendData | null =
     legend ??
-    (lastCandle
+    (liveShown
       ? {
-          time: lastCandle.time as number,
-          o: lastCandle.open,
-          h: lastCandle.high,
-          l: lastCandle.low,
-          c: lastCandle.close,
-          v: lastCandle.volume,
+          time: liveShown.time as number,
+          o: liveShown.open,
+          h: liveShown.high,
+          l: liveShown.low,
+          c: liveShown.close,
+          v: liveShown.volume,
           chg:
-            lastCandle.open !== 0
-              ? ((lastCandle.close - lastCandle.open) / lastCandle.open) * 100
+            liveShown.open !== 0
+              ? ((liveShown.close - liveShown.open) / liveShown.open) * 100
               : 0,
           inds: indicatorMetaRef.current
             .filter((m) => m.name !== 'VOL')
@@ -762,7 +779,7 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
         }
       : null)
   // 悬浮时成交量取悬浮值；未悬浮时固定显示最新成交量（VOL 指标关闭则隐藏）
-  const legendVol = legend ? legend.v : lastCandle && indicatorMetaRef.current.some((m) => m.name === 'VOL') ? lastCandle.volume : null
+  const legendVol = legend ? legend.v : liveShown && indicatorMetaRef.current.some((m) => m.name === 'VOL') ? liveShown.volume : null
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 360 }}>
