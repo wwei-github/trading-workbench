@@ -531,10 +531,6 @@ export default function WatchlistPanel() {
             symbol={selectedSymbol}
             limit={500}
             refreshKey={refreshKeys[selectedSymbol] ?? 0}
-            keyLevels={
-              rows.find((r) => r.symbol === selectedSymbol)?.scan?.key_levels ??
-              undefined
-            }
           />
         )}
       </div>

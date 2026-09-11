@@ -400,7 +400,6 @@ export default function ResultTable() {
             symbol={selectedRecord.symbol}
             limit={500}
             ai={selectedAi}
-            keyLevels={selectedRecord.key_levels ?? undefined}
           />
         )}
       </div>

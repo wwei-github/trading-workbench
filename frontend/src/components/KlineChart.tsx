@@ -30,7 +30,7 @@ import {
   type IndicatorContext,
   type IndicatorResult,
 } from '../constants/indicators'
-import type { AIAnalysis, Kline, KeyLevel } from '../types'
+import type { AIAnalysis, Kline } from '../types'
 
 const { Text } = Typography
 
@@ -38,41 +38,11 @@ interface Props {
   symbol: string
   limit?: number
   ai?: AIAnalysis
-  keyLevels?: KeyLevel[]
   // 变化时强制重新拉取 K 线（关注列表手动刷新用）
   refreshKey?: number
 }
 
 const CHART_HEIGHT = 560 // 容器无高度时的兜底值
-
-// 关键位 kind → 中文标签（图表线条/勾选开关共用）
-const KIND_LABEL: Record<string, string> = {
-  prev_high: '前高',
-  prev_low: '前低',
-  support: '支撑',
-  resistance: '压力',
-  range_top: '区间顶',
-  range_bottom: '区间底',
-}
-
-// 每个角色（支撑/压力）最多显示的关键位条数：只画距当前价最近的
-const MAX_LINES_PER_ROLE = 2
-
-// 关键位默认只显示前高/前低，其余类型默认隐藏（工具栏药丸可随时打开）
-const DEFAULT_VISIBLE_KINDS = new Set(['prev_high', 'prev_low'])
-const defaultHiddenKinds = () =>
-  new Set(Object.keys(KIND_LABEL).filter((k) => !DEFAULT_VISIBLE_KINDS.has(k)))
-
-// 关键位类型语义色：开关按钮圆点与图表线条颜色同源（支撑/压力保持红绿语义，
-// 前高/前低/区间顶/区间底各配独立色相，便于一眼区分）
-const KIND_COLORS: Record<string, string> = {
-  prev_high: '#ff9800',
-  prev_low: '#00bcd4',
-  support: '#26a69a',
-  resistance: '#ef5350',
-  range_top: '#f0b90b',
-  range_bottom: '#b39ddb',
-}
 
 // 涨跌配色方案：红涨绿跌（国内习惯，默认）/ 绿涨红跌（国际习惯）
 // 仅作用于 K 线实体；关键位/AI 仓位线保持语义色不变
@@ -134,7 +104,7 @@ interface LegendData {
   inds: LegendIndicator[]
 }
 
-export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refreshKey = 0 }: Props) {
+export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: Props) {
   // 全局涨跌配色 / 技术指标（store 共享，切换后所有图表同步生效）
   const colorScheme = useScanStore((s) => s.colorScheme)
   const setColorScheme = useScanStore((s) => s.setColorScheme)
@@ -146,7 +116,6 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const priceLinesRef = useRef<IPriceLine[]>([])
-  const keyLineLinesRef = useRef<IPriceLine[]>([])
   // 技术指标 series + 图例元信息（目录驱动），effect 重建时统一清理
   const indicatorSeriesRef = useRef<ISeriesApi<SeriesType>[]>([])
   const indicatorMetaRef = useRef<
@@ -154,10 +123,6 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
   >([])
   const redrawFnRef = useRef<(() => void) | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // K 线最新收盘价（作为"当前价"，用于挑选最近的关键位）
-  const [lastClose, setLastClose] = useState<number | null>(null)
-  // 隐藏的关键位类型（默认仅显示前高/前低，其余关闭）
-  const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(defaultHiddenKinds)
   // 已加载的 K 线（完整 OHLCV），供指标计算与标注使用
   const [candlePoints, setCandlePoints] = useState<
     { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }[]
@@ -291,7 +256,6 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
         // 默认显示最近约 130 根（更易读），往左滚动可看全量历史
         const from = Math.max(0, candleData.length - 130)
         chart.timeScale().setVisibleLogicalRange({ from, to: candleData.length + 4 })
-        setLastClose(candleData[candleData.length - 1]?.close ?? null)
         // 直接从原始数据取完整 OHLCV（candleData 是给 series 用的精简结构）
         setCandlePoints(
           data.klines.map((k: Kline) => ({
@@ -374,71 +338,6 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
       wickDownColor: c.down,
     })
   }, [colorScheme])
-
-  // 切换币种时恢复关键位默认开关状态（仅前高/前低显示），避免上个币种的开关选择残留
-  useEffect(() => {
-    setHiddenKinds(defaultHiddenKinds())
-  }, [symbol])
-
-  // 绘制关键位水平线：只画距当前价最近的 N 条支撑 + N 条压力，可按类型勾选隐藏
-  useEffect(() => {
-    const series = seriesRef.current
-    if (!series) return
-
-    // 清除旧关键位线
-    keyLineLinesRef.current.forEach((l) => {
-      try {
-        series.removePriceLine(l)
-      } catch {
-        /* series 已销毁 */
-      }
-    })
-    keyLineLinesRef.current = []
-
-    if (!keyLevels || keyLevels.length === 0) return
-    // K 线未加载完成时先不画，加载后 lastClose 变化会重跑本 effect
-    if (lastClose == null) return
-
-    // 按角色取距当前价最近的 N 条
-    const pickNearest = (role: 'support' | 'resistance') =>
-      keyLevels
-        .filter((lv) => lv.role === role)
-        .sort(
-          (a, b) => Math.abs(a.price - lastClose) - Math.abs(b.price - lastClose),
-        )
-        .slice(0, MAX_LINES_PER_ROLE)
-
-    const nearest = [
-      ...pickNearest('support'),
-      ...pickNearest('resistance'),
-    ].filter((lv) => !hiddenKinds.has(lv.kind))
-
-    for (const lv of nearest) {
-      const line = series.createPriceLine({
-        price: lv.price,
-        color: KIND_COLORS[lv.kind] ?? (lv.role === 'support' ? '#26a69a' : '#ef5350'),
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: KIND_LABEL[lv.kind] || lv.kind,
-      })
-      keyLineLinesRef.current.push(line)
-    }
-
-    return () => {
-      const s = seriesRef.current
-      if (s) {
-        keyLineLinesRef.current.forEach((l) => {
-          try {
-            s.removePriceLine(l)
-          } catch {
-            /* series 已销毁 */
-          }
-        })
-      }
-      keyLineLinesRef.current = []
-    }
-  }, [keyLevels, hiddenKinds, lastClose, symbol, limit])
 
   // 渲染技术指标：目录驱动（indicatorts 计算库 + 通用渲染层），无手写指标数学
   // 主图叠加（pane 0）/ 副图（按目录顺序自动分配 pane 1,2,3…）
@@ -804,7 +703,7 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
           gap: 4,
           maxWidth: 'calc(100% - 16px)',
         }}>
-        {/* 工具栏：指标选择 + 关键位类型开关 + 涨跌配色切换 */}
+        {/* 工具栏：指标选择 + 涨跌配色切换 */}
         <div
           style={{
             ...GLASS,
@@ -880,56 +779,6 @@ export default function KlineChart({ symbol, limit = 500, ai, keyLevels, refresh
               指标
             </Button>
           </Dropdown>
-          {keyLevels && keyLevels.length > 0 &&
-            [...new Set(keyLevels.map((lv) => lv.kind))].map((kind) => {
-              const visible = !hiddenKinds.has(kind)
-              const color = KIND_COLORS[kind] ?? '#9aa3b2'
-              return (
-                <span
-                  key={kind}
-                  onClick={() =>
-                    setHiddenKinds((prev) => {
-                      const next = new Set(prev)
-                      if (visible) next.add(kind)
-                      else next.delete(kind)
-                      return next
-                    })
-                  }
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 5,
-                    fontSize: 11,
-                    lineHeight: '16px',
-                    padding: '2px 9px',
-                    borderRadius: 999,
-                    cursor: 'pointer',
-                    userSelect: 'none',
-                    transition: 'all 0.2s',
-                    ...(visible
-                      ? {
-                          color: '#fff',
-                          background: `${color}2b`,
-                          border: `1px solid ${color}99`,
-                          boxShadow: `0 0 6px ${color}33`,
-                        }
-                      : { color: '#6b7385', background: 'transparent', border: '1px dashed #3a3f4d' }),
-                  }}>
-                  <span
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      flexShrink: 0,
-                      background: visible ? color : '#4a5164',
-                      boxShadow: visible ? `0 0 4px ${color}` : 'none',
-                      transition: 'all 0.2s',
-                    }}
-                  />
-                  {KIND_LABEL[kind] || kind}
-                </span>
-              )
-            })}
           {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效）：
               药丸形分段控件，选中项带涨跌语义色底色，圆点直观示意红绿顺序 */}
           <div
