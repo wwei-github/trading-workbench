@@ -62,17 +62,17 @@ def list_scans(
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    # 仅保留最近 24 小时内的扫描记录
+    # 仅保留最近 24 小时内的扫描记录（关注列表手动刷新不进历史）
     cutoff = datetime.utcnow() - timedelta(hours=24)
     total = db.execute(
         select(func.count())
         .select_from(ScanRecord)
-        .where(ScanRecord.started_at >= cutoff)
+        .where(ScanRecord.started_at >= cutoff, ScanRecord.scan_type != "watchlist")
     ).scalar_one()
     items = (
         db.execute(
             select(ScanRecord)
-            .where(ScanRecord.started_at >= cutoff)
+            .where(ScanRecord.started_at >= cutoff, ScanRecord.scan_type != "watchlist")
             .order_by(desc(ScanRecord.started_at))
             .offset((page - 1) * page_size)
             .limit(page_size)
@@ -102,7 +102,10 @@ def latest_scan_results(
 ):
     latest = db.execute(
         select(ScanRecord)
-        .where(ScanRecord.status == "completed")
+        .where(
+            ScanRecord.status == "completed",
+            ScanRecord.scan_type != "watchlist",  # 关注列表手动刷新不算常规扫描
+        )
         .order_by(desc(ScanRecord.finished_at))
         .limit(1)
     ).scalars().first()
@@ -141,7 +144,10 @@ def scan_results(
 @router.get("/status", response_model=ScanStatusResponse)
 def scan_status(db: Session = Depends(get_db)):
     last_scan = db.execute(
-        select(ScanRecord).order_by(desc(ScanRecord.started_at)).limit(1)
+        select(ScanRecord)
+        .where(ScanRecord.scan_type != "watchlist")  # 关注列表手动刷新不算常规扫描
+        .order_by(desc(ScanRecord.started_at))
+        .limit(1)
     ).scalars().first()
     is_scanning = (
         db.execute(

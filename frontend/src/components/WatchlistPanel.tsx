@@ -74,6 +74,8 @@ export default function WatchlistPanel() {
   const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
   // 每币种的图表重拉计数（刷新成功后 +1，触发 KlineChart 重新拉数据）
   const [refreshKeys, setRefreshKeys] = useState<Record<string, number>>({});
+  // 手动刷新重跑信号判定后覆盖显示的最新信号（优先级高于全量扫描 results）
+  const [refreshedScans, setRefreshedScans] = useState<Record<string, ScanResult>>({});
 
   // ===== AI 分析（按币种管理，与扫描结果行展开布局一致） =====
   const aiEnabled = !!aiConfig?.ai_analysis_enabled;
@@ -114,16 +116,21 @@ export default function WatchlistPanel() {
     };
   }, []);
 
-  // 组装行数据：行情 + 信号信息（当前扫描结果优先，其次后端嵌入的最近扫描结果）
+  // 组装行数据：行情 + 信号信息
+  // 优先级：手动刷新重跑的信号 > 当前全量扫描结果 > 后端嵌入的最近扫描结果
   const rows: WatchRow[] = useMemo(
     () =>
       watchlist.map((w) => ({
         ...w,
         price: quotes[w.symbol]?.price ?? null,
         volume_24h: quotes[w.symbol]?.volume_24h ?? null,
-        scan: results.find((r) => r.symbol === w.symbol) || w.latest_scan || null,
+        scan:
+          refreshedScans[w.symbol] ||
+          results.find((r) => r.symbol === w.symbol) ||
+          w.latest_scan ||
+          null,
       })),
-    [watchlist, quotes, results],
+    [watchlist, quotes, results, refreshedScans],
   );
 
   const handleDelete = async (symbol: string) => {
@@ -144,16 +151,26 @@ export default function WatchlistPanel() {
       .catch(() => message.error("复制失败"));
   };
 
-  // ===== K 线手动刷新：强制拉取最新 K 线写回缓存 =====
+  // ===== K 线手动刷新：强制拉最新 K 线 + 重跑信号判定 =====
   const handleRefresh = async (e: React.MouseEvent, symbol: string) => {
     e.stopPropagation();
     setRefreshing((prev) => ({ ...prev, [symbol]: true }));
     try {
       const d = await scanApi.watchlist.refresh(symbol);
       setRefreshKeys((prev) => ({ ...prev, [symbol]: (prev[symbol] ?? 0) + 1 }));
-      message.success(`${symbol} K线已更新（${d.kline_count}根）`);
+      if (d.hit && d.latest_scan) {
+        // 重跑命中：覆盖显示最新信号（类型/位置/EMA/形态随刷新更新）
+        setRefreshedScans((prev) => ({ ...prev, [symbol]: d.latest_scan! }));
+        const st = SIGNAL_TYPE_MAP[d.latest_scan.signal_type];
+        message.success(
+          `${symbol} 已更新：命中「${st?.label ?? d.latest_scan.signal_type}」（K线${d.kline_count}根）`,
+        );
+      } else {
+        // 未命中：不动原有命中记录，是否删除由用户决定
+        message.info(`${symbol} 已更新：当前未命中信号（保留原显示，K线${d.kline_count}根）`);
+      }
     } catch (err: any) {
-      message.error(err?.response?.data?.detail || "K线刷新失败");
+      message.error(err?.response?.data?.detail || "刷新失败");
     } finally {
       setRefreshing((prev) => ({ ...prev, [symbol]: false }));
     }

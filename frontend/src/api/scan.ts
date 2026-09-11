@@ -107,12 +107,18 @@ export const scanApi = {
       api.post<WatchlistItem>('/watchlist', { symbol }).then((r) => r.data),
     remove: (symbol: string) =>
       api.delete<{ ok: boolean; symbol: string }>(`/watchlist/${symbol}`).then((r) => r.data),
-    // 手动刷新：强制拉取最新 K 线并写回缓存，返回刷新时间
+    // 手动刷新：强制拉最新 K 线并重跑信号判定；命中返回最新信号（未命中保留原显示）
     refresh: (symbol: string) =>
       api
-        .post<{ symbol: string; updated_at: string; kline_count: number; last_close: number | null }>(
-          `/watchlist/${symbol}/refresh`,
-        )
+        .post<{
+          symbol: string;
+          updated_at: string;
+          kline_count: number;
+          last_close: number | null;
+          hit: boolean;
+          signal_count: number;
+          latest_scan: ScanResult | null;
+        }>(`/watchlist/${symbol}/refresh`)
         .then((r) => r.data),
   },
 }
