@@ -3,6 +3,7 @@
 - Schema 强约束（Pydantic）
 - 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR]，价格距离不设百分比红线）、
   止损须越过最近 N 根已收盘K线极值（多单严格低于最低点，空单严格高于最高点）；
+  止盈须锚定前方结构位（多单=上方高点/关键位，空单=下方低点/关键位，留余地；TP2 更远一档）；
   仓位公式保证触止损账户亏损 ≤ 风险预算（RISK_BUDGET_PCT=3%，仓位维度的"3%止损"）
 - 仓位公式化（固定亏损法）：仓位 = 风险预算 ÷ 止损距离，触止损恰好亏 RISK_BUDGET_PCT（3%），AI 不自报仓位
 - 返回具体违规明细，供"校验失败带错误反馈重试"
@@ -13,6 +14,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ValidationError
 
 from app.config import settings
+from app.services.strategy import recent_swings
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,40 @@ def calc_atr(klines: list, period: int = 14) -> Optional[float]:
         prev_c = float(closed[i - 1][4])
         trs.append(max(h - l, abs(h - prev_c), abs(l - prev_c)))
     return sum(trs) / len(trs)
+
+
+_TP_ANCHOR_TOL = 0.015   # 止盈锚定容差：距结构位 1.5% 以内视为锚定（留余地）
+_TP_OVERSHOOT = 0.002    # 允许略越过结构位的幅度（防止贪心把止盈挂到结构位外过远）
+
+
+def _structural_candidates(signal: dict, klines: list, direction: str, entry: float) -> list[float]:
+    """入场方向前方的结构位候选：摆动高/低点 + 关键位价格。
+
+    多单止盈看上方（前高/压力类关键位），空单看下方（前低/支撑类关键位）。
+    多单返回升序，空单返回降序。摆动 order 用全局 SWING_ORDER（与 fact pack 近似同源）。
+    """
+    swings = recent_swings(klines, order=settings.SWING_ORDER, n=50)
+    prices = [float(s["price"]) for s in (swings["highs"] if direction == "long" else swings["lows"])]
+    for lv in (signal.get("key_levels") or []):
+        try:
+            prices.append(float(lv.get("price") or 0))
+        except (TypeError, ValueError):
+            continue
+    if direction == "long":
+        return sorted({p for p in prices if p > entry})
+    return sorted({p for p in prices if p < entry}, reverse=True)
+
+
+def _anchored(tp: float, cands: list[float], direction: str) -> Optional[float]:
+    """TP 是否锚定某结构位（留余地方向随多空：多单略低于高位、空单略高于低位），返回匹配位"""
+    for c in cands:
+        if direction == "long":
+            if c * (1 - _TP_ANCHOR_TOL) <= tp <= c * (1 + _TP_OVERSHOOT):
+                return c
+        else:
+            if c * (1 - _TP_OVERSHOOT) <= tp <= c * (1 + _TP_ANCHOR_TOL):
+                return c
+    return None
 
 
 def validate_decision(
@@ -172,6 +208,29 @@ def validate_decision(
             violations.append(
                 f"止损距离 {stop_dist:.6g} > 3×ATR({3*atr:.6g})，过远盈亏比崩塌"
             )
+
+    # ── 止盈锚定校验：TP1 必须是前方第一个（或因盈亏比退一档的）结构位，TP2 更远一档 ──
+    # 多单锚定上方的高点/关键位，空单锚定下方的低点/关键位；留余地 = 距结构位容差内、
+    # 不得显著越过。违规时列出可用结构位，供 AI 回炉重试时直接选位
+    if d.direction in ("long", "short") and d.take_profit_1 > 0:
+        side = "上方" if d.direction == "long" else "下方"
+        cands = _structural_candidates(signal, klines, d.direction, d.entry_price)
+        c1 = _anchored(d.take_profit_1, cands, d.direction)
+        if c1 is None:
+            near = ", ".join(f"{c:g}" for c in cands[:5]) or "无"
+            violations.append(
+                f"止盈一 {d.take_profit_1} 未锚定结构位：必须是前一个高点/低点或关键位并留余地"
+                f"（{'做多看上方高点/关键位' if d.direction == 'long' else '做空看下方低点/关键位'}）。"
+                f"可用结构位（{side}）：{near}"
+            )
+        if d.take_profit_2 > 0:
+            base = c1 if c1 is not None else d.take_profit_1
+            further = [c for c in cands if (c > base if d.direction == "long" else c < base)]
+            if _anchored(d.take_profit_2, further, d.direction) is None:
+                near = ", ".join(f"{c:g}" for c in further[:5]) or "无"
+                violations.append(
+                    f"止盈二 {d.take_profit_2} 未锚定比止盈一更远的一档结构位。可用结构位（{side}）：{near}"
+                )
 
     if stop_dist > 0:
         rr = abs(d.take_profit_1 - d.entry_price) / stop_dist
