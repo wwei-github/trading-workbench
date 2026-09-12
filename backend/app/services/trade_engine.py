@@ -172,6 +172,16 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
             if abs(price - entry_ai) / entry_ai > 0.01:
                 logger.info("开仓作废 %s：现价偏离 AI 入场价超 1%%", symbol)
                 continue
+            # 盈亏比按开仓时现价复验：分析到开仓之间价格漂移会改变实际赔率
+            # （多单现价抬高→风险距离变大、盈利空间变小），跌破铁律即作废——
+            # 防"价格已涨/跌了一截仍追单"，此时开进去的实际盈亏比远低于分析值
+            rr_open = abs(tp1 - price) / abs(price - sl)
+            if rr_open < settings.AI_RR_MIN:
+                logger.info(
+                    "开仓作废 %s：按现价复算盈亏比 %.2f < %.1f（现价 %s，入场 %s）",
+                    symbol, rr_open, settings.AI_RR_MIN, price, entry_ai,
+                )
+                continue
 
             # EMA 排列必须条件（顺势交易专属）：多单须 21>55>144 多头排列，空单须 144>55>21 空头排列
             if trade_type == "trend_follow":
