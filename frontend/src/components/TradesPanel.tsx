@@ -5,9 +5,10 @@
  * - 展开行：左右双卡片——左 AI 分析结论快照（AiAnalysisCard），右 操作历史时间线
  * - 状态筛选：胶囊按钮组（进行中 = 运行中/TP1已止盈/已保本 三态聚合，带计数徽标）
  */
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Button,
+  Descriptions,
   Empty,
   Row,
   Space,
@@ -125,28 +126,22 @@ function detailValue(k: string, v: unknown): React.ReactNode {
   return String(v)
 }
 
-// 事件详情 JSON → 两列键值网格（左灰键名 / 右深值）
+// 事件详情 JSON → Descriptions 组件（一行两项）
 function renderDetail(detail: Record<string, unknown> | null) {
   if (!detail || Object.keys(detail).length === 0) return null
   return (
-    <div
-      style={{
-        marginTop: 6,
-        paddingTop: 6,
-        borderTop: '1px dashed #f0f0f0',
-        display: 'grid',
-        gridTemplateColumns: 'auto 1fr',
-        gap: '3px 12px',
-        fontSize: 12,
-      }}
-    >
-      {Object.entries(detail).map(([k, v]) => (
-        <Fragment key={k}>
-          <span style={{ color: '#999' }}>{DETAIL_KEY_MAP[k] || k}</span>
-          <span style={{ color: '#333', wordBreak: 'break-all' }}>{detailValue(k, v)}</span>
-        </Fragment>
-      ))}
-    </div>
+    <Descriptions
+      size="small"
+      column={2}
+      style={{ marginTop: 8 }}
+      labelStyle={{ fontSize: 12, color: '#999', paddingInlineEnd: 8 }}
+      contentStyle={{ fontSize: 12, color: '#333', wordBreak: 'break-all' }}
+      items={Object.entries(detail).map(([k, v]) => ({
+        key: k,
+        label: DETAIL_KEY_MAP[k] || k,
+        children: detailValue(k, v),
+      }))}
+    />
   )
 }
 
