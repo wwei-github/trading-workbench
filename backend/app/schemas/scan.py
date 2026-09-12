@@ -190,6 +190,11 @@ class SystemConfigOut(BaseModel):
     # 自动交易（docs/06）
     max_open_trades: int = 5
 
+    # 开单策略开关（docs/06 §3）
+    strategy_trend_follow_enabled: bool = True
+    strategy_structure_break_enabled: bool = False
+    strategy_range_edge_enabled: bool = True
+
     class Config:
         from_attributes = True
 
@@ -220,6 +225,11 @@ class SystemConfigUpdate(BaseModel):
 
     # 自动交易（docs/06）
     max_open_trades: Optional[int] = None
+
+    # 开单策略开关（docs/06 §3）
+    strategy_trend_follow_enabled: Optional[bool] = None
+    strategy_structure_break_enabled: Optional[bool] = None
+    strategy_range_edge_enabled: Optional[bool] = None
 
 
 # ===== 复盘统计（docs/04 §10 P2） =====

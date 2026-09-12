@@ -123,6 +123,10 @@ export interface SystemConfig {
   strategy_prompt: string;
   kline_interval: string;
   kline_window: number;
+  // 开单策略开关（docs/06）
+  strategy_trend_follow_enabled?: boolean;
+  strategy_structure_break_enabled?: boolean;
+  strategy_range_edge_enabled?: boolean;
   breakout_threshold: number;
   r_squared_threshold: number;
   repeat_window_hours: number;

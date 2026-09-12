@@ -115,6 +115,13 @@ def _run_migrations(engine):
             ALTER TABLE system_config
               ADD COLUMN IF NOT EXISTS max_open_trades INTEGER NOT NULL DEFAULT 5
         """))
+        # 开单策略开关（默认：顺势/区间边缘开，结构破位关）
+        conn.execute(text("""
+            ALTER TABLE system_config
+              ADD COLUMN IF NOT EXISTS strategy_trend_follow_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+              ADD COLUMN IF NOT EXISTS strategy_structure_break_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+              ADD COLUMN IF NOT EXISTS strategy_range_edge_enabled BOOLEAN NOT NULL DEFAULT TRUE
+        """))
         # Feature 12: 自动交易——环境标识（测试网/正式网）与开单时 AI 结论快照
         conn.execute(text("""
             ALTER TABLE trade_records

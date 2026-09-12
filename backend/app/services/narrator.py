@@ -10,7 +10,7 @@ from typing import Optional
 from openai import OpenAI
 
 from app.config import settings
-from app.services.risk_guard import TRADE_TYPE_LABELS
+from app.services.risk_guard import LEGACY_TRADE_TYPE_LABELS, TRADE_TYPE_LABELS
 from app.services.strategy.types import POSITION_LABEL_MAP
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,8 @@ def generate_narrative(
             f"止损 {decision.get('stop_loss')}，止盈1 {decision.get('take_profit_1')}，"
             f"盈亏比 {decision.get('risk_reward_ratio')}，仓位 {decision.get('position_pct')}%",
         ]
-        tt = TRADE_TYPE_LABELS.get(decision.get("trade_type") or "")
+        tt = (TRADE_TYPE_LABELS.get(decision.get("trade_type") or "")
+              or LEGACY_TRADE_TYPE_LABELS.get(decision.get("trade_type") or ""))
         if tt:
             facts.append(f"开单类型: {tt}（叙述中体现该打法的逻辑）")
         if agent_reason:

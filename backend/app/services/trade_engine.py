@@ -141,6 +141,20 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
             logger.info("开仓跳过 %s：已有持仓", symbol)
             continue
 
+        # 开单策略开关：AI 归类类型未启用则不开仓（分析本身照常记录）
+        trade_type = a.trade_type or ""
+        type_switch = {
+            "trend_follow": cfg.strategy_trend_follow_enabled,
+            "structure_break": cfg.strategy_structure_break_enabled,
+            "range_edge": cfg.strategy_range_edge_enabled,
+        }.get(trade_type)
+        if type_switch is None:
+            logger.info("开仓跳过 %s：开单类型未知（%s）", symbol, trade_type or "无")
+            continue
+        if not type_switch:
+            logger.info("开仓跳过 %s：策略未启用（%s）", symbol, trade_type)
+            continue
+
         direction = a.direction
         entry_ai = float(a.entry_price)
         sl = float(a.stop_loss)
@@ -159,16 +173,17 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
                 logger.info("开仓作废 %s：现价偏离 AI 入场价超 1%%", symbol)
                 continue
 
-            # EMA 排列硬闸门（开单前提）：多单须 21>55>144 多头排列，空单须 144>55>21 空头排列
-            ema = analyze_ema(ExchangePool().get_klines(symbol, interval, kline_window))
-            ema_ok = ema is not None and (
-                (direction == "long" and ema["fast"] > ema["mid"] > ema["slow"])
-                or (direction == "short" and ema["fast"] < ema["mid"] < ema["slow"])
-            )
-            if not ema_ok:
-                logger.info("开仓跳过 %s：EMA 未按方向排列（%s），不满足开单前提",
-                            symbol, ema["state_label"] if ema else "K线数据不足")
-                continue
+            # EMA 排列必须条件（顺势交易专属）：多单须 21>55>144 多头排列，空单须 144>55>21 空头排列
+            if trade_type == "trend_follow":
+                ema = analyze_ema(ExchangePool().get_klines(symbol, interval, kline_window))
+                ema_ok = ema is not None and (
+                    (direction == "long" and ema["fast"] > ema["mid"] > ema["slow"])
+                    or (direction == "short" and ema["fast"] < ema["mid"] < ema["slow"])
+                )
+                if not ema_ok:
+                    logger.info("开仓跳过 %s：顺势交易 EMA 未按方向排列（%s），不满足开单前提",
+                                symbol, ema["state_label"] if ema else "K线数据不足")
+                    continue
 
             # 固定亏损仓位：基数分档 × 3% ÷ 止损距离
             stop_pct = abs(price - sl) / price

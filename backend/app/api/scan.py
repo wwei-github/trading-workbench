@@ -305,6 +305,9 @@ def get_system_config(db: Session = Depends(get_db)):
         level_merge_threshold=float(cfg.level_merge_threshold),
         fib_enabled=cfg.fib_enabled,
         max_open_trades=cfg.max_open_trades,
+        strategy_trend_follow_enabled=cfg.strategy_trend_follow_enabled,
+        strategy_structure_break_enabled=cfg.strategy_structure_break_enabled,
+        strategy_range_edge_enabled=cfg.strategy_range_edge_enabled,
     )
 
 
@@ -360,6 +363,13 @@ def update_system_config(
         if not (1 <= body.max_open_trades <= 50):
             raise HTTPException(status_code=400, detail="max_open_trades 需在 1~50 之间")
         cfg.max_open_trades = body.max_open_trades
+    # 开单策略开关
+    if body.strategy_trend_follow_enabled is not None:
+        cfg.strategy_trend_follow_enabled = body.strategy_trend_follow_enabled
+    if body.strategy_structure_break_enabled is not None:
+        cfg.strategy_structure_break_enabled = body.strategy_structure_break_enabled
+    if body.strategy_range_edge_enabled is not None:
+        cfg.strategy_range_edge_enabled = body.strategy_range_edge_enabled
 
     db.commit()
     db.refresh(cfg)
@@ -381,6 +391,9 @@ def update_system_config(
         level_merge_threshold=float(cfg.level_merge_threshold),
         fib_enabled=bool(cfg.fib_enabled),
         max_open_trades=cfg.max_open_trades,
+        strategy_trend_follow_enabled=bool(cfg.strategy_trend_follow_enabled),
+        strategy_structure_break_enabled=bool(cfg.strategy_structure_break_enabled),
+        strategy_range_edge_enabled=bool(cfg.strategy_range_edge_enabled),
     )
 
 

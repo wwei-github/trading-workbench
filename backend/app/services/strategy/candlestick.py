@@ -448,21 +448,17 @@ def detect_harami_breakout(klines: list[list], idx: int = -1) -> Optional[dict]:
 
 
 # ===== 12 金K 清单（与 docs/03-交易系统.md §6.2 对齐）=====
+# 2026-09-12 精简：去掉刺透线/孕线突破/蜻蜓/乌云盖顶/墓碑（信号质量弱或与保留形态高度重叠），
+# 保留 6 种实体结构更明确的形态。检测函数保留（历史扫描结果展示用），仅不再参与信号判定
 GOLDEN_12 = {
-    # 看涨 6 种
+    # 看涨 3 种
     "hammer",              # 锤形线
     "bullish_engulfing",   # 看涨吞没
     "morning_star",        # 启明星
-    "piercing_line",       # 刺透线
-    "bullish_harami",      # 看涨孕线突破
-    "dragonfly_doji",      # 长下影十字（蜻蜓）
-    # 看跌 6 种
+    # 看跌 3 种
     "hanging_man",         # 上吊线
     "bearish_engulfing",   # 看跌吞没
     "evening_star",        # 黄昏星
-    "dark_cloud_cover",    # 乌云盖顶
-    "bearish_harami",      # 看跌孕线突破
-    "gravestone_doji",     # 长上影十字（墓碑）
 }
 
 PATTERN_LABEL_MAP = {

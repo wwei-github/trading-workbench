@@ -25,14 +25,10 @@ _TALIB_MAP = {
     "hammer": ("CDLHAMMER", "bullish"),
     "bullish_engulfing": ("CDLENGULFING", "bullish"),
     "morning_star": ("CDLMORNINGSTAR", "bullish"),
-    "piercing_line": ("CDLPIERCING", "bullish"),
-    "dragonfly_doji": ("CDLDRAGONFLYDOJI", "bullish"),
     # 看跌
     "hanging_man": ("CDLHANGINGMAN", "bearish"),
     "bearish_engulfing": ("CDLENGULFING", "bearish"),
     "evening_star": ("CDLEVENINGSTAR", "bearish"),
-    "dark_cloud_cover": ("CDLDARKCLOUDCOVER", "bearish"),
-    "gravestone_doji": ("CDLGRAVESTONEDOJI", "bearish"),
 }
 
 _BOOST = 0.1

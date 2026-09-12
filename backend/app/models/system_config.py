@@ -38,4 +38,10 @@ class SystemConfig(Base):
     # 自动交易（docs/06）：同时在跑单子上限（页面可改）
     max_open_trades: Mapped[int] = mapped_column(Integer, default=5)
 
+    # 开单策略开关（docs/06 §3）：只影响自动开仓，不影响 AI 分析本身
+    # 2026-09-12 起开单类型为三种；structure_break（123·N字·2B 合并）默认不启用
+    strategy_trend_follow_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    strategy_structure_break_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    strategy_range_edge_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
     notes: Mapped[str] = mapped_column(String(255), default="系统运行时配置")

@@ -34,6 +34,9 @@ export default function ScanConfigPanel() {
         key_level_tolerance: aiConfig.key_level_tolerance,
         level_merge_threshold: aiConfig.level_merge_threshold,
         max_open_trades: aiConfig.max_open_trades ?? 5,
+        strategy_trend_follow_enabled: aiConfig.strategy_trend_follow_enabled ?? true,
+        strategy_structure_break_enabled: aiConfig.strategy_structure_break_enabled ?? false,
+        strategy_range_edge_enabled: aiConfig.strategy_range_edge_enabled ?? true,
       })
     }
   }, [open, aiConfig, form])
@@ -55,6 +58,10 @@ export default function ScanConfigPanel() {
         level_merge_threshold: values.level_merge_threshold,
         // 自动交易
         max_open_trades: values.max_open_trades,
+        // 开单策略开关
+        strategy_trend_follow_enabled: values.strategy_trend_follow_enabled,
+        strategy_structure_break_enabled: values.strategy_structure_break_enabled,
+        strategy_range_edge_enabled: values.strategy_range_edge_enabled,
         // P2 实验开关
         dual_judge_enabled: values.dual_judge_enabled,
       }
@@ -184,6 +191,31 @@ export default function ScanConfigPanel() {
             tooltip="自动开仓的在跑单子数量上限；每小时任务先结算再开仓，评分高的优先"
           >
             <InputNumber min={1} max={50} style={{ width: '100%' }} />
+          </Form.Item>
+
+          <Form.Item
+            label="开单策略：顺势交易"
+            name="strategy_trend_follow_enabled"
+            valuePropName="checked"
+            tooltip="趋势中顺 EMA 方向开仓；EMA 三线严格排列（多单21>55>144、空单144>55>21）是其硬前提"
+          >
+            <Switch />
+          </Form.Item>
+          <Form.Item
+            label="开单策略：区间边缘反转"
+            name="strategy_range_edge_enabled"
+            valuePropName="checked"
+            tooltip="震荡区间触及顶/底边缘且出现反转形态时反向开仓，止盈看中轨"
+          >
+            <Switch />
+          </Form.Item>
+          <Form.Item
+            label="开单策略：结构破位回踩"
+            name="strategy_structure_break_enabled"
+            valuePropName="checked"
+            tooltip="123法则·N字结构·2B法则合并打法（破位-回踩-确认）；默认关闭"
+          >
+            <Switch />
           </Form.Item>
 
           {/* AI 实验功能（P2，默认关闭） */}

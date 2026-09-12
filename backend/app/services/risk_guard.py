@@ -19,14 +19,20 @@ from app.services.strategy import recent_swings
 logger = logging.getLogger(__name__)
 
 # 开单类型（结构打法归类，docs/04 §4 Stage 3；skip 时为空）
+# 2026-09-12 起三种破位/回踩类打法（123法则·N字结构·2B法则）合并为 structure_break
 TRADE_TYPE_LABELS = {
     "trend_follow": "顺势交易",
-    "rule_123": "123法则",
-    "n_structure": "N字结构",
-    "rule_2b": "2B法则",
+    "structure_break": "结构破位回踩",
     "range_edge": "区间边缘反转",
 }
 TRADE_TYPES = tuple(TRADE_TYPE_LABELS)
+
+# 合并前的历史类型（旧分析/旧交易快照仍可能携带，仅作展示，不再接受 AI 新输出）
+LEGACY_TRADE_TYPE_LABELS = {
+    "rule_123": "123法则（已并入结构破位回踩）",
+    "n_structure": "N字结构（已并入结构破位回踩）",
+    "rule_2b": "2B法则（已并入结构破位回踩）",
+}
 
 
 class TradeDecision(BaseModel):

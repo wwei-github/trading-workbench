@@ -113,8 +113,10 @@ export const EMA_STATE_FILTERS = Object.entries(EMA_STATE_MAP).map(
 // 开单类型（结构打法归类，AI 分析输出）
 export const TRADE_TYPE_MAP: Record<string, { label: string; color: string }> = {
   trend_follow: { label: "顺势交易", color: "blue" },
-  rule_123: { label: "123法则", color: "purple" },
-  n_structure: { label: "N字结构", color: "cyan" },
-  rule_2b: { label: "2B法则", color: "geekblue" },
+  structure_break: { label: "结构破位回踩", color: "purple" },
   range_edge: { label: "区间边缘反转", color: "gold" },
+  // 合并前的历史类型（旧分析/旧交易记录展示用）
+  rule_123: { label: "123法则(已并入)", color: "purple" },
+  n_structure: { label: "N字结构(已并入)", color: "cyan" },
+  rule_2b: { label: "2B法则(已并入)", color: "geekblue" },
 };
