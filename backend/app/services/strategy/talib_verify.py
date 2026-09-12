@@ -44,8 +44,9 @@ def boost_with_talib(klines: list, results: list[dict], idx: int = -2) -> list[d
     if talib is None or not results:
         return results
 
-    pos = len(klines) + idx
-    if pos < 0 or len(klines) < 5:
+    # idx 与 detect_all_patterns 同语义（负数=倒数，正数=绝对位置），统一换算成绝对位置
+    pos = idx if idx >= 0 else len(klines) + idx
+    if pos < 0 or pos >= len(klines) or len(klines) < 5:
         return results
 
     try:

@@ -100,13 +100,26 @@ def detect_inverted_hammer(klines: list[list], idx: int = -1) -> Optional[dict]:
     return None
 
 
+# 吞没实体下限：两根实体都须达到"近期典型实体"水平——实体太短（窄幅盘整里的
+# 小实体互包）不构成有意义的吞没。基线取形态两根之前的 ENGULF_BODY_LOOKBACK 根
+# 平均实体（排除形态自身，防大实体抬高自身门槛），样本不足 ENGULF_BODY_MIN_BARS
+# 根视为历史不足、不判定
+ENGULF_BODY_LOOKBACK = 20
+ENGULF_BODY_MIN_RATIO = 1.0   # 两根实体均须 ≥ 基线均值 × 该系数
+ENGULF_BODY_MIN_BARS = 10
+
+
 def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     """吞没形态（看涨/看跌）
 
     看涨吞没：当前阳线实体完全包住前一根阴线实体
     看跌吞没：当前阴线实体完全包住前一根阳线实体
+    两根 K 线实体都必须比较长（≥ 近 20 根平均实体），
+    实体太短的小实体互包不算吞没。
     """
-    if len(klines) < abs(idx) + 1:
+    # idx 与其他检测器同语义（负数=倒数，正数=绝对位置），统一换算成绝对位置
+    pos = idx if idx >= 0 else len(klines) + idx
+    if pos < 1 + ENGULF_BODY_MIN_BARS:
         return None
 
     k_cur = klines[idx]
@@ -118,6 +131,16 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     body2 = _body(o2, c2)
 
     if body1 < 1e-12 or body2 < 1e-12:
+        return None
+
+    base = [
+        _body(float(k[1]), float(k[4]))
+        for k in klines[max(0, pos - 1 - ENGULF_BODY_LOOKBACK): pos - 1]
+    ]
+    if len(base) < ENGULF_BODY_MIN_BARS:
+        return None
+    avg_body = sum(base) / len(base)
+    if avg_body <= 0 or body1 < avg_body * ENGULF_BODY_MIN_RATIO or body2 < avg_body * ENGULF_BODY_MIN_RATIO:
         return None
 
     # 看涨吞没：前阴后阳，阳实体包住阴实体
