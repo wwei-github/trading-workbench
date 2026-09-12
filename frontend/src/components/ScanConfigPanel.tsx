@@ -37,6 +37,7 @@ export default function ScanConfigPanel() {
         strategy_trend_follow_enabled: aiConfig.strategy_trend_follow_enabled ?? true,
         strategy_structure_break_enabled: aiConfig.strategy_structure_break_enabled ?? false,
         strategy_range_edge_enabled: aiConfig.strategy_range_edge_enabled ?? true,
+        dual_judge_enabled: aiConfig.dual_judge_enabled ?? true,
       })
     }
   }, [open, aiConfig, form])

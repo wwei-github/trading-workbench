@@ -8,8 +8,7 @@
 约束（安全边界）：
 - 只对 suggest 决策生效，且只能 keep 或 veto（veto=转 forced skip），不能改价格/方向——
   裁判无权生成新交易参数，杜绝"评委幻觉价位"绕过 Risk Guard
-- 开关 system_config.dual_judge_enabled（默认关）：辩论多花 3 次 LLM 调用，
-  建议复盘数据校准后再开启
+- 开关 system_config.dual_judge_enabled（默认开）：辩论多花 3 次 LLM 调用
 """
 import json
 import logging
