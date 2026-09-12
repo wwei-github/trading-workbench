@@ -1,8 +1,9 @@
 """Risk Guard：AI 决策的确定性校验器（docs/04 §4 Stage 4 / §5.6）
 
 - Schema 强约束（Pydantic）
-- 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR] + ≤3% 绝对红线）、
-  止损须越过最近 N 根已收盘K线极值（多单严格低于最低点，空单严格高于最高点）
+- 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR]，价格距离不设百分比红线）、
+  止损须越过最近 N 根已收盘K线极值（多单严格低于最低点，空单严格高于最高点）；
+  仓位公式保证触止损账户亏损 ≤ 风险预算（RISK_BUDGET_PCT=3%，仓位维度的"3%止损"）
 - 仓位公式化：AI 不自报仓位，由风险预算与止损距离计算
 - 返回具体违规明细，供"校验失败带错误反馈重试"
 """
@@ -159,10 +160,8 @@ def validate_decision(
 
     stop_dist = abs(d.entry_price - d.stop_loss)
     stop_pct = stop_dist / d.entry_price if d.entry_price else 0
-    if stop_pct > settings.RISK_STOP_MAX_PCT:
-        violations.append(
-            f"止损距离 {stop_pct*100:.2f}% 超过 {settings.RISK_STOP_MAX_PCT*100:.0f}% 绝对红线"
-        )
+    # 注意：3% 属仓位维度（单笔触止损的账户亏损预算，由下方仓位公式保证），
+    # 不对止损价格距离设百分比红线；止损宽度由结构位决定，仅用 ATR 上下界约束合理性
     atr = calc_atr(klines)
     if atr and d.entry_price:
         if stop_dist < 0.3 * atr:

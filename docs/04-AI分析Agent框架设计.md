@@ -227,7 +227,7 @@ class TradeDecision(BaseModel):
 - 方向-价格一致性：long 要求 `stop < entry < tp1 < tp2`；short 反之
 - 锚点存在性：`*_level_ref` 必须在关键位列表中
 - **盈亏比复算**：`rr = |tp1-entry| / |entry-stop|`，要求 ≥**1.5** 才允许 suggest（对齐交易系统六问铁律；AI 声称值一律不信，用复算值落库）
-- 止损合理性：`|entry-stop|` ∈ [0.3×ATR, 3×ATR]（太近易扫损、太远盈亏比崩）；且绝对红线 `|entry-stop|/entry ≤ 3%`（交易系统统一止损，5% 为绝对上限）
+- 止损合理性：`|entry-stop|` ∈ [0.3×ATR, 3×ATR]（太近易扫损、太远盈亏比崩）；价格距离不设百分比红线——"3%止损"属仓位维度（触发止损时的账户亏损预算，由下方仓位公式保证）；止损还须越过最近 N 根已收盘K线极值（多单严格低于最低点，空单严格高于最高点）
 - 仓位公式化：`position_pct = clamp(风险预算% / (|entry-stop|/entry), 0.5, 10)` —— AI 不再自报仓位
 - skip 一致性：suggest 时 `skip_reason` 必须为空，反之亦然
 
@@ -371,7 +371,7 @@ return FORCE_SKIP                              # 步数耗尽 保险③
 - 方向-价格一致性（long：`stop < entry < tp1 < tp2`；short 反之）
 - 锚点存在性（所有 `*_level_ref` 必须在 get_key_levels 返回中）
 - 盈亏比复算 ≥ 1.5（对齐交易系统铁律；AI 声称值不信，用复算值落库）
-- 止损距离 ∈ [0.3, 3]×ATR，且绝对红线 ≤ 3%
+- 止损距离 ∈ [0.3, 3]×ATR（价格距离不设百分比红线；3% 为仓位维度的单笔亏损预算 RISK_BUDGET_PCT）
 - 仓位公式化（AI 不自报）
 
 不合格时，**把"违规第 2 条：做多止损高于入场价"作为工具返回值送回循环**——模型亲眼看到错在哪再改，比外层 if/else 硬重试效果好得多。这是 ReAct 循环里天然的"反思"（Reflection）。
