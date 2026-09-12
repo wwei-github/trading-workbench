@@ -4,6 +4,8 @@
 - 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR]，价格距离不设百分比红线）、
   止损须越过最近 N 根已收盘K线极值（多单严格低于最低点，空单严格高于最高点）；
   止盈须锚定前方结构位（多单=上方高点/关键位，空单=下方低点/关键位，留余地；TP2 更远一档）；
+  方向铁律（docs/03 §8）：只在支撑位做多、只在压力位做空——入场价必须落在对应角色关键位
+  区域内（±0.25×ATR 容差）；例外：放量突破 breakout / 手动搜索 manual_search / 无关键位；
   仓位公式保证触止损账户亏损 ≤ 风险预算（RISK_BUDGET_PCT=3%，仓位维度的"3%止损"）
 - 仓位公式化（固定亏损法）：仓位 = 风险预算 ÷ 止损距离，触止损恰好亏 RISK_BUDGET_PCT（3%），AI 不自报仓位
 - 返回具体违规明细，供"校验失败带错误反馈重试"
@@ -168,6 +170,40 @@ def validate_decision(
         )
     # tp2 与 tp1 的大小关系检查放在止盈锚定块之后（回退/清零可能改变 tp1/tp2，见下）
 
+    atr = calc_atr(klines)
+
+    # ── 方向铁律（docs/03 §8）：只在支撑位做多、只在压力位做空 ──
+    # 入场价必须落在信号方向对应角色的关键位区域内（±0.25×ATR 容差，防 AI 贴着区域边缘报价）。
+    # 例外：breakout（放量突破顺势追，入场贴近现价）/ manual_search（用户手动指定，人工兜底）/
+    # 无关键位（无法校验，交由其余规则约束）
+    levels = signal.get("key_levels") or []
+    if (
+        d.direction in ("long", "short") and levels
+        and signal.get("signal_type") not in ("breakout", "manual_search")
+    ):
+        tol = 0.25 * atr if atr else 0.0
+        wanted_role = "support" if d.direction == "long" else "resistance"
+        side_levels = [
+            lv for lv in levels
+            if lv.get("role") == wanted_role and float(lv.get("price") or 0) > 0
+        ]
+        if not any(
+            float(lv["zone_low"]) - tol <= d.entry_price <= float(lv["zone_high"]) + tol
+            for lv in side_levels
+        ):
+            if side_levels:
+                near = ", ".join(f"{float(lv['price']):g}" for lv in side_levels[:5])
+                violations.append(
+                    f"方向铁律违规：{'做多入场必须落在某个支撑位区域内' if d.direction == 'long' else '做空入场必须落在某个压力位区域内'}"
+                    f"（±0.25×ATR 容差），唯一例外是放量突破信号。"
+                    f"可用{'支撑位' if d.direction == 'long' else '压力位'}：{near}"
+                )
+            else:
+                violations.append(
+                    f"方向铁律违规：当前关键位中没有{'支撑位，做多不成立' if d.direction == 'long' else '压力位，做空不成立'}"
+                    f"（唯一例外是放量突破信号）"
+                )
+
     if close > 0:
         dev = abs(d.entry_price - close) / close
         if dev > 0.02:
@@ -203,7 +239,7 @@ def validate_decision(
     stop_pct = stop_dist / d.entry_price if d.entry_price else 0
     # 注意：3% 属仓位维度（单笔触止损的账户亏损预算，由下方仓位公式保证），
     # 不对止损价格距离设百分比红线；止损宽度由结构位决定，仅用 ATR 上下界约束合理性
-    atr = calc_atr(klines)
+    # （atr 已在方向铁律块前算好）
     if atr and d.entry_price:
         if stop_dist < 0.3 * atr:
             violations.append(

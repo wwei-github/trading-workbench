@@ -30,11 +30,8 @@ logger = logging.getLogger(__name__)
 
 MAX_ROUNDS = 5
 
-# 锚点枚举：关键位 kind + market（市价锚，兜底表达力）
-LEVEL_REFS = (
-    "support", "resistance", "prev_high", "prev_low",
-    "range_top", "range_bottom", "market",
-)
+# 锚点枚举：关键位两类（support/resistance，按 role 解析到价格侧最近的一档）+ market（市价锚）
+LEVEL_REFS = ("support", "resistance", "market")
 
 _REF_DESC = "、".join(LEVEL_REFS)
 
@@ -64,10 +61,13 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 10. 止损止盈纪律（多空方向不同，程序会校验）：做多——stop 必须严格低于最近 10 根K线最低点（用影线极值即最低价计算，
     非收盘价），且至少低 0.2%（建议 0.2%~0.5%）缓冲防插针扫损；做空相反，stop 必须严格高于最近 10 根K线最高点
     （影线极值，留缓冲）。缓冲不足程序会自动推远。
-11. 止盈锚定：止盈一必须锚定入场方向前方的结构位——做多看前一个高点/压力类关键位，做空看前一个低点/支撑类关键位，
+11. 止盈锚定：止盈一必须锚定入场方向前方的结构位——做多看上方的压力位，做空看下方的支撑位，
     并留 0.2%~0.5% 余地（做多低于该位、做空高于该位）；到最近结构位盈亏比不足 {rr_min} 时取下一档更远结构位。
     止盈二取更前一档同类结构位且必须比止盈一更远。前方无任何结构位可锚定时（如创新高突破），
     止盈一 = 入场 ± {rr_min}×止损距离、止盈二不设（仅一档）；程序同样会自动回退。盈亏比 ≥{rr_min} 是开单硬性要求。
+12. 方向铁律（程序强校验）：只在支撑位做多，只在压力位做空。锚点与位置不符会直接被风控打回。
+    唯一例外：信号类型为 breakout（放量突破，事实包 signal_type 可见）时顺势追突破——
+    向上突破压力位做多、向下突破支撑位做空，entry 用 market 锚。
 
 {skill_index}"""
 
@@ -137,19 +137,24 @@ TOOLS_SCHEMA = [
 
 
 def _resolve_price(ref: Optional[str], offset_pct, signal: dict) -> Optional[float]:
-    """锚点 + 偏移 → 绝对价格；非法锚点返回 None"""
+    """锚点 + 偏移 → 绝对价格；非法锚点返回 None。
+
+    support/resistance 按 role 解析到价格侧最近的一档（多位同角色时：
+    support 取价下方最近即价格最大者，resistance 取价上方最近即价格最小者）。
+    """
     if not ref:
         return None
-    price_map = {
-        lv.get("kind"): float(lv.get("price", 0))
-        for lv in (signal.get("key_levels") or [])
-    }
     if ref == "market":
         base = float(signal.get("current_price") or 0)
-    elif ref in price_map and price_map[ref] > 0:
-        base = price_map[ref]
     else:
-        return None
+        prices = [
+            float(lv.get("price", 0))
+            for lv in (signal.get("key_levels") or [])
+            if lv.get("role") == ref and float(lv.get("price", 0)) > 0
+        ]
+        if not prices:
+            return None
+        base = max(prices) if ref == "support" else min(prices)
     try:
         off = float(offset_pct or 0)
     except (TypeError, ValueError):
@@ -383,12 +388,16 @@ def _build_facts(signal: dict, klines: list, atr: float) -> dict:
         "narrow_range": False,
         "role": None,
     }
-    # 信号命中的关键位角色
+    # 信号命中的关键位角色：两类化后 position 即 support/resistance，可直接作 role；
+    # 旧数据的 prev_high 等 kind 值走 key_levels 查找回退
     hit_kind = signal.get("position")
-    for lv in signal.get("key_levels") or []:
-        if lv.get("kind") == hit_kind:
-            facts["role"] = lv.get("role")
-            break
+    if hit_kind in ("support", "resistance"):
+        facts["role"] = hit_kind
+    else:
+        for lv in signal.get("key_levels") or []:
+            if lv.get("kind") == hit_kind:
+                facts["role"] = lv.get("role")
+                break
     # pin_bar：已收盘最后一根 影线 > 2×实体
     if len(klines) >= 2:
         k = klines[-2]
@@ -437,6 +446,10 @@ def _build_user_msg(
                 )
             )
         swings_section = "\n".join(sw_lines) + "\n"
+    # 量能（放量突破判定依据，classify_volume 口径：相对近20根已收盘均量的倍数）
+    vol_desc = signal.get("volume_type") or "—"
+    if signal.get("volume"):
+        vol_desc += f"（{float(signal['volume']):.1f}×20根均量）"
     msg = (
         f"币种: {signal['symbol']}\n"
         f"信号类型: {signal['signal_type']}\n"
@@ -445,6 +458,7 @@ def _build_user_msg(
         f"{POSITION_LABEL_MAP.get(signal.get('position') or '', signal.get('position') or '未知')}）\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
         f"信号强度: {signal.get('strength', '—')}\n"
+        f"量能: {vol_desc}\n"
         f"ATR(14): {atr:.6g}\n"
         + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
         + swings_section
