@@ -7,44 +7,53 @@ export const SIGNAL_TYPE_MAP: Record<string, { label: string; color: string }> =
   downtrend: { label: "下跌趋势", color: "red" },
   trend_reversal: { label: "趋势反转", color: "purple" },
   range_bound: { label: "震荡区间", color: "orange" },
+  breakout: { label: "放量突破", color: "gold" },
   unknown: { label: "未分类", color: "default" },
   // 旧值保留映射（兼容历史记录）
   downtrend_breakout: { label: "下跌突破", color: "red" },
   uptrend_pullback: { label: "上涨回调", color: "green" },
 };
 
+// 两类化（2026-09-12）后新数据只产生 support/resistance；其余为历史兼容展示
 export const POSITION_LABEL_MAP: Record<string, string> = {
-  prev_high: "前高",
-  prev_low: "前低",
   support: "支撑位",
   resistance: "压力位",
+  prev_high: "前高",
+  prev_low: "前低",
   range_top: "区间顶",
   range_bottom: "区间底",
 };
 
-// 支撑类位置（显示绿色标签）
+// 支撑类位置（旧 kind 的颜色回退；新数据 kind==role 直接判定）
 export const POSITION_SUPPORT_KINDS = new Set([
   "prev_low",
   "support",
   "range_bottom",
 ]);
 
-// 位置标签：颜色跟随关键位的实际角色（kind 仅表示来源结构）。
-// 关键位被突破后角色互换（docs/03）：如支撑位跌破后位于现价上方，实际是压力（回抽），
-// 此时标签显示"支撑位→压力"并标红，避免"支撑位+空头排列"这类看似矛盾的展示。
+// 位置标签：两类化后新数据的 kind 即角色（support→绿 / resistance→红），
+// 提示取同 kind 关键位中距现价最近的一档（关键位是列表，多位同 kind，取最近才有意义）；
+// 旧 kind（前高/前低等）仅历史展示，不再反查关键位（语义已变，提示无意义）
 export function positionTag(
   kind: string,
   keyLevels?: KeyLevel[] | null,
+  currentPrice?: number,
 ): { label: string; color: string; tip?: string } {
-  const base = POSITION_LABEL_MAP[kind] || kind;
-  const hit = keyLevels?.find((lv) => lv.kind === kind);
-  const role = hit?.role ?? (POSITION_SUPPORT_KINDS.has(kind) ? "support" : "resistance");
-  const isSupportRole = role === "support";
-  // kind 来源侧与实际角色不一致 → 已发生角色互换
-  const flipped = hit != null && isSupportRole !== POSITION_SUPPORT_KINDS.has(kind);
-  const label = flipped ? `${base}→${isSupportRole ? "支撑" : "压力"}` : base;
+  const label = POSITION_LABEL_MAP[kind] || kind;
+  const isSupportRole = POSITION_SUPPORT_KINDS.has(kind);
+  if (!keyLevels?.length || !["support", "resistance"].includes(kind)) {
+    return { label, color: isSupportRole ? "green" : "red" };
+  }
+  let hit: KeyLevel | undefined;
+  if (currentPrice && currentPrice > 0) {
+    hit = [...keyLevels]
+      .filter((lv) => lv.kind === kind)
+      .sort(
+        (a, b) => Math.abs(a.price - currentPrice) - Math.abs(b.price - currentPrice),
+      )[0];
+  }
   const tip = hit
-    ? `${base} ${hit.price}，${isSupportRole ? "支撑" : "压力"}，触及 ${hit.touches} 次`
+    ? `${label} ${hit.price}，触及 ${hit.touches} 次，区域 ${hit.zone_low}~${hit.zone_high}`
     : undefined;
   return { label, color: isSupportRole ? "green" : "red", tip };
 }
@@ -85,9 +94,11 @@ export const SIGNAL_TYPE_FILTERS = Object.entries(SIGNAL_TYPE_MAP).map(
   ([value, cfg]) => ({ text: cfg.label, value }),
 );
 
-export const POSITION_FILTERS = Object.entries(POSITION_LABEL_MAP).map(
-  ([value, text]) => ({ text, value }),
-);
+// 位置过滤只保留两类（旧 kind 行不进过滤选项，但历史行仍正常渲染）
+export const POSITION_FILTERS = (["support", "resistance"] as const).map((value) => ({
+  text: POSITION_LABEL_MAP[value],
+  value,
+}));
 
 export const PATTERN_FILTERS = Object.keys({
   ...BULLISH_PATTERNS,

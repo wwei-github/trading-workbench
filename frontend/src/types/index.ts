@@ -11,7 +11,7 @@ export interface ScanRecord {
 }
 
 export interface KeyLevel {
-  kind: string; // prev_high / prev_low / support / resistance / range_top / range_bottom
+  kind: string; // support / resistance（2026-09-12 两类化后 kind==role；历史行可能是 prev_high 等）
   price: number;
   zone_low: number;
   zone_high: number;

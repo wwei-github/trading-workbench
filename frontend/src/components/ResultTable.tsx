@@ -266,8 +266,8 @@ export default function ResultTable() {
       ...filterProps("position", POSITION_FILTERS),
       render: (v: string | null, record: ScanResult) => {
         if (!v) return <span style={{ color: "#999" }}>-</span>;
-        // 颜色/标签跟随关键位实际角色（跌破的支撑位显示"支撑位→压力"并标红）
-        const { label, color, tip } = positionTag(v, record.key_levels);
+        // 两类化后 kind 即角色；提示取距现价最近的一档同角色关键位
+        const { label, color, tip } = positionTag(v, record.key_levels, record.current_price);
         return (
           <Tooltip title={tip}>
             <Tag color={color}>{label}</Tag>
