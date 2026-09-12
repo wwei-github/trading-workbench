@@ -4,7 +4,7 @@
 - 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR]，价格距离不设百分比红线）、
   止损须越过最近 N 根已收盘K线极值（多单严格低于最低点，空单严格高于最高点）；
   仓位公式保证触止损账户亏损 ≤ 风险预算（RISK_BUDGET_PCT=3%，仓位维度的"3%止损"）
-- 仓位公式化：AI 不自报仓位，由风险预算与止损距离计算
+- 仓位公式化（固定亏损法）：仓位 = 风险预算 ÷ 止损距离，触止损恰好亏 RISK_BUDGET_PCT（3%），AI 不自报仓位
 - 返回具体违规明细，供"校验失败带错误反馈重试"
 """
 import logging
@@ -186,11 +186,12 @@ def validate_decision(
         return False, violations, {}
 
     # ── 修正：程序复算值落库，AI 声称值不信 ──
+    # 固定亏损仓位法：仓位（名义价值占账户%）= 风险预算 ÷ 止损距离，
+    # 触发止损时账户恰好亏损 RISK_BUDGET_PCT（3%）。止损越远仓位越小，不设 clamp。
+    # 例：止损距离 2% → 仓位 150%（10×杠杆下占用保证金 15%）
     position_pct = 0.0
     if stop_pct > 0:
-        position_pct = round(
-            min(max(settings.RISK_BUDGET_PCT / stop_pct, 0.5), 10.0), 2
-        )
+        position_pct = round(settings.RISK_BUDGET_PCT / stop_pct, 2)
     fixed = {
         "trade_decision": "suggest",
         "skip_reason": "",

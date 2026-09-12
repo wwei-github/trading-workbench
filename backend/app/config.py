@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     AI_CALL_TIMEOUT_S: int = 240      # 单次 LLM 调用超时（防网关挂起拖垮整轮分析；实测单轮 85~130s，拥塞时 >180s，留足余量）
     AI_MIN_STRENGTH: float = 0.4      # 信号强度低于此值直接程序 skip，不调 LLM
     AI_RR_MIN: float = 1.5            # 盈亏比复算下限（交易系统铁律）
-    RISK_BUDGET_PCT: float = 3.0      # 单笔风险预算（%资金）：触发止损时的账户亏损上限，仓位 = 预算/止损距离%
+    RISK_BUDGET_PCT: float = 3.0      # 单笔固定亏损预算（%账户资金）：仓位 = 预算÷止损距离%，触止损恰好亏3%
     STOP_LOSS_RECENT_BARS: int = 5    # 止损须越过最近N根已收盘K线极值（多单严格低于最低点，空单严格高于最高点）
     FINGERPRINT_TTL_MIN: int = 60     # 指纹缓存复用窗口（分钟，0.3% 价格分桶）
     ATR_SPIKE_MULT: float = 5.0       # 当前K线振幅 > N×ATR 熔断，直接 skip

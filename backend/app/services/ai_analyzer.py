@@ -36,7 +36,7 @@ SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信�
 - take_profit_1: 第一档止盈价，盈亏比≥1.5。skip 时为 0。
 - take_profit_2: 第二档止盈价，盈亏比≥3。skip 时为 0。
 - risk_reward_ratio: take_profit_1 的盈亏比，2位小数。skip 时为 0。
-- position_pct: 建议仓位占总资金百分比，1-10，2位小数。skip 时为 0。
+- position_pct: 建议名义仓位占账户资金百分比，2位小数。程序会按固定亏损复算覆盖（仓位=3%÷止损距离%），此处报估算值即可。skip 时为 0。
 - recommendation: 推荐程度，0-100的整数。skip 时≤30，suggest 时≥50
 - analysis: ≤300字中文推理，用"1. 2. 3."序号逐条展示，每条独占一行（JSON内换行写\\n），格式如下：
   先逐条列出满足的条件（如：1. EMA多头排列，趋势向上 2. 回踩支撑位企稳，触及2次）；

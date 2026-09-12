@@ -228,7 +228,7 @@ class TradeDecision(BaseModel):
 - 锚点存在性：`*_level_ref` 必须在关键位列表中
 - **盈亏比复算**：`rr = |tp1-entry| / |entry-stop|`，要求 ≥**1.5** 才允许 suggest（对齐交易系统六问铁律；AI 声称值一律不信，用复算值落库）
 - 止损合理性：`|entry-stop|` ∈ [0.3×ATR, 3×ATR]（太近易扫损、太远盈亏比崩）；价格距离不设百分比红线——"3%止损"属仓位维度（触发止损时的账户亏损预算，由下方仓位公式保证）；止损还须越过最近 N 根已收盘K线极值（多单严格低于最低点，空单严格高于最高点）
-- 仓位公式化：`position_pct = clamp(风险预算% / (|entry-stop|/entry), 0.5, 10)` —— AI 不再自报仓位
+- 仓位公式化（固定亏损法）：`position_pct = 风险预算% ÷ (|entry-stop|/entry)`，触发止损时账户恰好亏损风险预算（RISK_BUDGET_PCT=3%），止损越远仓位越小、不设 clamp —— AI 不再自报仓位
 - skip 一致性：suggest 时 `skip_reason` 必须为空，反之亦然
 
 不合格 → 把**具体违规项**作为反馈消息追加，重试 Trader（≤2 次）；仍不合格 → 强制 skip（skip_reason="风控校验未通过: ..."）。可选增强：`recommendation ≥ 70` 的高置信 suggest 触发第二视角复检（双评委，分歧则降 recommendation）——默认关闭，实现参考 §7.3 TradingAgents 的辩论机制移植。
