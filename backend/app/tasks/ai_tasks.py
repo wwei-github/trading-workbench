@@ -5,8 +5,8 @@
 - Stage 1 闸门（不调 LLM 直接出结论）：
     1) strength < AI_MIN_STRENGTH → 程序 skip
     2) 当前K线振幅 > ATR_SPIKE_MULT × ATR → 熔断 skip
-    3) 1h 内同指纹 → 沿用旧结论
-    4) 24h 内同币种已有 suggest 结论且本信号为重复命中 → 沿用旧结论
+    3) 1h 内同指纹 → 沿用旧结论（价格区仍有效时）
+    4) 24h 内同币种已有 suggest 结论且本信号为重复命中 → 沿用旧结论（价格区仍有效时）
 - Stage 2：analyze_with_guard（校验回炉）→ 落库
 """
 import hashlib
@@ -210,24 +210,31 @@ def run_ai_analysis_single(
         # 扫描到分析之间可能已明显移动——所有锚点换算、入场价校验都以最新价为基准
         if klines:
             signal["current_price"] = float(klines[-1][4])
-        # 3) 指纹缓存：TTL 内同指纹沿用旧结论（手动重分析不短路）
+        # 3) 指纹缓存：TTL 内同指纹沿用旧结论（手动重分析不短路）；
+        #    价格区已失效（现价越过原止盈一/止损）的旧结论不沿用，重新分析
         if not force and settings.FINGERPRINT_TTL_MIN > 0:
             cached = _find_recent(db, r.symbol, fp, settings.FINGERPRINT_TTL_MIN)
             if cached:
-                note = "⏱️ 沿用近期同信号结论"
+                if _conclusion_still_valid(cached, signal["current_price"]):
+                    note = "⏱️ 沿用近期同信号结论"
+                    ai_progress.push(r.id, "gate", note=note)
+                    _copy(db, r, r.symbol, cached, fp, note)
+                    ai_progress.push_done(r.id, cached.trade_decision, note)
+                    return
+                note = "⚠️ 同信号旧结论的价格区已失效（现价越过原止盈/止损），重新分析"
                 ai_progress.push(r.id, "gate", note=note)
-                _copy(db, r, r.symbol, cached, fp, note)
-                ai_progress.push_done(r.id, cached.trade_decision, note)
-                return
-        # 4) 重复信号沿用：24h 内同币种已有 suggest 且本行为重复命中
+        # 4) 重复信号沿用：24h 内同币种已有 suggest 且本行为重复命中（同样校验价格区）
         if not force and r.is_repeat:
             repeat = _find_recent_suggest(db, r.symbol, 24 * 60)
             if repeat:
-                note = "🔁 24h 内重复信号，沿用已有结论"
+                if _conclusion_still_valid(repeat, signal["current_price"]):
+                    note = "🔁 24h 内重复信号，沿用已有结论"
+                    ai_progress.push(r.id, "gate", note=note)
+                    _copy(db, r, r.symbol, repeat, fp, note)
+                    ai_progress.push_done(r.id, repeat.trade_decision, note)
+                    return
+                note = "⚠️ 重复信号的旧结论价格区已失效（现价越过原止盈/止损），重新分析"
                 ai_progress.push(r.id, "gate", note=note)
-                _copy(db, r, r.symbol, repeat, fp, note)
-                ai_progress.push_done(r.id, repeat.trade_decision, note)
-                return
 
         # ── Stage 2：LLM 分析（P1 Agent 工具循环 / P0 单次调用）+ Risk Guard 校验 ──
         # LLM 长调用（数分钟）期间不持有 DB 连接——任务开头取出的连接可能中途被
@@ -298,6 +305,28 @@ def run_ai_analysis_single(
     finally:
         db.close()
         _sem_release(sem)
+
+
+def _conclusion_still_valid(a: AIAnalysis, current_price: float) -> bool:
+    """沿用旧结论前校验价格区仍有效：现价须仍在该方向的 止损~止盈一 区间内。
+
+    价格已越过原 TP1/SL 的旧结论没有参考意义（如价格已到止盈位还提示做多）——
+    不再沿用，落入下方正常 LLM 重分析（以当前价重新锚定）。skip 结论或价格
+    数据不全时不拦（无失效可言）。
+    """
+    if a.trade_decision != "suggest" or not a.direction:
+        return True
+    try:
+        price, sl, tp1 = (
+            float(current_price), float(a.stop_loss or 0), float(a.take_profit_1 or 0),
+        )
+    except (TypeError, ValueError):
+        return True
+    if price <= 0 or sl <= 0 or tp1 <= 0:
+        return True
+    if a.direction == "long":
+        return sl < price < tp1
+    return sl > price > tp1
 
 
 def _find_recent(db, symbol: str, fp: str, ttl_min: int) -> Optional[AIAnalysis]:
