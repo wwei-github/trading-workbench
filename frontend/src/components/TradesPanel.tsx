@@ -134,7 +134,13 @@ function renderDetail(detail: Record<string, unknown> | null) {
       size="small"
       column={2}
       style={{ marginTop: 8 }}
-      labelStyle={{ fontSize: 12, color: '#999', paddingInlineEnd: 8 }}
+      labelStyle={{
+        fontSize: 12,
+        color: '#999',
+        width: 92,
+        whiteSpace: 'nowrap',
+        paddingInlineEnd: 8,
+      }}
       contentStyle={{ fontSize: 12, color: '#333', wordBreak: 'break-all' }}
       items={Object.entries(detail).map(([k, v]) => ({
         key: k,
