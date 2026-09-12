@@ -58,8 +58,8 @@ class Settings(BaseSettings):
     MIN_VOLUME_24H: float = 3_000_000  # 扫描候选池 24h 成交额下限（USDT），低于此不进扫描
 
     # 自动交易（docs/06，币安 USDT-M 合约）
-    BINANCE_TRADE_KEY: str = ""
-    BINANCE_TRADE_SECRET: str = ""
+    BINANCE_API_KEY: str = ""
+    BINANCE_SECRET_KEY: str = ""
     TRADING_TESTNET: bool = True      # 首期走 testnet 验证链路
     TRADING_ENABLED: bool = False     # 自动交易总开关
     TRADING_MIN_RECOMMENDATION: float = 60.0  # 开单推荐度门槛

@@ -22,7 +22,7 @@ def run_auto_trade_task():
         return
     trader = BinanceTrader()
     if not trader.configured:
-        logger.warning("自动交易缺少币安 API 凭据（BINANCE_TRADE_KEY/SECRET），跳过")
+        logger.warning("自动交易缺少币安 API 凭据（BINANCE_API_KEY/BINANCE_SECRET_KEY），跳过")
         return
 
     db = SessionLocal()

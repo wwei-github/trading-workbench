@@ -16,7 +16,7 @@ from decimal import ROUND_DOWN, Decimal
 from typing import Optional
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.config import settings
 from app.models.scan import AIAnalysis, ScanResult
@@ -52,7 +52,9 @@ def _close_side(direction: str) -> str:
 
 
 def _open_candidates(db: Session):
-    """未开过仓的 ≥60 分 suggest 分析（推荐度降序 = 开单优先级）"""
+    """未开过仓的 ≥60 分 suggest 分析（推荐度降序 = 开单优先级）。
+    已有 FAILED 记录的 symbol（如交易所未上架）整只排除，避免每小时空转"""
+    tr_fail = aliased(TradeRecord)
     return db.execute(
         select(AIAnalysis, ScanResult)
         .join(ScanResult, AIAnalysis.scan_result_id == ScanResult.id)
@@ -65,6 +67,9 @@ def _open_candidates(db: Session):
             AIAnalysis.take_profit_1 > 0,
             AIAnalysis.recommendation >= settings.TRADING_MIN_RECOMMENDATION,
             TradeRecord.id.is_(None),
+            ~select(tr_fail.id).where(
+                tr_fail.symbol == AIAnalysis.symbol, tr_fail.status == "FAILED"
+            ).exists(),
         )
         .order_by(AIAnalysis.recommendation.desc(), AIAnalysis.created_at.desc())
     ).all()
@@ -124,8 +129,8 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
 
             # 固定亏损仓位：基数分档 × 3% ÷ 止损距离
             stop_pct = abs(price - sl) / price
-            risk_amount = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
-            notional = risk_amount / stop_pct
+            risk_budget = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
+            notional = risk_budget / stop_pct
             qty = trader.round_qty(symbol, notional / price)
             f = trader.filters(symbol)
             if qty < f["min_qty"] or qty * price < f["min_notional"]:
@@ -134,13 +139,20 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
                     symbol, qty, f["min_qty"], f["min_notional"],
                 )
                 continue
+            if qty > f["max_qty"]:
+                logger.info("开仓 %s：数量 %s 超交易所单笔上限 %s，按上限缩减（实际风险低于 %.0f%% 预算）",
+                            symbol, qty, f["max_qty"], settings.TRADING_RISK_PCT)
+                qty = trader.round_qty(symbol, f["max_qty"])
             leverage = settings.TRADING_LEVERAGE
             margin_used = qty * price / leverage
             if margin_used > wallet - occupied:
                 logger.info("开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f", symbol, margin_used, wallet - occupied)
                 continue
+            # 实际风险金额按最终数量精确计（向下取整/上限缩减只会低于 3% 预算）
+            risk_amount = round(qty * abs(price - sl), 4)
 
-            # 下单：市价开仓 → 挂 SL/TP1/TP2；保护单任一失败立即平仓不留裸仓
+            # 下单：市价开仓 → 挂 SL/TP1/TP2 → 入库，全在保护块内：
+            # 任何一步失败都紧急撤单+平仓，不留裸仓（含记录构建/入库失败）
             trader.setup_leverage(symbol, leverage)
             side = "BUY" if direction == "long" else "SELL"
             close_side = _close_side(direction)
@@ -156,48 +168,55 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
                 if tp2 > 0 and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
                     tp2_order = trader.take_profit_reduce(
                         symbol, close_side, qty_tp2, trader.round_price(symbol, tp2))
+                now = datetime.utcnow()
+                rec = TradeRecord(
+                    symbol=symbol,
+                    direction=direction,
+                    scan_result_id=a.scan_result_id,
+                    ai_analysis_id=a.id,
+                    recommendation=float(a.recommendation) if a.recommendation is not None else None,
+                    entry_price=price,
+                    qty=qty,
+                    notional=round(qty * price, 2),
+                    leverage=leverage,
+                    margin_mode="isolated",
+                    margin_used=round(margin_used, 4),
+                    risk_amount=round(risk_amount, 4),
+                    stop_loss=sl,
+                    tp1=tp1,
+                    tp2=tp2 if tp2_order else 0,
+                    status="OPENED",
+                    opened_at=now,
+                    raw={
+                        # SL/TP 为 algo 条件单，标识是 algoId（MARKET 入场单仍是 orderId）
+                        "entry_order_id": entry_order["orderId"],
+                        "sl_order_id": sl_order.get("algoId") or sl_order.get("orderId"),
+                        "tp1_order_id": tp1_order.get("algoId") or tp1_order.get("orderId"),
+                        "tp2_order_id": (tp2_order.get("algoId") or tp2_order.get("orderId")) if tp2_order else None,
+                        "qty_tp1": qty_tp1,
+                        "qty_tp2": qty_tp2 if tp2_order else 0,
+                        "capital_base": _capital_base(wallet),
+                        "wallet": wallet,
+                        "testnet": settings.TRADING_TESTNET,
+                    },
+                )
+                db.add(rec)
+                db.flush()
+                _add_event(db, rec, "OPEN", {
+                    "price": price, "qty": qty, "stop_loss": sl, "tp1": tp1, "tp2": tp2,
+                    "risk_amount": round(risk_amount, 4), "entry_order_id": entry_order["orderId"],
+                })
+                db.commit()
             except Exception:
-                trader.market_order(symbol, close_side, qty)  # 平掉裸仓
+                # 紧急处理：先撤全部挂单再只减仓平仓（reduceOnly：开仓单未成交时会被
+                # 交易所拒绝，而不是反向开成裸仓）
+                try:
+                    trader.cancel_all_algo(symbol)
+                    trader.market_order(symbol, close_side, qty, reduce_only=True)
+                except Exception as close_err:
+                    logger.error("紧急平仓失败 %s: %s（若开仓单未成交则本无仓位）", symbol, close_err)
                 raise
 
-            now = datetime.utcnow()
-            rec = TradeRecord(
-                symbol=symbol,
-                direction=direction,
-                scan_result_id=a.scan_result_id,
-                ai_analysis_id=a.id,
-                recommendation=float(a.recommendation) if a.recommendation is not None else None,
-                entry_price=price,
-                qty=qty,
-                notional=round(qty * price, 2),
-                leverage=leverage,
-                margin_mode="isolated",
-                margin_used=round(margin_used, 4),
-                risk_amount=round(risk_amount, 4),
-                stop_loss=sl,
-                tp1=tp1,
-                tp2=tp2 if tp2_order else 0,
-                status="OPENED",
-                opened_at=now,
-                raw={
-                    "entry_order_id": entry_order["orderId"],
-                    "sl_order_id": sl_order["orderId"],
-                    "tp1_order_id": tp1_order["orderId"],
-                    "tp2_order_id": tp2_order["orderId"] if tp2_order else None,
-                    "qty_tp1": qty_tp1,
-                    "qty_tp2": qty_tp2 if tp2_order else 0,
-                    "capital_base": _capital_base(wallet),
-                    "wallet": wallet,
-                    "testnet": settings.TRADING_TESTNET,
-                },
-            )
-            db.add(rec)
-            db.flush()
-            _add_event(db, rec, "OPEN", {
-                "price": price, "qty": qty, "stop_loss": sl, "tp1": tp1, "tp2": tp2,
-                "risk_amount": round(risk_amount, 4), "entry_order_id": entry_order["orderId"],
-            })
-            db.commit()
             opened += 1
             running += 1
             positions[symbol] = {"amt": qty if direction == "long" else -qty,
@@ -207,6 +226,25 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
         except Exception as e:
             db.rollback()
             logger.warning("开仓失败 %s: %s", symbol, e)
+            # 交易所无此合约（-1121，如 testnet 未上架）每轮必失败：落 FAILED 记录并跳过同 symbol 后续分析
+            if "-1121" in str(e):
+                try:
+                    exists = db.execute(
+                        select(TradeRecord.id).where(
+                            TradeRecord.symbol == symbol, TradeRecord.status == "FAILED")
+                    ).first()
+                    if not exists:
+                        rec = TradeRecord(
+                            symbol=symbol, direction=direction, ai_analysis_id=a.id,
+                            recommendation=float(a.recommendation) if a.recommendation is not None else None,
+                            status="FAILED", raw={"fail_reason": str(e)[:200]},
+                        )
+                        db.add(rec)
+                        db.flush()
+                        _add_event(db, rec, "ERROR", {"message": "交易所未上架该合约（-1121）"})
+                    db.commit()
+                except Exception:
+                    db.rollback()
             continue
     return opened
 
@@ -294,10 +332,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
             # 仓位归零 → 结算（以币安已实现盈亏为准）
             if qty <= 0 or amt < qty * 0.05:
                 # 清理残留挂单（SL 先成交时 TP reduceOnly 单会一直挂着）
-                for key in ("sl_order_id", "tp1_order_id", "tp2_order_id"):
-                    oid = raw.get(key)
-                    if oid and int(oid) in open_ids:
-                        trader.cancel_order(rec.symbol, int(oid))
+                trader.cancel_all_algo(rec.symbol)
                 since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000)
                 pnl = trader.realized_pnl_since(rec.symbol, since_ms)
                 rec.realized_pnl = round(pnl, 6)
