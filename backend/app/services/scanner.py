@@ -15,24 +15,23 @@ from app.models.trade import TradeRecord
 from app.services.exchange_pool import ExchangePool
 from app.services.strategy import detect_all_signals
 from app.services.strategy.ema import analyze_ema
+from app.services.strategy.key_levels import volume_ratio
 
 logger = logging.getLogger(__name__)
 
 
 def classify_volume(klines: list[list]) -> tuple[float, str]:
-    """提取最新已收盘 K 线成交量并分类。
+    """提取最新已收盘 K 线成交量并分类（比率口径复用 key_levels.volume_ratio，
+    与放量突破门槛 BREAKOUT_VOL_RATIO 同源）。
 
-    klines[-1] 是未收盘 K 线，用 klines[-2]；前 20 根用 klines[-22:-2]。
-    返回 (volume, volume_type)。
+    klines[-1] 是未收盘 K 线，用 klines[-2]。返回 (volume, volume_type)。
     """
     if len(klines) < 22:
         return 0.0, "平量"
     vol = float(klines[-2][5])
-    prev_vols = [float(k[5]) for k in klines[-22:-2]]
-    avg = sum(prev_vols) / len(prev_vols)
-    if avg <= 0:
+    ratio = volume_ratio(klines)
+    if ratio <= 0:  # 近20根均量为 0（volume_ratio 的兜底分支）
         return vol, "平量"
-    ratio = vol / avg
     if ratio < 0.5:
         vt = "地量"
     elif ratio < 0.8:
@@ -130,7 +129,6 @@ class Scanner:
                     config = {
                         "min_klines": 30,
                         "swing_order": cfg.swing_order,
-                        "breakout_threshold": float(cfg.breakout_threshold),
                         "r_squared_threshold": float(cfg.r_squared_threshold),
                         "pullback_tolerance": float(cfg.pullback_tolerance),
                         "key_level_tolerance": float(cfg.key_level_tolerance),
