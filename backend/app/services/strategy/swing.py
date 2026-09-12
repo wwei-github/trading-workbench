@@ -37,6 +37,35 @@ def find_swing_points(
     return high_idx, low_idx
 
 
+def find_pivots(
+    series: np.ndarray,
+    left: int,
+    right: int,
+) -> tuple[list[int], list[int]]:
+    """非对称摆动点（Pine pivothigh/pivotlow 语义）：严格高于前 left 根与后 right 根为高点
+
+    与 find_swing_points 的对称 order 不同，左窗（历史纵深）与右窗（确认延迟）独立：
+    左窗大只留大级别结构，右窗小更快确认（借鉴 Auto S/R 指标的 left=50/right=25 与 quick right=5）。
+    返回: (pivot_high_idx, pivot_low_idx)，时间升序；末尾 right 根尚未确认不计入，并列极值不计入
+    """
+    n = len(series)
+    if n < left + right + 1:
+        return [], []
+
+    high_idx: list[int] = []
+    low_idx: list[int] = []
+
+    for i in range(left, n - right):
+        left_w = series[i - left : i]
+        right_w = series[i + 1 : i + right + 1]
+        if series[i] > left_w.max() and series[i] > right_w.max():
+            high_idx.append(i)
+        if series[i] < left_w.min() and series[i] < right_w.min():
+            low_idx.append(i)
+
+    return high_idx, low_idx
+
+
 def merge_swings(
     high_idx: list[int],
     low_idx: list[int],

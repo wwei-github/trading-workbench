@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, desc, select, func
 from sqlalchemy.orm import Session
@@ -29,6 +30,8 @@ from app.services.scanner import classify_volume
 from app.services.ai_analyzer import analyze_coin
 from app.services.skill_library import list_skills
 from app.services.strategy import compute_signal_key_levels, recent_swings
+from app.services.strategy.key_levels import calc_atr
+from app.services.strategy.swing import find_pivots
 from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
@@ -486,6 +489,69 @@ def skill_detail(name: str):
 
 # ===== K 线数据 =====
 
+# 图表关键位选位口径（借鉴 TradingView「Automatic Support & Resistance」指标）：
+# - 确认摆动点：左 50 / 右 25 根——右窗长，只留大级别结构位，每侧取最近 3 档（Pine level3~8）
+# - quick 摆动点：右窗仅 5 根——对最新结构快速响应，各取最近 1 档（Pine level1/2）
+# - 角色按现价动态判定：位在现价上方=压力（红），下方=支撑（绿），与该指标 close>=level 着色一致
+CHART_PIVOT_LEFT = 50
+CHART_PIVOT_RIGHT = 25
+CHART_PIVOT_QUICK_RIGHT = 5
+CHART_PIVOT_LEVELS_PER_SIDE = 3
+
+
+def _chart_pivot_levels(klines: list[list], cfg) -> list[dict]:
+    """图表展示用关键位：Pine Auto S/R 式摆动点阶梯（quick + 最近 3 档确认高低点）。
+
+    与扫描/AI 的聚类关键位（compute_signal_key_levels）口径互不影响；区域半宽沿用
+    图表减半口径（cfg.key_level_tolerance × 0.5 的 ATR 自适应）。近邻去重：与已选位
+    价格距 ≤ merge 阈值的不重复画（quick 位优先保留）。
+    """
+    closes = np.array([float(k[4]) for k in klines], dtype=float)
+    n = len(klines)
+    if n < CHART_PIVOT_LEFT + CHART_PIVOT_QUICK_RIGHT + 1:
+        return []
+    close_last = float(closes[-2]) if n >= 2 else float(closes[-1])
+
+    base = float(cfg.key_level_tolerance) * 0.5  # 图表展示半宽减半
+    tol = base
+    atr = calc_atr(klines)
+    if atr and close_last > 0:
+        tol = min(max(0.5 * atr / close_last, base * 0.5), base * 2)
+
+    merge_thr = float(cfg.level_merge_threshold)
+    picked: list[float] = []
+
+    def _add(idx: int) -> None:
+        price = float(closes[idx])
+        if all(abs(price - p) / p > merge_thr for p in picked):
+            picked.append(price)
+
+    quick_h, quick_l = find_pivots(closes, CHART_PIVOT_LEFT, CHART_PIVOT_QUICK_RIGHT)
+    full_h, full_l = find_pivots(closes, CHART_PIVOT_LEFT, CHART_PIVOT_RIGHT)
+    if quick_h:
+        _add(quick_h[-1])
+    if quick_l:
+        _add(quick_l[-1])
+    for idx in full_h[-CHART_PIVOT_LEVELS_PER_SIDE:]:
+        _add(idx)
+    for idx in full_l[-CHART_PIVOT_LEVELS_PER_SIDE:]:
+        _add(idx)
+
+    levels = []
+    for price in picked:
+        role = "resistance" if price > close_last else "support"
+        levels.append({
+            "kind": role,
+            "price": price,
+            "zone_low": price * (1 - tol),
+            "zone_high": price * (1 + tol),
+            "touches": 1,
+            "role": role,
+        })
+    levels.sort(key=lambda lv: lv["price"], reverse=True)
+    return levels
+
+
 @router.get("/klines/{symbol}")
 def get_klines(
     symbol: str,
@@ -532,25 +598,15 @@ def get_klines(
         ]
         for kind in ("highs", "lows")
     }
-    # 关键位（图表区域色块用，与扫描/AI 同源：支撑位/压力位 + ATR 自适应区域）
-    levels = compute_signal_key_levels(
-        klines,
-        {
-            "min_klines": 30,
-            "swing_order": cfg.swing_order,
-            "r_squared_threshold": float(cfg.r_squared_threshold),
-            "pullback_tolerance": float(cfg.pullback_tolerance),
-            "key_level_tolerance": float(cfg.key_level_tolerance),
-            "level_merge_threshold": float(cfg.level_merge_threshold),
-            "max_trend_slope": 0.005,
-        },
-    )
+    # 关键位（图表区域色块用）：Pine Auto S/R 式摆动点阶梯；
+    # 扫描/AI 的聚类关键位口径不受影响（事实包止盈锚定需全量位）
+    key_levels = _chart_pivot_levels(klines, cfg)
     return {
         "symbol": symbol,
         "interval": cfg.kline_interval,
         "klines": result,
         "swings": swings,
-        "key_levels": levels,
+        "key_levels": key_levels,
     }
 
 
