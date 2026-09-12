@@ -4,13 +4,14 @@ from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import SessionLocal
 from app.models.scan import ScanRecord, ScanResult
 from app.models.system_config import SystemConfig
+from app.models.trade import TradeRecord
 from app.services.exchange_pool import ExchangePool
 from app.services.strategy import detect_all_signals
 from app.services.strategy.ema import analyze_ema
@@ -171,9 +172,14 @@ class Scanner:
             self._save_results(scan_record_id, hits, repeat_symbols)
 
             # 6. 触发 AI 分析（任务内自检开关；批量按24h成交额取前 AI_MAX_PER_SCAN 个）
+            # 满仓跳过（docs/06）：定时扫描时在跑单已达上限则不做 AI 分析（省 LLM 成本，
+            # 反正开不了仓）；手动扫描/手动分析不受限。下次结算释放额度后自然恢复
             from app.tasks.ai_tasks import run_ai_analysis_task
             try:
-                run_ai_analysis_task.delay(str(scan_record_id))
+                if record.scan_type == "scheduled" and self._slots_full():
+                    logger.info("在跑单子已达上限，定时扫描后跳过本轮 AI 分析 #%s", scan_record_id)
+                else:
+                    run_ai_analysis_task.delay(str(scan_record_id))
             except Exception as e:
                 logger.warning("AI 分析分发失败（忽略）: %s", e)
 
@@ -262,6 +268,29 @@ class Scanner:
         except Exception as e:
             logger.exception("更新扫描状态失败 #%s: %s", scan_record_id, e)
             sdb.rollback()
+        finally:
+            sdb.close()
+
+    @staticmethod
+    def _slots_full() -> bool:
+        """在跑单子数是否已达 max_open_trades 上限（独立短会话，避免长扫描后连接失效）。
+
+        查询失败按未满仓处理：宁可多花一次 AI 分析，不因统计故障漏掉开仓机会。
+        """
+        sdb = SessionLocal()
+        try:
+            cfg = sdb.get(SystemConfig, 1)
+            if not cfg:
+                return False
+            running = sdb.execute(
+                select(func.count(TradeRecord.id)).where(
+                    TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT"))
+                )
+            ).scalar() or 0
+            return running >= (cfg.max_open_trades or 5)
+        except Exception:
+            logger.exception("查询在跑单子数失败，按未满仓处理")
+            return False
         finally:
             sdb.close()
 
