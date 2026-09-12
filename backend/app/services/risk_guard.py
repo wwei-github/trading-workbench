@@ -1,7 +1,8 @@
 """Risk Guard：AI 决策的确定性校验器（docs/04 §4 Stage 4 / §5.6）
 
 - Schema 强约束（Pydantic）
-- 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR] + ≤3% 绝对红线）
+- 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR] + ≤3% 绝对红线）、
+  止损须越过最近 N 根已收盘K线极值（多单严格低于最低点，空单严格高于最高点）
 - 仓位公式化：AI 不自报仓位，由风险预算与止损距离计算
 - 返回具体违规明细，供"校验失败带错误反馈重试"
 """
@@ -137,6 +138,24 @@ def validate_decision(
         dev = abs(d.entry_price - close) / close
         if dev > 0.02:
             violations.append(f"入场价偏离当前价 {dev*100:.2f}% > 2%（入场应接近现价）")
+
+    # ── 止损须越过最近N根已收盘K线极值：多单严格低于最低点、空单严格高于最高点 ──
+    # 不能正好用极值本身（插针必扫损）；violations 会反馈给 AI 回炉重试
+    closed = klines[:-1] if len(klines) >= 2 else klines
+    n = min(settings.STOP_LOSS_RECENT_BARS, len(closed))
+    if n > 0:
+        if d.direction == "long":
+            recent_low = min(float(k[3]) for k in closed[-n:])
+            if d.stop_loss >= recent_low:
+                violations.append(
+                    f"做多止损 {d.stop_loss} 必须严格低于最近{n}根K线最低点 {recent_low}（在其下方留缓冲，不能正好用最低点）"
+                )
+        elif d.direction == "short":
+            recent_high = max(float(k[2]) for k in closed[-n:])
+            if d.stop_loss <= recent_high:
+                violations.append(
+                    f"做空止损 {d.stop_loss} 必须严格高于最近{n}根K线最高点 {recent_high}（在其上方留缓冲，不能正好用最高点）"
+                )
 
     stop_dist = abs(d.entry_price - d.stop_loss)
     stop_pct = stop_dist / d.entry_price if d.entry_price else 0

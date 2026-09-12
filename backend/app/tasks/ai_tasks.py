@@ -234,7 +234,9 @@ def run_ai_analysis_single(
         signal["recent_swings"] = recent_swings(klines, order=cfg.swing_order, n=2)
         # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
         # Agent 管线由模型按需调用工具自行获取
-        if cfg.ai_pipeline_enabled:
+        # 管线选择：批量（每小时扫描自动触发/手动全量）固定走 P0 单次调用管线，
+        # 不受「AI 管线」开关影响；仅手动单币重分析（force）跟随开关走 Agent 管线
+        if cfg.ai_pipeline_enabled and force:
             def _cb(ev: dict) -> None:
                 ai_progress.push(r.id, ev.pop("t"), **ev)
 

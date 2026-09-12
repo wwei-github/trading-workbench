@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     AI_RR_MIN: float = 1.5            # 盈亏比复算下限（交易系统铁律）
     RISK_BUDGET_PCT: float = 1.0      # 单笔风险预算（%资金），仓位 = 预算/止损距离%
     RISK_STOP_MAX_PCT: float = 0.03   # 止损距离绝对红线（3%，交易系统统一止损）
+    STOP_LOSS_RECENT_BARS: int = 10   # 止损须越过最近N根已收盘K线极值（多单严格低于最低点，空单严格高于最高点）
     FINGERPRINT_TTL_MIN: int = 60     # 指纹缓存复用窗口（分钟，0.3% 价格分桶）
     ATR_SPIKE_MULT: float = 5.0       # 当前K线振幅 > N×ATR 熔断，直接 skip
     AI_MAX_PER_SCAN: int = 10         # 单次扫描批量 AI 分析上限（按24h成交额取前N）
