@@ -24,6 +24,7 @@ from app.models.system_config import SystemConfig
 from app.models.trade import TradeEvent, TradeRecord
 from app.services.binance_trader import BinanceTrader
 from app.services.exchange_pool import ExchangePool
+from app.services.strategy.ema import analyze_ema
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,9 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
     cfg = db.get(SystemConfig, 1)
     if not cfg:
         return 0
+    interval = cfg.kline_interval if cfg else "1h"
+    # EMA144 需 ≥154 根已收盘 K 线，窗口下限 160
+    kline_window = max(cfg.kline_window or 240, 160)
     candidates = _open_candidates(db)
     if not candidates:
         return 0
@@ -153,6 +157,17 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
                 continue
             if abs(price - entry_ai) / entry_ai > 0.01:
                 logger.info("开仓作废 %s：现价偏离 AI 入场价超 1%%", symbol)
+                continue
+
+            # EMA 排列硬闸门（开单前提）：多单须 21>55>144 多头排列，空单须 144>55>21 空头排列
+            ema = analyze_ema(ExchangePool().get_klines(symbol, interval, kline_window))
+            ema_ok = ema is not None and (
+                (direction == "long" and ema["fast"] > ema["mid"] > ema["slow"])
+                or (direction == "short" and ema["fast"] < ema["mid"] < ema["slow"])
+            )
+            if not ema_ok:
+                logger.info("开仓跳过 %s：EMA 未按方向排列（%s），不满足开单前提",
+                            symbol, ema["state_label"] if ema else "K线数据不足")
                 continue
 
             # 固定亏损仓位：基数分档 × 3% ÷ 止损距离
