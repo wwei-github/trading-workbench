@@ -2,13 +2,13 @@
  * 交易记录页（docs/06）：自动交易生命周期与收益展示
  * - 概览条：在跑单子 / 已平仓 / 胜率 / 累计净收益（正绿负红）
  * - 列表：币种/方向/环境（测试网·正式网）/状态/开仓信息/三价现值/收益，分页默认 10 条、固定高度滚动
- * - 展开行：开单时 AI 分析结论快照（AiAnalysisCard）+ 操作历史时间线
+ * - 展开行：左右双卡片——左 AI 分析结论快照（AiAnalysisCard），右 操作历史时间线
+ * - 状态筛选：胶囊按钮组（进行中 = 运行中/TP1已止盈/已保本 三态聚合，带计数徽标）
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Button,
   Empty,
-  Radio,
   Row,
   Space,
   Spin,
@@ -18,7 +18,7 @@ import {
   Typography,
   message,
 } from 'antd'
-import { ReloadOutlined } from '@ant-design/icons'
+import { HistoryOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
 import AiAnalysisCard from './AiAnalysisCard'
@@ -144,7 +144,12 @@ export default function TradesPanel() {
   }, [fetchData])
 
   const filtered = useMemo(
-    () => (statusFilter ? rows.filter((r) => r.status === statusFilter) : rows),
+    () =>
+      statusFilter === ''
+        ? rows
+        : statusFilter === 'running'
+          ? rows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status))
+          : rows.filter((r) => r.status === statusFilter),
     [rows, statusFilter],
   )
 
@@ -158,16 +163,15 @@ export default function TradesPanel() {
     return { running, closed: closedRows.length, winRate, totalPnl }
   }, [rows])
 
-  // 状态筛选选项（带当前数量）
+  // 状态筛选选项：进行中 = 三态聚合（运行中/TP1已止盈/已保本），带当前数量与状态色点
   const statusOptions = useMemo(() => {
-    const count = (s: string) => (s ? rows.filter((r) => r.status === s).length : rows.length)
+    const running = rows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status)).length
+    const count = (s: string) => rows.filter((r) => r.status === s).length
     return [
-      { value: '', label: `全部 (${count('')})` },
-      { value: 'OPENED', label: `运行中 (${count('OPENED')})` },
-      { value: 'TP1_HIT', label: `TP1已止盈 (${count('TP1_HIT')})` },
-      { value: 'TP2_HIT', label: `已保本 (${count('TP2_HIT')})` },
-      { value: 'CLOSED', label: `已平仓 (${count('CLOSED')})` },
-      { value: 'FAILED', label: `失败 (${count('FAILED')})` },
+      { value: '', label: '全部', count: rows.length, dot: null as string | null },
+      { value: 'running', label: '进行中', count: running, dot: '#1677ff' },
+      { value: 'CLOSED', label: '已平仓', count: count('CLOSED'), dot: '#8c8c8c' },
+      { value: 'FAILED', label: '失败', count: count('FAILED'), dot: '#ff4d4f' },
     ]
   }, [rows])
 
@@ -210,7 +214,9 @@ export default function TradesPanel() {
             children: (
               <div>
                 <Space size={8}>
-                  <Tag color={meta.color}>{meta.label}</Tag>
+                  <Tag color={meta.color} style={{ marginInlineEnd: 0, fontSize: 12, lineHeight: '18px' }}>
+                    {meta.label}
+                  </Tag>
                   <span style={{ fontSize: 12, color: '#999' }}>{fmtTime(ev.created_at)}</span>
                 </Space>
                 {renderDetail(ev.detail)}
@@ -329,17 +335,58 @@ export default function TradesPanel() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <Row justify="space-between" align="middle">
-        <Radio.Group
-          optionType="button"
-          buttonStyle="solid"
-          size="small"
-          value={statusFilter}
-          options={statusOptions}
-          onChange={(e) => {
-            setStatusFilter(e.target.value)
-            setPage(1)
-          }}
-        />
+        {/* 状态筛选：胶囊按钮组（选中=蓝底白字，带状态色点与计数徽标） */}
+        <Space size={6} wrap>
+          {statusOptions.map((opt) => {
+            const active = statusFilter === opt.value
+            return (
+              <Tag.CheckableTag
+                key={opt.value}
+                checked={active}
+                onChange={() => {
+                  setStatusFilter(opt.value)
+                  setPage(1)
+                }}
+                style={{
+                  borderRadius: 999,
+                  padding: '3px 12px',
+                  fontSize: 13,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  background: active ? undefined : '#fff',
+                  border: `1px solid ${active ? 'transparent' : '#e5e5e5'}`,
+                  boxShadow: active ? '0 1px 4px rgba(22,119,255,0.30)' : 'none',
+                }}
+              >
+                {opt.dot && (
+                  <span
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      flexShrink: 0,
+                      background: active ? '#fff' : opt.dot,
+                    }}
+                  />
+                )}
+                {opt.label}
+                <span
+                  style={{
+                    fontSize: 11,
+                    lineHeight: '16px',
+                    padding: '0 6px',
+                    borderRadius: 999,
+                    background: active ? 'rgba(255,255,255,0.25)' : '#f5f5f5',
+                    color: active ? '#fff' : '#8c8c8c',
+                  }}
+                >
+                  {opt.count}
+                </span>
+              </Tag.CheckableTag>
+            )
+          })}
+        </Space>
         <Button icon={<ReloadOutlined />} size="small" onClick={fetchData}>
           刷新
         </Button>
@@ -385,9 +432,32 @@ export default function TradesPanel() {
             }}
             expandable={{
               expandedRowRender: (rec) => (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                  <div>
-                    <div style={{ fontWeight: 600, marginBottom: 8 }}>AI 分析结论（开单时快照）</div>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                  {/* 左：AI 分析结论快照（较宽） */}
+                  <div
+                    style={{
+                      flex: '1.5 1 420px',
+                      minWidth: 0,
+                      padding: '12px 14px',
+                      borderRadius: 8,
+                      background: '#fafafa',
+                      border: '1px solid #f0f0f0',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        marginBottom: 10,
+                        fontWeight: 600,
+                        fontSize: 13,
+                        color: '#595959',
+                      }}
+                    >
+                      <RobotOutlined style={{ color: '#1677ff' }} />
+                      AI 分析结论（开单时快照）
+                    </div>
                     {rec.ai_snapshot ? (
                       <AiAnalysisCard ai={rec.ai_snapshot} />
                     ) : (
@@ -396,8 +466,32 @@ export default function TradesPanel() {
                       </Typography.Text>
                     )}
                   </div>
-                  <div>
-                    <div style={{ fontWeight: 600, marginBottom: 8 }}>操作历史</div>
+                  {/* 右：操作历史时间线（较窄） */}
+                  <div
+                    style={{
+                      flex: '1 1 280px',
+                      minWidth: 260,
+                      maxWidth: 440,
+                      padding: '12px 14px',
+                      borderRadius: 8,
+                      background: '#fafafa',
+                      border: '1px solid #f0f0f0',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        marginBottom: 10,
+                        fontWeight: 600,
+                        fontSize: 13,
+                        color: '#595959',
+                      }}
+                    >
+                      <HistoryOutlined style={{ color: '#fa8c16' }} />
+                      操作历史
+                    </div>
                     {renderTimeline(rec)}
                   </div>
                 </div>
