@@ -242,8 +242,8 @@ def run_ai_analysis_single(
         db.close()
         db = SessionLocal()
         r = db.get(ScanResult, r.id)
-        # 近期摆动结构（HH/LH/HL/LL）随事实包给 AI，与图表标注同源
-        signal["recent_swings"] = recent_swings(klines, order=cfg.swing_order, n=2)
+        # 近期摆动结构（HH/LH/HL/LL，高低点各 20 个）随事实包给 AI，与图表标注同源
+        signal["recent_swings"] = recent_swings(klines, order=cfg.swing_order, n=20)
         # 关键位在分析时刻重算（含 ATR 自适应区域与时间加权）：扫描落库的 key_levels
         # 是扫描时快照，分析时结构可能已变化。指纹已按扫描快照算完，缓存判定不受影响
         fresh_levels = compute_signal_key_levels(klines, {

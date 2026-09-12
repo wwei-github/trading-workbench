@@ -16,7 +16,8 @@ export interface KeyLevel {
   zone_low: number;
   zone_high: number;
   touches: number;
-  weight?: number; // 时间加权触及强度（聚类位才有）
+  weight?: number; // 时间加权触及强度（含形态加成，聚类位才有）
+  pattern_hits?: number; // 触及点出现方向匹配 12 金K 的次数（形态确认加成）
   role: string; // support / resistance
 }
 

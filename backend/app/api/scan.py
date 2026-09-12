@@ -590,8 +590,9 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         "volume_type": volume_type,
         "volume": vol,
         "volume_24h": volume_24h,
-        # 近期摆动结构（HH/LH/HL/LL），与图表标注同源
-        "recent_swings": recent_swings(klines, order=cfg.swing_order, n=2),
+        # 近期摆动结构（HH/LH/HL/LL，高低点各 20 个）：足够 AI 锚定止盈档位与
+        # 评估关键位的历史触及密度
+        "recent_swings": recent_swings(klines, order=cfg.swing_order, n=20),
         # 分析时刻计算的关键位（前高前低/支撑压力/区间边界，含时间加权与 ATR 自适应区域）
         "key_levels": compute_signal_key_levels(klines, {
             "swing_order": cfg.swing_order,

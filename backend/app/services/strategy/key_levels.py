@@ -14,6 +14,12 @@ ATR% 越大区域越宽（0.5×ATR），限制在配置值 key_level_tolerance �
 - 每次触及的权重 = 2^(-bars_ago / 半衰期)，半衰期 60 根已收盘 K 线
 - 聚类簇按总权重过滤（≥1.2，约等于"近期 2 次触及"），纯久远旧点自然衰减淘汰；
   触及次数 touches 仍保留原始计数供展示
+
+形态确认加成（2026-09-13）：
+- 触及点（摆动点当根及确认窗内）出现方向匹配的 12 金K（低点配看涨/高点配看跌），
+  该次触及的时间权重 ×PATTERN_TOUCH_BOOST——有形态确认的位更可靠，
+  单次近期形态触及即可达到聚类保留阈值
+- 每个关键位带 pattern_hits（簇内形态确认的触及次数），随事实包给 AI 参考
 """
 from __future__ import annotations
 
@@ -21,12 +27,19 @@ from typing import Optional
 
 import numpy as np
 
+from app.services.strategy import candlestick
+from app.services.strategy.candlestick import GOLDEN_12
 from app.services.strategy.swing import linear_regression
 from app.services.strategy.types import RANGE_BOUND
 
 # 触及权重半衰期（已收盘 K 线根数）与聚类保留阈值（≈2 次近期触及）
 TOUCH_HALF_LIFE = 60
 MIN_CLUSTER_WEIGHT = 1.2
+
+# 形态确认加成：触及点出现方向匹配的 12 金K，该次触及权重乘数
+PATTERN_TOUCH_BOOST = 1.5
+# 形态确认窗（根）：启明星/黄昏星在极值后 1~2 根才完成，摆动点当根 + 后 2 根内命中都算
+PATTERN_CONFIRM_WINDOW = 2
 
 # 放量突破的量能门槛：收盘K线成交量 ≥ 该倍数 × 近20根均量（volume_ratio 唯一口径）
 BREAKOUT_VOL_RATIO = 1.2
@@ -63,7 +76,7 @@ def volume_ratio(klines: list) -> float:
 
 
 def _make_level(price: float, touches: int, close_last: float, tol: float,
-                weight: Optional[float] = None) -> dict:
+                weight: Optional[float] = None, pattern_hits: int = 0) -> dict:
     """构造关键位 dict。
 
     【2026-09-12 两类化】kind 由角色动态推导：位在当前价上方=压力位(resistance)，
@@ -77,9 +90,10 @@ def _make_level(price: float, touches: int, close_last: float, tol: float,
         "zone_high": float(price * (1 + tol)),
         "touches": int(touches),
         "role": role,
+        "pattern_hits": int(pattern_hits),  # 簇内出现方向匹配 12 金K 的触及次数
     }
     if weight is not None:
-        lv["weight"] = round(float(weight), 2)  # 时间加权触及强度（最近摆动点无聚类权重）
+        lv["weight"] = round(float(weight), 2)  # 时间加权触及强度（含形态加成；最近摆动点无聚类权重）
     return lv
 
 
@@ -89,13 +103,37 @@ def _touch_weight(idx: int, n_closed: int) -> float:
     return 2.0 ** (-bars_ago / TOUCH_HALF_LIFE)
 
 
+def _pattern_boosts(swings: list[tuple], klines: list) -> dict[int, float]:
+    """摆动点索引 → 该次触及的权重乘数：触及点附近出现方向匹配的 12 金K 时 >1。
+
+    低点配看涨形态、高点配看跌形态（形态与位角色共振才算确认）；
+    检查摆动点当根及其后 PATTERN_CONFIRM_WINDOW 根（星形三根K线在极值后完成）。
+    只查已收盘 K 线（len(klines)-2 及以前）。
+    """
+    boosts: dict[int, float] = {}
+    last_closed = len(klines) - 2
+    for idx, kind, _ in swings:
+        want = "bullish" if kind == "L" else "bearish"
+        for j in range(int(idx), min(int(idx) + PATTERN_CONFIRM_WINDOW, last_closed) + 1):
+            if any(
+                p["direction"] == want and p["pattern"] in GOLDEN_12
+                for p in candlestick.detect_all_patterns(klines, idx=j)
+            ):
+                boosts[idx] = PATTERN_TOUCH_BOOST
+                break
+    return boosts
+
+
 def _cluster_levels(points: list[tuple[float, int]], merge_thr: float, n_closed: int,
-                    ) -> list[tuple[float, int, float]]:
-    """按价格聚类：相互距离 ≤ merge_thr 的点合并（时间加权），
-    返回 [(中心价, 触及次数, 总权重)]，仅保留总权重 ≥ MIN_CLUSTER_WEIGHT 的簇
-    （权重 1.2 上限单点 1.0，天然要求 ≥2 次触及，且纯久远旧点会被衰减淘汰）"""
+                    boosts: Optional[dict[int, float]] = None,
+                    ) -> list[tuple[float, int, float, int]]:
+    """按价格聚类：相互距离 ≤ merge_thr 的点合并（时间加权，含形态加成），
+    返回 [(中心价, 触及次数, 总权重, 形态确认次数)]，仅保留总权重 ≥ MIN_CLUSTER_WEIGHT 的簇
+    （权重 1.2 上限单点 1.0，天然要求 ≥2 次触及——近期形态确认触及 ×1.5 除外，
+    且纯久远旧点会被衰减淘汰）"""
     if not points:
         return []
+    boosts = boosts or {}
     pts = sorted(points, key=lambda p: p[0])
     groups: list[list[tuple[float, int]]] = [[pts[0]]]
     for p in pts[1:]:
@@ -105,9 +143,14 @@ def _cluster_levels(points: list[tuple[float, int]], merge_thr: float, n_closed:
             groups.append([p])
     out = []
     for g in groups:
-        weight = sum(_touch_weight(idx, n_closed) for _, idx in g)
+        weight = sum(_touch_weight(idx, n_closed) * boosts.get(idx, 1.0) for _, idx in g)
         if weight >= MIN_CLUSTER_WEIGHT:
-            out.append((sum(p[0] for p in g) / len(g), len(g), weight))
+            out.append((
+                sum(p[0] for p in g) / len(g),
+                len(g),
+                weight,
+                sum(1 for _, idx in g if idx in boosts),
+            ))
     return out
 
 
@@ -123,7 +166,7 @@ def compute_key_levels(
 
     swings: merge_swings 输出 [(idx, "H"|"L", price), ...]
     signal_type: classify_structure 的分类结果（震荡时补充区间边界）
-    klines: 传入时可按 ATR 自适应区域半宽（不传则用配置固定值）
+    klines: 传入时启用 ATR 自适应区域半宽与形态确认加成（不传则用配置固定值、无加成）
     """
     highs_seq = [p for p in swings if p[1] == "H"]
     lows_seq = [p for p in swings if p[1] == "L"]
@@ -136,24 +179,29 @@ def compute_key_levels(
 
     # 区域半宽自适应：0.5×ATR，限制在配置容忍度的 [0.5×, 2×] 内
     tol = base_tol
+    boosts: dict[int, float] = {}
     if klines:
         atr = calc_atr(klines)
         if atr and close_last > 0:
             tol = min(max(0.5 * atr / close_last, base_tol * 0.5), base_tol * 2)
+        # 形态确认加成：触及点出现方向匹配的 12 金K → 该次触及权重 ×1.5
+        boosts = _pattern_boosts(swings, klines)
 
     levels: list[dict] = []
 
-    # 1. 最近摆动点（天然最新，无聚类权重）
-    levels.append(_make_level(highs_seq[-1][2], 1, close_last, tol))
-    levels.append(_make_level(lows_seq[-1][2], 1, close_last, tol))
+    # 1. 最近摆动点（天然最新，无聚类权重；pattern_hits 供 AI 参考）
+    levels.append(_make_level(highs_seq[-1][2], 1, close_last, tol,
+                              pattern_hits=int(highs_seq[-1][0]) in boosts))
+    levels.append(_make_level(lows_seq[-1][2], 1, close_last, tol,
+                              pattern_hits=int(lows_seq[-1][0]) in boosts))
 
-    # 2. 历史摆动点聚类（除最近点外，时间加权）
-    for price, touches, weight in _cluster_levels(
-            [(p[2], p[0]) for p in highs_seq[:-1]], merge_thr, n_closed):
-        levels.append(_make_level(price, touches, close_last, tol, weight))
-    for price, touches, weight in _cluster_levels(
-            [(p[2], p[0]) for p in lows_seq[:-1]], merge_thr, n_closed):
-        levels.append(_make_level(price, touches, close_last, tol, weight))
+    # 2. 历史摆动点聚类（除最近点外，时间加权 + 形态加成）
+    for price, touches, weight, hits in _cluster_levels(
+            [(p[2], p[0]) for p in highs_seq[:-1]], merge_thr, n_closed, boosts):
+        levels.append(_make_level(price, touches, close_last, tol, weight, hits))
+    for price, touches, weight, hits in _cluster_levels(
+            [(p[2], p[0]) for p in lows_seq[:-1]], merge_thr, n_closed, boosts):
+        levels.append(_make_level(price, touches, close_last, tol, weight, hits))
 
     # 3. 区间回归边界（仅震荡结构）：按角色归类为压力位/支撑位
     if signal_type == RANGE_BOUND:

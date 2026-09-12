@@ -68,6 +68,9 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 12. 方向铁律（程序强校验）：只在支撑位做多，只在压力位做空。锚点与位置不符会直接被风控打回。
     唯一例外：信号类型为 breakout（放量突破，事实包 signal_type 可见）时顺势追突破——
     向上突破压力位做多、向下突破支撑位做空，entry 用 market 锚。
+13. 关键位可靠性：事实包关键位列表中触及次数越多、时间加权权重越高越可靠；时间加权已含
+    形态确认加成（触及点出现方向匹配的 12 金K 会放大权重，"形态确认N次"标记）。
+    锚定止盈、评估支撑压力强度时优先选触及多/有权重/形态确认多的位。
 
 {skill_index}"""
 
@@ -424,6 +427,8 @@ def _build_user_msg(
         touch = f"触及{lv.get('touches', 1)}次"
         if lv.get("weight") is not None:
             touch += f"·时间加权{lv['weight']}"
+        if lv.get("pattern_hits"):
+            touch += f"·形态确认{lv['pattern_hits']}次"
         levels.append(
             f"  {POSITION_LABEL_MAP.get(lv.get('kind'), lv.get('kind'))}: {lv['price']:.6g} "
             f"({role}, {touch})"
