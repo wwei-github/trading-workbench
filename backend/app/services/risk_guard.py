@@ -173,8 +173,10 @@ def validate_decision(
         if dev > 0.02:
             violations.append(f"入场价偏离当前价 {dev*100:.2f}% > 2%（入场应接近现价）")
 
-    # ── 止损须越过最近N根已收盘K线极值：多单严格低于最低点、空单严格高于最高点 ──
-    # 不能正好用极值本身（插针必扫损）；violations 会反馈给 AI 回炉重试
+    # ── 止损须越过最近N根已收盘K线影线极值（最高/最低价，非收盘价）：多单严格低于最低点、
+    # 空单严格高于最高点，且至少留 STOP_LOSS_BUFFER_PCT 缓冲——价格常在极点前反弹，贴着极点的
+    # 止损大概率被插针扫损。缓冲不足者程序直接推远到缓冲处（更远→固定亏损法仓位更小，风险不变）；
+    # 未越过极值者反馈给 AI 回炉重试
     closed = klines[:-1] if len(klines) >= 2 else klines
     n = min(settings.STOP_LOSS_RECENT_BARS, len(closed))
     if n > 0:
@@ -182,14 +184,20 @@ def validate_decision(
             recent_low = min(float(k[3]) for k in closed[-n:])
             if d.stop_loss >= recent_low:
                 violations.append(
-                    f"做多止损 {d.stop_loss} 必须严格低于最近{n}根K线最低点 {recent_low}（在其下方留缓冲，不能正好用最低点）"
+                    f"做多止损 {d.stop_loss} 必须严格低于最近{n}根K线最低点 {recent_low}"
+                    f"（影线极值，且至少低 {settings.STOP_LOSS_BUFFER_PCT:.1%} 缓冲，不能正好用最低点）"
                 )
+            elif d.stop_loss > recent_low * (1 - settings.STOP_LOSS_BUFFER_PCT):
+                d.stop_loss = recent_low * (1 - settings.STOP_LOSS_BUFFER_PCT)
         elif d.direction == "short":
             recent_high = max(float(k[2]) for k in closed[-n:])
             if d.stop_loss <= recent_high:
                 violations.append(
-                    f"做空止损 {d.stop_loss} 必须严格高于最近{n}根K线最高点 {recent_high}（在其上方留缓冲，不能正好用最高点）"
+                    f"做空止损 {d.stop_loss} 必须严格高于最近{n}根K线最高点 {recent_high}"
+                    f"（影线极值，且至少高 {settings.STOP_LOSS_BUFFER_PCT:.1%} 缓冲，不能正好用最高点）"
                 )
+            elif d.stop_loss < recent_high * (1 + settings.STOP_LOSS_BUFFER_PCT):
+                d.stop_loss = recent_high * (1 + settings.STOP_LOSS_BUFFER_PCT)
 
     stop_dist = abs(d.entry_price - d.stop_loss)
     stop_pct = stop_dist / d.entry_price if d.entry_price else 0
