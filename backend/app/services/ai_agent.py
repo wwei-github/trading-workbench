@@ -30,8 +30,14 @@ logger = logging.getLogger(__name__)
 
 MAX_ROUNDS = 5
 
-# 锚点枚举：关键位两类（support/resistance，按 role 解析到价格侧最近的一档）+ market（市价锚）
-LEVEL_REFS = ("support", "resistance", "market")
+# 锚点枚举：关键位两类角色（support/resistance，按 role 解析到价格侧最近的一档）
+# + 区域近轨锚点（做多止盈锚压力位下轨、做空锚支撑位上轨）+ market（市价锚）。
+# next_ 前缀取更前一档（止盈二用）
+LEVEL_REFS = (
+    "support", "resistance", "market",
+    "resistance_zone_low", "support_zone_high",
+    "next_resistance_zone_low", "next_support_zone_high",
+)
 
 _REF_DESC = "、".join(LEVEL_REFS)
 
@@ -39,6 +45,10 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 1. 程序能算的不让你算——事实包数据直接用；需要补充数据才调用工具，最多 {max_rounds} 轮。
 2. **禁止编造绝对价格**：所有价格必须用结构位锚点表达（entry_ref/stop_ref/tp1_ref/tp2_ref + offset_pct），
    ref 取值: {_ref_desc}；offset_pct 为相对锚点的百分比偏移（如支撑下方 0.5×ATR 用负 offset）。
+   止盈用区域近轨锚点：做多止盈一 tp1_ref=resistance_zone_low（最近压力位下轨）、
+   止盈二 tp2_ref=next_resistance_zone_low（下一档压力位下轨）；做空用 support_zone_high /
+   next_support_zone_high（支撑位上轨）。止盈 offset 留余地：做多 -0.2~-0.5（下轨下方），
+   做空 0.2~0.5（上轨上方）。
 3. 决策必须通过 submit_decision 工具提交，提交后程序会做风控校验：
    校验不通过时工具会返回违规明细，请按明细修正后重新提交。
 4. **入场价纪律**：当前价格是分析时刻的最新价。顺势追势时 entry 用 market 锚（offset 0 附近）；
@@ -61,9 +71,11 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 10. 止损止盈纪律（多空方向不同，程序会校验）：做多——stop 必须严格低于最近 10 根K线最低点（用影线极值即最低价计算，
     非收盘价），且至少低 0.2%（建议 0.2%~0.5%）缓冲防插针扫损；做空相反，stop 必须严格高于最近 10 根K线最高点
     （影线极值，留缓冲）。缓冲不足程序会自动推远。
-11. 止盈锚定：止盈一必须锚定入场方向前方的结构位——做多看上方的压力位，做空看下方的支撑位，
-    并留 0.2%~0.5% 余地（做多低于该位、做空高于该位）；到最近结构位盈亏比不足 {rr_min} 时取下一档更远结构位。
-    止盈二取更前一档同类结构位且必须比止盈一更远。前方无任何结构位可锚定时（如创新高突破），
+11. 止盈锚定：关键位是带上下轨的区域。做多止盈一必须挂在上方压力位的下轨（zone_low）下方 0.2%~0.5%，
+    做空挂在下方支撑位的上轨（zone_high）上方 0.2%~0.5%——不得挂在关键位区域内（价格常在区域边缘反弹，
+    挂进区域的止盈大概率落空）；到最近结构位盈亏比不足 {rr_min} 时取下一档更远结构位。
+    止盈二取更前一档同类结构位（做多=更高一档压力位的下轨下方，做空=更低一档支撑位的上轨上方）且必须比止盈一更远。
+    近期摆动高点/低点也可锚定（锚定价位本身，留同样余地）。前方无任何结构位可锚定时（如创新高突破），
     止盈一 = 入场 ± {rr_min}×止损距离、止盈二不设（仅一档）；程序同样会自动回退。盈亏比 ≥{rr_min} 是开单硬性要求。
 12. 方向铁律（程序强校验）：只在支撑位做多，只在压力位做空。锚点与位置不符会直接被风控打回。
     唯一例外：信号类型为 breakout（放量突破，事实包 signal_type 可见）时顺势追突破——
@@ -121,10 +133,13 @@ TOOLS_SCHEMA = [
             "entry_offset_pct": {"type": "number", "description": "入场相对锚点偏移%，默认0"},
             "stop_ref": {"type": "string", "enum": list(LEVEL_REFS), "description": "止损锚点"},
             "stop_offset_pct": {"type": "number", "description": "止损相对锚点偏移%（通常负/反向）"},
-            "tp1_ref": {"type": "string", "enum": list(LEVEL_REFS), "description": "止盈1锚点"},
-            "tp1_offset_pct": {"type": "number", "description": "止盈1偏移%"},
-            "tp2_ref": {"type": "string", "enum": list(LEVEL_REFS), "description": "止盈2锚点（可选）"},
-            "tp2_offset_pct": {"type": "number", "description": "止盈2偏移%"},
+            "tp1_ref": {"type": "string", "enum": list(LEVEL_REFS),
+                        "description": "止盈1锚点：做多=resistance_zone_low（最近压力位下轨），做空=support_zone_high（最近支撑位上轨）"},
+            "tp1_offset_pct": {"type": "number",
+                               "description": "止盈1相对锚点偏移%，留余地：做多 -0.2~-0.5（下轨下方），做空 0.2~0.5（上轨上方）"},
+            "tp2_ref": {"type": "string", "enum": list(LEVEL_REFS),
+                        "description": "止盈2锚点（可选）：做多=next_resistance_zone_low，做空=next_support_zone_high"},
+            "tp2_offset_pct": {"type": "number", "description": "止盈2相对锚点偏移%，同止盈1留余地"},
             "recommendation": {"type": "integer", "description": "推荐程度 0-100，skip≤30，suggest≥50"},
             "reason": {
                 "type": "string",
@@ -139,16 +154,49 @@ TOOLS_SCHEMA = [
 ]
 
 
+# 区域近轨锚点：ref -> (role, 区域字段, 第几档)；第几档 0=价格侧最近、1=下一档（止盈二用）
+_ZONE_REF_MAP = {
+    "resistance_zone_low": ("resistance", "zone_low", 0),
+    "support_zone_high": ("support", "zone_high", 0),
+    "next_resistance_zone_low": ("resistance", "zone_low", 1),
+    "next_support_zone_high": ("support", "zone_high", 1),
+}
+
+
+def _nth_level(signal: dict, role: str, nth: int) -> Optional[dict]:
+    """价格侧第 nth 近的某角色关键位：压力位按价格升序（上方最近为 0），支撑位按价格降序"""
+    levels = [
+        lv for lv in (signal.get("key_levels") or [])
+        if lv.get("role") == role and float(lv.get("price", 0) or 0) > 0
+    ]
+    if len(levels) <= nth:
+        return None
+    levels.sort(key=lambda lv: float(lv["price"]), reverse=(role == "support"))
+    return levels[nth]
+
+
 def _resolve_price(ref: Optional[str], offset_pct, signal: dict) -> Optional[float]:
     """锚点 + 偏移 → 绝对价格；非法锚点返回 None。
 
     support/resistance 按 role 解析到价格侧最近的一档（多位同角色时：
-    support 取价下方最近即价格最大者，resistance 取价上方最近即价格最小者）。
+    support 取价下方最近即价格最大者，resistance 取价上方最近即价格最小者）；
+    区域近轨锚点解析到对应关键位的 zone_low/zone_high（旧数据无区域字段时退化为价位本身）。
     """
     if not ref:
         return None
     if ref == "market":
         base = float(signal.get("current_price") or 0)
+    elif ref in _ZONE_REF_MAP:
+        role, field, nth = _ZONE_REF_MAP[ref]
+        lv = _nth_level(signal, role, nth)
+        if lv is None:
+            return None
+        try:
+            base = float(lv.get(field))
+        except (TypeError, ValueError):
+            base = 0.0
+        if base <= 0:
+            base = float(lv.get("price") or 0)
     else:
         prices = [
             float(lv.get("price", 0))
@@ -429,9 +477,16 @@ def _build_user_msg(
             touch += f"·时间加权{lv['weight']}"
         if lv.get("pattern_hits"):
             touch += f"·形态确认{lv['pattern_hits']}次"
+        zone = ""
+        try:
+            zl, zh = float(lv.get("zone_low") or 0), float(lv.get("zone_high") or 0)
+        except (TypeError, ValueError):
+            zl = zh = 0.0
+        if zl > 0 and zh > 0:
+            zone = f"，区域{zl:.6g}~{zh:.6g}"
         levels.append(
-            f"  {POSITION_LABEL_MAP.get(lv.get('kind'), lv.get('kind'))}: {lv['price']:.6g} "
-            f"({role}, {touch})"
+            f"  {POSITION_LABEL_MAP.get(lv.get('kind'), lv.get('kind'))}: {lv['price']:.6g}"
+            f"{zone} ({role}, {touch})"
         )
     # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点）
     sw = signal.get("recent_swings") or {}

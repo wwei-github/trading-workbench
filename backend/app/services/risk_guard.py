@@ -3,7 +3,8 @@
 - Schema 强约束（Pydantic）
 - 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR]，价格距离不设百分比红线）、
   止损须越过最近 N 根已收盘K线极值（多单严格低于最低点，空单严格高于最高点）；
-  止盈须锚定前方结构位（多单=上方高点/关键位，空单=下方低点/关键位，留余地；TP2 更远一档）；
+  止盈须锚定前方结构位区域近轨（多单=压力位下轨 zone_low 下方、空单=支撑位上轨 zone_high 上方，
+  留余地；摆动点锚定价位本身；TP2 更远一档同规则）；
   方向铁律（docs/03 §8）：只在支撑位做多、只在压力位做空——入场价必须落在对应角色关键位
   区域内（±0.25×ATR 容差）；例外：放量突破 breakout / 手动搜索 manual_search / 无关键位；
   仓位公式保证触止损账户亏损 ≤ 风险预算（RISK_BUDGET_PCT=3%，仓位维度的"3%止损"）
@@ -81,43 +82,69 @@ def normalize_raw(raw: dict) -> TradeDecision:
 
 
 
-_TP_ANCHOR_TOL = 0.015   # 止盈锚定容差：距结构位 1.5% 以内视为锚定（留余地）
-_TP_OVERSHOOT = 0.002    # 允许略越过结构位的幅度（防止贪心把止盈挂到结构位外过远）
+_TP_ANCHOR_TOL = 0.015   # 止盈锚定容差：距锚定点 1.5% 以内视为锚定（留余地）
+_TP_OVERSHOOT = 0.002    # 允许略越过锚定点的幅度（程序直接拉回到位外侧 0.2%，不回炉）
 
 
-def _structural_candidates(signal: dict, klines: list, direction: str, entry: float) -> list[float]:
-    """入场方向前方的结构位候选：摆动高/低点 + 关键位价格。
+def _structural_candidates(signal: dict, klines: list, direction: str, entry: float) -> list[dict]:
+    """入场方向前方的结构位候选，每个候选 {price, anchor, far}：
 
-    多单止盈看上方（前高/压力类关键位），空单看下方（前低/支撑类关键位）。
-    多单返回升序，空单返回降序。摆动 order 用全局 SWING_ORDER（与 fact pack 近似同源）。
+    - anchor 锚定点：关键位取区域近轨（多单=压力位下轨 zone_low，空单=支撑位上轨 zone_high），
+      止盈挂在近轨外侧留余地——价格常在区域边缘反弹，深入区域才触发的止盈大概率落空；
+      摆动点无区域，锚定价位本身。
+    - far 匹配上界：关键位=区域远轨（近轨与远轨之间视为"略越过近轨"，程序拉回），
+      摆动点=价位外侧 0.2%。
+    多单返回按 anchor 升序，空单降序。摆动 order 用全局 SWING_ORDER（与 fact pack 近似同源）。
     """
     swings = recent_swings(klines, order=settings.SWING_ORDER, n=50)
-    prices = [float(s["price"]) for s in (swings["highs"] if direction == "long" else swings["lows"])]
+    cands: list[dict] = []
+    for s in (swings["highs"] if direction == "long" else swings["lows"]):
+        p = float(s["price"])
+        if (direction == "long" and p <= entry) or (direction == "short" and p >= entry):
+            continue
+        far = p * (1 + _TP_OVERSHOOT) if direction == "long" else p * (1 - _TP_OVERSHOOT)
+        cands.append({"price": p, "anchor": p, "far": far})
     for lv in (signal.get("key_levels") or []):
         try:
-            prices.append(float(lv.get("price") or 0))
+            price = float(lv.get("price") or 0)
         except (TypeError, ValueError):
             continue
-    if direction == "long":
-        return sorted({p for p in prices if p > entry})
-    return sorted({p for p in prices if p < entry}, reverse=True)
+        if price <= 0:
+            continue
+        anchor_field = "zone_low" if direction == "long" else "zone_high"
+        far_field = "zone_high" if direction == "long" else "zone_low"
+        try:
+            anchor = float(lv[anchor_field])
+            far = float(lv[far_field])
+        except (KeyError, TypeError, ValueError):
+            # 旧数据无区域字段：退化为价位锚定（略越位 0.2% 内仍可拉回）
+            anchor = price
+            far = price * (1 + _TP_OVERSHOOT) if direction == "long" else price * (1 - _TP_OVERSHOOT)
+        if (far - anchor) * (1 if direction == "long" else -1) < 0:
+            far = anchor  # 区域数据异常兜底
+        # 近轨须仍在入场方向前方，否则该关键位对止盈无意义（入场已在区域内/越过区域）
+        if (anchor - entry) * (1 if direction == "long" else -1) <= 0:
+            continue
+        cands.append({"price": price, "anchor": anchor, "far": far})
+    cands.sort(key=lambda c: c["anchor"], reverse=(direction == "short"))
+    return cands
 
 
-def _anchored(tp: float, cands: list[float], direction: str) -> Optional[float]:
-    """TP 是否锚定某结构位（留余地方向随多空：多单略低于高位、空单略高于低位），返回匹配位"""
+def _anchored(tp: float, cands: list[dict], direction: str) -> Optional[dict]:
+    """TP 是否锚定某结构位近轨并留余地（多单=近轨下方~远轨间，空单对称），返回匹配候选"""
     for c in cands:
         if direction == "long":
-            if c * (1 - _TP_ANCHOR_TOL) <= tp <= c * (1 + _TP_OVERSHOOT):
+            if c["anchor"] * (1 - _TP_ANCHOR_TOL) <= tp <= c["far"]:
                 return c
         else:
-            if c * (1 - _TP_OVERSHOOT) <= tp <= c * (1 + _TP_ANCHOR_TOL):
+            if c["far"] <= tp <= c["anchor"] * (1 + _TP_ANCHOR_TOL):
                 return c
     return None
 
 
-def _clamp_before_level(tp: float, level: float, direction: str) -> float:
-    """越过结构位的止盈拉回位前 0.2%（多单位下方、空单位上方）——程序直接修正不回炉"""
-    return level * (1 - _TP_OVERSHOOT) if direction == "long" else level * (1 + _TP_OVERSHOOT)
+def _clamp_before_level(tp: float, anchor: float, direction: str) -> float:
+    """越过区域近轨的止盈拉回近轨外侧 0.2%（多单=下轨下方、空单=上轨上方）——程序直接修正不回炉"""
+    return anchor * (1 - _TP_OVERSHOOT) if direction == "long" else anchor * (1 + _TP_OVERSHOOT)
 
 
 def validate_decision(
@@ -187,8 +214,16 @@ def validate_decision(
             lv for lv in levels
             if lv.get("role") == wanted_role and float(lv.get("price") or 0) > 0
         ]
+
+        def _zone_edge(lv: dict, field: str) -> float:
+            # 区域字段缺失（旧数据）时退化为价位本身
+            try:
+                return float(lv[field])
+            except (KeyError, TypeError, ValueError):
+                return float(lv.get("price") or 0)
+
         if not any(
-            float(lv["zone_low"]) - tol <= d.entry_price <= float(lv["zone_high"]) + tol
+            _zone_edge(lv, "zone_low") - tol <= d.entry_price <= _zone_edge(lv, "zone_high") + tol
             for lv in side_levels
         ):
             if side_levels:
@@ -250,10 +285,9 @@ def validate_decision(
                 f"止损距离 {stop_dist:.6g} > 3×ATR({3*atr:.6g})，过远盈亏比崩塌"
             )
 
-    # ── 止盈锚定校验：TP1 必须是前方第一个（或因盈亏比退一档的）结构位，TP2 更远一档 ──
-    # 多单锚定上方的高点/关键位，空单锚定下方的低点/关键位；留余地 = 距结构位容差内、
-    # 不得显著越过（越过者程序直接拉回位前 0.2%）。前方无任何结构位时回退固定盈亏比；
-    # 其余违规列出可用结构位供 AI 重试
+    # ── 止盈锚定校验：TP1 必须锚定前方第一个结构位区域近轨（多单=压力位下轨、空单=支撑位上轨）
+    # 并留余地，TP2 更远一档同规则；摆动点锚定价位本身。近轨与远轨之间视为"略越过近轨"，
+    # 程序直接拉回近轨外侧 0.2%。前方无任何结构位时回退固定盈亏比；其余违规列出可用锚定点供 AI 重试
     if d.direction in ("long", "short") and d.take_profit_1 > 0:
         side = "上方" if d.direction == "long" else "下方"
         cands = _structural_candidates(signal, klines, d.direction, d.entry_price)
@@ -267,33 +301,36 @@ def validate_decision(
                 d.take_profit_1 = d.entry_price + fb if d.direction == "long" else d.entry_price - fb
                 d.take_profit_2 = 0.0
             else:
-                near = ", ".join(f"{c:g}" for c in cands[:5])
+                near = ", ".join(f"{c['anchor']:g}" for c in cands[:5])
                 violations.append(
-                    f"止盈一 {d.take_profit_1} 未锚定结构位：必须是前一个高点/低点或关键位并留余地"
-                    f"（{'做多看上方高点/关键位' if d.direction == 'long' else '做空看下方低点/关键位'}）。"
-                    f"可用结构位（{side}）：{near}"
+                    f"止盈一 {d.take_profit_1} 未锚定结构位：关键位须挂在区域近轨外侧留余地"
+                    f"（{'做多=压力位下轨下方 0.2%~0.5%' if d.direction == 'long' else '做空=支撑位上轨上方 0.2%~0.5%'}，"
+                    f"摆动点锚定价位本身，看{side}）。可用锚定点（{side}）：{near}"
                 )
-        elif (d.direction == "long" and d.take_profit_1 > c1) or (
-            d.direction == "short" and d.take_profit_1 < c1
+        elif (d.direction == "long" and d.take_profit_1 > c1["anchor"]) or (
+            d.direction == "short" and d.take_profit_1 < c1["anchor"]
         ):
-            # 用户规则：止盈必须留在结构位之前（多=位下方、空=位上方）——价格常在位前反弹，
-            # 挂到位外大概率不成交。AI 偶尔把 TP 挂过结构位（容差内 ≤0.2%），程序拉回位前 0.2%
-            d.take_profit_1 = _clamp_before_level(d.take_profit_1, c1, d.direction)
+            # 用户规则：止盈须挂在区域近轨外侧（多=下轨下方、空=上轨上方）——价格常在区域边缘
+            # 反弹，深入区域才触发的止盈大概率落空。AI 挂进区域时程序拉回近轨外侧 0.2%
+            d.take_profit_1 = _clamp_before_level(d.take_profit_1, c1["anchor"], d.direction)
         if d.take_profit_2 > 0 and c1 is not None:
-            further = [c for c in cands if (c > c1 if d.direction == "long" else c < c1)]
+            further = [
+                c for c in cands
+                if (c["anchor"] > c1["anchor"] if d.direction == "long" else c["anchor"] < c1["anchor"])
+            ]
             if not further:
                 d.take_profit_2 = 0.0  # 更前方已无结构位：仅设一档
             else:
                 c2 = _anchored(d.take_profit_2, further, d.direction)
                 if c2 is None:
-                    near = ", ".join(f"{c:g}" for c in further[:5])
+                    near = ", ".join(f"{c['anchor']:g}" for c in further[:5])
                     violations.append(
-                        f"止盈二 {d.take_profit_2} 未锚定比止盈一更远的一档结构位。可用结构位（{side}）：{near}"
+                        f"止盈二 {d.take_profit_2} 未锚定比止盈一更远的一档结构位近轨。可用锚定点（{side}）：{near}"
                     )
-                elif (d.direction == "long" and d.take_profit_2 > c2) or (
-                    d.direction == "short" and d.take_profit_2 < c2
+                elif (d.direction == "long" and d.take_profit_2 > c2["anchor"]) or (
+                    d.direction == "short" and d.take_profit_2 < c2["anchor"]
                 ):
-                    d.take_profit_2 = _clamp_before_level(d.take_profit_2, c2, d.direction)
+                    d.take_profit_2 = _clamp_before_level(d.take_profit_2, c2["anchor"], d.direction)
 
     # 止盈锚定块的回退/清零可能改变 tp1/tp2，关系检查以修正后值为准（清除原始值误报）
     if d.direction == "long" and d.take_profit_2 > 0 and d.take_profit_2 <= d.take_profit_1:
