@@ -154,9 +154,11 @@ export interface TradeRecord {
   status: 'OPENED' | 'TP1_HIT' | 'TP2_HIT' | 'CLOSED' | 'FAILED'
   opened_at: string | null
   closed_at: string | null
-  realized_pnl: number | null // 正/负值 USDT
+  realized_pnl: number | null // 正/负值 USDT（净额：含手续费/资金费）
   pnl_pct: number | null // 相对止损金额 %
   exit_reason: string | null // sl / tp1_then_sl / trail_sl / breakeven_sl / manual / error
+  testnet: boolean // 测试网/正式网
+  ai_snapshot: AIAnalysis | null // 开单时 AI 分析结论快照
   ai_analysis_id: string | null
 }
 

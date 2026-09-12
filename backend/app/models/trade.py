@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import String, Integer, Numeric, DateTime, ForeignKey, JSON, Index
+from sqlalchemy import String, Integer, Boolean, Numeric, DateTime, ForeignKey, JSON, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -31,6 +31,9 @@ class TradeRecord(Base):
         UUID(as_uuid=True), ForeignKey("ai_analyses.id"), nullable=False, unique=True, index=True
     )
     recommendation: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)  # 开单时评分快照
+    testnet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)  # 测试网/正式网标识
+    ai_snapshot: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # 开单时 AI 分析结论快照（字段同前端 AIAnalysisCard 所需，交易记录自持不随 ai_analyses 断链）
 
     # 开仓
     entry_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)  # 实际成交均价

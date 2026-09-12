@@ -115,6 +115,12 @@ def _run_migrations(engine):
             ALTER TABLE system_config
               ADD COLUMN IF NOT EXISTS max_open_trades INTEGER NOT NULL DEFAULT 5
         """))
+        # Feature 12: 自动交易——环境标识（测试网/正式网）与开单时 AI 结论快照
+        conn.execute(text("""
+            ALTER TABLE trade_records
+              ADD COLUMN IF NOT EXISTS testnet BOOLEAN NOT NULL DEFAULT TRUE,
+              ADD COLUMN IF NOT EXISTS ai_snapshot JSON
+        """))
         # 确保系统配置表有默认行（初始值从 env 注入）
         conn.execute(text(
             "INSERT INTO system_config "

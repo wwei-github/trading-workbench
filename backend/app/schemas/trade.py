@@ -36,6 +36,8 @@ class TradeOut(BaseModel):
     realized_pnl: Optional[float] = None
     pnl_pct: Optional[float] = None
     exit_reason: Optional[str] = None
+    testnet: bool = True
+    ai_snapshot: Optional[dict] = None
     ai_analysis_id: Optional[uuid.UUID] = None
 
     class Config:

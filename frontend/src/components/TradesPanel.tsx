@@ -1,12 +1,12 @@
 /**
  * 交易记录页（docs/06）：自动交易生命周期与收益展示
- * - 列表：币种/方向/状态/开仓信息/三价现值/收益（正绿负红）
- * - 展开行：操作历史时间线（开仓/止盈成交/止损移动/结算）
+ * - 概览条：在跑单子 / 已平仓 / 胜率 / 累计净收益（正绿负红）
+ * - 列表：币种/方向/环境（测试网·正式网）/状态/开仓信息/三价现值/收益，分页默认 10 条、固定高度滚动
+ * - 展开行：开单时 AI 分析结论快照（AiAnalysisCard）+ 操作历史时间线
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Button,
-  Col,
   Empty,
   Radio,
   Row,
@@ -21,6 +21,7 @@ import {
 import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
+import AiAnalysisCard from './AiAnalysisCard'
 import type { TradeEvent, TradeRecord } from '../types'
 
 // 状态标签：运行中三态 + 已平仓 + 失败
@@ -67,7 +68,7 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   real_entry_price: '实际入场 AI 价',
   from: '原止损',
   to: '新止损',
-  realized_pnl: '已实现盈亏',
+  realized_pnl: '净盈亏',
   pnl_pct: '收益率',
   exit_reason: '出场原因',
   qty_tp1: 'TP1数量',
@@ -99,6 +100,18 @@ function renderDetail(detail: Record<string, unknown> | null) {
   )
 }
 
+// 概览小卡片（与 AI 价格卡同风格：灰底 + 大数字）
+function StatCard({ title, value, color }: { title: string; value: string; color?: string }) {
+  return (
+    <div style={{ flex: 1, minWidth: 120, padding: '8px 14px', borderRadius: 8, background: '#fafafa' }}>
+      <div style={{ fontSize: 12, color: '#999', marginBottom: 2 }}>{title}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: color || 'rgba(0,0,0,0.88)', lineHeight: 1.3 }}>
+        {value}
+      </div>
+    </div>
+  )
+}
+
 /**
  * 交易记录页（docs/06）
  */
@@ -106,12 +119,15 @@ export default function TradesPanel() {
   const [rows, setRows] = useState<TradeRecord[]>([])
   const [eventsMap, setEventsMap] = useState<Record<string, TradeEvent[]>>({})
   const [loading, setLoading] = useState(false)
-  const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined)
+  const [statusFilter, setStatusFilter] = useState<string>('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
 
-  const fetchData = useCallback(async (status?: string) => {
+  // 一次拉全量（上限 500），状态筛选/概览统计都在前端算——切换即时且带数量
+  const fetchData = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await scanApi.trades.list(status, 200)
+      const data = await scanApi.trades.list(undefined, 500)
       setRows(data)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '获取交易记录失败')
@@ -122,10 +138,38 @@ export default function TradesPanel() {
 
   // 初始加载；交易按小时巡检，30s 轮询保持页面新鲜
   useEffect(() => {
-    fetchData(statusFilter)
-    const timer = setInterval(() => fetchData(statusFilter), 30000)
+    fetchData()
+    const timer = setInterval(fetchData, 30000)
     return () => clearInterval(timer)
-  }, [statusFilter, fetchData])
+  }, [fetchData])
+
+  const filtered = useMemo(
+    () => (statusFilter ? rows.filter((r) => r.status === statusFilter) : rows),
+    [rows, statusFilter],
+  )
+
+  // 概览统计：在跑（三态）/ 已平仓 / 胜率 / 累计净收益
+  const stats = useMemo(() => {
+    const running = rows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status)).length
+    const closedRows = rows.filter((r) => r.status === 'CLOSED' && r.realized_pnl != null)
+    const wins = closedRows.filter((r) => (r.realized_pnl ?? 0) > 0).length
+    const totalPnl = closedRows.reduce((s, r) => s + (r.realized_pnl ?? 0), 0)
+    const winRate = closedRows.length > 0 ? Math.round((wins / closedRows.length) * 100) : null
+    return { running, closed: closedRows.length, winRate, totalPnl }
+  }, [rows])
+
+  // 状态筛选选项（带当前数量）
+  const statusOptions = useMemo(() => {
+    const count = (s: string) => (s ? rows.filter((r) => r.status === s).length : rows.length)
+    return [
+      { value: '', label: `全部 (${count('')})` },
+      { value: 'OPENED', label: `运行中 (${count('OPENED')})` },
+      { value: 'TP1_HIT', label: `TP1已止盈 (${count('TP1_HIT')})` },
+      { value: 'TP2_HIT', label: `已保本 (${count('TP2_HIT')})` },
+      { value: 'CLOSED', label: `已平仓 (${count('CLOSED')})` },
+      { value: 'FAILED', label: `失败 (${count('FAILED')})` },
+    ]
+  }, [rows])
 
   // 展开行时加载该笔交易的操作历史
   const loadEvents = useCallback(async (tradeId: string) => {
@@ -137,7 +181,7 @@ export default function TradesPanel() {
     }
   }, [])
 
-  // 收益列：正绿负红（已实现盈亏 + 相对止损金额的百分比）
+  // 收益列：正绿负红（净盈亏 + 相对止损金额的百分比）
   const renderPnl = (rec: TradeRecord) => {
     if (rec.status !== 'CLOSED' || rec.realized_pnl === null || rec.realized_pnl === undefined) {
       return <span style={{ color: '#999' }}>-</span>
@@ -152,6 +196,32 @@ export default function TradesPanel() {
     )
   }
 
+  // 操作历史时间线
+  const renderTimeline = (rec: TradeRecord) => {
+    const evts = eventsMap[rec.id]
+    if (!evts) return <Spin size="small" />
+    if (evts.length === 0) return <Typography.Text type="secondary">暂无操作历史</Typography.Text>
+    return (
+      <Timeline
+        items={evts.map((ev) => {
+          const meta = EVENT_MAP[ev.event_type] || { label: ev.event_type, color: 'gray' }
+          return {
+            color: meta.color,
+            children: (
+              <div>
+                <Space size={8}>
+                  <Tag color={meta.color}>{meta.label}</Tag>
+                  <span style={{ fontSize: 12, color: '#999' }}>{fmtTime(ev.created_at)}</span>
+                </Space>
+                {renderDetail(ev.detail)}
+              </div>
+            ),
+          }
+        })}
+      />
+    )
+  }
+
   const columns: ColumnsType<TradeRecord> = [
     {
       title: '币种',
@@ -160,11 +230,19 @@ export default function TradesPanel() {
       render: (v: string, rec) => (
         <Space size={4}>
           <Typography.Text strong>{v}</Typography.Text>
-          <Tag color={rec.direction === 'long' ? 'green' : 'red'}>
+          <Tag color={rec.direction === 'long' ? 'green' : 'red'} style={{ marginInlineEnd: 0 }}>
             {rec.direction === 'long' ? '多' : '空'}
           </Tag>
         </Space>
       ),
+    },
+    {
+      title: '环境',
+      dataIndex: 'testnet',
+      key: 'testnet',
+      width: 80,
+      render: (v: boolean) =>
+        v === false ? <Tag color="green">正式网</Tag> : <Tag color="gold">测试网</Tag>,
     },
     {
       title: '状态',
@@ -181,7 +259,8 @@ export default function TradesPanel() {
       dataIndex: 'recommendation',
       key: 'recommendation',
       width: 70,
-      render: fmtNum,
+      render: (v: number | null) =>
+        v != null ? <strong style={{ color: v >= 80 ? '#ff4d4f' : '#fa8c16' }}>{v}</strong> : '-',
     },
     {
       title: '开仓价',
@@ -247,33 +326,40 @@ export default function TradesPanel() {
     },
   ]
 
-  const statusOptions = [
-    { value: '', label: '全部' },
-    { value: 'OPENED', label: '运行中' },
-    { value: 'TP1_HIT', label: 'TP1已止盈' },
-    { value: 'TP2_HIT', label: '已保本' },
-    { value: 'CLOSED', label: '已平仓' },
-    { value: 'FAILED', label: '失败' },
-  ]
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <Row justify="space-between" align="middle">
-        <Col>
-          <Radio.Group
-            optionType="button"
-            buttonStyle="solid"
-            value={statusFilter ?? ''}
-            onChange={(e) => setStatusFilter(e.target.value || undefined)}
-            options={statusOptions}
-          />
-        </Col>
-        <Col>
-          <Button icon={<ReloadOutlined />} size="small" onClick={() => fetchData(statusFilter)}>
-            刷新
-          </Button>
-        </Col>
+        <Radio.Group
+          optionType="button"
+          buttonStyle="solid"
+          size="small"
+          value={statusFilter}
+          options={statusOptions}
+          onChange={(e) => {
+            setStatusFilter(e.target.value)
+            setPage(1)
+          }}
+        />
+        <Button icon={<ReloadOutlined />} size="small" onClick={fetchData}>
+          刷新
+        </Button>
       </Row>
+
+      {/* 概览条 */}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <StatCard title="在跑单子" value={String(stats.running)} color="#1677ff" />
+        <StatCard title="已平仓" value={String(stats.closed)} />
+        <StatCard
+          title="胜率（净盈利笔数占比）"
+          value={stats.winRate === null ? '-' : `${stats.winRate}%`}
+          color={stats.winRate === null ? undefined : stats.winRate >= 50 ? '#52c41a' : '#ff4d4f'}
+        />
+        <StatCard
+          title="累计净收益（含手续费）"
+          value={`${stats.totalPnl > 0 ? '+' : ''}${stats.totalPnl.toFixed(2)} USDT`}
+          color={stats.totalPnl > 0 ? '#52c41a' : stats.totalPnl < 0 ? '#ff4d4f' : undefined}
+        />
+      </div>
 
       <Spin spinning={loading}>
         {rows.length === 0 && !loading ? (
@@ -282,38 +368,40 @@ export default function TradesPanel() {
           <Table<TradeRecord>
             rowKey="id"
             columns={columns}
-            dataSource={rows}
+            dataSource={filtered}
             size="small"
-            pagination={{ pageSize: 20, showSizeChanger: false }}
-            expandable={{
-              expandedRowRender: (rec) => {
-                const evts = eventsMap[rec.id]
-                if (!evts) {
-                  return <Spin size="small" />
-                }
-                if (evts.length === 0) {
-                  return <Typography.Text type="secondary">暂无操作历史</Typography.Text>
-                }
-                return (
-                  <Timeline
-                    items={evts.map((ev) => {
-                      const meta = EVENT_MAP[ev.event_type] || { label: ev.event_type, color: 'gray' }
-                      return {
-                        color: meta.color,
-                        children: (
-                          <div>
-                            <Space size={8}>
-                              <Tag color={meta.color}>{meta.label}</Tag>
-                              <span style={{ fontSize: 12, color: '#999' }}>{fmtTime(ev.created_at)}</span>
-                            </Space>
-                            {renderDetail(ev.detail)}
-                          </div>
-                        ),
-                      }
-                    })}
-                  />
-                )
+            scroll={{ y: 480 }}
+            pagination={{
+              current: page,
+              pageSize,
+              total: filtered.length,
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 50],
+              showTotal: (t) => `共 ${t} 条`,
+              onChange: (p, ps) => {
+                setPage(ps !== pageSize ? 1 : p)
+                setPageSize(ps)
               },
+            }}
+            expandable={{
+              expandedRowRender: (rec) => (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, marginBottom: 8 }}>AI 分析结论（开单时快照）</div>
+                    {rec.ai_snapshot ? (
+                      <AiAnalysisCard ai={rec.ai_snapshot} />
+                    ) : (
+                      <Typography.Text type="secondary">
+                        该记录早于快照功能，未存档 AI 分析结论
+                      </Typography.Text>
+                    )}
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 600, marginBottom: 8 }}>操作历史</div>
+                    {renderTimeline(rec)}
+                  </div>
+                </div>
+              ),
               onExpand: (expanded, rec) => {
                 if (expanded && !eventsMap[rec.id]) loadEvents(rec.id)
               },

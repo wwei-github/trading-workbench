@@ -212,9 +212,10 @@ class BinanceTrader:
         return self._req("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
 
     def realized_pnl_since(self, symbol: str, since_ms: int) -> float:
-        """本 symbol 自 since_ms 起的已实现盈亏合计（USDT，正/负）"""
+        """本 symbol 自 since_ms 起的净盈亏（USDT，正/负）：
+        已实现盈亏 + 手续费 + 资金费（币安 income 中费用为负值，直接求和即净额）"""
         rows = self._req("GET", "/fapi/v1/income", {
-            "symbol": symbol, "incomeType": "REALIZED_PNL",
-            "startTime": since_ms, "limit": 1000,
+            "symbol": symbol, "startTime": since_ms, "limit": 1000,
         })
-        return sum(float(r.get("income") or 0) for r in rows)
+        keep = {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"}
+        return sum(float(r.get("income") or 0) for r in rows if r.get("incomeType") in keep)

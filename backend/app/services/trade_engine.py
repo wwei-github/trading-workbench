@@ -11,7 +11,7 @@
     TP2 后每次巡检跟进止损（最近3根已收盘K线极值，只收紧不放松）
 """
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import ROUND_DOWN, Decimal
 from typing import Optional
 
@@ -48,13 +48,40 @@ def _close_side(direction: str) -> str:
     return "SELL" if direction == "long" else "BUY"
 
 
+def _ai_snapshot(a: AIAnalysis) -> dict:
+    """开单时 AI 分析结论快照：交易记录自持一份，不随 ai_analyses 清理断链。
+    字段与前端 AIAnalysisCard 展示所需一致（scan_result_id 置空 = 不提供运行轨迹入口）"""
+    def _num(v) -> Optional[float]:
+        return float(v) if v is not None else None
+    return {
+        "id": str(a.id),
+        "symbol": a.symbol,
+        "trade_decision": a.trade_decision,
+        "skip_reason": a.skip_reason,
+        "direction": a.direction,
+        "trade_type": a.trade_type,
+        "analysis": a.analysis,
+        "entry_price": _num(a.entry_price),
+        "stop_loss": _num(a.stop_loss),
+        "take_profit_1": _num(a.take_profit_1),
+        "take_profit_2": _num(a.take_profit_2),
+        "risk_reward_ratio": _num(a.risk_reward_ratio),
+        "position_pct": _num(a.position_pct),
+        "recommendation": _num(a.recommendation),
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+        "scan_result_id": None,
+    }
+
+
 # ── 开仓 ──────────────────────────────────────────────────────
 
 
 def _open_candidates(db: Session):
     """未开过仓的 ≥60 分 suggest 分析（推荐度降序 = 开单优先级）。
+    只取最近 1 小时内生成的分析（旧信号不再开仓）；
     已有 FAILED 记录的 symbol（如交易所未上架）整只排除，避免每小时空转"""
     tr_fail = aliased(TradeRecord)
+    fresh_since = datetime.utcnow() - timedelta(hours=1)
     return db.execute(
         select(AIAnalysis, ScanResult)
         .join(ScanResult, AIAnalysis.scan_result_id == ScanResult.id)
@@ -66,6 +93,7 @@ def _open_candidates(db: Session):
             AIAnalysis.stop_loss > 0,
             AIAnalysis.take_profit_1 > 0,
             AIAnalysis.recommendation >= settings.TRADING_MIN_RECOMMENDATION,
+            AIAnalysis.created_at >= fresh_since,
             TradeRecord.id.is_(None),
             ~select(tr_fail.id).where(
                 tr_fail.symbol == AIAnalysis.symbol, tr_fail.status == "FAILED"
@@ -175,6 +203,8 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
                     scan_result_id=a.scan_result_id,
                     ai_analysis_id=a.id,
                     recommendation=float(a.recommendation) if a.recommendation is not None else None,
+                    testnet=settings.TRADING_TESTNET,
+                    ai_snapshot=_ai_snapshot(a),
                     entry_price=price,
                     qty=qty,
                     notional=round(qty * price, 2),
@@ -197,7 +227,6 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
                         "qty_tp2": qty_tp2 if tp2_order else 0,
                         "capital_base": _capital_base(wallet),
                         "wallet": wallet,
-                        "testnet": settings.TRADING_TESTNET,
                     },
                 )
                 db.add(rec)
@@ -237,6 +266,7 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
                         rec = TradeRecord(
                             symbol=symbol, direction=direction, ai_analysis_id=a.id,
                             recommendation=float(a.recommendation) if a.recommendation is not None else None,
+                            testnet=settings.TRADING_TESTNET,
                             status="FAILED", raw={"fail_reason": str(e)[:200]},
                         )
                         db.add(rec)
@@ -329,7 +359,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
             tp1_gone = raw.get("tp1_order_id") and int(raw["tp1_order_id"]) not in open_ids
             tp2_gone = raw.get("tp2_order_id") and int(raw["tp2_order_id"]) not in open_ids
 
-            # 仓位归零 → 结算（以币安已实现盈亏为准）
+            # 仓位归零 → 结算（净盈亏 = 已实现盈亏 − 手续费 − 资金费，正/负值）
             if qty <= 0 or amt < qty * 0.05:
                 # 清理残留挂单（SL 先成交时 TP reduceOnly 单会一直挂着）
                 trader.cancel_all_algo(rec.symbol)
