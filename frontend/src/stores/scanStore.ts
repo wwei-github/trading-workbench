@@ -16,6 +16,17 @@ function loadColorScheme(): ColorScheme {
   }
 }
 
+// 图表关键位区域（支撑/压力色块）全局开关，localStorage 持久化，默认开
+const KEY_LEVELS_KEY = 'chart-key-levels'
+
+function loadShowKeyLevels(): boolean {
+  try {
+    return localStorage.getItem(KEY_LEVELS_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
 // 图表技术指标（开源库 indicatorts 计算，目录见 constants/indicators.ts；开关 + 参数，localStorage 持久化）
 export interface IndicatorSetting {
   enabled: boolean
@@ -100,6 +111,9 @@ interface ScanState {
   // 图表涨跌配色（全局切换，localStorage 持久化）
   colorScheme: ColorScheme
   setColorScheme: (scheme: ColorScheme) => void
+  // 图表关键位区域（支撑/压力色块，全局开关，localStorage 持久化）
+  showKeyLevels: boolean
+  setShowKeyLevels: (show: boolean) => void
   // 图表技术指标（全局，开关 + 参数，localStorage 持久化）
   indicatorSettings: IndicatorSettings
   toggleIndicator: (key: string) => void
@@ -378,6 +392,17 @@ export const useScanStore = create<ScanState>((set, get) => ({
     set({ colorScheme: scheme })
     try {
       localStorage.setItem(COLOR_SCHEME_KEY, scheme)
+    } catch {
+      /* 隐私模式等场景下忽略 */
+    }
+  },
+
+  // ===== 图表关键位区域开关 =====
+  showKeyLevels: loadShowKeyLevels(),
+  setShowKeyLevels: (show) => {
+    set({ showKeyLevels: show })
+    try {
+      localStorage.setItem(KEY_LEVELS_KEY, show ? '1' : '0')
     } catch {
       /* 隐私模式等场景下忽略 */
     }

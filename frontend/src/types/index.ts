@@ -114,6 +114,7 @@ export interface KlineData {
   interval: string;
   klines: Kline[];
   swings?: { highs: SwingPoint[]; lows: SwingPoint[] };
+  key_levels?: KeyLevel[];
 }
 
 export interface SystemConfig {

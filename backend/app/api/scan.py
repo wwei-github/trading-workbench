@@ -532,7 +532,26 @@ def get_klines(
         ]
         for kind in ("highs", "lows")
     }
-    return {"symbol": symbol, "interval": cfg.kline_interval, "klines": result, "swings": swings}
+    # 关键位（图表区域色块用，与扫描/AI 同源：支撑位/压力位 + ATR 自适应区域）
+    levels = compute_signal_key_levels(
+        klines,
+        {
+            "min_klines": 30,
+            "swing_order": cfg.swing_order,
+            "r_squared_threshold": float(cfg.r_squared_threshold),
+            "pullback_tolerance": float(cfg.pullback_tolerance),
+            "key_level_tolerance": float(cfg.key_level_tolerance),
+            "level_merge_threshold": float(cfg.level_merge_threshold),
+            "max_trend_slope": 0.005,
+        },
+    )
+    return {
+        "symbol": symbol,
+        "interval": cfg.kline_interval,
+        "klines": result,
+        "swings": swings,
+        "key_levels": levels,
+    }
 
 
 # ===== 手动搜索 AI 分析 =====

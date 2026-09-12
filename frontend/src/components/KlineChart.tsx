@@ -33,7 +33,7 @@ import {
   type IndicatorContext,
   type IndicatorResult,
 } from '../constants/indicators'
-import type { AIAnalysis, Kline, KlineData } from '../types'
+import type { AIAnalysis, Kline, KlineData, KeyLevel } from '../types'
 
 const { Text } = Typography
 
@@ -111,6 +111,8 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
   // 全局涨跌配色 / 技术指标（store 共享，切换后所有图表同步生效）
   const colorScheme = useScanStore((s) => s.colorScheme)
   const setColorScheme = useScanStore((s) => s.setColorScheme)
+  const showKeyLevels = useScanStore((s) => s.showKeyLevels)
+  const setShowKeyLevels = useScanStore((s) => s.setShowKeyLevels)
   const indicatorSettings = useScanStore((s) => s.indicatorSettings)
   const toggleIndicator = useScanStore((s) => s.toggleIndicator)
   const setIndicatorParams = useScanStore((s) => s.setIndicatorParams)
@@ -144,6 +146,9 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
   // 实时推送的最后一根 bar（每秒节流写入，仅供图例数字跳动；不进 candlePoints，指标 effect 不重建）
   const [liveBar, setLiveBar] = useState<{ t: number; o: number; h: number; l: number; c: number; v: number } | null>(null)
   const liveTickRef = useRef(0)
+  // 关键位（支撑/压力区域，后端 /klines 接口随 K 线返回，图表色块渲染）
+  const [chartKeyLevels, setChartKeyLevels] = useState<KeyLevel[]>([])
+  const levelSvgRef = useRef<SVGSVGElement>(null)
 
   // 将拉取到的 K 线应用到图表（初始化加载与"更新"按钮共用）
   const applyKlineData = useCallback((data: KlineData) => {
@@ -176,6 +181,8 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
     setError(null)
     // 整包数据已落图，实时图例清零，以新数据为准（下一帧推送 ≤1s 内重新填充）
     setLiveBar(null)
+    // 关键位区域随整包数据更新（实时 bar 不更新——位是分析时刻的结构，逐秒重算无意义）
+    setChartKeyLevels(data.key_levels ?? [])
     // 摆动结构标注（借鉴 Pine 结构标签：高点 HH/LH，低点 HL/LL，各取 5 个）
     const sw = data.swings
     const fmtP = (p: number) =>
@@ -264,6 +271,9 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
+
+    // 旧币种的关键位不带入新图（新数据到达后由 applyKlineData 重填）
+    setChartKeyLevels([])
 
     const chart = createChart(container, {
       layout: {
@@ -750,6 +760,120 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
     // refreshKey 变化会重建图表，effect 需重跑以重新绑定新 chart/series
   }, [ai, symbol, refreshKey])
 
+  // 渲染关键位区域色块（支撑=绿、压力=红——与 K 线涨跌配色无关的语义色，
+  // 全宽色带 + 上下边界虚线 + 左侧标签；rAF 循环重绘同步缩放/平移）
+  useEffect(() => {
+    const chart = chartRef.current
+    const series = seriesRef.current
+    const svg = levelSvgRef.current
+    if (!chart || !series || !svg) return
+
+    // 关闭开关或无数据：清空残留色块
+    if (!showKeyLevels || chartKeyLevels.length === 0) {
+      while (svg.firstChild) svg.removeChild(svg.firstChild)
+      return
+    }
+
+    const NS = 'http://www.w3.org/2000/svg'
+    const el = (tag: string) => document.createElementNS(NS, tag)
+
+    const drawZones = () => {
+      while (svg.firstChild) svg.removeChild(svg.firstChild)
+      const fullWidth = containerRef.current?.clientWidth || 520
+      const height = containerRef.current?.clientHeight || CHART_HEIGHT
+      const priceScaleWidth = chart.priceScale('right').width()
+      const rightEdge = Math.max(0, fullWidth - priceScaleWidth)
+      svg.setAttribute('width', String(fullWidth))
+      svg.setAttribute('height', String(height))
+      svg.setAttribute('viewBox', `0 0 ${fullWidth} ${height}`)
+
+      // 两遍绘制：先全部色块，再全部边界线与标签——相邻位的标签不被后续色块盖住
+      const drawn: {
+        top: number
+        bottom: number
+        isSupport: boolean
+        lv: KeyLevel
+      }[] = []
+      for (const lv of chartKeyLevels) {
+        const yTop = series.priceToCoordinate(lv.zone_high)
+        const yBot = series.priceToCoordinate(lv.zone_low)
+        if (yTop == null || yBot == null) continue
+        const top = Math.min(yTop, yBot)
+        const bottom = Math.max(yTop, yBot)
+        if (bottom < 0 || top > height) continue // 完全在可视区外
+        const isSupport = lv.role === 'support'
+        const cTop = Math.max(top, 0)
+        const cBot = Math.min(bottom, height)
+        const r = el('rect')
+        r.setAttribute('x', '0')
+        r.setAttribute('y', String(cTop))
+        r.setAttribute('width', String(rightEdge))
+        r.setAttribute('height', String(cBot - cTop))
+        r.setAttribute('fill', isSupport ? 'rgba(38, 166, 154, 0.10)' : 'rgba(239, 83, 80, 0.10)')
+        svg.appendChild(r)
+        drawn.push({ top, bottom, isSupport, lv })
+      }
+
+      for (const { top, bottom, isSupport, lv } of drawn) {
+        const edgeColor = isSupport ? 'rgba(38, 166, 154, 0.45)' : 'rgba(239, 83, 80, 0.45)'
+        // 区域上下边界虚线
+        for (const yy of [top, bottom]) {
+          if (yy < 0 || yy > height) continue
+          const ln = el('line')
+          ln.setAttribute('x1', '0')
+          ln.setAttribute('y1', String(yy))
+          ln.setAttribute('x2', String(rightEdge))
+          ln.setAttribute('y2', String(yy))
+          ln.setAttribute('stroke', edgeColor)
+          ln.setAttribute('stroke-width', '1')
+          ln.setAttribute('stroke-dasharray', '4,3')
+          svg.appendChild(ln)
+        }
+        // 左侧标签（区域可见高度不足时跳过，避免挤压重叠）
+        const cTop = Math.max(top, 0)
+        const cBot = Math.min(bottom, height)
+        if (cBot - cTop < 14) continue
+        const text = `${isSupport ? '支撑' : '压力'} ${fmtPrice(lv.price)}${lv.touches > 1 ? `·${lv.touches}次` : ''}`
+        const font = 'bold 10px monospace'
+        const ctx2 = document.createElement('canvas').getContext('2d')!
+        ctx2.font = font
+        const tw = ctx2.measureText(text).width
+        const padX = 4
+        const boxH = 13
+        const boxW = tw + padX * 2
+        const boxY = (cTop + cBot) / 2 - boxH / 2
+        const rect = el('rect')
+        rect.setAttribute('x', '6')
+        rect.setAttribute('y', String(boxY))
+        rect.setAttribute('width', String(boxW))
+        rect.setAttribute('height', String(boxH))
+        rect.setAttribute('fill', isSupport ? 'rgba(38, 166, 154, 0.6)' : 'rgba(239, 83, 80, 0.6)')
+        svg.appendChild(rect)
+        const t = el('text')
+        t.setAttribute('x', String(6 + padX))
+        t.setAttribute('y', String(boxY + 10))
+        t.setAttribute('fill', '#fff')
+        t.setAttribute('font-size', '10')
+        t.setAttribute('font-family', 'monospace')
+        t.setAttribute('font-weight', 'bold')
+        t.textContent = text
+        svg.appendChild(t)
+      }
+    }
+
+    requestAnimationFrame(() => drawZones())
+    // rAF 循环持续重绘：价格轴缩放/时间轴平移/窗宽变化时区域始终同步
+    let rafId = 0
+    const loop = () => {
+      drawZones()
+      rafId = requestAnimationFrame(loop)
+    }
+    rafId = requestAnimationFrame(loop)
+    return () => {
+      cancelAnimationFrame(rafId)
+    }
+  }, [chartKeyLevels, showKeyLevels, symbol, limit, refreshKey])
+
   // ===== 图例渲染数据：悬浮时用图例状态，否则用最新一根 K 线 =====
   // 未悬浮时优先取实时推送的最后一根（每秒节流刷新，图例数字跟着跳）；
   // liveBar 时间早于整包数据（手动更新后）则视为过期，回落 candlePoints
@@ -940,6 +1064,32 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
               )
             })}
           </div>
+          {/* 关键位区域开关：支撑/压力色块显示与否（全局生效，localStorage 持久化） */}
+          <Tooltip title="显示/隐藏支撑位、压力位区域色块">
+            <span
+              onClick={() => setShowKeyLevels(!showKeyLevels)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                fontSize: 11,
+                lineHeight: '16px',
+                padding: '2px 8px',
+                borderRadius: 999,
+                cursor: 'pointer',
+                userSelect: 'none',
+                transition: 'all 0.2s',
+                marginLeft: 4,
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                color: showKeyLevels ? '#fff' : '#8b93a7',
+                background: showKeyLevels ? 'rgba(38, 166, 154, 0.22)' : 'rgba(255, 255, 255, 0.06)',
+              }}>
+              <span
+                style={{ width: 5, height: 5, borderRadius: '50%', background: showKeyLevels ? '#26a69a' : '#8b93a7' }}
+              />
+              关键位
+            </span>
+          </Tooltip>
         </div>
         {/* 图例：OHLC + 涨跌幅 + 成交量 + 指标数值（十字线联动，纯展示不挡操作） */}
         {legendData && !error && (
@@ -1009,6 +1159,21 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
           borderRadius: 8,
           overflow: 'hidden',
           border: '1px solid #232838',
+        }}
+      />
+      {/* 关键位区域层（支撑绿/压力红全宽色带）：在图表之上、AI 仓位标注之下 */}
+      <svg
+        ref={levelSvgRef}
+        width="100%"
+        height="100%"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          pointerEvents: 'none',
+          zIndex: 5,
         }}
       />
       <svg
