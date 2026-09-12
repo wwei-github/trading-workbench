@@ -1,14 +1,14 @@
 """关键位计算模块
 
 关键位构成（见 docs/03-关键位筛选重构需求.md §2）：
-- 前高/前低：最近一个摆动高点/低点（收盘价计算）
-- 支撑位/压力位：更早的摆动点按价格聚类（时间加权 ≥ 阈值），被突破后角色互换
-- 区间顶部/底部：震荡结构下用摆动点回归拟合的上下边界
+- 最近摆动高点/低点、历史摆动点聚类（时间加权 ≥ 阈值）、震荡结构的回归边界——
+  三种来源照常计算，但标签只保留两类（2026-09-12 两类化）：
+  支撑位(support) / 压力位(resistance)，kind 由角色动态推导。
 
 关键位是区域：中心价 ± zone_tolerance。区域半宽随波动自适应：
 ATR% 越大区域越宽（0.5×ATR），限制在配置值 key_level_tolerance 的 [0.5×, 2×] 倍内——
 高波动币不会因固定 0.5% 太窄而频繁假触及，低波动币不会太宽而到处都是信号。
-角色按当前价动态判定：关键位在当前价上方=压力，下方=支撑。
+角色按当前价动态判定：关键位在当前价上方=压力，下方=支撑（kind == role）。
 
 时间加权（2026-09-12 优化）：
 - 每次触及的权重 = 2^(-bars_ago / 半衰期)，半衰期 60 根已收盘 K 线
@@ -22,19 +22,14 @@ from typing import Optional
 import numpy as np
 
 from app.services.strategy.swing import linear_regression
-from app.services.strategy.types import (
-    POS_PREV_HIGH,
-    POS_PREV_LOW,
-    POS_RANGE_BOTTOM,
-    POS_RANGE_TOP,
-    POS_RESISTANCE,
-    POS_SUPPORT,
-    RANGE_BOUND,
-)
+from app.services.strategy.types import RANGE_BOUND
 
 # 触及权重半衰期（已收盘 K 线根数）与聚类保留阈值（≈2 次近期触及）
 TOUCH_HALF_LIFE = 60
 MIN_CLUSTER_WEIGHT = 1.2
+
+# 放量突破的量能门槛：收盘K线成交量 ≥ 该倍数 × 近20根均量（volume_ratio 唯一口径）
+BREAKOUT_VOL_RATIO = 1.2
 
 
 def calc_atr(klines: list, period: int = 14) -> Optional[float]:
@@ -53,19 +48,38 @@ def calc_atr(klines: list, period: int = 14) -> Optional[float]:
     return sum(trs) / len(trs)
 
 
-def _make_level(kind: str, price: float, touches: int, close_last: float, tol: float,
+def volume_ratio(klines: list) -> float:
+    """最新已收盘 K 线成交量 ÷ 近 20 根已收盘均量（数据不足或均量为 0 时返回 0）。
+
+    classify_volume 的分档与突破量能门槛（BREAKOUT_VOL_RATIO）共用此口径。
+    """
+    closed = klines[:-1] if len(klines) >= 2 else klines
+    if len(closed) < 22:
+        return 0.0
+    avg = sum(float(k[5]) for k in closed[-21:-1]) / 20
+    if avg <= 0:
+        return 0.0
+    return float(closed[-1][5]) / avg
+
+
+def _make_level(price: float, touches: int, close_last: float, tol: float,
                 weight: Optional[float] = None) -> dict:
-    """构造关键位 dict，角色按当前价动态判定（上方=压力，下方=支撑）"""
+    """构造关键位 dict。
+
+    【2026-09-12 两类化】kind 由角色动态推导：位在当前价上方=压力位(resistance)，
+    下方=支撑位(support)——kind == role，不再区分前高/前低/区间顶底等来源标签。
+    """
+    role = "resistance" if price > close_last else "support"
     lv = {
-        "kind": kind,
+        "kind": role,
         "price": float(price),
         "zone_low": float(price * (1 - tol)),
         "zone_high": float(price * (1 + tol)),
         "touches": int(touches),
-        "role": "resistance" if price > close_last else "support",
+        "role": role,
     }
     if weight is not None:
-        lv["weight"] = round(float(weight), 2)  # 时间加权触及强度（前高/前低无聚类权重）
+        lv["weight"] = round(float(weight), 2)  # 时间加权触及强度（最近摆动点无聚类权重）
     return lv
 
 
@@ -129,19 +143,19 @@ def compute_key_levels(
 
     levels: list[dict] = []
 
-    # 1. 前高/前低（最近一个摆动点，天然最新，无聚类权重）
-    levels.append(_make_level(POS_PREV_HIGH, highs_seq[-1][2], 1, close_last, tol))
-    levels.append(_make_level(POS_PREV_LOW, lows_seq[-1][2], 1, close_last, tol))
+    # 1. 最近摆动点（天然最新，无聚类权重）
+    levels.append(_make_level(highs_seq[-1][2], 1, close_last, tol))
+    levels.append(_make_level(lows_seq[-1][2], 1, close_last, tol))
 
-    # 2. 支撑/压力位：除最近点外的摆动点聚类（前高/前低已单独列出）
+    # 2. 历史摆动点聚类（除最近点外，时间加权）
     for price, touches, weight in _cluster_levels(
             [(p[2], p[0]) for p in highs_seq[:-1]], merge_thr, n_closed):
-        levels.append(_make_level(POS_RESISTANCE, price, touches, close_last, tol, weight))
+        levels.append(_make_level(price, touches, close_last, tol, weight))
     for price, touches, weight in _cluster_levels(
             [(p[2], p[0]) for p in lows_seq[:-1]], merge_thr, n_closed):
-        levels.append(_make_level(POS_SUPPORT, price, touches, close_last, tol, weight))
+        levels.append(_make_level(price, touches, close_last, tol, weight))
 
-    # 3. 区间顶/底（仅震荡结构）：摆动点回归拟合边界
+    # 3. 区间回归边界（仅震荡结构）：按角色归类为压力位/支撑位
     if signal_type == RANGE_BOUND:
         rh = highs_seq[-min(5, len(highs_seq)):]
         rl = lows_seq[-min(5, len(lows_seq)):]
@@ -155,33 +169,71 @@ def compute_key_levels(
             upper = slope_h * n_closed + inter_h
             lower = slope_l * n_closed + inter_l
             if upper > lower > 0 and upper / lower - 1 >= 0.005:
-                levels.append(_make_level(POS_RANGE_TOP, upper, len(rh), close_last, tol))
-                levels.append(_make_level(POS_RANGE_BOTTOM, lower, len(rl), close_last, tol))
+                levels.append(_make_level(upper, len(rh), close_last, tol))
+                levels.append(_make_level(lower, len(rl), close_last, tol))
 
     return levels
 
 
-def find_touching_level(levels: list[dict], kline: list) -> dict | None:
-    """找出最新已收盘 K 线触及的关键位。
+def _level_side(lv: dict, prev_close: float) -> str:
+    """位在前收盘时的侧向：support-like（位在前收下方/持平）或 resistance-like。
 
-    优先级：收盘价进入区域 > 影线刺入区域；同优先级取距中心最近。
+    突破与触位的判定都需要"这一根K线之前价格在位的哪一侧"作上下文——
+    收盘在支撑位上方是常态，只有从前收上方跌穿区域才是破位。
+    """
+    return "support" if prev_close >= lv["price"] else "resistance"
+
+
+def find_touching_level(levels: list[dict], kline: list, prev_close: float) -> dict | None:
+    """找出最新已收盘 K 线触及的关键位（持住侧规则，2026-09-12）。
+
+    触及 = 影线与区域重叠 且 收盘在"持住侧"（support-like 位要求收盘 ≥ zone_low，
+    resistance-like 要求收盘 ≤ zone_high）。收盘在区域内是子集，天然涵盖；
+    收盘越过区域远侧（破位方向）不属于触及——那归 find_broken_level 的放量门控管。
+    同分取距中心最近。
     kline: [open_time, open, high, low, close, ...]
     """
-    o, h, l, c = float(kline[1]), float(kline[2]), float(kline[3]), float(kline[4])
+    h, l, c = float(kline[2]), float(kline[3]), float(kline[4])
     best: tuple[tuple, dict] | None = None
     for lv in levels:
         zl, zh = lv["zone_low"], lv["zone_high"]
-        if zl <= c <= zh:
-            pri = 0  # 收盘触及
-        elif l <= zh and h >= zl:
-            pri = 1  # 影线刺入
+        if not (l <= zh and h >= zl):
+            continue  # 影线未与区域重叠
+        if _level_side(lv, prev_close) == "support":
+            if c < zl:
+                continue  # 收盘跌穿区域：破位，不是触及
+        else:
+            if c > zh:
+                continue  # 收盘涨破区域：突破，不是触及
+        dist = abs(c - lv["price"]) / lv["price"] if lv["price"] > 0 else 1e9
+        if best is None or dist < best[0]:
+            best = (dist, lv)
+    return best[1] if best else None
+
+
+def find_broken_level(levels: list[dict], kline: list, prev_close: float) -> Optional[dict]:
+    """找出最新已收盘 K 线放量突破的关键位（破位距离最大者）。
+
+    突破 = 收盘越过整个区域：resistance-like 位要求收盘 > zone_high（向上突破），
+    support-like 位要求收盘 < zone_low（向下破位）。返回 None 表示本根无突破。
+    kline: [open_time, open, high, low, close, ...]
+    """
+    c = float(kline[4])
+    best: tuple[float, dict, str] | None = None
+    for lv in levels:
+        side = _level_side(lv, prev_close)
+        if side == "resistance" and c > lv["zone_high"]:
+            edge, direction = lv["zone_high"], "up"
+        elif side == "support" and c < lv["zone_low"]:
+            edge, direction = lv["zone_low"], "down"
         else:
             continue
-        dist = abs(c - lv["price"]) / lv["price"] if lv["price"] > 0 else 1e9
-        key = (pri, dist)
-        if best is None or key < best[0]:
-            best = (key, lv)
-    return best[1] if best else None
+        pct = (c - edge) / edge * 100 if edge > 0 else 0.0
+        if best is None or abs(pct) > abs(best[0]):
+            best = (pct, lv, direction)
+    if best is None:
+        return None
+    return {"level": best[1], "direction": best[2], "pct": best[0]}
 
 
 def fmt_price(p: float) -> str:

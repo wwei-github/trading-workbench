@@ -2,11 +2,15 @@
 
 流程：
 1. 摆动点（收盘价）→ 结构分类（上涨/下跌/反转/震荡/未分类）
-2. 计算关键位（前高/前低/支撑/压力/区间顶底）
-3. 最新已收盘 K 线触及关键位区域？→ position
-4. 该 K 线出现 12 金K？→ pattern（方向需与关键位角色匹配）
-5. EMA 均线形态严格门控：仅认可多头/空头排列、金叉/死叉 4 态，且方向须与位置一致
-6. 输出信号
+2. 计算关键位（只分支撑位/压力位两类，kind 由角色推导）
+3. 放量突破优先：收盘越过整个关键位区域 + 量能 ≥1.2×均量 + EMA 同向 → breakout 信号
+   （不要求形态；前收盘上下文区分"突破"与"常态居位"）
+4. 触位：最新已收盘 K 线持住侧触及关键位区域 → position
+5. 该 K 线出现 12 金K？→ pattern（方向需与关键位角色匹配）
+6. EMA 均线形态严格门控：仅认可多头/空头排列、金叉/死叉 4 态，且方向须与信号一致
+7. 输出信号
+
+方向铁律（docs/03 §8）：只在支撑位做多、只在压力位做空，唯一例外是放量突破。
 """
 from __future__ import annotations
 
@@ -17,13 +21,17 @@ from app.services.strategy import candlestick
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.candlestick import GOLDEN_12, PATTERN_LABEL_MAP
 from app.services.strategy.key_levels import (
+    BREAKOUT_VOL_RATIO,
     compute_key_levels,
+    find_broken_level,
     find_touching_level,
     fmt_price,
+    volume_ratio,
 )
 from app.services.strategy.structure import classify_structure
 from app.services.strategy.swing import find_swing_points, merge_swings
 from app.services.strategy.types import (
+    BREAKOUT,
     POSITION_LABEL_MAP,
     LABEL_MAP,
     TREND_REVERSAL,
@@ -144,12 +152,61 @@ def _detect(klines: list[list], config: dict) -> Optional[dict]:
     if not levels:
         return None
 
-    # 3. 最新已收盘 K 线（klines[-2]）是否触及关键位区域
-    hit = find_touching_level(levels, klines[-2])
+    # EMA 门控共用（触位与突破两条路径都需要）：
+    # a) 仅 4 种趋势态可出信号（拐头/纠缠/未知 → 过滤）
+    # b) 方向合理性：EMA 偏向必须与信号方向一致
+    ema = config.get("ema")
+    if ema is None:
+        ema = analyze_ema(klines)
+    ema_state = ema["state"] if ema else None
+
+    # 3. 放量突破优先：收盘越过整个关键位区域（涨破压力/跌破支撑）且量能达标
+    #    且 EMA 与突破方向同向 → 发突破信号（不要求 K 线形态）。
+    #    前收盘上下文区分"突破"与"常态居位"：价格本来就高于支撑位不算突破。
+    #    门控不过则该位作废，落到触位路径（破位位因持住侧检查不会再被当触及）
+    prev_close = float(closes[-3]) if n >= 3 else close_last
+    broken = find_broken_level(levels, klines[-2], prev_close)
+    if broken is not None:
+        ratio = volume_ratio(klines)
+        wanted = "bullish" if broken["direction"] == "up" else "bearish"
+        if (
+            ratio >= BREAKOUT_VOL_RATIO
+            and ema_state in EMA_ALLOWED
+            and EMA_BIAS[ema_state] == wanted
+        ):
+            blv = broken["level"]
+            up = broken["direction"] == "up"
+            edge = blv["zone_high"] if up else blv["zone_low"]
+            strength = 0.8 if ratio >= 2.0 else 0.7  # 倍量再加档
+            if blv.get("touches", 1) >= 2:
+                strength += 0.1
+            strength = min(strength + 0.1, 1.0)  # EMA 同向
+            return {
+                "signal_type": BREAKOUT,
+                "position": blv["kind"],
+                "current_price": close_last,
+                "breakout_pct": float(broken["pct"]),  # 越过区域边缘的幅度（带符号）
+                "trend_slope": 0.0,
+                "r_squared": 0.0,
+                "pattern": None,
+                "pattern_direction": wanted,
+                "signal_reason": (
+                    f"放量突破{'压力' if up else '支撑'}区域({fmt_price(edge)})·"
+                    f"{ratio:.1f}×均量"
+                ),
+                "ema_state": ema_state,
+                "strength": strength,
+                "key_levels": levels,
+                "hit_level": blv,
+                "reversal": structure.get("reversal"),
+            }
+
+    # 4. 触位路径：最新已收盘 K 线（klines[-2]）持住侧触及关键位区域
+    hit = find_touching_level(levels, klines[-2], prev_close)
     if hit is None:
         return None
 
-    # 4. 12 金K + 方向匹配（支撑类位置→看涨，压力类位置→看跌）
+    # 5. 12 金K + 方向匹配（支撑位→看涨形态，压力位→看跌形态）
     patterns = candlestick.detect_all_patterns(klines, idx=-2)
     wanted = "bullish" if hit["role"] == "support" else "bearish"
     pattern = next(
@@ -159,20 +216,16 @@ def _detect(klines: list[list], config: dict) -> Optional[dict]:
     if pattern is None:
         return None
 
-    # 5. EMA 严格门控（权重高于单根 K 线形态）：
+    # 6. EMA 严格门控（权重高于单根 K 线形态，ema_state 已在突破分支前算好）：
     #    a) 仅 4 种趋势态可出信号（拐头/纠缠/未知 → 过滤）
     #    b) 位置合理性：EMA 偏向必须与位置方向一致——空头排列/死叉下触及支撑位无效，
     #       多头排列/金叉下触及压力位无效
-    ema = config.get("ema")
-    if ema is None:
-        ema = analyze_ema(klines)
-    ema_state = ema["state"] if ema else None
     if ema_state not in EMA_ALLOWED:
         return None
     if EMA_BIAS[ema_state] != wanted:
         return None
 
-    # 6. 组装信号
+    # 7. 组装信号
     position = hit["kind"]
     position_label = POSITION_LABEL_MAP.get(position, position)
     role_label = "支撑" if hit["role"] == "support" else "压力"
