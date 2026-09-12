@@ -5,7 +5,7 @@
  * - 展开行：左右双卡片——左 AI 分析结论快照（AiAnalysisCard），右 操作历史时间线
  * - 状态筛选：胶囊按钮组（进行中 = 运行中/TP1已止盈/已保本 三态聚合，带计数徽标）
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Button,
   Empty,
@@ -18,7 +18,18 @@ import {
   Typography,
   message,
 } from 'antd'
-import { HistoryOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons'
+import {
+  AccountBookOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  HistoryOutlined,
+  MinusCircleOutlined,
+  ReloadOutlined,
+  RobotOutlined,
+  RocketOutlined,
+  SwapOutlined,
+  WarningOutlined,
+} from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
 import AiAnalysisCard from './AiAnalysisCard'
@@ -43,16 +54,16 @@ const EXIT_REASON_MAP: Record<string, string> = {
   error: '异常平仓',
 }
 
-// 操作历史事件标签
-const EVENT_MAP: Record<string, { label: string; color: string }> = {
-  OPEN: { label: '开仓', color: 'green' },
-  TP1_FILL: { label: 'TP1止盈成交', color: 'green' },
-  TP2_FILL: { label: 'TP2止盈成交', color: 'green' },
-  SL_MOVE: { label: '止损移动', color: 'blue' },
-  SL_FILL: { label: '止损成交', color: 'red' },
-  CANCEL: { label: '撤单', color: 'default' },
-  SETTLE: { label: '结算', color: 'blue' },
-  ERROR: { label: '异常', color: 'red' },
+// 操作历史事件元数据：中文标签 / 主题色 / 时间线圆点图标
+const EVENT_META: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
+  OPEN: { label: '开仓', color: '#1677ff', icon: <RocketOutlined /> },
+  TP1_FILL: { label: 'TP1 止盈成交', color: '#52c41a', icon: <CheckCircleOutlined /> },
+  TP2_FILL: { label: 'TP2 止盈成交', color: '#52c41a', icon: <CheckCircleOutlined /> },
+  SL_MOVE: { label: '止损移动', color: '#fa8c16', icon: <SwapOutlined /> },
+  SL_FILL: { label: '止损成交', color: '#ff4d4f', icon: <CloseCircleOutlined /> },
+  CANCEL: { label: '撤单', color: '#8c8c8c', icon: <MinusCircleOutlined /> },
+  SETTLE: { label: '结算', color: '#1677ff', icon: <AccountBookOutlined /> },
+  ERROR: { label: '异常', color: '#ff4d4f', icon: <WarningOutlined /> },
 }
 
 // 事件详情按键的中文名
@@ -83,18 +94,57 @@ function fmtNum(n: number | null | undefined): string {
 
 function fmtTime(s: string | null | undefined): string {
   if (!s) return '-'
-  return new Date(s).toLocaleString('zh-CN', { hour12: false })
+  return new Date(s)
+    .toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    })
+    .replace(/\//g, '-')
 }
 
-// 事件详情 JSON → "中文名: 值" 列表
+// 事件详情值格式化：盈亏带正负号着色、百分比补 %、出场原因转中文
+function detailValue(k: string, v: unknown): React.ReactNode {
+  if (k === 'exit_reason') return EXIT_REASON_MAP[String(v)] || String(v)
+  if (k === 'pnl_pct') return `${v}%`
+  if (k === 'realized_pnl') {
+    const n = Number(v)
+    if (!Number.isNaN(n)) {
+      const color = n > 0 ? '#52c41a' : n < 0 ? '#ff4d4f' : '#595959'
+      return (
+        <strong style={{ color }}>
+          {n > 0 ? '+' : ''}
+          {n.toFixed(2)} USDT
+        </strong>
+      )
+    }
+  }
+  return String(v)
+}
+
+// 事件详情 JSON → 两列键值网格（左灰键名 / 右深值）
 function renderDetail(detail: Record<string, unknown> | null) {
   if (!detail || Object.keys(detail).length === 0) return null
   return (
-    <div style={{ fontSize: 12, color: '#666' }}>
+    <div
+      style={{
+        marginTop: 6,
+        paddingTop: 6,
+        borderTop: '1px dashed #f0f0f0',
+        display: 'grid',
+        gridTemplateColumns: 'auto 1fr',
+        gap: '3px 12px',
+        fontSize: 12,
+      }}
+    >
       {Object.entries(detail).map(([k, v]) => (
-        <div key={k}>
-          {DETAIL_KEY_MAP[k] || k}: {String(v)}
-        </div>
+        <Fragment key={k}>
+          <span style={{ color: '#999' }}>{DETAIL_KEY_MAP[k] || k}</span>
+          <span style={{ color: '#333', wordBreak: 'break-all' }}>{detailValue(k, v)}</span>
+        </Fragment>
       ))}
     </div>
   )
@@ -200,31 +250,90 @@ export default function TradesPanel() {
     )
   }
 
-  // 操作历史时间线
+  // 操作历史时间线：彩色图标圆点 + 白色事件卡片 + 键值详情网格
   const renderTimeline = (rec: TradeRecord) => {
     const evts = eventsMap[rec.id]
     if (!evts) return <Spin size="small" />
-    if (evts.length === 0) return <Typography.Text type="secondary">暂无操作历史</Typography.Text>
+    if (evts.length === 0)
+      return (
+        <div style={{ textAlign: 'center', padding: '18px 0', color: '#bfbfbf', fontSize: 12 }}>
+          <HistoryOutlined style={{ fontSize: 20, display: 'block', marginBottom: 6 }} />
+          暂无操作历史
+          <div style={{ marginTop: 4, fontSize: 11 }}>开仓/止盈/止损/结算等事件将按时间记录在这里</div>
+        </div>
+      )
     return (
-      <Timeline
-        items={evts.map((ev) => {
-          const meta = EVENT_MAP[ev.event_type] || { label: ev.event_type, color: 'gray' }
-          return {
-            color: meta.color,
-            children: (
-              <div>
-                <Space size={8}>
-                  <Tag color={meta.color} style={{ marginInlineEnd: 0, fontSize: 12, lineHeight: '18px' }}>
-                    {meta.label}
-                  </Tag>
-                  <span style={{ fontSize: 12, color: '#999' }}>{fmtTime(ev.created_at)}</span>
-                </Space>
-                {renderDetail(ev.detail)}
-              </div>
-            ),
-          }
-        })}
-      />
+      <div>
+        <div style={{ fontSize: 12, color: '#999', marginBottom: 10 }}>
+          共 <span style={{ color: '#595959', fontWeight: 600 }}>{evts.length}</span> 条事件
+        </div>
+        <Timeline
+          items={evts.map((ev) => {
+            const meta =
+              EVENT_META[ev.event_type] || {
+                label: ev.event_type,
+                color: '#8c8c8c',
+                icon: <HistoryOutlined />,
+              }
+            const detail = renderDetail(ev.detail)
+            return {
+              dot: (
+                <span
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 22,
+                    height: 22,
+                    borderRadius: '50%',
+                    background: meta.color,
+                    color: '#fff',
+                    fontSize: 11,
+                    boxShadow: '0 0 0 3px #fafafa',
+                  }}
+                >
+                  {meta.icon}
+                </span>
+              ),
+              children: (
+                <div
+                  style={{
+                    background: '#fff',
+                    border: '1px solid #f0f0f0',
+                    borderRadius: 8,
+                    padding: detail ? '8px 12px' : '10px 12px',
+                    marginBottom: 2,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'baseline',
+                      gap: 8,
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <span style={{ fontWeight: 600, fontSize: 13, color: meta.color }}>
+                      {meta.label}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: '#999',
+                        marginLeft: 'auto',
+                        fontVariantNumeric: 'tabular-nums',
+                      }}
+                    >
+                      {fmtTime(ev.created_at)}
+                    </span>
+                  </div>
+                  {detail}
+                </div>
+              ),
+            }
+          })}
+        />
+      </div>
     )
   }
 
