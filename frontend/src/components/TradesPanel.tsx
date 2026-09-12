@@ -49,6 +49,7 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
 const EXIT_REASON_MAP: Record<string, string> = {
   sl: '止损离场',
   tp1_then_sl: 'TP1后止损',
+  tp1_trail: 'TP1后跟踪止损',
   trail_sl: 'TP2后跟踪止损',
   breakeven_sl: '保本止损',
   manual: '手动平仓',

@@ -8,6 +8,8 @@
 结算（settle_trades）：
     以交易所为真源（持仓量/挂单/已实现盈亏）推断成交事件：
     仓位归零 → 结算收益（正/负值）；TP1/TP2 成交 → 状态迁移；
+    TP1 成交 → 止损移至成本价（保本，幂等）；
+    无 TP2 的单：TP1 止盈 75%，剩余 25% 从 TP1 起跟进止损；
     TP2 后每次巡检跟进止损（最近3根已收盘K线极值，只收紧不放松）
 """
 import logging
@@ -47,6 +49,15 @@ def _add_event(db: Session, rec: TradeRecord, event_type: str, detail: Optional[
 
 def _close_side(direction: str) -> str:
     return "SELL" if direction == "long" else "BUY"
+
+
+def _tp_quantities(qty: float, tp2: float) -> tuple[float, float]:
+    """TP1/TP2 分配数量：AI 给出 TP2 → 50%/25% 两档分批止盈；
+    未给出（AI 未报 / 前方无结构位程序回退清零）→ TP1 一次止盈 75%，
+    剩余 25% 从 TP1 成交起由跟进止损退出（与 TP2 后同机制）"""
+    if tp2 and tp2 > 0:
+        return qty * 0.5, qty * 0.25
+    return qty * 0.75, 0.0
 
 
 def _ai_snapshot(a: AIAnalysis) -> dict:
@@ -228,8 +239,9 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
             try:
                 sl_order = trader.stop_market_close(
                     symbol, close_side, trader.round_price(symbol, sl))
-                qty_tp1 = trader.round_qty(symbol, qty * 0.5)
-                qty_tp2 = trader.round_qty(symbol, qty * 0.25)
+                q1, q2 = _tp_quantities(qty, tp2)
+                qty_tp1 = trader.round_qty(symbol, q1)
+                qty_tp2 = trader.round_qty(symbol, q2)
                 tp1_order = trader.take_profit_reduce(
                     symbol, close_side, qty_tp1, trader.round_price(symbol, tp1))
                 tp2_order = None
@@ -325,6 +337,7 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
 def _trailing_stop(rec: TradeRecord, klines: list[list]) -> Optional[float]:
     """跟进止损（只收紧不放松）：多单=max(当前SL, 最近3根已收盘K线最低价)，空单反之。
 
+    适用状态：TP2_HIT（有 TP2 的单）与 TP1_HIT（无 TP2 的单，TP1 成交后即启用）。
     TP2_HIT 状态下额外以 TP1 价夹紧（保本锚定）：多单 SL 不得低于 TP1，
     空单不得高于 TP1——即使最近 3 根 K 线极值越过 TP1 也不放松到保本价之外。
     """
@@ -369,12 +382,66 @@ def _move_sl_trailing(db: Session, trader: BinanceTrader, rec: TradeRecord,
     logger.info("跟进止损 %s：%s → %s", rec.symbol, old_sl, new_sl)
 
 
+def _move_sl_breakeven(db: Session, trader: BinanceTrader, rec: TradeRecord,
+                       open_ids: set[int]) -> bool:
+    """TP1 成交后保本止损：SL 移到成本价（多单 SL=max(现SL,入场价)，空单反之，只收紧不放松）。
+
+    幂等：SL 已不差于成本价（或取整后相同）时不动作，返回是否实际移动。
+    """
+    entry = float(rec.entry_price or 0)
+    cur = float(rec.stop_loss or 0)
+    if entry <= 0 or cur <= 0:
+        return False
+    new_sl = max(cur, entry) if rec.direction == "long" else min(cur, entry)
+    if new_sl == cur:
+        return False
+    new_sl = trader.round_price(rec.symbol, new_sl)
+    if new_sl == cur:
+        return False
+    raw = rec.raw or {}
+    old_id = raw.get("sl_order_id")
+    if old_id and old_id in open_ids:
+        trader.cancel_order(rec.symbol, int(old_id))
+    sl_order = trader.stop_market_close(rec.symbol, _close_side(rec.direction), new_sl)
+    old_sl = cur
+    rec.stop_loss = new_sl
+    raw["sl_order_id"] = sl_order.get("algoId") or sl_order.get("orderId")
+    rec.raw = raw
+    _add_event(db, rec, "SL_MOVE", {"from": old_sl, "to": new_sl, "reason": "tp1_breakeven",
+                                    "sl_order_id": raw["sl_order_id"]})
+    logger.info("保本止损 %s：%s → %s（成本价）", rec.symbol, old_sl, new_sl)
+    return True
+
+
 def _derive_exit_reason(rec: TradeRecord) -> str:
     if rec.status == "TP2_HIT":
         return "trail_sl"
     if rec.status == "TP1_HIT":
+        # TP1 后止损已移至成本价；无 TP2 的单随后启用跟进止损（只收紧）——
+        # SL 已被收紧越过成本价 → TP1后跟踪止损出场；仍贴着成本价 → 保本出场
+        entry, sl = float(rec.entry_price or 0), float(rec.stop_loss or 0)
+        if entry > 0 and sl > 0:
+            eps = entry * 1e-6
+            if rec.direction == "long":
+                if sl > entry + eps:
+                    return "tp1_trail"
+                if sl >= entry - eps:
+                    return "breakeven_sl"
+            else:
+                if sl < entry - eps:
+                    return "tp1_trail"
+                if sl <= entry + eps:
+                    return "breakeven_sl"
         return "tp1_then_sl"
     return "sl"
+
+
+def _zero_pos_exit_reason(rec: TradeRecord, tp1_gone: bool) -> str:
+    """仓位归零时的出场原因：OPENED 状态下 TP1 单已消失，说明 TP1 与 SL 在同一巡检间隔内
+    先后成交（如 75% TP1 后回踩触发 SL）→ tp1_then_sl；其余按状态推断"""
+    if rec.status == "OPENED" and tp1_gone:
+        return "tp1_then_sl"
+    return _derive_exit_reason(rec)
 
 
 def settle_trades(db: Session, trader: BinanceTrader) -> int:
@@ -407,7 +474,10 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                 pnl = trader.realized_pnl_since(rec.symbol, since_ms)
                 rec.realized_pnl = round(pnl, 6)
                 rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
-                exit_reason = _derive_exit_reason(rec)  # 须在改状态前取（依当前状态推断）
+                if rec.status == "OPENED" and tp1_gone:
+                    # TP1 与 SL 在同一巡检间隔内先后成交（如 75% TP1 后回踩触发 SL）：补记 TP1_FILL
+                    _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1")})
+                exit_reason = _zero_pos_exit_reason(rec, tp1_gone)
                 rec.status = "CLOSED"
                 rec.closed_at = datetime.utcnow()
                 rec.exit_reason = exit_reason
@@ -435,6 +505,10 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                 elif tp1_gone and ratio <= 0.75:
                     _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1")})
                     rec.status = "TP1_HIT"
+                    _move_sl_breakeven(db, trader, rec, open_ids)  # 用户规则：TP1 后止损移至成本价
+                    if not rec.tp2:
+                        # 无 TP2：TP1 止盈 75% 后剩余仓即启用跟进止损（与 TP2 后同机制）
+                        _move_sl_trailing(db, trader, rec, interval, open_ids)
                     db.commit()
                     handled += 1
             elif rec.status == "TP1_HIT":
@@ -442,6 +516,14 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                     _add_event(db, rec, "TP2_FILL", {"qty": raw.get("qty_tp2")})
                     rec.status = "TP2_HIT"
                     _move_sl_trailing(db, trader, rec, interval, open_ids)
+                    db.commit()
+                    handled += 1
+                else:
+                    # 保本兜底（幂等）：部署前已处于 TP1_HIT 的旧单、或上次保本移动失败的补偿
+                    _move_sl_breakeven(db, trader, rec, open_ids)
+                    if not rec.tp2:
+                        # 无 TP2：与 TP2 后同规则，每次巡检跟进止损（只收紧不放松）
+                        _move_sl_trailing(db, trader, rec, interval, open_ids)
                     db.commit()
                     handled += 1
             elif rec.status == "TP2_HIT":

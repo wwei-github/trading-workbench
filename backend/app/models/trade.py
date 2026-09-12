@@ -51,13 +51,13 @@ class TradeRecord(Base):
 
     # 状态与结算
     status: Mapped[str] = mapped_column(String(16), default="OPENED", index=True)
-    # OPENED（运行中）/ TP1_HIT（部分止盈）/ TP2_HIT（已保本）/ CLOSED / FAILED
+    # OPENED（运行中）/ TP1_HIT（部分止盈，止损已移至成本价保本）/ TP2_HIT（仅剩跟进仓）/ CLOSED / FAILED
     opened_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     realized_pnl: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)  # 正/负值 USDT
     pnl_pct: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)  # 相对止损金额 %
     exit_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    # sl / tp1_then_sl / trail_sl / breakeven_sl / manual / error
+    # sl / tp1_then_sl / tp1_trail / trail_sl / breakeven_sl / manual / error
 
     raw: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # {entry_order_id, sl_order_id, tp1_order_id, tp2_order_id, qty_tp1, qty_tp2, capital_base, wallet}
