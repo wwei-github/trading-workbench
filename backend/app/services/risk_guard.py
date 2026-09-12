@@ -15,6 +15,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.config import settings
 from app.services.strategy import recent_swings
+from app.services.strategy.key_levels import calc_atr
 
 logger = logging.getLogger(__name__)
 
@@ -76,18 +77,6 @@ def normalize_raw(raw: dict) -> TradeDecision:
         raise ValueError(f"trade_decision 非法: {data.get('trade_decision')!r}")
     return TradeDecision(**data)
 
-
-def calc_atr(klines: list, period: int = 14) -> Optional[float]:
-    """ATR(14)：最近 period 根已收盘 K 线的真实波幅均值（klines[-1] 未收盘）"""
-    closed = klines[:-1] if len(klines) >= 2 else klines
-    if len(closed) < period + 1:
-        return None
-    trs = []
-    for i in range(-period, 0):
-        h, l = float(closed[i][2]), float(closed[i][3])
-        prev_c = float(closed[i - 1][4])
-        trs.append(max(h - l, abs(h - prev_c), abs(l - prev_c)))
-    return sum(trs) / len(trs)
 
 
 _TP_ANCHOR_TOL = 0.015   # 止盈锚定容差：距结构位 1.5% 以内视为锚定（留余地）

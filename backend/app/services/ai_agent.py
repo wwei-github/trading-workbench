@@ -411,9 +411,12 @@ def _build_user_msg(
     levels = []
     for lv in signal.get("key_levels") or []:
         role = "支撑" if lv.get("role") == "support" else "压力"
+        touch = f"触及{lv.get('touches', 1)}次"
+        if lv.get("weight") is not None:
+            touch += f"·时间加权{lv['weight']}"
         levels.append(
             f"  {POSITION_LABEL_MAP.get(lv.get('kind'), lv.get('kind'))}: {lv['price']:.6g} "
-            f"({role}, 触及{lv.get('touches', 1)}次)"
+            f"({role}, {touch})"
         )
     # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点）
     sw = signal.get("recent_swings") or {}

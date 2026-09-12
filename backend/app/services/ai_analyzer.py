@@ -113,8 +113,11 @@ def _build_messages(
         for lv in signal["key_levels"]:
             kind = POSITION_LABEL_MAP.get(lv.get("kind"), lv.get("kind", "?"))
             role = "支撑" if lv.get("role") == "support" else "压力"
+            touch = f"触及{lv.get('touches', 1)}次"
+            if lv.get("weight") is not None:
+                touch += f"·时间加权{lv['weight']}"
             lines.append(
-                f"  {kind}: {lv['price']:.6g} ({role}, 触及{lv.get('touches', 1)}次, "
+                f"  {kind}: {lv['price']:.6g} ({role}, {touch}, "
                 f"区域{lv['zone_low']:.6g}~{lv['zone_high']:.6g})"
             )
         levels_summary = "关键位列表:\n" + "\n".join(lines) + "\n"

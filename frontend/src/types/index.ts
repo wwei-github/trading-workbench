@@ -16,6 +16,7 @@ export interface KeyLevel {
   zone_low: number;
   zone_high: number;
   touches: number;
+  weight?: number; // 时间加权触及强度（聚类位才有）
   role: string; // support / resistance
 }
 

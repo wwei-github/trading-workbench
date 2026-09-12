@@ -119,8 +119,8 @@ def _detect(klines: list[list], config: dict) -> Optional[dict]:
     structure = classify_structure(swings, closes, n_closed, config)
     signal_type = structure["signal_type"]
 
-    # 2. 计算关键位
-    levels = compute_key_levels(swings, closes, n_closed, signal_type, config)
+    # 2. 计算关键位（传 klines 启用 ATR 自适应区域半宽）
+    levels = compute_key_levels(swings, closes, n_closed, signal_type, config, klines)
     if not levels:
         return None
 

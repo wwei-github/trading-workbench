@@ -2,13 +2,22 @@
 
 关键位构成（见 docs/03-关键位筛选重构需求.md §2）：
 - 前高/前低：最近一个摆动高点/低点（收盘价计算）
-- 支撑位/压力位：更早的摆动点按价格聚类（≥2 次触及），被突破后角色互换
+- 支撑位/压力位：更早的摆动点按价格聚类（时间加权 ≥ 阈值），被突破后角色互换
 - 区间顶部/底部：震荡结构下用摆动点回归拟合的上下边界
 
-关键位是区域：中心价 ± zone_tolerance（默认 ±0.5%），价格进入区域即算"到位"。
+关键位是区域：中心价 ± zone_tolerance。区域半宽随波动自适应：
+ATR% 越大区域越宽（0.5×ATR），限制在配置值 key_level_tolerance 的 [0.5×, 2×] 倍内——
+高波动币不会因固定 0.5% 太窄而频繁假触及，低波动币不会太宽而到处都是信号。
 角色按当前价动态判定：关键位在当前价上方=压力，下方=支撑。
+
+时间加权（2026-09-12 优化）：
+- 每次触及的权重 = 2^(-bars_ago / 半衰期)，半衰期 60 根已收盘 K 线
+- 聚类簇按总权重过滤（≥1.2，约等于"近期 2 次触及"），纯久远旧点自然衰减淘汰；
+  触及次数 touches 仍保留原始计数供展示
 """
 from __future__ import annotations
+
+from typing import Optional
 
 import numpy as np
 
@@ -23,10 +32,31 @@ from app.services.strategy.types import (
     RANGE_BOUND,
 )
 
+# 触及权重半衰期（已收盘 K 线根数）与聚类保留阈值（≈2 次近期触及）
+TOUCH_HALF_LIFE = 60
+MIN_CLUSTER_WEIGHT = 1.2
 
-def _make_level(kind: str, price: float, touches: int, close_last: float, tol: float) -> dict:
+
+def calc_atr(klines: list, period: int = 14) -> Optional[float]:
+    """ATR(period)：最近 period 根已收盘 K 线的真实波幅均值（klines[-1] 未收盘）。
+
+    供关键位区域自适应宽度与 AI 事实包共用（risk_guard 由此处导入）。
+    """
+    closed = klines[:-1] if len(klines) >= 2 else klines
+    if len(closed) < period + 1:
+        return None
+    trs = []
+    for i in range(-period, 0):
+        h, l = float(closed[i][2]), float(closed[i][3])
+        prev_c = float(closed[i - 1][4])
+        trs.append(max(h - l, abs(h - prev_c), abs(l - prev_c)))
+    return sum(trs) / len(trs)
+
+
+def _make_level(kind: str, price: float, touches: int, close_last: float, tol: float,
+                weight: Optional[float] = None) -> dict:
     """构造关键位 dict，角色按当前价动态判定（上方=压力，下方=支撑）"""
-    return {
+    lv = {
         "kind": kind,
         "price": float(price),
         "zone_low": float(price * (1 - tol)),
@@ -34,20 +64,37 @@ def _make_level(kind: str, price: float, touches: int, close_last: float, tol: f
         "touches": int(touches),
         "role": "resistance" if price > close_last else "support",
     }
+    if weight is not None:
+        lv["weight"] = round(float(weight), 2)  # 时间加权触及强度（前高/前低无聚类权重）
+    return lv
 
 
-def _cluster_levels(prices: list[float], merge_thr: float) -> list[tuple[float, int]]:
-    """按价格聚类：相互距离 ≤ merge_thr 的点合并，返回 [(中心价, 触及次数)]，仅保留 ≥2 次触及"""
-    if not prices:
+def _touch_weight(idx: int, n_closed: int) -> float:
+    """单次触及的时间权重：越近越重，半衰期 TOUCH_HALF_LIFE 根"""
+    bars_ago = max(n_closed - int(idx), 0)
+    return 2.0 ** (-bars_ago / TOUCH_HALF_LIFE)
+
+
+def _cluster_levels(points: list[tuple[float, int]], merge_thr: float, n_closed: int,
+                    ) -> list[tuple[float, int, float]]:
+    """按价格聚类：相互距离 ≤ merge_thr 的点合并（时间加权），
+    返回 [(中心价, 触及次数, 总权重)]，仅保留总权重 ≥ MIN_CLUSTER_WEIGHT 的簇
+    （权重 1.2 上限单点 1.0，天然要求 ≥2 次触及，且纯久远旧点会被衰减淘汰）"""
+    if not points:
         return []
-    pts = sorted(prices)
-    groups: list[list[float]] = [[pts[0]]]
+    pts = sorted(points, key=lambda p: p[0])
+    groups: list[list[tuple[float, int]]] = [[pts[0]]]
     for p in pts[1:]:
-        if abs(p - groups[-1][-1]) / groups[-1][-1] <= merge_thr:
+        if abs(p[0] - groups[-1][-1][0]) / groups[-1][-1][0] <= merge_thr:
             groups[-1].append(p)
         else:
             groups.append([p])
-    return [(sum(g) / len(g), len(g)) for g in groups if len(g) >= 2]
+    out = []
+    for g in groups:
+        weight = sum(_touch_weight(idx, n_closed) for _, idx in g)
+        if weight >= MIN_CLUSTER_WEIGHT:
+            out.append((sum(p[0] for p in g) / len(g), len(g), weight))
+    return out
 
 
 def compute_key_levels(
@@ -56,11 +103,13 @@ def compute_key_levels(
     n_closed: int,
     signal_type: str,
     config: dict,
+    klines: Optional[list] = None,
 ) -> list[dict]:
     """计算关键位列表。
 
     swings: merge_swings 输出 [(idx, "H"|"L", price), ...]
     signal_type: classify_structure 的分类结果（震荡时补充区间边界）
+    klines: 传入时可按 ATR 自适应区域半宽（不传则用配置固定值）
     """
     highs_seq = [p for p in swings if p[1] == "H"]
     lows_seq = [p for p in swings if p[1] == "L"]
@@ -68,20 +117,29 @@ def compute_key_levels(
         return []
 
     close_last = float(closes[-2])
-    tol = config.get("key_level_tolerance", 0.005)
+    base_tol = config.get("key_level_tolerance", 0.005)
     merge_thr = config.get("level_merge_threshold", 0.005)
+
+    # 区域半宽自适应：0.5×ATR，限制在配置容忍度的 [0.5×, 2×] 内
+    tol = base_tol
+    if klines:
+        atr = calc_atr(klines)
+        if atr and close_last > 0:
+            tol = min(max(0.5 * atr / close_last, base_tol * 0.5), base_tol * 2)
 
     levels: list[dict] = []
 
-    # 1. 前高/前低（最近一个摆动点）
+    # 1. 前高/前低（最近一个摆动点，天然最新，无聚类权重）
     levels.append(_make_level(POS_PREV_HIGH, highs_seq[-1][2], 1, close_last, tol))
     levels.append(_make_level(POS_PREV_LOW, lows_seq[-1][2], 1, close_last, tol))
 
     # 2. 支撑/压力位：除最近点外的摆动点聚类（前高/前低已单独列出）
-    for price, touches in _cluster_levels([p[2] for p in highs_seq[:-1]], merge_thr):
-        levels.append(_make_level(POS_RESISTANCE, price, touches, close_last, tol))
-    for price, touches in _cluster_levels([p[2] for p in lows_seq[:-1]], merge_thr):
-        levels.append(_make_level(POS_SUPPORT, price, touches, close_last, tol))
+    for price, touches, weight in _cluster_levels(
+            [(p[2], p[0]) for p in highs_seq[:-1]], merge_thr, n_closed):
+        levels.append(_make_level(POS_RESISTANCE, price, touches, close_last, tol, weight))
+    for price, touches, weight in _cluster_levels(
+            [(p[2], p[0]) for p in lows_seq[:-1]], merge_thr, n_closed):
+        levels.append(_make_level(POS_SUPPORT, price, touches, close_last, tol, weight))
 
     # 3. 区间顶/底（仅震荡结构）：摆动点回归拟合边界
     if signal_type == RANGE_BOUND:
