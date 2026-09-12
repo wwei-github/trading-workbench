@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AIAnalysis, AiProgress, KlineData, ListResponse, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, WatchlistItem } from '../types'
+import type { AIAnalysis, AiProgress, KlineData, ListResponse, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TradeEvent, TradeRecord, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -94,6 +94,19 @@ export const scanApi = {
   // 技能详情（含全文 body markdown，404 = 技能不存在）
   skillDetail: (name: string) =>
     api.get<SkillInfo>(`/scans/skills/${encodeURIComponent(name)}`).then((r) => r.data),
+
+  // ===== 自动交易（docs/06）=====
+
+  // 交易记录列表（新→旧；status 可选过滤）
+  trades: {
+    list: (status?: string, limit = 200) =>
+      api
+        .get<TradeRecord[]>('/trades', { params: { status, limit } })
+        .then((r) => r.data),
+    // 一笔交易的操作历史（开仓/止盈成交/止损移动/结算/异常）
+    events: (tradeId: string) =>
+      api.get<TradeEvent[]>(`/trades/${tradeId}/events`).then((r) => r.data),
+  },
 
   // 关注列表
   watchlist: {

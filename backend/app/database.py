@@ -110,6 +110,11 @@ def _run_migrations(engine):
             ALTER TABLE ai_analyses
               ADD COLUMN IF NOT EXISTS trade_type VARCHAR(16)
         """))
+        # Feature 12: 自动交易（docs/06）——在跑单子上限
+        conn.execute(text("""
+            ALTER TABLE system_config
+              ADD COLUMN IF NOT EXISTS max_open_trades INTEGER NOT NULL DEFAULT 5
+        """))
         # 确保系统配置表有默认行（初始值从 env 注入）
         conn.execute(text(
             "INSERT INTO system_config "
@@ -135,6 +140,6 @@ def _run_migrations(engine):
 
 def init_db():
     """创建所有表 + 幂等迁移"""
-    from app.models import scan  # noqa: F401
+    from app.models import scan, trade  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _run_migrations(engine)

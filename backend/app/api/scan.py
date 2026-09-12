@@ -304,6 +304,7 @@ def get_system_config(db: Session = Depends(get_db)):
         key_level_tolerance=float(cfg.key_level_tolerance),
         level_merge_threshold=float(cfg.level_merge_threshold),
         fib_enabled=cfg.fib_enabled,
+        max_open_trades=cfg.max_open_trades,
     )
 
 
@@ -355,6 +356,10 @@ def update_system_config(
         cfg.level_merge_threshold = body.level_merge_threshold
     if body.fib_enabled is not None:
         cfg.fib_enabled = body.fib_enabled
+    if body.max_open_trades is not None:
+        if not (1 <= body.max_open_trades <= 50):
+            raise HTTPException(status_code=400, detail="max_open_trades 需在 1~50 之间")
+        cfg.max_open_trades = body.max_open_trades
 
     db.commit()
     db.refresh(cfg)
@@ -375,6 +380,7 @@ def update_system_config(
         key_level_tolerance=float(cfg.key_level_tolerance),
         level_merge_threshold=float(cfg.level_merge_threshold),
         fib_enabled=bool(cfg.fib_enabled),
+        max_open_trades=cfg.max_open_trades,
     )
 
 

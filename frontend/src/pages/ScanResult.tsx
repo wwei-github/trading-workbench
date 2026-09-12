@@ -9,6 +9,7 @@ import StrategyPromptPanel from '../components/StrategyPromptPanel'
 import WatchlistPanel from '../components/WatchlistPanel'
 import SearchPanel from '../components/SearchPanel'
 import ReviewStatsPanel from '../components/ReviewStatsPanel'
+import TradesPanel from '../components/TradesPanel'
 import { useScanStore } from '../stores/scanStore'
 
 export default function ScanResult() {
@@ -238,6 +239,11 @@ export default function ScanResult() {
             key: 'history',
             label: '历史记录',
             children: <div style={{ height: '100%', overflow: 'hidden' }}><HistoryList /></div>,
+          },
+          {
+            key: 'trades',
+            label: '交易记录',
+            children: <div style={{ height: '100%', overflow: 'auto' }}><TradesPanel /></div>,
           },
         ]}
       />

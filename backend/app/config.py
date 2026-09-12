@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     AI_MAX_PER_SCAN: int = 10         # 单次扫描批量 AI 分析上限（按24h成交额取前N）
     MIN_VOLUME_24H: float = 3_000_000  # 扫描候选池 24h 成交额下限（USDT），低于此不进扫描
 
+    # 自动交易（docs/06，币安 USDT-M 合约）
+    BINANCE_TRADE_KEY: str = ""
+    BINANCE_TRADE_SECRET: str = ""
+    TRADING_TESTNET: bool = True      # 首期走 testnet 验证链路
+    TRADING_ENABLED: bool = False     # 自动交易总开关
+    TRADING_MIN_RECOMMENDATION: float = 60.0  # 开单推荐度门槛
+    TRADING_RISK_PCT: float = 3.0     # 止损金额占风险基数比例（%）
+    TRADING_CAPITAL_TIERS: str = "100,200,500,1000,2000,5000,10000"  # 风险基数分档（向下落档）
+    TRADING_MIN_FREE_PCT: float = 0.7  # 可用余额/总资金 下限（70% 规则）
+    TRADING_LEVERAGE: int = 20        # 杠杆（逐仓 ISOLATED）
+
     class Config:
         env_file = ".env"
 

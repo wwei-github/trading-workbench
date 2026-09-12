@@ -187,6 +187,9 @@ class SystemConfigOut(BaseModel):
     level_merge_threshold: float
     fib_enabled: bool
 
+    # 自动交易（docs/06）
+    max_open_trades: int = 5
+
     class Config:
         from_attributes = True
 
@@ -214,6 +217,9 @@ class SystemConfigUpdate(BaseModel):
     key_level_tolerance: Optional[float] = None
     level_merge_threshold: Optional[float] = None
     fib_enabled: Optional[bool] = None
+
+    # 自动交易（docs/06）
+    max_open_trades: Optional[int] = None
 
 
 # ===== 复盘统计（docs/04 §10 P2） =====

@@ -35,4 +35,7 @@ class SystemConfig(Base):
     level_merge_threshold: Mapped[float] = mapped_column(Numeric(10, 6), default=0.005)  # 支撑/压力聚类合并阈值
     fib_enabled: Mapped[bool] = mapped_column(Boolean, default=False)  # 斐波那契位开关（二期）
 
+    # 自动交易（docs/06）：同时在跑单子上限（页面可改）
+    max_open_trades: Mapped[int] = mapped_column(Integer, default=5)
+
     notes: Mapped[str] = mapped_column(String(255), default="系统运行时配置")

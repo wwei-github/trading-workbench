@@ -132,6 +132,39 @@ export interface SystemConfig {
   level_merge_threshold?: number; // 支撑/压力聚类合并阈值
   fib_enabled?: boolean; // 斐波那契位开关（二期）
   dual_judge_enabled?: boolean; // 双评委辩论：对 suggest 决策做多空辩论复核
+  max_open_trades?: number; // 自动交易：同时在跑单子上限
+}
+
+// ===== 自动交易（docs/06）=====
+
+export interface TradeRecord {
+  id: string
+  symbol: string
+  direction: 'long' | 'short'
+  recommendation: number | null
+  entry_price: number | null
+  qty: number | null
+  notional: number | null
+  leverage: number
+  margin_used: number | null
+  risk_amount: number | null
+  stop_loss: number | null
+  tp1: number | null
+  tp2: number | null
+  status: 'OPENED' | 'TP1_HIT' | 'TP2_HIT' | 'CLOSED' | 'FAILED'
+  opened_at: string | null
+  closed_at: string | null
+  realized_pnl: number | null // 正/负值 USDT
+  pnl_pct: number | null // 相对止损金额 %
+  exit_reason: string | null // sl / tp1_then_sl / trail_sl / breakeven_sl / manual / error
+  ai_analysis_id: string | null
+}
+
+export interface TradeEvent {
+  id: string
+  event_type: string // OPEN / TP1_FILL / TP2_FILL / SL_MOVE / SL_FILL / CANCEL / ERROR / SETTLE / SKIP
+  detail: Record<string, unknown> | null
+  created_at: string
 }
 
 // ===== AI 建议复盘系统（P2）=====

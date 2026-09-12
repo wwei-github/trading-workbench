@@ -33,6 +33,7 @@ export default function ScanConfigPanel() {
         pullback_tolerance: aiConfig.pullback_tolerance,
         key_level_tolerance: aiConfig.key_level_tolerance,
         level_merge_threshold: aiConfig.level_merge_threshold,
+        max_open_trades: aiConfig.max_open_trades ?? 5,
       })
     }
   }, [open, aiConfig, form])
@@ -52,6 +53,8 @@ export default function ScanConfigPanel() {
         // 关键位参数
         key_level_tolerance: values.key_level_tolerance,
         level_merge_threshold: values.level_merge_threshold,
+        // 自动交易
+        max_open_trades: values.max_open_trades,
         // P2 实验开关
         dual_judge_enabled: values.dual_judge_enabled,
       }
@@ -167,6 +170,20 @@ export default function ScanConfigPanel() {
             tooltip="相互距离 ≤ 阈值的摆动点合并为一个水平区域，0.005 = 0.5%"
           >
             <InputNumber step={0.001} min={0} max={0.1} style={{ width: '100%' }} />
+          </Form.Item>
+
+          {/* 自动交易（docs/06） */}
+          <Divider style={{ margin: '8px 0 16px' }}>
+            <span style={{ fontSize: 13, color: '#999' }}>自动交易</span>
+          </Divider>
+          <Form.Item
+            label="同时在跑单子上限"
+            name="max_open_trades"
+            initialValue={5}
+            rules={[{ required: true, message: '请输入在跑单子上限' }]}
+            tooltip="自动开仓的在跑单子数量上限；每小时任务先结算再开仓，评分高的优先"
+          >
+            <InputNumber min={1} max={50} style={{ width: '100%' }} />
           </Form.Item>
 
           {/* AI 实验功能（P2，默认关闭） */}
