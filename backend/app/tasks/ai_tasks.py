@@ -190,6 +190,11 @@ def run_ai_analysis_single(
         # 2) 振幅熔断（当前已收盘K线振幅 > N×ATR，插针/异常行情不出建议）
         pool = ExchangePool()
         klines = pool.get_klines(r.symbol, cfg.kline_interval, 500)
+        if len(klines) < 500:
+            # K线不足500根（止盈锚定/回退的前提是查满500根窗口）：强刷重取一次；
+            # 仍不足则为新上市合约的全部历史，用可用K线继续
+            klines = pool.get_klines(r.symbol, cfg.kline_interval, 500, force_refresh=True)
+            logger.info("AI 分析 %s K线不足500根，强刷重取后 %d 根", r.symbol, len(klines))
         atr = calc_atr(klines)
         if atr and len(klines) >= 2:
             closed = klines[-2]
