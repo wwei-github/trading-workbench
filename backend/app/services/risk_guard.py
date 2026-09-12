@@ -166,10 +166,7 @@ def validate_decision(
         violations.append(
             f"做空价格关系错误：要求 止损({d.stop_loss}) > 入场({d.entry_price}) > 止盈1({d.take_profit_1})"
         )
-    if d.direction == "long" and d.take_profit_2 > 0 and d.take_profit_2 <= d.take_profit_1:
-        violations.append("做多要求 tp2 > tp1")
-    if d.direction == "short" and d.take_profit_2 > 0 and d.take_profit_2 >= d.take_profit_1:
-        violations.append("做空要求 tp2 < tp1")
+    # tp2 与 tp1 的大小关系检查放在止盈锚定块之后（回退/清零可能改变 tp1/tp2，见下）
 
     if close > 0:
         dev = abs(d.entry_price - close) / close
@@ -211,26 +208,41 @@ def validate_decision(
 
     # ── 止盈锚定校验：TP1 必须是前方第一个（或因盈亏比退一档的）结构位，TP2 更远一档 ──
     # 多单锚定上方的高点/关键位，空单锚定下方的低点/关键位；留余地 = 距结构位容差内、
-    # 不得显著越过。违规时列出可用结构位，供 AI 回炉重试时直接选位
+    # 不得显著越过。前方无任何结构位时回退固定盈亏比；其余违规列出可用结构位供 AI 重试
     if d.direction in ("long", "short") and d.take_profit_1 > 0:
         side = "上方" if d.direction == "long" else "下方"
         cands = _structural_candidates(signal, klines, d.direction, d.entry_price)
         c1 = _anchored(d.take_profit_1, cands, d.direction)
         if c1 is None:
-            near = ", ".join(f"{c:g}" for c in cands[:5]) or "无"
-            violations.append(
-                f"止盈一 {d.take_profit_1} 未锚定结构位：必须是前一个高点/低点或关键位并留余地"
-                f"（{'做多看上方高点/关键位' if d.direction == 'long' else '做空看下方低点/关键位'}）。"
-                f"可用结构位（{side}）：{near}"
-            )
-        if d.take_profit_2 > 0:
-            base = c1 if c1 is not None else d.take_profit_1
-            further = [c for c in cands if (c > base if d.direction == "long" else c < base)]
-            if _anchored(d.take_profit_2, further, d.direction) is None:
-                near = ", ".join(f"{c:g}" for c in further[:5]) or "无"
+            if not cands:
+                # 前方无任何结构位可锚定（如创新高突破）：回退固定盈亏比——
+                # TP1 = 入场 ± RR_MIN×止损距离（乘 1.001 留浮点余量，防复算恰等于阈值被判负），
+                # TP2 清零，仅设一档
+                fb = settings.AI_RR_MIN * stop_dist * 1.001
+                d.take_profit_1 = d.entry_price + fb if d.direction == "long" else d.entry_price - fb
+                d.take_profit_2 = 0.0
+            else:
+                near = ", ".join(f"{c:g}" for c in cands[:5])
+                violations.append(
+                    f"止盈一 {d.take_profit_1} 未锚定结构位：必须是前一个高点/低点或关键位并留余地"
+                    f"（{'做多看上方高点/关键位' if d.direction == 'long' else '做空看下方低点/关键位'}）。"
+                    f"可用结构位（{side}）：{near}"
+                )
+        if d.take_profit_2 > 0 and c1 is not None:
+            further = [c for c in cands if (c > c1 if d.direction == "long" else c < c1)]
+            if not further:
+                d.take_profit_2 = 0.0  # 更前方已无结构位：仅设一档
+            elif _anchored(d.take_profit_2, further, d.direction) is None:
+                near = ", ".join(f"{c:g}" for c in further[:5])
                 violations.append(
                     f"止盈二 {d.take_profit_2} 未锚定比止盈一更远的一档结构位。可用结构位（{side}）：{near}"
                 )
+
+    # 止盈锚定块的回退/清零可能改变 tp1/tp2，关系检查以修正后值为准（清除原始值误报）
+    if d.direction == "long" and d.take_profit_2 > 0 and d.take_profit_2 <= d.take_profit_1:
+        violations.append("做多要求 tp2 > tp1")
+    if d.direction == "short" and d.take_profit_2 > 0 and d.take_profit_2 >= d.take_profit_1:
+        violations.append("做空要求 tp2 < tp1")
 
     if stop_dist > 0:
         rr = abs(d.take_profit_1 - d.entry_price) / stop_dist
