@@ -464,7 +464,7 @@ class ExchangePool:
     def get_recent_klines(
         self, symbol: str, interval: str = "1h", limit: int = 2,
     ) -> list[list]:
-        """拉取最近 limit 根 K 线（缓存读写双旁路，实时流降级/快照专用，docs/07）
+        """拉取最近 limit 根 K 线（缓存读写双旁路，实时流降级/快照专用，docs/05）
 
         不读缓存（limit=2 会命中整周期的 500 根旧缓存）、不写缓存
         （避免 2 根覆盖整周期全量缓存），直接按故障转移链路请求交易所。

@@ -1,4 +1,4 @@
-"""实时 K 线 SSE 端点（docs/07）
+"""实时 K 线 SSE 端点（docs/05）
 
 GET /api/scans/klines/{symbol}/stream?interval=1h
 

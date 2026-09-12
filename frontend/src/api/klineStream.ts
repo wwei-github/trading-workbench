@@ -1,5 +1,5 @@
 // 实时 K 线 SSE 客户端（原生 EventSource，无第三方库）
-// 服务端：backend/app/api/kline_stream.py + kline_hub.py（docs/07）
+// 服务端：backend/app/api/kline_stream.py + kline_hub.py（docs/05）
 // 断线由 EventSource 按服务端下发的 retry: 5000 自动重连，此处不手动重连。
 
 export interface KlineBar {

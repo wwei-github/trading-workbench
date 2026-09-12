@@ -1,4 +1,4 @@
-"""KlineHub：实时 K 线聚合推送（docs/07）
+"""KlineHub：实时 K 线聚合推送（docs/05）
 
 - 上游：单条币安 USDT-M WebSocket（wss://fstream.binance.com/ws raw 端点），
   按 (symbol, interval) 频道动态 SUBSCRIBE/UNSUBSCRIBE，所有浏览器/图表共享
