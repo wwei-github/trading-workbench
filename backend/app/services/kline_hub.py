@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import time
+from typing import Optional
 
 import websockets
 
@@ -45,8 +46,8 @@ class KlineHub:
         self._last_event_ts: dict[ChannelKey, float] = {}
         self._last_degraded_msg: dict[ChannelKey, str] = {}
         self._desired: set[ChannelKey] = set()
-        self._upstream_task: asyncio.Task | None = None
-        self._sweep_task: asyncio.Task | None = None
+        self._upstream_task: Optional[asyncio.Task] = None
+        self._sweep_task: Optional[asyncio.Task] = None
         self._ws = None  # websockets 客户端连接
         self._state = "idle"  # idle / connecting / ws / rest
         self._ws_attempt = 0
@@ -92,7 +93,7 @@ class KlineHub:
             self._state = "idle"
             self._cancel_tasks()
 
-    def snapshot(self, ch: ChannelKey) -> dict | None:
+    def snapshot(self, ch: ChannelKey) -> Optional[dict]:
         """该频道最新一帧 bar（新订阅者快照；可能为 None）"""
         return self._last_bar.get(ch)
 
@@ -297,7 +298,7 @@ class KlineHub:
         if bar is not None:
             self._publish(ch, bar)
 
-    async def _rest_bar(self, pool: ExchangePool, ch: ChannelKey) -> dict | None:
+    async def _rest_bar(self, pool: ExchangePool, ch: ChannelKey) -> Optional[dict]:
         """REST 取最新一根 bar（整体限时，防故障转移链挂起拖垮 sweep）；失败推 degraded"""
         symbol, interval = ch
         try:

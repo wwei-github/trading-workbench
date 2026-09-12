@@ -14,6 +14,7 @@ GET /api/scans/klines/{symbol}/stream?interval=1h
 import asyncio
 import json
 import time
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -37,7 +38,7 @@ def _bar_from_kline(k: list) -> dict:
     }
 
 
-async def _rest_snapshot(symbol: str, interval: str) -> dict | None:
+async def _rest_snapshot(symbol: str, interval: str) -> Optional[dict]:
     """REST 快照：实时链路取最新一根（缓存双旁路），失败降级旧缓存，全失败 None"""
     pool = ExchangePool()
     try:

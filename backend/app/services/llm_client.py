@@ -6,11 +6,14 @@ Agent 循环 + 双评委多处建连，统一收口到这里。
 - max_retries=1：SDK 默认重试 2 次，超时场景最坏 3×timeout（实测出现过 87s 挂死）；
   收窄为 1 次兼顾瞬时抖动容错
 """
+from typing import Optional
+
 from openai import OpenAI
 
 from app.config import settings
 
-_client: OpenAI | None = None
+# Optional 写法兼容 Python 3.9（PEP 604 的 X | Y 运行时求值需 3.10+）
+_client: Optional[OpenAI] = None
 
 
 def get_client() -> OpenAI:

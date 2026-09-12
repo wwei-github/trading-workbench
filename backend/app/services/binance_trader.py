@@ -10,7 +10,7 @@ import logging
 import time
 import urllib.parse
 from decimal import ROUND_DOWN, Decimal
-from typing import Optional
+from typing import Optional, Union
 
 import httpx
 
@@ -41,7 +41,7 @@ class BinanceTrader:
 
     # ── 基础请求 ──────────────────────────────────────────────
 
-    def _req(self, method: str, path: str, params: Optional[dict] = None) -> dict | list:
+    def _req(self, method: str, path: str, params: Optional[dict] = None) -> Union[dict, list]:
         params = dict(params or {})
         params.setdefault("recvWindow", 10000)
         params["timestamp"] = int(time.time() * 1000)

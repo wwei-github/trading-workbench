@@ -1,5 +1,6 @@
 """交易记录 API（docs/06）：列表 + 操作历史"""
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/api/trades", tags=["trades"])
 
 @router.get("", response_model=list[TradeOut])
 def list_trades(
-    status: str | None = None,
+    status: Optional[str] = None,
     limit: int = 100,
     db: Session = Depends(get_db),
 ):
