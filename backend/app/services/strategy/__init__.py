@@ -33,9 +33,29 @@ __all__ = [
     "detect_all_signals",
     "detect_any_signal",
     "recent_swings",
+    "compute_signal_key_levels",
     "GOLDEN_12",
     "LABEL_MAP",
 ]
+
+
+def compute_signal_key_levels(klines: list[list], config: dict) -> list[dict]:
+    """分析时刻的关键位快照（手动搜索 / 定时 AI 分析的事实包共用）。
+
+    与 _detect 前两步同源：摆动点 → 结构分类 → 关键位（含 ATR 自适应区域与时间加权），
+    但不做触及/形态/EMA 门控——AI 需要全量关键位而非仅信号命中位。
+    """
+    closes = np.array([float(k[4]) for k in klines], dtype=float)
+    n = len(klines)
+    if n < config.get("min_klines", 30):
+        return []
+    order = config.get("swing_order", 3)
+    high_idx, low_idx = find_swing_points(closes, closes, order)
+    swings = merge_swings(high_idx, low_idx, closes, closes)
+    if len(swings) < 4:
+        return []
+    structure = classify_structure(swings, closes, n - 1, config)
+    return compute_key_levels(swings, closes, n - 1, structure["signal_type"], config, klines)
 
 
 # EMA 状态 → 趋势偏向

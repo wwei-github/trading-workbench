@@ -32,7 +32,7 @@ from app.services.ai_analyzer import analyze_with_guard
 from app.services.dual_judge import run_dual_judge
 from app.services.exchange_pool import ExchangePool
 from app.services.risk_guard import build_forced_skip, calc_atr
-from app.services.strategy import recent_swings
+from app.services.strategy import compute_signal_key_levels, recent_swings
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +237,15 @@ def run_ai_analysis_single(
         r = db.get(ScanResult, r.id)
         # 近期摆动结构（HH/LH/HL/LL）随事实包给 AI，与图表标注同源
         signal["recent_swings"] = recent_swings(klines, order=cfg.swing_order, n=2)
+        # 关键位在分析时刻重算（含 ATR 自适应区域与时间加权）：扫描落库的 key_levels
+        # 是扫描时快照，分析时结构可能已变化。指纹已按扫描快照算完，缓存判定不受影响
+        fresh_levels = compute_signal_key_levels(klines, {
+            "swing_order": cfg.swing_order,
+            "key_level_tolerance": float(cfg.key_level_tolerance),
+            "level_merge_threshold": float(cfg.level_merge_threshold),
+        })
+        if fresh_levels:
+            signal["key_levels"] = fresh_levels
         # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
         # Agent 管线由模型按需调用工具自行获取
         # 管线选择：批量（每小时扫描自动触发/手动全量）固定走 P0 单次调用管线，

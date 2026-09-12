@@ -28,7 +28,7 @@ from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services.scanner import classify_volume
 from app.services.ai_analyzer import analyze_coin
 from app.services.skill_library import list_skills
-from app.services.strategy import recent_swings
+from app.services.strategy import compute_signal_key_levels, recent_swings
 from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
@@ -573,6 +573,12 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         "volume_24h": volume_24h,
         # 近期摆动结构（HH/LH/HL/LL），与图表标注同源
         "recent_swings": recent_swings(klines, order=cfg.swing_order, n=2),
+        # 分析时刻计算的关键位（前高前低/支撑压力/区间边界，含时间加权与 ATR 自适应区域）
+        "key_levels": compute_signal_key_levels(klines, {
+            "swing_order": cfg.swing_order,
+            "key_level_tolerance": float(cfg.key_level_tolerance),
+            "level_merge_threshold": float(cfg.level_merge_threshold),
+        }),
     }
 
     strategy_prompt = (
