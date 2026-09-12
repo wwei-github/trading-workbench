@@ -6,11 +6,11 @@ version: 1
 ---
 ## 震荡区间高抛低吸打法
 
-**前提**：`signal_type == "range_bound"`，区间边界已由关键位模块算出（range_top/range_bottom）。
+**前提**：`signal_type == "range_bound"`，区间边界已由关键位模块算出（上方边界=压力位、下方边界=支撑位）。
 
-**入场**：区间底部出现看涨金K → 做多（锚点 range_bottom）；区间顶部出现看跌金K → 做空（锚点 range_top）。止损锚点放区间外侧（做多止损 = range_bottom - 0.5×ATR，offset 为负）。
+**入场**：区间底部出现看涨金K → 做多（锚点支撑位 support）；区间顶部出现看跌金K → 做空（锚点压力位 resistance）。止损锚点放区间外侧（做多止损 = 支撑位锚点再向下偏移 0.5×ATR，offset 为负）。
 
-**止盈**：tp1 = 区间中线（range_top 与 range_bottom 的中点，可用 offset 表达）；tp2 = 对侧边界。
+**止盈**：做多 tp1 = 上方压力位（对侧边界，留 0.2%~0.5% 余地）；做空 tp1 = 下方支撑位；tp2 = 更远一档关键位。区间太窄导致复算盈亏比不足时直接 skip——区间交易不追盈亏比。
 
 **区间收敛（高点降低 + 低点抬高）**：突破方向不确定，仓位减半（recommendation 降 20）。
 

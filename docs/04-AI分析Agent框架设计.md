@@ -203,14 +203,18 @@ class TradeDecision(BaseModel):
     skip_reason: list[str] = []            # ≤3 条；suggest 时必须为空
     direction: Literal["long", "short"] | None
     # 关键改变：AI 不再直接报价格，而是报"结构位引用 + 偏移"
-    entry_level_ref: str | None            # 关键位列表中的 kind，如 "support"
+    entry_level_ref: str | None            # 锚点枚举（2026-09-12 两类化后）：support / resistance / market
     entry_offset_pct: float                # 相对该位的偏移%，通常 0~0.2
-    stop_level_ref: str | None             # 止损锚定的结构位 kind
+    stop_level_ref: str | None             # 止损锚定的结构位（support/resistance + offset）
     stop_offset_pct: float
-    tp1_level_ref: str | None              # 止盈锚定（如上方压力位/区间顶）
+    tp1_level_ref: str | None              # 止盈锚定（做多=上方压力位、做空=下方支撑位）
     tp2_level_ref: str | None
     recommendation: int                    # 0-100
 ```
+
+**锚点解析规则（2026-09-12 两类化）**：枚举收敛为 `support / resistance / market`。
+同角色多位按**价格侧最近**解析——support 取 role==support 中价格最大者（价下方最近支撑），
+resistance 取最小者（价上方最近压力）；一侧无位时该锚点非法（返回 None，模型须换锚重试）。
 
 **工具集**（function calling，按需调用）：
 
@@ -233,6 +237,7 @@ class TradeDecision(BaseModel):
 - **盈亏比复算**：`rr = |tp1-entry| / |entry-stop|`，要求 ≥**1.5** 才允许 suggest（对齐交易系统六问铁律；AI 声称值一律不信，用复算值落库）
 - 止损合理性：`|entry-stop|` ∈ [0.3×ATR, 3×ATR]（太近易扫损、太远盈亏比崩）；价格距离不设百分比红线——"3%止损"属仓位维度（触发止损时的账户亏损预算，由下方仓位公式保证）；止损还须越过最近 10 根已收盘K线的影线极值（多单严格低于最低价、空单严格高于最高价，用高低价极点计算非收盘价），且至少留 0.2% 缓冲——缓冲不足程序自动推远，未越过极值打回 AI 重试（`STOP_LOSS_RECENT_BARS` / `STOP_LOSS_BUFFER_PCT`）【2026-09-12：5根→10根+强制缓冲】
 - 止盈锚定：止盈一/二必须锚定前方结构位（多单=上方的前高/关键位，空单=下方的前低/关键位，留余地：容差1.5%内、不得显著越过），止盈二须比止盈一更远一档；违规时向 AI 反馈可用结构位列表；前方无结构位时回退 TP1=入场±1.5×止损距离（仅设一档）——回退前提是已取满 500 根K线窗口（不足时强刷重取一次，新上市合约取全部可用历史）
+- **方向铁律（2026-09-12）**：只在支撑位做多、只在压力位做空——入场价必须落在信号方向对应角色（多=support、空=resistance）的关键位区域内（±0.25×ATR 容差）；例外：`breakout`（放量突破顺势追，入场贴近现价）/ `manual_search`（用户手动指定）；违规消息列出可用同侧位价格，打回 AI 重试
 - 仓位公式化（固定亏损法）：`position_pct = 风险预算% ÷ (|entry-stop|/entry)`，触发止损时账户恰好亏损风险预算（RISK_BUDGET_PCT=3%），止损越远仓位越小、不设 clamp —— AI 不再自报仓位
 - skip 一致性：suggest 时 `skip_reason` 必须为空，反之亦然
 
@@ -378,6 +383,7 @@ return FORCE_SKIP                              # 步数耗尽 保险③
 - 盈亏比复算 ≥ 1.5（对齐交易系统铁律；AI 声称值不信，用复算值落库）
 - 止损距离 ∈ [0.3, 3]×ATR（价格距离不设百分比红线；3% 为仓位维度的单笔亏损预算 RISK_BUDGET_PCT）
 - 止盈锚定：止盈一/二必须锚定前方结构位（多单=上方的前高/关键位，空单=下方的前低/关键位，留余地：容差1.5%内、不得显著越过），止盈二须比止盈一更远一档；违规时向 AI 反馈可用结构位列表；前方无结构位时回退 TP1=入场±1.5×止损距离（仅设一档）——回退前提是已取满 500 根K线窗口（不足时强刷重取一次，新上市合约取全部可用历史）
+- **方向铁律（2026-09-12）**：只在支撑位做多、只在压力位做空——入场价必须落在信号方向对应角色（多=support、空=resistance）的关键位区域内（±0.25×ATR 容差）；例外：`breakout`（放量突破顺势追，入场贴近现价）/ `manual_search`（用户手动指定）；违规消息列出可用同侧位价格，打回 AI 重试
 - 仓位公式化（AI 不自报）
 
 不合格时，**把"违规第 2 条：做多止损高于入场价"作为工具返回值送回循环**——模型亲眼看到错在哪再改，比外层 if/else 硬重试效果好得多。这是 ReAct 循环里天然的"反思"（Reflection）。
