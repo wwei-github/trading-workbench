@@ -77,7 +77,7 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   risk_amount: '止损金额',
   entry_order_id: '开仓单ID',
   sl_order_id: '止损单ID',
-  real_entry_price: '实际入场 AI 价',
+  real_entry_price: '实际入场价',
   from: '原止损',
   to: '新止损',
   realized_pnl: '净盈亏',
@@ -133,11 +133,12 @@ function renderDetail(detail: Record<string, unknown> | null) {
     <Descriptions
       size="small"
       column={2}
+      colon={false}
       style={{ marginTop: 8 }}
       labelStyle={{
         fontSize: 12,
         color: '#999',
-        width: 92,
+        width: 72,
         whiteSpace: 'nowrap',
         paddingInlineEnd: 8,
       }}
