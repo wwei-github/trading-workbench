@@ -6,6 +6,7 @@ from typing import Optional
 from openai import OpenAI
 
 from app.config import settings
+from app.services import skill_library
 from app.services.llm_client import get_client
 from app.services.risk_guard import build_forced_skip, parse_and_validate
 from app.services.strategy.ema import analyze_ema
@@ -190,6 +191,13 @@ def _build_messages(
         )
 
     system_prompt = SYSTEM_PROMPT
+    # 技能注入（P0 管线无工具循环，命中技能正文直接进系统提示词；与 Agent 管线共用同一事实判定）
+    skill_block = skill_library.render_matched(skill_library.build_facts(signal, klines))
+    if skill_block:
+        system_prompt += (
+            "\n\n以下技能与当前信号命中相关（use_when 条件已程序判定），请遵循其规则：\n"
+            f"{skill_block}"
+        )
     if strategy_prompt:
         system_prompt += (
             "\n\n以下是用户自定义交易策略，请优先遵循其规则进行分析，"

@@ -85,6 +85,68 @@ def render_index(facts: dict) -> str:
     return "\n".join(lines) if lines else "（无可用技能）"
 
 
+def build_facts(signal: dict, klines: list) -> dict:
+    """技能 use_when 判定用的布尔事实（程序算，不让模型猜）
+
+    funding_extreme 恒为 False（市场环境数据不再预取，资金费率由 Agent 调 get_funding 自查），
+    依赖它的技能不会自动命中，但仍会出现在索引中由 Agent 按需加载。
+    """
+    facts: dict = {
+        "signal_type": signal.get("signal_type") or "unknown",
+        "pin_bar": False,
+        "funding_extreme": False,
+        "narrow_range": False,
+        "role": None,
+    }
+    # 信号命中的关键位角色：两类化后 position 即 support/resistance，可直接作 role；
+    # 旧数据的 prev_high 等 kind 值走 key_levels 查找回退
+    hit_kind = signal.get("position")
+    if hit_kind in ("support", "resistance"):
+        facts["role"] = hit_kind
+    else:
+        for lv in signal.get("key_levels") or []:
+            if lv.get("kind") == hit_kind:
+                facts["role"] = lv.get("role")
+                break
+    # pin_bar：已收盘最后一根 影线 > 2×实体
+    if len(klines) >= 2:
+        k = klines[-2]
+        h, l, o, c = float(k[2]), float(k[3]), float(k[1]), float(k[4])
+        body = abs(c - o)
+        shadow = max(h - o, h - c) + max(o - l, c - l)  # 上下影线之和
+        facts["pin_bar"] = body > 0 and shadow > 2 * body
+    return facts
+
+
+# P0 管线注入正文的预算：单条与总量截断（约 3k token），控制批量分析的成本与延迟
+_PER_SKILL_MAX = 4000
+_TOTAL_MAX = 6000
+
+
+def render_matched(facts: dict) -> str:
+    """渲染命中技能的正文块（无工具循环的 P0 管线直接注入系统提示词用）。
+
+    命中即注入（Agent 管线的"按需 load_skill"在此不可用）；多条命中按
+    技能名顺序拼接，超预算截断。无命中返回空串。
+    """
+    parts: list[str] = []
+    used = 0
+    for s in list_skills():
+        if not _safe_eval_use_when(s["use_when"], facts):
+            continue
+        body = s["body"]
+        if len(body) > _PER_SKILL_MAX:
+            body = body[:_PER_SKILL_MAX] + "\n…（已截断）"
+        if used + len(body) > _TOTAL_MAX:
+            body = body[: max(0, _TOTAL_MAX - used)]
+            if body:
+                parts.append(f"### 技能：{s['name']}\n{body}\n…（总量截断）")
+            break
+        parts.append(f"### 技能：{s['name']}\n{body}")
+        used += len(body)
+    return "\n\n".join(parts)
+
+
 def load_skill(name: str) -> str:
     """加载技能正文（带截断），供 load_skill 工具调用"""
     for s in list_skills():

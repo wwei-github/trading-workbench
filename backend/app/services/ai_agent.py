@@ -427,36 +427,8 @@ def analyze_coin_agent(
 
 
 def _build_facts(signal: dict, klines: list, atr: float) -> dict:
-    """技能 use_when 判定用的布尔事实（程序算，不让模型猜）
-
-    funding_extreme 恒为 False（市场环境数据不再预取，资金费率由 Agent 调 get_funding 自查），
-    依赖它的技能不会自动标注命中，但仍会出现在技能索引中由 Agent 按需加载。
-    """
-    facts: dict = {
-        "signal_type": signal.get("signal_type") or "unknown",
-        "pin_bar": False,
-        "funding_extreme": False,
-        "narrow_range": False,
-        "role": None,
-    }
-    # 信号命中的关键位角色：两类化后 position 即 support/resistance，可直接作 role；
-    # 旧数据的 prev_high 等 kind 值走 key_levels 查找回退
-    hit_kind = signal.get("position")
-    if hit_kind in ("support", "resistance"):
-        facts["role"] = hit_kind
-    else:
-        for lv in signal.get("key_levels") or []:
-            if lv.get("kind") == hit_kind:
-                facts["role"] = lv.get("role")
-                break
-    # pin_bar：已收盘最后一根 影线 > 2×实体
-    if len(klines) >= 2:
-        k = klines[-2]
-        h, l, o, c = float(k[2]), float(k[3]), float(k[1]), float(k[4])
-        body = abs(c - o)
-        shadow = max(h - o, h - c) + max(o - l, c - l)  # 上下影线之和
-        facts["pin_bar"] = body > 0 and shadow > 2 * body
-    return facts
+    """技能 use_when 判定用的布尔事实（委托 skill_library，与 P0 管线共用）"""
+    return skill_library.build_facts(signal, klines)
 
 
 def _build_user_msg(
