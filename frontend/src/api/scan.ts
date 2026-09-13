@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AIAnalysis, AiProgress, KlineData, ListResponse, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TradeEvent, TradeRecord, WatchlistItem } from '../types'
+import type { AIAnalysis, AiProgress, KlineData, ListResponse, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeRecord, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -136,4 +136,32 @@ export const scanApi = {
         }>(`/watchlist/${symbol}/refresh`)
         .then((r) => r.data),
   },
+
+  // ===== 运维观测（任务记录 / 系统日志）=====
+
+  // 任务记录（新→旧；task_type/status 可选过滤）
+  tasks: (page = 1, pageSize = 10, taskType?: string, status?: string) =>
+    api
+      .get<ListResponse<TaskRecord>>('/tasks', {
+        params: {
+          page,
+          page_size: pageSize,
+          task_type: taskType || undefined,
+          status: status || undefined,
+        },
+      })
+      .then((r) => r.data),
+
+  // 系统日志（新→旧；level/q 可选过滤）
+  logs: (page = 1, pageSize = 20, level?: string, q?: string) =>
+    api
+      .get<ListResponse<AppLog>>('/logs', {
+        params: {
+          page,
+          page_size: pageSize,
+          level: level || undefined,
+          q: q || undefined,
+        },
+      })
+      .then((r) => r.data),
 }

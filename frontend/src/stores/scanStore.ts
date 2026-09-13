@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AIAnalysis, ScanRecord, ScanResult, ScanStatus, SystemConfig, WatchlistItem } from '../types'
+import type { AIAnalysis, AppLog, ScanRecord, ScanResult, ScanStatus, SystemConfig, TaskRecord, WatchlistItem } from '../types'
 import { scanApi, type ResultFilters } from '../api/scan'
 import { INDICATOR_CATALOG } from '../constants/indicators'
 
@@ -84,10 +84,19 @@ interface ScanState {
   resultsPageSize: number
   // 结果列表过滤条件（服务端过滤）
   filters: ResultFilters
-  history: ScanRecord[]
-  historyTotal: number
-  historyPage: number
-  historyPageSize: number
+  // 任务记录（扫描/交易/复盘等任务粒度运行历史）
+  tasks: TaskRecord[]
+  tasksTotal: number
+  tasksPage: number
+  tasksPageSize: number
+  tasksType: string // '' = 全部
+  // 系统日志（WARNING 及以上报错）
+  logs: AppLog[]
+  logsTotal: number
+  logsPage: number
+  logsPageSize: number
+  logLevel: string // '' = 全部
+  logQuery: string
   currentScanId: string | null
   aiConfig: SystemConfig | null
   aiAnalyses: AIAnalysis[]
@@ -96,7 +105,8 @@ interface ScanState {
   fetchStatus: () => Promise<void>
   fetchResults: (scanId?: string, page?: number, pageSize?: number) => Promise<void>
   setFilters: (filters: ResultFilters) => Promise<void>
-  fetchHistory: (page?: number, pageSize?: number) => Promise<void>
+  fetchTasks: (page?: number, pageSize?: number, taskType?: string) => Promise<void>
+  fetchLogs: (page?: number, pageSize?: number, level?: string, q?: string) => Promise<void>
   fetchConfig: () => Promise<void>
   triggerScan: () => Promise<void>
   toggleAi: (enabled: boolean) => Promise<void>
@@ -209,10 +219,17 @@ export const useScanStore = create<ScanState>((set, get) => ({
   resultsPage: 1,
   resultsPageSize: 20,
   filters: {},
-  history: [],
-  historyTotal: 0,
-  historyPage: 1,
-  historyPageSize: 10,
+  tasks: [],
+  tasksTotal: 0,
+  tasksPage: 1,
+  tasksPageSize: 10,
+  tasksType: '',
+  logs: [],
+  logsTotal: 0,
+  logsPage: 1,
+  logsPageSize: 20,
+  logLevel: '',
+  logQuery: '',
   currentScanId: null,
   aiConfig: null,
   aiAnalyses: [],
@@ -265,19 +282,35 @@ export const useScanStore = create<ScanState>((set, get) => ({
     await get().fetchResults(undefined, 1)
   },
 
-  fetchHistory: async (page?: number, pageSize?: number) => {
+  fetchTasks: async (page?, pageSize?, taskType?) => {
     try {
-      const p = page ?? get().historyPage
-      const ps = pageSize ?? get().historyPageSize
-      const data = await scanApi.list(p, ps)
+      const p = page ?? get().tasksPage
+      const ps = pageSize ?? get().tasksPageSize
+      const t = taskType ? '' + taskType : get().tasksType
+      const data = await scanApi.tasks(p, ps, t)
       set({
-        history: data.items,
-        historyTotal: data.total,
-        historyPage: p,
-        historyPageSize: ps,
+        tasks: data.items, tasksTotal: data.total,
+        tasksPage: p, tasksPageSize: ps, tasksType: t,
       })
     } catch (e) {
-      console.error('获取历史记录失败', e)
+      console.error('获取任务记录失败', e)
+    }
+  },
+
+  fetchLogs: async (page?, pageSize?, level?, q?) => {
+    try {
+      const p = page ?? get().logsPage
+      const ps = pageSize ?? get().logsPageSize
+      const lv = level ? '' + level : get().logLevel
+      const query = q !== undefined ? q : get().logQuery
+      const data = await scanApi.logs(p, ps, lv, query)
+      set({
+        logs: data.items, logsTotal: data.total,
+        logsPage: p, logsPageSize: ps,
+        logLevel: lv, logQuery: query,
+      })
+    } catch (e) {
+      console.error('获取系统日志失败', e)
     }
   },
 

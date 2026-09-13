@@ -7,6 +7,7 @@ from app.celery_app import celery_app
 from app.database import SessionLocal
 from app.models.scan import ScanRecord
 from app.services.scanner import Scanner
+from app.services.task_log import close_task, open_task
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ def run_scan_task(self, scan_record_id: Optional[str] = None, scan_type: str = "
     scan_type: scheduled / manual
     """
     db = SessionLocal()
+    task_id = ""
     try:
         if scan_record_id:
             record = db.get(ScanRecord, UUID(scan_record_id))
@@ -33,6 +35,14 @@ def run_scan_task(self, scan_record_id: Optional[str] = None, scan_type: str = "
             db.refresh(record)
             scan_record_id = str(record.id)
 
+        # 任务记录（前端「任务记录」列表）
+        task_id = open_task(
+            task_type="scan",
+            task_name="定时扫描" if scan_type == "scheduled" else "手动扫描",
+            trigger=scan_type,
+            scan_record_id=scan_record_id,
+        )
+
         # 如果已有正在运行的扫描，跳过
         running = (
             db.query(ScanRecord)
@@ -44,11 +54,27 @@ def run_scan_task(self, scan_record_id: Optional[str] = None, scan_type: str = "
             record.status = "failed"
             record.finished_at = datetime.utcnow()
             db.commit()
+            close_task(task_id, "skipped", summary="已有扫描任务运行中，跳过")
             return
 
         scanner = Scanner()
         scanner.run(record.id)
+
+        # scanner.run 用自己的会话收尾，重读最终状态
+        db.expire_all()
+        record = db.get(ScanRecord, record.id)
+        close_task(
+            task_id,
+            "completed" if record.status == "completed" else "failed",
+            summary=f"扫描 {record.coin_count} 个，命中 {record.hit_count} 个",
+            detail={
+                "coin_count": record.coin_count,
+                "hit_count": record.hit_count,
+                "error_count": record.error_count,
+            },
+        )
     except Exception as e:
         logger.exception("扫描任务失败: %s", e)
+        close_task(task_id, "failed", error=e)
     finally:
         db.close()

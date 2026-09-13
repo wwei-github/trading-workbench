@@ -17,6 +17,7 @@ from app.config import settings
 from app.database import SessionLocal
 from app.models.scan import AIAnalysis, ScanResult, TradeReview
 from app.services.exchange_pool import ExchangePool
+from app.services.task_log import close_task, open_task
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ def run_trade_review_task():
     """定时复盘：找观察期结束且未复盘的 suggest 决策，逐 K 回放落库"""
     db = SessionLocal()
     pool = ExchangePool()
+    task_id = ""
     try:
         now = datetime.utcnow()
         cutoff = now - timedelta(hours=OBSERVATION_HOURS)
@@ -75,8 +77,10 @@ def run_trade_review_task():
             )
         ).all()
         if not rows:
-            return
+            return  # 无待复盘不记任务记录（每 30 分钟一次，避免刷屏）
         logger.info("复盘任务：%d 条建议待复盘", len(rows))
+        task_id = open_task(task_type="review", task_name="建议复盘", trigger="scheduled")
+        reviewed = 0
 
         for a, sr in rows:
             try:
@@ -117,12 +121,15 @@ def run_trade_review_task():
                     recommendation=float(a.recommendation) if a.recommendation is not None else None,
                 ))
                 db.commit()
+                reviewed += 1
                 logger.info("复盘完成: %s %s -> %s", a.symbol, a.direction, outcome)
             except Exception as e:
                 logger.warning("复盘 %s 失败: %s", a.symbol, e)
                 db.rollback()
                 continue
+        close_task(task_id, "completed", summary=f"复盘 {reviewed} 条建议")
     except Exception as e:
         logger.exception("复盘任务失败: %s", e)
+        close_task(task_id, "failed", error=e)
     finally:
         db.close()

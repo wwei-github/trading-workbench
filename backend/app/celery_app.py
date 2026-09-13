@@ -2,6 +2,9 @@ from celery import Celery
 from celery.schedules import crontab
 
 from app.config import settings
+from app.services.log_sink import attach_db_log_sink
+
+attach_db_log_sink()  # worker 进程同样落库 WARNING+ 日志（前端「系统日志」）
 
 celery_app = Celery(
     "trading_workbench",

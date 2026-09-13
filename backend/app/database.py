@@ -153,6 +153,6 @@ def _run_migrations(engine):
 
 def init_db():
     """创建所有表 + 幂等迁移"""
-    from app.models import scan, trade  # noqa: F401
+    from app.models import ops, scan, trade  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _run_migrations(engine)

@@ -64,6 +64,30 @@ export interface ListResponse<T> {
   page_size?: number;
 }
 
+// 任务记录：任务粒度的运行历史（扫描/交易/复盘等），见后端 task_records
+export interface TaskRecord {
+  id: string;
+  task_type: 'scan' | 'ai' | 'trade' | 'review';
+  task_name: string;
+  trigger: 'scheduled' | 'manual' | 'system';
+  status: 'running' | 'completed' | 'failed' | 'skipped';
+  summary: string | null;
+  detail: Record<string, unknown> | null;
+  error: string | null;
+  scan_record_id: string | null; // scan 任务关联的扫描记录（点击加载结果）
+  started_at: string;
+  finished_at: string | null;
+}
+
+// 系统日志：应用 WARNING 及以上日志（定时任务/接口/交易结算等报错）
+export interface AppLog {
+  id: number;
+  level: 'WARNING' | 'ERROR' | 'CRITICAL';
+  logger_name: string;
+  message: string;
+  created_at: string;
+}
+
 export interface AIAnalysis {
   id: string;
   scan_result_id: string | null; // 手动搜索分析时为 null

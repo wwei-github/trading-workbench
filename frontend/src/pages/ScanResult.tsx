@@ -3,7 +3,8 @@ import { Card, Row, Col, Button, Space, Switch, Tooltip, Tabs, message } from 'a
 import { ReloadOutlined, ThunderboltOutlined, RobotOutlined, FileTextOutlined, ApiOutlined } from '@ant-design/icons'
 import ScanStatus from '../components/ScanStatus'
 import ResultTable from '../components/ResultTable'
-import HistoryList from '../components/HistoryList'
+import TaskList from '../components/TaskList'
+import LogsPanel from '../components/LogsPanel'
 import ScanConfigPanel from '../components/ScanConfigPanel'
 import StrategyPromptPanel from '../components/StrategyPromptPanel'
 import WatchlistPanel from '../components/WatchlistPanel'
@@ -16,7 +17,7 @@ export default function ScanResult() {
   const {
     fetchStatus,
     fetchResults,
-    fetchHistory,
+    fetchTasks,
     fetchConfig,
     fetchAiAnalyses,
     triggerScan,
@@ -30,13 +31,13 @@ export default function ScanResult() {
   const wasScanning = useRef(false)
 
   useEffect(() => {
-    // 初始加载：状态、配置、结果、历史
+    // 初始加载：状态、配置、结果、任务记录
     fetchStatus()
     fetchConfig().then(() => {
       // fetchResults 内部会根据 AI 开关加载已有 AI 分析结果（不自动触发）
       fetchResults()
     })
-    fetchHistory()
+    fetchTasks()
 
     // 每 30 秒刷新状态
     const timer = setInterval(() => {
@@ -85,7 +86,7 @@ export default function ScanResult() {
     } else {
       fetchResults()
     }
-    fetchHistory()
+    fetchTasks()
   }
 
   const handleAiToggle = async (checked: boolean) => {
@@ -236,9 +237,14 @@ export default function ScanResult() {
             ),
           },
           {
-            key: 'history',
-            label: '历史记录',
-            children: <div style={{ height: '100%', overflow: 'hidden' }}><HistoryList /></div>,
+            key: 'tasks',
+            label: '任务记录',
+            children: <div style={{ height: '100%', overflow: 'hidden' }}><TaskList /></div>,
+          },
+          {
+            key: 'logs',
+            label: '系统日志',
+            children: <div style={{ height: '100%', overflow: 'hidden' }}><LogsPanel /></div>,
           },
           {
             key: 'trades',
