@@ -444,6 +444,19 @@ def _zero_pos_exit_reason(rec: TradeRecord, tp1_gone: bool) -> str:
     return _derive_exit_reason(rec)
 
 
+def _record_realized(db: Session, trader: BinanceTrader, rec: TradeRecord) -> float:
+    """部分止盈后记录截至当前的已实现净盈亏（已实现盈亏−手续费−资金费，交易所 income 口径）。
+
+    写入交易记录（运行中=已实现部分，供收益列展示已止盈金额；终态结算时会复算覆盖为
+    全程净额）并返回，供 TP1_FILL/TP2_FILL 事件 detail 携带。
+    """
+    since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    pnl = round(trader.realized_pnl_since(rec.symbol, since_ms), 6)
+    rec.realized_pnl = pnl
+    rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
+    return pnl
+
+
 def settle_trades(db: Session, trader: BinanceTrader) -> int:
     """对非终态交易：以交易所为准推断事件、跟进止损、结算收益。返回处理笔数"""
     cfg = db.get(SystemConfig, 1)
@@ -476,7 +489,8 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                 rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
                 if rec.status == "OPENED" and tp1_gone:
                     # TP1 与 SL 在同一巡检间隔内先后成交（如 75% TP1 后回踩触发 SL）：补记 TP1_FILL
-                    _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1")})
+                    _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
+                                                     "realized_pnl": round(pnl, 6)})
                 exit_reason = _zero_pos_exit_reason(rec, tp1_gone)
                 rec.status = "CLOSED"
                 rec.closed_at = datetime.utcnow()
@@ -495,15 +509,19 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
             if rec.status == "OPENED":
                 if tp2_gone and ratio <= 0.35:
                     # 同一小时两档止盈都成交
+                    realized = _record_realized(db, trader, rec)
                     _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1")})
                     rec.status = "TP1_HIT"
-                    _add_event(db, rec, "TP2_FILL", {"qty": raw.get("qty_tp2")})
+                    _add_event(db, rec, "TP2_FILL", {"qty": raw.get("qty_tp2"),
+                                                     "realized_pnl": realized})  # 两档累计
                     rec.status = "TP2_HIT"
                     _move_sl_trailing(db, trader, rec, interval, open_ids)
                     db.commit()
                     handled += 1
                 elif tp1_gone and ratio <= 0.75:
-                    _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1")})
+                    realized = _record_realized(db, trader, rec)
+                    _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
+                                                     "realized_pnl": realized})
                     rec.status = "TP1_HIT"
                     _move_sl_breakeven(db, trader, rec, open_ids)  # 用户规则：TP1 后止损移至成本价
                     if not rec.tp2:
@@ -513,7 +531,9 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                     handled += 1
             elif rec.status == "TP1_HIT":
                 if tp2_gone and ratio <= 0.35:
-                    _add_event(db, rec, "TP2_FILL", {"qty": raw.get("qty_tp2")})
+                    realized = _record_realized(db, trader, rec)
+                    _add_event(db, rec, "TP2_FILL", {"qty": raw.get("qty_tp2"),
+                                                     "realized_pnl": realized})
                     rec.status = "TP2_HIT"
                     _move_sl_trailing(db, trader, rec, interval, open_ids)
                     db.commit()

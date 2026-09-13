@@ -239,16 +239,19 @@ export default function TradesPanel() {
   }, [])
 
   // 收益列：正绿负红（净盈亏 + 相对止损金额的百分比）
+  // 运行中单子显示已实现部分（TP1/TP2 已止盈金额，带"已止盈"标记），结算后为全程净额
   const renderPnl = (rec: TradeRecord) => {
-    if (rec.status !== 'CLOSED' || rec.realized_pnl === null || rec.realized_pnl === undefined) {
+    if (rec.realized_pnl === null || rec.realized_pnl === undefined) {
       return <span style={{ color: '#999' }}>-</span>
     }
     const pnl = rec.realized_pnl
     const pct = rec.pnl_pct !== null && rec.pnl_pct !== undefined ? ` (${rec.pnl_pct > 0 ? '+' : ''}${rec.pnl_pct}%)` : ''
     const color = pnl > 0 ? '#52c41a' : pnl < 0 ? '#ff4d4f' : '#999'
+    const running = rec.status !== 'CLOSED'
     return (
       <span style={{ color, fontWeight: 600 }}>
         {pnl > 0 ? '+' : ''}{pnl.toFixed(2)}{pct}
+        {running && pnl > 0 && <Tag color="green" style={{ marginLeft: 6, fontWeight: 400 }}>已止盈</Tag>}
       </span>
     )
   }
