@@ -194,6 +194,27 @@ class BinanceTrader:
                 return
             raise
 
+    def open_algo_orders(self, symbol: str) -> list:
+        """在挂的条件单原始列表（SL/TP 均为 algo 单，含 algoId/type/side/closePosition 字段）"""
+        return self._req("GET", "/fapi/v1/openAlgoOrders", {"symbol": symbol})
+
+    def cancel_stale_close_position_algo(self, symbol: str, side: str) -> None:
+        """撤销该 symbol 指定方向全部 closePosition 条件单。
+
+        SL 移动时旧单撤单竞态未生效的兜底（交易所 -4130：同方向已有 closePosition 单）；
+        TP 单是 reduceOnly 带数量，不受影响。
+        """
+        for o in self.open_algo_orders(symbol):
+            try:
+                if (
+                    str(o.get("closePosition")).lower() == "true"
+                    and o.get("side") == side
+                    and o.get("algoId")
+                ):
+                    self.cancel_order(symbol, int(o["algoId"]))
+            except (TypeError, ValueError, AttributeError):
+                continue
+
     def cancel_all_algo(self, symbol: str) -> None:
         """撤销该 symbol 全部在挂 algo 条件单（紧急平仓/结算清理用）"""
         try:

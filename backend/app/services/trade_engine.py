@@ -24,7 +24,7 @@ from app.config import settings
 from app.models.scan import AIAnalysis, ScanResult
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeEvent, TradeRecord
-from app.services.binance_trader import BinanceTrader
+from app.services.binance_trader import BinanceTrader, BinanceTradeError
 from app.services.exchange_pool import ExchangePool
 from app.services.strategy.ema import analyze_ema
 
@@ -362,31 +362,65 @@ def _trailing_stop(rec: TradeRecord, klines: list[list]) -> Optional[float]:
 
 def _move_sl_trailing(db: Session, trader: BinanceTrader, rec: TradeRecord,
                       interval: str, open_ids: set[int]) -> None:
-    """按跟进规则移动止损：撤旧 SL 挂新 SL（closePosition），更新现值并写事件"""
+    """按跟进规则移动止损（只收紧不放松）；新 SL 会立即触发时跳过本轮（旧 SL 仍有效保护：
+    仓位存在即旧 SL 未触发），避免交易所 -2021 拒单导致整轮结算回滚重试"""
     klines = ExchangePool().get_klines(rec.symbol, interval, 20)
     new_sl = _trailing_stop(rec, klines)
     if new_sl is None:
         return
     new_sl = trader.round_price(rec.symbol, new_sl)
-    old_sl = float(rec.stop_loss)
+    cur = float(rec.stop_loss or 0)
+    if new_sl == cur:
+        return
+    price = trader.price(rec.symbol)
+    if _immediate_trigger(new_sl, price, rec.direction):
+        logger.info("跟进止损 %s 跳过：新 SL %s 会立即触发（现价 %s）", rec.symbol, new_sl, price)
+        return
+    _replace_sl(db, trader, rec, open_ids, new_sl)
+    logger.info("跟进止损 %s：%s → %s", rec.symbol, cur, new_sl)
+
+
+def _replace_sl(db: Session, trader: BinanceTrader, rec: TradeRecord,
+                open_ids: set[int], new_sl: float, reason: Optional[str] = None) -> None:
+    """撤旧 SL 挂新 SL（closePosition），更新现值并写 SL_MOVE 事件。
+
+    -4130（同方向已有 closePosition 条件单）兜底：旧单撤单竞态未生效时，
+    清掉该方向残留的 closePosition 单再挂一次（TP 单是 reduceOnly 带数量，不受影响）。
+    """
     raw = rec.raw or {}
     old_id = raw.get("sl_order_id")
     if old_id and old_id in open_ids:
         trader.cancel_order(rec.symbol, int(old_id))
-    sl_order = trader.stop_market_close(rec.symbol, _close_side(rec.direction), new_sl)
+    close_side = _close_side(rec.direction)
+    try:
+        sl_order = trader.stop_market_close(rec.symbol, close_side, new_sl)
+    except BinanceTradeError as e:
+        if "-4130" not in str(e):
+            raise
+        logger.warning("SL 挂单遇 -4130 %s：清理残留 closePosition 单后重挂", rec.symbol)
+        trader.cancel_stale_close_position_algo(rec.symbol, close_side)
+        sl_order = trader.stop_market_close(rec.symbol, close_side, new_sl)
+    old_sl = float(rec.stop_loss or 0)
     rec.stop_loss = new_sl
-    raw["sl_order_id"] = sl_order["orderId"]
+    raw["sl_order_id"] = sl_order.get("algoId") or sl_order.get("orderId")
     rec.raw = raw
-    _add_event(db, rec, "SL_MOVE", {"from": old_sl, "to": new_sl,
-                                    "sl_order_id": sl_order["orderId"]})
-    logger.info("跟进止损 %s：%s → %s", rec.symbol, old_sl, new_sl)
+    detail = {"from": old_sl, "to": new_sl, "sl_order_id": raw["sl_order_id"]}
+    if reason:
+        detail["reason"] = reason
+    _add_event(db, rec, "SL_MOVE", detail)
+
+
+def _immediate_trigger(new_sl: float, price: float, direction: str) -> bool:
+    """新 SL 挂上即会触发：多单 SL ≥ 现价 / 空单 SL ≤ 现价"""
+    return new_sl >= price if direction == "long" else new_sl <= price
 
 
 def _move_sl_breakeven(db: Session, trader: BinanceTrader, rec: TradeRecord,
                        open_ids: set[int]) -> bool:
     """TP1 成交后保本止损：SL 移到成本价（多单 SL=max(现SL,入场价)，空单反之，只收紧不放松）。
 
-    幂等：SL 已不差于成本价（或取整后相同）时不动作，返回是否实际移动。
+    幂等：SL 已不差于成本价（或取整后相同）时不动作；价格已回到成本价另一侧
+    （挂上即立即触发）时跳过本轮保留原 SL，下轮巡检再试。返回是否实际移动。
     """
     entry = float(rec.entry_price or 0)
     cur = float(rec.stop_loss or 0)
@@ -398,18 +432,13 @@ def _move_sl_breakeven(db: Session, trader: BinanceTrader, rec: TradeRecord,
     new_sl = trader.round_price(rec.symbol, new_sl)
     if new_sl == cur:
         return False
-    raw = rec.raw or {}
-    old_id = raw.get("sl_order_id")
-    if old_id and old_id in open_ids:
-        trader.cancel_order(rec.symbol, int(old_id))
-    sl_order = trader.stop_market_close(rec.symbol, _close_side(rec.direction), new_sl)
-    old_sl = cur
-    rec.stop_loss = new_sl
-    raw["sl_order_id"] = sl_order.get("algoId") or sl_order.get("orderId")
-    rec.raw = raw
-    _add_event(db, rec, "SL_MOVE", {"from": old_sl, "to": new_sl, "reason": "tp1_breakeven",
-                                    "sl_order_id": raw["sl_order_id"]})
-    logger.info("保本止损 %s：%s → %s（成本价）", rec.symbol, old_sl, new_sl)
+    price = trader.price(rec.symbol)
+    if _immediate_trigger(new_sl, price, rec.direction):
+        logger.info("保本止损 %s 跳过：SL %s 会立即触发（现价 %s），保留原 SL 下轮再试",
+                    rec.symbol, new_sl, price)
+        return False
+    _replace_sl(db, trader, rec, open_ids, new_sl, reason="tp1_breakeven")
+    logger.info("保本止损 %s：%s → %s（成本价）", rec.symbol, cur, new_sl)
     return True
 
 
@@ -539,6 +568,9 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                     db.commit()
                     handled += 1
                 else:
+                    if rec.realized_pnl is None:
+                        # 回填：部署前已升到 TP1_HIT 的旧单，TP1_FILL 事件未记已止盈金额
+                        _record_realized(db, trader, rec)
                     # 保本兜底（幂等）：部署前已处于 TP1_HIT 的旧单、或上次保本移动失败的补偿
                     _move_sl_breakeven(db, trader, rec, open_ids)
                     if not rec.tp2:
