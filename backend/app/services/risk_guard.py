@@ -2,7 +2,8 @@
 
 - Schema 强约束（Pydantic）
 - 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR]，价格距离不设百分比红线）、
-  止损须越过最近 N 根已收盘K线极值（多单严格低于最低点，空单严格高于最高点）；
+  止损锚定（2026-09-13：入场与 N 根极值之间有同类关键位则程序定锚其区域外沿±缓冲，
+  无则回退影线极值锚——多单严格低于最低点、空单严格高于最高点）；
   止盈须锚定前方结构位区域近轨（多单=压力位下轨 zone_low 下方、空单=支撑位上轨 zone_high 上方，
   留余地；摆动点锚定价位本身；TP2 更远一档同规则）；
   方向铁律（docs/03 §8）：只在支撑位做多、只在压力位做空——入场价必须落在对应角色关键位
@@ -157,6 +158,13 @@ def validate_decision(
     """
     violations: list[str] = []
 
+    def _zone_edge(lv: dict, field: str) -> float:
+        # 区域字段缺失（旧数据）时退化为价位本身（止损/方向铁律块共用）
+        try:
+            return float(lv[field])
+        except (KeyError, TypeError, ValueError):
+            return float(lv.get("price") or 0)
+
     # ── skip：只要求理由非空（recommendation 超标仅修正，不浪费重试）──
     if d.trade_decision == "skip":
         if not d.skip_reason.strip():
@@ -215,13 +223,6 @@ def validate_decision(
             if lv.get("role") == wanted_role and float(lv.get("price") or 0) > 0
         ]
 
-        def _zone_edge(lv: dict, field: str) -> float:
-            # 区域字段缺失（旧数据）时退化为价位本身
-            try:
-                return float(lv[field])
-            except (KeyError, TypeError, ValueError):
-                return float(lv.get("price") or 0)
-
         if not any(
             _zone_edge(lv, "zone_low") - tol <= d.entry_price <= _zone_edge(lv, "zone_high") + tol
             for lv in side_levels
@@ -244,31 +245,56 @@ def validate_decision(
         if dev > 0.02:
             violations.append(f"入场价偏离当前价 {dev*100:.2f}% > 2%（入场应接近现价）")
 
-    # ── 止损须越过最近N根已收盘K线影线极值（最高/最低价，非收盘价）：多单严格低于最低点、
-    # 空单严格高于最高点，且至少留 STOP_LOSS_BUFFER_PCT 缓冲——价格常在极点前反弹，贴着极点的
-    # 止损大概率被插针扫损。缓冲不足者程序直接推远到缓冲处（更远→固定亏损法仓位更小，风险不变）；
-    # 未越过极值者反馈给 AI 回炉重试
+    # ── 止损锚定（2026-09-13 更新：关键位优先，影线极值兜底）──
+    # 多单：入场价与最近N根影线最低点之间存在支撑位（区域下沿落在 [recent_low, entry) 内）时，
+    # 取离入场最近者，止损由程序直接定在其下沿外 STOP_LOSS_BUFFER_PCT 处（AI 给值仅参考）；
+    # 该范围内无支撑位时退回极值锚：严格低于 recent_low 且留缓冲（不足自动推远，未越过打回）。
+    # 空单对称（压力位上沿 ∈ (entry, recent_high]，取最近者）。锚距过近（<0.3×ATR）时不用关键位锚。
     closed = klines[:-1] if len(klines) >= 2 else klines
     n = min(settings.STOP_LOSS_RECENT_BARS, len(closed))
     if n > 0:
         if d.direction == "long":
             recent_low = min(float(k[3]) for k in closed[-n:])
-            if d.stop_loss >= recent_low:
-                violations.append(
-                    f"做多止损 {d.stop_loss} 必须严格低于最近{n}根K线最低点 {recent_low}"
-                    f"（影线极值，且至少低 {settings.STOP_LOSS_BUFFER_PCT:.1%} 缓冲，不能正好用最低点）"
-                )
-            elif d.stop_loss > recent_low * (1 - settings.STOP_LOSS_BUFFER_PCT):
-                d.stop_loss = recent_low * (1 - settings.STOP_LOSS_BUFFER_PCT)
+            anchor = None
+            for lv in signal.get("key_levels") or []:
+                if (lv.get("role") or lv.get("kind")) != "support":
+                    continue
+                edge = _zone_edge(lv, "zone_low")
+                if recent_low <= edge < d.entry_price and (anchor is None or edge > anchor):
+                    anchor = edge
+            if anchor is not None and not (
+                atr and d.entry_price and d.entry_price - anchor < 0.3 * atr
+            ):
+                d.stop_loss = anchor * (1 - settings.STOP_LOSS_BUFFER_PCT)
+            else:
+                if d.stop_loss >= recent_low:
+                    violations.append(
+                        f"做多止损 {d.stop_loss} 必须严格低于最近{n}根K线最低点 {recent_low}"
+                        f"（影线极值，且至少低 {settings.STOP_LOSS_BUFFER_PCT:.1%} 缓冲，不能正好用最低点）"
+                    )
+                elif d.stop_loss > recent_low * (1 - settings.STOP_LOSS_BUFFER_PCT):
+                    d.stop_loss = recent_low * (1 - settings.STOP_LOSS_BUFFER_PCT)
         elif d.direction == "short":
             recent_high = max(float(k[2]) for k in closed[-n:])
-            if d.stop_loss <= recent_high:
-                violations.append(
-                    f"做空止损 {d.stop_loss} 必须严格高于最近{n}根K线最高点 {recent_high}"
-                    f"（影线极值，且至少高 {settings.STOP_LOSS_BUFFER_PCT:.1%} 缓冲，不能正好用最高点）"
-                )
-            elif d.stop_loss < recent_high * (1 + settings.STOP_LOSS_BUFFER_PCT):
-                d.stop_loss = recent_high * (1 + settings.STOP_LOSS_BUFFER_PCT)
+            anchor = None
+            for lv in signal.get("key_levels") or []:
+                if (lv.get("role") or lv.get("kind")) != "resistance":
+                    continue
+                edge = _zone_edge(lv, "zone_high")
+                if d.entry_price < edge <= recent_high and (anchor is None or edge < anchor):
+                    anchor = edge
+            if anchor is not None and not (
+                atr and d.entry_price and anchor - d.entry_price < 0.3 * atr
+            ):
+                d.stop_loss = anchor * (1 + settings.STOP_LOSS_BUFFER_PCT)
+            else:
+                if d.stop_loss <= recent_high:
+                    violations.append(
+                        f"做空止损 {d.stop_loss} 必须严格高于最近{n}根K线最高点 {recent_high}"
+                        f"（影线极值，且至少高 {settings.STOP_LOSS_BUFFER_PCT:.1%} 缓冲，不能正好用最高点）"
+                    )
+                elif d.stop_loss < recent_high * (1 + settings.STOP_LOSS_BUFFER_PCT):
+                    d.stop_loss = recent_high * (1 + settings.STOP_LOSS_BUFFER_PCT)
 
     stop_dist = abs(d.entry_price - d.stop_loss)
     stop_pct = stop_dist / d.entry_price if d.entry_price else 0
