@@ -39,8 +39,9 @@ class ScanResult(Base):
     signal_reason: Mapped[str] = mapped_column(String(128), nullable=True)
     strength: Mapped[Optional[float]] = mapped_column(Numeric(6, 4), nullable=True)  # 信号强度 0-1
     ema_state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)  # 均线形态状态
-    position: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # 12金K出现的位置
-    key_levels: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)  # 命中的关键位明细
+    # 信号位置（形态/突破方向派生：看涨形态/向上突破=resistance、看跌形态/向下突破=support；
+    # 历史行为关键位角色口径，2026-09-14 关键位功能移除后不再产生关键位明细）
+    position: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     volume_24h: Mapped[float] = mapped_column(Numeric(20, 2), nullable=False, default=0)
     volume: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False, default=0)
     volume_type: Mapped[str] = mapped_column(String(16), nullable=False, default="平量", index=True)

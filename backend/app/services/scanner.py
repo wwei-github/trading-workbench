@@ -15,13 +15,13 @@ from app.models.trade import TradeRecord
 from app.services.exchange_pool import ExchangePool
 from app.services.strategy import detect_all_signals
 from app.services.strategy.ema import analyze_ema
-from app.services.strategy.key_levels import volume_ratio
+from app.services.strategy.indicators import volume_ratio
 
 logger = logging.getLogger(__name__)
 
 
 def classify_volume(klines: list[list]) -> tuple[float, str]:
-    """提取最新已收盘 K 线成交量并分类（比率口径复用 key_levels.volume_ratio，
+    """提取最新已收盘 K 线成交量并分类（比率口径复用 indicators.volume_ratio，
     与放量突破门槛 BREAKOUT_VOL_RATIO 同源）。
 
     klines[-1] 是未收盘 K 线，用 klines[-2]。返回 (volume, volume_type)。
@@ -131,8 +131,6 @@ class Scanner:
                         "swing_order": cfg.swing_order,
                         "r_squared_threshold": float(cfg.r_squared_threshold),
                         "pullback_tolerance": float(cfg.pullback_tolerance),
-                        "key_level_tolerance": float(cfg.key_level_tolerance),
-                        "level_merge_threshold": float(cfg.level_merge_threshold),
                         "max_trend_slope": 0.005,
                         # EMA 形态门控：反向否决、同向加权（见 strategy/_detect）
                         "ema": ema,
@@ -227,7 +225,6 @@ class Scanner:
                         strength=h.get("strength"),
                         ema_state=h.get("ema_state"),
                         position=h.get("position"),
-                        key_levels=h.get("key_levels"),
                         volume_24h=h.get("volume_24h", 0),
                         volume=h.get("volume", 0),
                         volume_type=h.get("volume_type", "平量"),

@@ -1,8 +1,9 @@
 """Trader Agent：GLM 工具循环 + submit_decision 校验即工具（docs/04 §5 P1）
 
-- 事实包（信号/关键位/EMA/ATR/量能）随首条 user 消息给足，程序能算的不让模型算
+- 事实包（信号/摆动结构/EMA/ATR/量能）随首条 user 消息给足，程序能算的不让模型算
 - 工具只做"补充查询"：更多K线、资金费率、大盘、恐贪、技能阅读
-- 结构位锚点：模型不报绝对价格，报 (ref, offset_pct)，程序换算后过 Risk Guard——消灭幻觉价位
+- 结构位锚点：模型不报绝对价格，报 (ref, offset_pct)，程序换算到摆动结构位后过
+  Risk Guard——消灭幻觉价位（2026-09-14 起锚点解析自 recent_swings，docs/09）
 - 校验即工具：submit_decision 内嵌 Risk Guard，违规明细作为工具结果返回，模型看着错处改（Reflection）
 - spke 已验证 GLM tool-calling 稳定（3/3，2 轮收敛），故手写循环不引入框架
 """
@@ -30,9 +31,9 @@ logger = logging.getLogger(__name__)
 
 MAX_ROUNDS = 5
 
-# 锚点枚举：关键位两类角色（support/resistance，按 role 解析到价格侧最近的一档）
-# + 线外锚点（做多止盈锚压力线下方、做空锚支撑线上方，枚举名沿用 zone 时期历史命名）+
-# market（市价锚）。next_ 前缀取更前一档（止盈二用）
+# 锚点枚举：结构位两类（support/resistance，解析到现价下/上方最近的摆动点）
+# + 线外锚点（做多止盈锚摆动高点下方、做空锚摆动低点上方，枚举名沿用 zone/关键位
+# 时期历史命名）+ market（市价锚）。next_ 前缀取更前一档（止盈二用）
 LEVEL_REFS = (
     "support", "resistance", "market",
     "resistance_zone_low", "support_zone_high",
@@ -44,22 +45,23 @@ _REF_DESC = "、".join(LEVEL_REFS)
 AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随消息给出，规则如下：
 1. 程序能算的不让你算——事实包数据直接用；需要补充数据才调用工具，最多 {max_rounds} 轮。
 2. **禁止编造绝对价格**：所有价格必须用结构位锚点表达（entry_ref/stop_ref/tp1_ref/tp2_ref + offset_pct），
-   ref 取值: {_ref_desc}；offset_pct 为相对锚点的百分比偏移（如支撑下方 0.5×ATR 用负 offset）。
-   止盈用线外锚点：做多止盈一 tp1_ref=resistance_zone_low（最近压力位价格线，历史命名）、
-   止盈二 tp2_ref=next_resistance_zone_low（下一档压力线）；做空用 support_zone_high /
-   next_support_zone_high（支撑线）。止盈 offset 留余地：做多 -0.2~-0.5（线下方），
-   做空 0.2~0.5（线上方）。
+   ref 取值: {_ref_desc}；offset_pct 为相对锚点的百分比偏移（如支撑位下方 0.5×ATR 用负 offset）。
+   止盈用线外锚点：做多止盈一 tp1_ref=resistance_zone_low（现价上方最近的摆动高点，历史命名）、
+   止盈二 tp2_ref=next_resistance_zone_low（更远一档的摆动高点）；做空用 support_zone_high /
+   next_support_zone_high（现价下方的摆动低点及其更远一档）。止盈 offset 留余地：
+   做多 -0.2~-0.5（位下方），做空 0.2~0.5（位上方）。
 3. 决策必须通过 submit_decision 工具提交，提交后程序会做风控校验：
    校验不通过时工具会返回违规明细，请按明细修正后重新提交。
 4. **入场价纪律**：当前价格是分析时刻的最新价。顺势追势时 entry 用 market 锚（offset 0 附近）；
-   计划等回踩时 entry 锚定回踩结构位并在 reason 写明"等回踩"；若现价已显著离开信号关键位
-   且无合理入场计划 → 直接 skip，不要给出既不贴近现价也不贴近结构位的模糊入场价。
+   计划等回踩时 entry 锚定回踩结构位（摆动低/高点）并在 reason 写明"等回踩"；
+   若现价已显著离开摆动结构位且无合理入场计划 → 直接 skip，
+   不要给出既不贴近现价也不贴近结构位的模糊入场价。
 5. 开单类型归类（trade_type，suggest 必填其一）：
    trend_follow 顺势交易（EMA 三线严格排列是硬前提，多单 21>55>144、空单 144>55>21）/
    structure_break 结构破位回踩（涵盖 123法则·N字结构·2B法则，见下方打法详解）/
    range_edge 区间边缘反转。
 6. "可用技能"列表中标注【当前命中】的技能，建议先 load_skill 阅读再决策。
-7. **效率与数据边界（重要）**：事实包只含信号与行情数据（60根K线含每根成交量与成交额/关键位/均线形态/ATR），
+7. **效率与数据边界（重要）**：事实包只含信号与行情数据（60根K线含每根成交量与成交额/摆动结构/均线形态/ATR），
    首轮即可直接 submit_decision；资金费率、大盘状态、恐贪指数等环境数据**不在**事实包中，
    确需时在同一轮一次性批量调用 get_funding / get_market_breadth / get_fear_greed 自行获取
    （如资金费率极端可 load_skill 阅读 funding-extreme-handling）；不要为用工具而用工具，
@@ -68,30 +70,27 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    决策一律通过 submit_decision 提交。
 9. 盈亏比铁律 ≥{rr_min}；止损宽度由结构位决定，不设固定价格百分比上限；仓位不要自己报，
    程序按固定亏损法计算：仓位 = 3% ÷ 止损距离%，触发止损时恰好亏损账户资金的 3%（止损越远仓位越小）。
-10. 止损锚定（关键位优先，极值兜底，两锚取更远者；程序按此规则直接定锚，stop 值仅参考）：
-    做多优先锚定入场价下方最近支撑位价格线外 0.3%~0.5%，做空锚定上方最近压力位价格线外同幅度，
-    锚须落在最近 5 根K线影线范围内；入场贴着关键位时止损还须越过影线极值——做多取支撑线与
-    5 根最低点中更低者、做空取压力线与 5 根最高点中更高者外 0.3%
-    （止损在近期波动区间内部必被扫损）；该范围内无同类关键位时用极值锚——
+10. 止损锚定（结构位优先，极值兜底，两锚取更远者；程序按此规则直接定锚，stop 值仅参考）：
+    做多优先锚定入场价下方最近摆动低点外 0.3%~0.5%，做空锚定上方最近摆动高点外同幅度；
+    入场贴着结构位时止损还须越过影线极值——做多取摆动低点与 5 根最低点中更低者、
+    做空取摆动高点与 5 根最高点中更高者外 0.3%
+    （止损在近期波动区间内部必被扫损）；入场价与极值间无摆动结构时用极值锚——
     做多严格低于最近 5 根K线最低点（影线极值非收盘价）至少 0.3%，做空相反。
-11. 止盈锚定（2026-09-14 起程序强制最近优先，偏离会直接改挂）：关键位是单价格线，角色按
-    现价位置划分——现价上方都是压力位、下方都是支撑位（支撑跌破即变压力、压力突破即变支撑）。
-    距现价特别近（≤1×ATR）的线是价格正在测试/突破的"争夺位"，只回答"是否得到支撑/压力/突破"，
-    不算止盈目标；做多止盈一必须挂在更远的第一条结构位（压力线）下方 0.2%~0.5%，
-    做空挂在下方第一条结构位（支撑线）上方 0.2%~0.5%
-    ——不得贴死线位或挂在越线一侧（价格常在线附近反弹，越线才触发的止盈大概率落空）。
+11. 止盈锚定（程序强制最近优先，偏离会直接改挂）：结构位=摆动高低点（事实包"近期摆动结构"）。
+    距现价特别近（≤1×ATR）的位是价格正在测试/突破的"争夺位"，只回答"是否得到支撑/压力/突破"，
+    不算止盈目标；做多止盈一必须挂在更远的第一档结构位（摆动高点）下方 0.2%~0.5%，
+    做空挂在下方第一档结构位（摆动低点）上方 0.2%~0.5%
+    ——不得贴死位或挂在越位一侧（价格常在位附近反弹，越位才触发的止盈大概率落空）。
     禁止把止盈一挂到更远结构位凑盈亏比：到第一结构位的盈亏比不足 {rr_min} 说明空间不足，
-    应直接 skip；程序会把偏离的止盈一强制改挂回第一结构位线外侧再按铁律打回。
-    止盈二取止盈一锚定档的下一档同类结构位（做多=更高一档压力线下方，做空=更低一档
-    支撑线上方）且必须比止盈一更远。近期摆动高点/低点不算独立锚定档——仅当前方
-    没有任何关键位时才作回退锚（锚定价位本身，留同样余地）。
-    前方无任何结构位可锚定时（如创新高突破），止盈一 = 入场 ± {rr_min}×止损距离、
-    止盈二不设（仅一档）；程序同样会自动回退。盈亏比 ≥{rr_min} 是开单硬性要求。
-12. 方向铁律（程序强校验）：只在支撑位做多，只在压力位做空。锚点与位置不符会直接被风控打回。
+    应直接 skip；程序会把偏离的止盈一强制改挂回第一结构位外侧再按铁律打回。
+    止盈二取止盈一锚定档的下一档同类结构位（做多=更高一档摆动高点下方，做空=更低一档
+    摆动低点上方）且必须比止盈一更远。价格创新高/新低、前方无摆动结构位时
+    （如创新高突破），止盈一 = 入场 ± {rr_min}×止损距离、止盈二不设（仅一档）；
+    程序同样会自动回退。盈亏比 ≥{rr_min} 是开单硬性要求。
+12. 方向铁律（程序强校验）：只在支撑结构做多（入场贴近摆动低点/近期低点），
+    只在压力结构做空（入场贴近摆动高点/近期高点）。锚点与位置不符会直接被风控打回。
     唯一例外：信号类型为 breakout（放量突破，事实包 signal_type 可见）时顺势追突破——
-    向上突破压力位做多、向下突破支撑位做空，entry 用 market 锚。
-13. 关键位可靠性：事实包关键位列表中触及次数（touches）越多、形态确认（pattern_hits，触及点
-    出现方向匹配的 12 金K）越多越可靠。锚定止盈、评估支撑压力强度时优先选触及多/形态确认多的位。
+    向上破 Donchian 上轨做多、向下破下轨做空，entry 用 market 锚。
 
 {skill_index}"""
 
@@ -163,51 +162,63 @@ TOOLS_SCHEMA = [
 ]
 
 
-# 线外锚点：ref -> (role, 第几档)；第几档 0=价格侧最近、1=下一档（止盈二用）。
-# 关键位为单价格线（docs/08），锚点直接解析到线价本身，枚举名沿用 zone 时期历史命名。
+# 线外锚点：ref -> (swings 侧, 第几档)；第几档 0=现价侧最近、1=下一档（止盈二用）。
+# 锚点解析到摆动结构位价格本身（docs/09），枚举名沿用 zone/关键位时期历史命名。
 _ZONE_REF_MAP = {
-    "resistance_zone_low": ("resistance", 0),
-    "support_zone_high": ("support", 0),
-    "next_resistance_zone_low": ("resistance", 1),
-    "next_support_zone_high": ("support", 1),
+    "resistance_zone_low": ("highs", 0),
+    "support_zone_high": ("lows", 0),
+    "next_resistance_zone_low": ("highs", 1),
+    "next_support_zone_high": ("lows", 1),
 }
 
 
-def _nth_level(signal: dict, role: str, nth: int) -> Optional[dict]:
-    """价格侧第 nth 近的某角色关键位：压力位按价格升序（上方最近为 0），支撑位按价格降序"""
-    levels = [
-        lv for lv in (signal.get("key_levels") or [])
-        if lv.get("role") == role and float(lv.get("price", 0) or 0) > 0
-    ]
-    if len(levels) <= nth:
+def _nth_swing(signal: dict, side: str, nth: int) -> Optional[float]:
+    """现价侧第 nth 近的摆动结构位价格：highs 取现价上方升序（最近为 0），
+    lows 取现价下方降序（最近为 0）。数据缺失返回 None。"""
+    sw = signal.get("recent_swings") or {}
+    try:
+        cur = float(signal.get("current_price") or 0)
+    except (TypeError, ValueError):
+        cur = 0.0
+    if cur <= 0:
         return None
-    levels.sort(key=lambda lv: float(lv["price"]), reverse=(role == "support"))
-    return levels[nth]
+    prices = sorted(
+        (float(s["price"]) for s in (sw.get(side) or []) if float(s.get("price", 0) or 0) > 0),
+        reverse=(side == "lows"),
+    )
+    prices = [p for p in prices if (p > cur if side == "highs" else p < cur)]
+    if len(prices) <= nth:
+        return None
+    return prices[nth]
 
 
 def _resolve_price(ref: Optional[str], offset_pct, signal: dict) -> Optional[float]:
     """锚点 + 偏移 → 绝对价格；非法锚点返回 None。
 
-    support/resistance 按 role 解析到价格侧最近的一档（多位同角色时：
+    support/resistance 解析到现价下方/上方最近的摆动结构位（多位时：
     support 取价下方最近即价格最大者，resistance 取价上方最近即价格最小者）；
-    线外锚点解析到对应关键位的价格线本身（历史行带 zone 字段也只按 price 解析）。
+    线外锚点解析到对应侧第 nth 近的摆动结构位价格本身。
     """
     if not ref:
         return None
     if ref == "market":
         base = float(signal.get("current_price") or 0)
     elif ref in _ZONE_REF_MAP:
-        role, nth = _ZONE_REF_MAP[ref]
-        lv = _nth_level(signal, role, nth)
-        if lv is None:
+        side, nth = _ZONE_REF_MAP[ref]
+        base = _nth_swing(signal, side, nth)
+        if base is None:
             return None
-        base = float(lv.get("price") or 0)
     else:
+        cur = float(signal.get("current_price") or 0)
+        sw = signal.get("recent_swings") or {}
+        side = "lows" if ref == "support" else "highs"
         prices = [
-            float(lv.get("price", 0))
-            for lv in (signal.get("key_levels") or [])
-            if lv.get("role") == ref and float(lv.get("price", 0)) > 0
+            float(s.get("price", 0))
+            for s in (sw.get(side) or [])
+            if float(s.get("price", 0)) > 0
         ]
+        if cur > 0:
+            prices = [p for p in prices if (p < cur if ref == "support" else p > cur)]
         if not prices:
             return None
         base = max(prices) if ref == "support" else min(prices)
@@ -446,17 +457,7 @@ def _build_user_msg(
     kline_summary = "\n".join(
         f"{int(k[0]/1000)},{k[1]},{k[2]},{k[3]},{k[4]},{k[5]},{k[7]}" for k in recent
     )
-    levels = []
-    for lv in signal.get("key_levels") or []:
-        role = "支撑" if lv.get("role") == "support" else "压力"
-        touch = f"触及{lv.get('touches', 1)}次"
-        if lv.get("pattern_hits"):
-            touch += f"·形态确认{lv['pattern_hits']}次"
-        levels.append(
-            f"  {POSITION_LABEL_MAP.get(lv.get('kind'), lv.get('kind'))}: {lv['price']:.6g}"
-            f" ({role}, {touch})"
-        )
-    # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点）
+    # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点）——锚点解析的数据源
     sw = signal.get("recent_swings") or {}
     swings_section = ""
     if sw.get("highs") or sw.get("lows"):
@@ -490,7 +491,6 @@ def _build_user_msg(
         f"ATR(14): {atr:.6g}\n"
         + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
         + swings_section
-        + "关键位（锚点参考，价格程序可换算）:\n" + "\n".join(levels) + "\n"
         + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
     )
     if user_input:

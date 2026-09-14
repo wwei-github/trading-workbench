@@ -27,11 +27,11 @@ LABEL_MAP = {
 }
 
 # ===== 信号类型补充 =====
-BREAKOUT = "breakout"                # 放量突破（收盘越过整个关键位区域 + 量能≥1.2×均量 + EMA 同向）
+BREAKOUT = "breakout"                # 放量突破（收盘破 N 根 Donchian 通道轨 + 量能≥1.2×均量 + EMA 同向，docs/09）
 
-# ===== 关键位类型（scan_results.position 取值）=====
-# 【2026-09-12 两类化】关键位只保留支撑/压力两类，kind 由角色动态推导（位在现价
-# 上方=resistance、下方=support，与 role 同源）。前高/前低/区间顶底不再作为新值产生，
+# ===== 信号位置（scan_results.position 取值，形态/突破方向派生，docs/09）=====
+# 【2026-09-14 起不再有关键位模块】position 由信号方向派生：看涨形态/向上突破=
+# resistance、看跌形态/向下突破=support。前高/前低/区间顶底不再作为新值产生，
 # 仅用于历史数据兼容展示
 POS_SUPPORT = "support"              # 支撑位
 POS_RESISTANCE = "resistance"        # 压力位

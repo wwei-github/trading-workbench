@@ -158,8 +158,6 @@ def refresh_watchlist(symbol: str, db: Session = Depends(get_db)):
             "breakout_threshold": float(cfg.breakout_threshold),
             "r_squared_threshold": float(cfg.r_squared_threshold),
             "pullback_tolerance": float(cfg.pullback_tolerance),
-            "key_level_tolerance": float(cfg.key_level_tolerance),
-            "level_merge_threshold": float(cfg.level_merge_threshold),
             "max_trend_slope": 0.005,
             "ema": ema,
         }
@@ -222,7 +220,6 @@ def refresh_watchlist(symbol: str, db: Session = Depends(get_db)):
                 strength=sig.get("strength"),
                 ema_state=sig.get("ema_state"),
                 position=sig.get("position"),
-                key_levels=sig.get("key_levels"),
                 volume_24h=volume_24h,
                 volume=sig.get("volume", 0),
                 volume_type=sig.get("volume_type", "平量"),

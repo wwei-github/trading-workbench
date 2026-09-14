@@ -1,18 +1,17 @@
-"""Risk Guard：AI 决策的确定性校验器（docs/04 §4 Stage 4 / §5.6）
+"""Risk Guard：AI 决策的确定性校验器（docs/04 §4 Stage 4 / §5.6，锚定设计见 docs/09）
 
 - Schema 强约束（Pydantic）
 - 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR] + 强平安全上限，
   见 liquidation_gate_pct——超上限的开仓闸门必拒，风控侧前置打回）、
-  止损锚定（2026-09-13：入场与 N 根极值之间有同类关键位则程序定锚其价格线±缓冲，
-  无则回退影线极值锚——多单严格低于最低点、空单严格高于最高点）；
-  止盈最近优先强制（2026-09-14）：止盈一必须挂第一关键位价格线外侧（多单=压力线
-  下方、空单=支撑线上方，留余地 0.2%），止盈二挂下一档线同规则；摆动点仅在
-  前方无任何关键位时回退使用（锚定价位本身）；AI 挂到更远结构位/空档/越线时程序直接改挂，
-  到第一结构位盈亏比不足由 RR 铁律打回；
-  方向铁律（docs/03 §8）：只在支撑位做多、只在压力位做空——入场价必须贴近对应角色
-  关键位价格线（线 ±0.3% 容差带 + 0.25×ATR 容差；容差取 key_levels.DEFAULT_TOL 镜像，
-  调整 DB config 的 key_level_tolerance 不自动跟随风控侧）；例外：放量突破 breakout /
-  手动搜索 manual_search / 无关键位；
+  止损锚定（结构锚优先，影线极值兜底，两锚取更远者——多单=入场价下方最近摆动低点
+  与最近 N 根最低点中更低者外 0.3%，空单对称；无结构锚回退极值锚）；
+  止盈最近优先强制：止盈一必须挂入场方向前方最近摆动结构位外侧（多单=摆动高点下方、
+  空单=摆动低点上方，留余地 0.2%），止盈二挂下一档同规则；AI 挂到更远结构位/空档/
+  越位时程序直接改挂，到第一结构位盈亏比不足由 RR 铁律打回；前方无任何结构位
+  （如创新高突破）回退固定盈亏比；
+  方向铁律（docs/03 §8）：只在支撑结构做多、只在压力结构做空——入场价必须贴近
+  对应方向的摆动低/高点或最近 N 根影线极值（位 ±0.3% 容差带 + 0.25×ATR 容差）；
+  例外：放量突破 breakout / 手动搜索 manual_search / 无任何结构锚（K线过短）；
   仓位公式保证触止损账户亏损 ≤ 风险预算（RISK_BUDGET_PCT=3%，仓位维度的"3%止损"）
 - 仓位公式化（固定亏损法）：仓位 = 风险预算 ÷ 止损距离，触止损恰好亏 RISK_BUDGET_PCT（3%），AI 不自报仓位
 - 返回具体违规明细，供"校验失败带错误反馈重试"
@@ -24,7 +23,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.config import settings
 from app.services.strategy import recent_swings
-from app.services.strategy.key_levels import DEFAULT_TOL, calc_atr
+from app.services.strategy.indicators import calc_atr
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +89,16 @@ def normalize_raw(raw: dict) -> TradeDecision:
 
 _TP_ANCHOR_TOL = 0.015   # 止盈锚定容差：距锚定点 1.5% 以内视为锚定（留余地）
 _TP_OVERSHOOT = 0.002    # 允许略越过锚定点的幅度（程序直接拉回到位外侧 0.2%，不回炉）
-# 近线阈值：距现价（≈入场价）≤ 该倍数×ATR 的关键位是价格正在测试/突破的"争夺位"——
-# 价格上方即压力位、下方即支撑位，只承担"是否得到支撑/压力/突破"的判定语义
-# （信号层 find_touching/broken 用全部线），不作止盈目标；止盈从更远的第一条线起算（2026-09-14）
+# 近位阈值：距现价（≈入场价）≤ 该倍数×ATR 的摆动结构位是价格正在测试/突破的
+# "争夺位"——只承担"是否得到支撑/压力/突破"的判定语义，不作止盈目标；
+# 止盈从更远的第一档结构位起算（2026-09-14）
 TP_NEAR_ATR_MULT = 1.0
+
+# 方向铁律容差带（原 key_levels.DEFAULT_TOL 镜像）：入场须落在结构锚 ±0.3% 内
+_IRON_RULE_TOL = 0.003
+# 止盈候选近距合并：与上一接受候选价距 ≤0.5% 的摆动点并入前者（关键位移除后
+# 摆动点不再预聚合，防相近的 TP1/TP2 贴脸）
+_CAND_MERGE_PCT = 0.005
 
 # 逐仓强平闸门（docs/07 §8-A4）：止损距离超过 1/杠杆 − 维持保证金率 时，
 # 价格未到止损价保证金就先亏光 → 被强平（20× 即 4.5%）。risk_guard 止损上限
@@ -111,51 +116,40 @@ def liquidation_gate_pct(leverage: Optional[int] = None) -> float:
 
 
 def _structural_candidates(
-    signal: dict, klines: list, direction: str, entry: float, atr: Optional[float] = None,
+    klines: list, direction: str, entry: float, atr: Optional[float] = None,
 ) -> list[dict]:
     """入场方向前方的止盈锚定候选，每个候选 {price, anchor, far}：
 
-    只用关键位价格线作候选（2026-09-14 改版，docs/08）：止盈一=第一压力/支撑线、
-    止盈二=下一档（用户规则）。此前摆动点前高与区域混排，前高插在第一压力区前面
-    把止盈一、二都压在第一压力位下方（FLOCKUSDT 案例：两档止盈分别锚在前高
-    0.0695/0.0719，都在第一压力区 0.0746 之下）。入场方向前方没有任何关键位时
-    （如创新高突破）才回退摆动点（anchor=价位本身，far=外侧 0.2%）。
-    - anchor 锚定点：关键位价格线本身，止盈挂在线外侧留余地（0.2%）。
-    - far 匹配上界：线外侧 0.2%（略越线视为"即将到位"，程序拉回线外）。
-    - **近线不作止盈目标（2026-09-14）**：距入场价 ≤ TP_NEAR_ATR_MULT×ATR 的线是
-      价格正在测试/突破的"争夺位"（上方=压力、下方=支撑），语义是"是否得到
-      支撑/压力/突破"而非盈利空间，止盈从更远的第一条线起算；摆动点回退锚同滤。
+    只用摆动点作候选（2026-09-14 关键位功能移除，docs/09）：止盈一=入场方向前方
+    最近摆动结构位、止盈二=下一档（用户规则）。
+    - anchor 锚定点：摆动点价格本身，止盈挂在外侧留余地（0.2%）。
+    - far 匹配上界：位外侧 0.2%（略越位视为"即将到位"，程序拉回位外）。
+    - **近位不作止盈目标**：距入场价 ≤ TP_NEAR_ATR_MULT×ATR 的摆动点是价格正在
+      测试/突破的"争夺位"，语义是"是否得到支撑/压力/突破"而非盈利空间，
+      止盈从更远的第一档起算。
+    - **近距合并**：与上一接受候选价距 ≤ _CAND_MERGE_PCT 的摆动点并入前者
+      （相近摆动点不再预先聚合为一条线，在此防 TP1/TP2 贴脸）。
     多单返回按 anchor 升序，空单降序。
     """
     near_dist = atr * TP_NEAR_ATR_MULT if atr else 0.0
+    swings = recent_swings(klines, order=settings.SWING_ORDER, n=50)
+    side = swings["highs"] if direction == "long" else swings["lows"]
+    # 就近排序：多单升序（前方最近在前）、空单降序
+    pts = sorted(
+        (float(s["price"]) for s in side if float(s["price"]) > 0),
+        reverse=(direction == "short"),
+    )
     cands: list[dict] = []
-    for lv in (signal.get("key_levels") or []):
-        try:
-            price = float(lv.get("price") or 0)
-        except (TypeError, ValueError):
+    for p in pts:
+        far = p * (1 + _TP_OVERSHOOT) if direction == "long" else p * (1 - _TP_OVERSHOOT)
+        # 摆动点须仍在入场方向前方，否则对止盈无意义（入场已越过该位）
+        if (p - entry) * (1 if direction == "long" else -1) <= 0:
             continue
-        if price <= 0:
-            continue
-        anchor = price
-        far = price * (1 + _TP_OVERSHOOT) if direction == "long" else price * (1 - _TP_OVERSHOOT)
-        # 线须仍在入场方向前方，否则该关键位对止盈无意义（入场已越过线）
-        if (anchor - entry) * (1 if direction == "long" else -1) <= 0:
-            continue
-        if near_dist and abs(anchor - entry) <= near_dist:
-            continue  # 贴脸线 = 当前争夺位（支撑/压力/突破判定语义），不作止盈目标
-        cands.append({"price": price, "anchor": anchor, "far": far})
-    if not cands:
-        # 前方无任何关键位区域（如创新高突破）：回退摆动点作结构位
-        swings = recent_swings(klines, order=settings.SWING_ORDER, n=50)
-        for s in (swings["highs"] if direction == "long" else swings["lows"]):
-            p = float(s["price"])
-            if (direction == "long" and p <= entry) or (direction == "short" and p >= entry):
-                continue
-            if near_dist and abs(p - entry) <= near_dist:
-                continue
-            far = p * (1 + _TP_OVERSHOOT) if direction == "long" else p * (1 - _TP_OVERSHOOT)
-            cands.append({"price": p, "anchor": p, "far": far})
-    cands.sort(key=lambda c: c["anchor"], reverse=(direction == "short"))
+        if near_dist and abs(p - entry) <= near_dist:
+            continue  # 贴脸位 = 当前争夺位，不作止盈目标
+        if cands and abs(p - cands[-1]["anchor"]) / cands[-1]["anchor"] <= _CAND_MERGE_PCT:
+            continue  # 与上一档价距过近：合并（防止盈一、二贴脸）
+        cands.append({"price": p, "anchor": p, "far": far})
     return cands
 
 
@@ -228,41 +222,52 @@ def validate_decision(
 
     atr = calc_atr(klines)
 
-    # ── 方向铁律（docs/03 §8）：只在支撑位做多、只在压力位做空 ──
-    # 入场价必须贴近信号方向对应角色的关键位价格线：线 ±0.3% 容差带（key_level_tolerance，
-    # 此处用 key_levels.DEFAULT_TOL 镜像——风控无 DB config）再 ±0.25×ATR 容差，
-    # 防 AI 贴着容差带边缘报价。
-    # 例外：breakout（放量突破顺势追，入场贴近现价）/ manual_search（用户手动指定，人工兜底）/
-    # 无关键位（无法校验，交由其余规则约束）
-    levels = signal.get("key_levels") or []
+    # 公共预计算：最近 N 根影线极值 + 摆动结构（方向铁律/止损锚定共用）
+    closed = klines[:-1] if len(klines) >= 2 else klines
+    n = min(settings.STOP_LOSS_RECENT_BARS, len(closed))
+    recent_low = min(float(k[3]) for k in closed[-n:]) if n > 0 else 0.0
+    recent_high = max(float(k[2]) for k in closed[-n:]) if n > 0 else 0.0
+    swings = recent_swings(klines, order=settings.SWING_ORDER, n=10)
+
+    # ── 方向铁律（docs/03 §8）：只在支撑结构做多、只在压力结构做空 ──
+    # 入场价必须贴近信号方向的摆动结构位：摆动低点（多）/摆动高点（空），
+    # 最近 N 根影线极值也是合格锚（摆动点确认滞后 2×order 根，极值补位）。
+    # 命中带 = 锚 ×(1±0.3%) 再 ±0.25×ATR 容差，防 AI 贴着容差带边缘报价。
+    # 例外：breakout（放量突破顺势追，入场贴近现价）/ manual_search（用户手动指定，
+    # 人工兜底）/ 无任何结构锚（K线过短，交由其余规则约束）
+    if d.direction == "long":
+        iron_anchors = [float(s["price"]) for s in swings["lows"] if float(s["price"]) > 0]
+        if n > 0:
+            iron_anchors.append(recent_low)
+    elif d.direction == "short":
+        iron_anchors = [float(s["price"]) for s in swings["highs"] if float(s["price"]) > 0]
+        if n > 0:
+            iron_anchors.append(recent_high)
+    else:
+        iron_anchors = []
     if (
-        d.direction in ("long", "short") and levels
+        iron_anchors
         and signal.get("signal_type") not in ("breakout", "manual_search")
     ):
         tol = 0.25 * atr if atr else 0.0
-        wanted_role = "support" if d.direction == "long" else "resistance"
-        side_levels = [
-            lv for lv in levels
-            if lv.get("role") == wanted_role and float(lv.get("price") or 0) > 0
-        ]
-
         if not any(
-            float(lv["price"]) * (1 - DEFAULT_TOL) - tol
+            a * (1 - _IRON_RULE_TOL) - tol
             <= d.entry_price <=
-            float(lv["price"]) * (1 + DEFAULT_TOL) + tol
-            for lv in side_levels
+            a * (1 + _IRON_RULE_TOL) + tol
+            for a in iron_anchors
         ):
-            if side_levels:
-                near = ", ".join(f"{float(lv['price']):g}" for lv in side_levels[:5])
+            near = ", ".join(f"{a:g}" for a in iron_anchors[:5])
+            if d.direction == "long":
                 violations.append(
-                    f"方向铁律违规：{'做多入场必须贴近某个支撑位价格线' if d.direction == 'long' else '做空入场必须贴近某个压力位价格线'}"
-                    f"（线 ±0.3% 容差带 + 0.25×ATR 容差），唯一例外是放量突破信号。"
-                    f"可用{'支撑位' if d.direction == 'long' else '压力位'}：{near}"
+                    f"方向铁律违规：做多入场必须贴近某个支撑结构位"
+                    f"（摆动低点/最近{n}根最低点，位 ±0.3% 容差带 + 0.25×ATR 容差），"
+                    f"唯一例外是放量突破信号。可用锚：{near}"
                 )
             else:
                 violations.append(
-                    f"方向铁律违规：当前关键位中没有{'支撑位，做多不成立' if d.direction == 'long' else '压力位，做空不成立'}"
-                    f"（唯一例外是放量突破信号）"
+                    f"方向铁律违规：做空入场必须贴近某个压力结构位"
+                    f"（摆动高点/最近{n}根最高点，位 ±0.3% 容差带 + 0.25×ATR 容差），"
+                    f"唯一例外是放量突破信号。可用锚：{near}"
                 )
 
     if close > 0:
@@ -270,26 +275,21 @@ def validate_decision(
         if dev > 0.02:
             violations.append(f"入场价偏离当前价 {dev*100:.2f}% > 2%（入场应接近现价）")
 
-    # ── 止损锚定（2026-09-13 更新：关键位优先，影线极值兜底；2026-09-14 补强：两锚取更远者）──
-    # 多单：入场价下方最近的支撑位价格线（不限是否在 N 根影线范围内）为候选锚，
-    # 最终锚 = 「支撑线与 recent_low 中更低者」（AI 给值仅参考）——入场贴着关键位是
-    # 区间边缘类开单的常态，只锚线位会把止损放进近期波动区间内部（AKEUSDT 案例：
-    # 空单止损 1.48% 比黄昏星高点还近），必须同时越过影线极值；跨极值的关键位比极值更远，
-    # 同样参与定锚（关键位优先）。最终锚距 <0.3×ATR 时不用关键位锚（回退极值锚路径）。
-    # 无候选关键位时退回极值锚：严格低于 recent_low 且留缓冲（不足自动推远，未越过打回）。
-    # 空单对称（压力线与 recent_high 取更高者）。
-    closed = klines[:-1] if len(klines) >= 2 else klines
-    n = min(settings.STOP_LOSS_RECENT_BARS, len(closed))
+    # ── 止损锚定（结构锚优先，影线极值兜底；两锚取更远者）──
+    # 多单：入场价下方最近的摆动低点（收盘价结构位）为候选锚，
+    # 最终锚 = 「摆动低点与 recent_low 中更低者」（AI 给值仅参考）——入场贴着结构位是
+    # 区间边缘类开单的常态，只锚结构位会把止损放进近期波动区间内部（AKEUSDT 案例：
+    # 空单止损 1.48% 比黄昏星高点还近），必须同时越过影线极值；跨极值的结构位比极值更远，
+    # 同样参与定锚（结构位优先）。最终锚距 <0.3×ATR 时不用结构锚（回退极值锚路径）。
+    # 无候选结构位时退回极值锚：严格低于 recent_low 且留缓冲（不足自动推远，未越过打回）。
+    # 空单对称（摆动高点与 recent_high 取更高者）。
     if n > 0:
         if d.direction == "long":
-            recent_low = min(float(k[3]) for k in closed[-n:])
             anchor = None
-            for lv in signal.get("key_levels") or []:
-                if (lv.get("role") or lv.get("kind")) != "support":
-                    continue
-                edge = float(lv.get("price") or 0)
-                if 0 < edge < d.entry_price and (anchor is None or edge > anchor):
-                    anchor = edge
+            for s in swings["lows"]:
+                p = float(s["price"])
+                if 0 < p < d.entry_price and (anchor is None or p > anchor):
+                    anchor = p
             base = min(anchor, recent_low) if anchor is not None else None
             if base is not None and not (
                 atr and d.entry_price and d.entry_price - base < 0.3 * atr
@@ -304,15 +304,12 @@ def validate_decision(
                 elif d.stop_loss > recent_low * (1 - settings.STOP_LOSS_BUFFER_PCT):
                     d.stop_loss = recent_low * (1 - settings.STOP_LOSS_BUFFER_PCT)
         elif d.direction == "short":
-            recent_high = max(float(k[2]) for k in closed[-n:])
             anchor = None
-            for lv in signal.get("key_levels") or []:
-                if (lv.get("role") or lv.get("kind")) != "resistance":
-                    continue
-                edge = float(lv.get("price") or 0)
-                if edge > d.entry_price and (anchor is None or edge < anchor):
-                    anchor = edge
-            # 同多单：两锚取更远者（压力线与 recent_high 中更高者）
+            for s in swings["highs"]:
+                p = float(s["price"])
+                if p > d.entry_price and (anchor is None or p < anchor):
+                    anchor = p
+            # 同多单：两锚取更远者（摆动高点与 recent_high 中更高者）
             base = max(anchor, recent_high) if anchor is not None else None
             if base is not None and not (
                 atr and d.entry_price and base - d.entry_price < 0.3 * atr
@@ -354,15 +351,15 @@ def validate_decision(
                 f"请收紧止损到上限内，结构上做不到就直接 skip"
             )
 
-    # ── 止盈锚定校验（2026-09-14 改为最近优先强制）：止盈一必须挂在第一结构位线外侧，
-    # 止盈二挂在下一档结构位线外侧（用户规则）。AI 挂在更远结构位或空档时程序直接改挂
+    # ── 止盈锚定校验（最近优先强制）：止盈一必须挂在第一摆动结构位外侧，
+    # 止盈二挂在下一档结构位外侧（用户规则）。AI 挂在更远结构位或空档时程序直接改挂
     # （修正不回炉）——此前允许"最近位盈亏比不足就取下一档"，AI 会跳过第一压力位去锚更远
     # 的摆动点，止盈一、二扎堆（SCRUSDT 案例：两档仅差 0.37%）。到第一结构位盈亏比不足
     # 1.5 时由下方 RR 铁律打回——第一压力/支撑都够不着 1.5R 的交易本就不值得做。
-    # 近线例外（2026-09-14）：距现价 ≤1×ATR 的争夺位线不作止盈目标（见 _structural_candidates），
-    # 止盈一从更远的第一条线起算；前方无任何结构位时回退固定盈亏比。
+    # 近位例外：距现价 ≤1×ATR 的争夺位不作止盈目标（见 _structural_candidates），
+    # 止盈一从更远的第一档起算；前方无任何结构位时回退固定盈亏比。
     if d.direction in ("long", "short") and d.take_profit_1 > 0:
-        cands = _structural_candidates(signal, klines, d.direction, d.entry_price, atr)
+        cands = _structural_candidates(klines, d.direction, d.entry_price, atr)
         if not cands:
             # 前方无任何结构位可锚定（如创新高突破）：回退固定盈亏比——
             # TP1 = 入场 ± RR_MIN×止损距离（乘 1.001 留浮点余量，防复算恰等于阈值被判负），

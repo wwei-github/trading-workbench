@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     R_SQUARED_THRESHOLD: float = 0.5
     REPEAT_WINDOW_HOURS: int = 3
     SWING_ORDER: int = 3
+    BREAKOUT_CHANNEL_BARS: int = 20  # Donchian 通道突破的回看根数（收盘破 N 根高低轨 + 放量）
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
 
     # 排除的币种关键字（杠杆代币等）
@@ -52,7 +53,7 @@ class Settings(BaseSettings):
     AI_RR_MIN: float = 1.5            # 盈亏比复算下限（交易系统铁律）
     RISK_BUDGET_PCT: float = 3.0      # 单笔固定亏损预算（%账户资金）：仓位 = 预算÷止损距离%，触止损恰好亏3%
     STOP_LOSS_RECENT_BARS: int = 5    # 止损须越过最近N根已收盘K线影线极值（多单低于最低价、空单高于最高价，非收盘价；2026-09-14 由10改5）
-    STOP_LOSS_BUFFER_PCT: float = 0.003  # 止损越过锚点（关键位外沿/极值）的最小缓冲（0.3%）：贴着锚点必被插针扫损，不足者程序自动推远
+    STOP_LOSS_BUFFER_PCT: float = 0.003  # 止损越过锚点（摆动结构位/极值）的最小缓冲（0.3%）：贴着锚点必被插针扫损，不足者程序自动推远
     FINGERPRINT_TTL_MIN: int = 60     # 指纹缓存复用窗口（分钟，0.3% 价格分桶）
     ATR_SPIKE_MULT: float = 5.0       # 当前K线振幅 > N×ATR 熔断，直接 skip
     AI_SIGNAL_MAX_BARS_AGO: int = 2   # 信号陈旧闸门：扫描落库后超过 N 根K线未完成分析直接程序 skip（形态是扫描时刻快照，隔多根可能已失效；docs/07 §8-A3）

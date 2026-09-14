@@ -1,5 +1,4 @@
-// 信号类型 / 关键位位置 / K线形态 标签映射（扫描结果与关注列表共用）
-import type { KeyLevel } from "../types";
+// 信号类型 / 信号位置 / K线形态 标签映射（扫描结果与关注列表共用）
 
 export const SIGNAL_TYPE_MAP: Record<string, { label: string; color: string }> = {
   // 新结构分类（关键位重构）
@@ -31,34 +30,11 @@ export const POSITION_SUPPORT_KINDS = new Set([
   "range_bottom",
 ]);
 
-// 位置标签：两类化后新数据的 kind 即角色（support→绿 / resistance→红），
-// 提示取同 kind 关键位中距现价最近的一档（关键位是列表，多位同 kind，取最近才有意义）；
-// 旧 kind（前高/前低等）仅历史展示，不再反查关键位（语义已变，提示无意义）
-export function positionTag(
-  kind: string,
-  keyLevels?: KeyLevel[] | null,
-  currentPrice?: number,
-): { label: string; color: string; tip?: string } {
+// 位置标签：新数据 position 即形态/突破方向派生的角色（support→绿 / resistance→红）；
+// 旧 kind（前高/前低等）仅历史展示
+export function positionTag(kind: string): { label: string; color: string } {
   const label = POSITION_LABEL_MAP[kind] || kind;
-  const isSupportRole = POSITION_SUPPORT_KINDS.has(kind);
-  if (!keyLevels?.length || !["support", "resistance"].includes(kind)) {
-    return { label, color: isSupportRole ? "green" : "red" };
-  }
-  let hit: KeyLevel | undefined;
-  if (currentPrice && currentPrice > 0) {
-    hit = [...keyLevels]
-      .filter((lv) => lv.kind === kind)
-      .sort(
-        (a, b) => Math.abs(a.price - currentPrice) - Math.abs(b.price - currentPrice),
-      )[0];
-  }
-  // tip：新数据（线口径）只展示线价+触及；历史行带 zone 字段则保留区域展示
-  const tip = hit
-    ? hit.zone_low != null && hit.zone_high != null
-      ? `${label} ${hit.price}，触及 ${hit.touches} 次，区域 ${hit.zone_low}~${hit.zone_high}`
-      : `${label} ${hit.price}，触及 ${hit.touches} 次${hit.pattern_hits ? `，形态确认 ${hit.pattern_hits} 次` : ""}`
-    : undefined;
-  return { label, color: isSupportRole ? "green" : "red", tip };
+  return { label, color: POSITION_SUPPORT_KINDS.has(kind) ? "green" : "red" };
 }
 
 // 12 金K + 历史形态映射

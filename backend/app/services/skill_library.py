@@ -98,16 +98,11 @@ def build_facts(signal: dict, klines: list) -> dict:
         "narrow_range": False,
         "role": None,
     }
-    # 信号命中的关键位角色：两类化后 position 即 support/resistance，可直接作 role；
-    # 旧数据的 prev_high 等 kind 值走 key_levels 查找回退
+    # 信号位置角色：position 即形态/突破方向派生的 support/resistance，直接作 role；
+    # 旧数据的 prev_high 等历史值不命中（role=None，技能不自动触发）
     hit_kind = signal.get("position")
     if hit_kind in ("support", "resistance"):
         facts["role"] = hit_kind
-    else:
-        for lv in signal.get("key_levels") or []:
-            if lv.get("kind") == hit_kind:
-                facts["role"] = lv.get("role")
-                break
     # pin_bar：已收盘最后一根 影线 > 2×实体
     if len(klines) >= 2:
         k = klines[-2]

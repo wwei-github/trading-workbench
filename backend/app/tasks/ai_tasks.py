@@ -34,7 +34,7 @@ from app.services.ai_analyzer import analyze_with_guard
 from app.services.dual_judge import run_dual_judge
 from app.services.exchange_pool import ExchangePool
 from app.services.risk_guard import build_forced_skip, calc_atr
-from app.services.strategy import compute_signal_key_levels, recent_swings
+from app.services.strategy import recent_swings
 
 logger = logging.getLogger(__name__)
 
@@ -81,20 +81,12 @@ def compute_fingerprint(signal: dict) -> str:
     """信号指纹：价格 0.5% 对数分桶 + 信号要素。同指纹在 TTL 内可复用结论"""
     close = float(signal.get("current_price") or 0)
     bucket = round(math.log(close) / 0.005) if close > 0 else 0
-    nearest_level = ""
-    levels = signal.get("key_levels") or []
-    if levels and close > 0:
-        nearest = min(
-            levels, key=lambda lv: abs(float(lv.get("price", 0)) - close)
-        )
-        nearest_level = f"{float(nearest['price']):.4f}"
     raw = "|".join([
         signal.get("symbol", ""),
         signal.get("signal_type", ""),
         signal.get("position") or "",
         signal.get("pattern") or "",
         str(bucket),
-        nearest_level,
     ])
     return hashlib.sha1(raw.encode()).hexdigest()[:40]
 
@@ -192,7 +184,6 @@ def run_ai_analysis_single(
             "pattern": r.pattern,
             "signal_reason": r.signal_reason,
             "position": r.position,
-            "key_levels": r.key_levels,
             "volume_type": r.volume_type,
             "volume": float(r.volume),
             "volume_24h": float(r.volume_24h),
@@ -215,7 +206,7 @@ def run_ai_analysis_single(
         # 2) 信号陈旧（docs/07 §8-A3）：形态/触位判定基于扫描时刻K线快照，从扫描到
         #    分析完成（LLM 单轮 85~130s + 超时重试）可能跨 1~2 根K线，形态可能已失效
         #    甚至反向——超过 N 根K线未处理直接程序 skip，不调 LLM。
-        #    手动单币重分析（force）不受限：用户主动发起，且分析时关键位/现价都会重算
+        #    手动单币重分析（force）不受限：用户主动发起，且分析时摆动结构/现价都会重算
         bars_ago = _signal_bars_ago(r.created_at, cfg.kline_interval)
         if not force and bars_ago > settings.AI_SIGNAL_MAX_BARS_AGO:
             reason = (
@@ -281,17 +272,9 @@ def run_ai_analysis_single(
         db.close()
         db = SessionLocal()
         r = db.get(ScanResult, r.id)
-        # 近期摆动结构（HH/LH/HL/LL，高低点各 20 个）随事实包给 AI，与图表标注同源
+        # 近期摆动结构（HH/LH/HL/LL，高低点各 20 个）随事实包给 AI，与图表标注同源；
+        # 分析时刻现算（现价已更新），锚点解析（ai_agent）与风控锚定共用
         signal["recent_swings"] = recent_swings(klines, order=cfg.swing_order, n=20)
-        # 关键位在分析时刻重算（支撑/压力聚合线，docs/08）：扫描落库的 key_levels
-        # 是扫描时快照，分析时结构可能已变化。指纹已按扫描快照算完，缓存判定不受影响
-        fresh_levels = compute_signal_key_levels(klines, {
-            "swing_order": cfg.swing_order,
-            "key_level_tolerance": float(cfg.key_level_tolerance),
-            "level_merge_threshold": float(cfg.level_merge_threshold),
-        })
-        if fresh_levels:
-            signal["key_levels"] = fresh_levels
         # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
         # Agent 管线由模型按需调用工具自行获取
         # 管线选择：批量（每小时扫描自动触发/手动全量）固定走 P0 单次调用管线，

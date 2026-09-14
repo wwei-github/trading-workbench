@@ -1,35 +1,26 @@
-"""策略统一入口：关键位 + 12金K 统一过滤（见 docs/03-关键位筛选重构需求.md §5.2）
+"""策略统一入口：Donchian 通道突破 + 12金K 形态信号（docs/09，2026-09-14 关键位功能移除）
 
 流程：
 1. 摆动点（收盘价）→ 结构分类（上涨/下跌/反转/震荡/未分类，仅作 signal_type 标签）
-2. 计算关键位（支撑/压力单价格线，角色按现价位置：上方=压力、下方=支撑，docs/08）
-3. 放量突破优先：收盘越过关键位容差带（price×(1±tol)）+ 量能 ≥1.2×均量 + EMA 同向
-   → breakout 信号（不要求形态；前收盘上下文区分"突破"与"常态居位"）
-4. 触位：最新已收盘 K 线持住侧触及关键位容差带 → position
-5. 该 K 线出现 12 金K？→ pattern（方向需与关键位角色匹配）
-6. EMA 均线形态严格门控：仅认可多头/空头排列、金叉/死叉 4 态，且方向须与信号一致
-7. 输出信号
+2. Donchian 通道突破优先：信号K线收盘严格越过前 N 根高低轨 + 量能 ≥1.2×均量 + EMA 同向
+   → breakout 信号（不要求形态）
+3. 形态路径：该 K 线出现 GOLDEN_12 形态（方向决定 position）+ EMA 严格门控 → 信号
+4. 输出信号 dict（无 key_levels/hit_level——关键位功能整体移除；风控锚定改用
+   recent_swings 摆动点 + 近端影线极值，见 risk_guard）
 
-方向铁律（docs/03 §8）：只在支撑位做多、只在压力位做空，唯一例外是放量突破。
+信号 position 语义（形态/突破方向派生，不再来自关键位角色）：
+看涨形态/向上突破=resistance、看跌形态/向下突破=support。
 """
 from __future__ import annotations
 
 import numpy as np
 from typing import Optional
 
+from app.config import settings
 from app.services.strategy import candlestick
-from app.services.strategy.ema import analyze_ema
 from app.services.strategy.candlestick import GOLDEN_12, PATTERN_LABEL_MAP
-from app.services.strategy.key_levels import (
-    BREAKOUT_VOL_RATIO,
-    compute_key_levels,
-    compute_key_levels_from_swings,
-    find_broken_level,
-    find_touching_level,
-    fmt_price,
-    level_side,
-    volume_ratio,
-)
+from app.services.strategy.ema import analyze_ema
+from app.services.strategy.indicators import BREAKOUT_VOL_RATIO, fmt_price, volume_ratio
 from app.services.strategy.structure import classify_structure
 from app.services.strategy.swing import find_swing_points, merge_swings
 from app.services.strategy.types import (
@@ -41,23 +32,10 @@ from app.services.strategy.types import (
 
 __all__ = [
     "detect_all_signals",
-    "detect_any_signal",
     "recent_swings",
-    "compute_signal_key_levels",
     "GOLDEN_12",
     "LABEL_MAP",
 ]
-
-
-def compute_signal_key_levels(klines: list[list], config: dict) -> list[dict]:
-    """分析时刻的关键位快照（手动搜索 / 定时 AI 分析的事实包共用）。
-
-    与 _detect 前两步同源：摆动点 → 聚合支撑/压力线，但不做触及/形态/EMA 门控——
-    AI 需要全量关键位而非仅信号命中位。
-    """
-    if len(klines) < config.get("min_klines", 30):
-        return []
-    return compute_key_levels(klines, config)
 
 
 # EMA 状态 → 趋势偏向
@@ -108,18 +86,12 @@ def recent_swings(klines: list[list], order: int = 3, n: int = 2) -> dict:
 
 
 def detect_all_signals(klines: list[list], config: dict) -> list[dict]:
-    """统一过滤：关键位 + 12金K。返回命中的信号列表（0 或 1 个）"""
+    """统一过滤：Donchian 突破 + 12金K 形态。返回命中的信号列表（0 或 1 个）"""
     try:
         sig = _detect(klines, config)
     except Exception:
         return []
     return [sig] if sig else []
-
-
-def detect_any_signal(klines: list[list], config: dict) -> Optional[dict]:
-    """兼容旧接口：返回首个命中信号或 None"""
-    signals = detect_all_signals(klines, config)
-    return signals[0] if signals else None
 
 
 def _detect(klines: list[list], config: dict) -> Optional[dict]:
@@ -141,12 +113,7 @@ def _detect(klines: list[list], config: dict) -> Optional[dict]:
     structure = classify_structure(swings, closes, n_closed, config)
     signal_type = structure["signal_type"]
 
-    # 2. 计算关键位（支撑/压力单价格线；传 klines 启用形态确认计数）
-    levels = compute_key_levels_from_swings(swings, closes, n_closed, config, klines)
-    if not levels:
-        return None
-
-    # EMA 门控共用（触位与突破两条路径都需要）：
+    # EMA 门控（突破与形态两条路径共用）：
     # a) 仅 4 种趋势态可出信号（拐头/纠缠/未知 → 过滤）
     # b) 方向合理性：EMA 偏向必须与信号方向一致
     ema = config.get("ema")
@@ -154,90 +121,71 @@ def _detect(klines: list[list], config: dict) -> Optional[dict]:
         ema = analyze_ema(klines)
     ema_state = ema["state"] if ema else None
 
-    # 3. 放量突破优先：收盘越过关键位容差带（涨破压力/跌破支撑）且量能达标
-    #    且 EMA 与突破方向同向 → 发突破信号（不要求 K 线形态）。
-    #    前收盘上下文区分"突破"与"常态居位"：价格本来就高于支撑位不算突破。
-    #    门控不过则该位作废，落到触位路径（破位位因持住侧检查不会再被当触及）
-    prev_close = float(closes[-3]) if n >= 3 else close_last
-    tol = config.get("key_level_tolerance", 0.003)
-    broken = find_broken_level(levels, klines[-2], prev_close, tol=tol)
-    if broken is not None:
-        ratio = volume_ratio(klines)
-        wanted = "bullish" if broken["direction"] == "up" else "bearish"
-        if (
-            ratio >= BREAKOUT_VOL_RATIO
-            and ema_state in EMA_ALLOWED
-            and EMA_BIAS[ema_state] == wanted
-        ):
-            blv = broken["level"]
-            up = broken["direction"] == "up"
-            edge = blv["price"]
-            strength = 0.8 if ratio >= 2.0 else 0.7  # 倍量再加档
-            if blv.get("touches", 1) >= 2:
-                strength += 0.1
-            strength = min(strength + 0.1, 1.0)  # EMA 同向
-            return {
-                "signal_type": BREAKOUT,
-                # 突破的 position=被突破线的角色（向上破压力、向下破支撑）；
-                # 不能用 blv["kind"]——突破后价格已越过线，按现价口径线角色会翻转
-                "position": "resistance" if up else "support",
-                "current_price": close_last,
-                "breakout_pct": float(broken["pct"]),  # 越过容差带的幅度（带符号，从线价起算）
-                "trend_slope": 0.0,
-                "r_squared": 0.0,
-                "pattern": None,
-                "pattern_direction": wanted,
-                "signal_reason": (
-                    f"放量突破{'压力' if up else '支撑'}位({fmt_price(edge)})·"
-                    f"{ratio:.1f}×均量"
-                ),
-                "ema_state": ema_state,
-                "strength": strength,
-                "key_levels": levels,
-                "hit_level": blv,
-                "reversal": structure.get("reversal"),
-            }
+    # 2. Donchian 通道突破优先：信号K线收盘严格越过前 N 根已收盘K线的高低轨
+    #    （窗口不含信号K线自身、不含未收盘根，防"自己破自己"）+ 量能达标 + EMA 同向。
+    #    量能/EMA 不过则落到形态路径（突破K线自身也可能带形态）
+    chan_n = int(config.get("breakout_channel_bars", settings.BREAKOUT_CHANNEL_BARS))
+    if chan_n > 0 and n >= chan_n + 2:
+        window = klines[-2 - chan_n:-2]
+        chan_high = max(float(k[2]) for k in window)
+        chan_low = min(float(k[3]) for k in window)
+        up = close_last > chan_high
+        down = close_last < chan_low
+        if up or down:
+            ratio = volume_ratio(klines)
+            wanted = "bullish" if up else "bearish"
+            if (
+                ratio >= BREAKOUT_VOL_RATIO
+                and ema_state in EMA_ALLOWED
+                and EMA_BIAS[ema_state] == wanted
+            ):
+                track = chan_high if up else chan_low
+                strength = 0.8 if ratio >= 2.0 else 0.7  # 倍量再加档
+                strength = min(strength + 0.1, 1.0)  # EMA 同向
+                return {
+                    "signal_type": BREAKOUT,
+                    # 突破的 position 按突破方向派生（向上=resistance、向下=support）
+                    "position": "resistance" if up else "support",
+                    "current_price": close_last,
+                    "breakout_pct": (close_last - track) / track * 100,  # 越过轨道幅度（带符号）
+                    "trend_slope": 0.0,
+                    "r_squared": 0.0,
+                    "pattern": None,
+                    "pattern_direction": wanted,
+                    "signal_reason": (
+                        f"放量突破{chan_n}根Donchian{'上' if up else '下'}轨"
+                        f"({fmt_price(track)})·{ratio:.1f}×均量"
+                    ),
+                    "ema_state": ema_state,
+                    "strength": strength,
+                    "reversal": structure.get("reversal"),
+                }
 
-    # 4. 触位路径：最新已收盘 K 线（klines[-2]）持住侧触及关键位容差带
-    hit = find_touching_level(levels, klines[-2], prev_close, tol=tol)
-    if hit is None:
-        return None
-
-    # 5. 12 金K + 方向匹配（支撑位→看涨形态，压力位→看跌形态）
-    # 触及语境的侧向用 level_side（前收盘口径，与 find_touching_level 的持住侧判定同源），
-    # 不用线角色（现价口径）——两者在价格刚穿越线的根上可能不一致，信号语义以触及为准
+    # 3. 形态路径：信号K线（klines[-2]）出现 GOLDEN_12 形态，方向决定 position
+    #    （看涨→support 回踩企稳、看跌→resistance 反抽受阻）
     patterns = candlestick.detect_all_patterns(klines, idx=-2)
-    side = level_side(hit, prev_close)
-    wanted = "bullish" if side == "support" else "bearish"
-    pattern = next(
-        (p for p in patterns if p["direction"] == wanted and p["pattern"] in GOLDEN_12),
-        None,
-    )
+    pattern = next((p for p in patterns if p["pattern"] in GOLDEN_12), None)
     if pattern is None:
         return None
+    wanted = pattern["direction"]
 
-    # 6. EMA 严格门控（权重高于单根 K 线形态，ema_state 已在突破分支前算好）：
+    # 4. EMA 严格门控（权重高于单根 K 线形态）：
     #    a) 仅 4 种趋势态可出信号（拐头/纠缠/未知 → 过滤）
-    #    b) 位置合理性：EMA 偏向必须与位置方向一致——空头排列/死叉下触及支撑位无效，
-    #       多头排列/金叉下触及压力位无效
+    #    b) 方向合理性：EMA 偏向必须与形态方向一致——空头排列/死叉下的看涨形态无效
     if ema_state not in EMA_ALLOWED:
         return None
     if EMA_BIAS[ema_state] != wanted:
         return None
 
-    # 7. 组装信号（position 取触及语境的侧向：回踩企稳=support、反抽受阻=resistance）
-    position = side
+    # 5. 组装信号
+    position = "support" if wanted == "bullish" else "resistance"
     position_label = POSITION_LABEL_MAP.get(position, position)
-    role_label = "支撑" if side == "support" else "压力"
-    deviation = (close_last - hit["price"]) / hit["price"] * 100
     reason = (
-        f"{position_label}({fmt_price(hit['price'])})·{role_label} + "
+        f"{position_label} + "
         f"{PATTERN_LABEL_MAP.get(pattern['pattern'], pattern['pattern'])}"
     )
 
     strength = pattern["strength"]
-    if hit["touches"] >= 2:
-        strength += 0.1  # 多次触及的关键位更可靠
     if signal_type == TREND_REVERSAL:
         strength += 0.1  # 反转结构加权
     strength += 0.1  # 均线形态与信号同向（严格门控后必然同向）
@@ -247,7 +195,7 @@ def _detect(klines: list[list], config: dict) -> Optional[dict]:
         "signal_type": signal_type,
         "position": position,
         "current_price": close_last,
-        "breakout_pct": float(deviation),  # 距关键位中心的偏离（带符号）
+        "breakout_pct": 0.0,
         "trend_slope": 0.0,
         "r_squared": 0.0,
         "pattern": pattern["pattern"],
@@ -255,7 +203,5 @@ def _detect(klines: list[list], config: dict) -> Optional[dict]:
         "signal_reason": reason,
         "ema_state": ema_state,
         "strength": strength,
-        "key_levels": levels,
-        "hit_level": hit,
         "reversal": structure.get("reversal"),
     }

@@ -31,8 +31,7 @@ class ScanResultOut(BaseModel):
     pattern: Optional[str] = None
     signal_reason: Optional[str] = None
     ema_state: Optional[str] = None  # 均线形态状态（bullish_align 等）
-    position: Optional[str] = None  # 12金K出现的位置（关键位类型）
-    key_levels: Optional[list] = None  # 命中的关键位明细
+    position: Optional[str] = None  # 信号位置（形态/突破方向派生）
     volume_24h: float
     volume: float
     volume_type: str
@@ -182,9 +181,6 @@ class SystemConfigOut(BaseModel):
     swing_order: int
     pullback_tolerance: float
 
-    # 关键位参数
-    key_level_tolerance: float
-    level_merge_threshold: float
     fib_enabled: bool
 
     # 自动交易（docs/06）
@@ -218,9 +214,6 @@ class SystemConfigUpdate(BaseModel):
     swing_order: Optional[int] = None
     pullback_tolerance: Optional[float] = None
 
-    # 关键位参数
-    key_level_tolerance: Optional[float] = None
-    level_merge_threshold: Optional[float] = None
     fib_enabled: Optional[bool] = None
 
     # 自动交易（docs/06）

@@ -31,8 +31,6 @@ export default function ScanConfigPanel() {
         repeat_window_hours: aiConfig.repeat_window_hours,
         swing_order: aiConfig.swing_order,
         pullback_tolerance: aiConfig.pullback_tolerance,
-        key_level_tolerance: aiConfig.key_level_tolerance,
-        level_merge_threshold: aiConfig.level_merge_threshold,
         max_open_trades: aiConfig.max_open_trades ?? 5,
         strategy_trend_follow_enabled: aiConfig.strategy_trend_follow_enabled ?? true,
         strategy_structure_break_enabled: aiConfig.strategy_structure_break_enabled ?? false,
@@ -54,9 +52,6 @@ export default function ScanConfigPanel() {
         repeat_window_hours: values.repeat_window_hours,
         swing_order: values.swing_order,
         pullback_tolerance: values.pullback_tolerance,
-        // 关键位参数
-        key_level_tolerance: values.key_level_tolerance,
-        level_merge_threshold: values.level_merge_threshold,
         // 自动交易
         max_open_trades: values.max_open_trades,
         // 开单策略开关
@@ -160,24 +155,6 @@ export default function ScanConfigPanel() {
             tooltip="上涨回调策略的容差比例，0.03 = 3%"
           >
             <InputNumber step={0.01} min={0} max={1} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item
-            label="关键位触及容差"
-            name="key_level_tolerance"
-            initialValue={0.003}
-            rules={[{ required: true }]}
-            tooltip="关键位是单价格线：影线进入线 ±容差带即算触及（收盘须在持住侧），收盘越过 ±容差带算突破，0.003 = ±0.3%"
-          >
-            <InputNumber step={0.001} min={0} max={0.1} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item
-            label="摆动点聚合阈值"
-            name="level_merge_threshold"
-            initialValue={0.005}
-            rules={[{ required: true }]}
-            tooltip="相互距离 ≤ 阈值的摆动点合并为一条水平线（均值价），0.005 = 0.5%"
-          >
-            <InputNumber step={0.001} min={0} max={0.1} style={{ width: '100%' }} />
           </Form.Item>
 
           {/* 自动交易（docs/06） */}

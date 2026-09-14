@@ -46,15 +46,14 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS pullback_tolerance NUMERIC(10,6) NOT NULL DEFAULT 0.03,
               ADD COLUMN IF NOT EXISTS strategy_prompt_enabled BOOLEAN NOT NULL DEFAULT FALSE,
               ADD COLUMN IF NOT EXISTS strategy_prompt TEXT NOT NULL DEFAULT '',
-              ADD COLUMN IF NOT EXISTS key_level_tolerance NUMERIC(10,6) NOT NULL DEFAULT 0.003,
-              ADD COLUMN IF NOT EXISTS level_merge_threshold NUMERIC(10,6) NOT NULL DEFAULT 0.005,
               ADD COLUMN IF NOT EXISTS fib_enabled BOOLEAN NOT NULL DEFAULT FALSE
         """))
-        # Feature 3: 关键位筛选重构（docs/03）—— scan_results 加位置与关键位明细
+        # Feature 3: scan_results 加信号位置列（形态/突破方向派生）。
+        # 2026-09-14 关键位功能移除（docs/09）：key_level_tolerance / level_merge_threshold /
+        # key_levels 列不再新建与映射；存量库中的历史列按仓库惯例保留不 DROP（历史行不动）
         conn.execute(text("""
             ALTER TABLE scan_results
-              ADD COLUMN IF NOT EXISTS position VARCHAR(32),
-              ADD COLUMN IF NOT EXISTS key_levels JSON
+              ADD COLUMN IF NOT EXISTS position VARCHAR(32)
         """))
         # Feature 4: EMA 均线形态状态
         conn.execute(text("""

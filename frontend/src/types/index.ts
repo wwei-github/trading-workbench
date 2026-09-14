@@ -10,17 +10,6 @@ export interface ScanRecord {
   created_at: string;
 }
 
-export interface KeyLevel {
-  kind: string; // support / resistance（2026-09-14 线口径后 kind==role；历史行可能是 prev_high 等）
-  price: number;
-  zone_low?: number; // 历史行（区域口径）残留字段，新数据不再产出
-  zone_high?: number; // 同上
-  touches: number;
-  weight?: number; // 历史行（时间加权）残留字段，新数据不再产出
-  pattern_hits?: number; // 触及点出现方向匹配 12 金K 的次数（形态确认）
-  role: string; // support / resistance
-}
-
 export interface ScanResult {
   id: string;
   scan_record_id: string;
@@ -33,8 +22,7 @@ export interface ScanResult {
   pattern: string | null;
   signal_reason: string | null;
   ema_state: string | null; // 均线形态状态（bullish_align / bearish_cross 等）
-  position: string | null; // 12金K出现的位置（关键位类型）
-  key_levels: KeyLevel[] | null; // 命中的关键位明细
+  position: string | null; // 信号位置（形态/突破方向派生：支撑位/压力位）
   volume_24h: number;
   volume: number;
   volume_type: string;
@@ -139,7 +127,6 @@ export interface KlineData {
   interval: string;
   klines: Kline[];
   swings?: { highs: SwingPoint[]; lows: SwingPoint[] };
-  key_levels?: KeyLevel[];
 }
 
 export interface SystemConfig {
@@ -159,8 +146,6 @@ export interface SystemConfig {
   repeat_window_hours: number;
   swing_order: number;
   pullback_tolerance: number;
-  key_level_tolerance?: number; // 关键位区域半宽（±x）
-  level_merge_threshold?: number; // 支撑/压力聚类合并阈值
   fib_enabled?: boolean; // 斐波那契位开关（二期）
   dual_judge_enabled?: boolean; // 双评委辩论：对 suggest 决策做多空辩论复核
   max_open_trades?: number; // 自动交易：同时在跑单子上限

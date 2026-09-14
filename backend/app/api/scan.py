@@ -28,8 +28,7 @@ from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services.scanner import classify_volume
 from app.services.ai_analyzer import analyze_coin
 from app.services.skill_library import list_skills
-from app.services.strategy import compute_signal_key_levels, recent_swings
-from app.services.strategy.key_levels import compute_key_levels
+from app.services.strategy import recent_swings
 from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
@@ -330,8 +329,6 @@ def get_system_config(db: Session = Depends(get_db)):
         repeat_window_hours=cfg.repeat_window_hours,
         swing_order=cfg.swing_order,
         pullback_tolerance=float(cfg.pullback_tolerance),
-        key_level_tolerance=float(cfg.key_level_tolerance),
-        level_merge_threshold=float(cfg.level_merge_threshold),
         fib_enabled=cfg.fib_enabled,
         max_open_trades=cfg.max_open_trades,
         strategy_trend_follow_enabled=cfg.strategy_trend_follow_enabled,
@@ -382,10 +379,6 @@ def update_system_config(
         cfg.swing_order = body.swing_order
     if body.pullback_tolerance is not None:
         cfg.pullback_tolerance = body.pullback_tolerance
-    if body.key_level_tolerance is not None:
-        cfg.key_level_tolerance = body.key_level_tolerance
-    if body.level_merge_threshold is not None:
-        cfg.level_merge_threshold = body.level_merge_threshold
     if body.fib_enabled is not None:
         cfg.fib_enabled = body.fib_enabled
     if body.max_open_trades is not None:
@@ -416,8 +409,6 @@ def update_system_config(
         repeat_window_hours=cfg.repeat_window_hours,
         swing_order=cfg.swing_order,
         pullback_tolerance=float(cfg.pullback_tolerance),
-        key_level_tolerance=float(cfg.key_level_tolerance),
-        level_merge_threshold=float(cfg.level_merge_threshold),
         fib_enabled=bool(cfg.fib_enabled),
         max_open_trades=cfg.max_open_trades,
         strategy_trend_follow_enabled=bool(cfg.strategy_trend_follow_enabled),
@@ -561,22 +552,12 @@ def get_klines(
         ]
         for kind in ("highs", "lows")
     }
-    # 关键位（图表水平线用）：统一口径 compute_key_levels（支撑/压力聚合线，docs/08）
-    # ——与扫描信号检测、AI 事实包、风控锚定完全同源，图上看到的线即 AI 锚定的位
-    key_levels = compute_key_levels(
-        klines,
-        {
-            "swing_order": int(cfg.swing_order),
-            "key_level_tolerance": float(cfg.key_level_tolerance),
-            "level_merge_threshold": float(cfg.level_merge_threshold),
-        },
-    )
+    # 关键位功能已移除（docs/09）：图表不再返回关键位线，仅保留摆动点标记
     return {
         "symbol": symbol,
         "interval": cfg.kline_interval,
         "klines": result,
         "swings": swings,
-        "key_levels": key_levels,
     }
 
 
@@ -617,14 +598,8 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         "volume": vol,
         "volume_24h": volume_24h,
         # 近期摆动结构（HH/LH/HL/LL，高低点各 20 个）：足够 AI 锚定止盈档位与
-        # 评估关键位的历史触及密度
+        # 评估结构位的历史密度
         "recent_swings": recent_swings(klines, order=cfg.swing_order, n=20),
-        # 分析时刻计算的关键位（支撑/压力聚合线：前高前低+历史摆动点合并，docs/08）
-        "key_levels": compute_signal_key_levels(klines, {
-            "swing_order": cfg.swing_order,
-            "key_level_tolerance": float(cfg.key_level_tolerance),
-            "level_merge_threshold": float(cfg.level_merge_threshold),
-        }),
     }
 
     strategy_prompt = (
