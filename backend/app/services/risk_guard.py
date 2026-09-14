@@ -90,6 +90,10 @@ def normalize_raw(raw: dict) -> TradeDecision:
 
 _TP_ANCHOR_TOL = 0.015   # 止盈锚定容差：距锚定点 1.5% 以内视为锚定（留余地）
 _TP_OVERSHOOT = 0.002    # 允许略越过锚定点的幅度（程序直接拉回到位外侧 0.2%，不回炉）
+# 近线阈值：距现价（≈入场价）≤ 该倍数×ATR 的关键位是价格正在测试/突破的"争夺位"——
+# 价格上方即压力位、下方即支撑位，只承担"是否得到支撑/压力/突破"的判定语义
+# （信号层 find_touching/broken 用全部线），不作止盈目标；止盈从更远的第一条线起算（2026-09-14）
+TP_NEAR_ATR_MULT = 1.0
 
 # 逐仓强平闸门（docs/07 §8-A4）：止损距离超过 1/杠杆 − 维持保证金率 时，
 # 价格未到止损价保证金就先亏光 → 被强平（20× 即 4.5%）。risk_guard 止损上限
@@ -106,7 +110,9 @@ def liquidation_gate_pct(leverage: Optional[int] = None) -> float:
     return 1 / lev - LIQ_GATE_MMR
 
 
-def _structural_candidates(signal: dict, klines: list, direction: str, entry: float) -> list[dict]:
+def _structural_candidates(
+    signal: dict, klines: list, direction: str, entry: float, atr: Optional[float] = None,
+) -> list[dict]:
     """入场方向前方的止盈锚定候选，每个候选 {price, anchor, far}：
 
     只用关键位价格线作候选（2026-09-14 改版，docs/08）：止盈一=第一压力/支撑线、
@@ -116,8 +122,12 @@ def _structural_candidates(signal: dict, klines: list, direction: str, entry: fl
     （如创新高突破）才回退摆动点（anchor=价位本身，far=外侧 0.2%）。
     - anchor 锚定点：关键位价格线本身，止盈挂在线外侧留余地（0.2%）。
     - far 匹配上界：线外侧 0.2%（略越线视为"即将到位"，程序拉回线外）。
+    - **近线不作止盈目标（2026-09-14）**：距入场价 ≤ TP_NEAR_ATR_MULT×ATR 的线是
+      价格正在测试/突破的"争夺位"（上方=压力、下方=支撑），语义是"是否得到
+      支撑/压力/突破"而非盈利空间，止盈从更远的第一条线起算；摆动点回退锚同滤。
     多单返回按 anchor 升序，空单降序。
     """
+    near_dist = atr * TP_NEAR_ATR_MULT if atr else 0.0
     cands: list[dict] = []
     for lv in (signal.get("key_levels") or []):
         try:
@@ -131,6 +141,8 @@ def _structural_candidates(signal: dict, klines: list, direction: str, entry: fl
         # 线须仍在入场方向前方，否则该关键位对止盈无意义（入场已越过线）
         if (anchor - entry) * (1 if direction == "long" else -1) <= 0:
             continue
+        if near_dist and abs(anchor - entry) <= near_dist:
+            continue  # 贴脸线 = 当前争夺位（支撑/压力/突破判定语义），不作止盈目标
         cands.append({"price": price, "anchor": anchor, "far": far})
     if not cands:
         # 前方无任何关键位区域（如创新高突破）：回退摆动点作结构位
@@ -138,6 +150,8 @@ def _structural_candidates(signal: dict, klines: list, direction: str, entry: fl
         for s in (swings["highs"] if direction == "long" else swings["lows"]):
             p = float(s["price"])
             if (direction == "long" and p <= entry) or (direction == "short" and p >= entry):
+                continue
+            if near_dist and abs(p - entry) <= near_dist:
                 continue
             far = p * (1 + _TP_OVERSHOOT) if direction == "long" else p * (1 - _TP_OVERSHOOT)
             cands.append({"price": p, "anchor": p, "far": far})
@@ -345,9 +359,10 @@ def validate_decision(
     # （修正不回炉）——此前允许"最近位盈亏比不足就取下一档"，AI 会跳过第一压力位去锚更远
     # 的摆动点，止盈一、二扎堆（SCRUSDT 案例：两档仅差 0.37%）。到第一结构位盈亏比不足
     # 1.5 时由下方 RR 铁律打回——第一压力/支撑都够不着 1.5R 的交易本就不值得做。
-    # 前方无任何结构位时回退固定盈亏比。
+    # 近线例外（2026-09-14）：距现价 ≤1×ATR 的争夺位线不作止盈目标（见 _structural_candidates），
+    # 止盈一从更远的第一条线起算；前方无任何结构位时回退固定盈亏比。
     if d.direction in ("long", "short") and d.take_profit_1 > 0:
-        cands = _structural_candidates(signal, klines, d.direction, d.entry_price)
+        cands = _structural_candidates(signal, klines, d.direction, d.entry_price, atr)
         if not cands:
             # 前方无任何结构位可锚定（如创新高突破）：回退固定盈亏比——
             # TP1 = 入场 ± RR_MIN×止损距离（乘 1.001 留浮点余量，防复算恰等于阈值被判负），
