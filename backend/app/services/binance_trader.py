@@ -232,11 +232,27 @@ class BinanceTrader:
     def order(self, symbol: str, order_id: int) -> dict:
         return self._req("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
 
-    def realized_pnl_since(self, symbol: str, since_ms: int) -> float:
-        """本 symbol 自 since_ms 起的净盈亏（USDT，正/负）：
-        已实现盈亏 + 手续费 + 资金费（币安 income 中费用为负值，直接求和即净额）"""
-        rows = self._req("GET", "/fapi/v1/income", {
+    def income_rows(self, symbol: str, since_ms: int) -> list:
+        """本 symbol 自 since_ms 起的 income 明细（净盈亏/手续费/资金费/强平清算等）"""
+        return self._req("GET", "/fapi/v1/income", {
             "symbol": symbol, "startTime": since_ms, "limit": 1000,
         })
-        keep = {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"}
+
+    INCOME_KEEP = {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE", "INSURANCE_CLEAR"}
+
+    def realized_pnl_since(self, symbol: str, since_ms: int) -> float:
+        """本 symbol 自 since_ms 起的净盈亏（USDT，正/负）：
+        已实现盈亏 + 手续费 + 资金费 + 强平清算（INSURANCE_CLEAR，强平时真实划走的钱；
+        币安 income 中费用为负值，直接求和即净额）"""
+        rows = self.income_rows(symbol, since_ms)
+        return self.sum_income(rows, self.INCOME_KEEP)
+
+    def realized_price_pnl_since(self, symbol: str, since_ms: int) -> float:
+        """自 since_ms 起的价差已实现盈亏（仅 REALIZED_PNL，不含费用——
+        供止盈分档事件计算"本档盈亏"：各档差值即该档成交的价差收益）"""
+        rows = self.income_rows(symbol, since_ms)
+        return self.sum_income(rows, {"REALIZED_PNL"})
+
+    @staticmethod
+    def sum_income(rows: list, keep: set) -> float:
         return sum(float(r.get("income") or 0) for r in rows if r.get("incomeType") in keep)

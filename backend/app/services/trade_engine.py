@@ -300,6 +300,9 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
                         "qty_tp2": qty_tp2 if tp2_order else 0,
                         "capital_base": _capital_base(wallet),
                         "wallet": wallet,
+                        # 价差盈亏书签（REALIZED_PNL 累计，仅价差不含费用）：
+                        # TP1/TP2 成交事件用"当前累计 − 书签"算本档盈亏
+                        "realized_bookmark": 0,
                     },
                 )
                 db.add(rec)
@@ -499,10 +502,10 @@ def _zero_pos_exit_reason(rec: TradeRecord, tp1_gone: bool) -> str:
 
 
 def _record_realized(db: Session, trader: BinanceTrader, rec: TradeRecord) -> float:
-    """部分止盈后记录截至当前的已实现净盈亏（已实现盈亏−手续费−资金费，交易所 income 口径）。
+    """部分止盈后记录截至当前的已实现净盈亏（已实现盈亏−手续费−资金费−强平清算，交易所 income 口径）。
 
     写入交易记录（运行中=已实现部分，供收益列展示已止盈金额；终态结算时会复算覆盖为
-    全程净额）并返回，供 TP1_FILL/TP2_FILL 事件 detail 携带。
+    全程净额）并返回，供 TP1_FILL/TP2_FILL 事件 detail 携带累计值。
     """
     # 起点回拨 5s：开仓手续费 income 的时间戳可能略早于 opened_at（实测时差 <1s），
     # 不回拨会把入场手续费漏在净盈亏之外
@@ -511,6 +514,16 @@ def _record_realized(db: Session, trader: BinanceTrader, rec: TradeRecord) -> fl
     rec.realized_pnl = pnl
     rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
     return pnl
+
+
+def _tranche_pnl(trader: BinanceTrader, rec: TradeRecord, raw: dict) -> float:
+    """本档止盈盈亏：REALIZED_PNL 累计（仅价差不含费用）相对上次书签的差值，
+    即该档成交自身的价差收益；书签推进后写回 rec.raw。"""
+    since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000) - 5_000
+    cum = trader.realized_price_pnl_since(rec.symbol, since_ms)
+    tranche = round(cum - float(raw.get("realized_bookmark") or 0), 6)
+    rec.raw = {**raw, "realized_bookmark": round(cum, 6)}
+    return tranche
 
 
 def settle_trades(db: Session, trader: BinanceTrader) -> int:
@@ -535,20 +548,35 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
             tp1_gone = raw.get("tp1_order_id") and int(raw["tp1_order_id"]) not in open_ids
             tp2_gone = raw.get("tp2_order_id") and int(raw["tp2_order_id"]) not in open_ids
 
-            # 仓位归零 → 结算（净盈亏 = 已实现盈亏 − 手续费 − 资金费，正/负值）
+            # 仓位归零 → 结算（净盈亏 = 已实现盈亏 − 手续费 − 资金费 − 强平清算，正/负值）
             if qty <= 0 or amt < qty * 0.05:
                 # 清理残留挂单（SL 先成交时 TP reduceOnly 单会一直挂着）
                 trader.cancel_all_algo(rec.symbol)
                 # 起点回拨 5s：开仓手续费 income 的时间戳可能略早于 opened_at（同 _record_realized）
                 since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000) - 5_000
-                pnl = trader.realized_pnl_since(rec.symbol, since_ms)
-                rec.realized_pnl = round(pnl, 6)
+                rows = trader.income_rows(rec.symbol, since_ms)
+                # 强平识别：逐仓保证金亏光时交易所强制平仓并撤销全部挂单（含 TP），
+                # 会产生 INSURANCE_CLEAR 清算记录——此时 TP1 挂单消失≠TP1 成交，
+                # 不能按 tp1_gone 误判为 tp1_then_sl
+                insurance_clear = sum(
+                    float(r.get("income") or 0)
+                    for r in rows if r.get("incomeType") == "INSURANCE_CLEAR"
+                )
+                pnl = round(trader.sum_income(rows, trader.INCOME_KEEP), 6)
+                rec.realized_pnl = pnl
                 rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
-                if rec.status == "OPENED" and tp1_gone:
-                    # TP1 与 SL 在同一巡检间隔内先后成交（如 75% TP1 后回踩触发 SL）：补记 TP1_FILL
-                    _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
-                                                     "realized_pnl": round(pnl, 6)})
-                exit_reason = _zero_pos_exit_reason(rec, tp1_gone)
+                if insurance_clear != 0:
+                    _add_event(db, rec, "LIQUIDATION", {
+                        "qty": qty, "insurance_clear": round(insurance_clear, 6),
+                        "realized_pnl": pnl,
+                    })
+                    exit_reason = "liquidation"
+                else:
+                    if rec.status == "OPENED" and tp1_gone:
+                        # TP1 与 SL 在同一巡检间隔内先后成交（如 75% TP1 后回踩触发 SL）：补记 TP1_FILL
+                        _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
+                                                         "realized_pnl": round(pnl, 6)})
+                    exit_reason = _zero_pos_exit_reason(rec, tp1_gone)
                 rec.status = "CLOSED"
                 rec.closed_at = datetime.utcnow()
                 rec.exit_reason = exit_reason
@@ -577,8 +605,10 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                     handled += 1
                 elif tp1_gone and ratio <= 0.75:
                     realized = _record_realized(db, trader, rec)
+                    tranche = _tranche_pnl(trader, rec, raw)
                     _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
-                                                     "realized_pnl": realized})
+                                                     "pnl": tranche,
+                                                     "cum_pnl": realized})
                     rec.status = "TP1_HIT"
                     _move_sl_breakeven(db, trader, rec, open_ids)  # 用户规则：TP1 后止损移至成本价
                     if not rec.tp2:
@@ -589,8 +619,10 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
             elif rec.status == "TP1_HIT":
                 if tp2_gone and ratio <= 0.35:
                     realized = _record_realized(db, trader, rec)
+                    tranche = _tranche_pnl(trader, rec, raw)
                     _add_event(db, rec, "TP2_FILL", {"qty": raw.get("qty_tp2"),
-                                                     "realized_pnl": realized})
+                                                     "pnl": tranche,
+                                                     "cum_pnl": realized})
                     rec.status = "TP2_HIT"
                     _move_sl_trailing(db, trader, rec, interval, open_ids)
                     db.commit()

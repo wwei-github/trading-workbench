@@ -33,6 +33,7 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
+import { bj } from '../utils/dayjs'
 import AiAnalysisCard from './AiAnalysisCard'
 import type { TradeEvent, TradeRecord } from '../types'
 
@@ -52,6 +53,7 @@ const EXIT_REASON_MAP: Record<string, string> = {
   tp1_trail: 'TP1后跟踪止损',
   trail_sl: 'TP2后跟踪止损',
   breakeven_sl: '保本止损',
+  liquidation: '强平（保证金亏光）',
   manual: '手动平仓',
   error: '异常平仓',
 }
@@ -65,6 +67,7 @@ const EVENT_META: Record<string, { label: string; color: string; icon: React.Rea
   SL_FILL: { label: '止损成交', color: '#ff4d4f', icon: <CloseCircleOutlined /> },
   CANCEL: { label: '撤单', color: '#8c8c8c', icon: <MinusCircleOutlined /> },
   SETTLE: { label: '结算', color: '#1677ff', icon: <AccountBookOutlined /> },
+  LIQUIDATION: { label: '强平', color: '#ff4d4f', icon: <WarningOutlined /> },
   ERROR: { label: '异常', color: '#ff4d4f', icon: <WarningOutlined /> },
 }
 
@@ -79,9 +82,15 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   entry_order_id: '开仓单ID',
   sl_order_id: '止损单ID',
   real_entry_price: '实际入场价',
+  fill_price: '成交均价',
+  slippage_pct: '滑点%',
+  actual_risk: '实际止损风险',
   from: '原止损',
   to: '新止损',
   realized_pnl: '净盈亏',
+  pnl: '本档盈亏',
+  cum_pnl: '累计盈亏',
+  insurance_clear: '强平清算',
   pnl_pct: '收益率',
   exit_reason: '出场原因',
   qty_tp1: 'TP1数量',
@@ -96,23 +105,15 @@ function fmtNum(n: number | null | undefined): string {
 
 function fmtTime(s: string | null | undefined): string {
   if (!s) return '-'
-  return new Date(s)
-    .toLocaleString('zh-CN', {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    })
-    .replace(/\//g, '-')
+  // 后端时间为 UTC naive，统一转北京时间展示
+  return bj(s).format('MM-DD HH:mm:ss')
 }
 
 // 事件详情值格式化：盈亏带正负号着色、百分比补 %、出场原因转中文
 function detailValue(k: string, v: unknown): React.ReactNode {
   if (k === 'exit_reason') return EXIT_REASON_MAP[String(v)] || String(v)
-  if (k === 'pnl_pct') return `${v}%`
-  if (k === 'realized_pnl') {
+  if (k === 'pnl_pct' || k === 'slippage_pct') return `${v}%`
+  if (k === 'realized_pnl' || k === 'pnl' || k === 'cum_pnl' || k === 'insurance_clear') {
     const n = Number(v)
     if (!Number.isNaN(n)) {
       const color = n > 0 ? '#52c41a' : n < 0 ? '#ff4d4f' : '#595959'

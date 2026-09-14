@@ -34,6 +34,7 @@ import {
   type IndicatorResult,
 } from '../constants/indicators'
 import type { AIAnalysis, Kline, KlineData, KeyLevel } from '../types'
+import { dayjs, BJ } from '../utils/dayjs'
 
 const { Text } = Typography
 
@@ -65,9 +66,9 @@ const fmtVol = (v: number) =>
         ? `${(v / 1e3).toFixed(2)}K`
         : v.toFixed(2)
 const fmtTime = (sec: number) => {
-  const d = new Date(sec * 1000)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  // K 线时间戳为 UTC epoch，统一转北京时区展示（与其他面板一致）
+  const d = dayjs.unix(sec).tz(BJ)
+  return d.format('MM-DD HH:mm')
 }
 
 // 从序列尾部找最后一个有效值（指标前段常有空值）
