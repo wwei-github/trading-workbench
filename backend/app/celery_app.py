@@ -10,10 +10,19 @@ attach_db_log_sink()  # worker 进程同样落库 WARNING+ 日志（前端「系
 
 @worker_process_init.connect
 def _restart_db_log_sink(**_kwargs):
-    """prefork 子进程不继承存活线程：fork 后重启日志写库线程，否则 worker 日志全部丢失"""
+    """prefork 子进程初始化：重启日志写库线程 + 丢弃 fork 继承的数据库连接池。
+
+    线程不随 fork 存活：不重启则 worker 日志全部丢失（「系统日志」看不到 worker 记录）。
+    连接池是父进程 import 时建立的：子进程继承同一批 TCP socket，父子并发使用会串包，
+    连接被服务端掐断（"server closed the connection unexpectedly"）——04:02 扫描的
+    AI 分发任务即因此整批失败。dispose(close=False) 让子进程自建连接、不关父进程的。
+    """
     from app.services.log_sink import restart_db_log_sink_after_fork
 
     restart_db_log_sink_after_fork()
+    from app.database import engine
+
+    engine.dispose(close=False)
 
 celery_app = Celery(
     "trading_workbench",

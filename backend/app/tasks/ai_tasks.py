@@ -97,7 +97,7 @@ def compute_fingerprint(signal: dict) -> str:
     return hashlib.sha1(raw.encode()).hexdigest()[:40]
 
 
-@celery_app.task(name="app.tasks.ai_tasks.run_ai_analysis_task", bind=True, max_retries=0)
+@celery_app.task(name="app.tasks.ai_tasks.run_ai_analysis_task", bind=True, max_retries=3)
 def run_ai_analysis_task(
     self, scan_record_id: str, only_scan_result_id: Optional[str] = None,
     user_input: Optional[str] = None,
@@ -134,6 +134,8 @@ def run_ai_analysis_task(
         logger.info("已分发 %d 个 AI 分析子任务 #%s", len(results), scan_record_id)
     except Exception as e:
         logger.exception("AI 分析任务分发失败: %s", e)
+        # 瞬时故障（DB 断连等）自动重试：子任务幂等（闸门/指纹/沿用短路），重发无副作用
+        raise self.retry(countdown=30)
     finally:
         db.close()
 
