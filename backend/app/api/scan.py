@@ -532,7 +532,9 @@ def _chart_pivot_levels(klines: list[list], cfg) -> list[dict]:
 
     与扫描/AI 的聚类关键位（compute_signal_key_levels）口径互不影响；区域半宽沿用
     图表减半口径（cfg.key_level_tolerance × 0.5 的 ATR 自适应）。近邻去重：与已选位
-    价格距 ≤ merge 阈值的不重复画（quick 位优先保留）。
+    的区域重叠或近乎重合（价距 ≤ 两侧半宽 + merge 阈值）的不重复画（quick 位优先保留）
+    ——TREEUSDT 案例：0.04209/0.04175 两档支撑价距 0.81% > 0.5% 阈值双双画出，
+    区域边缘仅隔 0.2%，视觉粘合。
     """
     closes = np.array([float(k[4]) for k in klines], dtype=float)
     n = len(klines)
@@ -548,10 +550,13 @@ def _chart_pivot_levels(klines: list[list], cfg) -> list[dict]:
 
     merge_thr = float(cfg.level_merge_threshold)
     picked: list[float] = []
+    # 区域宽度参与去重：tol 已是相对比例（如 0.003 = ±0.3%）——两档的区域重叠或
+    # 近乎重合（价距 ≤ 两侧半宽之和 + 合并阈值）视觉上就是一个位，只画一个
+    # （与关键位数据层的合并规则同口径，2026-09-14）
 
     def _add(idx: int) -> None:
         price = float(closes[idx])
-        if all(abs(price - p) / p > merge_thr for p in picked):
+        if all(abs(price - p) / p > (2 * tol + merge_thr) for p in picked):
             picked.append(price)
 
     quick_h, quick_l = find_pivots(closes, CHART_PIVOT_LEFT, CHART_PIVOT_QUICK_RIGHT)
