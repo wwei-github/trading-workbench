@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     KLINE_WINDOW: int = 240
     BREAKOUT_THRESHOLD: float = 0.005  # 0.5%
     R_SQUARED_THRESHOLD: float = 0.5
-    REPEAT_WINDOW_HOURS: int = 24
+    REPEAT_WINDOW_HOURS: int = 3
     SWING_ORDER: int = 3
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
 

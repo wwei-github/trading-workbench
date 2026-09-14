@@ -7,7 +7,8 @@
     2) 信号落库后超过 AI_SIGNAL_MAX_BARS_AGO 根K线仍未分析 → 程序 skip（形态已陈旧，docs/07 §8-A3）
     3) 当前K线振幅 > ATR_SPIKE_MULT × ATR → 熔断 skip
     4) 1h 内同指纹 → 沿用旧结论（价格区仍有效时）
-    5) 24h 内同币种已有 suggest 结论且本信号为重复命中 → 沿用旧结论（价格区仍有效时）
+    5) 3h 内同币种已有 suggest 结论且本信号为重复命中 → 沿用旧结论（价格区仍有效时；
+       REPEAT_WINDOW_HOURS，2026-09-14 由 24h 收窄）
 - Stage 2：analyze_with_guard（校验回炉）→ 落库
 """
 import hashlib
@@ -261,12 +262,12 @@ def run_ai_analysis_single(
                     return
                 note = "⚠️ 同信号旧结论的价格区已失效（现价越过原止盈/止损），重新分析"
                 ai_progress.push(r.id, "gate", note=note)
-        # 5) 重复信号沿用：24h 内同币种已有 suggest 且本行为重复命中（同样校验价格区）
+        # 5) 重复信号沿用：REPEAT_WINDOW_HOURS(3h) 内同币种已有 suggest 且本行为重复命中（同样校验价格区）
         if not force and r.is_repeat:
-            repeat = _find_recent_suggest(db, r.symbol, 24 * 60)
+            repeat = _find_recent_suggest(db, r.symbol, settings.REPEAT_WINDOW_HOURS * 60)
             if repeat:
                 if _conclusion_still_valid(repeat, signal["current_price"]):
-                    note = "🔁 24h 内重复信号，沿用已有结论"
+                    note = f"🔁 {settings.REPEAT_WINDOW_HOURS}h 内重复信号，沿用已有结论"
                     ai_progress.push(r.id, "gate", note=note)
                     _copy(db, r, r.symbol, repeat, fp, note)
                     ai_progress.push_done(r.id, repeat.trade_decision, note)

@@ -1,6 +1,6 @@
 """自动交易定时任务（docs/06）
 
-每小时第 42 分钟：settle_trades 结算/跟进在跑单子（TP/SL 事件推进、保本移损、
+每小时第 10 分钟：settle_trades 结算/跟进在跑单子（TP/SL 事件推进、保本移损、
 跟进止损、SL 挂单补挂、强平判定）。开仓不在本任务——2026-09-14 起唯一开仓
 通道是即时开仓：AI 分析落库即由 ai_tasks 分发 open_trade_for_analysis
 （suggest 且 ≥60 分），与结算共用同一把 Redis 开仓锁串行执行，
