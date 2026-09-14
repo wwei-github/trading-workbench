@@ -15,6 +15,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_DOWN, Decimal
+from uuid import UUID
 from typing import Optional
 
 from sqlalchemy import select
@@ -147,228 +148,288 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
             logger.info("钱包余额 %s 低于最小风险档位，不开仓", wallet)
             break
 
-        symbol = a.symbol
-        if symbol in positions:
-            logger.info("开仓跳过 %s：已有持仓", symbol)
-            continue
-
-        # 开单策略开关：AI 归类类型未启用则不开仓（分析本身照常记录）
-        trade_type = a.trade_type or ""
-        type_switch = {
-            "trend_follow": cfg.strategy_trend_follow_enabled,
-            "structure_break": cfg.strategy_structure_break_enabled,
-            "range_edge": cfg.strategy_range_edge_enabled,
-        }.get(trade_type)
-        if type_switch is None:
-            logger.info("开仓跳过 %s：开单类型未知（%s）", symbol, trade_type or "无")
-            continue
-        if not type_switch:
-            logger.info("开仓跳过 %s：策略未启用（%s）", symbol, trade_type)
-            continue
-
-        direction = a.direction
-        entry_ai = float(a.entry_price)
-        sl = float(a.stop_loss)
-        tp1 = float(a.take_profit_1)
-        tp2 = float(a.take_profit_2 or 0)
-        try:
-            price = trader.price(symbol)
-            # 方向-价格一致性复验（分析到开仓之间价格可能移动）
-            if direction == "long" and not (sl < price < tp1):
-                logger.info("开仓作废 %s：现价 %s 已不在止损/止盈一区间内", symbol, price)
-                continue
-            if direction == "short" and not (sl > price > tp1):
-                logger.info("开仓作废 %s：现价 %s 已不在止损/止盈一区间内", symbol, price)
-                continue
-            if abs(price - entry_ai) / entry_ai > 0.01:
-                logger.info("开仓作废 %s：现价偏离 AI 入场价超 1%%", symbol)
-                continue
-            # 盈亏比按开仓时现价复验：分析到开仓之间价格漂移会改变实际赔率
-            # （多单现价抬高→风险距离变大、盈利空间变小），跌破铁律即作废——
-            # 防"价格已涨/跌了一截仍追单"，此时开进去的实际盈亏比远低于分析值
-            rr_open = abs(tp1 - price) / abs(price - sl)
-            if rr_open < settings.AI_RR_MIN:
-                logger.info(
-                    "开仓作废 %s：按现价复算盈亏比 %.2f < %.1f（现价 %s，入场 %s）",
-                    symbol, rr_open, settings.AI_RR_MIN, price, entry_ai,
-                )
-                continue
-
-            # EMA 排列必须条件（顺势交易专属）：多单须 21>55>144 多头排列，空单须 144>55>21 空头排列
-            if trade_type == "trend_follow":
-                ema = analyze_ema(ExchangePool().get_klines(symbol, interval, kline_window))
-                ema_ok = ema is not None and (
-                    (direction == "long" and ema["fast"] > ema["mid"] > ema["slow"])
-                    or (direction == "short" and ema["fast"] < ema["mid"] < ema["slow"])
-                )
-                if not ema_ok:
-                    logger.info("开仓跳过 %s：顺势交易 EMA 未按方向排列（%s），不满足开单前提",
-                                symbol, ema["state_label"] if ema else "K线数据不足")
-                    continue
-
-            # 固定亏损仓位：基数分档 × 3% ÷ 止损距离
-            stop_pct = abs(price - sl) / price
-            # 止损宽度闸门（防强平）：逐仓计划止损亏损 = 名义×stop_pct，保证金 = 名义/杠杆；
-            # 止损距离超过 1/杠杆−维持保证金率（20× 即 4.5%）时，价格未到止损价
-            # 保证金就先亏光 → 被强平并连累撤销 TP 挂单（BATUSDT 案例：止损 6.4% 被强平）。
-            # 这类单子固定亏损法无解（预算放不进保证金里），直接跳过
-            liq_gate = 1 / settings.TRADING_LEVERAGE - 0.005
-            if stop_pct >= liq_gate:
-                logger.info(
-                    "开仓跳过 %s：止损距离 %.2f%% 达到强平闸门 %.2f%%（1/%s 杠杆−维持保证金），"
-                    "价格未到止损必先被强平",
-                    symbol, stop_pct * 100, liq_gate * 100, settings.TRADING_LEVERAGE,
-                )
-                continue
-            risk_budget = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
-            notional = risk_budget / stop_pct
-            qty = trader.round_qty(symbol, notional / price)
-            f = trader.filters(symbol)
-            if qty < f["min_qty"] or qty * price < f["min_notional"]:
-                logger.info(
-                    "开仓放弃 %s：计算数量 %s 低于交易所最小规则（min_qty=%s, min_notional=%s）",
-                    symbol, qty, f["min_qty"], f["min_notional"],
-                )
-                continue
-            if qty > f["max_qty"]:
-                logger.info("开仓 %s：数量 %s 超交易所单笔上限 %s，按上限缩减（实际风险低于 %.0f%% 预算）",
-                            symbol, qty, f["max_qty"], settings.TRADING_RISK_PCT)
-                qty = trader.round_qty(symbol, f["max_qty"])
-            leverage = settings.TRADING_LEVERAGE
-            margin_used = qty * price / leverage
-            if margin_used > wallet - occupied:
-                logger.info("开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f", symbol, margin_used, wallet - occupied)
-                continue
-            # 实际风险金额按最终数量精确计（向下取整/上限缩减只会低于 3% 预算）
-            risk_amount = round(qty * abs(price - sl), 4)
-
-            # 下单：市价开仓 → 挂 SL/TP1/TP2 → 入库，全在保护块内：
-            # 任何一步失败都紧急撤单+平仓，不留裸仓（含记录构建/入库失败）
-            trader.setup_leverage(symbol, leverage)
-            side = "BUY" if direction == "long" else "SELL"
-            close_side = _close_side(direction)
-            entry_order = trader.market_order(symbol, side, qty)
-            # 成交回报：下单响应为 ACK 不含均价，市价单即时成交后查实际成交价/量。
-            # 滑点 = 成交价对参考价的偏离（testnet 盘口薄，深吃单可达 0.5%+）；
-            # 查询失败按参考价记账，不阻断挂 SL/TP（保护块兜底仍在）
-            fill_price, fill_qty = price, qty
-            try:
-                od = trader.order(symbol, entry_order["orderId"])
-                if float(od.get("avgPrice") or 0) > 0:
-                    fill_price = float(od["avgPrice"])
-                    fill_qty = float(od.get("executedQty") or qty)
-            except Exception as fill_err:
-                logger.warning("开仓 %s：成交回报查询失败，按参考价 %s 记账（%s）", symbol, price, fill_err)
-            slippage_pct = (fill_price / price - 1) * 100
-            actual_risk = fill_qty * abs(fill_price - sl)
-            if risk_amount > 0 and actual_risk > risk_amount * 1.15:
-                logger.warning(
-                    "开仓 %s：成交 %s 对参考价 %s 滑 %.2f%%，实际止损风险 %.2f 超预算 %.2f 的 %.0f%%"
-                    "（止损越近名义仓位越大，同等滑率放大越多）",
-                    symbol, fill_price, price, slippage_pct,
-                    actual_risk, risk_amount, (actual_risk / risk_amount - 1) * 100,
-                )
-            qty = fill_qty
-            try:
-                sl_order = trader.stop_market_close(
-                    symbol, close_side, trader.round_price(symbol, sl))
-                q1, q2 = _tp_quantities(qty, tp2)
-                qty_tp1 = trader.round_qty(symbol, q1)
-                qty_tp2 = trader.round_qty(symbol, q2)
-                tp1_order = trader.take_profit_reduce(
-                    symbol, close_side, qty_tp1, trader.round_price(symbol, tp1))
-                tp2_order = None
-                if tp2 > 0 and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
-                    tp2_order = trader.take_profit_reduce(
-                        symbol, close_side, qty_tp2, trader.round_price(symbol, tp2))
-                now = datetime.utcnow()
-                rec = TradeRecord(
-                    symbol=symbol,
-                    direction=direction,
-                    scan_result_id=a.scan_result_id,
-                    ai_analysis_id=a.id,
-                    recommendation=float(a.recommendation) if a.recommendation is not None else None,
-                    testnet=settings.TRADING_TESTNET,
-                    ai_snapshot=_ai_snapshot(a),
-                    entry_price=fill_price,
-                    qty=qty,
-                    notional=round(qty * fill_price, 2),
-                    leverage=leverage,
-                    margin_mode="isolated",
-                    margin_used=round(qty * fill_price / leverage, 4),
-                    risk_amount=round(risk_amount, 4),
-                    stop_loss=sl,
-                    tp1=tp1,
-                    tp2=tp2 if tp2_order else 0,
-                    status="OPENED",
-                    opened_at=now,
-                    raw={
-                        # SL/TP 为 algo 条件单，标识是 algoId（MARKET 入场单仍是 orderId）
-                        "entry_order_id": entry_order["orderId"],
-                        "sl_order_id": sl_order.get("algoId") or sl_order.get("orderId"),
-                        "tp1_order_id": tp1_order.get("algoId") or tp1_order.get("orderId"),
-                        "tp2_order_id": (tp2_order.get("algoId") or tp2_order.get("orderId")) if tp2_order else None,
-                        "qty_tp1": qty_tp1,
-                        "qty_tp2": qty_tp2 if tp2_order else 0,
-                        "capital_base": _capital_base(wallet),
-                        "wallet": wallet,
-                        # 价差盈亏书签（REALIZED_PNL 累计，仅价差不含费用）：
-                        # TP1/TP2 成交事件用"当前累计 − 书签"算本档盈亏
-                        "realized_bookmark": 0,
-                    },
-                )
-                db.add(rec)
-                db.flush()
-                _add_event(db, rec, "OPEN", {
-                    "price": price, "qty": qty, "stop_loss": sl, "tp1": tp1, "tp2": tp2,
-                    "risk_amount": round(risk_amount, 4), "entry_order_id": entry_order["orderId"],
-                    "fill_price": fill_price, "slippage_pct": round(slippage_pct, 3),
-                    "actual_risk": round(actual_risk, 4),
-                })
-                db.commit()
-            except Exception:
-                # 紧急处理：先撤全部挂单再只减仓平仓（reduceOnly：开仓单未成交时会被
-                # 交易所拒绝，而不是反向开成裸仓）
-                try:
-                    trader.cancel_all_algo(symbol)
-                    trader.market_order(symbol, close_side, qty, reduce_only=True)
-                except Exception as close_err:
-                    logger.error("紧急平仓失败 %s: %s（若开仓单未成交则本无仓位）", symbol, close_err)
-                raise
-
+        if _attempt_open(db, trader, cfg, interval, kline_window, a, wallet, positions):
             opened += 1
             running += 1
-            positions[symbol] = {"amt": qty if direction == "long" else -qty,
-                                 "initial_margin": qty * fill_price / leverage,
-                                 "entry_price": fill_price}
-            logger.info("已开仓 %s %s qty=%s 成交=%s（对参考价 %s 滑 %.2f%%）sl=%s tp1=%s tp2=%s（评分 %s）",
-                        symbol, direction, qty, fill_price, price, slippage_pct,
-                        sl, tp1, tp2, a.recommendation)
-        except Exception as e:
-            db.rollback()
-            logger.warning("开仓失败 %s: %s", symbol, e)
-            # 交易所无此合约（-1121，如 testnet 未上架）每轮必失败：落 FAILED 记录并跳过同 symbol 后续分析
-            if "-1121" in str(e):
-                try:
-                    exists = db.execute(
-                        select(TradeRecord.id).where(
-                            TradeRecord.symbol == symbol, TradeRecord.status == "FAILED")
-                    ).first()
-                    if not exists:
-                        rec = TradeRecord(
-                            symbol=symbol, direction=direction, ai_analysis_id=a.id,
-                            recommendation=float(a.recommendation) if a.recommendation is not None else None,
-                            testnet=settings.TRADING_TESTNET,
-                            status="FAILED", raw={"fail_reason": str(e)[:200]},
-                        )
-                        db.add(rec)
-                        db.flush()
-                        _add_event(db, rec, "ERROR", {"message": "交易所未上架该合约（-1121）"})
-                    db.commit()
-                except Exception:
-                    db.rollback()
-            continue
     return opened
+
+
+def _attempt_open(
+    db: Session, trader: BinanceTrader, cfg: SystemConfig,
+    interval: str, kline_window: int, a: AIAnalysis,
+    wallet: float, positions: dict,
+) -> bool:
+    """对单条分析过全部开仓闸门并尝试开仓（docs/06 §3 逐项检查）。
+
+    返回是否成功开仓；成功时更新 positions（供调用方累计在跑数与占用保证金）。
+    批量（try_open_trades）与单条（try_open_for_analysis，分析完成即开）共用；
+    开仓失败统一 rollback 并落 FAILED 记录（仅 -1121 未上架）。
+    """
+    occupied = sum(p["initial_margin"] for p in positions.values())
+    symbol = a.symbol
+    if symbol in positions:
+        logger.info("开仓跳过 %s：已有持仓", symbol)
+        return False
+    # 开单策略开关：AI 归类类型未启用则不开仓（分析本身照常记录）
+    trade_type = a.trade_type or ""
+    type_switch = {
+        "trend_follow": cfg.strategy_trend_follow_enabled,
+        "structure_break": cfg.strategy_structure_break_enabled,
+        "range_edge": cfg.strategy_range_edge_enabled,
+    }.get(trade_type)
+    if type_switch is None:
+        logger.info("开仓跳过 %s：开单类型未知（%s）", symbol, trade_type or "无")
+        return False
+    if not type_switch:
+        logger.info("开仓跳过 %s：策略未启用（%s）", symbol, trade_type)
+        return False
+    direction = a.direction
+    entry_ai = float(a.entry_price)
+    sl = float(a.stop_loss)
+    tp1 = float(a.take_profit_1)
+    tp2 = float(a.take_profit_2 or 0)
+    try:
+        price = trader.price(symbol)
+        # 方向-价格一致性复验（分析到开仓之间价格可能移动）
+        if direction == "long" and not (sl < price < tp1):
+            logger.info("开仓作废 %s：现价 %s 已不在止损/止盈一区间内", symbol, price)
+            return False
+        if direction == "short" and not (sl > price > tp1):
+            logger.info("开仓作废 %s：现价 %s 已不在止损/止盈一区间内", symbol, price)
+            return False
+        if abs(price - entry_ai) / entry_ai > 0.01:
+            logger.info("开仓作废 %s：现价偏离 AI 入场价超 1%%", symbol)
+            return False
+        # 盈亏比按开仓时现价复验：分析到开仓之间价格漂移会改变实际赔率
+        # （多单现价抬高→风险距离变大、盈利空间变小），跌破铁律即作废——
+        # 防"价格已涨/跌了一截仍追单"，此时开进去的实际盈亏比远低于分析值
+        rr_open = abs(tp1 - price) / abs(price - sl)
+        if rr_open < settings.AI_RR_MIN:
+            logger.info(
+                "开仓作废 %s：按现价复算盈亏比 %.2f < %.1f（现价 %s，入场 %s）",
+                symbol, rr_open, settings.AI_RR_MIN, price, entry_ai,
+            )
+            return False
+        # EMA 排列必须条件（顺势交易专属）：多单须 21>55>144 多头排列，空单须 144>55>21 空头排列
+        if trade_type == "trend_follow":
+            ema = analyze_ema(ExchangePool().get_klines(symbol, interval, kline_window))
+            ema_ok = ema is not None and (
+                (direction == "long" and ema["fast"] > ema["mid"] > ema["slow"])
+                or (direction == "short" and ema["fast"] < ema["mid"] < ema["slow"])
+            )
+            if not ema_ok:
+                logger.info("开仓跳过 %s：顺势交易 EMA 未按方向排列（%s），不满足开单前提",
+                            symbol, ema["state_label"] if ema else "K线数据不足")
+                return False
+        # 固定亏损仓位：基数分档 × 3% ÷ 止损距离
+        stop_pct = abs(price - sl) / price
+        # 止损宽度闸门（防强平）：逐仓计划止损亏损 = 名义×stop_pct，保证金 = 名义/杠杆；
+        # 止损距离超过 1/杠杆−维持保证金率（20× 即 4.5%）时，价格未到止损价
+        # 保证金就先亏光 → 被强平并连累撤销 TP 挂单（BATUSDT 案例：止损 6.4% 被强平）。
+        # 这类单子固定亏损法无解（预算放不进保证金里），直接跳过
+        liq_gate = 1 / settings.TRADING_LEVERAGE - 0.005
+        if stop_pct >= liq_gate:
+            logger.info(
+                "开仓跳过 %s：止损距离 %.2f%% 达到强平闸门 %.2f%%（1/%s 杠杆−维持保证金），"
+                "价格未到止损必先被强平",
+                symbol, stop_pct * 100, liq_gate * 100, settings.TRADING_LEVERAGE,
+            )
+            return False
+        risk_budget = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
+        notional = risk_budget / stop_pct
+        qty = trader.round_qty(symbol, notional / price)
+        f = trader.filters(symbol)
+        if qty < f["min_qty"] or qty * price < f["min_notional"]:
+            logger.info(
+                "开仓放弃 %s：计算数量 %s 低于交易所最小规则（min_qty=%s, min_notional=%s）",
+                symbol, qty, f["min_qty"], f["min_notional"],
+            )
+            return False
+        if qty > f["max_qty"]:
+            logger.info("开仓 %s：数量 %s 超交易所单笔上限 %s，按上限缩减（实际风险低于 %.0f%% 预算）",
+                        symbol, qty, f["max_qty"], settings.TRADING_RISK_PCT)
+            qty = trader.round_qty(symbol, f["max_qty"])
+        leverage = settings.TRADING_LEVERAGE
+        margin_used = qty * price / leverage
+        if margin_used > wallet - occupied:
+            logger.info("开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f", symbol, margin_used, wallet - occupied)
+            return False
+        # 实际风险金额按最终数量精确计（向下取整/上限缩减只会低于 3% 预算）
+        risk_amount = round(qty * abs(price - sl), 4)
+
+        # 下单：市价开仓 → 挂 SL/TP1/TP2 → 入库，全在保护块内：
+        # 任何一步失败都紧急撤单+平仓，不留裸仓（含记录构建/入库失败）
+        trader.setup_leverage(symbol, leverage)
+        side = "BUY" if direction == "long" else "SELL"
+        close_side = _close_side(direction)
+        entry_order = trader.market_order(symbol, side, qty)
+        # 成交回报：下单响应为 ACK 不含均价，市价单即时成交后查实际成交价/量。
+        # 滑点 = 成交价对参考价的偏离（testnet 盘口薄，深吃单可达 0.5%+）；
+        # 查询失败按参考价记账，不阻断挂 SL/TP（保护块兜底仍在）
+        fill_price, fill_qty = price, qty
+        try:
+            od = trader.order(symbol, entry_order["orderId"])
+            if float(od.get("avgPrice") or 0) > 0:
+                fill_price = float(od["avgPrice"])
+                fill_qty = float(od.get("executedQty") or qty)
+        except Exception as fill_err:
+            logger.warning("开仓 %s：成交回报查询失败，按参考价 %s 记账（%s）", symbol, price, fill_err)
+        slippage_pct = (fill_price / price - 1) * 100
+        actual_risk = fill_qty * abs(fill_price - sl)
+        if risk_amount > 0 and actual_risk > risk_amount * 1.15:
+            logger.warning(
+                "开仓 %s：成交 %s 对参考价 %s 滑 %.2f%%，实际止损风险 %.2f 超预算 %.2f 的 %.0f%%"
+                "（止损越近名义仓位越大，同等滑率放大越多）",
+                symbol, fill_price, price, slippage_pct,
+                actual_risk, risk_amount, (actual_risk / risk_amount - 1) * 100,
+            )
+        qty = fill_qty
+        try:
+            sl_order = trader.stop_market_close(
+                symbol, close_side, trader.round_price(symbol, sl))
+            q1, q2 = _tp_quantities(qty, tp2)
+            qty_tp1 = trader.round_qty(symbol, q1)
+            qty_tp2 = trader.round_qty(symbol, q2)
+            tp1_order = trader.take_profit_reduce(
+                symbol, close_side, qty_tp1, trader.round_price(symbol, tp1))
+            tp2_order = None
+            if tp2 > 0 and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
+                tp2_order = trader.take_profit_reduce(
+                    symbol, close_side, qty_tp2, trader.round_price(symbol, tp2))
+            now = datetime.utcnow()
+            rec = TradeRecord(
+                symbol=symbol,
+                direction=direction,
+                scan_result_id=a.scan_result_id,
+                ai_analysis_id=a.id,
+                recommendation=float(a.recommendation) if a.recommendation is not None else None,
+                testnet=settings.TRADING_TESTNET,
+                ai_snapshot=_ai_snapshot(a),
+                entry_price=fill_price,
+                qty=qty,
+                notional=round(qty * fill_price, 2),
+                leverage=leverage,
+                margin_mode="isolated",
+                margin_used=round(qty * fill_price / leverage, 4),
+                risk_amount=round(risk_amount, 4),
+                stop_loss=sl,
+                tp1=tp1,
+                tp2=tp2 if tp2_order else 0,
+                status="OPENED",
+                opened_at=now,
+                raw={
+                    # SL/TP 为 algo 条件单，标识是 algoId（MARKET 入场单仍是 orderId）
+                    "entry_order_id": entry_order["orderId"],
+                    "sl_order_id": sl_order.get("algoId") or sl_order.get("orderId"),
+                    "tp1_order_id": tp1_order.get("algoId") or tp1_order.get("orderId"),
+                    "tp2_order_id": (tp2_order.get("algoId") or tp2_order.get("orderId")) if tp2_order else None,
+                    "qty_tp1": qty_tp1,
+                    "qty_tp2": qty_tp2 if tp2_order else 0,
+                    "capital_base": _capital_base(wallet),
+                    "wallet": wallet,
+                    # 价差盈亏书签（REALIZED_PNL 累计，仅价差不含费用）：
+                    # TP1/TP2 成交事件用"当前累计 − 书签"算本档盈亏
+                    "realized_bookmark": 0,
+                },
+            )
+            db.add(rec)
+            db.flush()
+            _add_event(db, rec, "OPEN", {
+                "price": price, "qty": qty, "stop_loss": sl, "tp1": tp1, "tp2": tp2,
+                "risk_amount": round(risk_amount, 4), "entry_order_id": entry_order["orderId"],
+                "fill_price": fill_price, "slippage_pct": round(slippage_pct, 3),
+                "actual_risk": round(actual_risk, 4),
+            })
+            db.commit()
+        except Exception:
+            # 紧急处理：先撤全部挂单再只减仓平仓（reduceOnly：开仓单未成交时会被
+            # 交易所拒绝，而不是反向开成裸仓）
+            try:
+                trader.cancel_all_algo(symbol)
+                trader.market_order(symbol, close_side, qty, reduce_only=True)
+            except Exception as close_err:
+                logger.error("紧急平仓失败 %s: %s（若开仓单未成交则本无仓位）", symbol, close_err)
+            raise
+
+        positions[symbol] = {"amt": qty if direction == "long" else -qty,
+                             "initial_margin": qty * fill_price / leverage,
+                             "entry_price": fill_price}
+        logger.info("已开仓 %s %s qty=%s 成交=%s（对参考价 %s 滑 %.2f%%）sl=%s tp1=%s tp2=%s（评分 %s）",
+                    symbol, direction, qty, fill_price, price, slippage_pct,
+                    sl, tp1, tp2, a.recommendation)
+        return True
+    except Exception as e:
+        db.rollback()
+        logger.warning("开仓失败 %s: %s", symbol, e)
+        # 交易所无此合约（-1121，如 testnet 未上架）每轮必失败：落 FAILED 记录并跳过同 symbol 后续分析
+        if "-1121" in str(e):
+            try:
+                exists = db.execute(
+                    select(TradeRecord.id).where(
+                        TradeRecord.symbol == symbol, TradeRecord.status == "FAILED")
+                ).first()
+                if not exists:
+                    rec = TradeRecord(
+                        symbol=symbol, direction=direction, ai_analysis_id=a.id,
+                        recommendation=float(a.recommendation) if a.recommendation is not None else None,
+                        testnet=settings.TRADING_TESTNET,
+                        status="FAILED", raw={"fail_reason": str(e)[:200]},
+                    )
+                    db.add(rec)
+                    db.flush()
+                    _add_event(db, rec, "ERROR", {"message": "交易所未上架该合约（-1121）"})
+                db.commit()
+            except Exception:
+                db.rollback()
+        return False
+
+
+def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bool:
+    """单条分析完成即开仓（2026-09-14：不再等 :42 统一批次，docs/06 §2）。
+
+    闸门与批量开仓完全一致（§3）：上限 / 70% 余额 / 最小资金 / 同币无仓 /
+    策略开关 / 方向价格复验 / 盈亏比复验 / EMA / 强平闸门。
+    返回是否成功开仓；未过的候选仍留在 :42 批次的候选池里兜底重试。
+    """
+    a = db.get(AIAnalysis, UUID(str(analysis_id)))
+    if a is None:
+        return False
+    cfg = db.get(SystemConfig, 1)
+    if not cfg:
+        return False
+    # 与 _open_candidates 同口径的快速过滤（suggest / 方向 / 三价 / 评分门槛 / 1 小时内）
+    if (
+        a.trade_decision != "suggest"
+        or a.direction not in ("long", "short")
+        or not a.entry_price or not a.stop_loss or not a.take_profit_1
+        or float(a.recommendation or 0) < settings.TRADING_MIN_RECOMMENDATION
+    ):
+        return False
+    if a.created_at and a.created_at < datetime.utcnow() - timedelta(hours=1):
+        logger.info("即时开仓跳过 %s：分析已超过 1 小时", a.symbol)
+        return False
+    if db.execute(
+        select(TradeRecord.id).where(TradeRecord.ai_analysis_id == a.id)
+    ).first():
+        return False  # 该分析已开过仓
+    positions = trader.positions()
+    if len(positions) >= cfg.max_open_trades:
+        logger.info("即时开仓跳过 %s：在跑单子已达上限 %d", a.symbol, cfg.max_open_trades)
+        return False
+    wallet_info = trader.wallet_balance()
+    wallet = wallet_info["wallet"]
+    occupied = sum(p["initial_margin"] for p in positions.values())
+    if wallet > 0 and wallet - occupied < wallet * settings.TRADING_MIN_FREE_PCT:
+        logger.info("即时开仓跳过 %s：可用余额低于总资金 %.0f%%",
+                    a.symbol, settings.TRADING_MIN_FREE_PCT * 100)
+        return False
+    if _capital_base(wallet) <= 0:
+        logger.info("即时开仓跳过 %s：钱包余额低于最小风险档位", a.symbol)
+        return False
+    interval = cfg.kline_interval if cfg else "1h"
+    # EMA144 需 ≥154 根已收盘 K 线，窗口下限 160
+    kline_window = max(cfg.kline_window or 240, 160)
+    return _attempt_open(db, trader, cfg, interval, kline_window, a, wallet, positions)
 
 
 # ── 结算 ──────────────────────────────────────────────────────

@@ -382,17 +382,36 @@ def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str) -
 
 
 def _finish(db, r: ScanResult, symbol: str, ai_result: dict, fp: str, commit: bool = True):
-    _upsert_ai_analysis(db, r.id, symbol, ai_result, fingerprint=fp)
+    row = _upsert_ai_analysis(db, r.id, symbol, ai_result, fingerprint=fp)
     if commit:
         db.commit()
         logger.info("AI 分析完成: %s (%s)", symbol, ai_result.get("trade_decision"))
+        _dispatch_immediate_open(row)
+
+
+def _dispatch_immediate_open(a: AIAnalysis) -> None:
+    """2026-09-14 起不等整批分析完：suggest 且 ≥60 分的分析一落库即分发开仓任务。
+
+    只做分发不做开仓（闸门全在 open_trade_for_analysis → try_open_for_analysis 里）；
+    静默失败不重试——候选仍满足条件，:42 批次会兜底。
+    """
+    if a.trade_decision != "suggest":
+        return
+    if float(a.recommendation or 0) < settings.TRADING_MIN_RECOMMENDATION:
+        return
+    if not settings.TRADING_ENABLED:
+        return
+    celery_app.send_task(
+        "app.tasks.trade_tasks.open_trade_for_analysis", args=[str(a.id)]
+    )
+    logger.info("已分发即时开仓任务: %s（评分 %s）", a.symbol, a.recommendation)
 
 
 def _upsert_ai_analysis(
     db, scan_result_id: UUID, symbol: str, ai_result: dict,
     fingerprint: Optional[str] = None,
 ):
-    """latest-wins：有则更新，无则新建"""
+    """latest-wins：有则更新，无则新建；返回落库行（供即时开仓分发取 id）"""
     fields = {
         "trade_decision": ai_result.get("trade_decision"),
         "skip_reason": ai_result.get("skip_reason"),
@@ -416,5 +435,7 @@ def _upsert_ai_analysis(
     if existing:
         for k, v in fields.items():
             setattr(existing, k, v)
-    else:
-        db.add(AIAnalysis(scan_result_id=scan_result_id, symbol=symbol, **fields))
+        return existing
+    row = AIAnalysis(scan_result_id=scan_result_id, symbol=symbol, **fields)
+    db.add(row)
+    return row
