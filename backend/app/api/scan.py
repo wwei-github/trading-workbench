@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import delete, desc, select, func
+from sqlalchemy import delete, desc, select, update, func
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -36,6 +36,7 @@ from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
 from app.models.scan import ScanRecord, ScanResult, AIAnalysis, TradeReview
+from app.models.trade import TradeRecord
 from app.models.system_config import SystemConfig
 
 router = APIRouter(prefix="/api/scans", tags=["scans"])
@@ -264,13 +265,40 @@ def trigger_ai_analysis(
     if not record:
         raise HTTPException(status_code=404, detail="扫描记录不存在")
 
-    # 单币重新分析：先删除旧结果，前端轮询以"新记录出现"为完成标志
+    # 单币重新分析：先删除旧结果，前端轮询以"新记录出现"为完成标志。
+    # 已被交易记录/复盘引用的旧结论不能删（FK 约束，直接删会 500）——置空
+    # scan_result_id 摘钩保留（交易记录自持 ai_snapshot 快照，复盘统计不受影响）；
+    # 无引用的照常删除。新结论落库时按 scan_result_id 另起新行（latest-wins upsert）
     if body.scan_result_id:
-        db.execute(
-            delete(AIAnalysis).where(
-                AIAnalysis.scan_result_id == body.scan_result_id
-            )
-        )
+        old_ids = db.execute(
+            select(AIAnalysis.id).where(AIAnalysis.scan_result_id == body.scan_result_id)
+        ).scalars().all()
+        if old_ids:
+            referenced = set(db.execute(
+                select(TradeRecord.ai_analysis_id).where(
+                    TradeRecord.ai_analysis_id.in_(old_ids))
+            ).scalars().all()) | set(db.execute(
+                select(TradeReview.ai_analysis_id).where(
+                    TradeReview.ai_analysis_id.in_(old_ids))
+            ).scalars().all())
+            if referenced:
+                db.execute(
+                    update(AIAnalysis)
+                    .where(AIAnalysis.id.in_(referenced))
+                    .values(scan_result_id=None)
+                )
+                db.execute(
+                    delete(AIAnalysis).where(
+                        AIAnalysis.scan_result_id == body.scan_result_id,
+                        ~AIAnalysis.id.in_(referenced),
+                    )
+                )
+            else:
+                db.execute(
+                    delete(AIAnalysis).where(
+                        AIAnalysis.scan_result_id == body.scan_result_id
+                    )
+                )
         db.commit()
         # 清空旧进度事件，保证事件流只属于本次分析（前端流式展示依赖）
         from app.services import ai_progress

@@ -60,8 +60,9 @@ class AIAnalysis(Base):
     __tablename__ = "ai_analyses"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    scan_result_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("scan_results.id"), nullable=False, index=True
+    # 可空：单币重新分析时被交易记录/复盘引用的旧结论会摘钩（置空）让位给新结论
+    scan_result_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scan_results.id"), nullable=True, index=True
     )
     symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     trade_decision: Mapped[Optional[str]] = mapped_column(String(8), nullable=True, index=True)  # suggest / skip
