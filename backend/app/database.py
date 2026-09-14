@@ -46,7 +46,7 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS pullback_tolerance NUMERIC(10,6) NOT NULL DEFAULT 0.03,
               ADD COLUMN IF NOT EXISTS strategy_prompt_enabled BOOLEAN NOT NULL DEFAULT FALSE,
               ADD COLUMN IF NOT EXISTS strategy_prompt TEXT NOT NULL DEFAULT '',
-              ADD COLUMN IF NOT EXISTS key_level_tolerance NUMERIC(10,6) NOT NULL DEFAULT 0.005,
+              ADD COLUMN IF NOT EXISTS key_level_tolerance NUMERIC(10,6) NOT NULL DEFAULT 0.003,
               ADD COLUMN IF NOT EXISTS level_merge_threshold NUMERIC(10,6) NOT NULL DEFAULT 0.005,
               ADD COLUMN IF NOT EXISTS fib_enabled BOOLEAN NOT NULL DEFAULT FALSE
         """))

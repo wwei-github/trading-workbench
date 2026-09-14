@@ -174,7 +174,7 @@ def compute_key_levels(
         return []
 
     close_last = float(closes[-2])
-    base_tol = config.get("key_level_tolerance", 0.005)
+    base_tol = config.get("key_level_tolerance", 0.003)
     merge_thr = config.get("level_merge_threshold", 0.005)
 
     # 区域半宽自适应：0.5×ATR，限制在配置容忍度的 [0.5×, 2×] 内
