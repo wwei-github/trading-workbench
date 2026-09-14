@@ -245,11 +245,14 @@ def validate_decision(
         if dev > 0.02:
             violations.append(f"入场价偏离当前价 {dev*100:.2f}% > 2%（入场应接近现价）")
 
-    # ── 止损锚定（2026-09-13 更新：关键位优先，影线极值兜底）──
-    # 多单：入场价与最近N根影线最低点之间存在支撑位（区域下沿落在 [recent_low, entry) 内）时，
-    # 取离入场最近者，止损由程序直接定在其下沿外 STOP_LOSS_BUFFER_PCT 处（AI 给值仅参考）；
-    # 该范围内无支撑位时退回极值锚：严格低于 recent_low 且留缓冲（不足自动推远，未越过打回）。
-    # 空单对称（压力位上沿 ∈ (entry, recent_high]，取最近者）。锚距过近（<0.3×ATR）时不用关键位锚。
+    # ── 止损锚定（2026-09-13 更新：关键位优先，影线极值兜底；2026-09-14 补强：两锚取更远者）──
+    # 多单：入场价下方最近的支撑位区域下轨（不限是否在 10 根影线范围内）为候选锚，
+    # 最终锚 = 「区域下轨与 recent_low 中更低者」（AI 给值仅参考）——入场贴着关键位区域是
+    # 区间边缘类开单的常态，只锚区域近轨会把止损放进近期波动区间内部（AKEUSDT 案例：
+    # 空单止损 1.48% 比黄昏星高点还近），必须同时越过影线极值；跨极值的关键位比极值更远，
+    # 同样参与定锚（关键位优先）。最终锚距 <0.3×ATR 时不用关键位锚（回退极值锚路径）。
+    # 无候选关键位时退回极值锚：严格低于 recent_low 且留缓冲（不足自动推远，未越过打回）。
+    # 空单对称（区域上轨与 recent_high 取更高者）。
     closed = klines[:-1] if len(klines) >= 2 else klines
     n = min(settings.STOP_LOSS_RECENT_BARS, len(closed))
     if n > 0:
@@ -260,12 +263,13 @@ def validate_decision(
                 if (lv.get("role") or lv.get("kind")) != "support":
                     continue
                 edge = _zone_edge(lv, "zone_low")
-                if recent_low <= edge < d.entry_price and (anchor is None or edge > anchor):
+                if 0 < edge < d.entry_price and (anchor is None or edge > anchor):
                     anchor = edge
-            if anchor is not None and not (
-                atr and d.entry_price and d.entry_price - anchor < 0.3 * atr
+            base = min(anchor, recent_low) if anchor is not None else None
+            if base is not None and not (
+                atr and d.entry_price and d.entry_price - base < 0.3 * atr
             ):
-                d.stop_loss = anchor * (1 - settings.STOP_LOSS_BUFFER_PCT)
+                d.stop_loss = base * (1 - settings.STOP_LOSS_BUFFER_PCT)
             else:
                 if d.stop_loss >= recent_low:
                     violations.append(
@@ -281,12 +285,14 @@ def validate_decision(
                 if (lv.get("role") or lv.get("kind")) != "resistance":
                     continue
                 edge = _zone_edge(lv, "zone_high")
-                if d.entry_price < edge <= recent_high and (anchor is None or edge < anchor):
+                if edge > d.entry_price and (anchor is None or edge < anchor):
                     anchor = edge
-            if anchor is not None and not (
-                atr and d.entry_price and anchor - d.entry_price < 0.3 * atr
+            # 同多单：两锚取更远者（区域上轨与 recent_high 中更高者）
+            base = max(anchor, recent_high) if anchor is not None else None
+            if base is not None and not (
+                atr and d.entry_price and base - d.entry_price < 0.3 * atr
             ):
-                d.stop_loss = anchor * (1 + settings.STOP_LOSS_BUFFER_PCT)
+                d.stop_loss = base * (1 + settings.STOP_LOSS_BUFFER_PCT)
             else:
                 if d.stop_loss <= recent_high:
                     violations.append(
