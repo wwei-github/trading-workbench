@@ -1,8 +1,8 @@
 """策略统一入口：关键位 + 12金K 统一过滤（见 docs/03-关键位筛选重构需求.md §5.2）
 
 流程：
-1. 摆动点（收盘价）→ 结构分类（上涨/下跌/反转/震荡/未分类）
-2. 计算关键位（只分支撑位/压力位两类，kind 由角色推导）
+1. 摆动点（收盘价）→ 结构分类（上涨/下跌/反转/震荡/未分类，≥4 个摆动点门槛保留）
+2. 计算关键位（compute_key_levels 统一口径：Pine 摆动点阶梯，与图表端点/AI 事实包同源）
 3. 放量突破优先：收盘越过整个关键位区域 + 量能 ≥1.2×均量 + EMA 同向 → breakout 信号
    （不要求形态；前收盘上下文区分"突破"与"常态居位"）
 4. 触位：最新已收盘 K 线持住侧触及关键位区域 → position
@@ -50,20 +50,12 @@ __all__ = [
 def compute_signal_key_levels(klines: list[list], config: dict) -> list[dict]:
     """分析时刻的关键位快照（手动搜索 / 定时 AI 分析的事实包共用）。
 
-    与 _detect 前两步同源：摆动点 → 结构分类 → 关键位（含 ATR 自适应区域与时间加权），
-    但不做触及/形态/EMA 门控——AI 需要全量关键位而非仅信号命中位。
+    与图表端点、_detect 第 2 步同一 compute_key_levels（Pine 摆动点阶梯统一口径，
+    docs/03 §2）——不做触及/形态/EMA 门控，AI 需要全量关键位而非仅信号命中位。
     """
-    closes = np.array([float(k[4]) for k in klines], dtype=float)
-    n = len(klines)
-    if n < config.get("min_klines", 30):
+    if len(klines) < config.get("min_klines", 30):
         return []
-    order = config.get("swing_order", 3)
-    high_idx, low_idx = find_swing_points(closes, closes, order)
-    swings = merge_swings(high_idx, low_idx, closes, closes)
-    if len(swings) < 4:
-        return []
-    structure = classify_structure(swings, closes, n - 1, config)
-    return compute_key_levels(swings, closes, n - 1, structure["signal_type"], config, klines)
+    return compute_key_levels(klines, config)
 
 
 # EMA 状态 → 趋势偏向
@@ -147,8 +139,8 @@ def _detect(klines: list[list], config: dict) -> Optional[dict]:
     structure = classify_structure(swings, closes, n_closed, config)
     signal_type = structure["signal_type"]
 
-    # 2. 计算关键位（传 klines 启用 ATR 自适应区域半宽）
-    levels = compute_key_levels(swings, closes, n_closed, signal_type, config, klines)
+    # 2. 计算关键位（统一口径：Pine 摆动点阶梯，与图表端点/AI 事实包同源）
+    levels = compute_key_levels(klines, config)
     if not levels:
         return None
 
