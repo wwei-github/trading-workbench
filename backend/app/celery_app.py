@@ -54,7 +54,7 @@ celery_app.conf.update(
         },
         "auto-trade": {
             "task": "app.tasks.trade_tasks.run_auto_trade_task",
-            "schedule": crontab(minute=42),  # 每小时第42分：扫描(02分)+AI分析后，先结算后开仓
+            "schedule": crontab(minute=42),  # 每小时第42分：结算/巡检在跑仓位（开仓唯一通道 = 分析后即时开仓）
         },
     },
     task_acks_late=True,

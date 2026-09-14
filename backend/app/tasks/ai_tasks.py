@@ -428,10 +428,11 @@ def _finish(db, r: ScanResult, symbol: str, ai_result: dict, fp: str, commit: bo
 
 
 def _dispatch_immediate_open(a: AIAnalysis) -> None:
-    """2026-09-14 起不等整批分析完：suggest 且 ≥60 分的分析一落库即分发开仓任务。
+    """唯一开仓通道：suggest 且 ≥60 分的分析一落库即分发开仓任务（2026-09-14 起
+    取消 :42 批量开仓，本分发失败即无兜底）。
 
     只做分发不做开仓（闸门全在 open_trade_for_analysis → try_open_for_analysis 里）；
-    静默失败不重试——候选仍满足条件，:42 批次会兜底。
+    静默失败不重试——等该币下次信号重新分析再触发。
     """
     if a.trade_decision != "suggest":
         return

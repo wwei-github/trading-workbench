@@ -1,11 +1,12 @@
 """自动交易引擎（docs/06）
 
-开仓（try_open_trades）：
-    候选 = AI 结论 suggest 且推荐度 ≥60 且未开过仓，按推荐度降序
-    逐个过闸门（在跑单上限 / 余额 70% 规则 / 同币无仓 / 方向价格复验），
-    固定亏损法定仓位（基数分档 ×3% ÷ 止损距离）→ 市价开仓 + 挂 SL/TP1/TP2 → 入库
+开仓（唯一通道 = 即时开仓，2026-09-14 起不再有 :42 批量开仓）：
+    AI 结论 suggest 且推荐度 ≥60 → 分析落库即分发 open_trade_for_analysis
+    → try_open_for_analysis 过闸门（在跑单上限 / 余额 70% 规则 / 同币无仓 /
+    方向价格复验）→ 固定亏损法定仓位（基数分档 ×3% ÷ 止损距离）
+    → 市价开仓 + 挂 SL/TP1/TP2 → 入库；闸门未过即放弃，无批次重试
 
-结算（settle_trades）：
+结算（settle_trades，每小时 :42 巡检）：
     以交易所为真源（持仓量/挂单/已实现盈亏）推断成交事件：
     仓位归零 → 结算收益（正/负值）；TP1/TP2 成交 → 状态迁移；
     止损挂单消失（被撤/交易所异常）→ 按当前止损价补挂（裸仓保护）；
@@ -20,10 +21,10 @@ from uuid import UUID
 from typing import Optional
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models.scan import AIAnalysis, ScanResult
+from app.models.scan import AIAnalysis
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeEvent, TradeRecord
 from app.services.binance_trader import BinanceTrader, BinanceTradeError
@@ -91,71 +92,6 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
 # ── 开仓 ──────────────────────────────────────────────────────
 
 
-def _open_candidates(db: Session):
-    """未开过仓的 ≥60 分 suggest 分析（推荐度降序 = 开单优先级）。
-    只取最近 1 小时内生成的分析（旧信号不再开仓）；
-    已有 FAILED 记录的 symbol（如交易所未上架）整只排除，避免每小时空转"""
-    tr_fail = aliased(TradeRecord)
-    fresh_since = datetime.utcnow() - timedelta(hours=1)
-    return db.execute(
-        select(AIAnalysis, ScanResult)
-        .join(ScanResult, AIAnalysis.scan_result_id == ScanResult.id)
-        .outerjoin(TradeRecord, TradeRecord.ai_analysis_id == AIAnalysis.id)
-        .where(
-            AIAnalysis.trade_decision == "suggest",
-            AIAnalysis.direction.in_(("long", "short")),
-            AIAnalysis.entry_price > 0,
-            AIAnalysis.stop_loss > 0,
-            AIAnalysis.take_profit_1 > 0,
-            AIAnalysis.recommendation >= settings.TRADING_MIN_RECOMMENDATION,
-            AIAnalysis.created_at >= fresh_since,
-            TradeRecord.id.is_(None),
-            ~select(tr_fail.id).where(
-                tr_fail.symbol == AIAnalysis.symbol, tr_fail.status == "FAILED"
-            ).exists(),
-        )
-        .order_by(AIAnalysis.recommendation.desc(), AIAnalysis.created_at.desc())
-    ).all()
-
-
-def try_open_trades(db: Session, trader: BinanceTrader) -> int:
-    """按评分优先逐个尝试开仓；返回本次成功开仓数"""
-    cfg = db.get(SystemConfig, 1)
-    if not cfg:
-        return 0
-    interval = cfg.kline_interval if cfg else "1h"
-    # EMA144 需 ≥154 根已收盘 K 线，窗口下限 160
-    kline_window = max(cfg.kline_window or 240, 160)
-    candidates = _open_candidates(db)
-    if not candidates:
-        return 0
-    logger.info("自动开仓候选 %d 个", len(candidates))
-
-    wallet_info = trader.wallet_balance()
-    wallet = wallet_info["wallet"]
-    positions = trader.positions()  # {symbol: {...}}
-    running = len(positions)
-    opened = 0
-
-    for a, _sr in candidates:
-        if running >= cfg.max_open_trades:
-            logger.info("在跑单子已达上限 %d，停止本轮开仓", cfg.max_open_trades)
-            break
-        # 余额风控（70% 规则）：可用 = 钱包 − 在跑单占用保证金
-        occupied = sum(p["initial_margin"] for p in positions.values())
-        if wallet > 0 and wallet - occupied < wallet * settings.TRADING_MIN_FREE_PCT:
-            logger.info("可用余额低于总资金 %.0f%%，停止本轮开仓", settings.TRADING_MIN_FREE_PCT * 100)
-            break
-        if _capital_base(wallet) <= 0:
-            logger.info("钱包余额 %s 低于最小风险档位，不开仓", wallet)
-            break
-
-        if _attempt_open(db, trader, cfg, interval, kline_window, a, wallet, positions):
-            opened += 1
-            running += 1
-    return opened
-
-
 def _attempt_open(
     db: Session, trader: BinanceTrader, cfg: SystemConfig,
     interval: str, kline_window: int, a: AIAnalysis,
@@ -164,7 +100,7 @@ def _attempt_open(
     """对单条分析过全部开仓闸门并尝试开仓（docs/06 §3 逐项检查）。
 
     返回是否成功开仓；成功时更新 positions（供调用方累计在跑数与占用保证金）。
-    批量（try_open_trades）与单条（try_open_for_analysis，分析完成即开）共用；
+    即时开仓唯一入口（try_open_for_analysis，分析完成即分发）调用；
     开仓失败统一 rollback 并落 FAILED 记录（仅 -1121 未上架）。
     """
     occupied = sum(p["initial_margin"] for p in positions.values())
@@ -404,7 +340,7 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
 
     闸门与批量开仓完全一致（§3）：上限 / 70% 余额 / 最小资金 / 同币无仓 /
     策略开关 / 方向价格复验 / 盈亏比复验 / EMA / 强平闸门。
-    返回是否成功开仓；未过的候选仍留在 :42 批次的候选池里兜底重试。
+    返回是否成功开仓；闸门未过即放弃（无批次重试，等该币下次信号重新分析）。
     """
     a = db.get(AIAnalysis, UUID(str(analysis_id)))
     if a is None:
@@ -412,7 +348,7 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
     cfg = db.get(SystemConfig, 1)
     if not cfg:
         return False
-    # 与 _open_candidates 同口径的快速过滤（suggest / 方向 / 三价 / 评分门槛 / 1 小时内）
+    # 开仓资格快速过滤（suggest / 方向 / 三价 / 评分门槛 / 1 小时内）
     if (
         a.trade_decision != "suggest"
         or a.direction not in ("long", "short")
