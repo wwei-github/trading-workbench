@@ -208,6 +208,18 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
 
             # 固定亏损仓位：基数分档 × 3% ÷ 止损距离
             stop_pct = abs(price - sl) / price
+            # 止损宽度闸门（防强平）：逐仓计划止损亏损 = 名义×stop_pct，保证金 = 名义/杠杆；
+            # 止损距离超过 1/杠杆−维持保证金率（20× 即 4.5%）时，价格未到止损价
+            # 保证金就先亏光 → 被强平并连累撤销 TP 挂单（BATUSDT 案例：止损 6.4% 被强平）。
+            # 这类单子固定亏损法无解（预算放不进保证金里），直接跳过
+            liq_gate = 1 / settings.TRADING_LEVERAGE - 0.005
+            if stop_pct >= liq_gate:
+                logger.info(
+                    "开仓跳过 %s：止损距离 %.2f%% 达到强平闸门 %.2f%%（1/%s 杠杆−维持保证金），"
+                    "价格未到止损必先被强平",
+                    symbol, stop_pct * 100, liq_gate * 100, settings.TRADING_LEVERAGE,
+                )
+                continue
             risk_budget = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
             notional = risk_budget / stop_pct
             qty = trader.round_qty(symbol, notional / price)
