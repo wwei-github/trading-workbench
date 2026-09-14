@@ -4,9 +4,10 @@
 - 并发：Redis zset 信号量限制 LLM 全局并发（LLM_CONCURRENCY，默认 3）
 - Stage 1 闸门（不调 LLM 直接出结论）：
     1) strength < AI_MIN_STRENGTH → 程序 skip
-    2) 当前K线振幅 > ATR_SPIKE_MULT × ATR → 熔断 skip
-    3) 1h 内同指纹 → 沿用旧结论（价格区仍有效时）
-    4) 24h 内同币种已有 suggest 结论且本信号为重复命中 → 沿用旧结论（价格区仍有效时）
+    2) 信号落库后超过 AI_SIGNAL_MAX_BARS_AGO 根K线仍未分析 → 程序 skip（形态已陈旧，docs/07 §8-A3）
+    3) 当前K线振幅 > ATR_SPIKE_MULT × ATR → 熔断 skip
+    4) 1h 内同指纹 → 沿用旧结论（价格区仍有效时）
+    5) 24h 内同币种已有 suggest 结论且本信号为重复命中 → 沿用旧结论（价格区仍有效时）
 - Stage 2：analyze_with_guard（校验回炉）→ 落库
 """
 import hashlib
@@ -95,6 +96,27 @@ def compute_fingerprint(signal: dict) -> str:
         nearest_level,
     ])
     return hashlib.sha1(raw.encode()).hexdigest()[:40]
+
+
+_INTERVAL_SECONDS = {
+    "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
+    "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600, "8h": 28800,
+    "12h": 43200, "1d": 86400,
+}
+
+
+def _signal_bars_ago(created_at: Optional[datetime], interval: str) -> int:
+    """信号K线距今的根数：扫描落库紧跟信号K线收盘之后，落库时刻 ≈ 信号K线收盘时刻。
+
+    未知周期/缺时间返回 0（不拦），避免配置异常误杀全部信号。
+    """
+    if not created_at:
+        return 0
+    secs = _INTERVAL_SECONDS.get(interval or "")
+    if not secs:
+        return 0
+    delta = datetime.utcnow() - created_at
+    return max(int(delta.total_seconds() // secs), 0)
 
 
 @celery_app.task(name="app.tasks.ai_tasks.run_ai_analysis_task", bind=True, max_retries=3)
@@ -189,7 +211,21 @@ def run_ai_analysis_single(
             _finish(db, r, r.symbol, build_forced_skip(reason), fp)
             ai_progress.push_done(r.id, "skip", reason)
             return
-        # 2) 振幅熔断（当前已收盘K线振幅 > N×ATR，插针/异常行情不出建议）
+        # 2) 信号陈旧（docs/07 §8-A3）：形态/触位判定基于扫描时刻K线快照，从扫描到
+        #    分析完成（LLM 单轮 85~130s + 超时重试）可能跨 1~2 根K线，形态可能已失效
+        #    甚至反向——超过 N 根K线未处理直接程序 skip，不调 LLM。
+        #    手动单币重分析（force）不受限：用户主动发起，且分析时关键位/现价都会重算
+        bars_ago = _signal_bars_ago(r.created_at, cfg.kline_interval)
+        if not force and bars_ago > settings.AI_SIGNAL_MAX_BARS_AGO:
+            reason = (
+                f"信号已过期：距今 {bars_ago} 根{cfg.kline_interval}K线"
+                f"（>{settings.AI_SIGNAL_MAX_BARS_AGO}），形态判定基于扫描时刻快照，程序判定跳过"
+            )
+            ai_progress.push(r.id, "gate", note=reason)
+            _finish(db, r, r.symbol, build_forced_skip(reason), fp)
+            ai_progress.push_done(r.id, "skip", reason)
+            return
+        # 3) 振幅熔断（当前已收盘K线振幅 > N×ATR，插针/异常行情不出建议）
         pool = ExchangePool()
         klines = pool.get_klines(r.symbol, cfg.kline_interval, 500)
         if len(klines) < 500:
@@ -212,7 +248,7 @@ def run_ai_analysis_single(
         # 扫描到分析之间可能已明显移动——所有锚点换算、入场价校验都以最新价为基准
         if klines:
             signal["current_price"] = float(klines[-1][4])
-        # 3) 指纹缓存：TTL 内同指纹沿用旧结论（手动重分析不短路）；
+        # 4) 指纹缓存：TTL 内同指纹沿用旧结论（手动重分析不短路）；
         #    价格区已失效（现价越过原止盈一/止损）的旧结论不沿用，重新分析
         if not force and settings.FINGERPRINT_TTL_MIN > 0:
             cached = _find_recent(db, r.symbol, fp, settings.FINGERPRINT_TTL_MIN)
@@ -225,7 +261,7 @@ def run_ai_analysis_single(
                     return
                 note = "⚠️ 同信号旧结论的价格区已失效（现价越过原止盈/止损），重新分析"
                 ai_progress.push(r.id, "gate", note=note)
-        # 4) 重复信号沿用：24h 内同币种已有 suggest 且本行为重复命中（同样校验价格区）
+        # 5) 重复信号沿用：24h 内同币种已有 suggest 且本行为重复命中（同样校验价格区）
         if not force and r.is_repeat:
             repeat = _find_recent_suggest(db, r.symbol, 24 * 60)
             if repeat:

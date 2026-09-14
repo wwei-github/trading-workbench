@@ -8,6 +8,7 @@
 结算（settle_trades）：
     以交易所为真源（持仓量/挂单/已实现盈亏）推断成交事件：
     仓位归零 → 结算收益（正/负值）；TP1/TP2 成交 → 状态迁移；
+    止损挂单消失（被撤/交易所异常）→ 按当前止损价补挂（裸仓保护）；
     TP1 成交 → 止损移至成本价（保本，幂等）；
     无 TP2 的单：TP1 止盈 75%，剩余 25% 从 TP1 起跟进止损；
     TP2 后每次巡检跟进止损（最近3根已收盘K线极值，只收紧不放松）
@@ -27,6 +28,7 @@ from app.models.system_config import SystemConfig
 from app.models.trade import TradeEvent, TradeRecord
 from app.services.binance_trader import BinanceTrader, BinanceTradeError
 from app.services.exchange_pool import ExchangePool
+from app.services.risk_guard import liquidation_gate_pct
 from app.services.strategy.ema import analyze_ema
 
 logger = logging.getLogger(__name__)
@@ -227,7 +229,8 @@ def _attempt_open(
         # 止损距离超过 1/杠杆−维持保证金率（20× 即 4.5%）时，价格未到止损价
         # 保证金就先亏光 → 被强平并连累撤销 TP 挂单（BATUSDT 案例：止损 6.4% 被强平）。
         # 这类单子固定亏损法无解（预算放不进保证金里），直接跳过
-        liq_gate = 1 / settings.TRADING_LEVERAGE - 0.005
+        # （口径与 risk_guard.liquidation_gate_pct 共用；risk_guard 已按 0.9 倍前置拦截）
+        liq_gate = liquidation_gate_pct()
         if stop_pct >= liq_gate:
             logger.info(
                 "开仓跳过 %s：止损距离 %.2f%% 达到强平闸门 %.2f%%（1/%s 杠杆−维持保证金），"
@@ -253,6 +256,18 @@ def _attempt_open(
         margin_used = qty * price / leverage
         if margin_used > wallet - occupied:
             logger.info("开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f", symbol, margin_used, wallet - occupied)
+            return False
+        # TP1 分批数量预检（下单前）：低于交易所最小数量时整单放弃——
+        # 开完仓才挂 TP1 被交易所拒单，会走紧急撤单+平仓，且该失败不落记录，
+        # 候选每小时重试"开仓→拒单→平仓"空转（docs/07 §8-A1）。TP2 本就有
+        # min_qty 检查（不足时静默跳过该档），TP1 是主止盈档、缺它无意义
+        q1_pre, _ = _tp_quantities(qty, tp2)
+        qty_tp1_pre = trader.round_qty(symbol, q1_pre)
+        if qty_tp1_pre < f["min_qty"]:
+            logger.info(
+                "开仓放弃 %s：止盈一数量 %s 低于交易所最小数量 %s，分批止盈无法挂单",
+                symbol, qty_tp1_pre, f["min_qty"],
+            )
             return False
         # 实际风险金额按最终数量精确计（向下取整/上限缩减只会低于 3% 预算）
         risk_amount = round(qty * abs(price - sl), 4)
@@ -503,9 +518,11 @@ def _replace_sl(db: Session, trader: BinanceTrader, rec: TradeRecord,
         sl_order = trader.stop_market_close(rec.symbol, close_side, new_sl)
     old_sl = float(rec.stop_loss or 0)
     rec.stop_loss = new_sl
-    raw["sl_order_id"] = sl_order.get("algoId") or sl_order.get("orderId")
-    rec.raw = raw
-    detail = {"from": old_sl, "to": new_sl, "sl_order_id": raw["sl_order_id"]}
+    # 必须赋新 dict：rec.raw = 原对象 会被 SQLAlchemy 判定无变化而丢库
+    # （实测历史单 raw.sl_order_id 全部停留在开仓时旧值，docs/07 §8-A2）
+    new_id = sl_order.get("algoId") or sl_order.get("orderId")
+    rec.raw = {**raw, "sl_order_id": new_id}
+    detail = {"from": old_sl, "to": new_sl, "sl_order_id": new_id}
     if reason:
         detail["reason"] = reason
     _add_event(db, rec, "SL_MOVE", detail)
@@ -514,6 +531,35 @@ def _replace_sl(db: Session, trader: BinanceTrader, rec: TradeRecord,
 def _immediate_trigger(new_sl: float, price: float, direction: str) -> bool:
     """新 SL 挂上即会触发：多单 SL ≥ 现价 / 空单 SL ≤ 现价"""
     return new_sl >= price if direction == "long" else new_sl <= price
+
+
+def _rehang_lost_sl(db: Session, trader: BinanceTrader, rec: TradeRecord,
+                    open_ids: set[int]) -> None:
+    """止损挂单存活巡检（docs/07 §8-A2）：SL algo 单消失（手动撤销/交易所异常）时
+    按当前止损价补挂——OPENED/TP1_HIT/TP2_HIT 状态下仓位无 SL 保护只能等强平。
+
+    - SL 单仍在挂单列表（或记录无 sl_order_id 的极端情况无价可挂）→ 不动作；
+    - 现价已被止损价越过：疑似 SL 刚触发、持仓量尚未反映，补挂会立即触发/挂空单，
+      跳过本轮，留待仓位归零的结算路径确认。
+    """
+    raw = rec.raw or {}
+    sl_id = raw.get("sl_order_id")
+    if sl_id and int(sl_id) in open_ids:
+        return
+    cur_sl = float(rec.stop_loss or 0)
+    if cur_sl <= 0:
+        return
+    price = trader.price(rec.symbol)
+    if _immediate_trigger(cur_sl, price, rec.direction):
+        logger.info(
+            "止损单丢失 %s：现价 %s 已越过 SL %s，疑似刚触发，下轮结算确认",
+            rec.symbol, price, cur_sl,
+        )
+        return
+    _replace_sl(db, trader, rec, open_ids,
+                trader.round_price(rec.symbol, cur_sl), reason="sl_rehang")
+    db.commit()
+    logger.warning("止损挂单丢失已补挂 %s：SL=%s（巡检发现挂单消失）", rec.symbol, cur_sl)
 
 
 def _move_sl_breakeven(db: Session, trader: BinanceTrader, rec: TradeRecord,
@@ -664,6 +710,8 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                 continue
 
             ratio = amt / qty
+            # 止损挂单存活巡检：SL 单被撤/丢失时补挂（裸仓保护，docs/07 §8-A2）
+            _rehang_lost_sl(db, trader, rec, open_ids)
             if rec.status == "OPENED":
                 if tp2_gone and ratio <= 0.35:
                     # 同一小时两档止盈都成交

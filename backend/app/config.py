@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     STOP_LOSS_BUFFER_PCT: float = 0.003  # 止损越过锚点（关键位外沿/极值）的最小缓冲（0.3%）：贴着锚点必被插针扫损，不足者程序自动推远
     FINGERPRINT_TTL_MIN: int = 60     # 指纹缓存复用窗口（分钟，0.3% 价格分桶）
     ATR_SPIKE_MULT: float = 5.0       # 当前K线振幅 > N×ATR 熔断，直接 skip
+    AI_SIGNAL_MAX_BARS_AGO: int = 2   # 信号陈旧闸门：扫描落库后超过 N 根K线未完成分析直接程序 skip（形态是扫描时刻快照，隔多根可能已失效；docs/07 §8-A3）
     AI_MAX_PER_SCAN: int = 10         # 单次扫描批量 AI 分析上限（按24h成交额取前N）
     MIN_VOLUME_24H: float = 3_000_000  # 扫描候选池 24h 成交额下限（USDT），低于此不进扫描
 

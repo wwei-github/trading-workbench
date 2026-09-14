@@ -1,7 +1,8 @@
 """Risk Guard：AI 决策的确定性校验器（docs/04 §4 Stage 4 / §5.6）
 
 - Schema 强约束（Pydantic）
-- 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR]，价格距离不设百分比红线）、
+- 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR] + 强平安全上限，
+  见 liquidation_gate_pct——超上限的开仓闸门必拒，风控侧前置打回）、
   止损锚定（2026-09-13：入场与 N 根极值之间有同类关键位则程序定锚其区域外沿±缓冲，
   无则回退影线极值锚——多单严格低于最低点、空单严格高于最高点）；
   止盈最近优先强制（2026-09-14）：止盈一必须挂第一关键位区域近轨外侧（多单=压力位下轨 zone_low
@@ -87,6 +88,20 @@ def normalize_raw(raw: dict) -> TradeDecision:
 
 _TP_ANCHOR_TOL = 0.015   # 止盈锚定容差：距锚定点 1.5% 以内视为锚定（留余地）
 _TP_OVERSHOOT = 0.002    # 允许略越过锚定点的幅度（程序直接拉回到位外侧 0.2%，不回炉）
+
+# 逐仓强平闸门（docs/07 §8-A4）：止损距离超过 1/杠杆 − 维持保证金率 时，
+# 价格未到止损价保证金就先亏光 → 被强平（20× 即 4.5%）。risk_guard 止损上限
+# 与 trade_engine 开仓闸门（_attempt_open）共用此口径
+LIQ_GATE_MMR = 0.005
+# 风控侧安全系数：开仓时现价对 AI 入场最多可漂移 1%（开仓闸门），闸门按开仓现价
+# 复算止损距离——此处按 AI 入场价计，收紧 10% 留出漂移余量（20× 即 4.05%）
+LIQ_GATE_SAFETY = 0.9
+
+
+def liquidation_gate_pct(leverage: Optional[int] = None) -> float:
+    """逐仓强平闸门：止损距离占价格的最大安全比例（1/杠杆 − 维持保证金率）"""
+    lev = leverage or settings.TRADING_LEVERAGE
+    return 1 / lev - LIQ_GATE_MMR
 
 
 def _structural_candidates(signal: dict, klines: list, direction: str, entry: float) -> list[dict]:
@@ -322,6 +337,18 @@ def validate_decision(
         if stop_dist > 3 * atr:
             violations.append(
                 f"止损距离 {stop_dist:.6g} > 3×ATR({3*atr:.6g})，过远盈亏比崩塌"
+            )
+    # 强平闸门前置（docs/07 §8-A4）：止损距离超过强平安全上限的交易，开仓闸门必拒
+    # （价格未到止损保证金先亏光）——与其让分析通过后每轮在开仓处空转，这里直接打回：
+    # AI 若无法在结构允许范围内收紧止损，应输出 skip（固定亏损法对此类距离无解）
+    if d.entry_price:
+        stop_cap = liquidation_gate_pct() * LIQ_GATE_SAFETY
+        if stop_pct >= stop_cap:
+            violations.append(
+                f"止损距离 {stop_pct*100:.2f}% 超过强平安全上限 {stop_cap*100:.2f}%"
+                f"（{settings.TRADING_LEVERAGE}× 逐仓：1/{settings.TRADING_LEVERAGE}−维持保证金率，"
+                f"再×{LIQ_GATE_SAFETY:g} 留开仓漂移余量），该距离下价格未到止损必先被强平——"
+                f"请收紧止损到上限内，结构上做不到就直接 skip"
             )
 
     # ── 止盈锚定校验（2026-09-14 改为最近优先强制）：止盈一必须挂在第一结构位近轨外侧，
