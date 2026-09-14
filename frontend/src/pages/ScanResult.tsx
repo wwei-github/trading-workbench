@@ -239,6 +239,11 @@ export default function ScanResult() {
             ),
           },
           {
+            key: 'trades',
+            label: '交易记录',
+            children: <div style={{ height: '100%', overflow: 'auto' }}><TradesPanel /></div>,
+          },
+          {
             key: 'tasks',
             label: '任务记录',
             children: <div style={{ height: '100%', overflow: 'hidden' }}><TaskList /></div>,
@@ -247,11 +252,6 @@ export default function ScanResult() {
             key: 'logs',
             label: '系统日志',
             children: <div style={{ height: '100%', overflow: 'hidden' }}><LogsPanel /></div>,
-          },
-          {
-            key: 'trades',
-            label: '交易记录',
-            children: <div style={{ height: '100%', overflow: 'auto' }}><TradesPanel /></div>,
           },
         ]}
       />
