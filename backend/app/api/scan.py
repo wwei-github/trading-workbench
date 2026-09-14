@@ -561,8 +561,8 @@ def get_klines(
         ]
         for kind in ("highs", "lows")
     }
-    # 关键位（图表区域色块用）：统一口径 compute_key_levels（原 AI 分析口径：摆动点+
-    # 聚类+回归边界）——与扫描信号检测、AI 事实包、风控锚定完全同源，图上看到的位即 AI 锚定的位
+    # 关键位（图表水平线用）：统一口径 compute_key_levels（支撑/压力聚合线，docs/08）
+    # ——与扫描信号检测、AI 事实包、风控锚定完全同源，图上看到的线即 AI 锚定的位
     key_levels = compute_key_levels(
         klines,
         {
@@ -619,7 +619,7 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         # 近期摆动结构（HH/LH/HL/LL，高低点各 20 个）：足够 AI 锚定止盈档位与
         # 评估关键位的历史触及密度
         "recent_swings": recent_swings(klines, order=cfg.swing_order, n=20),
-        # 分析时刻计算的关键位（前高前低/支撑压力/区间边界，含时间加权与 ATR 自适应区域）
+        # 分析时刻计算的关键位（支撑/压力聚合线：前高前低+历史摆动点合并，docs/08）
         "key_levels": compute_signal_key_levels(klines, {
             "swing_order": cfg.swing_order,
             "key_level_tolerance": float(cfg.key_level_tolerance),

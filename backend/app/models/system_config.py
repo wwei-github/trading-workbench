@@ -31,8 +31,8 @@ class SystemConfig(Base):
     pullback_tolerance: Mapped[float] = mapped_column(Numeric(10, 6), default=0.03)
 
     # 关键位参数（关键位筛选重构，见 docs/03）
-    key_level_tolerance: Mapped[float] = mapped_column(Numeric(10, 6), default=0.003)  # 关键位区域半宽 ±0.3%（ATR 自适应上限 2×=±0.6%）
-    level_merge_threshold: Mapped[float] = mapped_column(Numeric(10, 6), default=0.005)  # 支撑/压力聚类合并阈值
+    key_level_tolerance: Mapped[float] = mapped_column(Numeric(10, 6), default=0.003)  # 关键位触及/突破容差带 ±0.3%（docs/08 线口径）
+    level_merge_threshold: Mapped[float] = mapped_column(Numeric(10, 6), default=0.005)  # 摆动点聚合为一条线的价距阈值
     fib_enabled: Mapped[bool] = mapped_column(Boolean, default=False)  # 斐波那契位开关（二期）
 
     # 自动交易（docs/06）：同时在跑单子上限（页面可改）

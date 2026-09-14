@@ -148,7 +148,7 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
   // 实时推送的最后一根 bar（每秒节流写入，仅供图例数字跳动；不进 candlePoints，指标 effect 不重建）
   const [liveBar, setLiveBar] = useState<{ t: number; o: number; h: number; l: number; c: number; v: number } | null>(null)
   const liveTickRef = useRef(0)
-  // 关键位（支撑/压力区域，后端 /klines 接口随 K 线返回，图表色块渲染）
+  // 关键位（支撑/压力线，后端 /klines 接口随 K 线返回，图表水平线渲染）
   const [chartKeyLevels, setChartKeyLevels] = useState<KeyLevel[]>([])
   const levelSvgRef = useRef<SVGSVGElement>(null)
 
@@ -183,7 +183,7 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
     setError(null)
     // 整包数据已落图，实时图例清零，以新数据为准（下一帧推送 ≤1s 内重新填充）
     setLiveBar(null)
-    // 关键位区域随整包数据更新（实时 bar 不更新——位是分析时刻的结构，逐秒重算无意义）
+    // 关键位线随整包数据更新（实时 bar 不更新——位是分析时刻的结构，逐秒重算无意义）
     setChartKeyLevels(data.key_levels ?? [])
     // 摆动结构标注（借鉴 Pine 结构标签：高点 HH/LH，低点 HL/LL，各取 5 个）
     const sw = data.swings
@@ -763,15 +763,15 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
     // refreshKey 变化会重建图表，effect 需重跑以重新绑定新 chart/series
   }, [ai, symbol, refreshKey, colorScheme])
 
-  // 渲染关键位区域色块（支撑=绿、压力=红——与 K 线涨跌配色无关的语义色，
-  // 全宽色带 + 上下边界虚线 + 左侧标签；rAF 循环重绘同步缩放/平移）
+  // 渲染关键位水平线（支撑=绿、压力=红——与 K 线涨跌配色无关的语义色，
+  // 单条全宽虚线 + 左侧标签；rAF 循环重绘同步缩放/平移；docs/08 线口径）
   useEffect(() => {
     const chart = chartRef.current
     const series = seriesRef.current
     const svg = levelSvgRef.current
     if (!chart || !series || !svg) return
 
-    // 关闭开关或无数据：清空残留色块
+    // 关闭开关或无数据：清空残留线条
     if (!showKeyLevels || chartKeyLevels.length === 0) {
       while (svg.firstChild) svg.removeChild(svg.firstChild)
       return
@@ -780,7 +780,7 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
     const NS = 'http://www.w3.org/2000/svg'
     const el = (tag: string) => document.createElementNS(NS, tag)
 
-    const drawZones = () => {
+    const drawLevels = () => {
       while (svg.firstChild) svg.removeChild(svg.firstChild)
       const fullWidth = containerRef.current?.clientWidth || 520
       const height = containerRef.current?.clientHeight || CHART_HEIGHT
@@ -790,52 +790,30 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
       svg.setAttribute('height', String(height))
       svg.setAttribute('viewBox', `0 0 ${fullWidth} ${height}`)
 
-      // 两遍绘制：先全部色块，再全部边界线与标签——相邻位的标签不被后续色块盖住
-      const drawn: {
-        top: number
-        bottom: number
-        isSupport: boolean
-        lv: KeyLevel
-      }[] = []
+      // 第一遍画线，第二遍画标签；相邻线标签 y 距过近时跳过后绘，防重叠
+      const labelSlots: { y: number; isSupport: boolean; lv: KeyLevel }[] = []
       for (const lv of chartKeyLevels) {
-        const yTop = series.priceToCoordinate(lv.zone_high)
-        const yBot = series.priceToCoordinate(lv.zone_low)
-        if (yTop == null || yBot == null) continue
-        const top = Math.min(yTop, yBot)
-        const bottom = Math.max(yTop, yBot)
-        if (bottom < 0 || top > height) continue // 完全在可视区外
+        const y = series.priceToCoordinate(lv.price)
+        if (y == null) continue
+        if (y < 0 || y > height) continue // 可视区外
         const isSupport = lv.role === 'support'
-        const cTop = Math.max(top, 0)
-        const cBot = Math.min(bottom, height)
-        const r = el('rect')
-        r.setAttribute('x', '0')
-        r.setAttribute('y', String(cTop))
-        r.setAttribute('width', String(rightEdge))
-        r.setAttribute('height', String(cBot - cTop))
-        r.setAttribute('fill', isSupport ? 'rgba(38, 166, 154, 0.10)' : 'rgba(239, 83, 80, 0.10)')
-        svg.appendChild(r)
-        drawn.push({ top, bottom, isSupport, lv })
+        const ln = el('line')
+        ln.setAttribute('x1', '0')
+        ln.setAttribute('y1', String(y))
+        ln.setAttribute('x2', String(rightEdge))
+        ln.setAttribute('y2', String(y))
+        ln.setAttribute('stroke', isSupport ? 'rgba(38, 166, 154, 0.45)' : 'rgba(239, 83, 80, 0.45)')
+        ln.setAttribute('stroke-width', '1')
+        ln.setAttribute('stroke-dasharray', '4,3')
+        svg.appendChild(ln)
+        labelSlots.push({ y, isSupport, lv })
       }
 
-      for (const { top, bottom, isSupport, lv } of drawn) {
-        const edgeColor = isSupport ? 'rgba(38, 166, 154, 0.45)' : 'rgba(239, 83, 80, 0.45)'
-        // 区域上下边界虚线
-        for (const yy of [top, bottom]) {
-          if (yy < 0 || yy > height) continue
-          const ln = el('line')
-          ln.setAttribute('x1', '0')
-          ln.setAttribute('y1', String(yy))
-          ln.setAttribute('x2', String(rightEdge))
-          ln.setAttribute('y2', String(yy))
-          ln.setAttribute('stroke', edgeColor)
-          ln.setAttribute('stroke-width', '1')
-          ln.setAttribute('stroke-dasharray', '4,3')
-          svg.appendChild(ln)
-        }
-        // 左侧标签（区域可见高度不足时跳过，避免挤压重叠）
-        const cTop = Math.max(top, 0)
-        const cBot = Math.min(bottom, height)
-        if (cBot - cTop < 14) continue
+      let lastLabelY = -Infinity
+      for (const { y, isSupport, lv } of labelSlots) {
+        const boxY = y - 6.5
+        if (boxY - lastLabelY < 12) continue // 与上一条标签挤压重叠：跳过后绘
+        lastLabelY = boxY
         const text = `${isSupport ? '支撑' : '压力'} ${fmtPrice(lv.price)}${lv.touches > 1 ? `·${lv.touches}次` : ''}`
         const font = 'bold 10px monospace'
         const ctx2 = document.createElement('canvas').getContext('2d')!
@@ -844,7 +822,6 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
         const padX = 4
         const boxH = 13
         const boxW = tw + padX * 2
-        const boxY = (cTop + cBot) / 2 - boxH / 2
         const rect = el('rect')
         rect.setAttribute('x', '6')
         rect.setAttribute('y', String(boxY))
@@ -864,11 +841,11 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
       }
     }
 
-    requestAnimationFrame(() => drawZones())
-    // rAF 循环持续重绘：价格轴缩放/时间轴平移/窗宽变化时区域始终同步
+    requestAnimationFrame(() => drawLevels())
+    // rAF 循环持续重绘：价格轴缩放/时间轴平移/窗宽变化时线条始终同步
     let rafId = 0
     const loop = () => {
-      drawZones()
+      drawLevels()
       rafId = requestAnimationFrame(loop)
     }
     rafId = requestAnimationFrame(loop)
@@ -1020,8 +997,8 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
             </Button>
           </Tooltip>
           {/* 涨跌配色切换已上移至页面顶部工具栏（全局生效，见 ColorSchemeToggle） */}
-          {/* 关键位区域开关：支撑/压力色块显示与否（全局生效，localStorage 持久化） */}
-          <Tooltip title="显示/隐藏支撑位、压力位区域色块">
+          {/* 关键位线开关：支撑/压力水平线显示与否（全局生效，localStorage 持久化） */}
+          <Tooltip title="显示/隐藏支撑位、压力位水平线">
             <span
               onClick={() => setShowKeyLevels(!showKeyLevels)}
               style={{
@@ -1117,7 +1094,7 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
           border: '1px solid #232838',
         }}
       />
-      {/* 关键位区域层（支撑绿/压力红全宽色带）：在图表之上、AI 仓位标注之下 */}
+      {/* 关键位线层（支撑绿/压力红全宽水平虚线）：在图表之上、AI 仓位标注之下 */}
       <svg
         ref={levelSvgRef}
         width="100%"

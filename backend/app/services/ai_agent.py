@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 MAX_ROUNDS = 5
 
 # 锚点枚举：关键位两类角色（support/resistance，按 role 解析到价格侧最近的一档）
-# + 区域近轨锚点（做多止盈锚压力位下轨、做空锚支撑位上轨）+ market（市价锚）。
-# next_ 前缀取更前一档（止盈二用）
+# + 线外锚点（做多止盈锚压力线下方、做空锚支撑线上方，枚举名沿用 zone 时期历史命名）+
+# market（市价锚）。next_ 前缀取更前一档（止盈二用）
 LEVEL_REFS = (
     "support", "resistance", "market",
     "resistance_zone_low", "support_zone_high",
@@ -45,10 +45,10 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 1. 程序能算的不让你算——事实包数据直接用；需要补充数据才调用工具，最多 {max_rounds} 轮。
 2. **禁止编造绝对价格**：所有价格必须用结构位锚点表达（entry_ref/stop_ref/tp1_ref/tp2_ref + offset_pct），
    ref 取值: {_ref_desc}；offset_pct 为相对锚点的百分比偏移（如支撑下方 0.5×ATR 用负 offset）。
-   止盈用区域近轨锚点：做多止盈一 tp1_ref=resistance_zone_low（最近压力位下轨）、
-   止盈二 tp2_ref=next_resistance_zone_low（下一档压力位下轨）；做空用 support_zone_high /
-   next_support_zone_high（支撑位上轨）。止盈 offset 留余地：做多 -0.2~-0.5（下轨下方），
-   做空 0.2~0.5（上轨上方）。
+   止盈用线外锚点：做多止盈一 tp1_ref=resistance_zone_low（最近压力位价格线，历史命名）、
+   止盈二 tp2_ref=next_resistance_zone_low（下一档压力线）；做空用 support_zone_high /
+   next_support_zone_high（支撑线）。止盈 offset 留余地：做多 -0.2~-0.5（线下方），
+   做空 0.2~0.5（线上方）。
 3. 决策必须通过 submit_decision 工具提交，提交后程序会做风控校验：
    校验不通过时工具会返回违规明细，请按明细修正后重新提交。
 4. **入场价纪律**：当前价格是分析时刻的最新价。顺势追势时 entry 用 market 锚（offset 0 附近）；
@@ -69,28 +69,27 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 9. 盈亏比铁律 ≥{rr_min}；止损宽度由结构位决定，不设固定价格百分比上限；仓位不要自己报，
    程序按固定亏损法计算：仓位 = 3% ÷ 止损距离%，触发止损时恰好亏损账户资金的 3%（止损越远仓位越小）。
 10. 止损锚定（关键位优先，极值兜底，两锚取更远者；程序按此规则直接定锚，stop 值仅参考）：
-    做多优先锚定入场价下方最近支撑位的区域下轨（zone_low）外 0.3%~0.5%，做空锚定上方最近压力位的区域
-    上轨（zone_high）外同幅度，锚须落在最近 10 根K线影线范围内；入场贴着关键位区域时止损还须越过
-    影线极值——做多取 zone_low 与 10 根最低点中更低者、做空取 zone_high 与 10 根最高点中更高者外 0.3%
+    做多优先锚定入场价下方最近支撑位价格线外 0.3%~0.5%，做空锚定上方最近压力位价格线外同幅度，
+    锚须落在最近 10 根K线影线范围内；入场贴着关键位时止损还须越过影线极值——做多取支撑线与
+    10 根最低点中更低者、做空取压力线与 10 根最高点中更高者外 0.3%
     （止损在近期波动区间内部必被扫损）；该范围内无同类关键位时用极值锚——
     做多严格低于最近 10 根K线最低点（影线极值非收盘价）至少 0.3%，做空相反。
-11. 止盈锚定（2026-09-14 起程序强制最近优先，偏离会直接改挂）：关键位是带上下轨的区域，
-    重叠/近邻的同角色区域已预先合并为一档。做多止盈一必须挂在上方第一个结构位（压力位下轨
-    zone_low）下方 0.2%~0.5%，做空挂在下方第一个结构位（支撑位上轨 zone_high）上方 0.2%~0.5%
-    ——不得挂在关键位区域内（价格常在区域边缘反弹，挂进区域的止盈大概率落空）。
+11. 止盈锚定（2026-09-14 起程序强制最近优先，偏离会直接改挂）：关键位是单价格线（角色由来源
+    固定：摆动低点=支撑、摆动高点=压力）。做多止盈一必须挂在上方第一个结构位（压力线）
+    下方 0.2%~0.5%，做空挂在下方第一个结构位（支撑线）上方 0.2%~0.5%
+    ——不得贴死线位或挂在越线一侧（价格常在线附近反弹，越线才触发的止盈大概率落空）。
     禁止把止盈一挂到更远结构位凑盈亏比：到第一结构位的盈亏比不足 {rr_min} 说明空间不足，
-    应直接 skip；程序会把偏离的止盈一强制改挂回第一结构位近轨外侧再按铁律打回。
-    止盈二取止盈一锚定档的下一档同类结构位（做多=更高一档压力位的下轨下方，做空=更低一档
-    支撑位的上轨上方）且必须比止盈一更远。近期摆动高点/低点不算独立锚定档——仅当前方
-    没有任何关键位区域时才作回退锚（锚定价位本身，留同样余地）。
+    应直接 skip；程序会把偏离的止盈一强制改挂回第一结构位线外侧再按铁律打回。
+    止盈二取止盈一锚定档的下一档同类结构位（做多=更高一档压力线下方，做空=更低一档
+    支撑线上方）且必须比止盈一更远。近期摆动高点/低点不算独立锚定档——仅当前方
+    没有任何关键位时才作回退锚（锚定价位本身，留同样余地）。
     前方无任何结构位可锚定时（如创新高突破），止盈一 = 入场 ± {rr_min}×止损距离、
     止盈二不设（仅一档）；程序同样会自动回退。盈亏比 ≥{rr_min} 是开单硬性要求。
 12. 方向铁律（程序强校验）：只在支撑位做多，只在压力位做空。锚点与位置不符会直接被风控打回。
     唯一例外：信号类型为 breakout（放量突破，事实包 signal_type 可见）时顺势追突破——
     向上突破压力位做多、向下突破支撑位做空，entry 用 market 锚。
-13. 关键位可靠性：事实包关键位列表中触及次数越多、时间加权权重越高越可靠；时间加权已含
-    形态确认加成（触及点出现方向匹配的 12 金K 会放大权重，"形态确认N次"标记）。
-    锚定止盈、评估支撑压力强度时优先选触及多/有权重/形态确认多的位。
+13. 关键位可靠性：事实包关键位列表中触及次数（touches）越多、形态确认（pattern_hits，触及点
+    出现方向匹配的 12 金K）越多越可靠。锚定止盈、评估支撑压力强度时优先选触及多/形态确认多的位。
 
 {skill_index}"""
 
@@ -142,11 +141,11 @@ TOOLS_SCHEMA = [
             "stop_ref": {"type": "string", "enum": list(LEVEL_REFS), "description": "止损锚点"},
             "stop_offset_pct": {"type": "number", "description": "止损相对锚点偏移%（通常负/反向）"},
             "tp1_ref": {"type": "string", "enum": list(LEVEL_REFS),
-                        "description": "止盈1锚点：做多=resistance_zone_low（最近压力位下轨），做空=support_zone_high（最近支撑位上轨）"},
+                        "description": "止盈1锚点：做多=resistance_zone_low（最近压力位价格线），做空=support_zone_high（最近支撑位价格线）"},
             "tp1_offset_pct": {"type": "number",
-                               "description": "止盈1相对锚点偏移%，留余地：做多 -0.2~-0.5（下轨下方），做空 0.2~0.5（上轨上方）"},
+                               "description": "止盈1相对锚点偏移%，留余地：做多 -0.2~-0.5（线下方），做空 0.2~0.5（线上方）"},
             "tp2_ref": {"type": "string", "enum": list(LEVEL_REFS),
-                        "description": "止盈2锚点（可选）：做多=next_resistance_zone_low，做空=next_support_zone_high"},
+                        "description": "止盈2锚点（可选）：做多=next_resistance_zone_low（下一档压力线），做空=next_support_zone_high（下一档支撑线）"},
             "tp2_offset_pct": {"type": "number", "description": "止盈2相对锚点偏移%，同止盈1留余地"},
             "recommendation": {"type": "integer", "description": "推荐程度 0-100，skip≤30，suggest≥50"},
             "reason": {
@@ -162,12 +161,13 @@ TOOLS_SCHEMA = [
 ]
 
 
-# 区域近轨锚点：ref -> (role, 区域字段, 第几档)；第几档 0=价格侧最近、1=下一档（止盈二用）
+# 线外锚点：ref -> (role, 第几档)；第几档 0=价格侧最近、1=下一档（止盈二用）。
+# 关键位为单价格线（docs/08），锚点直接解析到线价本身，枚举名沿用 zone 时期历史命名。
 _ZONE_REF_MAP = {
-    "resistance_zone_low": ("resistance", "zone_low", 0),
-    "support_zone_high": ("support", "zone_high", 0),
-    "next_resistance_zone_low": ("resistance", "zone_low", 1),
-    "next_support_zone_high": ("support", "zone_high", 1),
+    "resistance_zone_low": ("resistance", 0),
+    "support_zone_high": ("support", 0),
+    "next_resistance_zone_low": ("resistance", 1),
+    "next_support_zone_high": ("support", 1),
 }
 
 
@@ -188,23 +188,18 @@ def _resolve_price(ref: Optional[str], offset_pct, signal: dict) -> Optional[flo
 
     support/resistance 按 role 解析到价格侧最近的一档（多位同角色时：
     support 取价下方最近即价格最大者，resistance 取价上方最近即价格最小者）；
-    区域近轨锚点解析到对应关键位的 zone_low/zone_high（旧数据无区域字段时退化为价位本身）。
+    线外锚点解析到对应关键位的价格线本身（历史行带 zone 字段也只按 price 解析）。
     """
     if not ref:
         return None
     if ref == "market":
         base = float(signal.get("current_price") or 0)
     elif ref in _ZONE_REF_MAP:
-        role, field, nth = _ZONE_REF_MAP[ref]
+        role, nth = _ZONE_REF_MAP[ref]
         lv = _nth_level(signal, role, nth)
         if lv is None:
             return None
-        try:
-            base = float(lv.get(field))
-        except (TypeError, ValueError):
-            base = 0.0
-        if base <= 0:
-            base = float(lv.get("price") or 0)
+        base = float(lv.get("price") or 0)
     else:
         prices = [
             float(lv.get("price", 0))
@@ -453,20 +448,11 @@ def _build_user_msg(
     for lv in signal.get("key_levels") or []:
         role = "支撑" if lv.get("role") == "support" else "压力"
         touch = f"触及{lv.get('touches', 1)}次"
-        if lv.get("weight") is not None:
-            touch += f"·时间加权{lv['weight']}"
         if lv.get("pattern_hits"):
             touch += f"·形态确认{lv['pattern_hits']}次"
-        zone = ""
-        try:
-            zl, zh = float(lv.get("zone_low") or 0), float(lv.get("zone_high") or 0)
-        except (TypeError, ValueError):
-            zl = zh = 0.0
-        if zl > 0 and zh > 0:
-            zone = f"，区域{zl:.6g}~{zh:.6g}"
         levels.append(
             f"  {POSITION_LABEL_MAP.get(lv.get('kind'), lv.get('kind'))}: {lv['price']:.6g}"
-            f"{zone} ({role}, {touch})"
+            f" ({role}, {touch})"
         )
     # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点）
     sw = signal.get("recent_swings") or {}

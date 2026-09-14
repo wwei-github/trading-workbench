@@ -52,8 +52,11 @@ export function positionTag(
         (a, b) => Math.abs(a.price - currentPrice) - Math.abs(b.price - currentPrice),
       )[0];
   }
+  // tip：新数据（线口径）只展示线价+触及；历史行带 zone 字段则保留区域展示
   const tip = hit
-    ? `${label} ${hit.price}，触及 ${hit.touches} 次，区域 ${hit.zone_low}~${hit.zone_high}`
+    ? hit.zone_low != null && hit.zone_high != null
+      ? `${label} ${hit.price}，触及 ${hit.touches} 次，区域 ${hit.zone_low}~${hit.zone_high}`
+      : `${label} ${hit.price}，触及 ${hit.touches} 次${hit.pattern_hits ? `，形态确认 ${hit.pattern_hits} 次` : ""}`
     : undefined;
   return { label, color: isSupportRole ? "green" : "red", tip };
 }

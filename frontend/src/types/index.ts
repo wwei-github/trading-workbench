@@ -11,13 +11,13 @@ export interface ScanRecord {
 }
 
 export interface KeyLevel {
-  kind: string; // support / resistance（2026-09-12 两类化后 kind==role；历史行可能是 prev_high 等）
+  kind: string; // support / resistance（2026-09-14 线口径后 kind==role；历史行可能是 prev_high 等）
   price: number;
-  zone_low: number;
-  zone_high: number;
+  zone_low?: number; // 历史行（区域口径）残留字段，新数据不再产出
+  zone_high?: number; // 同上
   touches: number;
-  weight?: number; // 时间加权触及强度（含形态加成，聚类位才有）
-  pattern_hits?: number; // 触及点出现方向匹配 12 金K 的次数（形态确认加成）
+  weight?: number; // 历史行（时间加权）残留字段，新数据不再产出
+  pattern_hits?: number; // 触及点出现方向匹配 12 金K 的次数（形态确认）
   role: string; // support / resistance
 }
 
