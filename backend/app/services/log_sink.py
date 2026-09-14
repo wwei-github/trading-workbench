@@ -122,13 +122,30 @@ class DBLogHandler(logging.Handler):
                     db.close()
 
 
+# 单例 handler：fork 后由 restart_db_log_sink_after_fork 重启其写库线程
+# （声明放在类定义之后——模块级注解会即时求值，前置会 NameError）
+_handler: Optional[DBLogHandler] = None
+
+
 def attach_db_log_sink() -> None:
     """把 DBLogHandler 挂到 root logger（幂等）"""
-    global _attached
+    """把 DBLogHandler 挂到 root logger（幂等）"""
+    global _attached, _handler
     if _attached:
         return
     _attached = True
-    handler = DBLogHandler()
-    handler.addFilter(_AppLoggerFilter())
-    logging.getLogger().addHandler(handler)
-    handler.start()
+    _handler = DBLogHandler()
+    _handler.addFilter(_AppLoggerFilter())
+    logging.getLogger().addHandler(_handler)
+    _handler.start()
+
+
+def restart_db_log_sink_after_fork() -> None:
+    """celery prefork 子进程 fork 后重启写库线程。
+
+    线程不随 fork 存活：父进程 attach 时启动的 _writer_loop 在子进程里已死，
+    日志只会进队列没人消费（「系统日志」看不到 worker 的任何记录）。
+    start() 幂等——线程还活着直接返回；worker_process_init 信号里调用。
+    """
+    if _handler is not None:
+        _handler.start()

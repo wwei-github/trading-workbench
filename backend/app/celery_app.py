@@ -1,10 +1,19 @@
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import worker_process_init
 
 from app.config import settings
 from app.services.log_sink import attach_db_log_sink
 
 attach_db_log_sink()  # worker 进程同样落库 WARNING+ 日志（前端「系统日志」）
+
+
+@worker_process_init.connect
+def _restart_db_log_sink(**_kwargs):
+    """prefork 子进程不继承存活线程：fork 后重启日志写库线程，否则 worker 日志全部丢失"""
+    from app.services.log_sink import restart_db_log_sink_after_fork
+
+    restart_db_log_sink_after_fork()
 
 celery_app = Celery(
     "trading_workbench",

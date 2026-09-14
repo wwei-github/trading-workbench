@@ -69,6 +69,13 @@ def close_task(
                 rec.error = str(error)[:2000]
             rec.finished_at = datetime.utcnow()
             db.commit()
+            # 失败任务同步落一条系统日志（WARNING+ 会进「系统日志」面板）——
+            # 不依赖任务自身是否 logger.exception，保证失败在两处都可见
+            if status == "failed":
+                logger.warning(
+                    "任务[%s] %s 失败: %s",
+                    rec.task_type, rec.task_name, (str(error) if error else summary or "")[:300],
+                )
     except Exception as e:
         try:
             db.rollback()
