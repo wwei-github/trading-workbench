@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTabMemory } from '../utils/tabMemory'
 import {
   Button,
   Card,
@@ -149,6 +150,8 @@ export default function StrategyPromptPanel() {
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [loaded, setLoaded] = useState(false)
+  // 内部 Tab（提示词/技能库）记忆：刷新后保留
+  const [promptTab, switchPromptTab] = useTabMemory('tabs.strategyPanel', ['prompt', 'skills'])
 
   // 配置加载后初始化编辑内容（只初始化一次，避免覆盖未保存的编辑）
   useEffect(() => {
@@ -178,6 +181,8 @@ export default function StrategyPromptPanel() {
 
   return (
     <Tabs
+      activeKey={promptTab}
+      onChange={switchPromptTab}
       items={[
         {
           key: 'prompt',

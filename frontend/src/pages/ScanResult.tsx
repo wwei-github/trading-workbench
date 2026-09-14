@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Card, Row, Col, Button, Space, Switch, Tooltip, Tabs, message } from 'antd'
 import { ReloadOutlined, ThunderboltOutlined, RobotOutlined, FileTextOutlined, ApiOutlined } from '@ant-design/icons'
+import { useTabMemory } from '../utils/tabMemory'
 import ScanStatus from '../components/ScanStatus'
 import ResultTable from '../components/ResultTable'
 import TaskList from '../components/TaskList'
@@ -30,6 +31,11 @@ export default function ScanResult() {
   } = useScanStore()
 
   const wasScanning = useRef(false)
+  // Tab 记忆：刷新后保留刷新前的聚焦 tab
+  const [activeTab, switchTab] = useTabMemory(
+    'tabs.scanResult',
+    ['results', 'watchlist', 'search', 'strategy', 'trades', 'tasks', 'logs'],
+  )
 
   useEffect(() => {
     // 初始加载：状态、配置、结果、任务记录
@@ -210,7 +216,8 @@ export default function ScanResult() {
       </Card>
 
       <Tabs
-        defaultActiveKey="results"
+        activeKey={activeTab}
+        onChange={switchTab}
         style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
         tabBarStyle={{ flexShrink: 0 }}
         items={[
