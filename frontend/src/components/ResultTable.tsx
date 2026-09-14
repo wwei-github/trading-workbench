@@ -13,6 +13,7 @@ import {
 } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { useScanStore } from "../stores/scanStore";
+import { schemeTag } from "../utils/scheme";
 import {
   SIGNAL_TYPE_MAP,
   SIGNAL_TYPE_FILTERS,
@@ -46,6 +47,8 @@ export default function ResultTable() {
     addToWatchlist,
     removeFromWatchlist,
   } = useScanStore();
+  // 全局涨跌配色方案：多空、胜负标签随「红涨绿跌/绿涨红跌」翻转
+  const colorScheme = useScanStore((s) => s.colorScheme);
 
   const aiEnabled = !!aiConfig?.ai_analysis_enabled;
   const watchedSymbols = useMemo(
@@ -219,8 +222,8 @@ export default function ResultTable() {
             </Tooltip>
           );
         }
-        if (ai.direction === "long") return <Tag color="green">多</Tag>;
-        if (ai.direction === "short") return <Tag color="red">空</Tag>;
+        if (ai.direction === "long") return <Tag color={schemeTag(colorScheme).up}>多</Tag>;
+        if (ai.direction === "short") return <Tag color={schemeTag(colorScheme).down}>空</Tag>;
         return <span style={{ color: "#999" }}>-</span>;
       },
     },
@@ -360,11 +363,11 @@ export default function ResultTable() {
         if (!status) return <span style={{ color: "#999" }}>-</span>;
         switch (status) {
           case "win_tp1":
-            return <Tag color="green">胜·TP1</Tag>;
+            return <Tag color={schemeTag(colorScheme).up}>胜·TP1</Tag>;
           case "win_tp2":
-            return <Tag color="green">胜·TP2</Tag>;
+            return <Tag color={schemeTag(colorScheme).up}>胜·TP2</Tag>;
           case "loss":
-            return <Tag color="red">负·止损</Tag>;
+            return <Tag color={schemeTag(colorScheme).down}>负·止损</Tag>;
           case "expired":
             return <Tag color="default">超时</Tag>;
           default:

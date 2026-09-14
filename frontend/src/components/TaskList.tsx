@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { Button, Card, List, Tag, Typography, Pagination, Empty, Select, Tooltip } from 'antd'
 import { DownOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
 import { bj } from '../utils/dayjs'
-import { useScanStore } from '../stores/scanStore'
+import { useScanStore, type ColorScheme } from '../stores/scanStore'
+import { schemeTag } from '../utils/scheme'
 import type { TaskRecord } from '../types'
 
 const { Text } = Typography
@@ -29,13 +30,13 @@ const statusMeta: Record<string, { label: string; color: string }> = {
   skipped: { label: '跳过', color: 'default' },
 }
 
-// 复盘结论展示（review 任务 detail.items[].outcome）
-const OUTCOME_META: Record<string, { label: string; color: string }> = {
-  win_tp1: { label: 'TP1达成', color: 'green' },
-  win_tp2: { label: 'TP2达成', color: 'green' },
-  loss: { label: '止损', color: 'red' },
+// 复盘结论展示（review 任务 detail.items[].outcome）：盈=涨色、亏=跌色（随全局方案翻转）
+const outcomeMeta = (scheme: ColorScheme): Record<string, { label: string; color: string }> => ({
+  win_tp1: { label: 'TP1达成', color: schemeTag(scheme).up },
+  win_tp2: { label: 'TP2达成', color: schemeTag(scheme).up },
+  loss: { label: '止损', color: schemeTag(scheme).down },
   expired: { label: '未定论', color: 'default' },
-}
+})
 
 const DIR_LABEL: Record<string, string> = { long: '多', short: '空' }
 
@@ -47,15 +48,15 @@ function fmtDetailValue(v: unknown): string {
 }
 
 // detail.items（复盘明细）渲染：逐条 币种/方向/结论/K线数/评分
-function renderReviewItems(items: Record<string, unknown>[]) {
+function renderReviewItems(items: Record<string, unknown>[], scheme: ColorScheme) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       {items.map((it, i) => {
-        const o = OUTCOME_META[String(it.outcome)] || { label: String(it.outcome), color: 'default' }
+        const o = outcomeMeta(scheme)[String(it.outcome)] || { label: String(it.outcome), color: 'default' }
         return (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
             <Text strong>{String(it.symbol ?? '-')}</Text>
-            <Tag color={it.direction === 'long' ? 'green' : 'red'} style={{ marginInlineEnd: 0 }}>
+            <Tag color={it.direction === 'long' ? schemeTag(scheme).up : schemeTag(scheme).down} style={{ marginInlineEnd: 0 }}>
               {DIR_LABEL[String(it.direction)] || '-'}
             </Tag>
             <Tag color={o.color} style={{ marginInlineEnd: 0 }}>{o.label}</Tag>
@@ -70,11 +71,11 @@ function renderReviewItems(items: Record<string, unknown>[]) {
 }
 
 // detail JSON → 键值行（counts 等扁平对象）；items 数组单独渲染
-function renderDetail(detail: Record<string, unknown>) {
+function renderDetail(detail: Record<string, unknown>, scheme: ColorScheme) {
   const items = detail.items
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
-      {Array.isArray(items) && items.length > 0 && renderReviewItems(items as Record<string, unknown>[])}
+      {Array.isArray(items) && items.length > 0 && renderReviewItems(items as Record<string, unknown>[], scheme)}
       {Array.isArray(items) && items.length === 0 && (
         <Text type="secondary" style={{ fontSize: 12 }}>本轮无明细</Text>
       )}
@@ -95,6 +96,8 @@ export default function TaskList() {
     tasks, tasksTotal, tasksPage, tasksPageSize, tasksType,
     fetchTasks, fetchResults,
   } = useScanStore()
+  // 全局涨跌配色方案（红涨绿跌/绿涨红跌）：复盘结论/方向标签随方案翻转
+  const colorScheme = useScanStore((s) => s.colorScheme)
   // 展开查看详情的任务 id 集合
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
@@ -207,7 +210,7 @@ export default function TaskList() {
                         </Text>
                       </div>
                     )}
-                    {hasDetail && renderDetail(item.detail!)}
+                    {hasDetail && renderDetail(item.detail!, colorScheme)}
                   </div>
                 )}
               </List.Item>

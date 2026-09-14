@@ -16,6 +16,8 @@ import {
 import { ReloadOutlined, QuestionCircleOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
+import { useScanStore } from '../stores/scanStore'
+import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
 import type { ReviewGroupStat, ReviewStats } from '../types'
 import {
   EMA_STATE_MAP,
@@ -50,10 +52,11 @@ export default function ReviewStatsPanel() {
     fetchData(days)
   }, [days, fetchData])
 
-  // 胜率百分比展示（>=50% 绿色，<50% 红色）
+  // 胜率百分比展示（>=50% 涨色，<50% 跌色；随全局红涨绿跌/绿涨红跌方案翻转）
+  const colorScheme = useScanStore((s) => s.colorScheme)
   const renderWinRate = (rate: number) => {
     const pct = (rate * 100).toFixed(1) + '%'
-    const color = rate >= 0.5 ? '#52c41a' : '#ff4d4f'
+    const color = rate >= 0.5 ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down
     return <span style={{ color, fontWeight: 600 }}>{pct}</span>
   }
 
@@ -113,21 +116,21 @@ export default function ReviewStatsPanel() {
       dataIndex: 'win_tp1',
       key: 'win_tp1',
       width: 80,
-      render: (v: number) => <Tag color="green">{v}</Tag>,
+      render: (v: number) => <Tag color={schemeTag(colorScheme).up}>{v}</Tag>,
     },
     {
       title: '胜·TP2',
       dataIndex: 'win_tp2',
       key: 'win_tp2',
       width: 80,
-      render: (v: number) => <Tag color="green">{v}</Tag>,
+      render: (v: number) => <Tag color={schemeTag(colorScheme).up}>{v}</Tag>,
     },
     {
       title: '负',
       dataIndex: 'loss',
       key: 'loss',
       width: 60,
-      render: (v: number) => <Tag color="red">{v}</Tag>,
+      render: (v: number) => <Tag color={schemeTag(colorScheme).down}>{v}</Tag>,
     },
     {
       title: '超时',
@@ -181,24 +184,24 @@ export default function ReviewStatsPanel() {
                     value={(stats!.win_rate * 100).toFixed(1)}
                     suffix="%"
                     valueStyle={{
-                      color: stats!.win_rate >= 0.5 ? '#52c41a' : '#ff4d4f',
+                      color: stats!.win_rate >= 0.5 ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down,
                     }}
                   />
                 </Card>
               </Col>
               <Col xs={12} sm={8} md={4}>
                 <Card size="small">
-                  <Statistic title="胜·TP1" value={stats!.win_tp1} valueStyle={{ color: '#52c41a' }} />
+                  <Statistic title="胜·TP1" value={stats!.win_tp1} valueStyle={{ color: SCHEME_UP_DOWN[colorScheme].up }} />
                 </Card>
               </Col>
               <Col xs={12} sm={8} md={4}>
                 <Card size="small">
-                  <Statistic title="胜·TP2" value={stats!.win_tp2} valueStyle={{ color: '#52c41a' }} />
+                  <Statistic title="胜·TP2" value={stats!.win_tp2} valueStyle={{ color: SCHEME_UP_DOWN[colorScheme].up }} />
                 </Card>
               </Col>
               <Col xs={12} sm={8} md={4}>
                 <Card size="small">
-                  <Statistic title="负·止损" value={stats!.loss} valueStyle={{ color: '#ff4d4f' }} />
+                  <Statistic title="负·止损" value={stats!.loss} valueStyle={{ color: SCHEME_UP_DOWN[colorScheme].down }} />
                 </Card>
               </Col>
               <Col xs={12} sm={8} md={4}>

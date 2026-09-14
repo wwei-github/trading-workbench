@@ -11,6 +11,7 @@ import WatchlistPanel from '../components/WatchlistPanel'
 import SearchPanel from '../components/SearchPanel'
 import ReviewStatsPanel from '../components/ReviewStatsPanel'
 import TradesPanel from '../components/TradesPanel'
+import ColorSchemeToggle from '../components/ColorSchemeToggle'
 import { useScanStore } from '../stores/scanStore'
 
 export default function ScanResult() {
@@ -189,6 +190,7 @@ export default function ScanResult() {
                   />
                 </Space>
               </Tooltip>
+              <ColorSchemeToggle />
               <ScanConfigPanel />
               <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
                 刷新

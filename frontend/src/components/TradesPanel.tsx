@@ -34,6 +34,8 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
 import { bj } from '../utils/dayjs'
+import { SCHEME_UP_DOWN, schemeTag, schemeValueColor } from '../utils/scheme'
+import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import AiAnalysisCard from './AiAnalysisCard'
 import type { TradeEvent, TradeRecord } from '../types'
 
@@ -110,13 +112,14 @@ function fmtTime(s: string | null | undefined): string {
 }
 
 // 事件详情值格式化：盈亏带正负号着色、百分比补 %、出场原因转中文
-function detailValue(k: string, v: unknown): React.ReactNode {
+// 盈亏颜色跟随全局涨跌配色方案（红涨绿跌/绿涨红跌）
+function detailValue(k: string, v: unknown, scheme: ColorScheme): React.ReactNode {
   if (k === 'exit_reason') return EXIT_REASON_MAP[String(v)] || String(v)
   if (k === 'pnl_pct' || k === 'slippage_pct') return `${v}%`
   if (k === 'realized_pnl' || k === 'pnl' || k === 'cum_pnl' || k === 'insurance_clear') {
     const n = Number(v)
     if (!Number.isNaN(n)) {
-      const color = n > 0 ? '#52c41a' : n < 0 ? '#ff4d4f' : '#595959'
+      const color = n > 0 ? SCHEME_UP_DOWN[scheme].up : n < 0 ? SCHEME_UP_DOWN[scheme].down : '#595959'
       return (
         <strong style={{ color }}>
           {n > 0 ? '+' : ''}
@@ -129,7 +132,7 @@ function detailValue(k: string, v: unknown): React.ReactNode {
 }
 
 // 事件详情 JSON → Descriptions 组件（一行两项）
-function renderDetail(detail: Record<string, unknown> | null) {
+function renderDetail(detail: Record<string, unknown> | null, scheme: ColorScheme) {
   if (!detail || Object.keys(detail).length === 0) return null
   return (
     <Descriptions
@@ -148,7 +151,7 @@ function renderDetail(detail: Record<string, unknown> | null) {
       items={Object.entries(detail).map(([k, v]) => ({
         key: k,
         label: DETAIL_KEY_MAP[k] || k,
-        children: detailValue(k, v),
+        children: detailValue(k, v, scheme),
       }))}
     />
   )
@@ -197,6 +200,11 @@ export default function TradesPanel() {
     return () => clearInterval(timer)
   }, [fetchData])
 
+  // 全局涨跌配色方案（红涨绿跌/绿涨红跌，页面顶部切换）
+  const colorScheme = useScanStore((s) => s.colorScheme)
+  // 整行点击展开/收起（受控 keys；点展开图标时 stopPropagation 由 onRow 内部处理）
+  const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([])
+
   const filtered = useMemo(
     () =>
       statusFilter === ''
@@ -239,7 +247,7 @@ export default function TradesPanel() {
     }
   }, [])
 
-  // 收益列：正绿负红（净盈亏 + 相对止损金额的百分比）
+  // 收益列（净盈亏 + 相对止损金额的百分比），正负色跟随全局涨跌配色方案
   // 运行中单子显示已实现部分（TP1/TP2 已止盈金额，带"已止盈"标记），结算后为全程净额
   const renderPnl = (rec: TradeRecord) => {
     if (rec.realized_pnl === null || rec.realized_pnl === undefined) {
@@ -247,12 +255,12 @@ export default function TradesPanel() {
     }
     const pnl = rec.realized_pnl
     const pct = rec.pnl_pct !== null && rec.pnl_pct !== undefined ? ` (${rec.pnl_pct > 0 ? '+' : ''}${rec.pnl_pct}%)` : ''
-    const color = pnl > 0 ? '#52c41a' : pnl < 0 ? '#ff4d4f' : '#999'
+    const color = schemeValueColor(pnl, colorScheme)
     const running = rec.status !== 'CLOSED'
     return (
       <span style={{ color, fontWeight: 600 }}>
         {pnl > 0 ? '+' : ''}{pnl.toFixed(2)}{pct}
-        {running && pnl > 0 && <Tag color="green" style={{ marginLeft: 6, fontWeight: 400 }}>已止盈</Tag>}
+        {running && pnl > 0 && <Tag color={schemeTag(colorScheme).up} style={{ marginLeft: 6, fontWeight: 400 }}>已止盈</Tag>}
       </span>
     )
   }
@@ -282,7 +290,7 @@ export default function TradesPanel() {
                 color: '#8c8c8c',
                 icon: <HistoryOutlined />,
               }
-            const detail = renderDetail(ev.detail)
+            const detail = renderDetail(ev.detail, colorScheme)
             return {
               dot: (
                 <span
@@ -349,10 +357,11 @@ export default function TradesPanel() {
       title: '币种',
       dataIndex: 'symbol',
       key: 'symbol',
+      width: 150,
       render: (v: string, rec) => (
         <Space size={4}>
           <Typography.Text strong>{v}</Typography.Text>
-          <Tag color={rec.direction === 'long' ? 'green' : 'red'} style={{ marginInlineEnd: 0 }}>
+          <Tag color={rec.direction === 'long' ? schemeTag(colorScheme).up : schemeTag(colorScheme).down} style={{ marginInlineEnd: 0 }}>
             {rec.direction === 'long' ? '多' : '空'}
           </Tag>
         </Space>
@@ -515,12 +524,12 @@ export default function TradesPanel() {
         <StatCard
           title="胜率（净盈利笔数占比）"
           value={stats.winRate === null ? '-' : `${stats.winRate}%`}
-          color={stats.winRate === null ? undefined : stats.winRate >= 50 ? '#52c41a' : '#ff4d4f'}
+          color={stats.winRate === null ? undefined : stats.winRate >= 50 ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down}
         />
         <StatCard
           title="累计净收益（含手续费）"
           value={`${stats.totalPnl > 0 ? '+' : ''}${stats.totalPnl.toFixed(2)} USDT`}
-          color={stats.totalPnl > 0 ? '#52c41a' : stats.totalPnl < 0 ? '#ff4d4f' : undefined}
+          color={stats.totalPnl === 0 ? undefined : schemeValueColor(stats.totalPnl, colorScheme)}
         />
       </div>
 
@@ -534,6 +543,16 @@ export default function TradesPanel() {
             dataSource={filtered}
             size="small"
             scroll={{ y: 480 }}
+            onRow={(rec) => ({
+              onClick: (e) => {
+                // 点展开图标/按钮/链接时不重复触发（图标点击本身会冒泡到这里）
+                if ((e.target as HTMLElement).closest('button, a')) return
+                setExpandedKeys((prev) =>
+                  prev.includes(rec.id) ? prev.filter((k) => k !== rec.id) : [...prev, rec.id],
+                )
+              },
+              style: { cursor: 'pointer' },
+            })}
             pagination={{
               current: page,
               pageSize,
@@ -547,6 +566,8 @@ export default function TradesPanel() {
               },
             }}
             expandable={{
+              expandedRowKeys: expandedKeys,
+              onExpandedRowsChange: (keys) => setExpandedKeys([...keys]),
               expandedRowRender: (rec) => (
                 <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
                   {/* 左：AI 分析结论快照（较宽） */}

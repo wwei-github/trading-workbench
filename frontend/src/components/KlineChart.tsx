@@ -28,6 +28,7 @@ import {
   useScanStore,
   type ColorScheme,
 } from '../stores/scanStore'
+import { SCHEME_UP_DOWN } from '../utils/scheme'
 import {
   INDICATOR_CATALOG,
   type IndicatorContext,
@@ -49,7 +50,8 @@ interface Props {
 const CHART_HEIGHT = 560 // 容器无高度时的兜底值
 
 // 涨跌配色方案：红涨绿跌（国内习惯，默认）/ 绿涨红跌（国际习惯）
-// 仅作用于 K 线实体；关键位/AI 仓位线保持语义色不变
+// 全局生效（切换入口在页面顶部 ColorSchemeToggle）：K线实体与 AI 仓位线、
+// 各面板的涨跌/盈亏文本、胜负/多空标签均随方案翻转（utils/scheme.ts）
 const CANDLE_COLORS: Record<ColorScheme, { up: string; down: string }> = {
   'red-up': { up: '#ef5350', down: '#26a69a' },
   'green-up': { up: '#26a69a', down: '#ef5350' },
@@ -109,9 +111,8 @@ interface LegendData {
 }
 
 export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: Props) {
-  // 全局涨跌配色 / 技术指标（store 共享，切换后所有图表同步生效）
+  // 全局涨跌配色（切换入口在页面顶部）/ 技术指标（store 共享，切换后所有图表同步生效）
   const colorScheme = useScanStore((s) => s.colorScheme)
-  const setColorScheme = useScanStore((s) => s.setColorScheme)
   const showKeyLevels = useScanStore((s) => s.showKeyLevels)
   const setShowKeyLevels = useScanStore((s) => s.setShowKeyLevels)
   const indicatorSettings = useScanStore((s) => s.indicatorSettings)
@@ -600,11 +601,12 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
 
     const isLong = ai.direction !== 'short'
 
-    // 颜色配置
-    const colorEntry = isLong ? '#26a69a' : '#ef5350'
-    const colorSL = '#ef5350'
-    const colorTP1 = '#26a69a'
-    const colorTP2 = '#00bcd4'
+    // 颜色配置（跟随全局红涨绿跌/绿涨红跌方案：止盈=涨色、止损=跌色、入场=方向色）
+    const { up, down } = SCHEME_UP_DOWN[colorScheme]
+    const colorEntry = isLong ? up : down
+    const colorSL = down
+    const colorTP1 = up
+    const colorTP2 = up
     const labelEntry = isLong ? '做多' : '做空'
 
     // 固定标注宽度：放在右侧价格轴左边，向左延伸
@@ -759,7 +761,7 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
       cancelAnimationFrame(rafId)
     }
     // refreshKey 变化会重建图表，effect 需重跑以重新绑定新 chart/series
-  }, [ai, symbol, refreshKey])
+  }, [ai, symbol, refreshKey, colorScheme])
 
   // 渲染关键位区域色块（支撑=绿、压力=红——与 K 线涨跌配色无关的语义色，
   // 全宽色带 + 上下边界虚线 + 左侧标签；rAF 循环重绘同步缩放/平移）
@@ -1017,54 +1019,7 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
               更新
             </Button>
           </Tooltip>
-          {/* 全局涨跌配色切换（localStorage 持久化，对所有图表生效）：
-              药丸形分段控件，选中项带涨跌语义色底色，圆点直观示意红绿顺序 */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              background: 'rgba(255, 255, 255, 0.06)',
-              border: '1px solid rgba(255, 255, 255, 0.08)',
-              borderRadius: 999,
-              padding: 2,
-              marginLeft: 4,
-            }}>
-            {(
-              [
-                { value: 'red-up', label: '红涨绿跌', tint: 'rgba(239, 83, 80, 0.30)', dots: ['#ef5350', '#26a69a'] },
-                { value: 'green-up', label: '绿涨红跌', tint: 'rgba(38, 166, 154, 0.30)', dots: ['#26a69a', '#ef5350'] },
-              ] as const
-            ).map((opt) => {
-              const active = colorScheme === opt.value
-              return (
-                <span
-                  key={opt.value}
-                  onClick={() => setColorScheme(opt.value)}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    fontSize: 11,
-                    lineHeight: '16px',
-                    padding: '2px 8px',
-                    borderRadius: 999,
-                    cursor: 'pointer',
-                    userSelect: 'none',
-                    transition: 'all 0.2s',
-                    color: active ? '#fff' : '#8b93a7',
-                    background: active ? opt.tint : 'transparent',
-                  }}>
-                  <span
-                    style={{ width: 5, height: 5, borderRadius: '50%', background: opt.dots[0] }}
-                  />
-                  <span
-                    style={{ width: 5, height: 5, borderRadius: '50%', background: opt.dots[1] }}
-                  />
-                  {opt.label}
-                </span>
-              )
-            })}
-          </div>
+          {/* 涨跌配色切换已上移至页面顶部工具栏（全局生效，见 ColorSchemeToggle） */}
           {/* 关键位区域开关：支撑/压力色块显示与否（全局生效，localStorage 持久化） */}
           <Tooltip title="显示/隐藏支撑位、压力位区域色块">
             <span

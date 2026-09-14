@@ -8,6 +8,8 @@ import {
 } from '@ant-design/icons'
 import { Bubble, ThoughtChain } from '@ant-design/x'
 import { bj } from '../utils/dayjs'
+import { useScanStore } from '../stores/scanStore'
+import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
 import { scanApi } from '../api/scan'
 import { TRADE_TYPE_MAP } from '../constants/labels'
 import type { AIAnalysis, StageTrace } from '../types'
@@ -200,6 +202,8 @@ interface Props {
 
 /** AI 分析结果卡片：决策横幅 + 价格卡 + 指标行 + AI 推理气泡（Ant Design X） */
 export default function AiAnalysisCard({ ai }: Props) {
+  // 全局涨跌配色方案：多空标签、止损/止盈价卡颜色随方案翻转
+  const colorScheme = useScanStore((s) => s.colorScheme)
   const eff = getEffectiveDecision(ai)
   const isSkip = eff.decision === 'skip'
   // 运行轨迹弹窗开关（仅 Agent 生成的分析可查看）
@@ -237,11 +241,11 @@ export default function AiAnalysisCard({ ai }: Props) {
           </strong>
           {!isSkip &&
             (ai.direction === 'long' ? (
-              <Tag color="green" style={{ marginInlineEnd: 0 }}>
+              <Tag color={schemeTag(colorScheme).up} style={{ marginInlineEnd: 0 }}>
                 做多 Long
               </Tag>
             ) : ai.direction === 'short' ? (
-              <Tag color="red" style={{ marginInlineEnd: 0 }}>
+              <Tag color={schemeTag(colorScheme).down} style={{ marginInlineEnd: 0 }}>
                 做空 Short
               </Tag>
             ) : null)}
@@ -294,9 +298,9 @@ export default function AiAnalysisCard({ ai }: Props) {
           {/* 价格卡：入场 / 止损 / 止盈1 / 止盈2 */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
             <PriceCard label="入场价" value={ai.entry_price} color="#1677ff" />
-            <PriceCard label="止损价" value={ai.stop_loss} color="#ff4d4f" />
-            <PriceCard label="止盈1" value={ai.take_profit_1} color="#52c41a" />
-            <PriceCard label="止盈2" value={ai.take_profit_2} color="#52c41a" />
+            <PriceCard label="止损价" value={ai.stop_loss} color={SCHEME_UP_DOWN[colorScheme].down} />
+            <PriceCard label="止盈1" value={ai.take_profit_1} color={SCHEME_UP_DOWN[colorScheme].up} />
+            <PriceCard label="止盈2" value={ai.take_profit_2} color={SCHEME_UP_DOWN[colorScheme].up} />
           </div>
           {/* 指标行：盈亏比 / 仓位 / 分析时间 / 运行轨迹 */}
           <div
