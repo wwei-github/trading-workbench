@@ -560,6 +560,7 @@ export default function TradesPanel() {
               showSizeChanger: true,
               pageSizeOptions: [10, 20, 50],
               showTotal: (t) => `共 ${t} 条`,
+              position: ['bottomRight'],
               onChange: (p, ps) => {
                 setPage(ps !== pageSize ? 1 : p)
                 setPageSize(ps)

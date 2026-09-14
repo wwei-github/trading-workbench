@@ -218,8 +218,9 @@ export default function TaskList() {
           }}
         />
       </div>
-      <div style={{ flexShrink: 0, paddingTop: 8, borderTop: '1px solid #f0f0f0', textAlign: 'right' }}>
+      <div style={{ flexShrink: 0, paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>
         <Pagination
+          align="end"
           current={tasksPage}
           pageSize={tasksPageSize}
           total={tasksTotal}

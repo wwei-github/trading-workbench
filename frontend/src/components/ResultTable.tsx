@@ -402,6 +402,7 @@ export default function ResultTable() {
             total,
             showTotal: (t) => `共 ${t} 条`,
             size: "small",
+            position: ['bottomRight'],
           }}
           locale={{ emptyText: <Empty description="暂无命中币种" /> }}
           onRow={(record) => ({

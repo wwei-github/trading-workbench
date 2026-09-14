@@ -92,8 +92,9 @@ export default function LogsPanel() {
           }}
         />
       </div>
-      <div style={{ flexShrink: 0, paddingTop: 8, borderTop: '1px solid #f0f0f0', textAlign: 'right' }}>
+      <div style={{ flexShrink: 0, paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>
         <Pagination
+          align="end"
           current={logsPage}
           pageSize={logsPageSize}
           total={logsTotal}
