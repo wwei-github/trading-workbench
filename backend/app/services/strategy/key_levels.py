@@ -2,9 +2,9 @@
 
 - 摆动点（收盘价，两侧各 order 根确认）：低点→支撑线、高点→压力线，
   角色由来源固定，不再按当前价动态互换；
-- 每侧最新摆动点自成一线（前高/前低，touches=1，不参与聚合），其余历史点按
-  价距 ≤ level_merge_threshold 链式聚合为一条线（均值价，touches=成员数）；
-- 每侧最多 LEVELS_PER_SIDE 条（按时间新→旧截断）；
+- 全部摆动点按价距 ≤ level_merge_threshold 链式聚合为一条线（均值价，touches=成员数）——
+  价格相近的线一律融合，无"最新点单独成线"例外（2026-09-14 收敛：图上不再出现贴脸双线）；
+- 每侧最多 LEVELS_PER_SIDE=3 条（按时间新→旧截断，全图 ≤6 条）；
 - pattern_hits：摆动点当根及确认窗内出现方向匹配 12 金K 的成员数（形态确认的触及次数）；
 - 触及/突破判定用固定容差带 tol（=key_level_tolerance，DEFAULT_TOL 为镜像缺省）：
   触及 = 影线与 [price×(1−tol), price×(1+tol)] 相交且收盘在持住侧；
@@ -25,8 +25,9 @@ from app.services.strategy import candlestick
 from app.services.strategy.candlestick import GOLDEN_12
 from app.services.strategy.swing import find_swing_points, merge_swings
 
-# 每侧最多保留的线数（按时间新→旧截断：前高/前低必含，更老的历史线让位）
-LEVELS_PER_SIDE = 5
+# 每侧最多保留的线数（按时间新→旧截断：更老的历史线让位）。2026-09-14 由 5 收敛为 3：
+# 相近价位已由聚合融合，3 条/侧（全图 ≤6 条）在图上足够清晰，弱位堆积无益
+LEVELS_PER_SIDE = 3
 
 # 判定容差缺省值：触及带/突破带 = price×(1±DEFAULT_TOL)。
 # 信号检测路径由 _detect 传 config 的 key_level_tolerance；risk_guard 拿不到 DB config，
@@ -151,13 +152,11 @@ def compute_key_levels_from_swings(
 
     levels: list[dict] = []
     for seq, role in ((highs_seq, "resistance"), (lows_seq, "support")):
+        # 全部摆动点（含最新点）统一链式聚合——价格相近的线融合为一条；
+        # 聚合保证相邻组均值价间距 > merge_thr，图上不会出现贴脸双线
         lines = _aggregate_lines(
-            [(float(p[2]), int(p[0])) for p in seq[:-1]], merge_thr, hits,
+            [(float(p[2]), int(p[0])) for p in seq], merge_thr, hits,
         )
-        # 最新摆动点单独成线（前高/前低），不参与聚合——若价位贴近历史聚簇会双线并存，
-        # 判定/锚定取最近一条，功能无损（docs/08 §7）。
-        newest = seq[-1]
-        lines.append((float(newest[2]), 1, int(int(newest[0]) in hits), int(newest[0])))
         lines.sort(key=lambda x: x[3], reverse=True)  # 时间新→旧，截前 N 条
         for price, touches, hit, _idx in lines[:LEVELS_PER_SIDE]:
             levels.append(_make_level(price, role, touches, hit))
