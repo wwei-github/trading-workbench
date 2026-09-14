@@ -4,8 +4,9 @@
 - 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR]，价格距离不设百分比红线）、
   止损锚定（2026-09-13：入场与 N 根极值之间有同类关键位则程序定锚其区域外沿±缓冲，
   无则回退影线极值锚——多单严格低于最低点、空单严格高于最高点）；
-  止盈须锚定前方结构位区域近轨（多单=压力位下轨 zone_low 下方、空单=支撑位上轨 zone_high 上方，
-  留余地；摆动点锚定价位本身；TP2 更远一档同规则）；
+  止盈最近优先强制（2026-09-14）：止盈一必须挂第一结构位近轨外侧（多单=压力位下轨 zone_low
+  下方、空单=支撑位上轨 zone_high 上方，留余地；摆动点锚定价位本身），止盈二挂下一档同规则；
+  AI 挂到更远结构位/空档/区域内部时程序直接改挂，到第一结构位盈亏比不足由 RR 铁律打回；
   方向铁律（docs/03 §8）：只在支撑位做多、只在压力位做空——入场价必须落在对应角色关键位
   区域内（±0.25×ATR 容差）；例外：放量突破 breakout / 手动搜索 manual_search / 无关键位；
   仓位公式保证触止损账户亏损 ≤ 风险预算（RISK_BUDGET_PCT=3%，仓位维度的"3%止损"）
@@ -317,52 +318,43 @@ def validate_decision(
                 f"止损距离 {stop_dist:.6g} > 3×ATR({3*atr:.6g})，过远盈亏比崩塌"
             )
 
-    # ── 止盈锚定校验：TP1 必须锚定前方第一个结构位区域近轨（多单=压力位下轨、空单=支撑位上轨）
-    # 并留余地，TP2 更远一档同规则；摆动点锚定价位本身。近轨与远轨之间视为"略越过近轨"，
-    # 程序直接拉回近轨外侧 0.2%。前方无任何结构位时回退固定盈亏比；其余违规列出可用锚定点供 AI 重试
+    # ── 止盈锚定校验（2026-09-14 改为最近优先强制）：止盈一必须挂在第一结构位近轨外侧，
+    # 止盈二挂在下一档结构位近轨外侧（用户规则）。AI 挂在更远结构位或空档时程序直接改挂
+    # （修正不回炉）——此前允许"最近位盈亏比不足就取下一档"，AI 会跳过第一压力位去锚更远
+    # 的摆动点，止盈一、二扎堆（SCRUSDT 案例：两档仅差 0.37%）。到第一结构位盈亏比不足
+    # 1.5 时由下方 RR 铁律打回——第一压力/支撑都够不着 1.5R 的交易本就不值得做。
+    # 前方无任何结构位时回退固定盈亏比。
     if d.direction in ("long", "short") and d.take_profit_1 > 0:
-        side = "上方" if d.direction == "long" else "下方"
         cands = _structural_candidates(signal, klines, d.direction, d.entry_price)
-        c1 = _anchored(d.take_profit_1, cands, d.direction)
-        if c1 is None:
-            if not cands:
-                # 前方无任何结构位可锚定（如创新高突破）：回退固定盈亏比——
-                # TP1 = 入场 ± RR_MIN×止损距离（乘 1.001 留浮点余量，防复算恰等于阈值被判负），
-                # TP2 清零，仅设一档
-                fb = settings.AI_RR_MIN * stop_dist * 1.001
-                d.take_profit_1 = d.entry_price + fb if d.direction == "long" else d.entry_price - fb
-                d.take_profit_2 = 0.0
-            else:
-                near = ", ".join(f"{c['anchor']:g}" for c in cands[:5])
-                violations.append(
-                    f"止盈一 {d.take_profit_1} 未锚定结构位：关键位须挂在区域近轨外侧留余地"
-                    f"（{'做多=压力位下轨下方 0.2%~0.5%' if d.direction == 'long' else '做空=支撑位上轨上方 0.2%~0.5%'}，"
-                    f"摆动点锚定价位本身，看{side}）。可用锚定点（{side}）：{near}"
-                )
-        elif (d.direction == "long" and d.take_profit_1 > c1["anchor"]) or (
-            d.direction == "short" and d.take_profit_1 < c1["anchor"]
-        ):
-            # 用户规则：止盈须挂在区域近轨外侧（多=下轨下方、空=上轨上方）——价格常在区域边缘
-            # 反弹，深入区域才触发的止盈大概率落空。AI 挂进区域时程序拉回近轨外侧 0.2%
-            d.take_profit_1 = _clamp_before_level(d.take_profit_1, c1["anchor"], d.direction)
-        if d.take_profit_2 > 0 and c1 is not None:
-            further = [
-                c for c in cands
-                if (c["anchor"] > c1["anchor"] if d.direction == "long" else c["anchor"] < c1["anchor"])
-            ]
-            if not further:
-                d.take_profit_2 = 0.0  # 更前方已无结构位：仅设一档
-            else:
-                c2 = _anchored(d.take_profit_2, further, d.direction)
-                if c2 is None:
-                    near = ", ".join(f"{c['anchor']:g}" for c in further[:5])
-                    violations.append(
-                        f"止盈二 {d.take_profit_2} 未锚定比止盈一更远的一档结构位近轨。可用锚定点（{side}）：{near}"
-                    )
-                elif (d.direction == "long" and d.take_profit_2 > c2["anchor"]) or (
-                    d.direction == "short" and d.take_profit_2 < c2["anchor"]
+        if not cands:
+            # 前方无任何结构位可锚定（如创新高突破）：回退固定盈亏比——
+            # TP1 = 入场 ± RR_MIN×止损距离（乘 1.001 留浮点余量，防复算恰等于阈值被判负），
+            # TP2 清零，仅设一档
+            fb = settings.AI_RR_MIN * stop_dist * 1.001
+            d.take_profit_1 = d.entry_price + fb if d.direction == "long" else d.entry_price - fb
+            d.take_profit_2 = 0.0
+        else:
+            first = cands[0]
+            # 两种改挂：挂在空档/更远结构位（未锚定第一结构位），或挂进区域内部/
+            # 越过近轨（价格常在区域边缘反弹，深入区域才触发的止盈大概率落空）——
+            # 都直接改挂第一结构位近轨外侧 0.2%
+            if _anchored(d.take_profit_1, [first], d.direction) is None or (
+                (d.direction == "long" and d.take_profit_1 > first["anchor"])
+                or (d.direction == "short" and d.take_profit_1 < first["anchor"])
+            ):
+                d.take_profit_1 = _clamp_before_level(d.take_profit_1, first["anchor"], d.direction)
+            second = cands[1] if len(cands) > 1 else None
+            if second is None or d.take_profit_2 <= 0:
+                d.take_profit_2 = 0.0  # 更前方已无结构位（或 AI 仅设一档）
+            elif _anchored(d.take_profit_2, [second], d.direction) is None or (
+                (d.direction == "long" and d.take_profit_2 > second["anchor"])
+                or (d.direction == "short" and d.take_profit_2 < second["anchor"])
+            ):
+                d.take_profit_2 = _clamp_before_level(d.take_profit_2, second["anchor"], d.direction)
+                if (d.direction == "long" and d.take_profit_2 <= d.take_profit_1) or (
+                    d.direction == "short" and d.take_profit_2 >= d.take_profit_1
                 ):
-                    d.take_profit_2 = _clamp_before_level(d.take_profit_2, c2["anchor"], d.direction)
+                    d.take_profit_2 = 0.0  # 改挂后与止盈一倒挂/贴死：仅设一档
 
     # 止盈锚定块的回退/清零可能改变 tp1/tp2，关系检查以修正后值为准（清除原始值误报）
     if d.direction == "long" and d.take_profit_2 > 0 and d.take_profit_2 <= d.take_profit_1:

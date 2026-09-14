@@ -220,7 +220,43 @@ def compute_key_levels(
                 levels.append(_make_level(upper, len(rh), close_last, tol))
                 levels.append(_make_level(lower, len(rl), close_last, tol))
 
-    return levels
+    # 4. 同角色区域重叠/近于重合的合并（区域半宽 ATR 自适应后聚类簇间仍会重叠）
+    return _merge_overlapping_levels(levels, merge_thr)
+
+
+def _merge_overlapping_levels(levels: list[dict], near_gap: float) -> list[dict]:
+    """同角色区域重叠或近于重合（间隔 ≤ near_gap）→ 合并为一个区域（2026-09-14）。
+
+    聚类按中心价间距（level_merge_threshold）分簇，但区域半宽是 ATR 自适应的——
+    两簇中心距超过 merge_thr 时区域仍可能相互重叠，人眼是一个位，锚定止盈却会被
+    当两档用（SCRUSDT 案例：0.023166~0.023634 与 0.023516~0.023992 重叠未合并，
+    止盈一、二扎堆在 0.37% 内）。合并取并集：zone_low=min、zone_high=max、
+    中心=并集中点，touches/pattern_hits/weight 累加；role/kind 维持原值不重判
+    （同角色合并，并集中点可能因并集偏宽越过前收，重判会与止损/铁律块的角色口径不一致）。
+    """
+    out: list[dict] = []
+    for role in ("support", "resistance"):
+        group = sorted(
+            (dict(lv) for lv in levels if lv["role"] == role),
+            key=lambda x: x["zone_low"],
+        )
+        merged: list[dict] = []
+        for lv in group:
+            if merged and lv["zone_low"] <= merged[-1]["zone_high"] * (1 + near_gap):
+                g = merged[-1]
+                g["zone_low"] = min(g["zone_low"], lv["zone_low"])
+                g["zone_high"] = max(g["zone_high"], lv["zone_high"])
+                g["price"] = (g["zone_low"] + g["zone_high"]) / 2
+                g["touches"] = int(g["touches"]) + int(lv["touches"])
+                g["pattern_hits"] = int(g["pattern_hits"]) + int(lv["pattern_hits"])
+                g["weight"] = round(
+                    float(g.get("weight", 0)) + float(lv.get("weight", 0)), 2
+                )
+            else:
+                merged.append(lv)
+        out.extend(merged)
+    out.sort(key=lambda x: x["price"])
+    return out
 
 
 def _level_side(lv: dict, prev_close: float) -> str:
