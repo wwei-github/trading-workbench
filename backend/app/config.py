@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     AI_MIN_STRENGTH: float = 0.4      # 信号强度低于此值直接程序 skip，不调 LLM
     AI_RR_MIN: float = 1.5            # 盈亏比复算下限（交易系统铁律）
     RISK_BUDGET_PCT: float = 3.0      # 单笔固定亏损预算（%账户资金）：仓位 = 预算÷止损距离%，触止损恰好亏3%
-    STOP_LOSS_RECENT_BARS: int = 10   # 止损须越过最近N根已收盘K线影线极值（多单低于最低价、空单高于最高价，非收盘价）
+    STOP_LOSS_RECENT_BARS: int = 5    # 止损须越过最近N根已收盘K线影线极值（多单低于最低价、空单高于最高价，非收盘价；2026-09-14 由10改5）
     STOP_LOSS_BUFFER_PCT: float = 0.003  # 止损越过锚点（关键位外沿/极值）的最小缓冲（0.3%）：贴着锚点必被插针扫损，不足者程序自动推远
     FINGERPRINT_TTL_MIN: int = 60     # 指纹缓存复用窗口（分钟，0.3% 价格分桶）
     ATR_SPIKE_MULT: float = 5.0       # 当前K线振幅 > N×ATR 熔断，直接 skip
