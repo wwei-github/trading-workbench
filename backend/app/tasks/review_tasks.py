@@ -81,6 +81,9 @@ def run_trade_review_task():
         logger.info("复盘任务：%d 条建议待复盘", len(rows))
         task_id = open_task(task_type="review", task_name="建议复盘", trigger="scheduled")
         reviewed = 0
+        # 明细随任务记录落库（前端任务记录页可展开查看）：逐条结论 + 分组计数
+        items = []
+        counts = {"win_tp1": 0, "win_tp2": 0, "loss": 0, "expired": 0}
 
         for a, sr in rows:
             try:
@@ -122,12 +125,23 @@ def run_trade_review_task():
                 ))
                 db.commit()
                 reviewed += 1
+                counts[outcome] = counts.get(outcome, 0) + 1
+                items.append({
+                    "symbol": a.symbol,
+                    "direction": a.direction,
+                    "outcome": outcome,
+                    "bars_to_exit": nbars or None,
+                    "recommendation": float(a.recommendation) if a.recommendation is not None else None,
+                })
                 logger.info("复盘完成: %s %s -> %s", a.symbol, a.direction, outcome)
             except Exception as e:
                 logger.warning("复盘 %s 失败: %s", a.symbol, e)
                 db.rollback()
                 continue
-        close_task(task_id, "completed", summary=f"复盘 {reviewed} 条建议")
+        close_task(task_id, "completed", summary=f"复盘 {reviewed} 条建议", detail={
+            "counts": counts,
+            "items": items,
+        })
     except Exception as e:
         logger.exception("复盘任务失败: %s", e)
         close_task(task_id, "failed", error=e)
