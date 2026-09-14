@@ -4,9 +4,10 @@
 - 方向-价格一致性、盈亏比复算（≥1.5 铁律）、止损范围（[0.3×ATR, 3×ATR]，价格距离不设百分比红线）、
   止损锚定（2026-09-13：入场与 N 根极值之间有同类关键位则程序定锚其区域外沿±缓冲，
   无则回退影线极值锚——多单严格低于最低点、空单严格高于最高点）；
-  止盈最近优先强制（2026-09-14）：止盈一必须挂第一结构位近轨外侧（多单=压力位下轨 zone_low
-  下方、空单=支撑位上轨 zone_high 上方，留余地；摆动点锚定价位本身），止盈二挂下一档同规则；
-  AI 挂到更远结构位/空档/区域内部时程序直接改挂，到第一结构位盈亏比不足由 RR 铁律打回；
+  止盈最近优先强制（2026-09-14）：止盈一必须挂第一关键位区域近轨外侧（多单=压力位下轨 zone_low
+  下方、空单=支撑位上轨 zone_high 上方，留余地），止盈二挂下一档区域同规则；摆动点仅在
+  前方无任何区域时回退使用（锚定价位本身）；AI 挂到更远结构位/空档/区域内部时程序直接改挂，
+  到第一结构位盈亏比不足由 RR 铁律打回；
   方向铁律（docs/03 §8）：只在支撑位做多、只在压力位做空——入场价必须落在对应角色关键位
   区域内（±0.25×ATR 容差）；例外：放量突破 breakout / 手动搜索 manual_search / 无关键位；
   仓位公式保证触止损账户亏损 ≤ 风险预算（RISK_BUDGET_PCT=3%，仓位维度的"3%止损"）
@@ -89,23 +90,19 @@ _TP_OVERSHOOT = 0.002    # 允许略越过锚定点的幅度（程序直接拉�
 
 
 def _structural_candidates(signal: dict, klines: list, direction: str, entry: float) -> list[dict]:
-    """入场方向前方的结构位候选，每个候选 {price, anchor, far}：
+    """入场方向前方的止盈锚定候选，每个候选 {price, anchor, far}：
 
+    只用关键位区域作候选（2026-09-14 改版）：止盈一=第一压力/支撑位、止盈二=下一档
+    （用户规则）。此前摆动点前高与区域混排，前高插在第一压力区前面把止盈一、二
+    都压在第一压力位下方（FLOCKUSDT 案例：两档止盈分别锚在前高 0.0695/0.0719，
+    都在第一压力区 0.0746 之下）。入场方向前方没有任何区域时（如创新高突破）
+    才回退摆动点（anchor=价位本身，far=外侧 0.2%）。
     - anchor 锚定点：关键位取区域近轨（多单=压力位下轨 zone_low，空单=支撑位上轨 zone_high），
-      止盈挂在近轨外侧留余地——价格常在区域边缘反弹，深入区域才触发的止盈大概率落空；
-      摆动点无区域，锚定价位本身。
-    - far 匹配上界：关键位=区域远轨（近轨与远轨之间视为"略越过近轨"，程序拉回），
-      摆动点=价位外侧 0.2%。
-    多单返回按 anchor 升序，空单降序。摆动 order 用全局 SWING_ORDER（与 fact pack 近似同源）。
+      止盈挂在近轨外侧留余地——价格常在区域边缘反弹，深入区域才触发的止盈大概率落空。
+    - far 匹配上界：关键位=区域远轨（近轨与远轨之间视为"略越过近轨"，程序拉回）。
+    多单返回按 anchor 升序，空单降序。
     """
-    swings = recent_swings(klines, order=settings.SWING_ORDER, n=50)
     cands: list[dict] = []
-    for s in (swings["highs"] if direction == "long" else swings["lows"]):
-        p = float(s["price"])
-        if (direction == "long" and p <= entry) or (direction == "short" and p >= entry):
-            continue
-        far = p * (1 + _TP_OVERSHOOT) if direction == "long" else p * (1 - _TP_OVERSHOOT)
-        cands.append({"price": p, "anchor": p, "far": far})
     for lv in (signal.get("key_levels") or []):
         try:
             price = float(lv.get("price") or 0)
@@ -128,6 +125,15 @@ def _structural_candidates(signal: dict, klines: list, direction: str, entry: fl
         if (anchor - entry) * (1 if direction == "long" else -1) <= 0:
             continue
         cands.append({"price": price, "anchor": anchor, "far": far})
+    if not cands:
+        # 前方无任何关键位区域（如创新高突破）：回退摆动点作结构位
+        swings = recent_swings(klines, order=settings.SWING_ORDER, n=50)
+        for s in (swings["highs"] if direction == "long" else swings["lows"]):
+            p = float(s["price"])
+            if (direction == "long" and p <= entry) or (direction == "short" and p >= entry):
+                continue
+            far = p * (1 + _TP_OVERSHOOT) if direction == "long" else p * (1 - _TP_OVERSHOOT)
+            cands.append({"price": p, "anchor": p, "far": far})
     cands.sort(key=lambda c: c["anchor"], reverse=(direction == "short"))
     return cands
 
