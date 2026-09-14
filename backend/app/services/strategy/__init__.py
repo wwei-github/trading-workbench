@@ -2,7 +2,7 @@
 
 流程：
 1. 摆动点（收盘价）→ 结构分类（上涨/下跌/反转/震荡/未分类，仅作 signal_type 标签）
-2. 计算关键位（支撑/压力单价格线，角色由摆动点来源固定，docs/08）
+2. 计算关键位（支撑/压力单价格线，角色按现价位置：上方=压力、下方=支撑，docs/08）
 3. 放量突破优先：收盘越过关键位容差带（price×(1±tol)）+ 量能 ≥1.2×均量 + EMA 同向
    → breakout 信号（不要求形态；前收盘上下文区分"突破"与"常态居位"）
 4. 触位：最新已收盘 K 线持住侧触及关键位容差带 → position
@@ -27,6 +27,7 @@ from app.services.strategy.key_levels import (
     find_broken_level,
     find_touching_level,
     fmt_price,
+    level_side,
     volume_ratio,
 )
 from app.services.strategy.structure import classify_structure
@@ -177,7 +178,9 @@ def _detect(klines: list[list], config: dict) -> Optional[dict]:
             strength = min(strength + 0.1, 1.0)  # EMA 同向
             return {
                 "signal_type": BREAKOUT,
-                "position": blv["kind"],
+                # 突破的 position=被突破线的角色（向上破压力、向下破支撑）；
+                # 不能用 blv["kind"]——突破后价格已越过线，按现价口径线角色会翻转
+                "position": "resistance" if up else "support",
                 "current_price": close_last,
                 "breakout_pct": float(broken["pct"]),  # 越过容差带的幅度（带符号，从线价起算）
                 "trend_slope": 0.0,
@@ -201,8 +204,11 @@ def _detect(klines: list[list], config: dict) -> Optional[dict]:
         return None
 
     # 5. 12 金K + 方向匹配（支撑位→看涨形态，压力位→看跌形态）
+    # 触及语境的侧向用 level_side（前收盘口径，与 find_touching_level 的持住侧判定同源），
+    # 不用线角色（现价口径）——两者在价格刚穿越线的根上可能不一致，信号语义以触及为准
     patterns = candlestick.detect_all_patterns(klines, idx=-2)
-    wanted = "bullish" if hit["role"] == "support" else "bearish"
+    side = level_side(hit, prev_close)
+    wanted = "bullish" if side == "support" else "bearish"
     pattern = next(
         (p for p in patterns if p["direction"] == wanted and p["pattern"] in GOLDEN_12),
         None,
@@ -219,10 +225,10 @@ def _detect(klines: list[list], config: dict) -> Optional[dict]:
     if EMA_BIAS[ema_state] != wanted:
         return None
 
-    # 7. 组装信号
-    position = hit["kind"]
+    # 7. 组装信号（position 取触及语境的侧向：回踩企稳=support、反抽受阻=resistance）
+    position = side
     position_label = POSITION_LABEL_MAP.get(position, position)
-    role_label = "支撑" if hit["role"] == "support" else "压力"
+    role_label = "支撑" if side == "support" else "压力"
     deviation = (close_last - hit["price"]) / hit["price"] * 100
     reason = (
         f"{position_label}({fmt_price(hit['price'])})·{role_label} + "

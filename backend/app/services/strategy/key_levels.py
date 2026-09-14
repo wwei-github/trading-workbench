@@ -1,10 +1,12 @@
 """关键位计算模块——支撑/压力单价格线（2026-09-14 去区域化重写，docs/08）
 
-- 摆动点（收盘价，两侧各 order 根确认）：低点→支撑线、高点→压力线，
-  角色由来源固定，不再按当前价动态互换；
-- 全部摆动点按价距 ≤ level_merge_threshold 链式聚合为一条线（均值价，touches=成员数）——
-  价格相近的线一律融合，无"最新点单独成线"例外（2026-09-14 收敛：图上不再出现贴脸双线）；
-- 每侧最多 LEVELS_PER_SIDE=3 条（按时间新→旧截断，全图 ≤6 条）；
+- 摆动点（收盘价，两侧各 order 根确认）全部参与聚合，角色按线相对现价的位置划分：
+  现价上方=压力线（resistance）、下方=支撑线（support）——支撑跌破即变压力、
+  压力突破即变支撑，价格上方只有压力位、下方只有支撑位（不再按摆动点来源固定角色）；
+- 全部摆动点（高/低点合并）按价距 ≤ level_merge_threshold 链式聚合为一条线
+  （均值价，touches=成员数）——价格相近的线一律融合，无"最新点单独成线"例外
+  （2026-09-14 收敛：图上不再出现贴脸双线）；
+- 每侧（现价上/下方）最多 LEVELS_PER_SIDE=3 条（按时间新→旧截断，全图 ≤6 条）；
 - pattern_hits：摆动点当根及确认窗内出现方向匹配 12 金K 的成员数（形态确认的触及次数）；
 - 触及/突破判定用固定容差带 tol（=key_level_tolerance，DEFAULT_TOL 为镜像缺省）：
   触及 = 影线与 [price×(1−tol), price×(1+tol)] 相交且收盘在持住侧；
@@ -72,7 +74,7 @@ def volume_ratio(klines: list) -> float:
 
 
 def _make_level(price: float, role: str, touches: int, pattern_hits: int) -> dict:
-    """构造关键位 dict（单价格线）：角色由调用方按来源传入（低点=support、高点=resistance）。"""
+    """构造关键位 dict（单价格线）：角色=线相对现价的位置（上方=resistance、下方=support）。"""
     return {
         "kind": role,
         "price": float(price),
@@ -141,24 +143,28 @@ def compute_key_levels_from_swings(
 
     swings: merge_swings 输出 [(idx, "H"|"L", price), ...]
     klines: 传入时启用形态确认计数（pattern_hits），否则为 0
+
+    角色按线相对现价（closes[-1]）的位置划分：上方=resistance、下方=support
+    （支撑跌破即变压力、压力突破即变支撑），不按摆动点来源（H/L）固定。
     """
-    highs_seq = [p for p in swings if p[1] == "H"]
-    lows_seq = [p for p in swings if p[1] == "L"]
-    if not highs_seq or not lows_seq:
+    if not swings or len(closes) == 0:
         return []
+    cur = float(closes[-1])
 
     merge_thr = config.get("level_merge_threshold", 0.005)
     hits = _pattern_hit_idxs(swings, klines) if klines else set()
 
+    # 高/低点合并后统一链式聚合——价格相近的线融合为一条（含同价区历史高点+低点）；
+    # 聚合保证相邻组均值价间距 > merge_thr，图上不会出现贴脸双线
+    lines = _aggregate_lines(
+        [(float(p[2]), int(p[0])) for p in swings], merge_thr, hits,
+    )
+
     levels: list[dict] = []
-    for seq, role in ((highs_seq, "resistance"), (lows_seq, "support")):
-        # 全部摆动点（含最新点）统一链式聚合——价格相近的线融合为一条；
-        # 聚合保证相邻组均值价间距 > merge_thr，图上不会出现贴脸双线
-        lines = _aggregate_lines(
-            [(float(p[2]), int(p[0])) for p in seq], merge_thr, hits,
-        )
-        lines.sort(key=lambda x: x[3], reverse=True)  # 时间新→旧，截前 N 条
-        for price, touches, hit, _idx in lines[:LEVELS_PER_SIDE]:
+    for role in ("resistance", "support"):
+        side = [ln for ln in lines if (ln[0] <= cur) == (role == "support")]
+        side.sort(key=lambda x: x[3], reverse=True)  # 时间新→旧，截前 N 条
+        for price, touches, hit, _idx in side[:LEVELS_PER_SIDE]:
             levels.append(_make_level(price, role, touches, hit))
     levels.sort(key=lambda x: x["price"])
     return levels
@@ -182,11 +188,12 @@ def compute_key_levels(klines: list, config: dict) -> list[dict]:
     return compute_key_levels_from_swings(swings, closes, n - 1, config, klines)
 
 
-def _level_side(lv: dict, prev_close: float) -> str:
+def level_side(lv: dict, prev_close: float) -> str:
     """位在前收盘时的侧向：support-like（位在前收下方/持平）或 resistance-like。
 
     突破与触位的判定都需要"这一根K线之前价格在位的哪一侧"作上下文——
     收盘在支撑位上方是常态，只有从前收上方跌穿容差带才是破位。
+    信号检测用它取"触及语境"的侧向（与线角色的现价口径相互独立，见 compute_key_levels_from_swings）。
     """
     return "support" if prev_close >= lv["price"] else "resistance"
 
@@ -209,7 +216,7 @@ def find_touching_level(
         lo, hi = price * (1 - tol), price * (1 + tol)
         if not (l <= hi and h >= lo):
             continue  # 影线未与容差带重叠
-        if _level_side(lv, prev_close) == "support":
+        if level_side(lv, prev_close) == "support":
             if c < lo:
                 continue  # 收盘跌穿容差带：破位，不是触及
         else:
@@ -235,7 +242,7 @@ def find_broken_level(
     best: tuple[float, dict, str] | None = None
     for lv in levels:
         price = float(lv["price"])
-        side = _level_side(lv, prev_close)
+        side = level_side(lv, prev_close)
         if side == "resistance" and c > price * (1 + tol):
             edge, direction = price, "up"
         elif side == "support" and c < price * (1 - tol):
