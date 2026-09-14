@@ -1,23 +1,30 @@
-"""关键位计算模块（统一口径，2026-09-14）
+"""关键位计算模块
 
-图表端点、信号检测、AI 事实包、风控锚定共用同一个 compute_key_levels——
-Pine Auto S/R 式摆动点阶梯（借鉴 Auto S/R 指标 left=50/right=25 与 quick right=5）：
-
-- quick 位：find_pivots(left=50, right=5) 的最新高点/低点各一档（右确认仅 5 根，覆盖最新结构）
-- full 位：find_pivots(left=50, right=25) 每侧最近 CHART_PIVOT_LEVELS_PER_SIDE(3) 档
-  （右确认 25 根，大级别位；full 是 quick 的子集）
-- 近邻合并：价距 ≤ 2×区域半宽 + level_merge_threshold 的摆动点并入同一位，
-  触及池 = quick 摆动点全集——touches 为组内摆动点数、weight 为时间加权触及强度、
-  pattern_hits 为组内出现方向匹配 12 金K 的触及数（price 取组内首个选中点，确定性）
+关键位构成（见 docs/03-关键位筛选重构需求.md §2）：
+- 最近摆动高点/低点、历史摆动点聚类（时间加权 ≥ 阈值）、震荡结构的回归边界——
+  三种来源照常计算，但标签只保留两类（2026-09-12 两类化）：
+  支撑位(support) / 压力位(resistance)，kind 由角色动态推导。
 
 关键位是区域：中心价 ± zone_tolerance。区域半宽随波动自适应：
-ATR% 越大区域越宽（0.5×ATR），限制在配置值 key_level_tolerance 的 [0.5×, 2×] 倍内
-（默认配置 0.3% → 实际区域 0.15%~0.6%）。角色按当前价动态判定：
-关键位在当前价上方=压力，下方=支撑（kind == role）。
+ATR% 越大区域越宽（0.5×ATR），限制在配置值 key_level_tolerance 的 [0.5×, 2×] 倍内——
+高波动币不会因固定 0.5% 太窄而频繁假触及，低波动币不会太宽而到处都是信号。
+角色按当前价动态判定：关键位在当前价上方=压力，下方=支撑（kind == role）。
 
-历史注：此前数据层为"摆动点+时间加权聚类（权重 ≥1.2 门控）+震荡回归边界"，图表层为
-Pine 摆动点阶梯且区域减半——两套数字不同曾三次造成理解偏差（SCRUSDT 止盈扎堆、
-FLOCKUSDT 锚位、TREEUSDT 粘合），2026-09-14 起统一为本函数（docs/03 §2、docs/07 §2）。
+时间加权（2026-09-12 优化）：
+- 每次触及的权重 = 2^(-bars_ago / 半衰期)，半衰期 60 根已收盘 K 线
+- 聚类簇按总权重过滤（≥1.2，约等于"近期 2 次触及"），纯久远旧点自然衰减淘汰；
+  触及次数 touches 仍保留原始计数供展示
+
+形态确认加成（2026-09-13）：
+- 触及点（摆动点当根及确认窗内）出现方向匹配的 12 金K（低点配看涨/高点配看跌），
+  该次触及的时间权重 ×PATTERN_TOUCH_BOOST——有形态确认的位更可靠，
+  单次近期形态触及即可达到聚类保留阈值
+- 每个关键位带 pattern_hits（簇内形态确认的触及次数），随事实包给 AI 参考
+
+统一入口（2026-09-14）：compute_key_levels(klines, config) 内部完成摆动点→结构
+分类→聚类→回归边界全链路，图表端点/信号检测/AI 事实包/风控锚定共用——图上看到
+的位即 AI 锚定的位。历史：当日曾短暂统一为 Pine 摆动点阶梯口径，同日按用户决定
+回退为本口径（原 AI 分析逻辑），仅保留统一入口签名。
 """
 from __future__ import annotations
 
@@ -27,16 +34,13 @@ import numpy as np
 
 from app.services.strategy import candlestick
 from app.services.strategy.candlestick import GOLDEN_12
-from app.services.strategy.swing import find_pivots
+from app.services.strategy.structure import classify_structure
+from app.services.strategy.swing import find_swing_points, linear_regression, merge_swings
+from app.services.strategy.types import RANGE_BOUND
 
-# Pine 摆动点阶梯参数（原图表层 CHART_PIVOT_*，口径归一后迁入）
-PIVOT_LEFT = 50                 # 左确认窗（历史纵深）：只留大级别结构
-PIVOT_RIGHT = 25                # full 位右确认窗（大级别位确认滞后 25 根）
-PIVOT_QUICK_RIGHT = 5           # quick 位右确认窗（最新结构，滞后仅 5 根）
-LEVELS_PER_SIDE = 3             # full 位每侧最多档数
-
-# 触及权重半衰期（已收盘 K 线根数）
+# 触及权重半衰期（已收盘 K 线根数）与聚类保留阈值（≈2 次近期触及）
 TOUCH_HALF_LIFE = 60
+MIN_CLUSTER_WEIGHT = 1.2
 
 # 形态确认加成：触及点出现方向匹配的 12 金K，该次触及权重乘数
 PATTERN_TOUCH_BOOST = 1.5
@@ -81,8 +85,8 @@ def _make_level(price: float, touches: int, close_last: float, tol: float,
                 weight: Optional[float] = None, pattern_hits: int = 0) -> dict:
     """构造关键位 dict。
 
-    kind 由角色动态推导：位在当前价上方=压力位(resistance)，下方=支撑位(support)
-    ——kind == role。
+    【2026-09-12 两类化】kind 由角色动态推导：位在当前价上方=压力位(resistance)，
+    下方=支撑位(support)——kind == role，不再区分前高/前低/区间顶底等来源标签。
     """
     role = "resistance" if price > close_last else "support"
     lv = {
@@ -92,10 +96,10 @@ def _make_level(price: float, touches: int, close_last: float, tol: float,
         "zone_high": float(price * (1 + tol)),
         "touches": int(touches),
         "role": role,
-        "pattern_hits": int(pattern_hits),  # 组内出现方向匹配 12 金K 的触及次数
+        "pattern_hits": int(pattern_hits),  # 簇内出现方向匹配 12 金K 的触及次数
     }
     if weight is not None:
-        lv["weight"] = round(float(weight), 2)  # 时间加权触及强度（组内触及的半衰期加权和）
+        lv["weight"] = round(float(weight), 2)  # 时间加权触及强度（含形态加成；最近摆动点无聚类权重）
     return lv
 
 
@@ -126,106 +130,137 @@ def _pattern_boosts(swings: list[tuple], klines: list) -> dict[int, float]:
     return boosts
 
 
-def compute_key_levels(klines: list, config: dict) -> list[dict]:
-    """统一关键位（图表端点 / 信号检测 / AI 事实包 / 风控锚定共用）。
+def _cluster_levels(points: list[tuple[float, int]], merge_thr: float, n_closed: int,
+                    boosts: Optional[dict[int, float]] = None,
+                    ) -> list[tuple[float, int, float, int]]:
+    """按价格聚类：相互距离 ≤ merge_thr 的点合并（时间加权，含形态加成），
+    返回 [(中心价, 触及次数, 总权重, 形态确认次数)]，仅保留总权重 ≥ MIN_CLUSTER_WEIGHT 的簇
+    （权重 1.2 上限单点 1.0，天然要求 ≥2 次触及——近期形态确认触及 ×1.5 除外，
+    且纯久远旧点会被衰减淘汰）"""
+    if not points:
+        return []
+    boosts = boosts or {}
+    pts = sorted(points, key=lambda p: p[0])
+    groups: list[list[tuple[float, int]]] = [[pts[0]]]
+    for p in pts[1:]:
+        if abs(p[0] - groups[-1][-1][0]) / groups[-1][-1][0] <= merge_thr:
+            groups[-1].append(p)
+        else:
+            groups.append([p])
+    out = []
+    for g in groups:
+        weight = sum(_touch_weight(idx, n_closed) * boosts.get(idx, 1.0) for _, idx in g)
+        if weight >= MIN_CLUSTER_WEIGHT:
+            out.append((
+                sum(p[0] for p in g) / len(g),
+                len(g),
+                weight,
+                sum(1 for _, idx in g if idx in boosts),
+            ))
+    return out
 
-    选位与近邻合并规则见模块 docstring。config 需含：
-    - key_level_tolerance：区域半宽基准（默认 0.003）
-    - level_merge_threshold：近邻合并外加间距（默认 0.005）
+
+def compute_key_levels_from_swings(
+    swings: list[tuple],
+    closes: np.ndarray,
+    n_closed: int,
+    signal_type: str,
+    config: dict,
+    klines: Optional[list] = None,
+) -> list[dict]:
+    """计算关键位列表。
+
+    swings: merge_swings 输出 [(idx, "H"|"L", price), ...]
+    signal_type: classify_structure 的分类结果（震荡时补充区间边界）
+    klines: 传入时启用 ATR 自适应区域半宽与形态确认加成（不传则用配置固定值、无加成）
+    """
+    highs_seq = [p for p in swings if p[1] == "H"]
+    lows_seq = [p for p in swings if p[1] == "L"]
+    if not highs_seq or not lows_seq:
+        return []
+
+    close_last = float(closes[-2])
+    base_tol = config.get("key_level_tolerance", 0.003)
+    merge_thr = config.get("level_merge_threshold", 0.005)
+
+    # 区域半宽自适应：0.5×ATR，限制在配置容忍度的 [0.5×, 2×] 内
+    tol = base_tol
+    boosts: dict[int, float] = {}
+    if klines:
+        atr = calc_atr(klines)
+        if atr and close_last > 0:
+            tol = min(max(0.5 * atr / close_last, base_tol * 0.5), base_tol * 2)
+        # 形态确认加成：触及点出现方向匹配的 12 金K → 该次触及权重 ×1.5
+        boosts = _pattern_boosts(swings, klines)
+
+    levels: list[dict] = []
+
+    # 1. 最近摆动点（天然最新，无聚类权重；pattern_hits 供 AI 参考）
+    levels.append(_make_level(highs_seq[-1][2], 1, close_last, tol,
+                              pattern_hits=int(highs_seq[-1][0]) in boosts))
+    levels.append(_make_level(lows_seq[-1][2], 1, close_last, tol,
+                              pattern_hits=int(lows_seq[-1][0]) in boosts))
+
+    # 2. 历史摆动点聚类（除最近点外，时间加权 + 形态加成）
+    for price, touches, weight, hits in _cluster_levels(
+            [(p[2], p[0]) for p in highs_seq[:-1]], merge_thr, n_closed, boosts):
+        levels.append(_make_level(price, touches, close_last, tol, weight, hits))
+    for price, touches, weight, hits in _cluster_levels(
+            [(p[2], p[0]) for p in lows_seq[:-1]], merge_thr, n_closed, boosts):
+        levels.append(_make_level(price, touches, close_last, tol, weight, hits))
+
+    # 3. 区间回归边界（仅震荡结构）：按角色归类为压力位/支撑位
+    if signal_type == RANGE_BOUND:
+        rh = highs_seq[-min(5, len(highs_seq)):]
+        rl = lows_seq[-min(5, len(lows_seq)):]
+        xh = np.array([p[0] for p in rh], dtype=float)
+        yh = np.array([p[2] for p in rh], dtype=float)
+        xl = np.array([p[0] for p in rl], dtype=float)
+        yl = np.array([p[2] for p in rl], dtype=float)
+        slope_h, inter_h, _ = linear_regression(xh, yh)
+        slope_l, inter_l, _ = linear_regression(xl, yl)
+        if np.isfinite(slope_h) and np.isfinite(slope_l):
+            upper = slope_h * n_closed + inter_h
+            lower = slope_l * n_closed + inter_l
+            if upper > lower > 0 and upper / lower - 1 >= 0.005:
+                levels.append(_make_level(upper, len(rh), close_last, tol))
+                levels.append(_make_level(lower, len(rl), close_last, tol))
+
+    # 4. 同角色区域重叠/近于重合的合并（区域半宽 ATR 自适应后聚类簇间仍会重叠）
+    return _merge_overlapping_levels(levels, merge_thr)
+
+
+
+def compute_key_levels(klines: list, config: dict) -> list[dict]:
+    """全站统一入口（图表端点 / 信号检测 / AI 事实包 / 风控锚定共用）——原 AI 分析口径。
+
+    内部完成摆动点 → 结构分类 → 聚类关键位 全链路；调用方给 klines 与
+    {swing_order, key_level_tolerance, level_merge_threshold} 即可，区域半宽
+    为交易层口径（clamp(0.5×ATR/价, 0.5×tol, 2×tol)，tol=key_level_tolerance 不减半）。
     """
     closes = np.array([float(k[4]) for k in klines], dtype=float)
     n = len(klines)
-    if n < PIVOT_LEFT + PIVOT_QUICK_RIGHT + 1:
+    if n < config.get("min_klines", 30):
         return []
-    close_last = float(closes[-2]) if n >= 2 else float(closes[-1])
-    if close_last <= 0:
+    order = config.get("swing_order", 3)
+    high_idx, low_idx = find_swing_points(closes, closes, order)
+    swings = merge_swings(high_idx, low_idx, closes, closes)
+    if len(swings) < 4:
         return []
-
-    base_tol = float(config.get("key_level_tolerance", 0.003))
-    merge_thr = float(config.get("level_merge_threshold", 0.005))
-
-    # 区域半宽自适应：0.5×ATR，限制在配置容忍度的 [0.5×, 2×] 内（与风控锚定同一校准）
-    tol = base_tol
-    atr = calc_atr(klines)
-    if atr and close_last > 0:
-        tol = min(max(0.5 * atr / close_last, base_tol * 0.5), base_tol * 2)
-    near_thr = 2 * tol + merge_thr
-
-    quick_h, quick_l = find_pivots(closes, PIVOT_LEFT, PIVOT_QUICK_RIGHT)
-    full_h, full_l = find_pivots(closes, PIVOT_LEFT, PIVOT_RIGHT)
-
-    # 选位顺序与旧图表层一致：quick 最新高/低点优先，再 full 每侧最近 N 档；
-    # _group 改造自旧 _add 去重——命中阈值不丢弃而是并入最近的组（价取组内首个选中点）
-    groups: list[dict] = []  # {price, members: [(idx, "H"|"L")]}
-
-    def _group(idx: int) -> None:
-        price = float(closes[idx])
-        best: tuple[float, dict] | None = None
-        for g in groups:
-            dist = abs(price - g["price"]) / g["price"] if g["price"] > 0 else 1e9
-            if dist <= near_thr and (best is None or dist < best[0]):
-                best = (dist, g)
-        if best is None:
-            groups.append({"price": price, "members": [(int(idx), None)]})
-        elif all(int(idx) != m[0] for m in best[1]["members"]):
-            best[1]["members"].append((int(idx), None))
-
-    if quick_h:
-        _group(quick_h[-1])
-    if quick_l:
-        _group(quick_l[-1])
-    for idx in full_h[-LEVELS_PER_SIDE:]:
-        _group(idx)
-    for idx in full_l[-LEVELS_PER_SIDE:]:
-        _group(idx)
-    if not groups:
-        return []
-
-    # 触及池补扫（口径 b）：quick 全集（full ⊆ quick）中价距落入某组阈值内的摆动点
-    # 都计入该组 touches/weight/pattern_hits——恢复"多次触及"的真实密度
-    qh_set = set(quick_h)  # 高点索引集合（quick_h 与 quick_l 不相交，可判定极性）
-
-    def _kind_of(idx: int) -> str:
-        return "H" if idx in qh_set else "L"
-
-    for idx in list(quick_h) + list(quick_l):
-        price = float(closes[idx])
-        best: tuple[float, dict] | None = None
-        for g in groups:
-            dist = abs(price - g["price"]) / g["price"] if g["price"] > 0 else 1e9
-            if dist <= near_thr and (best is None or dist < best[0]):
-                best = (dist, g)
-        if best is not None and all(int(idx) != m[0] for m in best[1]["members"]):
-            best[1]["members"].append((int(idx), _kind_of(int(idx))))
-
-    n_closed = n - 1
-    levels: list[dict] = []
-    for g in groups:
-        members = [(idx, kind if kind else ("H" if idx in qh_set else "L"))
-                   for idx, kind in g["members"]]
-        price_members = [(idx, kind, float(closes[idx])) for idx, kind in members]
-        boosts = _pattern_boosts(price_members, klines)
-        levels.append(_make_level(
-            g["price"],
-            touches=len(members),
-            close_last=close_last,
-            tol=tol,
-            weight=sum(_touch_weight(idx, n_closed) for idx, _ in members),
-            pattern_hits=sum(1 for idx, _ in members if idx in boosts),
-        ))
-    levels.sort(key=lambda lv: lv["price"])
-    return levels
+    structure = classify_structure(swings, closes, n - 1, config)
+    return compute_key_levels_from_swings(
+        swings, closes, n - 1, structure["signal_type"], config, klines,
+    )
 
 
 def _merge_overlapping_levels(levels: list[dict], near_gap: float) -> list[dict]:
-    """同角色区域重叠或近于重合（间隔 ≤ near_gap）→ 合并为一个区域。
+    """同角色区域重叠或近于重合（间隔 ≤ near_gap）→ 合并为一个区域（2026-09-14）。
 
-    【2026-09-14 起新路径不再调用】统一口径的近邻合并已在 compute_key_levels 内完成
-    （去重阈值 2×tol+merge_thr 保证区域互不重叠）；函数保留供历史数据修复与测试使用。
-    聚类按中心价间距分簇，但区域半宽是 ATR 自适应的——两簇中心距超过阈值时区域仍可能
-    相互重叠，人眼是一个位，锚定止盈却会被当两档用（SCRUSDT 案例：0.023166~0.023634 与
-    0.023516~0.023992 重叠未合并，止盈一、二扎堆在 0.37% 内）。合并取并集：zone_low=min、
-    zone_high=max、中心=并集中点，touches/pattern_hits/weight 累加；role/kind 维持原值不重判
+    聚类按中心价间距（level_merge_threshold）分簇，但区域半宽是 ATR 自适应的——
+    两簇中心距超过 merge_thr 时区域仍可能相互重叠，人眼是一个位，锚定止盈却会被
+    当两档用（SCRUSDT 案例：0.023166~0.023634 与 0.023516~0.023992 重叠未合并，
+    止盈一、二扎堆在 0.37% 内）。合并取并集：zone_low=min、zone_high=max、
+    中心=并集中点，touches/pattern_hits/weight 累加；role/kind 维持原值不重判
     （同角色合并，并集中点可能因并集偏宽越过前收，重判会与止损/铁律块的角色口径不一致）。
     """
     out: list[dict] = []
@@ -263,7 +298,7 @@ def _level_side(lv: dict, prev_close: float) -> str:
 
 
 def find_touching_level(levels: list[dict], kline: list, prev_close: float) -> dict | None:
-    """找出最新已收盘 K 线触及的关键位（持住侧规则）。
+    """找出最新已收盘 K 线触及的关键位（持住侧规则，2026-09-12）。
 
     触及 = 影线与区域重叠 且 收盘在"持住侧"（support-like 位要求收盘 ≥ zone_low，
     resistance-like 要求收盘 ≤ zone_high）。收盘在区域内是子集，天然涵盖；

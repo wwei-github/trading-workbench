@@ -561,11 +561,12 @@ def get_klines(
         ]
         for kind in ("highs", "lows")
     }
-    # 关键位（图表区域色块用）：统一口径 compute_key_levels（Pine Auto S/R 式摆动点
-    # 阶梯）——与扫描信号检测、AI 事实包、风控锚定完全同源，图上看到的位即 AI 锚定的位
+    # 关键位（图表区域色块用）：统一口径 compute_key_levels（原 AI 分析口径：摆动点+
+    # 聚类+回归边界）——与扫描信号检测、AI 事实包、风控锚定完全同源，图上看到的位即 AI 锚定的位
     key_levels = compute_key_levels(
         klines,
         {
+            "swing_order": int(cfg.swing_order),
             "key_level_tolerance": float(cfg.key_level_tolerance),
             "level_merge_threshold": float(cfg.level_merge_threshold),
         },
