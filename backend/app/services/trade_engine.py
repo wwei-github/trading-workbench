@@ -236,6 +236,27 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
             side = "BUY" if direction == "long" else "SELL"
             close_side = _close_side(direction)
             entry_order = trader.market_order(symbol, side, qty)
+            # 成交回报：下单响应为 ACK 不含均价，市价单即时成交后查实际成交价/量。
+            # 滑点 = 成交价对参考价的偏离（testnet 盘口薄，深吃单可达 0.5%+）；
+            # 查询失败按参考价记账，不阻断挂 SL/TP（保护块兜底仍在）
+            fill_price, fill_qty = price, qty
+            try:
+                od = trader.order(symbol, entry_order["orderId"])
+                if float(od.get("avgPrice") or 0) > 0:
+                    fill_price = float(od["avgPrice"])
+                    fill_qty = float(od.get("executedQty") or qty)
+            except Exception as fill_err:
+                logger.warning("开仓 %s：成交回报查询失败，按参考价 %s 记账（%s）", symbol, price, fill_err)
+            slippage_pct = (fill_price / price - 1) * 100
+            actual_risk = fill_qty * abs(fill_price - sl)
+            if risk_amount > 0 and actual_risk > risk_amount * 1.15:
+                logger.warning(
+                    "开仓 %s：成交 %s 对参考价 %s 滑 %.2f%%，实际止损风险 %.2f 超预算 %.2f 的 %.0f%%"
+                    "（止损越近名义仓位越大，同等滑率放大越多）",
+                    symbol, fill_price, price, slippage_pct,
+                    actual_risk, risk_amount, (actual_risk / risk_amount - 1) * 100,
+                )
+            qty = fill_qty
             try:
                 sl_order = trader.stop_market_close(
                     symbol, close_side, trader.round_price(symbol, sl))
@@ -257,12 +278,12 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
                     recommendation=float(a.recommendation) if a.recommendation is not None else None,
                     testnet=settings.TRADING_TESTNET,
                     ai_snapshot=_ai_snapshot(a),
-                    entry_price=price,
+                    entry_price=fill_price,
                     qty=qty,
-                    notional=round(qty * price, 2),
+                    notional=round(qty * fill_price, 2),
                     leverage=leverage,
                     margin_mode="isolated",
-                    margin_used=round(margin_used, 4),
+                    margin_used=round(qty * fill_price / leverage, 4),
                     risk_amount=round(risk_amount, 4),
                     stop_loss=sl,
                     tp1=tp1,
@@ -286,6 +307,8 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
                 _add_event(db, rec, "OPEN", {
                     "price": price, "qty": qty, "stop_loss": sl, "tp1": tp1, "tp2": tp2,
                     "risk_amount": round(risk_amount, 4), "entry_order_id": entry_order["orderId"],
+                    "fill_price": fill_price, "slippage_pct": round(slippage_pct, 3),
+                    "actual_risk": round(actual_risk, 4),
                 })
                 db.commit()
             except Exception:
@@ -301,9 +324,11 @@ def try_open_trades(db: Session, trader: BinanceTrader) -> int:
             opened += 1
             running += 1
             positions[symbol] = {"amt": qty if direction == "long" else -qty,
-                                 "initial_margin": margin_used, "entry_price": price}
-            logger.info("已开仓 %s %s qty=%s sl=%s tp1=%s tp2=%s（评分 %s）",
-                        symbol, direction, qty, sl, tp1, tp2, a.recommendation)
+                                 "initial_margin": qty * fill_price / leverage,
+                                 "entry_price": fill_price}
+            logger.info("已开仓 %s %s qty=%s 成交=%s（对参考价 %s 滑 %.2f%%）sl=%s tp1=%s tp2=%s（评分 %s）",
+                        symbol, direction, qty, fill_price, price, slippage_pct,
+                        sl, tp1, tp2, a.recommendation)
         except Exception as e:
             db.rollback()
             logger.warning("开仓失败 %s: %s", symbol, e)
@@ -479,7 +504,9 @@ def _record_realized(db: Session, trader: BinanceTrader, rec: TradeRecord) -> fl
     写入交易记录（运行中=已实现部分，供收益列展示已止盈金额；终态结算时会复算覆盖为
     全程净额）并返回，供 TP1_FILL/TP2_FILL 事件 detail 携带。
     """
-    since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    # 起点回拨 5s：开仓手续费 income 的时间戳可能略早于 opened_at（实测时差 <1s），
+    # 不回拨会把入场手续费漏在净盈亏之外
+    since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000) - 5_000
     pnl = round(trader.realized_pnl_since(rec.symbol, since_ms), 6)
     rec.realized_pnl = pnl
     rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
@@ -512,7 +539,8 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
             if qty <= 0 or amt < qty * 0.05:
                 # 清理残留挂单（SL 先成交时 TP reduceOnly 单会一直挂着）
                 trader.cancel_all_algo(rec.symbol)
-                since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000)
+                # 起点回拨 5s：开仓手续费 income 的时间戳可能略早于 opened_at（同 _record_realized）
+                since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000) - 5_000
                 pnl = trader.realized_pnl_since(rec.symbol, since_ms)
                 rec.realized_pnl = round(pnl, 6)
                 rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
