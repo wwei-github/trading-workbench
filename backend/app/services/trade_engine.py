@@ -107,6 +107,7 @@ def _attempt_open(
     symbol = a.symbol
     if symbol in positions:
         logger.info("开仓跳过 %s：已有持仓", symbol)
+        _mark_open_block(db, a, "同币种已有在跑持仓")
         return False
     # 开单类型仅作记录（2026-09-15 拍板）：策略开关不再拦截开仓（未知类型也不拦），
     # trade_type 仍随分析/交易记录落库；顺势交易的 EMA 排列前提单独保留（下方校验）
@@ -120,6 +121,7 @@ def _attempt_open(
         price = trader.price(symbol)
         if abs(price - entry_ai) / entry_ai > 0.01:
             logger.info("开仓作废 %s：现价偏离 AI 入场价超 1%%", symbol)
+            _mark_open_block(db, a, f"现价偏离 AI 入场价超 1%（入场 {entry_ai}，开仓时现价 {price}）")
             return False
         # EMA 排列必须条件（顺势交易专属）：多单须 21>55>144 多头排列，空单须 144>55>21 空头排列
         if trade_type == "trend_follow":
@@ -131,6 +133,7 @@ def _attempt_open(
             if not ema_ok:
                 logger.info("开仓跳过 %s：顺势交易 EMA 未按方向排列（%s），不满足开单前提",
                             symbol, ema["state_label"] if ema else "K线数据不足")
+                _mark_open_block(db, a, f"顺势交易 EMA 未按方向排列（{ema['state_label'] if ema else 'K线数据不足'}）")
                 return False
         # 固定亏损仓位：基数分档 × 3% ÷ 止损距离
         stop_pct = abs(price - sl) / price
@@ -138,6 +141,7 @@ def _attempt_open(
             # 原"方向-价格一致性/RR 复验"闸门（2026-09-15 移除）曾顺带拦住 sl==现价；
             # 现在显式防零：止损距离为 0 无法按固定亏损法计算仓位
             logger.info("开仓放弃 %s：止损距离为 0（sl=%s，现价 %s）", symbol, sl, price)
+            _mark_open_block(db, a, f"止损距离为 0（sl={sl}，现价 {price}），无法计算仓位")
             return False
         # 止损宽度闸门（防强平）：逐仓计划止损亏损 = 名义×stop_pct，保证金 = 名义/杠杆；
         # 止损距离超过 1/杠杆−维持保证金率（20× 即 4.5%）时，价格未到止损价
@@ -152,6 +156,11 @@ def _attempt_open(
                 "价格未到止损必先被强平",
                 symbol, stop_pct * 100, liq_gate * 100, settings.TRADING_LEVERAGE,
             )
+            _mark_open_block(
+                db, a,
+                f"止损距离 {stop_pct * 100:.2f}% 达到强平闸门 {liq_gate * 100:.2f}%"
+                f"（{settings.TRADING_LEVERAGE}× 逐仓），价格未到止损必先被强平",
+            )
             return False
         risk_budget = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
         notional = risk_budget / stop_pct
@@ -161,6 +170,10 @@ def _attempt_open(
             logger.info(
                 "开仓放弃 %s：计算数量 %s 低于交易所最小规则（min_qty=%s, min_notional=%s）",
                 symbol, qty, f["min_qty"], f["min_notional"],
+            )
+            _mark_open_block(
+                db, a,
+                f"计算数量 {qty} 低于交易所最小规则（min_qty={f['min_qty']}, min_notional={f['min_notional']}）",
             )
             return False
         # 市价入场按 MARKET_LOT_SIZE 校验（常比 LOT_SIZE 严得多，BBUSDT -4005 案例：
@@ -174,6 +187,7 @@ def _attempt_open(
         margin_used = qty * price / leverage
         if margin_used > wallet - occupied:
             logger.info("开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f", symbol, margin_used, wallet - occupied)
+            _mark_open_block(db, a, f"所需保证金 {margin_used:.2f} 超过可用 {wallet - occupied:.2f}")
             return False
         # TP1 分批数量预检（下单前）：低于交易所最小数量时整单放弃——
         # 开完仓才挂 TP1 被交易所拒单，会走紧急撤单+平仓，且该失败不落记录，
@@ -185,6 +199,10 @@ def _attempt_open(
             logger.info(
                 "开仓放弃 %s：止盈一数量 %s 低于交易所最小数量 %s，分批止盈无法挂单",
                 symbol, qty_tp1_pre, f["min_qty"],
+            )
+            _mark_open_block(
+                db, a,
+                f"止盈一数量 {qty_tp1_pre} 低于交易所最小数量 {f['min_qty']}，分批止盈无法挂单",
             )
             return False
         # 实际风险金额按最终数量精确计（向下取整/上限缩减只会低于 3% 预算）
@@ -317,6 +335,19 @@ def _attempt_open(
         return False
 
 
+def _mark_open_block(db: Session, a: AIAnalysis, reason: str) -> None:
+    """开仓闸门拒开原因落库（ai_analyses.open_block_reason，前端 AI 分析卡展示）。
+
+    仅覆盖进入下单序列之前的拦截；下单序列内的成败由 trade_records 呈现。
+    写库失败不阻断流程（原因展示是尽力而为，闸门决策以日志为准）。
+    """
+    try:
+        a.open_block_reason = reason[:250]
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
 def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bool:
     """单条分析完成即开仓（2026-09-14：不再等 :42 统一批次，docs/06 §2）。
 
@@ -340,6 +371,7 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
         return False
     if a.created_at and a.created_at < datetime.utcnow() - timedelta(hours=1):
         logger.info("即时开仓跳过 %s：分析已超过 1 小时", a.symbol)
+        _mark_open_block(db, a, "分析已超过 1 小时（信号过期）")
         return False
     if db.execute(
         select(TradeRecord.id).where(TradeRecord.ai_analysis_id == a.id)
@@ -347,10 +379,12 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
         return False  # 该分析已开过仓
     if a.pullback_wait:
         logger.info("即时开仓跳过 %s：AI 建议等回踩（仅展示待回踩标识，不下单）", a.symbol)
+        _mark_open_block(db, a, "AI 建议等回踩至入场价，仅展示待回踩标识、不下单")
         return False
     positions = trader.positions()
     if len(positions) >= cfg.max_open_trades:
         logger.info("即时开仓跳过 %s：在跑单子已达上限 %d", a.symbol, cfg.max_open_trades)
+        _mark_open_block(db, a, f"在跑单子已达上限 {cfg.max_open_trades}")
         return False
     wallet_info = trader.wallet_balance()
     wallet = wallet_info["wallet"]
@@ -363,13 +397,22 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
     )
     if wallet > 0 and wallet - occupied < wallet * min_free:
         logger.info("即时开仓跳过 %s：可用余额低于总资金 %.0f%%", a.symbol, min_free * 100)
+        _mark_open_block(db, a, f"可用余额低于总资金 {min_free * 100:.0f}%")
         return False
     if _capital_base(wallet) <= 0:
         logger.info("即时开仓跳过 %s：钱包余额低于最小风险档位", a.symbol)
+        _mark_open_block(db, a, "钱包余额低于最小风险档位")
         return False
     interval = cfg.kline_interval if cfg else "1h"
     # EMA144 需 ≥154 根已收盘 K 线，窗口下限 160
     kline_window = max(cfg.kline_window or 240, 160)
+    # 即将进入闸门序列：清掉沿用/上一轮尝试残留的拒开原因，本次成败由闸门重新裁定
+    if a.open_block_reason:
+        try:
+            a.open_block_reason = None
+            db.commit()
+        except Exception:
+            db.rollback()
     return _attempt_open(db, trader, cfg, interval, kline_window, a, wallet, positions)
 
 

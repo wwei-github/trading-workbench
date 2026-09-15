@@ -285,6 +285,24 @@ export default function AiAnalysisCard({ ai }: Props) {
         )}
       </div>
 
+      {/* 未开单原因：suggest 被开仓闸门拦下时后端落库（强平闸门/在跑上限/余额不足/待回踩等）；
+          进入下单序列后的成败由交易记录 Tab 呈现，不走此提示 */}
+      {!isSkip && ai.open_block_reason && (
+        <div
+          style={{
+            padding: '6px 12px',
+            marginBottom: 10,
+            borderRadius: 8,
+            fontSize: 12,
+            lineHeight: '20px',
+            color: '#faad14',
+            background: 'rgba(250,173,20,0.08)',
+            border: '1px solid rgba(250,173,20,0.30)',
+          }}>
+          ⚠ 未开单原因：{ai.open_block_reason}
+        </div>
+      )}
+
       {/* skip：理由 + AI 推理，均走推理气泡 */}
       {isSkip ? (
         <Bubble

@@ -133,6 +133,12 @@ def _run_migrations(engine):
             ALTER TABLE ai_analyses
               ADD COLUMN IF NOT EXISTS pullback_wait BOOLEAN NOT NULL DEFAULT FALSE
         """))
+        # 未开单原因（2026-09-15）：suggest 结论被开仓闸门拦下时记录具体原因，
+        # 前端 AI 分析卡展示（下单序列内的成败由 trade_records 呈现，不走此列）
+        conn.execute(text("""
+            ALTER TABLE ai_analyses
+              ADD COLUMN IF NOT EXISTS open_block_reason VARCHAR(255)
+        """))
         # Feature 12: 自动交易——环境标识（测试网/正式网）与开单时 AI 结论快照
         conn.execute(text("""
             ALTER TABLE trade_records

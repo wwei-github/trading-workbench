@@ -374,6 +374,12 @@ def _upsert_ai_analysis(
         "position_pct": ai_result.get("position_pct"),
         "recommendation": ai_result.get("recommendation"),
         "pullback_wait": bool(ai_result.get("pullback_wait")),
+        # 待回踩结论在分发前就被跳过（_dispatch_immediate_open），不会进入开仓闸门，
+        # 未开单原因在此预置；其余结论的原因由开仓闸门拦截时写入
+        "open_block_reason": (
+            "AI 建议等回踩至入场价，仅展示待回踩标识、不下单"
+            if bool(ai_result.get("pullback_wait")) else None
+        ),
         "fingerprint": fingerprint,
         "stage_trace": ai_result.get("stage_trace"),
     }

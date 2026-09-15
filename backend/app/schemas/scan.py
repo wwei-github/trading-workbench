@@ -93,6 +93,7 @@ class AIAnalysisOut(BaseModel):
     position_pct: Optional[float] = None
     recommendation: Optional[float] = None  # 推荐程度 0-100
     pullback_wait: bool = False  # AI 建议等回踩（仅展示"待回踩"标识，不下单）
+    open_block_reason: Optional[str] = None  # 未开单原因（开仓闸门拦截时记录）
     created_at: datetime
 
     class Config:

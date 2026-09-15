@@ -93,6 +93,7 @@ export interface AIAnalysis {
   position_pct: number | null;
   recommendation: number | null; // 0-100
   pullback_wait?: boolean; // AI 建议等回踩（入场在现价回踩侧）——仅展示"待回踩"标识，不下单
+  open_block_reason?: string | null; // 未开单原因（suggest 被开仓闸门拦下时后端落库）
   created_at: string;
   review_status?: string | null; // 复盘结果：win_tp1 / win_tp2 / loss / expired（24h 后回放定论）
 }

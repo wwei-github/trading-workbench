@@ -82,6 +82,9 @@ class AIAnalysis(Base):
     stage_trace: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # Agent 工具循环 trace（docs/04 §5.9）
     # AI 建议等回踩（2026-09-15）：入场价在现价回踩侧的 suggest——仅展示"待回踩"标识，不下单
     pullback_wait: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    # 未开单原因（2026-09-15）：suggest 被开仓闸门拦下时记录（强平闸门/在跑上限/余额不足等），
+    # 仅覆盖进入下单序列之前的拦截；下单序列内的成败由 trade_records 呈现
+    open_block_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")
