@@ -9,9 +9,8 @@
   空单=摆动低点上方，留余地 0.2%），止盈二挂下一档同规则；AI 挂到更远结构位/空档/
   越位时程序直接改挂，到第一结构位盈亏比不足由 RR 铁律打回；前方无任何结构位
   （如创新高突破）回退固定盈亏比；
-  方向铁律（docs/03 §8）：只在支撑结构做多、只在压力结构做空——入场价必须贴近
-  对应方向的摆动低/高点或最近 N 根影线极值（位 ±0.3% 容差带 + 0.25×ATR 容差）；
-  例外：放量突破 breakout / 手动搜索 manual_search / 无任何结构锚（K线过短）；
+  方向铁律的距离校验已移除（2026-09-15 拍板：入场不再强制贴近结构位 ±0.3%），
+  "支撑做多/压力做空"仅作为 AI 提示词纪律，程序不再打回；
   仓位公式保证触止损账户亏损 ≤ 风险预算（RISK_BUDGET_PCT=3%，仓位维度的"3%止损"）
 - 仓位公式化（固定亏损法）：仓位 = 风险预算 ÷ 止损距离，触止损恰好亏 RISK_BUDGET_PCT（3%），AI 不自报仓位
 - 返回具体违规明细，供"校验失败带错误反馈重试"
@@ -94,8 +93,6 @@ _TP_OVERSHOOT = 0.002    # 允许略越过锚定点的幅度（程序直接拉�
 # 止盈从更远的第一档结构位起算（2026-09-14）
 TP_NEAR_ATR_MULT = 1.0
 
-# 方向铁律容差带（原 key_levels.DEFAULT_TOL 镜像）：入场须落在结构锚 ±0.3% 内
-_IRON_RULE_TOL = 0.003
 # 止盈候选近距合并：与上一接受候选价距 ≤0.5% 的摆动点并入前者（关键位移除后
 # 摆动点不再预聚合，防相近的 TP1/TP2 贴脸）
 _CAND_MERGE_PCT = 0.005
@@ -222,53 +219,16 @@ def validate_decision(
 
     atr = calc_atr(klines)
 
-    # 公共预计算：最近 N 根影线极值 + 摆动结构（方向铁律/止损锚定共用）
+    # 公共预计算：最近 N 根影线极值 + 摆动结构（止损锚定/止盈锚定共用）
     closed = klines[:-1] if len(klines) >= 2 else klines
     n = min(settings.STOP_LOSS_RECENT_BARS, len(closed))
     recent_low = min(float(k[3]) for k in closed[-n:]) if n > 0 else 0.0
     recent_high = max(float(k[2]) for k in closed[-n:]) if n > 0 else 0.0
     swings = recent_swings(klines, order=settings.SWING_ORDER, n=10)
 
-    # ── 方向铁律（docs/03 §8）：只在支撑结构做多、只在压力结构做空 ──
-    # 入场价必须贴近信号方向的摆动结构位：摆动低点（多）/摆动高点（空），
-    # 最近 N 根影线极值也是合格锚（摆动点确认滞后 2×order 根，极值补位）。
-    # 命中带 = 锚 ×(1±0.3%) 再 ±0.25×ATR 容差，防 AI 贴着容差带边缘报价。
-    # 例外：breakout（放量突破顺势追，入场贴近现价）/ manual_search（用户手动指定，
-    # 人工兜底）/ 无任何结构锚（K线过短，交由其余规则约束）
-    if d.direction == "long":
-        iron_anchors = [float(s["price"]) for s in swings["lows"] if float(s["price"]) > 0]
-        if n > 0:
-            iron_anchors.append(recent_low)
-    elif d.direction == "short":
-        iron_anchors = [float(s["price"]) for s in swings["highs"] if float(s["price"]) > 0]
-        if n > 0:
-            iron_anchors.append(recent_high)
-    else:
-        iron_anchors = []
-    if (
-        iron_anchors
-        and signal.get("signal_type") not in ("breakout", "manual_search")
-    ):
-        tol = 0.25 * atr if atr else 0.0
-        if not any(
-            a * (1 - _IRON_RULE_TOL) - tol
-            <= d.entry_price <=
-            a * (1 + _IRON_RULE_TOL) + tol
-            for a in iron_anchors
-        ):
-            near = ", ".join(f"{a:g}" for a in iron_anchors[:5])
-            if d.direction == "long":
-                violations.append(
-                    f"方向铁律违规：做多入场必须贴近某个支撑结构位"
-                    f"（摆动低点/最近{n}根最低点，位 ±0.3% 容差带 + 0.25×ATR 容差），"
-                    f"唯一例外是放量突破信号。可用锚：{near}"
-                )
-            else:
-                violations.append(
-                    f"方向铁律违规：做空入场必须贴近某个压力结构位"
-                    f"（摆动高点/最近{n}根最高点，位 ±0.3% 容差带 + 0.25×ATR 容差），"
-                    f"唯一例外是放量突破信号。可用锚：{near}"
-                )
+    # 方向铁律的距离校验已移除（2026-09-15 拍板）：入场不再强制贴近结构位 ±0.3%，
+    # "只在支撑做多/压力做空"降级为提示词纪律；入场合理性由「偏离现价 ≤2%」+
+    # 止损锚定 + RR≥1.5 三道既有校验兜底
 
     if close > 0:
         dev = abs(d.entry_price - close) / close
