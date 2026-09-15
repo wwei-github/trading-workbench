@@ -42,4 +42,7 @@ class SystemConfig(Base):
     strategy_structure_break_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     strategy_range_edge_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # 限价委托总开关（docs/10）：AI order_type=limit 时挂 OTOCO 限价委托；默认开启，页面可关
+    limit_order_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
     notes: Mapped[str] = mapped_column(String(255), default="系统运行时配置")

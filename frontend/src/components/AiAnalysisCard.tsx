@@ -11,7 +11,7 @@ import { bj } from '../utils/dayjs'
 import { useScanStore } from '../stores/scanStore'
 import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
 import { scanApi } from '../api/scan'
-import { TRADE_TYPE_MAP } from '../constants/labels'
+import { TRADE_TYPE_MAP, ORDER_TYPE_MAP } from '../constants/labels'
 import type { AIAnalysis, StageTrace } from '../types'
 
 function fmtPrice(v: number | null | undefined): string {
@@ -252,6 +252,12 @@ export default function AiAnalysisCard({ ai }: Props) {
           {!isSkip && tradeTypeCfg && (
             <Tag color={tradeTypeCfg.color} style={{ marginInlineEnd: 0 }}>
               {tradeTypeCfg.label}
+            </Tag>
+          )}
+          {!isSkip && (ai.order_type === 'limit' || ai.order_type === 'market') && (
+            // 委托方式（docs/10）：AI 自选，limit=限价委托挂单价等回踩
+            <Tag color={ORDER_TYPE_MAP[ai.order_type].color} style={{ marginInlineEnd: 0 }}>
+              {ORDER_TYPE_MAP[ai.order_type].label}
             </Tag>
           )}
         </Space>

@@ -22,6 +22,7 @@ import {
 import {
   AccountBookOutlined,
   CheckCircleOutlined,
+  ClockCircleOutlined,
   CloseCircleOutlined,
   HistoryOutlined,
   MinusCircleOutlined,
@@ -36,15 +37,18 @@ import { scanApi } from '../api/scan'
 import { bj } from '../utils/dayjs'
 import { SCHEME_UP_DOWN, schemeTag, schemeValueColor } from '../utils/scheme'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
+import { ORDER_TYPE_MAP } from '../constants/labels'
 import AiAnalysisCard from './AiAnalysisCard'
 import type { TradeEvent, TradeRecord } from '../types'
 
-// 状态标签：运行中三态 + 已平仓 + 失败
+// 状态标签：挂单中 + 运行中三态 + 已平仓 + 已撤销 + 失败
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
+  PENDING: { label: '挂单中', color: 'processing' },
   OPENED: { label: '运行中', color: 'blue' },
   TP1_HIT: { label: 'TP1已止盈', color: 'cyan' },
   TP2_HIT: { label: '已保本', color: 'geekblue' },
   CLOSED: { label: '已平仓', color: 'default' },
+  CANCELLED: { label: '已撤销', color: 'default' },
   FAILED: { label: '失败', color: 'red' },
 }
 
@@ -58,11 +62,19 @@ const EXIT_REASON_MAP: Record<string, string> = {
   liquidation: '强平（保证金亏光）',
   manual: '手动平仓',
   error: '异常平仓',
+  // 限价单（docs/10）
+  limit_expired: '限价单到期撤销',
+  limit_premise: '限价单前提失效',
+  limit_partial: '限价单部分成交平仓',
 }
 
 // 操作历史事件元数据：中文标签 / 主题色 / 时间线圆点图标
 const EVENT_META: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
   OPEN: { label: '开仓', color: '#1677ff', icon: <RocketOutlined /> },
+  LIMIT_PLACED: { label: '限价委托挂出', color: '#fa8c16', icon: <ClockCircleOutlined /> },
+  LIMIT_FILLED: { label: '限价委托成交', color: '#52c41a', icon: <CheckCircleOutlined /> },
+  LIMIT_CANCELLED: { label: '限价委托撤销', color: '#8c8c8c', icon: <MinusCircleOutlined /> },
+  LIMIT_PARTIAL: { label: '限价单部分成交', color: '#faad14', icon: <WarningOutlined /> },
   TP1_FILL: { label: 'TP1 止盈成交', color: '#52c41a', icon: <CheckCircleOutlined /> },
   TP2_FILL: { label: 'TP2 止盈成交', color: '#52c41a', icon: <CheckCircleOutlined /> },
   SL_MOVE: { label: '止损移动', color: '#fa8c16', icon: <SwapOutlined /> },
@@ -97,6 +109,8 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   exit_reason: '出场原因',
   qty_tp1: 'TP1数量',
   qty_tp2: 'TP2数量',
+  qty_filled: '已成交量',
+  expires_at: '到期时间',
   message: '错误信息',
 }
 
@@ -115,6 +129,7 @@ function fmtTime(s: string | null | undefined): string {
 // 盈亏颜色跟随全局涨跌配色方案（红涨绿跌/绿涨红跌）
 function detailValue(k: string, v: unknown, scheme: ColorScheme): React.ReactNode {
   if (k === 'exit_reason') return EXIT_REASON_MAP[String(v)] || String(v)
+  if (k === 'expires_at') return v ? bj(String(v)).format('MM-DD HH:mm') : String(v)
   if (k === 'pnl_pct' || k === 'slippage_pct') return `${v}%`
   if (k === 'realized_pnl' || k === 'pnl' || k === 'cum_pnl' || k === 'insurance_clear') {
     const n = Number(v)
@@ -205,19 +220,22 @@ export default function TradesPanel() {
   // 整行点击展开/收起（受控 keys；点展开图标时 stopPropagation 由 onRow 内部处理）
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([])
 
+  // 进行中 = 挂单中（PENDING 占在跑名额）+ 运行中三态
+  const RUNNING_STATUSES = ['PENDING', 'OPENED', 'TP1_HIT', 'TP2_HIT']
+
   const filtered = useMemo(
     () =>
       statusFilter === ''
         ? rows
         : statusFilter === 'running'
-          ? rows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status))
+          ? rows.filter((r) => RUNNING_STATUSES.includes(r.status))
           : rows.filter((r) => r.status === statusFilter),
     [rows, statusFilter],
   )
 
-  // 概览统计：在跑（三态）/ 已平仓 / 胜率 / 累计净收益
+  // 概览统计：在跑（挂单中+三态）/ 已平仓 / 胜率 / 累计净收益
   const stats = useMemo(() => {
-    const running = rows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status)).length
+    const running = rows.filter((r) => RUNNING_STATUSES.includes(r.status)).length
     const closedRows = rows.filter((r) => r.status === 'CLOSED' && r.realized_pnl != null)
     const wins = closedRows.filter((r) => (r.realized_pnl ?? 0) > 0).length
     const totalPnl = closedRows.reduce((s, r) => s + (r.realized_pnl ?? 0), 0)
@@ -225,14 +243,16 @@ export default function TradesPanel() {
     return { running, closed: closedRows.length, winRate, totalPnl }
   }, [rows])
 
-  // 状态筛选选项：进行中 = 三态聚合（运行中/TP1已止盈/已保本），带当前数量与状态色点
+  // 状态筛选选项：进行中 = 挂单中+三态聚合，带当前数量与状态色点
   const statusOptions = useMemo(() => {
-    const running = rows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status)).length
+    const running = rows.filter((r) => RUNNING_STATUSES.includes(r.status)).length
     const count = (s: string) => rows.filter((r) => r.status === s).length
     return [
       { value: '', label: '全部', count: rows.length, dot: null as string | null },
       { value: 'running', label: '进行中', count: running, dot: '#1677ff' },
+      { value: 'PENDING', label: '挂单中', count: count('PENDING'), dot: '#fa8c16' },
       { value: 'CLOSED', label: '已平仓', count: count('CLOSED'), dot: '#8c8c8c' },
+      { value: 'CANCELLED', label: '已撤销', count: count('CANCELLED'), dot: '#bfbfbf' },
       { value: 'FAILED', label: '失败', count: count('FAILED'), dot: '#ff4d4f' },
     ]
   }, [rows])
@@ -364,6 +384,11 @@ export default function TradesPanel() {
           <Tag color={rec.direction === 'long' ? schemeTag(colorScheme).up : schemeTag(colorScheme).down} style={{ marginInlineEnd: 0 }}>
             {rec.direction === 'long' ? '多' : '空'}
           </Tag>
+          {rec.order_type === 'limit' && (
+            <Tag color={ORDER_TYPE_MAP.limit.color} style={{ marginInlineEnd: 0 }}>
+              限价
+            </Tag>
+          )}
         </Space>
       ),
     },
@@ -440,7 +465,11 @@ export default function TradesPanel() {
       dataIndex: 'opened_at',
       key: 'opened_at',
       width: 150,
-      render: fmtTime,
+      render: (v: string | null, rec) =>
+        // 挂单中：展示委托挂出时间与到期时间（docs/10）
+        rec.status === 'PENDING'
+          ? `挂单至 ${fmtTime(rec.expires_at)}`
+          : fmtTime(v),
     },
     {
       title: '收益',

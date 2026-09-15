@@ -35,6 +35,7 @@ export default function ScanConfigPanel() {
         strategy_trend_follow_enabled: aiConfig.strategy_trend_follow_enabled ?? true,
         strategy_structure_break_enabled: aiConfig.strategy_structure_break_enabled ?? false,
         strategy_range_edge_enabled: aiConfig.strategy_range_edge_enabled ?? true,
+        limit_order_enabled: aiConfig.limit_order_enabled ?? true,
         dual_judge_enabled: aiConfig.dual_judge_enabled ?? true,
       })
     }
@@ -58,6 +59,7 @@ export default function ScanConfigPanel() {
         strategy_trend_follow_enabled: values.strategy_trend_follow_enabled,
         strategy_structure_break_enabled: values.strategy_structure_break_enabled,
         strategy_range_edge_enabled: values.strategy_range_edge_enabled,
+        limit_order_enabled: values.limit_order_enabled,
         // P2 实验开关
         dual_judge_enabled: values.dual_judge_enabled,
       }
@@ -192,6 +194,15 @@ export default function ScanConfigPanel() {
             name="strategy_structure_break_enabled"
             valuePropName="checked"
             tooltip="123法则·N字结构·2B法则合并打法（破位-回踩-确认）；默认关闭"
+          >
+            <Switch />
+          </Form.Item>
+
+          <Form.Item
+            label="限价委托"
+            name="limit_order_enabled"
+            valuePropName="checked"
+            tooltip="AI 决策标记限价（等回踩/反抽）时挂 OTOCO 委托单（入场+TP1+SL 一体，12h 未成交自动撤销）；关闭后限价建议一律回落市价路径（docs/10）"
           >
             <Switch />
           </Form.Item>

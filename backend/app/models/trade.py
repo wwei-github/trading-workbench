@@ -51,16 +51,22 @@ class TradeRecord(Base):
 
     # 状态与结算
     status: Mapped[str] = mapped_column(String(16), default="OPENED", index=True)
-    # OPENED（运行中）/ TP1_HIT（部分止盈，止损已移至成本价保本）/ TP2_HIT（仅剩跟进仓）/ CLOSED / FAILED
+    # PENDING（限价挂单中，docs/10）/ OPENED（运行中）/ TP1_HIT（部分止盈，止损已移至成本价保本）
+    # / TP2_HIT（仅剩跟进仓）/ CLOSED / FAILED / CANCELLED（挂单撤销/过期/前提失效）
+    order_type: Mapped[Optional[str]] = mapped_column(String(16), default="market", nullable=True)
+    # 委托方式：market 市价（现行路径，旧记录同此）/ limit 限价委托（docs/10）
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # 限价挂单到期时间（docs/10）
     opened_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     realized_pnl: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)  # 正/负值 USDT（运行中=已止盈部分，结算后=全程净额）
     pnl_pct: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)  # 相对止损金额 %
     exit_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     # sl / tp1_then_sl / tp1_trail / trail_sl / breakeven_sl / manual / error
+    # 限价单新值（docs/10）：limit_expired（到期撤销）/ limit_premise（触 TP1 前提失效）/ limit_partial（部分成交平仓）
 
     raw: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # {entry_order_id, sl_order_id, tp1_order_id, tp2_order_id, qty_tp1, qty_tp2, capital_base, wallet}
+    # 限价单（docs/10）：entry_order_id=OTOCO 父单 algoId；qty_filled=已成交量（部分成交时）
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -83,6 +89,7 @@ class TradeEvent(Base):
     )
     event_type: Mapped[str] = mapped_column(String(16), nullable=False)
     # OPEN / TP1_FILL / TP2_FILL / SL_MOVE / SL_FILL / CANCEL / ERROR / SETTLE / SKIP
+    # 限价单（docs/10）：LIMIT_PLACED / LIMIT_FILLED / LIMIT_CANCELLED / LIMIT_PARTIAL
     detail: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 

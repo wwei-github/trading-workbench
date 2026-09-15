@@ -84,6 +84,7 @@ export interface AIAnalysis {
   skip_reason: string | null;
   direction: string | null; // 'long' | 'short'
   trade_type: string | null; // 开单类型：trend_follow / rule_123 / n_structure / rule_2b / range_edge
+  order_type: string | null; // 委托方式：market 市价 / limit 限价委托（docs/10，AI 返回即指令）
   analysis: string | null;
   entry_price: number | null;
   stop_loss: number | null;
@@ -149,6 +150,7 @@ export interface SystemConfig {
   fib_enabled?: boolean; // 斐波那契位开关（二期）
   dual_judge_enabled?: boolean; // 双评委辩论：对 suggest 决策做多空辩论复核
   max_open_trades?: number; // 自动交易：同时在跑单子上限
+  limit_order_enabled?: boolean; // 限价委托总开关（docs/10）：AI order_type=limit 时挂 OTOCO
 }
 
 // ===== 自动交易（docs/06）=====
@@ -167,7 +169,9 @@ export interface TradeRecord {
   stop_loss: number | null
   tp1: number | null
   tp2: number | null
-  status: 'OPENED' | 'TP1_HIT' | 'TP2_HIT' | 'CLOSED' | 'FAILED'
+  status: 'PENDING' | 'OPENED' | 'TP1_HIT' | 'TP2_HIT' | 'CLOSED' | 'FAILED' | 'CANCELLED'
+  order_type: 'market' | 'limit' | null // 委托方式：limit=限价委托（docs/10）
+  expires_at: string | null // 限价挂单到期时间（PENDING 时有值）
   opened_at: string | null
   closed_at: string | null
   realized_pnl: number | null // 正/负值 USDT（净额：含手续费/资金费；运行中=已止盈部分，结算后=全程净额）

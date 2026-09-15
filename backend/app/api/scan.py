@@ -334,6 +334,7 @@ def get_system_config(db: Session = Depends(get_db)):
         strategy_trend_follow_enabled=cfg.strategy_trend_follow_enabled,
         strategy_structure_break_enabled=cfg.strategy_structure_break_enabled,
         strategy_range_edge_enabled=cfg.strategy_range_edge_enabled,
+        limit_order_enabled=cfg.limit_order_enabled,
     )
 
 
@@ -392,6 +393,8 @@ def update_system_config(
         cfg.strategy_structure_break_enabled = body.strategy_structure_break_enabled
     if body.strategy_range_edge_enabled is not None:
         cfg.strategy_range_edge_enabled = body.strategy_range_edge_enabled
+    if body.limit_order_enabled is not None:
+        cfg.limit_order_enabled = body.limit_order_enabled
 
     db.commit()
     db.refresh(cfg)
@@ -414,6 +417,7 @@ def update_system_config(
         strategy_trend_follow_enabled=bool(cfg.strategy_trend_follow_enabled),
         strategy_structure_break_enabled=bool(cfg.strategy_structure_break_enabled),
         strategy_range_edge_enabled=bool(cfg.strategy_range_edge_enabled),
+        limit_order_enabled=bool(cfg.limit_order_enabled),
     )
 
 

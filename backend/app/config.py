@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     TRADING_CAPITAL_TIERS: str = "100,200,500,1000,2000,5000,10000"  # 风险基数分档（向下落档）
     TRADING_MIN_FREE_PCT: float = 0.7  # 可用余额/总资金 下限（70% 规则）
     TRADING_LEVERAGE: int = 20        # 杠杆（逐仓 ISOLATED）
+    LIMIT_ORDER_TTL_HOURS: int = 12   # 限价委托挂单时效（docs/10），过期撤销；小时粒度巡检 → 实际寿命 12~13h
 
     class Config:
         env_file = ".env"
