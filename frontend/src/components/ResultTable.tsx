@@ -13,6 +13,7 @@ import {
 } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { useScanStore } from "../stores/scanStore";
+import { scanApi } from "../api/scan";
 import { schemeTag } from "../utils/scheme";
 import {
   SIGNAL_TYPE_MAP,
@@ -28,6 +29,15 @@ import { useState, useMemo, useEffect } from "react";
 import KlineChart from "./KlineChart";
 import AiExpandContent from "./AiExpandContent";
 import type { AIAnalysis, ScanResult } from "../types";
+
+// 交易状态中文名（"开单状态"列 tooltip 用，与交易记录 Tab 口径一致）
+const TRADE_STATUS_LABEL: Record<string, string> = {
+  OPENED: "运行中",
+  TP1_HIT: "部分止盈",
+  TP2_HIT: "已止盈·跟踪止损",
+  CLOSED: "已平仓",
+  FAILED: "开单失败",
+};
 
 export default function ResultTable() {
   const {
@@ -51,6 +61,26 @@ export default function ResultTable() {
   const colorScheme = useScanStore((s) => s.colorScheme);
 
   const aiEnabled = !!aiConfig?.ai_analysis_enabled;
+  // 开单状态映射：ai_analysis_id -> 交易状态（"开单状态"列判定已开单/开单失败）。
+  // 随结果列表刷新拉取（limit 500 足够覆盖当前页分析的近期交易）
+  const [tradeMap, setTradeMap] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let cancelled = false;
+    scanApi.trades
+      .list(undefined, 500)
+      .then((rows) => {
+        if (cancelled) return;
+        const m: Record<string, string> = {};
+        for (const t of rows) {
+          if (t.ai_analysis_id) m[t.ai_analysis_id] = t.status;
+        }
+        setTradeMap(m);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [results, currentScanId]);
   const watchedSymbols = useMemo(
     () => new Set(watchlist.map((w) => w.symbol)),
     [watchlist],
@@ -269,6 +299,27 @@ export default function ResultTable() {
         const ai = aiMap[record.id];
         if (!ai || ai.trade_decision !== "suggest") {
           return <span style={{ color: "#999" }}>-</span>;
+        }
+        // 已开单/开单失败：以 trade_records（按 ai_analysis_id 关联）为准
+        const tradeStatus = tradeMap[ai.id];
+        if (tradeStatus) {
+          const label = TRADE_STATUS_LABEL[tradeStatus] || tradeStatus;
+          if (tradeStatus === "FAILED") {
+            return (
+              <Tooltip title={`下单序列失败（${label}），详见交易记录 Tab`}>
+                <Tag color="red" style={{ marginInlineEnd: 0, cursor: "default" }}>
+                  开单失败
+                </Tag>
+              </Tooltip>
+            );
+          }
+          return (
+            <Tooltip title={`已开单（${label}），详见交易记录 Tab`}>
+              <Tag color="green" style={{ marginInlineEnd: 0, cursor: "default" }}>
+                已开单
+              </Tag>
+            </Tooltip>
+          );
         }
         if (ai.open_block_reason) {
           return (
