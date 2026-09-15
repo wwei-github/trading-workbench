@@ -7,7 +7,6 @@ from fastapi.responses import JSONResponse
 
 from app.api import (
     health_router,
-    kline_stream_router,
     ops_router,
     scan_router,
     trades_router,
@@ -15,7 +14,6 @@ from app.api import (
 )
 from app.config import settings
 from app.database import init_db
-from app.services.kline_hub import kline_hub
 from app.services.log_sink import attach_db_log_sink
 
 logging.basicConfig(
@@ -30,10 +28,7 @@ logger = logging.getLogger("app.api")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    try:
-        yield
-    finally:
-        await kline_hub.stop()
+    yield
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
@@ -49,7 +44,6 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(scan_router)
 app.include_router(watchlist_router)
-app.include_router(kline_stream_router)
 app.include_router(trades_router)
 app.include_router(ops_router)
 
