@@ -723,12 +723,34 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
             _rehang_lost_sl(db, trader, rec, open_ids)
             if rec.status == "OPENED":
                 if tp2_gone and ratio <= 0.35:
-                    # 同一小时两档止盈都成交
+                    # 同一小时两档止盈都成交：从交易所成交明细按时间序+数量精确拆分
+                    # 各档价差盈亏（与常规路径的 _tranche_pnl 书签口径同义，但两档同轮
+                    # 成交无法用书签差值区分；TP 条件单触发后换新单号，无法按单号归集）。
+                    # 拆分失败回退旧口径——两档合计只记在 TP2 上，TP1 不显示金额
                     realized = _record_realized(db, trader, rec)
-                    _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1")})
+                    qty_tp1, qty_tp2 = float(raw.get("qty_tp1") or 0), float(raw.get("qty_tp2") or 0)
+                    tranche1 = tranche2 = None
+                    if qty_tp1 > 0 and qty_tp2 > 0:
+                        try:
+                            since_ms = int(rec.opened_at.replace(
+                                tzinfo=timezone.utc).timestamp() * 1000) - 5_000
+                            tranche1, tranche2 = trader.fill_tranche_pnls(
+                                rec.symbol, since_ms, qty_tp1, qty_tp2)
+                        except Exception as e:
+                            logger.warning("拆分双档止盈金额失败 %s: %s（回退合计口径）",
+                                           rec.symbol, e)
+                            tranche1 = tranche2 = None
+                    tp1_detail = {"qty": raw.get("qty_tp1")}
+                    if tranche1 is not None:
+                        tp1_detail["pnl"] = tranche1
+                    _add_event(db, rec, "TP1_FILL", tp1_detail)
                     rec.status = "TP1_HIT"
-                    _add_event(db, rec, "TP2_FILL", {"qty": raw.get("qty_tp2"),
-                                                     "realized_pnl": realized})  # 两档累计
+                    tp2_detail = {"qty": raw.get("qty_tp2")}
+                    if tranche2 is not None:
+                        tp2_detail.update({"pnl": tranche2, "cum_pnl": realized})  # 两档累计
+                    else:
+                        tp2_detail["realized_pnl"] = realized  # 两档累计（旧口径）
+                    _add_event(db, rec, "TP2_FILL", tp2_detail)
                     rec.status = "TP2_HIT"
                     _move_sl_trailing(db, trader, rec, interval, open_ids)
                     db.commit()

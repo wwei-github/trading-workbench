@@ -257,6 +257,40 @@ class BinanceTrader:
         rows = self.income_rows(symbol, since_ms)
         return self.sum_income(rows, {"REALIZED_PNL"})
 
+    def fill_tranche_pnls(
+        self, symbol: str, since_ms: int, qty_tp1: float, qty_tp2: float,
+    ) -> tuple[float, float]:
+        """把两档止盈各自的价差盈亏从交易所成交明细拆出（userTrades.realizedPnl，
+        与 income REALIZED_PNL 同源）。
+
+        背景：TP 为条件单（TAKE_PROFIT_MARKET），触发后生成新 orderId 成交，
+        下单时记录的 algo 单号对不上成交回报——只能按成交归集：TP1 触发价更近
+        必然先成交，按时间序累计 CLOSE 侧成交量，到达 qty_tp1 即分界，其余归
+        TP2。CLOSE 侧 = realizedPnl 非零的成交（开仓成交价差为 0）。
+        两档合计成交量对不上（碎片化/残缺）时抛 ValueError，由调用方回退合计口径。
+        """
+        rows = self._req("GET", "/fapi/v1/userTrades", {
+            "symbol": symbol, "startTime": since_ms, "limit": 1000,
+        })
+        closes = sorted(
+            (r for r in rows if float(r.get("realizedPnl") or 0) != 0),
+            key=lambda r: r.get("time") or 0,
+        )
+        total_qty = sum(float(r.get("qty") or 0) for r in closes)
+        if abs(total_qty - (qty_tp1 + qty_tp2)) > max(qty_tp1 + qty_tp2, 1) * 0.01:
+            raise ValueError(
+                f"CLOSE 成交量 {total_qty} 与两档 {qty_tp1}+{qty_tp2} 对不上")
+        pnl1 = pnl2 = 0.0
+        acc = 0.0
+        for r in closes:
+            q, p = float(r.get("qty") or 0), float(r.get("realizedPnl") or 0)
+            if acc < qty_tp1:  # TP1 分界之前的时间序成交归 TP1
+                pnl1 += p
+            else:
+                pnl2 += p
+            acc += q
+        return round(pnl1, 6), round(pnl2, 6)
+
     @staticmethod
     def sum_income(rows: list, keep: set) -> float:
         return sum(float(r.get("income") or 0) for r in rows if r.get("incomeType") in keep)
