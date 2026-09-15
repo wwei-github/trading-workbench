@@ -185,11 +185,7 @@ class SystemConfigOut(BaseModel):
 
     # 自动交易（docs/06）
     max_open_trades: int = 5
-
-    # 开单策略开关（docs/06 §3）
-    strategy_trend_follow_enabled: bool = True
-    strategy_structure_break_enabled: bool = False
-    strategy_range_edge_enabled: bool = True
+    trading_min_free_pct: float = 0.5  # 开仓最低可用余额占钱包比例（0~1；2026-09-15 由固定 70% 改为可配置）
 
     class Config:
         from_attributes = True
@@ -218,11 +214,7 @@ class SystemConfigUpdate(BaseModel):
 
     # 自动交易（docs/06）
     max_open_trades: Optional[int] = None
-
-    # 开单策略开关（docs/06 §3）
-    strategy_trend_follow_enabled: Optional[bool] = None
-    strategy_structure_break_enabled: Optional[bool] = None
-    strategy_range_edge_enabled: Optional[bool] = None
+    trading_min_free_pct: Optional[float] = None  # 0~1，开仓最低可用余额占比
 
 
 # ===== 复盘统计（docs/04 §10 P2） =====

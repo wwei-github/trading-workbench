@@ -115,11 +115,17 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS max_open_trades INTEGER NOT NULL DEFAULT 5
         """))
         # 开单策略开关（默认：顺势/区间边缘开，结构破位关）
+        # 2026-09-15 拍板：开关不再拦截开仓（trade_type 仅作记录），DB 列保留不删
         conn.execute(text("""
             ALTER TABLE system_config
               ADD COLUMN IF NOT EXISTS strategy_trend_follow_enabled BOOLEAN NOT NULL DEFAULT TRUE,
               ADD COLUMN IF NOT EXISTS strategy_structure_break_enabled BOOLEAN NOT NULL DEFAULT FALSE,
               ADD COLUMN IF NOT EXISTS strategy_range_edge_enabled BOOLEAN NOT NULL DEFAULT TRUE
+        """))
+        # 余额风控可配置（2026-09-15）：开仓最低可用余额占比，默认 50%（原固定 70% 规则）
+        conn.execute(text("""
+            ALTER TABLE system_config
+              ADD COLUMN IF NOT EXISTS trading_min_free_pct NUMERIC(10,6) NOT NULL DEFAULT 0.5
         """))
         # Feature 12: 自动交易——环境标识（测试网/正式网）与开单时 AI 结论快照
         conn.execute(text("""

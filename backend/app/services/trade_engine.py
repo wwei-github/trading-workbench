@@ -108,19 +108,9 @@ def _attempt_open(
     if symbol in positions:
         logger.info("开仓跳过 %s：已有持仓", symbol)
         return False
-    # 开单策略开关：AI 归类类型未启用则不开仓（分析本身照常记录）
+    # 开单类型仅作记录（2026-09-15 拍板）：策略开关不再拦截开仓（未知类型也不拦），
+    # trade_type 仍随分析/交易记录落库；顺势交易的 EMA 排列前提单独保留（下方校验）
     trade_type = a.trade_type or ""
-    type_switch = {
-        "trend_follow": cfg.strategy_trend_follow_enabled,
-        "structure_break": cfg.strategy_structure_break_enabled,
-        "range_edge": cfg.strategy_range_edge_enabled,
-    }.get(trade_type)
-    if type_switch is None:
-        logger.info("开仓跳过 %s：开单类型未知（%s）", symbol, trade_type or "无")
-        return False
-    if not type_switch:
-        logger.info("开仓跳过 %s：策略未启用（%s）", symbol, trade_type)
-        return False
     direction = a.direction
     entry_ai = float(a.entry_price)
     sl = float(a.stop_loss)
@@ -128,25 +118,8 @@ def _attempt_open(
     tp2 = float(a.take_profit_2 or 0)
     try:
         price = trader.price(symbol)
-        # 方向-价格一致性复验（分析到开仓之间价格可能移动）
-        if direction == "long" and not (sl < price < tp1):
-            logger.info("开仓作废 %s：现价 %s 已不在止损/止盈一区间内", symbol, price)
-            return False
-        if direction == "short" and not (sl > price > tp1):
-            logger.info("开仓作废 %s：现价 %s 已不在止损/止盈一区间内", symbol, price)
-            return False
         if abs(price - entry_ai) / entry_ai > 0.01:
             logger.info("开仓作废 %s：现价偏离 AI 入场价超 1%%", symbol)
-            return False
-        # 盈亏比按开仓时现价复验：分析到开仓之间价格漂移会改变实际赔率
-        # （多单现价抬高→风险距离变大、盈利空间变小），跌破铁律即作废——
-        # 防"价格已涨/跌了一截仍追单"，此时开进去的实际盈亏比远低于分析值
-        rr_open = abs(tp1 - price) / abs(price - sl)
-        if rr_open < settings.AI_RR_MIN:
-            logger.info(
-                "开仓作废 %s：按现价复算盈亏比 %.2f < %.1f（现价 %s，入场 %s）",
-                symbol, rr_open, settings.AI_RR_MIN, price, entry_ai,
-            )
             return False
         # EMA 排列必须条件（顺势交易专属）：多单须 21>55>144 多头排列，空单须 144>55>21 空头排列
         if trade_type == "trend_follow":
@@ -161,6 +134,11 @@ def _attempt_open(
                 return False
         # 固定亏损仓位：基数分档 × 3% ÷ 止损距离
         stop_pct = abs(price - sl) / price
+        if stop_pct <= 0:
+            # 原"方向-价格一致性/RR 复验"闸门（2026-09-15 移除）曾顺带拦住 sl==现价；
+            # 现在显式防零：止损距离为 0 无法按固定亏损法计算仓位
+            logger.info("开仓放弃 %s：止损距离为 0（sl=%s，现价 %s）", symbol, sl, price)
+            return False
         # 止损宽度闸门（防强平）：逐仓计划止损亏损 = 名义×stop_pct，保证金 = 名义/杠杆；
         # 止损距离超过 1/杠杆−维持保证金率（20× 即 4.5%）时，价格未到止损价
         # 保证金就先亏光 → 被强平并连累撤销 TP 挂单（BATUSDT 案例：止损 6.4% 被强平）。
@@ -371,9 +349,14 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
     wallet_info = trader.wallet_balance()
     wallet = wallet_info["wallet"]
     occupied = sum(p["initial_margin"] for p in positions.values())
-    if wallet > 0 and wallet - occupied < wallet * settings.TRADING_MIN_FREE_PCT:
-        logger.info("即时开仓跳过 %s：可用余额低于总资金 %.0f%%",
-                    a.symbol, settings.TRADING_MIN_FREE_PCT * 100)
+    # 余额风控（2026-09-15 起可配置）：开仓最低可用余额占钱包比例，默认 50%（原固定 70%）
+    min_free = (
+        settings.TRADING_MIN_FREE_PCT
+        if cfg is None or cfg.trading_min_free_pct is None
+        else float(cfg.trading_min_free_pct)
+    )
+    if wallet > 0 and wallet - occupied < wallet * min_free:
+        logger.info("即时开仓跳过 %s：可用余额低于总资金 %.0f%%", a.symbol, min_free * 100)
         return False
     if _capital_base(wallet) <= 0:
         logger.info("即时开仓跳过 %s：钱包余额低于最小风险档位", a.symbol)

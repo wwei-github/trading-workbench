@@ -36,10 +36,9 @@ class SystemConfig(Base):
     # 自动交易（docs/06）：同时在跑单子上限（页面可改）
     max_open_trades: Mapped[int] = mapped_column(Integer, default=5)
 
-    # 开单策略开关（docs/06 §3）：只影响自动开仓，不影响 AI 分析本身
-    # 2026-09-12 起开单类型为三种；structure_break（123·N字·2B 合并）默认不启用
-    strategy_trend_follow_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    strategy_structure_break_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    strategy_range_edge_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 余额风控：开仓最低可用余额占钱包余额比例（0~1，页面可改）。
+    # 2026-09-15 由固定 70% 规则改为默认 50% 可配置。开单类型策略开关已移除
+    # （2026-09-15 拍板：trade_type 仅作记录不再拦截开仓；DB 历史列保留不删）
+    trading_min_free_pct: Mapped[float] = mapped_column(Numeric(10, 6), default=0.5)
 
     notes: Mapped[str] = mapped_column(String(255), default="系统运行时配置")

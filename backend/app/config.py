@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     TRADING_MIN_RECOMMENDATION: float = 60.0  # 开单推荐度门槛
     TRADING_RISK_PCT: float = 3.0     # 止损金额占风险基数比例（%）
     TRADING_CAPITAL_TIERS: str = "100,200,500,1000,2000,5000,10000"  # 风险基数分档（向下落档）
-    TRADING_MIN_FREE_PCT: float = 0.7  # 可用余额/总资金 下限（70% 规则）
+    TRADING_MIN_FREE_PCT: float = 0.5  # 可用余额/总资金 下限（2026-09-15 由 70% 改 50%；系统配置表 trading_min_free_pct 可改，此值仅作缺列/缺行兜底）
     TRADING_LEVERAGE: int = 20        # 杠杆（逐仓 ISOLATED）
 
     class Config:

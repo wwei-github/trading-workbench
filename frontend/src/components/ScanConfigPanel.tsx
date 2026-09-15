@@ -32,9 +32,8 @@ export default function ScanConfigPanel() {
         swing_order: aiConfig.swing_order,
         pullback_tolerance: aiConfig.pullback_tolerance,
         max_open_trades: aiConfig.max_open_trades ?? 5,
-        strategy_trend_follow_enabled: aiConfig.strategy_trend_follow_enabled ?? true,
-        strategy_structure_break_enabled: aiConfig.strategy_structure_break_enabled ?? false,
-        strategy_range_edge_enabled: aiConfig.strategy_range_edge_enabled ?? true,
+        // 表单里按百分比（0~100）编辑，保存时换算回 0~1 比例
+        trading_min_free_pct: Math.round((aiConfig.trading_min_free_pct ?? 0.5) * 10000) / 100,
         dual_judge_enabled: aiConfig.dual_judge_enabled ?? true,
       })
     }
@@ -54,10 +53,8 @@ export default function ScanConfigPanel() {
         pullback_tolerance: values.pullback_tolerance,
         // 自动交易
         max_open_trades: values.max_open_trades,
-        // 开单策略开关
-        strategy_trend_follow_enabled: values.strategy_trend_follow_enabled,
-        strategy_structure_break_enabled: values.strategy_structure_break_enabled,
-        strategy_range_edge_enabled: values.strategy_range_edge_enabled,
+        trading_min_free_pct:
+          values.trading_min_free_pct != null ? values.trading_min_free_pct / 100 : undefined,
         // P2 实验开关
         dual_judge_enabled: values.dual_judge_enabled,
       }
@@ -172,28 +169,13 @@ export default function ScanConfigPanel() {
           </Form.Item>
 
           <Form.Item
-            label="开单策略：顺势交易"
-            name="strategy_trend_follow_enabled"
-            valuePropName="checked"
-            tooltip="趋势中顺 EMA 方向开仓；EMA 三线严格排列（多单21>55>144、空单144>55>21）是其硬前提"
+            label="开仓最低可用余额（%）"
+            name="trading_min_free_pct"
+            initialValue={50}
+            rules={[{ required: true, message: '请输入开仓最低可用余额比例' }]}
+            tooltip="可用余额低于总资金该比例时不开新单（原 70% 规则；2026-09-15 起默认 50%，此处可改）"
           >
-            <Switch />
-          </Form.Item>
-          <Form.Item
-            label="开单策略：区间边缘反转"
-            name="strategy_range_edge_enabled"
-            valuePropName="checked"
-            tooltip="震荡区间触及顶/底边缘且出现反转形态时反向开仓，止盈看中轨"
-          >
-            <Switch />
-          </Form.Item>
-          <Form.Item
-            label="开单策略：结构破位回踩"
-            name="strategy_structure_break_enabled"
-            valuePropName="checked"
-            tooltip="123法则·N字结构·2B法则合并打法（破位-回踩-确认）；默认关闭"
-          >
-            <Switch />
+            <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} />
           </Form.Item>
 
           {/* AI 实验功能（P2，默认关闭） */}

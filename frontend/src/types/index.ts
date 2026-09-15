@@ -137,10 +137,6 @@ export interface SystemConfig {
   strategy_prompt: string;
   kline_interval: string;
   kline_window: number;
-  // 开单策略开关（docs/06）
-  strategy_trend_follow_enabled?: boolean;
-  strategy_structure_break_enabled?: boolean;
-  strategy_range_edge_enabled?: boolean;
   breakout_threshold: number;
   r_squared_threshold: number;
   repeat_window_hours: number;
@@ -149,6 +145,7 @@ export interface SystemConfig {
   fib_enabled?: boolean; // 斐波那契位开关（二期）
   dual_judge_enabled?: boolean; // 双评委辩论：对 suggest 决策做多空辩论复核
   max_open_trades?: number; // 自动交易：同时在跑单子上限
+  trading_min_free_pct?: number; // 开仓最低可用余额占钱包比例（0~1，原 70% 规则）
 }
 
 // ===== 自动交易（docs/06）=====
