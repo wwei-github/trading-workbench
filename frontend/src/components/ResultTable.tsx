@@ -253,6 +253,32 @@ export default function ResultTable() {
       },
     },
     {
+      // 开单状态列：suggest 被开仓闸门拦下时展示原因（ai_analyses.open_block_reason，
+      // trade_engine._mark_open_block 落库）；进入下单序列后的成败见交易记录 Tab
+      title: (
+        <Tooltip title="建议开单但被开仓闸门拦下的原因（强平闸门/现价偏离/在跑上限/余额不足/待回踩等），悬停查看详情；成功开单或下单失败的见交易记录 Tab">
+          <span>开单状态</span>
+        </Tooltip>
+      ),
+      key: "ai_open_block",
+      render: (_: unknown, record: ScanResult) => {
+        const ai = aiMap[record.id];
+        if (!ai || ai.trade_decision !== "suggest") {
+          return <span style={{ color: "#999" }}>-</span>;
+        }
+        if (ai.open_block_reason) {
+          return (
+            <Tooltip title={ai.open_block_reason}>
+              <Tag color="orange" style={{ marginInlineEnd: 0, cursor: "default" }}>
+                {ai.pullback_wait ? "⏳ 待回踩" : "未开单"}
+              </Tag>
+            </Tooltip>
+          );
+        }
+        return <span style={{ color: "#999" }}>-</span>;
+      },
+    },
+    {
       title: "信号类型",
       dataIndex: "signal_type",
       key: "signal_type",
