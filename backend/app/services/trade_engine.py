@@ -583,6 +583,39 @@ def _tranche_pnl(trader: BinanceTrader, rec: TradeRecord, raw: dict) -> float:
     return tranche
 
 
+def _sweep_orphan_algo_orders(
+    trader: BinanceTrader, active_syms: set, positions: dict,
+) -> int:
+    """孤儿条件单清扫：交易所在挂 algo 委托，但既无持仓也无在跑交易记录 → 撤销。
+
+    巡检按 DB 记录驱动，清不到"无记录的遗留单"（DB 重置前的历史单、手动平仓后
+    的残单等）——已止损/已平仓币种的条件委托会永远悬挂在交易所。每轮结算兜底
+    一遍，只动本系统交易过的符号之外一律不碰（不做全账户无差别撤销）。
+    返回清理的 symbol 数。
+    """
+    try:
+        open_algo = trader.all_open_algo_orders()
+    except Exception as e:
+        logger.warning("孤儿清扫：拉取在挂条件单失败（跳过本轮）: %s", e)
+        return 0
+    if not open_algo:
+        return 0
+    held = {
+        sym for sym, p in (positions or {}).items()
+        if abs(float((p or {}).get("amt") or 0)) > 0
+    }
+    orphan_syms = {str(o.get("symbol")) for o in open_algo if o.get("symbol")} - active_syms - held
+    cleaned = 0
+    for sym in sorted(orphan_syms):
+        try:
+            trader.cancel_all_algo(sym)
+            cleaned += 1
+            logger.info("孤儿条件单清扫：撤销 %s 的在挂委托（无持仓、无在跑记录）", sym)
+        except Exception as e:
+            logger.warning("孤儿清扫撤销 %s 失败: %s", sym, e)
+    return cleaned
+
+
 def settle_trades(db: Session, trader: BinanceTrader) -> int:
     """对非终态交易：以交易所为准推断事件、跟进止损、结算收益。返回处理笔数"""
     cfg = db.get(SystemConfig, 1)
@@ -590,9 +623,14 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
     records = db.execute(
         select(TradeRecord).where(TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")))
     ).scalars().all()
-    if not records:
-        return 0
+    # 在跑符号集（仅本网）：孤儿清扫时豁免这些 symbol 的在挂委托
+    active_syms = {
+        r.symbol for r in records if r.testnet == settings.TRADING_TESTNET
+    }
     positions = trader.positions()
+    if not records:
+        _sweep_orphan_algo_orders(trader, active_syms, positions)
+        return 0
     handled = 0
 
     for rec in records:
@@ -706,4 +744,6 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
             db.rollback()
             logger.warning("结算 %s 失败: %s", rec.symbol, e)
             continue
+    # ③ 孤儿条件单清扫（每轮兜底：无持仓、无在跑记录的在挂委托一律撤销）
+    _sweep_orphan_algo_orders(trader, active_syms, positions)
     return handled

@@ -2,13 +2,10 @@
 
 - 批量：Celery group 按币种并行分发（原串行 + sleep(1) 已废弃）
 - 并发：Redis zset 信号量限制 LLM 全局并发（LLM_CONCURRENCY，默认 3）
-- Stage 1 闸门（不调 LLM 直接出结论）：
-    1) strength < AI_MIN_STRENGTH → 程序 skip
-    2) 信号落库后超过 AI_SIGNAL_MAX_BARS_AGO 根K线仍未分析 → 程序 skip（形态已陈旧，docs/07 §8-A3）
-    3) 当前K线振幅 > ATR_SPIKE_MULT × ATR → 熔断 skip
-    4) 1h 内同指纹 → 沿用旧结论（价格区仍有效时）
-    5) 3h 内同币种已有 suggest 结论且本信号为重复命中 → 沿用旧结论（价格区仍有效时；
-       REPEAT_WINDOW_HOURS，2026-09-14 由 24h 收窄）
+- Stage 1 闸门：
+    1) 1h 内同指纹 → 沿用旧结论（价格区仍有效时）
+- 程序侧 skip 闸门已全部移除（2026-09-15 拍板）：选中的币种必须经过真实 AI 分析，
+  跳过与否由 AI 自己决定；重复命中由扫描侧抑制（scanner，同币同信号窗口内不落库）
 - Stage 2：analyze_with_guard（校验回炉）→ 落库
 """
 import hashlib
@@ -33,7 +30,6 @@ from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
 from app.services.dual_judge import run_dual_judge
 from app.services.exchange_pool import ExchangePool
-from app.services.risk_guard import build_forced_skip, calc_atr
 from app.services.strategy import recent_swings
 
 logger = logging.getLogger(__name__)
@@ -89,27 +85,6 @@ def compute_fingerprint(signal: dict) -> str:
         str(bucket),
     ])
     return hashlib.sha1(raw.encode()).hexdigest()[:40]
-
-
-_INTERVAL_SECONDS = {
-    "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
-    "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600, "8h": 28800,
-    "12h": 43200, "1d": 86400,
-}
-
-
-def _signal_bars_ago(created_at: Optional[datetime], interval: str) -> int:
-    """信号K线距今的根数：扫描落库紧跟信号K线收盘之后，落库时刻 ≈ 信号K线收盘时刻。
-
-    未知周期/缺时间返回 0（不拦），避免配置异常误杀全部信号。
-    """
-    if not created_at:
-        return 0
-    secs = _INTERVAL_SECONDS.get(interval or "")
-    if not secs:
-        return 0
-    delta = datetime.utcnow() - created_at
-    return max(int(delta.total_seconds() // secs), 0)
 
 
 @celery_app.task(name="app.tasks.ai_tasks.run_ai_analysis_task", bind=True, max_retries=3)
@@ -195,29 +170,8 @@ def run_ai_analysis_single(
         # 进度事件：start（前端流式展示分析过程）
         ai_progress.push_start(r.id, r.symbol, "agent")
 
-        # ── Stage 1 闸门（无 LLM 成本）──
-        # 1) 强度不足
-        if r.strength is not None and float(r.strength) < settings.AI_MIN_STRENGTH:
-            reason = f"信号强度 {float(r.strength):.2f} 低于阈值 {settings.AI_MIN_STRENGTH}，程序判定跳过"
-            ai_progress.push(r.id, "gate", note=reason)
-            _finish(db, r, r.symbol, build_forced_skip(reason), fp)
-            ai_progress.push_done(r.id, "skip", reason)
-            return
-        # 2) 信号陈旧（docs/07 §8-A3）：形态/触位判定基于扫描时刻K线快照，从扫描到
-        #    分析完成（LLM 单轮 85~130s + 超时重试）可能跨 1~2 根K线，形态可能已失效
-        #    甚至反向——超过 N 根K线未处理直接程序 skip，不调 LLM。
-        #    手动单币重分析（force）不受限：用户主动发起，且分析时摆动结构/现价都会重算
-        bars_ago = _signal_bars_ago(r.created_at, cfg.kline_interval)
-        if not force and bars_ago > settings.AI_SIGNAL_MAX_BARS_AGO:
-            reason = (
-                f"信号已过期：距今 {bars_ago} 根{cfg.kline_interval}K线"
-                f"（>{settings.AI_SIGNAL_MAX_BARS_AGO}），形态判定基于扫描时刻快照，程序判定跳过"
-            )
-            ai_progress.push(r.id, "gate", note=reason)
-            _finish(db, r, r.symbol, build_forced_skip(reason), fp)
-            ai_progress.push_done(r.id, "skip", reason)
-            return
-        # 3) 振幅熔断（当前已收盘K线振幅 > N×ATR，插针/异常行情不出建议）
+        # ── 程序侧 skip 闸门已全部移除（2026-09-15 拍板）：强度/陈旧/振幅熔断不再拦截，
+        #    选中的币种一律交真实 AI 分析，跳过与否由 AI 自己决定 ──
         pool = ExchangePool()
         klines = pool.get_klines(r.symbol, cfg.kline_interval, 500)
         if len(klines) < 500:
@@ -225,16 +179,6 @@ def run_ai_analysis_single(
             # 仍不足则为新上市合约的全部历史，用可用K线继续
             klines = pool.get_klines(r.symbol, cfg.kline_interval, 500, force_refresh=True)
             logger.info("AI 分析 %s K线不足500根，强刷重取后 %d 根", r.symbol, len(klines))
-        atr = calc_atr(klines)
-        if atr and len(klines) >= 2:
-            closed = klines[-2]
-            kline_range = float(closed[2]) - float(closed[3])  # high - low
-            if kline_range > settings.ATR_SPIKE_MULT * atr:
-                reason = f"当前K线振幅超过 {settings.ATR_SPIKE_MULT:g}×ATR，行情异常熔断"
-                ai_progress.push(r.id, "gate", note=reason)
-                _finish(db, r, r.symbol, build_forced_skip(reason), fp)
-                ai_progress.push_done(r.id, "skip", reason)
-                return
 
         # 分析时刻最新价（未收盘K线的现价）：信号里的 current_price 是扫描时价格，
         # 扫描到分析之间可能已明显移动——所有锚点换算、入场价校验都以最新价为基准
@@ -252,18 +196,6 @@ def run_ai_analysis_single(
                     ai_progress.push_done(r.id, cached.trade_decision, note)
                     return
                 note = "⚠️ 同信号旧结论的价格区已失效（现价越过原止盈/止损），重新分析"
-                ai_progress.push(r.id, "gate", note=note)
-        # 5) 重复信号沿用：REPEAT_WINDOW_HOURS(3h) 内同币种已有 suggest 且本行为重复命中（同样校验价格区）
-        if not force and r.is_repeat:
-            repeat = _find_recent_suggest(db, r.symbol, settings.REPEAT_WINDOW_HOURS * 60)
-            if repeat:
-                if _conclusion_still_valid(repeat, signal["current_price"]):
-                    note = f"🔁 {settings.REPEAT_WINDOW_HOURS}h 内重复信号，沿用已有结论"
-                    ai_progress.push(r.id, "gate", note=note)
-                    _copy(db, r, r.symbol, repeat, fp, note)
-                    ai_progress.push_done(r.id, repeat.trade_decision, note)
-                    return
-                note = "⚠️ 重复信号的旧结论价格区已失效（现价越过原止盈/止损），重新分析"
                 ai_progress.push(r.id, "gate", note=note)
 
         # ── Stage 2：LLM 分析（P1 Agent 工具循环 / P0 单次调用）+ Risk Guard 校验 ──
@@ -361,20 +293,6 @@ def _find_recent(db, symbol: str, fp: str, ttl_min: int) -> Optional[AIAnalysis]
             AIAnalysis.fingerprint == fp,
             AIAnalysis.created_at >= cutoff,
             AIAnalysis.trade_decision.isnot(None),
-        )
-        .order_by(AIAnalysis.created_at.desc())
-    ).scalars().first()
-
-
-def _find_recent_suggest(db, symbol: str, ttl_min: int) -> Optional[AIAnalysis]:
-    """TTL 内同 symbol 的最近 suggest 结论"""
-    cutoff = datetime.utcnow() - timedelta(minutes=ttl_min)
-    return db.execute(
-        select(AIAnalysis)
-        .where(
-            AIAnalysis.symbol == symbol,
-            AIAnalysis.trade_decision == "suggest",
-            AIAnalysis.created_at >= cutoff,
         )
         .order_by(AIAnalysis.created_at.desc())
     ).scalars().first()

@@ -198,6 +198,10 @@ class BinanceTrader:
         """在挂的条件单原始列表（SL/TP 均为 algo 单，含 algoId/type/side/closePosition 字段）"""
         return self._req("GET", "/fapi/v1/openAlgoOrders", {"symbol": symbol})
 
+    def all_open_algo_orders(self) -> list:
+        """全账户在挂条件单（不带 symbol 一次拉全，孤儿清扫用）"""
+        return self._req("GET", "/fapi/v1/openAlgoOrders", {})
+
     def cancel_stale_close_position_algo(self, symbol: str, side: str) -> None:
         """撤销该 symbol 指定方向全部 closePosition 条件单。
 

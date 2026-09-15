@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
@@ -56,6 +56,27 @@ def run_scan_task(self, scan_record_id: Optional[str] = None, scan_type: str = "
             db.commit()
             close_task(task_id, "skipped", summary="已有扫描任务运行中，跳过")
             return
+
+        # 定时扫描防重：休眠唤醒后 Celery 会把积压的多轮 beat 任务背靠背执行，
+        # 10 分钟内已有定时扫描完成则跳过本轮（避免同一小时双扫描、结果重复命中）
+        if scan_type == "scheduled":
+            recent_done = (
+                db.query(ScanRecord)
+                .filter(
+                    ScanRecord.scan_type == "scheduled",
+                    ScanRecord.status == "completed",
+                    ScanRecord.id != record.id,
+                    ScanRecord.started_at >= datetime.utcnow() - timedelta(minutes=10),
+                )
+                .first()
+            )
+            if recent_done:
+                logger.info("10 分钟内已有定时扫描完成（唤醒积压），跳过本次扫描")
+                record.status = "failed"
+                record.finished_at = datetime.utcnow()
+                db.commit()
+                close_task(task_id, "skipped", summary="10 分钟内已有定时扫描完成，跳过（唤醒积压）")
+                return
 
         scanner = Scanner()
         scanner.run(record.id)

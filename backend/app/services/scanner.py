@@ -160,12 +160,15 @@ class Scanner:
             # 3. 按 24h 成交额降序排列命中结果
             hits.sort(key=lambda x: x.get("volume_24h", 0), reverse=True)
 
-            # 4. 标记重复命中（用独立 session 避免死锁）
-            hit_symbols = [h["symbol"] for h in hits]
-            repeat_symbols = self._get_repeat_symbols_safe(hit_symbols, repeat_window_hours)
+            # 4. 重复命中抑制（用独立 session 避免死锁）：同 (symbol, signal_type) 在
+            #    repeat_window_hours 内已有命中的本轮不落库——持续趋势里 Donchian 突破
+            #    每根收盘K线都在创新高，不抑制会同币同信号每轮重复命中
+            new_hits, suppressed = self._suppress_repeat_hits(hits, repeat_window_hours)
+            if suppressed:
+                logger.info("重复命中抑制 #%s：%d 条已在 %dh 内命中过，不再落库", scan_record_id, suppressed, repeat_window_hours)
 
             # 5. 写入结果（用独立 session，避免长时间扫描后主 session 连接失效）
-            self._save_results(scan_record_id, hits, repeat_symbols)
+            self._save_results(scan_record_id, new_hits)
 
             # 6. 触发 AI 分析（任务内自检开关；批量按24h成交额取前 AI_MAX_PER_SCAN 个）
             # 满仓跳过（docs/06）：定时扫描时在跑单已达上限则不做 AI 分析（省 LLM 成本，
@@ -179,14 +182,15 @@ class Scanner:
             except Exception as e:
                 logger.warning("AI 分析分发失败（忽略）: %s", e)
 
-            hit_count = len(hits)
+            hit_count = len(new_hits)
             status = "completed"
 
             logger.info(
-                "扫描完成 #%s: 扫描%d个, 命中%d个",
+                "扫描完成 #%s: 扫描%d个, 命中%d个（抑制重复%d个）",
                 scan_record_id,
                 len(symbols),
-                len(hits),
+                len(new_hits),
+                suppressed,
             )
         except Exception as e:
             logger.exception("扫描异常 #%s: %s", scan_record_id, e)
@@ -203,7 +207,6 @@ class Scanner:
     def _save_results(
         scan_record_id: UUID,
         hits: list[dict],
-        repeat_symbols: set[str],
     ) -> None:
         """用独立 session 写入扫描结果，避免主 session 连接失效或死锁"""
         if not hits:
@@ -228,7 +231,6 @@ class Scanner:
                         volume_24h=h.get("volume_24h", 0),
                         volume=h.get("volume", 0),
                         volume_type=h.get("volume_type", "平量"),
-                        is_repeat=h["symbol"] in repeat_symbols,
                     )
                 )
             sdb.commit()
@@ -290,39 +292,34 @@ class Scanner:
             sdb.close()
 
     @staticmethod
-    def _get_repeat_symbols_safe(symbols: list[str], repeat_window_hours: int) -> set[str]:
-        """检查重复命中，用独立 session 避免与主事务死锁"""
-        if not symbols:
-            return set()
+    def _suppress_repeat_hits(hits: list[dict], repeat_window_hours: int) -> tuple[list[dict], int]:
+        """重复命中抑制：同 (symbol, signal_type) 在 repeat_window_hours 内已有命中
+        记录的，本轮不再落库——持续趋势里 Donchian 突破每根收盘K线都在创新高，
+        不抑制会同币同信号每轮重复命中、重复触发 AI 分析。
+
+        用独立 session 避免与主事务死锁；查询失败按未重复处理（不拦新信号）。
+        返回 (新命中列表, 抑制条数)。
+        """
+        if not hits:
+            return [], 0
+        seen: set[tuple[str, str]] = set()
         sdb = SessionLocal()
         try:
             since = datetime.utcnow() - timedelta(hours=repeat_window_hours)
-            rows = (
-                sdb.execute(
-                    select(ScanResult.symbol)
-                    .where(ScanResult.symbol.in_(symbols), ScanResult.created_at >= since)
-                    .distinct()
+            symbols = list({h["symbol"] for h in hits})
+            rows = sdb.execute(
+                select(ScanResult.symbol, ScanResult.signal_type).where(
+                    ScanResult.symbol.in_(symbols), ScanResult.created_at >= since
                 )
-                .scalars()
-                .all()
-            )
-            return set(rows)
+            ).all()
+            seen = {(r[0], r[1] or "unknown") for r in rows}
         except Exception as e:
-            logger.warning("查询重复命中失败（忽略）: %s", e)
+            logger.warning("查询重复命中失败（按未重复处理）: %s", e)
             sdb.rollback()
-            return set()
         finally:
             sdb.close()
-
-    @staticmethod
-    def _get_repeat_symbols(db: Session, symbols: list[str], repeat_window_hours: int) -> set[str]:
-        """检查哪些币种在 repeat_window_hours 内已有命中记录"""
-        if not symbols:
-            return set()
-        since = datetime.utcnow() - timedelta(hours=repeat_window_hours)
-        rows = db.execute(
-            select(ScanResult.symbol)
-            .where(ScanResult.symbol.in_(symbols), ScanResult.created_at >= since)
-            .distinct()
-        ).scalars().all()
-        return set(rows)
+        new_hits = [
+            h for h in hits
+            if (h["symbol"], h.get("signal_type", "unknown")) not in seen
+        ]
+        return new_hits, len(hits) - len(new_hits)
