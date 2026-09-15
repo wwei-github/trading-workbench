@@ -36,6 +36,7 @@ class TradeOut(BaseModel):
     realized_pnl: Optional[float] = None
     pnl_pct: Optional[float] = None
     exit_reason: Optional[str] = None
+    fail_reason: Optional[str] = None  # 开仓失败原因（仅 FAILED 记录，读自 raw.fail_reason）
     testnet: bool = True
     ai_snapshot: Optional[dict] = None
     ai_analysis_id: Optional[uuid.UUID] = None

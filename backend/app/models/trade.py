@@ -61,6 +61,12 @@ class TradeRecord(Base):
 
     raw: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # {entry_order_id, sl_order_id, tp1_order_id, tp2_order_id, qty_tp1, qty_tp2, capital_base, wallet}
+    # FAILED 记录另存 fail_reason（开仓失败原始报错，见 _attempt_open 的 -1121 落记录分支）
+
+    @property
+    def fail_reason(self) -> Optional[str]:
+        """开仓失败原因（仅 FAILED 记录写入 raw.fail_reason，API 经 TradeOut 透出）"""
+        return (self.raw or {}).get("fail_reason")
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(

@@ -16,6 +16,7 @@ import {
   Table,
   Tag,
   Timeline,
+  Tooltip,
   Typography,
   message,
 } from 'antd'
@@ -103,6 +104,14 @@ const DETAIL_KEY_MAP: Record<string, string> = {
 function fmtNum(n: number | null | undefined): string {
   if (n === null || n === undefined) return '-'
   return String(n)
+}
+
+// 失败原因短文案（状态列直接展示）：已知错误码转人话，其余截断原始报错；
+// 完整报错悬停查看（Tooltip），下单序列内的详细事件见展开行"操作历史"
+function failReasonShort(rec: TradeRecord): string {
+  const raw = rec.fail_reason || ''
+  if (raw.includes('-1121')) return '交易所未上架该合约'
+  return raw.length > 40 ? `${raw.slice(0, 40)}…` : raw
 }
 
 function fmtTime(s: string | null | undefined): string {
@@ -379,9 +388,32 @@ export default function TradesPanel() {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 100,
-      render: (v: string) => {
+      width: 150,
+      render: (v: string, rec) => {
         const s = STATUS_MAP[v] || { label: v, color: 'default' }
+        // 失败状态直接展示失败原因（fail_reason 读自记录 raw），悬停看完整报错
+        if (v === 'FAILED' && rec.fail_reason) {
+          return (
+            <Tooltip title={rec.fail_reason}>
+              <div>
+                <Tag color={s.color}>{s.label}</Tag>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: '#ff4d4f',
+                    lineHeight: '16px',
+                    marginTop: 2,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {failReasonShort(rec)}
+                </div>
+              </div>
+            </Tooltip>
+          )
+        }
         return <Tag color={s.color}>{s.label}</Tag>
       },
     },

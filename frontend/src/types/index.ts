@@ -172,6 +172,7 @@ export interface TradeRecord {
   realized_pnl: number | null // 正/负值 USDT（净额：含手续费/资金费；运行中=已止盈部分，结算后=全程净额）
   pnl_pct: number | null // 相对止损金额 %
   exit_reason: string | null // sl / tp1_then_sl / tp1_trail / trail_sl / breakeven_sl / liquidation / manual / error
+  fail_reason?: string | null // 开仓失败原因（仅 FAILED 记录，后端读自 raw.fail_reason）
   testnet: boolean // 测试网/正式网
   ai_snapshot: AIAnalysis | null // 开单时 AI 分析结论快照
   ai_analysis_id: string | null
