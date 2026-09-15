@@ -1,7 +1,7 @@
 """通用指标工具（原 key_levels.py 内的公共函数，2026-09-14 随关键位功能移除迁出）
 
 叶子模块：不 import strategy 包内其他模块（防循环导入）。
-- calc_atr：AI 事实包与 risk_guard（止损宽度/强平口径）共用；
+- calc_atr：AI 事实包（Agent 管线）共用；
 - volume_ratio：classify_volume 分档与突破量能门槛（BREAKOUT_VOL_RATIO）共用；
 - fmt_price：signal_reason 价格展示。
 """

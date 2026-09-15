@@ -165,7 +165,8 @@ def _attempt_open(
         # 止损距离超过 1/杠杆−维持保证金率（20× 即 4.5%）时，价格未到止损价
         # 保证金就先亏光 → 被强平并连累撤销 TP 挂单（BATUSDT 案例：止损 6.4% 被强平）。
         # 这类单子固定亏损法无解（预算放不进保证金里），直接跳过
-        # （口径与 risk_guard.liquidation_gate_pct 共用；risk_guard 已按 0.9 倍前置拦截）
+        # （口径与 risk_guard.liquidation_gate_pct 共用；risk_guard 侧前置拦截已于
+        # 2026-09-15 随"仅保留 RR 铁律"移除，本闸门是强平风险的唯一防线）
         liq_gate = liquidation_gate_pct()
         if stop_pct >= liq_gate:
             logger.info(

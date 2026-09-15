@@ -5,8 +5,8 @@
 2. Donchian 通道突破优先：信号K线收盘严格越过前 N 根高低轨 + 量能 ≥1.2×均量 + EMA 同向
    → breakout 信号（不要求形态）
 3. 形态路径：该 K 线出现 GOLDEN_12 形态（方向决定 position）+ EMA 严格门控 → 信号
-4. 输出信号 dict（无 key_levels/hit_level——关键位功能整体移除；风控锚定改用
-   recent_swings 摆动点 + 近端影线极值，见 risk_guard）
+4. 输出信号 dict（无 key_levels/hit_level——关键位功能整体移除；摆动点结构
+   recent_swings 供 AI 事实包与锚点解析使用）
 
 信号 position 语义（形态/突破方向派生，不再来自关键位角色）：
 看涨形态/向上突破=resistance、看跌形态/向下突破=support。
