@@ -50,7 +50,7 @@ celery_app.conf.update(
         },
         "trade-review": {
             "task": "app.tasks.review_tasks.run_trade_review_task",
-            "schedule": crontab(minute="*/30"),  # 每 30 分钟扫一次到期建议
+            "schedule": crontab(minute=10),  # 每小时第10分：与结算巡检同节点（2026-09-15 由每 30 分钟改为每小时一次）
         },
         "auto-trade": {
             "task": "app.tasks.trade_tasks.run_auto_trade_task",
