@@ -170,6 +170,7 @@ export default function ResultTable() {
       title: "币种",
       dataIndex: "symbol",
       key: "symbol",
+      width: 150,
       render: (v: string, record: ScanResult) => (
         <span>
           <strong>{v.replace("USDT", "")}/USDT</strong>
@@ -206,6 +207,7 @@ export default function ResultTable() {
         </Tooltip>
       ),
       key: "ai_direction",
+      width: 92,
       render: (_: unknown, record: ScanResult) => {
         const ai = aiMap[record.id];
         if (!ai) {
@@ -235,6 +237,7 @@ export default function ResultTable() {
         </Tooltip>
       ),
       key: "ai_recommendation",
+      width: 80,
       render: (_: unknown, record: ScanResult) => {
         const ai = aiMap[record.id];
         if (!ai) {
@@ -261,6 +264,7 @@ export default function ResultTable() {
         </Tooltip>
       ),
       key: "ai_open_block",
+      width: 100,
       render: (_: unknown, record: ScanResult) => {
         const ai = aiMap[record.id];
         if (!ai || ai.trade_decision !== "suggest") {
@@ -282,6 +286,7 @@ export default function ResultTable() {
       title: "信号类型",
       dataIndex: "signal_type",
       key: "signal_type",
+      width: 108,
       ...filterProps("signal_type", SIGNAL_TYPE_FILTERS),
       render: (v: string) => {
         const cfg = SIGNAL_TYPE_MAP[v] || { label: v, color: "default" };
@@ -292,6 +297,7 @@ export default function ResultTable() {
       title: "位置",
       dataIndex: "position",
       key: "position",
+      width: 88,
       ...filterProps("position", POSITION_FILTERS),
       render: (v: string | null, record: ScanResult) => {
         if (!v) return <span style={{ color: "#999" }}>-</span>;
@@ -304,6 +310,7 @@ export default function ResultTable() {
       title: "EMA",
       dataIndex: "ema_state",
       key: "ema_state",
+      width: 132,
       ...filterProps("ema_state", EMA_STATE_FILTERS),
       render: (v: string | null) => {
         if (!v) return <span style={{ color: "#999" }}>-</span>;
@@ -315,6 +322,7 @@ export default function ResultTable() {
       title: "K线形态",
       dataIndex: "pattern",
       key: "pattern",
+      width: 116,
       ...filterProps("pattern", PATTERN_FILTERS),
       render: (v: string | null, record: ScanResult) => {
         if (!v) return <span style={{ color: "#999" }}>-</span>;
@@ -330,6 +338,7 @@ export default function ResultTable() {
       title: "当前价格",
       dataIndex: "current_price",
       key: "current_price",
+      width: 104,
       render: (v: number) =>
         v < 1 ? v.toFixed(6) : v < 100 ? v.toFixed(4) : v.toFixed(2),
     },
@@ -337,6 +346,7 @@ export default function ResultTable() {
       title: "24h成交额",
       dataIndex: "volume_24h",
       key: "volume_24h",
+      width: 104,
       sorter: (a, b) => a.volume_24h - b.volume_24h,
       defaultSortOrder: "descend",
       render: (v: number) => {
@@ -349,6 +359,7 @@ export default function ResultTable() {
     {
       title: "K线量能",
       key: "volume_type",
+      width: 92,
       sorter: (a, b) => a.volume - b.volume,
       render: (_: unknown, r: ScanResult) => {
         const colorMap: Record<string, string> = {
@@ -369,6 +380,7 @@ export default function ResultTable() {
       title: "状态",
       dataIndex: "is_repeat",
       key: "is_repeat",
+      width: 68,
       render: (v: boolean) =>
         v ? <Tag color="default">重复</Tag> : <Tag color="green">新</Tag>,
     },
@@ -380,6 +392,7 @@ export default function ResultTable() {
         </Tooltip>
       ),
       key: "review",
+      width: 92,
       render: (_: unknown, record: ScanResult) => {
         const status = aiMap[record.id]?.review_status;
         if (!status) return <span style={{ color: "#999" }}>-</span>;
@@ -417,6 +430,8 @@ export default function ResultTable() {
           dataSource={results}
           loading={loading}
           size="small"
+          tableLayout="fixed"
+          scroll={{ x: 1380 }}
           onChange={handleTableChange}
           pagination={{
             current: resultsPage,
