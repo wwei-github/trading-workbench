@@ -92,6 +92,7 @@ class AIAnalysisOut(BaseModel):
     risk_reward_ratio: Optional[float] = None
     position_pct: Optional[float] = None
     recommendation: Optional[float] = None  # 推荐程度 0-100
+    pullback_wait: bool = False  # AI 建议等回踩（仅展示"待回踩"标识，不下单）
     created_at: datetime
 
     class Config:
@@ -130,6 +131,7 @@ class ManualAnalysisOut(BaseModel):
     risk_reward_ratio: Optional[float] = None
     position_pct: Optional[float] = None
     recommendation: Optional[float] = None  # 推荐程度 0-100
+    pullback_wait: bool = False  # AI 建议等回踩（仅展示"待回踩"标识，不下单）
     created_at: datetime
 
 

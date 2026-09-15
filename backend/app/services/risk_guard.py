@@ -97,6 +97,25 @@ def liquidation_gate_pct(leverage: Optional[int] = None) -> float:
     return 1 / lev - LIQ_GATE_MMR
 
 
+def is_pullback_wait(ai_result: dict, current_price) -> bool:
+    """AI 建议等回踩判定（2026-09-15）：suggest 且入场价在现价的回踩侧——
+    多单入场低于现价、空单高于现价（提示词契约：等回踩时 entry 锚定回踩结构位）。
+
+    限价委托已放弃（docs/10），此类建议无法按 AI 计划价位成交——仅落
+    "待回踩"标识供展示，程序不为其下单（即时开仓分发与开仓快速过滤都会跳过）。
+    """
+    if ai_result.get("trade_decision") != "suggest":
+        return False
+    direction = (ai_result.get("direction") or "").lower()
+    try:
+        entry, cur = float(ai_result.get("entry_price") or 0), float(current_price or 0)
+    except (TypeError, ValueError):
+        return False
+    if direction not in ("long", "short") or entry <= 0 or cur <= 0:
+        return False
+    return entry < cur if direction == "long" else entry > cur
+
+
 def validate_decision(
     d: TradeDecision, signal: dict, klines: list,
 ) -> tuple[bool, list[str], dict]:

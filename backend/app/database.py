@@ -127,6 +127,12 @@ def _run_migrations(engine):
             ALTER TABLE system_config
               ADD COLUMN IF NOT EXISTS trading_min_free_pct NUMERIC(10,6) NOT NULL DEFAULT 0.5
         """))
+        # 待回踩标记（2026-09-15）：AI 建议等回踩的 suggest 结论（入场价在现价回踩侧）
+        # 仅展示"待回踩"标识、不参与下单（限价委托已放弃，docs/10）
+        conn.execute(text("""
+            ALTER TABLE ai_analyses
+              ADD COLUMN IF NOT EXISTS pullback_wait BOOLEAN NOT NULL DEFAULT FALSE
+        """))
         # Feature 12: 自动交易——环境标识（测试网/正式网）与开单时 AI 结论快照
         conn.execute(text("""
             ALTER TABLE trade_records

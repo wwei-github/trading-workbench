@@ -92,6 +92,7 @@ export interface AIAnalysis {
   risk_reward_ratio: number | null;
   position_pct: number | null;
   recommendation: number | null; // 0-100
+  pullback_wait?: boolean; // AI 建议等回踩（入场在现价回踩侧）——仅展示"待回踩"标识，不下单
   created_at: string;
   review_status?: string | null; // 复盘结果：win_tp1 / win_tp2 / loss / expired（24h 后回放定论）
 }

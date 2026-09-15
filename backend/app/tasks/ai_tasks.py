@@ -30,6 +30,7 @@ from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
 from app.services.dual_judge import run_dual_judge
 from app.services.exchange_pool import ExchangePool
+from app.services.risk_guard import is_pullback_wait
 from app.services.strategy import recent_swings
 
 logger = logging.getLogger(__name__)
@@ -236,6 +237,8 @@ def run_ai_analysis_single(
             ai_result = run_dual_judge(ai_result, signal)
         # Narrator 已下线（提速）：submit_decision 的 reason 直接承载完整分点分析
         # （工具 schema 强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返
+        # 待回踩判定（2026-09-15）：入场在现价回踩侧的建议仅展示标识、不下单
+        ai_result["pullback_wait"] = is_pullback_wait(ai_result, signal.get("current_price"))
         _finish(db, r, r.symbol, ai_result, fp)
         ai_progress.push_done(
             r.id, ai_result.get("trade_decision"),
@@ -316,6 +319,7 @@ def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str) -
         "risk_reward_ratio": float(src.risk_reward_ratio or 0),
         "position_pct": float(src.position_pct or 0),
         "recommendation": float(src.recommendation or 0),
+        "pullback_wait": bool(src.pullback_wait),
     }
     _finish(db, r, symbol, result, fp)
     logger.info("AI 结论沿用: %s ← %s", symbol, src.id)
@@ -339,6 +343,9 @@ def _dispatch_immediate_open(a: AIAnalysis) -> None:
     if a.trade_decision != "suggest":
         return
     if float(a.recommendation or 0) < settings.TRADING_MIN_RECOMMENDATION:
+        return
+    if a.pullback_wait:
+        logger.info("跳过开仓 %s：AI 建议等回踩（仅展示待回踩标识，不下单）", a.symbol)
         return
     if not settings.TRADING_ENABLED:
         return
@@ -366,6 +373,7 @@ def _upsert_ai_analysis(
         "risk_reward_ratio": ai_result.get("risk_reward_ratio"),
         "position_pct": ai_result.get("position_pct"),
         "recommendation": ai_result.get("recommendation"),
+        "pullback_wait": bool(ai_result.get("pullback_wait")),
         "fingerprint": fingerprint,
         "stage_trace": ai_result.get("stage_trace"),
     }

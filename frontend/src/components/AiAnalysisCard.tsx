@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Button, Modal, Space, Spin, Statistic, Tag, message } from 'antd'
+import { Button, Modal, Space, Spin, Statistic, Tag, Tooltip, message } from 'antd'
 import {
   ApiOutlined,
   CheckCircleOutlined,
@@ -253,6 +253,14 @@ export default function AiAnalysisCard({ ai }: Props) {
             <Tag color={tradeTypeCfg.color} style={{ marginInlineEnd: 0 }}>
               {tradeTypeCfg.label}
             </Tag>
+          )}
+          {/* 待回踩标识：AI 建议等回踩至入场价再入场（限价委托已移除，此类建议仅展示、不下单） */}
+          {!isSkip && ai.pullback_wait && (
+            <Tooltip title="AI 建议等回踩至入场价再入场；程序不会为此下单，仅作跟踪展示">
+              <Tag color="orange" style={{ marginInlineEnd: 0, fontWeight: 700 }}>
+                ⏳ 待回踩
+              </Tag>
+            </Tooltip>
           )}
         </Space>
         {ai.recommendation != null && (

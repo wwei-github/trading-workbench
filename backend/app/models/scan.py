@@ -80,6 +80,8 @@ class AIAnalysis(Base):
     recommendation: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)  # 推荐程度 0-100
     fingerprint: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)  # 信号指纹（缓存复用）
     stage_trace: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # Agent 工具循环 trace（docs/04 §5.9）
+    # AI 建议等回踩（2026-09-15）：入场价在现价回踩侧的 suggest——仅展示"待回踩"标识，不下单
+    pullback_wait: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")

@@ -27,6 +27,7 @@ from app.schemas.scan import (
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services.scanner import classify_volume
 from app.services.ai_analyzer import analyze_coin
+from app.services.risk_guard import is_pullback_wait
 from app.services.skill_library import list_skills
 from app.services.strategy import recent_swings
 from app.api.watchlist import normalize_symbol
@@ -620,5 +621,6 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         risk_reward_ratio=ai_result.get("risk_reward_ratio"),
         position_pct=ai_result.get("position_pct"),
         recommendation=ai_result.get("recommendation"),
+        pullback_wait=is_pullback_wait(ai_result, signal.get("current_price")),
         created_at=datetime.utcnow(),
     )

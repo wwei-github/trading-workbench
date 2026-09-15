@@ -345,6 +345,9 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
         select(TradeRecord.id).where(TradeRecord.ai_analysis_id == a.id)
     ).first():
         return False  # 该分析已开过仓
+    if a.pullback_wait:
+        logger.info("即时开仓跳过 %s：AI 建议等回踩（仅展示待回踩标识，不下单）", a.symbol)
+        return False
     positions = trader.positions()
     if len(positions) >= cfg.max_open_trades:
         logger.info("即时开仓跳过 %s：在跑单子已达上限 %d", a.symbol, cfg.max_open_trades)
