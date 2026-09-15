@@ -10,16 +10,21 @@
 """
 import logging
 import time
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from redis import Redis
 
 from app.celery_app import celery_app
 from app.config import settings
 from app.database import SessionLocal
+from app.models.scan import AIAnalysis
 from app.services.binance_trader import BinanceTrader
 from app.services.task_log import close_task, open_task
-from app.services.trade_engine import settle_trades, try_open_for_analysis
+from app.services.trade_engine import (
+    _mark_open_block,
+    settle_trades,
+    try_open_for_analysis,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +49,22 @@ def _release_open_lock(r: Redis, ident: str) -> None:
             r.delete(_OPEN_LOCK_KEY)
     except Exception:
         pass
+
+
+def _mark_analysis_block(analysis_id: str, reason: str) -> None:
+    """闸门之外丢败的兜底落因（2026-09-15）：等锁超时 / 任务执行异常同样写
+    ai_analyses.open_block_reason——此前这类丢败既无交易记录也无拒开原因，
+    前端"开单状态"列显示"-"成为悬案（SENTUSDT 2026-09-15 实例）。尽力而为，
+    落因失败仅记日志。"""
+    db = SessionLocal()
+    try:
+        a = db.get(AIAnalysis, UUID(str(analysis_id)))
+        if a is not None:
+            _mark_open_block(db, a, reason)
+    except Exception:
+        logger.exception("开仓失败原因兜底落库失败 analysis=%s", analysis_id)
+    finally:
+        db.close()
 
 
 @celery_app.task(name="app.tasks.trade_tasks.run_auto_trade_task", max_retries=0)
@@ -90,6 +111,8 @@ def open_trade_for_analysis(analysis_id: str):
 
     由 ai_tasks 在分析落库后分发；Redis 锁与结算巡检互斥，防并发绕过上限/余额
     闸门。等锁超时或闸门未过即放弃（无重试）——等该币下次信号重新分析再触发。
+    闸门之外的丢败（等锁超时 / 执行异常，2026-09-15 起）也落
+    ai_analyses.open_block_reason，不留"既没开单也没原因"的悬案。
     """
     if not settings.TRADING_ENABLED:
         logger.info("即时开仓跳过：TRADING_ENABLED=false（analysis=%s）", analysis_id)
@@ -102,13 +125,24 @@ def open_trade_for_analysis(analysis_id: str):
     ident = uuid4().hex
     if not _acquire_open_lock(r, ident, wait_s=_OPEN_LOCK_WAIT_S, ttl_s=_OPEN_LOCK_TTL_S):
         logger.info("即时开仓等锁超时，放弃本次开仓（analysis=%s）", analysis_id)
+        _mark_analysis_block(
+            analysis_id,
+            f"开仓等锁超时 {_OPEN_LOCK_WAIT_S}s（与结算巡检互斥），本次放弃",
+        )
         return
     try:
-        db = SessionLocal()
         try:
-            ok = try_open_for_analysis(db, trader, analysis_id)
-        finally:
-            db.close()
+            db = SessionLocal()
+            try:
+                ok = try_open_for_analysis(db, trader, analysis_id)
+            finally:
+                db.close()
+        except Exception as e:
+            # 闸门之外的意外（交易所 REST 瞬断等）：任务 max_retries=0 失败即止、
+            # 无批次兜底，落因避免悬案（2026-09-15）
+            logger.exception("即时开仓任务异常 analysis=%s", analysis_id)
+            _mark_analysis_block(analysis_id, f"开仓任务异常：{e}")
+            ok = False
         if ok:
             logger.info("即时开仓完成 analysis=%s", analysis_id)
         else:
