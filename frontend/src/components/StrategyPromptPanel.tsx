@@ -53,7 +53,8 @@ function SkillsTab() {
   }
 
   return (
-    <div>
+    // 页签面板高度 100%（index.css 已让 tabpane 撑满），列表内部滚动，防被 content-holder 裁切
+    <div style={{ height: '100%', overflow: 'auto' }}>
       <Text type="secondary" style={{ fontSize: 12 }}>
         技能是可插拔的交易打法文件，AI Agent 决策时按触发条件按需加载（只读）
       </Text>
@@ -189,6 +190,9 @@ export default function StrategyPromptPanel() {
           label: '策略提示词',
           children: (
             <Card
+      /* 高度 100% 铺满页签面板（tabpane 已撑满），卡片纵向 flex：头部固定、body 撑剩余，
+         编辑区随窗口自适应——替代原 calc(100vh - 320px) 视口估算（估算偏差导致底部被裁切） */
+      style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
       size="small"
       title={
         <Space>
@@ -217,7 +221,7 @@ export default function StrategyPromptPanel() {
           </Button>
         </Space>
       }
-      styles={{ body: { padding: 12 } }}>
+      styles={{ body: { padding: 12, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } }}>
       <textarea
         value={text}
         onChange={(e) => {
@@ -228,9 +232,11 @@ export default function StrategyPromptPanel() {
         placeholder="用 Markdown 编写你的交易策略，AI 分析时会作为参考。例如：# 我的策略&#10;- 只做顺势单&#10;- 突破必须带量"
         style={{
           width: '100%',
-          height: 'calc(100vh - 320px)',
-          minHeight: 320,
-          resize: 'vertical',
+          // flex 撑满卡片 body 剩余高度（减去底部提示行）：长文在编辑框内部滚动，
+          // 不再依赖视口高度估算，底部提示行也不会被推出可视区
+          flex: 1,
+          minHeight: 240,
+          resize: 'none',
           padding: 12,
           borderRadius: 6,
           border: '1px solid #d9d9d9',
