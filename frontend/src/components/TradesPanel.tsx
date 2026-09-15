@@ -246,13 +246,13 @@ export default function TradesPanel() {
     ]
   }, [rows])
 
-  // 展开行时加载该笔交易的操作历史
+  // 展开行时加载该笔交易的操作历史（失败落空数组，时间线显示"暂无"，避免永远转圈）
   const loadEvents = useCallback(async (tradeId: string) => {
     try {
       const evts = await scanApi.trades.events(tradeId)
       setEventsMap((prev) => ({ ...prev, [tradeId]: evts }))
     } catch {
-      // 静默：展开行显示空时间线
+      setEventsMap((prev) => (prev[tradeId] ? prev : { ...prev, [tradeId]: [] }))
     }
   }, [])
 
@@ -579,6 +579,11 @@ export default function TradesPanel() {
               onClick: (e) => {
                 // 点展开图标/按钮/链接时不重复触发（图标点击本身会冒泡到这里）
                 if ((e.target as HTMLElement).closest('button, a')) return
+                // antd 的 onExpand 只在点展开图标时触发，整行点击展开带不出
+                // loadEvents（历史 bug：时间线永远转圈）——展开前在此补拉
+                if (!expandedKeys.includes(rec.id) && !eventsMap[rec.id]) {
+                  loadEvents(rec.id)
+                }
                 setExpandedKeys((prev) =>
                   prev.includes(rec.id) ? prev.filter((k) => k !== rec.id) : [...prev, rec.id],
                 )
