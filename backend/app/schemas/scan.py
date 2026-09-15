@@ -84,7 +84,6 @@ class AIAnalysisOut(BaseModel):
     skip_reason: Optional[str] = None
     direction: Optional[str] = None  # long / short
     trade_type: Optional[str] = None  # 开单类型：trend_follow / rule_123 / n_structure / rule_2b / range_edge
-    order_type: Optional[str] = None  # 委托方式：market 市价 / limit 限价委托（docs/10，AI 返回即指令）
     analysis: Optional[str] = None
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
@@ -123,7 +122,6 @@ class ManualAnalysisOut(BaseModel):
     skip_reason: Optional[str] = None
     direction: Optional[str] = None  # long / short
     trade_type: Optional[str] = None  # 开单类型：trend_follow / rule_123 / n_structure / rule_2b / range_edge
-    order_type: Optional[str] = None  # 委托方式：market 市价 / limit 限价委托（docs/10，AI 返回即指令）
     analysis: Optional[str] = None
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
@@ -193,9 +191,6 @@ class SystemConfigOut(BaseModel):
     strategy_structure_break_enabled: bool = False
     strategy_range_edge_enabled: bool = True
 
-    # 限价委托总开关（docs/10）
-    limit_order_enabled: bool = True
-
     class Config:
         from_attributes = True
 
@@ -228,9 +223,6 @@ class SystemConfigUpdate(BaseModel):
     strategy_trend_follow_enabled: Optional[bool] = None
     strategy_structure_break_enabled: Optional[bool] = None
     strategy_range_edge_enabled: Optional[bool] = None
-
-    # 限价委托总开关（docs/10）
-    limit_order_enabled: Optional[bool] = None
 
 
 # ===== 复盘统计（docs/04 §10 P2） =====

@@ -70,7 +70,6 @@ class AIAnalysis(Base):
     skip_reason: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     direction: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)  # long / short
     trade_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # 开单类型：trend_follow/rule_123/n_structure/rule_2b/range_edge
-    order_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # 委托方式：market 市价 / limit 限价委托（docs/10，AI 返回即指令）；旧结论为空视为 market
     analysis: Mapped[Optional[str]] = mapped_column(String(4000), nullable=True)
     entry_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
     stop_loss: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)

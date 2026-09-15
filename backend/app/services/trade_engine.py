@@ -1,24 +1,18 @@
-"""自动交易引擎（docs/06、docs/10）
+"""自动交易引擎（docs/06）
 
 开仓（唯一通道 = 即时开仓，2026-09-14 起不再有 :42 批量开仓）：
     AI 结论 suggest 且推荐度 ≥60 → 分析落库即分发 open_trade_for_analysis
-    → try_open_for_analysis 过闸门（在跑单上限含 PENDING / 余额 70% 规则 /
-    同币无仓无挂单 / 策略开关）→ 按 AI order_type 分流（docs/10，返回即指令）：
-      market → 固定亏损法定仓位（基数分档 ×3% ÷ 止损距离）
-               → 方向价格复验 + 现价 RR 复验 → 市价开仓 + 挂 SL/TP1/TP2 → OPENED
-      limit  → OTOCO 一体挂单（working 限价入场 + pending TP1 + pending SL，
-               成交瞬间交易所自动激活 TP1/SL）→ PENDING 记录，12h 过期撤销
+    → try_open_for_analysis 过闸门（在跑单上限 / 余额 70% 规则 / 同币无仓 /
+    方向价格复验）→ 固定亏损法定仓位（基数分档 ×3% ÷ 止损距离）
+    → 市价开仓 + 挂 SL/TP1/TP2 → 入库；闸门未过即放弃，无批次重试
 
-结算（settle_trades，每小时 :10 巡检）：
-    ① PENDING 限价单巡检（docs/10 §3）：过期/前提失效撤销、部分成交撤平、
-       满额成交转 OPENED（捕获 OTOCO 激活的 TP1/SL 子单 algoId）；
-    ② 持仓结算：以交易所为真源（持仓量/挂单/已实现盈亏）推断成交事件：
-       仓位归零 → 结算收益（正/负值）；TP1/TP2 成交 → 状态迁移；
-       止损挂单消失（被撤/交易所异常）→ 按当前止损价补挂（裸仓保护；
-       限价单 TP1 成交时 OCO 自动撤 SL 属预期，由保本移动补挂）；
-       TP1 成交 → 止损移至成本价（保本，幂等；限价单随后补挂 TP2）；
-       无 TP2 的单：TP1 止盈 75%，剩余 25% 从 TP1 起跟进止损；
-       TP2 后每次巡检跟进止损（最近3根已收盘K线极值，只收紧不放松）
+结算（settle_trades，每小时 :42 巡检）：
+    以交易所为真源（持仓量/挂单/已实现盈亏）推断成交事件：
+    仓位归零 → 结算收益（正/负值）；TP1/TP2 成交 → 状态迁移；
+    止损挂单消失（被撤/交易所异常）→ 按当前止损价补挂（裸仓保护）；
+    TP1 成交 → 止损移至成本价（保本，幂等）；
+    无 TP2 的单：TP1 止盈 75%，剩余 25% 从 TP1 起跟进止损；
+    TP2 后每次巡检跟进止损（最近3根已收盘K线极值，只收紧不放松）
 """
 import logging
 from datetime import datetime, timedelta, timezone
@@ -82,7 +76,6 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
         "skip_reason": a.skip_reason,
         "direction": a.direction,
         "trade_type": a.trade_type,
-        "order_type": a.order_type or "market",
         "analysis": a.analysis,
         "entry_price": _num(a.entry_price),
         "stop_loss": _num(a.stop_loss),
@@ -134,14 +127,6 @@ def _attempt_open(
     tp1 = float(a.take_profit_1)
     tp2 = float(a.take_profit_2 or 0)
     try:
-        # 委托方式路由（docs/10 §1，AI 返回即指令）：limit → 直接挂 OTOCO 等回踩，
-        # 不做方向/偏离/现价 RR 校验——三道天然保障：限价成交价 ≤ 委托价（价格保护）、
-        # 交易所 -2021 几何拒收、TTL+前提失效兜底。总开关关闭时回落市价路径（现行闸门全保留）
-        if (a.order_type or "market") == "limit" and cfg.limit_order_enabled:
-            return _place_limit_otoco(
-                db, trader, a, direction, entry_ai, sl, tp1, tp2,
-                interval, kline_window, wallet, positions,
-            )
         price = trader.price(symbol)
         # 方向-价格一致性复验（分析到开仓之间价格可能移动）
         if direction == "long" and not (sl < price < tp1):
@@ -350,138 +335,6 @@ def _attempt_open(
         return False
 
 
-def _place_limit_otoco(
-    db: Session, trader: BinanceTrader, a: AIAnalysis,
-    direction: str, entry: float, sl: float, tp1: float, tp2: float,
-    interval: str, kline_window: int, wallet: float, positions: dict,
-) -> bool:
-    """限价委托路径（docs/10 §2）：OTOCO 一体挂出——working 限价入场 + pending TP1 +
-    pending SL，入场满额成交瞬间交易所自动激活 TP1/SL（OCO，无裸仓窗口）。
-
-    落 PENDING 记录（entry_price=委托价、expires_at=now+TTL），成交转 OPENED 由
-    每小时 :10 巡检的 PENDING 块完成。AI 返回即指令：不校验方向/偏离/现价 RR，
-    通用闸门（策略开关/EMA/强平/精度/min_qty/保证金）照常。
-    挂单失败异常向上抛（-1121 由 _attempt_open 落 FAILED，其余回滚记日志）。
-    """
-    symbol = a.symbol
-    trade_type = a.trade_type or ""
-    # EMA 排列必须条件（顺势交易专属）——限价回踩入场同样适用
-    if trade_type == "trend_follow":
-        ema = analyze_ema(ExchangePool().get_klines(symbol, interval, kline_window))
-        ema_ok = ema is not None and (
-            (direction == "long" and ema["fast"] > ema["mid"] > ema["slow"])
-            or (direction == "short" and ema["fast"] < ema["mid"] < ema["slow"])
-        )
-        if not ema_ok:
-            logger.info("开仓跳过 %s：顺势交易 EMA 未按方向排列（%s），不满足开单前提",
-                        symbol, ema["state_label"] if ema else "K线数据不足")
-            return False
-    # 强平闸门：止损距离以委托价计（固定亏损法按委托价成交口径）
-    stop_pct = abs(entry - sl) / entry
-    liq_gate = liquidation_gate_pct()
-    if stop_pct >= liq_gate:
-        logger.info(
-            "开仓跳过 %s：止损距离 %.2f%% 达到强平闸门 %.2f%%（1/%s 杠杆−维持保证金）",
-            symbol, stop_pct * 100, liq_gate * 100, settings.TRADING_LEVERAGE,
-        )
-        return False
-    # 固定亏损仓位：基数分档 × 3% ÷ 止损距离，数量按委托价折算
-    risk_budget = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
-    notional = risk_budget / stop_pct
-    qty = trader.round_qty(symbol, notional / entry)
-    f = trader.filters(symbol)
-    if qty < f["min_qty"] or qty * entry < f["min_notional"]:
-        logger.info(
-            "开仓放弃 %s：计算数量 %s 低于交易所最小规则（min_qty=%s, min_notional=%s）",
-            symbol, qty, f["min_qty"], f["min_notional"],
-        )
-        return False
-    if qty > f["max_qty"]:
-        qty = trader.round_qty(symbol, f["max_qty"])
-    occupied = sum(p["initial_margin"] for p in positions.values())
-    leverage = settings.TRADING_LEVERAGE
-    margin_used = qty * entry / leverage
-    if margin_used > wallet - occupied:
-        logger.info("开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f",
-                    symbol, margin_used, wallet - occupied)
-        return False
-    # TP1 分批数量预检（docs/07 §8-A1，下单前）：低于 min_qty 整单放弃
-    q1, q2 = _tp_quantities(qty, tp2)
-    qty_tp1 = trader.round_qty(symbol, q1)
-    qty_tp2 = trader.round_qty(symbol, q2)
-    if qty_tp1 < f["min_qty"]:
-        logger.info("开仓放弃 %s：止盈一数量 %s 低于交易所最小数量 %s，分批止盈无法挂单",
-                    symbol, qty_tp1, f["min_qty"])
-        return False
-    entry_r = trader.round_price(symbol, entry)
-    sl_r = trader.round_price(symbol, sl)
-    tp1_r = trader.round_price(symbol, tp1)
-    side = "BUY" if direction == "long" else "SELL"
-    trader.setup_leverage(symbol, leverage)
-    # OTOCO 一体挂出：SL/TP1 触发价在现价错误一侧（会立即触发）时交易所 -2021 拒收
-    parent = trader.limit_order_otoco(
-        symbol, side, qty, entry_r, tp1_r, qty_tp1, sl_r)
-    parent_id = parent.get("algoId") or parent.get("orderId")
-    expires = datetime.utcnow() + timedelta(hours=settings.LIMIT_ORDER_TTL_HOURS)
-    risk_amount = round(qty * abs(entry_r - sl), 4)
-    try:
-        rec = TradeRecord(
-            symbol=symbol,
-            direction=direction,
-            scan_result_id=a.scan_result_id,
-            ai_analysis_id=a.id,
-            recommendation=float(a.recommendation) if a.recommendation is not None else None,
-            testnet=settings.TRADING_TESTNET,
-            ai_snapshot=_ai_snapshot(a),
-            entry_price=entry_r,  # 委托价（成交均价在转 OPENED 时以交易所为准回填）
-            qty=qty,
-            notional=round(qty * entry_r, 2),
-            leverage=leverage,
-            margin_mode="isolated",
-            margin_used=round(qty * entry_r / leverage, 4),
-            risk_amount=risk_amount,
-            stop_loss=sl,
-            tp1=tp1,
-            tp2=tp2,
-            status="PENDING",
-            order_type="limit",
-            expires_at=expires,
-            opened_at=None,
-            raw={
-                # OTOCO 父单 algoId（复用入场委托 id 字段）；TP1/SL 子单 algoId 在
-                # 成交转 OPENED 时由巡检捕获回填（_capture_otoco_children）
-                "entry_order_id": parent_id,
-                "qty_tp1": qty_tp1,
-                "qty_tp2": qty_tp2,
-                "capital_base": _capital_base(wallet),
-                "wallet": wallet,
-                "realized_bookmark": 0,
-            },
-        )
-        db.add(rec)
-        db.flush()
-        _add_event(db, rec, "LIMIT_PLACED", {
-            "price": entry_r, "qty": qty, "stop_loss": sl, "tp1": tp1, "tp2": tp2,
-            "risk_amount": risk_amount, "entry_order_id": parent_id,
-            "expires_at": expires.isoformat(),
-            "message": "限价委托已挂出（OTOCO：入场+TP1+SL 一体，12h 未成交自动撤销）",
-        })
-        db.commit()
-    except Exception:
-        # 落库失败：尚无仓位可平，撤掉 OTOCO 父单防孤儿挂单
-        try:
-            if parent_id:
-                trader.cancel_order(symbol, int(parent_id))
-        except Exception as cancel_err:
-            logger.error("PENDING 落库失败后撤父单失败 %s: %s", symbol, cancel_err)
-        raise
-    logger.info(
-        "限价委托已挂出 %s %s qty=%s @%s（sl=%s tp1=%s tp2=%s，%dh 未成交过期）",
-        symbol, direction, qty, entry_r, sl, tp1, tp2, settings.LIMIT_ORDER_TTL_HOURS,
-    )
-    return True
-
-
 def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bool:
     """单条分析完成即开仓（2026-09-14：不再等 :42 统一批次，docs/06 §2）。
 
@@ -511,25 +364,12 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
     ).first():
         return False  # 该分析已开过仓
     positions = trader.positions()
-    # PENDING 限价挂单同样占名额与同币唯一（docs/10 §5：委托锁定保证金）
-    pend = db.execute(
-        select(TradeRecord.symbol, TradeRecord.margin_used).where(
-            TradeRecord.status == "PENDING",
-            TradeRecord.testnet == settings.TRADING_TESTNET,
-        )
-    ).all()
-    pending_syms = {r[0] for r in pend}
-    pending_margin = sum(float(r[1] or 0) for r in pend)
-    if a.symbol in pending_syms:
-        logger.info("即时开仓跳过 %s：该币已有限价挂单在等待（一个币一个计划）", a.symbol)
-        return False
-    in_run = len(positions) + len(pending_syms)
-    if in_run >= cfg.max_open_trades:
-        logger.info("即时开仓跳过 %s：在跑单子+挂单已达上限 %d", a.symbol, cfg.max_open_trades)
+    if len(positions) >= cfg.max_open_trades:
+        logger.info("即时开仓跳过 %s：在跑单子已达上限 %d", a.symbol, cfg.max_open_trades)
         return False
     wallet_info = trader.wallet_balance()
     wallet = wallet_info["wallet"]
-    occupied = sum(p["initial_margin"] for p in positions.values()) + pending_margin
+    occupied = sum(p["initial_margin"] for p in positions.values())
     if wallet > 0 and wallet - occupied < wallet * settings.TRADING_MIN_FREE_PCT:
         logger.info("即时开仓跳过 %s：可用余额低于总资金 %.0f%%",
                     a.symbol, settings.TRADING_MIN_FREE_PCT * 100)
@@ -637,15 +477,8 @@ def _rehang_lost_sl(db: Session, trader: BinanceTrader, rec: TradeRecord,
     - SL 单仍在挂单列表（或记录无 sl_order_id 的极端情况无价可挂）→ 不动作；
     - 现价已被止损价越过：疑似 SL 刚触发、持仓量尚未反映，补挂会立即触发/挂空单，
       跳过本轮，留待仓位归零的结算路径确认。
-    - 限价单（docs/10）：OPENED 状态下 TP1 挂单消失 = OCO 在 TP1 成交时自动撤 SL，
-      属预期行为——保本 SL 由本轮 TP1_HIT 分支补挂，此处不补（否则把原始止损价挂回去）；
-      TP1_HIT 及之后状态正常巡检。
     """
     raw = rec.raw or {}
-    if rec.order_type == "limit" and rec.status == "OPENED":
-        tp1_id = raw.get("tp1_order_id")
-        if tp1_id and int(tp1_id) not in open_ids:
-            return
     sl_id = raw.get("sl_order_id")
     if sl_id and int(sl_id) in open_ids:
         return
@@ -740,366 +573,27 @@ def _record_realized(db: Session, trader: BinanceTrader, rec: TradeRecord) -> fl
 
 def _tranche_pnl(trader: BinanceTrader, rec: TradeRecord, raw: dict) -> float:
     """本档止盈盈亏：REALIZED_PNL 累计（仅价差不含费用）相对上次书签的差值，
-    即该档成交自身的价差收益；书签推进后写回 rec.raw。
-
-    以 rec.raw 当前值为基准（而非调用方的 raw 快照）：同轮 _rehang_lost_sl /
-    子单捕获可能已更新过 raw，用旧快照回写会把那些字段退回旧值。"""
+    即该档成交自身的价差收益；书签推进后写回 rec.raw。"""
     since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000) - 5_000
     cum = trader.realized_price_pnl_since(rec.symbol, since_ms)
+    # 同轮巡检内 _rehang_lost_sl 等可能已更新 rec.raw，重读最新值，避免用本轮入口的旧快照覆盖回去
     cur_raw = rec.raw or raw
     tranche = round(cum - float(cur_raw.get("realized_bookmark") or 0), 6)
     rec.raw = {**cur_raw, "realized_bookmark": round(cum, 6)}
     return tranche
 
 
-# ── 限价挂单巡检（docs/10 §3，并入每小时 :10 结算任务） ──────────
-
-
-def _capture_otoco_children(trader: BinanceTrader, rec: TradeRecord) -> None:
-    """成交后捕获 OTOCO 自动激活的 TP1/SL 子单 algoId（幂等，逐轮补齐）。
-
-    按 side=平仓方向 + 类型匹配（TAKE_PROFIT→TP1、STOP→SL）；捕获失败不阻塞——
-    raw 缺 tp1_order_id 时 tp1_gone 恒为 False（不会误判 TP1 成交），缺 sl_order_id
-    时 _rehang_lost_sl 会按当前止损价补挂（-4130 清理兜底），下一轮继续尝试捕获。
-    """
-    raw = rec.raw or {}
-    if raw.get("tp1_order_id") and raw.get("sl_order_id"):
-        return
-    close_side = _close_side(rec.direction)
-    upd: dict = {}
-    try:
-        for o in trader.open_algo_orders(rec.symbol):
-            oid = o.get("algoId")
-            if oid is None or str(o.get("side")) != close_side:
-                continue
-            otype = str(o.get("type") or o.get("algoType") or "").upper()
-            if "TAKE_PROFIT" in otype and not raw.get("tp1_order_id"):
-                upd["tp1_order_id"] = int(oid)
-            elif "STOP" in otype and not raw.get("sl_order_id"):
-                upd["sl_order_id"] = int(oid)
-    except Exception as e:
-        logger.warning("OTOCO 子单捕获失败 %s: %s", rec.symbol, e)
-        return
-    if upd:
-        # 必须赋新 dict（SQLAlchemy 变更检测，docs/07 §8-A2）
-        rec.raw = {**raw, **upd}
-        logger.info("OTOCO 子单捕获 %s：%s", rec.symbol, upd)
-
-
-def _promote_pending(db: Session, trader: BinanceTrader, rec: TradeRecord,
-                     pos: Optional[dict], st: Optional[dict]) -> None:
-    """限价单满额成交 → OPENED（docs/10 §4）：成交价/量以交易所持仓为真相
-    （父单成交回报兜底，插针平掉后持仓消失时用），回填 raw 子单 id，之后
-    既有结算逻辑（tp1_gone 推断/SL 补挂/保本移动）直接接管。"""
-    symbol = rec.symbol
-    raw = rec.raw or {}
-    placed = float(rec.entry_price or 0)
-    qty_planned = float(rec.qty or 0)
-    fill_price = fill_qty = 0.0
-    if pos:
-        fill_price = float(pos.get("entry_price") or 0)
-        fill_qty = abs(float(pos.get("amt") or 0))
-    if st:
-        if fill_price <= 0:
-            try:
-                fill_price = float(st.get("avgPrice") or 0)
-            except (TypeError, ValueError):
-                pass
-        if fill_qty <= 0:
-            try:
-                fill_qty = float(st.get("executedQty") or 0)
-            except (TypeError, ValueError):
-                fill_qty = 0.0
-    if fill_price <= 0:
-        fill_price = placed
-    if fill_qty <= 0:
-        fill_qty = qty_planned
-    close_side = _close_side(rec.direction)
-    now = datetime.utcnow()
-
-    # 插针兜底（docs/10 §4-5）：成交价已越过 SL 而仓位仍存活（SL 激活异常未触发）
-    # → 立即市价平仓结算，不留无保护仓位
-    sl = float(rec.stop_loss or 0)
-    breached = False
-    if sl > 0 and fill_price > 0:
-        price_now = trader.price(symbol)
-        breached = (rec.direction == "long" and price_now <= sl) or \
-                   (rec.direction == "short" and price_now >= sl)
-    if breached and pos:
-        try:
-            trader.market_order(symbol, close_side, fill_qty, reduce_only=True)
-            trader.cancel_all_algo(symbol)
-        except Exception as e:
-            logger.error("插针兜底平仓失败 %s: %s", symbol, e)
-        pnl = _pnl_since_created(trader, rec)
-        rec.entry_price = fill_price
-        rec.qty = fill_qty
-        rec.notional = round(fill_qty * fill_price, 2)
-        rec.margin_used = round(fill_qty * fill_price / (rec.leverage or 20), 4)
-        rec.realized_pnl = pnl
-        rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
-        rec.status = "CLOSED"
-        rec.closed_at = now
-        rec.exit_reason = "sl"
-        _add_event(db, rec, "LIMIT_FILLED", {
-            "fill_price": fill_price, "qty": fill_qty,
-            "entry_order_id": raw.get("entry_order_id"),
-        })
-        _add_event(db, rec, "SETTLE", {
-            "realized_pnl": pnl, "pnl_pct": rec.pnl_pct, "exit_reason": "sl",
-            "message": "成交价已越过止损价（SL 激活异常），插针兜底平仓",
-        })
-        db.commit()
-        logger.warning("限价单插针兜底 %s：成交 %s 已越 SL %s，平仓结算", symbol, fill_price, sl)
-        return
-
-    rec.entry_price = fill_price
-    rec.qty = fill_qty
-    rec.notional = round(fill_qty * fill_price, 2)
-    rec.margin_used = round(fill_qty * fill_price / (rec.leverage or 20), 4)
-    rec.risk_amount = round(fill_qty * abs(fill_price - sl), 4)
-    rec.opened_at = now
-    rec.status = "OPENED"
-    _add_event(db, rec, "LIMIT_FILLED", {
-        "fill_price": fill_price, "qty": fill_qty,
-        "entry_order_id": raw.get("entry_order_id"),
-        "slippage_pct": round((fill_price / placed - 1) * 100, 3) if placed > 0 else None,
-        "message": "限价委托成交，TP1/SL 已由交易所自动激活",
-    })
-    _capture_otoco_children(trader, rec)
-    db.commit()
-    logger.info("限价单成交转 OPENED %s：成交 %s ×%s（委托价 %s）",
-                symbol, fill_price, fill_qty, placed)
-
-
-def _pnl_since_created(trader: BinanceTrader, rec: TradeRecord) -> Optional[float]:
-    """自记录创建时起（PENDING 期间入场成交已发生）的已实现净盈亏；起点回拨 5s 同 _record_realized"""
-    try:
-        created = rec.created_at or datetime.utcnow()
-        since_ms = int(created.replace(tzinfo=timezone.utc).timestamp() * 1000) - 5_000
-        return round(trader.realized_pnl_since(rec.symbol, since_ms), 6)
-    except Exception:
-        return None
-
-
-def _close_partial_pending(db: Session, trader: BinanceTrader, rec: TradeRecord,
-                           exec_qty: float) -> None:
-    """部分成交处置（docs/10 §0-⑦）：撤父单 + 市价平已成交部分 → CLOSED(limit_partial)。
-    OTOCO 满额成交才激活 TP/SL，部分仓位无保护，风险必须有界（发现延迟 ≤1h）。"""
-    symbol = rec.symbol
-    parent_id = (rec.raw or {}).get("entry_order_id")
-    if parent_id:
-        try:
-            trader.cancel_order(symbol, int(parent_id))
-        except Exception as e:
-            logger.warning("部分成交撤父单失败 %s: %s", symbol, e)
-    try:
-        trader.market_order(symbol, _close_side(rec.direction), exec_qty, reduce_only=True)
-    except Exception as e:
-        logger.error("部分成交平仓失败 %s qty=%s: %s", symbol, exec_qty, e)
-    pnl = _pnl_since_created(trader, rec)
-    rec.qty = exec_qty  # 已成交部分为实际仓位口径
-    rec.realized_pnl = pnl
-    rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if pnl is not None and rec.risk_amount else None
-    rec.status = "CLOSED"
-    rec.closed_at = datetime.utcnow()
-    rec.exit_reason = "limit_partial"
-    _add_event(db, rec, "LIMIT_PARTIAL", {
-        "qty": exec_qty, "realized_pnl": pnl,
-        "message": "限价单部分成交：撤父单并市价平已成交部分（TP/SL 未激活，风险有界）",
-    })
-    _add_event(db, rec, "SETTLE", {
-        "realized_pnl": pnl, "pnl_pct": rec.pnl_pct, "exit_reason": "limit_partial",
-    })
-    db.commit()
-    logger.warning("限价单部分成交已处置 %s：exec=%s → CLOSED(limit_partial)", symbol, exec_qty)
-
-
-def _reconcile_cancelled(db: Session, rec: TradeRecord, status_str: str) -> bool:
-    """父单已在交易所侧终态（人工撤销/过期/拒绝/消失）：对账落 CANCELLED"""
-    exit_reason = {
-        "EXPIRED": "limit_expired",
-        "REJECTED": "error",
-    }.get(status_str, "manual")
-    rec.status = "CANCELLED"
-    rec.closed_at = datetime.utcnow()
-    rec.exit_reason = exit_reason
-    _add_event(db, rec, "LIMIT_CANCELLED", {
-        "status": status_str, "reason": exit_reason,
-        "message": "挂单已在交易所侧撤销/失效，对账落库",
-    })
-    db.commit()
-    logger.info("限价单对账撤销 %s：交易所状态 %s", rec.symbol, status_str)
-    return True
-
-
-def _cancel_pending(db: Session, trader: BinanceTrader, rec: TradeRecord,
-                    exit_reason: str, msg: str) -> bool:
-    """撤销 PENDING OTOCO 父单并落 CANCELLED；撤单-成交竞态按成交处理
-    （宁可开成不可开漏，docs/10 §3）。"""
-    symbol = rec.symbol
-    qty = float(rec.qty or 0)
-    parent_id = (rec.raw or {}).get("entry_order_id")
-    # 撤单请求前最后一刻成交的竞态：仓位为准
-    pos = trader.positions().get(symbol)
-    amt = abs(pos["amt"]) if pos else 0.0
-    if qty > 0 and amt >= qty * 0.95:
-        _promote_pending(db, trader, rec, pos, None)
-        return True
-    if parent_id:
-        # cancel_order 对已成交/已撤销（-2011）静默忽略——下方复查兜底
-        trader.cancel_order(symbol, int(parent_id))
-    # 撤后复查：竞态期间成交 → 按成交/部分成交处理
-    pos = trader.positions().get(symbol)
-    amt = abs(pos["amt"]) if pos else 0.0
-    if qty > 0 and amt >= qty * 0.95:
-        _promote_pending(db, trader, rec, pos, None)
-        return True
-    if 0 < amt < qty * 0.95:
-        _close_partial_pending(db, trader, rec, amt)
-        return True
-    rec.status = "CANCELLED"
-    rec.closed_at = datetime.utcnow()
-    rec.exit_reason = exit_reason
-    _add_event(db, rec, "LIMIT_CANCELLED", {
-        "reason": exit_reason, "message": msg, "entry_order_id": parent_id,
-    })
-    db.commit()
-    logger.info("限价单撤销 %s：%s（%s）", symbol, exit_reason, msg)
-    return True
-
-
-def _handle_pending(db: Session, trader: BinanceTrader, rec: TradeRecord) -> bool:
-    """单条 PENDING 限价单巡检（docs/10 §3）：先查单再决策，交易所为真相。
-
-    返回是否处置（转 OPENED / 撤销 / 部分平仓）；False=继续等待。
-    """
-    raw = rec.raw or {}
-    symbol = rec.symbol
-    qty = float(rec.qty or 0)
-    parent_id = raw.get("entry_order_id")
-
-    # ① TTL 过期（小时粒度巡检 → 实际寿命 12~13h）
-    if rec.expires_at and datetime.utcnow() >= rec.expires_at:
-        return _cancel_pending(db, trader, rec, "limit_expired", "挂单时效（TTL）到期自动撤销")
-
-    # ② 交易所仓位为真相：≥95% 委托量 = 满额成交
-    pos = trader.positions().get(symbol)
-    amt = abs(pos["amt"]) if pos else 0.0
-    if qty > 0 and amt >= qty * 0.95:
-        _promote_pending(db, trader, rec, pos, None)
-        return True
-
-    # ③ 查父单终态/成交明细（working 中的单查不到时以挂单列表与仓位判断）
-    st = None
-    if parent_id:
-        try:
-            st = trader.algo_order(symbol, int(parent_id))
-        except Exception:
-            st = None
-    exec_qty = 0.0
-    status_str = ""
-    if st:
-        try:
-            exec_qty = float(st.get("executedQty") or 0)
-        except (TypeError, ValueError):
-            exec_qty = 0.0
-        status_str = str(st.get("algoStatus") or st.get("status") or "").upper()
-
-    # ④ 父单满额成交（仓位可能已被插针 SL 打掉——仍转 OPENED，结算路径兜底）
-    if status_str in ("FINISHED", "FILLED"):
-        _promote_pending(db, trader, rec, pos, st)
-        return True
-
-    # ⑤ 部分成交（pending 未激活、无止损保护）：立即撤父单 + 平已成交部分
-    if 0 < exec_qty < qty * 0.95:
-        _close_partial_pending(db, trader, rec, exec_qty)
-        return True
-
-    # ⑥ 前提失效：未成交而现价已触及 TP1——行情已走完，不追
-    price = trader.price(symbol)
-    tp1 = float(rec.tp1 or 0)
-    touched_tp1 = tp1 > 0 and (
-        (rec.direction == "long" and price >= tp1)
-        or (rec.direction == "short" and price <= tp1)
-    )
-    if touched_tp1:
-        return _cancel_pending(db, trader, rec, "limit_premise",
-                               f"现价 {price} 已触及 TP1 {tp1}，等回踩/反抽前提失效")
-
-    # ⑦ 外部撤销/过期/拒绝（人工撤单或交易所侧清理）：对账
-    if status_str in ("CANCELLED", "CANCELED", "EXPIRED", "REJECTED"):
-        return _reconcile_cancelled(db, rec, status_str)
-
-    # ⑧ 父单查询不到且不在挂单列表：交易所侧已消失，对账（连续两轮 API 异常才可能误判）
-    if st is None and parent_id is not None:
-        try:
-            working_ids = trader.open_order_ids(symbol)
-        except Exception:
-            working_ids = None
-        if working_ids is not None and parent_id not in working_ids:
-            return _reconcile_cancelled(db, rec, "GONE")
-
-    # ⑨ working 无成交，继续等待
-    return False
-
-
-def _place_late_tp2(db: Session, trader: BinanceTrader, rec: TradeRecord) -> None:
-    """限价单 TP2 补挂（docs/10 §4）：OTOCO 两个 pending 位被 TP1/SL 占满，TP2
-    （25% 原仓位，AI 给过 TP2 才有）在 TP1 成交后由巡检补挂；数量不足 min_qty 时
-    放弃该档（tp2 置 0 → 剩余仓位走跟进止损）。失败不阻断结算（同样回退跟进止损）。"""
-    try:
-        f = trader.filters(rec.symbol)
-        qty_tp2 = trader.round_qty(rec.symbol, float(rec.qty) * 0.25)
-        if qty_tp2 < f["min_qty"]:
-            rec.tp2 = 0
-            logger.info("限价单 %s：TP2 数量 %s 低于最小数量 %s，放弃该档走跟进止损",
-                        rec.symbol, qty_tp2, f["min_qty"])
-            return
-        tp2_order = trader.take_profit_reduce(
-            rec.symbol, _close_side(rec.direction), qty_tp2,
-            trader.round_price(rec.symbol, float(rec.tp2)))
-        rec.raw = {
-            **(rec.raw or {}),
-            "tp2_order_id": tp2_order.get("algoId") or tp2_order.get("orderId"),
-            "qty_tp2": qty_tp2,
-        }
-        logger.info("限价单 %s：TP2 已补挂 %s qty=%s", rec.symbol, rec.tp2, qty_tp2)
-    except Exception as e:
-        logger.warning("限价单 %s TP2 补挂失败: %s（剩余仓位改走跟进止损）", rec.symbol, e)
-        rec.tp2 = 0
-
-
 def settle_trades(db: Session, trader: BinanceTrader) -> int:
-    """对非终态交易：以交易所为准推断事件、跟进止损、结算收益。返回处理笔数。
-
-    先处理 PENDING 限价挂单（docs/10 §3：查单/撤销/成交转 OPENED），再走持仓
-    结算循环——同一任务同一 Redis 锁，先挂单后持仓。
-    """
+    """对非终态交易：以交易所为准推断事件、跟进止损、结算收益。返回处理笔数"""
     cfg = db.get(SystemConfig, 1)
     interval = cfg.kline_interval if cfg else "1h"
-    handled = 0
-    # ① 限价挂单巡检（docs/10 §3）
-    pending = db.execute(
-        select(TradeRecord).where(
-            TradeRecord.status == "PENDING",
-            TradeRecord.testnet == settings.TRADING_TESTNET,
-        )
-    ).scalars().all()
-    for rec in pending:
-        try:
-            if _handle_pending(db, trader, rec):
-                handled += 1
-        except Exception as e:
-            db.rollback()
-            logger.warning("限价挂单巡检 %s 失败: %s", rec.symbol, e)
-    # ② 持仓结算（OPENED/TP1_HIT/TP2_HIT；刚转 OPENED 的限价单同轮直接接管）
     records = db.execute(
         select(TradeRecord).where(TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")))
     ).scalars().all()
     if not records:
-        return handled
+        return 0
     positions = trader.positions()
+    handled = 0
 
     for rec in records:
         try:
@@ -1108,10 +602,6 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
             pos = positions.get(rec.symbol)
             amt = abs(pos["amt"]) if pos else 0.0
             open_ids = trader.open_order_ids(rec.symbol)
-            # 限价单（docs/10）：OTOCO 子单 algoId 逐轮补齐（成交时捕获失败/字段缺失的兜底）
-            if rec.order_type == "limit" and (not raw.get("tp1_order_id") or not raw.get("sl_order_id")):
-                _capture_otoco_children(trader, rec)
-                raw = rec.raw or {}
             tp1_gone = raw.get("tp1_order_id") and int(raw["tp1_order_id"]) not in open_ids
             tp2_gone = raw.get("tp2_order_id") and int(raw["tp2_order_id"]) not in open_ids
 
@@ -1180,10 +670,6 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                                                      "cum_pnl": realized})
                     rec.status = "TP1_HIT"
                     _move_sl_breakeven(db, trader, rec, open_ids)  # 用户规则：TP1 后止损移至成本价
-                    if rec.order_type == "limit" and rec.tp2 and not raw.get("tp2_order_id"):
-                        # 限价单（docs/10）：OTOCO 两个 pending 位被 TP1/SL 占满，
-                        # TP2 在 TP1 成交后由巡检补挂（市价路径开仓时已挂，不进此分支）
-                        _place_late_tp2(db, trader, rec)
                     if not rec.tp2:
                         # 无 TP2：TP1 止盈 75% 后剩余仓即启用跟进止损（与 TP2 后同机制）
                         _move_sl_trailing(db, trader, rec, interval, open_ids)

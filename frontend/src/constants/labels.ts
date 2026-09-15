@@ -110,9 +110,3 @@ export const TRADE_TYPE_MAP: Record<string, { label: string; color: string }> = 
   n_structure: { label: "N字结构(已并入)", color: "cyan" },
   rule_2b: { label: "2B法则(已并入)", color: "geekblue" },
 };
-
-// 委托方式（docs/10）：AI 决策自选，market=市价立即成交 / limit=限价委托等回踩
-export const ORDER_TYPE_MAP: Record<string, { label: string; color: string }> = {
-  market: { label: "市价单", color: "blue" },
-  limit: { label: "限价委托", color: "orange" },
-};

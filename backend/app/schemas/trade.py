@@ -31,8 +31,6 @@ class TradeOut(BaseModel):
     tp1: Optional[float] = None
     tp2: Optional[float] = None
     status: str
-    order_type: Optional[str] = None  # 委托方式：market 市价 / limit 限价委托（docs/10）
-    expires_at: Optional[datetime] = None  # 限价挂单到期时间（PENDING 时有值）
     opened_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
     realized_pnl: Optional[float] = None

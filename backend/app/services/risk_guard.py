@@ -51,7 +51,6 @@ class TradeDecision(BaseModel):
     skip_reason: str = ""
     direction: Optional[Literal["long", "short"]] = None
     trade_type: Optional[str] = None  # 开单类型：trend_follow / rule_123 / n_structure / rule_2b / range_edge
-    order_type: Optional[Literal["market", "limit"]] = None  # 委托方式（docs/10）：limit=限价委托挂单等回踩，缺省按 market
     entry_price: float = 0.0
     stop_loss: float = 0.0
     take_profit_1: float = 0.0
@@ -82,13 +81,6 @@ def normalize_raw(raw: dict) -> TradeDecision:
             data[f] = 0.0
     if data.get("direction") == "":
         data["direction"] = None
-    # 委托方式归一化（docs/10）：大小写宽容，非法/空值按 None（下游视为 market）
-    ot = data.get("order_type")
-    if isinstance(ot, str):
-        ot = ot.strip().lower()
-    if ot not in ("market", "limit"):
-        ot = None
-    data["order_type"] = ot
     if data.get("trade_decision") not in ("suggest", "skip"):
         raise ValueError(f"trade_decision 非法: {data.get('trade_decision')!r}")
     return TradeDecision(**data)
@@ -198,7 +190,6 @@ def validate_decision(
             "skip_reason": d.skip_reason.strip(),
             "direction": None,
             "trade_type": None,
-            "order_type": None,
             "analysis": d.analysis or "",
             "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
             "take_profit_2": 0, "risk_reward_ratio": 0,
@@ -279,9 +270,7 @@ def validate_decision(
                     f"唯一例外是放量突破信号。可用锚：{near}"
                 )
 
-    # 入场偏离现价 ≤2% 仅约束市价路径（docs/10：AI 返回即指令——order_type=limit 的
-    # 耐心侧挂单本来就是等回踩/反抽，偏离带内合法；几何兜底交给交易所 -2021 与 TTL）
-    if close > 0 and d.order_type != "limit":
+    if close > 0:
         dev = abs(d.entry_price - close) / close
         if dev > 0.02:
             violations.append(f"入场价偏离当前价 {dev*100:.2f}% > 2%（入场应接近现价）")
@@ -431,7 +420,6 @@ def validate_decision(
         "skip_reason": "",
         "direction": d.direction,
         "trade_type": d.trade_type,
-        "order_type": d.order_type,
         "analysis": d.analysis or "",
         "entry_price": round(d.entry_price, 8),
         "stop_loss": round(d.stop_loss, 8),
@@ -454,7 +442,6 @@ def build_forced_skip(reason: str, violations: Optional[list[str]] = None) -> di
         "trade_decision": "skip",
         "skip_reason": skip_reason[:500],
         "direction": None,
-        "order_type": None,
         "analysis": "1. 该信号未通过程序风控校验，已自动跳过，未消耗人工判断成本。",
         "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
         "take_profit_2": 0, "risk_reward_ratio": 0,

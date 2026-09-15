@@ -184,39 +184,6 @@ class BinanceTrader:
             "quantity": self._dec_str(qty), "reduceOnly": "true",
         })
 
-    def limit_order_otoco(
-        self,
-        symbol: str,
-        side: str,
-        qty: float,
-        price: float,
-        tp1_price: float,
-        tp1_qty: float,
-        sl_price: float,
-    ) -> dict:
-        """限价委托 OTOCO 一体单（docs/10）：working 限价入场 + pending TP1 + pending SL。
-
-        入场单满额成交的瞬间交易所自动激活 TP1+SL（OCO：一侧成交另一侧自动撤销），
-        无裸仓窗口。返回含父单 algoId。
-        side=入场方向（BUY/SELL），TP1/SL 由交易所按 reduceOnly 语义处理。
-        """
-        return self._req("POST", "/fapi/v1/algoOrder", {
-            "algoType": "OTOCO", "symbol": symbol, "side": side,
-            "type": "LIMIT", "timeInForce": "GTC",
-            "price": self._dec_str(price), "quantity": self._dec_str(qty),
-            "tpType": "TAKE_PROFIT_MARKET", "tpStopPrice": self._dec_str(tp1_price),
-            "tpQuantity": self._dec_str(tp1_qty),
-            "slType": "STOP_MARKET", "slStopPrice": self._dec_str(sl_price),
-            "slClosePosition": "true",
-        })
-
-    def algo_order(self, symbol: str, algo_id: int) -> dict:
-        """查询单个 algo 单（含 OTOCO 父单）的当前状态与成交明细（status/avgPrice/executedQty）。
-
-        working 中的单在 openAlgoOrders；终态（FINISHED/CANCELLED/EXPIRED/REJECTED）查这里。
-        """
-        return self._req("GET", "/fapi/v1/algoOrders", {"symbol": symbol, "algoId": algo_id})
-
     def cancel_order(self, symbol: str, order_id: int) -> None:
         """撤销 algo 条件单（order_id 实为 algoId）。已成交/已撤销的忽略"""
         try:

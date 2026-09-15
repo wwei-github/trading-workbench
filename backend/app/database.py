@@ -127,21 +127,6 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS testnet BOOLEAN NOT NULL DEFAULT TRUE,
               ADD COLUMN IF NOT EXISTS ai_snapshot JSON
         """))
-        # Feature 13: 限价委托（docs/10）——trade_records 委托方式/到期时间、
-        # ai_analyses 的 order_type（AI 返回即指令）、system_config 总开关（默认开）
-        conn.execute(text("""
-            ALTER TABLE trade_records
-              ADD COLUMN IF NOT EXISTS order_type VARCHAR(16) DEFAULT 'market',
-              ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP
-        """))
-        conn.execute(text("""
-            ALTER TABLE ai_analyses
-              ADD COLUMN IF NOT EXISTS order_type VARCHAR(16)
-        """))
-        conn.execute(text("""
-            ALTER TABLE system_config
-              ADD COLUMN IF NOT EXISTS limit_order_enabled BOOLEAN NOT NULL DEFAULT TRUE
-        """))
         # 确保系统配置表有默认行（初始值从 env 注入）
         conn.execute(text(
             "INSERT INTO system_config "
