@@ -163,10 +163,13 @@ def _attempt_open(
                 symbol, qty, f["min_qty"], f["min_notional"],
             )
             return False
-        if qty > f["max_qty"]:
+        # 市价入场按 MARKET_LOT_SIZE 校验（常比 LOT_SIZE 严得多，BBUSDT -4005 案例：
+        # LOT_SIZE 100万 / MARKET_LOT_SIZE 5万），条件单按 LOT_SIZE；取两者更严的上限
+        max_qty = min(f["max_qty"], f.get("market_max_qty", f["max_qty"]))
+        if qty > max_qty:
             logger.info("开仓 %s：数量 %s 超交易所单笔上限 %s，按上限缩减（实际风险低于 %.0f%% 预算）",
-                        symbol, qty, f["max_qty"], settings.TRADING_RISK_PCT)
-            qty = trader.round_qty(symbol, f["max_qty"])
+                        symbol, qty, max_qty, settings.TRADING_RISK_PCT)
+            qty = trader.round_qty(symbol, max_qty)
         leverage = settings.TRADING_LEVERAGE
         margin_used = qty * price / leverage
         if margin_used > wallet - occupied:
