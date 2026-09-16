@@ -7,10 +7,15 @@
   RISK_BUDGET_PCT（3%），AI 不自报仓位
 
 已移除的校验（方法论降级为 AI 提示词纪律，程序不再打回/改挂）：
-- 方向-价格一致性、入场偏离现价 ≤2%（2026-09-15 移除）
+- 入场偏离现价 ≤2%（2026-09-15 移除）
 - 方向铁律入场贴近结构位 ±0.3%（2026-09-15 早些时候移除）
 - 止损锚定（结构锚 vs 影线极值取更远者 + 0.3% 缓冲）、止损宽度 [0.3×ATR, 3×ATR]、
   强平安全上限前置、止盈最近优先强制（docs/09 的锚定设计保留为提示词方法论）
+
+方向-价格一致性（2026-09-16 恢复为硬校验，不属于方法论）：多单 SL<entry<TP1、
+空单 TP1<entry<SL（TP2>0 时同侧递延）。2026-09-15 随校验链收缩移除后，
+ETHUSDT 空单反向止损（SL=2373 < 入场 2391.89）靠 abs() 口径的 RR 铁律
+畅通落库，到挂 SL 才会被交易所拒单——这是可行性铁律而非结构偏好，不可省。
 
 放水后的兜底在开仓闸门（trade_engine._attempt_open）：方向-价格复核、现价偏离
 ≤1%、RR 按现价复算 ≥1.5、强平闸门（liquidation_gate_pct，本模块提供共用口径）、
@@ -153,6 +158,34 @@ def validate_decision(
         )
     if d.entry_price <= 0 or d.stop_loss <= 0 or d.take_profit_1 <= 0:
         violations.append("suggest 时 entry/stop_loss/tp1 必须为正数价格")
+    if violations:
+        return False, violations, {}
+
+    # ── 方向-价格一致性硬校验（2026-09-16 恢复为程序强制；ETHUSDT 案例）──
+    # 多单 SL<entry<TP1、空单 TP1<entry<SL 是交易所可挂性铁律：反向止损的
+    # 条件单会被拒单（-2021 would immediately trigger），走到开仓→挂SL失败→
+    # 紧急平仓空转。RR 铁律全程 abs() 对方向盲，反向止损照样达标
+    # （ETHUSDT 空单 SL=2373 低于入场 2391.89，RR 复算 1.58 畅通通过）。
+    # TP2>0 时须与方向同侧且比 TP1 更远
+    if d.direction == "long" and not d.stop_loss < d.entry_price < d.take_profit_1:
+        violations.append(
+            f"多单价格序矛盾：须 SL < 入场 < TP1"
+            f"（实得 SL={d.stop_loss}，入场={d.entry_price}，TP1={d.take_profit_1}）"
+        )
+    if d.direction == "short" and not d.take_profit_1 < d.entry_price < d.stop_loss:
+        violations.append(
+            f"空单价格序矛盾：须 TP1 < 入场 < SL"
+            f"（实得 TP1={d.take_profit_1}，入场={d.entry_price}，SL={d.stop_loss}）"
+        )
+    if d.take_profit_2 > 0:
+        if d.direction == "long" and d.take_profit_2 <= d.take_profit_1:
+            violations.append(
+                f"多单 TP2 须比 TP1 更远（TP2={d.take_profit_2} ≤ TP1={d.take_profit_1}）"
+            )
+        if d.direction == "short" and d.take_profit_2 >= d.take_profit_1:
+            violations.append(
+                f"空单 TP2 须比 TP1 更远（TP2={d.take_profit_2} ≥ TP1={d.take_profit_1}）"
+            )
     if violations:
         return False, violations, {}
 

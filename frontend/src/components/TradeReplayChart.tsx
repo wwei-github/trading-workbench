@@ -290,7 +290,9 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
     }
     drawZone(data.entry_price, data.stop_loss, 'rgba(239, 83, 80, 0.15)')
     drawZone(data.entry_price, data.tp1, 'rgba(38, 166, 154, 0.15)')
-    drawZone(data.tp1, data.tp2, 'rgba(38, 166, 154, 0.08)')
+    // tp2 为 0/null（未设止盈二）时不绘制 TP2 区域与线
+    const hasTP2 = data.tp2 != null && data.tp2 > 0
+    if (hasTP2) drawZone(data.tp1, data.tp2, 'rgba(38, 166, 154, 0.08)')
 
     // 水平线 + 右侧价签
     const drawLine = (price: number | null, color: string, label: string, dashed: boolean) => {
@@ -338,7 +340,7 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
     drawLine(data.entry_price, colorEntry, isL ? '开多' : '开空', false)
     drawLine(data.stop_loss, colorSL, '止损', true)
     drawLine(data.tp1, colorTP, '止盈1', true)
-    drawLine(data.tp2, colorTP, '止盈2', true)
+    if (hasTP2) drawLine(data.tp2, colorTP, '止盈2', true)
   }, [data, colorScheme])
 
   useEffect(() => {

@@ -135,6 +135,23 @@ def _attempt_open(
                             symbol, ema["state_label"] if ema else "K线数据不足")
                 _mark_open_block(db, a, f"顺势交易 EMA 未按方向排列（{ema['state_label'] if ema else 'K线数据不足'}）")
                 return False
+        # 方向-价格可挂性复核（2026-09-16 恢复，交易所侧最后一道防线）：
+        # SL/TP1 触发价必须在现价的正确侧，否则条件单被拒单（-2021 would
+        # immediately trigger）→ 开完仓挂 SL 必败走紧急平仓空转。risk_guard
+        # 已按 AI 三价拦反向止损，此处按现价兜底：AI 报价到开仓之间的漂移，
+        # 以及前序 1% 偏离闸门内 TP1 落到现价错误侧的边缘情况
+        placeable = (sl < price < tp1) if direction == "long" else (tp1 < price < sl)
+        if not placeable:
+            logger.info(
+                "开仓跳过 %s：SL/TP 与现价矛盾不可挂单（方向 %s，SL=%s，入场=%s，TP1=%s，现价 %s）",
+                symbol, direction, sl, entry_ai, tp1, price,
+            )
+            _mark_open_block(
+                db, a,
+                f"SL/TP 与现价矛盾不可挂单（方向 {direction}，SL={sl}，入场={entry_ai}，"
+                f"TP1={tp1}，现价 {price}）",
+            )
+            return False
         # 固定亏损仓位：基数分档 × 3% ÷ 止损距离
         stop_pct = abs(price - sl) / price
         if stop_pct <= 0:
@@ -332,6 +349,10 @@ def _attempt_open(
                 db.commit()
             except Exception:
                 db.rollback()
+        else:
+            # 非 -1121 的开仓失败（如 testnet 对未上架币返回空 ticker 而非 -1121，
+            # PUMPUSDT 案例）：同样不留"既没开单也没原因"的悬案，落拒开原因
+            _mark_open_block(db, a, f"开仓失败：{str(e)[:200]}")
         return False
 
 

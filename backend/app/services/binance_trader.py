@@ -139,7 +139,10 @@ class BinanceTrader:
         """最新价（下单时点）"""
         r = self._req("GET", "/fapi/v2/ticker/price", {"symbol": symbol})
         if "price" not in r:
-            raise BinanceTradeError(f"ticker/price 响应异常: {str(r)[:100]}")
+            # testnet 对未上架合约返回空体 {}（主网才返回 -1121），错误信息带上可能性提示
+            raise BinanceTradeError(
+                f"ticker/price 无数据（可能未上架该合约，如 testnet）: {str(r)[:100]}"
+            )
         return float(r["price"])
 
     # ── 杠杆 / 保证金模式 ─────────────────────────────────────
