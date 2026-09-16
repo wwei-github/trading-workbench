@@ -169,19 +169,29 @@ class BinanceTrader:
         return r
 
     def stop_market_close(self, symbol: str, side: str, stop_price: float) -> dict:
-        """止损单（algo）：触发后市价全平剩余仓位（closePosition），返回含 algoId"""
+        """止损单（algo）：触发后市价全平剩余仓位（closePosition），返回含 algoId
+
+        workingType=MARK_PRICE：用标记价格触发。标记价格跟随多所指数价格加权利率，
+        不受单一订单簿打飞影响（测试网薄订单簿曾把 last price 打飞 30%误触发止损，
+        成交于 100 vs 真实市价 77）。
+        """
         return self._req("POST", "/fapi/v1/algoOrder", {
             "algoType": "CONDITIONAL", "symbol": symbol, "side": side,
             "type": "STOP_MARKET", "triggerPrice": self._dec_str(stop_price),
-            "closePosition": "true",
+            "closePosition": "true", "workingType": "MARK_PRICE",
         })
 
     def take_profit_reduce(self, symbol: str, side: str, qty: float, stop_price: float) -> dict:
-        """止盈单（algo）：触发后市价减仓指定数量（reduceOnly），返回含 algoId"""
+        """止盈单（algo）：触发后市价减仓指定数量（reduceOnly），返回含 algoId
+
+        止盈保留默认 CONTRACT_PRICE（最新成交价）：到止盈位说明行情真到了，
+        用 last price 触发更贴近实际可成交价格，避免标记价格滞后于行情尖峰。
+        """
         return self._req("POST", "/fapi/v1/algoOrder", {
             "algoType": "CONDITIONAL", "symbol": symbol, "side": side,
             "type": "TAKE_PROFIT_MARKET", "triggerPrice": self._dec_str(stop_price),
             "quantity": self._dec_str(qty), "reduceOnly": "true",
+            "workingType": "CONTRACT_PRICE",
         })
 
     def cancel_order(self, symbol: str, order_id: int) -> None:

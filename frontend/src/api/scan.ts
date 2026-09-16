@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AIAnalysis, AiProgress, KlineData, ListResponse, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeRecord, WatchlistItem } from '../types'
+import type { AIAnalysis, AiProgress, KlineData, ListResponse, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -106,6 +106,9 @@ export const scanApi = {
     // 一笔交易的操作历史（开仓/止盈成交/止损移动/结算/异常）
     events: (tradeId: string) =>
       api.get<TradeEvent[]>(`/trades/${tradeId}/events`).then((r) => r.data),
+    // 交易复盘K线（开单前100根 + 持仓期间，含初始止损止盈与关键事件）
+    klines: (tradeId: string) =>
+      api.get<TradeKlineData>(`/trades/${tradeId}/klines`, { timeout: 60000 }).then((r) => r.data),
   },
 
   // 关注列表

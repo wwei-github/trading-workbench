@@ -10,6 +10,7 @@ import {
   Button,
   Descriptions,
   Empty,
+  Modal,
   Row,
   Space,
   Spin,
@@ -38,6 +39,7 @@ import { bj } from '../utils/dayjs'
 import { SCHEME_UP_DOWN, schemeTag, schemeValueColor } from '../utils/scheme'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import AiAnalysisCard from './AiAnalysisCard'
+import TradeReplayChart from './TradeReplayChart'
 import type { TradeEvent, TradeRecord } from '../types'
 
 // 状态标签：运行中三态 + 已平仓 + 失败
@@ -213,6 +215,8 @@ export default function TradesPanel() {
   const colorScheme = useScanStore((s) => s.colorScheme)
   // 整行点击展开/收起（受控 keys；点展开图标时 stopPropagation 由 onRow 内部处理）
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([])
+  // 复盘K线弹窗（点击币种名打开）
+  const [replayTrade, setReplayTrade] = useState<TradeRecord | null>(null)
 
   const filtered = useMemo(
     () =>
@@ -369,7 +373,17 @@ export default function TradesPanel() {
       width: 150,
       render: (v: string, rec) => (
         <Space size={4}>
-          <Typography.Text strong>{v}</Typography.Text>
+          {/* 实际开仓的记录可点击打开复盘K线弹窗（FAILED/未开仓不可点）；
+              行点击展开逻辑会忽略 a 标签，此处 stopPropagation 双保险 */}
+          {rec.opened_at ? (
+            <Tooltip title="点击查看开仓前后K线复盘">
+              <a onClick={(e) => { e.stopPropagation(); setReplayTrade(rec) }} style={{ fontWeight: 600, cursor: 'pointer' }}>
+                {v}
+              </a>
+            </Tooltip>
+          ) : (
+            <Typography.Text strong>{v}</Typography.Text>
+          )}
           <Tag color={rec.direction === 'long' ? schemeTag(colorScheme).up : schemeTag(colorScheme).down} style={{ marginInlineEnd: 0 }}>
             {rec.direction === 'long' ? '多' : '空'}
           </Tag>
@@ -678,6 +692,38 @@ export default function TradesPanel() {
           />
         )}
       </Spin>
+
+      {/* 复盘K线弹窗：开单前100根 + 持仓全程，初始止损止盈区域 + 关键事件标注 */}
+      <Modal
+        open={!!replayTrade}
+        onCancel={() => setReplayTrade(null)}
+        width={1080}
+        footer={null}
+        destroyOnClose
+        title={
+          replayTrade && (
+            <Space size={6}>
+              <span style={{ fontWeight: 600 }}>{replayTrade.symbol}</span>
+              <Tag color={replayTrade.direction === 'long' ? schemeTag(colorScheme).up : schemeTag(colorScheme).down} style={{ marginInlineEnd: 0 }}>
+                {replayTrade.direction === 'long' ? '多' : '空'}
+              </Tag>
+              <Tag color={(STATUS_MAP[replayTrade.status] || { color: 'default' }).color} style={{ marginInlineEnd: 0 }}>
+                {(STATUS_MAP[replayTrade.status] || { label: replayTrade.status }).label}
+              </Tag>
+              <span style={{ fontSize: 12, color: '#999', fontWeight: 400 }}>
+                K线复盘 · {bj(replayTrade.opened_at).format('MM-DD HH:mm')} 开仓
+                {replayTrade.closed_at ? ` · ${bj(replayTrade.closed_at).format('MM-DD HH:mm')} 平仓` : ' · 持仓中'}
+              </span>
+            </Space>
+          )
+        }
+      >
+        {replayTrade && (
+          <div style={{ height: 560 }}>
+            <TradeReplayChart tradeId={replayTrade.id} />
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

@@ -108,11 +108,12 @@ def _raise_if_rate_limited(resp: httpx.Response, name: str = "binance") -> None:
         raise ExchangeError(f"限流，约 {wait:.0f}s 后恢复")
 
 
-def _fetch_binance(symbol: str, interval: str, limit: int) -> list[list]:
-    resp = _get_client("binance").get(
-        "/fapi/v1/klines",
-        params={"symbol": symbol, "interval": interval, "limit": limit},
-    )
+def _fetch_binance(symbol: str, interval: str, limit: int, end_time: Optional[int] = None) -> list[list]:
+    """end_time: 毫秒时间戳，取该时刻之前（含）的最近 limit 根；None = 最新"""
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    if end_time is not None:
+        params["endTime"] = int(end_time)
+    resp = _get_client("binance").get("/fapi/v1/klines", params=params)
     _raise_if_rate_limited(resp)
     if resp.status_code >= 400:
         raise ExchangeError(f"HTTP {resp.status_code}")
@@ -132,14 +133,15 @@ def _okx_symbol(symbol: str) -> str:
     raise ExchangeError(f"无法转换合约代码 {symbol}")
 
 
-def _fetch_okx(symbol: str, interval: str, limit: int) -> list[list]:
+def _fetch_okx(symbol: str, interval: str, limit: int, end_time: Optional[int] = None) -> list[list]:
     bar = _OKX_BAR.get(interval)
     if bar is None:
         raise ExchangeError(f"不支持周期 {interval}")
-    resp = _get_client("okx").get(
-        "/api/v5/market/candles",
-        params={"instId": _okx_symbol(symbol), "bar": bar, "limit": min(limit, 300)},
-    )
+    params = {"instId": _okx_symbol(symbol), "bar": bar, "limit": min(limit, 300)}
+    if end_time is not None:
+        # after：返回早于该时间戳的记录（即截至 end_time 的历史区间）
+        params["after"] = int(end_time)
+    resp = _get_client("okx").get("/api/v5/market/candles", params=params)
     if resp.status_code != 200:
         raise ExchangeError(f"HTTP {resp.status_code}")
     body = resp.json()
@@ -155,19 +157,19 @@ def _fetch_okx(symbol: str, interval: str, limit: int) -> list[list]:
     return rows
 
 
-def _fetch_bitget(symbol: str, interval: str, limit: int) -> list[list]:
+def _fetch_bitget(symbol: str, interval: str, limit: int, end_time: Optional[int] = None) -> list[list]:
     granularity = _BITGET_GRANULARITY.get(interval)
     if granularity is None:
         raise ExchangeError(f"不支持周期 {interval}")
-    resp = _get_client("bitget").get(
-        "/api/v2/mix/market/candles",
-        params={
-            "symbol": symbol,
-            "productType": "USDT-FUTURES",
-            "granularity": granularity,
-            "limit": limit,
-        },
-    )
+    params = {
+        "symbol": symbol,
+        "productType": "USDT-FUTURES",
+        "granularity": granularity,
+        "limit": limit,
+    }
+    if end_time is not None:
+        params["endTime"] = int(end_time)
+    resp = _get_client("bitget").get("/api/v2/mix/market/candles", params=params)
     if resp.status_code != 200:
         raise ExchangeError(f"HTTP {resp.status_code}")
     body = resp.json()
@@ -459,6 +461,27 @@ class ExchangePool:
                     "所有交易所获取 %s %s 失败，降级返回旧缓存", symbol, interval
                 )
                 return stale
+        raise AllExchangesFailed("；".join(errors) or "未知错误")
+
+    def get_klines_range(
+        self, symbol: str, interval: str, limit: int, end_time_ms: int,
+    ) -> list[list]:
+        """拉取历史区间 K 线：截至 end_time_ms（含）的最近 limit 根。
+
+        交易复盘用（按开仓时刻取历史K线）。直接请求交易所，不读不写缓存——
+        缓存只存"最新"数据，历史区间无复用价值。保留多交易所故障转移。
+        """
+        errors: list[str] = []
+        for name in _ordered_names():
+            try:
+                return _FETCHERS[name](symbol, interval, limit, end_time=end_time_ms)
+            except ExchangeError as e:
+                errors.append(f"{_LABELS[name]}: {e}")
+                continue
+            except Exception as e:
+                _cooldown(name, _DEFAULT_COOLDOWN, str(e)[:120])
+                errors.append(f"{_LABELS[name]}: {str(e)[:120]}")
+                continue
         raise AllExchangesFailed("；".join(errors) or "未知错误")
 
     def get_usdt_swap_symbols_with_volume(self) -> list[dict]:

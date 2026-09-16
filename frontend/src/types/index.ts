@@ -185,6 +185,32 @@ export interface TradeEvent {
   created_at: string
 }
 
+// ===== 交易复盘K线（交易记录弹窗）=====
+
+// 复盘关键事件（图上打箭头）：开仓 / 止盈成交 / 止损成交
+export interface TradeKlineEvent {
+  event_type: 'OPEN' | 'TP1_FILL' | 'TP2_FILL' | 'SL_FILL'
+  created_at: string
+  detail: Record<string, unknown> | null
+}
+
+export interface TradeKlineData {
+  trade_id: string
+  symbol: string
+  direction: 'long' | 'short'
+  interval: string
+  status: TradeRecord['status']
+  exit_reason: string | null
+  entry_price: number | null // 开单时初始值（OPEN 事件快照）
+  stop_loss: number | null
+  tp1: number | null
+  tp2: number | null
+  opened_at: string | null
+  closed_at: string | null
+  klines: Kline[]
+  events: TradeKlineEvent[]
+}
+
 // ===== AI 建议复盘系统（P2）=====
 
 // 单个维度分组的复盘统计（groups 数组每个元素只有一个维度字段非空）
