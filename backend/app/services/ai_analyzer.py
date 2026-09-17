@@ -10,6 +10,7 @@ from app.services import skill_library
 from app.services.llm_client import get_client
 from app.services.risk_guard import build_forced_skip, parse_and_validate
 from app.services.strategy.ema import analyze_ema
+from app.services.strategy.technical import render_indicator_block
 from app.services.strategy.types import POSITION_LABEL_MAP
 
 logger = logging.getLogger(__name__)
@@ -88,8 +89,11 @@ SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信�
 均线形态是重要趋势背景：多头排列支撑做多逻辑，空头排列支撑做空逻辑；
 金叉/死叉与拐头是动能转换信号；若均线形态与摆动结构信号方向矛盾，
 需谨慎评估并在 analysis 中说明理由。
+技术指标（MACD/布林带/RSI/SuperTrend）是辅助参考：分析判断以K线结构与量能为主，
+指标用于确认动能方向、波动状态与超买超卖背景；指标结论与K线结构矛盾时以结构为准，
+并在 analysis 中说明矛盾。
 资金费率/持仓量/大盘状态/恐贪指数等市场环境数据未随消息提供，请勿臆测：
-仅基于给定的 K 线、均线、量能与摆动结构数据进行分析。"""
+仅基于给定的 K 线、量能、均线、摆动结构与技术指标数据进行分析。"""
 
 
 def _get_client() -> OpenAI:
@@ -137,6 +141,9 @@ def _build_messages(
     if ema:
         ema_summary = f"均线形态: {ema['state_label']}（{ema['detail']}）\n"
 
+    # 技术指标（MACD/布林带/RSI/SuperTrend，辅助参考；数据不足时整块缺省）
+    indicator_summary = render_indicator_block(klines)
+
     # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点，与 Agent 管线同源）
     sw = signal.get("recent_swings") or {}
     swings_summary = ""
@@ -172,6 +179,7 @@ def _build_messages(
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
         f"量能: {vol_desc}\n"
         f"{ema_summary}"
+        f"{indicator_summary}"
         f"{swings_summary}"
         f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
     )

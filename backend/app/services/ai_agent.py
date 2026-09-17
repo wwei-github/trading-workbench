@@ -25,6 +25,7 @@ from app.services.risk_guard import (
 )
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import calc_atr
+from app.services.strategy.technical import render_indicator_block
 from app.services.strategy.types import POSITION_LABEL_MAP
 
 logger = logging.getLogger(__name__)
@@ -62,8 +63,8 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    structure_break 结构破位回踩（涵盖 123法则·N字结构·2B法则，见下方打法详解）/
    range_edge 区间边缘反转。
 6. "可用技能"列表中标注【当前命中】的技能，建议先 load_skill 阅读再决策。
-7. **效率与数据边界（重要）**：事实包只含信号与行情数据（60根K线含每根成交量与成交额/摆动结构/均线形态/ATR），
-   首轮即可直接 submit_decision；资金费率、大盘状态、恐贪指数等环境数据**不在**事实包中，
+7. **效率与数据边界（重要）**：事实包只含信号与行情数据（60根K线含每根成交量与成交额/摆动结构/均线形态/ATR/技术指标MACD·布林带·RSI·SuperTrend），
+   技术指标为辅助参考，判断以K线与量能为主；首轮即可直接 submit_decision；资金费率、大盘状态、恐贪指数等环境数据**不在**事实包中，
    确需时在同一轮一次性批量调用 get_funding / get_market_breadth / get_fear_greed 自行获取
    （如资金费率极端可 load_skill 阅读 funding-extreme-handling）；不要为用工具而用工具，
    也不要每轮只查一个工具。
@@ -491,6 +492,7 @@ def _build_user_msg(
         f"量能: {vol_desc}\n"
         f"ATR(14): {atr:.6g}\n"
         + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
+        + render_indicator_block(klines)
         + swings_section
         + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
     )
