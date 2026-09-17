@@ -145,6 +145,12 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS testnet BOOLEAN NOT NULL DEFAULT TRUE,
               ADD COLUMN IF NOT EXISTS ai_snapshot JSON
         """))
+        # 指标驱动筛选（2026-09-17）：扫描候选质量分（AI 配额排序键）与指标票数明细
+        conn.execute(text("""
+            ALTER TABLE scan_results
+              ADD COLUMN IF NOT EXISTS quality_score INTEGER,
+              ADD COLUMN IF NOT EXISTS votes_json JSON
+        """))
         # 确保系统配置表有默认行（初始值从 env 注入）。
         # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有
         # Python 端 default 没有 server_default，漏列的裸 INSERT 会 NotNullViolation

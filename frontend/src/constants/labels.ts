@@ -8,6 +8,10 @@ export const SIGNAL_TYPE_MAP: Record<string, { label: string; color: string }> =
   range_bound: { label: "震荡区间", color: "orange" },
   breakout: { label: "放量突破", color: "gold" },
   unknown: { label: "未分类", color: "default" },
+  // 指标驱动筛选（2026-09-17）：触发类型（多指标同向 + 入场触发确认）
+  trigger_breakout: { label: "同向突破", color: "gold" },
+  trigger_candlestick: { label: "同向形态", color: "blue" },
+  trigger_pullback: { label: "同向回踩", color: "cyan" },
   // 旧值保留映射（兼容历史记录）
   downtrend_breakout: { label: "下跌突破", color: "red" },
   uptrend_pullback: { label: "上涨回调", color: "green" },

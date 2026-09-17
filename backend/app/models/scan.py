@@ -45,6 +45,9 @@ class ScanResult(Base):
     volume_24h: Mapped[float] = mapped_column(Numeric(20, 2), nullable=False, default=0)
     volume: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False, default=0)
     volume_type: Mapped[str] = mapped_column(String(16), nullable=False, default="平量", index=True)
+    # 指标驱动筛选（2026-09-17）：候选质量分（0-100，AI 配额排序键）与指标票数明细
+    quality_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    votes_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     is_repeat: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 

@@ -345,6 +345,32 @@ export default function ResultTable() {
       },
     },
     {
+      title: "质量分",
+      dataIndex: "quality_score",
+      key: "quality_score",
+      width: 96,
+      defaultSortOrder: "descend",
+      sorter: (a: ScanResult, b: ScanResult) =>
+        (a.quality_score ?? -1) - (b.quality_score ?? -1),
+      render: (v: number | null, record: ScanResult) => {
+        if (v == null) return <span style={{ color: "#999" }}>-</span>;
+        const votes = record.votes_json;
+        const detail = votes
+          ? `指标多数决：多${votes.bull_n} vs 空${votes.bear_n}（净${votes.net > 0 ? "+" : ""}${votes.net} / 已投${votes.voted}）`
+            + (votes.bull.length ? `\n看多：${votes.bull.join("、")}` : "")
+            + (votes.bear.length ? `\n看空：${votes.bear.join("、")}` : "")
+          : undefined;
+        const color = v >= 75 ? "green" : v >= 60 ? "gold" : "default";
+        return (
+          <Tooltip title={detail}>
+            <Tag color={color} style={{ marginInlineEnd: 0, cursor: "default" }}>
+              {v}
+            </Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: "位置",
       dataIndex: "position",
       key: "position",
@@ -399,7 +425,6 @@ export default function ResultTable() {
       key: "volume_24h",
       width: 104,
       sorter: (a, b) => a.volume_24h - b.volume_24h,
-      defaultSortOrder: "descend",
       render: (v: number) => {
         if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
         if (v >= 1e6) return (v / 1e6).toFixed(2) + "M";

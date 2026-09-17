@@ -1,3 +1,17 @@
+"""扫描编排器（指标驱动筛选管线，2026-09-17 重设计）
+
+筛选漏斗（指标为主、信号为触发器）：
+1. 宇宙：USDT 永续，24h 成交额 ≥ MIN_VOLUME_24H（流动性门槛）
+2. 体检：全池每币 1h K线 → 6 指标投票（MACD/布林/RSI/SuperTrend/ADX/OBV）；
+   |净票|≥2 才补拉 4h 算第 7 票（两阶段拉取省 4h 请求）
+3. 分组：7 票净票 |net|≥3 → 多头/空头候选；-2~+2 中性跳过（震荡市不开单）
+4. 触发确认：方向与候选一致的入场触发（Donchian突破/黄金12形态/回踩EMA21企稳，
+   见 strategy/trigger.py）；无触发 → 观察池（不落库，下轮重算）
+5. 质量分排序 + 重复命中抑制 + 落库 → AI 配额（按质量分取前 N）
+
+旧信号管线（Donchian+形态为主动作、EMA 硬门控）已整体替换：
+方向判定权从信号路径移交给指标多数决，与 AI 提示词的多数决规则同一把尺子。
+"""
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -13,9 +27,13 @@ from app.models.scan import ScanRecord, ScanResult
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.exchange_pool import ExchangePool
-from app.services.strategy import detect_all_signals
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import volume_ratio
+from app.services.strategy.technical import (
+    compute_indicator_votes,
+    compute_quality_score,
+)
+from app.services.strategy.trigger import detect_trigger
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +80,65 @@ def _get_scan_config(db) -> SystemConfig:
             pullback_tolerance=settings.PULLBACK_TOLERANCE,
         )
     return cfg
+
+
+def detect_indicator_candidate(
+    pool: ExchangePool, symbol: str, klines: list[list],
+) -> Optional[dict]:
+    """指标驱动单币检测（Scanner 与 watchlist.refresh 共用同一套逻辑与阈值）。
+
+    流程：6 票预筛（|net6|<2 直接判中性，省 4h 请求）→ 补拉 4h 算第 7 票
+    → 多数决分组（|net|≥3 且 voted≥5）→ 方向一致触发确认（trigger.py）→ 质量分。
+
+    返回候选 dict（signal_type/quality_score/votes 及展示字段），每币至多 1 个；
+    无候选（中性/票数不足/无触发 → 观察池）返回 None；异常向上抛由调用方处理。
+    """
+    ema = analyze_ema(klines)  # 背景展示用（方向判定不依赖 EMA）
+    vol, vol_type = classify_volume(klines)
+
+    # 两阶段投票：先 6 票预筛（|net6|<2 时第 7 票也够不到 3，省 4h 请求）
+    votes6 = compute_indicator_votes(klines)
+    if not votes6 or votes6["voted"] < 5 or abs(votes6["net"]) < 2:
+        return None
+
+    # 第 7 票：4h 背景（失败降级为无 4h 票，不中断）
+    try:
+        htf = pool.get_klines(symbol, "4h", 200)
+    except Exception as e:
+        htf = None
+        logger.warning("%s 获取4h K线失败（跳过4h票）: %s", symbol, e)
+
+    votes = compute_indicator_votes(klines, htf)
+    if not votes or votes["voted"] < 5 or abs(votes["net"]) < 3:
+        return None  # 中性/票数不足 → 不分组
+
+    direction = 1 if votes["net"] > 0 else -1
+    trig = detect_trigger(klines, direction)
+    if trig is None:
+        return None  # 有方向无触发 → 观察池（不落库）
+
+    quality = compute_quality_score(direction, votes, trig["type"])
+    votes_json = {
+        "bull": votes["bull"], "bear": votes["bear"],
+        "bull_n": votes["bull_n"], "bear_n": votes["bear_n"],
+        "net": votes["net"], "voted": votes["voted"],
+    }
+    return {
+        "signal_type": trig["type"],
+        "current_price": float(klines[-2][4]),
+        "breakout_pct": trig["breakout_pct"],
+        "trend_slope": 0.0,
+        "r_squared": 0.0,
+        "pattern": trig.get("pattern"),
+        "signal_reason": trig["reason"][:120],
+        "position": trig["position"],
+        "strength": quality / 100.0,
+        "ema_state": ema["state"] if ema else None,
+        "volume": vol,
+        "volume_type": vol_type,
+        "quality_score": quality,
+        "votes": votes_json,
+    }
 
 
 class Scanner:
@@ -113,36 +190,23 @@ class Scanner:
             volume_map = {s["symbol"]: s["volume_24h"] for s in symbols_data}
             symbols = [s["symbol"] for s in symbols_data]
 
-            # 2. 线程池并发扫描每个币种
+            # 2. 线程池并发扫描每个币种（指标驱动筛选，见模块 docstring）
             hits: list[dict] = []
 
             def scan_one(symbol: str) -> tuple[str, list[dict], bool]:
-                """返回 (symbol, [signals...], is_error)"""
+                """指标多数决定向 → 触发确认 → 质量分。返回 (symbol, [候选...], is_error)"""
                 try:
-                    # EMA144 需要足够的历史数据做暖机，至少拉 300 根
+                    # EMA144/指标暖机需要足够历史，至少拉 300 根
                     klines = self.pool.get_klines(
                         symbol,
                         interval=kline_interval,
                         limit=max(kline_window, 300),
                     )
-                    ema = analyze_ema(klines)
-                    config = {
-                        "min_klines": 30,
-                        "swing_order": cfg.swing_order,
-                        "r_squared_threshold": float(cfg.r_squared_threshold),
-                        "pullback_tolerance": float(cfg.pullback_tolerance),
-                        "max_trend_slope": 0.005,
-                        # EMA 形态门控：反向否决、同向加权（见 strategy/_detect）
-                        "ema": ema,
-                    }
-                    signals = detect_all_signals(klines, config)
-                    vol, vol_type = classify_volume(klines)
-                    ema_state = ema["state"] if ema else None
-                    for sig in signals:
-                        sig["volume"] = vol
-                        sig["volume_type"] = vol_type
-                        sig["ema_state"] = ema_state
-                    return symbol, signals, False
+                    cand = detect_indicator_candidate(self.pool, symbol, klines)
+                    if cand is None:
+                        return symbol, [], False
+                    cand["symbol"] = symbol
+                    return symbol, [cand], False
                 except Exception as e:
                     logger.warning("扫描 %s 失败: %s", symbol, e)
                     return symbol, [], True
@@ -157,8 +221,11 @@ class Scanner:
                         sig["volume_24h"] = volume_map.get(symbol, 0)
                         hits.append({"symbol": symbol, **sig})
 
-            # 3. 按 24h 成交额降序排列命中结果
-            hits.sort(key=lambda x: x.get("volume_24h", 0), reverse=True)
+            # 3. 按质量分降序（同分按 24h 成交额）——AI 配额按此顺序取前 N
+            hits.sort(
+                key=lambda x: (x.get("quality_score", 0), x.get("volume_24h", 0)),
+                reverse=True,
+            )
 
             # 4. 重复命中抑制（用独立 session 避免死锁）：同 (symbol, signal_type) 在
             #    repeat_window_hours 内已有命中的本轮不落库——持续趋势里 Donchian 突破
@@ -231,6 +298,8 @@ class Scanner:
                         volume_24h=h.get("volume_24h", 0),
                         volume=h.get("volume", 0),
                         volume_type=h.get("volume_type", "平量"),
+                        quality_score=h.get("quality_score"),
+                        votes_json=h.get("votes"),
                     )
                 )
             sdb.commit()

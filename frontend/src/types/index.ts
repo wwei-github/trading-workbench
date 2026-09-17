@@ -26,6 +26,15 @@ export interface ScanResult {
   volume_24h: number;
   volume: number;
   volume_type: string;
+  quality_score: number | null; // 指标驱动筛选：候选质量分 0-100（AI 配额排序键）
+  votes_json: { // 指标票数明细（7 指标多数决）
+    bull: string[];
+    bear: string[];
+    bull_n: number;
+    bear_n: number;
+    net: number;
+    voted: number;
+  } | null;
   is_repeat: boolean;
   created_at: string;
 }

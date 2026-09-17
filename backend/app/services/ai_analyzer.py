@@ -22,6 +22,10 @@ SIGNAL_TYPE_LABELS = {
     "trend_reversal": "趋势反转（收盘价破前高/前低）",
     "range_bound": "震荡区间",
     "breakout": "放量突破（收盘破 Donchian 通道 + 放量）",
+    # 指标驱动筛选（2026-09-17）：触发器类型（方向已由指标多数决确定）
+    "trigger_breakout": "指标同向·Donchian突破触发",
+    "trigger_candlestick": "指标同向·K线形态触发",
+    "trigger_pullback": "指标同向·回踩EMA21触发",
     "unknown": "未分类",
     "manual_search": "手动搜索",
 }

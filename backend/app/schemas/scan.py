@@ -35,6 +35,8 @@ class ScanResultOut(BaseModel):
     volume_24h: float
     volume: float
     volume_type: str
+    quality_score: Optional[int] = None  # 指标驱动筛选：候选质量分 0-100（AI 配额排序键）
+    votes_json: Optional[dict] = None  # 指标票数明细 {bull, bear, bull_n, bear_n, net, voted}
     is_repeat: bool
     created_at: datetime
 

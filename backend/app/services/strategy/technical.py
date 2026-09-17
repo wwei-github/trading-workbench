@@ -119,8 +119,9 @@ def analyze_bollinger(
     else:
         state, label = "below_mid", "中轨下方"
 
-    # 带宽近 60 根滚动分位（数据足够才算）
+    # 带宽近 60 根滚动分位（数据足够才算）；bw_rank 数值供质量分使用
     rank_desc = ""
+    bw_rank: Optional[float] = None
     if len(closes) >= period + 60:
         bws = []
         for i in range(len(closes) - 60, len(closes)):
@@ -130,11 +131,13 @@ def analyze_bollinger(
                 bws.append(float(w.std(ddof=0)) * 2 * ndev / m * 100)
         if bws:
             rank = sum(1 for b in bws if b < bw) / len(bws) * 100
+            bw_rank = rank
             zone = "收窄" if rank <= 25 else "张开" if rank >= 80 else "常态"
             rank_desc = f", 带宽近60根分位={rank:.0f}%, {zone}"
 
     return {
         "upper": upper, "mid": mid, "lower": lower, "bandwidth": bw,
+        "bw_rank": bw_rank,
         "state": state, "state_label": label,
         "dir": 1 if price >= mid else -1,
         "detail": (
@@ -492,3 +495,70 @@ def render_indicator_block(klines: list[list], htf_klines: Optional[list] = None
         )
 
     return "技术指标（方向=多空票数多数决，以票数多的方向为主）:\n" + "\n".join(lines) + "\n"
+
+
+def compute_indicator_votes(
+    klines: list[list], htf_klines: Optional[list] = None,
+) -> Optional[dict]:
+    """指标方向票数统计——扫描筛选与 AI 注入同一把尺子（指标驱动管线核心）。
+
+    返回 None = 无任何可用指标；否则：
+    {bull: [多票短名], bear: [空票短名], bull_n, bear_n, net, voted,
+     results: [(短名, 指标结果dict)]}
+    """
+    results = [(short, r) for _, short, r in _compute_all(klines, htf_klines) if r]
+    if not results:
+        return None
+    bull = [s for s, r in results if int(r.get("dir") or 0) > 0]
+    bear = [s for s, r in results if int(r.get("dir") or 0) < 0]
+    return {
+        "bull": bull, "bear": bear,
+        "bull_n": len(bull), "bear_n": len(bear),
+        "net": len(bull) - len(bear),
+        "voted": len(results),
+        "results": results,
+    }
+
+
+def compute_quality_score(direction: int, votes: dict, trigger_type: str) -> int:
+    """候选质量分（0-100）：方向一致性为主，修饰项只影响排序不改变方向。
+
+    direction: 候选方向（1 多 / -1 空，= net 的符号）
+    trigger_type: trigger_breakout / trigger_candlestick / trigger_pullback
+    修饰规则（2026-09-17 设计评审定稿）：
+    - 4h背景与候选同向 +5 / 反向 -8（1h 多数与 4h 背景拧巴的降权）
+    - 突破触发且 ADX≥25 +5（强趋势中的突破可信）
+    - RSI>75 做多 / RSI<25 做空 -8（追高杀低）
+    - OBV 顶背离做多 / 底背离做空 -6（量价背离）
+    - 突破触发且布林带宽分位 ≤10 -5（带宽收窄的突破易假）
+    """
+    by_short = dict(votes["results"])
+    score = 50 + direction * votes["net"] * 7  # net≥3 → 基础 ≥71
+
+    htf = by_short.get(_HTF_SHORT)
+    if htf and int(htf.get("dir") or 0):
+        score += 5 if int(htf["dir"]) == direction else -8
+
+    adx = by_short.get("ADX")
+    if trigger_type == "trigger_breakout" and adx and float(adx.get("adx") or 0) >= 25:
+        score += 5
+
+    rsi = by_short.get("RSI")
+    if rsi:
+        v = float(rsi.get("rsi") or 50)
+        if (direction == 1 and v > 75) or (direction == -1 and v < 25):
+            score -= 8
+
+    obv = by_short.get("OBV")
+    if obv:
+        st = obv.get("state")
+        if (direction == 1 and st == "bear_div") or (direction == -1 and st == "bull_div"):
+            score -= 6
+
+    boll = by_short.get("布林带")
+    if trigger_type == "trigger_breakout" and boll:
+        rank = boll.get("bw_rank")
+        if rank is not None and float(rank) <= 10:
+            score -= 5
+
+    return max(0, min(100, int(round(score))))

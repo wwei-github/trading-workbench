@@ -109,8 +109,12 @@ def run_ai_analysis_task(
         if only_scan_result_id:
             q = q.where(ScanResult.id == UUID(only_scan_result_id))
         else:
-            # 批量：按 24h 成交额降序取前 N（控制 LLM 成本；单币重分析不受限）
-            q = q.order_by(ScanResult.volume_24h.desc()).limit(settings.AI_MAX_PER_SCAN)
+            # 批量：按质量分降序（指标驱动筛选的排序键，旧数据无分排后）、
+            # 同分按 24h 成交额——控制 LLM 成本；单币重分析不受限
+            q = q.order_by(
+                ScanResult.quality_score.desc().nulls_last(),
+                ScanResult.volume_24h.desc(),
+            ).limit(settings.AI_MAX_PER_SCAN)
         results = db.execute(q).scalars().all()
         if not results:
             logger.info("无可分析的扫描结果 #%s", scan_record_id)

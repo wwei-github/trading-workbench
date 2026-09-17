@@ -182,11 +182,12 @@ def _get_results(
     signal_type: str = None, position: str = None, pattern: str = None,
     ema_state: str = None,
 ):
-    allowed_sort = {"breakout_pct", "created_at", "symbol", "r_squared", "volume_24h", "volume", "volume_type"}
+    allowed_sort = {"breakout_pct", "created_at", "symbol", "r_squared", "volume_24h", "volume", "volume_type", "quality_score"}
     if sort_by not in allowed_sort:
         sort_by = "breakout_pct"
     column = getattr(ScanResult, sort_by)
-    order_col = desc(column) if order == "desc" else column
+    # desc 时 NULL 排最后（PG 默认 NULLS FIRST）：旧管线历史行 quality_score 为空，不插队
+    order_col = desc(column).nulls_last() if order == "desc" else column
 
     conds = [ScanResult.scan_record_id == scan_id]
     if signal_type:

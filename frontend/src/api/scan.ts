@@ -19,14 +19,14 @@ export const scanApi = {
       .get<ListResponse<ScanRecord>>('/scans', { params: { page, page_size: pageSize } })
       .then((r) => r.data),
 
-  results: (scanId: string, page = 1, pageSize = 20, sortBy = 'volume_24h', order = 'desc', filters?: ResultFilters) =>
+  results: (scanId: string, page = 1, pageSize = 20, sortBy = 'quality_score', order = 'desc', filters?: ResultFilters) =>
     api
       .get<ListResponse<ScanResult>>(`/scans/${scanId}/results`, {
         params: { page, page_size: pageSize, sort_by: sortBy, order, ...(filters || {}) },
       })
       .then((r) => r.data),
 
-  latestResults: (page = 1, pageSize = 20, sortBy = 'volume_24h', order = 'desc', filters?: ResultFilters) =>
+  latestResults: (page = 1, pageSize = 20, sortBy = 'quality_score', order = 'desc', filters?: ResultFilters) =>
     api
       .get<ListResponse<ScanResult>>('/scans/latest/results', {
         params: { page, page_size: pageSize, sort_by: sortBy, order, ...(filters || {}) },

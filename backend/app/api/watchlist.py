@@ -1,4 +1,5 @@
 """关注列表 API：币种的增删查、K 线手动刷新，持久保存"""
+import logging
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,9 +17,9 @@ from app.schemas.scan import (
 )
 from app.services.binance_client import BinanceClient
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
-from app.services.scanner import _get_scan_config, classify_volume
-from app.services.strategy import detect_all_signals
-from app.services.strategy.ema import analyze_ema
+from app.services.scanner import _get_scan_config, detect_indicator_candidate
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
@@ -148,26 +149,16 @@ def refresh_watchlist(symbol: str, db: Session = Depends(get_db)):
     except AllExchangesFailed as e:
         raise HTTPException(status_code=503, detail=f"K线刷新失败（{e.summary}）")
 
-    # 信号判定：与扫描器 scan_one 完全同一套逻辑与参数
+    # 信号判定：与扫描器 scan_one 完全同一套指标多数决+触发确认逻辑（每币至多 1 个候选）
     signals: list[dict] = []
     if klines:
-        ema = analyze_ema(klines)
-        config = {
-            "min_klines": 30,
-            "swing_order": cfg.swing_order,
-            "breakout_threshold": float(cfg.breakout_threshold),
-            "r_squared_threshold": float(cfg.r_squared_threshold),
-            "pullback_tolerance": float(cfg.pullback_tolerance),
-            "max_trend_slope": 0.005,
-            "ema": ema,
-        }
-        signals = detect_all_signals(klines, config)
-        vol, vol_type = classify_volume(klines)
-        ema_state = ema["state"] if ema else None
-        for sig in signals:
-            sig["volume"] = vol
-            sig["volume_type"] = vol_type
-            sig["ema_state"] = ema_state
+        try:
+            cand = detect_indicator_candidate(pool, target, klines)
+        except Exception as e:
+            logger.warning("关注刷新 %s 信号判定失败（按无命中处理）: %s", target, e)
+            cand = None
+        if cand:
+            signals = [cand]
 
     latest_scan = None
     if signals:
@@ -223,6 +214,8 @@ def refresh_watchlist(symbol: str, db: Session = Depends(get_db)):
                 volume_24h=volume_24h,
                 volume=sig.get("volume", 0),
                 volume_type=sig.get("volume_type", "平量"),
+                quality_score=sig.get("quality_score"),
+                votes_json=sig.get("votes"),
                 is_repeat=is_repeat,
             )
             for sig in signals

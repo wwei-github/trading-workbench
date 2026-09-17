@@ -333,6 +333,28 @@ export default function WatchlistPanel() {
       },
     },
     {
+      title: "质量分",
+      key: "quality_score",
+      render: (_: unknown, r: WatchRow) => {
+        const v = r.scan?.quality_score;
+        if (v == null) return <span style={{ color: "#999" }}>-</span>;
+        const votes = r.scan?.votes_json;
+        const detail = votes
+          ? `指标多数决：多${votes.bull_n} vs 空${votes.bear_n}（净${votes.net > 0 ? "+" : ""}${votes.net} / 已投${votes.voted}）`
+            + (votes.bull.length ? `\n看多：${votes.bull.join("、")}` : "")
+            + (votes.bear.length ? `\n看空：${votes.bear.join("、")}` : "")
+          : undefined;
+        const color = v >= 75 ? "green" : v >= 60 ? "gold" : "default";
+        return (
+          <Tooltip title={detail}>
+            <Tag color={color} style={{ marginInlineEnd: 0, cursor: "default" }}>
+              {v}
+            </Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: "位置",
       key: "position",
       filters: POSITION_FILTERS,
