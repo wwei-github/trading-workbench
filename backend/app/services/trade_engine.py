@@ -31,7 +31,6 @@ from app.models.trade import AccountTransfer, TradeEvent, TradeRecord
 from app.services.binance_trader import BinanceTrader, BinanceTradeError
 from app.services.exchange_pool import ExchangePool
 from app.services.risk_guard import liquidation_gate_pct
-from app.services.strategy.ema import analyze_ema
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +94,7 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
 
 def _attempt_open(
     db: Session, trader: BinanceTrader, cfg: SystemConfig,
-    interval: str, kline_window: int, a: AIAnalysis,
+    a: AIAnalysis,
     wallet: float, positions: dict,
 ) -> bool:
     """对单条分析过全部开仓闸门并尝试开仓（docs/06 §3 逐项检查）。
@@ -110,8 +109,9 @@ def _attempt_open(
         logger.info("开仓跳过 %s：已有持仓", symbol)
         _mark_open_block(db, a, "同币种已有在跑持仓")
         return False
-    # 开单类型仅作记录（2026-09-15 拍板）：策略开关不再拦截开仓（未知类型也不拦），
-    # trade_type 仍随分析/交易记录落库；顺势交易的 EMA 排列前提单独保留（下方校验）
+    # 开单类型仅作记录（2026-09-15 拍板）：策略开关不再拦截开仓（未知类型也不拦）
+    # EMA 排列前提随指标多数决重设计移除（2026-09-17）：方向判定权已移交指标多数决
+    # （|net|≥3 才成候选），与 AI 提示词、扫描筛选同一把尺子，开仓侧不再二次设限
     trade_type = a.trade_type or ""
     direction = a.direction
     entry_ai = float(a.entry_price)
@@ -124,18 +124,6 @@ def _attempt_open(
             logger.info("开仓作废 %s：现价偏离 AI 入场价超 1%%", symbol)
             _mark_open_block(db, a, f"现价偏离 AI 入场价超 1%（入场 {entry_ai}，开仓时现价 {price}）")
             return False
-        # EMA 排列必须条件（顺势交易专属）：多单须 21>55>144 多头排列，空单须 144>55>21 空头排列
-        if trade_type == "trend_follow":
-            ema = analyze_ema(ExchangePool().get_klines(symbol, interval, kline_window))
-            ema_ok = ema is not None and (
-                (direction == "long" and ema["fast"] > ema["mid"] > ema["slow"])
-                or (direction == "short" and ema["fast"] < ema["mid"] < ema["slow"])
-            )
-            if not ema_ok:
-                logger.info("开仓跳过 %s：顺势交易 EMA 未按方向排列（%s），不满足开单前提",
-                            symbol, ema["state_label"] if ema else "K线数据不足")
-                _mark_open_block(db, a, f"顺势交易 EMA 未按方向排列（{ema['state_label'] if ema else 'K线数据不足'}）")
-                return False
         # 方向-价格可挂性复核（2026-09-16 恢复，交易所侧最后一道防线）：
         # SL/TP1 触发价必须在现价的正确侧，否则条件单被拒单（-2021 would
         # immediately trigger）→ 开完仓挂 SL 必败走紧急平仓空转。risk_guard
@@ -425,9 +413,6 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
         logger.info("即时开仓跳过 %s：钱包余额低于最小风险档位", a.symbol)
         _mark_open_block(db, a, "钱包余额低于最小风险档位")
         return False
-    interval = cfg.kline_interval if cfg else "1h"
-    # EMA144 需 ≥154 根已收盘 K 线，窗口下限 160
-    kline_window = max(cfg.kline_window or 240, 160)
     # 即将进入闸门序列：清掉沿用/上一轮尝试残留的拒开原因，本次成败由闸门重新裁定
     if a.open_block_reason:
         try:
@@ -435,7 +420,7 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
             db.commit()
         except Exception:
             db.rollback()
-    return _attempt_open(db, trader, cfg, interval, kline_window, a, wallet, positions)
+    return _attempt_open(db, trader, cfg, a, wallet, positions)
 
 
 # ── 结算 ──────────────────────────────────────────────────────
