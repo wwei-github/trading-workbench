@@ -145,15 +145,28 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS testnet BOOLEAN NOT NULL DEFAULT TRUE,
               ADD COLUMN IF NOT EXISTS ai_snapshot JSON
         """))
-        # 确保系统配置表有默认行（初始值从 env 注入）
+        # 确保系统配置表有默认行（初始值从 env 注入）。
+        # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有
+        # Python 端 default 没有 server_default，漏列的裸 INSERT 会 NotNullViolation
+        # （存量库行已存在走 ON CONFLICT 跳过，因此本地从未暴露）。
         conn.execute(text(
             "INSERT INTO system_config "
             "(id, ai_analysis_enabled, kline_interval, kline_window, "
             " breakout_threshold, r_squared_threshold, repeat_window_hours, "
-            " swing_order, pullback_tolerance, notes) "
+            " swing_order, pullback_tolerance, notes, "
+            " ai_pipeline_enabled, dual_judge_enabled, "
+            " strategy_prompt_enabled, strategy_prompt, fib_enabled, "
+            " max_open_trades, "
+            " strategy_trend_follow_enabled, strategy_structure_break_enabled, "
+            " strategy_range_edge_enabled, trading_min_free_pct) "
             "VALUES (1, false, :kline_interval, :kline_window, "
             " :breakout_threshold, :r_squared_threshold, :repeat_window_hours, "
-            " :swing_order, :pullback_tolerance, '系统运行时配置') "
+            " :swing_order, :pullback_tolerance, '系统运行时配置', "
+            " false, true, "
+            " false, '', false, "
+            " 5, "
+            " true, false, "
+            " true, 0.5) "
             "ON CONFLICT (id) DO NOTHING"
         ),
             {
