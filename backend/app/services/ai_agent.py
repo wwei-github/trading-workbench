@@ -59,12 +59,16 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    若现价已显著离开摆动结构位且无合理入场计划 → 直接 skip，
    不要给出既不贴近现价也不贴近结构位的模糊入场价。
 5. 开单类型归类（trade_type，suggest 必填其一）：
-   trend_follow 顺势交易（EMA 三线严格排列是硬前提，多单 21>55>144、空单 144>55>21）/
+   trend_follow 顺势交易（趋势方向由 EMA 排列或指标多数决确立，纯 EMA 排列不是硬门槛）/
    structure_break 结构破位回踩（涵盖 123法则·N字结构·2B法则，见下方打法详解）/
    range_edge 区间边缘反转。
 6. "可用技能"列表中标注【当前命中】的技能，建议先 load_skill 阅读再决策。
-7. **效率与数据边界（重要）**：事实包只含信号与行情数据（60根K线含每根成交量与成交额/摆动结构/均线形态/ATR/技术指标MACD·布林带·RSI·SuperTrend），
-   技术指标为辅助参考，判断以K线与量能为主；首轮即可直接 submit_decision；资金费率、大盘状态、恐贪指数等环境数据**不在**事实包中，
+7. **效率与数据边界（重要）**：事实包只含信号与行情数据（60根K线含每根成交量与成交额/摆动结构/均线形态/ATR/技术指标MACD·布林带·RSI·SuperTrend·ADX·OBV·4h背景），
+   指标块末尾的"指标方向"行为程序化统计（各指标投多/空/中性票）：多空票数谁多以谁为主，
+   即使与 1h K线结构矛盾也以多数方向为准（analysis 中写明票数与依据）；
+   多空平衡时自行结合K线结构与量能判断；
+   EMA 排列不构成方向限制（多头排列不禁止做空、空头排列不禁止做多）。
+   首轮即可直接 submit_decision；资金费率、大盘状态、恐贪指数等环境数据**不在**事实包中，
    确需时在同一轮一次性批量调用 get_funding / get_market_breadth / get_fear_greed 自行获取
    （如资金费率极端可 load_skill 阅读 funding-extreme-handling）；不要为用工具而用工具，
    也不要每轮只查一个工具。
@@ -320,6 +324,7 @@ def analyze_coin_agent(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     pool=None,
     progress_cb=None,
+    htf_klines: Optional[list] = None,
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -347,7 +352,7 @@ def analyze_coin_agent(
             "===== 自定义策略结束 ====="
         )
 
-    user_msg = _build_user_msg(signal, klines, ema, atr, user_input)
+    user_msg = _build_user_msg(signal, klines, ema, atr, user_input, htf_klines)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
@@ -451,7 +456,7 @@ def _build_facts(signal: dict, klines: list, atr: float) -> dict:
 
 def _build_user_msg(
     signal: dict, klines: list, ema: Optional[dict], atr: float,
-    user_input: Optional[str],
+    user_input: Optional[str], htf_klines: Optional[list] = None,
 ) -> str:
     closed = klines[:-1] if len(klines) >= 2 else klines
     recent = closed[-60:]
@@ -492,7 +497,7 @@ def _build_user_msg(
         f"量能: {vol_desc}\n"
         f"ATR(14): {atr:.6g}\n"
         + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
-        + render_indicator_block(klines)
+        + render_indicator_block(klines, htf_klines)
         + swings_section
         + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
     )

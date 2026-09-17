@@ -208,6 +208,12 @@ def run_ai_analysis_single(
         # 近期摆动结构（HH/LH/HL/LL，高低点各 20 个）随事实包给 AI，与图表标注同源；
         # 分析时刻现算（现价已更新），锚点解析（ai_agent）与风控锚定共用
         signal["recent_swings"] = recent_swings(klines, order=cfg.swing_order, n=20)
+        # 4h 高周期 K 线（大方向背景注入，约 200 根）；失败只降级为无 4h 行，不中断分析
+        try:
+            htf_klines = pool.get_klines(r.symbol, "4h", 200)
+        except Exception as e:
+            htf_klines = None
+            logger.warning("AI 分析 %s 获取4h K线失败，跳过4h背景: %s", r.symbol, e)
         # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
         # Agent 管线由模型按需调用工具自行获取
         # 管线选择：批量（每小时扫描自动触发/手动全量）固定走 P0 单次调用管线，
@@ -222,6 +228,7 @@ def run_ai_analysis_single(
                 user_input=user_input,
                 pool=pool,
                 progress_cb=_cb,
+                htf_klines=htf_klines,
             )
         else:
             ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
@@ -229,6 +236,7 @@ def run_ai_analysis_single(
                 signal, klines,
                 strategy_prompt=strategy_prompt,
                 user_input=user_input,
+                htf_klines=htf_klines,
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto
         if cfg.dual_judge_enabled:

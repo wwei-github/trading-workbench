@@ -577,6 +577,12 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
     if len(klines) < 2:
         raise HTTPException(status_code=400, detail=f"币种 {symbol} K线数据不足")
 
+    # 4h 高周期 K 线（大方向背景注入）；失败只降级为无 4h 行，不中断分析
+    try:
+        htf_klines = pool.get_klines(symbol, "4h", 200)
+    except Exception:
+        htf_klines = None
+
     vol, volume_type = classify_volume(klines)
     # 24h 成交额（USDT）：最近 24 根已收盘 K 线的计价成交量之和
     volume_24h = sum(float(k[7]) for k in klines[-25:-1] if len(k) > 7)
@@ -602,7 +608,9 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         else None
     )
     try:
-        ai_result = analyze_coin(signal, klines, strategy_prompt=strategy_prompt)
+        ai_result = analyze_coin(
+            signal, klines, strategy_prompt=strategy_prompt, htf_klines=htf_klines,
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI 分析失败: {e}")
 

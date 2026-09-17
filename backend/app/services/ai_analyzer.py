@@ -31,7 +31,7 @@ SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信�
 - trade_decision: 是否建议开单，"suggest"（建议开单）或 "skip"（不建议开单）
 - skip_reason: 当 trade_decision="skip" 时必填，用"1. 2. 3."序号逐条列出不建议开单的主要原因（如：1. 信号强度不足 2. 盈亏比不佳），最多3条，每条一行，JSON内换行写\\n。suggest 时输出空字符串。
 - direction: 交易方向，"long"（做多）或 "short"（做空）。skip 时为空字符串。
-- trade_type: 开单类型（结构打法归类），suggest 时必填其一：trend_follow（顺势交易，EMA 三线严格排列是硬前提：多单 21>55>144、空单 144>55>21）/ structure_break（结构破位回踩，涵盖 123法则·N字结构·2B法则，见下方打法详解）/ range_edge（区间边缘反转）。skip 时为空字符串。
+- trade_type: 开单类型（结构打法归类），suggest 时必填其一：trend_follow（顺势交易，趋势方向由 EMA 排列或指标共振确立，如 SuperTrend/MACD/4h背景同向即满足，纯 EMA 排列不再是硬门槛）/ structure_break（结构破位回踩，涵盖 123法则·N字结构·2B法则，见下方打法详解）/ range_edge（区间边缘反转）。skip 时为空字符串。
 - entry_price: 建议入场价。必须以"当前价格"（分析时刻最新价）为基准：顺势追势时入场贴近现价；
   计划等回踩时给回踩锚定价（摆动低/高点）并在 analysis 中写明"等回踩"（程序会据此标记
   "待回踩"，仅作展示、不会为其下单）；若现价已显著离开
@@ -86,14 +86,17 @@ SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信�
   止盈二设 0（仅设一档）。
 
 所有价格为数值，单位 USDT。
-均线形态是重要趋势背景：多头排列支撑做多逻辑，空头排列支撑做空逻辑；
-金叉/死叉与拐头是动能转换信号；若均线形态与摆动结构信号方向矛盾，
-需谨慎评估并在 analysis 中说明理由。
-技术指标（MACD/布林带/RSI/SuperTrend）是辅助参考：分析判断以K线结构与量能为主，
-指标用于确认动能方向、波动状态与超买超卖背景；指标结论与K线结构矛盾时以结构为准，
-并在 analysis 中说明矛盾。
+均线与指标纪律（2026-09-17 起）：
+- EMA 排列不构成方向限制：多头排列不禁止做空、空头排列不禁止做多，均线仅是趋势背景参考之一
+  （金叉/死叉/拐头是动能转换信号）。
+- 指标多数决规则（重要）：用户消息"技术指标"块末尾的"指标方向"行为程序化统计
+  （MACD/布林带/RSI/SuperTrend/ADX/OBV/4h背景 各投多/空/中性票）。
+  多空票数谁多以谁为主——即使 1h K线形态或摆动结构与多数方向矛盾，也以多数方向为准，
+  并在 analysis 第一条写明"指标方向: 看多N项 vs 看空M项"及各指标依据；
+  多空票数平衡时自行结合 K线结构与量能判断。
+- 入场/止损/止盈的结构位锚定规则不受指标方向影响，仍按上方规则执行。
 资金费率/持仓量/大盘状态/恐贪指数等市场环境数据未随消息提供，请勿臆测：
-仅基于给定的 K 线、量能、均线、摆动结构与技术指标数据进行分析。"""
+仅基于给定的 K 线、量能、均线、摆动结构、技术指标与 4h 背景数据进行分析。"""
 
 
 def _get_client() -> OpenAI:
@@ -104,6 +107,7 @@ def _get_client() -> OpenAI:
 def analyze_coin(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
+    htf_klines: Optional[list] = None,
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -112,17 +116,19 @@ def analyze_coin(
     klines: 原始 K 线数据 [[open_time, open, high, low, close, volume, ...], ...]
     strategy_prompt: 用户自定义交易策略（MD 格式），提供时附加到系统提示词供 AI 参考
     user_input: 本次分析的用户补充说明（要求/持仓计划/个人观点），附加到用户提示词
+    htf_klines: 可选 4h 高周期 K 线（大方向背景；None 时注入块缺省 4h 行）
     """
     client = _get_client()
     return _call_llm(
         client,
-        _build_messages(signal, klines, strategy_prompt, user_input),
+        _build_messages(signal, klines, strategy_prompt, user_input, htf_klines),
     )
 
 
 def _build_messages(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
+    htf_klines: Optional[list] = None,
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）"""
     # 取最近 60 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-61:-1]）
@@ -141,8 +147,8 @@ def _build_messages(
     if ema:
         ema_summary = f"均线形态: {ema['state_label']}（{ema['detail']}）\n"
 
-    # 技术指标（MACD/布林带/RSI/SuperTrend，辅助参考；数据不足时整块缺省）
-    indicator_summary = render_indicator_block(klines)
+    # 技术指标（MACD/布林带/RSI/SuperTrend/ADX/OBV + 4h背景 + 程序化共振结论）
+    indicator_summary = render_indicator_block(klines, htf_klines)
 
     # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点，与 Agent 管线同源）
     sw = signal.get("recent_swings") or {}
@@ -239,6 +245,7 @@ def _call_llm(client: OpenAI, messages: list) -> dict:
 def analyze_with_guard(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
+    htf_klines: Optional[list] = None,
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -246,6 +253,7 @@ def analyze_with_guard(
     """
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
+        htf_klines=htf_klines,
     )
     client = _get_client()
 
