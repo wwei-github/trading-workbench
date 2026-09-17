@@ -329,7 +329,12 @@ export default function WatchlistPanel() {
         const v = r.scan?.signal_type;
         if (!v) return <span style={{ color: "#999" }}>-</span>;
         const cfg = SIGNAL_TYPE_MAP[v] || { label: v, color: "default" };
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
+        // 触发原因挂信号类型悬停（突破/回踩行无 K线形态，原因只在这里可见）
+        return (
+          <Tooltip title={r.scan?.signal_reason || undefined}>
+            <Tag color={cfg.color}>{cfg.label}</Tag>
+          </Tooltip>
+        );
       },
     },
     {

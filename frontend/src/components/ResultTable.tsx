@@ -230,6 +230,48 @@ export default function ResultTable() {
       ),
     },
     {
+      title: "信号类型",
+      dataIndex: "signal_type",
+      key: "signal_type",
+      width: 108,
+      ...filterProps("signal_type", SIGNAL_TYPE_FILTERS),
+      render: (v: string, record: ScanResult) => {
+        const cfg = SIGNAL_TYPE_MAP[v] || { label: v, color: "default" };
+        // 触发原因挂信号类型悬停（突破/回踩行无 K线形态，原因只在这里可见）
+        return (
+          <Tooltip title={record.signal_reason || undefined}>
+            <Tag color={cfg.color}>{cfg.label}</Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: "质量分",
+      dataIndex: "quality_score",
+      key: "quality_score",
+      width: 96,
+      defaultSortOrder: "descend",
+      sorter: (a: ScanResult, b: ScanResult) =>
+        (a.quality_score ?? -1) - (b.quality_score ?? -1),
+      render: (v: number | null, record: ScanResult) => {
+        if (v == null) return <span style={{ color: "#999" }}>-</span>;
+        const votes = record.votes_json;
+        const detail = votes
+          ? `指标多数决：多${votes.bull_n} vs 空${votes.bear_n}（净${votes.net > 0 ? "+" : ""}${votes.net} / 已投${votes.voted}）`
+            + (votes.bull.length ? `\n看多：${votes.bull.join("、")}` : "")
+            + (votes.bear.length ? `\n看空：${votes.bear.join("、")}` : "")
+          : undefined;
+        const color = v >= 75 ? "green" : v >= 60 ? "gold" : "default";
+        return (
+          <Tooltip title={detail}>
+            <Tag color={color} style={{ marginInlineEnd: 0, cursor: "default" }}>
+              {v}
+            </Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
       // AI 方向列：开多/开空。扫描完成后自动分析（按24h成交额取前 AI_MAX_PER_SCAN 个）
       title: (
         <Tooltip title="AI 分析方向：开多/开空。扫描完成后自动分析成交额前 10 的命中币种">
@@ -262,7 +304,7 @@ export default function ResultTable() {
     {
       // AI 推荐度列：0-100，仅 suggest 结论有值
       title: (
-        <Tooltip title="AI 推荐度（0-100，仅建议开单时有值）">
+        <Tooltip title="AI 推荐度（0-100，仅建议开单时有值）。与质量分不同：质量分是程序侧指标多数决打分（决定进入 AI 配额的顺序），推荐度是 AI 分析后的结论">
           <span>推荐度</span>
         </Tooltip>
       ),
@@ -334,40 +376,29 @@ export default function ResultTable() {
       },
     },
     {
-      title: "信号类型",
-      dataIndex: "signal_type",
-      key: "signal_type",
-      width: 108,
-      ...filterProps("signal_type", SIGNAL_TYPE_FILTERS),
-      render: (v: string) => {
-        const cfg = SIGNAL_TYPE_MAP[v] || { label: v, color: "default" };
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
-      },
-    },
-    {
-      title: "质量分",
-      dataIndex: "quality_score",
-      key: "quality_score",
-      width: 96,
-      defaultSortOrder: "descend",
-      sorter: (a: ScanResult, b: ScanResult) =>
-        (a.quality_score ?? -1) - (b.quality_score ?? -1),
-      render: (v: number | null, record: ScanResult) => {
-        if (v == null) return <span style={{ color: "#999" }}>-</span>;
-        const votes = record.votes_json;
-        const detail = votes
-          ? `指标多数决：多${votes.bull_n} vs 空${votes.bear_n}（净${votes.net > 0 ? "+" : ""}${votes.net} / 已投${votes.voted}）`
-            + (votes.bull.length ? `\n看多：${votes.bull.join("、")}` : "")
-            + (votes.bear.length ? `\n看空：${votes.bear.join("、")}` : "")
-          : undefined;
-        const color = v >= 75 ? "green" : v >= 60 ? "gold" : "default";
-        return (
-          <Tooltip title={detail}>
-            <Tag color={color} style={{ marginInlineEnd: 0, cursor: "default" }}>
-              {v}
-            </Tag>
-          </Tooltip>
-        );
+      // 复盘列：AI 建议开单 24h 后逐K回放定论（数据来自 aiMap，AI 开关关闭时为空显示 -）
+      title: (
+        <Tooltip title="AI 建议开单 24h 后逐K回放结果：先触止损=负，触止盈=胜，24h内未触任何价位=超时">
+          <span>复盘</span>
+        </Tooltip>
+      ),
+      key: "review",
+      width: 92,
+      render: (_: unknown, record: ScanResult) => {
+        const status = aiMap[record.id]?.review_status;
+        if (!status) return <span style={{ color: "#999" }}>-</span>;
+        switch (status) {
+          case "win_tp1":
+            return <Tag color={schemeTag(colorScheme).up}>胜·TP1</Tag>;
+          case "win_tp2":
+            return <Tag color={schemeTag(colorScheme).up}>胜·TP2</Tag>;
+          case "loss":
+            return <Tag color={schemeTag(colorScheme).down}>负·止损</Tag>;
+          case "expired":
+            return <Tag color="default">超时</Tag>;
+          default:
+            return <span style={{ color: "#999" }}>-</span>;
+        }
       },
     },
     {
@@ -459,32 +490,6 @@ export default function ResultTable() {
       width: 68,
       render: (v: boolean) =>
         v ? <Tag color="default">重复</Tag> : <Tag color="green">新</Tag>,
-    },
-    {
-      // 复盘列：AI 建议开单 24h 后逐K回放定论（数据来自 aiMap，AI 开关关闭时为空显示 -）
-      title: (
-        <Tooltip title="AI 建议开单 24h 后逐K回放结果：先触止损=负，触止盈=胜，24h内未触任何价位=超时">
-          <span>复盘</span>
-        </Tooltip>
-      ),
-      key: "review",
-      width: 92,
-      render: (_: unknown, record: ScanResult) => {
-        const status = aiMap[record.id]?.review_status;
-        if (!status) return <span style={{ color: "#999" }}>-</span>;
-        switch (status) {
-          case "win_tp1":
-            return <Tag color={schemeTag(colorScheme).up}>胜·TP1</Tag>;
-          case "win_tp2":
-            return <Tag color={schemeTag(colorScheme).up}>胜·TP2</Tag>;
-          case "loss":
-            return <Tag color={schemeTag(colorScheme).down}>负·止损</Tag>;
-          case "expired":
-            return <Tag color="default">超时</Tag>;
-          default:
-            return <span style={{ color: "#999" }}>-</span>;
-        }
-      },
     },
   ];
 
