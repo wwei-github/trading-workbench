@@ -23,6 +23,7 @@ from app.services.task_log import close_task, open_task
 from app.services.trade_engine import (
     _mark_open_block,
     settle_trades,
+    sync_account_transfers,
     try_open_for_analysis,
 )
 
@@ -94,11 +95,24 @@ def run_auto_trade_task():
                 db.close()
         finally:
             _release_open_lock(r, ident)
+
+        # 资金划转同步（账户级读操作，无需开仓锁，放在锁外不延长巡检持锁时间；
+        # 失败只记日志不影响本轮结算结果）
+        transfers = 0
+        try:
+            db = SessionLocal()
+            try:
+                transfers = sync_account_transfers(db, trader)
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("资金划转同步失败")
+
         logger.info("结算巡检完成：%d 笔", settled)
         close_task(
             task_id, "completed",
-            summary=f"结算/巡检 {settled} 笔",
-            detail={"settled": settled},
+            summary=f"结算/巡检 {settled} 笔" + (f"，新增划转 {transfers} 条" if transfers else ""),
+            detail={"settled": settled, "transfers_synced": transfers},
         )
     except Exception as e:
         logger.exception("结算巡检任务失败: %s", e)

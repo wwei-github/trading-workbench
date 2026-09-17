@@ -255,6 +255,13 @@ class BinanceTrader:
             "symbol": symbol, "startTime": since_ms, "limit": 1000,
         })
 
+    def transfer_rows(self, since_ms: int) -> list:
+        """合约账户级资金划转明细（不带 symbol：income TRANSFER 是账户级流水）。
+        income 正=转入（现货→合约），负=转出（合约→现货）。"""
+        return self._req("GET", "/fapi/v1/income", {
+            "incomeType": "TRANSFER", "startTime": since_ms, "limit": 1000,
+        })
+
     INCOME_KEEP = {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE", "INSURANCE_CLEAR"}
 
     def realized_pnl_since(self, symbol: str, since_ms: int) -> float:

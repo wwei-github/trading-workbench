@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.system_config import SystemConfig
-from app.models.trade import TradeEvent, TradeRecord
-from app.schemas.trade import TradeEventOut, TradeOut
+from app.models.trade import AccountTransfer, TradeEvent, TradeRecord
+from app.schemas.trade import AccountTransferOut, TradeEventOut, TradeOut
 from app.services.binance_client import _INTERVAL_MINUTES
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 
@@ -32,6 +32,18 @@ def list_trades(
         q = q.where(TradeRecord.status == status.upper())
     rows = db.execute(q).scalars().all()
     return [TradeOut.model_validate(r) for r in rows]
+
+
+@router.get("/transfers", response_model=list[AccountTransferOut])
+def list_transfers(limit: int = 200, db: Session = Depends(get_db)):
+    """合约账户资金划转记录（新→旧，amount 正=转入/负=转出）。
+    由每小时结算巡检从币安 income TRANSFER 同步，本接口只读。"""
+    rows = db.execute(
+        select(AccountTransfer)
+        .order_by(AccountTransfer.transfer_time.desc())
+        .limit(min(limit, 500))
+    ).scalars().all()
+    return [AccountTransferOut.model_validate(r) for r in rows]
 
 
 @router.get("/{trade_id}/events", response_model=list[TradeEventOut])

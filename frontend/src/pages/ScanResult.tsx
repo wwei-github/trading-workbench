@@ -12,6 +12,7 @@ import WatchlistPanel from '../components/WatchlistPanel'
 import SearchPanel from '../components/SearchPanel'
 import ReviewStatsPanel from '../components/ReviewStatsPanel'
 import TradesPanel from '../components/TradesPanel'
+import TransfersPanel from '../components/TransfersPanel'
 import ColorSchemeToggle from '../components/ColorSchemeToggle'
 import { useScanStore } from '../stores/scanStore'
 
@@ -34,7 +35,7 @@ export default function ScanResult() {
   // Tab 记忆：刷新后保留刷新前的聚焦 tab
   const [activeTab, switchTab] = useTabMemory(
     'tabs.scanResult',
-    ['results', 'watchlist', 'search', 'strategy', 'trades', 'tasks', 'logs'],
+    ['results', 'watchlist', 'search', 'strategy', 'trades', 'transfers', 'tasks', 'logs'],
   )
 
   useEffect(() => {
@@ -249,6 +250,11 @@ export default function ScanResult() {
             key: 'trades',
             label: '交易记录',
             children: <div style={{ height: '100%', overflow: 'auto' }}><TradesPanel /></div>,
+          },
+          {
+            key: 'transfers',
+            label: '资金划转',
+            children: <div style={{ height: '100%', overflow: 'auto' }}><TransfersPanel /></div>,
           },
           {
             key: 'tasks',

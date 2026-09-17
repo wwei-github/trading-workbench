@@ -40,6 +40,7 @@ import { SCHEME_UP_DOWN, schemeTag, schemeValueColor } from '../utils/scheme'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import AiAnalysisCard from './AiAnalysisCard'
 import TradeReplayChart from './TradeReplayChart'
+import StatCard from './StatCard'
 import type { TradeEvent, TradeRecord } from '../types'
 
 // 状态标签：运行中三态 + 已平仓 + 失败
@@ -165,18 +166,6 @@ function renderDetail(detail: Record<string, unknown> | null, scheme: ColorSchem
         children: detailValue(k, v, scheme),
       }))}
     />
-  )
-}
-
-// 概览小卡片（与 AI 价格卡同风格：灰底 + 大数字）
-function StatCard({ title, value, color }: { title: string; value: string; color?: string }) {
-  return (
-    <div style={{ flex: 1, minWidth: 120, padding: '8px 14px', borderRadius: 8, background: '#fafafa' }}>
-      <div style={{ fontSize: 12, color: '#999', marginBottom: 2 }}>{title}</div>
-      <div style={{ fontSize: 18, fontWeight: 700, color: color || 'rgba(0,0,0,0.88)', lineHeight: 1.3 }}>
-        {value}
-      </div>
-    </div>
   )
 }
 

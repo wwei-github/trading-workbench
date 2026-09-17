@@ -43,3 +43,15 @@ class TradeOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class AccountTransferOut(BaseModel):
+    """合约账户资金划转（amount 带符号：正=转入，负=转出）"""
+    id: uuid.UUID
+    tran_id: str
+    asset: str
+    amount: float
+    transfer_time: datetime
+
+    class Config:
+        from_attributes = True

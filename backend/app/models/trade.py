@@ -97,3 +97,22 @@ class TradeEvent(Base):
     __table_args__ = (
         Index("ix_trade_events_record_created", "trade_record_id", "created_at"),
     )
+
+
+class AccountTransfer(Base):
+    """合约账户资金划转记录（每小时结算巡检时从币安 income TRANSFER 同步）
+
+    amount 带符号：正=转入（现货→合约），负=转出（合约→现货）。
+    tran_id 为币安 income.tranId，唯一约束幂等去重（重复同步不插重复行）。
+    """
+
+    __tablename__ = "account_transfers"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tran_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    asset: Mapped[str] = mapped_column(String(16), nullable=False, default="USDT")
+    amount: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    transfer_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    raw: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

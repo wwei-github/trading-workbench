@@ -185,6 +185,15 @@ export interface TradeEvent {
   created_at: string
 }
 
+// 合约账户资金划转（每小时巡检同步自币安 income TRANSFER）
+export interface AccountTransfer {
+  id: string
+  tran_id: string
+  asset: string
+  amount: number // 正=转入（现货→合约），负=转出（合约→现货）
+  transfer_time: string
+}
+
 // ===== 交易复盘K线（交易记录弹窗）=====
 
 // 复盘关键事件（图上打箭头）：开仓 / 止盈成交 / 止损成交

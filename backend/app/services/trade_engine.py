@@ -21,12 +21,13 @@ from uuid import UUID
 from typing import Optional
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.scan import AIAnalysis
 from app.models.system_config import SystemConfig
-from app.models.trade import TradeEvent, TradeRecord
+from app.models.trade import AccountTransfer, TradeEvent, TradeRecord
 from app.services.binance_trader import BinanceTrader, BinanceTradeError
 from app.services.exchange_pool import ExchangePool
 from app.services.risk_guard import liquidation_gate_pct
@@ -668,6 +669,52 @@ def _sweep_orphan_algo_orders(
         except Exception as e:
             logger.warning("孤儿清扫撤销 %s 失败: %s", sym, e)
     return cleaned
+
+
+def sync_account_transfers(db: Session, trader: BinanceTrader) -> int:
+    """同步合约账户资金划转记录（income TRANSFER）到 account_transfers 表。
+
+    增量拉取：从库内最新 transfer_time 前移 60s 重叠窗口开始（首次从 7 天前起），
+    tran_id 唯一约束 + on_conflict_do_nothing 幂等去重。返回新插入条数。
+    """
+    last = db.execute(
+        select(AccountTransfer.transfer_time)
+        .order_by(AccountTransfer.transfer_time.desc())
+        .limit(1)
+    ).scalar()
+    since = last - timedelta(seconds=60) if last else datetime.utcnow() - timedelta(days=7)
+    since_ms = int(since.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    rows = trader.transfer_rows(since_ms)
+    inserted = 0
+    for row in rows:
+        try:
+            amount = float(row.get("income") or 0)
+        except (TypeError, ValueError):
+            continue
+        if amount == 0:
+            continue
+        t_ms = int(row.get("time") or 0)
+        if t_ms <= 0:
+            continue
+        # 测试网 TRANSFER 的 tranId 恒为 0（注意 0 是 falsy，不能用 `or` 兜底）：
+        # tranId 有效时用原值，否则用 时间+资产+金额 组合键做幂等去重
+        raw_tran = row.get("tranId")
+        tran_id = (
+            str(raw_tran)
+            if raw_tran not in (None, "", 0, "0")
+            else f"{t_ms}:{row.get('asset') or 'USDT'}:{row.get('income')}"
+        )
+        stmt = pg_insert(AccountTransfer).values(
+            tran_id=tran_id,
+            asset=row.get("asset") or "USDT",
+            amount=amount,
+            transfer_time=datetime.utcfromtimestamp(t_ms / 1000),
+            raw=row,
+        ).on_conflict_do_nothing(index_elements=["tran_id"])
+        res = db.execute(stmt)
+        inserted += res.rowcount or 0
+    db.commit()
+    return inserted
 
 
 def settle_trades(db: Session, trader: BinanceTrader) -> int:
