@@ -26,11 +26,8 @@ export default function ScanConfigPanel() {
       form.setFieldsValue({
         kline_interval: aiConfig.kline_interval,
         kline_window: aiConfig.kline_window,
-        breakout_threshold: aiConfig.breakout_threshold,
-        r_squared_threshold: aiConfig.r_squared_threshold,
         repeat_window_hours: aiConfig.repeat_window_hours,
         swing_order: aiConfig.swing_order,
-        pullback_tolerance: aiConfig.pullback_tolerance,
         max_open_trades: aiConfig.max_open_trades ?? 5,
         // 表单里按百分比（0~100）编辑，保存时换算回 0~1 比例
         trading_min_free_pct: Math.round((aiConfig.trading_min_free_pct ?? 0.5) * 10000) / 100,
@@ -46,11 +43,8 @@ export default function ScanConfigPanel() {
       const data: Partial<SystemConfig> = {
         kline_interval: values.kline_interval,
         kline_window: values.kline_window,
-        breakout_threshold: values.breakout_threshold,
-        r_squared_threshold: values.r_squared_threshold,
         repeat_window_hours: values.repeat_window_hours,
         swing_order: values.swing_order,
-        pullback_tolerance: values.pullback_tolerance,
         // 自动交易
         max_open_trades: values.max_open_trades,
         trading_min_free_pct:
@@ -114,22 +108,6 @@ export default function ScanConfigPanel() {
             <InputNumber min={30} max={1500} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item
-            label="突破阈值"
-            name="breakout_threshold"
-            rules={[{ required: true }]}
-            tooltip="突破幅度阈值，0.005 = 0.5%"
-          >
-            <InputNumber step={0.001} min={0} max={1} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item
-            label="R² 阈值"
-            name="r_squared_threshold"
-            rules={[{ required: true }]}
-            tooltip="趋势线拟合度阈值，越大要求越严格"
-          >
-            <InputNumber step={0.05} min={0} max={1} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item
             label="重复命中窗口（小时）"
             name="repeat_window_hours"
             rules={[{ required: true }]}
@@ -141,17 +119,9 @@ export default function ScanConfigPanel() {
             label="摆动点阶数"
             name="swing_order"
             rules={[{ required: true }]}
-            tooltip="计算摆动点时的左右比较根数"
+            tooltip="AI 事实包中摆动点确认的左右比较根数"
           >
             <InputNumber min={1} max={10} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item
-            label="回调容差"
-            name="pullback_tolerance"
-            rules={[{ required: true }]}
-            tooltip="上涨回调策略的容差比例，0.03 = 3%"
-          >
-            <InputNumber step={0.01} min={0} max={1} style={{ width: '100%' }} />
           </Form.Item>
 
           {/* 自动交易（docs/06） */}
