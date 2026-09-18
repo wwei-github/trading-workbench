@@ -84,11 +84,17 @@ def _bucket_label(rec: TradeRecord) -> str:
 
 
 def _agg(trades: list) -> dict:
-    wins = [t for t in trades if (t.realized_pnl or 0) > 0]
-    losses = [t for t in trades if (t.realized_pnl or 0) < 0]
-    pnl = round(sum(t.realized_pnl or 0 for t in trades), 2)
-    avg_win = round(sum(t.realized_pnl for t in wins) / len(wins), 2) if wins else 0.0
-    avg_loss = round(sum(t.realized_pnl for t in losses) / len(losses), 2) if losses else 0.0
+    # Numeric 列经 SQLAlchemy 返回 Decimal，统一转 float 再聚合——
+    # 否则空 wins 时 avg_win=0.0(float) / avg_loss=Decimal 触发
+    # "unsupported operand type(s) for /: 'float' and 'decimal.Decimal'"
+    def _pnl(t) -> float:
+        return float(t.realized_pnl or 0)
+
+    wins = [t for t in trades if _pnl(t) > 0]
+    losses = [t for t in trades if _pnl(t) < 0]
+    pnl = round(sum(_pnl(t) for t in trades), 2)
+    avg_win = round(sum(_pnl(t) for t in wins) / len(wins), 2) if wins else 0.0
+    avg_loss = round(sum(_pnl(t) for t in losses) / len(losses), 2) if losses else 0.0
     return {
         "count": len(trades),
         "wins": len(wins),
@@ -97,7 +103,7 @@ def _agg(trades: list) -> dict:
         "pnl": pnl,
         "avg_win": avg_win,
         "avg_loss": avg_loss,
-        "payoff": round(abs(avg_win / avg_loss), 2) if avg_loss else None,  # 盈亏比
+        "payoff": round(abs(avg_win / avg_loss), 2) if (wins and losses) else None,  # 盈亏比（需双侧样本）
         "ev_per_trade": round(pnl / len(trades), 2) if trades else 0.0,  # 期望值/笔 USDT
     }
 
@@ -118,15 +124,16 @@ def build_actual_review(db: Session, days: int) -> dict:
     overview = _agg(trades)
     total_fee = round(sum(t.fee_total or 0 for t in trades), 2)
     total_funding = round(sum(t.funding_total or 0 for t in trades), 2)
-    planned_risk = round(sum(t.risk_amount or 0 for t in trades), 2)
+    planned_risk = round(sum(float(t.risk_amount or 0) for t in trades), 2)
 
     overview.update({
         "days": days,
         "total_fee": total_fee,
         "total_funding": total_funding,
         "planned_risk_total": planned_risk,
-        # 计划 vs 实际：净亏（计划内应亏 planned_risk，实际多亏部分主要是费用）
-        "plan_gap": round((min(overview["pnl"], 0) + planned_risk), 2),  # ≥0 表示亏超计划
+        # 计划 vs 实际：亏超计划的部分 = |实际净亏| − 计划风险合计（差额主要来自费用；
+        # ≤0 即未超计划，钳为 0——前端 plan_gap>0.5 展示"亏超计划"）
+        "plan_gap": round(max(0.0, -min(overview["pnl"], 0) - planned_risk), 2),
         "avg_hold_hours": round(
             sum(_hold_hours(t) for t in trades) / len(trades), 1) if trades else 0.0,
         "attributed": sum(1 for t in trades if t.attributed_at),  # 已归因笔数
