@@ -59,4 +59,9 @@ class SystemConfig(Base):
     # NULL=恢复默认（risk_guard.PULLBACK_MARKET_PCT=0.01）
     pullback_market_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
 
+    # max_slippage_pct：开仓前盘口滑点实测上限（比例，0.003=0.3%）。按本单数量
+    # 走订单簿逐层吃的预期滑点超线放弃（GRIFFAIN 薄盘案例：0.637% 滑点撑宽
+    # 止损 17%）；NULL=恢复默认 0.003
+    max_slippage_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+
     notes: Mapped[str] = mapped_column(String(255), default="系统运行时配置")

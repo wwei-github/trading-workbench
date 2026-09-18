@@ -27,6 +27,7 @@ from app.models.scan import ScanRecord, ScanResult
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.exchange_pool import ExchangePool
+from app.services.binance_trader import BinanceTrader
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import volume_ratio
 from app.services.strategy.technical import (
@@ -185,6 +186,30 @@ class Scanner:
                 "24h成交额 ≥ %s USDT 过滤：%d → %d",
                 f"{min_vol:,.0f}", before, len(symbols_data),
             )
+
+            # C 交易所风险档位过滤（2026-09-18）：最大允许杠杆 <10× 的币不进候选
+            # （交易所对其流动性/风险的终极标注；4USDT 案例）。注意不能按首档 MMR
+            # 过滤——币安 2026 已把多数山寨首档 MMR 统一调到 1.5%~2%（首档名义
+            # 5k~10k 内 MMR 均为此值，BTC 0.4% 是孤例），按 MMR 过滤会误拦 58%。
+            # 一次 leverageBracket 全市场拉取、进程缓存 24h；失败（空表）放行不阻断
+            _bt = BinanceTrader()
+            risk_tiers = _bt.risk_tier_all()
+            if risk_tiers:
+                before = len(symbols_data)
+                symbols_data = [
+                    s for s in symbols_data
+                    if (rt := risk_tiers.get(s["symbol"])) is None or rt[1] >= 10
+                ]
+                logger.info("风险档位过滤（最大杠杆 <10×）：%d → %d", before, len(symbols_data))
+
+            # D 黑名单过滤（2026-09-18）：手动添加（永久）/ 连续止损自动加入（冷却期），
+            # 命中不进扫描。集合为空时跳过查询
+            from app.services.blacklist_service import active_symbols
+            blacklisted = active_symbols(db)
+            if blacklisted:
+                before = len(symbols_data)
+                symbols_data = [s for s in symbols_data if s["symbol"] not in blacklisted]
+                logger.info("黑名单过滤（%d 个生效）：%d → %d", len(blacklisted), before, len(symbols_data))
 
             # 构建 symbol -> volume 映射
             volume_map = {s["symbol"]: s["volume_24h"] for s in symbols_data}

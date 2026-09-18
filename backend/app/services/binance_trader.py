@@ -30,6 +30,9 @@ class BinanceTradeError(Exception):
 _filters_cache: dict[str, dict] = {}
 # 逐 symbol 的杠杆分档缓存（进程内）：leverageBracket 响应（MMR 按名义档位取）
 _bracket_cache: dict[str, list] = {}
+# 全市场第 1 档风险档位缓存（扫描候选池过滤，24h 刷新）
+_risk_tier_cache: dict[str, tuple[float, int]] = {}
+_risk_tier_cached_at: float = 0.0
 
 
 class BinanceTrader:
@@ -184,6 +187,74 @@ class BinanceTrader:
         """
         info = self.bracket_info(symbol, notional if notional is not None else 0.0)
         return info[0] if info else None
+
+    def market_slippage_estimate(self, symbol: str, side: str, qty: float) -> Optional[float]:
+        """市价单滑点实测（GRIFFAIN 案例闸门，2026-09-18）：按当前订单簿把本单
+        数量逐层吃掉，加权均价对最优价的偏离即为预期滑点（比例，0.003=0.3%）。
+
+        订单簿薄的小币（吃单滑点 0.637%）会撑宽实际止损距离、放大风险超预算；
+        成交额门槛拦不住（拉盘小币 24h 成交额可过 300 万，簿上照样空）。开仓前
+        用本单真实数量实测——不是泛泛的盘口深度，是这单要付出的真实成本。
+        返回 None = 簿数据异常（调用方决定放行与否，不阻断）。
+        """
+        try:
+            book = self._req("GET", "/fapi/v1/depth", {"symbol": symbol, "limit": 50})
+            # BUY 吃 asks（卖单簿），SELL 吃 bids（买单簿）；[[price, qty], ...] 字符串对
+            levels = book.get("asks" if side.upper() == "BUY" else "bids") or []
+            if not levels:
+                return None
+            remaining, cost, best = float(qty), 0.0, None
+            for p_str, q_str in levels[:50]:
+                p, q = float(p_str), float(q_str)
+                if best is None:
+                    best = p
+                take = min(remaining, q)
+                cost += take * p
+                remaining -= take
+                if remaining <= 0:
+                    break
+            if best is None or best <= 0:
+                return None
+            if remaining > 0:  # 簿深 50 档吃不完：按全部可见深度算均价（必然高滑点，如实上报）
+                cost += remaining * float(levels[-1][0])
+            avg_price = cost / float(qty)
+            return avg_price / best - 1
+        except Exception as e:
+            logger.warning("market_slippage_estimate(%s) 失败: %s", symbol, e)
+            return None
+
+    def risk_tier_all(self) -> dict[str, tuple[float, int]]:
+        """全市场第 1 档风险档位（扫描候选池过滤用，scanner 调用）：{symbol: (首档MMR, 首档最大杠杆)}。
+
+        /fapi/v1/leverageBracket 不带 symbol 一次拉全市场，进程内缓存 24h——
+        交易所对各币的风险标注（4USDT 首档 MMR 1.5%/杠杆 15×，主流币 0.4%~0.5%）。
+        失败返回空 dict（调用方放行，不阻断扫描）
+        """
+        global _risk_tier_cache, _risk_tier_cached_at
+        now = time.time()
+        if _risk_tier_cache and now - _risk_tier_cached_at < 86400:
+            return _risk_tier_cache
+        try:
+            rows = self._req("GET", "/fapi/v1/leverageBracket", {})
+            out: dict[str, tuple[float, int]] = {}
+            for r in rows:
+                brackets = r.get("brackets") or []
+                if not brackets:
+                    continue
+                first = brackets[0]  # 按档位升序，[0] 即第 1 档
+                try:
+                    out[str(r["symbol"])] = (
+                        float(first["maintMarginRatio"]),
+                        int(first["initialLeverage"]),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+            _risk_tier_cache = out
+            _risk_tier_cached_at = now
+            return out
+        except Exception as e:
+            logger.warning("risk_tier_all 拉取失败（扫描侧放行）: %s", e)
+            return _risk_tier_cache or {}
 
     # ── 杠杆 / 保证金模式 ─────────────────────────────────────
 

@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountTransfer, AIAnalysis, AiProgress, AttributionResult, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
+import type { AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -139,6 +139,18 @@ export const scanApi = {
   // 技能详情（含全文 body markdown，404 = 技能不存在）
   skillDetail: (name: string) =>
     api.get<SkillInfo>(`/scans/skills/${encodeURIComponent(name)}`).then((r) => r.data),
+
+  // ===== 币种黑名单（手动/自动）=====
+
+  blacklist: {
+    list: () => api.get<BlacklistItem[]>('/scans/blacklist').then((r) => r.data),
+    add: (symbol: string, reason?: string) =>
+      api
+        .post<{ id: string; symbol: string }>('/scans/blacklist', { symbol, reason: reason || '' })
+        .then((r) => r.data),
+    remove: (symbol: string) =>
+      api.delete<{ ok: boolean }>(`/scans/blacklist/${encodeURIComponent(symbol)}`).then((r) => r.data),
+  },
 
   // ===== 自动交易（docs/06）=====
 

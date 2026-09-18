@@ -110,6 +110,12 @@ LIQ_GATE_BUFFER = 0.005
 # 超容差才维持「待回踩不下单」。回踩不远时市价进也能满足盈亏比，不必干等
 PULLBACK_MARKET_PCT = 0.01
 
+# 开仓前盘口滑点实测上限（system_config.max_slippage_pct 可页面覆盖，NULL=默认 0.003）：
+# 按本单数量走订单簿逐层吃的加权均价对最优价的偏离（0.003=0.3%）。GRIFFAIN 案例：
+# 簿薄的小币吃单滑点 0.637% → 实际止损距离拉宽 17%、风险超预算。None 返回（簿异常）
+# 不阻断，避免接口抖动锁死开单
+MAX_SLIPPAGE_PCT = 0.003
+
 
 def liquidation_gate_pct(
     leverage: Optional[int] = None,

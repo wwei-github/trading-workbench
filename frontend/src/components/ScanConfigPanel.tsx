@@ -38,6 +38,9 @@ export default function ScanConfigPanel() {
         pullback_market_pct: aiConfig.pullback_market_pct != null
           ? Math.round(aiConfig.pullback_market_pct * 10000) / 100
           : null,
+        max_slippage_pct: aiConfig.max_slippage_pct != null
+          ? Math.round(aiConfig.max_slippage_pct * 10000) / 100
+          : null,
         dual_judge_enabled: aiConfig.dual_judge_enabled ?? true,
       })
     }
@@ -61,6 +64,7 @@ export default function ScanConfigPanel() {
         liq_gate_buffer: values.liq_gate_buffer != null ? values.liq_gate_buffer / 100 : null,
         min_adapt_leverage: values.min_adapt_leverage ?? null,
         pullback_market_pct: values.pullback_market_pct != null ? values.pullback_market_pct / 100 : null,
+        max_slippage_pct: values.max_slippage_pct != null ? values.max_slippage_pct / 100 : null,
         // P2 实验开关
         dual_judge_enabled: values.dual_judge_enabled,
       }
@@ -190,6 +194,14 @@ export default function ScanConfigPanel() {
             tooltip="开仓时现价对 AI 入场价的最大偏离。待回踩距离 ≤ 容差时市价入场（盈亏比按现价复算 ≥1.5 才放行），超容差维持待回踩不下单；普通单的开仓漂移上限同用此值"
           >
             <InputNumber min={0.1} max={5} step={0.1} style={{ width: '100%' }} placeholder="1" />
+          </Form.Item>
+
+          <Form.Item
+            label="开仓滑点上限（%，留空=默认 0.3）"
+            name="max_slippage_pct"
+            tooltip="开仓前按本单数量走订单簿逐层吃，预期滑点超上限放弃开单（盘口过薄的小币会撑宽止损、实际风险超预算）。0=关闭滑点闸门"
+          >
+            <InputNumber min={0} max={5} step={0.05} style={{ width: '100%' }} placeholder="0.3" />
           </Form.Item>
 
           {/* AI 实验功能（P2，默认关闭） */}

@@ -197,6 +197,7 @@ class SystemConfigOut(BaseModel):
     liq_gate_buffer: Optional[float] = None
     min_adapt_leverage: Optional[int] = None  # 动态杠杆下限（整数倍数；NULL=默认 8）
     pullback_market_pct: Optional[float] = None  # 入场偏离容差（比例 0.01=1%；NULL=默认）
+    max_slippage_pct: Optional[float] = None  # 开仓滑点实测上限（比例 0.003=0.3%；NULL=默认）
 
     class Config:
         from_attributes = True
@@ -232,6 +233,7 @@ class SystemConfigUpdate(BaseModel):
     liq_gate_buffer: Optional[float] = None
     min_adapt_leverage: Optional[int] = None  # 动态杠杆下限（1~20；传 null 恢复默认）
     pullback_market_pct: Optional[float] = None  # 入场偏离容差（比例；传 null 恢复默认 1%）
+    max_slippage_pct: Optional[float] = None  # 开仓滑点实测上限（比例；传 null 恢复默认 0.3%）
 
 
 # ===== 复盘统计（docs/04 §10 P2） =====

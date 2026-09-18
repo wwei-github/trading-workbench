@@ -161,6 +161,21 @@ export interface SystemConfig {
   liq_gate_buffer?: number | null; // 规则补丁参数：强平闸门缓冲（比例 0.005=0.5%；null=默认）
   min_adapt_leverage?: number | null; // 动态杠杆下限（整数倍数；null=默认 8，宽止损单限制层）
   pullback_market_pct?: number | null; // 入场偏离容差（比例 0.01=1%；null=默认；待回踩距离 ≤ 容差时市价入场）
+  max_slippage_pct?: number | null; // 开仓滑点实测上限（比例 0.003=0.3%；null=默认；按本单数量走订单簿计算）
+}
+
+// ===== 币种黑名单（手动/自动）=====
+
+export interface BlacklistItem {
+  id: string;
+  symbol: string;
+  origin: 'manual' | 'auto'; // 手动（永久）/ 止损严重超预算自动（冷却期）
+  reason: string;
+  expires_at: string | null; // auto 冷却到期时间；manual 恒 null
+  expired: boolean; // auto 已过期（自然失效）
+  active: boolean; // 当前生效（过滤扫描中）
+  disabled: boolean;
+  created_at: string | null;
 }
 
 // ===== 规则补丁（docs/12 §10）=====

@@ -175,8 +175,16 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS max_stop_pct NUMERIC(10, 6),
               ADD COLUMN IF NOT EXISTS liq_gate_buffer NUMERIC(10, 6),
               ADD COLUMN IF NOT EXISTS min_adapt_leverage INTEGER,
-              ADD COLUMN IF NOT EXISTS pullback_market_pct NUMERIC(10, 6)
+              ADD COLUMN IF NOT EXISTS pullback_market_pct NUMERIC(10, 6),
+              ADD COLUMN IF NOT EXISTS max_slippage_pct NUMERIC(10, 6)
         """))
+        # 币种黑名单（2026-09-18）：全新表由 create_all 建表（init_db 已导入
+        # app.models.blacklist），此处补索引（create_all 对 unique=True 的 symbol
+        # 已有唯一约束，再补普通索引便于按名查询的确定性）
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_symbol_blacklist_symbol "
+            "ON symbol_blacklist (symbol)"
+        ))
         # 确保系统配置表有默认行（初始值从 env 注入）。
         # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有
         # Python 端 default 没有 server_default，漏列的裸 INSERT 会 NotNullViolation
@@ -215,6 +223,6 @@ def _run_migrations(engine):
 
 def init_db():
     """创建所有表 + 幂等迁移"""
-    from app.models import ops, patch, scan, trade  # noqa: F401
+    from app.models import ops, patch, scan, trade, blacklist  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _run_migrations(engine)

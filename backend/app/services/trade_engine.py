@@ -35,6 +35,7 @@ from app.services.risk_guard import (
     LIQ_GATE_BUFFER,
     LIQ_GATE_MMR_FALLBACK,
     PULLBACK_MARKET_PCT,
+    MAX_SLIPPAGE_PCT,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,13 @@ def _attempt_open(
     if symbol in positions:
         logger.info("开仓跳过 %s：已有持仓", symbol)
         _mark_open_block(db, a, "同币种已有在跑持仓")
+        return False
+    # 黑名单兜底（2026-09-18）：扫描宇宙过滤（主过滤）与开仓之间的时间差内，
+    # 币可能被手动拉黑或刚触发自动拉黑——开仓前最后核对一次（D 双保险）
+    from app.services.blacklist_service import active_symbols
+    if symbol in active_symbols(db):
+        logger.info("开仓跳过 %s：币种在黑名单（手动/连续止损自动）", symbol)
+        _mark_open_block(db, a, "币种在黑名单（手动添加或连续止损自动冷却中）")
         return False
     # 开单类型仅作记录（2026-09-15 拍板）：策略开关不再拦截开仓（未知类型也不拦）
     # EMA 排列前提随指标多数决重设计移除（2026-09-17）：方向判定权已移交指标多数决
@@ -348,6 +356,30 @@ def _attempt_open(
             logger.info("开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f", symbol, margin_used, wallet - occupied)
             _mark_open_block(db, a, f"所需保证金 {margin_used:.2f} 超过可用 {wallet - occupied:.2f}")
             return False
+        # 盘口滑点实测闸门（GRIFFAIN 案例，2026-09-18）：按本单数量走订单簿逐层吃，
+        # 预期滑点超 max_slippage_pct（补丁参数，NULL=默认 0.3%）放弃——簿薄的小币
+        # 吃单会撑宽止损距离、实际风险超预算（0.637% 滑点 → 风险多 17%）。成交额
+        # 门槛拦不住这类币（拉盘时 24h 成交额照样过线）。簿异常 None 不阻断
+        slip_max = (
+            float(cfg.max_slippage_pct)
+            if getattr(cfg, "max_slippage_pct", None) is not None else MAX_SLIPPAGE_PCT
+        )
+        if slip_max > 0:
+            est_slip = trader.market_slippage_estimate(
+                symbol, "BUY" if direction == "long" else "SELL", qty
+            )
+            if est_slip is not None and est_slip > slip_max:
+                logger.info(
+                    "开仓放弃 %s：盘口滑点实测 %.2f%% 超上限 %.2f%%（max_slippage_pct，"
+                    "数量 %s 走簿计算）——盘口过薄，实际风险将超预算",
+                    symbol, est_slip * 100, slip_max * 100, qty,
+                )
+                _mark_open_block(
+                    db, a,
+                    f"盘口滑点实测 {est_slip * 100:.2f}% 超上限 {slip_max * 100:.2f}%"
+                    f"（max_slippage_pct，按本单数量 {qty} 走簿计算），盘口过薄放弃开单",
+                )
+                return False
         # TP1 分批数量预检（下单前）：低于交易所最小数量时整单放弃——
         # 开完仓才挂 TP1 被交易所拒单，会走紧急撤单+平仓，且该失败不落记录，
         # 候选每小时重试"开仓→拒单→平仓"空转（docs/07 §8-A1）。TP2 本就有
@@ -933,6 +965,16 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                 handled += 1
                 logger.info("交易结算 %s %s：pnl=%s（%s%%）", rec.symbol, rec.direction,
                             rec.realized_pnl, rec.pnl_pct)
+                # 黑名单自动登记（D，2026-09-18）：实际止损金额严重超出计划风险预算
+                # （≥1.2 倍）或强平 → 自动拉黑冷却 30 天。失败不阻断结算
+                try:
+                    from app.services.blacklist_service import register_settle
+                    register_settle(db, rec.symbol, rec.risk_amount,
+                                    rec.realized_pnl, rec.exit_reason or "")
+                    db.commit()
+                except Exception as e:
+                    db.rollback()
+                    logger.warning("黑名单登记失败 %s: %s", rec.symbol, e)
                 continue
 
             ratio = amt / qty

@@ -420,6 +420,11 @@ def update_system_config(
         if v is not None and not (0 < v < 0.05):
             raise HTTPException(status_code=400, detail="pullback_market_pct 需为比例值（0.01=1%，<5%）")
         cfg.pullback_market_pct = v
+    if "max_slippage_pct" in body.model_fields_set:
+        v = body.max_slippage_pct
+        if v is not None and not (0 < v < 0.05):
+            raise HTTPException(status_code=400, detail="max_slippage_pct 需为比例值（0.003=0.3%，<5%）")
+        cfg.max_slippage_pct = v
 
     db.commit()
     db.refresh(cfg)
@@ -446,6 +451,8 @@ def update_system_config(
         min_adapt_leverage=cfg.min_adapt_leverage,
         pullback_market_pct=(float(cfg.pullback_market_pct)
                              if cfg.pullback_market_pct is not None else None),
+        max_slippage_pct=(float(cfg.max_slippage_pct)
+                          if cfg.max_slippage_pct is not None else None),
     )
 
 
@@ -699,6 +706,53 @@ def get_ai_progress(scan_result_id: UUID, db: Session = Depends(get_db)):
     else:
         status = "running" if events else "idle"
     return {"scan_result_id": str(scan_result_id), "status": status, "events": events}
+
+
+# ===== 币种黑名单（2026-09-18，GRIFFAIN/4USDT 批次教训） =====
+
+@router.get("/blacklist")
+def blacklist_list(db: Session = Depends(get_db)):
+    """黑名单列表（含已过期/停用行，前端按状态区分展示）"""
+    from app.models.blacklist import SymbolBlacklist
+    from app.services.blacklist_service import active_symbols
+    rows = db.execute(select(SymbolBlacklist).order_by(desc(SymbolBlacklist.created_at))).scalars().all()
+    act = active_symbols(db)
+    now = datetime.utcnow()
+    return [{
+        "id": str(r.id),
+        "symbol": r.symbol,
+        "origin": r.origin,  # manual / auto
+        "reason": r.reason,
+        "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+        "expired": bool(r.origin == "auto" and r.expires_at and r.expires_at <= now),
+        "active": r.symbol in act,
+        "disabled": r.disabled,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    } for r in rows]
+
+
+@router.post("/blacklist")
+def blacklist_add(body: dict, db: Session = Depends(get_db)):
+    """手动添加（永久）。body: {symbol, reason?}"""
+    from app.models.blacklist import SymbolBlacklist
+    from app.services.blacklist_service import add_manual
+    symbol = normalize_symbol(str(body.get("symbol") or "").strip())
+    if not symbol or not symbol.endswith("USDT"):
+        raise HTTPException(status_code=400, detail="请输入有效的 USDT 合约币种（如 4USDT）")
+    row = add_manual(db, symbol, str(body.get("reason") or "").strip())
+    db.commit()
+    return {"id": str(row.id), "symbol": row.symbol, "origin": "manual"}
+
+
+@router.delete("/blacklist/{symbol}")
+def blacklist_remove(symbol: str, db: Session = Depends(get_db)):
+    """手动移除（删行，manual/auto 都可删）"""
+    from app.services.blacklist_service import remove
+    ok = remove(db, normalize_symbol(symbol.strip().upper()))
+    db.commit()
+    if not ok:
+        raise HTTPException(status_code=404, detail="该币种不在黑名单")
+    return {"ok": True}
 
 
 # ===== 技能库（只读，docs/04 §6.5） =====

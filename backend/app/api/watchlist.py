@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
 def normalize_symbol(raw: str) -> str:
     """规范币种输入：去空格转大写，未带 USDT 后缀时自动补全"""
-    s = (raw or "").strip().upper().replace("/", "").replace("-", "")
+    s = (raw or "").strip().upper().replace("/", "").replace("-", "").replace(" ", "")
     if not s:
         raise HTTPException(status_code=400, detail="币种名称不能为空")
     if not s.endswith(("USDT", "USDC", "BUSD", "USD")):
