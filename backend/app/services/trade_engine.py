@@ -30,7 +30,11 @@ from app.models.system_config import SystemConfig
 from app.models.trade import AccountTransfer, TradeEvent, TradeRecord
 from app.services.binance_trader import BinanceTrader, BinanceTradeError
 from app.services.exchange_pool import ExchangePool
-from app.services.risk_guard import liquidation_gate_pct, LIQ_GATE_MMR_FALLBACK
+from app.services.risk_guard import (
+    liquidation_gate_pct,
+    LIQ_GATE_BUFFER,
+    LIQ_GATE_MMR_FALLBACK,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +153,22 @@ def _attempt_open(
             logger.info("开仓放弃 %s：止损距离为 0（sl=%s，现价 %s）", symbol, sl, price)
             _mark_open_block(db, a, f"止损距离为 0（sl={sl}，现价 {price}），无法计算仓位")
             return False
+        # 止损宽度硬上限（docs/12 §10 规则补丁参数 max_stop_pct）：
+        # 「止损过宽」标签的补丁落点——AI 复盘产出建议值写入 system_config，
+        # NULL=不限制（默认）。策略性闸门，先于强平可行性闸门执行
+        if cfg.max_stop_pct is not None:
+            max_stop = float(cfg.max_stop_pct)
+            if stop_pct >= max_stop:
+                logger.info(
+                    "开仓跳过 %s：止损距离 %.2f%% 达到上限 %.2f%%（max_stop_pct 补丁参数）",
+                    symbol, stop_pct * 100, max_stop * 100,
+                )
+                _mark_open_block(
+                    db, a,
+                    f"止损距离 {stop_pct * 100:.2f}% 达到配置上限 {max_stop * 100:.2f}%"
+                    f"（max_stop_pct，复盘补丁参数）",
+                )
+                return False
         # 止损宽度闸门（防强平）：逐仓计划止损亏损 = 名义×stop_pct，保证金 = 名义/杠杆；
         # 止损距离超过 1/杠杆−维持保证金率时，价格未到止损价保证金就先亏光
         # → 被强平并连累撤销 TP 挂单。这类单子固定亏损法无解（预算放不进保证金
@@ -158,9 +178,14 @@ def _attempt_open(
         # 4USDT 案例：写死 MMR 0.5% 低估小币 1.5% 实际值，止损 4.2% 贴 4.5% 旧
         # 闸门通过、跌 3.5% 即被强平，实际亏损超风险预算 10%）。两段校验：
         # ① 粗筛——qty 未定，按第 1 档 MMR；② 复验——notional 确定后按实际档位。
+        # 缓冲可由补丁参数 liq_gate_buffer 覆盖（「执行偏差」标签落点，NULL=默认值）
+        liq_buf = (
+            float(cfg.liq_gate_buffer)
+            if cfg.liq_gate_buffer is not None else LIQ_GATE_BUFFER
+        )
         mmr_1 = trader.bracket_mmr(symbol)
         mmr_eff = mmr_1 if mmr_1 is not None else LIQ_GATE_MMR_FALLBACK
-        liq_gate = liquidation_gate_pct(mmr=mmr_eff)
+        liq_gate = liquidation_gate_pct(mmr=mmr_eff, buffer=liq_buf)
         if stop_pct >= liq_gate:
             logger.info(
                 "开仓跳过 %s：止损距离 %.2f%% 达到强平闸门 %.2f%%（%s× 逐仓，"
@@ -181,7 +206,7 @@ def _attempt_open(
         # 闸门随之收紧；跨档后不达标同样放弃
         mmr_exact = trader.bracket_mmr(symbol, notional) or mmr_eff
         if mmr_exact > mmr_eff:
-            liq_gate2 = liquidation_gate_pct(mmr=mmr_exact)
+            liq_gate2 = liquidation_gate_pct(mmr=mmr_exact, buffer=liq_buf)
             if stop_pct >= liq_gate2:
                 logger.info(
                     "开仓跳过 %s：名义 %.0f 落入高档位（维持保证金率 %.2f%%），"

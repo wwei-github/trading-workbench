@@ -238,3 +238,55 @@ def run_ai_attribution_task():
             close_task(task_id, "failed", error=e)
     finally:
         db.close()
+
+
+# ===== 规则补丁闭环（docs/12 §10，2026-09-18） =====
+
+@celery_app.task(name="app.tasks.review_tasks.run_patch_trigger_task", max_retries=0)
+def run_patch_trigger_task():
+    """每日触发：标签热度检查 → AI 生成补丁草稿（待人工确认合入）"""
+    if not settings.AI_API_KEY:
+        return
+    db = SessionLocal()
+    task_id = ""
+    try:
+        from app.services.patch_service import run_trigger
+        task_id = open_task(task_type="review", task_name="补丁触发", trigger="scheduled")
+        drafts = run_trigger(db)
+        close_task(task_id, "completed",
+                    summary=f"生成 {len(drafts)} 条补丁草稿",
+                    detail={"drafts": [
+                        {"tag": d.target_tag, "kind": d.kind, "id": d.id}
+                        for d in drafts
+                    ]})
+    except Exception as e:
+        logger.exception("补丁触发任务失败: %s", e)
+        if task_id:
+            close_task(task_id, "failed", error=e)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.review_tasks.run_patch_evaluate_task", max_retries=0)
+def run_patch_evaluate_task():
+    """每日评估：active 补丁的三态判定（有效/无效/恶化告警）"""
+    db = SessionLocal()
+    task_id = ""
+    try:
+        from app.services.patch_service import run_evaluate
+        task_id = open_task(task_type="review", task_name="补丁评估", trigger="scheduled")
+        updated = run_evaluate(db)
+        alerts = [p for p in updated if p.verdict == "worse"]
+        close_task(task_id, "completed",
+                   summary=f"评估 {len(updated)} 条补丁，告警 {len(alerts)} 条",
+                   detail={"alerts": [
+                       {"tag": p.target_tag, "id": p.id,
+                        "checks": p.metrics_after_json.get("checks")}
+                       for p in alerts
+                   ]})
+    except Exception as e:
+        logger.exception("补丁评估任务失败: %s", e)
+        if task_id:
+            close_task(task_id, "failed", error=e)
+    finally:
+        db.close()

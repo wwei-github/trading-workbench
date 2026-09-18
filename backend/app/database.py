@@ -160,6 +160,21 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS error_lesson TEXT,
               ADD COLUMN IF NOT EXISTS attributed_at TIMESTAMP
         """))
+        # 规则补丁闭环（docs/12 §10，2026-09-18）：prompt_patches 全新表由
+        # create_all 建表（init_db 已导入 app.models.patch），此处仅补索引与参数列
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_prompt_patches_status "
+            "ON prompt_patches (status)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_prompt_patches_target_tag "
+            "ON prompt_patches (target_tag)"
+        ))
+        conn.execute(text("""
+            ALTER TABLE system_config
+              ADD COLUMN IF NOT EXISTS max_stop_pct NUMERIC(10, 6),
+              ADD COLUMN IF NOT EXISTS liq_gate_buffer NUMERIC(10, 6)
+        """))
         # 确保系统配置表有默认行（初始值从 env 注入）。
         # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有
         # Python 端 default 没有 server_default，漏列的裸 INSERT 会 NotNullViolation
@@ -198,6 +213,6 @@ def _run_migrations(engine):
 
 def init_db():
     """创建所有表 + 幂等迁移"""
-    from app.models import ops, scan, trade  # noqa: F401
+    from app.models import ops, patch, scan, trade  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _run_migrations(engine)

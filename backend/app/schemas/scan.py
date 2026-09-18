@@ -192,6 +192,10 @@ class SystemConfigOut(BaseModel):
     max_open_trades: int = 5
     trading_min_free_pct: float = 0.5  # 开仓最低可用余额占钱包比例（0~1；2026-09-15 由固定 70% 改为可配置）
 
+    # 规则补丁参数（docs/12 §10，比例口径 0.04=4%；NULL=默认/不限制）
+    max_stop_pct: Optional[float] = None
+    liq_gate_buffer: Optional[float] = None
+
     class Config:
         from_attributes = True
 
@@ -220,6 +224,10 @@ class SystemConfigUpdate(BaseModel):
     # 自动交易（docs/06）
     max_open_trades: Optional[int] = None
     trading_min_free_pct: Optional[float] = None  # 0~1，开仓最低可用余额占比
+
+    # 规则补丁参数（比例口径；传 null 恢复默认）
+    max_stop_pct: Optional[float] = None
+    liq_gate_buffer: Optional[float] = None
 
 
 # ===== 复盘统计（docs/04 §10 P2） =====
@@ -317,6 +325,39 @@ class ActualReviewResponse(BaseModel):
 class AttributionTriggerResponse(BaseModel):
     processed: int
     results: list[dict] = []
+
+
+# ===== 规则补丁（docs/12 §10） =====
+
+class PatchOut(BaseModel):
+    id: UUID
+    target_tag: str
+    origin: str  # ai / manual
+    kind: str  # prompt / param
+    param_key: str = ""
+    old_text: str = ""  # 系统原文段落引用（仅展示）
+    new_text: str
+    param_value: str = ""
+    evidence_json: Optional[dict] = None
+    metrics_before_json: Optional[dict] = None
+    metrics_after_json: Optional[dict] = None
+    verdict: str = "pending"  # pending / valid / invalid / worse
+    status: str  # draft / active / valid / invalid / rolled_back
+    applied_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PatchListResponse(BaseModel):
+    items: list[PatchOut]
+    stats: dict  # 当前实时窗口统计（热度/EV/胜率/通过率）
+    rule_tags: list[str]
+
+
+class PatchDetailResponse(PatchOut):
+    """对照明细：继承补丁全字段（metrics_before/after 内含前后指标）"""
 
 
 # ===== 技能库（docs/04 §6，只读） =====

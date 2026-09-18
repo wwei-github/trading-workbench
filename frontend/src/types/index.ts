@@ -157,6 +157,64 @@ export interface SystemConfig {
   dual_judge_enabled?: boolean; // 双评委辩论：对 suggest 决策做多空辩论复核
   max_open_trades?: number; // 自动交易：同时在跑单子上限
   trading_min_free_pct?: number; // 开仓最低可用余额占钱包比例（0~1，原 70% 规则）
+  max_stop_pct?: number | null; // 规则补丁参数：止损宽度硬上限（比例 0.04=4%；null=不限制）
+  liq_gate_buffer?: number | null; // 规则补丁参数：强平闸门缓冲（比例 0.005=0.5%；null=默认）
+}
+
+// ===== 规则补丁（docs/12 §10）=====
+
+export type PatchStatus = 'draft' | 'active' | 'valid' | 'invalid' | 'rolled_back'
+export type PatchVerdict = 'pending' | 'valid' | 'invalid' | 'worse'
+
+export interface PatchMetrics {
+  window_days?: number
+  closed_trades?: number
+  attributed_total?: number
+  tag_counts?: Record<string, number>
+  heat?: Record<string, number>
+  ev_per_trade?: number
+  win_rate?: number
+  pass_rate?: number
+}
+
+export interface Patch {
+  id: string
+  target_tag: string
+  origin: 'ai' | 'manual'
+  kind: 'prompt' | 'param'
+  param_key: string
+  old_text: string // 系统原文段落引用（仅展示）
+  new_text: string
+  param_value: string
+  evidence_json?: { heat_7d?: number; attributed_total_7d?: number; case_trade_ids?: string[] } | null
+  metrics_before_json?: PatchMetrics | null
+  metrics_after_json?: { after?: PatchMetrics; checks?: string[]; evaluated_days?: number } | null
+  verdict: PatchVerdict
+  status: PatchStatus
+  applied_at: string | null
+  created_at: string
+}
+
+export interface PatchListResponse {
+  items: Patch[]
+  stats: PatchMetrics // 当前实时窗口统计
+  rule_tags: string[]
+}
+
+export interface PromptView {
+  system_prompt: string
+  agent_system: string
+  user_custom: string
+  patch_segments: {
+    marker: string
+    tag: string
+    patch_id: string | null
+    status: PatchStatus | 'orphan'
+    verdict: PatchVerdict | null
+    applied_at: string | null
+    text: string
+  }[]
+  params: { max_stop_pct: number | null; liq_gate_buffer: number | null }
 }
 
 // ===== 自动交易（docs/06）=====

@@ -41,4 +41,12 @@ class SystemConfig(Base):
     # （2026-09-15 拍板：trade_type 仅作记录不再拦截开仓；DB 历史列保留不删）
     trading_min_free_pct: Mapped[float] = mapped_column(Numeric(10, 6), default=0.5)
 
+    # 规则补丁参数（docs/12 §10，AI 复盘补丁的程序参数落点；NULL/默认=不限制）：
+    # max_stop_pct：止损宽度硬上限（比例，如 0.04=4%），开仓闸门读取；
+    #                NULL 历史默认=不强平闸门兜底（liquidation_gate_pct）
+    # liq_gate_buffer：强平闸门缓冲（现值常量 LIQ_GATE_BUFFER=0.005），
+    #                程序参数补丁「执行偏差」落点
+    max_stop_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+    liq_gate_buffer: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+
     notes: Mapped[str] = mapped_column(String(255), default="系统运行时配置")

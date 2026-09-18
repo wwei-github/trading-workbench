@@ -26,6 +26,9 @@ from app.schemas.scan import (
     ReviewStatsResponse,
     ActualReviewResponse,
     AttributionTriggerResponse,
+    PatchListResponse,
+    PatchDetailResponse,
+    PatchOut,
 )
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services.scanner import classify_volume
@@ -38,6 +41,7 @@ from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
 from app.models.scan import ScanRecord, ScanResult, AIAnalysis, TradeReview
 from app.models.trade import TradeRecord
+from app.models.patch import PromptPatch
 from app.models.system_config import SystemConfig
 
 router = APIRouter(prefix="/api/scans", tags=["scans"])
@@ -392,6 +396,17 @@ def update_system_config(
         if not (0 <= body.trading_min_free_pct <= 1):
             raise HTTPException(status_code=400, detail="trading_min_free_pct 需在 0~1 之间")
         cfg.trading_min_free_pct = body.trading_min_free_pct
+    # 规则补丁参数（docs/12 §10）：显式传 null = 恢复默认（用 model_fields_set 区分未传）
+    if "max_stop_pct" in body.model_fields_set:
+        v = body.max_stop_pct
+        if v is not None and not (0 < v < 1):
+            raise HTTPException(status_code=400, detail="max_stop_pct 需为比例值（0.04=4%）")
+        cfg.max_stop_pct = v
+    if "liq_gate_buffer" in body.model_fields_set:
+        v = body.liq_gate_buffer
+        if v is not None and not (0 < v < 0.05):
+            raise HTTPException(status_code=400, detail="liq_gate_buffer 需为比例值（0.005=0.5%，<5%）")
+        cfg.liq_gate_buffer = v
 
     db.commit()
     db.refresh(cfg)
@@ -412,6 +427,9 @@ def update_system_config(
         fib_enabled=bool(cfg.fib_enabled),
         max_open_trades=cfg.max_open_trades,
         trading_min_free_pct=float(cfg.trading_min_free_pct),
+        max_stop_pct=float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None,
+        liq_gate_buffer=(float(cfg.liq_gate_buffer)
+                         if cfg.liq_gate_buffer is not None else None),
     )
 
 
@@ -552,6 +570,84 @@ def review_attribute(body: dict, db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail=f"K线获取失败（{e.summary}）")
     processed = sum(1 for r in results if r.get("ok"))
     return {"processed": processed, "results": results}
+
+
+# ===== 规则补丁闭环（docs/12 §10） =====
+
+@router.get("/review/patches", response_model=PatchListResponse)
+def review_patches(db: Session = Depends(get_db)):
+    """补丁列表（告警置顶）：含合入前后对照指标（评估任务写入）"""
+    from app.services.patch_service import RULE_TAGS, window_stats
+
+    rows = db.execute(
+        select(PromptPatch).order_by(PromptPatch.created_at.desc())
+    ).scalars().all()
+    stats = window_stats(db, days=7)  # 当前实时热度（列表底部展示）
+    items = [PatchOut.model_validate(p) for p in rows]
+    # 恶化告警置顶，其余按创建时间倒序
+    items.sort(key=lambda x: (x.verdict != "worse",))
+    return PatchListResponse(items=items, stats=stats, rule_tags=list(RULE_TAGS))
+
+
+@router.get("/review/patches/{patch_id}", response_model=PatchDetailResponse)
+def review_patch_detail(patch_id: UUID, db: Session = Depends(get_db)):
+    """补丁对照明细：前后指标 + 证据案例交易 ID"""
+    p = db.get(PromptPatch, patch_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="补丁不存在")
+    return PatchDetailResponse.model_validate(p)
+
+
+@router.post("/review/patches/{patch_id}/apply", response_model=PatchOut)
+def review_patch_apply(patch_id: UUID, db: Session = Depends(get_db)):
+    """合入草稿：提示词追加覆盖段 / 参数写 system_config 列（即时生效）"""
+    from app.services.patch_service import apply_patch
+    try:
+        return PatchOut.model_validate(apply_patch(db, str(patch_id)))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/review/patches/{patch_id}/rollback", response_model=PatchOut)
+def review_patch_rollback(patch_id: UUID, db: Session = Depends(get_db)):
+    """回滚：提示词删标记段 / 参数恢复默认。页面一键操作，即时生效"""
+    from app.services.patch_service import rollback_patch
+    try:
+        return PatchOut.model_validate(rollback_patch(db, str(patch_id)))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/review/patches/{patch_id}")
+def review_patch_delete(patch_id: UUID, db: Session = Depends(get_db)):
+    """删除草稿（仅 draft 可删；已合入的走回滚保留历史）"""
+    p = db.get(PromptPatch, patch_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="补丁不存在")
+    if p.status != "draft":
+        raise HTTPException(status_code=400, detail="仅草稿可删除，已合入的请走回滚")
+    db.delete(p)
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/review/prompt-view")
+def review_prompt_view(db: Session = Depends(get_db)):
+    """当前生效提示词分层视图：系统自带（代码常量）/用户自定义/补丁覆盖段 + 参数"""
+    from app.services.patch_service import build_prompt_view
+    return build_prompt_view(db)
+
+
+@router.post("/review/patches/trigger")
+def review_patch_trigger(db: Session = Depends(get_db)):
+    """手动触发一次补丁草稿生成（立即调 LLM，不等每日定时）"""
+    from app.services.patch_service import run_trigger
+    if not settings.AI_API_KEY:
+        raise HTTPException(status_code=400, detail="AI 未配置（AI_API_KEY 为空）")
+    drafts = run_trigger(db)
+    return {"created": len(drafts), "drafts": [
+        {"id": d.id, "tag": d.target_tag, "kind": d.kind} for d in drafts
+    ]}
 
 
 # ===== Agent trace 查询（docs/04 §5.9） =====

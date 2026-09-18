@@ -12,6 +12,7 @@ import WatchlistPanel from '../components/WatchlistPanel'
 import SearchPanel from '../components/SearchPanel'
 import ReviewStatsPanel from '../components/ReviewStatsPanel'
 import ReviewActualPanel from '../components/ReviewActualPanel'
+import ReviewPatchesPanel from '../components/ReviewPatchesPanel'
 import TradesPanel from '../components/TradesPanel'
 import TransfersPanel from '../components/TransfersPanel'
 import ColorSchemeToggle from '../components/ColorSchemeToggle'
@@ -264,6 +265,11 @@ export default function ScanResult() {
                       key: 'suggestion',
                       label: 'AI建议质量',
                       children: <ReviewStatsPanel />,
+                    },
+                    {
+                      key: 'patches',
+                      label: '规则补丁',
+                      children: <ReviewPatchesPanel />,
                     },
                   ]}
                 />

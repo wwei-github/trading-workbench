@@ -31,6 +31,9 @@ export default function ScanConfigPanel() {
         max_open_trades: aiConfig.max_open_trades ?? 5,
         // 表单里按百分比（0~100）编辑，保存时换算回 0~1 比例
         trading_min_free_pct: Math.round((aiConfig.trading_min_free_pct ?? 0.5) * 10000) / 100,
+        // 补丁参数（比例→%编辑；null = 未设）
+        max_stop_pct: aiConfig.max_stop_pct != null ? Math.round(aiConfig.max_stop_pct * 10000) / 100 : null,
+        liq_gate_buffer: aiConfig.liq_gate_buffer != null ? Math.round(aiConfig.liq_gate_buffer * 10000) / 100 : null,
         dual_judge_enabled: aiConfig.dual_judge_enabled ?? true,
       })
     }
@@ -49,6 +52,9 @@ export default function ScanConfigPanel() {
         max_open_trades: values.max_open_trades,
         trading_min_free_pct:
           values.trading_min_free_pct != null ? values.trading_min_free_pct / 100 : undefined,
+        // 补丁参数（null/清空 = 恢复默认；后端区分「未传」与「传 null」）
+        max_stop_pct: values.max_stop_pct != null ? values.max_stop_pct / 100 : null,
+        liq_gate_buffer: values.liq_gate_buffer != null ? values.liq_gate_buffer / 100 : null,
         // P2 实验开关
         dual_judge_enabled: values.dual_judge_enabled,
       }
@@ -146,6 +152,22 @@ export default function ScanConfigPanel() {
             tooltip="可用余额低于总资金该比例时不开新单（原 70% 规则；2026-09-15 起默认 50%，此处可改）"
           >
             <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} />
+          </Form.Item>
+
+          <Form.Item
+            label="止损宽度上限（%，留空=不限制）"
+            name="max_stop_pct"
+            tooltip="开仓闸门的止损宽度硬上限（AI 复盘补丁参数 max_stop_pct 的手改入口，与补丁回滚共用同一列）"
+          >
+            <InputNumber min={0.1} max={10} step={0.1} style={{ width: '100%' }} placeholder="不限制" />
+          </Form.Item>
+
+          <Form.Item
+            label="强平闸门缓冲（%，留空=默认 0.5%）"
+            name="liq_gate_buffer"
+            tooltip="强平闸门 = 1/杠杆 − 维持保证金率 − 缓冲（覆盖手续费/资金费/触发价差；AI 复盘补丁参数 liq_gate_buffer 的手改入口）"
+          >
+            <InputNumber min={0.1} max={5} step={0.1} style={{ width: '100%' }} placeholder="0.5" />
           </Form.Item>
 
           {/* AI 实验功能（P2，默认关闭） */}

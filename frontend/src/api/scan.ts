@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountTransfer, AIAnalysis, AiProgress, AttributionResult, KlineData, ListResponse, ActualReview, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
+import type { AccountTransfer, AIAnalysis, AiProgress, AttributionResult, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -94,6 +94,36 @@ export const scanApi = {
       .post<AttributionResult>('/scans/review/attribute',
         tradeId ? { trade_id: tradeId } : {})
       .then((r) => r.data),
+
+  // ===== 规则补丁（docs/12 §10）=====
+
+  // 补丁列表（告警置顶）+ 当前实时窗口统计
+  patches: () =>
+    api.get<PatchListResponse>('/scans/review/patches').then((r) => r.data),
+
+  // 合入草稿（提示词追加覆盖段 / 参数写列，即时生效）
+  applyPatch: (id: string) =>
+    api.post<Patch>(`/scans/review/patches/${id}/apply`).then((r) => r.data),
+
+  // 回滚（提示词删标记段 / 参数恢复默认，即时生效）
+  rollbackPatch: (id: string) =>
+    api.post<Patch>(`/scans/review/patches/${id}/rollback`).then((r) => r.data),
+
+  // 删除草稿（仅 draft 可删）
+  deletePatch: (id: string) =>
+    api.delete(`/scans/review/patches/${id}`).then((r) => r.data),
+
+  // 手动触发一次草稿生成（立即调 LLM）
+  triggerPatches: () =>
+    api
+      .post<{ created: number; drafts: { id: string; tag: string; kind: string }[] }>(
+        '/scans/review/patches/trigger',
+      )
+      .then((r) => r.data),
+
+  // 当前生效提示词分层视图（系统自带/用户自定义/补丁覆盖段 + 参数）
+  promptView: () =>
+    api.get<PromptView>('/scans/review/prompt-view').then((r) => r.data),
 
   // Agent 工具循环轨迹（404 = 分析记录不存在；stage_trace 为 null = 单次调用管线生成）
   aiTrace: (analysisId: string) =>
