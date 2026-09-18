@@ -240,8 +240,8 @@ export const useScanStore = create<ScanState>((set, get) => ({
       const p = scanChanged ? 1 : (page ?? get().resultsPage)
       const ps = pageSize ?? get().resultsPageSize
       const data = id
-        ? await scanApi.results(id, p, ps, 'volume_24h', 'desc', get().filters)
-        : await scanApi.latestResults(p, ps, 'volume_24h', 'desc', get().filters)
+        ? await scanApi.results(id, p, ps, 'quality_score', 'desc', get().filters)
+        : await scanApi.latestResults(p, ps, 'quality_score', 'desc', get().filters)
       // 优先用传入的 id，否则从结果的 scan_record_id 推断
       const newScanId = id || data.items[0]?.scan_record_id || null
       set({
