@@ -8,6 +8,7 @@ import {
 } from "antd";
 import {
   CopyOutlined,
+  ReloadOutlined,
   StarOutlined,
   StarFilled,
 } from "@ant-design/icons";
@@ -52,6 +53,8 @@ export default function ResultTable() {
     analyzingMap,
     triggerAiAnalysis,
     fetchResults,
+    fetchStatus,
+    fetchTasks,
     aiConfig,
     watchlist,
     addToWatchlist,
@@ -118,6 +121,18 @@ export default function ResultTable() {
 
   // 每行的 AI 补充说明输入（scanResultId -> 输入内容）
   const [userInputs, setUserInputs] = useState<Record<string, string>>({});
+
+  // 刷新：先取最新扫描记录 ID，再拉取该次扫描的结果（原顶部工具栏的刷新按钮）
+  const handleRefresh = async () => {
+    await fetchStatus();
+    const latestScanId = useScanStore.getState().status?.last_scan?.id;
+    if (latestScanId) {
+      await fetchResults(latestScanId);
+    } else {
+      fetchResults();
+    }
+    fetchTasks();
+  };
 
   const handleReAnalyze = async (record: ScanResult) => {
     if (!currentScanId) {
@@ -504,6 +519,11 @@ export default function ResultTable() {
           overflow: "hidden",
           paddingRight: 8,
         }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', flexShrink: 0, marginBottom: 4 }}>
+          <Button icon={<ReloadOutlined />} size="small" onClick={handleRefresh}>
+            刷新
+          </Button>
+        </div>
         <Table
           rowKey="id"
           className="result-table"

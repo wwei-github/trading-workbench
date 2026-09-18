@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { Card, Row, Col, Button, Space, Switch, Tooltip, Tabs, message } from 'antd'
-import { ReloadOutlined, ThunderboltOutlined, RobotOutlined, FileTextOutlined, ApiOutlined } from '@ant-design/icons'
+import { ThunderboltOutlined, RobotOutlined, FileTextOutlined, ApiOutlined } from '@ant-design/icons'
 import { useTabMemory } from '../utils/tabMemory'
 import ScanStatus from '../components/ScanStatus'
 import ResultTable from '../components/ResultTable'
@@ -85,18 +85,6 @@ export default function ScanResult() {
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '触发扫描失败')
     }
-  }
-
-  const handleRefresh = async () => {
-    // 先刷新状态拿到最新扫描记录 ID，再拉取该扫描的结果
-    await fetchStatus()
-    const latestScanId = useScanStore.getState().status?.last_scan?.id
-    if (latestScanId) {
-      await fetchResults(latestScanId)
-    } else {
-      fetchResults()
-    }
-    fetchTasks()
   }
 
   const handleAiToggle = async (checked: boolean) => {
@@ -201,9 +189,6 @@ export default function ScanResult() {
               </Tooltip>
               <ColorSchemeToggle />
               <ScanConfigPanel />
-              <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
-                刷新
-              </Button>
               <Button
                 type="primary"
                 icon={<ThunderboltOutlined />}
@@ -279,12 +264,12 @@ export default function ScanResult() {
           {
             key: 'trades',
             label: '交易记录',
-            children: <div style={{ height: '100%', overflow: 'auto' }}><TradesPanel active={activeTab === 'trades'} /></div>,
+            children: <div style={{ height: '100%', overflow: 'auto' }}><TradesPanel /></div>,
           },
           {
             key: 'transfers',
             label: '资金划转',
-            children: <div style={{ height: '100%', overflow: 'auto' }}><TransfersPanel active={activeTab === 'transfers'} /></div>,
+            children: <div style={{ height: '100%', overflow: 'auto' }}><TransfersPanel /></div>,
           },
           {
             key: 'tasks',

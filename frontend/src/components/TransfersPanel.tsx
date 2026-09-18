@@ -4,7 +4,8 @@
  * - 概览：累计转入 / 累计转出 / 净流入；明细表带符号金额着色（随全局涨跌配色）
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Empty, Spin, Table, Tag, message } from 'antd'
+import { Button, Empty, Spin, Table, Tag, message } from 'antd'
+import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
 import { bj } from '../utils/dayjs'
@@ -18,7 +19,7 @@ function fmtTime(s: string | null | undefined): string {
   return bj(s).format('MM-DD HH:mm:ss')
 }
 
-export default function TransfersPanel({ active = true }: { active?: boolean }) {
+export default function TransfersPanel() {
   const [rows, setRows] = useState<AccountTransfer[]>([])
   const [loading, setLoading] = useState(false)
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -34,14 +35,11 @@ export default function TransfersPanel({ active = true }: { active?: boolean }) 
     }
   }, [])
 
-  // 划转每小时巡检同步，30s 轮询保持页面新鲜
-  // active=false（切到其他顶层 Tab）时暂停轮询，避免面板常驻导致的无效请求
+  // 仅初始加载，不做轮询：划转每小时 :10 巡检从交易所同步（按小时变动），
+  // 手动点「刷新」按钮即可获取最新数据
   useEffect(() => {
     fetchData()
-    if (!active) return
-    const timer = setInterval(fetchData, 30000)
-    return () => clearInterval(timer)
-  }, [fetchData, active])
+  }, [fetchData])
 
   // 概览：累计转入 / 累计转出 / 净流入（正=资金净流入合约账户）
   const stats = useMemo(() => {
@@ -109,6 +107,9 @@ export default function TransfersPanel({ active = true }: { active?: boolean }) 
           value={`${stats.net > 0 ? '+' : ''}${stats.net.toFixed(2)} USDT`}
           color={stats.net === 0 ? undefined : schemeValueColor(stats.net, colorScheme)}
         />
+        <Button icon={<ReloadOutlined />} size="small" style={{ marginLeft: 'auto', alignSelf: 'center' }} onClick={fetchData}>
+          刷新
+        </Button>
       </div>
 
       <Spin spinning={loading}>

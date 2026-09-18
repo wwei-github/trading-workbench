@@ -172,7 +172,7 @@ function renderDetail(detail: Record<string, unknown> | null, scheme: ColorSchem
 /**
  * 交易记录页（docs/06）
  */
-export default function TradesPanel({ active = true }: { active?: boolean }) {
+export default function TradesPanel() {
   const [rows, setRows] = useState<TradeRecord[]>([])
   const [eventsMap, setEventsMap] = useState<Record<string, TradeEvent[]>>({})
   const [loading, setLoading] = useState(false)
@@ -193,14 +193,11 @@ export default function TradesPanel({ active = true }: { active?: boolean }) {
     }
   }, [])
 
-  // 初始加载；交易按小时巡检，30s 轮询保持页面新鲜
-  // active=false（切到其他顶层 Tab）时暂停轮询，避免面板常驻导致的无效请求
+  // 仅初始加载，不做轮询：数据源 = 每小时第 10 分结算巡检（按小时变动），
+  // 手动点「刷新」按钮即可获取最新数据
   useEffect(() => {
     fetchData()
-    if (!active) return
-    const timer = setInterval(fetchData, 30000)
-    return () => clearInterval(timer)
-  }, [fetchData, active])
+  }, [fetchData])
 
   // 全局涨跌配色方案（红涨绿跌/绿涨红跌，页面顶部切换）
   const colorScheme = useScanStore((s) => s.colorScheme)
