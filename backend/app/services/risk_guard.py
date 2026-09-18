@@ -90,16 +90,28 @@ def normalize_raw(raw: dict) -> TradeDecision:
 
 
 # 逐仓强平闸门口径（docs/07 §8-A4）：止损距离超过 1/杠杆 − 维持保证金率 时，
-# 价格未到止损价保证金就先亏光 → 被强平（20× 即 4.5%）。
+# 价格未到止损价保证金就先亏光 → 被强平。
+# MMR 必须按币种实际值取（trade_engine 经 binance_trader.bracket_mmr 查
+# /fapi/v1/leverageBracket）：BTC 0.4%、主流币 0.5%、小币第 1 档普遍 1.5%-2.5%。
+# 写死 0.005 的旧口径放行了 4USDT（MMR=1.5%）止损 4.2% 的单子——实际跌 3.5%
+# 即被强平，SL 形同虚设（2026-09-17 案例，实际亏损超风险预算 10%）。
+# 缓冲 LIQ_GATE_BUFFER 覆盖：开平 taker 手续费（约 0.1% 名义）+ 持仓资金费
+# （小币单笔可达 0.2%+ 名义，swing 持仓多日）+ 强平触发价差。
 # trade_engine 开仓闸门（_attempt_open）使用此口径；risk_guard 侧的前置打回
 # 已随"仅保留 RR 铁律"移除（2026-09-15），强平保护由开仓闸门承担
-LIQ_GATE_MMR = 0.005
+LIQ_GATE_MMR = 0.005  # mmr 未提供时的默认（主流币口径）
+LIQ_GATE_MMR_FALLBACK = 0.025  # bracket API 拿不到时的保守兜底（覆盖小币高 MMR）
+LIQ_GATE_BUFFER = 0.005
 
 
-def liquidation_gate_pct(leverage: Optional[int] = None) -> float:
-    """逐仓强平闸门：止损距离占价格的最大安全比例（1/杠杆 − 维持保证金率）"""
+def liquidation_gate_pct(
+    leverage: Optional[int] = None,
+    mmr: Optional[float] = None,
+    buffer: Optional[float] = None,
+) -> float:
+    """逐仓强平闸门：止损距离占价格的最大安全比例（1/杠杆 − MMR − 缓冲）"""
     lev = leverage or settings.TRADING_LEVERAGE
-    return 1 / lev - LIQ_GATE_MMR
+    return 1 / lev - (LIQ_GATE_MMR if mmr is None else mmr) - (LIQ_GATE_BUFFER if buffer is None else buffer)
 
 
 def is_pullback_wait(ai_result: dict, current_price) -> bool:

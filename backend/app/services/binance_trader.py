@@ -28,6 +28,8 @@ class BinanceTradeError(Exception):
 
 # 逐 symbol 的交易规则缓存（进程内）：stepSize/tickSize/minNotional/minQty
 _filters_cache: dict[str, dict] = {}
+# 逐 symbol 的杠杆分档缓存（进程内）：leverageBracket 响应（MMR 按名义档位取）
+_bracket_cache: dict[str, list] = {}
 
 
 class BinanceTrader:
@@ -144,6 +146,30 @@ class BinanceTrader:
                 f"ticker/price 无数据（可能未上架该合约，如 testnet）: {str(r)[:100]}"
             )
         return float(r["price"])
+
+    def bracket_mmr(self, symbol: str, notional: Optional[float] = None) -> Optional[float]:
+        """该币种的维持保证金率（MMR），按名义价值取对应档位；notional=None 取第 1 档。
+
+        /fapi/v1/leverageBracket。失败返回 None（调用方用保守值兜底）。
+        各币第 1 档 MMR 差异极大（BTC 0.4%、主流币 0.5%、小币 1.5%-2.5%），
+        写死 0.5% 会放行「强平先于止损」的单子（4USDT 案例：止损 4.2% 通过
+        4.5% 闸门，但实际 MMR=1.5% → 跌 3.5% 即被强平，SL 形同虚设）。
+        """
+        try:
+            rows = _bracket_cache.get(symbol)
+            if rows is None:
+                rows = self._req("GET", "/fapi/v1/leverageBracket", {"symbol": symbol})
+                _bracket_cache[symbol] = rows
+            brackets = rows[0]["brackets"]  # 按档位升序
+            chosen = brackets[-1]
+            for b in brackets:
+                if notional is None or notional <= float(b["notionalCap"]):
+                    chosen = b
+                    break
+            return float(chosen["maintMarginRatio"])
+        except Exception as e:
+            logger.warning("bracket_mmr(%s) 获取失败: %s", symbol, e)
+            return None
 
     # ── 杠杆 / 保证金模式 ─────────────────────────────────────
 
