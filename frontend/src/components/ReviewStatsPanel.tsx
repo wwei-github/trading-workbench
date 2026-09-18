@@ -80,6 +80,16 @@ export default function ReviewStatsPanel() {
     return { dim: '其他', value: '-' }
   }
 
+  // 期望值（R 倍数）：>0 表示该组每笔平均净赚（含费用假设后仍为正）
+  const renderEv = (v: number | null) =>
+    v == null ? (
+      '-'
+    ) : (
+      <span style={{ color: v > 0 ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down, fontWeight: 600 }}>
+        {v.toFixed(2)}R
+      </span>
+    )
+
   const columns: ColumnsType<ReviewGroupStat> = [
     {
       title: '维度',
@@ -138,6 +148,18 @@ export default function ReviewStatsPanel() {
       key: 'expired',
       width: 70,
       render: (v: number) => <Tag color="default">{v}</Tag>,
+    },
+    {
+      title: (
+        <Tooltip title="期望值（R 倍数）：止损亏 1R、TP1 赚 RR1、TP2 赚 RR2，已扣费用假设（taker 往返 0.1% + 资金费 0.03%/8h）。>0 = 扣费后仍为正期望">
+          期望值
+        </Tooltip>
+      ),
+      dataIndex: 'ev_r',
+      key: 'ev_r',
+      width: 90,
+      sorter: (a, b) => (a.ev_r ?? -99) - (b.ev_r ?? -99),
+      render: (v: number | null) => renderEv(v),
     },
   ]
 
@@ -207,6 +229,20 @@ export default function ReviewStatsPanel() {
               <Col xs={12} sm={8} md={4}>
                 <Card size="small">
                   <Statistic title="超时" value={stats!.expired} />
+                </Card>
+              </Col>
+              <Col xs={12} sm={8} md={4}>
+                <Card size="small">
+                  <Statistic
+                    title={<Tooltip title="扣费用假设后的每笔平均期望（R 倍数）">期望值</Tooltip>}
+                    value={stats!.ev_r == null ? '-' : stats!.ev_r.toFixed(2)}
+                    suffix="R"
+                    valueStyle={{
+                      color: stats!.ev_r != null && stats!.ev_r > 0
+                        ? SCHEME_UP_DOWN[colorScheme].up
+                        : SCHEME_UP_DOWN[colorScheme].down,
+                    }}
+                  />
                 </Card>
               </Col>
             </Row>

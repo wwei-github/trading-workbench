@@ -242,6 +242,7 @@ export interface ReviewGroupStat {
   loss: number;
   expired: number;
   win_rate: number;
+  ev_r: number | null; // 期望值（R 倍数，含费用假设）
 }
 
 // 复盘统计汇总（expired 不计入胜率分母）
@@ -253,7 +254,81 @@ export interface ReviewStats {
   loss: number;
   expired: number;
   win_rate: number;
+  ev_r: number | null;
   groups: ReviewGroupStat[];
+}
+
+// ===== 实盘归因（复盘重设计 2026-09-18）=====
+
+// 实盘总览统计
+export interface ActualOverview {
+  days: number;
+  count: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  pnl: number;
+  avg_win: number;
+  avg_loss: number;
+  payoff: number | null;
+  ev_per_trade: number;
+  avg_hold_hours: number;
+  total_fee: number;
+  total_funding: number;
+  planned_risk_total: number;
+  plan_gap: number;
+  attributed: number;
+}
+
+// 实盘分组统计（dim = 开单类型/方向/出场原因/开仓时段/错误标签）
+export interface ActualGroupStat {
+  dim: string;
+  key: string;
+  count: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  pnl: number;
+  avg_win: number;
+  avg_loss: number;
+  payoff: number | null;
+  ev_per_trade: number;
+}
+
+// 实盘逐笔明细（计划 vs 实际 + AI 归因）
+export interface ActualTradeItem {
+  id: string;
+  symbol: string;
+  direction: string | null;
+  trade_type: string;
+  exit_reason: string | null;
+  entry_plan: number | null;
+  sl_plan: number | null;
+  tp1_plan: number | null;
+  entry_actual: number | null;
+  realized_pnl: number | null;
+  pnl_pct: number | null;
+  risk_amount: number | null;
+  fee_total: number | null;
+  funding_total: number | null;
+  recommendation: number | null;
+  opened_at: string | null;
+  closed_at: string | null;
+  hold_hours: number;
+  error_tags: string[];
+  error_lesson: string | null;
+  attributed: boolean;
+}
+
+export interface ActualReview {
+  overview: ActualOverview;
+  groups: ActualGroupStat[];
+  items: ActualTradeItem[];
+}
+
+export interface AttributionResult {
+  processed: number;
+  results: { symbol: string; ok: boolean; tags?: string[]; lesson?: string; error?: string }[];
 }
 
 // 技能库条目（列表不含 body，详情接口返回全文）

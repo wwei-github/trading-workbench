@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from typing import Optional
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, desc, select, update, func
@@ -23,6 +24,8 @@ from app.schemas.scan import (
     SystemConfigUpdate,
     ReviewGroupStats,
     ReviewStatsResponse,
+    ActualReviewResponse,
+    AttributionTriggerResponse,
 )
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services.scanner import classify_volume
@@ -428,13 +431,52 @@ def _agg_stats(rows: list[TradeReview]) -> dict:
 
 @router.get("/review/stats", response_model=ReviewStatsResponse)
 def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_db)):
-    """AI 建议复盘统计：整体 + 按 signal_type/position/ema_state 分组胜率"""
+    """AI 建议复盘统计：整体 + 按 signal_type/position/ema_state 分组胜率 + 期望值(R)"""
     cutoff = datetime.utcnow() - timedelta(days=days)
     rows = db.execute(
         select(TradeReview).where(TradeReview.created_at >= cutoff)
     ).scalars().all()
 
-    resp = ReviewStatsResponse(days=days, **_agg_stats(rows), groups=[])
+    # 期望值口径（R 倍数）：loss=-1R、win_tp1=RR1、win_tp2=RR2（简化：不分批），
+    # 减去费用假设——taker 往返 0.1% 名义 + 资金费 0.03%/8h（按持仓 K 线数折算），
+    # 费用换算成 R：cost_pct / stop_pct。无对应 AI 三价（手动分析/数据缺失）的行不计
+    ai_map: dict = {}
+    ai_ids = [r.ai_analysis_id for r in rows if r.ai_analysis_id]
+    if ai_ids:
+        for a in db.execute(
+            select(AIAnalysis).where(AIAnalysis.id.in_(ai_ids))
+        ).scalars().all():
+            ai_map[str(a.id)] = a
+
+    def _ev_r(rev: TradeReview) -> Optional[float]:
+        a = ai_map.get(str(rev.ai_analysis_id)) if rev.ai_analysis_id else None
+        if not a or not a.entry_price or not a.stop_loss or not a.take_profit_1:
+            return None
+        entry, stop, tp1 = float(a.entry_price), float(a.stop_loss), float(a.take_profit_1)
+        stop_dist = abs(entry - stop)
+        if stop_dist <= 0 or entry <= 0:
+            return None
+        if rev.outcome == "loss":
+            r_mult = -1.0
+        elif rev.outcome == "win_tp1":
+            r_mult = abs(tp1 - entry) / stop_dist
+        elif rev.outcome == "win_tp2" and a.take_profit_2:
+            r_mult = abs(float(a.take_profit_2) - entry) / stop_dist
+        else:
+            return None
+        cost_pct = 0.001 + 0.0003 * max(1, (rev.bars_to_exit or 1) // 8)  # 往返手续费 + 资金费(0.03%/8h)
+        return round(r_mult - cost_pct / (stop_dist / entry), 3)
+
+    for rev in rows:
+        rev.ev = _ev_r(rev)  # 非映射属性，分组聚合用
+
+    def _agg_ev(items: list) -> Optional[float]:
+        vals = [r.ev for r in items if getattr(r, "ev", None) is not None]
+        return round(sum(vals) / len(vals), 3) if vals else None
+
+    resp = ReviewStatsResponse(
+        days=days, **_agg_stats(rows), ev_r=_agg_ev(rows), groups=[],
+    )
 
     for dim in ("signal_type", "position", "ema_state"):
         buckets: dict[str, list[TradeReview]] = {}
@@ -444,8 +486,72 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
                 buckets.setdefault(key, []).append(r)
         for key, items in sorted(buckets.items()):
             agg = _agg_stats(items)
-            resp.groups.append(ReviewGroupStats(**{dim: key, **agg}))
+            resp.groups.append(ReviewGroupStats(**{dim: key, **agg, "ev_r": _agg_ev(items)}))
     return resp
+
+
+@router.get("/review/actual", response_model=ActualReviewResponse)
+def review_actual(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_db)):
+    """实盘归因统计（复盘主轴）：trade_records 总览 + 分组 + 逐笔计划vs实际 + AI 错误标签"""
+    from app.services.actual_review import backfill_costs, build_actual_review
+    from app.services.binance_trader import BinanceTrader
+
+    try:
+        backfill_costs(db, BinanceTrader(), limit=20)  # 存量平仓单费用一次性回补
+    except Exception as e:
+        # 回补失败不阻塞统计（费用列显示 None）
+        import logging
+        logging.getLogger(__name__).warning("费用回补失败: %s", e)
+
+    return build_actual_review(db, days)
+
+
+@router.post("/review/attribute", response_model=AttributionTriggerResponse)
+def review_attribute(body: dict, db: Session = Depends(get_db)):
+    """手动触发 AI 错误归因：body.trade_id 指定单笔，缺省处理全部待归因（≤5 笔）"""
+    from app.services.actual_review import backfill_costs
+    from app.services.binance_trader import BinanceTrader
+    from app.services.exchange_pool import AllExchangesFailed
+    from app.tasks.review_tasks import run_ai_attribution
+
+    if not settings.AI_API_KEY:
+        raise HTTPException(status_code=400, detail="AI 未配置（AI_API_KEY 为空）")
+
+    trade_id = body.get("trade_id")
+    q = (
+        select(TradeRecord)
+        .where(
+            TradeRecord.status == "CLOSED",
+            TradeRecord.exit_reason.isnot(None),
+            TradeRecord.testnet == settings.TRADING_TESTNET,
+        )
+        .order_by(TradeRecord.closed_at.desc())
+    )
+    if trade_id:
+        try:
+            tid = UUID(str(trade_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="trade_id 格式非法")
+        q = q.where(TradeRecord.id == tid)
+    else:
+        q = q.where(TradeRecord.attributed_at.is_(None))
+    trades = db.execute(q.limit(5)).scalars().all()
+    if not trades:
+        raise HTTPException(status_code=404, detail="没有待归因的交易")
+
+    trader = BinanceTrader()
+    try:
+        backfill_costs(db, trader, limit=5)
+    except Exception:
+        pass
+
+    pool = ExchangePool()
+    try:
+        results = run_ai_attribution(db, pool, trader, trades)
+    except AllExchangesFailed as e:
+        raise HTTPException(status_code=503, detail=f"K线获取失败（{e.summary}）")
+    processed = sum(1 for r in results if r.get("ok"))
+    return {"processed": processed, "results": results}
 
 
 # ===== Agent trace 查询（docs/04 §5.9） =====

@@ -234,6 +234,7 @@ class ReviewGroupStats(BaseModel):
     loss: int = 0
     expired: int = 0
     win_rate: float = 0.0  # (win_tp1+win_tp2)/(win+loss)，expired 不计
+    ev_r: Optional[float] = None  # 期望值（R 倍数，含费用假设）
 
 
 class ReviewStatsResponse(BaseModel):
@@ -244,7 +245,78 @@ class ReviewStatsResponse(BaseModel):
     loss: int = 0
     expired: int = 0
     win_rate: float = 0.0
+    ev_r: Optional[float] = None  # 期望值（R 倍数，含费用假设）
     groups: list[ReviewGroupStats] = []
+
+
+# ===== 实盘归因统计（复盘重设计 2026-09-18） =====
+
+class ActualOverview(BaseModel):
+    days: int
+    count: int = 0
+    wins: int = 0
+    losses: int = 0
+    win_rate: float = 0.0
+    pnl: float = 0.0  # 净盈亏 USDT
+    avg_win: float = 0.0
+    avg_loss: float = 0.0
+    payoff: Optional[float] = None  # 盈亏比 avg_win/|avg_loss|
+    ev_per_trade: float = 0.0  # 期望值/笔 USDT
+    avg_hold_hours: float = 0.0
+    total_fee: float = 0.0  # 手续费合计（负值）
+    total_funding: float = 0.0  # 资金费合计
+    planned_risk_total: float = 0.0  # 计划风险合计（risk_amount）
+    plan_gap: float = 0.0  # 亏超计划的部分（费用/资金费/滑点）
+    attributed: int = 0  # 已 AI 归因笔数
+
+
+class ActualGroupStats(BaseModel):
+    dim: str  # 开单类型/方向/出场原因/开仓时段/错误标签
+    key: str
+    count: int = 0
+    wins: int = 0
+    losses: int = 0
+    win_rate: float = 0.0
+    pnl: float = 0.0
+    avg_win: float = 0.0
+    avg_loss: float = 0.0
+    payoff: Optional[float] = None
+    ev_per_trade: float = 0.0
+
+
+class ActualTradeItem(BaseModel):
+    id: UUID
+    symbol: str
+    direction: Optional[str] = None
+    trade_type: str = "unknown"
+    exit_reason: Optional[str] = None
+    entry_plan: Optional[float] = None
+    sl_plan: Optional[float] = None
+    tp1_plan: Optional[float] = None
+    entry_actual: Optional[float] = None
+    realized_pnl: Optional[float] = None
+    pnl_pct: Optional[float] = None
+    risk_amount: Optional[float] = None
+    fee_total: Optional[float] = None
+    funding_total: Optional[float] = None
+    recommendation: Optional[float] = None
+    opened_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    hold_hours: float = 0.0
+    error_tags: list[str] = []
+    error_lesson: Optional[str] = None
+    attributed: bool = False
+
+
+class ActualReviewResponse(BaseModel):
+    overview: ActualOverview
+    groups: list[ActualGroupStats] = []
+    items: list[ActualTradeItem] = []
+
+
+class AttributionTriggerResponse(BaseModel):
+    processed: int
+    results: list[dict] = []
 
 
 # ===== 技能库（docs/04 §6，只读） =====

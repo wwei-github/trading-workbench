@@ -151,6 +151,15 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS quality_score INTEGER,
               ADD COLUMN IF NOT EXISTS votes_json JSON
         """))
+        # 复盘重设计（2026-09-18）：实盘费用拆分 + AI 错误归因（trade_records）
+        conn.execute(text("""
+            ALTER TABLE trade_records
+              ADD COLUMN IF NOT EXISTS fee_total NUMERIC(20, 6),
+              ADD COLUMN IF NOT EXISTS funding_total NUMERIC(20, 6),
+              ADD COLUMN IF NOT EXISTS error_tags JSON,
+              ADD COLUMN IF NOT EXISTS error_lesson TEXT,
+              ADD COLUMN IF NOT EXISTS attributed_at TIMESTAMP
+        """))
         # 确保系统配置表有默认行（初始值从 env 注入）。
         # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有
         # Python 端 default 没有 server_default，漏列的裸 INSERT 会 NotNullViolation

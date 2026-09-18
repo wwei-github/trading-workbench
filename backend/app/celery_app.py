@@ -52,6 +52,10 @@ celery_app.conf.update(
             "task": "app.tasks.review_tasks.run_trade_review_task",
             "schedule": crontab(minute=10),  # 每小时第10分：与结算巡检同节点（2026-09-15 由每 30 分钟改为每小时一次）
         },
+        "ai-attribution": {
+            "task": "app.tasks.review_tasks.run_ai_attribution_task",
+            "schedule": crontab(minute=14),  # 每小时第14分：结算/建议复盘之后，对已平仓交易做 AI 错误归因
+        },
         "auto-trade": {
             "task": "app.tasks.trade_tasks.run_auto_trade_task",
             "schedule": crontab(minute=10),  # 每小时第10分：结算/巡检在跑仓位（开仓唯一通道 = 分析后即时开仓）

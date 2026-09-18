@@ -768,6 +768,18 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                     float(r.get("income") or 0)
                     for r in rows if r.get("incomeType") == "INSURANCE_CLEAR"
                 )
+                # 费用拆分（复盘归因 2026-09-18）：手续费与资金费单列，
+                # 供「计划 vs 实际」偏差分析（4USDT 案例：费用+资金费吃掉超预算 10%）
+                fee_total = sum(
+                    float(r.get("income") or 0)
+                    for r in rows if r.get("incomeType") == "COMMISSION"
+                )
+                funding_total = sum(
+                    float(r.get("income") or 0)
+                    for r in rows if r.get("incomeType") == "FUNDING_FEE"
+                )
+                rec.fee_total = round(fee_total, 6)
+                rec.funding_total = round(funding_total, 6)
                 pnl = round(trader.sum_income(rows, trader.INCOME_KEEP), 6)
                 rec.realized_pnl = pnl
                 rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
@@ -789,6 +801,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                 _add_event(db, rec, "SETTLE", {
                     "realized_pnl": rec.realized_pnl, "pnl_pct": rec.pnl_pct,
                     "exit_reason": rec.exit_reason,
+                    "fee_total": rec.fee_total, "funding_total": rec.funding_total,
                 })
                 db.commit()
                 handled += 1

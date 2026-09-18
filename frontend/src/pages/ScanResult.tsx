@@ -11,6 +11,7 @@ import StrategyPromptPanel from '../components/StrategyPromptPanel'
 import WatchlistPanel from '../components/WatchlistPanel'
 import SearchPanel from '../components/SearchPanel'
 import ReviewStatsPanel from '../components/ReviewStatsPanel'
+import ReviewActualPanel from '../components/ReviewActualPanel'
 import TradesPanel from '../components/TradesPanel'
 import TransfersPanel from '../components/TransfersPanel'
 import ColorSchemeToggle from '../components/ColorSchemeToggle'
@@ -35,7 +36,7 @@ export default function ScanResult() {
   // Tab 记忆：刷新后保留刷新前的聚焦 tab
   const [activeTab, switchTab] = useTabMemory(
     'tabs.scanResult',
-    ['results', 'watchlist', 'search', 'strategy', 'trades', 'transfers', 'tasks', 'logs'],
+    ['results', 'watchlist', 'search', 'strategy', 'review', 'trades', 'transfers', 'tasks', 'logs'],
   )
 
   useEffect(() => {
@@ -243,6 +244,29 @@ export default function ScanResult() {
             children: (
               <div style={{ height: '100%', overflow: 'auto' }}>
                 <StrategyPromptPanel />
+              </div>
+            ),
+          },
+          {
+            key: 'review',
+            label: '复盘',
+            children: (
+              <div style={{ height: '100%', overflow: 'auto' }}>
+                <Tabs
+                  defaultActiveKey="actual"
+                  items={[
+                    {
+                      key: 'actual',
+                      label: '实盘归因',
+                      children: <ReviewActualPanel />,
+                    },
+                    {
+                      key: 'suggestion',
+                      label: 'AI建议质量',
+                      children: <ReviewStatsPanel />,
+                    },
+                  ]}
+                />
               </div>
             ),
           },

@@ -7,7 +7,7 @@
 统计维度快照（signal_type/position/ema_state）随复盘落库，供分组胜率统计。
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -16,6 +16,7 @@ from app.celery_app import celery_app
 from app.config import settings
 from app.database import SessionLocal
 from app.models.scan import AIAnalysis, ScanResult, TradeReview
+from app.models.trade import TradeRecord
 from app.services.exchange_pool import ExchangePool
 from app.services.task_log import close_task, open_task
 
@@ -145,5 +146,95 @@ def run_trade_review_task():
     except Exception as e:
         logger.exception("复盘任务失败: %s", e)
         close_task(task_id, "failed", error=e)
+    finally:
+        db.close()
+
+
+# ===== AI 错误归因（复盘重设计 2026-09-18） =====
+
+# 单轮最多归因笔数（每笔一次 LLM 调用，控制开销与单轮时长）
+ATTRIBUTION_BATCH = 5
+
+
+def run_ai_attribution(db, pool, trader, trades: list) -> list[dict]:
+    """对给定已平仓交易逐笔 AI 归因并落库（定时任务与手动触发共用）。
+
+    返回逐笔结果 [{symbol, ok, tags/lesson/error}]。
+    """
+    from app.models.system_config import SystemConfig
+    from app.services.ai_attribution import _interval_ms, attribute_trade
+
+    cfg = db.get(SystemConfig, 1)
+    interval = cfg.kline_interval if cfg else "1h"
+
+    results = []
+    for rec in trades:
+        item = {"symbol": rec.symbol, "opened_at": rec.opened_at.isoformat() if rec.opened_at else None}
+        try:
+            # K 线区间：开仓前 ~100 根 + 持仓全程（与交易复盘K线同源口径）
+            opened = rec.opened_at
+            closed = rec.closed_at or datetime.utcnow()
+            held_bars = 0
+            if opened:
+                held_bars = int((closed - opened).total_seconds() * 1000 / _interval_ms(interval)) + 1
+            bars = min(100 + max(held_bars, 1), 480)
+            end_ms = int(closed.replace(tzinfo=timezone.utc).timestamp() * 1000) - 1
+            klines = pool.get_klines_range(rec.symbol, interval, bars, end_ms) or []
+
+            verdict = attribute_trade(rec, klines)
+            rec.error_tags = verdict["tags"]
+            rec.error_lesson = verdict["lesson"]
+            rec.attributed_at = datetime.utcnow()
+            db.commit()
+            item.update(ok=True, tags=verdict["tags"], lesson=verdict["lesson"])
+            logger.info("AI 归因 %s %s: %s", rec.symbol, rec.direction, verdict["tags"])
+        except Exception as e:
+            db.rollback()
+            item.update(ok=False, error=str(e)[:200])
+            logger.warning("AI 归因失败 %s: %s", rec.symbol, e)
+        results.append(item)
+    return results
+
+
+@celery_app.task(name="app.tasks.review_tasks.run_ai_attribution_task", max_retries=0)
+def run_ai_attribution_task():
+    """定时归因：找已平仓未归因的交易，逐笔 AI 复盘出错误标签与教训"""
+    if not settings.AI_API_KEY:
+        return  # AI 未配置，静默跳过
+    db = SessionLocal()
+    pool = ExchangePool()
+    trader = None
+    task_id = ""
+    try:
+        # 费用回补先行（归因事实包需要 fee/funding）
+        from app.services.binance_trader import BinanceTrader
+        from app.services.actual_review import backfill_costs
+        trader = BinanceTrader()
+        backfill_costs(db, trader, limit=ATTRIBUTION_BATCH)
+
+        trades = db.execute(
+            select(TradeRecord)
+            .where(
+                TradeRecord.status == "CLOSED",
+                TradeRecord.exit_reason.isnot(None),
+                TradeRecord.attributed_at.is_(None),
+                TradeRecord.testnet == settings.TRADING_TESTNET,
+            )
+            .order_by(TradeRecord.closed_at.desc())
+            .limit(ATTRIBUTION_BATCH)
+        ).scalars().all()
+        if not trades:
+            return  # 无待归因不记任务记录（避免刷屏）
+
+        task_id = open_task(task_type="review", task_name="AI错误归因", trigger="scheduled")
+        results = run_ai_attribution(db, pool, trader, trades)
+        ok_n = sum(1 for r in results if r.get("ok"))
+        close_task(task_id, "completed", summary=f"归因 {ok_n}/{len(results)} 笔", detail={
+            "items": results,
+        })
+    except Exception as e:
+        logger.exception("AI 归因任务失败: %s", e)
+        if task_id:
+            close_task(task_id, "failed", error=e)
     finally:
         db.close()

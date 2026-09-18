@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountTransfer, AIAnalysis, AiProgress, KlineData, ListResponse, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
+import type { AccountTransfer, AIAnalysis, AiProgress, AttributionResult, KlineData, ListResponse, ActualReview, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -78,6 +78,21 @@ export const scanApi = {
   reviewStats: (days = 30) =>
     api
       .get<ReviewStats>('/scans/review/stats', { params: { days } })
+      .then((r) => r.data),
+
+  // ===== 实盘归因（复盘重设计 2026-09-18）=====
+
+  // 实盘归因统计（trade_records 主轴：总览 + 分组 + 逐笔计划vs实际 + AI 错误标签）
+  actualReview: (days = 30) =>
+    api
+      .get<ActualReview>('/scans/review/actual', { params: { days } })
+      .then((r) => r.data),
+
+  // 手动触发 AI 错误归因（tradeId 缺省 = 处理全部待归因 ≤5 笔）
+  attributeTrades: (tradeId?: string) =>
+    api
+      .post<AttributionResult>('/scans/review/attribute',
+        tradeId ? { trade_id: tradeId } : {})
       .then((r) => r.data),
 
   // Agent 工具循环轨迹（404 = 分析记录不存在；stage_trace 为 null = 单次调用管线生成）
