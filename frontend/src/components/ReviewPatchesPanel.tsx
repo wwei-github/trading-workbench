@@ -309,6 +309,7 @@ export default function ReviewPatchesPanel() {
           loading={loading}
           columns={columns}
           dataSource={data?.items ?? []}
+          scroll={{ y: 400 }}
           pagination={false}
           locale={{ emptyText: <Empty description="暂无补丁（等待归因数据积累或手动触发生成）" /> }}
         />

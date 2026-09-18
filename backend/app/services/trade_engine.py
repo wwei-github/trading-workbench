@@ -276,31 +276,54 @@ def _attempt_open(
             )
         risk_budget = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
         notional = risk_budget / stop_pct
-        # 复验：名义大跨入高档位时 MMR 更高（如 BTC 名义 >2 万 U 档 MMR 0.5%→1%），
-        # 闸门随之收紧；动态杠杆同步下调，降到下限仍兜不住才放弃
-        mmr_exact = trader.bracket_mmr(symbol, notional) or mmr_eff
-        if mmr_exact > mmr_eff:
-            lev_exact = _adaptive_leverage(stop_pct, mmr_exact, liq_buf)
-            if lev_exact < lev_min:
-                logger.info(
-                    "开仓跳过 %s：名义 %.0f 落入高档位（维持保证金率 %.2f%%），"
-                    "止损距离 %.2f%% 下动态安全杠杆 %s× 低于下限 %s×",
-                    symbol, notional, mmr_exact * 100,
-                    stop_pct * 100, lev_exact, lev_min,
-                )
-                _mark_open_block(
-                    db, a,
-                    f"名义 {notional:.0f} 落入高档位（维持保证金率 {mmr_exact * 100:.2f}%），"
-                    f"动态安全杠杆 {lev_exact}× 低于下限 {lev_min}×"
-                    f"（min_adapt_leverage 限制），放弃开单",
-                )
-                return False
-            if lev_exact < leverage:
-                leverage = lev_exact
-                logger.info(
-                    "开仓 %s：名义 %.0f 落入高档位（维持保证金率 %.2f%%），杠杆下调至 %s×",
-                    symbol, notional, mmr_exact * 100, leverage,
-                )
+        # 复验按名义所在档位精确取（2026-09-18 -2027 修复）：MMR / 档位最大杠杆 /
+        # 档位名义上限。杠杆超档位 initialLeverage 会被交易所拒单（-2027 Exceeded
+        # the maximum allowable position at current leverage——固定 20× 且名义落
+        # 入低杠杆档时必现），此处封顶；名义超最大档 notionalCap 同样被拒，放弃
+        info = trader.bracket_info(symbol, notional)
+        if info is not None:
+            mmr_exact, lev_max, notional_cap = info
+        else:
+            mmr_exact = trader.bracket_mmr(symbol, notional) or mmr_eff
+            lev_max = notional_cap = None
+        if notional_cap is not None and notional > notional_cap:
+            logger.info(
+                "开仓放弃 %s：名义 %.0f 超该币最大档名义上限 %.0f（交易所仓位限制）",
+                symbol, notional, notional_cap,
+            )
+            _mark_open_block(
+                db, a,
+                f"名义 {notional:.0f} 超该币最大档名义上限 {notional_cap:.0f}"
+                f"（交易所仓位限制）",
+            )
+            return False
+        # 杠杆上限取三者最小：配置上限 / 档位最大杠杆 / 精确档 MMR 下的强平安全杠杆；
+        # 低于下限 lev_min 仍放弃（限制层不变）
+        cap_reason = None
+        if lev_max is not None and leverage > lev_max:
+            cap_reason = f"名义 {notional:.0f} 档位最大杠杆 {lev_max}×"
+            leverage = lev_max
+        lev_exact = _adaptive_leverage(stop_pct, mmr_exact, liq_buf)
+        if lev_exact < leverage:
+            cap_reason = f"精确档维持保证金率 {mmr_exact * 100:.2f}% 的强平闸门"
+            leverage = lev_exact
+        if leverage < lev_min:
+            logger.info(
+                "开仓跳过 %s：止损距离 %.2f%%，复验后杠杆 %s× 低于下限 %s×（%s）",
+                symbol, stop_pct * 100, leverage, lev_min, cap_reason or "强平闸门",
+            )
+            _mark_open_block(
+                db, a,
+                f"止损距离 {stop_pct * 100:.2f}%，复验后杠杆 {leverage}×"
+                f" 低于下限 {lev_min}×（{cap_reason or '强平闸门'}；min_adapt_leverage 限制）",
+            )
+            return False
+        if cap_reason:
+            logger.info(
+                "开仓 %s：杠杆下调至 %s×（%s，强平距离 %.2f%%）",
+                symbol, leverage, cap_reason,
+                liquidation_gate_pct(leverage=leverage, mmr=mmr_exact, buffer=liq_buf) * 100,
+            )
         qty = trader.round_qty(symbol, notional / price)
         f = trader.filters(symbol)
         if qty < f["min_qty"] or qty * price < f["min_notional"]:

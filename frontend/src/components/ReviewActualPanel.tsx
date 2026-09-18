@@ -329,6 +329,7 @@ export default function ReviewActualPanel() {
                 columns={groupColumns}
                 dataSource={data!.groups}
                 size="small"
+                scroll={{ y: 240 }}
                 pagination={false}
               />
             </Card>
@@ -340,7 +341,7 @@ export default function ReviewActualPanel() {
                 columns={itemColumns}
                 dataSource={data!.items}
                 size="small"
-                scroll={{ x: 900 }}
+                scroll={{ x: 900, y: 400 }}
                 expandable={{
                   expandedRowRender: (t) =>
                     t.attributed ? (

@@ -266,6 +266,7 @@ export default function ReviewStatsPanel() {
                 columns={columns}
                 dataSource={stats!.groups}
                 size="small"
+                scroll={{ y: 320 }}
                 pagination={false}
               />
             </Card>

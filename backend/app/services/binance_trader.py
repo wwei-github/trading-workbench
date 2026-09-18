@@ -147,13 +147,13 @@ class BinanceTrader:
             )
         return float(r["price"])
 
-    def bracket_mmr(self, symbol: str, notional: Optional[float] = None) -> Optional[float]:
-        """该币种的维持保证金率（MMR），按名义价值取对应档位；notional=None 取第 1 档。
+    def bracket_info(self, symbol: str, notional: float) -> Optional[tuple]:
+        """名义价值所在档位的 (MMR, 档位最大杠杆 initialLeverage, 档位名义上限 notionalCap)。
 
         /fapi/v1/leverageBracket。失败返回 None（调用方用保守值兜底）。
-        各币第 1 档 MMR 差异极大（BTC 0.4%、主流币 0.5%、小币 1.5%-2.5%），
-        写死 0.5% 会放行「强平先于止损」的单子（4USDT 案例：止损 4.2% 通过
-        4.5% 闸门，但实际 MMR=1.5% → 跌 3.5% 即被强平，SL 形同虚设）。
+        -2027 修复：下单名义落在某档位时，设置的杠杆超过该档 initialLeverage
+        会被拒单（Exceeded the maximum allowable position at current leverage）；
+        名义超最大档 notionalCap 同样拒。
         """
         try:
             rows = _bracket_cache.get(symbol)
@@ -161,15 +161,29 @@ class BinanceTrader:
                 rows = self._req("GET", "/fapi/v1/leverageBracket", {"symbol": symbol})
                 _bracket_cache[symbol] = rows
             brackets = rows[0]["brackets"]  # 按档位升序
-            chosen = brackets[-1]
+            chosen = brackets[-1]  # notional 超所有档时落最大档（调用方按 cap 拦截）
             for b in brackets:
-                if notional is None or notional <= float(b["notionalCap"]):
+                if notional <= float(b["notionalCap"]):
                     chosen = b
                     break
-            return float(chosen["maintMarginRatio"])
+            return (
+                float(chosen["maintMarginRatio"]),
+                int(chosen["initialLeverage"]),
+                float(chosen["notionalCap"]),
+            )
         except Exception as e:
-            logger.warning("bracket_mmr(%s) 获取失败: %s", symbol, e)
+            logger.warning("bracket_info(%s) 获取失败: %s", symbol, e)
             return None
+
+    def bracket_mmr(self, symbol: str, notional: Optional[float] = None) -> Optional[float]:
+        """该币种的维持保证金率（MMR），按名义价值取对应档位；notional=None 取第 1 档。
+
+        各币第 1 档 MMR 差异极大（BTC 0.4%、主流币 0.5%、小币 1.5%-2.5%），
+        写死 0.5% 会放行「强平先于止损」的单子（4USDT 案例：止损 4.2% 通过
+        4.5% 闸门，但实际 MMR=1.5% → 跌 3.5% 即被强平，SL 形同虚设）。
+        """
+        info = self.bracket_info(symbol, notional if notional is not None else 0.0)
+        return info[0] if info else None
 
     # ── 杠杆 / 保证金模式 ─────────────────────────────────────
 
