@@ -279,6 +279,7 @@ export interface TradeKlineData {
   exit_reason: string | null
   entry_price: number | null // 开单时初始值（OPEN 事件快照）
   stop_loss: number | null
+  current_stop_loss: number | null // 跟踪止损现值（SL_MOVE 后更新；与初始止损不同时弹窗加画现止损线）
   tp1: number | null
   tp2: number | null
   opened_at: string | null

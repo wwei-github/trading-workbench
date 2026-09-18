@@ -42,6 +42,12 @@ const fmtTime = (sec: number) => dayjs.unix(sec).tz(BJ).format('MM-DD HH:mm')
 // 后端 UTC naive → 毫秒（统一按 UTC 解析）
 const utcMs = (v: string) => dayjs.utc(v).valueOf()
 
+// 现止损线颜色：琥珀色，与初始止损（跌色）区分
+const CUR_SL_COLOR = '#faad14'
+// 价签最小间距与错位步长（px）：现止损=保本价时与开仓线同高，需上下错开
+const TAG_GAP = 13
+const TAG_SHIFT = 14
+
 // 事件 → 图上箭头标记的位置与文案（多空方向决定箭头在K线上方还是下方）
 function eventMarker(
   ev: TradeKlineEvent,
@@ -294,11 +300,12 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
     const hasTP2 = data.tp2 != null && data.tp2 > 0
     if (hasTP2) drawZone(data.tp1, data.tp2, 'rgba(38, 166, 154, 0.08)')
 
-    // 水平线 + 右侧价签
-    const drawLine = (price: number | null, color: string, label: string, dashed: boolean) => {
-      if (price == null) return
+    // 水平线 + 右侧价签（tagDy：价签垂直偏移，防同价位标签重叠；返回价签中心 y 供后续防撞）
+    const tagYs: number[] = []
+    const drawLine = (price: number | null, color: string, label: string, dashed: boolean, tagDy = 0) => {
+      if (price == null) return null
       const y = series.priceToCoordinate(price)
-      if (y == null) return
+      if (y == null) return null
       const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
       line.setAttribute('x1', String(x0))
       line.setAttribute('y1', String(y))
@@ -318,10 +325,11 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
       const boxW = tw + 8
       const boxH = 13
       const boxX = rightEdge - boxW
+      const tagY = y + tagDy
 
       const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
       rect.setAttribute('x', String(boxX))
-      rect.setAttribute('y', String(y - boxH / 2))
+      rect.setAttribute('y', String(tagY - boxH / 2))
       rect.setAttribute('width', String(boxW))
       rect.setAttribute('height', String(boxH))
       rect.setAttribute('fill', color)
@@ -329,18 +337,32 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
 
       const t = document.createElementNS('http://www.w3.org/2000/svg', 'text')
       t.setAttribute('x', String(boxX + 4))
-      t.setAttribute('y', String(y + 3))
+      t.setAttribute('y', String(tagY + 3))
       t.setAttribute('fill', '#fff')
       t.setAttribute('font-size', '10')
       t.setAttribute('font-family', 'monospace')
       t.setAttribute('font-weight', 'bold')
       t.textContent = text
       svg.appendChild(t)
+      tagYs.push(tagY)
+      return tagY
     }
     drawLine(data.entry_price, colorEntry, isL ? '开多' : '开空', false)
     drawLine(data.stop_loss, colorSL, '止损', true)
     drawLine(data.tp1, colorTP, '止盈1', true)
     if (hasTP2) drawLine(data.tp2, colorTP, '止盈2', true)
+
+    // 现止损（跟踪移动后的最新位置）：与初始止损不同才加画（琥珀色区分）；
+    // 价签与已有标签同高时上下错位（保本止损=开仓价的场景）
+    const curSl = data.current_stop_loss
+    if (curSl != null && data.stop_loss != null && Math.abs(curSl - data.stop_loss) > 1e-12) {
+      const cy = series.priceToCoordinate(curSl)
+      if (cy != null) {
+        const clash = tagYs.find((uy) => Math.abs(uy - cy) < TAG_GAP)
+        const dy = clash == null ? 0 : clash > cy ? -TAG_SHIFT : TAG_SHIFT
+        drawLine(curSl, CUR_SL_COLOR, '现止损', true, dy)
+      }
+    }
   }, [data, colorScheme])
 
   useEffect(() => {
@@ -416,6 +438,11 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
               {' '}· 止盈1 <span style={{ color: SCHEME_UP_DOWN[colorScheme].up }}>{fmtPrice(data.tp1)}</span>
             </>
           )}
+          {data.current_stop_loss != null && data.stop_loss != null && Math.abs(data.current_stop_loss - data.stop_loss) > 1e-12 && (
+            <>
+              {' '}· 现止损 <span style={{ color: CUR_SL_COLOR }}>{fmtPrice(data.current_stop_loss)}</span>
+            </>
+          )}
           <span style={{ marginLeft: 8, color: '#5a6377' }}>{bj(data.opened_at).format('MM-DD HH:mm')} 开仓</span>
         </div>
       </div>
@@ -443,7 +470,7 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
         }}
       />
       <Text type="secondary" style={{ position: 'absolute', bottom: 6, right: 10, fontSize: 10, zIndex: 20, color: '#5a6377' }}>
-        初始止损止盈（开单时快照）· 跟踪止损移动见操作历史
+        止损/止盈1/2 为开单时快照 · 琥珀线=现止损（跟踪移动后）· 移动明细见操作历史
       </Text>
     </div>
   )

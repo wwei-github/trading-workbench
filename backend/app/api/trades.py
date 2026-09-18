@@ -122,6 +122,7 @@ def trade_klines(trade_id: str, db: Session = Depends(get_db)):
         "exit_reason": rec.exit_reason,
         "entry_price": entry_price,
         "stop_loss": stop_loss,
+        "current_stop_loss": _nz(rec.stop_loss),  # 跟踪止损现值（SL_MOVE 后更新）；与初始快照不同时前端加画现止损线
         "tp1": tp1,
         "tp2": tp2,
         "opened_at": opened_dt.isoformat() if opened_dt else None,
