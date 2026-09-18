@@ -439,6 +439,7 @@ def _agg_stats(rows: list[TradeReview]) -> dict:
     wins = sum(1 for r in rows if r.outcome in ("win_tp1", "win_tp2"))
     losses = sum(1 for r in rows if r.outcome == "loss")
     return {
+        "total": len(rows),
         "win_tp1": sum(1 for r in rows if r.outcome == "win_tp1"),
         "win_tp2": sum(1 for r in rows if r.outcome == "win_tp2"),
         "loss": losses,
