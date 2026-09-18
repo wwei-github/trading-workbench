@@ -49,4 +49,14 @@ class SystemConfig(Base):
     max_stop_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
     liq_gate_buffer: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
 
+    # min_adapt_leverage：动态杠杆下限（整数倍数）。止损距离超 20× 强平闸门时
+    # 按安全杠杆降杠杆开单（2026-09-18），安全杠杆低于此下限的宽止损单放弃——
+    # 限制层：不是所有单都动态算完就开。NULL=恢复默认（config.TRADING_LEVERAGE_MIN=8）
+    min_adapt_leverage: Mapped[int] = mapped_column(nullable=True, default=None)
+
+    # pullback_market_pct：入场偏离容差（比例，0.01=1%）。现价偏离闸门 +
+    # 待回踩单市价入场判定共用（距离 ≤ 容差 → 市价进场，RR 按现价复算）；
+    # NULL=恢复默认（risk_guard.PULLBACK_MARKET_PCT=0.01）
+    pullback_market_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+
     notes: Mapped[str] = mapped_column(String(255), default="系统运行时配置")

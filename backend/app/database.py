@@ -173,7 +173,9 @@ def _run_migrations(engine):
         conn.execute(text("""
             ALTER TABLE system_config
               ADD COLUMN IF NOT EXISTS max_stop_pct NUMERIC(10, 6),
-              ADD COLUMN IF NOT EXISTS liq_gate_buffer NUMERIC(10, 6)
+              ADD COLUMN IF NOT EXISTS liq_gate_buffer NUMERIC(10, 6),
+              ADD COLUMN IF NOT EXISTS min_adapt_leverage INTEGER,
+              ADD COLUMN IF NOT EXISTS pullback_market_pct NUMERIC(10, 6)
         """))
         # 确保系统配置表有默认行（初始值从 env 注入）。
         # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有

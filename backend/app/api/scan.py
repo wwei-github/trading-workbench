@@ -407,6 +407,19 @@ def update_system_config(
         if v is not None and not (0 < v < 0.05):
             raise HTTPException(status_code=400, detail="liq_gate_buffer 需为比例值（0.005=0.5%，<5%）")
         cfg.liq_gate_buffer = v
+    if "min_adapt_leverage" in body.model_fields_set:
+        v = body.min_adapt_leverage
+        if v is not None and not (1 <= v <= settings.TRADING_LEVERAGE):
+            raise HTTPException(
+                status_code=400,
+                detail=f"min_adapt_leverage 需在 1~{settings.TRADING_LEVERAGE} 之间（动态杠杆下限，倍数）",
+            )
+        cfg.min_adapt_leverage = v
+    if "pullback_market_pct" in body.model_fields_set:
+        v = body.pullback_market_pct
+        if v is not None and not (0 < v < 0.05):
+            raise HTTPException(status_code=400, detail="pullback_market_pct 需为比例值（0.01=1%，<5%）")
+        cfg.pullback_market_pct = v
 
     db.commit()
     db.refresh(cfg)
@@ -430,6 +443,9 @@ def update_system_config(
         max_stop_pct=float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None,
         liq_gate_buffer=(float(cfg.liq_gate_buffer)
                          if cfg.liq_gate_buffer is not None else None),
+        min_adapt_leverage=cfg.min_adapt_leverage,
+        pullback_market_pct=(float(cfg.pullback_market_pct)
+                             if cfg.pullback_market_pct is not None else None),
     )
 
 

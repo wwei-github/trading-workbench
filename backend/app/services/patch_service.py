@@ -37,6 +37,8 @@ RULE_TAGS = tuple(t for t in ERROR_TAGS if t not in ("行情异常", "无明显�
 PARAM_KEYS = {
     "max_stop_pct": "止损宽度硬上限（比例，0.04=4%；NULL=不限制）",
     "liq_gate_buffer": "强平闸门缓冲（比例，0.005=0.5%；NULL=恢复默认 0.005）",
+    "min_adapt_leverage": "动态杠杆下限（整数倍数，8=允许降到 8×；NULL=恢复默认 8）",
+    "pullback_market_pct": "入场偏离容差（比例，0.01=1%；待回踩距离 ≤ 容差时市价入场；NULL=恢复默认 0.01）",
 }
 
 HEAT_THRESHOLD = 0.5      # 热度阈值：近7天该标签笔数/已归因笔数
@@ -194,6 +196,9 @@ def _generate_draft(db: Session, tag: str, heat: float, stats: dict,
             "max_stop_pct": (float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None),
             "liq_gate_buffer": (float(cfg.liq_gate_buffer)
                                 if cfg.liq_gate_buffer is not None else None),
+            "min_adapt_leverage": cfg.min_adapt_leverage,
+            "pullback_market_pct": (float(cfg.pullback_market_pct)
+                                    if cfg.pullback_market_pct is not None else None),
         },
         "active_patches": [
             {"tag": p.target_tag, "kind": p.kind, "new_text": p.new_text[:200]}
@@ -456,5 +461,8 @@ def build_prompt_view(db: Session) -> dict:
                              if cfg.max_stop_pct is not None else None),
             "liq_gate_buffer": (float(cfg.liq_gate_buffer)
                                 if cfg.liq_gate_buffer is not None else None),
+            "min_adapt_leverage": cfg.min_adapt_leverage,
+            "pullback_market_pct": (float(cfg.pullback_market_pct)
+                                    if cfg.pullback_market_pct is not None else None),
         },
     }

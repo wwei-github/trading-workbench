@@ -63,7 +63,9 @@ class Settings(BaseSettings):
     TRADING_RISK_PCT: float = 3.0     # 止损金额占风险基数比例（%）
     TRADING_CAPITAL_TIERS: str = "100,200,500,1000,2000,5000,10000"  # 风险基数分档（向下落档）
     TRADING_MIN_FREE_PCT: float = 0.5  # 可用余额/总资金 下限（2026-09-15 由 70% 改 50%；系统配置表 trading_min_free_pct 可改，此值仅作缺列/缺行兜底）
-    TRADING_LEVERAGE: int = 20        # 杠杆（逐仓 ISOLATED）
+    TRADING_LEVERAGE: int = 20        # 杠杆上限（逐仓 ISOLATED；止损距离超闸门时动态下调）
+    TRADING_LEVERAGE_MIN: int = 8     # 动态杠杆下限默认值（system_config.min_adapt_leverage 可页面覆盖）：
+                                      # 限制层——安全杠杆低于下限的宽止损单放弃，不是所有单都算完就开
 
     class Config:
         env_file = ".env"

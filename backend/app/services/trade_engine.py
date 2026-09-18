@@ -34,6 +34,7 @@ from app.services.risk_guard import (
     liquidation_gate_pct,
     LIQ_GATE_BUFFER,
     LIQ_GATE_MMR_FALLBACK,
+    PULLBACK_MARKET_PCT,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,21 @@ def _capital_base(wallet: float) -> float:
         if wallet >= t:
             base = t
     return base
+
+
+def _adaptive_leverage(stop_pct: float, mmr: float, buffer: float) -> int:
+    """按止损距离反推逐仓安全杠杆（2026-09-18 动态杠杆）。
+
+    固定亏损法下止损亏损金额 = 名义×stop_pct，与杠杆无关；杠杆只决定
+    保证金占用（名义/杠杆）与强平距离（≈1/杠杆−MMR）。从配置上限
+    TRADING_LEVERAGE 向下搜索首个「强平距离 > 止损距离」的杠杆，止损计划
+    （止损价/仓位/风险金额）保持不变，仅多占保证金换取强平不可达。
+    返回 0 表示降到 1× 仍兜不住（stop_pct ≥ 1−MMR−缓冲，实际由下限闸门拦截）。
+    """
+    for lev in range(settings.TRADING_LEVERAGE, 0, -1):
+        if stop_pct < liquidation_gate_pct(leverage=lev, mmr=mmr, buffer=buffer):
+            return lev
+    return 0
 
 
 def _add_event(db: Session, rec: TradeRecord, event_type: str, detail: Optional[dict] = None) -> None:
@@ -124,10 +140,37 @@ def _attempt_open(
     tp2 = float(a.take_profit_2 or 0)
     try:
         price = trader.price(symbol)
-        if abs(price - entry_ai) / entry_ai > 0.01:
-            logger.info("开仓作废 %s：现价偏离 AI 入场价超 1%%", symbol)
-            _mark_open_block(db, a, f"现价偏离 AI 入场价超 1%（入场 {entry_ai}，开仓时现价 {price}）")
+        # 入场偏离容差（pullback_market_pct 补丁参数，NULL=默认 1%）：现价对 AI
+        # 入场价的最大偏离。一兼两职：① 普通单的开仓漂移上限；② 待回踩单的
+        # 市价入场判定——回踩距离 ≤ 容差时不再干等，市价进场（RR 按现价复算
+        # 见下方闸门），超容差维持「待回踩不下单」
+        dev_tol = (
+            float(cfg.pullback_market_pct)
+            if cfg.pullback_market_pct is not None else PULLBACK_MARKET_PCT
+        )
+        deviation = abs(price - entry_ai) / entry_ai
+        if deviation > dev_tol:
+            if a.pullback_wait:
+                logger.info(
+                    "开仓跳过 %s：待回踩距离 %.2f%% 超容差 %.2f%%（pullback_market_pct），"
+                    "市价进不满足盈亏计划，维持待回踩不下单",
+                    symbol, deviation * 100, dev_tol * 100,
+                )
+                _mark_open_block(
+                    db, a,
+                    f"待回踩距离 {deviation * 100:.2f}% 超容差 {dev_tol * 100:.2f}%"
+                    f"（pullback_market_pct），市价进不满足盈亏计划，维持待回踩",
+                )
+            else:
+                logger.info("开仓作废 %s：现价偏离 AI 入场价超 %.2f%%", symbol, dev_tol * 100)
+                _mark_open_block(db, a, f"现价偏离 AI 入场价超 {dev_tol * 100:.2f}%"
+                                        f"（入场 {entry_ai}，开仓时现价 {price}）")
             return False
+        if a.pullback_wait:
+            logger.info(
+                "开仓 %s：待回踩距离 %.2f%% ≤ 容差 %.2f%%，市价入场（RR 按现价复算把关）",
+                symbol, deviation * 100, dev_tol * 100,
+            )
         # 方向-价格可挂性复核（2026-09-16 恢复，交易所侧最后一道防线）：
         # SL/TP1 触发价必须在现价的正确侧，否则条件单被拒单（-2021 would
         # immediately trigger）→ 开完仓挂 SL 必败走紧急平仓空转。risk_guard
@@ -145,6 +188,22 @@ def _attempt_open(
                 f"TP1={tp1}，现价 {price}）",
             )
             return False
+        # 盈亏比按现价复算（2026-09-18 补上，此前仅 AI 入场价口径校验）：市价成交
+        # 价就是现价，待回踩单/漂移单偏离 AI 入场价后风险变宽、盈利变窄，RR 随之
+        # 退化——按现价复算仍须 ≥AI_RR_MIN 铁律，否则市价进不划算
+        if sl != price:
+            rr_now = abs(tp1 - price) / abs(price - sl)
+            if rr_now < settings.AI_RR_MIN:
+                logger.info(
+                    "开仓跳过 %s：盈亏比按现价复算 %.2f < %s（入场 %s，现价 %s）",
+                    symbol, rr_now, settings.AI_RR_MIN, entry_ai, price,
+                )
+                _mark_open_block(
+                    db, a,
+                    f"盈亏比按现价复算 {rr_now:.2f} < {settings.AI_RR_MIN}"
+                    f"（入场 {entry_ai}，现价 {price}），市价进不满足盈亏计划",
+                )
+                return False
         # 固定亏损仓位：基数分档 × 3% ÷ 止损距离
         stop_pct = abs(price - sl) / price
         if stop_pct <= 0:
@@ -169,15 +228,14 @@ def _attempt_open(
                     f"（max_stop_pct，复盘补丁参数）",
                 )
                 return False
-        # 止损宽度闸门（防强平）：逐仓计划止损亏损 = 名义×stop_pct，保证金 = 名义/杠杆；
-        # 止损距离超过 1/杠杆−维持保证金率时，价格未到止损价保证金就先亏光
-        # → 被强平并连累撤销 TP 挂单。这类单子固定亏损法无解（预算放不进保证金
-        # 里），直接跳过（risk_guard 侧前置拦截已于 2026-09-15 随"仅保留 RR 铁律"
-        # 移除，本闸门是强平风险的唯一防线）。
-        # MMR 按币种实际档位取（BATUSDT 案例：止损 6.4% 被强平→加入闸门；
-        # 4USDT 案例：写死 MMR 0.5% 低估小币 1.5% 实际值，止损 4.2% 贴 4.5% 旧
-        # 闸门通过、跌 3.5% 即被强平，实际亏损超风险预算 10%）。两段校验：
-        # ① 粗筛——qty 未定，按第 1 档 MMR；② 复验——notional 确定后按实际档位。
+        # 止损宽度闸门（防强平）→ 动态杠杆适配（2026-09-18）：止损距离超过
+        # 上限杠杆的强平闸门时不再直接放弃，而是按 _adaptive_leverage 反推
+        # 安全杠杆继续开单；低于下限 TRADING_LEVERAGE_MIN 才放弃（止损过宽
+        # 到连 3× 逐仓都先强平）。这类单子固定亏损法本无解（预算放不进保证金
+        # 里），此前一律跳过（BATUSDT 案例：止损 6.4% 被强平→20× 下加闸门；
+        # 4USDT 案例：写死 MMR 0.5% 低估小币 1.5% 实际值→MMR 按币种实际档位取）。
+        # 两段校验：① 粗筛——qty 未定，按第 1 档 MMR；② 复验——notional 确定
+        # 后按实际档位（跨高档位 MMR 更高时杠杆再次下调）。
         # 缓冲可由补丁参数 liq_gate_buffer 覆盖（「执行偏差」标签落点，NULL=默认值）
         liq_buf = (
             float(cfg.liq_gate_buffer)
@@ -185,41 +243,64 @@ def _attempt_open(
         )
         mmr_1 = trader.bracket_mmr(symbol)
         mmr_eff = mmr_1 if mmr_1 is not None else LIQ_GATE_MMR_FALLBACK
-        liq_gate = liquidation_gate_pct(mmr=mmr_eff, buffer=liq_buf)
-        if stop_pct >= liq_gate:
+        # 限制层（2026-09-18）：动态杠杆下限，页面补丁参数 min_adapt_leverage 可覆盖
+        # （NULL=默认 config.TRADING_LEVERAGE_MIN）——不是所有宽止损单都算完就开，
+        # 安全杠杆低于下限的直接放弃
+        lev_min = (
+            int(cfg.min_adapt_leverage)
+            if cfg.min_adapt_leverage is not None else settings.TRADING_LEVERAGE_MIN
+        )
+        leverage = _adaptive_leverage(stop_pct, mmr_eff, liq_buf)
+        if leverage < lev_min:
+            liq_gate_min = liquidation_gate_pct(leverage=lev_min, mmr=mmr_eff, buffer=liq_buf)
             logger.info(
-                "开仓跳过 %s：止损距离 %.2f%% 达到强平闸门 %.2f%%（%s× 逐仓，"
-                "维持保证金率 %.2f%% + 缓冲），价格未到止损必先被强平",
-                symbol, stop_pct * 100, liq_gate * 100,
-                settings.TRADING_LEVERAGE, mmr_eff * 100,
+                "开仓跳过 %s：止损距离 %.2f%% 过宽，动态安全杠杆 %s× 低于下限 %s×"
+                "（下限闸门 %.2f%%，维持保证金率 %.2f%% + 缓冲），min_adapt_leverage 限制",
+                symbol, stop_pct * 100, leverage, lev_min,
+                liq_gate_min * 100, mmr_eff * 100,
             )
             _mark_open_block(
                 db, a,
-                f"止损距离 {stop_pct * 100:.2f}% 达到强平闸门 {liq_gate * 100:.2f}%"
-                f"（{settings.TRADING_LEVERAGE}× 逐仓，维持保证金率 {mmr_eff * 100:.2f}%"
-                f"+缓冲），价格未到止损必先被强平",
+                f"止损距离 {stop_pct * 100:.2f}% 过宽，动态安全杠杆 {leverage}×"
+                f" 低于下限 {lev_min}×（min_adapt_leverage 限制），放弃开单",
             )
             return False
+        if leverage < settings.TRADING_LEVERAGE:
+            liq_gate = liquidation_gate_pct(leverage=leverage, mmr=mmr_eff, buffer=liq_buf)
+            logger.info(
+                "开仓 %s：止损距离 %.2f%% 超 %s× 强平闸门 %.2f%%（维持保证金率 %.2f%%"
+                "+ 缓冲），动态降杠杆至 %s×（强平距离 %.2f%%）",
+                symbol, stop_pct * 100, settings.TRADING_LEVERAGE,
+                liquidation_gate_pct(mmr=mmr_eff, buffer=liq_buf) * 100,
+                mmr_eff * 100, leverage, liq_gate * 100,
+            )
         risk_budget = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
         notional = risk_budget / stop_pct
         # 复验：名义大跨入高档位时 MMR 更高（如 BTC 名义 >2 万 U 档 MMR 0.5%→1%），
-        # 闸门随之收紧；跨档后不达标同样放弃
+        # 闸门随之收紧；动态杠杆同步下调，降到下限仍兜不住才放弃
         mmr_exact = trader.bracket_mmr(symbol, notional) or mmr_eff
         if mmr_exact > mmr_eff:
-            liq_gate2 = liquidation_gate_pct(mmr=mmr_exact, buffer=liq_buf)
-            if stop_pct >= liq_gate2:
+            lev_exact = _adaptive_leverage(stop_pct, mmr_exact, liq_buf)
+            if lev_exact < lev_min:
                 logger.info(
                     "开仓跳过 %s：名义 %.0f 落入高档位（维持保证金率 %.2f%%），"
-                    "止损距离 %.2f%% 达到强平闸门 %.2f%%",
+                    "止损距离 %.2f%% 下动态安全杠杆 %s× 低于下限 %s×",
                     symbol, notional, mmr_exact * 100,
-                    stop_pct * 100, liq_gate2 * 100,
+                    stop_pct * 100, lev_exact, lev_min,
                 )
                 _mark_open_block(
                     db, a,
                     f"名义 {notional:.0f} 落入高档位（维持保证金率 {mmr_exact * 100:.2f}%），"
-                    f"止损距离 {stop_pct * 100:.2f}% 达到强平闸门 {liq_gate2 * 100:.2f}%",
+                    f"动态安全杠杆 {lev_exact}× 低于下限 {lev_min}×"
+                    f"（min_adapt_leverage 限制），放弃开单",
                 )
                 return False
+            if lev_exact < leverage:
+                leverage = lev_exact
+                logger.info(
+                    "开仓 %s：名义 %.0f 落入高档位（维持保证金率 %.2f%%），杠杆下调至 %s×",
+                    symbol, notional, mmr_exact * 100, leverage,
+                )
         qty = trader.round_qty(symbol, notional / price)
         f = trader.filters(symbol)
         if qty < f["min_qty"] or qty * price < f["min_notional"]:
@@ -239,7 +320,6 @@ def _attempt_open(
             logger.info("开仓 %s：数量 %s 超交易所单笔上限 %s，按上限缩减（实际风险低于 %.0f%% 预算）",
                         symbol, qty, max_qty, settings.TRADING_RISK_PCT)
             qty = trader.round_qty(symbol, max_qty)
-        leverage = settings.TRADING_LEVERAGE
         margin_used = qty * price / leverage
         if margin_used > wallet - occupied:
             logger.info("开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f", symbol, margin_used, wallet - occupied)
@@ -437,10 +517,8 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
         select(TradeRecord.id).where(TradeRecord.ai_analysis_id == a.id)
     ).first():
         return False  # 该分析已开过仓
-    if a.pullback_wait:
-        logger.info("即时开仓跳过 %s：AI 建议等回踩（仅展示待回踩标识，不下单）", a.symbol)
-        _mark_open_block(db, a, "AI 建议等回踩至入场价，仅展示待回踩标识、不下单")
-        return False
+    # 待回踩单不再在此跳过（2026-09-18）：回踩距离 ≤ pullback_market_pct 容差
+    # 时市价入场、超容差维持不下单——判定移入 _attempt_open 偏离闸门
     positions = trader.positions()
     if len(positions) >= cfg.max_open_trades:
         logger.info("即时开仓跳过 %s：在跑单子已达上限 %d", a.symbol, cfg.max_open_trades)

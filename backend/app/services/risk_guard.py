@@ -103,6 +103,13 @@ LIQ_GATE_MMR = 0.005  # mmr 未提供时的默认（主流币口径）
 LIQ_GATE_MMR_FALLBACK = 0.025  # bracket API 拿不到时的保守兜底（覆盖小币高 MMR）
 LIQ_GATE_BUFFER = 0.005
 
+# 入场偏离容差（system_config.pullback_market_pct 可页面覆盖，NULL=默认 0.01）：
+# 开仓时现价对 AI 入场价的最大偏离。2026-09-18 起一兼两职：
+# ① 普通单的开仓漂移上限（原写死 1%）；② 待回踩单的市价入场判定——
+# 回踩距离 ≤ 容差时市价进场（RR 按现价复算仍须 ≥AI_RR_MIN，见开仓闸门），
+# 超容差才维持「待回踩不下单」。回踩不远时市价进也能满足盈亏比，不必干等
+PULLBACK_MARKET_PCT = 0.01
+
 
 def liquidation_gate_pct(
     leverage: Optional[int] = None,

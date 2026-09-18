@@ -159,6 +159,8 @@ export interface SystemConfig {
   trading_min_free_pct?: number; // 开仓最低可用余额占钱包比例（0~1，原 70% 规则）
   max_stop_pct?: number | null; // 规则补丁参数：止损宽度硬上限（比例 0.04=4%；null=不限制）
   liq_gate_buffer?: number | null; // 规则补丁参数：强平闸门缓冲（比例 0.005=0.5%；null=默认）
+  min_adapt_leverage?: number | null; // 动态杠杆下限（整数倍数；null=默认 8，宽止损单限制层）
+  pullback_market_pct?: number | null; // 入场偏离容差（比例 0.01=1%；null=默认；待回踩距离 ≤ 容差时市价入场）
 }
 
 // ===== 规则补丁（docs/12 §10）=====

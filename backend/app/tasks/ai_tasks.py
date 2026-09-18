@@ -356,9 +356,8 @@ def _dispatch_immediate_open(a: AIAnalysis) -> None:
         return
     if float(a.recommendation or 0) < settings.TRADING_MIN_RECOMMENDATION:
         return
-    if a.pullback_wait:
-        logger.info("跳过开仓 %s：AI 建议等回踩（仅展示待回踩标识，不下单）", a.symbol)
-        return
+    # 待回踩单照常分发（2026-09-18）：回踩距离 ≤ pullback_market_pct 容差时
+    # 市价入场、超容差在 _attempt_open 偏离闸门拦下——不再一刀切不下单
     if not settings.TRADING_ENABLED:
         return
     celery_app.send_task(
