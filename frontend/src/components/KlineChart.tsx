@@ -583,10 +583,12 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
           svg.appendChild(r)
         }
       }
-      // 止盈2区：止盈1 → 止盈2（更浅绿）
-      if (ai.take_profit_1 != null && ai.take_profit_2 != null) {
+      // 止盈2区：止盈1 → 止盈2（更浅绿）；tp2 为 0/null（未设止盈二）时不绘制
+      const tp2 = ai.take_profit_2
+      const hasTP2 = tp2 != null && tp2 > 0
+      if (ai.take_profit_1 != null && hasTP2) {
         const yTP1 = series.priceToCoordinate(ai.take_profit_1)
-        const yTP2 = series.priceToCoordinate(ai.take_profit_2)
+        const yTP2 = series.priceToCoordinate(tp2)
         if (yTP1 != null && yTP2 != null) {
           const top = Math.min(yTP1, yTP2)
           const h = Math.abs(yTP2 - yTP1)
@@ -662,10 +664,10 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
         const yTP1 = series.priceToCoordinate(ai.take_profit_1)
         if (yTP1 != null) drawLine(yTP1, colorTP1, '止盈1', ai.take_profit_1, true)
       }
-      // 止盈2线（虚线）
-      if (ai.take_profit_2 != null) {
-        const yTP2 = series.priceToCoordinate(ai.take_profit_2)
-        if (yTP2 != null) drawLine(yTP2, colorTP2, '止盈2', ai.take_profit_2, true)
+      // 止盈2线（虚线；tp2 为 0/null 时不绘制）
+      if (hasTP2) {
+        const yTP2 = series.priceToCoordinate(tp2)
+        if (yTP2 != null) drawLine(yTP2, colorTP2, '止盈2', tp2, true)
       }
     }
 
