@@ -25,12 +25,14 @@ import {
   AccountBookOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
+  DownOutlined,
   HistoryOutlined,
   MinusCircleOutlined,
   ReloadOutlined,
   RobotOutlined,
   RocketOutlined,
   SwapOutlined,
+  UpOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
@@ -169,6 +171,49 @@ function renderDetail(detail: Record<string, unknown> | null, scheme: ColorSchem
   )
 }
 
+// 事件卡片折叠态的关键信息摘要（一行，随事件类型取核心值）：
+// 止损移动 → from→to；盈亏类 → 着色金额；开仓/成交 → 成交均价；错误 → 短文案
+function eventSummary(ev: TradeEvent, scheme: ColorScheme): React.ReactNode {
+  const d = (ev.detail || {}) as Record<string, unknown>
+  if (d.from != null && d.to != null) {
+    return (
+      <span style={{ fontSize: 12, color: '#595959', fontVariantNumeric: 'tabular-nums' }}>
+        {String(d.from)} → {String(d.to)}
+      </span>
+    )
+  }
+  for (const k of ['realized_pnl', 'pnl', 'insurance_clear']) {
+    if (d[k] != null) {
+      const n = Number(d[k])
+      if (!Number.isNaN(n)) {
+        return (
+          <strong
+            style={{
+              fontSize: 12,
+              color: n > 0 ? SCHEME_UP_DOWN[scheme].up : n < 0 ? SCHEME_UP_DOWN[scheme].down : '#595959',
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {n > 0 ? '+' : ''}
+            {n.toFixed(2)} U
+          </strong>
+        )
+      }
+    }
+  }
+  if (d.fill_price != null) {
+    return <span style={{ fontSize: 12, color: '#595959' }}>成交 {String(d.fill_price)}</span>
+  }
+  if (d.price != null) {
+    return <span style={{ fontSize: 12, color: '#595959' }}>价格 {String(d.price)}</span>
+  }
+  if (d.message) {
+    const msg = String(d.message)
+    return <span style={{ fontSize: 12, color: '#ff4d4f' }}>{msg.length > 36 ? `${msg.slice(0, 36)}…` : msg}</span>
+  }
+  return null
+}
+
 /**
  * 交易记录页（docs/06）
  */
@@ -203,6 +248,16 @@ export default function TradesPanel() {
   const colorScheme = useScanStore((s) => s.colorScheme)
   // 整行点击展开/收起（受控 keys；点展开图标时 stopPropagation 由 onRow 内部处理）
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([])
+  // 操作历史事件卡片展开态（key = `${rec.id}:${idx}`，默认全部折叠只显关键信息）
+  const [expandedEvts, setExpandedEvts] = useState<Set<string>>(new Set())
+  const toggleEvt = (key: string) => {
+    setExpandedEvts((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
   // 复盘K线弹窗（点击币种名打开）
   const [replayTrade, setReplayTrade] = useState<TradeRecord | null>(null)
 
@@ -292,7 +347,7 @@ export default function TradesPanel() {
           共 <span style={{ color: '#595959', fontWeight: 600 }}>{evts.length}</span> 条事件
         </div>
         <Timeline
-          items={evts.map((ev) => {
+          items={evts.map((ev, idx) => {
             const meta =
               EVENT_META[ev.event_type] || {
                 label: ev.event_type,
@@ -300,6 +355,10 @@ export default function TradesPanel() {
                 icon: <HistoryOutlined />,
               }
             const detail = renderDetail(ev.detail, colorScheme)
+            // 折叠态关键信息（有详情才可展开；无详情事件直接平铺摘要）
+            const summary = eventSummary(ev, colorScheme)
+            const evtKey = `${rec.id}:${idx}`
+            const evtOpen = expandedEvts.has(evtKey)
             return {
               dot: (
                 <span
@@ -327,7 +386,9 @@ export default function TradesPanel() {
                     borderRadius: 8,
                     padding: detail ? '8px 12px' : '10px 12px',
                     marginBottom: 2,
+                    cursor: detail ? 'pointer' : 'default',
                   }}
+                  onClick={() => detail && toggleEvt(evtKey)}
                 >
                   <div
                     style={{
@@ -340,18 +401,38 @@ export default function TradesPanel() {
                     <span style={{ fontWeight: 600, fontSize: 13, color: meta.color }}>
                       {meta.label}
                     </span>
+                    {summary && !evtOpen && (
+                      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {summary}
+                      </span>
+                    )}
                     <span
                       style={{
                         fontSize: 12,
                         color: '#999',
                         marginLeft: 'auto',
                         fontVariantNumeric: 'tabular-nums',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
                       }}
                     >
                       {fmtTime(ev.created_at)}
+                      {detail && (
+                        <span
+                          style={{
+                            color: '#bfbfbf',
+                            fontSize: 10,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                          }}
+                        >
+                          {evtOpen ? <UpOutlined /> : <DownOutlined />}
+                        </span>
+                      )}
                     </span>
                   </div>
-                  {detail}
+                  {evtOpen && detail}
                 </div>
               ),
             }
