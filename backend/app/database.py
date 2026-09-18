@@ -179,11 +179,11 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS max_slippage_pct NUMERIC(10, 6)
         """))
         # 币种黑名单（2026-09-18）：全新表由 create_all 建表（init_db 已导入
-        # app.models.blacklist），此处补索引（create_all 对 unique=True 的 symbol
-        # 已有唯一约束，再补普通索引便于按名查询的确定性）
+        # app.models.blacklist）。symbol 带 unique=True 自带唯一索引，不再建
+        # ix_symbol_blacklist_symbol（模型同名额外索引曾致 beat DuplicateTable）
         conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_symbol_blacklist_symbol "
-            "ON symbol_blacklist (symbol)"
+            "CREATE INDEX IF NOT EXISTS ix_symbol_blacklist_origin "
+            "ON symbol_blacklist (origin)"
         ))
         # 确保系统配置表有默认行（初始值从 env 注入）。
         # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有

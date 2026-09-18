@@ -37,6 +37,5 @@ class SymbolBlacklist(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
-Index("ix_symbol_blacklist_symbol", SymbolBlacklist.symbol)
+    # symbol 唯一约束自带索引，无需再建 Index（否则 create_all 与迁移重复建
+    # 同名索引，beat 启动崩溃 DuplicateTable——2026-09-18 部署实测）
