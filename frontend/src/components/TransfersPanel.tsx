@@ -18,7 +18,7 @@ function fmtTime(s: string | null | undefined): string {
   return bj(s).format('MM-DD HH:mm:ss')
 }
 
-export default function TransfersPanel() {
+export default function TransfersPanel({ active = true }: { active?: boolean }) {
   const [rows, setRows] = useState<AccountTransfer[]>([])
   const [loading, setLoading] = useState(false)
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -35,11 +35,13 @@ export default function TransfersPanel() {
   }, [])
 
   // 划转每小时巡检同步，30s 轮询保持页面新鲜
+  // active=false（切到其他顶层 Tab）时暂停轮询，避免面板常驻导致的无效请求
   useEffect(() => {
     fetchData()
+    if (!active) return
     const timer = setInterval(fetchData, 30000)
     return () => clearInterval(timer)
-  }, [fetchData])
+  }, [fetchData, active])
 
   // 概览：累计转入 / 累计转出 / 净流入（正=资金净流入合约账户）
   const stats = useMemo(() => {

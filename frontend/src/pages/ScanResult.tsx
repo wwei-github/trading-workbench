@@ -279,12 +279,12 @@ export default function ScanResult() {
           {
             key: 'trades',
             label: '交易记录',
-            children: <div style={{ height: '100%', overflow: 'auto' }}><TradesPanel /></div>,
+            children: <div style={{ height: '100%', overflow: 'auto' }}><TradesPanel active={activeTab === 'trades'} /></div>,
           },
           {
             key: 'transfers',
             label: '资金划转',
-            children: <div style={{ height: '100%', overflow: 'auto' }}><TransfersPanel /></div>,
+            children: <div style={{ height: '100%', overflow: 'auto' }}><TransfersPanel active={activeTab === 'transfers'} /></div>,
           },
           {
             key: 'tasks',
