@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     AI_API_KEY: str = ""
     AI_BASE_URL: str = "https://api.openai.com/v1"
     AI_MODEL: str = "gpt-4o-mini"
+    # 飞书群机器人（业务日报等通知用；未配置时通知静默跳过）
+    FEISHU_NOTIFY_WEBHOOK: str = ""
 
     # AI 管线（P0，docs/04 §10）
     LLM_CONCURRENCY: int = 4          # LLM 全局并发上限（Redis 信号量）

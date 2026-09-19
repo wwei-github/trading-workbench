@@ -33,6 +33,7 @@ celery_app = Celery(
         "app.tasks.ai_tasks",
         "app.tasks.review_tasks",
         "app.tasks.trade_tasks",
+        "app.tasks.daily_report",
     ],
 )
 
@@ -67,6 +68,11 @@ celery_app.conf.update(
         "auto-trade": {
             "task": "app.tasks.trade_tasks.run_auto_trade_task",
             "schedule": crontab(minute=10),  # 每小时第10分：结算/巡检在跑仓位（开仓唯一通道 = 分析后即时开仓）
+        },
+        "daily-report": {
+            "task": "app.tasks.daily_report.notify_daily_report",
+            # 每日 00:05 UTC（北京 08:05）：日线 00:00 UTC 收盘后 5 分钟，推主流币收盘价 + 前一日交易统计
+            "schedule": crontab(minute=5, hour=0),
         },
     },
     task_acks_late=True,
