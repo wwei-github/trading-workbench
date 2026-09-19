@@ -123,7 +123,7 @@ jobs:
               -o StrictHostKeyChecking=accept-new \
               -o ConnectTimeout=15 \
               root@${{ secrets.DEPLOY_HOST }} \
-              'cd /home/ubuntu/github/trading-workbench && bash scripts/release.sh deploy ${{ steps.prep.outputs.scope }} ${{ github.sha }}' \
+              'cd /home/ubuntu/github/trading-workbench && git pull --ff-only origin main && bash scripts/release.sh deploy ${{ steps.prep.outputs.scope }} ${{ github.sha }}' \
           2>&1 | tee deploy_output.log
           # release.sh 失败会非零退出，pipefail 让本步骤失败
 
