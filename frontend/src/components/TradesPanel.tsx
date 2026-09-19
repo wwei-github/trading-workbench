@@ -10,7 +10,9 @@ import {
   Button,
   Descriptions,
   Empty,
+  Input,
   Modal,
+  Popconfirm,
   Row,
   Space,
   Spin,
@@ -31,6 +33,7 @@ import {
   ReloadOutlined,
   RobotOutlined,
   RocketOutlined,
+  StopOutlined,
   SwapOutlined,
   UpOutlined,
   WarningOutlined,
@@ -260,6 +263,55 @@ export default function TradesPanel() {
   }
   // 复盘K线弹窗（点击币种名打开）
   const [replayTrade, setReplayTrade] = useState<TradeRecord | null>(null)
+
+  // 黑名单状态：初始拉一次生效列表，操作后局部更新（与复盘 Tab 的 BlacklistPanel 各自独立维护）
+  const [blacklistSet, setBlacklistSet] = useState<Set<string>>(new Set())
+  const loadBlacklist = useCallback(async () => {
+    try {
+      const items = await scanApi.blacklist.list()
+      setBlacklistSet(new Set(items.filter((i) => i.active).map((i) => i.symbol)))
+    } catch {
+      /* 状态加载失败不阻断页面，按钮按"未拉黑"渲染 */
+    }
+  }, [])
+  useEffect(() => {
+    loadBlacklist()
+  }, [loadBlacklist])
+
+  // 拉黑弹窗（加入需备注原因，可留空）
+  const [blTarget, setBlTarget] = useState<TradeRecord | null>(null)
+  const [blReason, setBlReason] = useState('')
+  const [blSaving, setBlSaving] = useState(false)
+
+  const handleBlacklistAdd = async () => {
+    if (!blTarget) return
+    setBlSaving(true)
+    try {
+      await scanApi.blacklist.add(blTarget.symbol, blReason.trim())
+      setBlacklistSet((prev) => new Set(prev).add(blTarget.symbol))
+      message.success(`${blTarget.symbol} 已加入黑名单（扫描将过滤该币种）`)
+      setBlTarget(null)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '加入黑名单失败')
+    } finally {
+      setBlSaving(false)
+    }
+  }
+
+  const handleBlacklistRemove = async (symbol: string) => {
+    try {
+      await scanApi.blacklist.remove(symbol)
+      setBlacklistSet((prev) => {
+        const next = new Set(prev)
+        next.delete(symbol)
+        return next
+      })
+      message.success(`${symbol} 已移出黑名单（重新进入扫描候选）`)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '移出黑名单失败')
+    }
+  }
+
 
   const filtered = useMemo(
     () =>
@@ -578,6 +630,46 @@ export default function TradesPanel() {
       width: 120,
       render: (v: string | null) => (v ? EXIT_REASON_MAP[v] || v : '-'),
     },
+    {
+      title: '黑名单',
+      key: 'blacklist',
+      width: 76,
+      fixed: 'right',
+      render: (_: unknown, rec) => {
+        const inBl = blacklistSet.has(rec.symbol)
+        return inBl ? (
+          <Popconfirm
+            title="移出黑名单？"
+            description="该币种将重新进入扫描候选池"
+            okText="移出"
+            cancelText="取消"
+            onConfirm={() => handleBlacklistRemove(rec.symbol)}
+          >
+            <Tooltip title="已在黑名单中，点击移出">
+              <Button size="small" type="link" danger style={{ padding: 0, height: 'auto' }}>
+                移出
+              </Button>
+            </Tooltip>
+          </Popconfirm>
+        ) : (
+          <Tooltip title="加入黑名单后，扫描将过滤该币种">
+            <Button
+              size="small"
+              type="link"
+              icon={<StopOutlined />}
+              style={{ padding: 0, height: 'auto' }}
+              onClick={(e) => {
+                e.stopPropagation()
+                setBlTarget(rec)
+                setBlReason('')
+              }}
+            >
+              拉黑
+            </Button>
+          </Tooltip>
+        )
+      },
+    },
   ]
 
   return (
@@ -675,7 +767,7 @@ export default function TradesPanel() {
             columns={columns}
             dataSource={filtered}
             size="small"
-            scroll={{ y: 480 }}
+            scroll={{ x: 'max-content', y: 480 }}
             onRow={(rec) => ({
               onClick: (e) => {
                 // 点展开图标/按钮/链接时不重复触发（图标点击本身会冒泡到这里）
@@ -810,6 +902,30 @@ export default function TradesPanel() {
             <TradeReplayChart tradeId={replayTrade.id} />
           </div>
         )}
+      </Modal>
+
+      {/* 拉黑弹窗：备注原因可留空（永久生效，复盘 Tab 可手动移除） */}
+      <Modal
+        title={blTarget ? `加入黑名单：${blTarget.symbol}` : '加入黑名单'}
+        open={!!blTarget}
+        onOk={handleBlacklistAdd}
+        confirmLoading={blSaving}
+        onCancel={() => setBlTarget(null)}
+        okText="确认拉黑"
+        cancelText="取消"
+        width={420}
+      >
+        <div style={{ fontSize: 12, color: '#999', marginBottom: 8 }}>
+          手动拉黑为永久生效，扫描候选池将过滤该币种；可在复盘 Tab 的「币种黑名单」中移除。
+        </div>
+        <Input.TextArea
+          value={blReason}
+          onChange={(e) => setBlReason(e.target.value)}
+          placeholder="拉黑原因（可选），如：滑点过大 / 反复止损 / 妖币"
+          rows={2}
+          maxLength={100}
+          showCount
+        />
       </Modal>
     </div>
   )
