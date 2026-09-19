@@ -43,9 +43,9 @@ def _daily_close(symbol: str) -> tuple[str, str, str]:
             return name, f"{close:,.2f}", "—"
         chg = (close - open_) / open_ * 100
         if chg > 0:
-            chg_md = f"<font color='info'>{chg:+.2f}%</font>"
+            chg_md = f"<font color='success'>{chg:+.2f}%</font>"   # 涨绿
         elif chg < 0:
-            chg_md = f"<font color='warning'>{chg:+.2f}%</font>"
+            chg_md = f"<font color='red'>{chg:+.2f}%</font>"       # 跌红
         else:
             chg_md = f"{chg:+.2f}%"
         return name, f"{close:,.2f}", chg_md
@@ -155,8 +155,10 @@ def notify_daily_report() -> dict:
             {"tag": "div", "fields": [
                 {"is_short": True, "text": {"tag": "lark_md", "content": f"**开单**　{opened} 笔"}},
                 {"is_short": True, "text": {"tag": "lark_md", "content": f"**闭单**　{closed} 笔"}},
-                {"is_short": True, "text": {"tag": "lark_md", "content": f"**止盈**　{win} 笔 ✅"}},
-                {"is_short": True, "text": {"tag": "lark_md", "content": f"**止损**　{loss} 笔 🚫"}},
+                {"is_short": True, "text": {"tag": "lark_md",
+                 "content": f"**止盈**　{win} 笔 <font color='success'>✔</font>"}},
+                {"is_short": True, "text": {"tag": "lark_md",
+                 "content": f"**止损**　{loss} 笔 <font color='red'>✖</font>"}},
                 {"is_short": True, "text": {"tag": "lark_md",
                  "content": f"**胜率**　{win_rate}（{total_win}/{total_closed}）"}},
                 {"is_short": True, "text": {"tag": "lark_md",
