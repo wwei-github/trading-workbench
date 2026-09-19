@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 from app.celery_app import celery_app
 from app.database import SessionLocal
 from app.models.trade import TradeRecord
-from app.services.notify import send_feishu_text
+from app.services.notify import send_feishu_card, send_feishu_text
 
 logger = logging.getLogger(__name__)
 
@@ -109,44 +109,57 @@ def notify_daily_report() -> dict:
     # 胜率：全部历史已闭单口径（total_win/total_closed）；无闭单显示 —
     win_rate = f"{total_win / total_closed * 100:.0f}%" if total_closed else "—"
 
-    # ── 飞书文本排版（等宽对齐思路）：中文全角字符宽度=2、ASCII=1，
-    #    用 _w() 计算显示宽度后手动补空格，保证冒号后标签列、行情三列各自对齐 ──
-    sep = "──────────────────────"   # 细线分隔（比粗实线轻量）
+    # ── 飞书消息卡片（interactive）：列对齐由卡片布局引擎负责。
+    #    文本消息是比例字体，空格补位永远对不齐价格列/个位数，卡片 column_set 才是真对齐 ──
+    def _col(title: str, *lines: str) -> dict:
+        """一个等宽 column 单元：标题加粗 + 下方数据行。"""
+        return {
+            "tag": "column", "width": "weighted", "weight": 1,
+            "elements": [{"tag": "div", "text": {"tag": "lark_md",
+                         "content": "\n".join([f"**{title}**", *lines])}}],
+        }
 
-    def _w(s: str) -> int:
-        """显示宽度：CJK/全角按 2 列，其余按 1 列。"""
-        return sum(2 if "\u4e00" <= ch <= "\u9fff" or ch in "　·✅💰📈💼📊🔺🔻➖—" else 1
-                   for ch in s)
-
-    def _pad(s: str, width: int) -> str:
-        return s + " " * max(0, width - _w(s))
-
-    # 行情行：币种(4) | 收盘价(16) | 涨跌幅
-    price_rows = []
-    for name, price, chg in prices:
-        price_rows.append(f"　{_pad(name, 4)}{_pad(price, 16)}{chg}")
-
-    # 统计行：标签列补到 8 显示宽（最长标签「净收益」=6 宽 + 2 间距），数值起始于同一列
-    def _stat(label: str, value: str) -> str:
-        return f"　{_pad(label, 8)}{value}"
-
-    lines = [
-        f"📊 每日交易日报 · {date_label}",
-        "",
-        "📈 主流币日收盘",
-        *price_rows,
-        sep,
-        "💼 交易统计",
-        _stat("开单", f"{opened} 笔　·　在跑 {running}　·　失败 {failed}"),
-        _stat("闭单", f"{closed} 笔"),
-        _stat("止盈", f"{win} 笔　✅"),
-        _stat("止损", f"{loss} 笔"),
-        _stat("胜率", f"{win_rate}（全部已闭单 {total_win}/{total_closed}）"),
-        sep,
-        _stat("净收益", f"{_net_str(net)}"),
-    ]
-    text = "\n".join(lines)
-    ok = send_feishu_text(text)
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"📊 每日交易日报 · {date_label}"},
+            "template": "green" if net > 0 else ("red" if net < 0 else "blue"),
+        },
+        "elements": [
+            # 行情：3 等宽列，币种/收盘价/涨跌幅各占一行，列间天然对齐
+            {"tag": "column_set", "flex_mode": "stretch", "columns": [
+                _col(name, price, chg or "—") for name, price, chg in prices
+            ]},
+            {"tag": "hr"},
+            # 交易统计：4 等宽列（单双位数不再互相挤歪）
+            {"tag": "column_set", "flex_mode": "stretch", "columns": [
+                _col("开单", f"{opened} 笔"),
+                _col("闭单", f"{closed} 笔"),
+                _col("止盈", f"{win} 笔 ✅"),
+                _col("止损", f"{loss} 笔"),
+            ]},
+            # 胜率 + 净收益：2 等宽列，净收益加粗突出
+            {"tag": "column_set", "flex_mode": "stretch", "columns": [
+                _col("胜率", f"{win_rate}（{total_win}/{total_closed}）"),
+                _col("💰 净收益", f"**{_net_str(net)}**"),
+            ]},
+            # 口径脚注
+            {"tag": "div", "text": {"tag": "lark_md",
+             "content": (f"在跑 {running} · 失败 {failed} · 胜率=止盈笔数÷全部已闭单 · "
+                         "在跑单浮动盈亏不计入净收益")}},
+        ],
+    }
+    ok = send_feishu_card(card)
+    if not ok:
+        # 卡片发送失败降级为纯文本（保底不让日报丢消息，对齐性让位于送达）
+        text = "\n".join([
+            f"📊 每日交易日报 · {date_label}",
+            *[f"{name} 收盘 {price} {chg}" for name, price, chg in prices],
+            f"开单 {opened}（在跑 {running} · 失败 {failed}）/ 闭单 {closed}",
+            f"止盈 {win} / 止损 {loss} / 胜率 {win_rate}（{total_win}/{total_closed}）",
+            f"净收益 {_net_str(net)}",
+        ])
+        ok = send_feishu_text(text)
     logger.info("每日日报已%s（%s）", "发送" if ok else "跳过/失败", date_label)
     return {"date": date_label, "opened": opened, "closed": closed,
             "win": win, "loss": loss, "net": round(net, 2), "notified": ok}

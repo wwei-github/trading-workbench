@@ -33,3 +33,26 @@ def send_feishu_text(text: str) -> bool:
     except Exception as e:
         logger.warning("飞书通知发送失败: %s", e)
         return False
+
+
+def send_feishu_card(card: dict) -> bool:
+    """发消息卡片（interactive）到飞书群。card 为卡片体（header/elements），
+    外层 msg_type 包装在本函数内。列对齐由卡片布局引擎负责，不受聊天比例字体影响。"""
+    webhook = settings.FEISHU_NOTIFY_WEBHOOK
+    if not webhook:
+        logger.info("FEISHU_NOTIFY_WEBHOOK 未配置，跳过飞书通知")
+        return False
+    try:
+        resp = httpx.post(
+            webhook,
+            json={"msg_type": "interactive", "card": card},
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("code") == 0 or data.get("StatusCode") == 0:
+            return True
+        logger.warning("飞书卡片返回异常: %s", str(data)[:300])
+        return False
+    except Exception as e:
+        logger.warning("飞书卡片发送失败: %s", e)
+        return False
