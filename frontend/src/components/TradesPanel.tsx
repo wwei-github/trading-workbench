@@ -600,6 +600,24 @@ export default function TradesPanel() {
       },
     },
     {
+      // 盈亏比（R）：净盈亏 ÷ 计划风险额（risk_amount），按结算后全程净额算；
+      // 在跑单/未结算显示 -（TP1 半程利润算 R 会虚高，与概览口径一致）
+      title: '盈亏比',
+      key: 'r_multiple',
+      width: 80,
+      render: (_: unknown, rec) => {
+        if (rec.status !== 'CLOSED' || !rec.risk_amount || rec.realized_pnl == null) {
+          return <span style={{ color: '#999' }}>-</span>
+        }
+        const r = rec.realized_pnl / rec.risk_amount
+        return (
+          <span style={{ color: schemeValueColor(r, colorScheme), fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+            {r > 0 ? '+' : ''}{r.toFixed(2)}R
+          </span>
+        )
+      },
+    },
+    {
       title: '出场原因',
       dataIndex: 'exit_reason',
       key: 'exit_reason',
