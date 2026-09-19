@@ -12,7 +12,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.celery_app import celery_app
 from app.database import SessionLocal
@@ -88,6 +88,17 @@ def notify_daily_report() -> dict:
 
         running = sum(1 for r in rows if r.status in ("OPENED", "TP1_HIT", "TP2_HIT"))
         failed = sum(1 for r in rows if r.status == "FAILED")
+
+        # 胜率口径：全部历史已闭单（不只当日），与交易记录页概览一致
+        total_closed = db.execute(
+            select(func.count(TradeRecord.id)).where(TradeRecord.status == "CLOSED")
+        ).scalar() or 0
+        total_win = db.execute(
+            select(func.count(TradeRecord.id)).where(
+                TradeRecord.status == "CLOSED",
+                TradeRecord.realized_pnl > 0,
+            )
+        ).scalar() or 0
     finally:
         db.close()
 
@@ -95,29 +106,44 @@ def notify_daily_report() -> dict:
         sign = "+" if v > 0 else ""
         return f"{sign}{v:,.2f} USDT"
 
-    # 胜率（止盈占已闭单比例；无闭单不显示）
-    win_rate = f"{win / closed * 100:.0f}%" if closed else "—"
+    # 胜率：全部历史已闭单口径（total_win/total_closed）；无闭单显示 —
+    win_rate = f"{total_win / total_closed * 100:.0f}%" if total_closed else "—"
 
-    # ── 飞书文本排版：分区线 + 双列行情（价格 + 涨跌幅）──
-    sep = "━━━━━━━━━━━━━━━━━━━━"
+    # ── 飞书文本排版（等宽对齐思路）：中文全角字符宽度=2、ASCII=1，
+    #    用 _w() 计算显示宽度后手动补空格，保证冒号后标签列、行情三列各自对齐 ──
+    sep = "──────────────────────"   # 细线分隔（比粗实线轻量）
+
+    def _w(s: str) -> int:
+        """显示宽度：CJK/全角按 2 列，其余按 1 列。"""
+        return sum(2 if "\u4e00" <= ch <= "\u9fff" or ch in "　·✅💰📈💼📊🔺🔻➖—" else 1
+                   for ch in s)
+
+    def _pad(s: str, width: int) -> str:
+        return s + " " * max(0, width - _w(s))
+
+    # 行情行：币种(4) | 收盘价(16) | 涨跌幅
+    price_rows = []
+    for name, price, chg in prices:
+        price_rows.append(f"　{_pad(name, 4)}{_pad(price, 16)}{chg}")
+
+    # 统计行：标签列补到 8 显示宽（最长标签「净收益」=6 宽 + 2 间距），数值起始于同一列
+    def _stat(label: str, value: str) -> str:
+        return f"　{_pad(label, 8)}{value}"
+
     lines = [
         f"📊 每日交易日报 · {date_label}",
         "",
         "📈 主流币日收盘",
-        *[
-            # 币种 | 收盘价 | 涨跌幅，三列对齐
-            f"　{name:<4}{price:<14}{chg}"
-            for name, price, chg in prices
-        ],
+        *price_rows,
         sep,
         "💼 交易统计",
-        f"　开单　{opened} 笔　·　在跑 {running}　·　失败 {failed}",
-        f"　闭单　{closed} 笔",
-        f"　止盈　{win} 笔　✅",
-        f"　止损　{loss} 笔",
-        f"　胜率　{win_rate}",
+        _stat("开单", f"{opened} 笔　·　在跑 {running}　·　失败 {failed}"),
+        _stat("闭单", f"{closed} 笔"),
+        _stat("止盈", f"{win} 笔　✅"),
+        _stat("止损", f"{loss} 笔"),
+        _stat("胜率", f"{win_rate}（全部已闭单 {total_win}/{total_closed}）"),
         sep,
-        f"💰 净收益　{_net_str(net)}",
+        _stat("净收益", f"{_net_str(net)}"),
     ]
     text = "\n".join(lines)
     ok = send_feishu_text(text)
