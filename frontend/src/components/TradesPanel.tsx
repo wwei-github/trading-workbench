@@ -336,22 +336,21 @@ export default function TradesPanel() {
     [rows, statusFilter],
   )
 
-  // 概览统计：在跑（三态）/ 已平仓 / 胜率 / 累计净收益 / 平均盈亏比
+  // 概览统计：在跑（三态）/ 盈利单 / 亏损单 / 胜率 / 累计净收益 / 平均盈亏比
   const stats = useMemo(() => {
     const running = rows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status)).length
     const closedRows = rows.filter((r) => r.status === 'CLOSED' && r.realized_pnl != null)
-    const wins = closedRows.filter((r) => (r.realized_pnl ?? 0) > 0).length
+    const winRows = closedRows.filter((r) => (r.realized_pnl ?? 0) > 0)
+    const loseRows = closedRows.filter((r) => (r.realized_pnl ?? 0) <= 0)
     const totalPnl = closedRows.reduce((s, r) => s + (r.realized_pnl ?? 0), 0)
-    const winRate = closedRows.length > 0 ? Math.round((wins / closedRows.length) * 100) : null
-    // 盈亏比：R = 净盈亏 ÷ 计划风险额(risk_amount)。止盈单由利润反推实际RR；
-    // 止损单≈−1R（费用/滑点略超），纳入后均值即每笔期望R——>0 系统才真赚钱。
+    const winRate = closedRows.length > 0 ? Math.round((winRows.length / closedRows.length) * 100) : null
+    // 盈亏比：R = 净盈亏 ÷ 计划风险额(risk_amount)。止盈单由利润反推实际RR
     // 仅统计已完全闭单（在跑的 TP1_HIT 半程利润会虚高）；risk_amount 缺失的历史单剔除
     const rRows = closedRows.filter((r) => (r.risk_amount ?? 0) > 0)
     const rOf = (r: (typeof rRows)[number]) => (r.realized_pnl as number) / (r.risk_amount as number)
     const winRRows = rRows.filter((r) => (r.realized_pnl ?? 0) > 0)
     const avgWinR = winRRows.length > 0 ? winRRows.reduce((s, r) => s + rOf(r), 0) / winRRows.length : null
-    const avgR = rRows.length > 0 ? rRows.reduce((s, r) => s + rOf(r), 0) / rRows.length : null
-    return { running, closed: closedRows.length, winRate, totalPnl, avgWinR, avgR }
+    return { running, closed: closedRows.length, wins: winRows.length, loses: loseRows.length, winRate, totalPnl, avgWinR }
   }, [rows])
 
   // 状态筛选选项：进行中 = 三态聚合（运行中/TP1已止盈/TP2已止盈），带当前数量与状态色点
@@ -761,7 +760,16 @@ export default function TradesPanel() {
       {/* 概览条 */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <StatCard title="在跑单子" value={String(stats.running)} color="#1677ff" />
-        <StatCard title="已平仓" value={String(stats.closed)} />
+        <StatCard
+          title="盈利单"
+          value={String(stats.wins)}
+          color={stats.wins > 0 ? SCHEME_UP_DOWN[colorScheme].up : undefined}
+        />
+        <StatCard
+          title="亏损单"
+          value={String(stats.loses)}
+          color={stats.loses > 0 ? SCHEME_UP_DOWN[colorScheme].down : undefined}
+        />
         <StatCard
           title="胜率（净盈利笔数占比）"
           value={stats.winRate === null ? '-' : `${stats.winRate}%`}
@@ -776,11 +784,6 @@ export default function TradesPanel() {
           title="平均盈亏比（止盈单）"
           value={stats.avgWinR === null ? '-' : `${stats.avgWinR > 0 ? '+' : ''}${stats.avgWinR.toFixed(2)}R`}
           color={stats.avgWinR === null ? undefined : schemeValueColor(stats.avgWinR, colorScheme)}
-        />
-        <StatCard
-          title="每笔期望（含止损单）"
-          value={stats.avgR === null ? '-' : `${stats.avgR > 0 ? '+' : ''}${stats.avgR.toFixed(2)}R`}
-          color={stats.avgR === null ? undefined : schemeValueColor(stats.avgR, colorScheme)}
         />
       </div>
 
