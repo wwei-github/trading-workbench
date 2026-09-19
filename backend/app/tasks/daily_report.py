@@ -26,9 +26,10 @@ _MAJOR_SYMBOLS = ("BTCUSDT", "ETHUSDT", "BNBUSDT")
 
 
 def _daily_close(symbol: str) -> tuple[str, str, str]:
-    """最新已收盘日线 (币种名, 收盘价文本, 24h涨跌幅文本)。失败返回 '获取失败'，不中断整体。
+    """最新已收盘日线 (币种名, 收盘价文本, 24h涨跌幅 lark_md 文本)。失败不中断整体。
 
     涨跌幅 = (收盘-开盘)/开盘，取刚收的这根日线（[-2]）的开/收盘价。
+    颜色：涨绿 <font color='info'>、跌红 <font color='warning'>（卡片内渲染）。
     """
     name = symbol.replace("USDT", "")
     try:
@@ -41,8 +42,13 @@ def _daily_close(symbol: str) -> tuple[str, str, str]:
         if open_ <= 0:
             return name, f"{close:,.2f}", "—"
         chg = (close - open_) / open_ * 100
-        arrow = "🔺" if chg > 0 else ("🔻" if chg < 0 else "➖")
-        return name, f"{close:,.2f}", f"{arrow} {chg:+.2f}%"
+        if chg > 0:
+            chg_md = f"<font color='info'>{chg:+.2f}%</font>"
+        elif chg < 0:
+            chg_md = f"<font color='warning'>{chg:+.2f}%</font>"
+        else:
+            chg_md = f"{chg:+.2f}%"
+        return name, f"{close:,.2f}", chg_md
     except Exception as e:
         logger.warning("日线收盘价获取失败 %s: %s", symbol, e)
         return name, "获取失败", ""
@@ -150,7 +156,7 @@ def notify_daily_report() -> dict:
                 {"is_short": True, "text": {"tag": "lark_md", "content": f"**开单**　{opened} 笔"}},
                 {"is_short": True, "text": {"tag": "lark_md", "content": f"**闭单**　{closed} 笔"}},
                 {"is_short": True, "text": {"tag": "lark_md", "content": f"**止盈**　{win} 笔 ✅"}},
-                {"is_short": True, "text": {"tag": "lark_md", "content": f"**止损**　{loss} 笔 ❌"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**止损**　{loss} 笔 🚫"}},
                 {"is_short": True, "text": {"tag": "lark_md",
                  "content": f"**胜率**　{win_rate}（{total_win}/{total_closed}）"}},
                 {"is_short": True, "text": {"tag": "lark_md",
