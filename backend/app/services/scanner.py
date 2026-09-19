@@ -191,6 +191,9 @@ class Scanner:
             # （ARXUSDT 有 K线、AI 照常分析），下单环境（TRADING_TESTNET 决定）
             # 未上架 → 开单 -1121 Invalid symbol 白白烧 AI 配额 + FAILED 记录。
             # 在扫描宇宙阶段用下单环境 exchangeInfo 剔除；空表（拉取失败）放行不阻断
+            # （_bt 实例化必须在 C0 之前——此前放在 C 段导致 UnboundLocalError，
+            #   04:02/05:02 两轮扫描全崩的根因）
+            _bt = BinanceTrader()
             listed = _bt.listed_symbols()
             if listed:
                 before = len(symbols_data)
@@ -202,7 +205,6 @@ class Scanner:
             # 过滤——币安 2026 已把多数山寨首档 MMR 统一调到 1.5%~2%（首档名义
             # 5k~10k 内 MMR 均为此值，BTC 0.4% 是孤例），按 MMR 过滤会误拦 58%。
             # 一次 leverageBracket 全市场拉取、进程缓存 24h；失败（空表）放行不阻断
-            _bt = BinanceTrader()
             risk_tiers = _bt.risk_tier_all()
             if risk_tiers:
                 before = len(symbols_data)
