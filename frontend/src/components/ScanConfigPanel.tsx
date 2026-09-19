@@ -149,9 +149,9 @@ export default function ScanConfigPanel() {
             name="max_open_trades"
             initialValue={5}
             rules={[{ required: true, message: '请输入在跑单子上限' }]}
-            tooltip="自动开仓的在跑单子数量上限；每小时任务先结算再开仓，评分高的优先"
+            tooltip="自动开仓的在跑单子数量上限，0 = 不限单数（仅按开仓最低可用余额判断）；每小时任务先结算再开仓，评分高的优先"
           >
-            <InputNumber min={1} max={50} style={{ width: '100%' }} />
+            <InputNumber min={0} max={50} style={{ width: '100%' }} />
           </Form.Item>
 
           <Form.Item
@@ -159,7 +159,7 @@ export default function ScanConfigPanel() {
             name="trading_min_free_pct"
             initialValue={50}
             rules={[{ required: true, message: '请输入开仓最低可用余额比例' }]}
-            tooltip="可用余额低于总资金该比例时不开新单（原 70% 规则；2026-09-15 起默认 50%，此处可改）"
+            tooltip="可用余额低于总资金该比例时不开新单"
           >
             <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} />
           </Form.Item>

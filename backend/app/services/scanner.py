@@ -390,7 +390,10 @@ class Scanner:
                     TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT"))
                 )
             ).scalar() or 0
-            return running >= (cfg.max_open_trades or 5)
+            # 0 = 不限单数，仅靠余额风控兜底
+            if not cfg.max_open_trades or cfg.max_open_trades <= 0:
+                return False
+            return running >= cfg.max_open_trades
         except Exception:
             logger.exception("查询在跑单子数失败，按未满仓处理")
             return False

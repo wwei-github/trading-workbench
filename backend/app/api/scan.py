@@ -389,8 +389,8 @@ def update_system_config(
     if body.fib_enabled is not None:
         cfg.fib_enabled = body.fib_enabled
     if body.max_open_trades is not None:
-        if not (1 <= body.max_open_trades <= 50):
-            raise HTTPException(status_code=400, detail="max_open_trades 需在 1~50 之间")
+        if not (0 <= body.max_open_trades <= 50):
+            raise HTTPException(status_code=400, detail="max_open_trades 需在 0~50 之间（0=不限单数）")
         cfg.max_open_trades = body.max_open_trades
     if body.trading_min_free_pct is not None:
         if not (0 <= body.trading_min_free_pct <= 1):
