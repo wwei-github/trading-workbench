@@ -127,32 +127,56 @@ jobs:
           2>&1 | tee deploy_output.log
           # release.sh 失败会非零退出，pipefail 让本步骤失败
 
-      - name: 飞书通知（仅失败）
-        if: failure()
+      # 飞书通知：成功/失败都发。要点：
+      # - always() 保证前面步骤失败也执行；send 步骤本身不 fail（通知失败不阻塞流水线）
+      # - 成功从日志提取 release.sh 的 DEPLOY_OK 行（含 SHA/scope），失败附日志尾部
+      # - 触发人/提交信息取自 github context，短 SHA 便于和 release.sh status 对账
+      - name: 飞书通知（成功/失败）
+        if: always()
         env:
           WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           SCOPE: ${{ steps.prep.outputs.scope }}
           SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          MSG: ${{ github.event.head_commit.message }}
+          REF: ${{ github.ref_name }}
+          RESULT: ${{ steps.ssh_deploy.outcome }}
         run: |
           if [ -z "$WEBHOOK" ]; then echo "未配置 FEISHU_WEBHOOK，跳过通知"; exit 0; fi
-          LOG=$(tail -c 2000 deploy_output.log 2>/dev/null || echo "（无部署日志）")
-          SCOPE="$SCOPE" SHA="$SHA" LOG="$LOG" WEBHOOK="$WEBHOOK" python3 - <<'PY'
+          LOG=$(tail -c 1500 deploy_output.log 2>/dev/null || echo "（无部署日志）")
+          OK_LINE=$(grep -E 'DEPLOY_OK|ROLLED_BACK_TO' deploy_output.log 2>/dev/null | tail -1 || true)
+          SCOPE="$SCOPE" SHA="$SHA" ACTOR="$ACTOR" MSG="$MSG" REF="$REF" \
+          RESULT="$RESULT" LOG="$LOG" OK_LINE="$OK_LINE" WEBHOOK="$WEBHOOK" python3 - <<'PY'
           import json, os, urllib.request
-          text = (
-              "❌ trading-workbench 部署失败\n"
-              f"范围: {os.environ['SCOPE']}\n"
-              f"提交: {os.environ['SHA']}\n"
-              "动作: 构建失败→旧容器未动；up 后失败→已自动回滚\n"
-              "回退: 服务器上执行 scripts/release.sh rollback [<sha>]\n"
-              "---- 部署日志尾部 ----\n" + os.environ['LOG']
-          )
-          payload = json.dumps({"msg_type": "text", "content": {"text": text}}).encode()
-          req = urllib.request.Request(os.environ['WEBHOOK'], data=payload,
+          e = os.environ
+          short = e['SHA'][:7]
+          # 提交信息只留首行，超长截断
+          msg = (e['MSG'] or '').splitlines()[0][:60] if e['MSG'] else ''
+          head = "✅ 部署成功" if e['RESULT'] == 'success' else "❌ 部署失败"
+          lines = [
+              f"{head} · trading-workbench",
+              f"版本: {short}（{e['REF']}）",
+              f"范围: {e['SCOPE']}",
+          ]
+          if msg:
+              lines.append(f"提交: {msg}")
+          lines.append(f"触发: {e['ACTOR']}")
+          if e['RESULT'] == 'success':
+              lines.append(f"结果: {e['OK_LINE'] or '健康检查全部通过'}")
+          else:
+              lines += [
+                  "状态: 构建失败→旧容器未动；up 后失败→已自动回滚",
+                  "回退: 服务器执行 scripts/release.sh rollback [<sha>]",
+                  "---- 部署日志尾部 ----",
+                  e['LOG'],
+              ]
+          payload = json.dumps({"msg_type": "text", "content": {"text": "\n".join(lines)}}).encode()
+          req = urllib.request.Request(e['WEBHOOK'], data=payload,
                                        headers={"Content-Type": "application/json"})
           try:
               urllib.request.urlopen(req, timeout=10)
-          except Exception as e:
-              print(f"飞书通知发送失败（不阻塞）: {e}")
+          except Exception as ex:
+              print(f"飞书通知发送失败（不阻塞）: {ex}")
           PY
 
       - name: 部署结果摘要
