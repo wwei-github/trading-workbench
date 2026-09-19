@@ -1,0 +1,164 @@
+# ============================================================
+# CICD 部署流水线（2026-09-19）
+#
+# 流程: push main → 测试门禁（tsc + py_compile）→ 变更检测定 scope
+#       → SSH 到服务器执行 scripts/release.sh（SHA 构建→up→健康检查→失败自动回滚）
+#       → 失败发飞书通知（FEISHU_WEBHOOK 未配置时跳过）
+#
+# 手动入口: Actions 页面 Run workflow，可指定 scope 重新部署任意最新代码；
+#           回滚用服务器上 scripts/release.sh rollback [<sha>]
+#
+# Secrets:
+#   DEPLOY_HOST     服务器 IP
+#   DEPLOY_SSH_KEY  部署专用 ed25519 私钥（公钥在服务器 root authorized_keys）
+#   FEISHU_WEBHOOK  飞书群自定义机器人 Webhook（可选，失败通知）
+# ============================================================
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "部署范围"
+        type: choice
+        default: auto
+        options: [auto, backend, frontend, all]
+        # auto = 按本次相对上一 commit 的变更自动判断；纯文档 → none（只测试不部署）
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false   # 部署不互相打断，排队执行
+
+jobs:
+  # ── 门禁：前端类型检查 + 后端语法检查 ──────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 前端 tsc 类型检查
+        run: |
+          cd frontend
+          npm ci
+          npx tsc --noEmit
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 后端语法检查（compileall）
+        run: python -m compileall -q backend/app
+
+  # ── 变更检测：决定部署范围（backend|frontend|all|none）──────
+  changes:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push'
+    outputs:
+      scope: ${{ steps.diff.outputs.scope }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要与上一个 commit 做 diff
+      - id: diff
+        name: 计算变更范围
+        run: |
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [[ "$BEFORE" =~ ^0+$ ]]; then
+            echo "scope=all" >> "$GITHUB_OUTPUT"   # 首次 push / 历史不明 → 全量
+          else
+            CHANGED=$(git diff --name-only "$BEFORE" HEAD || true)
+            echo "变更文件:"; echo "$CHANGED" | head -50
+            scope=none
+            if echo "$CHANGED" | grep -qE '^(docker-compose\.yml|backend/\.env\.example|scripts/release\.sh)$|^(backend|frontend)/Dockerfile'; then
+              scope=all
+            else
+              if echo "$CHANGED" | grep -q '^backend/';   then scope=backend; fi
+              if echo "$CHANGED" | grep -q '^frontend/';  then scope=all; fi
+            fi
+            # 只有 .github/、docs/、*.md 等变更 → none（已通过测试，不部署）
+            echo "scope=$scope" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── 发布：SSH 到服务器执行 release.sh ──────────────────────
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [test, changes]
+    if: >
+      always() &&
+      needs.test.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' || needs.changes.outputs.scope != 'none')
+    outputs:
+      scope: ${{ steps.prep.outputs.scope }}
+    steps:
+      - id: prep
+        name: 确定部署 scope
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            s="${{ inputs.scope }}"
+            [ "$s" == "auto" ] && s=all     # 手动触发无法 diff，默认全量
+          else
+            s="${{ needs.changes.outputs.scope }}"
+          fi
+          echo "scope=$s" >> "$GITHUB_OUTPUT"
+          echo "部署 scope: $s"
+
+      - name: 写入部署私钥
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: SSH 发布（SHA 构建 → up → 健康检查 → 失败自动回滚）
+        id: ssh_deploy
+        run: |
+          set -o pipefail
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=15 \
+              root@${{ secrets.DEPLOY_HOST }} \
+              'cd /home/ubuntu/github/trading-workbench && bash scripts/release.sh deploy ${{ steps.prep.outputs.scope }} ${{ github.sha }}' \
+          2>&1 | tee deploy_output.log
+          # release.sh 失败会非零退出，pipefail 让本步骤失败
+
+      - name: 飞书通知（仅失败）
+        if: failure()
+        env:
+          WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          SCOPE: ${{ steps.prep.outputs.scope }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then echo "未配置 FEISHU_WEBHOOK，跳过通知"; exit 0; fi
+          LOG=$(tail -c 2000 deploy_output.log 2>/dev/null || echo "（无部署日志）")
+          SCOPE="$SCOPE" SHA="$SHA" LOG="$LOG" WEBHOOK="$WEBHOOK" python3 - <<'PY'
+          import json, os, urllib.request
+          text = (
+              "❌ trading-workbench 部署失败\n"
+              f"范围: {os.environ['SCOPE']}\n"
+              f"提交: {os.environ['SHA']}\n"
+              "动作: 构建失败→旧容器未动；up 后失败→已自动回滚\n"
+              "回退: 服务器上执行 scripts/release.sh rollback [<sha>]\n"
+              "---- 部署日志尾部 ----\n" + os.environ['LOG']
+          )
+          payload = json.dumps({"msg_type": "text", "content": {"text": text}}).encode()
+          req = urllib.request.Request(os.environ['WEBHOOK'], data=payload,
+                                       headers={"Content-Type": "application/json"})
+          try:
+              urllib.request.urlopen(req, timeout=10)
+          except Exception as e:
+              print(f"飞书通知发送失败（不阻塞）: {e}")
+          PY
+
+      - name: 部署结果摘要
+        if: success()
+        run: |
+          echo "### 部署成功 ✅" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 范围: ${{ steps.prep.outputs.scope }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 版本: ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          grep -E 'DEPLOY_OK|健康检查' deploy_output.log | tail -3 >> "$GITHUB_STEP_SUMMARY" || true

@@ -29,6 +29,9 @@ services:
 
   backend:
     build: ./backend
+    # CICD（2026-09-19）：镜像带 IMAGE_TAG（默认 latest），发布脚本按 git SHA 打标签，
+    # 回滚 = 切标签 + up -d，无需重新构建。不设 IMAGE_TAG 时行为与旧手动部署一致
+    image: trading-workbench-backend:${IMAGE_TAG:-latest}
     env_file:
       - ./backend/.env
     ports:
@@ -42,6 +45,7 @@ services:
 
   celery_worker:
     build: ./backend
+    image: trading-workbench-backend:${IMAGE_TAG:-latest}
     env_file:
       - ./backend/.env
     # 并发 6：任务以 LLM 网络等待为主（I/O 型）；预留空位给即时开仓等短任务，
@@ -56,6 +60,7 @@ services:
 
   celery_beat:
     build: ./backend
+    image: trading-workbench-backend:${IMAGE_TAG:-latest}
     env_file:
       - ./backend/.env
     command: celery -A celery_worker.celery_app beat --loglevel=info
@@ -68,6 +73,7 @@ services:
 
   frontend:
     build: ./frontend
+    image: trading-workbench-frontend:${IMAGE_TAG:-latest}
     ports:
       - "8088:80"
     depends_on:
