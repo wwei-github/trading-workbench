@@ -38,9 +38,10 @@ services_for_scope() {
 
 compose() { docker compose "$@"; }
 
-# 健康检查：参数为本次部署的 scope（决定检查哪些项）
+# 健康检查：参数为本次部署的 scope（决定检查哪些项）。
+# bash 惯例：返回 0 = 健康，非 0 = 存在失败项
 health_check() {
-    local scope="$1" ok=1
+    local scope="$1" failed=0
     step "健康检查（scope=$scope）..."
 
     # 1. 容器全部 Up
@@ -49,38 +50,38 @@ health_check() {
     if [ -n "$down" ]; then
         error "存在非 Up 容器:"
         echo "$down"
-        ok=0
+        failed=1
     fi
 
     # 2. 后端 API（backend 8082 直连）——backend/all 或纯前端部署都查（frontend 依赖 backend）
     if ! curl -sf -o /dev/null --max-time 10 http://localhost:8082/api/scans/config; then
         error "后端 API /api/scans/config 探活失败"
-        ok=0
+        failed=1
     fi
 
     # 3. 前端首页（frontend 8088）——frontend/all 才查
     if [ "$scope" != "backend" ]; then
         if ! curl -sf -o /dev/null --max-time 10 http://localhost:8088/; then
             error "前端首页 :8088 探活失败"
-            ok=0
+            failed=1
         fi
     fi
 
-    # 4. beat 启动 60 秒日志无崩溃特征（仅 backend/all）
+    # 4. beat 启动后日志无崩溃特征（仅 backend/all）
     if [ "$scope" != "frontend" ]; then
         sleep 20  # 给 beat 一点启动时间再翻日志
         if compose logs celery_beat --since 3m 2>/dev/null | grep -qiE 'Traceback|DuplicateTable|crashed'; then
             error "celery_beat 启动日志发现崩溃特征"
             compose logs celery_beat --since 3m 2>/dev/null | grep -iE 'Traceback|DuplicateTable|crashed' | head -5
-            ok=0
+            failed=1
         fi
         if [ "$(compose ps -q celery_worker celery_beat | xargs -r docker inspect --format '{{.State.Running}}' 2>/dev/null | grep -c '^true$')" != "2" ]; then
             error "celery_worker / celery_beat 未处于运行状态"
-            ok=0
+            failed=1
         fi
     fi
 
-    return $ok
+    return $failed
 }
 
 cmd_deploy() {
