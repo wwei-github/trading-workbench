@@ -87,14 +87,30 @@ def notify_daily_report() -> dict:
         sign = "+" if v > 0 else ""
         return f"{sign}{v:,.2f} USDT"
 
-    stat_lines = [
-        "",
-        f"开单 {opened} 笔（其中在跑 {running}、失败 {failed}）",
-        f"闭单 {closed} 笔：止盈 {win} / 止损 {loss}",
-        f"净收益 {_net_str(net)}",
-    ]
+    # 胜率（止盈占已闭单比例；无闭单不显示）
+    win_rate = f"{win / closed * 100:.0f}%" if closed else "—"
 
-    text = "\n".join([f"📊 trading-workbench 日报 {date_label}", ""] + price_lines + stat_lines)
+    # ── 飞书文本排版：全角分隔线 + 表格式对齐（等宽场景下数字列对齐）──
+    sep = "━━━━━━━━━━━━━━━━━━"
+    lines = [
+        f"📊 每日交易日报 · {date_label}",
+        sep,
+        "📈 主流币日收盘",
+        *[
+            f"　{name:<4}{price}"   # 全角空格缩进 + 名称定宽，价格列对齐
+            for name, price in prices
+        ],
+        sep,
+        "💼 交易统计",
+        f"　开单　{opened} 笔　·　在跑 {running}　·　失败 {failed}",
+        f"　闭单　{closed} 笔",
+        f"　止盈　{win} 笔　✅",
+        f"　止损　{loss} 笔",
+        f"　胜率　{win_rate}",
+        sep,
+        f"💰 净收益　{_net_str(net)}",
+    ]
+    text = "\n".join(lines)
     ok = send_feishu_text(text)
     logger.info("每日日报已%s（%s）", "发送" if ok else "跳过/失败", date_label)
     return {"date": date_label, "opened": opened, "closed": closed,
