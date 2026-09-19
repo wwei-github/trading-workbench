@@ -122,6 +122,17 @@ def notify_daily_report() -> dict:
     # 头部：净收益为正绿/为负红/持平蓝，emoji 跟随
     head_emoji = "📈" if net > 0 else ("📉" if net < 0 else "📊")
 
+    # 行情列权重：BTC 价格位数多给大列，避免挤压换行
+    price_weight = {"BTC": 4, "ETH": 3, "BNB": 3}
+    price_cols = []
+    for name, price, chg in prices:
+        price_cols.append({
+            "tag": "column", "width": "weighted",
+            "weight": price_weight.get(name, 3),
+            "elements": [{"tag": "div", "text": {"tag": "lark_md",
+                         "content": f"**{name}**\n**{price}**\n{chg or '—'}"}}],
+        })
+
     card = {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -129,11 +140,9 @@ def notify_daily_report() -> dict:
             "template": "green" if net > 0 else ("red" if net < 0 else "blue"),
         },
         "elements": [
-            # ── 行情区：3 等宽列，币种/收盘价(粗体)/涨跌幅 ──
+            # ── 行情区：3 列（按价格位数加权），币种/收盘价(粗体)/涨跌幅 ──
             {"tag": "div", "text": {"tag": "lark_md", "content": "**📈 主流币日收盘**"}},
-            {"tag": "column_set", "flex_mode": "stretch", "columns": [
-                _col(name, f"**{price}**", chg or "—") for name, price, chg in prices
-            ]},
+            {"tag": "column_set", "flex_mode": "stretch", "columns": price_cols},
             {"tag": "hr"},
             # ── 统计区：原生 fields 两列栅格，每格独立单元格（单双位数不挤歪）──
             {"tag": "div", "text": {"tag": "lark_md", "content": "**💼 交易统计**"}},
@@ -141,7 +150,7 @@ def notify_daily_report() -> dict:
                 {"is_short": True, "text": {"tag": "lark_md", "content": f"**开单**　{opened} 笔"}},
                 {"is_short": True, "text": {"tag": "lark_md", "content": f"**闭单**　{closed} 笔"}},
                 {"is_short": True, "text": {"tag": "lark_md", "content": f"**止盈**　{win} 笔 ✅"}},
-                {"is_short": True, "text": {"tag": "lark_md", "content": f"**止损**　{loss} 笔"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**止损**　{loss} 笔 ❌"}},
                 {"is_short": True, "text": {"tag": "lark_md",
                  "content": f"**胜率**　{win_rate}（{total_win}/{total_closed}）"}},
                 {"is_short": True, "text": {"tag": "lark_md",
