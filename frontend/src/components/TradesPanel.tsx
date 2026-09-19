@@ -3,7 +3,7 @@
  * - 概览条：在跑单子 / 已平仓 / 胜率 / 累计净收益（正绿负红）
  * - 列表：币种/方向/环境（测试网·正式网）/状态/开仓信息/三价现值/收益，分页默认 10 条、固定高度滚动
  * - 展开行：左右双卡片——左 AI 分析结论快照（AiAnalysisCard），右 操作历史时间线
- * - 状态筛选：胶囊按钮组（进行中 = 运行中/TP1已止盈/已保本 三态聚合，带计数徽标）
+ * - 状态筛选：胶囊按钮组（进行中 = 运行中/TP1已止盈/TP2已止盈 三态聚合，带计数徽标）
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
@@ -52,9 +52,22 @@ import type { TradeEvent, TradeRecord } from '../types'
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   OPENED: { label: '运行中', color: 'blue' },
   TP1_HIT: { label: 'TP1已止盈', color: 'cyan' },
-  TP2_HIT: { label: '已保本', color: 'geekblue' },
+  TP2_HIT: { label: 'TP2已止盈', color: 'geekblue' },
   CLOSED: { label: '已平仓', color: 'default' },
   FAILED: { label: '失败', color: 'red' },
+}
+
+// 跟进止损进行中的单子（TP2后 / 无TP2的TP1后），止损价已推过末档止盈价
+// （有TP2看TP2，无TP2看TP1）→ 锁定利润已超过该档，状态改显「移动止损」
+function statusMeta(rec: TradeRecord): { label: string; color: string } {
+  const s = STATUS_MAP[rec.status] || { label: rec.status, color: 'default' }
+  const trailing = rec.status === 'TP2_HIT' || (rec.status === 'TP1_HIT' && !rec.tp2)
+  const refTp = rec.tp2 ?? rec.tp1
+  if (trailing && refTp && rec.stop_loss) {
+    const passed = rec.direction === 'long' ? rec.stop_loss > refTp : rec.stop_loss < refTp
+    if (passed) return { ...s, label: '移动止损' }
+  }
+  return s
 }
 
 // 出场原因映射
@@ -341,7 +354,7 @@ export default function TradesPanel() {
     return { running, closed: closedRows.length, winRate, totalPnl, avgWinR, avgR }
   }, [rows])
 
-  // 状态筛选选项：进行中 = 三态聚合（运行中/TP1已止盈/已保本），带当前数量与状态色点
+  // 状态筛选选项：进行中 = 三态聚合（运行中/TP1已止盈/TP2已止盈），带当前数量与状态色点
   const statusOptions = useMemo(() => {
     const running = rows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status)).length
     const count = (s: string) => rows.filter((r) => r.status === s).length
@@ -363,20 +376,18 @@ export default function TradesPanel() {
     }
   }, [])
 
-  // 收益列（净盈亏 + 相对止损金额的百分比），正负色跟随全局涨跌配色方案
-  // 运行中单子显示已实现部分（TP1/TP2 已止盈金额，带"已止盈"标记），结算后为全程净额
+  // 收益金额列（净盈亏 USDT），正负色跟随全局涨跌配色方案
+  // 运行中单子显示已实现部分（TP1/TP2 已止盈金额），结算后为全程净额；
+  // 百分比单独一列展示，「已止盈」标记由状态列的 TP1已止盈/TP2已止盈 Tag 表达
   const renderPnl = (rec: TradeRecord) => {
     if (rec.realized_pnl === null || rec.realized_pnl === undefined) {
       return <span style={{ color: '#999' }}>-</span>
     }
     const pnl = rec.realized_pnl
-    const pct = rec.pnl_pct !== null && rec.pnl_pct !== undefined ? ` (${rec.pnl_pct > 0 ? '+' : ''}${rec.pnl_pct}%)` : ''
     const color = schemeValueColor(pnl, colorScheme)
-    const running = rec.status !== 'CLOSED'
     return (
       <span style={{ color, fontWeight: 600 }}>
-        {pnl > 0 ? '+' : ''}{pnl.toFixed(2)}{pct}
-        {running && pnl > 0 && <Tag color={schemeTag(colorScheme).up} style={{ marginLeft: 6, fontWeight: 400 }}>已止盈</Tag>}
+        {pnl > 0 ? '+' : ''}{pnl.toFixed(2)}
       </span>
     )
   }
@@ -528,13 +539,22 @@ export default function TradesPanel() {
         v === false ? <Tag color="green">正式网</Tag> : <Tag color="gold">测试网</Tag>,
     },
     {
+      title: '评分',
+      dataIndex: 'recommendation',
+      key: 'recommendation',
+      width: 70,
+      render: (v: number | null) =>
+        v != null ? <strong style={{ color: v >= 80 ? '#ff4d4f' : '#fa8c16' }}>{v}</strong> : '-',
+    },
+    {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 150,
+      width: 110,
       render: (v: string, rec) => {
-        const s = STATUS_MAP[v] || { label: v, color: 'default' }
-        // 失败状态直接展示失败原因（fail_reason 读自记录 raw），悬停看完整报错
+        const s = statusMeta(rec)
+        // 只显当前状态标签；止损移动/出场等明细展开行「操作历史」查看。
+        // 失败状态保留原因小字（悬停看完整报错）
         if (v === 'FAILED' && rec.fail_reason) {
           return (
             <Tooltip title={rec.fail_reason}>
@@ -561,12 +581,31 @@ export default function TradesPanel() {
       },
     },
     {
-      title: '评分',
-      dataIndex: 'recommendation',
-      key: 'recommendation',
-      width: 70,
-      render: (v: number | null) =>
-        v != null ? <strong style={{ color: v >= 80 ? '#ff4d4f' : '#fa8c16' }}>{v}</strong> : '-',
+      title: '收益',
+      key: 'pnl',
+      width: 100,
+      render: (_: unknown, rec) => renderPnl(rec),
+    },
+    {
+      title: '收益率',
+      dataIndex: 'pnl_pct',
+      key: 'pnl_pct',
+      width: 80,
+      render: (v: number | null) => {
+        if (v === null || v === undefined) return <span style={{ color: '#999' }}>-</span>
+        return (
+          <span style={{ color: schemeValueColor(v, colorScheme), fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+            {v > 0 ? '+' : ''}{v}%
+          </span>
+        )
+      },
+    },
+    {
+      title: '出场原因',
+      dataIndex: 'exit_reason',
+      key: 'exit_reason',
+      width: 110,
+      render: (v: string | null) => (v ? EXIT_REASON_MAP[v] || v : '-'),
     },
     {
       title: '开仓价',
@@ -616,19 +655,6 @@ export default function TradesPanel() {
       key: 'opened_at',
       width: 150,
       render: fmtTime,
-    },
-    {
-      title: '收益',
-      key: 'pnl',
-      width: 120,
-      render: (_: unknown, rec) => renderPnl(rec),
-    },
-    {
-      title: '出场原因',
-      dataIndex: 'exit_reason',
-      key: 'exit_reason',
-      width: 120,
-      render: (v: string | null) => (v ? EXIT_REASON_MAP[v] || v : '-'),
     },
     {
       title: '黑名单',
@@ -886,8 +912,8 @@ export default function TradesPanel() {
               <Tag color={replayTrade.direction === 'long' ? schemeTag(colorScheme).up : schemeTag(colorScheme).down} style={{ marginInlineEnd: 0 }}>
                 {replayTrade.direction === 'long' ? '多' : '空'}
               </Tag>
-              <Tag color={(STATUS_MAP[replayTrade.status] || { color: 'default' }).color} style={{ marginInlineEnd: 0 }}>
-                {(STATUS_MAP[replayTrade.status] || { label: replayTrade.status }).label}
+              <Tag color={statusMeta(replayTrade).color} style={{ marginInlineEnd: 0 }}>
+                {statusMeta(replayTrade).label}
               </Tag>
               <span style={{ fontSize: 12, color: '#999', fontWeight: 400 }}>
                 K线复盘 · {bj(replayTrade.opened_at).format('MM-DD HH:mm')} 开仓
