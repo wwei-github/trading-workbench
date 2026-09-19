@@ -25,18 +25,27 @@ _TZ_BJ = timezone(timedelta(hours=8))
 _MAJOR_SYMBOLS = ("BTCUSDT", "ETHUSDT", "BNBUSDT")
 
 
-def _daily_close(symbol: str) -> tuple[str, str]:
-    """最新已收盘日线 (symbol, 收盘价文本)。失败返回 '获取失败'，不中断整体。"""
+def _daily_close(symbol: str) -> tuple[str, str, str]:
+    """最新已收盘日线 (币种名, 收盘价文本, 24h涨跌幅文本)。失败返回 '获取失败'，不中断整体。
+
+    涨跌幅 = (收盘-开盘)/开盘，取刚收的这根日线（[-2]）的开/收盘价。
+    """
+    name = symbol.replace("USDT", "")
     try:
         from app.services.exchange_pool import ExchangePool
 
         klines = ExchangePool().get_klines(symbol, "1d", 2)
-        # klines[-1] 未收盘，[-2] 为刚收的日线
-        close = float(klines[-2][4])
-        return symbol.replace("USDT", ""), f"{close:,.2f}"
+        # klines[-1] 未收盘，[-2] 为刚收的日线；[1]=open [4]=close
+        k = klines[-2]
+        close, open_ = float(k[4]), float(k[1])
+        if open_ <= 0:
+            return name, f"{close:,.2f}", "—"
+        chg = (close - open_) / open_ * 100
+        arrow = "🔺" if chg > 0 else ("🔻" if chg < 0 else "➖")
+        return name, f"{close:,.2f}", f"{arrow} {chg:+.2f}%"
     except Exception as e:
         logger.warning("日线收盘价获取失败 %s: %s", symbol, e)
-        return symbol.replace("USDT", ""), "获取失败"
+        return name, "获取失败", ""
 
 
 @celery_app.task(name="app.tasks.daily_report.notify_daily_report")
@@ -90,15 +99,16 @@ def notify_daily_report() -> dict:
     # 胜率（止盈占已闭单比例；无闭单不显示）
     win_rate = f"{win / closed * 100:.0f}%" if closed else "—"
 
-    # ── 飞书文本排版：全角分隔线 + 表格式对齐（等宽场景下数字列对齐）──
-    sep = "━━━━━━━━━━━━━━━━━━"
+    # ── 飞书文本排版：分区线 + 双列行情（价格 + 涨跌幅）──
+    sep = "━━━━━━━━━━━━━━━━━━━━"
     lines = [
         f"📊 每日交易日报 · {date_label}",
-        sep,
+        "",
         "📈 主流币日收盘",
         *[
-            f"　{name:<4}{price}"   # 全角空格缩进 + 名称定宽，价格列对齐
-            for name, price in prices
+            # 币种 | 收盘价 | 涨跌幅，三列对齐
+            f"　{name:<4}{price:<14}{chg}"
+            for name, price, chg in prices
         ],
         sep,
         "💼 交易统计",
