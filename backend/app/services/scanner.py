@@ -187,6 +187,16 @@ class Scanner:
                 f"{min_vol:,.0f}", before, len(symbols_data),
             )
 
+            # C0 下单环境可交易过滤（2026-09-19，ARX 案例）：数据源永远走正式网
+            # （ARXUSDT 有 K线、AI 照常分析），下单环境（TRADING_TESTNET 决定）
+            # 未上架 → 开单 -1121 Invalid symbol 白白烧 AI 配额 + FAILED 记录。
+            # 在扫描宇宙阶段用下单环境 exchangeInfo 剔除；空表（拉取失败）放行不阻断
+            listed = _bt.listed_symbols()
+            if listed:
+                before = len(symbols_data)
+                symbols_data = [s for s in symbols_data if s["symbol"] in listed]
+                logger.info("下单环境可交易过滤（%d 个合约）：%d → %d", len(listed), before, len(symbols_data))
+
             # C 交易所风险档位过滤（2026-09-18）：最大允许杠杆 <10× 的币不进候选
             # （交易所对其流动性/风险的终极标注；4USDT 案例）。注意不能按首档 MMR
             # 过滤——币安 2026 已把多数山寨首档 MMR 统一调到 1.5%~2%（首档名义

@@ -137,6 +137,14 @@ def _attempt_open(
         logger.info("开仓跳过 %s：币种在黑名单（手动/连续止损自动）", symbol)
         _mark_open_block(db, a, "币种在黑名单（手动添加或连续止损自动冷却中）")
         return False
+    # 下单环境可交易兜底（2026-09-19，ARX 案例）：扫描宇宙已过滤，这里防
+    # 缓存到期瞬间/扫描并发窗口内的新候选。空集合（拉取失败）放行不阻断
+    from app.services.binance_trader import BinanceTrader
+    listed = BinanceTrader().listed_symbols()
+    if listed and symbol not in listed:
+        logger.info("开仓跳过 %s：下单环境未上架该合约（exchangeInfo 校验）", symbol)
+        _mark_open_block(db, a, "下单环境未上架该合约（无法交易）")
+        return False
     # 开单类型仅作记录（2026-09-15 拍板）：策略开关不再拦截开仓（未知类型也不拦）
     # EMA 排列前提随指标多数决重设计移除（2026-09-17）：方向判定权已移交指标多数决
     # （|net|≥3 才成候选），与 AI 提示词、扫描筛选同一把尺子，开仓侧不再二次设限

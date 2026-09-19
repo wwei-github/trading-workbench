@@ -33,6 +33,10 @@ _bracket_cache: dict[str, list] = {}
 # 全市场第 1 档风险档位缓存（扫描候选池过滤，24h 刷新）
 _risk_tier_cache: dict[str, tuple[float, int]] = {}
 _risk_tier_cached_at: float = 0.0
+# 下单环境可交易合约集合缓存（扫描宇宙过滤，24h 刷新）：ARX 案例——数据源是
+# 正式网（ARXUSDT 存在、AI 分析照常），测试网未上架 → 下单 -1121 Invalid symbol
+_listed_cache: set[str] = set()
+_listed_cached_at: float = 0.0
 
 
 class BinanceTrader:
@@ -255,6 +259,32 @@ class BinanceTrader:
         except Exception as e:
             logger.warning("risk_tier_all 拉取失败（扫描侧放行）: %s", e)
             return _risk_tier_cache or {}
+
+    def listed_symbols(self) -> set[str]:
+        """当前下单环境（TRADING_TESTNET 决定 base）可交易的合约集合（扫描宇宙过滤）。
+
+        exchangeInfo 一次拉全市场，进程内缓存 24h。数据源永远走正式网而下单环境
+        由配置决定：切换 TRADING_TESTNET 后重启容器即随新环境重新校验（切环境
+        本来就要重启）。失败返回空 set（调用方放行，不阻断扫描）。
+        """
+        global _listed_cache, _listed_cached_at
+        now = time.time()
+        if _listed_cache and now - _listed_cached_at < 86400:
+            return _listed_cache
+        try:
+            r = self._req("GET", "/fapi/v1/exchangeInfo", {})
+            out = {
+                s["symbol"]
+                for s in r.get("symbols", [])
+                if s.get("status") == "TRADING" and s.get("contractType") == "PERPETUAL"
+            }
+            if out:  # 拉到空列表视为异常，保留旧缓存
+                _listed_cache = out
+                _listed_cached_at = now
+            return _listed_cache
+        except Exception as e:
+            logger.warning("listed_symbols 拉取失败（扫描侧放行）: %s", e)
+            return _listed_cache
 
     # ── 杠杆 / 保证金模式 ─────────────────────────────────────
 
