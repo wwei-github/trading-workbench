@@ -110,43 +110,51 @@ def notify_daily_report() -> dict:
     win_rate = f"{total_win / total_closed * 100:.0f}%" if total_closed else "—"
 
     # ── 飞书消息卡片（interactive）：列对齐由卡片布局引擎负责。
-    #    文本消息是比例字体，空格补位永远对不齐价格列/个位数，卡片 column_set 才是真对齐 ──
+    #    文本消息是比例字体，空格补位永远对不齐价格列/个位数，卡片栅格才是真对齐 ──
     def _col(title: str, *lines: str) -> dict:
-        """一个等宽 column 单元：标题加粗 + 下方数据行。"""
+        """等宽 column 单元：标题加粗 + 下方数据行（行情区用）。"""
         return {
             "tag": "column", "width": "weighted", "weight": 1,
             "elements": [{"tag": "div", "text": {"tag": "lark_md",
                          "content": "\n".join([f"**{title}**", *lines])}}],
         }
 
+    # 头部：净收益为正绿/为负红/持平蓝，emoji 跟随
+    head_emoji = "📈" if net > 0 else ("📉" if net < 0 else "📊")
+
     card = {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"📊 每日交易日报 · {date_label}"},
+            "title": {"tag": "plain_text", "content": f"{head_emoji} 每日交易日报 · {date_label}"},
             "template": "green" if net > 0 else ("red" if net < 0 else "blue"),
         },
         "elements": [
-            # 行情：3 等宽列，币种/收盘价/涨跌幅各占一行，列间天然对齐
+            # ── 行情区：3 等宽列，币种/收盘价(粗体)/涨跌幅 ──
+            {"tag": "div", "text": {"tag": "lark_md", "content": "**📈 主流币日收盘**"}},
             {"tag": "column_set", "flex_mode": "stretch", "columns": [
-                _col(name, price, chg or "—") for name, price, chg in prices
+                _col(name, f"**{price}**", chg or "—") for name, price, chg in prices
             ]},
             {"tag": "hr"},
-            # 交易统计：4 等宽列（单双位数不再互相挤歪）
-            {"tag": "column_set", "flex_mode": "stretch", "columns": [
-                _col("开单", f"{opened} 笔"),
-                _col("闭单", f"{closed} 笔"),
-                _col("止盈", f"{win} 笔 ✅"),
-                _col("止损", f"{loss} 笔"),
+            # ── 统计区：原生 fields 两列栅格，每格独立单元格（单双位数不挤歪）──
+            {"tag": "div", "text": {"tag": "lark_md", "content": "**💼 交易统计**"}},
+            {"tag": "div", "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**开单**　{opened} 笔"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**闭单**　{closed} 笔"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**止盈**　{win} 笔 ✅"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**止损**　{loss} 笔"}},
+                {"is_short": True, "text": {"tag": "lark_md",
+                 "content": f"**胜率**　{win_rate}（{total_win}/{total_closed}）"}},
+                {"is_short": True, "text": {"tag": "lark_md",
+                 "content": f"**在跑**　{running} 笔 · 失败 {failed}"}},
             ]},
-            # 胜率 + 净收益：2 等宽列，净收益加粗突出
-            {"tag": "column_set", "flex_mode": "stretch", "columns": [
-                _col("胜率", f"{win_rate}（{total_win}/{total_closed}）"),
-                _col("💰 净收益", f"**{_net_str(net)}**"),
-            ]},
-            # 口径脚注
+            {"tag": "hr"},
+            # ── 收益区：独立一行加粗突出 ──
             {"tag": "div", "text": {"tag": "lark_md",
-             "content": (f"在跑 {running} · 失败 {failed} · 胜率=止盈笔数÷全部已闭单 · "
-                         "在跑单浮动盈亏不计入净收益")}},
+             "content": f"💰 **净收益　{_net_str(net)}**"}},
+            # ── 口径脚注（小字灰显）──
+            {"tag": "note", "elements": [{"tag": "plain_text",
+             "content": ("胜率 = 止盈笔数 ÷ 全部已闭单 · 净收益只计已闭单"
+                         "（含手续费/资金费），在跑单浮动盈亏不计")}]},
         ],
     }
     ok = send_feishu_card(card)
