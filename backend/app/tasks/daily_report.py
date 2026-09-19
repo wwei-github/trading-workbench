@@ -62,7 +62,6 @@ def notify_daily_report() -> dict:
 
     with ThreadPoolExecutor(max_workers=3) as ex:
         prices = list(ex.map(_daily_close, _MAJOR_SYMBOLS))
-    price_lines = [f"{name} 收盘 {price}" for name, price in prices]
 
     # 当日交易统计
     db = SessionLocal()
