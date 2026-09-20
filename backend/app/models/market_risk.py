@@ -1,6 +1,6 @@
 """市场风险防护状态（docs/15）。状态单行 id=1，历史只增不改。"""
 from datetime import datetime
-from sqlalchemy import DateTime, Integer, String, JSON
+from sqlalchemy import Boolean, DateTime, Integer, String, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -19,6 +19,9 @@ class MarketRiskState(Base):
     s4_last_release_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     osc_lock_until: Mapped[datetime] = mapped_column(DateTime, nullable=True)  # L2 震荡锁截止
     entered_level_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)  # 进入当前等级时间
+    # 仓位动作待重试（2026-09-20）：L2/L3 动作失败或 trader 未配置时置位，
+    # 下轮快检即便等级未变也重试执行；成功后清零
+    actions_pending: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

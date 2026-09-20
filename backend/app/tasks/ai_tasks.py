@@ -23,7 +23,7 @@ from sqlalchemy import select
 from app.celery_app import celery_app
 from app.config import settings
 from app.database import SessionLocal
-from app.models.scan import ScanResult, AIAnalysis
+from app.models.scan import ScanRecord, ScanResult, AIAnalysis
 from app.models.system_config import SystemConfig
 from app.services import ai_progress
 from app.services.ai_agent import analyze_coin_agent
@@ -127,6 +127,10 @@ def run_ai_analysis_task(
             lvl = get_current_level(db)
             if lvl >= 2:
                 logger.info("市场防护 L%d 生效，扫描 #%s 命中 %d 币跳过 AI 分析", lvl, scan_record_id, len(results))
+                rec = db.get(ScanRecord, UUID(scan_record_id))
+                if rec:
+                    rec.guard_note = f"市场防护 L{lvl} 暂停 AI 分析（{datetime.utcnow():%m-%d %H:%M}）"
+                    db.commit()
                 return
 
         force = only_scan_result_id is not None

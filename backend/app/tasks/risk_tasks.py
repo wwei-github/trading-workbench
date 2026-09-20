@@ -31,7 +31,10 @@ def market_risk_check():
             _release_open_lock(r, ident)
         summary = (
             "数据失败，等级冻结" if result.get("frozen")
-            else f"L{result['level']}" + ("（升级，已执行动作）" if result.get("changed") and result["level"] > 0 else "")
+            else f"L{result['level']}" + (
+                "（升级，已执行动作）" if result.get("upgraded")
+                else "（降级）" if result.get("changed") else ""
+            )
         )
         close_task(task_id, "completed", summary=summary, detail=result)
     except Exception as e:

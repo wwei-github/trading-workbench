@@ -477,6 +477,7 @@ def _load_state(db) -> tuple["MarketRiskState", dict]:
         "s4_last_release_at": row.s4_last_release_at.isoformat() if row.s4_last_release_at else None,
         "osc_lock_until": row.osc_lock_until.isoformat() if row.osc_lock_until else None,
         "entered_level_at": row.entered_level_at.isoformat() if row.entered_level_at else None,
+        "actions_pending": bool(row.actions_pending),
     }
     return row, st
 
@@ -491,6 +492,7 @@ def _save_state(db, row, st: dict, sig: Optional[dict], old_level: int) -> None:
     row.s4_last_release_at = datetime.fromisoformat(st["s4_last_release_at"]) if st.get("s4_last_release_at") else None
     row.osc_lock_until = datetime.fromisoformat(st["osc_lock_until"]) if st.get("osc_lock_until") else None
     row.entered_level_at = datetime.fromisoformat(st["entered_level_at"]) if st.get("entered_level_at") else None
+    row.actions_pending = bool(st.get("actions_pending"))
     if sig:
         row.signals = {k: sig[k] for k in ("s1", "s2", "s3", "s4") if k in sig}
         row.updated_at = datetime.utcnow()
@@ -510,7 +512,8 @@ def get_current_level(db) -> int:
 
 def execute_level_actions(db, trader, level: int) -> dict:
     """L2/L3 存量仓位动作（仅本网）。L2：盈利方向 SL 收成本；L3：深亏(>0.5R)多单市价离场、
-    盈利空单锁利润。返回动作计数供通知。"""
+    盈利单 SL 再收紧一档（entry 与现价中点，锁约一半浮盈）。返回动作计数供通知，
+    failed>0 时由调用方置 actions_pending 下轮重试。"""
     from sqlalchemy import select as _select
     from app.models.trade import TradeRecord
     recs = db.execute(_select(TradeRecord).where(
@@ -518,7 +521,7 @@ def execute_level_actions(db, trader, level: int) -> dict:
         TradeRecord.testnet == settings.TRADING_TESTNET,
     )).scalars().all()
     if not recs:
-        return {"sl_moved": 0, "closed": 0}
+        return {"sl_moved": 0, "closed": 0, "failed": 0}
     # 现价一次拉全（BinanceTrader 无公开行情方法，走 BinanceClient 24hr ticker）
     from app.services.binance_client import BinanceClient
     _c = BinanceClient()
@@ -526,31 +529,43 @@ def execute_level_actions(db, trader, level: int) -> dict:
         px = {t["symbol"]: float(t.get("lastPrice") or 0) for t in _c.get_24h_tickers()}
     finally:
         _c.close()
-    moved = closed = 0
+    # 交易所实际剩余仓位一次拉全：TP1/TP2 分批后 rec.qty（开仓原始量）大于剩余量，
+    # 按原始量发 reduceOnly 市价单会被币安 -2022 拒单
+    positions = trader.positions()
+    moved = closed = failed = 0
     for rec in recs:
         try:
             price = px.get(rec.symbol, 0.0)
             entry = float(rec.entry_price or 0)
             if entry <= 0:
                 continue
-            qty = abs(float(rec.qty or 0))
+            amt = abs(positions[rec.symbol]["amt"]) if rec.symbol in positions else 0.0
+            if amt < 1e-9:  # 已无实际持仓（结算/手动平仓未同步等），跳过
+                continue
             risk = float(rec.risk_amount or 0)
             raw = dict(rec.raw or {})
             if level >= 2:
-                # 盈利方向：多单 price>entry / 空单 price<entry → SL 收成本
+                # 盈利方向：多单 price>entry / 空单 price<entry → SL 收紧
                 in_profit = price > entry if rec.direction == "long" else price < entry
                 if in_profit:
                     from app.services.trade_engine import _replace_sl
-                    open_ids = trader.open_order_ids(rec.symbol)
-                    if float(rec.stop_loss or 0) != entry:
-                        _replace_sl(db, trader, rec, open_ids, entry, reason="market_guard_l2")
+                    # 只收紧不放宽：L2 收至成本；L3 再收紧一档至 entry 与现价中点。
+                    # 多单 SL 已被跟进止损移到目标上方（空单反之）时不回退
+                    target = entry if level == 2 else (entry + price) / 2
+                    cur_sl = float(rec.stop_loss or 0)
+                    need_tighten = cur_sl < target if rec.direction == "long" \
+                        else (cur_sl == 0 or cur_sl > target)
+                    if need_tighten:
+                        open_ids = trader.open_order_ids(rec.symbol)
+                        _replace_sl(db, trader, rec, open_ids, target,
+                                    reason=f"market_guard_l{level}")
                         moved += 1
                 # L3 深亏多单市价离场（空单不平，docs/15 §3）
                 if level >= 3 and rec.direction == "long" and price < entry and risk > 0:
-                    loss_r = (entry - price) * qty / risk
+                    loss_r = (entry - price) * amt / risk
                     if loss_r > 0.5:
                         trader.cancel_all_algo(rec.symbol)
-                        trader.market_order(rec.symbol, "SELL", qty, reduce_only=True)
+                        trader.market_order(rec.symbol, "SELL", amt, reduce_only=True)
                         raw["guard_closed"] = True
                         rec.raw = raw  # 新 dict，确保 SQLAlchemy 落库
                         _add_guard_event(db, rec, {"loss_r": round(loss_r, 2), "price": price})
@@ -558,22 +573,29 @@ def execute_level_actions(db, trader, level: int) -> dict:
             db.commit()
         except Exception as e:
             db.rollback()
+            failed += 1
             logger.exception("防护动作失败 %s: %s", rec.symbol, e)
-    return {"sl_moved": moved, "closed": closed}
+    return {"sl_moved": moved, "closed": closed, "failed": failed}
 
 
 def _add_guard_event(db, rec, detail: dict) -> None:
     from app.services.trade_engine import _add_event
-    _add_event(db, rec, "MARKET_GUARD_CLOSE", detail)
+    _add_event(db, rec, "GUARD_CLOSE", detail)
 
 
 def run_risk_check() -> dict:
-    """快检主入口：采集→评估→持久化→升级即时执行→通知。数据失败冻结。"""
+    """快检主入口：采集→评估→持久化→升级即时执行→通知。数据失败冻结。
+
+    仓位动作在 _save_state/commit 之前完成（execute 内部自会 commit 其行变更）；
+    动作失败（failed>0）置 actions_pending，下轮快检即便等级未变也重试；
+    trader 未配置时同样置位，等配置后补执行。
+    """
     from app.database import SessionLocal
     from app.services.binance_trader import BinanceTrader
     from app.services.notify import send_feishu_text
     sig = fetch_signals()
-    result = {"level": 0, "changed": False, "actions": None, "frozen": sig is None}
+    result = {"level": 0, "changed": False, "upgraded": False, "actions": None,
+              "frozen": sig is None}
     if sig is None:
         logger.info("快检数据失败，等级冻结")
         return result
@@ -582,14 +604,23 @@ def run_risk_check() -> dict:
         row, st = _load_state(db)
         old_level = st["level"]
         st = evaluate_level(sig, st)
-        _save_state(db, row, st, sig, old_level)
-        db.commit()
-        result["level"] = st["level"]
-        if st["level"] > old_level:
-            result["changed"] = True
+        upgraded = st["level"] > old_level
+        result["upgraded"] = upgraded
+        need = st["level"] >= 2 and (upgraded or st.get("actions_pending"))
+        if need:
             trader = BinanceTrader()
             if trader.configured:
                 result["actions"] = execute_level_actions(db, trader, st["level"])
+                st["actions_pending"] = result["actions"].get("failed", 0) > 0
+            else:
+                st["actions_pending"] = True  # 等配置后下轮重试
+        elif st["level"] < 2:
+            st["actions_pending"] = False
+        _save_state(db, row, st, sig, old_level)
+        db.commit()
+        result["level"] = st["level"]
+        if upgraded:
+            result["changed"] = True
             send_feishu_text(
                 f"⚠️ 市场风险升级 L{old_level}→L{st['level']}\n"
                 f"BTC 24h {sig['s1']}% | 广度 {sig['s2']}% | ATR {sig['s3']}x | 3×15m {sig['s4']}%\n"

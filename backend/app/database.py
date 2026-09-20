@@ -185,6 +185,10 @@ def _run_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_symbol_blacklist_origin "
             "ON symbol_blacklist (origin)"
         ))
+        # 扫描记录市场防护标注（docs/15 §5，2026-09-20）：L2/L3 暂停批量 AI 分析时写入
+        conn.execute(text(
+            "ALTER TABLE scan_records ADD COLUMN IF NOT EXISTS guard_note VARCHAR(128)"
+        ))
         # 确保系统配置表有默认行（初始值从 env 注入）。
         # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有
         # Python 端 default 没有 server_default，漏列的裸 INSERT 会 NotNullViolation
