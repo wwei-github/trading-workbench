@@ -839,7 +839,7 @@ export default function TradesPanel() {
               { label: '测试网', value: 'testnet' },
             ]}
           />
-          <Button icon={<ReloadOutlined />} size="small" onClick={fetchData}>
+          <Button icon={<ReloadOutlined />} onClick={fetchData}>
             刷新
           </Button>
         </Space>

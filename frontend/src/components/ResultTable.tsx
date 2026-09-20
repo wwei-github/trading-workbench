@@ -523,7 +523,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexShrink: 0, marginBottom: 4 }}>
           {/* 立即扫描（外部传入，置于刷新左侧，2026-09-20 移入扫描结果 Tab） */}
           {headerExtra}
-          <Button icon={<ReloadOutlined />} size="small" onClick={handleRefresh}>
+          <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
             刷新
           </Button>
         </div>

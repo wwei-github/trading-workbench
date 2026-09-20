@@ -217,7 +217,7 @@ export default function ReviewActualPanel() {
           </Space>
         </Col>
         <Col>
-          <Button icon={<ReloadOutlined />} size="small" onClick={() => fetchData(days)}>刷新</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => fetchData(days)}>刷新</Button>
         </Col>
       </Row>
 

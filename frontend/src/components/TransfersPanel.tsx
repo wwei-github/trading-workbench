@@ -107,7 +107,7 @@ export default function TransfersPanel() {
           value={`${stats.net > 0 ? '+' : ''}${stats.net.toFixed(2)} USDT`}
           color={stats.net === 0 ? undefined : schemeValueColor(stats.net, colorScheme)}
         />
-        <Button icon={<ReloadOutlined />} size="small" style={{ marginLeft: 'auto', alignSelf: 'center' }} onClick={fetchData}>
+        <Button icon={<ReloadOutlined />} style={{ marginLeft: 'auto', alignSelf: 'center' }} onClick={fetchData}>
           刷新
         </Button>
       </div>

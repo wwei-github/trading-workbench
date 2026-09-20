@@ -10,7 +10,7 @@ html, body, #root {
    2. 表格内嵌正文旁的 icon 快捷键（星标/复制/展开开关）：
       type="text" + size="small"（非操作列，保持低调灰色）
    3. 工具栏：主操作/打开弹窗 = type="primary"（默认尺寸）带 icon；
-      刷新等次操作 = default + size="small" + 图标带文字
+      刷新等次操作 = default + 默认尺寸 + 图标带文字（与系统日志刷新一致）
    4. 表格展开区的主动作 CTA（AI 分析/AI 归因）= type="primary" ghost + size="small"
    ──────────────────────────────────────────────────────────── */
 .ant-table-cell .ant-btn-link {

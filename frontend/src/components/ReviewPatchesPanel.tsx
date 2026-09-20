@@ -306,7 +306,7 @@ export default function ReviewPatchesPanel() {
             <Button size="small" icon={<ThunderboltOutlined />} loading={triggering} onClick={doTrigger}>
               手动触发生成
             </Button>
-            <Button size="small" icon={<ReloadOutlined />} onClick={fetchData}>
+            <Button icon={<ReloadOutlined />} onClick={fetchData}>
               刷新
             </Button>
           </Space>

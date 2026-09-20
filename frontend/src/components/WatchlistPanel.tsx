@@ -484,7 +484,6 @@ export default function WatchlistPanel() {
         <div style={{ marginBottom: 8, flexShrink: 0 }}>
           <Button
             icon={<ReloadOutlined />}
-            size="small"
             onClick={loadData}
             loading={loading}>
             刷新

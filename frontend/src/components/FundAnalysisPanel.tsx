@@ -307,54 +307,56 @@ export default function FundAnalysisPanel() {
   }, [data, up, down])
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {/* 筛选条：环境 + 时间范围（自定义出现 RangePicker）+ 刷新 */}
-      <Row justify="space-between" align="middle" gutter={[12, 8]}>
+      <Row justify="space-between" align="middle" gutter={[0, 8]}>
         <Col flex="auto">
           <Space size={12} wrap>
             <Segmented
               value={scope}
               onChange={(v) => setScope(v as Scope)}
               options={[
-                { label: '正式网', value: 'live' },
-                { label: '测试网', value: 'testnet' },
+                { label: "正式网", value: "live" },
+                { label: "测试网", value: "testnet" },
               ]}
             />
             <Segmented
               value={range}
               onChange={(v) => setRange(v as RangeKey)}
               options={[
-                { label: '全部', value: 'all' },
-                { label: '本周', value: 'week' },
-                { label: '本月', value: 'month' },
-                { label: '自定义', value: 'custom' },
+                { label: "全部", value: "all" },
+                { label: "本周", value: "week" },
+                { label: "本月", value: "month" },
+                { label: "自定义", value: "custom" },
               ]}
             />
-            {range === 'custom' && (
+            {range === "custom" && (
               <DatePicker.RangePicker
                 value={dates}
                 onChange={(v) => setDates(v as [Dayjs, Dayjs] | null)}
                 allowClear={false}
-                placeholder={['开始日期', '结束日期']}
+                placeholder={["开始日期", "结束日期"]}
               />
             )}
           </Space>
         </Col>
-        <Button icon={<ReloadOutlined />} size="small" onClick={fetchData}>
+        <Button icon={<ReloadOutlined />} onClick={fetchData}>
           刷新
         </Button>
       </Row>
 
       {/* 概览 6 卡：净收益/盈亏比随涨跌色；胜率 ≥50 涨色；其余中性 */}
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
         <StatCard
           title="区间净收益"
-          value={summary ? `${fmtSigned(summary.net_pnl)} USDT` : '-'}
-          color={summary ? schemeValueColor(summary.net_pnl, colorScheme) : undefined}
+          value={summary ? `${fmtSigned(summary.net_pnl)} USDT` : "-"}
+          color={
+            summary ? schemeValueColor(summary.net_pnl, colorScheme) : undefined
+          }
         />
         <StatCard
           title="胜率（净盈利笔数占比）"
-          value={summary?.win_rate == null ? '-' : `${summary.win_rate}%`}
+          value={summary?.win_rate == null ? "-" : `${summary.win_rate}%`}
           color={
             summary?.win_rate == null
               ? undefined
@@ -363,19 +365,36 @@ export default function FundAnalysisPanel() {
                 : down
           }
         />
-        <StatCard title="手续费" value={summary ? `${summary.fee_total.toFixed(2)} USDT` : '-'} />
-        <StatCard title="资金费" value={summary ? `${summary.funding_total.toFixed(2)} USDT` : '-'} />
-        <StatCard title="净流入" value={summary ? `${fmtSigned(summary.transfer_net)} USDT` : '-'} />
+        <StatCard
+          title="手续费"
+          value={summary ? `${summary.fee_total.toFixed(2)} USDT` : "-"}
+        />
+        <StatCard
+          title="资金费"
+          value={summary ? `${summary.funding_total.toFixed(2)} USDT` : "-"}
+        />
+        <StatCard
+          title="净流入"
+          value={summary ? `${fmtSigned(summary.transfer_net)} USDT` : "-"}
+        />
         <StatCard
           title="盈亏比R（止盈单）"
-          value={summary?.avg_win_r == null ? '-' : `${fmtSigned(summary.avg_win_r)}R`}
-          color={summary?.avg_win_r == null ? undefined : schemeValueColor(summary.avg_win_r, colorScheme)}
+          value={
+            summary?.avg_win_r == null
+              ? "-"
+              : `${fmtSigned(summary.avg_win_r)}R`
+          }
+          color={
+            summary?.avg_win_r == null
+              ? undefined
+              : schemeValueColor(summary.avg_win_r, colorScheme)
+          }
         />
       </div>
 
       {/* 空态/图表栅格：data 为空（未选日期或加载中）不渲染图表，无已平仓交易时整体空态 */}
       {data === null ? (
-        range === 'custom' && !dates ? (
+        range === "custom" && !dates ? (
           <Empty description="请选择日期范围" style={{ marginTop: 60 }} />
         ) : (
           <Empty description="暂无数据" style={{ marginTop: 60 }} />
@@ -416,7 +435,12 @@ export default function FundAnalysisPanel() {
                   <Empty
                     description="该范围内暂无划转记录"
                     image={Empty.PRESENTED_IMAGE_SIMPLE}
-                    style={{ height: 300, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}
+                    style={{
+                      height: 300,
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "center",
+                    }}
                   />
                 ) : (
                   <EChart option={transferOption} height={300} />
@@ -427,5 +451,5 @@ export default function FundAnalysisPanel() {
         </Spin>
       )}
     </div>
-  )
+  );
 }

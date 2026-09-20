@@ -183,7 +183,7 @@ export default function ReviewStatsPanel() {
           />
         </Col>
         <Col>
-          <Button icon={<ReloadOutlined />} size="small" onClick={() => fetchData(days)}>
+          <Button icon={<ReloadOutlined />} onClick={() => fetchData(days)}>
             刷新
           </Button>
         </Col>
