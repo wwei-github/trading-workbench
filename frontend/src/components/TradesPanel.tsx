@@ -47,7 +47,7 @@ import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import AiAnalysisCard from './AiAnalysisCard'
 import TradeReplayChart from './TradeReplayChart'
 import StatCard from './StatCard'
-import type { FundAnalytics, TradeEvent, TradeRecord } from '../types'
+import type { AccountSummary, FundAnalytics, TradeEvent, TradeRecord } from '../types'
 
 // 状态标签：运行中三态 + 已平仓 + 失败
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
@@ -259,18 +259,27 @@ export default function TradesPanel() {
   }, [aiConfig, fetchConfig, scopeInit, defaultScope])
   // 概览汇总（与资金分析同源）：closed/wins/win_rate/net_pnl/avg_win_r 来自 analytics 接口
   const [summary, setSummary] = useState<FundAnalytics['summary'] | null>(null)
+  // 账户资金概览（当前环境）：总资金/未实现收益/收益率，与列表/统计并发拉
+  const [acct, setAcct] = useState<AccountSummary | null>(null)
 
   // 列表拉全量（上限 500）供表格与状态计数；概览统计从 analytics 接口取，
   // 保证与资金分析页数字完全一致（接口全表统计，无 500 条截断差异）
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
-      const [list, analytics] = await Promise.all([
+      const [list, analytics, acctData] = await Promise.all([
         scanApi.trades.list(undefined, 500),
         scanApi.trades.analytics({ scope }),
+        scanApi.trades.accountSummary().catch(() => null),
       ])
       setRows(list)
       setSummary(analytics.summary)
+      // 账户概览以当前环境为准（接口按系统配置的环境返回，切环境瞬时不匹配则丢弃）
+      if (acctData && acctData.available && acctData.testnet === (scope === 'testnet')) {
+        setAcct(acctData)
+      } else if (acctData && !acctData.available) {
+        setAcct(acctData)
+      }
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '获取交易记录失败')
     } finally {
@@ -837,8 +846,37 @@ export default function TradesPanel() {
         </Space>
       </Row>
 
-      {/* 概览条（胜率/净收益/盈亏比与资金分析页同源同数） */}
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+      {/* 概览条：左=账户资金（当前环境），右=交易统计（与资金分析页同源同数） */}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'stretch' }}>
+        <StatCard
+          title="总资金（当前环境）"
+          value={acct?.available ? `${(acct.margin_balance ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '--'}
+          color="#1677ff"
+        />
+        <StatCard
+          title="未实现收益"
+          value={
+            acct?.available
+              ? `${(acct.unrealized ?? 0) > 0 ? '+' : ''}${(acct.unrealized ?? 0).toFixed(2)} USDT`
+              : '--'
+          }
+          color={acct?.available && (acct.unrealized ?? 0) !== 0 ? schemeValueColor(acct.unrealized ?? 0, colorScheme) : undefined}
+        />
+        <StatCard
+          title="收益率"
+          value={
+            acct?.available && acct.profit_rate !== null && acct.profit_rate !== undefined
+              ? `${acct.profit_rate > 0 ? '+' : ''}${acct.profit_rate.toFixed(2)}%`
+              : '--'
+          }
+          color={
+            acct?.available && acct.profit_rate !== null && acct.profit_rate !== undefined
+              ? schemeValueColor(acct.profit_rate, colorScheme)
+              : undefined
+          }
+        />
+        {/* 资金列与交易统计列之间的分隔 */}
+        <div style={{ width: 1, background: '#e8e8e8', margin: '4px 2px' }} />
         <StatCard title="在跑单子" value={String(stats.running)} color="#1677ff" />
         <StatCard
           title="盈利单"
@@ -865,6 +903,10 @@ export default function TradesPanel() {
           value={stats.avgWinR === null ? '-' : `${stats.avgWinR > 0 ? '+' : ''}${stats.avgWinR.toFixed(2)}R`}
           color={stats.avgWinR === null ? undefined : schemeValueColor(stats.avgWinR, colorScheme)}
         />
+      </div>
+      {/* 资金口径说明（一行小字，避免误解） */}
+      <div style={{ fontSize: 12, color: '#999', marginTop: -4 }}>
+        总资金 = 钱包余额 + 未实现收益；收益率 = 总收益（已实现+未实现）÷ 本金（总资金−总收益）
       </div>
 
       <Spin spinning={loading}>
