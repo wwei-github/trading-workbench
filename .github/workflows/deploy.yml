@@ -10,7 +10,8 @@
 #
 # Secrets:
 #   DEPLOY_HOST     服务器 IP
-#   DEPLOY_SSH_KEY  部署专用 ed25519 私钥（公钥在服务器 root authorized_keys）
+#   DEPLOY_SSH_KEY  部署专用 ed25519 私钥（公钥在服务器 deploy 用户 authorized_keys，
+#                   经 command= 包装脚本限制只能执行 deploy <scope> <sha>）
 #   FEISHU_WEBHOOK  飞书群自定义机器人 Webhook（可选，失败通知）
 # ============================================================
 name: Deploy
@@ -115,15 +116,15 @@ jobs:
           echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-      - name: SSH 发布（SHA 构建 → up → 健康检查 → 失败自动回滚）
+      - name: SSH 发布（受限通道 deploy@：包装脚本只接受 deploy <scope> <sha>，见服务器 /usr/local/bin/deploy-run.sh）
         id: ssh_deploy
         run: |
           set -o pipefail
           ssh -i ~/.ssh/deploy_key \
               -o StrictHostKeyChecking=accept-new \
               -o ConnectTimeout=15 \
-              root@${{ secrets.DEPLOY_HOST }} \
-              'cd /home/ubuntu/github/trading-workbench && git pull --ff-only origin main && bash scripts/release.sh deploy ${{ steps.prep.outputs.scope }} ${{ github.sha }}' \
+              deploy@${{ secrets.DEPLOY_HOST }} \
+              "deploy ${{ steps.prep.outputs.scope }} ${{ github.sha }}" \
           2>&1 | tee deploy_output.log
           # release.sh 失败会非零退出，pipefail 让本步骤失败
 
