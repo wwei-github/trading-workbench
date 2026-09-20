@@ -19,6 +19,7 @@ from app.models.scan import AIAnalysis, ScanResult, TradeReview
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.exchange_pool import ExchangePool
+from app.services.system_switch import system_enabled
 from app.services.task_log import close_task, open_task
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,8 @@ def replay_suggestion(
 @celery_app.task(name="app.tasks.review_tasks.run_trade_review_task", max_retries=0)
 def run_trade_review_task():
     """定时复盘：找观察期结束且未复盘的 suggest 决策，逐 K 回放落库"""
+    if not system_enabled():
+        return  # 系统总开关关闭：所有定时任务跳过
     db = SessionLocal()
     pool = ExchangePool()
     task_id = ""
@@ -199,6 +202,8 @@ def run_ai_attribution(db, pool, trader, trades: list) -> list[dict]:
 @celery_app.task(name="app.tasks.review_tasks.run_ai_attribution_task", max_retries=0)
 def run_ai_attribution_task():
     """定时归因：找已平仓未归因的交易，逐笔 AI 复盘出错误标签与教训"""
+    if not system_enabled():
+        return  # 系统总开关关闭：所有定时任务跳过
     if not settings.AI_API_KEY:
         return  # AI 未配置，静默跳过
     db = SessionLocal()
@@ -247,6 +252,8 @@ def run_ai_attribution_task():
 @celery_app.task(name="app.tasks.review_tasks.run_patch_trigger_task", max_retries=0)
 def run_patch_trigger_task():
     """每日触发：标签热度检查 → AI 生成补丁草稿（待人工确认合入）"""
+    if not system_enabled():
+        return  # 系统总开关关闭：所有定时任务跳过
     if not settings.AI_API_KEY:
         return
     db = SessionLocal()
@@ -272,6 +279,8 @@ def run_patch_trigger_task():
 @celery_app.task(name="app.tasks.review_tasks.run_patch_evaluate_task", max_retries=0)
 def run_patch_evaluate_task():
     """每日评估：active 补丁的三态判定（有效/无效/恶化告警）"""
+    if not system_enabled():
+        return  # 系统总开关关闭：所有定时任务跳过
     db = SessionLocal()
     task_id = ""
     try:

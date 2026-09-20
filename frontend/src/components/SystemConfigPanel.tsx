@@ -22,17 +22,27 @@ export default function SystemConfigPanel() {
   useEffect(() => {
     if (open && aiConfig) {
       form.setFieldsValue({
+        system_enabled: aiConfig.system_enabled ?? true,
         trading_testnet: aiConfig.trading_testnet ?? true,
         trading_enabled: aiConfig.trading_enabled ?? false,
       })
     }
   }, [open, aiConfig, form])
 
+  // 正式网安全联锁：切到正式网自动关闭自动交易开关（需二次保存确认开启）
+  const handleEnvChange = (v: boolean) => {
+    if (!v) {
+      form.setFieldValue('trading_enabled', false)
+      message.warning('已切换到正式网：自动交易默认关闭，确认无误后需手动开启')
+    }
+  }
+
   const handleSave = async () => {
     try {
       const values = await form.validateFields()
       setSaving(true)
       const data: Partial<SystemConfig> = {
+        system_enabled: values.system_enabled,
         trading_testnet: values.trading_testnet,
         trading_enabled: values.trading_enabled,
       }
@@ -68,10 +78,19 @@ export default function SystemConfigPanel() {
         <Spin spinning={loading}>
         <Form form={form} layout="vertical">
           <Form.Item
+            label="系统总开关"
+            name="system_enabled"
+            valuePropName="checked"
+            tooltip="关闭后所有定时任务（定时扫描/结算巡检/复盘归因/补丁/日报）都不执行；手动触发不受影响。注意：结算巡检也停，在跑单的止损补挂随之暂停"
+          >
+            <Switch checkedChildren="开" unCheckedChildren="关" />
+          </Form.Item>
+
+          <Form.Item
             label="交易环境"
             name="trading_testnet"
             rules={[{ required: true }]}
-            tooltip="当前自动交易的执行环境（运行时可切，下一轮任务生效）。存量在跑单按开单时的环境继续结算，切环境互不影响"
+            tooltip="当前自动交易的执行环境（运行时可切，下一轮任务生效）。存量在跑单按开单时的环境继续结算，切环境互不影响。默认测试网；切到正式网会自动关闭自动交易"
           >
             <Radio.Group
               options={[
@@ -80,6 +99,7 @@ export default function SystemConfigPanel() {
               ]}
               optionType="button"
               buttonStyle="solid"
+              onChange={(e) => handleEnvChange(e.target.value)}
             />
           </Form.Item>
 

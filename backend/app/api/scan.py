@@ -343,6 +343,7 @@ def get_system_config(db: Session = Depends(get_db)):
         trading_min_free_pct=float(cfg.trading_min_free_pct),
         trading_testnet=cfg.trading_testnet,
         trading_enabled=cfg.trading_enabled,
+        system_enabled=cfg.system_enabled,
         binance_key_live=bool(settings.BINANCE_API_KEY and settings.BINANCE_SECRET_KEY),
         binance_key_testnet=bool(
             settings.BINANCE_TESTNET_API_KEY and settings.BINANCE_TESTNET_SECRET_KEY
@@ -404,9 +405,16 @@ def update_system_config(
         cfg.trading_min_free_pct = body.trading_min_free_pct
     # 运行时环境与总开关（任务级即时生效：celery 任务每轮读 DB）
     if body.trading_testnet is not None:
+        was_testnet = cfg.trading_testnet
         cfg.trading_testnet = body.trading_testnet
+        # 正式网安全联锁：切到正式网一律先关闭自动交易（需二次保存确认开启），
+        # 防止误切环境直接实盘开单
+        if was_testnet and not body.trading_testnet:
+            cfg.trading_enabled = False
     if body.trading_enabled is not None:
         cfg.trading_enabled = body.trading_enabled
+    if body.system_enabled is not None:
+        cfg.system_enabled = body.system_enabled
     # 规则补丁参数（docs/12 §10）：显式传 null = 恢复默认（用 model_fields_set 区分未传）
     if "max_stop_pct" in body.model_fields_set:
         v = body.max_stop_pct
@@ -458,6 +466,7 @@ def update_system_config(
         trading_min_free_pct=float(cfg.trading_min_free_pct),
         trading_testnet=cfg.trading_testnet,
         trading_enabled=cfg.trading_enabled,
+        system_enabled=cfg.system_enabled,
         binance_key_live=bool(settings.BINANCE_API_KEY and settings.BINANCE_SECRET_KEY),
         binance_key_testnet=bool(
             settings.BINANCE_TESTNET_API_KEY and settings.BINANCE_TESTNET_SECRET_KEY

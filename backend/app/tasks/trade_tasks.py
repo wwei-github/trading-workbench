@@ -21,6 +21,7 @@ from app.models.scan import AIAnalysis
 from app.models.system_config import SystemConfig
 from app.services.binance_trader import BinanceTrader
 from app.services.task_log import close_task, open_task
+from app.services.system_switch import system_enabled
 from app.services.trade_engine import (
     _mark_open_block,
     settle_trades,
@@ -73,6 +74,10 @@ def _mark_analysis_block(analysis_id: str, reason: str) -> None:
 def run_auto_trade_task():
     task_id = open_task(task_type="trade", task_name="结算巡检", trigger="scheduled")
     try:
+        # 系统总开关：关闭后所有定时任务跳过（含结算巡检——在跑单的止损补挂暂停，仅维护窗口用）
+        if not system_enabled():
+            close_task(task_id, "skipped", summary="系统总开关关闭，定时任务跳过")
+            return
         db = SessionLocal()
         try:
             cfg = db.get(SystemConfig, 1)

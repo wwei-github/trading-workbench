@@ -43,6 +43,10 @@ class SystemConfig(Base):
     trading_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
     trading_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # 系统总开关（2026-09-20）：关闭后所有定时任务（扫描/结算巡检/复盘归因/补丁/日报）
+    # 直接跳过；手动触发不受限。默认开启
+    system_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
     # 余额风控：开仓最低可用余额占钱包余额比例（0~1，页面可改）。
     # 2026-09-15 由固定 70% 规则改为默认 50% 可配置。开单类型策略开关已移除
     # （2026-09-15 拍板：trade_type 仅作记录不再拦截开仓；DB 历史列保留不删）

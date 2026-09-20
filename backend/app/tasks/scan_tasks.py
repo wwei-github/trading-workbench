@@ -8,6 +8,7 @@ from app.database import SessionLocal
 from app.models.scan import ScanRecord
 from app.services.scanner import Scanner
 from app.services.task_log import close_task, open_task
+from app.services.system_switch import system_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,14 @@ def run_scan_task(self, scan_record_id: Optional[str] = None, scan_type: str = "
             trigger=scan_type,
             scan_record_id=scan_record_id,
         )
+
+        # 系统总开关：关闭后定时扫描跳过（手动扫描不受限）
+        if scan_type == "scheduled" and not system_enabled():
+            record.status = "failed"
+            record.finished_at = datetime.utcnow()
+            db.commit()
+            close_task(task_id, "skipped", summary="系统总开关关闭，定时扫描跳过")
+            return
 
         # 如果已有正在运行的扫描，跳过
         running = (

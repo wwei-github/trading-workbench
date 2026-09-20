@@ -165,6 +165,7 @@ export interface SystemConfig {
   // 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面「系统配置」弹窗可改）
   trading_testnet?: boolean; // 当前交易环境：true=测试网 false=正式网
   trading_enabled?: boolean; // 自动交易总开关（关=停开新单，结算巡检照常）
+  system_enabled?: boolean; // 系统总开关（关=所有定时任务跳过，手动触发不受限）
   binance_key_live?: boolean; // 正式网 API key 已配置（只读状态，不返回 key）
   binance_key_testnet?: boolean; // 测试网 API key 已配置（未配置时回落正式网 key）
 }

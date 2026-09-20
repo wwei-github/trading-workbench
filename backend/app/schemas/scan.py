@@ -195,6 +195,7 @@ class SystemConfigOut(BaseModel):
     # 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面可改）
     trading_testnet: bool = True
     trading_enabled: bool = False
+    system_enabled: bool = True       # 系统总开关：关闭后所有定时任务跳过（手动触发不受限）
     # 双环境凭据配置状态（只读，不返回 key 本身）
     binance_key_live: bool = False      # 正式网 key 已配置
     binance_key_testnet: bool = False   # 测试网 key 已配置（未配时回落正式网 key = 与 live 同值）
@@ -238,6 +239,7 @@ class SystemConfigUpdate(BaseModel):
     # 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面可改）
     trading_testnet: Optional[bool] = None
     trading_enabled: Optional[bool] = None
+    system_enabled: Optional[bool] = None
 
     # 规则补丁参数（比例口径；传 null 恢复默认）
     max_stop_pct: Optional[float] = None
