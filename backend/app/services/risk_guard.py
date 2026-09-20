@@ -22,6 +22,7 @@ ETHUSDT 空单反向止损（SL=2373 < 入场 2391.89）靠 abs() 口径的 RR �
 保证金可用性——交易所侧最后一道防线。
 """
 import logging
+from datetime import datetime, timedelta
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ValidationError
@@ -276,3 +277,185 @@ def parse_and_validate(raw: dict, signal: dict, klines: list) -> tuple[bool, lis
     except (ValidationError, ValueError) as e:
         return False, [f"输出格式不合法: {str(e)[:200]}"], {}
     return validate_decision(d, signal, klines)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 市场风险防护（docs/15，Market Guard）：信号采集 + 分级状态机
+#
+# 快检直连币安合约公开接口（3 个请求），不走 ExchangePool K线缓存——
+# 缓存为小时级扫描设计，复用会让快检拿到最长 1 小时前的旧数据（docs/15 §4）。
+# 分级规则（§4/§5）：
+#   命中数 = S1(BTC 24h ≤ -5%) + S2(广度 ≥70%) + S3(ATR 放大 ≥1.8x)
+#   L3 = 命中数≥3 或 S1≤-8% 或 (S4≤-6% 且 BTC 24h≤-3%)
+#   L2 = 命中数≥2 或 S4≤-3.5%
+#   L1 = 命中数≥1
+# 防抖：S1/S2/S3 升级需连续 GUARD_CONFIRM_ROUNDS 轮；S4 即时；
+#   降级需连续 GUARD_DOWNGRADE_ROUNDS 轮低于当前等级且逐级；
+#   S4 迟滞：触发 -3.5% / 解除 -1.5%；L2 震荡锁 1 小时。
+# ═════════════════════════════════════════════════════════════════════
+
+_EXCLUDE = ("UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG")
+
+
+# ── 信号采集（直连，无缓存）──
+
+def fetch_signals() -> Optional[dict]:
+    """拉取四信号快照。任一请求失败返回 None（调用方据此冻结等级）。
+
+    返回 {s1, s2, s3, s4, s1_hit, s2_hit, s3_hit, s4_hit, s4_l3_ok, ts}
+    """
+    from app.services.binance_client import BinanceClient
+    client = BinanceClient()
+    try:
+        tickers = client.get_24h_tickers()
+        btc_1h = client.get_klines("BTCUSDT", "1h", 40)
+        btc_15m = client.get_klines("BTCUSDT", "15m", 10)
+    except Exception as e:
+        logger.warning("风险快检行情获取失败（等级冻结）: %s", e)
+        return None
+    finally:
+        client.close()
+
+    btc = next((t for t in tickers if t.get("symbol") == "BTCUSDT"), None)
+    if not btc or not btc_1h or not btc_15m:
+        logger.warning("风险快检数据不完整（等级冻结）")
+        return None
+
+    s1 = float(btc.get("priceChangePercent") or 0)
+
+    # S2 广度：24h 成交额前 N 的 USDT 合约中跌幅达标占比
+    pool = [
+        t for t in tickers
+        if t.get("symbol", "").endswith("USDT")
+        and not any(k in t["symbol"] for k in _EXCLUDE)
+    ]
+    pool.sort(key=lambda t: float(t.get("quoteVolume") or 0), reverse=True)
+    top = pool[: settings.GUARD_TOP_N]
+    s2 = (
+        sum(1 for t in top if float(t.get("priceChangePercent") or 0) <= settings.GUARD_S2_PCT)
+        / len(top) * 100
+    ) if top else 0.0
+
+    # S3：已收盘 1h K线的 ATR14（近 14 根 vs 24h 前的 14 根）
+    trs = _closed_trs(btc_1h)
+    s3 = _atr(trs[-14:]) / _atr(trs[-38:-24]) if len(trs) >= 38 else 0.0
+
+    # S4：最近 3 根已收盘 15m 累计涨跌幅（%）——只用已收盘K线，免疫插针
+    closed15 = btc_15m[:-1]  # 最后一根未收盘，剔除
+    if len(closed15) >= 3:
+        open_px = float(closed15[-3][1])
+        close_px = float(closed15[-1][4])
+        s4 = (close_px / open_px - 1) * 100 if open_px > 0 else 0.0
+    else:
+        s4 = 0.0
+
+    s4_hit = s4 <= settings.GUARD_S4_L2_PCT
+    return {
+        "s1": round(s1, 2), "s2": round(s2, 1), "s3": round(s3, 2), "s4": round(s4, 2),
+        "s1_hit": s1 <= settings.GUARD_S1_PCT,
+        "s2_hit": s2 >= settings.GUARD_S2_BREADTH,
+        "s3_hit": s3 >= settings.GUARD_S3_MULT,
+        "s4_hit": s4_hit,
+        "s4_l3_ok": s4 <= settings.GUARD_S4_L3_PCT and s1 <= settings.GUARD_S4_L3_CONFIRM_24H,
+        "ts": datetime.utcnow().isoformat(),
+    }
+
+
+def _closed_trs(klines: list[list]) -> list[float]:
+    """已收盘K线的真实波幅 TR 序列（剔除首尾：首根缺前收盘、末根未收盘）"""
+    trs = []
+    for i in range(1, len(klines) - 1):
+        h, l = float(klines[i][2]), float(klines[i][3])
+        pc = float(klines[i - 1][4])
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    return trs
+
+
+def _atr(trs: list[float]) -> float:
+    return sum(trs) / len(trs) if trs else 0.0
+
+
+# ── 分级状态机（纯函数，可离线验证）──
+
+def evaluate_level(sig: dict, st: dict) -> dict:
+    """按信号与上一状态计算新状态。st 为 MarketRiskState 行的 dict 化快照。
+
+    st 键：level, cause, pending_level, pending_count, below_count,
+           s4_last_release_at(iso|None), osc_lock_until(iso|None)
+    返回新 st（含 level/cause/各计数），只算不存。
+    """
+    now = datetime.utcnow()
+    st = {**st}
+    level = int(st.get("level") or 0)
+    hits = sum(1 for k in ("s1_hit", "s2_hit", "s3_hit") if sig.get(k))
+    s4_raw = float(sig.get("s4") or 0.0)
+    lock_active = bool(
+        st.get("osc_lock_until")
+        and datetime.fromisoformat(st["osc_lock_until"]) > now
+    )
+
+    # S4 迟滞：s4 驱动期间，跌幅浅于解除阈值才视为消失
+    s4_active = s4_raw <= settings.GUARD_S4_L2_PCT or (
+        st.get("cause") == "s4" and s4_raw <= settings.GUARD_S4_RELEASE_PCT
+    )
+
+    # 目标等级（原始口径）
+    l3 = (
+        hits >= 3
+        or (sig.get("s1") is not None and sig["s1"] <= settings.GUARD_S1_L3_PCT)
+        or (s4_raw <= settings.GUARD_S4_L3_PCT
+            and (sig.get("s1") or 0) <= settings.GUARD_S4_L3_CONFIRM_24H)
+    )
+    raw = 3 if l3 else 2 if (hits >= 2 or s4_active) else 1 if hits >= 1 else 0
+
+    if raw > level:
+        immediate = raw == 3 or s4_active  # S4/L3 即时；纯 S1/S2/S3 需确认
+        if immediate:
+            # 震荡锁内同因再触发：锁 L2、走常规降级（cause=normal，不再快速衰减）
+            if raw == 2 and s4_active and lock_active:
+                st.update(level=2, cause="normal", below_count=0, pending_level=0,
+                          pending_count=0, entered_level_at=now.isoformat(),
+                          osc_lock_until=(now + timedelta(seconds=settings.GUARD_OSC_LOCK_S)).isoformat())
+                return st
+            st.update(level=raw, cause="s4" if raw == 2 else "normal",
+                      below_count=0, pending_level=0, pending_count=0,
+                      entered_level_at=now.isoformat())
+            return st
+        # S1/S2/S3 升级确认（防窗口滚动/成分变化单轮跳变）
+        if int(st.get("pending_level") or 0) == raw:
+            cnt = int(st.get("pending_count") or 0) + 1
+            if cnt >= settings.GUARD_CONFIRM_ROUNDS:
+                st.update(level=raw, cause="normal", below_count=0,
+                          pending_level=0, pending_count=0, entered_level_at=now.isoformat())
+            else:
+                st.update(pending_level=raw, pending_count=cnt)
+        else:
+            st.update(pending_level=raw, pending_count=1)
+        return st
+
+    if raw < level:
+        # s4 单驱等级（未锁定）：信号消失即按常规命中重算（快速衰减），并设震荡锁窗口
+        if st.get("cause") == "s4" and not s4_active and not lock_active:
+            st.update(level=raw, cause="normal", below_count=0, pending_level=0,
+                      pending_count=0, entered_level_at=now.isoformat(),
+                      osc_lock_until=(now + timedelta(seconds=settings.GUARD_OSC_LOCK_S)).isoformat())
+            return st
+        # 常规降级：连续 N 轮、逐级（棘轮，max 保证一次最多降一级）
+        cnt = int(st.get("below_count") or 0) + 1
+        st["below_count"] = cnt
+        if cnt >= settings.GUARD_DOWNGRADE_ROUNDS:
+            st.update(level=max(raw, level - 1), cause="normal", below_count=0,
+                      pending_level=0, pending_count=0, entered_level_at=now.isoformat())
+        return st
+
+    # 持平：清计数
+    st.update(pending_level=0, pending_count=0, below_count=0)
+    return st
+
+
+def downgrade_one_level(st: dict) -> dict:
+    """外置降级入口（预留）：降一级并清 cause。"""
+    now = datetime.utcnow()
+    return {**st, "level": max(0, int(st.get("level") or 0) - 1), "cause": "normal",
+            "below_count": 0, "pending_level": 0, "pending_count": 0,
+            "entered_level_at": now.isoformat()}
