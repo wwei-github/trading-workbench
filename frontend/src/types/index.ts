@@ -443,3 +443,33 @@ export interface AiProgress {
   status: 'done' | 'running' | 'idle'
   events: AiProgressEvent[]
 }
+
+// ===== 市场风险防护（docs/15）=====
+
+export interface MarketRiskSignals {
+  s1: number;
+  s2: number;
+  s3: number;
+  s4: number;
+}
+export interface MarketRiskHistoryItem {
+  id: string;
+  from_level: number;
+  to_level: number;
+  trigger: {
+    reason?: string;
+    s1?: number;
+    s2?: number;
+    s3?: number;
+    s4?: number;
+  };
+  created_at: string;
+}
+export interface MarketRisk {
+  level: 0 | 1 | 2 | 3;
+  cause: string;
+  signals: MarketRiskSignals;
+  entered_level_at: string | null;
+  updated_at: string | null;
+  history: MarketRiskHistoryItem[];
+}

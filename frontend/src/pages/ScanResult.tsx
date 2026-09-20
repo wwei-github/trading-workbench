@@ -16,6 +16,7 @@ import ReviewPatchesPanel from '../components/ReviewPatchesPanel'
 import BlacklistPanel from '../components/BlacklistPanel'
 import TradesPanel from '../components/TradesPanel'
 import TransfersPanel from '../components/TransfersPanel'
+import RiskBanner from '../components/RiskBanner'
 import ColorSchemeToggle from '../components/ColorSchemeToggle'
 import { useScanStore } from '../stores/scanStore'
 
@@ -203,6 +204,8 @@ export default function ScanResult() {
           </Col>
         </Row>
       </Card>
+
+      <RiskBanner />
 
       <Tabs
         activeKey={activeTab}
