@@ -48,9 +48,9 @@ services:
     image: trading-workbench-backend:${IMAGE_TAG:-latest}
     env_file:
       - ./backend/.env
-    # 并发 6：任务以 LLM 网络等待为主（I/O 型）；预留空位给即时开仓等短任务，
-    # 不至于排在分钟级分析任务后面失去时效（LLM 实际并发由 Redis 信号量 LLM_CONCURRENCY 限）
-    command: celery -A celery_worker.celery_app worker --loglevel=info --concurrency=6
+    # 并发 10：LLM 信号量 LLM_CONCURRENCY=8 + 预留 2 空位给即时开仓等短任务，
+    # 不至于排在分钟级分析任务后面失去时效（任务以 LLM 网络等待为主，I/O 型）
+    command: celery -A celery_worker.celery_app worker --loglevel=info --concurrency=10
     depends_on:
       db:
         condition: service_healthy
