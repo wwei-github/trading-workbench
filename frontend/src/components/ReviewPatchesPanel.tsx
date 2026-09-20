@@ -145,7 +145,24 @@ export default function ReviewPatchesPanel() {
     setTriggering(true)
     try {
       const r = await scanApi.triggerPatches()
-      message.success(r.created ? `生成 ${r.created} 条补丁草稿` : '本次无标签达到触发阈值（或均处冷却期）')
+      if (r.created) {
+        message.success(`生成 ${r.created} 条补丁草稿`)
+      } else if (r.skips?.length) {
+        // 未生成：Modal 展示逐条判定明细（样本/热度/已有草稿/冷却）
+        Modal.info({
+          title: '未生成补丁草稿',
+          width: 520,
+          content: (
+            <ul style={{ paddingLeft: 18, margin: '12px 0 0' }}>
+              {r.skips.map((s, i) => (
+                <li key={i} style={{ marginBottom: 6, fontSize: 13 }}>{s}</li>
+              ))}
+            </ul>
+          ),
+        })
+      } else {
+        message.info('本次无标签达到触发阈值（或均处冷却期）')
+      }
       fetchData()
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '触发失败')

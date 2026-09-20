@@ -696,14 +696,17 @@ def review_prompt_view(db: Session = Depends(get_db)):
 
 @router.post("/review/patches/trigger")
 def review_patch_trigger(db: Session = Depends(get_db)):
-    """手动触发一次补丁草稿生成（立即调 LLM，不等每日定时）"""
+    """手动触发一次补丁草稿生成（立即调 LLM，不等每日定时）；
+    未生成时返回 skips 明细（卡在样本/热度/已有草稿/冷却哪一关）"""
     from app.services.patch_service import run_trigger
     if not settings.AI_API_KEY:
         raise HTTPException(status_code=400, detail="AI 未配置（AI_API_KEY 为空）")
-    drafts = run_trigger(db)
-    return {"created": len(drafts), "drafts": [
-        {"id": d.id, "tag": d.target_tag, "kind": d.kind} for d in drafts
-    ]}
+    result = run_trigger(db)
+    return {"created": len(result["drafts"]), "skips": result["skips"],
+            "attributed_total_7d": result["attributed_total"],
+            "drafts": [
+                {"id": d.id, "tag": d.target_tag, "kind": d.kind} for d in result["drafts"]
+            ]}
 
 
 # ===== Agent trace 查询（docs/04 §5.9） =====

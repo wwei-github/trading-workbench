@@ -254,13 +254,22 @@ def run_patch_trigger_task():
     try:
         from app.services.patch_service import run_trigger
         task_id = open_task(task_type="review", task_name="补丁触发", trigger="scheduled")
-        drafts = run_trigger(db)
+        result = run_trigger(db)
+        drafts = result["drafts"]
+        summary = f"生成 {len(drafts)} 条补丁草稿"
+        if not drafts and result["skips"]:
+            summary = f"未生成补丁：{result['skips'][0]}"
         close_task(task_id, "completed",
-                    summary=f"生成 {len(drafts)} 条补丁草稿",
-                    detail={"drafts": [
-                        {"tag": d.target_tag, "kind": d.kind, "id": d.id}
-                        for d in drafts
-                    ]})
+                    summary=summary,
+                    detail={
+                        # 未生成时 skips 直接给出卡在哪关（样本/热度/已有草稿/冷却）
+                        "skips": result["skips"],
+                        "attributed_total_7d": result["attributed_total"],
+                        "drafts": [
+                            {"tag": d.target_tag, "kind": d.kind, "id": d.id}
+                            for d in drafts
+                        ],
+                    })
     except Exception as e:
         logger.exception("补丁触发任务失败: %s", e)
         if task_id:

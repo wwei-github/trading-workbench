@@ -109,19 +109,30 @@ def window_stats(db: Session, days: int = 7) -> dict:
 
 # ── 触发：热度超标 → AI 生成补丁草稿 ─────────────────────────────────────
 
-def run_trigger(db: Session) -> list[PromptPatch]:
-    """每日触发任务：检查各规则标签热度，超标且过冷却的生成补丁草稿。"""
+def run_trigger(db: Session) -> dict:
+    """每日触发任务：检查各规则标签热度，超标且过冷却的生成补丁草稿。
+
+    返回 {"drafts": [...], "attributed_total": n, "skips": [...]}——skips 逐条
+    记录三重门槛的判定明细（样本不足 / 各标签热度 / 已有草稿 / 冷却中），
+    任务记录与手动触发响应直接展示，一眼看出没生成补丁卡在哪关。
+    """
     stats = window_stats(db, days=7)
+    skips: list[str] = []
     if stats["attributed_total"] < MIN_SAMPLE:
-        logger.info("补丁触发跳过：近7天已归因仅 %s 笔（< %s）",
-                    stats["attributed_total"], MIN_SAMPLE)
-        return []
+        skips.append(
+            f"样本不足：近7天已归因仅 {stats['attributed_total']} 笔（门槛 {MIN_SAMPLE}），"
+            f"先积累归因样本"
+        )
+        return {"drafts": [], "attributed_total": stats["attributed_total"], "skips": skips}
 
     cooldown_since = datetime.utcnow() - timedelta(days=COOLDOWN_DAYS)
     drafts: list[PromptPatch] = []
+    below: list[str] = []  # 热度未达标标签（汇总一行，避免明细过长）
     for tag in RULE_TAGS:
         heat = stats["heat"].get(tag, 0.0)
         if heat < HEAT_THRESHOLD:
+            if stats["tag_counts"].get(tag):
+                below.append(f"{tag} {heat:.2f}")
             continue
         # 同标签存在待确认/生效中补丁 → 不重复生成
         exists = db.execute(
@@ -130,6 +141,7 @@ def run_trigger(db: Session) -> list[PromptPatch]:
                    PromptPatch.status.in_(("draft", "active")))
         ).scalar_one()
         if exists:
+            skips.append(f"{tag} 热度 {heat:.2f} 达标，但已有待确认/生效中补丁，跳过")
             continue
         # 冷却：同标签近期合入过（任意终态）→ 跳过
         cooled = db.execute(
@@ -138,6 +150,7 @@ def run_trigger(db: Session) -> list[PromptPatch]:
                    PromptPatch.applied_at >= cooldown_since)
         ).scalar_one()
         if cooled:
+            skips.append(f"{tag} 热度 {heat:.2f} 达标，但在 {COOLDOWN_DAYS} 天冷却期内，跳过")
             continue
 
         case_ids = [
@@ -154,9 +167,13 @@ def run_trigger(db: Session) -> list[PromptPatch]:
         if patch:
             db.add(patch)
             drafts.append(patch)
+        else:
+            skips.append(f"{tag} 热度 {heat:.2f} 达标，但 AI 生成草稿失败（见系统日志）")
+    if below:
+        skips.append(f"热度未达标（门槛 {HEAT_THRESHOLD}）：{'、'.join(below)}")
     if drafts:
         db.commit()
-    return drafts
+    return {"drafts": drafts, "attributed_total": stats["attributed_total"], "skips": skips}
 
 
 _PATCH_GEN_SYSTEM = """你是期货交易系统的规则工程师。复盘发现某类错误高频出现，\

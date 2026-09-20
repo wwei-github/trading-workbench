@@ -113,10 +113,15 @@ export const scanApi = {
   deletePatch: (id: string) =>
     api.delete(`/scans/review/patches/${id}`).then((r) => r.data),
 
-  // 手动触发一次草稿生成（立即调 LLM）
+  // 手动触发一次草稿生成（立即调 LLM）；未生成时 skips 给出各关判定明细
   triggerPatches: () =>
     api
-      .post<{ created: number; drafts: { id: string; tag: string; kind: string }[] }>(
+      .post<{
+        created: number;
+        skips: string[];
+        attributed_total_7d: number;
+        drafts: { id: string; tag: string; kind: string }[];
+      }>(
         '/scans/review/patches/trigger',
       )
       .then((r) => r.data),
