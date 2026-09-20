@@ -120,6 +120,15 @@ def run_ai_analysis_task(
             logger.info("无可分析的扫描结果 #%s", scan_record_id)
             return
 
+        # 市场风险防护（docs/15 §5）：L2/L3 开仓已暂停，批量 AI 分析不再分发（省 LLM 成本）。
+        # 手动单币重分析（only_scan_result_id 非空）不受限，结果仅展示
+        if only_scan_result_id is None and settings.MARKET_GUARD_ENABLED:
+            from app.services.risk_guard import get_current_level
+            lvl = get_current_level(db)
+            if lvl >= 2:
+                logger.info("市场防护 L%d 生效，扫描 #%s 命中 %d 币跳过 AI 分析", lvl, scan_record_id, len(results))
+                return
+
         force = only_scan_result_id is not None
         jobs = group(
             run_ai_analysis_single.s(str(r.id), scan_record_id, user_input, force)

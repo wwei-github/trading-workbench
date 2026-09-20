@@ -33,6 +33,7 @@ celery_app = Celery(
         "app.tasks.ai_tasks",
         "app.tasks.review_tasks",
         "app.tasks.trade_tasks",
+        "app.tasks.risk_tasks",
         "app.tasks.daily_report",
     ],
 )
@@ -74,6 +75,10 @@ celery_app.conf.update(
             # 每日 08:05（北京）：币安日K 08:00 北京收盘后 5 分钟，推主流币收盘价 + 前一日交易统计
             # 注意 timezone=Asia/Shanghai，crontab 的 hour 按北京时间解释，勿写 UTC
             "schedule": crontab(minute=5, hour=8),
+        },
+        "market-risk-check": {
+            "task": "app.tasks.risk_tasks.market_risk_check",
+            "schedule": crontab(minute="*/30"),  # 每 30 分钟快检（用户拍板 2026-09-20，原设计 5 分钟）
         },
     },
     task_acks_late=True,
