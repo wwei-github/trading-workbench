@@ -149,7 +149,7 @@ export default function ScanResult() {
             key: 'strategy',
             label: '策略提示词',
             children: (
-              <div style={{ height: '100%', overflow: 'auto' }}>
+              <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
                 <StrategyPromptPanel />
               </div>
             ),
@@ -158,7 +158,7 @@ export default function ScanResult() {
             key: 'review',
             label: '复盘',
             children: (
-              <div style={{ height: '100%', overflow: 'auto' }}>
+              <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
                 <Tabs
                   defaultActiveKey="actual"
                   items={[
@@ -166,23 +166,23 @@ export default function ScanResult() {
                       key: 'actual',
                       label: '实盘归因',
                       // 嵌套 Tabs 的 tabpane 被全局 CSS 锁 height:100%（overflow:hidden），
-                      // 内容超高会被裁——内层各 tab 统一包 overflow:auto 滚动容器
-                      children: <div style={{ height: '100%', overflow: 'auto' }}><ReviewActualPanel /></div>,
+                      // 内容超高会被裁——内层各 tab 统一包纵向滚动容器（横向不滚，宽内容由表格内部滚动消化）
+                      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><ReviewActualPanel /></div>,
                     },
                     {
                       key: 'suggestion',
                       label: 'AI建议质量',
-                      children: <div style={{ height: '100%', overflow: 'auto' }}><ReviewStatsPanel /></div>,
+                      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><ReviewStatsPanel /></div>,
                     },
                     {
                       key: 'patches',
                       label: '规则补丁',
-                      children: <div style={{ height: '100%', overflow: 'auto' }}><ReviewPatchesPanel /></div>,
+                      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><ReviewPatchesPanel /></div>,
                     },
                     {
                       key: 'blacklist',
                       label: '币种黑名单',
-                      children: <div style={{ height: '100%', overflow: 'auto' }}><BlacklistPanel /></div>,
+                      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><BlacklistPanel /></div>,
                     },
                   ]}
                 />
@@ -192,17 +192,17 @@ export default function ScanResult() {
           {
             key: 'trades',
             label: '交易记录',
-            children: <div style={{ height: '100%', overflow: 'auto' }}><TradesPanel /></div>,
+            children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><TradesPanel /></div>,
           },
           {
             key: 'transfers',
             label: '资金划转',
-            children: <div style={{ height: '100%', overflow: 'auto' }}><TransfersPanel /></div>,
+            children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><TransfersPanel /></div>,
           },
           {
             key: 'fund-analysis',
             label: '资金分析',
-            children: <div style={{ height: '100%', overflow: 'auto' }}><FundAnalysisPanel /></div>,
+            children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><FundAnalysisPanel /></div>,
           },
           {
             key: 'tasks',
