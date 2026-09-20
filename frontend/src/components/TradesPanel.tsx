@@ -486,6 +486,9 @@ export default function TradesPanel() {
     }
   }
 
+  // AI 建议详情弹窗：点击列表「AI 建议」列打开，展示完整诊断（动作/逻辑/走势/理由）
+  const [adviceView, setAdviceView] = useState<TradeRecord | null>(null)
+
   // 收益金额列（净盈亏 USDT），正负色跟随全局涨跌配色方案
   // 运行中 = 已实现 + 浮动合计（docs/16，每小时 :10 巡检刷新），悬浮拆分明细；
   // 结算后为全程净额；百分比单独一列展示，「已止盈」标记由状态列的 TP1/TP2 Tag 表达
@@ -708,7 +711,7 @@ export default function TradesPanel() {
     },
     {
       // AI 持仓诊断（docs/16）：浮亏在跑单时 AI 判断开仓逻辑是否破坏与建议动作；
-      // 非在跑单淡显最近一次诊断（历史参考）；在跑单附「重诊」（手动无视冷却）
+      // 点击弹窗展示完整诊断详情；在跑单附「重诊」（手动无视冷却）
       title: 'AI 建议',
       key: 'ai_advice',
       width: 200,
@@ -717,41 +720,38 @@ export default function TradesPanel() {
         if (!adv) return <span style={{ color: '#999' }}>-</span>
         const meta = ADVICE_ACTION_META[adv.action] || ADVICE_ACTION_META.hold
         const running = ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(rec.status)
-        const tip = (
-          <div style={{ maxWidth: 320 }}>
-            <div>
-              {meta.label} · {rec.ai_advice_at ? bj(rec.ai_advice_at).format('MM-DD HH:mm') : '-'}
-            </div>
-            <div style={{ marginTop: 4 }}>
-              开仓逻辑{adv.thesis_valid ? '成立' : '已破坏'}，走势{adv.trend_broken ? '已走坏' : '未走坏'}
-            </div>
-            <div style={{ marginTop: 4 }}>{adv.reason}</div>
-            {adv.detail && <div style={{ marginTop: 4, color: '#ddd' }}>{adv.detail}</div>}
-          </div>
-        )
         return (
           <div
             style={{ display: 'flex', alignItems: 'center', gap: 0, minWidth: 0 }}
             onClick={(e) => e.stopPropagation()}
           >
-            <Tooltip title={tip}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, flex: 1 }}>
-                <Tag color={meta.color} style={{ marginInlineEnd: 0, flexShrink: 0 }}>
-                  {meta.label}
-                </Tag>
-                <span
-                  style={{
-                    fontSize: 12,
-                    color: running ? '#595959' : '#bfbfbf',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {adv.reason}
-                </span>
-              </div>
-            </Tooltip>
+            <div
+              onClick={() => setAdviceView(rec)}
+              title="点击查看诊断详情"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                minWidth: 0,
+                flex: 1,
+                cursor: 'pointer',
+              }}
+            >
+              <Tag color={meta.color} style={{ marginInlineEnd: 0, flexShrink: 0, cursor: 'pointer' }}>
+                {meta.label}
+              </Tag>
+              <span
+                style={{
+                  fontSize: 12,
+                  color: running ? '#595959' : '#bfbfbf',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {adv.reason}
+              </span>
+            </div>
             {running && (
               <Button
                 size="small"
@@ -1309,6 +1309,97 @@ export default function TradesPanel() {
             : ''}
           实盘数据与复盘统计不受影响，此操作不可恢复。
         </div>
+      </Modal>
+
+      {/* AI 建议详情弹窗：完整持仓诊断（动作/开仓逻辑/走势/理由/补充说明），
+          在跑单可在弹窗内直接重新诊断 */}
+      <Modal
+        title={
+          adviceView && (
+            <Space size={8}>
+              <span>AI 持仓诊断</span>
+              <Typography.Text strong>{adviceView.symbol}</Typography.Text>
+              <Tag
+                color={adviceView.direction === 'long' ? schemeTag(colorScheme).up : schemeTag(colorScheme).down}
+                style={{ marginInlineEnd: 0 }}
+              >
+                {adviceView.direction === 'long' ? '多' : '空'}
+              </Tag>
+            </Space>
+          )
+        }
+        open={!!adviceView}
+        onCancel={() => setAdviceView(null)}
+        width={520}
+        footer={
+          adviceView && ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(adviceView.status) ? (
+            <Space>
+              <Button onClick={() => setAdviceView(null)}>关闭</Button>
+              <Button
+                type="primary"
+                loading={advisingId === adviceView.id}
+                onClick={async () => {
+                  await handleAdvice(adviceView)
+                  setAdviceView(null)
+                }}
+              >
+                重新诊断
+              </Button>
+            </Space>
+          ) : (
+            <Button onClick={() => setAdviceView(null)}>关闭</Button>
+          )
+        }
+      >
+        {adviceView?.ai_advice && (() => {
+          const adv = adviceView.ai_advice
+          const meta = ADVICE_ACTION_META[adv.action] || ADVICE_ACTION_META.hold
+          const totalPnl =
+            (adviceView.realized_pnl ?? 0) +
+            (adviceView.status !== 'CLOSED' ? adviceView.unrealized_pnl ?? 0 : 0)
+          return (
+            <>
+              <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 10 }}>
+                状态 {STATUS_MAP[adviceView.status]?.label || adviceView.status}
+                {adviceView.entry_price ? ` · 开仓价 ${adviceView.entry_price.toPrecision(6)}` : ''}
+                {' · 当前收益 '}
+                <span
+                  style={{
+                    color: totalPnl > 0 ? schemeTag(colorScheme).up : totalPnl < 0 ? schemeTag(colorScheme).down : undefined,
+                    fontWeight: 600,
+                  }}
+                >
+                  {totalPnl > 0 ? '+' : ''}
+                  {totalPnl.toFixed(2)} USDT
+                </span>
+              </div>
+              <Descriptions size="small" column={2} bordered style={{ marginBottom: 12 }}>
+                <Descriptions.Item label="建议动作">
+                  <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>{meta.label}</Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label="诊断时间">
+                  {adviceView.ai_advice_at ? bj(adviceView.ai_advice_at).format('YYYY-MM-DD HH:mm') : '-'}
+                </Descriptions.Item>
+                <Descriptions.Item label="开仓逻辑">
+                  <span style={{ color: adv.thesis_valid ? '#52c41a' : '#ff4d4f', fontWeight: 600 }}>
+                    {adv.thesis_valid ? '仍成立' : '已破坏'}
+                  </span>
+                </Descriptions.Item>
+                <Descriptions.Item label="当前走势">
+                  <span style={{ color: adv.trend_broken ? '#ff4d4f' : '#52c41a', fontWeight: 600 }}>
+                    {adv.trend_broken ? '已走坏' : '未走坏'}
+                  </span>
+                </Descriptions.Item>
+              </Descriptions>
+              <div style={{ fontSize: 13, lineHeight: 1.8 }}>{adv.reason}</div>
+              {adv.detail && (
+                <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 8, lineHeight: 1.7 }}>
+                  {adv.detail}
+                </div>
+              )}
+            </>
+          )
+        })()}
       </Modal>
     </div>
   )
