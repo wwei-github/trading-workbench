@@ -214,6 +214,18 @@ function renderDetail(detail: Record<string, unknown> | null, scheme: ColorSchem
 // 止损移动 → from→to；盈亏类 → 着色金额；开仓/成交 → 成交均价；错误 → 短文案
 function eventSummary(ev: TradeEvent, scheme: ColorScheme): React.ReactNode {
   const d = (ev.detail || {}) as Record<string, unknown>
+  // AI 持仓诊断：收起态直接展示建议动作 Tag（详情展开可见完整理由）
+  if (ev.event_type === 'AI_ADVICE' && d.action != null) {
+    const meta = ADVICE_ACTION_META[String(d.action)]
+    return (
+      <Tag
+        color={meta?.color || 'default'}
+        style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: '16px', padding: '0 6px' }}
+      >
+        {meta?.label || String(d.action)}
+      </Tag>
+    )
+  }
   if (d.from != null && d.to != null) {
     return (
       <span style={{ fontSize: 12, color: '#595959', fontVariantNumeric: 'tabular-nums' }}>
@@ -506,10 +518,10 @@ export default function TradesPanel() {
         {total.toFixed(2)}
       </span>
     )
-    // 两部分都存在且浮动非零才悬浮拆分（纯已实现/纯浮动无需拆）
-    if (!hasRealized || !hasUnreal || unreal === 0) return main
+    // 在跑单一律悬浮拆分（含浮盈为 0 的时刻，口径统一：显示更新时刻的总收益）
+    if (!hasRealized || !hasUnreal) return main
     return (
-      <Tooltip title={<span>已实现 {fmtSigned(realized)} · 浮动 {fmtSigned(unreal)} USDT</span>}>
+      <Tooltip title={<span>已结算 {fmtSigned(realized)} · 浮盈/亏 {fmtSigned(unreal)} USDT（每小时 :10 更新）</span>}>
         {main}
       </Tooltip>
     )
@@ -710,8 +722,7 @@ export default function TradesPanel() {
       render: (_: unknown, rec) => renderPnl(rec),
     },
     {
-      // AI 持仓诊断（docs/16）：仅展示建议动作 Tag，理由等详情点击弹窗查看；
-      // 在跑单附「重诊」（手动无视冷却）
+      // AI 持仓诊断（docs/16）：仅展示建议动作 Tag，理由等详情点击弹窗查看
       title: 'AI 建议',
       key: 'ai_advice',
       width: 110,
@@ -719,12 +730,8 @@ export default function TradesPanel() {
         const adv = rec.ai_advice
         if (!adv) return <span style={{ color: '#999' }}>-</span>
         const meta = ADVICE_ACTION_META[adv.action] || ADVICE_ACTION_META.hold
-        const running = ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(rec.status)
         return (
-          <div
-            style={{ display: 'flex', alignItems: 'center', gap: 0 }}
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div style={{ display: 'flex', alignItems: 'center' }} onClick={(e) => e.stopPropagation()}>
             <Tag
               color={meta.color}
               onClick={() => setAdviceView(rec)}
@@ -733,16 +740,6 @@ export default function TradesPanel() {
             >
               {meta.label}
             </Tag>
-            {running && (
-              <Button
-                size="small"
-                type="link"
-                loading={advisingId === rec.id}
-                onClick={() => handleAdvice(rec)}
-              >
-                重诊
-              </Button>
-            )}
           </div>
         )
       },
@@ -843,41 +840,55 @@ export default function TradesPanel() {
       render: fmtTime,
     },
     {
-      title: '黑名单',
+      title: '操作',
       key: 'blacklist',
-      width: 76,
+      width: 120,
       fixed: 'right',
       render: (_: unknown, rec) => {
         const inBl = blacklistSet.has(rec.symbol)
-        return inBl ? (
-          <Popconfirm
-            title="移出黑名单？"
-            description="该币种将重新进入扫描候选池"
-            okText="移出"
-            cancelText="取消"
-            onConfirm={() => handleBlacklistRemove(rec.symbol)}
-          >
-            <Tooltip title="已在黑名单中，点击移出">
-              <Button size="small" type="link" danger>
-                移出
+        const running = ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(rec.status)
+        return (
+          <Space size={0} onClick={(e) => e.stopPropagation()}>
+            {running && (
+              <Button
+                size="small"
+                type="link"
+                loading={advisingId === rec.id}
+                onClick={() => handleAdvice(rec)}
+              >
+                重诊
               </Button>
-            </Tooltip>
-          </Popconfirm>
-        ) : (
-          <Tooltip title="加入黑名单后，扫描将过滤该币种">
-            <Button
-              size="small"
-              type="link"
-              icon={<StopOutlined />}
-              onClick={(e) => {
-                e.stopPropagation()
-                setBlTarget(rec)
-                setBlReason('')
-              }}
-            >
-              拉黑
-            </Button>
-          </Tooltip>
+            )}
+            {inBl ? (
+              <Popconfirm
+                title="移出黑名单？"
+                description="该币种将重新进入扫描候选池"
+                okText="移出"
+                cancelText="取消"
+                onConfirm={() => handleBlacklistRemove(rec.symbol)}
+              >
+                <Tooltip title="已在黑名单中，点击移出">
+                  <Button size="small" type="link" danger>
+                    移出
+                  </Button>
+                </Tooltip>
+              </Popconfirm>
+            ) : (
+              <Tooltip title="加入黑名单后，扫描将过滤该币种">
+                <Button
+                  size="small"
+                  type="link"
+                  icon={<StopOutlined />}
+                  onClick={() => {
+                    setBlTarget(rec)
+                    setBlReason('')
+                  }}
+                >
+                  拉黑
+                </Button>
+              </Tooltip>
+            )}
+          </Space>
         )
       },
     },
@@ -939,16 +950,15 @@ export default function TradesPanel() {
           })}
         </Space>
         <Space size={12}>
-          {/* 环境切换：默认实盘，与资金分析页 scope 口径一致 */}
+          {/* 环境切换：默认实盘，与资金分析页 scope 口径/样式一致（无 size、无 onChange 里的翻页重置差异） */}
           <Segmented
-            size="small"
             value={scope}
             onChange={(v) => {
               setScope(v as 'live' | 'testnet')
               setPage(1)
             }}
             options={[
-              { label: '实盘', value: 'live' },
+              { label: '正式网', value: 'live' },
               { label: '测试网', value: 'testnet' },
             ]}
           />

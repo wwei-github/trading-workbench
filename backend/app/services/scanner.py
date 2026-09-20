@@ -7,7 +7,7 @@
 3. 分组：7 票净票 |net|≥3 → 多头/空头候选；-2~+2 中性跳过（震荡市不开单）
 4. 触发确认：方向与候选一致的入场触发（Donchian突破/黄金12形态/回踩EMA21企稳，
    见 strategy/trigger.py）；无触发 → 观察池（不落库，下轮重算）
-5. 质量分排序 + 重复命中抑制 + 落库 → AI 配额（按质量分取前 N）
+5. 质量分排序 + 重复命中抑制（仅定时）+ 落库 → AI 配额（按质量分取前 N）
 
 旧信号管线（Donchian+形态为主动作、EMA 硬门控）已整体替换：
 方向判定权从信号路径移交给指标多数决，与 AI 提示词的多数决规则同一把尺子。
@@ -126,7 +126,9 @@ def detect_indicator_candidate(
     }
     return {
         "signal_type": trig["type"],
-        "current_price": float(klines[-2][4]),
+        # 现价 = 未收盘K线最新价（仅作入场价差参考）：信号判定（投票/触发/形态/量能）
+        # 全部基于已收盘K线（klines[-2]），与扫描时刻在小时内的位置无关，同根K线同结果
+        "current_price": float(klines[-1][4]),
         "breakout_pct": trig["breakout_pct"],
         "trend_slope": 0.0,
         "r_squared": 0.0,
@@ -265,12 +267,19 @@ class Scanner:
                 reverse=True,
             )
 
-            # 4. 重复命中抑制（用独立 session 避免死锁）：同 (symbol, signal_type) 在
+            # 4. 重复命中抑制（仅定时扫描）：同 (symbol, signal_type) 在
             #    repeat_window_hours 内已有命中的本轮不落库——持续趋势里 Donchian 突破
-            #    每根收盘K线都在创新高，不抑制会同币同信号每轮重复命中
-            new_hits, suppressed = self._suppress_repeat_hits(hits, repeat_window_hours)
-            if suppressed:
-                logger.info("重复命中抑制 #%s：%d 条已在 %dh 内命中过，不再落库", scan_record_id, suppressed, repeat_window_hours)
+            #    每根收盘K线都在创新高，不抑制会同币同信号每轮重复命中。
+            #    手动扫描不做抑制（2026-09-20）：手动 = 对最近已收盘K线的完整评估，
+            #    与 :02 定时扫描同一根K线应得同样结果；抑制会让手动结果
+            #    「看起来完全不同」（实为定时已落库的命中被滤掉）。
+            #    AI 成本由指纹缓存（FINGERPRINT_TTL_MIN）兜底，同币同信号不重复调 LLM
+            if record.scan_type == "scheduled":
+                new_hits, suppressed = self._suppress_repeat_hits(hits, repeat_window_hours)
+                if suppressed:
+                    logger.info("重复命中抑制 #%s：%d 条已在 %dh 内命中过，不再落库", scan_record_id, suppressed, repeat_window_hours)
+            else:
+                new_hits, suppressed = hits, 0
 
             # 5. 写入结果（用独立 session，避免长时间扫描后主 session 连接失效）
             self._save_results(scan_record_id, new_hits)
