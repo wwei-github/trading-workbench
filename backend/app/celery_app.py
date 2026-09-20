@@ -59,11 +59,11 @@ celery_app.conf.update(
         },
         "patch-trigger": {
             "task": "app.tasks.review_tasks.run_patch_trigger_task",
-            "schedule": crontab(minute=40, hour=3),  # 每日 03:40 UTC（北京 11:40）：标签热度检查 → 补丁草稿
+            "schedule": crontab(minute=40, hour=11),  # 每日 11:40（北京，celery timezone=Asia/Shanghai）：标签热度检查 → 补丁草稿
         },
         "patch-evaluate": {
             "task": "app.tasks.review_tasks.run_patch_evaluate_task",
-            "schedule": crontab(minute=45, hour=3),  # 每日 03:45 UTC（北京 11:45）：active 补丁三态评估
+            "schedule": crontab(minute=45, hour=11),  # 每日 11:45（北京）：active 补丁三态评估
         },
         "auto-trade": {
             "task": "app.tasks.trade_tasks.run_auto_trade_task",
