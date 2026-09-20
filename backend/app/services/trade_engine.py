@@ -30,6 +30,7 @@ from app.models.system_config import SystemConfig
 from app.models.trade import AccountTransfer, TradeEvent, TradeRecord
 from app.services.binance_trader import BinanceTrader, BinanceTradeError
 from app.services.exchange_pool import ExchangePool
+from app.services.position_advisor import advice_due
 from app.services.risk_guard import (
     liquidation_gate_pct,
     LIQ_GATE_BUFFER,
@@ -799,7 +800,10 @@ def _record_realized(db: Session, trader: BinanceTrader, rec: TradeRecord) -> fl
     since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000) - 5_000
     pnl = round(trader.realized_pnl_since(rec.symbol, since_ms), 6)
     rec.realized_pnl = pnl
-    rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
+    # 运行中收益率为全程口径：(已实现 + 浮动) / risk_amount（docs/16）
+    rec.pnl_pct = round(
+        (pnl + float(rec.unrealized_pnl or 0)) / float(rec.risk_amount or 1) * 100, 2
+    ) if rec.risk_amount else None
     return pnl
 
 
@@ -906,8 +910,11 @@ def sync_account_transfers(db: Session) -> int:
     return inserted
 
 
-def settle_trades(db: Session, trader: BinanceTrader) -> int:
-    """对非终态交易：以交易所为准推断事件、跟进止损、结算收益。返回处理笔数。
+def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
+    """对非终态交易：以交易所为准推断事件、跟进止损、结算收益。
+
+    返回 (处理笔数, AI 持仓诊断触发清单)——触发清单由调用方在锁外派发
+    celery 子任务诊断（docs/16：LLM 调用绝不进开仓锁）。
 
     每条记录按自带 testnet 标记选对应环境账户结算（2026-09-20 运行时切环境后，
     存量在跑单仍走原环境正确结算；trader 参数为当前环境实例，作为同环境复用）。
@@ -935,8 +942,10 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
 
     if not records:
         _sweep_orphan_algo_orders(trader, set(), trader.positions())
-        return 0
+        return 0, []
     handled = 0
+    advice_ids: list[str] = []
+    now = datetime.utcnow()
 
     for rec in records:
         try:
@@ -976,6 +985,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                 )
                 rec.fee_total = round(fee_total, 6)
                 rec.funding_total = round(funding_total, 6)
+                rec.unrealized_pnl = 0  # 终态无浮动（docs/16）
                 pnl = round(rt.sum_income(rows, rt.INCOME_KEEP), 6)
                 rec.realized_pnl = pnl
                 rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
@@ -1016,6 +1026,17 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                 continue
 
             ratio = amt / qty
+            # 浮动盈亏快照 + 全程收益率（docs/16）：复用本轮已拉取的仓位数据，
+            # 零额外交易所请求；交易所为真相
+            unrealized = float(pos.get("unrealized_pnl") or 0)
+            rec.unrealized_pnl = round(unrealized, 6)
+            total_pnl = float(rec.realized_pnl or 0) + unrealized
+            if rec.risk_amount and float(rec.risk_amount) > 0:
+                rec.pnl_pct = round(total_pnl / float(rec.risk_amount) * 100, 2)
+            # 浮亏在跑单 AI 持仓诊断触发判定（冷却/恶化规则见 position_advisor）；
+            # 仅收集，锁外由调用方派发子任务执行
+            if advice_due(rec, total_pnl, now):
+                advice_ids.append(str(rec.id))
             # 止损挂单存活巡检：SL 单被撤/丢失时补挂（裸仓保护，docs/07 §8-A2）
             _rehang_lost_sl(db, rt, rec, open_ids)
             if rec.status == "OPENED":
@@ -1099,4 +1120,4 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
     # ③ 孤儿条件单清扫（每轮兜底：无持仓、无在跑记录的在挂委托一律撤销，按环境执行）
     for t, rt in traders.items():
         _sweep_orphan_algo_orders(rt, _active_syms(t), env_positions.get(t) or {})
-    return handled
+    return handled, advice_ids

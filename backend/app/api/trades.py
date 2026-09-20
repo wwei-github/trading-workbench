@@ -274,18 +274,52 @@ def fund_analytics(
     )
 
 
-@router.get("/{trade_id}/events", response_model=list[TradeEventOut])
-def trade_events(trade_id: str, db: Session = Depends(get_db)):
-    """一笔交易的操作历史（开仓/止盈成交/止损移动/结算/异常）"""
+def _get_trade_events(trade_id: str, db: Session) -> list[TradeEvent]:
+    """按记录 ID 升序取操作历史（不存在抛 404）"""
     rec = db.get(TradeRecord, trade_id)
     if not rec:
         raise HTTPException(status_code=404, detail="交易记录不存在")
-    rows = db.execute(
+    return db.execute(
         select(TradeEvent)
         .where(TradeEvent.trade_record_id == rec.id)
         .order_by(TradeEvent.created_at.asc())
     ).scalars().all()
+
+
+@router.get("/{trade_id}/events", response_model=list[TradeEventOut])
+def trade_events(trade_id: str, db: Session = Depends(get_db)):
+    """一笔交易的操作历史（开仓/止盈成交/止损移动/结算/异常）"""
+    rows = _get_trade_events(trade_id, db)
     return [TradeEventOut.model_validate(e) for e in rows]
+
+
+def _load_running_trade(trade_id: str, db: Session) -> TradeRecord:
+    """手动诊断前置校验：记录存在且在跑状态（docs/16）"""
+    rec = db.get(TradeRecord, trade_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="交易记录不存在")
+    if rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
+        raise HTTPException(status_code=400, detail="仅运行中的单子支持 AI 持仓诊断")
+    return rec
+
+
+@router.post("/{trade_id}/advice")
+def run_advice(trade_id: str, db: Session = Depends(get_db)):
+    """手动 AI 持仓诊断（docs/16）：复用定时诊断链路，无视冷却（人工显式请求）。
+
+    同步执行（LLM 10~30s），返回最新诊断结论；前端按钮 loading 等待。
+    """
+    from app.config import settings
+    from app.services.position_advisor import diagnose_trade
+
+    rec = _load_running_trade(trade_id, db)
+    if not settings.AI_API_KEY:
+        raise HTTPException(status_code=400, detail="AI 未配置（AI_API_KEY 为空）")
+    try:
+        return diagnose_trade(db, rec)
+    except Exception as e:
+        logger.warning("手动持仓诊断失败 %s: %s", rec.symbol, e)
+        raise HTTPException(status_code=502, detail=f"AI 诊断失败：{str(e)[:200]}")
 
 
 @router.get("/{trade_id}/klines")

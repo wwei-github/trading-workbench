@@ -1,7 +1,9 @@
 /**
  * 交易记录页（docs/06）：自动交易生命周期与收益展示
  * - 概览条：在跑单子 / 已平仓 / 胜率 / 累计净收益（正绿负红）
- * - 列表：币种/方向/环境（测试网·正式网）/状态/开仓信息/三价现值/收益/平仓时间；排序：进行中（开仓时间倒序）→ 已平仓（平仓时间倒序）→ 失败殿后
+ * - 列表：币种/方向/环境（测试网·正式网）/状态/开仓信息/三价现值/收益/收益率；排序：进行中（开仓时间倒序）→ 已平仓（平仓时间倒序）→ 失败殿后
+ * - 收益列：运行中 = 已实现+浮动合计（每小时 :10 巡检刷新，docs/16），悬浮拆分明细
+ * - AI 建议列：浮亏在跑单的 AI 持仓诊断（逻辑是否破坏/建议动作），手动可重诊（docs/16）
  * - 展开行：左右双卡片——左 AI 分析结论快照（AiAnalysisCard），右 操作历史时间线
  * - 状态筛选：胶囊按钮组（进行中 = 运行中/TP1已止盈/TP2已止盈 三态聚合，带计数徽标）
  */
@@ -48,6 +50,7 @@ import AiAnalysisCard from './AiAnalysisCard'
 import TradeReplayChart from './TradeReplayChart'
 import StatCard from './StatCard'
 import type { AccountSummary, FundAnalytics, TradeEvent, TradeRecord } from '../types'
+import { ADVICE_ACTION_META } from '../types'
 
 // 状态标签：运行中三态 + 已平仓 + 失败
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
@@ -94,6 +97,7 @@ const EVENT_META: Record<string, { label: string; color: string; icon: React.Rea
   SETTLE: { label: '结算', color: '#1677ff', icon: <AccountBookOutlined /> },
   LIQUIDATION: { label: '强平', color: '#ff4d4f', icon: <WarningOutlined /> },
   ERROR: { label: '异常', color: '#ff4d4f', icon: <WarningOutlined /> },
+  AI_ADVICE: { label: 'AI 持仓诊断', color: '#722ed1', icon: <RobotOutlined /> },
 }
 
 // 事件详情按键的中文名
@@ -121,11 +125,23 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   qty_tp1: 'TP1数量',
   qty_tp2: 'TP2数量',
   message: '错误信息',
+  // AI 持仓诊断（docs/16）
+  thesis_valid: '开仓逻辑',
+  trend_broken: '走势走坏',
+  action: '建议动作',
+  reason: '理由',
+  detail: '分析',
+  total_pnl: '全程盈亏',
 }
 
 function fmtNum(n: number | null | undefined): string {
   if (n === null || n === undefined) return '-'
   return String(n)
+}
+
+// 带符号金额（Tooltip 明细用）：+12.00 / -3.70
+function fmtSigned(n: number): string {
+  return `${n > 0 ? '+' : ''}${n.toFixed(2)}`
 }
 
 // 失败原因短文案（状态列直接展示）：已知错误码转人话，其余截断原始报错；
@@ -147,7 +163,12 @@ function fmtTime(s: string | null | undefined): string {
 function detailValue(k: string, v: unknown, scheme: ColorScheme): React.ReactNode {
   if (k === 'exit_reason') return EXIT_REASON_MAP[String(v)] || String(v)
   if (k === 'pnl_pct' || k === 'slippage_pct') return `${v}%`
-  if (k === 'realized_pnl' || k === 'pnl' || k === 'cum_pnl' || k === 'insurance_clear') {
+  if (k === 'thesis_valid' || k === 'trend_broken') return v ? '是' : '否'
+  if (k === 'action') return ADVICE_ACTION_META[String(v)]?.label || String(v)
+  if (
+    k === 'realized_pnl' || k === 'pnl' || k === 'cum_pnl'
+    || k === 'insurance_clear' || k === 'total_pnl'
+  ) {
     const n = Number(v)
     if (!Number.isNaN(n)) {
       const color = n > 0 ? SCHEME_UP_DOWN[scheme].up : n < 0 ? SCHEME_UP_DOWN[scheme].down : '#595959'
@@ -424,19 +445,44 @@ export default function TradesPanel() {
     }
   }, [])
 
-  // 收益金额列（净盈亏 USDT），正负色跟随全局涨跌配色方案
-  // 运行中单子显示已实现部分（TP1/TP2 已止盈金额），结算后为全程净额；
-  // 百分比单独一列展示，「已止盈」标记由状态列的 TP1已止盈/TP2已止盈 Tag 表达
-  const renderPnl = (rec: TradeRecord) => {
-    if (rec.realized_pnl === null || rec.realized_pnl === undefined) {
-      return <span style={{ color: '#999' }}>-</span>
+  // 手动 AI 持仓诊断（docs/16）：按记录 ID 记 loading，完成后刷新列表取最新结论
+  const [advisingId, setAdvisingId] = useState<string | null>(null)
+  const handleAdvice = async (rec: TradeRecord) => {
+    setAdvisingId(rec.id)
+    try {
+      await scanApi.trades.advice(rec.id)
+      message.success(`${rec.symbol} 持仓诊断完成`)
+      await fetchData()
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || 'AI 诊断失败')
+    } finally {
+      setAdvisingId(null)
     }
-    const pnl = rec.realized_pnl
-    const color = schemeValueColor(pnl, colorScheme)
-    return (
-      <span style={{ color, fontWeight: 600 }}>
-        {pnl > 0 ? '+' : ''}{pnl.toFixed(2)}
+  }
+
+  // 收益金额列（净盈亏 USDT），正负色跟随全局涨跌配色方案
+  // 运行中 = 已实现 + 浮动合计（docs/16，每小时 :10 巡检刷新），悬浮拆分明细；
+  // 结算后为全程净额；百分比单独一列展示，「已止盈」标记由状态列的 TP1/TP2 Tag 表达
+  const renderPnl = (rec: TradeRecord) => {
+    const hasRealized = rec.realized_pnl !== null && rec.realized_pnl !== undefined
+    const hasUnreal =
+      rec.status !== 'CLOSED' && rec.unrealized_pnl !== null && rec.unrealized_pnl !== undefined
+    if (!hasRealized && !hasUnreal) return <span style={{ color: '#999' }}>-</span>
+    const realized = hasRealized ? (rec.realized_pnl ?? 0) : 0
+    const unreal = hasUnreal ? (rec.unrealized_pnl ?? 0) : 0
+    const total = realized + unreal
+    const main = (
+      <span style={{ color: schemeValueColor(total, colorScheme), fontWeight: 600 }}>
+        {total > 0 ? '+' : ''}
+        {total.toFixed(2)}
       </span>
+    )
+    // 两部分都存在且浮动非零才悬浮拆分（纯已实现/纯浮动无需拆）
+    if (!hasRealized || !hasUnreal || unreal === 0) return main
+    return (
+      <Tooltip title={<span>已实现 {fmtSigned(realized)} · 浮动 {fmtSigned(unreal)} USDT</span>}>
+        {main}
+      </Tooltip>
     )
   }
 
@@ -633,6 +679,66 @@ export default function TradesPanel() {
       key: 'pnl',
       width: 100,
       render: (_: unknown, rec) => renderPnl(rec),
+    },
+    {
+      // AI 持仓诊断（docs/16）：浮亏在跑单时 AI 判断开仓逻辑是否破坏与建议动作；
+      // 非在跑单淡显最近一次诊断（历史参考）；在跑单附「重诊」（手动无视冷却）
+      title: 'AI 建议',
+      key: 'ai_advice',
+      width: 200,
+      render: (_: unknown, rec) => {
+        const adv = rec.ai_advice
+        if (!adv) return <span style={{ color: '#999' }}>-</span>
+        const meta = ADVICE_ACTION_META[adv.action] || ADVICE_ACTION_META.hold
+        const running = ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(rec.status)
+        const tip = (
+          <div style={{ maxWidth: 320 }}>
+            <div>
+              {meta.label} · {rec.ai_advice_at ? bj(rec.ai_advice_at).format('MM-DD HH:mm') : '-'}
+            </div>
+            <div style={{ marginTop: 4 }}>
+              开仓逻辑{adv.thesis_valid ? '成立' : '已破坏'}，走势{adv.trend_broken ? '已走坏' : '未走坏'}
+            </div>
+            <div style={{ marginTop: 4 }}>{adv.reason}</div>
+            {adv.detail && <div style={{ marginTop: 4, color: '#ddd' }}>{adv.detail}</div>}
+          </div>
+        )
+        return (
+          <div
+            style={{ display: 'flex', alignItems: 'center', gap: 0, minWidth: 0 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Tooltip title={tip}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, flex: 1 }}>
+                <Tag color={meta.color} style={{ marginInlineEnd: 0, flexShrink: 0 }}>
+                  {meta.label}
+                </Tag>
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: running ? '#595959' : '#bfbfbf',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {adv.reason}
+                </span>
+              </div>
+            </Tooltip>
+            {running && (
+              <Button
+                size="small"
+                type="link"
+                loading={advisingId === rec.id}
+                onClick={() => handleAdvice(rec)}
+              >
+                重诊
+              </Button>
+            )}
+          </div>
+        )
+      },
     },
     {
       title: '收益率',
@@ -986,6 +1092,56 @@ export default function TradesPanel() {
                         该记录早于快照功能，未存档 AI 分析结论
                       </Typography.Text>
                     )}
+                    {/* 持仓诊断（docs/16）：浮亏在跑单的 AI 建议与理由 */}
+                    {rec.ai_advice && (() => {
+                      const meta = ADVICE_ACTION_META[rec.ai_advice!.action] || ADVICE_ACTION_META.hold
+                      return (
+                        <div
+                          style={{
+                            marginTop: 10,
+                            padding: '8px 12px',
+                            background: '#fff',
+                            border: '1px solid #f0f0f0',
+                            borderRadius: 8,
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color: '#595959',
+                              marginBottom: 6,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 6,
+                            }}
+                          >
+                            <RobotOutlined style={{ color: '#722ed1' }} />
+                            持仓诊断
+                            <span style={{ fontWeight: 400, color: '#999' }}>
+                              {rec.ai_advice_at ? bj(rec.ai_advice_at).format('MM-DD HH:mm') : ''}
+                            </span>
+                          </div>
+                          <Space size={6} wrap>
+                            <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>
+                              {meta.label}
+                            </Tag>
+                            <span style={{ fontSize: 12, color: '#595959' }}>
+                              开仓逻辑{rec.ai_advice.thesis_valid ? '成立' : '已破坏'} ·
+                              走势{rec.ai_advice.trend_broken ? '已走坏' : '未走坏'}
+                            </span>
+                          </Space>
+                          <div style={{ fontSize: 12, color: '#333', marginTop: 6 }}>
+                            {rec.ai_advice.reason}
+                          </div>
+                          {rec.ai_advice.detail && (
+                            <div style={{ fontSize: 12, color: '#777', marginTop: 4 }}>
+                              {rec.ai_advice.detail}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </div>
                   {/* 右：操作历史时间线（较窄） */}
                   <div

@@ -34,12 +34,15 @@ class TradeOut(BaseModel):
     opened_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
     realized_pnl: Optional[float] = None
+    unrealized_pnl: Optional[float] = None  # 浮动盈亏快照（运行中每小时巡检刷新，docs/16）
     pnl_pct: Optional[float] = None
     exit_reason: Optional[str] = None
     fail_reason: Optional[str] = None  # 开仓失败原因（仅 FAILED 记录，读自 raw.fail_reason）
     testnet: bool = True
     ai_snapshot: Optional[dict] = None
     ai_analysis_id: Optional[uuid.UUID] = None
+    ai_advice: Optional[dict] = None  # AI 持仓诊断（docs/16，NULL=未诊断）
+    ai_advice_at: Optional[datetime] = None  # 最近诊断时间
 
     class Config:
         from_attributes = True

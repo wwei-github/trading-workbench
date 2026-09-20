@@ -19,6 +19,7 @@ from app.config import settings
 from app.database import SessionLocal
 from app.models.scan import AIAnalysis
 from app.models.system_config import SystemConfig
+from app.models.trade import TradeRecord
 from app.services.binance_trader import BinanceTrader
 from app.services.task_log import close_task, open_task
 from app.services.trade_engine import (
@@ -96,11 +97,16 @@ def run_auto_trade_task():
         try:
             db = SessionLocal()
             try:
-                settled = settle_trades(db, trader)
+                settled, advice_ids = settle_trades(db, trader)
             finally:
                 db.close()
         finally:
             _release_open_lock(r, ident)
+
+        # AI 持仓诊断派发（docs/16）：锁外逐单派发子任务——LLM 调用（10~30s）
+        # 绝不进开仓锁内，失败隔离（单笔失败不影响其余诊断与结算结果）
+        for tid in advice_ids:
+            run_position_advice.delay(tid)
 
         # 资金划转同步（账户级读操作，无需开仓锁，放在锁外不延长巡检持锁时间；
         # 两个环境各自同步；失败只记日志不影响本轮结算结果）
@@ -117,8 +123,11 @@ def run_auto_trade_task():
         logger.info("结算巡检完成：%d 笔", settled)
         close_task(
             task_id, "completed",
-            summary=f"结算/巡检 {settled} 笔" + (f"，新增划转 {transfers} 条" if transfers else ""),
-            detail={"settled": settled, "transfers_synced": transfers},
+            summary=f"结算/巡检 {settled} 笔"
+                    + (f"，新增划转 {transfers} 条" if transfers else "")
+                    + (f"，派发持仓诊断 {len(advice_ids)} 单" if advice_ids else ""),
+            detail={"settled": settled, "transfers_synced": transfers,
+                    "advice_dispatched": len(advice_ids)},
         )
     except Exception as e:
         logger.exception("结算巡检任务失败: %s", e)
@@ -176,3 +185,26 @@ def open_trade_for_analysis(analysis_id: str):
             logger.info("即时开仓未成交（闸门未过），放弃（analysis=%s）", analysis_id)
     finally:
         _release_open_lock(r, ident)
+
+
+@celery_app.task(name="app.tasks.trade_tasks.run_position_advice", max_retries=0)
+def run_position_advice(trade_id: str):
+    """AI 持仓诊断子任务（docs/16）：由结算巡检在锁外派发，单笔失败只记日志。
+
+    执行前重查状态：巡检与诊断之间 SL 可能已触发结算为 CLOSED → 跳过；
+    LLM 失败不落库，ai_advice_at 保持 NULL，下轮巡检按"未诊断"重试。
+    """
+    from app.services.position_advisor import diagnose_trade
+
+    db = SessionLocal()
+    try:
+        rec = db.get(TradeRecord, UUID(str(trade_id)))
+        if rec is None or rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
+            return  # 已结算/不存在，跳过
+        advice = diagnose_trade(db, rec)
+        logger.info("AI 持仓诊断 %s：%s（%s）", rec.symbol,
+                    advice.get("action"), advice.get("reason", "")[:60])
+    except Exception as e:
+        logger.warning("AI 持仓诊断失败 trade=%s: %s", trade_id, e)
+    finally:
+        db.close()

@@ -180,6 +180,11 @@ export const scanApi = {
     // 账户资金概览（当前环境：总资金/总收益/收益率，顶部状态栏展示）
     accountSummary: () =>
       api.get<AccountSummary>('/trades/account-summary').then((r) => r.data),
+    // 手动 AI 持仓诊断（docs/16，无视冷却；LLM 同步执行 10~30s）
+    advice: (tradeId: string) =>
+      api
+        .post<{ action: string; reason: string }>(`/trades/${tradeId}/advice`, null, { timeout: 120000 })
+        .then((r) => r.data),
   },
 
   // 关注列表

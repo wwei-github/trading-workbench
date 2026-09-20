@@ -55,7 +55,8 @@ class TradeRecord(Base):
     opened_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     realized_pnl: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)  # 正/负值 USDT（运行中=已止盈部分，结算后=全程净额）
-    pnl_pct: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)  # 相对止损金额 %
+    unrealized_pnl: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)  # 浮动盈亏快照（docs/16，运行中每小时 :10 巡检刷新，终态 0）
+    pnl_pct: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)  # 相对止损金额 %（运行中 = (已实现+浮动)/risk_amount，docs/16）
     exit_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     # sl / tp1_then_sl / tp1_trail / trail_sl / breakeven_sl / manual / error
     # 实盘归因（复盘重设计 2026-09-18）：结算时的费用拆分 + AI 错误归因结论
@@ -64,6 +65,12 @@ class TradeRecord(Base):
     error_tags: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # AI 归因错误标签数组（中文标签）
     error_lesson: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # AI 归因一句话教训
     attributed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # 归因时间（NULL=待归因）
+
+    # AI 持仓建议（docs/16）：浮亏在跑单的持仓诊断
+    ai_advice: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # {thesis_valid, trend_broken, action: hold/tighten/reduce/exit, reason, detail}
+    ai_advice_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # 最近诊断时间（NULL=未诊断，冷却判定基准）
+    ai_advice_pnl: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)  # 诊断时全程盈亏（恶化 ≥0.5R 提前刷新的基线）
 
     raw: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # {entry_order_id, sl_order_id, tp1_order_id, tp2_order_id, qty_tp1, qty_tp2, capital_base, wallet}

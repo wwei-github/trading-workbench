@@ -172,6 +172,14 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS error_lesson TEXT,
               ADD COLUMN IF NOT EXISTS attributed_at TIMESTAMP
         """))
+        # 在跑单浮动收益 + AI 持仓建议（docs/16，2026-09-20）
+        conn.execute(text("""
+            ALTER TABLE trade_records
+              ADD COLUMN IF NOT EXISTS unrealized_pnl NUMERIC(20, 6),
+              ADD COLUMN IF NOT EXISTS ai_advice JSON,
+              ADD COLUMN IF NOT EXISTS ai_advice_at TIMESTAMP,
+              ADD COLUMN IF NOT EXISTS ai_advice_pnl NUMERIC(20, 6)
+        """))
         # 规则补丁闭环（docs/12 §10，2026-09-18）：prompt_patches 全新表由
         # create_all 建表（init_db 已导入 app.models.patch），此处仅补索引与参数列
         conn.execute(text(
