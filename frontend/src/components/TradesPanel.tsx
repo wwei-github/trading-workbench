@@ -1,7 +1,7 @@
 /**
  * 交易记录页（docs/06）：自动交易生命周期与收益展示
  * - 概览条：在跑单子 / 已平仓 / 胜率 / 累计净收益（正绿负红）
- * - 列表：币种/方向/环境（测试网·正式网）/状态/开仓信息/三价现值/收益，分页默认 10 条、固定高度滚动
+ * - 列表：币种/方向/环境（测试网·正式网）/状态/开仓信息/三价现值/收益/平仓时间；排序：进行中（开仓时间倒序）→ 已平仓（平仓时间倒序）→ 失败殿后
  * - 展开行：左右双卡片——左 AI 分析结论快照（AiAnalysisCard），右 操作历史时间线
  * - 状态筛选：胶囊按钮组（进行中 = 运行中/TP1已止盈/TP2已止盈 三态聚合，带计数徽标）
  */
@@ -326,15 +326,22 @@ export default function TradesPanel() {
   }
 
 
-  const filtered = useMemo(
-    () =>
+  // 筛选 + 排序：进行中（按开仓时间倒序）→ 已平仓（按平仓时间倒序）→ 失败殿后
+  const filtered = useMemo(() => {
+    const base =
       statusFilter === ''
         ? rows
         : statusFilter === 'running'
           ? rows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status))
-          : rows.filter((r) => r.status === statusFilter),
-    [rows, statusFilter],
-  )
+          : rows.filter((r) => r.status === statusFilter)
+    const rank = (r: TradeRecord) =>
+      ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status) ? 0 : r.status === 'CLOSED' ? 1 : 2
+    // 已平仓看平仓时间，未平仓看开仓时间；同组内新→旧
+    const timeOf = (r: TradeRecord) => r.closed_at ?? r.opened_at ?? ''
+    return [...base].sort(
+      (a, b) => rank(a) - rank(b) || (timeOf(a) < timeOf(b) ? 1 : timeOf(a) > timeOf(b) ? -1 : 0),
+    )
+  }, [rows, statusFilter])
 
   // 概览统计：在跑（三态）/ 盈利单 / 亏损单 / 胜率 / 累计净收益 / 平均盈亏比
   const stats = useMemo(() => {
@@ -670,6 +677,13 @@ export default function TradesPanel() {
       title: '开仓时间',
       dataIndex: 'opened_at',
       key: 'opened_at',
+      width: 150,
+      render: fmtTime,
+    },
+    {
+      title: '平仓时间',
+      dataIndex: 'closed_at',
+      key: 'closed_at',
       width: 150,
       render: fmtTime,
     },
