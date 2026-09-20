@@ -55,3 +55,59 @@ class AccountTransferOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class FundSummary(BaseModel):
+    """资金分析概览（docs/14）"""
+    closed: int = 0
+    wins: int = 0
+    win_rate: Optional[float] = None      # 0-100，无闭单为 None
+    net_pnl: float = 0.0
+    fee_total: float = 0.0
+    funding_total: float = 0.0
+    avg_win_r: Optional[float] = None     # 仅 risk_amount>0 的盈利单均值
+    transfer_in: float = 0.0
+    transfer_out: float = 0.0
+    transfer_net: float = 0.0
+
+
+class DailyPoint(BaseModel):
+    """北京时间自然日聚合点"""
+    date: str          # YYYY-MM-DD
+    pnl: float = 0.0
+
+
+class SymbolPnl(BaseModel):
+    symbol: str
+    pnl: float
+    count: int
+    wins: int
+
+
+class ExitReasonStat(BaseModel):
+    reason: str
+    count: int
+    pnl: float
+
+
+class PnlBucket(BaseModel):
+    bucket: str        # 如 "-100~-50"、"50~100"、">|1000|"
+    count: int
+
+
+class TransferPoint(BaseModel):
+    """单日划转合计（转入/转出均为正数）"""
+    date: str
+    transfer_in: float = 0.0
+    transfer_out: float = 0.0
+
+
+class FundAnalyticsOut(BaseModel):
+    """GET /api/trades/analytics 响应（docs/14 §5）"""
+    summary: FundSummary
+    equity_curve: list[DailyPoint]
+    daily_pnl: list[DailyPoint]
+    by_symbol: list[SymbolPnl]
+    exit_reasons: list[ExitReasonStat]
+    pnl_distribution: list[PnlBucket]
+    transfers: list[TransferPoint]

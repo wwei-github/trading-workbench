@@ -1,7 +1,7 @@
-"""交易记录 API（docs/06）：列表 + 操作历史 + 复盘K线；资金分析聚合接口见 docs/14（待实现）"""
+"""交易记录 API（docs/06）：列表 + 操作历史 + 复盘K线；资金分析聚合接口见 docs/14"""
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,7 +12,18 @@ from app.database import get_db
 from app.models.market_risk import MarketRiskHistory, MarketRiskState
 from app.models.system_config import SystemConfig
 from app.models.trade import AccountTransfer, TradeEvent, TradeRecord
-from app.schemas.trade import AccountTransferOut, TradeEventOut, TradeOut
+from app.schemas.trade import (
+    AccountTransferOut,
+    DailyPoint,
+    ExitReasonStat,
+    FundAnalyticsOut,
+    FundSummary,
+    PnlBucket,
+    SymbolPnl,
+    TradeEventOut,
+    TradeOut,
+    TransferPoint,
+)
 from app.services.binance_client import _INTERVAL_MINUTES
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 
@@ -69,6 +80,178 @@ def get_market_risk(history_limit: int = 30, db: Session = Depends(get_db)):
             } for h in hist
         ],
     }
+
+
+def _bj_day(dt: datetime) -> str:
+    """UTC naive → 北京时间自然日键（DB 存 UTC，北京 = UTC+8）"""
+    return (dt + timedelta(hours=8)).date().isoformat()
+
+
+_PNL_EDGES = (5, 10, 20, 50, 100, 200, 500, 1000)  # |pnl| 档位切分边界
+
+
+def _pnl_bucket(v: float) -> str:
+    """实盈亏 → 固定档位名：负/正各 8 档 + 溢出档（边界值归离 0 更远的一档）"""
+    mag = abs(v)
+    for i, edge in enumerate(_PNL_EDGES):
+        if mag < edge:
+            lo = _PNL_EDGES[i - 1] if i else 0
+            if v > 0:
+                return f"{lo}~{edge}"
+            return f"0~-{edge}" if lo == 0 else f"-{edge}~-{lo}"
+    return ">1000" if v > 0 else ">|1000|"
+
+
+def _pnl_bucket_names() -> list[str]:
+    """全部档位名（深亏 → 深盈），供盈亏分布固定 x 轴顺序"""
+    neg = []
+    for i in range(len(_PNL_EDGES) - 1, -1, -1):
+        edge = _PNL_EDGES[i]
+        lo = _PNL_EDGES[i - 1] if i else 0
+        neg.append(f"0~-{edge}" if lo == 0 else f"-{edge}~-{lo}")
+    pos = []
+    for i, e in enumerate(_PNL_EDGES):
+        lo = _PNL_EDGES[i - 1] if i else 0
+        pos.append(f"{lo}~{e}")
+    pos.append(">1000")
+    return [">|1000|"] + neg + pos
+
+
+@router.get("/analytics", response_model=FundAnalyticsOut)
+def fund_analytics(
+    scope: str = "live",
+    start: Optional[str] = None,   # YYYY-MM-DD（北京时间）
+    end: Optional[str] = None,     # 闭区间，含当日
+    db: Session = Depends(get_db),
+):
+    """资金分析聚合（docs/14）：闭单按 closed_at 落北京时间自然日桶，划转按 transfer_time
+
+    - start/end 为北京时间 YYYY-MM-DD 闭区间；DB 存 UTC naive，过滤用换算后的 UTC 边界
+    - scope=testnet 时闭单照常统计，划转返回空列表（测试网未同步划转，前端展示空态）
+    """
+    def _parse_day(s: str, name: str) -> datetime:
+        try:
+            return datetime.fromisoformat(s)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"{name} 参数格式应为 YYYY-MM-DD")
+
+    testnet = scope == "testnet"
+    # 北京日边界 → UTC：北京 00:00 = 前一日 16:00 UTC
+    lo = _parse_day(start, "start") - timedelta(hours=8) if start else None
+    hi = _parse_day(end, "end") + timedelta(days=1) - timedelta(hours=8) if end else None
+
+    base = select(TradeRecord).where(
+        TradeRecord.status == "CLOSED",
+        TradeRecord.testnet == testnet,
+        TradeRecord.closed_at.is_not(None),
+    )
+    if lo is not None:
+        base = base.where(TradeRecord.closed_at >= lo)
+    if hi is not None:
+        base = base.where(TradeRecord.closed_at < hi)
+    rows = db.execute(base).scalars().all()
+
+    closed = len(rows)
+    wins = sum(1 for r in rows if (r.realized_pnl or 0) > 0)
+    net_pnl = round(sum(float(r.realized_pnl or 0) for r in rows), 2)
+    fee_total = round(sum(float(r.fee_total or 0) for r in rows), 2)
+    funding_total = round(sum(float(r.funding_total or 0) for r in rows), 2)
+    win_rs = [
+        float(r.realized_pnl) / float(r.risk_amount)
+        for r in rows
+        if (r.realized_pnl or 0) > 0 and r.risk_amount and float(r.risk_amount) > 0
+    ]
+    avg_win_r = round(sum(win_rs) / len(win_rs), 2) if win_rs else None
+
+    daily: dict[str, float] = {}
+    for r in rows:
+        d = _bj_day(r.closed_at)
+        daily[d] = daily.get(d, 0.0) + float(r.realized_pnl or 0)
+    days = sorted(daily)
+    equity_curve: list[DailyPoint] = []
+    cum = 0.0
+    for d in days:
+        cum += daily[d]
+        equity_curve.append(DailyPoint(date=d, pnl=round(cum, 2)))
+
+    by_symbol_map: dict[str, dict] = {}
+    for r in rows:
+        m = by_symbol_map.setdefault(r.symbol, {"pnl": 0.0, "count": 0, "wins": 0})
+        m["pnl"] += float(r.realized_pnl or 0)
+        m["count"] += 1
+        if (r.realized_pnl or 0) > 0:
+            m["wins"] += 1
+
+    exit_map: dict[str, dict] = {}
+    for r in rows:
+        m = exit_map.setdefault(r.exit_reason or "unknown", {"count": 0, "pnl": 0.0})
+        m["count"] += 1
+        m["pnl"] += float(r.realized_pnl or 0)
+
+    buckets: dict[str, int] = {}
+    for r in rows:
+        name = _pnl_bucket(float(r.realized_pnl or 0))
+        buckets[name] = buckets.get(name, 0) + 1
+
+    # 划转（amount 带符号：正=转入），只统计 USDT
+    rows_t: list[AccountTransfer] = []
+    if not testnet:
+        tq = select(AccountTransfer).where(AccountTransfer.asset == "USDT")
+        if lo is not None:
+            tq = tq.where(AccountTransfer.transfer_time >= lo)
+        if hi is not None:
+            tq = tq.where(AccountTransfer.transfer_time < hi)
+        rows_t = db.execute(tq).scalars().all()
+    t_daily: dict[str, dict] = {}
+    for t in rows_t:
+        m = t_daily.setdefault(_bj_day(t.transfer_time), {"in": 0.0, "out": 0.0})
+        amt = float(t.amount)
+        if amt >= 0:
+            m["in"] += amt
+        else:
+            m["out"] += -amt
+    t_in = round(sum(m["in"] for m in t_daily.values()), 2)
+    t_out = round(sum(m["out"] for m in t_daily.values()), 2)
+
+    return FundAnalyticsOut(
+        summary=FundSummary(
+            closed=closed,
+            wins=wins,
+            win_rate=round(wins / closed * 100, 1) if closed else None,
+            net_pnl=net_pnl,
+            fee_total=fee_total,
+            funding_total=funding_total,
+            avg_win_r=avg_win_r,
+            transfer_in=t_in,
+            transfer_out=t_out,
+            transfer_net=round(t_in - t_out, 2),
+        ),
+        equity_curve=equity_curve,
+        daily_pnl=[DailyPoint(date=d, pnl=round(daily[d], 2)) for d in days],
+        by_symbol=sorted(
+            (
+                SymbolPnl(symbol=s, pnl=round(m["pnl"], 2), count=m["count"], wins=m["wins"])
+                for s, m in by_symbol_map.items()
+            ),
+            key=lambda x: abs(x.pnl),
+            reverse=True,
+        ),
+        exit_reasons=sorted(
+            (
+                ExitReasonStat(reason=k, count=m["count"], pnl=round(m["pnl"], 2))
+                for k, m in exit_map.items()
+            ),
+            key=lambda x: x.count,
+            reverse=True,
+        ),
+        pnl_distribution=[
+            PnlBucket(bucket=b, count=buckets[b]) for b in _pnl_bucket_names() if b in buckets
+        ],
+        transfers=[
+            TransferPoint(date=d, transfer_in=round(m["in"], 2), transfer_out=round(m["out"], 2))
+            for d, m in sorted(t_daily.items())
+        ],
+    )
 
 
 @router.get("/{trade_id}/events", response_model=list[TradeEventOut])
