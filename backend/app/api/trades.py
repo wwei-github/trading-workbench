@@ -1,4 +1,4 @@
-"""交易记录 API（docs/06）：列表 + 操作历史 + 复盘K线"""
+"""交易记录 API（docs/06）：列表 + 操作历史 + 复盘K线；资金分析聚合接口见 docs/14（待实现）"""
 import logging
 import math
 from datetime import datetime, timezone
