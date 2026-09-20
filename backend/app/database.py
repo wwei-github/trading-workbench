@@ -145,6 +145,11 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS testnet BOOLEAN NOT NULL DEFAULT TRUE,
               ADD COLUMN IF NOT EXISTS ai_snapshot JSON
         """))
+        # 资金分析环境口径（2026-09-20）：划转记录标记来源环境，存量均为测试网账户流水
+        conn.execute(text("""
+            ALTER TABLE account_transfers
+              ADD COLUMN IF NOT EXISTS testnet BOOLEAN NOT NULL DEFAULT TRUE
+        """))
         # 指标驱动筛选（2026-09-17）：扫描候选质量分（AI 配额排序键）与指标票数明细
         conn.execute(text("""
             ALTER TABLE scan_results

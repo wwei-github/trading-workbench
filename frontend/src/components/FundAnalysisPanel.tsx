@@ -100,7 +100,6 @@ export default function FundAnalysisPanel() {
   }, [fetchData])
 
   const summary = data?.summary
-  const testnetNoTransfers = scope === 'testnet' && (data?.transfers.length ?? 0) === 0
 
   // ① 资金曲线：Line + up 色 areaStyle 渐变 + dataZoom inside + 0 基线
   const equityOption = useMemo<EChartsCoreOption>(() => {
@@ -397,9 +396,9 @@ export default function FundAnalysisPanel() {
             </Col>
             <Col span={8}>
               <Card size="small" title="资金流水（USDT）">
-                {testnetNoTransfers ? (
+                {(data?.transfers.length ?? 0) === 0 ? (
                   <Empty
-                    description="测试网账户未同步划转"
+                    description="该范围内暂无划转记录"
                     image={Empty.PRESENTED_IMAGE_SIMPLE}
                     style={{ height: 300, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}
                   />

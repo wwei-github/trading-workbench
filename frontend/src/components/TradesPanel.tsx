@@ -14,6 +14,7 @@ import {
   Modal,
   Popconfirm,
   Row,
+  Segmented,
   Space,
   Spin,
   Table,
@@ -46,7 +47,7 @@ import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import AiAnalysisCard from './AiAnalysisCard'
 import TradeReplayChart from './TradeReplayChart'
 import StatCard from './StatCard'
-import type { TradeEvent, TradeRecord } from '../types'
+import type { FundAnalytics, TradeEvent, TradeRecord } from '../types'
 
 // 状态标签：运行中三态 + 已平仓 + 失败
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
@@ -240,25 +241,40 @@ export default function TradesPanel() {
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
+  // 环境切换（实盘/测试网，默认实盘）：列表过滤 + 概览统计与资金分析页同源（docs/14 口径）
+  const [scope, setScope] = useState<'live' | 'testnet'>('live')
+  // 概览汇总（与资金分析同源）：closed/wins/win_rate/net_pnl/avg_win_r 来自 analytics 接口
+  const [summary, setSummary] = useState<FundAnalytics['summary'] | null>(null)
 
-  // 一次拉全量（上限 500），状态筛选/概览统计都在前端算——切换即时且带数量
+  // 列表拉全量（上限 500）供表格与状态计数；概览统计从 analytics 接口取，
+  // 保证与资金分析页数字完全一致（接口全表统计，无 500 条截断差异）
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await scanApi.trades.list(undefined, 500)
-      setRows(data)
+      const [list, analytics] = await Promise.all([
+        scanApi.trades.list(undefined, 500),
+        scanApi.trades.analytics({ scope }),
+      ])
+      setRows(list)
+      setSummary(analytics.summary)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '获取交易记录失败')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [scope])
 
-  // 仅初始加载，不做轮询：数据源 = 每小时第 10 分结算巡检（按小时变动），
+  // 仅初始加载 + 环境切换时重拉，不做轮询：数据源 = 每小时第 10 分结算巡检（按小时变动），
   // 手动点「刷新」按钮即可获取最新数据
   useEffect(() => {
     fetchData()
   }, [fetchData])
+
+  // 当前环境的记录（列表/状态计数用；概览统计走 analytics 接口）
+  const scopeRows = useMemo(
+    () => rows.filter((r) => r.testnet === (scope === 'testnet')),
+    [rows, scope],
+  )
 
   // 全局涨跌配色方案（红涨绿跌/绿涨红跌，页面顶部切换）
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -330,10 +346,10 @@ export default function TradesPanel() {
   const filtered = useMemo(() => {
     const base =
       statusFilter === ''
-        ? rows
+        ? scopeRows
         : statusFilter === 'running'
-          ? rows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status))
-          : rows.filter((r) => r.status === statusFilter)
+          ? scopeRows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status))
+          : scopeRows.filter((r) => r.status === statusFilter)
     const rank = (r: TradeRecord) =>
       ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status) ? 0 : r.status === 'CLOSED' ? 1 : 2
     // 已平仓看平仓时间，未平仓看开仓时间；同组内新→旧
@@ -341,36 +357,39 @@ export default function TradesPanel() {
     return [...base].sort(
       (a, b) => rank(a) - rank(b) || (timeOf(a) < timeOf(b) ? 1 : timeOf(a) > timeOf(b) ? -1 : 0),
     )
-  }, [rows, statusFilter])
+  }, [scopeRows, statusFilter])
 
-  // 概览统计：在跑（三态）/ 盈利单 / 亏损单 / 胜率 / 累计净收益 / 平均盈亏比
+  // 概览统计：在跑（三态，从当前环境列表算）；其余与资金分析页同源
+  // （closed/wins/win_rate/net_pnl/avg_win_r 全部取自 analytics 接口，口径见 docs/14）
   const stats = useMemo(() => {
-    const running = rows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status)).length
-    const closedRows = rows.filter((r) => r.status === 'CLOSED' && r.realized_pnl != null)
-    const winRows = closedRows.filter((r) => (r.realized_pnl ?? 0) > 0)
-    const loseRows = closedRows.filter((r) => (r.realized_pnl ?? 0) <= 0)
-    const totalPnl = closedRows.reduce((s, r) => s + (r.realized_pnl ?? 0), 0)
-    const winRate = closedRows.length > 0 ? Math.round((winRows.length / closedRows.length) * 100) : null
-    // 盈亏比：R = 净盈亏 ÷ 计划风险额(risk_amount)。止盈单由利润反推实际RR
-    // 仅统计已完全闭单（在跑的 TP1_HIT 半程利润会虚高）；risk_amount 缺失的历史单剔除
-    const rRows = closedRows.filter((r) => (r.risk_amount ?? 0) > 0)
-    const rOf = (r: (typeof rRows)[number]) => (r.realized_pnl as number) / (r.risk_amount as number)
-    const winRRows = rRows.filter((r) => (r.realized_pnl ?? 0) > 0)
-    const avgWinR = winRRows.length > 0 ? winRRows.reduce((s, r) => s + rOf(r), 0) / winRRows.length : null
-    return { running, closed: closedRows.length, wins: winRows.length, loses: loseRows.length, winRate, totalPnl, avgWinR }
-  }, [rows])
+    const running = scopeRows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status)).length
+    if (!summary) {
+      return { running, closed: 0, wins: 0, loses: 0, winRate: null as number | null, totalPnl: 0, avgWinR: null as number | null }
+    }
+    const wins = summary.wins
+    const closed = summary.closed
+    return {
+      running,
+      closed,
+      wins,
+      loses: closed - wins,
+      winRate: summary.win_rate,
+      totalPnl: summary.net_pnl,
+      avgWinR: summary.avg_win_r,
+    }
+  }, [scopeRows, summary])
 
   // 状态筛选选项：进行中 = 三态聚合（运行中/TP1已止盈/TP2已止盈），带当前数量与状态色点
   const statusOptions = useMemo(() => {
-    const running = rows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status)).length
-    const count = (s: string) => rows.filter((r) => r.status === s).length
+    const running = scopeRows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status)).length
+    const count = (s: string) => scopeRows.filter((r) => r.status === s).length
     return [
-      { value: '', label: '全部', count: rows.length, dot: null as string | null },
+      { value: '', label: '全部', count: scopeRows.length, dot: null as string | null },
       { value: 'running', label: '进行中', count: running, dot: '#1677ff' },
       { value: 'CLOSED', label: '已平仓', count: count('CLOSED'), dot: '#8c8c8c' },
       { value: 'FAILED', label: '失败', count: count('FAILED'), dot: '#ff4d4f' },
     ]
-  }, [rows])
+  }, [scopeRows])
 
   // 展开行时加载该笔交易的操作历史（失败落空数组，时间线显示"暂无"，避免永远转圈）
   const loadEvents = useCallback(async (tradeId: string) => {
@@ -784,12 +803,27 @@ export default function TradesPanel() {
             )
           })}
         </Space>
-        <Button icon={<ReloadOutlined />} size="small" onClick={fetchData}>
-          刷新
-        </Button>
+        <Space size={12}>
+          {/* 环境切换：默认实盘，与资金分析页 scope 口径一致 */}
+          <Segmented
+            size="small"
+            value={scope}
+            onChange={(v) => {
+              setScope(v as 'live' | 'testnet')
+              setPage(1)
+            }}
+            options={[
+              { label: '实盘', value: 'live' },
+              { label: '测试网', value: 'testnet' },
+            ]}
+          />
+          <Button icon={<ReloadOutlined />} size="small" onClick={fetchData}>
+            刷新
+          </Button>
+        </Space>
       </Row>
 
-      {/* 概览条 */}
+      {/* 概览条（胜率/净收益/盈亏比与资金分析页同源同数） */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <StatCard title="在跑单子" value={String(stats.running)} color="#1677ff" />
         <StatCard
@@ -808,7 +842,7 @@ export default function TradesPanel() {
           color={stats.winRate === null ? undefined : stats.winRate >= 50 ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down}
         />
         <StatCard
-          title="累计净收益（含手续费）"
+          title="累计净收益"
           value={`${stats.totalPnl > 0 ? '+' : ''}${stats.totalPnl.toFixed(2)} USDT`}
           color={stats.totalPnl === 0 ? undefined : schemeValueColor(stats.totalPnl, colorScheme)}
         />
@@ -820,8 +854,11 @@ export default function TradesPanel() {
       </div>
 
       <Spin spinning={loading}>
-        {rows.length === 0 && !loading ? (
-          <Empty description="暂无交易记录（TRADING_ENABLED 开启后自动开单）" style={{ marginTop: 60 }} />
+        {scopeRows.length === 0 && !loading ? (
+          <Empty
+            description={scope === 'live' ? '暂无实盘交易记录（TRADING_ENABLED 开启后自动开单）' : '暂无测试网交易记录'}
+            style={{ marginTop: 60 }}
+          />
         ) : (
           <Table<TradeRecord>
             rowKey="id"

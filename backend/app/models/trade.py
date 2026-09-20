@@ -119,6 +119,8 @@ class AccountTransfer(Base):
     asset: Mapped[str] = mapped_column(String(16), nullable=False, default="USDT")
     amount: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
     transfer_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    # 环境标识（2026-09-20）：同步自当前配置账户（TRADING_TESTNET），资金分析按 scope 过滤
+    testnet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     raw: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

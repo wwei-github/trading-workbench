@@ -853,9 +853,11 @@ def sync_account_transfers(db: Session, trader: BinanceTrader) -> int:
 
     增量拉取：从库内最新 transfer_time 前移 60s 重叠窗口开始（首次从 7 天前起），
     tran_id 唯一约束 + on_conflict_do_nothing 幂等去重。返回新插入条数。
+    按当前环境（TRADING_TESTNET）过滤窗口基准并写入 testnet 标记。
     """
     last = db.execute(
         select(AccountTransfer.transfer_time)
+        .where(AccountTransfer.testnet == settings.TRADING_TESTNET)
         .order_by(AccountTransfer.transfer_time.desc())
         .limit(1)
     ).scalar()
@@ -886,6 +888,7 @@ def sync_account_transfers(db: Session, trader: BinanceTrader) -> int:
             asset=row.get("asset") or "USDT",
             amount=amount,
             transfer_time=datetime.utcfromtimestamp(t_ms / 1000),
+            testnet=settings.TRADING_TESTNET,
             raw=row,
         ).on_conflict_do_nothing(index_elements=["tran_id"])
         res = db.execute(stmt)

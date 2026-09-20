@@ -168,15 +168,17 @@ def fund_analytics(
         name = _pnl_bucket(float(r.realized_pnl or 0))
         buckets[name] = buckets.get(name, 0) + 1
 
-    # 划转（amount 带符号：正=转入），只统计 USDT
-    rows_t: list[AccountTransfer] = []
-    if not testnet:
-        tq = select(AccountTransfer).where(AccountTransfer.asset == "USDT")
-        if lo is not None:
-            tq = tq.where(AccountTransfer.transfer_time >= lo)
-        if hi is not None:
-            tq = tq.where(AccountTransfer.transfer_time < hi)
-        rows_t = db.execute(tq).scalars().all()
+    # 划转（amount 带符号：正=转入），只统计 USDT；按环境标记过滤
+    # （testnet 列 2026-09-20 补上，存量回填 TRUE = 测试网账户流水）
+    tq = select(AccountTransfer).where(
+        AccountTransfer.asset == "USDT",
+        AccountTransfer.testnet == testnet,
+    )
+    if lo is not None:
+        tq = tq.where(AccountTransfer.transfer_time >= lo)
+    if hi is not None:
+        tq = tq.where(AccountTransfer.transfer_time < hi)
+    rows_t = db.execute(tq).scalars().all()
     t_daily: dict[str, dict] = {}
     for t in rows_t:
         m = t_daily.setdefault(_bj_day(t.transfer_time), {"in": 0.0, "out": 0.0})
