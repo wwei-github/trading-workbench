@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 按 docs/15 实现 5 分钟级市场风险快检（4 信号 → L0~L3 分级），升级即时执行仓位保护动作，前端横幅展示状态与迁移历史。
+**Goal:** 按 docs/15 实现 30 分钟级市场风险快检（2026-09-20 用户拍板）（4 信号 → L0~L3 分级），升级即时执行仓位保护动作，前端横幅展示状态与迁移历史。
 
-**Architecture:** 新增 `risk_guard` 服务（信号采集直连币安 + 纯函数分级状态机）与 `risk_tasks` Celery 任务（每 5 分钟），开仓闸门在 `trade_engine.try_open_for_analysis` 与 `ai_tasks` 批量分发处各加一道；新表 `market_risk_state`（单行状态）+ `market_risk_history`（迁移记录），create_all 自动建表。前端新增 `RiskBanner` 组件轮询展示。
+**Architecture:** 新增 `risk_guard` 服务（信号采集直连币安 + 纯函数分级状态机）与 `risk_tasks` Celery 任务（每 30 分钟），开仓闸门在 `trade_engine.try_open_for_analysis` 与 `ai_tasks` 批量分发处各加一道；新表 `market_risk_state`（单行状态）+ `market_risk_history`（迁移记录），create_all 自动建表。前端新增 `RiskBanner` 组件轮询展示。
 
 **Tech Stack:** FastAPI + SQLAlchemy 2.0 + Celery beat + httpx（币安合约公开接口）；React 18 + Ant Design 5 + TypeScript。
 
@@ -49,9 +49,9 @@
     GUARD_S4_L3_PCT: float = -6.0         # S4 触发 L3 的急跌阈值（%，还需 24h 共振）
     GUARD_S4_L3_CONFIRM_24H: float = -3.0 # S4 升 L3 要求的 BTC 24h 共振阈值（%）
     GUARD_S4_RELEASE_PCT: float = -1.5    # S4 迟滞解除阈值（跌幅浅于此视为消失）
-    GUARD_DOWNGRADE_ROUNDS: int = 24      # 降级防抖轮数（5 分钟/轮 ≈ 2 小时）
-    GUARD_CONFIRM_ROUNDS: int = 2         # S1/S2/S3 升级确认轮数（防窗口滚动跳变）
-    GUARD_STALE_S: int = 600              # 数据时点陈旧阈值（秒），超时冻结等级
+    GUARD_DOWNGRADE_ROUNDS: int = 4       # 降级防抖轮数（30 分钟/轮 ×4 ≈ 2 小时，等值于原 5 分钟×24 轮设计）
+    GUARD_CONFIRM_ROUNDS: int = 2         # S1/S2/S3 升级确认轮数（防窗口滚动跳变；30 分钟节拍下 ≤1 小时）
+    GUARD_STALE_S: int = 2700             # 数据时点陈旧阈值（秒，>45 分钟冻结；30 分钟节拍 ×1.5 余量）
     GUARD_OSC_LOCK_S: int = 3600          # L2 震荡锁时长（秒）
 ```
 
@@ -617,12 +617,12 @@ git commit -m "feat: 风险状态持久化/升级动作（SL收成本/深亏多�
 **Interfaces:**
 
 - Consumes: Task 3 `run_risk_check`/`get_current_level`；`trade_tasks._acquire_open_lock/_release_open_lock`
-- Produces: beat 任务 `app.tasks.risk_tasks.market_risk_check`（每 5 分钟）；闸门在 L≥2 时 `_mark_open_block(db, a, ...)`
+- Produces: beat 任务 `app.tasks.risk_tasks.market_risk_check`（每 30 分钟）；闸门在 L≥2 时 `_mark_open_block(db, a, ...)`
 
 - [ ] **Step 1: risk_tasks.py**
 
 ```python
-"""市场风险快检任务（docs/15）：每 5 分钟，升级即时执行仓位动作。"""
+"""市场风险快检任务（docs/15）：每 30 分钟，升级即时执行仓位动作。"""
 import logging
 from uuid import uuid4
 
@@ -675,7 +675,7 @@ def market_risk_check():
 ```python
         "market-risk-check": {
             "task": "app.tasks.risk_tasks.market_risk_check",
-            "schedule": crontab(minute="*/5"),  # 每 5 分钟快检（北京时间同样按 */5）
+            "schedule": crontab(minute="*/30"),  # 每 30 分钟快检（用户拍板 2026-09-20，原设计 5 分钟）
         },
 ```
 
@@ -714,7 +714,7 @@ def market_risk_check():
 ```bash
 python3 -m compileall backend/app -q && echo OK
 git add backend/app/tasks/risk_tasks.py backend/app/celery_app.py backend/app/services/trade_engine.py backend/app/tasks/ai_tasks.py
-git commit -m "feat: 5分钟风险快检任务接入beat；L2/L3开仓闸门与批量AI分析跳过"
+git commit -m "feat: 30分钟风险快检任务接入beat；L2/L3开仓闸门与批量AI分析跳过"
 ```
 
 ---
@@ -934,7 +934,7 @@ cd frontend && npx tsc --noEmit && echo TS-OK
 git push origin main
 ```
 
-部署成功（飞书卡片确认）后，等 5 分钟观察服务器日志 `docker compose logs backend | grep 风险快检 | tail -3`，横幅在页面出现即全链路通。
+部署成功（飞书卡片确认）后，等下一整点半（:00/:30 后几分钟）观察服务器日志 `docker compose logs backend | grep 风险快检 | tail -3`，横幅在页面出现即全链路通。
 
 - [ ] **Step 4: 文档验收**
 
