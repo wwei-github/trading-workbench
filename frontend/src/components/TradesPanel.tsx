@@ -458,16 +458,34 @@ export default function TradesPanel() {
     }
   }, [])
 
-  // 手动 AI 持仓诊断（docs/16）：按记录 ID 记 loading，完成后刷新列表取最新结论
+  // 手动 AI 持仓诊断（docs/16）：提交异步任务立即返回，随后轮询列表对比
+  // ai_advice_at 等结果（每 8s 一次，上限 ~100s）；期间按钮 loading 防重复提交
   const [advisingId, setAdvisingId] = useState<string | null>(null)
   const handleAdvice = async (rec: TradeRecord) => {
     setAdvisingId(rec.id)
     try {
       await scanApi.trades.advice(rec.id)
-      message.success(`${rec.symbol} 持仓诊断完成`)
+      message.success(`${rec.symbol} 已提交诊断，后台执行中`)
+      const baseAt = rec.ai_advice_at
+      for (let i = 0; i < 12; i++) {
+        await new Promise((r) => setTimeout(r, 8000))
+        try {
+          const list = await scanApi.trades.list(undefined, 500)
+          const cur = list.find((x) => x.id === rec.id)
+          if (!cur || !['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(cur.status)) break // 已平仓，诊断任务会自动跳过
+          if (cur.ai_advice_at !== baseAt) {
+            await fetchData()
+            message.success(`${rec.symbol} 诊断完成`)
+            return
+          }
+        } catch {
+          // 网络抖动继续下一轮
+        }
+      }
       await fetchData()
+      message.info(`${rec.symbol} 诊断仍在后台执行，稍后刷新查看结果`)
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || 'AI 诊断失败')
+      message.error(e?.response?.data?.detail || '提交诊断失败')
     } finally {
       setAdvisingId(null)
     }

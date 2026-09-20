@@ -180,11 +180,9 @@ export const scanApi = {
     // 账户资金概览（当前环境：总资金/总收益/收益率，顶部状态栏展示）
     accountSummary: () =>
       api.get<AccountSummary>('/trades/account-summary').then((r) => r.data),
-    // 手动 AI 持仓诊断（docs/16，无视冷却；LLM 同步执行 10~30s）
+    // 手动 AI 持仓诊断（docs/16，无视冷却）：异步派发立即返回，前端轮询结果
     advice: (tradeId: string) =>
-      api
-        .post<{ action: string; reason: string }>(`/trades/${tradeId}/advice`, null, { timeout: 120000 })
-        .then((r) => r.data),
+      api.post<{ queued: boolean; symbol: string }>(`/trades/${tradeId}/advice`).then((r) => r.data),
     // 一键清空测试网数据（两阶段：confirm=false 预检，true 执行删除）
     purgeTestnet: (confirm: boolean) =>
       api

@@ -319,21 +319,20 @@ def _load_running_trade(trade_id: str, db: Session) -> TradeRecord:
 
 @router.post("/{trade_id}/advice")
 def run_advice(trade_id: str, db: Session = Depends(get_db)):
-    """手动 AI 持仓诊断（docs/16）：复用定时诊断链路，无视冷却（人工显式请求）。
+    """手动 AI 持仓诊断（docs/16）：异步派发诊断子任务，立即返回。
 
-    同步执行（LLM 10~30s），返回最新诊断结论；前端按钮 loading 等待。
+    同步等 LLM 会被代理层/前端超时切断（GLM 思考模型常超 30s），改为与定时
+    诊断同链路（run_position_advice，锁外 celery 执行）；任务不做冷却判断，
+    手动派发天然无视冷却。前端提交后轮询列表对比 ai_advice_at 获取结果。
     """
     from app.config import settings
-    from app.services.position_advisor import diagnose_trade
+    from app.tasks.trade_tasks import run_position_advice
 
     rec = _load_running_trade(trade_id, db)
     if not settings.AI_API_KEY:
         raise HTTPException(status_code=400, detail="AI 未配置（AI_API_KEY 为空）")
-    try:
-        return diagnose_trade(db, rec)
-    except Exception as e:
-        logger.warning("手动持仓诊断失败 %s: %s", rec.symbol, e)
-        raise HTTPException(status_code=502, detail=f"AI 诊断失败：{str(e)[:200]}")
+    run_position_advice.delay(str(rec.id))
+    return {"queued": True, "symbol": rec.symbol}
 
 
 @router.get("/{trade_id}/klines")
