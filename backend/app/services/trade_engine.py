@@ -20,7 +20,7 @@ from decimal import ROUND_DOWN, Decimal
 from uuid import UUID
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -38,6 +38,7 @@ from app.services.risk_guard import (
     PULLBACK_MARKET_PCT,
     MAX_SLIPPAGE_PCT,
 )
+from app.services.task_log import close_task, open_task
 
 logger = logging.getLogger(__name__)
 
@@ -861,6 +862,10 @@ def sync_account_transfers(db: Session) -> int:
     on_conflict_do_nothing 幂等去重。返回新插入条数（两环境合计）。
     """
     inserted = 0
+    cfg = db.get(SystemConfig, 1)
+    # 测试网清除水位：一键清空删光划转后记录时刻，testnet 分支以它为下限，
+    # 防止「库内无记录→从 7 天前重拉」把刚删掉的划转回灌（仅对 testnet 生效）
+    purge_at = cfg.testnet_transfer_purge_at if cfg else None
     for t in (True, False):
         trader = BinanceTrader(t)
         if not trader.configured:
@@ -872,6 +877,8 @@ def sync_account_transfers(db: Session) -> int:
             .limit(1)
         ).scalar()
         since = last - timedelta(seconds=60) if last else datetime.utcnow() - timedelta(days=7)
+        if t and purge_at and since < purge_at:
+            since = purge_at
         since_ms = int(since.replace(tzinfo=timezone.utc).timestamp() * 1000)
         try:
             rows = trader.transfer_rows(since_ms)
@@ -908,6 +915,78 @@ def sync_account_transfers(db: Session) -> int:
             inserted += res.rowcount or 0
         db.commit()
     return inserted
+
+
+def purge_testnet_data(db: Session, force: bool = False) -> dict:
+    """一键清空测试网交易数据（2026-09-20，页面维护操作，实盘数据不受影响）。
+
+    两阶段：force=False 返回将删除的数量（预检）；force=True 执行删除：
+    trade_records（testnet=true）→ 级联清其 trade_events + account_transfers
+    （testnet=true）→ 记录划转清除水位防下轮同步回灌。不删 trade_reviews
+    （复盘统计基于 AI 分析、无环境归属，2026-09-20 拍板不在清理范围）。
+    在跑单只提示不拦截（删除后交易所侧仓位无人管理，由前端弹窗二次确认）。
+    返回 {records, events, transfers, running, executed}。
+    """
+    running = int(
+        db.execute(
+            select(func.count()).select_from(TradeRecord).where(
+                TradeRecord.testnet == True,  # noqa: E712
+                TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")),
+            )
+        ).scalar_one()
+    )
+    ids = db.execute(
+        select(TradeRecord.id).where(TradeRecord.testnet == True)  # noqa: E712
+    ).scalars().all()
+    events = int(
+        db.execute(
+            select(func.count()).select_from(TradeEvent).where(
+                TradeEvent.trade_record_id.in_(ids)
+            )
+        ).scalar_one()
+    ) if ids else 0
+    transfers = int(
+        db.execute(
+            select(func.count()).select_from(AccountTransfer).where(
+                AccountTransfer.testnet == True  # noqa: E712
+            )
+        ).scalar_one()
+    )
+    stats = {
+        "records": len(ids),
+        "events": events,
+        "transfers": transfers,
+        "running": running,
+        "executed": False,
+    }
+    if not force:
+        return stats
+
+    task_id = open_task("trade", "清空测试网数据", trigger="manual")
+    try:
+        if ids:
+            db.execute(delete(TradeEvent).where(TradeEvent.trade_record_id.in_(ids)))
+            db.execute(delete(TradeRecord).where(TradeRecord.id.in_(ids)))
+        if transfers:
+            db.execute(
+                delete(AccountTransfer).where(AccountTransfer.testnet == True)  # noqa: E712
+            )
+            cfg = db.get(SystemConfig, 1)
+            if cfg:
+                cfg.testnet_transfer_purge_at = datetime.utcnow()
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        close_task(task_id, "failed", error=str(e))
+        raise
+    stats["executed"] = True
+    close_task(
+        task_id,
+        "completed",
+        summary=f"删除记录 {stats['records']} / 事件 {stats['events']} / 划转 {stats['transfers']}",
+        detail=stats,
+    )
+    return stats
 
 
 def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:

@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
+import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, PurgeStats, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -184,6 +184,11 @@ export const scanApi = {
     advice: (tradeId: string) =>
       api
         .post<{ action: string; reason: string }>(`/trades/${tradeId}/advice`, null, { timeout: 120000 })
+        .then((r) => r.data),
+    // 一键清空测试网数据（两阶段：confirm=false 预检，true 执行删除）
+    purgeTestnet: (confirm: boolean) =>
+      api
+        .post<PurgeStats>('/trades/purge-testnet', null, { params: { confirm } })
         .then((r) => r.data),
   },
 

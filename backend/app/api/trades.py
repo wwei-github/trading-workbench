@@ -286,6 +286,20 @@ def _get_trade_events(trade_id: str, db: Session) -> list[TradeEvent]:
     ).scalars().all()
 
 
+@router.post("/purge-testnet")
+def purge_testnet(confirm: bool = False, db: Session = Depends(get_db)):
+    """一键清空测试网交易数据（两阶段：confirm=false 预检返回将删数量，
+    confirm=true 执行删除；范围=测试网交易记录+操作历史+划转流水，
+    不含复盘统计）。执行写入系统日志（任务记录）供审计"""
+    from app.services.trade_engine import purge_testnet_data
+
+    try:
+        return purge_testnet_data(db, force=confirm)
+    except Exception as e:
+        logger.error("清空测试网数据失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"清空失败: {e}")
+
+
 @router.get("/{trade_id}/events", response_model=list[TradeEventOut])
 def trade_events(trade_id: str, db: Session = Depends(get_db)):
     """一笔交易的操作历史（开仓/止盈成交/止损移动/结算/异常）"""

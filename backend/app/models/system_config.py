@@ -1,5 +1,8 @@
 """系统配置模型（单行表，存储运行时可变配置：AI 开关 + 扫描策略）"""
-from sqlalchemy import Boolean, String, Integer, Numeric, Text
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import Boolean, String, Integer, Numeric, Text, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -71,5 +74,12 @@ class SystemConfig(Base):
     # 走订单簿逐层吃的预期滑点超线放弃（GRIFFAIN 薄盘案例：0.637% 滑点撑宽
     # 止损 17%）；NULL=恢复默认 0.003
     max_slippage_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+
+    # testnet_transfer_purge_at：测试网划转清除水位（2026-09-20 一键清空测试网数据）。
+    # 清空功能删光测试网划转后记录此刻；sync_account_transfers 的 testnet 分支以它
+    # 为下限，防止「无记录→从 7 天前重拉」把刚删掉的划转回灌（水位只对 testnet 生效）
+    testnet_transfer_purge_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, default=None
+    )
 
     notes: Mapped[str] = mapped_column(String(255), default="系统运行时配置")

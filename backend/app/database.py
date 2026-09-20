@@ -196,7 +196,8 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS liq_gate_buffer NUMERIC(10, 6),
               ADD COLUMN IF NOT EXISTS min_adapt_leverage INTEGER,
               ADD COLUMN IF NOT EXISTS pullback_market_pct NUMERIC(10, 6),
-              ADD COLUMN IF NOT EXISTS max_slippage_pct NUMERIC(10, 6)
+              ADD COLUMN IF NOT EXISTS max_slippage_pct NUMERIC(10, 6),
+              ADD COLUMN IF NOT EXISTS testnet_transfer_purge_at TIMESTAMP
         """))
         # 币种黑名单（2026-09-18）：全新表由 create_all 建表（init_db 已导入
         # app.models.blacklist）。symbol 带 unique=True 自带唯一索引，不再建

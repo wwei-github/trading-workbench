@@ -309,6 +309,15 @@ export interface TradeEvent {
   created_at: string
 }
 
+// 一键清空测试网数据（预检/执行共用返回；executed=true 表示已删除）
+export interface PurgeStats {
+  records: number
+  events: number
+  transfers: number
+  running: number
+  executed: boolean
+}
+
 // 合约账户资金划转（每小时巡检同步自币安 income TRANSFER）
 export interface AccountTransfer {
   id: string
