@@ -165,22 +165,24 @@ export default function ScanResult() {
                     {
                       key: 'actual',
                       label: '实盘归因',
-                      children: <ReviewActualPanel />,
+                      // 嵌套 Tabs 的 tabpane 被全局 CSS 锁 height:100%（overflow:hidden），
+                      // 内容超高会被裁——内层各 tab 统一包 overflow:auto 滚动容器
+                      children: <div style={{ height: '100%', overflow: 'auto' }}><ReviewActualPanel /></div>,
                     },
                     {
                       key: 'suggestion',
                       label: 'AI建议质量',
-                      children: <ReviewStatsPanel />,
+                      children: <div style={{ height: '100%', overflow: 'auto' }}><ReviewStatsPanel /></div>,
                     },
                     {
                       key: 'patches',
                       label: '规则补丁',
-                      children: <ReviewPatchesPanel />,
+                      children: <div style={{ height: '100%', overflow: 'auto' }}><ReviewPatchesPanel /></div>,
                     },
                     {
                       key: 'blacklist',
                       label: '币种黑名单',
-                      children: <BlacklistPanel />,
+                      children: <div style={{ height: '100%', overflow: 'auto' }}><BlacklistPanel /></div>,
                     },
                   ]}
                 />
