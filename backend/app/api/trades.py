@@ -9,7 +9,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
-from app.models.market_risk import MarketRiskHistory, MarketRiskState
 from app.models.system_config import SystemConfig
 from app.models.trade import AccountTransfer, TradeEvent, TradeRecord
 from app.schemas.trade import (
@@ -56,30 +55,6 @@ def list_transfers(limit: int = 200, db: Session = Depends(get_db)):
         .limit(min(limit, 500))
     ).scalars().all()
     return [AccountTransferOut.model_validate(r) for r in rows]
-
-
-@router.get("/market-risk")
-def get_market_risk(history_limit: int = 30, db: Session = Depends(get_db)):
-    """市场风险防护状态 + 最近等级迁移历史（docs/15 §6 展示）"""
-    row = db.get(MarketRiskState, 1)
-    hist = db.execute(
-        select(MarketRiskHistory)
-        .order_by(MarketRiskHistory.created_at.desc())
-        .limit(min(history_limit, 100))
-    ).scalars().all()
-    return {
-        "level": row.level if row else 0,
-        "cause": row.cause if row else "normal",
-        "signals": row.signals if row else {},
-        "entered_level_at": row.entered_level_at.isoformat() if row and row.entered_level_at else None,
-        "updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
-        "history": [
-            {
-                "id": str(h.id), "from_level": h.from_level, "to_level": h.to_level,
-                "trigger": h.trigger, "created_at": h.created_at.isoformat(),
-            } for h in hist
-        ],
-    }
 
 
 def _bj_day(dt: datetime) -> str:

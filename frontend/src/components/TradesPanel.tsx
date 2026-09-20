@@ -78,7 +78,6 @@ export const EXIT_REASON_MAP: Record<string, string> = {
   trail_sl: 'TP2后跟踪止损',
   breakeven_sl: '保本止损',
   liquidation: '强平（保证金亏光）',
-  market_guard: '防护平仓',
   manual: '手动平仓',
   error: '异常平仓',
 }

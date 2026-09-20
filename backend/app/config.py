@@ -69,23 +69,6 @@ class Settings(BaseSettings):
     TRADING_LEVERAGE_MIN: int = 8     # 动态杠杆下限默认值（system_config.min_adapt_leverage 可页面覆盖）：
                                       # 限制层——安全杠杆低于下限的宽止损单放弃，不是所有单都算完就开
 
-    # 市场风险防护（docs/15，Market Guard）
-    MARKET_GUARD_ENABLED: bool = True     # 总开关（false 时快检任务空转、闸门放行）
-    GUARD_TOP_N: int = 20                 # 市场广度取样币种数（按 24h 成交额取前 N）
-    GUARD_S1_PCT: float = -5.0            # S1：BTC 24h 跌幅阈值（%）
-    GUARD_S1_L3_PCT: float = -8.0         # S1 直达 L3 的深跌阈值（%）
-    GUARD_S2_PCT: float = -3.0            # S2：单币 24h 跌幅计入广度的阈值（%）
-    GUARD_S2_BREADTH: float = 70.0        # S2：广度阈值（前 N 中跌幅达标的占比 %）
-    GUARD_S3_MULT: float = 1.8            # S3：1h ATR14 放大倍数阈值
-    GUARD_S4_L2_PCT: float = -3.5         # S4：3×15m 累计跌幅触发 L2（%）
-    GUARD_S4_L3_PCT: float = -6.0         # S4 触发 L3 的急跌阈值（%，还需 24h 共振）
-    GUARD_S4_L3_CONFIRM_24H: float = -3.0 # S4 升 L3 要求的 BTC 24h 共振阈值（%）
-    GUARD_S4_RELEASE_PCT: float = -1.5    # S4 迟滞解除阈值（跌幅浅于此视为消失）
-    GUARD_DOWNGRADE_ROUNDS: int = 4       # 降级防抖轮数（30 分钟/轮 ×4 ≈ 2 小时，等值于原 5 分钟×24 轮设计）
-    GUARD_CONFIRM_ROUNDS: int = 2         # S1/S2/S3 升级确认轮数（防窗口滚动跳变；30 分钟节拍下 ≤1 小时）
-    GUARD_STALE_S: int = 2700             # 数据时点陈旧阈值（秒，>45 分钟冻结；30 分钟节拍 ×1.5 余量）
-    GUARD_OSC_LOCK_S: int = 3600          # L2 震荡锁时长（秒）
-
     class Config:
         env_file = ".env"
 

@@ -20,8 +20,6 @@ class ScanRecord(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     finished_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    # 市场防护标注（docs/15 §5）：L2/L3 暂停批量 AI 分析时写入说明（2026-09-20）
-    guard_note: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     results: Mapped[list["ScanResult"]] = relationship(back_populates="scan_record", cascade="all, delete-orphan")
 

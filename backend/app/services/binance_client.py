@@ -133,13 +133,6 @@ class BinanceClient:
         resp = self._request(self.futures_client, "/fapi/v1/ticker/24hr")
         return resp.json()
 
-    def get_klines(self, symbol: str, interval: str, limit: int) -> list[list]:
-        """合约 K线（公开接口，直连不走缓存——Market Guard 快检用）"""
-        resp = self._request(self.futures_client, "/fapi/v1/klines", params={
-            "symbol": symbol, "interval": interval, "limit": limit,
-        })
-        return resp.json()
-
     # ── 现货 API（保留备用）──
 
     def get_exchange_info(self) -> dict:

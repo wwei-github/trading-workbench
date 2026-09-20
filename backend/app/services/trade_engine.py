@@ -583,14 +583,6 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
     # 待回踩单不再在此跳过（2026-09-18）：回踩距离 ≤ pullback_market_pct 容差
     # 时市价入场、超容差维持不下单——判定移入 _attempt_open 偏离闸门
     positions = trader.positions()
-    # 市场风险防护（docs/15）：L2/L3 暂停全部开仓
-    if settings.MARKET_GUARD_ENABLED:
-        from app.services.risk_guard import get_current_level
-        lvl = get_current_level(db)
-        if lvl >= 2:
-            logger.info("即时开仓跳过 %s：市场防护 L%d 暂停开仓", a.symbol, lvl)
-            _mark_open_block(db, a, f"市场防护 L{lvl} 暂停开仓")
-            return False
     # 单数上限（0 = 不限单数，仅靠余额风控兜底）
     if cfg.max_open_trades > 0 and len(positions) >= cfg.max_open_trades:
         logger.info("即时开仓跳过 %s：在跑单子已达上限 %d", a.symbol, cfg.max_open_trades)
@@ -958,9 +950,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                 pnl = round(trader.sum_income(rows, trader.INCOME_KEEP), 6)
                 rec.realized_pnl = pnl
                 rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
-                if (rec.raw or {}).get("guard_closed"):
-                    exit_reason = "market_guard"
-                elif insurance_clear != 0:
+                if insurance_clear != 0:
                     _add_event(db, rec, "LIQUIDATION", {
                         "qty": qty, "insurance_clear": round(insurance_clear, 6),
                         "realized_pnl": pnl,
