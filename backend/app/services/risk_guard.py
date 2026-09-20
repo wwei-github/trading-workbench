@@ -459,3 +459,147 @@ def downgrade_one_level(st: dict) -> dict:
     return {**st, "level": max(0, int(st.get("level") or 0) - 1), "cause": "normal",
             "below_count": 0, "pending_level": 0, "pending_count": 0,
             "entered_level_at": now.isoformat()}
+
+
+# ── 持久化与执行（docs/15 Task 3）──
+
+def _load_state(db) -> tuple["MarketRiskState", dict]:
+    from app.models.market_risk import MarketRiskState
+    row = db.get(MarketRiskState, 1)
+    if row is None:
+        row = MarketRiskState(id=1, level=0, cause="normal")
+        db.add(row)
+        db.flush()
+    st = {
+        "level": row.level, "cause": row.cause,
+        "pending_level": row.pending_level, "pending_count": row.pending_count,
+        "below_count": row.below_count,
+        "s4_last_release_at": row.s4_last_release_at.isoformat() if row.s4_last_release_at else None,
+        "osc_lock_until": row.osc_lock_until.isoformat() if row.osc_lock_until else None,
+        "entered_level_at": row.entered_level_at.isoformat() if row.entered_level_at else None,
+    }
+    return row, st
+
+
+def _save_state(db, row, st: dict, sig: Optional[dict], old_level: int) -> None:
+    from app.models.market_risk import MarketRiskHistory
+    row.level = st["level"]
+    row.cause = st["cause"]
+    row.pending_level = st["pending_level"]
+    row.pending_count = st["pending_count"]
+    row.below_count = st["below_count"]
+    row.s4_last_release_at = datetime.fromisoformat(st["s4_last_release_at"]) if st.get("s4_last_release_at") else None
+    row.osc_lock_until = datetime.fromisoformat(st["osc_lock_until"]) if st.get("osc_lock_until") else None
+    row.entered_level_at = datetime.fromisoformat(st["entered_level_at"]) if st.get("entered_level_at") else None
+    if sig:
+        row.signals = {k: sig[k] for k in ("s1", "s2", "s3", "s4") if k in sig}
+        row.updated_at = datetime.utcnow()
+    if st["level"] != old_level:
+        db.add(MarketRiskHistory(from_level=old_level, to_level=st["level"], trigger={
+            "reason": f"{'升级' if st['level'] > old_level else '降级'} L{old_level}→L{st['level']}",
+            **(row.signals or {}),
+        }))
+
+
+def get_current_level(db) -> int:
+    """开仓闸门读取（数据失败冻结即：表里是什么就是什么）"""
+    from app.models.market_risk import MarketRiskState
+    row = db.get(MarketRiskState, 1)
+    return int(row.level) if row else 0
+
+
+def execute_level_actions(db, trader, level: int) -> dict:
+    """L2/L3 存量仓位动作（仅本网）。L2：盈利方向 SL 收成本；L3：深亏(>0.5R)多单市价离场、
+    盈利空单锁利润。返回动作计数供通知。"""
+    from sqlalchemy import select as _select
+    from app.models.trade import TradeRecord
+    recs = db.execute(_select(TradeRecord).where(
+        TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")),
+        TradeRecord.testnet == settings.TRADING_TESTNET,
+    )).scalars().all()
+    if not recs:
+        return {"sl_moved": 0, "closed": 0}
+    # 现价一次拉全（BinanceTrader 无公开行情方法，走 BinanceClient 24hr ticker）
+    from app.services.binance_client import BinanceClient
+    _c = BinanceClient()
+    try:
+        px = {t["symbol"]: float(t.get("lastPrice") or 0) for t in _c.get_24h_tickers()}
+    finally:
+        _c.close()
+    moved = closed = 0
+    for rec in recs:
+        try:
+            price = px.get(rec.symbol, 0.0)
+            entry = float(rec.entry_price or 0)
+            if entry <= 0:
+                continue
+            qty = abs(float(rec.qty or 0))
+            risk = float(rec.risk_amount or 0)
+            raw = dict(rec.raw or {})
+            if level >= 2:
+                # 盈利方向：多单 price>entry / 空单 price<entry → SL 收成本
+                in_profit = price > entry if rec.direction == "long" else price < entry
+                if in_profit:
+                    from app.services.trade_engine import _replace_sl
+                    open_ids = trader.open_order_ids(rec.symbol)
+                    if float(rec.stop_loss or 0) != entry:
+                        _replace_sl(db, trader, rec, open_ids, entry, reason="market_guard_l2")
+                        moved += 1
+                # L3 深亏多单市价离场（空单不平，docs/15 §3）
+                if level >= 3 and rec.direction == "long" and price < entry and risk > 0:
+                    loss_r = (entry - price) * qty / risk
+                    if loss_r > 0.5:
+                        trader.cancel_all_algo(rec.symbol)
+                        trader.market_order(rec.symbol, "SELL", qty, reduce_only=True)
+                        raw["guard_closed"] = True
+                        rec.raw = raw  # 新 dict，确保 SQLAlchemy 落库
+                        _add_guard_event(db, rec, {"loss_r": round(loss_r, 2), "price": price})
+                        closed += 1
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.exception("防护动作失败 %s: %s", rec.symbol, e)
+    return {"sl_moved": moved, "closed": closed}
+
+
+def _add_guard_event(db, rec, detail: dict) -> None:
+    from app.services.trade_engine import _add_event
+    _add_event(db, rec, "MARKET_GUARD_CLOSE", detail)
+
+
+def run_risk_check() -> dict:
+    """快检主入口：采集→评估→持久化→升级即时执行→通知。数据失败冻结。"""
+    from app.database import SessionLocal
+    from app.services.binance_trader import BinanceTrader
+    from app.services.notify import send_feishu_text
+    sig = fetch_signals()
+    result = {"level": 0, "changed": False, "actions": None, "frozen": sig is None}
+    if sig is None:
+        logger.info("快检数据失败，等级冻结")
+        return result
+    db = SessionLocal()
+    try:
+        row, st = _load_state(db)
+        old_level = st["level"]
+        st = evaluate_level(sig, st)
+        _save_state(db, row, st, sig, old_level)
+        db.commit()
+        result["level"] = st["level"]
+        if st["level"] > old_level:
+            result["changed"] = True
+            trader = BinanceTrader()
+            if trader.configured:
+                result["actions"] = execute_level_actions(db, trader, st["level"])
+            send_feishu_text(
+                f"⚠️ 市场风险升级 L{old_level}→L{st['level']}\n"
+                f"BTC 24h {sig['s1']}% | 广度 {sig['s2']}% | ATR {sig['s3']}x | 3×15m {sig['s4']}%\n"
+                f"动作：{'开仓暂停' + (str(result['actions']) if result['actions'] else '')}"
+            )
+        elif st["level"] < old_level:
+            result["changed"] = True
+            send_feishu_text(f"✅ 市场风险降级 L{old_level}→L{st['level']}（防抖确认后）")
+        logger.info("风险快检：L%s（s1=%s s2=%s s3=%s s4=%s）",
+                    st["level"], sig["s1"], sig["s2"], sig["s3"], sig["s4"])
+        return result
+    finally:
+        db.close()

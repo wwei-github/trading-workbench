@@ -950,7 +950,9 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                 pnl = round(trader.sum_income(rows, trader.INCOME_KEEP), 6)
                 rec.realized_pnl = pnl
                 rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
-                if insurance_clear != 0:
+                if (rec.raw or {}).get("guard_closed"):
+                    exit_reason = "market_guard"
+                elif insurance_clear != 0:
                     _add_event(db, rec, "LIQUIDATION", {
                         "qty": qty, "insurance_clear": round(insurance_clear, 6),
                         "realized_pnl": pnl,
