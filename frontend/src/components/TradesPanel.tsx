@@ -70,8 +70,8 @@ function statusMeta(rec: TradeRecord): { label: string; color: string } {
   return s
 }
 
-// 出场原因映射
-const EXIT_REASON_MAP: Record<string, string> = {
+// 出场原因映射（资金分析页复用）
+export const EXIT_REASON_MAP: Record<string, string> = {
   sl: '止损离场',
   tp1_then_sl: 'TP1后止损',
   tp1_trail: 'TP1后跟踪止损',

@@ -16,6 +16,7 @@ import ReviewPatchesPanel from '../components/ReviewPatchesPanel'
 import BlacklistPanel from '../components/BlacklistPanel'
 import TradesPanel from '../components/TradesPanel'
 import TransfersPanel from '../components/TransfersPanel'
+import FundAnalysisPanel from '../components/FundAnalysisPanel'
 import RiskBanner from '../components/RiskBanner'
 import ColorSchemeToggle from '../components/ColorSchemeToggle'
 import { useScanStore } from '../stores/scanStore'
@@ -39,7 +40,7 @@ export default function ScanResult() {
   // Tab 记忆：刷新后保留刷新前的聚焦 tab
   const [activeTab, switchTab] = useTabMemory(
     'tabs.scanResult',
-    ['results', 'watchlist', 'search', 'strategy', 'review', 'trades', 'transfers', 'tasks', 'logs'],
+    ['results', 'watchlist', 'search', 'strategy', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs'],
   )
 
   useEffect(() => {
@@ -279,6 +280,11 @@ export default function ScanResult() {
             key: 'transfers',
             label: '资金划转',
             children: <div style={{ height: '100%', overflow: 'auto' }}><TransfersPanel /></div>,
+          },
+          {
+            key: 'fund-analysis',
+            label: '资金分析',
+            children: <div style={{ height: '100%', overflow: 'auto' }}><FundAnalysisPanel /></div>,
           },
           {
             key: 'tasks',
