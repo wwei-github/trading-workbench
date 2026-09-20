@@ -74,6 +74,12 @@ class ScanStatusResponse(BaseModel):
     last_scan: Optional[ScanRecordOut] = None
     is_scanning: bool
     config: ScanConfig
+    # 交易运行状态（2026-09-20 顶部一览）：自动交易开关/当前环境/在跑单数
+    trading_enabled: bool = False
+    trading_testnet: bool = True
+    open_trades: int = 0          # 当前环境在跑单数（OPENED/TP1_HIT/TP2_HIT）
+    max_open_trades: int = 5
+    ai_analysis_enabled: bool = False
 
 
 # ===== AI 分析 =====

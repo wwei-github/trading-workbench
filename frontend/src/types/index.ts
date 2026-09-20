@@ -52,6 +52,12 @@ export interface ScanStatus {
   last_scan: ScanRecord | null;
   is_scanning: boolean;
   config: ScanConfig;
+  // 交易运行状态（2026-09-20 顶部一览）
+  trading_enabled: boolean;
+  trading_testnet: boolean;
+  open_trades: number;
+  max_open_trades: number;
+  ai_analysis_enabled: boolean;
 }
 
 export interface ListResponse<T> {
