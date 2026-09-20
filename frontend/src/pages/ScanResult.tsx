@@ -7,6 +7,9 @@ import ResultTable from '../components/ResultTable'
 import TaskList from '../components/TaskList'
 import LogsPanel from '../components/LogsPanel'
 import ScanConfigPanel from '../components/ScanConfigPanel'
+import TradingConfigPanel from '../components/TradingConfigPanel'
+import SystemConfigPanel from '../components/SystemConfigPanel'
+import EnvironmentTag from '../components/EnvironmentTag'
 import StrategyPromptPanel from '../components/StrategyPromptPanel'
 import WatchlistPanel from '../components/WatchlistPanel'
 import SearchPanel from '../components/SearchPanel'
@@ -191,6 +194,9 @@ export default function ScanResult() {
               </Tooltip>
               <ColorSchemeToggle />
               <ScanConfigPanel />
+              <TradingConfigPanel />
+              <SystemConfigPanel />
+              <EnvironmentTag />
               <Button
                 type="primary"
                 icon={<ThunderboltOutlined />}

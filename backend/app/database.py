@@ -145,11 +145,17 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS testnet BOOLEAN NOT NULL DEFAULT TRUE,
               ADD COLUMN IF NOT EXISTS ai_snapshot JSON
         """))
-        # 资金分析环境口径（2026-09-20）：划转记录标记来源环境，存量均为测试网账户流水
+        # 资金分析环境口径（2026-09-20）：划转记录标记来源环境，存量回填 TRUE = 测试网账户流水
         conn.execute(text("""
             ALTER TABLE account_transfers
               ADD COLUMN IF NOT EXISTS testnet BOOLEAN NOT NULL DEFAULT TRUE
         """))
+        # 交易环境/总开关运行时化（2026-09-20）：由 env 静态配置迁移进 DB，页面可改
+        conn.execute(text(
+            f"ALTER TABLE system_config "
+            f"ADD COLUMN IF NOT EXISTS trading_testnet BOOLEAN NOT NULL DEFAULT {settings.TRADING_TESTNET}, "
+            f"ADD COLUMN IF NOT EXISTS trading_enabled BOOLEAN NOT NULL DEFAULT {settings.TRADING_ENABLED}"
+        ))
         # 指标驱动筛选（2026-09-17）：扫描候选质量分（AI 配额排序键）与指标票数明细
         conn.execute(text("""
             ALTER TABLE scan_results
@@ -203,7 +209,8 @@ def _run_migrations(engine):
             " strategy_prompt_enabled, strategy_prompt, fib_enabled, "
             " max_open_trades, "
             " strategy_trend_follow_enabled, strategy_structure_break_enabled, "
-            " strategy_range_edge_enabled, trading_min_free_pct) "
+            " strategy_range_edge_enabled, trading_min_free_pct, "
+            " trading_testnet, trading_enabled) "
             "VALUES (1, false, :kline_interval, :kline_window, "
             " :breakout_threshold, :r_squared_threshold, :repeat_window_hours, "
             " :swing_order, :pullback_tolerance, '系统运行时配置', "
@@ -211,7 +218,8 @@ def _run_migrations(engine):
             " false, '', false, "
             " 5, "
             " true, false, "
-            " true, 0.5) "
+            " true, 0.5, "
+            " :trading_testnet, :trading_enabled) "
             "ON CONFLICT (id) DO NOTHING"
         ),
             {
@@ -222,6 +230,8 @@ def _run_migrations(engine):
                 "repeat_window_hours": settings.REPEAT_WINDOW_HOURS,
                 "swing_order": settings.SWING_ORDER,
                 "pullback_tolerance": settings.PULLBACK_TOLERANCE,
+                "trading_testnet": settings.TRADING_TESTNET,
+                "trading_enabled": settings.TRADING_ENABLED,
             },
         )
 

@@ -18,6 +18,7 @@ from app.celery_app import celery_app
 from app.config import settings
 from app.database import SessionLocal
 from app.models.scan import AIAnalysis
+from app.models.system_config import SystemConfig
 from app.services.binance_trader import BinanceTrader
 from app.services.task_log import close_task, open_task
 from app.services.trade_engine import (
@@ -72,13 +73,18 @@ def _mark_analysis_block(analysis_id: str, reason: str) -> None:
 def run_auto_trade_task():
     task_id = open_task(task_type="trade", task_name="结算巡检", trigger="scheduled")
     try:
-        if not settings.TRADING_ENABLED:
-            logger.info("自动交易未开启（TRADING_ENABLED=false），跳过")
-            close_task(task_id, "skipped", summary="未开启自动交易（TRADING_ENABLED=false）")
-            return
-        trader = BinanceTrader()
+        db = SessionLocal()
+        try:
+            cfg = db.get(SystemConfig, 1)
+            env_testnet = bool(cfg.trading_testnet) if cfg else settings.TRADING_TESTNET
+        finally:
+            db.close()
+        # 结算巡检不依赖自动交易总开关：关掉开关（停开新单）后，存量在跑单的
+        # TP/SL 推进、止损补挂仍须继续，否则裸仓无保护
+        trader = BinanceTrader(env_testnet)
         if not trader.configured:
-            logger.warning("自动交易缺少币安 API 凭据（BINANCE_API_KEY/BINANCE_SECRET_KEY），跳过")
+            logger.warning("结算巡检缺少币安 API 凭据（%s 环境未配置 key），跳过",
+                           "testnet" if env_testnet else "正式网")
             close_task(task_id, "skipped", summary="缺少币安 API 凭据，跳过")
             return
 
@@ -97,12 +103,12 @@ def run_auto_trade_task():
             _release_open_lock(r, ident)
 
         # 资金划转同步（账户级读操作，无需开仓锁，放在锁外不延长巡检持锁时间；
-        # 失败只记日志不影响本轮结算结果）
+        # 两个环境各自同步；失败只记日志不影响本轮结算结果）
         transfers = 0
         try:
             db = SessionLocal()
             try:
-                transfers = sync_account_transfers(db, trader)
+                transfers = sync_account_transfers(db)
             finally:
                 db.close()
         except Exception:
@@ -128,10 +134,17 @@ def open_trade_for_analysis(analysis_id: str):
     闸门之外的丢败（等锁超时 / 执行异常，2026-09-15 起）也落
     ai_analyses.open_block_reason，不留"既没开单也没原因"的悬案。
     """
-    if not settings.TRADING_ENABLED:
-        logger.info("即时开仓跳过：TRADING_ENABLED=false（analysis=%s）", analysis_id)
-        return
-    trader = BinanceTrader()
+    # 开关/环境以 DB 为运行时权威（env 仅首次建行注入初始值）
+    db = SessionLocal()
+    try:
+        cfg = db.get(SystemConfig, 1)
+        if cfg is None or not cfg.trading_enabled:
+            logger.info("即时开仓跳过：自动交易总开关关闭（analysis=%s）", analysis_id)
+            return
+        env_testnet = bool(cfg.trading_testnet)
+    finally:
+        db.close()
+    trader = BinanceTrader(env_testnet)
     if not trader.configured:
         logger.warning("即时开仓跳过：缺少币安 API 凭据（analysis=%s）", analysis_id)
         return

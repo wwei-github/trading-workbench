@@ -36,6 +36,13 @@ class SystemConfig(Base):
     # 自动交易（docs/06）：同时在跑单子上限（页面可改）
     max_open_trades: Mapped[int] = mapped_column(Integer, default=5)
 
+    # 运行时环境与总开关（2026-09-20 由 env 静态配置迁移而来，页面可改、任务即时生效）：
+    # trading_testnet：当前交易环境（true=测试网 false=正式网），开仓/扫描宇宙/复核用；
+    #                  存量单按记录自带 testnet 标记结算，切环境不影响在跑单
+    # trading_enabled：自动交易总开关（关=定时/即时开仓全部跳过，结算巡检照常）
+    trading_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
+    trading_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # 余额风控：开仓最低可用余额占钱包余额比例（0~1，页面可改）。
     # 2026-09-15 由固定 70% 规则改为默认 50% 可配置。开单类型策略开关已移除
     # （2026-09-15 拍板：trade_type 仅作记录不再拦截开仓；DB 历史列保留不删）

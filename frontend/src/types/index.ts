@@ -162,6 +162,11 @@ export interface SystemConfig {
   min_adapt_leverage?: number | null; // 动态杠杆下限（整数倍数；null=默认 8，宽止损单限制层）
   pullback_market_pct?: number | null; // 入场偏离容差（比例 0.01=1%；null=默认；待回踩距离 ≤ 容差时市价入场）
   max_slippage_pct?: number | null; // 开仓滑点实测上限（比例 0.003=0.3%；null=默认；按本单数量走订单簿计算）
+  // 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面「系统配置」弹窗可改）
+  trading_testnet?: boolean; // 当前交易环境：true=测试网 false=正式网
+  trading_enabled?: boolean; // 自动交易总开关（关=停开新单，结算巡检照常）
+  binance_key_live?: boolean; // 正式网 API key 已配置（只读状态，不返回 key）
+  binance_key_testnet?: boolean; // 测试网 API key 已配置（未配置时回落正式网 key）
 }
 
 // ===== 币种黑名单（手动/自动）=====

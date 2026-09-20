@@ -188,12 +188,13 @@ class Scanner:
             )
 
             # C0 下单环境可交易过滤（2026-09-19，ARX 案例）：数据源永远走正式网
-            # （ARXUSDT 有 K线、AI 照常分析），下单环境（TRADING_TESTNET 决定）
-            # 未上架 → 开单 -1121 Invalid symbol 白白烧 AI 配额 + FAILED 记录。
-            # 在扫描宇宙阶段用下单环境 exchangeInfo 剔除；空表（拉取失败）放行不阻断
+            # （ARXUSDT 有 K线、AI 照常分析），下单环境（system_config.trading_testnet
+            # 决定，2026-09-20 起运行时可切）未上架 → 开单 -1121 Invalid symbol
+            # 白白烧 AI 配额 + FAILED 记录。在扫描宇宙阶段用下单环境 exchangeInfo
+            # 剔除；空表（拉取失败）放行不阻断
             # （_bt 实例化必须在 C0 之前——此前放在 C 段导致 UnboundLocalError，
             #   04:02/05:02 两轮扫描全崩的根因）
-            _bt = BinanceTrader()
+            _bt = BinanceTrader(bool(cfg.trading_testnet))
             listed = _bt.listed_symbols()
             if listed:
                 before = len(symbols_data)

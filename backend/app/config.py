@@ -57,10 +57,14 @@ class Settings(BaseSettings):
     MIN_VOLUME_24H: float = 3_000_000  # 扫描候选池 24h 成交额下限（USDT），低于此不进扫描
 
     # 自动交易（docs/06，币安 USDT-M 合约）
+    # 双环境凭据：正式网 = BINANCE_API_KEY/SECRET_KEY；测试网 = BINANCE_TESTNET_API_KEY/SECRET_KEY
+    # （测试网未单独配置时回落正式网 key，兼容只有一组 key 的部署）
     BINANCE_API_KEY: str = ""
     BINANCE_SECRET_KEY: str = ""
-    TRADING_TESTNET: bool = True      # 首期走 testnet 验证链路
-    TRADING_ENABLED: bool = False     # 自动交易总开关
+    BINANCE_TESTNET_API_KEY: str = ""
+    BINANCE_TESTNET_SECRET_KEY: str = ""
+    TRADING_TESTNET: bool = True      # 初始交易环境（运行时以 system_config.trading_testnet 为准，此值仅首次建行注入）
+    TRADING_ENABLED: bool = False     # 自动交易总开关初始值（运行时以 system_config.trading_enabled 为准）
     TRADING_MIN_RECOMMENDATION: float = 60.0  # 开单推荐度门槛
     TRADING_RISK_PCT: float = 3.0     # 止损金额占风险基数比例（%）
     TRADING_CAPITAL_TIERS: str = "100,200,500,1000,2000,5000,10000"  # 风险基数分档（向下落档）

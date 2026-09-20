@@ -358,8 +358,14 @@ def _dispatch_immediate_open(a: AIAnalysis) -> None:
         return
     # 待回踩单照常分发（2026-09-18）：回踩距离 ≤ pullback_market_pct 容差时
     # 市价入场、超容差在 _attempt_open 偏离闸门拦下——不再一刀切不下单
-    if not settings.TRADING_ENABLED:
-        return
+    # 开关以 DB 为运行时权威（2026-09-20 由 env 迁移进 system_config）
+    db = SessionLocal()
+    try:
+        cfg = db.get(SystemConfig, 1)
+        if cfg is None or not cfg.trading_enabled:
+            return
+    finally:
+        db.close()
     celery_app.send_task(
         "app.tasks.trade_tasks.open_trade_for_analysis", args=[str(a.id)]
     )

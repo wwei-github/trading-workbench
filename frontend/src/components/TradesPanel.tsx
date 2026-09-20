@@ -241,8 +241,22 @@ export default function TradesPanel() {
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
-  // 环境切换（实盘/测试网，默认实盘）：列表过滤 + 概览统计与资金分析页同源（docs/14 口径）
-  const [scope, setScope] = useState<'live' | 'testnet'>('live')
+  // 环境切换（实盘/测试网）：默认跟随当前交易环境（系统配置弹窗可切，2026-09-20）；
+  // 配置未加载前先按测试网（与后端 TRADING_TESTNET 初始值一致），拉到配置后校正
+  const { aiConfig, fetchConfig } = useScanStore()
+  const defaultScope: 'live' | 'testnet' = (aiConfig?.trading_testnet ?? true) ? 'testnet' : 'live'
+  const [scope, setScope] = useState<'live' | 'testnet'>('testnet')
+  const [scopeInit, setScopeInit] = useState(false)
+  useEffect(() => {
+    if (!aiConfig) {
+      fetchConfig()
+      return
+    }
+    if (!scopeInit) {
+      setScope(defaultScope)
+      setScopeInit(true)
+    }
+  }, [aiConfig, fetchConfig, scopeInit, defaultScope])
   // 概览汇总（与资金分析同源）：closed/wins/win_rate/net_pnl/avg_win_r 来自 analytics 接口
   const [summary, setSummary] = useState<FundAnalytics['summary'] | null>(null)
 

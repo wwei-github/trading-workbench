@@ -192,6 +192,13 @@ class SystemConfigOut(BaseModel):
     max_open_trades: int = 5
     trading_min_free_pct: float = 0.5  # 开仓最低可用余额占钱包比例（0~1；2026-09-15 由固定 70% 改为可配置）
 
+    # 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面可改）
+    trading_testnet: bool = True
+    trading_enabled: bool = False
+    # 双环境凭据配置状态（只读，不返回 key 本身）
+    binance_key_live: bool = False      # 正式网 key 已配置
+    binance_key_testnet: bool = False   # 测试网 key 已配置（未配时回落正式网 key = 与 live 同值）
+
     # 规则补丁参数（docs/12 §10，比例口径 0.04=4%；NULL=默认/不限制）
     max_stop_pct: Optional[float] = None
     liq_gate_buffer: Optional[float] = None
@@ -227,6 +234,10 @@ class SystemConfigUpdate(BaseModel):
     # 自动交易（docs/06）
     max_open_trades: Optional[int] = None
     trading_min_free_pct: Optional[float] = None  # 0~1，开仓最低可用余额占比
+
+    # 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面可改）
+    trading_testnet: Optional[bool] = None
+    trading_enabled: Optional[bool] = None
 
     # 规则补丁参数（比例口径；传 null 恢复默认）
     max_stop_pct: Optional[float] = None

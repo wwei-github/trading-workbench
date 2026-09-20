@@ -58,11 +58,27 @@ function isNegBucket(bucket: string): boolean {
 
 /** 资金分析页（docs/14） */
 export default function FundAnalysisPanel() {
-  const [scope, setScope] = useState<Scope>('live')
+  // 默认 scope 跟随当前交易环境（系统配置弹窗可切，2026-09-20）；
+  // 配置未加载前先按测试网（与后端 TRADING_TESTNET 初始值一致），拉到配置后校正
+  const { aiConfig, fetchConfig } = useScanStore()
+  const defaultScope: Scope = (aiConfig?.trading_testnet ?? true) ? 'testnet' : 'live'
+  const [scope, setScope] = useState<Scope>('testnet')
+  const [scopeInit, setScopeInit] = useState(false)
   const [range, setRange] = useState<RangeKey>('all')
   const [dates, setDates] = useState<[Dayjs, Dayjs] | null>(null)
   const [data, setData] = useState<FundAnalytics | null>(null)
   const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!aiConfig) {
+      fetchConfig()
+      return
+    }
+    if (!scopeInit) {
+      setScope(defaultScope)
+      setScopeInit(true)
+    }
+  }, [aiConfig, fetchConfig, scopeInit, defaultScope])
 
   const colorScheme = useScanStore((s) => s.colorScheme)
   const up = SCHEME_UP_DOWN[colorScheme].up

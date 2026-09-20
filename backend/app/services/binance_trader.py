@@ -26,27 +26,35 @@ class BinanceTradeError(Exception):
     """币安交易接口错误（含 HTTP 非 2xx 与返回码错误）"""
 
 
-# 逐 symbol 的交易规则缓存（进程内）：stepSize/tickSize/minNotional/minQty
-_filters_cache: dict[str, dict] = {}
-# 逐 symbol 的杠杆分档缓存（进程内）：leverageBracket 响应（MMR 按名义档位取）
-_bracket_cache: dict[str, list] = {}
+# 逐 symbol 的交易规则缓存（进程内，按环境分桶）：stepSize/tickSize/minNotional/minQty
+_filters_cache: dict[tuple[bool, str], dict] = {}
+# 逐 symbol 的杠杆分档缓存（进程内，按环境分桶）：leverageBracket 响应（MMR 按名义档位取）
+_bracket_cache: dict[tuple[bool, str], list] = {}
 # 全市场第 1 档风险档位缓存（扫描候选池过滤，24h 刷新）
 _risk_tier_cache: dict[str, tuple[float, int]] = {}
 _risk_tier_cached_at: float = 0.0
-# 下单环境可交易合约集合缓存（扫描宇宙过滤，24h 刷新）：ARX 案例——数据源是
-# 正式网（ARXUSDT 存在、AI 分析照常），测试网未上架 → 下单 -1121 Invalid symbol
-_listed_cache: set[str] = set()
-_listed_cached_at: float = 0.0
+# 下单环境可交易合约集合缓存（扫描宇宙过滤，24h 刷新，按环境分桶）：
+# ARX 案例——数据源是正式网（ARXUSDT 存在、AI 分析照常），测试网未上架
+# → 下单 -1121 Invalid symbol
+_listed_cache: dict[bool, tuple[set, float]] = {}
 
 
 class BinanceTrader:
-    def __init__(self):
-        self.key = settings.BINANCE_API_KEY
-        self.secret = settings.BINANCE_SECRET_KEY
-        self.base = _TEST_BASE if settings.TRADING_TESTNET else _PROD_BASE
+    def __init__(self, testnet: Optional[bool] = None):
+        """testnet=None=当前交易环境（system_config.trading_testnet 的进程内快照，
+        由调用方传入具体环境时按环境取凭据）。切环境后新实例即用新 key/base。"""
+        self.testnet = settings.TRADING_TESTNET if testnet is None else testnet
+        if self.testnet:
+            # 测试网 key 未单独配置时回落正式网 key（兼容单组 key 部署）
+            self.key = settings.BINANCE_TESTNET_API_KEY or settings.BINANCE_API_KEY
+            self.secret = settings.BINANCE_TESTNET_SECRET_KEY or settings.BINANCE_SECRET_KEY
+            self.base = _TEST_BASE
+        else:
+            self.key = settings.BINANCE_API_KEY
+            self.secret = settings.BINANCE_SECRET_KEY
+            self.base = _PROD_BASE
         self._client = httpx.Client(timeout=15)
-        if settings.TRADING_TESTNET:
-            logger.info("BinanceTrader: testnet 模式 (%s)", self.base)
+        logger.info("BinanceTrader: %s 模式 (%s)", "testnet" if self.testnet else "正式网", self.base)
 
     # ── 基础请求 ──────────────────────────────────────────────
 
@@ -97,9 +105,10 @@ class BinanceTrader:
     # ── 交易规则与精度 ────────────────────────────────────────
 
     def filters(self, symbol: str) -> dict:
-        """交易规则（进程内缓存）：{step, tick, min_qty, min_notional}"""
-        if symbol in _filters_cache:
-            return _filters_cache[symbol]
+        """交易规则（进程内缓存，按环境分桶）：{step, tick, min_qty, min_notional}"""
+        ck = (self.testnet, symbol)
+        if ck in _filters_cache:
+            return _filters_cache[ck]
         info = self._req("GET", "/fapi/v1/exchangeInfo")
         for s in info.get("symbols", []):
             if s.get("symbol") != symbol:
@@ -118,7 +127,7 @@ class BinanceTrader:
                     f["min_notional"] = float(rule["notional"])
                 elif ft == "PRICE_FILTER":
                     f["tick"] = float(rule["tickSize"])
-            _filters_cache[symbol] = f
+            _filters_cache[ck] = f
             return f
         raise BinanceTradeError(f"exchangeInfo 无 {symbol}（testnet 可能未上架该合约）")
 
@@ -163,10 +172,11 @@ class BinanceTrader:
         名义超最大档 notionalCap 同样拒。
         """
         try:
-            rows = _bracket_cache.get(symbol)
+            ck = (self.testnet, symbol)
+            rows = _bracket_cache.get(ck)
             if rows is None:
                 rows = self._req("GET", "/fapi/v1/leverageBracket", {"symbol": symbol})
-                _bracket_cache[symbol] = rows
+                _bracket_cache[ck] = rows
             brackets = rows[0]["brackets"]  # 按档位升序
             chosen = brackets[-1]  # notional 超所有档时落最大档（调用方按 cap 拦截）
             for b in brackets:
@@ -261,16 +271,15 @@ class BinanceTrader:
             return _risk_tier_cache or {}
 
     def listed_symbols(self) -> set[str]:
-        """当前下单环境（TRADING_TESTNET 决定 base）可交易的合约集合（扫描宇宙过滤）。
+        """当前实例环境可交易的合约集合（扫描宇宙过滤）。
 
-        exchangeInfo 一次拉全市场，进程内缓存 24h。数据源永远走正式网而下单环境
-        由配置决定：切换 TRADING_TESTNET 后重启容器即随新环境重新校验（切环境
-        本来就要重启）。失败返回空 set（调用方放行，不阻断扫描）。
+        exchangeInfo 一次拉全市场，进程内缓存 24h（按环境分桶：运行时切环境
+        后新实例走新 base，缓存互不污染）。失败返回空 set（调用方放行，不阻断扫描）。
         """
-        global _listed_cache, _listed_cached_at
         now = time.time()
-        if _listed_cache and now - _listed_cached_at < 86400:
-            return _listed_cache
+        cached = _listed_cache.get(self.testnet)
+        if cached and now - cached[1] < 86400:
+            return cached[0]
         try:
             r = self._req("GET", "/fapi/v1/exchangeInfo", {})
             out = {
@@ -279,12 +288,11 @@ class BinanceTrader:
                 if s.get("status") == "TRADING" and s.get("contractType") == "PERPETUAL"
             }
             if out:  # 拉到空列表视为异常，保留旧缓存
-                _listed_cache = out
-                _listed_cached_at = now
-            return _listed_cache
+                _listed_cache[self.testnet] = (out, now)
+            return _listed_cache.get(self.testnet, (out, 0))[0]
         except Exception as e:
             logger.warning("listed_symbols 拉取失败（扫描侧放行）: %s", e)
-            return _listed_cache
+            return (cached or (set(), 0))[0]
 
     # ── 杠杆 / 保证金模式 ─────────────────────────────────────
 

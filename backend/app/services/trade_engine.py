@@ -453,7 +453,7 @@ def _attempt_open(
                 scan_result_id=a.scan_result_id,
                 ai_analysis_id=a.id,
                 recommendation=float(a.recommendation) if a.recommendation is not None else None,
-                testnet=settings.TRADING_TESTNET,
+                testnet=trader.testnet,
                 ai_snapshot=_ai_snapshot(a),
                 entry_price=fill_price,
                 qty=qty,
@@ -522,7 +522,7 @@ def _attempt_open(
                     rec = TradeRecord(
                         symbol=symbol, direction=direction, ai_analysis_id=a.id,
                         recommendation=float(a.recommendation) if a.recommendation is not None else None,
-                        testnet=settings.TRADING_TESTNET,
+                        testnet=trader.testnet,
                         status="FAILED", raw={"fail_reason": str(e)[:200]},
                     )
                     db.add(rec)
@@ -848,89 +848,115 @@ def _sweep_orphan_algo_orders(
     return cleaned
 
 
-def sync_account_transfers(db: Session, trader: BinanceTrader) -> int:
+def sync_account_transfers(db: Session) -> int:
     """同步合约账户资金划转记录（income TRANSFER）到 account_transfers 表。
 
-    增量拉取：从库内最新 transfer_time 前移 60s 重叠窗口开始（首次从 7 天前起），
-    tran_id 唯一约束 + on_conflict_do_nothing 幂等去重。返回新插入条数。
-    按当前环境（TRADING_TESTNET）过滤窗口基准并写入 testnet 标记。
+    两个环境各自同步（2026-09-20 运行时切环境后两个账户都有真实流水，划转按
+    testnet 标记分环境落库）；key 未配置的环境跳过。增量拉取：从该环境库内最新
+    transfer_time 前移 60s 重叠窗口开始（首次从 7 天前起），tran_id 唯一约束 +
+    on_conflict_do_nothing 幂等去重。返回新插入条数（两环境合计）。
     """
-    last = db.execute(
-        select(AccountTransfer.transfer_time)
-        .where(AccountTransfer.testnet == settings.TRADING_TESTNET)
-        .order_by(AccountTransfer.transfer_time.desc())
-        .limit(1)
-    ).scalar()
-    since = last - timedelta(seconds=60) if last else datetime.utcnow() - timedelta(days=7)
-    since_ms = int(since.replace(tzinfo=timezone.utc).timestamp() * 1000)
-    rows = trader.transfer_rows(since_ms)
     inserted = 0
-    for row in rows:
+    for t in (True, False):
+        trader = BinanceTrader(t)
+        if not trader.configured:
+            continue
+        last = db.execute(
+            select(AccountTransfer.transfer_time)
+            .where(AccountTransfer.testnet == t)
+            .order_by(AccountTransfer.transfer_time.desc())
+            .limit(1)
+        ).scalar()
+        since = last - timedelta(seconds=60) if last else datetime.utcnow() - timedelta(days=7)
+        since_ms = int(since.replace(tzinfo=timezone.utc).timestamp() * 1000)
         try:
-            amount = float(row.get("income") or 0)
-        except (TypeError, ValueError):
+            rows = trader.transfer_rows(since_ms)
+        except Exception as e:
+            logger.warning("划转同步失败（%s）: %s", "testnet" if t else "正式网", e)
             continue
-        if amount == 0:
-            continue
-        t_ms = int(row.get("time") or 0)
-        if t_ms <= 0:
-            continue
-        # 测试网 TRANSFER 的 tranId 恒为 0（注意 0 是 falsy，不能用 `or` 兜底）：
-        # tranId 有效时用原值，否则用 时间+资产+金额 组合键做幂等去重
-        raw_tran = row.get("tranId")
-        tran_id = (
-            str(raw_tran)
-            if raw_tran not in (None, "", 0, "0")
-            else f"{t_ms}:{row.get('asset') or 'USDT'}:{row.get('income')}"
-        )
-        stmt = pg_insert(AccountTransfer).values(
-            tran_id=tran_id,
-            asset=row.get("asset") or "USDT",
-            amount=amount,
-            transfer_time=datetime.utcfromtimestamp(t_ms / 1000),
-            testnet=settings.TRADING_TESTNET,
-            raw=row,
-        ).on_conflict_do_nothing(index_elements=["tran_id"])
-        res = db.execute(stmt)
-        inserted += res.rowcount or 0
-    db.commit()
+        for row in rows:
+            try:
+                amount = float(row.get("income") or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount == 0:
+                continue
+            t_ms = int(row.get("time") or 0)
+            if t_ms <= 0:
+                continue
+            # 测试网 TRANSFER 的 tranId 恒为 0（注意 0 是 falsy，不能用 `or` 兜底）：
+            # tranId 有效时用原值，否则用 时间+资产+金额 组合键做幂等去重
+            raw_tran = row.get("tranId")
+            tran_id = (
+                str(raw_tran)
+                if raw_tran not in (None, "", 0, "0")
+                else f"{t_ms}:{row.get('asset') or 'USDT'}:{row.get('income')}"
+            )
+            stmt = pg_insert(AccountTransfer).values(
+                tran_id=tran_id,
+                asset=row.get("asset") or "USDT",
+                amount=amount,
+                transfer_time=datetime.utcfromtimestamp(t_ms / 1000),
+                testnet=t,
+                raw=row,
+            ).on_conflict_do_nothing(index_elements=["tran_id"])
+            res = db.execute(stmt)
+            inserted += res.rowcount or 0
+        db.commit()
     return inserted
 
 
 def settle_trades(db: Session, trader: BinanceTrader) -> int:
-    """对非终态交易：以交易所为准推断事件、跟进止损、结算收益。返回处理笔数"""
+    """对非终态交易：以交易所为准推断事件、跟进止损、结算收益。返回处理笔数。
+
+    每条记录按自带 testnet 标记选对应环境账户结算（2026-09-20 运行时切环境后，
+    存量在跑单仍走原环境正确结算；trader 参数为当前环境实例，作为同环境复用）。
+    """
     cfg = db.get(SystemConfig, 1)
     interval = cfg.kline_interval if cfg else "1h"
     records = db.execute(
         select(TradeRecord).where(TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")))
     ).scalars().all()
-    # 在跑符号集（仅本网）：孤儿清扫时豁免这些 symbol 的在挂委托
-    active_syms = {
-        r.symbol for r in records if r.testnet == settings.TRADING_TESTNET
-    }
-    positions = trader.positions()
+
+    traders: dict[bool, BinanceTrader] = {}
+
+    def _env_trader(t: bool) -> BinanceTrader:
+        if t not in traders:
+            traders[t] = trader if trader.testnet == t else BinanceTrader(t)
+        return traders[t]
+
+    env_positions: dict[bool, dict] = {}
+    for t in {r.testnet for r in records}:
+        rt = _env_trader(t)
+        env_positions[t] = rt.positions()
+
+    def _active_syms(t: bool) -> set:
+        return {r.symbol for r in records if r.testnet == t}
+
     if not records:
-        _sweep_orphan_algo_orders(trader, active_syms, positions)
+        _sweep_orphan_algo_orders(trader, set(), trader.positions())
         return 0
     handled = 0
 
     for rec in records:
         try:
+            rt = _env_trader(rec.testnet)
+            pos_map = env_positions.get(rec.testnet) or {}
             qty = float(rec.qty or 0)
             raw = rec.raw or {}
-            pos = positions.get(rec.symbol)
+            pos = pos_map.get(rec.symbol)
             amt = abs(pos["amt"]) if pos else 0.0
-            open_ids = trader.open_order_ids(rec.symbol)
+            open_ids = rt.open_order_ids(rec.symbol)
             tp1_gone = raw.get("tp1_order_id") and int(raw["tp1_order_id"]) not in open_ids
             tp2_gone = raw.get("tp2_order_id") and int(raw["tp2_order_id"]) not in open_ids
 
             # 仓位归零 → 结算（净盈亏 = 已实现盈亏 − 手续费 − 资金费 − 强平清算，正/负值）
             if qty <= 0 or amt < qty * 0.05:
                 # 清理残留挂单（SL 先成交时 TP reduceOnly 单会一直挂着）
-                trader.cancel_all_algo(rec.symbol)
+                rt.cancel_all_algo(rec.symbol)
                 # 起点回拨 5s：开仓手续费 income 的时间戳可能略早于 opened_at（同 _record_realized）
                 since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000) - 5_000
-                rows = trader.income_rows(rec.symbol, since_ms)
+                rows = rt.income_rows(rec.symbol, since_ms)
                 # 强平识别：逐仓保证金亏光时交易所强制平仓并撤销全部挂单（含 TP），
                 # 会产生 INSURANCE_CLEAR 清算记录——此时 TP1 挂单消失≠TP1 成交，
                 # 不能按 tp1_gone 误判为 tp1_then_sl
@@ -950,7 +976,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                 )
                 rec.fee_total = round(fee_total, 6)
                 rec.funding_total = round(funding_total, 6)
-                pnl = round(trader.sum_income(rows, trader.INCOME_KEEP), 6)
+                pnl = round(rt.sum_income(rows, rt.INCOME_KEEP), 6)
                 rec.realized_pnl = pnl
                 rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
                 if insurance_clear != 0:
@@ -991,21 +1017,21 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
 
             ratio = amt / qty
             # 止损挂单存活巡检：SL 单被撤/丢失时补挂（裸仓保护，docs/07 §8-A2）
-            _rehang_lost_sl(db, trader, rec, open_ids)
+            _rehang_lost_sl(db, rt, rec, open_ids)
             if rec.status == "OPENED":
                 if tp2_gone and ratio <= 0.35:
                     # 同一小时两档止盈都成交：从交易所成交明细按时间序+数量精确拆分
                     # 各档价差盈亏（与常规路径的 _tranche_pnl 书签口径同义，但两档同轮
                     # 成交无法用书签差值区分；TP 条件单触发后换新单号，无法按单号归集）。
                     # 拆分失败回退旧口径——两档合计只记在 TP2 上，TP1 不显示金额
-                    realized = _record_realized(db, trader, rec)
+                    realized = _record_realized(db, rt, rec)
                     qty_tp1, qty_tp2 = float(raw.get("qty_tp1") or 0), float(raw.get("qty_tp2") or 0)
                     tranche1 = tranche2 = None
                     if qty_tp1 > 0 and qty_tp2 > 0:
                         try:
                             since_ms = int(rec.opened_at.replace(
                                 tzinfo=timezone.utc).timestamp() * 1000) - 5_000
-                            tranche1, tranche2 = trader.fill_tranche_pnls(
+                            tranche1, tranche2 = rt.fill_tranche_pnls(
                                 rec.symbol, since_ms, qty_tp1, qty_tp2)
                         except Exception as e:
                             logger.warning("拆分双档止盈金额失败 %s: %s（回退合计口径）",
@@ -1023,53 +1049,54 @@ def settle_trades(db: Session, trader: BinanceTrader) -> int:
                         tp2_detail["realized_pnl"] = realized  # 两档累计（旧口径）
                     _add_event(db, rec, "TP2_FILL", tp2_detail)
                     rec.status = "TP2_HIT"
-                    _move_sl_trailing(db, trader, rec, interval, open_ids)
+                    _move_sl_trailing(db, rt, rec, interval, open_ids)
                     db.commit()
                     handled += 1
                 elif tp1_gone and ratio <= 0.75:
-                    realized = _record_realized(db, trader, rec)
-                    tranche = _tranche_pnl(trader, rec, raw)
+                    realized = _record_realized(db, rt, rec)
+                    tranche = _tranche_pnl(rt, rec, raw)
                     _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
                                                      "pnl": tranche,
                                                      "cum_pnl": realized})
                     rec.status = "TP1_HIT"
-                    _move_sl_breakeven(db, trader, rec, open_ids)  # 用户规则：TP1 后止损移至成本价
+                    _move_sl_breakeven(db, rt, rec, open_ids)  # 用户规则：TP1 后止损移至成本价
                     if not rec.tp2:
                         # 无 TP2：TP1 止盈 75% 后剩余仓即启用跟进止损（与 TP2 后同机制）
-                        _move_sl_trailing(db, trader, rec, interval, open_ids)
+                        _move_sl_trailing(db, rt, rec, interval, open_ids)
                     db.commit()
                     handled += 1
             elif rec.status == "TP1_HIT":
                 if tp2_gone and ratio <= 0.35:
-                    realized = _record_realized(db, trader, rec)
-                    tranche = _tranche_pnl(trader, rec, raw)
+                    realized = _record_realized(db, rt, rec)
+                    tranche = _tranche_pnl(rt, rec, raw)
                     _add_event(db, rec, "TP2_FILL", {"qty": raw.get("qty_tp2"),
                                                      "pnl": tranche,
                                                      "cum_pnl": realized})
                     rec.status = "TP2_HIT"
-                    _move_sl_trailing(db, trader, rec, interval, open_ids)
+                    _move_sl_trailing(db, rt, rec, interval, open_ids)
                     db.commit()
                     handled += 1
                 else:
                     if rec.realized_pnl is None:
                         # 回填：部署前已升到 TP1_HIT 的旧单，TP1_FILL 事件未记已止盈金额
-                        _record_realized(db, trader, rec)
+                        _record_realized(db, rt, rec)
                     # 保本兜底（幂等）：部署前已处于 TP1_HIT 的旧单、或上次保本移动失败的补偿
-                    _move_sl_breakeven(db, trader, rec, open_ids)
+                    _move_sl_breakeven(db, rt, rec, open_ids)
                     if not rec.tp2:
                         # 无 TP2：与 TP2 后同规则，每次巡检跟进止损（只收紧不放松）
-                        _move_sl_trailing(db, trader, rec, interval, open_ids)
+                        _move_sl_trailing(db, rt, rec, interval, open_ids)
                     db.commit()
                     handled += 1
             elif rec.status == "TP2_HIT":
                 # 每小时跟进止损（只收紧不放松）
-                _move_sl_trailing(db, trader, rec, interval, open_ids)
+                _move_sl_trailing(db, rt, rec, interval, open_ids)
                 db.commit()
                 handled += 1
         except Exception as e:
             db.rollback()
             logger.warning("结算 %s 失败: %s", rec.symbol, e)
             continue
-    # ③ 孤儿条件单清扫（每轮兜底：无持仓、无在跑记录的在挂委托一律撤销）
-    _sweep_orphan_algo_orders(trader, active_syms, positions)
+    # ③ 孤儿条件单清扫（每轮兜底：无持仓、无在跑记录的在挂委托一律撤销，按环境执行）
+    for t, rt in traders.items():
+        _sweep_orphan_algo_orders(rt, _active_syms(t), env_positions.get(t) or {})
     return handled

@@ -16,6 +16,7 @@ from app.celery_app import celery_app
 from app.config import settings
 from app.database import SessionLocal
 from app.models.scan import AIAnalysis, ScanResult, TradeReview
+from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.exchange_pool import ExchangePool
 from app.services.task_log import close_task, open_task
@@ -161,7 +162,6 @@ def run_ai_attribution(db, pool, trader, trades: list) -> list[dict]:
 
     返回逐笔结果 [{symbol, ok, tags/lesson/error}]。
     """
-    from app.models.system_config import SystemConfig
     from app.services.ai_attribution import _interval_ms, attribute_trade
 
     cfg = db.get(SystemConfig, 1)
@@ -206,10 +206,12 @@ def run_ai_attribution_task():
     trader = None
     task_id = ""
     try:
-        # 费用回补先行（归因事实包需要 fee/funding）
+        # 费用回补先行（归因事实包需要 fee/funding）；环境以 DB 为运行时权威
         from app.services.binance_trader import BinanceTrader
         from app.services.actual_review import backfill_costs
-        trader = BinanceTrader()
+        cfg = db.get(SystemConfig, 1)
+        env_testnet = bool(cfg.trading_testnet) if cfg else settings.TRADING_TESTNET
+        trader = BinanceTrader(env_testnet)
         backfill_costs(db, trader, limit=ATTRIBUTION_BATCH)
 
         trades = db.execute(
@@ -218,7 +220,7 @@ def run_ai_attribution_task():
                 TradeRecord.status == "CLOSED",
                 TradeRecord.exit_reason.isnot(None),
                 TradeRecord.attributed_at.is_(None),
-                TradeRecord.testnet == settings.TRADING_TESTNET,
+                TradeRecord.testnet == env_testnet,
             )
             .order_by(TradeRecord.closed_at.desc())
             .limit(ATTRIBUTION_BATCH)

@@ -341,6 +341,12 @@ def get_system_config(db: Session = Depends(get_db)):
         fib_enabled=cfg.fib_enabled,
         max_open_trades=cfg.max_open_trades,
         trading_min_free_pct=float(cfg.trading_min_free_pct),
+        trading_testnet=cfg.trading_testnet,
+        trading_enabled=cfg.trading_enabled,
+        binance_key_live=bool(settings.BINANCE_API_KEY and settings.BINANCE_SECRET_KEY),
+        binance_key_testnet=bool(
+            settings.BINANCE_TESTNET_API_KEY and settings.BINANCE_TESTNET_SECRET_KEY
+        ) or bool(settings.BINANCE_API_KEY and settings.BINANCE_SECRET_KEY),
     )
 
 
@@ -396,6 +402,11 @@ def update_system_config(
         if not (0 <= body.trading_min_free_pct <= 1):
             raise HTTPException(status_code=400, detail="trading_min_free_pct 需在 0~1 之间")
         cfg.trading_min_free_pct = body.trading_min_free_pct
+    # 运行时环境与总开关（任务级即时生效：celery 任务每轮读 DB）
+    if body.trading_testnet is not None:
+        cfg.trading_testnet = body.trading_testnet
+    if body.trading_enabled is not None:
+        cfg.trading_enabled = body.trading_enabled
     # 规则补丁参数（docs/12 §10）：显式传 null = 恢复默认（用 model_fields_set 区分未传）
     if "max_stop_pct" in body.model_fields_set:
         v = body.max_stop_pct
@@ -445,6 +456,12 @@ def update_system_config(
         fib_enabled=bool(cfg.fib_enabled),
         max_open_trades=cfg.max_open_trades,
         trading_min_free_pct=float(cfg.trading_min_free_pct),
+        trading_testnet=cfg.trading_testnet,
+        trading_enabled=cfg.trading_enabled,
+        binance_key_live=bool(settings.BINANCE_API_KEY and settings.BINANCE_SECRET_KEY),
+        binance_key_testnet=bool(
+            settings.BINANCE_TESTNET_API_KEY and settings.BINANCE_TESTNET_SECRET_KEY
+        ) or bool(settings.BINANCE_API_KEY and settings.BINANCE_SECRET_KEY),
         max_stop_pct=float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None,
         liq_gate_buffer=(float(cfg.liq_gate_buffer)
                          if cfg.liq_gate_buffer is not None else None),
@@ -565,7 +582,7 @@ def review_attribute(body: dict, db: Session = Depends(get_db)):
         .where(
             TradeRecord.status == "CLOSED",
             TradeRecord.exit_reason.isnot(None),
-            TradeRecord.testnet == settings.TRADING_TESTNET,
+            TradeRecord.testnet == _get_system_config(db).trading_testnet,
         )
         .order_by(TradeRecord.closed_at.desc())
     )
