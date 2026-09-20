@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, InputNumber, Select, message, Button, Spin, Divider, Switch } from 'antd'
-import { SettingOutlined } from '@ant-design/icons'
+import { Modal, Form, InputNumber, Select, Switch, message, Button, Spin, Divider, Tooltip } from 'antd'
+import { SettingOutlined, RobotOutlined, FileTextOutlined, ApiOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
 
-/** 策略配置弹窗（2026-09-20 拆分：扫描策略 + AI 实验开关；交易参数见 TradingConfigPanel，环境/开关见 SystemConfigPanel） */
+/** 策略配置弹窗：扫描策略 + AI 分析/策略/Agent 开关 + AI 实验功能。
+ *  （2026-09-20 工具栏的 AI/策略/Agent 三个快捷开关收敛至此；交易参数见
+ *  TradingConfigPanel，环境/自动交易开关见 SystemConfigPanel） */
 export default function ScanConfigPanel() {
   const [open, setOpen] = useState(false)
   const [form] = Form.useForm()
@@ -29,10 +31,16 @@ export default function ScanConfigPanel() {
         kline_window: aiConfig.kline_window,
         repeat_window_hours: aiConfig.repeat_window_hours,
         swing_order: aiConfig.swing_order,
+        ai_analysis_enabled: aiConfig.ai_analysis_enabled ?? false,
+        strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
+        ai_pipeline_enabled: aiConfig.ai_pipeline_enabled ?? true,
         dual_judge_enabled: aiConfig.dual_judge_enabled ?? true,
       })
     }
   }, [open, aiConfig, form])
+
+  const aiConfigured = !!aiConfig?.ai_configured
+  const hasStrategy = !!aiConfig?.strategy_prompt
 
   const handleSave = async () => {
     try {
@@ -43,7 +51,9 @@ export default function ScanConfigPanel() {
         kline_window: values.kline_window,
         repeat_window_hours: values.repeat_window_hours,
         swing_order: values.swing_order,
-        // P2 实验开关
+        ai_analysis_enabled: values.ai_analysis_enabled,
+        strategy_prompt_enabled: values.strategy_prompt_enabled,
+        ai_pipeline_enabled: values.ai_pipeline_enabled,
         dual_judge_enabled: values.dual_judge_enabled,
       }
       await updateConfig(data)
@@ -116,6 +126,54 @@ export default function ScanConfigPanel() {
             tooltip="AI 事实包中摆动点确认的左右比较根数"
           >
             <InputNumber min={1} max={10} style={{ width: '100%' }} />
+          </Form.Item>
+
+          {/* AI 分析开关区（原工具栏快捷开关，2026-09-20 收敛至此） */}
+          <Divider style={{ margin: '8px 0 16px' }}>
+            <span style={{ fontSize: 13, color: '#999' }}>AI 分析</span>
+          </Divider>
+          <Form.Item
+            label={
+              <span>
+                <RobotOutlined style={{ marginRight: 6 }} />AI 分析
+              </span>
+            }
+            name="ai_analysis_enabled"
+            valuePropName="checked"
+            tooltip={aiConfigured ? '开启后扫描命中币种自动触发 AI 分析（展开行查看结果）' : '后端未配置 AI_API_KEY，无法使用 AI 分析'}
+          >
+            <Switch disabled={!aiConfigured} />
+          </Form.Item>
+          <Tooltip
+            title={
+              hasStrategy
+                ? '开启后，AI 分析时将"策略提示词"一并发给 AI 参考'
+                : '请先在"策略提示词"页签中编写并保存策略'
+            }
+          >
+            <Form.Item
+              label={
+                <span>
+                  <FileTextOutlined style={{ marginRight: 6 }} />策略开关
+                </span>
+              }
+              name="strategy_prompt_enabled"
+              valuePropName="checked"
+            >
+              <Switch />
+            </Form.Item>
+          </Tooltip>
+          <Form.Item
+            label={
+              <span>
+                <ApiOutlined style={{ marginRight: 6 }} />Agent 管线
+              </span>
+            }
+            name="ai_pipeline_enabled"
+            valuePropName="checked"
+            tooltip="开启：工具循环 + 结构位锚点 + 技能库；关闭：单次调用 + 校验回炉"
+          >
+            <Switch disabled={!aiConfigured} />
           </Form.Item>
 
           {/* AI 实验功能（P2，默认关闭） */}

@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { Tooltip, Tag } from 'antd'
 import { useScanStore } from '../stores/scanStore'
 
-/** 当前交易环境徽标（工具栏常驻）：显示系统总开关/环境/自动交易状态。
+/** 当前交易环境徽标（工具栏常驻）：显示环境与自动交易状态。
  *  挂载时拉取一次配置；系统配置弹窗保存后 store 更新即随之刷新。 */
 export default function EnvironmentTag() {
   const { aiConfig, fetchConfig } = useScanStore()
@@ -12,22 +12,14 @@ export default function EnvironmentTag() {
   }, [aiConfig, fetchConfig])
 
   if (!aiConfig) return null
-  const enabled = aiConfig.system_enabled ?? true
   const testnet = aiConfig.trading_testnet ?? true
   const trading = aiConfig.trading_enabled ?? false
 
-  if (!enabled) {
-    return (
-      <Tooltip title="系统总开关已关闭：AI 分析与开单暂停（定时扫描、结算巡检、日报等照常）。在「系统配置」弹窗中可重新开启。">
-        <Tag color="default" style={{ marginInlineEnd: 0 }}>AI 停</Tag>
-      </Tooltip>
-    )
-  }
   return (
     <Tooltip
       title={
-        `当前交易环境：${testnet ? '测试网' : '正式网'}；自动交易${trading ? '已开启' : '已关闭'}（关=停开新单，结算巡检照常）。` +
-        '在「系统配置」弹窗中可切换。'
+        `当前交易环境：${testnet ? '测试网' : '正式网'}；自动交易${trading ? '已开启' : '已关闭'}` +
+        `（关=定时扫描的 AI 分析与开新单停止，结算/复盘/日报照常）。在「系统配置」弹窗中可切换。`
       }
     >
       <Tag color={testnet ? 'orange' : 'red'} style={{ marginInlineEnd: 0 }}>

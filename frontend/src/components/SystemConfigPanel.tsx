@@ -22,7 +22,6 @@ export default function SystemConfigPanel() {
   useEffect(() => {
     if (open && aiConfig) {
       form.setFieldsValue({
-        system_enabled: aiConfig.system_enabled ?? true,
         trading_testnet: aiConfig.trading_testnet ?? true,
         trading_enabled: aiConfig.trading_enabled ?? false,
       })
@@ -42,7 +41,6 @@ export default function SystemConfigPanel() {
       const values = await form.validateFields()
       setSaving(true)
       const data: Partial<SystemConfig> = {
-        system_enabled: values.system_enabled,
         trading_testnet: values.trading_testnet,
         trading_enabled: values.trading_enabled,
       }
@@ -78,15 +76,6 @@ export default function SystemConfigPanel() {
         <Spin spinning={loading}>
         <Form form={form} layout="vertical">
           <Form.Item
-            label="系统总开关"
-            name="system_enabled"
-            valuePropName="checked"
-            tooltip="关闭后定时扫描照常（K线/指标筛选），但筛选后的 AI 分析与开单停止（省 AI 配额）；结算巡检、复盘、归因、日报等其他任务照旧执行。手动扫描/手动分析不受限"
-          >
-            <Switch checkedChildren="开" unCheckedChildren="关" />
-          </Form.Item>
-
-          <Form.Item
             label="交易环境"
             name="trading_testnet"
             rules={[{ required: true }]}
@@ -107,7 +96,7 @@ export default function SystemConfigPanel() {
             label="自动交易总开关"
             name="trading_enabled"
             valuePropName="checked"
-            tooltip="关闭后停止开新单（定时扫描的 AI 分析照常），存量在跑单的结算巡检、止损补挂照常执行，不会裸仓"
+            tooltip="关闭后定时扫描的 AI 分析与开新单停止（省 AI 配额）；结算巡检、复盘、日报照常执行"
           >
             <Switch checkedChildren="开" unCheckedChildren="关" />
           </Form.Item>

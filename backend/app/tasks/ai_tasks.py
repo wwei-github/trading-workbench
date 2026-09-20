@@ -105,13 +105,14 @@ def run_ai_analysis_task(
         if not cfg or not cfg.ai_analysis_enabled or not settings.AI_API_KEY:
             logger.warning("AI 分析未启用，跳过")
             return
-        # 系统总开关（2026-09-20 语义）：关闭后「币种筛选后的 AI 分析」跳过（省 AI 配额），
-        # 随后的开单环节同样停——分析不产出，分发自然不发生。手动单币重分析
-        # （only_scan_result_id 非空）与手动扫描链路不受限
+        # 自动交易总开关（2026-09-20 合并系统总开关，单一开关）：关闭后定时扫描的
+        # 批量 AI 分析跳过（省 AI 配额），开单环节同样停——分析不产出，分发不发生。
+        # 结算巡检/复盘/归因/日报照常；手动单币重分析（only_scan_result_id 非空）
+        # 与手动扫描链路不受限
         if only_scan_result_id is None:
             scan_type = db.get(ScanRecord, UUID(scan_record_id)).scan_type
-            if scan_type == "scheduled" and not cfg.system_enabled:
-                logger.info("系统总开关关闭，定时扫描的 AI 分析跳过 #%s", scan_record_id)
+            if scan_type == "scheduled" and not cfg.trading_enabled:
+                logger.info("自动交易开关关闭，定时扫描的 AI 分析跳过 #%s", scan_record_id)
                 return
         q = select(ScanResult).where(ScanResult.scan_record_id == UUID(scan_record_id))
         if only_scan_result_id:

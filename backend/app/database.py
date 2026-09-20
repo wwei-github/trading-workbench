@@ -151,15 +151,11 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS testnet BOOLEAN NOT NULL DEFAULT TRUE
         """))
         # 交易环境/总开关运行时化（2026-09-20）：由 env 静态配置迁移进 DB，页面可改
+        # （system_enabled 列曾随"系统总开关"短暂数上线，功能并入 trading_enabled 后移除）
         conn.execute(text(
             f"ALTER TABLE system_config "
             f"ADD COLUMN IF NOT EXISTS trading_testnet BOOLEAN NOT NULL DEFAULT {settings.TRADING_TESTNET}, "
             f"ADD COLUMN IF NOT EXISTS trading_enabled BOOLEAN NOT NULL DEFAULT {settings.TRADING_ENABLED}"
-        ))
-        # 系统总开关（2026-09-20）：关闭后所有定时任务跳过（默认开启）
-        conn.execute(text(
-            "ALTER TABLE system_config "
-            "ADD COLUMN IF NOT EXISTS system_enabled BOOLEAN NOT NULL DEFAULT TRUE"
         ))
         # 指标驱动筛选（2026-09-17）：扫描候选质量分（AI 配额排序键）与指标票数明细
         conn.execute(text("""
@@ -215,7 +211,7 @@ def _run_migrations(engine):
             " max_open_trades, "
             " strategy_trend_follow_enabled, strategy_structure_break_enabled, "
             " strategy_range_edge_enabled, trading_min_free_pct, "
-            " trading_testnet, trading_enabled, system_enabled) "
+            " trading_testnet, trading_enabled) "
             "VALUES (1, false, :kline_interval, :kline_window, "
             " :breakout_threshold, :r_squared_threshold, :repeat_window_hours, "
             " :swing_order, :pullback_tolerance, '系统运行时配置', "
@@ -224,7 +220,7 @@ def _run_migrations(engine):
             " 5, "
             " true, false, "
             " true, 0.5, "
-            " :trading_testnet, :trading_enabled, true) "
+            " :trading_testnet, :trading_enabled) "
             "ON CONFLICT (id) DO NOTHING"
         ),
             {

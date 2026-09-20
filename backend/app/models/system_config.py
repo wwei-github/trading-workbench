@@ -39,13 +39,10 @@ class SystemConfig(Base):
     # 运行时环境与总开关（2026-09-20 由 env 静态配置迁移而来，页面可改、任务即时生效）：
     # trading_testnet：当前交易环境（true=测试网 false=正式网），开仓/扫描宇宙/复核用；
     #                  存量单按记录自带 testnet 标记结算，切环境不影响在跑单
-    # trading_enabled：自动交易总开关（关=定时/即时开仓全部跳过，结算巡检照常）
+    # trading_enabled：自动交易总开关（关=定时扫描的 AI 分析跳过 + 停开新单，
+    #                  结算巡检/复盘/日报照常；2026-09-20 合并原系统总开关）
     trading_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
     trading_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-
-    # 系统总开关（2026-09-20，语义 v2）：关闭 = 定时扫描照常（筛选不停），但筛选后的
-    # 批量 AI 分析跳过、开单随之停止；结算巡检/复盘/归因/补丁/日报照旧。默认开启
-    system_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # 余额风控：开仓最低可用余额占钱包余额比例（0~1，页面可改）。
     # 2026-09-15 由固定 70% 规则改为默认 50% 可配置。开单类型策略开关已移除
