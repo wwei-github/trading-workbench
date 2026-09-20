@@ -71,8 +71,9 @@ celery_app.conf.update(
         },
         "daily-report": {
             "task": "app.tasks.daily_report.notify_daily_report",
-            # 每日 00:05 UTC（北京 08:05）：日线 00:00 UTC 收盘后 5 分钟，推主流币收盘价 + 前一日交易统计
-            "schedule": crontab(minute=5, hour=0),
+            # 每日 08:05（北京）：币安日K 08:00 北京收盘后 5 分钟，推主流币收盘价 + 前一日交易统计
+            # 注意 timezone=Asia/Shanghai，crontab 的 hour 按北京时间解释，勿写 UTC
+            "schedule": crontab(minute=5, hour=8),
         },
     },
     task_acks_late=True,
