@@ -710,11 +710,11 @@ export default function TradesPanel() {
       render: (_: unknown, rec) => renderPnl(rec),
     },
     {
-      // AI 持仓诊断（docs/16）：浮亏在跑单时 AI 判断开仓逻辑是否破坏与建议动作；
-      // 点击弹窗展示完整诊断详情；在跑单附「重诊」（手动无视冷却）
+      // AI 持仓诊断（docs/16）：仅展示建议动作 Tag，理由等详情点击弹窗查看；
+      // 在跑单附「重诊」（手动无视冷却）
       title: 'AI 建议',
       key: 'ai_advice',
-      width: 200,
+      width: 110,
       render: (_: unknown, rec) => {
         const adv = rec.ai_advice
         if (!adv) return <span style={{ color: '#999' }}>-</span>
@@ -722,36 +722,17 @@ export default function TradesPanel() {
         const running = ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(rec.status)
         return (
           <div
-            style={{ display: 'flex', alignItems: 'center', gap: 0, minWidth: 0 }}
+            style={{ display: 'flex', alignItems: 'center', gap: 0 }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div
+            <Tag
+              color={meta.color}
               onClick={() => setAdviceView(rec)}
               title="点击查看诊断详情"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                minWidth: 0,
-                flex: 1,
-                cursor: 'pointer',
-              }}
+              style={{ marginInlineEnd: 0, cursor: 'pointer' }}
             >
-              <Tag color={meta.color} style={{ marginInlineEnd: 0, flexShrink: 0, cursor: 'pointer' }}>
-                {meta.label}
-              </Tag>
-              <span
-                style={{
-                  fontSize: 12,
-                  color: running ? '#595959' : '#bfbfbf',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {adv.reason}
-              </span>
-            </div>
+              {meta.label}
+            </Tag>
             {running && (
               <Button
                 size="small"
