@@ -954,7 +954,7 @@ export default function TradesPanel() {
           />
           {/* 一键清空测试网数据：仅测试网视图可见，预检→弹窗确认→执行 */}
           {scope === 'testnet' && (
-            <Button size="small" danger icon={<DeleteOutlined />} loading={purging} onClick={openPurge}>
+            <Button danger icon={<DeleteOutlined />} loading={purging} onClick={openPurge}>
               清空测试网数据
             </Button>
           )}
