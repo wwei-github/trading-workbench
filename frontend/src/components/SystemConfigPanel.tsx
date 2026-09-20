@@ -81,7 +81,7 @@ export default function SystemConfigPanel() {
             label="系统总开关"
             name="system_enabled"
             valuePropName="checked"
-            tooltip="关闭后所有定时任务（定时扫描/结算巡检/复盘归因/补丁/日报）都不执行；手动触发不受影响。注意：结算巡检也停，在跑单的止损补挂随之暂停"
+            tooltip="关闭后定时扫描照常（K线/指标筛选），但筛选后的 AI 分析与开单停止（省 AI 配额）；结算巡检、复盘、归因、日报等其他任务照旧执行。手动扫描/手动分析不受限"
           >
             <Switch checkedChildren="开" unCheckedChildren="关" />
           </Form.Item>

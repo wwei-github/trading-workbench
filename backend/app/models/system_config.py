@@ -43,8 +43,8 @@ class SystemConfig(Base):
     trading_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
     trading_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # 系统总开关（2026-09-20）：关闭后所有定时任务（扫描/结算巡检/复盘归因/补丁/日报）
-    # 直接跳过；手动触发不受限。默认开启
+    # 系统总开关（2026-09-20，语义 v2）：关闭 = 定时扫描照常（筛选不停），但筛选后的
+    # 批量 AI 分析跳过、开单随之停止；结算巡检/复盘/归因/补丁/日报照旧。默认开启
     system_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # 余额风控：开仓最低可用余额占钱包余额比例（0~1，页面可改）。

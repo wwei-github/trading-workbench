@@ -57,9 +57,6 @@ def _daily_close(symbol: str) -> tuple[str, str, str]:
 @celery_app.task(name="app.tasks.daily_report.notify_daily_report")
 def notify_daily_report() -> dict:
     """每日 08:05（北京）日报：主流币收盘价 + 昨日交易统计。"""
-    from app.services.system_switch import system_enabled
-    if not system_enabled():
-        return {"skipped": "系统总开关关闭"}  # 所有定时任务跳过
     now = datetime.now(_TZ_BJ)
     # 日报在收盘后 5 分钟跑，统计「昨天」一整天（北京自然日）
     day_start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)

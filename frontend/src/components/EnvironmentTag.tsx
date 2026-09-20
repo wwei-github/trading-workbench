@@ -18,8 +18,8 @@ export default function EnvironmentTag() {
 
   if (!enabled) {
     return (
-      <Tooltip title="系统总开关已关闭：所有定时任务暂停（手动触发不受限）。在「系统配置」弹窗中可重新开启。">
-        <Tag color="default" style={{ marginInlineEnd: 0 }}>已停用</Tag>
+      <Tooltip title="系统总开关已关闭：AI 分析与开单暂停（定时扫描、结算巡检、日报等照常）。在「系统配置」弹窗中可重新开启。">
+        <Tag color="default" style={{ marginInlineEnd: 0 }}>AI 停</Tag>
       </Tooltip>
     )
   }
