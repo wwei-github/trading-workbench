@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, KlineData, ListResponse, MarketRisk, ActualReview, Patch, PatchListResponse, PromptView, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
+import type { AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, KlineData, ListResponse, MarketRisk, ActualReview, Patch, PatchListResponse, PromptView, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -172,6 +172,9 @@ export const scanApi = {
     // 市场风险防护状态 + 最近等级迁移历史（docs/15）
     marketRisk: (historyLimit = 30) =>
       api.get<MarketRisk>('/trades/market-risk', { params: { history_limit: historyLimit } }).then((r) => r.data),
+    // 资金分析聚合（docs/14，start/end 为北京时间 YYYY-MM-DD 闭区间）
+    analytics: (params: { scope: 'live' | 'testnet'; start?: string; end?: string }) =>
+      api.get<FundAnalytics>('/trades/analytics', { params }).then((r) => r.data),
   },
 
   // 关注列表

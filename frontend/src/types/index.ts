@@ -473,3 +473,26 @@ export interface MarketRisk {
   updated_at: string | null;
   history: MarketRiskHistoryItem[];
 }
+
+// ===== 资金分析（docs/14，对齐后端 FundAnalyticsOut）=====
+
+export interface FundSummary {
+  closed: number; wins: number; win_rate: number | null
+  net_pnl: number; fee_total: number; funding_total: number
+  avg_win_r: number | null
+  transfer_in: number; transfer_out: number; transfer_net: number
+}
+export interface DailyPoint { date: string; pnl: number }
+export interface SymbolPnl { symbol: string; pnl: number; count: number; wins: number }
+export interface ExitReasonStat { reason: string; count: number; pnl: number }
+export interface PnlBucket { bucket: string; count: number }
+export interface TransferPoint { date: string; transfer_in: number; transfer_out: number }
+export interface FundAnalytics {
+  summary: FundSummary
+  equity_curve: DailyPoint[]
+  daily_pnl: DailyPoint[]
+  by_symbol: SymbolPnl[]
+  exit_reasons: ExitReasonStat[]
+  pnl_distribution: PnlBucket[]
+  transfers: TransferPoint[]
+}
