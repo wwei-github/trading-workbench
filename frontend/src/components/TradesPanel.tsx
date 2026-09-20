@@ -1122,46 +1122,47 @@ export default function TradesPanel() {
                         <div
                           style={{
                             marginTop: 10,
-                            padding: '8px 12px',
-                            background: '#fff',
-                            border: '1px solid #f0f0f0',
+                            padding: '10px 14px',
+                            background: 'linear-gradient(135deg, #f9f0ff 0%, #fff 60%)',
+                            border: '1px solid #efdbff',
                             borderRadius: 8,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 10,
+                            flexWrap: 'wrap',
                           }}
                         >
                           <div
                             style={{
                               fontSize: 12,
                               fontWeight: 600,
-                              color: '#595959',
-                              marginBottom: 6,
+                              color: '#722ed1',
                               display: 'flex',
                               alignItems: 'center',
                               gap: 6,
                             }}
                           >
-                            <RobotOutlined style={{ color: '#722ed1' }} />
+                            <RobotOutlined />
                             持仓诊断
-                            <span style={{ fontWeight: 400, color: '#999' }}>
-                              {rec.ai_advice_at ? bj(rec.ai_advice_at).format('MM-DD HH:mm') : ''}
-                            </span>
                           </div>
-                          <Space size={6} wrap>
-                            <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>
-                              {meta.label}
-                            </Tag>
-                            <span style={{ fontSize: 12, color: '#595959' }}>
-                              开仓逻辑{rec.ai_advice.thesis_valid ? '成立' : '已破坏'} ·
-                              走势{rec.ai_advice.trend_broken ? '已走坏' : '未走坏'}
-                            </span>
-                          </Space>
-                          <div style={{ fontSize: 12, color: '#333', marginTop: 6 }}>
-                            {rec.ai_advice.reason}
-                          </div>
-                          {rec.ai_advice.detail && (
-                            <div style={{ fontSize: 12, color: '#777', marginTop: 4 }}>
-                              {rec.ai_advice.detail}
-                            </div>
-                          )}
+                          <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>
+                            {meta.label}
+                          </Tag>
+                          <Tag
+                            color={rec.ai_advice.thesis_valid ? 'green' : 'red'}
+                            style={{ marginInlineEnd: 0 }}
+                          >
+                            开仓逻辑{rec.ai_advice.thesis_valid ? '成立' : '已破坏'}
+                          </Tag>
+                          <Tag
+                            color={rec.ai_advice.trend_broken ? 'red' : 'green'}
+                            style={{ marginInlineEnd: 0 }}
+                          >
+                            走势{rec.ai_advice.trend_broken ? '已走坏' : '未走坏'}
+                          </Tag>
+                          <span style={{ fontSize: 12, color: '#999', marginLeft: 'auto' }}>
+                            {rec.ai_advice_at ? bj(rec.ai_advice_at).format('MM-DD HH:mm') : ''}
+                          </span>
                         </div>
                       )
                     })()}
