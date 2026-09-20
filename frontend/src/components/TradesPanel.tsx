@@ -745,7 +745,7 @@ export default function TradesPanel() {
             onConfirm={() => handleBlacklistRemove(rec.symbol)}
           >
             <Tooltip title="已在黑名单中，点击移出">
-              <Button size="small" type="link" danger style={{ padding: 0, height: 'auto' }}>
+              <Button size="small" type="link" danger>
                 移出
               </Button>
             </Tooltip>
@@ -756,7 +756,6 @@ export default function TradesPanel() {
               size="small"
               type="link"
               icon={<StopOutlined />}
-              style={{ padding: 0, height: 'auto' }}
               onClick={(e) => {
                 e.stopPropagation()
                 setBlTarget(rec)

@@ -359,7 +359,6 @@ export default function AiAnalysisCard({ ai }: Props) {
                 type="link"
                 size="small"
                 icon={<ApiOutlined />}
-                style={{ padding: 0, height: 'auto' }}
                 onClick={() => setTraceOpen(true)}
               >
                 运行轨迹

@@ -4,6 +4,19 @@ html, body, #root {
   padding: 0;
 }
 
+/* ── 全站按钮风格规范（2026-09-20 统一）──────────────────────
+   1. 表格操作列：type="link" + size="small"，破坏性操作加 danger；
+      由下方规则紧凑化（padding-inline 4px），组件内不再写 padding hack
+   2. 表格内嵌正文旁的 icon 快捷键（星标/复制/展开开关）：
+      type="text" + size="small"（非操作列，保持低调灰色）
+   3. 工具栏：主操作/打开弹窗 = type="primary"（默认尺寸）带 icon；
+      刷新等次操作 = default + size="small" + 图标带文字
+   4. 表格展开区的主动作 CTA（AI 分析/AI 归因）= type="primary" ghost + size="small"
+   ──────────────────────────────────────────────────────────── */
+.ant-table-cell .ant-btn-link {
+  padding-inline: 4px;
+}
+
 /* Tabs 内容区域占满剩余高度 */
 .ant-tabs {
   height: 100%;

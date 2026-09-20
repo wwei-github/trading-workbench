@@ -441,12 +441,11 @@ export default function WatchlistPanel() {
         <span onClick={(e) => e.stopPropagation()}>
           <Tooltip title="拉取最新K线并缓存">
             <Button
-              type="text"
+              type="link"
               size="small"
               icon={<SyncOutlined spin={!!refreshing[r.symbol]} />}
               loading={refreshing[r.symbol]}
-              onClick={(e) => handleRefresh(e, r.symbol)}
-              style={{ padding: "0 6px" }}>
+              onClick={(e) => handleRefresh(e, r.symbol)}>
               更新
             </Button>
           </Tooltip>
@@ -458,7 +457,7 @@ export default function WatchlistPanel() {
             }}
             onCancel={(e) => e?.stopPropagation()}>
             <Button
-              type="text"
+              type="link"
               danger
               size="small"
               icon={<DeleteOutlined />}
