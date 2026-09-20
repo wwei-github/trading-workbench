@@ -1,20 +1,24 @@
-# 资金分析 Tab 设计方案
+# 14. 资金分析 Tab 设计（图表化资金与盈亏结构）
 
-日期：2026-09-20
-状态：已确认（用户选定：环境可切换 / ECharts / 后端聚合 API）
+> 2026-09-20 | 状态：设计已确认，待实现 | 前置文档：06（自动交易）、11（现行规则总览）
+> 决策拍板：单页仪表盘（A 方案）/ 正式网·测试网可切换 / ECharts / 后端聚合 API
 
-## 1. 目标
+## 1. 目标与范围
 
-在主页面新增顶层 Tab「资金分析」，通过图表展示合约账户资金状况与交易盈亏结构，支持时间范围筛选。
+- 主页面新增顶层 Tab「资金分析」，图表化展示合约账户资金状况与交易盈亏结构
+- 支持时间范围筛选：全部（默认）/ 本周 / 本月 / 自定义日期范围
+- 统计口径与交易记录页、每日日报一致（北京时间自然日）
+
+**明确不在本期范围**：导出 CSV/图片、BTC 基准对比、Sharpe/回撤等高级指标、自动轮询刷新。
 
 ## 2. 决策记录
 
 | 决策点 | 结论 | 理由 |
 |---|---|---|
 | 数据口径 | 正式网/测试网 Segmented 切换，默认正式网 | 测试网单子会扭曲真实资金曲线 |
-| 图表库 | ECharts（按需引入） | 现有 lightweight-charts 只适合K线；ECharts 面积/柱/饼全覆盖，中文文档 |
-| 数据获取 | 新增后端聚合 API | 现有列表接口 500 条上限，「全部」范围会截断失真 |
-| 页面形态 | 单页仪表盘（方案 A） | 数据量小（几百笔），一次拉全 + 图表栅格，无二级 Tab 必要 |
+| 图表库 | ECharts（按需引入） | 现有 lightweight-charts 只适合K线；ECharts 面积/柱/饼全覆盖 |
+| 数据获取 | 新增后端聚合 API | 列表接口 500 条上限，「全部」范围会截断失真 |
+| 页面形态 | 单页仪表盘 | 数据量小（几百笔），一次拉全 + 图表栅格，无二级 Tab 必要 |
 
 ## 3. 页面结构
 
@@ -73,13 +77,16 @@
 - 依赖：`npm i echarts`，按需注册（Line/Bar/Pie/Grid/Tooltip/DataZoom）+ 薄封装 `<EChart option={...} />`（ResizeObserver 自适应）
 - 配色：全部走现有 `SCHEME_UP_DOWN` / `schemeValueColor`（红涨绿跌可切换），与全站一致
 - 变更文件：
-  - `backend/app/api/trades.py` — analytics 端点
-  - `backend/app/schemas/trade.py` — 响应模型
-  - `frontend/src/components/FundAnalysisPanel.tsx` — 页面
-  - `frontend/src/components/EChart.tsx` — 图表封装
-  - `frontend/src/api/scan.ts` — 接口
-  - `frontend/src/types/index.ts` — 类型
-  - `frontend/src/pages/ScanResult.tsx` — 注册 Tab
+
+| 文件 | 变更 |
+|---|---|
+| `backend/app/api/trades.py` | analytics 端点 |
+| `backend/app/schemas/trade.py` | 响应模型 |
+| `frontend/src/components/FundAnalysisPanel.tsx` | 页面 |
+| `frontend/src/components/EChart.tsx` | 图表封装 |
+| `frontend/src/api/scan.ts` | 接口 |
+| `frontend/src/types/index.ts` | 类型 |
+| `frontend/src/pages/ScanResult.tsx` | 注册 Tab |
 
 ## 7. 图表明细
 
@@ -108,10 +115,3 @@
 - 自定义范围跨年正常聚合（SQL 无上限）
 - FAILED/未开仓记录不参与任何图表
 - 环境切换后划转区空态：测试网账户未同步划转时提示说明
-
-## 10. 非目标（YAGNI）
-
-- 不做导出 CSV/图片
-- 不做对比基准（BTC 同期涨跌）
-- 不做 Sharpe/回撤等高级指标（后续可加在 summary）
-- 不做自动刷新轮询（手动刷新按钮即可，数据源本身按小时变动）
