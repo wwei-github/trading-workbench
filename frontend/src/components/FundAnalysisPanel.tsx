@@ -51,9 +51,9 @@ function fmtSigned(n: number): string {
   return `${n > 0 ? '+' : ''}${n.toFixed(2)}`
 }
 
-// 盈亏分布档位：负值桶 = 深亏档（后端 ">|1000|"）或以 "-" 开头，其余为盈利档
+// 盈亏分布档位：负值桶 = 深亏档（后端 ">|1000|"）、以 "-" 开头、或最小亏损档 "0~-"，其余为盈利档
 function isNegBucket(bucket: string): boolean {
-  return bucket === '>|1000|' || bucket.startsWith('-')
+  return bucket === '>|1000|' || bucket.startsWith('-') || bucket.startsWith('0~-')
 }
 
 /** 资金分析页（docs/14） */
@@ -69,8 +69,11 @@ export default function FundAnalysisPanel() {
   const down = SCHEME_UP_DOWN[colorScheme].down
 
   const fetchData = useCallback(async () => {
-    // 自定义范围但未选日期：等选完再请求
-    if (range === 'custom' && !dates) return
+    // 自定义范围但未选日期：清空旧数据，等选完再请求
+    if (range === 'custom' && !dates) {
+      setData(null)
+      return
+    }
     const params: { scope: Scope; start?: string; end?: string } = { scope }
     if (range === 'week') {
       params.start = mondayOfThisWeek().format('YYYY-MM-DD')
@@ -355,8 +358,14 @@ export default function FundAnalysisPanel() {
         />
       </div>
 
-      {/* 图表栅格：无已平仓交易时整体空态 */}
-      {data && data.summary.closed === 0 ? (
+      {/* 空态/图表栅格：data 为空（未选日期或加载中）不渲染图表，无已平仓交易时整体空态 */}
+      {data === null ? (
+        range === 'custom' && !dates ? (
+          <Empty description="请选择日期范围" style={{ marginTop: 60 }} />
+        ) : (
+          <Empty description="暂无数据" style={{ marginTop: 60 }} />
+        )
+      ) : data.summary.closed === 0 ? (
         <Empty description="该范围内暂无已平仓交易" style={{ marginTop: 60 }} />
       ) : (
         <Spin spinning={loading}>
