@@ -92,6 +92,19 @@ export default function ScanResult() {
 
   const isScanning = !!status?.is_scanning
 
+  // 立即扫描按钮：置于扫描结果 Tab 内、ResultTable「刷新」左侧
+  const scanButton = (
+    <Button
+      type="primary"
+      icon={<ThunderboltOutlined />}
+      onClick={handleTrigger}
+      disabled={isScanning}
+      loading={isScanning}
+    >
+      {isScanning ? '扫描中...' : '立即扫描'}
+    </Button>
+  )
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <Card style={{ flexShrink: 0, marginBottom: 12 }}>
@@ -120,24 +133,7 @@ export default function ScanResult() {
           {
             key: 'results',
             label: '扫描结果',
-            children: (
-              <div style={{ height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                <div style={{ flexShrink: 0, display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
-                  <Button
-                    type="primary"
-                    icon={<ThunderboltOutlined />}
-                    onClick={handleTrigger}
-                    disabled={isScanning}
-                    loading={isScanning}
-                  >
-                    {isScanning ? '扫描中...' : '立即扫描'}
-                  </Button>
-                </div>
-                <div style={{ flex: 1, minHeight: 0 }}>
-                  <ResultTable />
-                </div>
-              </div>
-            ),
+            children: <div style={{ height: '100%', overflow: 'hidden' }}><ResultTable headerExtra={scanButton} /></div>,
           },
           {
             key: 'watchlist',

@@ -90,7 +90,7 @@ class BinanceTrader:
         return {"wallet": 0.0, "available": 0.0}
 
     def positions(self) -> dict[str, dict]:
-        """非零持仓：{symbol: {amt, initial_margin}}"""
+        """非零持仓：{symbol: {amt, initial_margin, unrealized_pnl}}"""
         out: dict[str, dict] = {}
         for p in self._req("GET", "/fapi/v2/positionRisk"):
             amt = float(p.get("positionAmt") or 0)
@@ -99,6 +99,7 @@ class BinanceTrader:
                     "amt": amt,
                     "initial_margin": float(p.get("initialMargin") or 0),
                     "entry_price": float(p.get("entryPrice") or 0),
+                    "unrealized_pnl": float(p.get("unRealizedProfit") or 0),
                 }
         return out
 

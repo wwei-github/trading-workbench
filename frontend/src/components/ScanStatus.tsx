@@ -1,47 +1,90 @@
+import { useEffect, useState } from 'react'
 import { Statistic, Row, Col, Tag } from 'antd'
 import { bj } from '../utils/dayjs'
 import { useScanStore } from '../stores/scanStore'
+import { scanApi } from '../api/scan'
+import { schemeValueColor } from '../utils/scheme'
+import type { AccountSummary } from '../types'
 
-/** 顶部运行状态一览（2026-09-20 重构）：
- *  扫描状态 / 最近扫描时间 / 最近命中 / 自动交易开关 / 在跑单数（当前环境）。
- *  扫描配置细节移除（策略配置弹窗内可见，非日常盯盘信息）。 */
+/** 顶部运行状态一览（2026-09-20 v2）：
+ *  资金三项（总资金/总收益/收益率，当前环境 60s 轮询）
+ *  + 自动交易 + 最近扫描（时间+命中）+ 在跑单水位。
+ *  扫描状态去掉（「扫描中」态在立即扫描按钮上直接可见）。 */
 export default function ScanStatus() {
-  const { status } = useScanStore()
+  const { status, colorScheme } = useScanStore()
   const last = status?.last_scan
   const trading = status?.trading_enabled ?? false
+  const [acct, setAcct] = useState<AccountSummary | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    const load = () =>
+      scanApi.trades
+        .accountSummary()
+        .then((d) => {
+          if (alive) setAcct(d)
+        })
+        .catch(() => {})
+    load()
+    const t = setInterval(load, 60_000)
+    return () => {
+      alive = false
+      clearInterval(t)
+    }
+  }, [])
+
   const openN = status?.open_trades ?? 0
   const maxN = status?.max_open_trades ?? 5
-  // max=0 表示不限单数（仅余额风控兜底）
   const unbounded = maxN <= 0
   const nearLimit = !unbounded && openN >= maxN
+
+  const money = (v?: number | null) =>
+    v === null || v === undefined ? '--' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
   return (
     <Row gutter={28}>
       <Col>
         <Statistic
-          title="扫描状态"
-          valueRender={() =>
-            status?.is_scanning ? (
-              <Tag color="processing" style={{ fontSize: 14, marginInlineEnd: 0 }}>
-                扫描中
-              </Tag>
-            ) : (
-              <Tag color="success" style={{ fontSize: 14, marginInlineEnd: 0 }}>
-                空闲
-              </Tag>
-            )
-          }
+          title="总资金"
+          valueRender={() => (
+            <span style={{ fontSize: 15, fontWeight: 600 }}>
+              {acct?.available ? money(acct.margin_balance) : '--'}
+              <span style={{ fontSize: 12, fontWeight: 400, color: '#8c8c8c', marginLeft: 4 }}>USDT</span>
+            </span>
+          )}
         />
       </Col>
       <Col>
         <Statistic
-          title="最近扫描"
+          title="总收益（含未实现）"
           valueRender={() => (
-            <span style={{ fontSize: 15 }}>
-              {last?.finished_at ? bj(last.finished_at).format('MM-DD HH:mm') : '-'}
-              <span style={{ fontSize: 12, color: '#8c8c8c', marginLeft: 6 }}>
-                命中 {last?.hit_count ?? 0}
-              </span>
+            <span
+              style={{
+                fontSize: 15,
+                color: acct?.available ? schemeValueColor(acct.profit ?? 0, colorScheme) : undefined,
+              }}
+            >
+              {acct?.available ? money(acct.profit) : '--'}
+            </span>
+          )}
+        />
+      </Col>
+      <Col>
+        <Statistic
+          title="收益率"
+          valueRender={() => (
+            <span
+              style={{
+                fontSize: 15,
+                color:
+                  acct?.available && acct.profit_rate !== null && acct.profit_rate !== undefined
+                    ? schemeValueColor(acct.profit_rate, colorScheme)
+                    : undefined,
+              }}
+            >
+              {acct?.available && acct.profit_rate !== null && acct.profit_rate !== undefined
+                ? `${acct.profit_rate > 0 ? '+' : ''}${acct.profit_rate.toFixed(2)}%`
+                : '--'}
             </span>
           )}
         />
@@ -64,15 +107,24 @@ export default function ScanStatus() {
       </Col>
       <Col>
         <Statistic
+          title="最近扫描"
+          valueRender={() => (
+            <span style={{ fontSize: 15 }}>
+              {last?.finished_at ? bj(last.finished_at).format('MM-DD HH:mm') : '-'}
+              <span style={{ fontSize: 12, color: '#8c8c8c', marginLeft: 6 }}>命中 {last?.hit_count ?? 0}</span>
+            </span>
+          )}
+        />
+      </Col>
+      <Col>
+        <Statistic
           title="在跑单（当前环境）"
           valueRender={() => (
             <span style={{ fontSize: 15 }}>
               <span style={{ color: nearLimit ? '#fa8c16' : undefined, fontWeight: nearLimit ? 600 : undefined }}>
                 {openN}
               </span>
-              <span style={{ fontSize: 12, color: '#8c8c8c' }}>
-                {' '}/ {unbounded ? '不限' : maxN}
-              </span>
+              <span style={{ fontSize: 12, color: '#8c8c8c' }}> / {unbounded ? '不限' : maxN}</span>
             </span>
           )}
         />

@@ -60,6 +60,18 @@ export interface ScanStatus {
   ai_analysis_enabled: boolean;
 }
 
+export interface AccountSummary {
+  testnet: boolean;
+  available: boolean; // false=交易所请求失败，降级显示
+  wallet?: number; // 钱包余额（不含未实现盈亏）
+  available_balance?: number;
+  unrealized?: number; // 未实现盈亏
+  margin_balance?: number; // 总资金 = 钱包 + 未实现盈亏
+  realized?: number; // 累计已实现盈亏（当前环境全部闭单）
+  profit?: number; // 总收益 = 已实现 + 未实现
+  profit_rate?: number | null; // 收益率% = 总收益 ÷ 本金（本金=总资金−总收益）
+}
+
 export interface ListResponse<T> {
   items: T[];
   total: number;

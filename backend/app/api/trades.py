@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
@@ -29,6 +29,49 @@ from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/trades", tags=["trades"])
+
+
+@router.get("/account-summary")
+def account_summary(db: Session = Depends(get_db)):
+    """当前交易环境合约账户资金概览（顶部状态栏展示，docs/06 账户维度补充）：
+    总资金=钱包+未实现盈亏；总收益=已实现+未实现；收益率=总收益÷本金，
+    本金=总资金−总收益（自洽口径，不依赖划转记录）。请求失败返回 available=False
+    前端降级显示「--」，不阻塞页面"""
+    from app.services.binance_trader import BinanceTrader
+
+    cfg = db.get(SystemConfig, 1)
+    testnet = bool(cfg.trading_testnet) if cfg else True
+    out: dict = {"testnet": testnet, "available": False}
+    try:
+        trader = BinanceTrader(testnet)
+        wallet = trader.wallet_balance()          # 1 请求：wallet + available
+        positions = trader.positions()            # 1 请求：未实现盈亏
+        unrealized = 0.0
+        for p in positions.values():
+            up = float(p.get("unrealized_pnl") or 0)
+            unrealized += up
+        margin_balance = wallet["wallet"] + unrealized
+        realized = db.execute(
+            select(func.coalesce(func.sum(TradeRecord.realized_pnl), 0.0)).where(
+                TradeRecord.status == "CLOSED",
+                TradeRecord.testnet == testnet,
+            )
+        ).scalar_one()
+        profit = float(realized) + unrealized
+        principal = margin_balance - profit
+        out.update(
+            available=True,
+            wallet=round(wallet["wallet"], 2),
+            available_balance=round(wallet["available"], 2),
+            unrealized=round(unrealized, 2),
+            margin_balance=round(margin_balance, 2),
+            realized=round(float(realized), 2),
+            profit=round(profit, 2),
+            profit_rate=round(profit / principal * 100, 2) if principal > 0 else None,
+        )
+    except Exception as e:
+        logger.warning("账户资金概览获取失败（testnet=%s）：%s", testnet, e)
+    return out
 
 
 @router.get("", response_model=list[TradeOut])

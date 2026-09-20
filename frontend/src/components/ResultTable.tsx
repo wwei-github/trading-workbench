@@ -13,6 +13,7 @@ import {
   StarFilled,
 } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
+import type { ReactNode } from "react";
 import { useScanStore } from "../stores/scanStore";
 import { scanApi } from "../api/scan";
 import { schemeTag } from "../utils/scheme";
@@ -40,7 +41,7 @@ const TRADE_STATUS_LABEL: Record<string, string> = {
   FAILED: "开单失败",
 };
 
-export default function ResultTable() {
+export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }) {
   const {
     results,
     total,
@@ -519,7 +520,9 @@ export default function ResultTable() {
           overflow: "hidden",
           paddingRight: 8,
         }}>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', flexShrink: 0, marginBottom: 4 }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexShrink: 0, marginBottom: 4 }}>
+          {/* 立即扫描（外部传入，置于刷新左侧，2026-09-20 移入扫描结果 Tab） */}
+          {headerExtra}
           <Button icon={<ReloadOutlined />} size="small" onClick={handleRefresh}>
             刷新
           </Button>
