@@ -140,6 +140,22 @@ function fmtNum(n: number | null | undefined): string {
   return String(n)
 }
 
+// 概览面板指标项：unit=金额单位小字；hl=淡蓝底高亮（今日口径两项）
+interface OverviewMetric {
+  label: string
+  value: string
+  unit?: string
+  color?: string
+  hl?: boolean
+}
+
+// 概览面板分组：accent=顶部彩条/圆点颜色
+interface OverviewGroup {
+  accent: string
+  title: string
+  items: OverviewMetric[]
+}
+
 // 带符号金额（Tooltip 明细用）：+12.00 / -3.70
 function fmtSigned(n: number): string {
   return `${n > 0 ? '+' : ''}${n.toFixed(2)}`
@@ -1001,43 +1017,59 @@ export default function TradesPanel() {
         </Space>
       </Row>
 
-      {/* 概览条：两组面板（账户资金 / 交易统计），组内紧凑网格，替代单卡堆叠 */}
+      {/* 概览条：两组面板（账户资金 5 项 / 交易统计 5 项），彩条标题 + 网格布局 */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'stretch' }}>
         {/*
-         * 分组面板：标题 + 组内指标网格（label 小字灰 / 数值大字着色）。
-         * 账户资金=当前环境实时值；交易统计=已闭单口径（与资金分析页同源同数）
+         * 面板样式：顶部 3px 彩条（资金=蓝 / 统计=紫）+ 白底浅阴影圆角；
+         * 指标 = 小字灰 label + 大字 tabular-nums 数值，金额带 USDT 单位小字；
+         * 「今日」两项淡蓝底高亮，聚焦当日表现
          */}
-        {[
+        {([
           {
-            title: '账户资金（当前环境）',
+            accent: '#1677ff',
+            title: '账户资金',
             items: [
               {
-                label: '总资金',
-                value: acct?.available
-                  ? (acct.margin_balance ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-                  : '--',
+                label: '保证金余额',
+                value: acct?.available ? (acct.margin_balance ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '--',
+                unit: 'USDT',
                 color: '#1677ff',
               },
               {
-                label: '未实现收益',
+                label: '钱包余额',
+                value: acct?.available ? (acct.wallet ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '--',
+                unit: 'USDT',
+              },
+              {
+                label: '未实现盈亏',
                 value: acct?.available ? `${(acct.unrealized ?? 0) > 0 ? '+' : ''}${(acct.unrealized ?? 0).toFixed(2)}` : '--',
+                unit: 'USDT',
                 color: acct?.available && (acct.unrealized ?? 0) !== 0 ? schemeValueColor(acct.unrealized ?? 0, colorScheme) : undefined,
               },
               {
-                label: '收益率',
+                label: '今日已实现盈亏',
+                value: acct?.available ? `${(acct.today_realized ?? 0) > 0 ? '+' : ''}${(acct.today_realized ?? 0).toFixed(2)}` : '--',
+                unit: 'USDT',
+                color: acct?.available && (acct.today_realized ?? 0) !== 0 ? schemeValueColor(acct.today_realized ?? 0, colorScheme) : undefined,
+                hl: true,
+              },
+              {
+                label: '今日盈亏',
                 value:
-                  acct?.available && acct.profit_rate !== null && acct.profit_rate !== undefined
-                    ? `${acct.profit_rate > 0 ? '+' : ''}${acct.profit_rate.toFixed(2)}%`
+                  acct?.available && acct.today_pnl_pct !== null && acct.today_pnl_pct !== undefined
+                    ? `${acct.today_pnl_pct > 0 ? '+' : ''}${acct.today_pnl_pct.toFixed(2)}%`
                     : '--',
                 color:
-                  acct?.available && acct.profit_rate !== null && acct.profit_rate !== undefined
-                    ? schemeValueColor(acct.profit_rate, colorScheme)
+                  acct?.available && acct.today_pnl_pct !== null && acct.today_pnl_pct !== undefined && acct.today_pnl_pct !== 0
+                    ? schemeValueColor(acct.today_pnl_pct, colorScheme)
                     : undefined,
+                hl: true,
               },
             ],
           },
           {
-            title: '交易统计（已闭单）',
+            accent: '#722ed1',
+            title: '交易统计',
             items: [
               { label: '在跑单子', value: String(stats.running), color: '#1677ff' },
               { label: '盈利单', value: String(stats.wins), color: stats.wins > 0 ? SCHEME_UP_DOWN[colorScheme].up : undefined },
@@ -1048,41 +1080,55 @@ export default function TradesPanel() {
                 color: stats.winRate === null ? undefined : stats.winRate >= 50 ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down,
               },
               {
-                label: '已结算收益',
-                value: `${stats.totalPnl > 0 ? '+' : ''}${stats.totalPnl.toFixed(2)}`,
-                color: stats.totalPnl === 0 ? undefined : schemeValueColor(stats.totalPnl, colorScheme),
-              },
-              {
-                label: '累计净收益',
-                // 全程口径：已结算（闭单实现）+ 未实现（在跑浮动），与收益率分母口径一致
-                value: (() => {
-                  const cum = stats.totalPnl + (acct?.available ? acct.unrealized ?? 0 : 0)
-                  return `${cum > 0 ? '+' : ''}${cum.toFixed(2)}`
-                })(),
-                color: (() => {
-                  const cum = stats.totalPnl + (acct?.available ? acct.unrealized ?? 0 : 0)
-                  return cum === 0 ? undefined : schemeValueColor(cum, colorScheme)
-                })(),
-              },
-              {
                 label: '平均盈亏比',
                 value: stats.avgWinR === null ? '-' : `${stats.avgWinR > 0 ? '+' : ''}${stats.avgWinR.toFixed(2)}R`,
                 color: stats.avgWinR === null ? undefined : schemeValueColor(stats.avgWinR, colorScheme),
               },
             ],
           },
-        ].map((group) => (
+        ] as OverviewGroup[]).map((group) => (
           <div
             key={group.title}
-            style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: '8px 14px 10px', flex: group.items.length > 3 ? 2.3 : 1, minWidth: group.items.length > 3 ? 560 : 300 }}
+            style={{
+              background: '#fff',
+              border: '1px solid #f0f0f0',
+              borderTop: `3px solid ${group.accent}`,
+              borderRadius: 10,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+              padding: '10px 16px 12px',
+              flex: 1,
+              minWidth: 460,
+            }}
           >
-            <div style={{ fontSize: 12, color: '#595959', fontWeight: 600, marginBottom: 4 }}>{group.title}</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: group.accent }} />
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'rgba(0,0,0,0.88)' }}>{group.title}</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(84px, 1fr))', gap: '4px 12px' }}>
               {group.items.map((it) => (
-                <div key={it.label} style={{ flex: '1 1 88px', minWidth: 88 }}>
-                  <div style={{ fontSize: 12, color: '#999', whiteSpace: 'nowrap' }}>{it.label}</div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: it.color || 'rgba(0,0,0,0.88)', lineHeight: 1.3, fontVariantNumeric: 'tabular-nums' }}>
+                <div
+                  key={it.label}
+                  style={
+                    it.hl
+                      ? { background: '#f0f7ff', borderRadius: 8, padding: '5px 10px 6px', margin: '-5px -10px -6px' }
+                      : undefined
+                  }
+                >
+                  <div style={{ fontSize: 12, color: '#8c8c8c', whiteSpace: 'nowrap' }}>{it.label}</div>
+                  <div
+                    style={{
+                      fontSize: 19,
+                      fontWeight: 700,
+                      color: it.color || 'rgba(0,0,0,0.88)',
+                      lineHeight: 1.35,
+                      fontVariantNumeric: 'tabular-nums',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
                     {it.value}
+                    {it.unit && (
+                      <span style={{ fontSize: 11, fontWeight: 400, color: '#8c8c8c', marginLeft: 3 }}>{it.unit}</span>
+                    )}
                   </div>
                 </div>
               ))}
@@ -1090,10 +1136,11 @@ export default function TradesPanel() {
           </div>
         ))}
       </div>
-      {/* 资金口径说明（一行小字，避免误解） */}
+      {/* 口径说明（一行小字，避免误解） */}
       <div style={{ fontSize: 12, color: '#999', marginTop: -4 }}>
-        总资金 = 钱包余额 + 未实现收益；收益率 = 总收益（已实现+未实现）÷ 本金（总资金−总收益）；
-        累计净收益 = 已结算收益 + 未实现收益；胜率 = 净盈利笔数占比；平均盈亏比仅计止盈单
+        保证金余额 = 钱包余额 + 未实现盈亏；今日口径按北京时间自然日（闭单时刻归属当日）；
+        今日盈亏 = （今日已实现 + 全部未实现）÷ 期初钱包（当前钱包 − 今日已实现，忽略日内划转）；
+        胜率 = 净盈利笔数占比；平均盈亏比仅计止盈单
       </div>
 
       <Spin spinning={loading}>

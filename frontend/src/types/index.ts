@@ -70,6 +70,8 @@ export interface AccountSummary {
   realized?: number; // 累计已实现盈亏（当前环境全部闭单）
   profit?: number; // 总收益 = 已实现 + 未实现
   profit_rate?: number | null; // 收益率% = 总收益 ÷ 本金（本金=总资金−总收益）
+  today_realized?: number; // 今日已实现盈亏（北京自然日闭单口径）
+  today_pnl_pct?: number | null; // 今日盈亏%（已实现+未实现）÷ 期初钱包（当前钱包−今日已实现）
 }
 
 export interface ListResponse<T> {

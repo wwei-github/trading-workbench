@@ -33,10 +33,13 @@ router = APIRouter(prefix="/api/trades", tags=["trades"])
 
 @router.get("/account-summary")
 def account_summary(db: Session = Depends(get_db)):
-    """当前交易环境合约账户资金概览（顶部状态栏展示，docs/06 账户维度补充）：
+    """当前交易环境合约账户资金概览（docs/06 账户维度补充）：
     总资金=钱包+未实现盈亏；总收益=已实现+未实现；收益率=总收益÷本金，
-    本金=总资金−总收益（自洽口径，不依赖划转记录）。请求失败返回 available=False
-    前端降级显示「--」，不阻塞页面"""
+    本金=总资金−总收益（自洽口径，不依赖划转记录）。
+    今日口径按北京自然日切（闭单 closed_at 落当日 00:00–24:00）：
+    today_realized=当日闭单已实现盈亏；today_pnl_pct=（今日已实现+未实现）
+    ÷ 期初钱包（当前钱包−今日已实现，忽略日内划转，近似自洽）。
+    请求失败返回 available=False 前端降级显示「--」，不阻塞页面"""
     from app.services.binance_trader import BinanceTrader
 
     cfg = db.get(SystemConfig, 1)
@@ -51,6 +54,20 @@ def account_summary(db: Session = Depends(get_db)):
             up = float(p.get("unrealized_pnl") or 0)
             unrealized += up
         margin_balance = wallet["wallet"] + unrealized
+        # 北京当日 00:00 → UTC 边界（北京 = UTC+8）
+        day_start_utc = (
+            (datetime.utcnow() + timedelta(hours=8)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            - timedelta(hours=8)
+        )
+        today_realized = db.execute(
+            select(func.coalesce(func.sum(TradeRecord.realized_pnl), 0.0)).where(
+                TradeRecord.status == "CLOSED",
+                TradeRecord.testnet == testnet,
+                TradeRecord.closed_at >= day_start_utc,
+            )
+        ).scalar_one()
         realized = db.execute(
             select(func.coalesce(func.sum(TradeRecord.realized_pnl), 0.0)).where(
                 TradeRecord.status == "CLOSED",
@@ -59,6 +76,9 @@ def account_summary(db: Session = Depends(get_db)):
         ).scalar_one()
         profit = float(realized) + unrealized
         principal = margin_balance - profit
+        # 今日盈亏（已实现+未实现浮动）÷ 期初钱包 ≈ 当前钱包 − 今日已实现
+        today_pnl = float(today_realized) + unrealized
+        opening_wallet = wallet["wallet"] - float(today_realized)
         out.update(
             available=True,
             wallet=round(wallet["wallet"], 2),
@@ -68,6 +88,8 @@ def account_summary(db: Session = Depends(get_db)):
             realized=round(float(realized), 2),
             profit=round(profit, 2),
             profit_rate=round(profit / principal * 100, 2) if principal > 0 else None,
+            today_realized=round(float(today_realized), 2),
+            today_pnl_pct=round(today_pnl / opening_wallet * 100, 2) if opening_wallet > 0 else None,
         )
     except Exception as e:
         logger.warning("账户资金概览获取失败（testnet=%s）：%s", testnet, e)
