@@ -91,6 +91,10 @@ def start_card_listener() -> None:
 
 
 def _run_ws() -> None:
+    """长连接主循环：client.start() 在连接断开（网络抖动/被同凭证新连接顶掉）时
+    会静默返回而非自动重连，故外层加重连循环；WARNING 级日志落 app_logs 可观测"""
+    import time as _time
+
     try:
         import lark_oapi as lark
 
@@ -99,12 +103,15 @@ def _run_ws() -> None:
             .register_p2_card_action_trigger(_on_card_action)
             .build()
         )
-        client = lark.ws.Client(
-            settings.FEISHU_APP_ID, settings.FEISHU_APP_SECRET,
-            event_handler=handler, log_level=lark.LogLevel.WARNING,
-        )
-        logger.info("飞书卡片回调长连接已启动（app_id=%s…）", settings.FEISHU_APP_ID[:8])
-        client.start()  # 阻塞，内置自动重连
+        while True:
+            client = lark.ws.Client(
+                settings.FEISHU_APP_ID, settings.FEISHU_APP_SECRET,
+                event_handler=handler, log_level=lark.LogLevel.WARNING,
+            )
+            logger.warning("飞书卡片回调长连接连接中（app_id=%s…）", settings.FEISHU_APP_ID[:8])
+            client.start()  # 阻塞；连接断开时返回
+            logger.warning("飞书卡片长连接断开，30s 后重连")  # 落 app_logs，前端系统日志可见
+            _time.sleep(30)
     except Exception:
         logger.exception("飞书卡片回调长连接异常退出（5 分钟后重试）")
         threading.Timer(300, _run_ws, daemon=True).start()
