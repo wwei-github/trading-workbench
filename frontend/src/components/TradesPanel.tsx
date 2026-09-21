@@ -563,7 +563,7 @@ export default function TradesPanel() {
     // 在跑单一律悬浮拆分（含浮盈为 0 的时刻，口径统一：显示更新时刻的总收益）
     if (!hasRealized || !hasUnreal) return main
     return (
-      <Tooltip title={<span>已结算 {fmtSigned(realized)} · 浮盈/亏 {fmtSigned(unreal)} USDT（每小时 :10 更新）</span>}>
+      <Tooltip title={<span>已结算 {fmtSigned(realized)} · 浮盈/亏 {fmtSigned(unreal)} USDT</span>}>
         {main}
       </Tooltip>
     )
