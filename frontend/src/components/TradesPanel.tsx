@@ -1068,7 +1068,7 @@ export default function TradesPanel() {
             accent: '#722ed1',
             title: '交易统计',
             items: [
-              { label: '在跑单子', value: String(stats.running), color: '#1677ff' },
+              { label: '运行中', value: String(stats.running), color: '#1677ff' },
               { label: '盈利单', value: String(stats.wins), color: stats.wins > 0 ? SCHEME_UP_DOWN[colorScheme].up : undefined },
               { label: '亏损单', value: String(stats.loses), color: stats.loses > 0 ? SCHEME_UP_DOWN[colorScheme].down : undefined },
               {
