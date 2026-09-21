@@ -809,6 +809,61 @@ def _record_realized(db: Session, trader: BinanceTrader, rec: TradeRecord) -> fl
     return pnl
 
 
+def close_market_now(db: Session, trader: BinanceTrader, rec: TradeRecord) -> dict:
+    """市价平仓（飞书卡片按钮，2026-09-21）：撤挂单 → reduceOnly 市价全平 →
+    立即按 income 口径结算落终态（复用巡检零仓位的费用拆分/事件口径）。
+
+    调用方须已获取开仓锁、确认 rec 在跑状态（本函数内不再校验）。
+    返回 {qty, pnl, pnl_pct}；异常向上抛由调用方回滚。
+    """
+    import time
+    trader.cancel_all_algo(rec.symbol)
+    pos = trader.positions().get(rec.symbol)
+    amt = abs(float((pos or {}).get("amt") or 0)) if pos else 0.0
+    close_side = _close_side(rec.direction)
+    close_qty = trader.round_qty(rec.symbol, amt if amt > 0 else float(rec.qty or 0))
+    if close_qty <= 0:
+        raise ValueError("无仓位可平（交易所持仓为空且记录无数量）")
+    if amt > 0:
+        trader.market_order(rec.symbol, close_side, close_qty, reduce_only=True)
+        # 市价单通常即时成交；最多重试一次兜底（成交量未反映到持仓时再补一单）
+        for _ in range(2):
+            cur = trader.positions().get(rec.symbol)
+            cur_amt = abs(float((cur or {}).get("amt") or 0)) if cur else 0.0
+            if cur_amt < close_qty * 0.05:
+                break
+            try:
+                trader.market_order(rec.symbol, close_side, trader.round_qty(
+                    rec.symbol, cur_amt), reduce_only=True)
+            except Exception:
+                break
+            time.sleep(1)
+    time.sleep(1)  # income 流水落库延迟（REALIZED_PNL/COMMISSION 通常 <1s）
+    # 结算：与巡检零仓位分支同口径（费用拆分/全程净额）
+    since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000) - 5_000
+    rows = trader.income_rows(rec.symbol, since_ms)
+    rec.fee_total = round(sum(float(r.get("income") or 0) for r in rows
+                              if r.get("incomeType") == "COMMISSION"), 6)
+    rec.funding_total = round(sum(float(r.get("income") or 0) for r in rows
+                                  if r.get("incomeType") == "FUNDING_FEE"), 6)
+    rec.unrealized_pnl = 0  # 终态无浮动（docs/16）
+    pnl = round(trader.sum_income(rows, trader.INCOME_KEEP), 6)
+    rec.realized_pnl = pnl
+    rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
+    rec.status = "CLOSED"
+    rec.closed_at = datetime.utcnow()
+    rec.exit_reason = "manual"
+    _add_event(db, rec, "MANUAL_CLOSE", {
+        "qty": float(close_qty), "realized_pnl": pnl, "pnl_pct": rec.pnl_pct,
+        "exit_reason": "manual", "fee_total": rec.fee_total,
+        "funding_total": rec.funding_total,
+    })
+    db.commit()
+    logger.info("市价平仓 %s %s：qty=%s pnl=%s（%s%%）", rec.symbol, rec.direction,
+                close_qty, rec.realized_pnl, rec.pnl_pct)
+    return {"qty": float(close_qty), "pnl": pnl, "pnl_pct": rec.pnl_pct}
+
+
 def _tranche_pnl(trader: BinanceTrader, rec: TradeRecord, raw: dict) -> float:
     """本档止盈盈亏：REALIZED_PNL 累计（仅价差不含费用）相对上次书签的差值，
     即该档成交自身的价差收益；书签推进后写回 rec.raw。"""

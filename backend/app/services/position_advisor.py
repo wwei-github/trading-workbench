@@ -234,18 +234,105 @@ def diagnose_trade(db: Session, rec) -> dict:
     return advice
 
 
+ACTION_LABEL = {
+    "hold": "继续持有",
+    "tighten": "收紧止损",
+    "reduce": "建议减仓",
+    "exit": "建议离场",
+}
+
+
 def _notify_exit(rec, advice: dict, total: float) -> None:
-    """建议离场 → 飞书推送（失败仅记日志）。调用方已保证同单不连续重复推送。"""
+    """建议离场 → 飞书卡片推送（失败仅记日志）。调用方已保证同单不连续重复推送。
+
+    卡片布局对齐日报：header 按盈亏着色（浮亏红）→ 持仓概要 fields 两列栅格
+    （币种方向/持有时长、开仓价/现价、浮亏金额/占比R）→ AI 建议（动作 +
+    thesis/trend 标注）→ 理由正文 → 市价平仓按钮（自建应用交互卡片，
+    feishu_bot 回调执行）。卡片失败降级纯文本保底。
+    """
     try:
-        from app.services.notify import send_feishu_text
+        from app.services.feishu_bot import configured as feishu_app_ready, send_app_card
+        from app.services.notify import send_feishu_card, send_feishu_text
         risk = float(rec.risk_amount or 0)
-        pct = f"（-风险额的 {abs(total) / risk * 100:.0f}%）" if risk > 0 and total < 0 else ""
         side = "多" if rec.direction == "long" else "空"
-        text = (
-            f"⚠️ AI 持仓建议：离场\n"
-            f"{rec.symbol} {side}｜浮亏 {total:.2f} USDT{pct}\n"
-            f"理由：{advice.get('reason') or '-'}"
+        entry = float(rec.entry_price or 0)
+        snap = rec.ai_snapshot or {}
+        tp1 = snap.get("tp1")
+        sl = snap.get("stop_loss")
+        held_h = (
+            round((datetime.utcnow() - rec.opened_at).total_seconds() / 3600, 1)
+            if rec.opened_at else None
         )
-        send_feishu_text(text)
+        r_mult = f"{total / risk:.2f}R" if risk > 0 else "-"
+
+        def _num(x):
+            if x in (None, "", 0):
+                return "—"
+            try:
+                return f"{float(x):g}"
+            except (TypeError, ValueError):
+                return str(x)
+
+        # 浮亏占比（相对止损金额），防御 risk<=0
+        loss_pct = f"{abs(total) / risk * 100:.0f}%" if risk > 0 else "—"
+        advice_line = (
+            f"**{ACTION_LABEL.get(action_f, action_f) if (action_f := advice.get('action')) else '-'}**"
+            f"（开仓逻辑{'成立' if advice.get('thesis_valid') else '已破坏'}"
+            f" · 走势{'已走坏' if advice.get('trend_broken') else '未走坏'}）"
+        )
+
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": f"⚠️ AI 持仓建议：建议离场 · {rec.symbol}"},
+                "template": "red",
+            },
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": "**📋 持仓概要**"}},
+                {"tag": "div", "fields": [
+                    {"is_short": True, "text": {"tag": "lark_md",
+                     "content": f"**方向**　{side}{f' · 已持仓 {held_h}h' if held_h is not None else ''}"}},
+                    {"is_short": True, "text": {"tag": "lark_md",
+                     "content": f"**浮亏**　<font color='red'>{total:+.2f} USDT（{r_mult} / 风险额的 {loss_pct}）</font>"}},
+                    {"is_short": True, "text": {"tag": "lark_md",
+                     "content": f"**开仓价**　{_num(entry)}"}},
+                    {"is_short": True, "text": {"tag": "lark_md",
+                     "content": f"**现价**　{_num(snap.get('current_price'))}"}},
+                    {"is_short": True, "text": {"tag": "lark_md",
+                     "content": f"**止损**　{_num(sl)}"}},
+                    {"is_short": True, "text": {"tag": "lark_md",
+                     "content": f"**TP1**　{_num(tp1)}"}},
+                ]},
+                {"tag": "hr"},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"🤖 **AI 建议**　{advice_line}"}},
+                {"tag": "div", "text": {"tag": "lark_md",
+                 "content": f"{advice.get('reason') or '—'}"}},
+            ],
+        }
+        # 交互卡片（2026-09-21）：自建应用发的卡片才收得到按钮回调；点击后
+        # 后台平仓并在群内发结果卡片（feishu_bot._exec_close）。未配置则
+        # webhook 纯展示、不带按钮
+        app_ready = feishu_app_ready()
+        if app_ready and settings.FEISHU_ACTION_TOKEN:
+            card["elements"].append({"tag": "action", "actions": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "🛑 市价平仓"},
+                "type": "danger",
+                "value": {
+                    "act": "close_market",
+                    "token": settings.FEISHU_ACTION_TOKEN,
+                    "trade_id": rec.id,
+                },
+            }]})
+        ok = send_app_card(card) if app_ready else send_feishu_card(card)
+        if not ok:
+            # 降级纯文本（保底送达）
+            pct = f"（风险额的 {loss_pct}）" if risk > 0 else ""
+            text = (
+                f"⚠️ AI 持仓建议：离场\n"
+                f"{rec.symbol} {side}｜浮亏 {total:.2f} USDT（{r_mult}）{pct}\n"
+                f"理由：{advice.get('reason') or '-'}"
+            )
+            send_feishu_text(text)
     except Exception as e:
         logger.warning("持仓建议飞书推送失败 %s: %s", rec.symbol, e)

@@ -14,6 +14,7 @@ from app.api import (
 )
 from app.config import settings
 from app.database import init_db
+from app.services.feishu_bot import start_card_listener
 from app.services.log_sink import attach_db_log_sink
 
 logging.basicConfig(
@@ -28,6 +29,7 @@ logger = logging.getLogger("app.api")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    start_card_listener()  # 飞书卡片回调长连接（自建应用，未配置自动跳过）
     yield
 
 

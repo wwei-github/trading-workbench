@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     AI_MODEL: str = "gpt-4o-mini"
     # 飞书群机器人（业务日报等通知用；未配置时通知静默跳过）
     FEISHU_NOTIFY_WEBHOOK: str = ""
+    # 飞书卡片操作（市价平仓按钮）：FEISHU_ACTION_TOKEN=操作令牌（按钮 value 携带校验）。
+    # 自建应用三件套（APP_ID/APP_SECRET/TARGET_ID）未配置时卡片不带按钮（webhook 纯展示）
+    FEISHU_ACTION_TOKEN: str = ""
+    # 飞书自建应用机器人（卡片按钮回调走长连接，点击平仓 → 会话内新卡片回报结果）
+    FEISHU_APP_ID: str = ""
+    FEISHU_APP_SECRET: str = ""
+    # 卡片发送目标：群 chat_id（oc_ 开头）或个人 open_id（ou_ 开头），发送时按前缀自动识别
+    FEISHU_TARGET_ID: str = ""
 
     # AI 管线（P0，docs/04 §10）
     LLM_CONCURRENCY: int = 8          # LLM 全局并发上限（Redis 信号量；2026-09-20 4→8，

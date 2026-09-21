@@ -99,6 +99,7 @@ const EVENT_META: Record<string, { label: string; color: string; icon: React.Rea
   LIQUIDATION: { label: '强平', color: '#ff4d4f', icon: <WarningOutlined /> },
   ERROR: { label: '异常', color: '#ff4d4f', icon: <WarningOutlined /> },
   AI_ADVICE: { label: 'AI 持仓诊断', color: '#722ed1', icon: <RobotOutlined /> },
+  MANUAL_CLOSE: { label: '市价平仓', color: '#fa541c', icon: <CloseCircleOutlined /> },
 }
 
 // 事件详情按键的中文名
@@ -185,8 +186,17 @@ function detailValue(k: string, v: unknown, scheme: ColorScheme): React.ReactNod
 }
 
 // 事件详情 JSON → Descriptions 组件（一行两项）
-function renderDetail(detail: Record<string, unknown> | null, scheme: ColorScheme) {
+// AI_ADVICE 事件隐藏 reason/detail（理由与分析只在左侧持仓诊断卡片完整展示）
+function renderDetail(
+  detail: Record<string, unknown> | null,
+  scheme: ColorScheme,
+  eventType?: string,
+) {
   if (!detail || Object.keys(detail).length === 0) return null
+  const entries = Object.entries(detail).filter(
+    ([k]) => !(eventType === 'AI_ADVICE' && (k === 'reason' || k === 'detail')),
+  )
+  if (entries.length === 0) return null
   return (
     <Descriptions
       size="small"
@@ -201,7 +211,7 @@ function renderDetail(detail: Record<string, unknown> | null, scheme: ColorSchem
         paddingInlineEnd: 8,
       }}
       contentStyle={{ fontSize: 12, color: '#333', wordBreak: 'break-all' }}
-      items={Object.entries(detail).map(([k, v]) => ({
+      items={entries.map(([k, v]) => ({
         key: k,
         label: DETAIL_KEY_MAP[k] || k,
         children: detailValue(k, v, scheme),
@@ -570,7 +580,7 @@ export default function TradesPanel() {
                 color: '#8c8c8c',
                 icon: <HistoryOutlined />,
               }
-            const detail = renderDetail(ev.detail, colorScheme)
+            const detail = renderDetail(ev.detail, colorScheme, ev.event_type)
             // 折叠态关键信息（有详情才可展开；无详情事件直接平铺摘要）
             const summary = eventSummary(ev, colorScheme)
             const evtKey = `${rec.id}:${idx}`
@@ -1144,43 +1154,59 @@ export default function TradesPanel() {
                             background: 'linear-gradient(135deg, #f9f0ff 0%, #fff 60%)',
                             border: '1px solid #efdbff',
                             borderRadius: 8,
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 10,
-                            flexWrap: 'wrap',
                           }}
                         >
                           <div
                             style={{
-                              fontSize: 12,
-                              fontWeight: 600,
-                              color: '#722ed1',
                               display: 'flex',
                               alignItems: 'center',
-                              gap: 6,
+                              gap: 10,
+                              flexWrap: 'wrap',
                             }}
                           >
-                            <RobotOutlined />
-                            持仓诊断
+                            <div
+                              style={{
+                                fontSize: 12,
+                                fontWeight: 600,
+                                color: '#722ed1',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 6,
+                              }}
+                            >
+                              <RobotOutlined />
+                              持仓诊断
+                            </div>
+                            <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>
+                              {meta.label}
+                            </Tag>
+                            <Tag
+                              color={rec.ai_advice.thesis_valid ? 'green' : 'red'}
+                              style={{ marginInlineEnd: 0 }}
+                            >
+                              开仓逻辑{rec.ai_advice.thesis_valid ? '成立' : '已破坏'}
+                            </Tag>
+                            <Tag
+                              color={rec.ai_advice.trend_broken ? 'red' : 'green'}
+                              style={{ marginInlineEnd: 0 }}
+                            >
+                              走势{rec.ai_advice.trend_broken ? '已走坏' : '未走坏'}
+                            </Tag>
+                            <span style={{ fontSize: 12, color: '#999', marginLeft: 'auto' }}>
+                              {rec.ai_advice_at ? bj(rec.ai_advice_at).format('MM-DD HH:mm') : ''}
+                            </span>
                           </div>
-                          <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>
-                            {meta.label}
-                          </Tag>
-                          <Tag
-                            color={rec.ai_advice.thesis_valid ? 'green' : 'red'}
-                            style={{ marginInlineEnd: 0 }}
-                          >
-                            开仓逻辑{rec.ai_advice.thesis_valid ? '成立' : '已破坏'}
-                          </Tag>
-                          <Tag
-                            color={rec.ai_advice.trend_broken ? 'red' : 'green'}
-                            style={{ marginInlineEnd: 0 }}
-                          >
-                            走势{rec.ai_advice.trend_broken ? '已走坏' : '未走坏'}
-                          </Tag>
-                          <span style={{ fontSize: 12, color: '#999', marginLeft: 'auto' }}>
-                            {rec.ai_advice_at ? bj(rec.ai_advice_at).format('MM-DD HH:mm') : ''}
-                          </span>
+                          {/* 理由与分析：左侧完整展示（右侧操作历史仅 Tag 摘要） */}
+                          {rec.ai_advice.reason && (
+                            <div style={{ fontSize: 12, color: '#595959', lineHeight: 1.6, marginTop: 6 }}>
+                              <b style={{ color: '#722ed1' }}>理由：</b>{rec.ai_advice.reason}
+                            </div>
+                          )}
+                          {rec.ai_advice.detail && (
+                            <div style={{ fontSize: 12, color: '#8c8c8c', lineHeight: 1.6, marginTop: 4 }}>
+                              <b style={{ color: '#722ed1' }}>分析：</b>{rec.ai_advice.detail}
+                            </div>
+                          )}
                         </div>
                       )
                     })()}
