@@ -15,6 +15,7 @@
     TP2 后每次巡检跟进止损（最近3根已收盘K线极值，只收紧不放松）
 """
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_DOWN, Decimal
 from uuid import UUID
@@ -44,15 +45,15 @@ logger = logging.getLogger(__name__)
 
 
 def _capital_base(wallet: float) -> float:
-    """风险基数：钱包余额向下落到最近的分档档位；低于最小档返回 0（不开仓）"""
-    tiers = sorted(
-        float(x) for x in str(settings.TRADING_CAPITAL_TIERS).split(",") if x.strip()
-    )
-    base = 0.0
-    for t in tiers:
-        if wallet >= t:
-            base = t
-    return base
+    """风险基数：按钱包余额首位数取整，下限 100、上限 5000（2026-09-21 拍板）：
+    首位 digit = int(wallet / 10^n)，基数 = digit × 10^n，超 5000 封顶、
+    不足 100 按 100 兜底。
+    例：4800 → 4000、980 → 900、65 → 100、5200/15000 → 5000"""
+    if wallet <= 0:
+        return 0.0
+    magnitude = 10 ** int(math.log10(wallet))
+    digit = int(wallet / magnitude)
+    return float(min(max(digit * magnitude, 100), 5000))
 
 
 def _adaptive_leverage(stop_pct: float, mmr: float, buffer: float) -> int:
