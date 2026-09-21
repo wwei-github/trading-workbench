@@ -1,6 +1,6 @@
 /**
  * 交易记录页（docs/06）：自动交易生命周期与收益展示
- * - 概览条：在跑单子 / 已平仓 / 胜率 / 累计净收益（正绿负红）
+ * - 概览条：两组面板（账户资金 3 项 / 交易统计 7 项，含已结算收益），紧凑网格不分卡
  * - 列表：币种/方向/环境（测试网·正式网）/状态/开仓信息/三价现值/收益/收益率；排序：进行中（开仓时间倒序）→ 已平仓（平仓时间倒序）→ 失败殿后
  * - 收益列：运行中 = 已实现+浮动合计（每小时 :10 巡检刷新，docs/16），悬浮拆分明细
  * - AI 建议列：浮亏在跑单的 AI 持仓诊断（逻辑是否破坏/建议动作），手动可重诊（docs/16）
@@ -49,7 +49,6 @@ import { SCHEME_UP_DOWN, schemeTag, schemeValueColor } from '../utils/scheme'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import AiAnalysisCard from './AiAnalysisCard'
 import TradeReplayChart from './TradeReplayChart'
-import StatCard from './StatCard'
 import type { AccountSummary, FundAnalytics, PurgeStats, TradeEvent, TradeRecord } from '../types'
 import { ADVICE_ACTION_META } from '../types'
 
@@ -1002,67 +1001,99 @@ export default function TradesPanel() {
         </Space>
       </Row>
 
-      {/* 概览条：左=账户资金（当前环境），右=交易统计（与资金分析页同源同数） */}
+      {/* 概览条：两组面板（账户资金 / 交易统计），组内紧凑网格，替代单卡堆叠 */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'stretch' }}>
-        <StatCard
-          title="总资金（当前环境）"
-          value={acct?.available ? `${(acct.margin_balance ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '--'}
-          color="#1677ff"
-        />
-        <StatCard
-          title="未实现收益"
-          value={
-            acct?.available
-              ? `${(acct.unrealized ?? 0) > 0 ? '+' : ''}${(acct.unrealized ?? 0).toFixed(2)} USDT`
-              : '--'
-          }
-          color={acct?.available && (acct.unrealized ?? 0) !== 0 ? schemeValueColor(acct.unrealized ?? 0, colorScheme) : undefined}
-        />
-        <StatCard
-          title="收益率"
-          value={
-            acct?.available && acct.profit_rate !== null && acct.profit_rate !== undefined
-              ? `${acct.profit_rate > 0 ? '+' : ''}${acct.profit_rate.toFixed(2)}%`
-              : '--'
-          }
-          color={
-            acct?.available && acct.profit_rate !== null && acct.profit_rate !== undefined
-              ? schemeValueColor(acct.profit_rate, colorScheme)
-              : undefined
-          }
-        />
-        {/* 资金列与交易统计列之间的分隔 */}
-        <div style={{ width: 1, background: '#e8e8e8', margin: '4px 2px' }} />
-        <StatCard title="在跑单子" value={String(stats.running)} color="#1677ff" />
-        <StatCard
-          title="盈利单"
-          value={String(stats.wins)}
-          color={stats.wins > 0 ? SCHEME_UP_DOWN[colorScheme].up : undefined}
-        />
-        <StatCard
-          title="亏损单"
-          value={String(stats.loses)}
-          color={stats.loses > 0 ? SCHEME_UP_DOWN[colorScheme].down : undefined}
-        />
-        <StatCard
-          title="胜率（净盈利笔数占比）"
-          value={stats.winRate === null ? '-' : `${stats.winRate}%`}
-          color={stats.winRate === null ? undefined : stats.winRate >= 50 ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down}
-        />
-        <StatCard
-          title="累计净收益"
-          value={`${stats.totalPnl > 0 ? '+' : ''}${stats.totalPnl.toFixed(2)} USDT`}
-          color={stats.totalPnl === 0 ? undefined : schemeValueColor(stats.totalPnl, colorScheme)}
-        />
-        <StatCard
-          title="平均盈亏比（止盈单）"
-          value={stats.avgWinR === null ? '-' : `${stats.avgWinR > 0 ? '+' : ''}${stats.avgWinR.toFixed(2)}R`}
-          color={stats.avgWinR === null ? undefined : schemeValueColor(stats.avgWinR, colorScheme)}
-        />
+        {/*
+         * 分组面板：标题 + 组内指标网格（label 小字灰 / 数值大字着色）。
+         * 账户资金=当前环境实时值；交易统计=已闭单口径（与资金分析页同源同数）
+         */}
+        {[
+          {
+            title: '账户资金（当前环境）',
+            items: [
+              {
+                label: '总资金',
+                value: acct?.available
+                  ? (acct.margin_balance ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                  : '--',
+                color: '#1677ff',
+              },
+              {
+                label: '未实现收益',
+                value: acct?.available ? `${(acct.unrealized ?? 0) > 0 ? '+' : ''}${(acct.unrealized ?? 0).toFixed(2)}` : '--',
+                color: acct?.available && (acct.unrealized ?? 0) !== 0 ? schemeValueColor(acct.unrealized ?? 0, colorScheme) : undefined,
+              },
+              {
+                label: '收益率',
+                value:
+                  acct?.available && acct.profit_rate !== null && acct.profit_rate !== undefined
+                    ? `${acct.profit_rate > 0 ? '+' : ''}${acct.profit_rate.toFixed(2)}%`
+                    : '--',
+                color:
+                  acct?.available && acct.profit_rate !== null && acct.profit_rate !== undefined
+                    ? schemeValueColor(acct.profit_rate, colorScheme)
+                    : undefined,
+              },
+            ],
+          },
+          {
+            title: '交易统计（已闭单）',
+            items: [
+              { label: '在跑单子', value: String(stats.running), color: '#1677ff' },
+              { label: '盈利单', value: String(stats.wins), color: stats.wins > 0 ? SCHEME_UP_DOWN[colorScheme].up : undefined },
+              { label: '亏损单', value: String(stats.loses), color: stats.loses > 0 ? SCHEME_UP_DOWN[colorScheme].down : undefined },
+              {
+                label: '胜率',
+                value: stats.winRate === null ? '-' : `${stats.winRate}%`,
+                color: stats.winRate === null ? undefined : stats.winRate >= 50 ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down,
+              },
+              {
+                label: '已结算收益',
+                value: `${stats.totalPnl > 0 ? '+' : ''}${stats.totalPnl.toFixed(2)}`,
+                color: stats.totalPnl === 0 ? undefined : schemeValueColor(stats.totalPnl, colorScheme),
+              },
+              {
+                label: '累计净收益',
+                // 全程口径：已结算（闭单实现）+ 未实现（在跑浮动），与收益率分母口径一致
+                value: (() => {
+                  const cum = stats.totalPnl + (acct?.available ? acct.unrealized ?? 0 : 0)
+                  return `${cum > 0 ? '+' : ''}${cum.toFixed(2)}`
+                })(),
+                color: (() => {
+                  const cum = stats.totalPnl + (acct?.available ? acct.unrealized ?? 0 : 0)
+                  return cum === 0 ? undefined : schemeValueColor(cum, colorScheme)
+                })(),
+              },
+              {
+                label: '平均盈亏比',
+                value: stats.avgWinR === null ? '-' : `${stats.avgWinR > 0 ? '+' : ''}${stats.avgWinR.toFixed(2)}R`,
+                color: stats.avgWinR === null ? undefined : schemeValueColor(stats.avgWinR, colorScheme),
+              },
+            ],
+          },
+        ].map((group) => (
+          <div
+            key={group.title}
+            style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: '8px 14px 10px', flex: group.items.length > 3 ? 2.3 : 1, minWidth: group.items.length > 3 ? 560 : 300 }}
+          >
+            <div style={{ fontSize: 12, color: '#595959', fontWeight: 600, marginBottom: 4 }}>{group.title}</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 18px' }}>
+              {group.items.map((it) => (
+                <div key={it.label} style={{ flex: '1 1 88px', minWidth: 88 }}>
+                  <div style={{ fontSize: 12, color: '#999', whiteSpace: 'nowrap' }}>{it.label}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: it.color || 'rgba(0,0,0,0.88)', lineHeight: 1.3, fontVariantNumeric: 'tabular-nums' }}>
+                    {it.value}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
       {/* 资金口径说明（一行小字，避免误解） */}
       <div style={{ fontSize: 12, color: '#999', marginTop: -4 }}>
-        总资金 = 钱包余额 + 未实现收益；收益率 = 总收益（已实现+未实现）÷ 本金（总资金−总收益）
+        总资金 = 钱包余额 + 未实现收益；收益率 = 总收益（已实现+未实现）÷ 本金（总资金−总收益）；
+        累计净收益 = 已结算收益 + 未实现收益；胜率 = 净盈利笔数占比；平均盈亏比仅计止盈单
       </div>
 
       <Spin spinning={loading}>
