@@ -89,11 +89,19 @@ def list_trades(
 
 
 @router.get("/transfers", response_model=list[AccountTransferOut])
-def list_transfers(limit: int = 200, db: Session = Depends(get_db)):
+def list_transfers(
+    scope: str = "live",
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
     """合约账户资金划转记录（新→旧，amount 正=转入/负=转出）。
-    由每小时结算巡检从币安 income TRANSFER 同步，本接口只读。"""
+    由每小时结算巡检从币安 income TRANSFER 同步，本接口只读；
+    scope 区分环境（live/testnet），按 testnet 标记过滤。"""
+    if scope not in ("live", "testnet"):
+        raise HTTPException(status_code=400, detail="scope 只支持 live/testnet")
     rows = db.execute(
         select(AccountTransfer)
+        .where(AccountTransfer.testnet == (scope == "testnet"))
         .order_by(AccountTransfer.transfer_time.desc())
         .limit(min(limit, 500))
     ).scalars().all()
@@ -145,7 +153,7 @@ def fund_analytics(
     """资金分析聚合（docs/14）：闭单按 closed_at 落北京时间自然日桶，划转按 transfer_time
 
     - start/end 为北京时间 YYYY-MM-DD 闭区间；DB 存 UTC naive，过滤用换算后的 UTC 边界
-    - scope=testnet 时闭单照常统计，划转返回空列表（测试网未同步划转，前端展示空态）
+    - scope=testnet 时闭单照常统计，划转按 testnet 标记过滤（两环境各自同步落库）
     """
     def _parse_day(s: str, name: str) -> datetime:
         try:

@@ -1,10 +1,11 @@
 /**
  * 资金划转页（顶层 Tab）：合约账户转入/转出记录
- * - 数据来源：每小时 :10 结算巡检从币安 income TRANSFER 同步（GET /api/trades/transfers）
+ * - 数据来源：每小时 :10 结算巡检从币安 income TRANSFER 同步（GET /api/trades/transfers?scope=）
+ * - 环境切换（正式网/测试网）与资金分析页一致：默认跟随当前交易环境
  * - 概览：累计转入 / 累计转出 / 净流入；明细表带符号金额着色（随全局涨跌配色）
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, Empty, Spin, Table, Tag, message } from 'antd'
+import { Button, Empty, Segmented, Spin, Table, Tag, message } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
@@ -14,29 +15,46 @@ import { useScanStore } from '../stores/scanStore'
 import StatCard from './StatCard'
 import type { AccountTransfer } from '../types'
 
+type Scope = 'live' | 'testnet'
+
 function fmtTime(s: string | null | undefined): string {
   if (!s) return '-'
   return bj(s).format('MM-DD HH:mm:ss')
 }
 
 export default function TransfersPanel() {
+  // 默认 scope 跟随当前交易环境（与资金分析页一致），配置加载后校正
+  const { aiConfig, fetchConfig } = useScanStore()
+  const defaultScope: Scope = (aiConfig?.trading_testnet ?? true) ? 'testnet' : 'live'
+  const [scope, setScope] = useState<Scope>('testnet')
+  const [scopeInit, setScopeInit] = useState(false)
   const [rows, setRows] = useState<AccountTransfer[]>([])
   const [loading, setLoading] = useState(false)
   const colorScheme = useScanStore((s) => s.colorScheme)
 
+  useEffect(() => {
+    if (!aiConfig) {
+      fetchConfig()
+      return
+    }
+    if (!scopeInit) {
+      setScope(defaultScope)
+      setScopeInit(true)
+    }
+  }, [aiConfig, fetchConfig, scopeInit, defaultScope])
+
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
-      setRows(await scanApi.trades.transfers())
+      setRows(await scanApi.trades.transfers(scope))
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '获取资金划转失败')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [scope])
 
-  // 仅初始加载，不做轮询：划转每小时 :10 巡检从交易所同步（按小时变动），
-  // 手动点「刷新」按钮即可获取最新数据
+  // scope 初始化/切换时重新拉取
   useEffect(() => {
     fetchData()
   }, [fetchData])
@@ -99,6 +117,21 @@ export default function TransfersPanel() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* 筛选条：环境切换 + 刷新（与资金分析页一致） */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+        <Segmented
+          value={scope}
+          onChange={(v) => setScope(v as Scope)}
+          options={[
+            { label: '正式网', value: 'live' },
+            { label: '测试网', value: 'testnet' },
+          ]}
+        />
+        <Button icon={<ReloadOutlined />} onClick={fetchData}>
+          刷新
+        </Button>
+      </div>
+
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         <StatCard title="累计转入" value={`+${stats.tin.toFixed(2)} USDT`} color="#1677ff" />
         <StatCard title="累计转出" value={`-${stats.tout.toFixed(2)} USDT`} color="#fa8c16" />
@@ -107,9 +140,6 @@ export default function TransfersPanel() {
           value={`${stats.net > 0 ? '+' : ''}${stats.net.toFixed(2)} USDT`}
           color={stats.net === 0 ? undefined : schemeValueColor(stats.net, colorScheme)}
         />
-        <Button icon={<ReloadOutlined />} style={{ marginLeft: 'auto', alignSelf: 'center' }} onClick={fetchData}>
-          刷新
-        </Button>
       </div>
 
       <Spin spinning={loading}>

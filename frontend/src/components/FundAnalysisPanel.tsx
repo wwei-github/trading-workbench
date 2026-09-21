@@ -2,7 +2,7 @@
  * 资金分析页（docs/14）：筛选条（环境/时间范围）+ 概览 6 卡 + 2×3 图表栅格
  * - 数据源 GET /api/trades/analytics（已闭单按北京时间自然日落桶，划转按 transfer_time）
  * - 配色全走 scheme 体系（红涨绿跌/绿涨红跌可切换），禁止硬编码涨跌色
- * - 划转仅一套（服务器配置环境账户），测试网视图下划转区显示空态说明
+ * - 划转按环境同步落库（testnet 标记），随页内 scope 过滤展示
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {

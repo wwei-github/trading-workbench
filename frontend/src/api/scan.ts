@@ -171,9 +171,11 @@ export const scanApi = {
     // 交易复盘K线（开单前100根 + 持仓期间，含初始止损止盈与关键事件）
     klines: (tradeId: string) =>
       api.get<TradeKlineData>(`/trades/${tradeId}/klines`, { timeout: 60000 }).then((r) => r.data),
-    // 合约账户资金划转（正=转入/负=转出，每小时巡检同步）
-    transfers: (limit = 200) =>
-      api.get<AccountTransfer[]>('/trades/transfers', { params: { limit } }).then((r) => r.data),
+    // 合约账户资金划转（正=转入/负=转出，每小时巡检同步，按环境过滤）
+    transfers: (scope: 'live' | 'testnet' = 'live', limit = 200) =>
+      api
+        .get<AccountTransfer[]>('/trades/transfers', { params: { scope, limit } })
+        .then((r) => r.data),
     // 资金分析聚合（docs/14，start/end 为北京时间 YYYY-MM-DD 闭区间）
     analytics: (params: { scope: 'live' | 'testnet'; start?: string; end?: string }) =>
       api.get<FundAnalytics>('/trades/analytics', { params }).then((r) => r.data),
