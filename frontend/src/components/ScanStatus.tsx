@@ -1,58 +1,23 @@
-import { useEffect, useState } from 'react'
 import { Statistic, Row, Col, Tag } from 'antd'
 import { bj } from '../utils/dayjs'
 import { useScanStore } from '../stores/scanStore'
-import { scanApi } from '../api/scan'
-import type { AccountSummary } from '../types'
 
 /** 顶部运行状态一览（2026-09-20 v2）：
- *  总资金（当前环境 60s 轮询）+ 自动交易 + 最近扫描（时间+命中）+ 在跑单水位。
+ *  自动交易 + 最近扫描（时间+命中）+ 在跑单水位（资金数字全部下沉到各页面概览）。
  *  总收益/收益率去掉（资金分析页与交易记录页概览已有，顶部只留资金存量）；
  *  扫描状态去掉（「扫描中」态在立即扫描按钮上直接可见）。 */
 export default function ScanStatus() {
   const { status } = useScanStore()
   const last = status?.last_scan
   const trading = status?.trading_enabled ?? false
-  const [acct, setAcct] = useState<AccountSummary | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    const load = () =>
-      scanApi.trades
-        .accountSummary()
-        .then((d) => {
-          if (alive) setAcct(d)
-        })
-        .catch(() => {})
-    load()
-    const t = setInterval(load, 60_000)
-    return () => {
-      alive = false
-      clearInterval(t)
-    }
-  }, [])
 
   const openN = status?.open_trades ?? 0
   const maxN = status?.max_open_trades ?? 5
   const unbounded = maxN <= 0
   const nearLimit = !unbounded && openN >= maxN
 
-  const money = (v?: number | null) =>
-    v === null || v === undefined ? '--' : v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
   return (
     <Row gutter={28}>
-      <Col>
-        <Statistic
-          title="总资金"
-          valueRender={() => (
-            <span style={{ fontSize: 15, fontWeight: 600 }}>
-              {acct?.available ? money(acct.margin_balance) : '--'}
-              <span style={{ fontSize: 12, fontWeight: 400, color: '#8c8c8c', marginLeft: 4 }}>USDT</span>
-            </span>
-          )}
-        />
-      </Col>
       <Col>
         <Statistic
           title="自动交易"

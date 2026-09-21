@@ -140,13 +140,12 @@ function fmtNum(n: number | null | undefined): string {
   return String(n)
 }
 
-// 概览面板指标项：unit=金额单位小字；hl=淡蓝底高亮（今日口径两项）
+// 概览面板指标项：unit=金额单位小字
 interface OverviewMetric {
   label: string
   value: string
   unit?: string
   color?: string
-  hl?: boolean
 }
 
 // 概览面板分组：accent=顶部彩条/圆点颜色
@@ -1051,7 +1050,6 @@ export default function TradesPanel() {
                 value: acct?.available ? `${(acct.today_realized ?? 0) > 0 ? '+' : ''}${(acct.today_realized ?? 0).toFixed(2)}` : '--',
                 unit: 'USDT',
                 color: acct?.available && (acct.today_realized ?? 0) !== 0 ? schemeValueColor(acct.today_realized ?? 0, colorScheme) : undefined,
-                hl: true,
               },
               {
                 label: '今日盈亏',
@@ -1063,7 +1061,6 @@ export default function TradesPanel() {
                   acct?.available && acct.today_pnl_pct !== null && acct.today_pnl_pct !== undefined && acct.today_pnl_pct !== 0
                     ? schemeValueColor(acct.today_pnl_pct, colorScheme)
                     : undefined,
-                hl: true,
               },
             ],
           },
@@ -1106,14 +1103,7 @@ export default function TradesPanel() {
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(84px, 1fr))', gap: '4px 12px' }}>
               {group.items.map((it) => (
-                <div
-                  key={it.label}
-                  style={
-                    it.hl
-                      ? { background: '#f0f7ff', borderRadius: 8, padding: '5px 10px 6px', margin: '-5px -10px -6px' }
-                      : undefined
-                  }
-                >
+                <div key={it.label}>
                   <div style={{ fontSize: 12, color: '#8c8c8c', whiteSpace: 'nowrap' }}>{it.label}</div>
                   <div
                     style={{
