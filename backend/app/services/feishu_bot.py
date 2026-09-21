@@ -52,11 +52,8 @@ def _tenant_token() -> str:
     return _token_cache["token"]
 
 
-def send_app_card(card: dict) -> bool:
-    """以自建应用身份发 interactive 卡片（webhook 发的卡片收不到回调）。
-
-    目标按前缀自动识别：oc_ → 群（chat_id），ou_ → 个人单聊（open_id）
-    """
+def _post_message(msg_type: str, content: str) -> bool:
+    """统一发消息（interactive/text）到目标会话；失败仅记日志不抛错"""
     if not configured():
         return False
     rid_type = "chat_id" if settings.FEISHU_TARGET_ID.startswith("oc_") else "open_id"
@@ -67,19 +64,32 @@ def send_app_card(card: dict) -> bool:
             headers={"Authorization": f"Bearer {_tenant_token()}"},
             json={
                 "receive_id": settings.FEISHU_TARGET_ID,
-                "msg_type": "interactive",
-                "content": json.dumps(card, ensure_ascii=False),
+                "msg_type": msg_type,
+                "content": content,
             },
             timeout=10,
         )
         data = r.json()
         if data.get("code") == 0:
             return True
-        logger.warning("飞书应用卡片发送失败: %s", str(data)[:300])
+        logger.warning("飞书应用消息发送失败: %s", str(data)[:300])
         return False
     except Exception as e:
-        logger.warning("飞书应用卡片发送异常: %s", e)
+        logger.warning("飞书应用消息发送异常: %s", e)
         return False
+
+
+def send_app_card(card: dict) -> bool:
+    """以自建应用身份发 interactive 卡片（webhook 发的卡片收不到回调）。
+
+    目标按前缀自动识别：oc_ → 群（chat_id），ou_ → 个人单聊（open_id）
+    """
+    return _post_message("interactive", json.dumps(card, ensure_ascii=False))
+
+
+def send_app_text(text: str) -> bool:
+    """以自建应用身份发纯文本（降级保底用）"""
+    return _post_message("text", json.dumps({"text": text}, ensure_ascii=False))
 
 
 def start_card_listener() -> None:
@@ -180,7 +190,8 @@ def _exec_close(trade_id: str) -> None:
                         else:
                             out = close_market_now(db, trader, rec)
                             res = {"ok": True, "symbol": rec.symbol,
-                                   "pnl": float(out["pnl"]), "pnl_pct": out.get("pnl_pct")}
+                                   "pnl": float(out["pnl"]), "pnl_pct": out.get("pnl_pct"),
+                                   "testnet": bool(rec.testnet)}
                     except Exception as e:
                         db.rollback()
                         logger.exception("卡片平仓失败 %s", trade_id)
@@ -193,7 +204,13 @@ def _exec_close(trade_id: str) -> None:
     if res["ok"]:
         pnl, pct = res["pnl"], res.get("pnl_pct")
         color = "green" if pnl > 0 else ("red" if pnl < 0 else "default")
-        pct_txt = f"（{pct}%）" if pct is not None else ""
+        env = "测试网" if res.get("testnet") else "正式网"
+
+        def _col(title: str, value: str) -> dict:
+            return {"tag": "column", "width": "weighted", "weight": 1,
+                    "elements": [{"tag": "div", "text": {"tag": "lark_md",
+                                 "content": f"**{title}**\n{value}"}}]}
+
         card = {
             "config": {"wide_screen_mode": True},
             "header": {
@@ -201,8 +218,11 @@ def _exec_close(trade_id: str) -> None:
                 "template": "green" if pnl >= 0 else "red",
             },
             "elements": [
-                {"tag": "div", "text": {"tag": "lark_md", "content":
-                 f"**净盈亏**　<font color='{color}'>{pnl:+.2f} USDT</font>{pct_txt}"}},
+                {"tag": "column_set", "flex_mode": "stretch", "columns": [
+                    _col("净盈亏", f"<font color='{color}'>{pnl:+.2f} USDT</font>"),
+                    _col("收益率", f"{pct}%" if pct is not None else "—"),
+                    _col("环境", env),
+                ]},
                 {"tag": "note", "elements": [{"tag": "plain_text",
                  "content": "手动平仓 · 费用已计入净额 · 详情见交易记录"}]},
             ],
@@ -221,12 +241,4 @@ def _exec_close(trade_id: str) -> None:
                  "content": "请到交易记录页手动处理或稍后重试"}]},
             ],
         }
-    if not send_app_card(card):
-        try:  # 应用发送失败回退 webhook 纯文本保底
-            from app.services.notify import send_feishu_text
-            send_feishu_text(
-                f"{'✅ 平仓成功' if res['ok'] else '❌ 平仓失败'}\n"
-                f"{res.get('symbol', '')} {res.get('pnl', res.get('error', ''))}"
-            )
-        except Exception:
-            pass
+    send_app_card(card)  # 失败已在 _post_message 记 WARNING 落 app_logs

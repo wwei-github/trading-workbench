@@ -44,10 +44,10 @@ class Settings(BaseSettings):
     AI_API_KEY: str = ""
     AI_BASE_URL: str = "https://api.openai.com/v1"
     AI_MODEL: str = "gpt-4o-mini"
-    # 飞书群机器人（业务日报等通知用；未配置时通知静默跳过）
-    FEISHU_NOTIFY_WEBHOOK: str = ""
+    # 飞书通知（业务日报/持仓建议/平仓结果）统一走自建应用机器人；
+    # 旧 FEISHU_NOTIFY_WEBHOOK 自定义机器人已弃用（收不到卡片按钮回调）
     # 飞书卡片操作（市价平仓按钮）：FEISHU_ACTION_TOKEN=操作令牌（按钮 value 携带校验）。
-    # 自建应用三件套（APP_ID/APP_SECRET/TARGET_ID）未配置时卡片不带按钮（webhook 纯展示）
+    # 自建应用三件套（APP_ID/APP_SECRET/TARGET_ID）未配置时通知静默跳过
     FEISHU_ACTION_TOKEN: str = ""
     # 飞书自建应用机器人（卡片按钮回调走长连接，点击平仓 → 会话内新卡片回报结果）
     FEISHU_APP_ID: str = ""

@@ -9,10 +9,12 @@
 #           回滚用服务器上 scripts/release.sh rollback [<sha>]
 #
 # Secrets:
-#   DEPLOY_HOST     服务器 IP
-#   DEPLOY_SSH_KEY  部署专用 ed25519 私钥（公钥在服务器 deploy 用户 authorized_keys，
-#                   经 command= 包装脚本限制只能执行 deploy <scope> <sha>）
-#   FEISHU_WEBHOOK  飞书群自定义机器人 Webhook（可选，失败通知）
+#   DEPLOY_HOST       服务器 IP
+#   DEPLOY_SSH_KEY    部署专用 ed25519 私钥（公钥在服务器 deploy 用户 authorized_keys，
+#                     经 command= 包装脚本限制只能执行 deploy <scope> <sha>）
+#   FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_TARGET_ID
+#                     飞书自建应用（部署结果卡片经 open API 发送；
+#                     旧 FEISHU_WEBHOOK 自定义机器人已弃用，收不到卡片按钮回调）
 # ============================================================
 name: Deploy
 
@@ -135,7 +137,9 @@ jobs:
       - name: 飞书通知（成功/失败）
         if: always()
         env:
-          WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          TARGET_ID: ${{ secrets.FEISHU_TARGET_ID }}
           SCOPE: ${{ steps.prep.outputs.scope }}
           SHA: ${{ github.sha }}
           ACTOR: ${{ github.actor }}
@@ -143,11 +147,14 @@ jobs:
           REF: ${{ github.ref_name }}
           RESULT: ${{ steps.ssh_deploy.outcome }}
         run: |
-          if [ -z "$WEBHOOK" ]; then echo "未配置 FEISHU_WEBHOOK，跳过通知"; exit 0; fi
+          if [ -z "$APP_ID" ] || [ -z "$APP_SECRET" ] || [ -z "$TARGET_ID" ]; then
+            echo "未配置飞书自建应用三件套，跳过通知"; exit 0
+          fi
           LOG=$(tail -c 1200 deploy_output.log 2>/dev/null || echo "（无部署日志）")
           OK_LINE=$(grep -E 'DEPLOY_OK|ROLLED_BACK_TO' deploy_output.log 2>/dev/null | tail -1 || true)
           SCOPE="$SCOPE" SHA="$SHA" ACTOR="$ACTOR" MSG="$MSG" REF="$REF" \
-          RESULT="$RESULT" LOG="$LOG" OK_LINE="$OK_LINE" WEBHOOK="$WEBHOOK" python3 - <<'PY'
+          RESULT="$RESULT" LOG="$LOG" OK_LINE="$OK_LINE" \
+          APP_ID="$APP_ID" APP_SECRET="$APP_SECRET" TARGET_ID="$TARGET_ID" python3 - <<'PY'
           import json, os, urllib.request
           e = os.environ
           short = e['SHA'][:7]
@@ -188,11 +195,29 @@ jobs:
               },
               "elements": elements,
           }
-          payload = json.dumps({"msg_type": "interactive", "card": card}).encode()
-          req = urllib.request.Request(e['WEBHOOK'], data=payload,
-                                       headers={"Content-Type": "application/json"})
+
+          def post(url, payload, headers, timeout=10):
+              req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+              return json.load(urllib.request.urlopen(req, timeout=timeout))
+
+          OPEN = "https://open.feishu.cn/open-apis"
           try:
-              urllib.request.urlopen(req, timeout=10)
+              # 自建应用发送：tenant_access_token → im/v1/messages
+              # TARGET_ID 前缀识别目标类型：oc_ 群（chat_id）/ ou_ 个人（open_id）
+              tok = post(f"{OPEN}/auth/v3/tenant_access_token/internal",
+                         {"app_id": e['APP_ID'], "app_secret": e['APP_SECRET']},
+                         {"Content-Type": "application/json"})
+              if tok.get("code") != 0:
+                  print(f"获取 tenant_access_token 失败（不阻塞）: {str(tok)[:200]}")
+              else:
+                  rid_type = "chat_id" if e['TARGET_ID'].startswith("oc_") else "open_id"
+                  r = post(f"{OPEN}/im/v1/messages?receive_id_type={rid_type}",
+                           {"receive_id": e['TARGET_ID'], "msg_type": "interactive",
+                            "content": json.dumps(card, ensure_ascii=False)},
+                           {"Content-Type": "application/json",
+                            "Authorization": f"Bearer {tok['tenant_access_token']}"})
+                  if r.get("code") != 0:
+                      print(f"部署通知发送失败（不阻塞）: {str(r)[:300]}")
           except Exception as ex:
               print(f"飞书通知发送失败（不阻塞）: {ex}")
           PY
