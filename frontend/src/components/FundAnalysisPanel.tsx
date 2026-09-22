@@ -1,6 +1,8 @@
 /**
  * 资金分析页（docs/14）：筛选条（环境/时间范围）+ 概览 6 卡 + 2×3 图表栅格
  * - 数据源 GET /api/trades/analytics（已闭单按北京时间自然日落桶，划转按 transfer_time）
+ * - 资金曲线 = 保证金余额估算（期初资金+累计净流入+累计已实现盈亏，后端重建）
+ * - 每日净收益 = 日历热力图（calendar + heatmap，红绿深浅随当日盈亏）
  * - 配色全走 scheme 体系（红涨绿跌/绿涨红跌可切换），禁止硬编码涨跌色
  * - 划转按环境同步落库（testnet 标记），随页内 scope 过滤展示
  */
@@ -117,24 +119,28 @@ export default function FundAnalysisPanel() {
 
   const summary = data?.summary
 
-  // ① 资金曲线：Line + up 色 areaStyle 渐变 + dataZoom inside + 0 基线
+  // ① 资金曲线：保证金余额（估算）Line + 蓝色 areaStyle 渐变 + dataZoom inside
+  // 口径 = 期初资金 + 累计净流入 + 累计已实现盈亏（后端重建，不含历史浮动）
   const equityOption = useMemo<EChartsCoreOption>(() => {
-    const pts = data?.equity_curve ?? []
+    const pts = data?.balance_curve ?? []
     return {
-      tooltip: { trigger: 'axis' },
-      grid: { left: 56, right: 20, top: 24, bottom: 40 },
+      tooltip: {
+        trigger: 'axis',
+        valueFormatter: (v: unknown) => `${Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT`,
+      },
+      grid: { left: 64, right: 20, top: 24, bottom: 40 },
       dataZoom: [{ type: 'inside' }],
       xAxis: { type: 'category', data: pts.map((p) => p.date) },
       yAxis: { type: 'value', scale: true, splitLine: { lineStyle: { color: '#f0f0f0' } } },
       series: [
         {
-          name: '累计净收益',
+          name: '保证金余额',
           type: 'line',
-          data: pts.map((p) => p.pnl),
+          data: pts.map((p) => p.balance),
           smooth: true,
           showSymbol: false,
-          lineStyle: { color: up, width: 2 },
-          itemStyle: { color: up },
+          lineStyle: { color: '#1677ff', width: 2 },
+          itemStyle: { color: '#1677ff' },
           areaStyle: {
             color: {
               type: 'linear',
@@ -143,45 +149,58 @@ export default function FundAnalysisPanel() {
               x2: 0,
               y2: 1,
               colorStops: [
-                { offset: 0, color: withAlpha(up, 0.28) },
-                { offset: 1, color: withAlpha(up, 0.02) },
+                { offset: 0, color: withAlpha('#1677ff', 0.22) },
+                { offset: 1, color: withAlpha('#1677ff', 0.02) },
               ],
             },
           },
-          markLine: {
-            silent: true,
-            symbol: 'none',
-            label: { show: false },
-            lineStyle: { color: '#999', type: 'dashed' },
-            data: [{ yAxis: 0 }],
-          },
         },
       ],
     }
-  }, [data, up])
+  }, [data])
 
-  // ② 每日净收益：Bar，颜色按当日盈亏取涨跌色
+  // ② 每日净收益：日历热力图（calendar + heatmap），颜色 = 当日盈亏涨跌色，
+  // visualMap 对称刻度（±maxAbs）保证红绿深浅可比
   const dailyOption = useMemo<EChartsCoreOption>(() => {
     const pts = data?.daily_pnl ?? []
+    const maxAbs = Math.max(1, ...pts.map((p) => Math.abs(p.pnl)))
     return {
-      tooltip: { trigger: 'axis' },
-      grid: { left: 56, right: 20, top: 24, bottom: 40 },
-      xAxis: { type: 'category', data: pts.map((p) => p.date) },
-      yAxis: { type: 'value', splitLine: { lineStyle: { color: '#f0f0f0' } } },
+      tooltip: {
+        trigger: 'item',
+        formatter: (p: { value: [string, number] }) =>
+          `${p.value[0]}<br/>当日净收益 <strong style="color:${schemeValueColor(Number(p.value[1]) || 0, colorScheme)}">${fmtSigned(Number(p.value[1]) || 0)} USDT</strong>`,
+      },
+      visualMap: {
+        min: -maxAbs,
+        max: maxAbs,
+        calculable: false,
+        show: false,
+        inRange: { color: [down, '#f0f0f0', up] },
+      },
+      calendar: {
+        range: [pts[0]?.date ?? dayjs().format('YYYY-MM-DD'), pts[pts.length - 1]?.date ?? dayjs().format('YYYY-MM-DD')],
+        cellSize: 'auto',
+        orient: 'horizontal',
+        left: 30,
+        right: 12,
+        top: 30,
+        itemStyle: { color: '#fafafa', borderColor: '#fff', borderWidth: 2 },
+        splitLine: { show: false },
+        dayLabel: { nameMap: 'ZH', firstDay: 1, fontSize: 10, color: '#8c8c8c' },
+        monthLabel: { nameMap: 'ZH', fontSize: 10, color: '#595959' },
+        yearLabel: { show: false },
+      },
       series: [
         {
           name: '当日净收益',
-          type: 'bar',
-          data: pts.map((p) => p.pnl),
-          barMaxWidth: 18,
-          itemStyle: {
-            color: (p: { value: number | string }) =>
-              schemeValueColor(Number(p.value) || 0, colorScheme),
-          },
+          type: 'heatmap',
+          coordinateSystem: 'calendar',
+          data: pts.map((p) => [p.date, p.pnl]),
+          itemStyle: { borderRadius: 3 },
         },
       ],
     }
-  }, [data, colorScheme])
+  }, [data, colorScheme, up, down])
 
   // ③ 币种盈亏 Top10：横向 Bar（|pnl| 降序已由后端排好），正负双色 + 金额 label
   const symbolOption = useMemo<EChartsCoreOption>(() => {
@@ -405,12 +424,20 @@ export default function FundAnalysisPanel() {
         <Spin spinning={loading}>
           <Row gutter={[12, 12]}>
             <Col span={8}>
-              <Card size="small" title="资金曲线（累计净收益）">
-                <EChart option={equityOption} height={300} />
+              <Card size="small" title="资金曲线（保证金余额·估算）">
+                {(data?.balance_curve.length ?? 0) === 0 ? (
+                  <Empty
+                    description="交易所余额数据不可用"
+                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                    style={{ height: 300, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}
+                  />
+                ) : (
+                  <EChart option={equityOption} height={300} />
+                )}
               </Card>
             </Col>
             <Col span={8}>
-              <Card size="small" title="每日净收益">
+              <Card size="small" title="每日净收益（日历）">
                 <EChart option={dailyOption} height={300} />
               </Card>
             </Col>

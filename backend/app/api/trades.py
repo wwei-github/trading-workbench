@@ -13,6 +13,7 @@ from app.models.system_config import SystemConfig
 from app.models.trade import AccountTransfer, TradeEvent, TradeRecord
 from app.schemas.trade import (
     AccountTransferOut,
+    BalancePoint,
     DailyPoint,
     ExitReasonStat,
     FundAnalyticsOut,
@@ -216,11 +217,6 @@ def fund_analytics(
         d = _bj_day(r.closed_at)
         daily[d] = daily.get(d, 0.0) + float(r.realized_pnl or 0)
     days = sorted(daily)
-    equity_curve: list[DailyPoint] = []
-    cum = 0.0
-    for d in days:
-        cum += daily[d]
-        equity_curve.append(DailyPoint(date=d, pnl=round(cum, 2)))
 
     by_symbol_map: dict[str, dict] = {}
     for r in rows:
@@ -263,6 +259,71 @@ def fund_analytics(
     t_in = round(sum(m["in"] for m in t_daily.values()), 2)
     t_out = round(sum(m["out"] for m in t_daily.values()), 2)
 
+    # 保证金余额曲线（估算）：钱包历史无法回放，用 期初资金 + 累计净流入 + 累计已实现盈亏
+    # 重建逐日余额（realized_pnl 为净口径，已含手续费/资金费）；锚点 = 范围起点当日余额，
+    # 之后逐日加上当日已实现盈亏与净划转。交易所钱包拉取失败 → 空曲线前端降级空态。
+    balance_curve: list[BalancePoint] = []
+    try:
+        from app.services.binance_trader import BinanceTrader
+
+        wallet_now = float(BinanceTrader(testnet).wallet_balance()["wallet"])
+        all_realized = db.execute(
+            select(func.coalesce(func.sum(TradeRecord.realized_pnl), 0.0)).where(
+                TradeRecord.status == "CLOSED",
+                TradeRecord.testnet == testnet,
+            )
+        ).scalar_one()
+        all_amts = db.execute(
+            select(AccountTransfer.amount).where(
+                AccountTransfer.asset == "USDT",
+                AccountTransfer.testnet == testnet,
+            )
+        ).scalars().all()
+        opening = wallet_now - sum(float(a) for a in all_amts) - float(all_realized)
+        # 范围起点前的事件累积（自定义/本周/本月范围时定位起点余额）
+        pre = 0.0
+        if lo is not None:
+            pre += float(
+                db.execute(
+                    select(func.coalesce(func.sum(TradeRecord.realized_pnl), 0.0)).where(
+                        TradeRecord.status == "CLOSED",
+                        TradeRecord.testnet == testnet,
+                        TradeRecord.closed_at < lo,
+                    )
+                ).scalar_one()
+            )
+            pre += sum(
+                float(t.amount)
+                for t in db.execute(
+                    select(AccountTransfer).where(
+                        AccountTransfer.asset == "USDT",
+                        AccountTransfer.testnet == testnet,
+                        AccountTransfer.transfer_time < lo,
+                    )
+                ).scalars().all()
+            )
+        start_balance = opening + pre
+        # 范围内逐日事件（已实现盈亏 + 带符号划转）
+        day_events: dict[str, float] = {}
+        for r in rows:
+            d = _bj_day(r.closed_at)
+            day_events[d] = day_events.get(d, 0.0) + float(r.realized_pnl or 0)
+        for t in rows_t:
+            d = _bj_day(t.transfer_time)
+            day_events[d] = day_events.get(d, 0.0) + float(t.amount)
+        anchor = _bj_day(lo) if lo is not None else (
+            (datetime.strptime(min(day_events), "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+            if day_events else None
+        )
+        if anchor:
+            bal = start_balance
+            balance_curve.append(BalancePoint(date=anchor, balance=round(bal, 2)))
+            for d in sorted(day_events):
+                bal += day_events[d]
+                balance_curve.append(BalancePoint(date=d, balance=round(bal, 2)))
+    except Exception as e:
+        logger.warning("保证金余额曲线构建失败（testnet=%s）：%s", testnet, e)
+
     return FundAnalyticsOut(
         summary=FundSummary(
             closed=closed,
@@ -276,7 +337,7 @@ def fund_analytics(
             transfer_out=t_out,
             transfer_net=round(t_in - t_out, 2),
         ),
-        equity_curve=equity_curve,
+        balance_curve=balance_curve,
         daily_pnl=[DailyPoint(date=d, pnl=round(daily[d], 2)) for d in days],
         by_symbol=sorted(
             (
