@@ -508,10 +508,9 @@ export interface SymbolPnl { symbol: string; pnl: number; count: number; wins: n
 export interface ExitReasonStat { reason: string; count: number; pnl: number }
 export interface PnlBucket { bucket: string; count: number }
 export interface TransferPoint { date: string; transfer_in: number; transfer_out: number }
-export interface BalancePoint { date: string; balance: number }
 export interface FundAnalytics {
   summary: FundSummary
-  balance_curve: BalancePoint[] // 保证金余额曲线（估算），交易所拉取失败为空数组
+  equity_curve: DailyPoint[]
   daily_pnl: DailyPoint[]
   by_symbol: SymbolPnl[]
   exit_reasons: ExitReasonStat[]

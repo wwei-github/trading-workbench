@@ -105,16 +105,10 @@ class TransferPoint(BaseModel):
     transfer_out: float = 0.0
 
 
-class BalancePoint(BaseModel):
-    """保证金余额曲线点（估算口径）"""
-    date: str          # YYYY-MM-DD（北京时间）
-    balance: float
-
-
 class FundAnalyticsOut(BaseModel):
     """GET /api/trades/analytics 响应（docs/14 §5）"""
     summary: FundSummary
-    balance_curve: list[BalancePoint] = []  # 保证金余额曲线（估算），交易所拉取失败时为空
+    equity_curve: list[DailyPoint]
     daily_pnl: list[DailyPoint]
     by_symbol: list[SymbolPnl]
     exit_reasons: list[ExitReasonStat]
