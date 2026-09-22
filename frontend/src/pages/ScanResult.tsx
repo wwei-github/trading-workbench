@@ -155,6 +155,11 @@ export default function ScanResult() {
             ),
           },
           {
+            key: 'fund-analysis',
+            label: '资金分析',
+            children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><FundAnalysisPanel /></div>,
+          },
+          {
             key: 'review',
             label: '复盘',
             children: (
@@ -198,11 +203,6 @@ export default function ScanResult() {
             key: 'transfers',
             label: '资金划转',
             children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><TransfersPanel /></div>,
-          },
-          {
-            key: 'fund-analysis',
-            label: '资金分析',
-            children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><FundAnalysisPanel /></div>,
           },
           {
             key: 'tasks',
