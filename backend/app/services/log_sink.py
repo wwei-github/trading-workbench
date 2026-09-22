@@ -128,15 +128,18 @@ _handler: Optional[DBLogHandler] = None
 
 
 def attach_db_log_sink() -> None:
-    """把 DBLogHandler 挂到 root logger（幂等）"""
-    """把 DBLogHandler 挂到 root logger（幂等）"""
+    """把 DBLogHandler 挂到「app」包 logger（幂等）。
+
+    挂 app 层而非 root：celery worker 默认 worker_hijack_root_logger=True 会在
+    启动时清空 root logger 的全部 handler，导致 worker 日志永远落不了库；
+    app.* 记录沿层级传播必经「app」节点，不受 celery 劫持影响（uvicorn 同理）。"""
     global _attached, _handler
     if _attached:
         return
     _attached = True
     _handler = DBLogHandler()
     _handler.addFilter(_AppLoggerFilter())
-    logging.getLogger().addHandler(_handler)
+    logging.getLogger("app").addHandler(_handler)
     _handler.start()
 
 

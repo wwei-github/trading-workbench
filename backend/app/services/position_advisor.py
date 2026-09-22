@@ -255,7 +255,11 @@ def _notify_exit(rec, advice: dict, total: float) -> None:
         if not configured():
             logger.info("飞书自建应用未配置，跳过持仓建议推送")
             return
+        # 防御：total 可能被调用方传 Decimal（Numeric 列），统一转 float；
+        # 卡片按钮 value 走 JSON 序列化，UUID 须转字符串
+        total = float(total)
         risk = float(rec.risk_amount or 0)
+        trade_id = str(rec.id)
         side = "多" if rec.direction == "long" else "空"
         entry = float(rec.entry_price or 0)
         snap = rec.ai_snapshot or {}
@@ -324,7 +328,7 @@ def _notify_exit(rec, advice: dict, total: float) -> None:
                     "value": {
                         "act": "close_market",
                         "token": settings.FEISHU_ACTION_TOKEN,
-                        "trade_id": rec.id,
+                        "trade_id": trade_id,
                     },
                 }]},
                 {"tag": "note", "elements": [{"tag": "plain_text",
