@@ -115,6 +115,127 @@ def run_spot_daily_task() -> dict:
         db.close()
 
 
+# ---------------- 回测（docs/18 §10，P1） ----------------
+
+@celery_app.task(name="app.tasks.spot_tasks.run_backtest_task")
+def run_backtest_task(bt_id: str) -> dict:
+    """回测任务：读 spot_backtests 参数 → 从 spot_kline_cache/币安拉三周期K线 →
+    run_backtest 日历重放 → 结果落库（summary/daily_series/orders_detail）。
+    纯计算秒级~十秒级；AI 复核跳过（§10.4 唯一差异）。"""
+    from app.database import SessionLocal
+    from app.models.spot import SpotBacktest, SpotKlineCache
+    from app.services.spot_backtest import run_backtest
+    from app.services.spot_client import SpotClient
+    from app.services.spot_engine import SpotDefaults
+    from app.services.spot_settings import load_spot_settings
+    from app.services.task_log import close_task, open_task
+
+    task_id = open_task("spot", f"回测 {bt_id[:8]}")
+    db = SessionLocal()
+    try:
+        row = db.get(SpotBacktest, bt_id)
+        if row is None:
+            raise ValueError(f"回测 {bt_id} 不存在")
+        p = row.params
+
+        # 配置：请求覆盖 > spot_settings > 默认
+        s = load_spot_settings(db)
+        cfg = SpotDefaults(
+            per_order_usdt=p.get("per_order_usdt") or s["per_order_usdt"],
+            max_total_usdt=s["max_total_usdt"],
+            dca_enabled=p.get("dca_enabled") if p.get("dca_enabled") is not None else s["dca_enabled"],
+            dca_amount=p.get("dca_amount") or s["dca_amount"],
+        )
+
+        # K线：优先缓存，不足/缺失则从币安拉全量历史回补
+        client = SpotClient()
+        klines = {"daily": {}, "weekly": {}, "monthly": {}}
+        try:
+            for sym in p["symbols"]:
+                need_daily = 400  # MA200 + 环境缓冲
+                daily = _cache_klines(db, sym, "1d")
+                if len(daily) < need_daily:
+                    daily = _merge_klines(daily, client.klines(sym, "1d", need_daily + 100))
+                    _upsert_cache(db, sym, "1d", daily)
+                weekly = _cache_klines(db, sym, "1w")
+                if len(weekly) < 60:
+                    weekly = _merge_klines(weekly, client.klines(sym, "1w", 160))
+                    _upsert_cache(db, sym, "1w", weekly)
+                monthly = _cache_klines(db, sym, "1M")
+                if len(monthly) < 14:
+                    monthly = _merge_klines(monthly, client.klines(sym, "1M", 150))
+                    _upsert_cache(db, sym, "1M", monthly)
+                klines["daily"][sym] = daily
+                klines["weekly"][sym] = weekly
+                klines["monthly"][sym] = monthly
+            db.commit()
+        finally:
+            client.close()
+
+        result = run_backtest(
+            p["symbols"], klines["daily"], klines["weekly"], klines["monthly"],
+            budget=float(p["budget"]), settings=cfg,
+            start=p.get("start"), end=p.get("end"),
+        )
+        row.summary = result["summary"]
+        row.daily_series = result["daily_series"]
+        row.orders_detail = {"items": result["orders"]}
+        row.status = "DONE"
+        row.finished_at = datetime.utcnow()
+        db.commit()
+        close_task(
+            task_id, "completed",
+            summary=(
+                f"{'/'.join(p['symbols'])} {p['start']}~{p['end']} "
+                f"{result['summary']['orders_count']}笔 "
+                f"超额 {result['summary']['excess_qty']}"
+            ),
+            detail={"backtest_id": str(row.id)},
+        )
+        return {"ok": True, "orders": result["summary"]["orders_count"]}
+    except Exception as e:
+        db.rollback()
+        try:
+            row = db.get(SpotBacktest, bt_id)
+            if row is not None:
+                row.status = "FAILED"
+                row.error = str(e)[:2000]
+                row.finished_at = datetime.utcnow()
+                db.commit()
+        except Exception:
+            logger.exception("回测失败状态写入失败")
+        close_task(task_id, "failed", error=str(e))
+        logger.exception("现货回测失败")
+        raise
+    finally:
+        db.close()
+
+
+def _cache_klines(db, symbol: str, interval: str) -> list:
+    """读缓存K线（t 排序旧→新）。"""
+    row = (
+        db.query(SpotKlineCache)
+        .filter(SpotKlineCache.symbol == symbol, SpotKlineCache.interval == interval)
+        .first()
+    )
+    if row is None:
+        return []
+    return sorted(row.klines, key=lambda k: k["t"])
+
+
+def _merge_klines(local: list, remote: list) -> list:
+    """合并本地与远端K线（按 t 去重，远端覆盖同 t，旧→新）。"""
+    by_t = {k["t"] if isinstance(k, dict) else int(k[0]): k for k in local}
+    for k in remote:
+        t = k["t"] if isinstance(k, dict) else int(k[0])
+        by_t[t] = (
+            k if isinstance(k, dict)
+            else {"t": int(k[0]), "o": float(k[1]), "h": float(k[2]),
+                  "l": float(k[3]), "c": float(k[4]), "v": float(k[5])}
+        )
+    return [by_t[t] for t in sorted(by_t)]
+
+
 _ACTION_TEXT = {
     "BUY": ("低买", "green"),
     "SELL": ("高卖", "red"),

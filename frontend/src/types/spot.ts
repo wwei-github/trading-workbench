@@ -166,3 +166,69 @@ export interface SpotTimelineItem {
   time: string
   data: SpotTimelineOrder | SpotTimelineReview | SpotTimelineDaily
 }
+
+// ===== 回测（docs/18 §10，P1）=====
+
+export interface BacktestParams {
+  symbols: string[]
+  start: string
+  end: string
+  budget: number
+  per_order_usdt?: number | null
+  dca_enabled?: boolean | null
+  dca_amount?: number | null
+}
+
+export interface BacktestSummary {
+  symbols: string[]
+  bars: number
+  start: string
+  end: string
+  budget: number
+  total_qty: number
+  coin_unit: string
+  total_market_value: number
+  total_cost: number
+  total_realized: number
+  cash_left: number
+  invested: number
+  orders_count: number
+  action_dist: Record<string, number>
+  benchmark: { invested: number; total_qty: number; qty_per_symbol: Record<string, number> }
+  excess_qty: Record<string, number>
+  max_drawdown: number
+  equity_curve_end?: number
+}
+
+export interface BacktestSeriesPoint {
+  date: string
+  cash: number
+  market_value: number
+  equity: number
+  coin_qty: Record<string, number>
+  invested: number
+}
+
+export interface BacktestOrder {
+  date: string
+  symbol: string
+  side: 'BUY' | 'SELL'
+  trigger: string // signal / dca
+  qty: number
+  price: number
+  quote: number
+  fee: number
+  score: number
+}
+
+export interface BacktestRecord {
+  id: string
+  status: 'RUNNING' | 'DONE' | 'FAILED'
+  params: BacktestParams
+  summary: BacktestSummary | null
+  daily_series?: BacktestSeriesPoint[] | null
+  orders?: BacktestOrder[] | null
+  error: string | null
+  created_at: string | null
+  finished_at: string | null
+}

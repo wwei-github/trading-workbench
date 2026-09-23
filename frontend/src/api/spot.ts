@@ -1,6 +1,15 @@
 // 现货屯币 API（docs/18，独立模块，不混入合约 scanApi）
 import axios from 'axios'
-import type { SpotConfig, SpotDecision, SpotOrder, SpotOverview, SpotSettings, SpotTimelineItem } from '../types/spot'
+import type {
+  BacktestParams,
+  BacktestRecord,
+  SpotConfig,
+  SpotDecision,
+  SpotOrder,
+  SpotOverview,
+  SpotSettings,
+  SpotTimelineItem,
+} from '../types/spot'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -37,4 +46,22 @@ export const spotApi = {
     api
       .put<{ ok: boolean } & SpotConfig & { rejected: string[] }>('/spot/config', patch)
       .then((r) => r.data),
+
+  // 回测（docs/18 §10，P1）：提交异步任务 → 轮询结果
+  createBacktest: (body: {
+    symbols?: string[]
+    start: string
+    end: string
+    budget: number
+    per_order_usdt?: number | null
+    dca_enabled?: boolean | null
+    dca_amount?: number | null
+  }) =>
+    api
+      .post<{ id: string; status: string }>('/spot/backtests', body, { timeout: 60000 })
+      .then((r) => r.data),
+  getBacktest: (id: string) =>
+    api.get<BacktestRecord>(`/spot/backtests/${id}`, { timeout: 60000 }).then((r) => r.data),
+  listBacktests: (limit = 20) =>
+    api.get<BacktestRecord[]>('/spot/backtests', { params: { limit } }).then((r) => r.data),
 }
