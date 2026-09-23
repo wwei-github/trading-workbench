@@ -22,6 +22,7 @@ import type { Dayjs } from 'dayjs'
 import type { EChartsCoreOption } from 'echarts/core'
 import EChart from './EChart'
 import StatCard from './StatCard'
+import ScopeSelector, { defaultScopeOf } from './ScopeSelector'
 import { EXIT_REASON_MAP } from './TradesPanel'
 import { scanApi } from '../api/scan'
 import { dayjs } from '../utils/dayjs'
@@ -29,7 +30,6 @@ import { SCHEME_UP_DOWN, schemeValueColor } from '../utils/scheme'
 import { useScanStore } from '../stores/scanStore'
 import type { FundAnalytics } from '../types'
 
-type Scope = 'live' | 'testnet'
 type RangeKey = 'all' | 'week' | 'month' | 'custom'
 
 /** 本周周一（北京时间）：dayjs 默认周日起始一周，手动归一到周一 */
@@ -58,11 +58,10 @@ function isNegBucket(bucket: string): boolean {
 
 /** 资金分析页（docs/14） */
 export default function FundAnalysisPanel() {
-  // 默认 scope 跟随当前交易环境（系统配置弹窗可切，2026-09-20）；
-  // 配置未加载前先按测试网（与后端 TRADING_TESTNET 初始值一致），拉到配置后校正
+  // 账号范围切换（docs/17）：默认跟随当前交易环境，多 live 账号时跟随选中账号
   const { aiConfig, fetchConfig } = useScanStore()
-  const defaultScope: Scope = (aiConfig?.trading_testnet ?? true) ? 'testnet' : 'live'
-  const [scope, setScope] = useState<Scope>('testnet')
+  const defaultScope = defaultScopeOf(aiConfig)
+  const [scope, setScope] = useState<string>('testnet')
   const [scopeInit, setScopeInit] = useState(false)
   const [range, setRange] = useState<RangeKey>('all')
   const [dates, setDates] = useState<[Dayjs, Dayjs] | null>(null)
@@ -90,7 +89,7 @@ export default function FundAnalysisPanel() {
       setData(null)
       return
     }
-    const params: { scope: Scope; start?: string; end?: string } = { scope }
+    const params: { scope: string; start?: string; end?: string } = { scope }
     if (range === 'week') {
       params.start = mondayOfThisWeek().format('YYYY-MM-DD')
       params.end = dayjs().format('YYYY-MM-DD')
@@ -312,14 +311,7 @@ export default function FundAnalysisPanel() {
       <Row justify="space-between" align="middle" gutter={[0, 8]}>
         <Col flex="auto">
           <Space size={12} wrap>
-            <Segmented
-              value={scope}
-              onChange={(v) => setScope(v as Scope)}
-              options={[
-                { label: "正式网", value: "live" },
-                { label: "测试网", value: "testnet" },
-              ]}
-            />
+            <ScopeSelector value={scope} onChange={setScope} />
             <Segmented
               value={range}
               onChange={(v) => setRange(v as RangeKey)}

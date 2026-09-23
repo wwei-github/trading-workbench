@@ -62,6 +62,8 @@ export interface ScanStatus {
 
 export interface AccountSummary {
   testnet: boolean;
+  account_key?: string; // 当前账号（docs/17）
+  account_name?: string; // 当前账号显示名
   available: boolean; // false=交易所请求失败，降级显示
   wallet?: number; // 钱包余额（不含未实现盈亏）
   available_balance?: number;
@@ -185,8 +187,19 @@ export interface SystemConfig {
   // 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面「系统配置」弹窗可改）
   trading_testnet?: boolean; // 当前交易环境：true=测试网 false=正式网
   trading_enabled?: boolean; // 自动交易总开关（关=定时扫描 AI 分析跳过+停开新单，结算/复盘/日报照常）
+  // 多账号（docs/17 P0）：.env 注册表只读展示 + 当前选中正式网账号
+  current_account_key?: string | null;
+  accounts?: AccountBrief[];
   binance_key_live?: boolean; // 正式网 API key 已配置（只读状态，不返回 key）
   binance_key_testnet?: boolean; // 测试网 API key 已配置（未配置时回落正式网 key）
+}
+
+// 账号注册表条目（docs/17）：key 稳定标识（testnet-1/live-N），只读不回传凭据
+export interface AccountBrief {
+  key: string;
+  name: string;
+  testnet: boolean;
+  configured: boolean;
 }
 
 // ===== 币种黑名单（手动/自动）=====
@@ -284,6 +297,7 @@ export interface TradeRecord {
   exit_reason: string | null // sl / tp1_then_sl / tp1_trail / trail_sl / breakeven_sl / liquidation / manual / error
   fail_reason?: string | null // 开仓失败原因（仅 FAILED 记录，后端读自 raw.fail_reason）
   testnet: boolean // 测试网/正式网
+  account_key?: string | null // 开单账号（docs/17：testnet-1/live-N；null=旧行按 testnet 回落）
   ai_snapshot: AIAnalysis | null // 开单时 AI 分析结论快照
   ai_analysis_id: string | null
   ai_advice: { // AI 持仓诊断（docs/16，浮亏在跑单）

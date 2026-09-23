@@ -16,7 +16,6 @@ import {
   Modal,
   Popconfirm,
   Row,
-  Segmented,
   Space,
   Spin,
   Table,
@@ -49,6 +48,7 @@ import { SCHEME_UP_DOWN, schemeTag, schemeValueColor } from '../utils/scheme'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import AiAnalysisCard from './AiAnalysisCard'
 import TradeReplayChart from './TradeReplayChart'
+import ScopeSelector, { defaultScopeOf, scopeIsTestnet } from './ScopeSelector'
 import type { AccountSummary, FundAnalytics, PurgeStats, TradeEvent, TradeRecord } from '../types'
 import { ADVICE_ACTION_META } from '../types'
 
@@ -299,11 +299,11 @@ export default function TradesPanel() {
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
-  // 环境切换（实盘/测试网）：默认跟随当前交易环境（系统配置弹窗可切，2026-09-20）；
-  // 配置未加载前先按测试网（与后端 TRADING_TESTNET 初始值一致），拉到配置后校正
+  // 账号范围切换（docs/17）：默认跟随当前交易环境（多 live 账号跟随选中账号）；
+  // 配置未加载前先按测试网，拉到配置后校正。值口径见 ScopeSelector
   const { aiConfig, fetchConfig } = useScanStore()
-  const defaultScope: 'live' | 'testnet' = (aiConfig?.trading_testnet ?? true) ? 'testnet' : 'live'
-  const [scope, setScope] = useState<'live' | 'testnet'>('testnet')
+  const defaultScope = defaultScopeOf(aiConfig)
+  const [scope, setScope] = useState<string>('testnet')
   const [scopeInit, setScopeInit] = useState(false)
   useEffect(() => {
     if (!aiConfig) {
@@ -320,20 +320,27 @@ export default function TradesPanel() {
   // 账户资金概览（当前环境）：总资金/未实现收益/收益率，与列表/统计并发拉
   const [acct, setAcct] = useState<AccountSummary | null>(null)
 
-  // 列表拉全量（上限 500）供表格与状态计数；概览统计从 analytics 接口取，
+  // 列表按账号范围服务端过滤（上限 500）供表格与状态计数；概览统计从 analytics 接口取，
   // 保证与资金分析页数字完全一致（接口全表统计，无 500 条截断差异）
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
       const [list, analytics, acctData] = await Promise.all([
-        scanApi.trades.list(undefined, 500),
+        scanApi.trades.list(undefined, 500, scope),
         scanApi.trades.analytics({ scope }),
         scanApi.trades.accountSummary().catch(() => null),
       ])
       setRows(list)
       setSummary(analytics.summary)
-      // 账户概览以当前环境为准（接口按系统配置的环境返回，切环境瞬时不匹配则丢弃）
-      if (acctData && acctData.available && acctData.testnet === (scope === 'testnet')) {
+      // 账户概览为当前交易账号实时数据：scope 是环境聚合时按环境匹配，
+      // scope 是具体账号 key 时按账号精确匹配，不匹配则丢弃（切范围瞬时不串数）
+      const acctMatch =
+        acctData && acctData.available
+          ? scope === 'live' || scope === 'testnet'
+            ? acctData.testnet === (scope === 'testnet')
+            : acctData.account_key === scope
+          : false
+      if (acctMatch) {
         setAcct(acctData)
       } else if (acctData && !acctData.available) {
         setAcct(acctData)
@@ -345,17 +352,14 @@ export default function TradesPanel() {
     }
   }, [scope])
 
-  // 仅初始加载 + 环境切换时重拉，不做轮询：数据源 = 每小时第 10 分结算巡检（按小时变动），
+  // 仅初始加载 + 范围切换时重拉，不做轮询：数据源 = 每小时第 10 分结算巡检（按小时变动），
   // 手动点「刷新」按钮即可获取最新数据
   useEffect(() => {
     fetchData()
   }, [fetchData])
 
-  // 当前环境的记录（列表/状态计数用；概览统计走 analytics 接口）
-  const scopeRows = useMemo(
-    () => rows.filter((r) => r.testnet === (scope === 'testnet')),
-    [rows, scope],
-  )
+  // 当前范围的记录（服务端已按 scope 过滤；概览统计走 analytics 接口）
+  const scopeRows = rows
 
   // 全局涨跌配色方案（红涨绿跌/绿涨红跌，页面顶部切换）
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -992,20 +996,16 @@ export default function TradesPanel() {
           })}
         </Space>
         <Space size={12}>
-          {/* 环境切换：默认实盘，与资金分析页 scope 口径/样式一致（无 size、无 onChange 里的翻页重置差异） */}
-          <Segmented
+          {/* 账号范围切换（docs/17）：单 live 账号=环境 Segmented，多账号=账号下拉 */}
+          <ScopeSelector
             value={scope}
             onChange={(v) => {
-              setScope(v as 'live' | 'testnet')
+              setScope(v)
               setPage(1)
             }}
-            options={[
-              { label: '正式网', value: 'live' },
-              { label: '测试网', value: 'testnet' },
-            ]}
           />
-          {/* 一键清空测试网数据：仅测试网视图可见，预检→弹窗确认→执行 */}
-          {scope === 'testnet' && (
+          {/* 一键清空测试网数据：仅测试网范围可见，预检→弹窗确认→执行 */}
+          {scopeIsTestnet(scope) && (
             <Button danger icon={<DeleteOutlined />} loading={purging} onClick={openPurge}>
               清空测试网数据
             </Button>
@@ -1136,7 +1136,13 @@ export default function TradesPanel() {
       <Spin spinning={loading}>
         {scopeRows.length === 0 && !loading ? (
           <Empty
-            description={scope === 'live' ? '暂无实盘交易记录（TRADING_ENABLED 开启后自动开单）' : '暂无测试网交易记录'}
+            description={
+              scopeIsTestnet(scope)
+                ? '暂无测试网交易记录'
+                : scope === 'live'
+                  ? '暂无实盘交易记录（自动交易开启后自动开单）'
+                  : '该账号暂无交易记录（自动交易开启后自动开单）'
+            }
             style={{ marginTop: 60 }}
           />
         ) : (

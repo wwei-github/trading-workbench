@@ -5,7 +5,7 @@
  * - 概览：累计转入 / 累计转出 / 净流入；明细表带符号金额着色（随全局涨跌配色）
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, Empty, Segmented, Spin, Table, Tag, message } from 'antd'
+import { Button, Empty, Spin, Table, Tag, message } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
@@ -13,9 +13,8 @@ import { bj } from '../utils/dayjs'
 import { schemeValueColor } from '../utils/scheme'
 import { useScanStore } from '../stores/scanStore'
 import StatCard from './StatCard'
+import ScopeSelector, { defaultScopeOf } from './ScopeSelector'
 import type { AccountTransfer } from '../types'
-
-type Scope = 'live' | 'testnet'
 
 function fmtTime(s: string | null | undefined): string {
   if (!s) return '-'
@@ -23,10 +22,10 @@ function fmtTime(s: string | null | undefined): string {
 }
 
 export default function TransfersPanel() {
-  // 默认 scope 跟随当前交易环境（与资金分析页一致），配置加载后校正
+  // 默认 scope 跟随当前交易环境（多 live 账号跟随选中账号，docs/17），配置加载后校正
   const { aiConfig, fetchConfig } = useScanStore()
-  const defaultScope: Scope = (aiConfig?.trading_testnet ?? true) ? 'testnet' : 'live'
-  const [scope, setScope] = useState<Scope>('testnet')
+  const defaultScope = defaultScopeOf(aiConfig)
+  const [scope, setScope] = useState<string>('testnet')
   const [scopeInit, setScopeInit] = useState(false)
   const [rows, setRows] = useState<AccountTransfer[]>([])
   const [loading, setLoading] = useState(false)
@@ -117,16 +116,9 @@ export default function TransfersPanel() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* 筛选条：环境切换 + 刷新（与资金分析页一致） */}
+      {/* 筛选条：账号范围（docs/17）+ 刷新（与资金分析页一致） */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-        <Segmented
-          value={scope}
-          onChange={(v) => setScope(v as Scope)}
-          options={[
-            { label: '正式网', value: 'live' },
-            { label: '测试网', value: 'testnet' },
-          ]}
-        />
+        <ScopeSelector value={scope} onChange={setScope} />
         <Button icon={<ReloadOutlined />} onClick={fetchData}>
           刷新
         </Button>

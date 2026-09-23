@@ -22,6 +22,7 @@ from app.schemas.scan import (
     ManualAnalysisOut,
     SystemConfigOut,
     SystemConfigUpdate,
+    AccountBrief,
     ReviewGroupStats,
     ReviewStatsResponse,
     ActualReviewResponse,
@@ -330,10 +331,9 @@ def trigger_ai_analysis(
 
 # ===== 系统配置（AI 开关 + 扫描策略） =====
 
-@router.get("/config", response_model=SystemConfigOut)
-def get_system_config(db: Session = Depends(get_db)):
-    """获取系统配置（AI 开关 + 策略提示词 + 扫描策略）"""
-    cfg = _get_system_config(db)
+def _config_response(cfg: SystemConfig) -> SystemConfigOut:
+    """SystemConfigOut 统一构造（GET/PUT 共用；含账号注册表只读展示，docs/17）"""
+    from app.services.account_registry import registry
     return SystemConfigOut(
         ai_analysis_enabled=cfg.ai_analysis_enabled,
         ai_pipeline_enabled=cfg.ai_pipeline_enabled,
@@ -348,16 +348,33 @@ def get_system_config(db: Session = Depends(get_db)):
         repeat_window_hours=cfg.repeat_window_hours,
         swing_order=cfg.swing_order,
         pullback_tolerance=float(cfg.pullback_tolerance),
-        fib_enabled=cfg.fib_enabled,
+        fib_enabled=bool(cfg.fib_enabled),
         max_open_trades=cfg.max_open_trades,
         trading_min_free_pct=float(cfg.trading_min_free_pct),
         trading_testnet=cfg.trading_testnet,
         trading_enabled=cfg.trading_enabled,
+        current_account_key=cfg.current_account_key,
+        accounts=[AccountBrief(key=a.key, name=a.name, testnet=a.testnet) for a in registry()],
         binance_key_live=bool(settings.BINANCE_API_KEY and settings.BINANCE_SECRET_KEY),
         binance_key_testnet=bool(
             settings.BINANCE_TESTNET_API_KEY and settings.BINANCE_TESTNET_SECRET_KEY
         ) or bool(settings.BINANCE_API_KEY and settings.BINANCE_SECRET_KEY),
+        max_stop_pct=float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None,
+        liq_gate_buffer=(float(cfg.liq_gate_buffer)
+                         if cfg.liq_gate_buffer is not None else None),
+        min_adapt_leverage=cfg.min_adapt_leverage,
+        pullback_market_pct=(float(cfg.pullback_market_pct)
+                             if cfg.pullback_market_pct is not None else None),
+        max_slippage_pct=(float(cfg.max_slippage_pct)
+                          if cfg.max_slippage_pct is not None else None),
     )
+
+
+@router.get("/config", response_model=SystemConfigOut)
+def get_system_config(db: Session = Depends(get_db)):
+    """获取系统配置（AI 开关 + 策略提示词 + 扫描策略）"""
+    cfg = _get_system_config(db)
+    return _config_response(cfg)
 
 
 @router.put("/config", response_model=SystemConfigOut)
@@ -420,6 +437,22 @@ def update_system_config(
         # 防止误切环境直接实盘开单
         if was_testnet and not body.trading_testnet:
             cfg.trading_enabled = False
+    # 多账号（docs/17）：切换当前正式网账号；与 trading_testnet 联锁——
+    # 选中 live 账号即进入正式网模式（关总闸），切回测试网保留账号选择便于再切
+    if body.current_account_key is not None:
+        from app.services.account_registry import get_account
+        acc = get_account(body.current_account_key)
+        if acc is None:
+            raise HTTPException(status_code=400, detail=f"账号 {body.current_account_key} 不在注册表中（检查服务器 .env）")
+        if acc.testnet:
+            raise HTTPException(status_code=400, detail="current_account_key 仅接受正式网账号")
+        if cfg.current_account_key != acc.key:
+            cfg.current_account_key = acc.key
+            if not cfg.trading_testnet:  # 正式网模式下换账号：同属实盘，联锁关总闸
+                cfg.trading_enabled = False
+        if cfg.trading_testnet:
+            cfg.trading_testnet = False  # 显式选 live 账号 = 进入正式网模式
+            cfg.trading_enabled = False
     if body.trading_enabled is not None:
         cfg.trading_enabled = body.trading_enabled
     # 规则补丁参数（docs/12 §10）：显式传 null = 恢复默认（用 model_fields_set 区分未传）
@@ -454,38 +487,7 @@ def update_system_config(
 
     db.commit()
     db.refresh(cfg)
-    return SystemConfigOut(
-        ai_analysis_enabled=cfg.ai_analysis_enabled,
-        ai_pipeline_enabled=cfg.ai_pipeline_enabled,
-        dual_judge_enabled=cfg.dual_judge_enabled,
-        ai_configured=bool(settings.AI_API_KEY),
-        strategy_prompt_enabled=cfg.strategy_prompt_enabled,
-        strategy_prompt=cfg.strategy_prompt or "",
-        kline_interval=cfg.kline_interval,
-        kline_window=cfg.kline_window,
-        breakout_threshold=float(cfg.breakout_threshold),
-        r_squared_threshold=float(cfg.r_squared_threshold),
-        repeat_window_hours=cfg.repeat_window_hours,
-        swing_order=cfg.swing_order,
-        pullback_tolerance=float(cfg.pullback_tolerance),
-        fib_enabled=bool(cfg.fib_enabled),
-        max_open_trades=cfg.max_open_trades,
-        trading_min_free_pct=float(cfg.trading_min_free_pct),
-        trading_testnet=cfg.trading_testnet,
-        trading_enabled=cfg.trading_enabled,
-        binance_key_live=bool(settings.BINANCE_API_KEY and settings.BINANCE_SECRET_KEY),
-        binance_key_testnet=bool(
-            settings.BINANCE_TESTNET_API_KEY and settings.BINANCE_TESTNET_SECRET_KEY
-        ) or bool(settings.BINANCE_API_KEY and settings.BINANCE_SECRET_KEY),
-        max_stop_pct=float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None,
-        liq_gate_buffer=(float(cfg.liq_gate_buffer)
-                         if cfg.liq_gate_buffer is not None else None),
-        min_adapt_leverage=cfg.min_adapt_leverage,
-        pullback_market_pct=(float(cfg.pullback_market_pct)
-                             if cfg.pullback_market_pct is not None else None),
-        max_slippage_pct=(float(cfg.max_slippage_pct)
-                          if cfg.max_slippage_pct is not None else None),
-    )
+    return _config_response(cfg)
 
 
 # ===== 复盘统计（docs/04 §10 P2） =====

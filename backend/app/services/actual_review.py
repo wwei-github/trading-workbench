@@ -28,7 +28,10 @@ _BACKFILL_LIMIT = 20
 
 
 def backfill_costs(db: Session, trader: BinanceTrader, limit: int = _BACKFILL_LIMIT) -> int:
-    """为 fee_total 为空的已平仓交易回补手续费/资金费（一次性，回写后不再查）。"""
+    """为 fee_total 为空的已平仓交易回补手续费/资金费（一次性，回写后不再查）。
+
+    按记录归属账号取 income（docs/17）：account_key 缺失旧行按 testnet 回落；
+    账号已从 .env 移除时回落环境默认账号。"""
     rows = db.execute(
         select(TradeRecord)
         .where(
@@ -39,13 +42,24 @@ def backfill_costs(db: Session, trader: BinanceTrader, limit: int = _BACKFILL_LI
         .order_by(TradeRecord.closed_at.desc())
         .limit(limit)
     ).scalars().all()
+    traders: dict[str, BinanceTrader] = {}
+
+    def _rec_trader(rec: TradeRecord) -> BinanceTrader:
+        key = rec.account_key or ("testnet-1" if rec.testnet else "live-1")
+        if key not in traders:
+            from app.services.account_registry import get_account
+            traders[key] = BinanceTrader(key) if get_account(key) else (
+                trader if trader.testnet == rec.testnet else BinanceTrader(rec.testnet)
+            )
+        return traders[key]
+
     n = 0
     for rec in rows:
         try:
             since_ms = int(
                 rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000
             ) - 5_000 if rec.opened_at else 0
-            income = trader.income_rows(rec.symbol, since_ms)
+            income = _rec_trader(rec).income_rows(rec.symbol, since_ms)
             rec.fee_total = round(sum(
                 float(r.get("income") or 0) for r in income
                 if r.get("incomeType") == "COMMISSION"), 6)

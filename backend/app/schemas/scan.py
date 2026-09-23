@@ -201,6 +201,9 @@ class SystemConfigOut(BaseModel):
     # 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面可改）
     trading_testnet: bool = True
     trading_enabled: bool = False     # 自动交易总开关：关=定时扫描 AI 分析跳过+停开新单（结算/复盘/日报照常）
+    # 多账号（docs/17 P0）：.env 注册表只读展示 + 当前选中正式网账号
+    current_account_key: Optional[str] = None
+    accounts: list["AccountBrief"] = []
     # 双环境凭据配置状态（只读，不返回 key 本身）
     binance_key_live: bool = False      # 正式网 key 已配置
     binance_key_testnet: bool = False   # 测试网 key 已配置（未配时回落正式网 key = 与 live 同值）
@@ -211,6 +214,17 @@ class SystemConfigOut(BaseModel):
     min_adapt_leverage: Optional[int] = None  # 动态杠杆下限（整数倍数；NULL=默认 8）
     pullback_market_pct: Optional[float] = None  # 入场偏离容差（比例 0.01=1%；NULL=默认）
     max_slippage_pct: Optional[float] = None  # 开仓滑点实测上限（比例 0.003=0.3%；NULL=默认）
+
+    class Config:
+        from_attributes = True
+
+
+class AccountBrief(BaseModel):
+    """账号注册表条目（只读展示，docs/17）：key 稳定标识，key/secret 永不返回"""
+    key: str
+    name: str
+    testnet: bool
+    configured: bool = True   # 注册表构建即代表 key+secret 齐全，恒 True（保留字段语义）
 
     class Config:
         from_attributes = True
@@ -244,6 +258,8 @@ class SystemConfigUpdate(BaseModel):
     # 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面可改）
     trading_testnet: Optional[bool] = None
     trading_enabled: Optional[bool] = None
+    # 当前正式网账号（docs/17）：需为注册表内 live 账号；切到正式网账号自动关总闸
+    current_account_key: Optional[str] = None
 
     # 规则补丁参数（比例口径；传 null 恢复默认）
     max_stop_pct: Optional[float] = None

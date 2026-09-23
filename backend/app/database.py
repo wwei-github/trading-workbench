@@ -199,6 +199,36 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS max_slippage_pct NUMERIC(10, 6),
               ADD COLUMN IF NOT EXISTS testnet_transfer_purge_at TIMESTAMP
         """))
+        # 多账号支持（docs/17 P0，2026-09-23）：账号配置走 .env 注册表，存量表
+        # 补 account_key 归属列并按 testnet 布尔回填（testnet→testnet-1，正式→live-1）
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS current_account_key VARCHAR(20)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS account_key VARCHAR(20)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE account_transfers "
+            "ADD COLUMN IF NOT EXISTS account_key VARCHAR(20)"
+        ))
+        conn.execute(text(
+            "UPDATE trade_records SET account_key = 'testnet-1' "
+            "WHERE account_key IS NULL AND testnet"
+        ))
+        conn.execute(text(
+            "UPDATE trade_records SET account_key = 'live-1' "
+            "WHERE account_key IS NULL AND NOT testnet"
+        ))
+        conn.execute(text(
+            "UPDATE account_transfers SET account_key = 'testnet-1' "
+            "WHERE account_key IS NULL AND testnet"
+        ))
+        conn.execute(text(
+            "UPDATE account_transfers SET account_key = 'live-1' "
+            "WHERE account_key IS NULL AND NOT testnet"
+        ))
         # 币种黑名单（2026-09-18）：全新表由 create_all 建表（init_db 已导入
         # app.models.blacklist）。symbol 带 unique=True 自带唯一索引，不再建
         # ix_symbol_blacklist_symbol（模型同名额外索引曾致 beat DuplicateTable）

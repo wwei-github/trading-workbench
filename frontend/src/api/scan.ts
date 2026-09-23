@@ -159,11 +159,11 @@ export const scanApi = {
 
   // ===== 自动交易（docs/06）=====
 
-  // 交易记录列表（新→旧；status 可选过滤）
+  // 交易记录列表（新→旧；status 可选过滤；scope 账号范围过滤，docs/17）
   trades: {
-    list: (status?: string, limit = 200) =>
+    list: (status?: string, limit = 200, scope = 'all') =>
       api
-        .get<TradeRecord[]>('/trades', { params: { status, limit } })
+        .get<TradeRecord[]>('/trades', { params: { status, limit, scope } })
         .then((r) => r.data),
     // 一笔交易的操作历史（开仓/止盈成交/止损移动/结算/异常）
     events: (tradeId: string) =>
@@ -171,13 +171,14 @@ export const scanApi = {
     // 交易复盘K线（开单前100根 + 持仓期间，含初始止损止盈与关键事件）
     klines: (tradeId: string) =>
       api.get<TradeKlineData>(`/trades/${tradeId}/klines`, { timeout: 60000 }).then((r) => r.data),
-    // 合约账户资金划转（正=转入/负=转出，每小时巡检同步，按环境过滤）
-    transfers: (scope: 'live' | 'testnet' = 'live', limit = 200) =>
+    // 合约账户资金划转（正=转入/负=转出，每小时巡检逐账号同步）
+    // scope：live/testnet 环境聚合、all、或账号 key（docs/17）
+    transfers: (scope: string = 'live', limit = 200) =>
       api
         .get<AccountTransfer[]>('/trades/transfers', { params: { scope, limit } })
         .then((r) => r.data),
     // 资金分析聚合（docs/14，start/end 为北京时间 YYYY-MM-DD 闭区间）
-    analytics: (params: { scope: 'live' | 'testnet'; start?: string; end?: string }) =>
+    analytics: (params: { scope: string; start?: string; end?: string }) =>
       api.get<FundAnalytics>('/trades/analytics', { params }).then((r) => r.data),
     // 账户资金概览（当前环境：总资金/总收益/收益率，顶部状态栏展示）
     accountSummary: () =>

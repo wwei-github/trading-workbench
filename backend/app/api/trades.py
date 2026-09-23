@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
@@ -31,22 +31,46 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/trades", tags=["trades"])
 
 
+def _account_scope_filter(model, scope: str):
+    """scope → 账号过滤条件（docs/17 P0）：live/testnet=环境聚合（旧行为，
+    按 testnet 布尔，兼容 account_key 为 NULL 的旧行）；all=全部；账号 key
+    （live-1/testnet-1/…）=指定账号。未知值抛 400。"""
+    if scope == "all":
+        return None
+    if scope in ("live", "testnet"):
+        return model.testnet == (scope == "testnet")
+    from app.services.account_registry import registry
+    if scope in {a.key for a in registry()}:
+        acc = next(a for a in registry() if a.key == scope)
+        # 账号精确匹配；account_key 为 NULL 的旧行按环境回落（与 account_summary 口径一致）
+        return or_(
+            model.account_key == scope,
+            and_(model.account_key.is_(None), model.testnet == acc.testnet),
+        )
+    raise HTTPException(status_code=400, detail=f"scope 只支持 live/testnet/all 或账号 key（未知：{scope}）")
+
+
 @router.get("/account-summary")
 def account_summary(db: Session = Depends(get_db)):
-    """当前交易环境合约账户资金概览（docs/06 账户维度补充）：
+    """当前交易账号合约账户资金概览（docs/06 账户维度补充 + docs/17 多账号）：
     总资金=钱包+未实现盈亏；总收益=已实现+未实现；收益率=总收益÷本金，
     本金=总资金−总收益（自洽口径，不依赖划转记录）。
     今日口径按北京自然日切（闭单 closed_at 落当日 00:00–24:00）：
     today_realized=当日闭单已实现盈亏；today_pnl_pct=（今日已实现+未实现）
     ÷ 期初钱包（当前钱包−今日已实现，忽略日内划转，近似自洽）。
+    收益统计按当前账号 account_key 过滤（NULL 旧行按 testnet 回落）。
     请求失败返回 available=False 前端降级显示「--」，不阻塞页面"""
     from app.services.binance_trader import BinanceTrader
+    from app.services import account_registry as reg
 
     cfg = db.get(SystemConfig, 1)
     testnet = bool(cfg.trading_testnet) if cfg else True
-    out: dict = {"testnet": testnet, "available": False}
+    acc = reg.resolve_current_account(db)
+    acc_key = acc.key if acc else ("testnet-1" if testnet else "live-1")
+    out: dict = {"testnet": testnet, "account_key": acc_key,
+                 "account_name": acc.name if acc else acc_key, "available": False}
     try:
-        trader = BinanceTrader(testnet)
+        trader = BinanceTrader(acc_key)
         wallet = trader.wallet_balance()          # 1 请求：wallet + available
         positions = trader.positions()            # 1 请求：未实现盈亏
         unrealized = 0.0
@@ -61,17 +85,22 @@ def account_summary(db: Session = Depends(get_db)):
             )
             - timedelta(hours=8)
         )
+        # 账号口径：account_key 精确匹配，NULL 旧行按 testnet 布尔回落
+        acc_cond = or_(
+            TradeRecord.account_key == acc_key,
+            and_(TradeRecord.account_key.is_(None), TradeRecord.testnet == testnet),
+        )
         today_realized = db.execute(
             select(func.coalesce(func.sum(TradeRecord.realized_pnl), 0.0)).where(
                 TradeRecord.status == "CLOSED",
-                TradeRecord.testnet == testnet,
+                acc_cond,
                 TradeRecord.closed_at >= day_start_utc,
             )
         ).scalar_one()
         realized = db.execute(
             select(func.coalesce(func.sum(TradeRecord.realized_pnl), 0.0)).where(
                 TradeRecord.status == "CLOSED",
-                TradeRecord.testnet == testnet,
+                acc_cond,
             )
         ).scalar_one()
         profit = float(realized) + unrealized
@@ -99,13 +128,18 @@ def account_summary(db: Session = Depends(get_db)):
 @router.get("", response_model=list[TradeOut])
 def list_trades(
     status: Optional[str] = None,
+    scope: str = "all",
     limit: int = 100,
     db: Session = Depends(get_db),
 ):
-    """自动交易记录（新→旧）。status 可选过滤：OPENED/TP1_HIT/TP2_HIT/CLOSED/FAILED"""
+    """自动交易记录（新→旧）。status 可选过滤：OPENED/TP1_HIT/TP2_HIT/CLOSED/FAILED；
+    scope 支持环境聚合（live/testnet）、all 与账号 key（docs/17）"""
     q = select(TradeRecord).order_by(TradeRecord.created_at.desc()).limit(min(limit, 500))
     if status:
         q = q.where(TradeRecord.status == status.upper())
+    cond = _account_scope_filter(TradeRecord, scope)
+    if cond is not None:
+        q = q.where(cond)
     rows = db.execute(q).scalars().all()
     return [TradeOut.model_validate(r) for r in rows]
 
@@ -117,16 +151,13 @@ def list_transfers(
     db: Session = Depends(get_db),
 ):
     """合约账户资金划转记录（新→旧，amount 正=转入/负=转出）。
-    由每小时结算巡检从币安 income TRANSFER 同步，本接口只读；
-    scope 区分环境（live/testnet），按 testnet 标记过滤。"""
-    if scope not in ("live", "testnet"):
-        raise HTTPException(status_code=400, detail="scope 只支持 live/testnet")
-    rows = db.execute(
-        select(AccountTransfer)
-        .where(AccountTransfer.testnet == (scope == "testnet"))
-        .order_by(AccountTransfer.transfer_time.desc())
-        .limit(min(limit, 500))
-    ).scalars().all()
+    由每小时结算巡检从币安 income TRANSFER 逐账号同步，本接口只读；
+    scope 支持环境聚合（live/testnet）、all 与账号 key（docs/17）。"""
+    cond = _account_scope_filter(AccountTransfer, scope)
+    q = select(AccountTransfer).order_by(AccountTransfer.transfer_time.desc()).limit(min(limit, 500))
+    if cond is not None:
+        q = q.where(cond)
+    rows = db.execute(q).scalars().all()
     return [AccountTransferOut.model_validate(r) for r in rows]
 
 
@@ -175,7 +206,8 @@ def fund_analytics(
     """资金分析聚合（docs/14）：闭单按 closed_at 落北京时间自然日桶，划转按 transfer_time
 
     - start/end 为北京时间 YYYY-MM-DD 闭区间；DB 存 UTC naive，过滤用换算后的 UTC 边界
-    - scope=testnet 时闭单照常统计，划转按 testnet 标记过滤（两环境各自同步落库）
+    - scope 支持环境聚合（live/testnet）、all 与账号 key（docs/17）；
+      闭单/划转均按 scope 过滤
     """
     def _parse_day(s: str, name: str) -> datetime:
         try:
@@ -183,16 +215,18 @@ def fund_analytics(
         except ValueError:
             raise HTTPException(status_code=400, detail=f"{name} 参数格式应为 YYYY-MM-DD")
 
-    testnet = scope == "testnet"
+    trade_cond = _account_scope_filter(TradeRecord, scope)
+    transfer_cond = _account_scope_filter(AccountTransfer, scope)
     # 北京日边界 → UTC：北京 00:00 = 前一日 16:00 UTC
     lo = _parse_day(start, "start") - timedelta(hours=8) if start else None
     hi = _parse_day(end, "end") + timedelta(days=1) - timedelta(hours=8) if end else None
 
     base = select(TradeRecord).where(
         TradeRecord.status == "CLOSED",
-        TradeRecord.testnet == testnet,
         TradeRecord.closed_at.is_not(None),
     )
+    if trade_cond is not None:
+        base = base.where(trade_cond)
     if lo is not None:
         base = base.where(TradeRecord.closed_at >= lo)
     if hi is not None:
@@ -241,12 +275,10 @@ def fund_analytics(
         name = _pnl_bucket(float(r.realized_pnl or 0))
         buckets[name] = buckets.get(name, 0) + 1
 
-    # 划转（amount 带符号：正=转入），只统计 USDT；按环境标记过滤
-    # （testnet 列 2026-09-20 补上，存量回填 TRUE = 测试网账户流水）
-    tq = select(AccountTransfer).where(
-        AccountTransfer.asset == "USDT",
-        AccountTransfer.testnet == testnet,
-    )
+    # 划转（amount 带符号：正=转入），只统计 USDT；按 scope 过滤
+    tq = select(AccountTransfer).where(AccountTransfer.asset == "USDT")
+    if transfer_cond is not None:
+        tq = tq.where(transfer_cond)
     if lo is not None:
         tq = tq.where(AccountTransfer.transfer_time >= lo)
     if hi is not None:

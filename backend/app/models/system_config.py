@@ -46,6 +46,10 @@ class SystemConfig(Base):
     #                  结算巡检/复盘/日报照常；2026-09-20 合并原系统总开关）
     trading_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
     trading_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 当前正式网账号（docs/17 P0）：正式网模式（trading_testnet=false）下生效，
+    # 记 system_config 选中的 live 账号 key（live-1/live-2…）；NULL=回落 live-1。
+    # 测试网模式忽略此值（测试网单账号 testnet-1）
+    current_account_key: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     # 余额风控：开仓最低可用余额占钱包余额比例（0~1，页面可改）。
     # 2026-09-15 由固定 70% 规则改为默认 50% 可配置。开单类型策略开关已移除

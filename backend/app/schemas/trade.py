@@ -39,6 +39,7 @@ class TradeOut(BaseModel):
     exit_reason: Optional[str] = None
     fail_reason: Optional[str] = None  # 开仓失败原因（仅 FAILED 记录，读自 raw.fail_reason）
     testnet: bool = True
+    account_key: Optional[str] = None  # 开单账号（docs/17：testnet-1/live-N；null=旧行按 testnet 回落）
     ai_snapshot: Optional[dict] = None
     ai_analysis_id: Optional[uuid.UUID] = None
     ai_advice: Optional[dict] = None  # AI 持仓诊断（docs/16，NULL=未诊断）
@@ -55,6 +56,7 @@ class AccountTransferOut(BaseModel):
     asset: str
     amount: float
     transfer_time: datetime
+    account_key: Optional[str] = None  # 所属账号（docs/17；null=旧行按 testnet 回落）
 
     class Config:
         from_attributes = True

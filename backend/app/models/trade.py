@@ -32,6 +32,7 @@ class TradeRecord(Base):
     )
     recommendation: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)  # 开单时评分快照
     testnet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)  # 测试网/正式网标识
+    account_key: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # 开单账号（docs/17：testnet-1/live-N；NULL=迁移前旧行，读路径按 testnet 回落）
     ai_snapshot: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # 开单时 AI 分析结论快照（字段同前端 AIAnalysisCard 所需，交易记录自持不随 ai_analyses 断链）
 
@@ -128,6 +129,7 @@ class AccountTransfer(Base):
     transfer_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     # 环境标识（2026-09-20）：同步自当前配置账户（TRADING_TESTNET），资金分析按 scope 过滤
     testnet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    account_key: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # 划转归属账号（docs/17；NULL=旧行按 testnet 回落）
     raw: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

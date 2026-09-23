@@ -457,6 +457,7 @@ def _attempt_open(
                 ai_analysis_id=a.id,
                 recommendation=float(a.recommendation) if a.recommendation is not None else None,
                 testnet=trader.testnet,
+                account_key=trader.account_key,
                 ai_snapshot=_ai_snapshot(a),
                 entry_price=fill_price,
                 qty=qty,
@@ -526,6 +527,7 @@ def _attempt_open(
                         symbol=symbol, direction=direction, ai_analysis_id=a.id,
                         recommendation=float(a.recommendation) if a.recommendation is not None else None,
                         testnet=trader.testnet,
+                        account_key=trader.account_key,
                         status="FAILED", raw={"fail_reason": str(e)[:200]},
                     )
                     db.add(rec)
@@ -912,35 +914,42 @@ def _sweep_orphan_algo_orders(
 def sync_account_transfers(db: Session) -> int:
     """同步合约账户资金划转记录（income TRANSFER）到 account_transfers 表。
 
-    两个环境各自同步（2026-09-20 运行时切环境后两个账户都有真实流水，划转按
-    testnet 标记分环境落库）；key 未配置的环境跳过。增量拉取：从该环境库内最新
-    transfer_time 前移 60s 重叠窗口开始（首次从 7 天前起），tran_id 唯一约束 +
-    on_conflict_do_nothing 幂等去重。返回新插入条数（两环境合计）。
+    逐账号同步（docs/17 P0）：.env 注册表内每个账号各拉各的流水，按
+    testnet + account_key 落库；key 未配置的账号自然不在注册表。增量拉取：
+    从该账号库内最新 transfer_time 前移 60s 重叠窗口开始（首次从 7 天前起），
+    tran_id 唯一约束 + on_conflict_do_nothing 幂等去重。返回新插入条数（全部账号合计）。
     """
     inserted = 0
     cfg = db.get(SystemConfig, 1)
     # 测试网清除水位：一键清空删光划转后记录时刻，testnet 分支以它为下限，
     # 防止「库内无记录→从 7 天前重拉」把刚删掉的划转回灌（仅对 testnet 生效）
     purge_at = cfg.testnet_transfer_purge_at if cfg else None
-    for t in (True, False):
-        trader = BinanceTrader(t)
+    from app.services.account_registry import registry
+    for acc in registry():
+        trader = BinanceTrader(acc.key)
         if not trader.configured:
             continue
         last = db.execute(
             select(AccountTransfer.transfer_time)
-            .where(AccountTransfer.testnet == t)
+            .where(
+                AccountTransfer.testnet == acc.testnet,
+                AccountTransfer.account_key == acc.key,
+            )
             .order_by(AccountTransfer.transfer_time.desc())
             .limit(1)
         ).scalar()
         since = last - timedelta(seconds=60) if last else datetime.utcnow() - timedelta(days=7)
-        if t and purge_at and since < purge_at:
+        if acc.testnet and purge_at and since < purge_at:
             since = purge_at
         since_ms = int(since.replace(tzinfo=timezone.utc).timestamp() * 1000)
         try:
             rows = trader.transfer_rows(since_ms)
         except Exception as e:
-            logger.warning("划转同步失败（%s）: %s", "testnet" if t else "正式网", e)
+            logger.warning("划转同步失败（%s/%s）: %s", acc.key, "testnet" if acc.testnet else "正式网", e)
             continue
+        # tranId 各账号独立计数，跨账号可能撞号：默认账号保持原格式（历史数据
+        # 兼容），附加账号加 account_key 前缀隔离；时间组合键同理
+        prefix = "" if acc.key in ("testnet-1", "live-1") else f"{acc.key}:"
         for row in rows:
             try:
                 amount = float(row.get("income") or 0)
@@ -954,17 +963,18 @@ def sync_account_transfers(db: Session) -> int:
             # 测试网 TRANSFER 的 tranId 恒为 0（注意 0 是 falsy，不能用 `or` 兜底）：
             # tranId 有效时用原值，否则用 时间+资产+金额 组合键做幂等去重
             raw_tran = row.get("tranId")
-            tran_id = (
+            base_id = (
                 str(raw_tran)
                 if raw_tran not in (None, "", 0, "0")
                 else f"{t_ms}:{row.get('asset') or 'USDT'}:{row.get('income')}"
             )
             stmt = pg_insert(AccountTransfer).values(
-                tran_id=tran_id,
+                tran_id=f"{prefix}{base_id}",
                 asset=row.get("asset") or "USDT",
                 amount=amount,
                 transfer_time=datetime.utcfromtimestamp(t_ms / 1000),
-                testnet=t,
+                testnet=acc.testnet,
+                account_key=acc.key,
                 raw=row,
             ).on_conflict_do_nothing(index_elements=["tran_id"])
             res = db.execute(stmt)
@@ -1051,8 +1061,8 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
     返回 (处理笔数, AI 持仓诊断触发清单)——触发清单由调用方在锁外派发
     celery 子任务诊断（docs/16：LLM 调用绝不进开仓锁）。
 
-    每条记录按自带 testnet 标记选对应环境账户结算（2026-09-20 运行时切环境后，
-    存量在跑单仍走原环境正确结算；trader 参数为当前环境实例，作为同环境复用）。
+    每条记录按自带 account_key 选对应账号结算（docs/17 P0；NULL 旧行按 testnet
+    回落 testnet-1/live-1）；trader 参数为当前环境实例，仅作同账号复用与孤儿清扫兜底。
     """
     cfg = db.get(SystemConfig, 1)
     interval = cfg.kline_interval if cfg else "1h"
@@ -1060,20 +1070,29 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
         select(TradeRecord).where(TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")))
     ).scalars().all()
 
-    traders: dict[bool, BinanceTrader] = {}
+    def _rec_acc_key(rec: TradeRecord) -> str:
+        return rec.account_key or ("testnet-1" if rec.testnet else "live-1")
 
-    def _env_trader(t: bool) -> BinanceTrader:
-        if t not in traders:
-            traders[t] = trader if trader.testnet == t else BinanceTrader(t)
-        return traders[t]
+    traders: dict[str, BinanceTrader] = {}
 
-    env_positions: dict[bool, dict] = {}
-    for t in {r.testnet for r in records}:
-        rt = _env_trader(t)
-        env_positions[t] = rt.positions()
+    def _rec_trader(rec: TradeRecord) -> BinanceTrader:
+        key = _rec_acc_key(rec)
+        if key not in traders:
+            from app.services.account_registry import get_account
+            if get_account(key):
+                traders[key] = BinanceTrader(key)
+            else:
+                # 账号已从 .env 移除：回落环境默认账号（旧行为）
+                traders[key] = trader if trader.testnet == rec.testnet else BinanceTrader(rec.testnet)
+        return traders[key]
 
-    def _active_syms(t: bool) -> set:
-        return {r.symbol for r in records if r.testnet == t}
+    acc_positions: dict[str, dict] = {}
+    for key in {_rec_acc_key(r) for r in records}:
+        first = next(r for r in records if _rec_acc_key(r) == key)
+        acc_positions[key] = _rec_trader(first).positions()
+
+    def _active_syms(key: str) -> set:
+        return {r.symbol for r in records if _rec_acc_key(r) == key}
 
     if not records:
         _sweep_orphan_algo_orders(trader, set(), trader.positions())
@@ -1084,8 +1103,8 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
 
     for rec in records:
         try:
-            rt = _env_trader(rec.testnet)
-            pos_map = env_positions.get(rec.testnet) or {}
+            rt = _rec_trader(rec)
+            pos_map = acc_positions.get(_rec_acc_key(rec)) or {}
             qty = float(rec.qty or 0)
             raw = rec.raw or {}
             pos = pos_map.get(rec.symbol)
@@ -1252,7 +1271,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
             db.rollback()
             logger.warning("结算 %s 失败: %s", rec.symbol, e)
             continue
-    # ③ 孤儿条件单清扫（每轮兜底：无持仓、无在跑记录的在挂委托一律撤销，按环境执行）
-    for t, rt in traders.items():
-        _sweep_orphan_algo_orders(rt, _active_syms(t), env_positions.get(t) or {})
+    # ③ 孤儿条件单清扫（每轮兜底：无持仓、无在跑记录的在挂委托一律撤销，按账号执行）
+    for key, rt in traders.items():
+        _sweep_orphan_algo_orders(rt, _active_syms(key), acc_positions.get(key) or {})
     return handled, advice_ids

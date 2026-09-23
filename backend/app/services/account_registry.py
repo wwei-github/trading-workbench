@@ -1,0 +1,135 @@
+"""交易账号注册表（docs/17 P0，2026-09-23）
+
+多账号配置全走 .env（纯配置驱动，无新表）：
+- 测试网单账号：BINANCE_TESTNET_API_KEY/SECRET_KEY → 账号 key `testnet-1`
+- 正式网 1 号：BINANCE_API_KEY/SECRET_KEY → `live-1`（沿用现有变量名，向后兼容）
+- 正式网附加账号：BINANCE_LIVE_{N}_API_KEY/SECRET_KEY（+可选 _NAME）→ `live-N`，N≥2 不限数量
+
+账号 key 是稳定标识（trade_records.account_key 记录归属）；NAME 仅展示用。
+启动时（uvicorn lifespan 与 celery worker 各自进程内）构建注册表并校验，
+配了 _API_KEY 缺 _SECRET_KEY 直接抛错，防止半配置账号上线。
+"""
+import logging
+import os
+import re
+from dataclasses import dataclass
+from typing import Optional
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+_TESTNET_KEY = "testnet-1"
+_LIVE_DEFAULT_KEY = "live-1"
+_LIVE_N_RE = re.compile(r"^BINANCE_LIVE_(\d+)_API_KEY$")
+
+
+@dataclass(frozen=True)
+class Account:
+    """一个交易账号（一组币安 key 的逻辑封装）。testnet 是账号属性而非环境开关。"""
+
+    key: str          # 稳定标识：testnet-1 / live-1 / live-2…
+    name: str         # 显示名（.env NAME 或默认「正式网-N」/「测试网」）
+    testnet: bool     # 账号属性：下单 base 与记录归属
+    api_key: str
+    api_secret: str
+
+    @property
+    def base_url(self) -> str:
+        from app.services.binance_trader import _PROD_BASE, _TEST_BASE
+        return _TEST_BASE if self.testnet else _PROD_BASE
+
+
+def _validate(key: str, api_key: str, secret: str) -> None:
+    if api_key and not secret:
+        raise RuntimeError(
+            f"账号 {key} 配置不完整：检测到 {api_key} 对应的 API_KEY 但缺少 SECRET_KEY，"
+            f"请在 .env 补全后重启"
+        )
+
+
+def build_registry() -> list[Account]:
+    """扫环境变量构建账号清单（每次调用重新扫描，进程内启动时调一次）。"""
+    accounts: list[Account] = []
+
+    tk, ts = settings.BINANCE_TESTNET_API_KEY, settings.BINANCE_TESTNET_SECRET_KEY
+    if tk or ts:
+        _validate(_TESTNET_KEY, tk, ts)
+        if tk and ts:
+            accounts.append(Account(_TESTNET_KEY, "测试网", True, tk, ts))
+
+    lk, ls = settings.BINANCE_API_KEY, settings.BINANCE_SECRET_KEY
+    if lk or ls:
+        _validate(_LIVE_DEFAULT_KEY, lk, ls)
+        if lk and ls:
+            accounts.append(Account(_LIVE_DEFAULT_KEY, "正式网-1", False, lk, ls))
+
+    # 附加正式网账号：BINANCE_LIVE_{N}_API_KEY（N≥2），按编号排序保证注册表顺序稳定
+    found: list[tuple[int, str, str, Optional[str]]] = []
+    for env_name, value in os.environ.items():
+        m = _LIVE_N_RE.match(env_name)
+        if m and value.strip():
+            n = int(m.group(1))
+            if n < 2:
+                continue  # live-1 固定走 BINANCE_API_KEY，编号 1 的扩展写法忽略
+            found.append((n, value.strip(), os.getenv(f"BINANCE_LIVE_{n}_SECRET_KEY", ""),
+                          os.getenv(f"BINANCE_LIVE_{n}_NAME")))
+    for n, ak, sec, name in sorted(found):
+        key = f"live-{n}"
+        _validate(key, ak, sec)
+        if sec:
+            accounts.append(Account(key, name or f"正式网-{n}", False, ak, sec))
+
+    return accounts
+
+
+# ── 进程内注册表（惰性构建；uvicorn / celery worker 各自进程一份）──────────
+_registry: Optional[list[Account]] = None
+
+
+def registry() -> list[Account]:
+    global _registry
+    if _registry is None:
+        _registry = build_registry()
+        names = ", ".join(f"{a.key}({a.name})" for a in _registry) or "无"
+        logger.info("账号注册表构建完成：%s", names)
+    return _registry
+
+
+def get_account(account_key: str) -> Optional[Account]:
+    return next((a for a in registry() if a.key == account_key), None)
+
+
+def live_accounts() -> list[Account]:
+    return [a for a in registry() if not a.testnet]
+
+
+def testnet_accounts() -> list[Account]:
+    return [a for a in registry() if a.testnet]
+
+
+def resolve_current_account(db) -> Account:
+    """解析当前交易账号：system_config.current_account_key（正式网模式）→
+    trading_testnet → 缺省回落 live-1 / testnet-1。
+
+    回落链保证任何配置状态下都有可用账号（迁移期 current_account_key 为 NULL
+    或指向已从 .env 移除的账号时自动降级，行为与单账号时代一致）。"""
+    from app.models.system_config import SystemConfig
+
+    cfg = db.get(SystemConfig, 1)
+    if cfg is not None:
+        if not cfg.trading_testnet:
+            # 正式网模式：优先 current_account_key，失效回落 live-1
+            key = cfg.current_account_key
+            acc = get_account(key) if key else None
+            if acc and not acc.testnet:
+                return acc
+            fallback = live_accounts()
+            if fallback:
+                return fallback[0]
+        else:
+            ta = testnet_accounts()
+            if ta:
+                return ta[0]
+    # 配置行缺失的最终兜底：有正式网用正式网，否则测试网
+    return (live_accounts() or testnet_accounts() or [None])[0]

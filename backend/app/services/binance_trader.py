@@ -40,21 +40,82 @@ _listed_cache: dict[bool, tuple[set, float]] = {}
 
 
 class BinanceTrader:
-    def __init__(self, testnet: Optional[bool] = None):
-        """testnet=None=当前交易环境（system_config.trading_testnet 的进程内快照，
-        由调用方传入具体环境时按环境取凭据）。切环境后新实例即用新 key/base。"""
-        self.testnet = settings.TRADING_TESTNET if testnet is None else testnet
-        if self.testnet:
-            # 测试网 key 未单独配置时回落正式网 key（兼容单组 key 部署）
-            self.key = settings.BINANCE_TESTNET_API_KEY or settings.BINANCE_API_KEY
-            self.secret = settings.BINANCE_TESTNET_SECRET_KEY or settings.BINANCE_SECRET_KEY
-            self.base = _TEST_BASE
+    def __init__(self, account: Optional[Union[bool, str]] = None):
+        """多账号构造（docs/17 P0）：
+        - str（账号 key，如 'live-2'/'testnet-1'）：用该账号凭据；注册表里不存在
+          （.env 改配置后旧记录引用）→ 落回该 key 的 testnet 属性无法得知，
+          按当前配置解析并告警
+        - bool：兼容旧调用——True=testnet-1（未配置回落 live-1，与历史回落语义
+          一致）；False=当前选中的正式网账号（system_config.current_account_key，
+          未选回落 live-1）
+        - None：同 False 的解析链（当前配置环境 + 当前账号）
+        self.testnet 保留为账号属性，既有按环境分桶的缓存与调用方判断不受影响。"""
+        acc = self._resolve_account(account)
+        if acc:
+            self.account_key, self.testnet = acc.key, acc.testnet
+            self.key, self.secret = acc.api_key, acc.api_secret
+            self.base = acc.base_url
         else:
-            self.key = settings.BINANCE_API_KEY
-            self.secret = settings.BINANCE_SECRET_KEY
-            self.base = _PROD_BASE
+            # 注册表为空（.env 完全没配 key）：沿用旧路径，configured=False 兜底
+            self.testnet = settings.TRADING_TESTNET if account is None else bool(account)
+            self.account_key = "testnet-1" if self.testnet else "live-1"
+            if self.testnet:
+                # 测试网 key 未单独配置时回落正式网 key（兼容单组 key 部署）
+                self.key = settings.BINANCE_TESTNET_API_KEY or settings.BINANCE_API_KEY
+                self.secret = settings.BINANCE_TESTNET_SECRET_KEY or settings.BINANCE_SECRET_KEY
+                self.base = _TEST_BASE
+            else:
+                self.key = settings.BINANCE_API_KEY
+                self.secret = settings.BINANCE_SECRET_KEY
+                self.base = _PROD_BASE
         self._client = httpx.Client(timeout=15)
-        logger.info("BinanceTrader: %s 模式 (%s)", "testnet" if self.testnet else "正式网", self.base)
+        logger.info(
+            "BinanceTrader: %s/%s (%s)", self.account_key, "testnet" if self.testnet else "正式网", self.base
+        )
+
+    def _resolve_account(self, account) -> Optional["Account"]:
+        from app.database import SessionLocal
+        from app.services import account_registry as reg
+
+        if isinstance(account, str):
+            acc = reg.get_account(account)
+            if acc is not None:
+                return acc
+            logger.warning("账号 %s 不在注册表中（.env 已移除？），回落当前配置账号", account)
+            account = None  # 落到下方完整解析链（当前环境 + 当前账号）
+        if account is True:
+            # 旧语义：明确要测试网（未配置测试网 key 时回落 live-1，历史行为）
+            pool = reg.testnet_accounts() or reg.live_accounts()
+            return pool[0] if pool else None
+        if account is False:
+            # 旧语义：明确要正式网——当前选中的 live 账号（current_account_key），未选回落 live-1
+            try:
+                from app.models.system_config import SystemConfig
+                db = SessionLocal()
+                try:
+                    cfg = db.get(SystemConfig, 1)
+                    key = cfg.current_account_key if cfg else None
+                finally:
+                    db.close()
+            except Exception:
+                logger.exception("读取 current_account_key 失败，回落 live-1")
+                key = None
+            acc = reg.get_account(key) if key else None
+            if acc and not acc.testnet:
+                return acc
+            pool = reg.live_accounts()
+            return pool[0] if pool else None
+        # None：完整解析链（当前环境 + 当前账号）
+        try:
+            db = SessionLocal()
+            try:
+                return reg.resolve_current_account(db)
+            finally:
+                db.close()
+        except Exception:  # DB 不可用时的极端兜底：按 env 静态配置
+            logger.exception("解析当前账号失败，按 env TRADING_TESTNET 兜底")
+            pool = reg.testnet_accounts() if settings.TRADING_TESTNET else reg.live_accounts()
+            return pool[0] if pool else None
 
     # ── 基础请求 ──────────────────────────────────────────────
 

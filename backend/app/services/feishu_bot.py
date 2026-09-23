@@ -174,7 +174,8 @@ def _exec_close(trade_id: str) -> None:
         elif rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
             res = {"ok": False, "error": f"该交易已不在跑（{rec.status}），无需平仓"}
         else:
-            trader = BinanceTrader(bool(rec.testnet))
+            # docs/17：按开单账号结算；account_key 缺失的旧行回落 testnet 标记
+            trader = BinanceTrader(rec.account_key or bool(rec.testnet))
             if not trader.configured:
                 res = {"ok": False, "error": "币安 API 凭据未配置，无法执行"}
             else:
