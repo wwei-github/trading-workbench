@@ -14,6 +14,7 @@ const typeMeta: Record<string, { label: string; color: string }> = {
   ai: { label: 'AI', color: 'geekblue' },
   trade: { label: '交易', color: 'purple' },
   review: { label: '复盘', color: 'cyan' },
+  spot: { label: '现货', color: 'gold' },
 }
 
 // 触发方式
@@ -128,6 +129,7 @@ export default function TaskList() {
             { value: 'ai', label: 'AI 分析任务' },
             { value: 'trade', label: '交易任务' },
             { value: 'review', label: '复盘任务' },
+            { value: 'spot', label: '现货任务' },
           ]}
         />
         <Button icon={<ReloadOutlined />} onClick={() => fetchTasks(1)}>刷新</Button>

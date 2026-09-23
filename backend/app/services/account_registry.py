@@ -162,3 +162,31 @@ def enabled_accounts(db) -> list["Account"]:
         if a and not a.testnet and a not in accs:
             accs.append(a)
     return accs or live_accounts() or testnet_accounts()
+
+
+# ── 现货（docs/18）：环境与合约完全独立，仅共用 .env 账号注册表 ─────────────
+
+def spot_enabled_accounts(db) -> list["Account"]:
+    """现货当前环境的账号清单：
+    - 现货测试网（spot_trading_testnet=true，默认）→ testnet-1 单账号
+    - 现货正式网 → spot_live_trading_keys ∩ 注册表（保持配置顺序），
+      空回落 live-1；与合约的 live_trading_keys 互不影响
+    """
+    from app.models.system_config import SystemConfig
+
+    cfg = db.get(SystemConfig, 1)
+    if cfg is not None and cfg.spot_trading_testnet:
+        return testnet_accounts() or live_accounts() or testnet_accounts()
+    accs: list[Account] = []
+    for k in parse_live_keys(cfg.spot_live_trading_keys if cfg else None):
+        a = get_account(k)
+        if a and not a.testnet and a not in accs:
+            accs.append(a)
+    return accs or live_accounts() or testnet_accounts()
+
+
+def resolve_spot_account(db) -> "Account":
+    """解析现货当前账号（P0 只读查询用：取启用清单第一个）。
+    失败语义与 resolve_current_account 一致：任何配置下都有可用账号。"""
+    accs = spot_enabled_accounts(db)
+    return accs[0]

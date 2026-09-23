@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import Boolean, String, Integer, Numeric, Text, DateTime
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -81,6 +82,16 @@ class SystemConfig(Base):
     # 走订单簿逐层吃的预期滑点超线放弃（GRIFFAIN 薄盘案例：0.637% 滑点撑宽
     # 止损 17%）；NULL=恢复默认 0.003
     max_slippage_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+
+    # 现货屯币配置（docs/18）：JSON 列（三币开关/单份金额/投入上限/定投 + 全局预算）。
+    # 零侵入约束：新增独立列，不改既有列语义；NULL=全部默认值
+    spot_settings: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, default=None)
+    # 现货环境开关（docs/18，2026-09-23 用户拍板：现货环境与合约完全独立）：
+    # true=现货测试网（默认），false=现货正式网；与 trading_testnet（合约）互不影响
+    spot_trading_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 现货正式网启用账号集合（docs/17 注册表共用；docs/18）：逗号分隔 key（live-1,live-2…），
+    # 空回落 live-1；现货测试网恒 testnet-1 单账号（忽略此值）
+    spot_live_trading_keys: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # testnet_transfer_purge_at：测试网划转清除水位（2026-09-20 一键清空测试网数据）。
     # 清空功能删光测试网划转后记录此刻；sync_account_transfers 的 testnet 分支以它

@@ -246,6 +246,23 @@ def _run_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_symbol_blacklist_origin "
             "ON symbol_blacklist (origin)"
         ))
+        # 现货屯币（docs/18）：spot_settings 配置 JSON 列（新增独立列，不改既有列语义）。
+        # 全新表（spot_orders/spot_weekly_reviews/spot_backtests/spot_kline_cache）
+        # 由 create_all 建表（init_db 已导入 app.models.spot）
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS spot_settings JSONB"
+        ))
+        # 现货环境与合约完全独立（docs/18，2026-09-23）：默认现货=测试网；
+        # 启用账号集合空回落 live-1。共用 docs/17 的 .env 账号注册表
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS spot_trading_testnet BOOLEAN DEFAULT TRUE"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS spot_live_trading_keys TEXT"
+        ))
         # 确保系统配置表有默认行（初始值从 env 注入）。
         # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有
         # Python 端 default 没有 server_default，漏列的裸 INSERT 会 NotNullViolation
@@ -288,6 +305,6 @@ def _run_migrations(engine):
 
 def init_db():
     """创建所有表 + 幂等迁移"""
-    from app.models import ops, patch, scan, trade, blacklist  # noqa: F401
+    from app.models import ops, patch, scan, trade, blacklist, spot  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _run_migrations(engine)

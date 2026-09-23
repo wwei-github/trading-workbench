@@ -83,10 +83,10 @@ export interface ListResponse<T> {
   page_size?: number;
 }
 
-// 任务记录：任务粒度的运行历史（扫描/交易/复盘等），见后端 task_records
+// 任务记录：任务粒度的运行历史（扫描/交易/复盘/现货等），见后端 task_records
 export interface TaskRecord {
   id: string;
-  task_type: 'scan' | 'ai' | 'trade' | 'review';
+  task_type: 'scan' | 'ai' | 'trade' | 'review' | 'spot';
   task_name: string;
   trigger: 'scheduled' | 'manual' | 'system';
   status: 'running' | 'completed' | 'failed' | 'skipped';

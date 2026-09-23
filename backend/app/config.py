@@ -88,6 +88,9 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        # 多账号 .env 变量（BINANCE_LIVE_{N}_*）由 account_registry 直接扫
+        # os.environ，Settings 不逐个声明；ignore 避免 extra_forbidden 误杀
+        extra = "ignore"
 
 
 settings = Settings()
