@@ -41,6 +41,8 @@ class SpotClient:
         from app.services.account_registry import get_account, resolve_spot_account
 
         self.account = None
+        # 账号解析失败原因（overview 降级提示用；None=解析成功）
+        self.resolve_error: Optional[str] = None
         self.testnet = True
         try:
             from app.database import SessionLocal
@@ -59,7 +61,10 @@ class SpotClient:
             if acc is not None and acc.configured:
                 self.account = acc
                 self.testnet = acc.testnet
+            else:
+                self.resolve_error = "现货账号未配置（.env 缺 BINANCE_TESTNET_API_KEY/SECRET_KEY）"
         except Exception as e:  # 表不存在/DB 异常等：降级为仅公开端点可用
+            self.resolve_error = f"现货账号解析失败: {e}"
             logger.warning("spot 账号解析失败，公开端点降级可用: %s", e)
 
         self.base_url = SPOT_TESTNET_BASE if self.testnet else settings.BINANCE_BASE_URL
@@ -115,8 +120,14 @@ class SpotClient:
         params["signature"] = sig
         return params
 
-    def account(self) -> Dict[str, Any]:
-        """现货账户（只读）：返回 balances 中非零资产列表。"""
+    def fetch_account(self) -> Dict[str, Any]:
+        """现货账户（只读）：返回 balances 中非零资产列表。
+
+        注意：不能命名为 account——__init__ 会写实例属性 self.account（当前账号），
+        同名方法会被属性遮蔽导致 NoneType not callable（2026-09-23 生产事故）。
+        """
+        if self.account is None:
+            raise RuntimeError(self.resolve_error or "现货账号未配置")
         params = self._signed_params()
         r = self._client.get(
             f"{self.base_url}/api/v3/account",
@@ -137,7 +148,7 @@ class SpotClient:
     def usdt_balance(self) -> Optional[float]:
         """USDT 可用余额（overview 现金池展示；失败 None）。"""
         try:
-            for b in self.account()["balances"]:
+            for b in self.fetch_account()["balances"]:
                 if b["asset"] == "USDT":
                     return b["free"] + b["locked"]
         except Exception as e:

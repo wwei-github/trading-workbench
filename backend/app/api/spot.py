@@ -189,14 +189,14 @@ def spot_overview(db: Session = Depends(get_db)):
         for c in clients:
             label = c.account.key if c.account else "现货账号"
             try:
-                acc = c.account()
+                acc = c.fetch_account()
                 ok_any = True
                 for b in acc["balances"]:
                     if b["asset"] in ("BTC", "ETH", "BNB"):
                         holdings[b["asset"]] = holdings.get(b["asset"], 0.0) + b["free"] + b["locked"]
                     if b["asset"] == "USDT":
                         usdt_free += b["free"] + b["locked"]
-            except Exception as e:  # 测试网 key 未配 / 网络
+            except Exception as e:  # 未配置 / 网络 / 鉴权失败
                 account_error = f"{label}: {str(e)[:150]}"
         usdt_free = round(usdt_free, 2) if ok_any else None
 
