@@ -195,8 +195,16 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
       close: k.close,
     }))
     series.setData(candleData)
-    // 复盘视图固定展示全部根数（开单前100根 + 持仓段，量级适中）
-    chart.timeScale().setVisibleLogicalRange({ from: -2, to: candleData.length + 4 })
+    // 复盘视图固定展示全部根数（开单前100根 + 持仓段，量级适中）。
+    // 右侧预留「价签走廊」：右缘价签（开仓/止盈/止损）宽约 110px，按 barSpacing
+    // 换算成空K线根数，避免标签压住最新K线（2026-09-23 用户反馈）
+    const plotW = Math.max(200, (container.clientWidth || 520) - 64)
+    let corridor = 8
+    for (let i = 0; i < 2; i++) {
+      corridor = Math.max(6, Math.ceil(110 / (plotW / (candleData.length + 2 + corridor))))
+    }
+    chart.timeScale().applyOptions({ rightOffset: corridor })
+    chart.timeScale().setVisibleLogicalRange({ from: -2, to: candleData.length + corridor })
 
     // 事件箭头：事件时间向下取整到所在K线（事件落在K线中间，取该K线）
     const markers: SeriesMarker<UTCTimestamp>[] = []

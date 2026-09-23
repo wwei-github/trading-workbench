@@ -151,9 +151,17 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
       close: k.close,
     }))
     series.setData(candleData)
-    // 默认显示最近约 130 根（更易读），往左滚动可看全量历史
+    // 默认显示最近约 130 根（更易读），往左滚动可看全量历史。
+    // 右侧预留「价签走廊」：右缘价签宽约 110px，按 barSpacing 换算成空K线根数，
+    // 避免标签压住最新K线（2026-09-23 用户反馈）
     const from = Math.max(0, candleData.length - 130)
-    chart.timeScale().setVisibleLogicalRange({ from, to: candleData.length + 4 })
+    const plotW = Math.max(200, (containerRef.current?.clientWidth || 520) - 64)
+    let corridor = 8
+    for (let i = 0; i < 2; i++) {
+      corridor = Math.max(6, Math.ceil(110 / (plotW / (candleData.length - from + 2 + corridor))))
+    }
+    chart.timeScale().applyOptions({ rightOffset: corridor })
+    chart.timeScale().setVisibleLogicalRange({ from, to: candleData.length + corridor })
     // 直接从原始数据取完整 OHLCV（candleData 是给 series 用的精简结构）
     setCandlePoints(
       data.klines.map((k: Kline) => ({
