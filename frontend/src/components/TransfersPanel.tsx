@@ -43,10 +43,15 @@ export default function TransfersPanel() {
     }
   }, [aiConfig, fetchConfig, defaultScope])
 
+  // seq 竞态守卫：scope 切换并发两批请求时，仅渲染最新一批（旧响应丢弃）
+  const seqRef = useRef(0)
   const fetchData = useCallback(async () => {
+    const seq = ++seqRef.current
     setLoading(true)
     try {
-      setRows(await scanApi.trades.transfers(scope))
+      const data = await scanApi.trades.transfers(scope)
+      if (seq !== seqRef.current) return
+      setRows(data)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '获取资金划转失败')
     } finally {

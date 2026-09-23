@@ -84,12 +84,15 @@ export default function FundAnalysisPanel() {
   const up = SCHEME_UP_DOWN[colorScheme].up
   const down = SCHEME_UP_DOWN[colorScheme].down
 
+  // seq 竞态守卫：scope/range 快速切换时并发多批请求，仅渲染最新一批（旧响应丢弃）
+  const seqRef = useRef(0)
   const fetchData = useCallback(async () => {
     // 自定义范围但未选日期：清空旧数据，等选完再请求
     if (range === 'custom' && !dates) {
       setData(null)
       return
     }
+    const seq = ++seqRef.current
     const params: { scope: string; start?: string; end?: string } = { scope }
     if (range === 'week') {
       params.start = mondayOfThisWeek().format('YYYY-MM-DD')
@@ -103,7 +106,9 @@ export default function FundAnalysisPanel() {
     }
     setLoading(true)
     try {
-      setData(await scanApi.trades.analytics(params))
+      const resp = await scanApi.trades.analytics(params)
+      if (seq !== seqRef.current) return
+      setData(resp)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '获取资金分析失败')
     } finally {

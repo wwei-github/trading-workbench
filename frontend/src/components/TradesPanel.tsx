@@ -322,7 +322,11 @@ export default function TradesPanel() {
 
   // 列表按账号范围服务端过滤（上限 500）供表格与状态计数；概览统计从 analytics 接口取，
   // 保证与资金分析页数字完全一致（接口全表统计，无 500 条截断差异）
+  // seq 竞态守卫：scope 切换会并发两批请求（初始环境批 + 校正批），后返回的旧响应
+  // 会覆盖新数据（表现为筛选器显示正式网、数据却是测试网），仅渲染最新一批
+  const seqRef = useRef(0)
   const fetchData = useCallback(async () => {
+    const seq = ++seqRef.current
     setLoading(true)
     try {
       const [list, analytics, acctData] = await Promise.all([
@@ -330,6 +334,7 @@ export default function TradesPanel() {
         scanApi.trades.analytics({ scope }),
         scanApi.trades.accountSummary().catch(() => null),
       ])
+      if (seq !== seqRef.current) return
       setRows(list)
       setSummary(analytics.summary)
       // 账户概览为当前交易账号实时数据：scope 是环境聚合时按环境匹配，

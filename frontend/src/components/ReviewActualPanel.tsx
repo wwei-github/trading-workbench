@@ -71,10 +71,15 @@ export default function ReviewActualPanel() {
   const upColor = SCHEME_UP_DOWN[colorScheme].up
   const downColor = SCHEME_UP_DOWN[colorScheme].down
 
+  // seq 竞态守卫：scope/days 快速切换时并发多批请求，仅渲染最新一批（旧响应丢弃）
+  const seqRef = useRef(0)
   const fetchData = useCallback(async (d: number, sc: string) => {
+    const seq = ++seqRef.current
     setLoading(true)
     try {
-      setData(await scanApi.actualReview(d, sc))
+      const resp = await scanApi.actualReview(d, sc)
+      if (seq !== seqRef.current) return
+      setData(resp)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '获取实盘归因失败')
     } finally {
