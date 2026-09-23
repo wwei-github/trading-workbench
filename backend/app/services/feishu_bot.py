@@ -140,21 +140,112 @@ def _toast(content: str, toast_type: str = "success"):
 
 
 def _on_card_action(data):
-    """卡片按钮回调：校验令牌 → 后台线程执行 → toast 即时反馈"""
+    """卡片按钮回调：校验令牌 → 后台线程执行 → toast 即时反馈
+
+    act 分支：close_market（合约平仓）/ spot_buy、spot_sell（现货屯币一键确认，
+    docs/18 P1 挂载点式扩展，合约逻辑零改动）。
+    """
     try:
         value = dict((getattr(data.event, "action", None) and data.event.action.value) or {})
-        if value.get("act") != "close_market":
-            return _toast("未知操作", "error")
-        if not settings.FEISHU_ACTION_TOKEN or value.get("token") != settings.FEISHU_ACTION_TOKEN:
-            return _toast("无效操作令牌", "error")
-        trade_id = str(value.get("trade_id") or "")
-        if not trade_id:
-            return _toast("缺少交易 ID", "error")
-        threading.Thread(target=_exec_close, args=(trade_id,), daemon=True).start()
-        return _toast("指令已接收，平仓执行中…")
+        act = value.get("act")
+        if act == "close_market":
+            if not settings.FEISHU_ACTION_TOKEN or value.get("token") != settings.FEISHU_ACTION_TOKEN:
+                return _toast("无效操作令牌", "error")
+            trade_id = str(value.get("trade_id") or "")
+            if not trade_id:
+                return _toast("缺少交易 ID", "error")
+            threading.Thread(target=_exec_close, args=(trade_id,), daemon=True).start()
+            return _toast("指令已接收，平仓执行中…")
+        if act in ("spot_buy", "spot_sell"):
+            if not settings.FEISHU_ACTION_TOKEN or value.get("token") != settings.FEISHU_ACTION_TOKEN:
+                return _toast("无效操作令牌", "error")
+            if not str(value.get("symbol") or ""):
+                return _toast("缺少币种", "error")
+            threading.Thread(target=_exec_spot_confirm, args=(act, dict(value)), daemon=True).start()
+            return _toast("指令已接收，现货下单执行中…")
+        return _toast("未知操作", "error")
     except Exception:
         logger.exception("卡片回调处理失败")
         return _toast("处理异常，请查看系统日志", "error")
+
+
+def _exec_spot_confirm(act: str, value: dict) -> None:
+    """后台执行现货一键确认下单 → 会话内发结果卡片（新消息）。
+
+    docs/18 P1 半自动闭环：日检卡片按钮 → exec_spot_order 统一风控与锁，
+    trigger_type=signal（人工确认的信号单，受单币每日一次冷却，重复点击被拒）。
+    BUY 带金额（push 时评估价，按金额买价格无关）；SELL 只带 lots，
+    执行时按现价折算并裁剪到波段仓 30% 上限。
+    """
+    from app.database import SessionLocal
+    from app.services.spot_exec import exec_spot_order
+
+    symbol = str(value.get("symbol") or "")
+    side = "BUY" if act == "spot_buy" else "SELL"
+    try:
+        lots = int(str(value.get("lots") or "")) or None
+    except ValueError:
+        lots = None
+    try:
+        quote = float(str(value.get("quote") or "")) or None
+    except ValueError:
+        quote = None
+
+    db = SessionLocal()
+    try:
+        out = exec_spot_order(
+            db, symbol, side, quote_amount=quote, lots=lots,
+            trigger_type="signal",
+            trigger_detail={"source": "feishu_card"},
+        )
+    finally:
+        db.close()
+
+    if out["ok"]:
+        qty = float(out.get("executed_qty") or 0)
+        spent = float(out.get("quote_spent") or 0)
+        avg = out.get("avg_price")
+        env = "测试网" if out.get("testnet") else "正式网"
+        body = (
+            f"买入金额 **{spent:,.2f} U** → 成交 **{qty:.8f}**"
+            + (f"（均价 {avg:,.2f}）" if avg else "")
+            if side == "BUY"
+            else f"卖出数量 **{qty:.8f}**" + (f"（均价 {avg:,.2f}）" if avg else "")
+            + f" · 回款 {spent:,.2f} U"
+        )
+        for note in out.get("risk_notes") or []:
+            body += f"\n⚠️ {note}"
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text",
+                          "content": f"✅ 现货买入成功 · {symbol}" if side == "BUY" else f"✅ 现货卖出成功 · {symbol}"},
+                "template": "green" if side == "BUY" else "orange",
+            },
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": body}},
+                {"tag": "note", "elements": [{"tag": "plain_text",
+                 "content": f"一键确认 · {env} · 详情见现货订单记录"}]},
+            ],
+        }
+    else:
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "❌ 现货下单未执行"},
+                "template": "red",
+            },
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md",
+                 "content": str(out.get("reason") or "未知错误")}},
+                {"tag": "note", "elements": [{"tag": "plain_text",
+                 "content": "风控拒绝或下单失败，可在工作台「现货 → 持仓总览」手动重试"}]},
+            ],
+        }
+    try:
+        send_app_card(card)
+    except Exception:
+        logger.exception("现货确认结果卡片发送失败")
 
 
 def _exec_close(trade_id: str) -> None:

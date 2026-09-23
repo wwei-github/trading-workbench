@@ -12,10 +12,13 @@ P0 能力（只算不发单）：
 spot_trading_testnet=true（默认）→ testnet-1（testnet.binance.vision），
 false → spot_live_trading_keys 启用账号（第一个，P0 只读）→ 回落 live-1。
 账号注册表与合约共用（.env BINANCE_LIVE_{N}_*），环境开关互不影响。
+注意：现货测试网与合约测试网是两套独立系统，key 不互通（2026-09-24 实证）——
+现货测试网专用凭据走 .env BINANCE_SPOT_TESTNET_*（可选，未配置回落 BINANCE_TESTNET_*）。
 """
 import hashlib
 import hmac
 import logging
+import math
 import time
 import urllib.parse
 from typing import Any, Dict, List, Optional
@@ -155,3 +158,110 @@ class SpotClient:
         except Exception as e:
             logger.warning("spot usdt_balance 查询失败: %s", e)
         return None
+
+    def asset_balance(self, asset: str) -> Optional[float]:
+        """单资产可用余额（free；SELL 波段仓上限计算用；失败 None）。"""
+        try:
+            for b in self.fetch_account()["balances"]:
+                if b["asset"] == asset:
+                    return b["free"]
+        except Exception as e:
+            logger.warning("spot asset_balance %s 查询失败: %s", asset, e)
+        return None
+
+    # ---------- 下单（P1：半自动确认后执行） ----------
+
+    # exchangeInfo 类级缓存：{base_url: {symbol: {step, tick, min_notional, ts}}}
+    # 现货过滤器极少变更，1h TTL 足够；类级共享避免每单重复拉全量规则
+    _EXCHANGE_INFO_TTL_MS = 3_600_000
+    _exchange_info_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+    def _symbol_filters(self, symbol: str) -> Dict[str, Any]:
+        """LOT_SIZE.stepSize / PRICE.tickSize / NOTIONAL.minNotional（缓存 1h）。"""
+        cache = SpotClient._exchange_info_cache.setdefault(self.base_url, {})
+        hit = cache.get(symbol)
+        now_ms = int(time.time() * 1000)
+        if hit and now_ms - hit["ts"] < SpotClient._EXCHANGE_INFO_TTL_MS:
+            return hit
+        r = self._client.get(f"{self.base_url}/api/v3/exchangeInfo", params={"symbol": symbol})
+        r.raise_for_status()
+        data = r.json()
+        # ?symbol= 形式返回仍包在 symbols 数组里（2026-09-24 实证）；
+        # 旧实现误读顶层 filters → 取不到 → 静默用默认值，step 默认 1e-05
+        # 对 BTCUSDT 碰巧成立、对 BNB/ETH 全错，市价单直接 -1013 LOT_SIZE。
+        # 过滤器拿不到必须报错：错误精度会导致超卖，静默兜底比失败更危险
+        syms = data.get("symbols") or []
+        filters = (syms[0].get("filters") if syms else None) or data.get("filters") or []
+        if not filters:
+            raise RuntimeError(f"exchangeInfo 未返回 {symbol} 过滤器，拒绝按猜测精度下单")
+        step, tick, min_notional = 0.00001, 0.01, 5.0
+        for f in filters:
+            if f["filterType"] == "LOT_SIZE":
+                step = float(f["stepSize"])
+            elif f["filterType"] == "PRICE_FILTER":
+                tick = float(f["tickSize"])
+            elif f["filterType"] in ("NOTIONAL", "MIN_NOTIONAL"):
+                min_notional = float(f.get("minNotional", 5.0))
+        info = {"step": step, "tick": tick, "min_notional": min_notional, "ts": now_ms}
+        cache[symbol] = info
+        return info
+
+    def round_qty(self, symbol: str, qty: float) -> float:
+        """数量按 LOT_SIZE.stepSize 向下取整（卖出可执行量守恒，绝不超卖）。"""
+        step = self._symbol_filters(symbol)["step"]
+        if step <= 0:
+            return qty
+        return math.floor(qty / step) * step
+
+    def round_quote(self, symbol: str, quote: float) -> float:
+        """金额按 PRICE.tickSize 向下取整（quoteOrderQty 也受 tick 约束）。"""
+        tick = self._symbol_filters(symbol)["tick"]
+        if tick <= 0:
+            return quote
+        return math.floor(quote / tick) * tick
+
+    def market_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: Optional[float] = None,
+        quote_order_qty: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """市价单（P1 半自动确认后调用）。
+
+        - BUY 用 quoteOrderQty（按金额买，天然规避数量精度）
+        - SELL 用 quantity（卖出必须给数量，调用方先 round_qty）
+        返回 {order_id, executed_qty, quote_spent, avg_price, status}。
+        """
+        if side not in ("BUY", "SELL"):
+            raise ValueError(f"非法方向: {side}")
+        if self.account is None:
+            raise RuntimeError(self.resolve_error or "现货账号未配置，无法下单")
+        params: Dict[str, Any] = {
+            "symbol": symbol, "side": side, "type": "MARKET",
+            "newOrderRespType": "FULL",  # 回带 fills 明细，均价/成交量直接用
+        }
+        if side == "BUY":
+            if not quote_order_qty or quote_order_qty <= 0:
+                raise ValueError("BUY 必须给 quote_order_qty")
+            params["quoteOrderQty"] = self.round_quote(symbol, quote_order_qty)
+        else:
+            if not quantity or quantity <= 0:
+                raise ValueError("SELL 必须给 quantity")
+            params["quantity"] = self.round_qty(symbol, quantity)
+        r = self._client.post(
+            f"{self.base_url}/api/v3/order",
+            params=self._signed_params(params),
+            headers={"X-MBX-APIKEY": self.account.api_key},
+        )
+        r.raise_for_status()
+        d = r.json()
+        executed = float(d.get("executedQty", 0) or 0)
+        spent = float(d.get("cummulativeQuoteQty", 0) or 0)
+        return {
+            "order_id": str(d.get("orderId", "")),
+            "status": d.get("status", ""),
+            "executed_qty": executed,
+            "quote_spent": spent,
+            "avg_price": (spent / executed) if executed > 0 else None,
+        }

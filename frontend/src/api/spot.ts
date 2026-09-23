@@ -5,6 +5,7 @@ import type {
   BacktestRecord,
   SpotConfig,
   SpotDecision,
+  SpotExecuteResult,
   SpotOrder,
   SpotOverview,
   SpotSettings,
@@ -28,6 +29,16 @@ export const spotApi = {
   // 订单列表（P0 通常为空：手动测试单）
   orders: (limit = 100) =>
     api.get<SpotOrder[]>('/spot/orders', { params: { limit } }).then((r) => r.data),
+
+  // 手动执行市价单（P1 第三入口；统一风控，拒绝时 ok=false + reason）
+  execute: (body: {
+    symbol: string
+    side: 'BUY' | 'SELL'
+    quote_amount?: number
+    qty?: number
+    lots?: number
+  }) =>
+    api.post<SpotExecuteResult>('/spot/execute', body, { timeout: 60000 }).then((r) => r.data),
 
   // 运营时间轴（买卖/AI研判/每日评分聚合，docs/18 §9.2.3）
   timeline: (limit = 100) =>

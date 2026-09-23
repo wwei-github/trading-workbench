@@ -1,8 +1,9 @@
-"""现货屯币 API（docs/18 P0：只读 + 配置，不下单）
+"""现货屯币 API（docs/18 P0 只读 + P1 执行闭环）
 
-- GET  /spot/overview   持仓总览（三币持仓 + 现金池 + 实时评分 + 当前计划）
+- GET  /spot/overview   持仓总览（三币持仓 + 现金池 + 实时评分 + 屯币 KPI）
 - GET  /spot/score/{symbol}  单币评分明细（可解释，P0 验收 TradingView 对照用）
 - GET  /spot/orders     订单列表（limit 参数）
+- POST /spot/execute    手动执行市价单（P1 第三入口，统一走 spot_exec 风控）
 - GET  /spot/settings   配置读取
 - PUT  /spot/settings   配置写入（字段白名单 + 范围校验）
 
@@ -162,6 +163,81 @@ def put_spot_config(body: SpotConfigIn, db: Session = Depends(get_db)):
     return {"ok": True, **_config_response(db), "rejected": rejected}
 
 
+# ---------------- 屯币 KPI（docs/18 §11：净增币 vs 定投基准，P1） ----------------
+
+
+def _spot_kpi(
+    db: Session, symbol: str, dca_amount: float, scope_keys: List[str],
+) -> Dict[str, Any]:
+    """单币屯币 KPI（FILLED 流水记账，KPI 是币数不是 USDT）。
+
+    - 净增币 = FILLED BUY 币数 − FILLED SELL 币数（按 scope 账号过滤）
+    - 定投基准：首笔 FILLED 单所在周的**周一起**，每周一买入 dca_amount，
+      买入价 = 该周周K收盘价（未收盘周 = 缓存内最新价，即现价口径）
+    """
+    q = db.query(SpotOrder).filter(SpotOrder.symbol == symbol, SpotOrder.status == "FILLED")
+    if scope_keys:
+        q = q.filter(SpotOrder.account_key.in_(scope_keys))
+    net_qty = 0.0
+    bought_quote = 0.0
+    sold_quote = 0.0
+    first_filled = None
+    for o in q.all():
+        qty = float(o.qty or 0)
+        if o.side == "BUY":
+            net_qty += qty
+            bought_quote += float(o.quote_amount or 0)
+        else:
+            net_qty -= qty
+            sold_quote += float(o.quote_amount or 0)
+        t = o.executed_at or o.created_at
+        if t and (first_filled is None or t < first_filled):
+            first_filled = t
+
+    out: Dict[str, Any] = {
+        "net_qty": round(net_qty, 8),
+        "bought_quote": round(bought_quote, 2),
+        "sold_quote": round(sold_quote, 2),
+        "benchmark_qty": None,
+        "benchmark_weeks": None,
+        "excess_qty": None,
+    }
+    if first_filled is None or dca_amount <= 0:
+        return out
+
+    # 周 close 序列（缓存周K；t=毫秒 open_time）
+    wrow = _get_cache(db, symbol, "1w")
+    if not wrow or not wrow.klines:
+        return out
+    week_close: Dict[datetime, float] = {}
+    for k in wrow.klines:
+        open_bj = datetime.fromtimestamp(float(k["t"]) / 1000.0, _TZ_BJ)
+        monday = (open_bj - timedelta(days=open_bj.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        week_close[monday] = float(k["c"])  # 同周取后值（当前周 = 现价口径）
+
+    first_bj = first_filled.replace(tzinfo=timezone.utc).astimezone(_TZ_BJ)
+    monday0 = (first_bj - timedelta(days=first_bj.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    benchmark = 0.0
+    weeks = 0
+    cur = monday0
+    now_bj = datetime.now(_TZ_BJ)
+    while cur <= now_bj:
+        price = week_close.get(cur)
+        if price:
+            weeks += 1
+            benchmark += dca_amount / price
+        cur += timedelta(days=7)
+    if weeks:
+        out["benchmark_qty"] = round(benchmark, 8)
+        out["benchmark_weeks"] = weeks
+        out["excess_qty"] = round(net_qty - benchmark, 8)
+    return out
+
+
 # ---------------- 持仓总览 ----------------
 
 @router.get("/overview")
@@ -232,12 +308,20 @@ def spot_overview(account_key: Optional[str] = None, db: Session = Depends(get_d
                 "env": d["env"] if d else None,
             })
 
+        # 屯币 KPI（净增币 vs 定投基准；scope 账号口径与持仓聚合一致）
+        scope_keys = [c.account.key for c in clients if c.account]
+        kpi = {
+            sym: _spot_kpi(db, sym, settings_dict["dca_amount"], scope_keys)
+            for sym in SPOT_SYMBOLS
+        }
+
         return {
             "testnet": client.testnet,
             "account_keys": [c.account.key for c in clients if c.account],
             "account_names": [c.account.name for c in clients if c.account],
             "coins": coins,
             "usdt_free": usdt_free,
+            "kpi": kpi,
             "settings": settings_dict,
             "account_error": account_error,
         }
@@ -258,6 +342,32 @@ def spot_score(symbol: str, db: Session = Depends(get_db)):
         return _evaluate_symbol(db, client, symbol)
     finally:
         client.close()
+
+
+# ---------------- 手动执行（P1 第三入口，与飞书确认/定投共用 spot_exec） ----------------
+
+
+class SpotExecuteIn(BaseModel):
+    symbol: str
+    side: str  # BUY / SELL
+    quote_amount: Optional[float] = None  # BUY：按金额买（优先）
+    qty: Optional[float] = None           # SELL：按数量卖（优先，先过波段仓裁剪）
+    lots: Optional[int] = None            # 双向兜底：BUY 缺金额/SELL 缺数量时按份折算
+
+
+@router.post("/execute")
+def spot_execute(body: SpotExecuteIn, db: Session = Depends(get_db)):
+    """手动执行现货市价单。统一走 exec_spot_order（风控铁律 + 账号锁 +
+    spot_orders 落库）；风控拒绝/下单失败返回 ok=false 与 reason，不抛 4xx。"""
+    from app.services.spot_exec import exec_spot_order
+
+    out = exec_spot_order(
+        db, body.symbol, body.side,
+        quote_amount=body.quote_amount, qty=body.qty, lots=body.lots,
+        trigger_type="manual",
+        trigger_detail={"source": "web"},
+    )
+    return out
 
 
 # ---------------- 历史（docs/18 §9.2.3 运营时间轴） ----------------

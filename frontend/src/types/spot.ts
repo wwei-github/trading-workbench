@@ -84,14 +84,37 @@ export interface SpotCoinOverview {
   env: SpotEnvState | null
 }
 
+// 屯币 KPI（docs/18 §11：净增币 vs 定投基准，P1；KPI 是币数不是 USDT）
+export interface SpotKpi {
+  net_qty: number
+  bought_quote: number
+  sold_quote: number
+  benchmark_qty: number | null
+  benchmark_weeks: number | null
+  excess_qty: number | null
+}
+
 export interface SpotOverview {
   testnet: boolean
   account_keys: string[] // 现货启用账号 key（多账号聚合持仓）
   account_names: string[]
   coins: SpotCoinOverview[]
   usdt_free: number | null
+  kpi: Record<string, SpotKpi>
   settings: SpotSettings
   account_error: string | null
+}
+
+// 手动执行结果（ok=false 时 reason 必填）
+export interface SpotExecuteResult {
+  ok: boolean
+  reason?: string
+  order_id?: string
+  executed_qty?: number
+  quote_spent?: number
+  avg_price?: number | null
+  risk_notes?: string[]
+  testnet?: boolean
 }
 
 // 现货环境与账号配置（与合约完全独立，docs/18）

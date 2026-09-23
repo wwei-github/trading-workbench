@@ -1,17 +1,23 @@
 /**
- * 现货·持仓总览（docs/18 P0 只读）
- * - 状态条：三币当前计划一句话汇总 + 现金池
+ * 现货·持仓总览（docs/18 P1 半自动闭环）
+ * - 状态条：现金池 + 配置摘要；KPI 卡：净增币 vs 定投基准（超额）
  * - 三币持仓卡：数量/市值/评分/建议动作；评分卡可展开明细（环境/仓位/择时三段）
+ * - 手动交易弹窗：第三执行入口（与飞书一键确认/周度定投共用后端风控）
  * - 评分实时算（后端读缓存K线），账户查询失败降级提示
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert,
+  Button,
   Card,
   Col,
   Descriptions,
+  InputNumber,
+  message,
+  Modal,
   Row,
   Segmented,
+  Select,
   Space,
   Spin,
   Statistic,
@@ -19,10 +25,9 @@ import {
   Tooltip,
   Typography,
 } from 'antd'
-import { ReloadOutlined } from '@ant-design/icons'
-import { Button } from 'antd'
+import { ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { spotApi } from '../api/spot'
-import type { SpotCoinOverview, SpotDecision, SpotOverview } from '../types/spot'
+import type { SpotCoinOverview, SpotDecision, SpotKpi, SpotOverview } from '../types/spot'
 import { useScanStore } from '../stores/scanStore'
 import { schemeValueColor } from '../utils/scheme'
 
@@ -94,6 +99,60 @@ function ScoreDetail({ decision }: { decision: SpotDecision }) {
         </div>
       )}
     </div>
+  )
+}
+
+// 屯币 KPI 卡（docs/18 §11：净增币 vs 定投基准；KPI 是币数不是 USDT）
+function KpiCard({ kpi, dcaAmount }: { kpi: Record<string, SpotKpi>; dcaAmount: number }) {
+  return (
+    <Card size="small" title="屯币 KPI（净增币 vs 定投基准）">
+      <Row gutter={16}>
+        {(['BTCUSDT', 'ETHUSDT', 'BNBUSDT'] as const).map((sym) => {
+          const k = kpi[sym]
+          const asset = sym.replace('USDT', '')
+          const hasData = !!k && (k.bought_quote > 0 || k.sold_quote > 0)
+          const excess = k?.excess_qty ?? null
+          return (
+            <Col span={8} key={sym}>
+              <Tooltip
+                title={
+                  hasData
+                    ? `买入合计 ${k!.bought_quote.toLocaleString('en-US')} U · 卖出合计 ${k!.sold_quote.toLocaleString('en-US')} U · 基准=首单周起每周一买入 ${dcaAmount} U`
+                    : '尚无成交订单（信号确认 / 周度定投 / 手动交易后计入）'
+                }
+              >
+                <div>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {asset} 净增币
+                  </Typography.Text>
+                  <div style={{ fontSize: 20, fontWeight: 600, lineHeight: '28px' }}>
+                    {hasData
+                      ? `${k!.net_qty > 0 ? '+' : ''}${fmtQty(k!.net_qty)} ${asset}`
+                      : '—'}
+                  </div>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {excess !== null && k!.benchmark_qty !== null ? (
+                      <>
+                        超额{' '}
+                        <span style={{ color: excess >= 0 ? '#52c41a' : '#ff4d4f' }}>
+                          {excess > 0 ? '+' : ''}
+                          {fmtQty(excess)}
+                        </span>
+                        {`（基准 ${fmtQty(k!.benchmark_qty!)} · ${k!.benchmark_weeks}周×${dcaAmount}U）`}
+                      </>
+                    ) : hasData ? (
+                      '暂无基准（缺周K缓存）'
+                    ) : (
+                      '暂无成交'
+                    )}
+                  </Typography.Text>
+                </div>
+              </Tooltip>
+            </Col>
+          )
+        })}
+      </Row>
+    </Card>
   )
 }
 
@@ -188,6 +247,15 @@ export default function SpotOverviewPanel() {
   const [details, setDetails] = useState<Record<string, SpotDecision>>({})
   // 正式网账号切换查看：null=全部启用账号聚合；非空=单账号（须在启用集合内）
   const [viewKey, setViewKey] = useState<string | null>(null)
+  // 手动交易弹窗（P1 第三执行入口）
+  const [execOpen, setExecOpen] = useState(false)
+  const [execSubmitting, setExecSubmitting] = useState(false)
+  const [execForm, setExecForm] = useState<{
+    symbol: string
+    side: 'BUY' | 'SELL'
+    amount: number | null
+    qty: number | null
+  }>({ symbol: 'BTCUSDT', side: 'BUY', amount: null, qty: null })
 
   const load = useCallback(async (key: string | null) => {
     setLoading(true)
@@ -228,6 +296,49 @@ export default function SpotOverviewPanel() {
     return keys.map((k, i) => ({ label: names[i] || k, value: k }))
   }, [data])
 
+  const openExec = () => {
+    setExecForm({
+      symbol: 'BTCUSDT',
+      side: 'BUY',
+      amount: data?.settings.per_order_usdt ?? null,
+      qty: null,
+    })
+    setExecOpen(true)
+  }
+
+  const submitExecute = async () => {
+    setExecSubmitting(true)
+    try {
+      const body =
+        execForm.side === 'BUY'
+          ? { symbol: execForm.symbol, side: 'BUY' as const, quote_amount: execForm.amount ?? undefined }
+          : { symbol: execForm.symbol, side: 'SELL' as const, qty: execForm.qty ?? undefined }
+      const out = await spotApi.execute(body)
+      if (out.ok) {
+        const detail =
+          execForm.side === 'BUY'
+            ? `买入 ${out.quote_spent} U → ${out.executed_qty}${execForm.symbol.replace('USDT', '')}`
+            : `卖出 ${out.executed_qty}，回款 ${out.quote_spent} U`
+        message.success(
+          `现货下单成交：${detail}${out.risk_notes?.length ? `（${out.risk_notes.join('；')}）` : ''}`,
+        )
+        setExecOpen(false)
+        load(viewKey)
+      } else {
+        message.warning(out.reason || '未执行')
+      }
+    } catch (e) {
+      message.error((e as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '下单失败')
+    } finally {
+      setExecSubmitting(false)
+    }
+  }
+
+  const heldQty = useMemo(
+    () => data?.coins.find((c) => c.symbol === execForm.symbol)?.qty ?? null,
+    [data, execForm.symbol],
+  )
+
   if (loading && !data) {
     return (
       <div style={{ textAlign: 'center', padding: 80 }}>
@@ -258,6 +369,9 @@ export default function SpotOverviewPanel() {
               size="small"
             />
           )}
+          <Button type="primary" icon={<ThunderboltOutlined />} size="small" onClick={openExec}>
+            手动交易
+          </Button>
           <Button icon={<ReloadOutlined />} size="small" onClick={() => load(viewKey)} loading={loading}>
             刷新
           </Button>
@@ -294,13 +408,15 @@ export default function SpotOverviewPanel() {
           <Col span={6}>
             <Statistic
               title="运行模式"
-              value="P0 半自动"
+              value="P1 半自动"
               valueStyle={{ fontSize: 20 }}
-              suffix={<Typography.Text type="secondary" style={{ fontSize: 12 }}>评分展示·不自动下单</Typography.Text>}
+              suffix={<Typography.Text type="secondary" style={{ fontSize: 12 }}>一键确认·手动执行</Typography.Text>}
             />
           </Col>
         </Row>
       </Card>
+
+      <KpiCard kpi={data.kpi ?? {}} dcaAmount={data.settings.dca_amount} />
 
       {data.coins.map((c) => (
         <CoinCard
@@ -311,6 +427,78 @@ export default function SpotOverviewPanel() {
           onToggle={() => toggle(c.symbol)}
         />
       ))}
+
+      <Modal
+        title="手动现货交易"
+        open={execOpen}
+        onCancel={() => setExecOpen(false)}
+        onOk={submitExecute}
+        okText="市价执行"
+        confirmLoading={execSubmitting}
+        okButtonProps={{
+          disabled:
+            execForm.side === 'BUY'
+              ? !execForm.amount || execForm.amount <= 0
+              : !execForm.qty || execForm.qty <= 0,
+        }}
+        destroyOnClose
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <Space size={12} wrap>
+            <Select
+              value={execForm.symbol}
+              onChange={(v) => setExecForm((f) => ({ ...f, symbol: v }))}
+              style={{ width: 140 }}
+              options={(data?.coins ?? []).map((c) => ({
+                label: `${c.asset} · ${fmtPrice(c.price)}`,
+                value: c.symbol,
+              }))}
+            />
+            <Segmented<'BUY' | 'SELL'>
+              value={execForm.side}
+              onChange={(v) => setExecForm((f) => ({ ...f, side: v }))}
+              options={[
+                { label: '买入', value: 'BUY' },
+                { label: '卖出', value: 'SELL' },
+              ]}
+            />
+          </Space>
+          {execForm.side === 'BUY' ? (
+            <div>
+              <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+                买入金额（USDT，≥10 U 最小名义；超出单币上限/保留垫时自动向下裁剪）
+              </Typography.Text>
+              <InputNumber
+                value={execForm.amount}
+                onChange={(v) => setExecForm((f) => ({ ...f, amount: v }))}
+                min={0}
+                step={10}
+                style={{ width: 200 }}
+                addonAfter="U"
+              />
+            </div>
+          ) : (
+            <div>
+              <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+                卖出数量（{execForm.symbol.replace('USDT', '')}
+                {heldQty !== null && heldQty !== undefined ? `，持有 ${fmtQty(heldQty)}` : ''}
+                ；超出波段可卖上限（free 的 30%）时自动裁剪）
+              </Typography.Text>
+              <InputNumber
+                value={execForm.qty}
+                onChange={(v) => setExecForm((f) => ({ ...f, qty: v }))}
+                min={0}
+                step={0.0001}
+                style={{ width: 200 }}
+                addonAfter={execForm.symbol.replace('USDT', '')}
+              />
+            </div>
+          )}
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            统一风控：单币投入上限 · USDT 保留垫 · 底仓 70% 锁定 · 单笔成交落现货订单记录
+          </Typography.Text>
+        </Space>
+      </Modal>
     </Space>
   )
 }

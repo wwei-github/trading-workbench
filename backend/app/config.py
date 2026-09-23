@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     BINANCE_SECRET_KEY: str = ""
     BINANCE_TESTNET_API_KEY: str = ""
     BINANCE_TESTNET_SECRET_KEY: str = ""
+    # 现货测试网专用 key（可选）：现货测试网（testnet.binance.vision）与合约测试网
+    # （testnet.binancefuture.com）是两套独立系统，key 不互通（2026-09-24 实证）。
+    # 未配置时回落 BINANCE_TESTNET_*，保持旧行为
+    BINANCE_SPOT_TESTNET_API_KEY: str = ""
+    BINANCE_SPOT_TESTNET_SECRET_KEY: str = ""
     TRADING_TESTNET: bool = True      # 初始交易环境（运行时以 system_config.trading_testnet 为准，此值仅首次建行注入）
     TRADING_ENABLED: bool = False     # 自动交易总开关初始值（运行时以 system_config.trading_enabled 为准）
     TRADING_MIN_RECOMMENDATION: float = 60.0  # 开单推荐度门槛

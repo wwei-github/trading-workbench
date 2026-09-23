@@ -41,6 +41,8 @@ class SpotOrder(Base):
     fail_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     testnet: Mapped[bool] = mapped_column(nullable=False, default=True)
+    # 归属账号（docs/17 注册表口径：testnet-1/live-N）；NULL 旧行按 testnet 回落
+    account_key: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     binance_order_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

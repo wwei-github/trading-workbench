@@ -81,6 +81,16 @@ celery_app.conf.update(
             # 现货屯币日检（docs/18 P0，仅评分推送不下单）：日K收盘后 8 分钟，错开 08:05 日报
             "schedule": crontab(minute=8, hour=8),
         },
+        "spot-dca": {
+            "task": "app.tasks.spot_tasks.run_spot_dca_task",
+            # 现货周度定投（P1，docs/18 §6）：周一 08:15，dca_enabled 才执行
+            "schedule": crontab(minute=15, hour=8, day_of_week="mon"),
+        },
+        "spot-weekly-review": {
+            "task": "app.tasks.spot_tasks.run_spot_weekly_review_task",
+            # AI 周度研判（P1，纯展示无执行权限）：周一 08:30，定投之后
+            "schedule": crontab(minute=30, hour=8, day_of_week="mon"),
+        },
     },
     task_acks_late=True,
     worker_prefetch_multiplier=1,

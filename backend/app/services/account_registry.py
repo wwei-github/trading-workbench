@@ -176,13 +176,35 @@ def spot_enabled_accounts(db) -> list["Account"]:
 
     cfg = db.get(SystemConfig, 1)
     if cfg is not None and cfg.spot_trading_testnet:
-        return testnet_accounts() or live_accounts() or testnet_accounts()
+        accs = testnet_accounts() or live_accounts() or testnet_accounts()
+        return _with_spot_testnet_keys(accs)
     accs: list[Account] = []
     for k in parse_live_keys(cfg.spot_live_trading_keys if cfg else None):
         a = get_account(k)
         if a and not a.testnet and a not in accs:
             accs.append(a)
     return accs or live_accounts() or testnet_accounts()
+
+
+def _with_spot_testnet_keys(accs: list["Account"]) -> list["Account"]:
+    """现货测试网账号的 key 覆盖（可选 BINANCE_SPOT_TESTNET_*）。
+
+    现货测试网（testnet.binance.vision）与合约测试网（testnet.binancefuture.com）
+    是两套独立系统，key 不互通（2026-09-24 实证：同一把 key 合约测试网 200 /
+    现货测试网 401，双出口 IP 一致，排除 IP 绑定）。配置了现货专用 key 时，
+    以 replace 生成 testnet 账号副本仅替换凭据（key/name/testnet 与归属口径不变，
+    且不污染注册表单例）；未配置回落 BINANCE_TESTNET_* 保持旧行为。
+    """
+    import dataclasses
+
+    sk = settings.BINANCE_SPOT_TESTNET_API_KEY
+    ss = settings.BINANCE_SPOT_TESTNET_SECRET_KEY
+    if not (sk or ss):
+        return accs
+    _validate("spot-testnet-1", sk, ss)
+    if not (sk and ss):
+        return accs
+    return [dataclasses.replace(a, api_key=sk, api_secret=ss) if a.testnet else a for a in accs]
 
 
 def resolve_spot_account(db) -> "Account":

@@ -243,8 +243,281 @@ _ACTION_TEXT = {
 }
 
 
+# ---------------- 周度定投 + AI 周度研判（docs/18 §6，P1） ----------------
+
+
+def _week_label() -> str:
+    """ISO 周标识（如 2026-W39），北京时区。"""
+    iso = datetime.now(_TZ_BJ).isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+@celery_app.task(name="app.tasks.spot_tasks.run_spot_dca_task")
+def run_spot_dca_task() -> dict:
+    """周度定投（周一 08:15）：dca_enabled 才执行，每币买入 dca_amount。
+
+    走 spot_exec.exec_spot_order（与飞书确认 / 手动 API 同一风控与锁），
+    trigger_type='dca' 不受信号单每日一次冷却限制。
+    定投账号口径：现货启用清单第一个账号（resolve_spot_account，P1 不做扇出）。"""
+    from app.database import SessionLocal
+    from app.services.spot_exec import exec_spot_order
+    from app.services.task_log import close_task, open_task
+
+    task_id = open_task("spot", "现货周度定投")
+    db = SessionLocal()
+    try:
+        s = load_spot_settings(db)
+        if not s["dca_enabled"] or s["dca_amount"] <= 0:
+            close_task(task_id, "skipped", summary="定投未开启或金额为 0，跳过")
+            return {"ok": False, "reason": "dca disabled"}
+
+        week = _week_label()
+        results = {}
+        for symbol in SPOT_SYMBOLS:
+            results[symbol] = exec_spot_order(
+                db, symbol, "BUY", quote_amount=s["dca_amount"],
+                trigger_type="dca",
+                trigger_detail={"week": week, "dca_amount": s["dca_amount"]},
+            )
+        ok_count = sum(1 for v in results.values() if v["ok"])
+
+        def _cell(sym: str) -> str:
+            v = results[sym]
+            if v["ok"]:
+                return f"{sym.replace('USDT', '')} ✅ 买入 {v.get('quote_spent', 0):.2f} U → {v.get('executed_qty', 0):.8f}"
+            return f"{sym.replace('USDT', '')} ❌ {v.get('reason') or '失败'}"
+
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": f"🪙 现货周度定投 · {week}"},
+                "template": "green" if ok_count == len(SPOT_SYMBOLS) else ("orange" if ok_count else "red"),
+            },
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(
+                    _cell(sym) for sym in SPOT_SYMBOLS
+                )}},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": (
+                    f"定投兜底累积（每周一 08:15）· 单次 {s['dca_amount']:,.0f} U/币 · 详情见现货订单记录"
+                )}]},
+            ],
+        }
+        try:
+            from app.services.notify import send_feishu_card
+
+            push_ok = send_feishu_card(card)
+        except Exception as e:
+            logger.warning("定投卡片推送失败: %s", e)
+            push_ok = False
+
+        close_task(
+            task_id, "completed" if ok_count else "failed",
+            summary="；".join(
+                f"{sym} {'成交' if results[sym]['ok'] else '失败'}" for sym in SPOT_SYMBOLS
+            ) + ("" if push_ok else "（飞书推送失败）"),
+            detail={"week": week, "results": {
+                sym: {"ok": v["ok"], "reason": v.get("reason"),
+                      "quote_spent": v.get("quote_spent"),
+                      "executed_qty": v.get("executed_qty")} for sym, v in results.items()
+            }},
+        )
+        return {"ok": ok_count == len(SPOT_SYMBOLS), "results": results}
+    except Exception as e:
+        close_task(task_id, "failed", error=str(e))
+        logger.exception("现货周度定投失败")
+        raise
+    finally:
+        db.close()
+
+
+_WEEKLY_REGIMES = ("积累期", "上升期", "分配期", "下降期")
+
+_WEEKLY_SYSTEM_PROMPT = """你是加密货币现货屯币策略的周度宏观研判助手。基于给定的三币三周期（月/周/日）量化快照，输出本周研判。
+严格输出 JSON（不要 markdown 包裹、不要思考过程），字段：
+- regime: 市场阶段，四选一："积累期"（月线熊市/深度回撤，屯币黄金区）/ "上升期"（月线转多头、周线牛熊线上方初期）/ "分配期"（月线多头高位、周线过热，波段卖出窗口）/ "下降期"（月线跌破 MA12月，转入熊市）
+- outlook: 对象，每个币种 "偏多"|"中性"|"偏空" 三选一，键为 BTC/ETH/BNB
+- risks: 数组，本周风险提示，最多 3 条，每条一句话
+- commentary: ≤400 字 Markdown 正文。要求：结合月K环境（牛熊/距ATH回撤）、周K牛熊线、日K超卖/过热信号，说明当前阶段判断依据、屯币动作倾向（多买/定投/只卖波段等）、以及本周需要关注的变化。禁止给出具体价格目标，禁止任何合约/杠杆建议，禁止臆测快照之外的宏观事件。"""
+
+
+@celery_app.task(name="app.tasks.spot_tasks.run_spot_weekly_review_task")
+def run_spot_weekly_review_task() -> dict:
+    """AI 周度研判（周一 08:30，纯展示、无执行权限，docs/18 §4.3）：
+    三币 evaluate_day 快照 → LLM → spot_weekly_reviews（week 唯一，重复跳过）→ 飞书卡片。"""
+    from app.database import SessionLocal
+    from app.models.spot import SPOT_SYMBOLS, SpotWeeklyReview
+    from app.services.spot_client import SpotClient
+    from app.services.task_log import close_task, open_task
+
+    task_id = open_task("spot", "AI 周度研判")
+    db = SessionLocal()
+    client = SpotClient()
+    try:
+        week = _week_label()
+        if db.query(SpotWeeklyReview).filter(SpotWeeklyReview.week == week).first():
+            close_task(task_id, "skipped", summary=f"{week} 研判已存在，跳过")
+            return {"ok": False, "reason": "already exists"}
+
+        decisions = []
+        snapshot = {}
+        for symbol in SPOT_SYMBOLS:
+            daily = client.klines(symbol, "1d", 300)
+            weekly = client.klines(symbol, "1w", 200)
+            monthly = client.klines(symbol, "1M", 150)
+            if not daily:
+                continue
+            _upsert_cache(db, symbol, "1d", daily)
+            _upsert_cache(db, symbol, "1w", weekly)
+            _upsert_cache(db, symbol, "1M", monthly)
+            d = evaluate_day(
+                symbol, _bar_close_date(int(daily[-1][0]), "1d"),
+                _closes(daily), _closes(weekly), _closes(monthly),
+            )
+            decisions.append(d)
+            snapshot[symbol] = {
+                "price": d["price"], "score": d["score"]["total"], "action": d["action"],
+                "env": d["env"],
+            }
+        db.commit()
+        if len(decisions) < len(SPOT_SYMBOLS):
+            raise RuntimeError(f"K线数据不全（{len(decisions)}/{len(SPOT_SYMBOLS)}），本周研判跳过")
+
+        # LLM 调用（10~30s，任务内异步执行，不进任何 Redis 锁）
+        parsed = _call_weekly_llm(snapshot)
+
+        row = SpotWeeklyReview(
+            week=week, regime=parsed["regime"], outlook=parsed["outlook"],
+            risks=parsed["risks"], commentary=parsed["commentary"],
+            indicator_snapshot={"decisions": snapshot},
+        )
+        db.add(row)
+        db.commit()
+
+        push_ok = _push_review_card(week, parsed, decisions)
+        close_task(
+            task_id, "completed",
+            summary=f"{week} {parsed['regime']}（飞书{'已推送' if push_ok else '未推送'}）",
+            detail={"week": week, "regime": parsed["regime"]},
+        )
+        return {"ok": True, "week": week, "regime": parsed["regime"]}
+    except Exception as e:
+        db.rollback()
+        close_task(task_id, "failed", error=str(e))
+        logger.exception("AI 周度研判失败")
+        raise
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+        db.close()
+
+
+def _call_weekly_llm(snapshot: dict) -> dict:
+    """快照 → LLM JSON（容错解析 + 字段收紧）。"""
+    import json
+
+    from app.config import settings as app_settings
+    from app.services.llm_client import get_client
+
+    lines = []
+    for sym, d in snapshot.items():
+        env = d["env"]
+        lines.append(
+            f"{sym}: 现价 {d['price']:.2f} · 三周期评分 {d['score']} · 建议动作 {d['action']} | "
+            f"月K: {'熊市' if env['monthly_bear'] else '非熊市'}、距ATH回撤 {env['ath_drawdown']}、"
+            f"深度价值区 {env['deep_value']} | 周K: 牛熊线上{'方' if env['weekly_above'] else '下方'}"
+            f"（vs MA30周 {env['vs_ma30w']}）、周RSI {env['weekly_rsi']}、"
+            f"周MACD{'金叉后' if env['weekly_macd_golden'] else '未金叉'} | 日K: vs MA200 {env['vs_ma200']}"
+        )
+    user_prompt = "三币三周期量化快照（评分越高越接近超卖低吸区，动作来自程序规则仅供参考）：\n" + "\n".join(lines)
+
+    client = get_client()
+    resp = client.chat.completions.create(
+        model=app_settings.AI_MODEL,
+        messages=[
+            {"role": "system", "content": _WEEKLY_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.3,
+        max_tokens=4000,
+    )
+    content = (resp.choices[0].message.content or "").strip()
+    # 剥掉可能的 markdown 围栏
+    if content.startswith("```"):
+        content = content.strip("`").lstrip("json").strip()
+    raw = json.loads(content)
+
+    regime = raw.get("regime")
+    if regime not in _WEEKLY_REGIMES:
+        raise ValueError(f"LLM regime 非法: {regime}")
+    outlook_raw = raw.get("outlook") or {}
+    outlook = {
+        sym.replace("USDT", ""): (outlook_raw.get(sym.replace("USDT", "")) or "中性")
+        for sym in SPOT_SYMBOLS
+    }
+    for k, v in outlook.items():
+        if v not in ("偏多", "中性", "偏空"):
+            outlook[k] = "中性"
+    risks = [str(x)[:100] for x in (raw.get("risks") or [])][:3]
+    commentary = str(raw.get("commentary") or "").strip()[:2000]
+    return {"regime": regime, "outlook": outlook, "risks": risks, "commentary": commentary}
+
+
+def _push_review_card(week: str, parsed: dict, decisions: list) -> bool:
+    """周度研判卡片（纯展示）。"""
+    outlook_cells = []
+    score_map = {d["symbol"]: d["score"]["total"] for d in decisions}
+    for sym in ("BTC", "ETH", "BNB"):
+        v = parsed["outlook"].get(sym, "中性")
+        color = {"偏多": "green", "偏空": "red"}.get(v, "blue")
+        outlook_cells.append({
+            "tag": "column", "width": "weighted", "weight": 1,
+            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": (
+                f"**{sym}**\n<font color='{color}'>{v}</font>（评分 {score_map.get(sym + 'USDT', '—')}）"
+            )}}],
+        })
+    elements: list = [
+        {"tag": "div", "text": {"tag": "lark_md",
+         "content": f"**市场阶段：{parsed['regime']}**"}},
+        {"tag": "column_set", "flex_mode": "stretch", "columns": outlook_cells},
+        {"tag": "hr"},
+    ]
+    if parsed["risks"]:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": (
+            "**风险提示**\n" + "\n".join(f"- {r}" for r in parsed["risks"])
+        )}})
+    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": parsed["commentary"]}})
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": (
+        "AI 周度研判 · 纯展示无执行权限（docs/18 §4.3）· 留档见现货历史记录"
+    )}]})
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"🔭 现货周度研判 · {week}"},
+            "template": "purple",
+        },
+        "elements": elements,
+    }
+    try:
+        from app.services.notify import send_feishu_card
+
+        return send_feishu_card(card)
+    except Exception as e:
+        logger.warning("周度研判卡片推送失败: %s", e)
+        return False
+
+
 def _push_card(decisions: list, settings_dict: dict) -> bool:
-    """飞书评分卡片（纯展示：评分/建议份数/三周期计划，无按钮——P1 加确认下单）。"""
+    """飞书评分卡片（P1 半自动：BUY/SELL 决策币种带一键确认按钮）。
+
+    按钮仅在自建应用三件套 + FEISHU_ACTION_TOKEN 配置齐全时展示
+    （webhook 卡片收不到回调，同合约「市价平仓」按钮的降级规则）。
+    value 全用字符串（UUID/数字序列化事故教训）。"""
+    from app.config import settings as app_settings
+    from app.services import feishu_bot
+
+    actionable = feishu_bot.configured() and bool(app_settings.FEISHU_ACTION_TOKEN)
     date_label = decisions[0]["as_of"]
     cols = []
     for d in decisions:
@@ -266,21 +539,55 @@ def _push_card(decisions: list, settings_dict: dict) -> bool:
             ])}}],
         })
 
+    elements: list = [
+        {"tag": "div", "text": {"tag": "lark_md", "content": "**三币屯币评分**"}},
+        {"tag": "column_set", "flex_mode": "stretch", "columns": cols},
+    ]
+
+    if actionable:
+        buttons = []
+        for d in decisions:
+            sym = d["symbol"]
+            if d["action"] == "BUY":
+                buttons.append({
+                    "tag": "button", "type": "primary",
+                    "text": {"tag": "plain_text",
+                             "content": f"确认买入 {sym.replace('USDT', '')} {d['lots']}份"},
+                    "value": {
+                        "act": "spot_buy", "token": app_settings.FEISHU_ACTION_TOKEN,
+                        "symbol": sym, "lots": str(d["lots"] or ""),
+                        "quote": str(d["quote_amount"] or ""),
+                    },
+                })
+            elif d["action"] == "SELL":
+                buttons.append({
+                    "tag": "button", "type": "danger",
+                    "text": {"tag": "plain_text",
+                             "content": f"确认卖出 {sym.replace('USDT', '')} {d['lots']}份"},
+                    "value": {
+                        "act": "spot_sell", "token": app_settings.FEISHU_ACTION_TOKEN,
+                        "symbol": sym, "lots": str(d["lots"] or ""),
+                    },
+                })
+        if buttons:
+            elements.append({"tag": "hr"})
+            elements.append({"tag": "action", "actions": buttons})
+
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": (
+        "半自动模式：点击按钮确认后市价执行（统一风控：投入上限/保留垫/波段仓 30%/每日一次冷却）。"
+        f"单份 {settings_dict['per_order_usdt']:,.0f} U · 单币上限 {settings_dict['max_total_usdt']:,.0f} U"
+        if actionable else
+        "评分仅供参考，不自动下单（docs/18）。配置自建应用后可一键确认下单。"
+        f"单份 {settings_dict['per_order_usdt']:,.0f} U · 单币上限 {settings_dict['max_total_usdt']:,.0f} U"
+    )}]})
+
     card = {
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": f"🪙 现货屯币日报 · {date_label}"},
             "template": "blue",
         },
-        "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": "**三币屯币评分**"}},
-            {"tag": "column_set", "flex_mode": "stretch", "columns": cols},
-            {"tag": "hr"},
-            {"tag": "note", "elements": [{"tag": "plain_text", "content": (
-                "P0 半自动：评分仅供参考，不自动下单（docs/18）。"
-                f"单份 {settings_dict['per_order_usdt']:,.0f} U · 单币上限 {settings_dict['max_total_usdt']:,.0f} U"
-            )}]},
-        ],
+        "elements": elements,
     }
     try:
         from app.services.notify import send_feishu_card

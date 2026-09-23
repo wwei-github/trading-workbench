@@ -263,6 +263,20 @@ def _run_migrations(engine):
             "ALTER TABLE system_config "
             "ADD COLUMN IF NOT EXISTS spot_live_trading_keys TEXT"
         ))
+        # spot_orders 归属账号列（P1 执行闭环，对齐 trade_records 惯例）：
+        # NULL 旧行按 testnet 布尔回填（与 docs/17 迁移同款双保险）
+        conn.execute(text(
+            "ALTER TABLE spot_orders "
+            "ADD COLUMN IF NOT EXISTS account_key VARCHAR(20)"
+        ))
+        conn.execute(text(
+            "UPDATE spot_orders SET account_key = 'testnet-1' "
+            "WHERE account_key IS NULL AND testnet"
+        ))
+        conn.execute(text(
+            "UPDATE spot_orders SET account_key = 'live-1' "
+            "WHERE account_key IS NULL AND NOT testnet"
+        ))
         # 确保系统配置表有默认行（初始值从 env 注入）。
         # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有
         # Python 端 default 没有 server_default，漏列的裸 INSERT 会 NotNullViolation
