@@ -4,13 +4,14 @@
  * - 三币持仓卡：数量/市值/评分/建议动作；评分卡可展开明细（环境/仓位/择时三段）
  * - 评分实时算（后端读缓存K线），账户查询失败降级提示
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   Card,
   Col,
   Descriptions,
   Row,
+  Segmented,
   Space,
   Spin,
   Statistic,
@@ -185,11 +186,13 @@ export default function SpotOverviewPanel() {
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [details, setDetails] = useState<Record<string, SpotDecision>>({})
+  // 正式网账号切换查看：null=全部启用账号聚合；非空=单账号（须在启用集合内）
+  const [viewKey, setViewKey] = useState<string | null>(null)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (key: string | null) => {
     setLoading(true)
     try {
-      const ov = await spotApi.overview()
+      const ov = await spotApi.overview(key ?? undefined)
       setData(ov)
     } catch {
       // 错误信息由 axios 拦截器统一提示
@@ -199,8 +202,8 @@ export default function SpotOverviewPanel() {
   }, [])
 
   useEffect(() => {
-    load()
-  }, [load])
+    load(viewKey)
+  }, [load, viewKey])
 
   const toggle = async (symbol: string) => {
     if (expanded === symbol) {
@@ -217,6 +220,13 @@ export default function SpotOverviewPanel() {
       }
     }
   }
+
+  // 正式网多账号时的切换选项：全部聚合 + 各启用账号
+  const accountOptions = useMemo(() => {
+    const keys = data?.account_keys ?? []
+    const names = data?.account_names ?? []
+    return keys.map((k, i) => ({ label: names[i] || k, value: k }))
+  }, [data])
 
   if (loading && !data) {
     return (
@@ -235,15 +245,23 @@ export default function SpotOverviewPanel() {
           <Tag color={data.testnet ? 'blue' : 'gold'} style={{ marginLeft: 8 }}>
             {data.testnet ? '现货测试网' : '现货正式网'}
           </Tag>
-          {data.account_names && data.account_names.length > 0 && (
-            <Tag style={{ marginLeft: 4 }}>
-              {data.account_names.join(' + ')}
-            </Tag>
-          )}
         </Typography.Title>
-        <Button icon={<ReloadOutlined />} size="small" onClick={load} loading={loading}>
-          刷新
-        </Button>
+        <Space>
+          {!data.testnet && accountOptions.length > 1 && (
+            <Segmented<string>
+              value={viewKey ?? 'all'}
+              onChange={(v) => setViewKey(v === 'all' ? null : v)}
+              options={[
+                { label: '全部账号', value: 'all' },
+                ...accountOptions,
+              ]}
+              size="small"
+            />
+          )}
+          <Button icon={<ReloadOutlined />} size="small" onClick={() => load(viewKey)} loading={loading}>
+            刷新
+          </Button>
+        </Space>
       </div>
 
       {data.account_error && (

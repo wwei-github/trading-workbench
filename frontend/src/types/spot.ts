@@ -123,3 +123,46 @@ export interface SpotOrder {
   created_at: string | null
   executed_at: string | null
 }
+
+// ===== 运营时间轴（docs/18 §9.2.3，react-chrono 数据源）=====
+
+// order 事件 data
+export interface SpotTimelineOrder {
+  symbol: string
+  side: 'BUY' | 'SELL'
+  trigger_type: string
+  qty: number | null
+  quote_amount: number | null
+  price: number | null
+  status: string
+  fail_reason: string | null
+  trigger_detail: Record<string, unknown> | null
+  testnet: boolean
+  executed_at: string | null
+}
+
+// review 事件 data（AI 周度研判）
+export interface SpotTimelineReview {
+  week: string
+  regime: string // 积累期 / 上升期 / 分配期 / 下降期
+  outlook: Record<string, string> | null // {BTC: 偏多, ...}
+  risks: string[] | null
+  commentary: string
+}
+
+// daily_check 事件 data（每日评分日检）
+export interface SpotTimelineDaily {
+  status: string
+  summary: string | null
+  as_of: string | null
+  actions: Record<string, { action: string; lots: number; score: number; plan: string }> | null
+  env: Record<string, SpotEnvState> | null
+  error: string | null
+}
+
+export interface SpotTimelineItem {
+  id: string
+  type: 'order' | 'review' | 'daily_check'
+  time: string
+  data: SpotTimelineOrder | SpotTimelineReview | SpotTimelineDaily
+}

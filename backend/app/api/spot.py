@@ -112,7 +112,7 @@ def _config_response(db: Session) -> Dict[str, Any]:
                 "key": a.key,
                 "name": a.name,
                 "testnet": a.testnet,
-                "configured": a.configured,
+                "configured": True,  # 注册表构建时已校验 key/secret 成对，进入清单即已配置
             }
             for a in registry()
         ],
@@ -165,17 +165,23 @@ def put_spot_config(body: SpotConfigIn, db: Session = Depends(get_db)):
 # ---------------- 持仓总览 ----------------
 
 @router.get("/overview")
-def spot_overview(db: Session = Depends(get_db)):
+def spot_overview(account_key: Optional[str] = None, db: Session = Depends(get_db)):
     """三币持仓 + 现金池 + 实时评分。
 
     多账号（现货正式网多开关，docs/18）：持仓与现金池跨启用账号**聚合**；
     评分走公开K线不依赖账户；单账号查询失败不拖垮整体（该账号计 0 并记 error）。
+    account_key 指定时只查该账号（正式网账号切换查看，须为现货启用集合成员）。
     """
     from app.services.account_registry import spot_enabled_accounts
     from app.services.spot_client import SpotClient
 
     settings_dict = load_spot_settings(db)
     spot_accs = spot_enabled_accounts(db)
+
+    if account_key:
+        spot_accs = [a for a in spot_accs if a.key == account_key]
+        if not spot_accs:
+            raise HTTPException(status_code=400, detail=f"账号 {account_key} 不在现货启用集合内")
 
     # 每启用账号一个只读客户端（公开端点也用它，testnet/live base 跟随账号属性）
     clients = [SpotClient(a.key) for a in spot_accs] or [SpotClient()]
@@ -254,34 +260,93 @@ def spot_score(symbol: str, db: Session = Depends(get_db)):
         client.close()
 
 
-# ---------------- 订单 ----------------
+# ---------------- 历史（docs/18 §9.2.3 运营时间轴） ----------------
 
-@router.get("/orders")
-def spot_orders(limit: int = 100, db: Session = Depends(get_db)):
-    rows = (
+@router.get("/timeline")
+def spot_timeline(limit: int = 100, db: Session = Depends(get_db)):
+    """运营时间轴聚合（react-chrono 数据源，docs/18 §9.2.3）：
+    - order：买卖/定投事件（spot_orders，含状态与触发快照）
+    - review：AI 周度研判（spot_weekly_reviews，P1 起有数据）
+    - daily_check：每日评分日检（task_records type=spot，P0 即有数据）
+    按时间倒序合并，最多 limit 条。
+    """
+    from app.models.spot import SpotWeeklyReview
+    from app.models.ops import TaskRecord
+
+    events: List[Dict[str, Any]] = []
+
+    # 1) 买卖/定投
+    for o in (
         db.query(SpotOrder)
         .order_by(SpotOrder.created_at.desc())
-        .limit(min(limit, 500))
+        .limit(min(limit, 300))
         .all()
-    )
-    return [
-        {
-            "id": str(r.id),
-            "symbol": r.symbol,
-            "side": r.side,
-            "trigger_type": r.trigger_type,
-            "trigger_detail": r.trigger_detail,
-            "qty": float(r.qty) if r.qty is not None else None,
-            "quote_amount": float(r.quote_amount) if r.quote_amount is not None else None,
-            "price": float(r.price) if r.price is not None else None,
-            "status": r.status,
-            "fail_reason": r.fail_reason,
-            "testnet": r.testnet,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-            "executed_at": r.executed_at.isoformat() if r.executed_at else None,
-        }
-        for r in rows
-    ]
+    ):
+        events.append({
+            "id": f"order-{o.id}",
+            "type": "order",
+            "time": o.created_at.isoformat() if o.created_at else None,
+            "data": {
+                "symbol": o.symbol,
+                "side": o.side,
+                "trigger_type": o.trigger_type,
+                "qty": float(o.qty) if o.qty is not None else None,
+                "quote_amount": float(o.quote_amount) if o.quote_amount is not None else None,
+                "price": float(o.price) if o.price is not None else None,
+                "status": o.status,
+                "fail_reason": o.fail_reason,
+                "trigger_detail": o.trigger_detail,
+                "testnet": o.testnet,
+                "executed_at": o.executed_at.isoformat() if o.executed_at else None,
+            },
+        })
+
+    # 2) AI 周度研判
+    for r in (
+        db.query(SpotWeeklyReview)
+        .order_by(SpotWeeklyReview.created_at.desc())
+        .limit(min(limit, 100))
+        .all()
+    ):
+        events.append({
+            "id": f"review-{r.id}",
+            "type": "review",
+            "time": r.created_at.isoformat() if r.created_at else None,
+            "data": {
+                "week": r.week,
+                "regime": r.regime,
+                "outlook": r.outlook,
+                "risks": r.risks,
+                "commentary": r.commentary,
+            },
+        })
+
+    # 3) 每日评分日检（P0 的评分流水）
+    for t in (
+        db.query(TaskRecord)
+        .filter(TaskRecord.task_type == "spot")
+        .order_by(TaskRecord.started_at.desc())
+        .limit(min(limit, 300))
+        .all()
+    ):
+        detail = t.detail or {}
+        events.append({
+            "id": f"daily-{t.id}",
+            "type": "daily_check",
+            "time": t.started_at.isoformat() if t.started_at else None,
+            "data": {
+                "status": t.status,
+                "summary": t.summary,
+                "as_of": detail.get("as_of"),
+                "actions": detail.get("actions"),
+                "env": detail.get("env"),
+                "error": t.error,
+            },
+        })
+
+    events = [e for e in events if e["time"]]
+    events.sort(key=lambda e: e["time"], reverse=True)
+    return events[: min(limit, 300)]
 
 
 # ---------------- 配置 ----------------

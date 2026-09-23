@@ -58,7 +58,8 @@ class SpotClient:
                     acc = resolve_spot_account(db)
             finally:
                 db.close()
-            if acc is not None and acc.configured:
+            # 注册表构建时已校验 key/secret 成对（半配置启动即抛错），此处 acc 非 None 即可用
+            if acc is not None:
                 self.account = acc
                 self.testnet = acc.testnet
             else:
