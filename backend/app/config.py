@@ -66,7 +66,9 @@ class Settings(BaseSettings):
     MIN_VOLUME_24H: float = 3_000_000  # 扫描候选池 24h 成交额下限（USDT），低于此不进扫描
 
     # 自动交易（docs/06，币安 USDT-M 合约）
-    # 双环境凭据：正式网 = BINANCE_API_KEY/SECRET_KEY；测试网 = BINANCE_TESTNET_API_KEY/SECRET_KEY
+    # 账号凭据（docs/17 注册表在 account_registry.py 读取）：正式网统一命名
+    # BINANCE_LIVE_{N}_API_KEY/SECRET_KEY（N≥1，注册表直接扫 os.environ，不走本字段）；
+    # 此处仅保留旧变量 BINANCE_API_KEY/SECRET_KEY 作 live-1 兼容回落与测试网兜底
     # （测试网未单独配置时回落正式网 key，兼容只有一组 key 的部署）
     BINANCE_API_KEY: str = ""
     BINANCE_SECRET_KEY: str = ""

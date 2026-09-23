@@ -333,7 +333,12 @@ def trigger_ai_analysis(
 
 def _config_response(cfg: SystemConfig) -> SystemConfigOut:
     """SystemConfigOut 统一构造（GET/PUT 共用；含账号注册表只读展示，docs/17）"""
-    from app.services.account_registry import registry, parse_live_keys
+    from app.services.account_registry import (
+        live_accounts,
+        parse_live_keys,
+        registry,
+        testnet_accounts,
+    )
     return SystemConfigOut(
         ai_analysis_enabled=cfg.ai_analysis_enabled,
         ai_pipeline_enabled=cfg.ai_pipeline_enabled,
@@ -356,10 +361,8 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         current_account_key=cfg.current_account_key,
         live_trading_keys=parse_live_keys(cfg.live_trading_keys),
         accounts=[AccountBrief(key=a.key, name=a.name, testnet=a.testnet) for a in registry()],
-        binance_key_live=bool(settings.BINANCE_API_KEY and settings.BINANCE_SECRET_KEY),
-        binance_key_testnet=bool(
-            settings.BINANCE_TESTNET_API_KEY and settings.BINANCE_TESTNET_SECRET_KEY
-        ) or bool(settings.BINANCE_API_KEY and settings.BINANCE_SECRET_KEY),
+        binance_key_live=bool(live_accounts()),
+        binance_key_testnet=bool(testnet_accounts()) or bool(live_accounts()),
         max_stop_pct=float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None,
         liq_gate_buffer=(float(cfg.liq_gate_buffer)
                          if cfg.liq_gate_buffer is not None else None),

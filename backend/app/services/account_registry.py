@@ -1,9 +1,10 @@
 """交易账号注册表（docs/17 P0，2026-09-23）
 
-多账号配置全走 .env（纯配置驱动，无新表）：
+多账号配置全走 .env（纯配置驱动，无新表），命名统一为 BINANCE_LIVE_{N}_*：
 - 测试网单账号：BINANCE_TESTNET_API_KEY/SECRET_KEY → 账号 key `testnet-1`
-- 正式网 1 号：BINANCE_API_KEY/SECRET_KEY → `live-1`（沿用现有变量名，向后兼容）
-- 正式网附加账号：BINANCE_LIVE_{N}_API_KEY/SECRET_KEY（+可选 _NAME）→ `live-N`，N≥2 不限数量
+- 正式网账号：BINANCE_LIVE_{N}_API_KEY/SECRET_KEY（+可选 _NAME）→ `live-N`，N≥1 不限数量
+- 向后兼容：live-1 未配置 BINANCE_LIVE_1_* 时回落旧变量 BINANCE_API_KEY/SECRET_KEY
+  （存量部署零改动；两处都配时 LIVE_1 优先）
 
 账号 key 是稳定标识（trade_records.account_key 记录归属）；NAME 仅展示用。
 启动时（uvicorn lifespan 与 celery worker 各自进程内）构建注册表并校验，
@@ -20,7 +21,6 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _TESTNET_KEY = "testnet-1"
-_LIVE_DEFAULT_KEY = "live-1"
 _LIVE_N_RE = re.compile(r"^BINANCE_LIVE_(\d+)_API_KEY$")
 
 
@@ -58,22 +58,19 @@ def build_registry() -> list[Account]:
         if tk and ts:
             accounts.append(Account(_TESTNET_KEY, "测试网", True, tk, ts))
 
-    lk, ls = settings.BINANCE_API_KEY, settings.BINANCE_SECRET_KEY
-    if lk or ls:
-        _validate(_LIVE_DEFAULT_KEY, lk, ls)
-        if lk and ls:
-            accounts.append(Account(_LIVE_DEFAULT_KEY, "正式网-1", False, lk, ls))
-
-    # 附加正式网账号：BINANCE_LIVE_{N}_API_KEY（N≥2），按编号排序保证注册表顺序稳定
+    # 正式网账号：BINANCE_LIVE_{N}_*（N≥1），按编号排序保证注册表顺序稳定。
+    # live-1 未配置扩展写法时回落旧变量 BINANCE_API_KEY/SECRET_KEY（向后兼容）
     found: list[tuple[int, str, str, Optional[str]]] = []
     for env_name, value in os.environ.items():
         m = _LIVE_N_RE.match(env_name)
         if m and value.strip():
             n = int(m.group(1))
-            if n < 2:
-                continue  # live-1 固定走 BINANCE_API_KEY，编号 1 的扩展写法忽略
             found.append((n, value.strip(), os.getenv(f"BINANCE_LIVE_{n}_SECRET_KEY", ""),
                           os.getenv(f"BINANCE_LIVE_{n}_NAME")))
+    if not any(n == 1 for n, _, _, _ in found):
+        lk, ls = settings.BINANCE_API_KEY, settings.BINANCE_SECRET_KEY
+        if lk or ls:
+            found.append((1, lk, ls, None))
     for n, ak, sec, name in sorted(found):
         key = f"live-{n}"
         _validate(key, ak, sec)
