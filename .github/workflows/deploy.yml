@@ -229,3 +229,80 @@ jobs:
           echo "- 范围: ${{ steps.prep.outputs.scope }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- 版本: ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
           grep -E 'DEPLOY_OK|健康检查' deploy_output.log | tail -3 >> "$GITHUB_STEP_SUMMARY" || true
+
+  # ── 门禁失败通知（2026-09-23）──────────────────────────────
+  # 背景：飞书通知在 deploy job 内，而 deploy 条件含 needs.test.result == 'success'
+  # —— test 门禁失败时 deploy 整个被 skip，通知步骤不会执行（失败静默）。
+  # 本 job 独立于 deploy：仅在 test/changes 失败时发卡片；deploy 失败仍由上方通知（不重复）。
+  notify-gate-failure:
+    runs-on: ubuntu-latest
+    needs: [test, changes]
+    if: always() && (needs.test.result == 'failure' || needs.changes.result == 'failure')
+    steps:
+      - name: 飞书通知（门禁失败）
+        env:
+          APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          TARGET_ID: ${{ secrets.FEISHU_TARGET_ID }}
+          SHA: ${{ github.sha }}
+          MSG: ${{ github.event.head_commit.message }}
+          REF: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          TEST: ${{ needs.test.result }}
+          CHANGES: ${{ needs.changes.result }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_SECRET" ] || [ -z "$TARGET_ID" ]; then
+            echo "未配置飞书自建应用三件套，跳过通知"; exit 0
+          fi
+          TEST="$TEST" CHANGES="$CHANGES" SHA="$SHA" MSG="$MSG" REF="$REF" ACTOR="$ACTOR" \
+          APP_ID="$APP_ID" APP_SECRET="$APP_SECRET" TARGET_ID="$TARGET_ID" python3 - <<'PY'
+          import json, os, urllib.request
+          e = os.environ
+          short = e['SHA'][:7]
+          msg = (e['MSG'] or '').splitlines()[0][:60] if e['MSG'] else ''
+          test, changes = e['TEST'], e['CHANGES']
+          gate = '前端 tsc / 后端 compileall' if test == 'failure' else '变更检测'
+          failed_jobs = [n for n, r in (('test 门禁', test), ('变更检测', changes)) if r == 'failure']
+          card = {
+              "config": {"wide_screen_mode": True},
+              "header": {"title": {"tag": "plain_text",
+                        "content": "❌ 门禁失败 · trading-workbench"},
+                        "template": "red"},
+              "elements": [
+                  {"tag": "div", "fields": [
+                      {"is_short": True, "text": {"tag": "lark_md", "content": f"**版本**　{short}（{e['REF']}）"}},
+                      {"is_short": True, "text": {"tag": "lark_md", "content": f"**触发**　{e['ACTOR']}"}},
+                      {"is_short": True, "text": {"tag": "lark_md", "content": f"**提交**　{msg or '—'}"}},
+                      {"is_short": True, "text": {"tag": "lark_md", "content": f"**失败**　{gate}"}},
+                  ]},
+                  {"tag": "hr"},
+                  {"tag": "div", "text": {"tag": "lark_md",
+                   "content": "代码未部署，线上仍在跑旧版本。日志见 GitHub Actions。"}},
+                  {"tag": "note", "elements": [{"tag": "plain_text",
+                   "content": f"job 状态: {'、'.join(failed_jobs)}；changes={changes or 'skipped'}"}]},
+              ],
+          }
+
+          def post(url, payload, headers, timeout=10):
+              req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+              return json.load(urllib.request.urlopen(req, timeout=timeout))
+
+          OPEN = "https://open.feishu.cn/open-apis"
+          try:
+              tok = post(f"{OPEN}/auth/v3/tenant_access_token/internal",
+                         {"app_id": e['APP_ID'], "app_secret": e['APP_SECRET']},
+                         {"Content-Type": "application/json"})
+              if tok.get("code") != 0:
+                  print(f"获取 tenant_access_token 失败（不阻塞）: {str(tok)[:200]}")
+              else:
+                  rid_type = "chat_id" if e['TARGET_ID'].startswith("oc_") else "open_id"
+                  r = post(f"{OPEN}/im/v1/messages?receive_id_type={rid_type}",
+                           {"receive_id": e['TARGET_ID'], "msg_type": "interactive",
+                            "content": json.dumps(card, ensure_ascii=False)},
+                           {"Content-Type": "application/json",
+                            "Authorization": f"Bearer {tok['tenant_access_token']}"})
+                  if r.get("code") != 0:
+                      print(f"门禁失败通知发送失败（不阻塞）: {str(r)[:300]}")
+          except Exception as ex:
+              print(f"飞书通知发送失败（不阻塞）: {ex}")
+          PY
