@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Button,
   Card,
@@ -23,6 +23,7 @@ import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
 import { TRADE_TYPE_MAP } from '../constants/labels'
 import type { ActualGroupStat, ActualReview, ActualTradeItem } from '../types'
 import TradeReplayChart from './TradeReplayChart'
+import ScopeSelector, { defaultScopeOf } from './ScopeSelector'
 
 // 出场原因映射（与 TradesPanel 同口径）
 const EXIT_REASON_MAP: Record<string, string> = {
@@ -49,15 +50,31 @@ export default function ReviewActualPanel() {
   const [loading, setLoading] = useState(false)
   const [attributing, setAttributing] = useState(false)
   const [replayTrade, setReplayTrade] = useState<ActualTradeItem | null>(null)
+  // 账号范围（docs/17）：默认跟随当前交易环境；面板被 Tabs 保活，
+  // 环境切换（defaultScope 变化）后重新跟随，手动选择不被配置刷新打断
+  const { aiConfig, fetchConfig } = useScanStore()
+  const defaultScope = defaultScopeOf(aiConfig)
+  const lastDefaultRef = useRef<string | null>(null)
+  const [scope, setScope] = useState<string>(defaultScope)
+  useEffect(() => {
+    if (!aiConfig) {
+      fetchConfig()
+      return
+    }
+    if (lastDefaultRef.current !== defaultScope) {
+      lastDefaultRef.current = defaultScope
+      setScope(defaultScope)
+    }
+  }, [aiConfig, fetchConfig, defaultScope])
 
   const colorScheme = useScanStore((s) => s.colorScheme)
   const upColor = SCHEME_UP_DOWN[colorScheme].up
   const downColor = SCHEME_UP_DOWN[colorScheme].down
 
-  const fetchData = useCallback(async (d: number) => {
+  const fetchData = useCallback(async (d: number, sc: string) => {
     setLoading(true)
     try {
-      setData(await scanApi.actualReview(d))
+      setData(await scanApi.actualReview(d, sc))
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '获取实盘归因失败')
     } finally {
@@ -66,8 +83,8 @@ export default function ReviewActualPanel() {
   }, [])
 
   useEffect(() => {
-    fetchData(days)
-  }, [days, fetchData])
+    fetchData(days, scope)
+  }, [days, scope, fetchData])
 
   // 一键归因：处理全部待归因（≤5 笔），完成后刷新
   const runAttribution = useCallback(async () => {
@@ -76,13 +93,13 @@ export default function ReviewActualPanel() {
       const res = await scanApi.attributeTrades()
       const ok = res.results.filter((r) => r.ok).length
       message.success(`AI 归因完成：${ok}/${res.results.length} 笔`)
-      fetchData(days)
+      fetchData(days, scope)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || 'AI 归因失败')
     } finally {
       setAttributing(false)
     }
-  }, [days, fetchData])
+  }, [days, scope, fetchData])
 
   const pnlColor = (v: number | null | undefined) =>
     v == null || v === 0 ? undefined : v > 0 ? upColor : downColor
@@ -192,6 +209,7 @@ export default function ReviewActualPanel() {
       <Row justify="space-between" align="middle">
         <Col>
           <Space>
+            <ScopeSelector value={scope} onChange={setScope} />
             <Radio.Group
               optionType="button"
               buttonStyle="solid"
@@ -217,7 +235,7 @@ export default function ReviewActualPanel() {
           </Space>
         </Col>
         <Col>
-          <Button icon={<ReloadOutlined />} onClick={() => fetchData(days)}>刷新</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => fetchData(days, scope)}>刷新</Button>
         </Col>
       </Row>
 

@@ -122,17 +122,22 @@ def _agg(trades: list) -> dict:
     }
 
 
-def build_actual_review(db: Session, days: int) -> dict:
-    """实盘归因统计主入口（API 层直接返回 dict）"""
+def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
+    """实盘归因统计主入口（API 层直接返回 dict）
+
+    extra_filter: 可选 scope 过滤条件（api/trades._account_scope_filter 产物，
+    live/testnet=环境聚合、账号 key=指定账号；None=全部，兼容旧行为）
+    """
     cutoff = datetime.utcnow() - timedelta(days=days)
+    q = select(TradeRecord).where(
+        TradeRecord.status == "CLOSED",
+        TradeRecord.exit_reason.isnot(None),
+        TradeRecord.closed_at >= cutoff,
+    )
+    if extra_filter is not None:
+        q = q.where(extra_filter)
     trades = db.execute(
-        select(TradeRecord)
-        .where(
-            TradeRecord.status == "CLOSED",
-            TradeRecord.exit_reason.isnot(None),
-            TradeRecord.closed_at >= cutoff,
-        )
-        .order_by(TradeRecord.closed_at.asc())
+        q.order_by(TradeRecord.closed_at.asc())
     ).scalars().all()
 
     overview = _agg(trades)

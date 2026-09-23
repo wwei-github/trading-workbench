@@ -4,7 +4,7 @@
  * - 配色全走 scheme 体系（红涨绿跌/绿涨红跌可切换），禁止硬编码涨跌色
  * - 划转按环境同步落库（testnet 标记），随页内 scope 过滤展示
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Button,
   Card,
@@ -58,11 +58,12 @@ function isNegBucket(bucket: string): boolean {
 
 /** 资金分析页（docs/14） */
 export default function FundAnalysisPanel() {
-  // 账号范围切换（docs/17）：默认跟随当前交易环境，多 live 账号时跟随选中账号
+  // 账号范围切换（docs/17）：默认跟随当前交易环境，多 live 账号时跟随选中账号。
+  // 面板被 Tabs 保活：环境切换（defaultScope 变化）后重新跟随，手动选择不被配置刷新打断
   const { aiConfig, fetchConfig } = useScanStore()
   const defaultScope = defaultScopeOf(aiConfig)
-  const [scope, setScope] = useState<string>('testnet')
-  const [scopeInit, setScopeInit] = useState(false)
+  const lastDefaultRef = useRef<string | null>(null)
+  const [scope, setScope] = useState<string>(defaultScope)
   const [range, setRange] = useState<RangeKey>('all')
   const [dates, setDates] = useState<[Dayjs, Dayjs] | null>(null)
   const [data, setData] = useState<FundAnalytics | null>(null)
@@ -73,11 +74,11 @@ export default function FundAnalysisPanel() {
       fetchConfig()
       return
     }
-    if (!scopeInit) {
+    if (lastDefaultRef.current !== defaultScope) {
+      lastDefaultRef.current = defaultScope
       setScope(defaultScope)
-      setScopeInit(true)
     }
-  }, [aiConfig, fetchConfig, scopeInit, defaultScope])
+  }, [aiConfig, fetchConfig, defaultScope])
 
   const colorScheme = useScanStore((s) => s.colorScheme)
   const up = SCHEME_UP_DOWN[colorScheme].up

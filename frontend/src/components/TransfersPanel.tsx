@@ -4,7 +4,7 @@
  * - 环境切换（正式网/测试网）与资金分析页一致：默认跟随当前交易环境
  * - 概览：累计转入 / 累计转出 / 净流入；明细表带符号金额着色（随全局涨跌配色）
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Empty, Spin, Table, Tag, message } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
@@ -22,11 +22,12 @@ function fmtTime(s: string | null | undefined): string {
 }
 
 export default function TransfersPanel() {
-  // 默认 scope 跟随当前交易环境（多 live 账号跟随选中账号，docs/17），配置加载后校正
+  // 默认 scope 跟随当前交易环境（多 live 账号跟随选中账号，docs/17）。
+  // 面板被 Tabs 保活：环境切换（defaultScope 变化）后重新跟随，手动选择不被配置刷新打断
   const { aiConfig, fetchConfig } = useScanStore()
   const defaultScope = defaultScopeOf(aiConfig)
-  const [scope, setScope] = useState<string>('testnet')
-  const [scopeInit, setScopeInit] = useState(false)
+  const lastDefaultRef = useRef<string | null>(null)
+  const [scope, setScope] = useState<string>(defaultScope)
   const [rows, setRows] = useState<AccountTransfer[]>([])
   const [loading, setLoading] = useState(false)
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -36,11 +37,11 @@ export default function TransfersPanel() {
       fetchConfig()
       return
     }
-    if (!scopeInit) {
+    if (lastDefaultRef.current !== defaultScope) {
+      lastDefaultRef.current = defaultScope
       setScope(defaultScope)
-      setScopeInit(true)
     }
-  }, [aiConfig, fetchConfig, scopeInit, defaultScope])
+  }, [aiConfig, fetchConfig, defaultScope])
 
   const fetchData = useCallback(async () => {
     setLoading(true)

@@ -588,8 +588,13 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
 
 
 @router.get("/review/actual", response_model=ActualReviewResponse)
-def review_actual(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_db)):
+def review_actual(
+    days: int = Query(30, ge=1, le=180),
+    scope: str = Query("all", description="live/testnet/all 或账号 key（docs/17）"),
+    db: Session = Depends(get_db),
+):
     """实盘归因统计（复盘主轴）：trade_records 总览 + 分组 + 逐笔计划vs实际 + AI 错误标签"""
+    from app.api.trades import _account_scope_filter
     from app.services.actual_review import backfill_costs, build_actual_review
     from app.services.binance_trader import BinanceTrader
 
@@ -600,7 +605,7 @@ def review_actual(days: int = Query(30, ge=1, le=180), db: Session = Depends(get
         import logging
         logging.getLogger(__name__).warning("费用回补失败: %s", e)
 
-    return build_actual_review(db, days)
+    return build_actual_review(db, days, extra_filter=_account_scope_filter(TradeRecord, scope))
 
 
 @router.post("/review/attribute", response_model=AttributionTriggerResponse)

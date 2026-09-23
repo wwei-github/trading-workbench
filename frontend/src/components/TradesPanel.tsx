@@ -7,7 +7,7 @@
  * - 展开行：左右双卡片——左 AI 分析结论快照（AiAnalysisCard），右 操作历史时间线
  * - 状态筛选：胶囊按钮组（进行中 = 运行中/TP1已止盈/TP2已止盈 三态聚合，带计数徽标）
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Button,
   Descriptions,
@@ -299,22 +299,22 @@ export default function TradesPanel() {
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
-  // 账号范围切换（docs/17）：默认跟随当前交易环境（多 live 账号跟随选中账号）；
-  // 配置未加载前先按测试网，拉到配置后校正。值口径见 ScopeSelector
+  // 账号范围切换（docs/17）：默认跟随当前交易环境（多 live 账号跟随选中账号）。
+  // 面板被 Tabs 保活：环境切换（defaultScope 变化）后重新跟随，手动选择不被配置刷新打断
   const { aiConfig, fetchConfig } = useScanStore()
   const defaultScope = defaultScopeOf(aiConfig)
-  const [scope, setScope] = useState<string>('testnet')
-  const [scopeInit, setScopeInit] = useState(false)
+  const lastDefaultRef = useRef<string | null>(null)
+  const [scope, setScope] = useState<string>(defaultScope)
   useEffect(() => {
     if (!aiConfig) {
       fetchConfig()
       return
     }
-    if (!scopeInit) {
+    if (lastDefaultRef.current !== defaultScope) {
+      lastDefaultRef.current = defaultScope
       setScope(defaultScope)
-      setScopeInit(true)
     }
-  }, [aiConfig, fetchConfig, scopeInit, defaultScope])
+  }, [aiConfig, fetchConfig, defaultScope])
   // 概览汇总（与资金分析同源）：closed/wins/win_rate/net_pnl/avg_win_r 来自 analytics 接口
   const [summary, setSummary] = useState<FundAnalytics['summary'] | null>(null)
   // 账户资金概览（当前环境）：总资金/未实现收益/收益率，与列表/统计并发拉

@@ -83,9 +83,10 @@ export const scanApi = {
   // ===== 实盘归因（复盘重设计 2026-09-18）=====
 
   // 实盘归因统计（trade_records 主轴：总览 + 分组 + 逐笔计划vs实际 + AI 错误标签）
-  actualReview: (days = 30) =>
+  // scope：live/testnet/all 或账号 key（docs/17 口径，缺省 all 兼容旧调用）
+  actualReview: (days = 30, scope?: string) =>
     api
-      .get<ActualReview>('/scans/review/actual', { params: { days } })
+      .get<ActualReview>('/scans/review/actual', { params: { days, scope } })
       .then((r) => r.data),
 
   // 手动触发 AI 错误归因（tradeId 缺省 = 处理全部待归因 ≤5 笔）
