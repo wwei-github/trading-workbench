@@ -54,7 +54,8 @@ def _ensure_klines(db: Session, client, symbol: str, interval: str, limit: int) 
     need_refresh = True
     if row is not None and row.klines:
         if interval == "1d":
-            last_open = datetime.utcfromtimestamp(float(row.klines[-1]["t"]))
+            # t 为毫秒时间戳，必须 /1000 转秒（漏除会溢出：year 58696 is out of range）
+            last_open = datetime.utcfromtimestamp(float(row.klines[-1]["t"]) / 1000.0)
             # 收盘时刻（UTC +1 天）若已过去，说明缓存含已收盘最新K线
             if last_open + timedelta(days=1) <= datetime.utcnow():
                 need_refresh = False
