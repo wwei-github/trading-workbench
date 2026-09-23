@@ -10,9 +10,11 @@
 """
 import logging
 import time
+from typing import Optional
 from uuid import UUID, uuid4
 
 from redis import Redis
+from sqlalchemy import select
 
 from app.celery_app import celery_app
 from app.config import settings
@@ -31,25 +33,32 @@ from app.services.trade_engine import (
 
 logger = logging.getLogger(__name__)
 
-# 开仓互斥锁：结算巡检（分钟级）与即时开仓（秒级）串行
-_OPEN_LOCK_KEY = "lock:trade_open"
+# 开仓互斥锁（docs/17 P1 按账号拆分）：结算巡检与即时开仓在「同一账号」维度互斥，
+# 扇出后不同账号可各自开单。key = lock:trade_open:{account_key|default}
 _OPEN_LOCK_TTL_S = 900       # 结算巡检最长持锁时间兜底（崩溃自动过期）
 _OPEN_LOCK_WAIT_S = 45       # 即时开仓等锁上限，超时放弃（无批次兜底）
 
 
-def _acquire_open_lock(r: Redis, ident: str, wait_s: int, ttl_s: int) -> bool:
+def _open_lock_key(account: Optional[str] = None) -> str:
+    return f"lock:trade_open:{account or 'default'}"
+
+
+def _acquire_open_lock(r: Redis, ident: str, wait_s: int, ttl_s: int,
+                       account: Optional[str] = None) -> bool:
+    key = _open_lock_key(account)
     deadline = time.time() + wait_s
     while time.time() < deadline:
-        if r.set(_OPEN_LOCK_KEY, ident, nx=True, ex=ttl_s):
+        if r.set(key, ident, nx=True, ex=ttl_s):
             return True
         time.sleep(0.5)
     return False
 
 
-def _release_open_lock(r: Redis, ident: str) -> None:
+def _release_open_lock(r: Redis, ident: str, account: Optional[str] = None) -> None:
     try:
-        if r.get(_OPEN_LOCK_KEY) == ident:
-            r.delete(_OPEN_LOCK_KEY)
+        key = _open_lock_key(account)
+        if r.get(key) == ident:
+            r.delete(key)
     except Exception:
         pass
 
@@ -74,34 +83,81 @@ def _mark_analysis_block(analysis_id: str, reason: str) -> None:
 def run_auto_trade_task():
     task_id = open_task(task_type="trade", task_name="结算巡检", trigger="scheduled")
     try:
+        from app.services.account_registry import enabled_accounts
+
         db = SessionLocal()
         try:
-            cfg = db.get(SystemConfig, 1)
-            env_testnet = bool(cfg.trading_testnet) if cfg else settings.TRADING_TESTNET
+            accs = enabled_accounts(db)
         finally:
             db.close()
-        # 结算巡检不依赖自动交易总开关：关掉开关（停开新单）后，存量在跑单的
-        # TP/SL 推进、止损补挂仍须继续，否则裸仓无保护
-        trader = BinanceTrader(env_testnet)
+        if not accs:
+            close_task(task_id, "skipped", summary="无可用交易账号（.env 未配置 key），跳过")
+            return
+        # 主账号实例（settle_trades 内部仍按记录自带 account_key 逐账号结算，docs/17 P0）
+        trader = BinanceTrader(accs[0].key)
         if not trader.configured:
-            logger.warning("结算巡检缺少币安 API 凭据（%s 环境未配置 key），跳过",
-                           "testnet" if env_testnet else "正式网")
+            logger.warning("结算巡检缺少币安 API 凭据（主账号 %s），跳过", accs[0].key)
             close_task(task_id, "skipped", summary="缺少币安 API 凭据，跳过")
             return
 
+        # 锁集合 = 启用账号 ∪ 存量在跑单账号（切走的账号其存量单仍要结算，docs/17 P1）
+        db = SessionLocal()
+        try:
+            run_keys = {
+                (k or ("testnet-1" if t else "live-1"))
+                for k, t in db.execute(
+                    select(TradeRecord.account_key, TradeRecord.testnet).where(
+                        TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT"))
+                    )
+                ).all()
+            }
+        finally:
+            db.close()
+        lock_keys = list(dict.fromkeys([a.key for a in accs] + sorted(run_keys)))
+
         r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
         ident = uuid4().hex
-        if not _acquire_open_lock(r, ident, wait_s=120, ttl_s=_OPEN_LOCK_TTL_S):
+        acquired: list[str] = []
+        for k in lock_keys:
+            if _acquire_open_lock(r, ident, wait_s=120, ttl_s=_OPEN_LOCK_TTL_S, account=k):
+                acquired.append(k)
+            else:
+                break
+        if len(acquired) < len(lock_keys):
+            for k in acquired:
+                _release_open_lock(r, ident, account=k)
             close_task(task_id, "skipped", summary="开仓锁被即时开仓长期占用，本轮跳过")
             return
         try:
             db = SessionLocal()
             try:
                 settled, advice_ids = settle_trades(db, trader)
+                # 多账号孤儿清扫（docs/17 P1）：settle_trades 仅兜底主账号，
+                # 其余启用账号各扫各的（无持仓、无在跑记录的残留挂单）
+                from app.services.trade_engine import _sweep_orphan_algo_orders
+                for acc in accs:
+                    if acc.key == trader.account_key:
+                        continue
+                    at = BinanceTrader(acc.key)
+                    if not at.configured:
+                        continue
+                    run_syms = {
+                        rec.symbol for rec in db.execute(
+                            select(TradeRecord).where(
+                                TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")),
+                                TradeRecord.account_key == acc.key,
+                            )
+                        ).scalars()
+                    }
+                    try:
+                        _sweep_orphan_algo_orders(at, run_syms, at.positions())
+                    except Exception:
+                        logger.exception("孤儿清扫失败（%s）", acc.key)
             finally:
                 db.close()
         finally:
-            _release_open_lock(r, ident)
+            for k in acquired:
+                _release_open_lock(r, ident, account=k)
 
         # AI 持仓诊断派发（docs/16）：锁外逐单派发子任务——LLM 调用（10~30s）
         # 绝不进开仓锁内，失败隔离（单笔失败不影响其余诊断与结算结果）
@@ -136,55 +192,78 @@ def run_auto_trade_task():
 
 @celery_app.task(name="app.tasks.trade_tasks.open_trade_for_analysis", max_retries=0)
 def open_trade_for_analysis(analysis_id: str):
-    """单条 AI 分析完成即开仓（唯一开仓通道，2026-09-14 起取消 :42 批量兜底）。
+    """单条 AI 分析完成即开仓——P1 扇出（docs/17 §3，2026-09-23）。
 
-    由 ai_tasks 在分析落库后分发；Redis 锁与结算巡检互斥，防并发绕过上限/余额
-    闸门。等锁超时或闸门未过即放弃（无重试）——等该币下次信号重新分析再触发。
-    闸门之外的丢败（等锁超时 / 执行异常，2026-09-15 起）也落
-    ai_analyses.open_block_reason，不留"既没开单也没原因"的悬案。
+    AI 分析共享一次，对当前环境每个启用账号独立过闸门/下单（各自钱包、风险
+    基数、在跑上限；串行下单共享 IP 权重）。账号锁 lock:trade_open:{key} 与
+    结算巡检互斥；单账号失败不影响其他账号。等锁超时或闸门未过即放弃（无重试）。
+    任一账号成交即清除拒开原因残留（避免「已开单仍显示拒开文案」误导）。
     """
-    # 开关/环境以 DB 为运行时权威（env 仅首次建行注入初始值）
+    from app.services.account_registry import enabled_accounts
+
+    # 开关/启用账号以 DB 为运行时权威（env 仅首次建行注入初始值）
     db = SessionLocal()
     try:
         cfg = db.get(SystemConfig, 1)
         if cfg is None or not cfg.trading_enabled:
             logger.info("即时开仓跳过：自动交易总开关关闭（analysis=%s）", analysis_id)
             return
-        env_testnet = bool(cfg.trading_testnet)
+        accs = enabled_accounts(db)
     finally:
         db.close()
-    trader = BinanceTrader(env_testnet)
-    if not trader.configured:
-        logger.warning("即时开仓跳过：缺少币安 API 凭据（analysis=%s）", analysis_id)
+    if not accs:
+        logger.warning("即时开仓跳过：无可用交易账号（analysis=%s）", analysis_id)
         return
+
     r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
-    ident = uuid4().hex
-    if not _acquire_open_lock(r, ident, wait_s=_OPEN_LOCK_WAIT_S, ttl_s=_OPEN_LOCK_TTL_S):
-        logger.info("即时开仓等锁超时，放弃本次开仓（analysis=%s）", analysis_id)
-        _mark_analysis_block(
-            analysis_id,
-            f"开仓等锁超时 {_OPEN_LOCK_WAIT_S}s（与结算巡检互斥），本次放弃",
-        )
-        return
-    try:
+    opened = 0
+    for acc in accs:
+        trader = BinanceTrader(acc.key)
+        if not trader.configured:
+            logger.warning("即时开仓跳过账号 %s：缺少币安 API 凭据（analysis=%s）",
+                           acc.key, analysis_id)
+            continue
+        ident = uuid4().hex
+        if not _acquire_open_lock(r, ident, wait_s=_OPEN_LOCK_WAIT_S,
+                                  ttl_s=_OPEN_LOCK_TTL_S, account=acc.key):
+            logger.info("即时开仓等锁超时（%s），放弃本次开仓（analysis=%s）",
+                        acc.key, analysis_id)
+            _mark_analysis_block(
+                analysis_id,
+                f"[{acc.key}] 开仓等锁超时 {_OPEN_LOCK_WAIT_S}s（与结算巡检互斥），本次放弃",
+            )
+            continue
+        try:
+            try:
+                db = SessionLocal()
+                try:
+                    if try_open_for_analysis(db, trader, analysis_id):
+                        opened += 1
+                finally:
+                    db.close()
+            except Exception as e:
+                # 闸门之外的意外（交易所 REST 瞬断等）：任务 max_retries=0 失败即止，
+                # 落因避免悬案（2026-09-15）；单账号异常不中断其余账号扇出
+                logger.exception("即时开仓任务异常 account=%s analysis=%s", acc.key, analysis_id)
+                _mark_analysis_block(analysis_id, f"[{acc.key}] 开仓任务异常：{e}")
+        finally:
+            _release_open_lock(r, ident, account=acc.key)
+
+    if opened:
+        logger.info("即时开仓完成：%d/%d 账号成交（analysis=%s）", opened, len(accs), analysis_id)
         try:
             db = SessionLocal()
             try:
-                ok = try_open_for_analysis(db, trader, analysis_id)
+                a = db.get(AIAnalysis, UUID(str(analysis_id)))
+                if a is not None and a.open_block_reason:
+                    a.open_block_reason = None
+                    db.commit()
             finally:
                 db.close()
-        except Exception as e:
-            # 闸门之外的意外（交易所 REST 瞬断等）：任务 max_retries=0 失败即止、
-            # 无批次兜底，落因避免悬案（2026-09-15）
-            logger.exception("即时开仓任务异常 analysis=%s", analysis_id)
-            _mark_analysis_block(analysis_id, f"开仓任务异常：{e}")
-            ok = False
-        if ok:
-            logger.info("即时开仓完成 analysis=%s", analysis_id)
-        else:
-            logger.info("即时开仓未成交（闸门未过），放弃（analysis=%s）", analysis_id)
-    finally:
-        _release_open_lock(r, ident)
+        except Exception:
+            logger.exception("清除拒开原因残留失败 analysis=%s", analysis_id)
+    else:
+        logger.info("即时开仓未成交（全部账号闸门未过），放弃（analysis=%s）", analysis_id)
 
 
 @celery_app.task(name="app.tasks.trade_tasks.run_position_advice", max_retries=0)

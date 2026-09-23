@@ -333,7 +333,7 @@ def trigger_ai_analysis(
 
 def _config_response(cfg: SystemConfig) -> SystemConfigOut:
     """SystemConfigOut 统一构造（GET/PUT 共用；含账号注册表只读展示，docs/17）"""
-    from app.services.account_registry import registry
+    from app.services.account_registry import registry, parse_live_keys
     return SystemConfigOut(
         ai_analysis_enabled=cfg.ai_analysis_enabled,
         ai_pipeline_enabled=cfg.ai_pipeline_enabled,
@@ -354,6 +354,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         trading_testnet=cfg.trading_testnet,
         trading_enabled=cfg.trading_enabled,
         current_account_key=cfg.current_account_key,
+        live_trading_keys=parse_live_keys(cfg.live_trading_keys),
         accounts=[AccountBrief(key=a.key, name=a.name, testnet=a.testnet) for a in registry()],
         binance_key_live=bool(settings.BINANCE_API_KEY and settings.BINANCE_SECRET_KEY),
         binance_key_testnet=bool(
@@ -453,6 +454,23 @@ def update_system_config(
         if cfg.trading_testnet:
             cfg.trading_testnet = False  # 显式选 live 账号 = 进入正式网模式
             cfg.trading_enabled = False
+    # P1 扇出（docs/17 §3）：启用自动交易的正式网账号集合（多账号并行开单）。
+    # 正式网模式内加减启用账号不联动总闸（总闸是显式安全开关）；主账号不在
+    # 启用集合时自动改为集合第一个
+    if body.live_trading_keys is not None:
+        from app.services.account_registry import get_account
+        seen: list = []
+        for k in body.live_trading_keys:
+            acc = get_account(k)
+            if acc is None:
+                raise HTTPException(status_code=400, detail=f"账号 {k} 不在注册表中（检查服务器 .env）")
+            if acc.testnet:
+                raise HTTPException(status_code=400, detail="live_trading_keys 仅接受正式网账号")
+            if acc not in seen:
+                seen.append(acc)
+        cfg.live_trading_keys = ",".join(a.key for a in seen)
+        if seen and cfg.current_account_key not in {a.key for a in seen}:
+            cfg.current_account_key = seen[0].key
     if body.trading_enabled is not None:
         cfg.trading_enabled = body.trading_enabled
     # 规则补丁参数（docs/12 §10）：显式传 null = 恢复默认（用 model_fields_set 区分未传）

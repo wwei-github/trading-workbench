@@ -50,6 +50,9 @@ class SystemConfig(Base):
     # 记 system_config 选中的 live 账号 key（live-1/live-2…）；NULL=回落 live-1。
     # 测试网模式忽略此值（测试网单账号 testnet-1）
     current_account_key: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # 启用自动交易的正式网账号集合（docs/17 P1 扇出）：逗号分隔 key（live-1,live-2…），
+    # 空回落 live-1（P0 单账号语义）；测试网模式忽略（testnet-1 单账号）
+    live_trading_keys: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # 余额风控：开仓最低可用余额占钱包余额比例（0~1，页面可改）。
     # 2026-09-15 由固定 70% 规则改为默认 50% 可配置。开单类型策略开关已移除

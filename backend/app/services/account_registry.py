@@ -133,3 +133,35 @@ def resolve_current_account(db) -> Account:
                 return ta[0]
     # 配置行缺失的最终兜底：有正式网用正式网，否则测试网
     return (live_accounts() or testnet_accounts() or [None])[0]
+
+
+def parse_live_keys(raw: Optional[str]) -> list[str]:
+    """逗号分隔的启用账号配置串 → 去重后的 key 列表（保持顺序）"""
+    if not raw:
+        return []
+    out: list[str] = []
+    for k in raw.split(","):
+        k = k.strip()
+        if k and k not in out:
+            out.append(k)
+    return out
+
+
+def enabled_accounts(db) -> list["Account"]:
+    """当前环境执行自动交易的账号清单（docs/17 P1 扇出）：
+    - 测试网模式 → 全部测试网账号（现仅 testnet-1；未配置回落正式网账号，
+      与 BinanceTrader(True) 历史回落语义一致）
+    - 正式网模式 → live_trading_keys ∩ 注册表（保持配置顺序）；
+      空/未配置回落 live-1（P0 单账号语义）
+    扇出开单/结算兜底/孤儿清扫均以此清单为准。"""
+    from app.models.system_config import SystemConfig
+
+    cfg = db.get(SystemConfig, 1)
+    if cfg is not None and cfg.trading_testnet:
+        return testnet_accounts() or live_accounts() or testnet_accounts()
+    accs: list[Account] = []
+    for k in parse_live_keys(cfg.live_trading_keys if cfg else None):
+        a = get_account(k)
+        if a and not a.testnet and a not in accs:
+            accs.append(a)
+    return accs or live_accounts() or testnet_accounts()

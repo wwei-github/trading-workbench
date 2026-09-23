@@ -205,6 +205,16 @@ def _run_migrations(engine):
             "ALTER TABLE system_config "
             "ADD COLUMN IF NOT EXISTS current_account_key VARCHAR(20)"
         ))
+        # P1 扇出（docs/17 §3）：启用自动交易的正式网账号集合（逗号分隔）；
+        # 回填 = 当前选中账号（P0 行为等价迁移：单账号启用集合）
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS live_trading_keys TEXT"
+        ))
+        conn.execute(text(
+            "UPDATE system_config SET live_trading_keys = current_account_key "
+            "WHERE live_trading_keys IS NULL AND current_account_key IS NOT NULL"
+        ))
         conn.execute(text(
             "ALTER TABLE trade_records "
             "ADD COLUMN IF NOT EXISTS account_key VARCHAR(20)"

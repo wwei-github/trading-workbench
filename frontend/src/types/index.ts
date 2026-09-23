@@ -187,8 +187,9 @@ export interface SystemConfig {
   // 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面「系统配置」弹窗可改）
   trading_testnet?: boolean; // 当前交易环境：true=测试网 false=正式网
   trading_enabled?: boolean; // 自动交易总开关（关=定时扫描 AI 分析跳过+停开新单，结算/复盘/日报照常）
-  // 多账号（docs/17 P0）：.env 注册表只读展示 + 当前选中正式网账号
+  // 多账号（docs/17 P0/P1）：.env 注册表只读展示 + 主账号 + 启用自动交易的 live 账号集合
   current_account_key?: string | null;
+  live_trading_keys?: string[]; // P1 扇出：正式网模式下执行自动交易的账号（空=回落 live-1）
   accounts?: AccountBrief[];
   binance_key_live?: boolean; // 正式网 API key 已配置（只读状态，不返回 key）
   binance_key_testnet?: boolean; // 测试网 API key 已配置（未配置时回落正式网 key）

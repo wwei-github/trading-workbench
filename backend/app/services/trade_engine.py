@@ -21,7 +21,7 @@ from decimal import ROUND_DOWN, Decimal
 from uuid import UUID
 from typing import Optional
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -581,10 +581,16 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
         logger.info("即时开仓跳过 %s：分析已超过 1 小时", a.symbol)
         _mark_open_block(db, a, "分析已超过 1 小时（信号过期）")
         return False
+    # 该分析在本账号已开过仓（docs/17 P1 扇出：同一 AI 分析允许多账号各开一单，
+    # 按账号判断；NULL account_key 旧行按环境回落，与全局口径一致）
+    acc_cond = or_(
+        TradeRecord.account_key == trader.account_key,
+        and_(TradeRecord.account_key.is_(None), TradeRecord.testnet == trader.testnet),
+    )
     if db.execute(
-        select(TradeRecord.id).where(TradeRecord.ai_analysis_id == a.id)
+        select(TradeRecord.id).where(TradeRecord.ai_analysis_id == a.id).where(acc_cond)
     ).first():
-        return False  # 该分析已开过仓
+        return False  # 该账号已用此分析开过仓
     # 待回踩单不再在此跳过（2026-09-18）：回踩距离 ≤ pullback_market_pct 容差
     # 时市价入场、超容差维持不下单——判定移入 _attempt_open 偏离闸门
     positions = trader.positions()

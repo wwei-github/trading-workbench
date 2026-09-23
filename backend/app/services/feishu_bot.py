@@ -181,7 +181,10 @@ def _exec_close(trade_id: str) -> None:
             else:
                 r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
                 ident = uuid4().hex
-                if not _acquire_open_lock(r, ident, wait_s=20, ttl_s=_OPEN_LOCK_TTL_S):
+                # 账号口径锁（docs/17 P1）：与该账号的结算巡检/开仓互斥
+                lock_acc = rec.account_key or ("testnet-1" if rec.testnet else "live-1")
+                if not _acquire_open_lock(r, ident, wait_s=20, ttl_s=_OPEN_LOCK_TTL_S,
+                                          account=lock_acc):
                     res = {"ok": False, "error": "系统忙（巡检/开仓中），请稍后重试"}
                 else:
                     try:
@@ -198,7 +201,7 @@ def _exec_close(trade_id: str) -> None:
                         logger.exception("卡片平仓失败 %s", trade_id)
                         res = {"ok": False, "error": f"平仓失败：{str(e)[:80]}"}
                     finally:
-                        _release_open_lock(r, ident)
+                        _release_open_lock(r, ident, account=lock_acc)
     finally:
         db.close()
 

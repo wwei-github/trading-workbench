@@ -201,8 +201,9 @@ class SystemConfigOut(BaseModel):
     # 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面可改）
     trading_testnet: bool = True
     trading_enabled: bool = False     # 自动交易总开关：关=定时扫描 AI 分析跳过+停开新单（结算/复盘/日报照常）
-    # 多账号（docs/17 P0）：.env 注册表只读展示 + 当前选中正式网账号
+    # 多账号（docs/17 P0/P1）：.env 注册表只读展示 + 主账号 + 启用自动交易的 live 账号集合
     current_account_key: Optional[str] = None
+    live_trading_keys: list[str] = []   # P1 扇出：正式网模式下执行自动交易的账号（空=回落 live-1）
     accounts: list["AccountBrief"] = []
     # 双环境凭据配置状态（只读，不返回 key 本身）
     binance_key_live: bool = False      # 正式网 key 已配置
@@ -260,6 +261,8 @@ class SystemConfigUpdate(BaseModel):
     trading_enabled: Optional[bool] = None
     # 当前正式网账号（docs/17）：需为注册表内 live 账号；切到正式网账号自动关总闸
     current_account_key: Optional[str] = None
+    # P1 扇出（docs/17 §3）：启用自动交易的正式网账号集合；正式网模式下生效
+    live_trading_keys: Optional[list[str]] = None
 
     # 规则补丁参数（比例口径；传 null 恢复默认）
     max_stop_pct: Optional[float] = None
