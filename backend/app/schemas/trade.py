@@ -42,6 +42,7 @@ class TradeOut(BaseModel):
     account_key: Optional[str] = None  # 开单账号（docs/17：testnet-1/live-N；null=旧行按 testnet 回落）
     ai_snapshot: Optional[dict] = None
     ai_analysis_id: Optional[uuid.UUID] = None
+    htf: Optional[dict] = None  # 4h 背景快照（经 AI分析→扫描结果 votes_json 取，旧数据 None）
     ai_advice: Optional[dict] = None  # AI 持仓诊断（docs/16，NULL=未诊断）
     ai_advice_at: Optional[datetime] = None  # 最近诊断时间
 

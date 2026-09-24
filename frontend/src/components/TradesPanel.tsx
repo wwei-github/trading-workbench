@@ -733,6 +733,37 @@ export default function TradesPanel() {
         v != null ? <strong style={{ color: v >= 80 ? '#ff4d4f' : '#fa8c16' }}>{v}</strong> : '-',
     },
     {
+      // 4h方向列：开单时 4h 背景级别（震荡/纠缠/弱·强多空），与扫描结果「4h方向」同源
+      title: (
+        <Tooltip title="开单时 4h 高周期背景（ADX门控 + EMA21/55 排列与间距分级）：ADX<20=震荡不投票，EMA 间距≥1%=强、0.1%~1%=弱；悬停查看完整判定细节">
+          <span>4h方向</span>
+        </Tooltip>
+      ),
+      key: 'htf_direction',
+      width: 88,
+      render: (_: unknown, rec) => {
+        const htf = rec.htf
+        if (!htf) return <span style={{ color: '#999' }}>-</span>
+        const isBull = htf.state === 'bullish'
+        const isBear = htf.state === 'bearish'
+        const short = htf.state === 'ranging'
+          ? '震荡'
+          : htf.state === 'mixed'
+            ? '纠缠'
+            : `${htf.label?.startsWith('强') ? '强' : '弱'}${isBull ? '多' : '空'}`
+        const color = isBull
+          ? schemeTag(colorScheme).up
+          : isBear
+            ? schemeTag(colorScheme).down
+            : 'default'
+        return (
+          <Tooltip title={htf.label || undefined}>
+            <Tag color={color} style={{ marginInlineEnd: 0 }}>{short}</Tag>
+          </Tooltip>
+        )
+      },
+    },
+    {
       title: '状态',
       dataIndex: 'status',
       key: 'status',

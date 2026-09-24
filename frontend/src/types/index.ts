@@ -306,6 +306,11 @@ export interface TradeRecord {
   account_key?: string | null // 开单账号（docs/17：testnet-1/live-N；null=旧行按 testnet 回落）
   ai_snapshot: AIAnalysis | null // 开单时 AI 分析结论快照
   ai_analysis_id: string | null
+  htf?: { // 4h 背景快照（经 AI分析→扫描结果 votes_json 取，旧数据无此字段）
+    state: string | null
+    label: string | null
+    dir: number
+  } | null
   ai_advice: { // AI 持仓诊断（docs/16，浮亏在跑单）
     thesis_valid: boolean // 开仓逻辑是否仍成立
     trend_broken: boolean // 走势是否走坏

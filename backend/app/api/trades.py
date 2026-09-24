@@ -141,7 +141,32 @@ def list_trades(
     if cond is not None:
         q = q.where(cond)
     rows = db.execute(q).scalars().all()
-    return [TradeOut.model_validate(r) for r in rows]
+
+    # 4h 背景快照（前端「4h方向」列）：trade → ai_analysis → scan_result.votes_json.htf，
+    # 两跳 IN 批量查（旧数据无 AI 分析/无 htf 键 → None 显示 -）
+    ai_ids = {r.ai_analysis_id for r in rows if r.ai_analysis_id}
+    htf_map: dict = {}
+    if ai_ids:
+        from app.models.scan import AIAnalysis, ScanResult
+        ai_rows = db.execute(
+            select(AIAnalysis.id, AIAnalysis.scan_result_id).where(AIAnalysis.id.in_(ai_ids))
+        ).all()
+        sr_ids = {sr_id for _, sr_id in ai_rows if sr_id}
+        sr_map: dict = {}
+        if sr_ids:
+            sr_rows = db.execute(
+                select(ScanResult.id, ScanResult.votes_json).where(ScanResult.id.in_(sr_ids))
+            ).all()
+            sr_map = {sid: (v or {}).get("htf") for sid, v in sr_rows}
+        htf_map = {
+            aid: sr_map.get(sr_id) for aid, sr_id in ai_rows if sr_id
+        }
+    out = []
+    for r in rows:
+        item = TradeOut.model_validate(r)
+        item.htf = htf_map.get(r.ai_analysis_id)
+        out.append(item)
+    return out
 
 
 @router.get("/transfers", response_model=list[AccountTransferOut])
