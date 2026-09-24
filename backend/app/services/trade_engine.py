@@ -1331,7 +1331,8 @@ def list_adoptable_positions(db: Session, trader: BinanceTrader) -> list[dict]:
                     continue
                 if trigger <= 0:
                     continue
-                otype = o.get("type")
+                # Algo Order API 返回字段为 orderType（无 type 字段，2026-09-24 线上实锤）
+                otype = o.get("orderType") or o.get("type")
                 if otype in ("STOP_MARKET", "STOP"):
                     sl_pre = trigger
                 elif otype in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT"):
@@ -1420,11 +1421,13 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
 
     # ④ 系统接管：撤原手动条件单 → 重挂 SL/TP1/TP2。
     #    SL 是裸仓保护的生命线：挂失败时尽力按原价恢复用户的 SL，再把异常抛回。
+    #    注意 Algo API 字段为 orderType；App OTOCO 止损是 reduceOnly 带数量
+    #    （closePosition=false），恢复匹配不要求 closePosition，认 STOP_MARKET/STOP 即可
     orig_algo = trader.open_algo_orders(symbol)
     orig_sl = next(
         (float(o.get("triggerPrice") or 0) for o in orig_algo
-         if o.get("side") == close_side and o.get("type") == "STOP_MARKET"
-         and str(o.get("closePosition")).lower() == "true"
+         if o.get("side") == close_side
+         and (o.get("orderType") or o.get("type")) in ("STOP_MARKET", "STOP")
          and float(o.get("triggerPrice") or 0) > 0),
         None,
     )
