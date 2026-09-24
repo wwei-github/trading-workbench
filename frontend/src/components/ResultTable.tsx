@@ -288,6 +288,38 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       },
     },
     {
+      // 4h方向列：扫描时 4h 背景级别（震荡/纠缠/弱·强多空），来自 votes_json.htf
+      title: (
+        <Tooltip title="扫描时 4h 高周期背景（ADX门控 + EMA21/55 排列与间距分级）：ADX<20=震荡不投票，EMA 间距≥1%=强、0.1%~1%=弱；悬停查看完整判定细节">
+          <span>4h方向</span>
+        </Tooltip>
+      ),
+      key: "htf_direction",
+      width: 88,
+      render: (_: unknown, record: ScanResult) => {
+        const htf = record.votes_json?.htf;
+        if (!htf) return <span style={{ color: "#999" }}>-</span>;
+        // 短标签：完整标签形如「强多头背景（价格在EMA21上方）」「震荡（无趋势，不作方向参考）」
+        const isBull = htf.state === "bullish";
+        const isBear = htf.state === "bearish";
+        const short = htf.state === "ranging"
+          ? "震荡"
+          : htf.state === "mixed"
+            ? "纠缠"
+            : `${htf.label?.startsWith("强") ? "强" : "弱"}${isBull ? "多" : "空"}`;
+        const color = isBull
+          ? schemeTag(colorScheme).up
+          : isBear
+            ? schemeTag(colorScheme).down
+            : "default";
+        return (
+          <Tooltip title={htf.label || undefined}>
+            <Tag color={color} style={{ marginInlineEnd: 0 }}>{short}</Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
       // AI 方向列：开多/开空。扫描完成后自动分析（按24h成交额取前 AI_MAX_PER_SCAN 个）
       title: (
         <Tooltip title="AI 分析方向：开多/开空。扫描完成后自动分析成交额前 10 的命中币种">
@@ -535,7 +567,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           loading={loading}
           size="small"
           tableLayout="fixed"
-          scroll={{ x: 1380 }}
+          scroll={{ x: 1468 }}
           onChange={handleTableChange}
           pagination={{
             current: resultsPage,

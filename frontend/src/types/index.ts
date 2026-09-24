@@ -34,6 +34,11 @@ export interface ScanResult {
     bear_n: number;
     net: number;
     voted: number;
+    htf?: { // 4h 背景级别快照（旧扫描行无此键）
+      state: string | null; // ranging / mixed / bullish / bearish
+      label: string | null; // 完整标签（含价格位置与 ADX/间距）
+      dir: number; // 1 多 / -1 空 / 0 中性
+    };
   } | null;
   is_repeat: boolean;
   created_at: string;

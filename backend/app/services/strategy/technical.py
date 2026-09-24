@@ -386,9 +386,13 @@ def analyze_obv(klines: list[list], lookback: int = 20) -> Optional[dict]:
 
 
 def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 55) -> Optional[dict]:
-    """4h 高周期背景：EMA21/55 排列 + 价格相对位置（1h 分析的大方向参照）。
+    """4h 高周期背景：ADX(14) 门控 + EMA21/55 排列与间距分级（1h 分析的大方向参照）。
 
     htf_klines 为 4h 周期 K 线（最后一根未收盘，内部剔除）。
+    - ADX<20：4h 震荡，EMA 排列不投方向票（治震荡市 EMA 反复交叉的误标）
+    - ADX≥20 按 EMA 排列投方向，间距分级：≥1% 强趋势 / 0.1%~1% 弱趋势
+      （刚金叉的小间距趋势可信度低，标签供 AI 区分背景强度）
+    - ADX 计算失败静默降级为仅 EMA 判定（单指标失败不阻塞背景注入）
     """
     if not htf_klines or len(htf_klines) < slow + 12:
         return None
@@ -405,18 +409,32 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
         return None
     price = float(closes[-1])
 
-    if abs(fn - sn) / sn < 0.001:
+    # ADX 门控：analyze_adx 内部同样剔除未收盘根，口径一致；失败降级不门控
+    adx_res = analyze_adx(htf_klines)
+    adx_v = float(adx_res["adx"]) if adx_res else None
+    if adx_v is not None and adx_v < 20:
+        return {
+            "state": "ranging", "state_label": "震荡（无趋势，不作方向参考）", "dir": 0,
+            "detail": f"ADX={adx_v:.1f}(<20), EMA{fast}/{slow}排列仅记录不投票",
+        }
+
+    dist_pct = abs(fn - sn) / sn * 100
+    if dist_pct < 0.1:
         state, label, d = "mixed", "均线纠缠", 0
     elif fn > sn:
         pos = "价格在EMA21上方" if price > fn else "价格回落至EMA21下方"
-        state, label, d = "bullish", f"多头背景（{pos}）", 1
+        grade = "强" if dist_pct >= 1.0 else "弱"
+        state, label, d = "bullish", f"{grade}多头背景（{pos}）", 1
     else:
         pos = "价格在EMA21下方" if price < fn else "价格反弹至EMA21上方"
-        state, label, d = "bearish", f"空头背景（{pos}）", -1
+        grade = "强" if dist_pct >= 1.0 else "弱"
+        state, label, d = "bearish", f"{grade}空头背景（{pos}）", -1
 
+    detail = f"EMA{fast}={fn:.6g}, EMA{slow}={sn:.6g}, 间距{dist_pct:.2f}%"
+    if adx_v is not None:
+        detail += f", ADX={adx_v:.1f}"
     return {
-        "state": state, "state_label": label, "dir": d,
-        "detail": f"EMA{fast}={fn:.6g}, EMA{slow}={sn:.6g}",
+        "state": state, "state_label": label, "dir": d, "detail": detail,
     }
 
 
@@ -429,7 +447,7 @@ _INDICATORS = (
     ("ADX(14)", "ADX", analyze_adx),
     ("OBV(20)", "OBV", analyze_obv),
 )
-_HTF_DISPLAY, _HTF_SHORT = "4h背景(EMA21/55)", "4h背景"
+HTF_DISPLAY, HTF_SHORT = "4h背景(EMA21/55)", "4h背景"
 
 
 def _compute_all(klines: list[list], htf_klines: Optional[list] = None) -> list[tuple]:
@@ -448,7 +466,7 @@ def _compute_all(klines: list[list], htf_klines: Optional[list] = None) -> list[
         except Exception as e:
             logger.warning("4h背景计算失败（跳过）: %s", e)
             htf = None
-        results.append((_HTF_DISPLAY, _HTF_SHORT, htf))
+        results.append((HTF_DISPLAY, HTF_SHORT, htf))
     return results
 
 
@@ -535,7 +553,7 @@ def compute_quality_score(direction: int, votes: dict, trigger_type: str) -> int
     by_short = dict(votes["results"])
     score = 50 + direction * votes["net"] * 7  # net≥3 → 基础 ≥71
 
-    htf = by_short.get(_HTF_SHORT)
+    htf = by_short.get(HTF_SHORT)
     if htf and int(htf.get("dir") or 0):
         score += 5 if int(htf["dir"]) == direction else -8
 
