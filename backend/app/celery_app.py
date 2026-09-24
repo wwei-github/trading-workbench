@@ -52,7 +52,9 @@ celery_app.conf.update(
         },
         "trade-review": {
             "task": "app.tasks.review_tasks.run_trade_review_task",
-            "schedule": crontab(minute=0),  # 每小时整点：与结算巡检同节点（2026-09-21 由 :10 前移，结算先行后归因/扫描时序更优）
+            # 每小时整点（2026-09-24 定档）：处理超 24h 的 AI 建议决策——
+            # 巡检加密到每半小时后，复盘归因保持每小时节奏不跟随
+            "schedule": crontab(minute=0),
         },
         "ai-attribution": {
             "task": "app.tasks.review_tasks.run_ai_attribution_task",
@@ -68,7 +70,9 @@ celery_app.conf.update(
         },
         "auto-trade": {
             "task": "app.tasks.trade_tasks.run_auto_trade_task",
-            "schedule": crontab(minute=0),  # 每小时整点：结算/巡检在跑仓位（开仓唯一通道 = 分析后即时开仓）；:02 扫描评估满仓闸门时数据更新鲜（2026-09-21 由 :10 前移）
+            # 每半小时巡检（2026-09-24 由每小时整点加密）：结算/巡检在跑仓位、
+            # 自动导入手动持仓、AI 持仓诊断；开仓唯一通道 = 分析后即时开仓
+            "schedule": crontab(minute="0,30"),
         },
         "daily-report": {
             "task": "app.tasks.daily_report.notify_daily_report",
