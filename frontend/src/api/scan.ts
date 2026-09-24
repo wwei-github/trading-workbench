@@ -193,6 +193,13 @@ export const scanApi = {
         .post<PurgeStats>('/trades/purge-testnet', null, { params: { confirm } })
         .then((r) => r.data),
     // 注：手动持仓导入已自动化——每小时结算巡检自动检测并接管 App 手动单
+    // 「导入持仓」按钮：立即手动触发一次导入（逻辑与巡检一致）
+    adoptNow: () =>
+      api
+        .post<{ ok: boolean; adopted: string[]; count: number; account_key: string }>(
+          '/trades/adopt-now', null, { timeout: 60000 },
+        )
+        .then((r) => r.data),
   },
 
   // 关注列表

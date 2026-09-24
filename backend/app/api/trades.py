@@ -3,6 +3,7 @@ import logging
 import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import and_, func, or_, select
@@ -184,6 +185,45 @@ def list_transfers(
         q = q.where(cond)
     rows = db.execute(q).scalars().all()
     return [AccountTransferOut.model_validate(r) for r in rows]
+
+
+@router.post("/adopt-now")
+def adopt_now(db: Session = Depends(get_db)):
+    """手动触发一次自动导入持仓（2026-09-24）：逻辑与每小时巡检完全一致
+    （交易所非零持仓未被接管的 = App 手动单，SL/TP 取条件单原值接管）。
+    与结算巡检在同一账号开仓锁内互斥（等锁 10s，超时 409）。"""
+    from redis import Redis
+    from app.config import settings
+    from app.services.binance_trader import BinanceTrader
+    from app.services.trade_engine import auto_adopt_positions
+    from app.services import account_registry as reg
+    from app.tasks.trade_tasks import (
+        _acquire_open_lock, _release_open_lock, _OPEN_LOCK_TTL_S,
+    )
+
+    cfg = db.get(SystemConfig, 1)
+    testnet = bool(cfg.trading_testnet) if cfg else True
+    acc = reg.resolve_current_account(db)
+    acc_key = acc.key if acc else ("testnet-1" if testnet else "live-1")
+    trader = BinanceTrader(acc_key)
+    if not trader.configured:
+        raise HTTPException(status_code=400, detail="当前账号未配置 API 凭据")
+
+    r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    ident = f"adopt-now-{uuid4().hex[:8]}"
+    if not _acquire_open_lock(r, ident, wait_s=10, ttl_s=_OPEN_LOCK_TTL_S,
+                              account=trader.account_key):
+        raise HTTPException(status_code=409, detail="与结算巡检/开仓互斥中，请稍后重试")
+    try:
+        adopted = auto_adopt_positions(db, trader)
+    except Exception as e:
+        db.rollback()
+        logger.exception("手动导入持仓失败")
+        raise HTTPException(status_code=500, detail=f"导入失败：{e}")
+    finally:
+        _release_open_lock(r, ident, account=trader.account_key)
+    return {"ok": True, "adopted": adopted,
+            "count": len(adopted), "account_key": trader.account_key}
 
 
 def _bj_day(dt: datetime) -> str:

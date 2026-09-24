@@ -32,6 +32,7 @@ import {
   DeleteOutlined,
   DownOutlined,
   HistoryOutlined,
+  ImportOutlined,
   MinusCircleOutlined,
   ReloadOutlined,
   RobotOutlined,
@@ -552,7 +553,25 @@ export default function TradesPanel() {
   }
 
   // 导入持仓已自动化（2026-09-24）：每小时结算巡检自动检测币安 App 手动开仓
-  // 并接管进系统（SL/TP 取 App 条件单原值），成功后飞书推送，无需手动操作
+  // 并接管进系统（SL/TP 取 App 条件单原值），成功后飞书推送，无需手动操作；
+  // 「导入持仓」按钮可不等整点立即触发一次同样的导入
+  const [adoptingNow, setAdoptingNow] = useState(false)
+  const handleAdoptNow = async () => {
+    setAdoptingNow(true)
+    try {
+      const resp = await scanApi.trades.adoptNow()
+      if (resp.count > 0) {
+        message.success(`已导入 ${resp.count} 个持仓：${resp.adopted.join('、')}`)
+        await fetchData()
+      } else {
+        message.info('无可导入持仓（交易所持仓均已接管，或手动单未同时设置止损+止盈条件单）')
+      }
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '导入失败')
+    } finally {
+      setAdoptingNow(false)
+    }
+  }
 
   // AI 建议详情弹窗：点击列表「AI 建议」列打开，展示完整诊断（动作/逻辑/走势/理由）
   const [adviceView, setAdviceView] = useState<TradeRecord | null>(null)
@@ -1051,6 +1070,11 @@ export default function TradesPanel() {
               清空测试网数据
             </Button>
           )}
+          <Tooltip title="立即检测币安 App 手动开仓并接管进系统（与每小时巡检逻辑一致；需同时设置止损+止盈条件单）">
+            <Button icon={<ImportOutlined />} loading={adoptingNow} onClick={handleAdoptNow}>
+              导入持仓
+            </Button>
+          </Tooltip>
           <Button icon={<ReloadOutlined />} onClick={fetchData}>
             刷新
           </Button>
