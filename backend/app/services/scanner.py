@@ -127,7 +127,7 @@ def detect_indicator_candidate(
     }
     # 4h 背景级别快照（震荡/纠缠/弱·强多空），前端「4h方向」列展示；
     # 旧扫描行无此键显示 -
-    htf_res = dict(votes["results"]).get(_HTF_SHORT)
+    htf_res = dict(votes["results"]).get(HTF_SHORT)
     if htf_res:
         votes_json["htf"] = {
             "state": htf_res.get("state"),
