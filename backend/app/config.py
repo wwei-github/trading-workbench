@@ -56,8 +56,9 @@ class Settings(BaseSettings):
     FEISHU_TARGET_ID: str = ""
 
     # AI 管线（P0，docs/04 §10）
-    LLM_CONCURRENCY: int = 8          # LLM 全局并发上限（Redis 信号量；2026-09-20 4→8，
-                                      # 10 币批量分析 4 并发需 3 轮 ≈10min，提速到 2 轮）
+    LLM_CONCURRENCY: int = 4          # LLM 全局并发上限（Redis 信号量；2026-09-20 4→8，
+                                      # 2026-09-24 8→4：降低网关拥塞，单次调用回落 85~130s 区间，
+                                      # 10 币批量需 3 轮 ≈5~7min）
     AI_CALL_TIMEOUT_S: int = 240      # 单次 LLM 调用超时（防网关挂起拖垮整轮分析；实测单轮 85~130s，拥塞时 >180s，留足余量）
     AI_RR_MIN: float = 1.5            # 盈亏比复算下限（交易系统铁律）
     RISK_BUDGET_PCT: float = 3.0      # 单笔固定亏损预算（%账户资金）：仓位 = 预算÷止损距离%，触止损恰好亏3%
