@@ -423,19 +423,50 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
         state, label, d = "mixed", "均线纠缠", 0
     elif fn > sn:
         pos = "价格在EMA21上方" if price > fn else "价格回落至EMA21下方"
-        grade = "强" if dist_pct >= 1.0 else "弱"
-        state, label, d = "bullish", f"{grade}多头背景（{pos}）", 1
+        grade = "strong" if dist_pct >= 1.0 else "weak"
+        state, label, d = "bullish", f"{'强' if grade == 'strong' else '弱'}多头背景（{pos}）", 1
     else:
         pos = "价格在EMA21下方" if price < fn else "价格反弹至EMA21上方"
-        grade = "强" if dist_pct >= 1.0 else "弱"
-        state, label, d = "bearish", f"{grade}空头背景（{pos}）", -1
+        grade = "strong" if dist_pct >= 1.0 else "weak"
+        state, label, d = "bearish", f"{'强' if grade == 'strong' else '弱'}空头背景（{pos}）", -1
 
     detail = f"EMA{fast}={fn:.6g}, EMA{slow}={sn:.6g}, 间距{dist_pct:.2f}%"
     if adx_v is not None:
         detail += f", ADX={adx_v:.1f}"
     return {
         "state": state, "state_label": label, "dir": d, "detail": detail,
+        # 趋势强度分级（仅方向性背景有值）：质量分加权与 AI 方向硬约束都读它
+        "grade": grade if state in ("bullish", "bearish") else None,
     }
+
+
+def enforce_htf_constraint(ai_result: dict, htf_klines: Optional[list]) -> dict:
+    """4h 强背景方向硬约束的程序化兜底（原地修改并返回 ai_result）。
+
+    强多头背景下 AI 返回开空 / 强空头背景下返回开多 → 强制改 skip
+    （LLM 可能无视 prompt 注入的约束行，开单前程序把关）。无 4h 数据、
+    非强趋势、非 suggest 或方向合规时原样返回。
+    """
+    try:
+        if not htf_klines or ai_result.get("trade_decision") != "suggest":
+            return ai_result
+        htf = analyze_htf_background(htf_klines)
+        if not htf or htf.get("grade") != "strong":
+            return ai_result
+        direction = (ai_result.get("direction") or "").lower()
+        if htf["state"] == "bullish" and direction == "short":
+            ai_result["trade_decision"] = "skip"
+            ai_result["skip_reason"] = (
+                "方向约束：4h强多头背景禁止开空（程序强制 skip）"
+            )
+        elif htf["state"] == "bearish" and direction == "long":
+            ai_result["trade_decision"] = "skip"
+            ai_result["skip_reason"] = (
+                "方向约束：4h强空头背景禁止开多（程序强制 skip）"
+            )
+    except Exception as e:
+        logger.warning("4h方向约束兜底检查失败（放行）: %s", e)
+    return ai_result
 
 
 # 注入顺序与参数标注（顺序即渲染顺序）；短名用于共振行展示
@@ -512,6 +543,21 @@ def render_indicator_block(klines: list[list], htf_klines: Optional[list] = None
             f" —— 无多数方向，自行结合K线结构与量能判断"
         )
 
+    # 4h 强背景方向硬约束（2026-09-24）：强多只开多 / 强空只开空，
+    # 优先级高于指标多数决；程序侧另有 enforce_htf_constraint 兜底
+    htf_r = next((r for _, s, r in results if s == HTF_SHORT and r), None)
+    if htf_r and htf_r.get("grade") == "strong":
+        if htf_r["state"] == "bullish":
+            lines.append(
+                "- 方向约束（硬性）: 4h强多头背景 —— 开仓方向仅可 long，"
+                "开空一律 skip；此约束优先于指标多数决"
+            )
+        else:
+            lines.append(
+                "- 方向约束（硬性）: 4h强空头背景 —— 开仓方向仅可 short，"
+                "开多一律 skip；此约束优先于指标多数决"
+            )
+
     return "技术指标（方向=多空票数多数决，以票数多的方向为主）:\n" + "\n".join(lines) + "\n"
 
 
@@ -543,8 +589,10 @@ def compute_quality_score(direction: int, votes: dict, trigger_type: str) -> int
 
     direction: 候选方向（1 多 / -1 空，= net 的符号）
     trigger_type: trigger_breakout / trigger_candlestick / trigger_pullback
-    修饰规则（2026-09-17 设计评审定稿）：
-    - 4h背景与候选同向 +5 / 反向 -8（1h 多数与 4h 背景拧巴的降权）
+    修饰规则（2026-09-17 设计评审定稿；2026-09-24 强 4h 背景提权）：
+    - 4h背景同向：强 +10 / 弱 +5；反向：强 -12 / 弱 -8
+      （强 4h 趋势币在质量分排序与 AI 配额中前置；逆强背景降权更狠，
+      与「强多只开多/强空只开空」硬约束呼应）
     - 突破触发且 ADX≥25 +5（强趋势中的突破可信）
     - RSI>75 做多 / RSI<25 做空 -8（追高杀低）
     - OBV 顶背离做多 / 底背离做空 -6（量价背离）
@@ -555,7 +603,12 @@ def compute_quality_score(direction: int, votes: dict, trigger_type: str) -> int
 
     htf = by_short.get(HTF_SHORT)
     if htf and int(htf.get("dir") or 0):
-        score += 5 if int(htf["dir"]) == direction else -8
+        same = int(htf["dir"]) == direction
+        strong = htf.get("grade") == "strong"
+        if same:
+            score += 10 if strong else 5
+        else:
+            score -= 12 if strong else 8
 
     adx = by_short.get("ADX")
     if trigger_type == "trigger_breakout" and adx and float(adx.get("adx") or 0) >= 25:

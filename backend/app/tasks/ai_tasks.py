@@ -29,6 +29,7 @@ from app.services import ai_progress
 from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
 from app.services.dual_judge import run_dual_judge
+from app.services.strategy.technical import enforce_htf_constraint
 from app.services.exchange_pool import ExchangePool
 from app.services.risk_guard import is_pullback_wait
 from app.services.strategy import recent_swings
@@ -256,6 +257,8 @@ def run_ai_analysis_single(
             if ai_result.get("trade_decision") == "suggest":
                 ai_progress.push(r.id, "gate", note="⚖️ 双评委辩论复核中…")
             ai_result = run_dual_judge(ai_result, signal)
+        # 4h 强背景方向硬约束兜底（强多只开多/强空只开空）：LLM 无视 prompt 时程序强制 skip
+        ai_result = enforce_htf_constraint(ai_result, htf_klines)
         # Narrator 已下线（提速）：submit_decision 的 reason 直接承载完整分点分析
         # （工具 schema 强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返
         # 待回踩判定（2026-09-15）：入场在现价回踩侧的建议仅展示标识、不下单

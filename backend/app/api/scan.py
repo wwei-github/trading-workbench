@@ -37,6 +37,7 @@ from app.services.ai_analyzer import analyze_coin
 from app.services.risk_guard import is_pullback_wait
 from app.services.skill_library import list_skills
 from app.services.strategy import recent_swings
+from app.services.strategy.technical import enforce_htf_constraint
 from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
@@ -948,6 +949,8 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         ai_result = analyze_coin(
             signal, klines, strategy_prompt=strategy_prompt, htf_klines=htf_klines,
         )
+        # 4h 强背景方向硬约束兜底（强多只开多/强空只开空）
+        ai_result = enforce_htf_constraint(ai_result, htf_klines)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI 分析失败: {e}")
 
