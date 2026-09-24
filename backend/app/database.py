@@ -163,6 +163,11 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS quality_score INTEGER,
               ADD COLUMN IF NOT EXISTS votes_json JSON
         """))
+        # 导入持仓（2026-09-24）：手动单接管无 AI 分析行，ai_analysis_id 放开非空
+        # （unique 约束保留，PG 允许多个 NULL）
+        conn.execute(text(
+            "ALTER TABLE trade_records ALTER COLUMN ai_analysis_id DROP NOT NULL"
+        ))
         # 复盘重设计（2026-09-18）：实盘费用拆分 + AI 错误归因（trade_records）
         conn.execute(text("""
             ALTER TABLE trade_records

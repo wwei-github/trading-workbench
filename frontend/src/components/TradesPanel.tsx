@@ -61,6 +61,8 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
   FAILED: { label: '失败', color: 'red' },
 }
 
+// 导入持仓弹窗：交易所持仓数据直接展示，SL/TP1/TP2 取币安现挂条件单（不可编辑）
+
 // 跟进止损进行中的单子（TP2后 / 无TP2的TP1后），止损价已推过末档止盈价
 // （有TP2看TP2，无TP2看TP1）→ 锁定利润已超过该档，状态改显「移动止损」
 function statusMeta(rec: TradeRecord): { label: string; color: string } {
@@ -548,6 +550,9 @@ export default function TradesPanel() {
       setPurging(false)
     }
   }
+
+  // 导入持仓已自动化（2026-09-24）：每小时结算巡检自动检测币安 App 手动开仓
+  // 并接管进系统（SL/TP 取 App 条件单原值），成功后飞书推送，无需手动操作
 
   // AI 建议详情弹窗：点击列表「AI 建议」列打开，展示完整诊断（动作/逻辑/走势/理由）
   const [adviceView, setAdviceView] = useState<TradeRecord | null>(null)

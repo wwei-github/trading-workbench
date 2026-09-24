@@ -130,8 +130,17 @@ def run_auto_trade_task():
             return
         try:
             db = SessionLocal()
+            adopted_all: list[str] = []
             try:
                 settled, advice_ids = settle_trades(db, trader)
+                # 自动导入手动持仓（2026-09-24）：交易所侧未被系统在跑记录接管的
+                # 非零持仓 = App 手动单，SL/TP 取 App 条件单原值接管
+                # （裸仓/校验不过跳过只记日志）
+                try:
+                    from app.services.trade_engine import auto_adopt_positions
+                    adopted_all.extend(auto_adopt_positions(db, trader))
+                except Exception:
+                    logger.exception("自动导入持仓失败（%s）", trader.account_key)
                 # 多账号孤儿清扫（docs/17 P1）：settle_trades 仅兜底主账号，
                 # 其余启用账号各扫各的（无持仓、无在跑记录的残留挂单）
                 from app.services.trade_engine import _sweep_orphan_algo_orders
@@ -149,12 +158,26 @@ def run_auto_trade_task():
                             )
                         ).scalars()
                     }
+                    # 其余启用账号同样自动导入手动持仓
+                    try:
+                        adopted_all.extend(auto_adopt_positions(db, at))
+                    except Exception:
+                        logger.exception("自动导入持仓失败（%s）", acc.key)
                     try:
                         _sweep_orphan_algo_orders(at, run_syms, at.positions())
                     except Exception:
                         logger.exception("孤儿清扫失败（%s）", acc.key)
             finally:
                 db.close()
+            if adopted_all:
+                try:
+                    from app.services.feishu_bot import send_app_text
+                    send_app_text(
+                        "📥 自动导入持仓：" + "、".join(adopted_all)
+                        + "（币安 App 手动单已接管，SL/TP 按原条件单重挂，后续由系统统一管理）"
+                    )
+                except Exception:
+                    logger.exception("自动导入持仓飞书通知失败")
         finally:
             for k in acquired:
                 _release_open_lock(r, ident, account=k)

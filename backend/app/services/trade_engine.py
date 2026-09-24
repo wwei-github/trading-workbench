@@ -1281,3 +1281,258 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
     for key, rt in traders.items():
         _sweep_orphan_algo_orders(rt, _active_syms(key), acc_positions.get(key) or {})
     return handled, advice_ids
+
+
+# ── 导入持仓（2026-09-24）：币安 App 手动开的单接管进系统 ─────────────
+# 接管后与系统单同待遇：每小时巡检结算/保本/跟进止损/AI 持仓诊断/复盘归因。
+# 管理范围从接管时刻起（接管前的已实现盈亏不回溯）；接管时撤掉原手动
+# 条件单，按系统规则重挂 SL（closePosition）/TP1/TP2（reduceOnly 50%/25%）。
+
+_ADOPT_RUNNING = ("OPENED", "TP1_HIT", "TP2_HIT")
+
+
+def _adopt_acc_cond(trader: BinanceTrader):
+    """同账号在跑记录过滤条件（NULL 旧行按环境回落，与 list_trades 口径一致）"""
+    return or_(
+        TradeRecord.account_key == trader.account_key,
+        and_(TradeRecord.account_key.is_(None), TradeRecord.testnet == trader.testnet),
+    )
+
+
+def list_adoptable_positions(db: Session, trader: BinanceTrader) -> list[dict]:
+    """当前账号交易所全部非零持仓（导入持仓弹窗数据源）：
+    附现挂条件单解析出的 SL/TP 预填值（用户在币安 App 设置的止盈止损）、
+    现价与 tracked 标记（已被系统在跑记录接管的不重复导入）。
+    任一 symbol 行情/挂单查询失败降级为空值，不阻塞整表。"""
+    running = {
+        sym for (sym,) in db.execute(
+            select(TradeRecord.symbol).where(
+                TradeRecord.status.in_(_ADOPT_RUNNING), _adopt_acc_cond(trader))
+        ).all()
+    }
+    close_side_of = {"long": "SELL", "short": "BUY"}
+    out = []
+    for sym, p in sorted(trader.positions().items()):
+        amt = float(p["amt"])
+        direction = "long" if amt > 0 else "short"
+        close_side = close_side_of[direction]
+        # 现挂条件单解析：SL = STOP_MARKET/STOP（市价/限价触发止损，App 默认市价）；
+        # TP = TAKE_PROFIT_MARKET/TAKE_PROFIT。按触发先后排序（long 触发价升序 /
+        # short 降序）→ 前两档预填 TP1/TP2；追踪委托无固定触发价不识别
+        sl_pre: Optional[float] = None
+        tps: list[float] = []
+        try:
+            for o in trader.open_algo_orders(sym):
+                if o.get("side") != close_side:
+                    continue
+                try:
+                    trigger = float(o.get("triggerPrice") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if trigger <= 0:
+                    continue
+                otype = o.get("type")
+                if otype in ("STOP_MARKET", "STOP"):
+                    sl_pre = trigger
+                elif otype in ("TAKE_PROFIT_MARKET", "TAKE_PROFIT"):
+                    tps.append(trigger)
+        except Exception as e:
+            logger.warning("导入持仓：拉取 %s 在挂条件单失败（预填为空）: %s", sym, e)
+        tps.sort(reverse=(direction == "short"))
+        try:
+            cur = trader.price(sym)
+        except Exception:
+            cur = 0.0
+        entry = float(p.get("entry_price") or 0)
+        margin_used = float(p.get("initial_margin") or 0)
+        notional = abs(amt) * entry
+        out.append({
+            "symbol": sym,
+            "direction": direction,
+            "qty": abs(amt),
+            "entry_price": entry,
+            "current_price": cur,
+            "unrealized_pnl": float(p.get("unrealized_pnl") or 0),
+            "margin_used": round(margin_used, 4),
+            "leverage": max(1, round(notional / margin_used)) if margin_used > 0 else 1,
+            "notional": round(notional, 2),
+            "tracked": sym in running,
+            "prefill": {
+                "stop_loss": sl_pre,
+                "tp1": tps[0] if tps else None,
+                "tp2": tps[1] if len(tps) > 1 else None,
+            },
+        })
+    return out
+
+
+def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
+                   stop_loss: float, tp1: float, tp2: float = 0) -> TradeRecord:
+    """导入持仓：把交易所已有手动仓接管为系统在跑单（status=OPENED）。
+
+    流程：持仓仍在校验 → 无同账号同币在跑记录 → 三价方向校验（按现价）→
+    撤原手动条件单 → 按系统规则重挂 SL/TP1/TP2（失败尽力恢复原 SL，绝不
+    把用户裸仓留在市场）→ 落库（opened_at=接管时刻，管理范围从此刻起）。
+    需在开仓锁（lock:trade_open:{account}）内调用，与结算巡检互斥。
+    """
+    # ① 持仓仍在（弹窗打开到提交之间可能已平仓）
+    pos = trader.positions().get(symbol)
+    if not pos or abs(float(pos["amt"])) == 0:
+        raise ValueError(f"交易所已无 {symbol} 持仓（可能已平仓），请刷新列表")
+    amt = float(pos["amt"])
+    direction = "long" if amt > 0 else "short"
+    close_side = _close_side(direction)
+    qty = abs(amt)
+    entry = float(pos.get("entry_price") or 0)
+    if entry <= 0 or qty <= 0:
+        raise ValueError(f"{symbol} 持仓数据异常（entry={entry}, qty={qty}）")
+
+    # ② 同账号同币不重复接管
+    exists = db.execute(
+        select(TradeRecord.id).where(
+            TradeRecord.symbol == symbol,
+            TradeRecord.status.in_(_ADOPT_RUNNING),
+            _adopt_acc_cond(trader),
+        )
+    ).first()
+    if exists:
+        raise ValueError(f"{symbol} 已有系统在跑记录，无需导入")
+
+    # ③ 三价方向校验（按现价；导入单不做盈亏比/风险预算闸门——尊重用户既定计划）
+    stop_loss, tp1, tp2 = float(stop_loss), float(tp1), float(tp2 or 0)
+    price_now = trader.price(symbol)
+    if stop_loss <= 0 or tp1 <= 0:
+        raise ValueError("止损价与止盈一必填")
+    if direction == "long":
+        if stop_loss >= price_now:
+            raise ValueError(f"多头止损价 {stop_loss} 必须低于现价 {price_now}")
+        if tp1 <= price_now:
+            raise ValueError(f"多头止盈一 {tp1} 必须高于现价 {price_now}")
+        if tp2 and tp2 <= tp1:
+            raise ValueError(f"止盈二 {tp2} 必须高于止盈一 {tp1}")
+    else:
+        if stop_loss <= price_now:
+            raise ValueError(f"空头止损价 {stop_loss} 必须高于现价 {price_now}")
+        if tp1 >= price_now:
+            raise ValueError(f"空头止盈一 {tp1} 必须低于现价 {price_now}")
+        if tp2 and tp2 >= tp1:
+            raise ValueError(f"止盈二 {tp2} 必须低于止盈一 {tp1}")
+
+    # ④ 系统接管：撤原手动条件单 → 重挂 SL/TP1/TP2。
+    #    SL 是裸仓保护的生命线：挂失败时尽力按原价恢复用户的 SL，再把异常抛回。
+    orig_algo = trader.open_algo_orders(symbol)
+    orig_sl = next(
+        (float(o.get("triggerPrice") or 0) for o in orig_algo
+         if o.get("side") == close_side and o.get("type") == "STOP_MARKET"
+         and str(o.get("closePosition")).lower() == "true"
+         and float(o.get("triggerPrice") or 0) > 0),
+        None,
+    )
+    trader.cancel_all_algo(symbol)
+    try:
+        sl_order = trader.stop_market_close(
+            symbol, close_side, trader.round_price(symbol, stop_loss))
+    except Exception:
+        if orig_sl:
+            try:
+                trader.stop_market_close(symbol, close_side, trader.round_price(symbol, orig_sl))
+                logger.warning("导入 %s：新 SL 挂单失败，已按原价 %s 恢复止损", symbol, orig_sl)
+            except Exception:
+                logger.error("导入 %s：新 SL 挂单失败且原价恢复也失败，仓位暂无止损保护！", symbol)
+        raise
+    f = trader.filters(symbol)
+    qty_tp1, qty_tp2 = _tp_quantities(qty, tp2)
+    tp1_order = None
+    tp2_order = None
+    if qty_tp1 >= f["min_qty"]:
+        try:
+            tp1_order = trader.take_profit_reduce(
+                symbol, close_side, trader.round_qty(symbol, qty_tp1),
+                trader.round_price(symbol, tp1))
+        except Exception as e:
+            logger.warning("导入 %s：TP1 挂单失败（SL 已就位，仅缺自动止盈）: %s", symbol, e)
+    if tp2 > 0 and tp1_order and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
+        try:
+            tp2_order = trader.take_profit_reduce(
+                symbol, close_side, trader.round_qty(symbol, qty_tp2),
+                trader.round_price(symbol, tp2))
+        except Exception as e:
+            logger.warning("导入 %s：TP2 挂单失败: %s", symbol, e)
+
+    # ⑤ 落库：opened_at=接管时刻（管理范围从此刻起，接管前盈亏不回溯）
+    now = datetime.utcnow()
+    notional = qty * entry
+    margin_used = float(pos.get("initial_margin") or 0)
+    rec = TradeRecord(
+        symbol=symbol,
+        direction=direction,
+        scan_result_id=None,
+        ai_analysis_id=None,  # 手动导入无 AI 分析行（2026-09-24 起该列可空）
+        recommendation=None,
+        testnet=trader.testnet,
+        account_key=trader.account_key,
+        ai_snapshot=None,
+        entry_price=entry,
+        qty=qty,
+        notional=round(notional, 2),
+        leverage=max(1, round(notional / margin_used)) if margin_used > 0 else 1,
+        margin_mode="isolated",
+        margin_used=round(margin_used, 4),
+        risk_amount=round(abs(entry - stop_loss) * qty, 4),  # 实际风险 = 止损距离 × 数量
+        stop_loss=stop_loss,
+        tp1=tp1,
+        tp2=tp2 if tp2_order else 0,
+        status="OPENED",
+        opened_at=now,
+        raw={
+            "adopted": True,
+            "sl_order_id": sl_order.get("algoId") or sl_order.get("orderId"),
+            "tp1_order_id": (tp1_order.get("algoId") or tp1_order.get("orderId")) if tp1_order else None,
+            "tp2_order_id": (tp2_order.get("algoId") or tp2_order.get("orderId")) if tp2_order else None,
+            "qty_tp1": qty_tp1 if tp1_order else 0,
+            "qty_tp2": qty_tp2 if tp2_order else 0,
+            "realized_bookmark": 0,  # 接管时点起算（_tranche_pnl 书签）
+            "adopt_price": price_now,
+            "adopt_note": "导入持仓：接管时点起的盈亏与仓位管理由系统跟进，接管前已实现盈亏不回溯",
+        },
+    )
+    db.add(rec)
+    db.flush()
+    _add_event(db, rec, "OPEN", {
+        "adopted": True, "price": price_now, "qty": qty,
+        "stop_loss": stop_loss, "tp1": tp1, "tp2": tp2 if tp2_order else 0,
+        "risk_amount": round(abs(entry - stop_loss) * qty, 4),
+        "entry_price": entry, "note": "手动持仓导入（管理范围自接管时点起）",
+    })
+    db.commit()
+    logger.info("已导入持仓 %s %s qty=%s entry=%s sl=%s tp1=%s tp2=%s（风险 %s USDT）",
+                symbol, direction, qty, entry, stop_loss, tp1,
+                tp2 if tp2_order else 0, rec.risk_amount)
+    return rec
+
+
+def auto_adopt_positions(db: Session, trader: BinanceTrader) -> list[str]:
+    """自动导入手动持仓（2026-09-24，随每小时结算巡检执行）：
+    交易所非零持仓中未被系统在跑记录接管的 = 用户在币安 App 手动开的单，
+    逐一尝试 adopt_position 接管（SL/TP 取 App 现挂条件单原值）。
+
+    跳过：已在跑记录的、App 未同时设置 SL+TP1 的（裸仓不入册，只记日志）、
+    三价校验不过的。需在开仓锁内调用。返回新导入的 symbol 列表。
+    """
+    out: list[str] = []
+    for row in list_adoptable_positions(db, trader):
+        if row["tracked"]:
+            continue
+        sym = row["symbol"]
+        pre = row["prefill"]
+        if not pre["stop_loss"] or not pre["tp1"]:
+            logger.info("自动导入跳过 %s：币安未同时设置止损+止盈条件单（裸仓不入册）", sym)
+            continue
+        try:
+            adopt_position(db, trader, sym, pre["stop_loss"], pre["tp1"], pre["tp2"] or 0)
+            out.append(sym)
+        except ValueError as e:
+            logger.info("自动导入跳过 %s：%s", sym, e)
+        except Exception:
+            logger.exception("自动导入失败 %s", sym)
+    return out

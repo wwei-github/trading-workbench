@@ -192,6 +192,7 @@ export const scanApi = {
       api
         .post<PurgeStats>('/trades/purge-testnet', null, { params: { confirm } })
         .then((r) => r.data),
+    // 注：手动持仓导入已自动化——每小时结算巡检自动检测并接管 App 手动单
   },
 
   // 关注列表

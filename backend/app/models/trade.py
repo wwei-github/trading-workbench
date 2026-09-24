@@ -27,8 +27,9 @@ class TradeRecord(Base):
     scan_result_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("scan_results.id"), nullable=True
     )
-    ai_analysis_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("ai_analyses.id"), nullable=False, unique=True, index=True
+    # 导入持仓（2026-09-24）无 AI 分析行 → nullable；unique 保留（PG 多 NULL 合法）
+    ai_analysis_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("ai_analyses.id"), nullable=True, unique=True, index=True
     )
     recommendation: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)  # 开单时评分快照
     testnet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)  # 测试网/正式网标识
