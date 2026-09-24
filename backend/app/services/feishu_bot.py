@@ -285,8 +285,7 @@ def _exec_close(trade_id: str) -> None:
                         else:
                             out = close_market_now(db, trader, rec)
                             res = {"ok": True, "symbol": rec.symbol,
-                                   "pnl": float(out["pnl"]), "pnl_pct": out.get("pnl_pct"),
-                                   "testnet": bool(rec.testnet)}
+                                   "pnl": float(out["pnl"]), "pnl_pct": out.get("pnl_pct")}
                     except Exception as e:
                         db.rollback()
                         logger.exception("卡片平仓失败 %s", trade_id)
@@ -299,7 +298,6 @@ def _exec_close(trade_id: str) -> None:
     if res["ok"]:
         pnl, pct = res["pnl"], res.get("pnl_pct")
         color = "green" if pnl > 0 else ("red" if pnl < 0 else "default")
-        env = "测试网" if res.get("testnet") else "正式网"
 
         def _col(title: str, value: str) -> dict:
             return {"tag": "column", "width": "weighted", "weight": 1,
@@ -316,7 +314,6 @@ def _exec_close(trade_id: str) -> None:
                 {"tag": "column_set", "flex_mode": "stretch", "columns": [
                     _col("净盈亏", f"<font color='{color}'>{pnl:+.2f} USDT</font>"),
                     _col("收益率", f"{pct}%" if pct is not None else "—"),
-                    _col("环境", env),
                 ]},
                 {"tag": "note", "elements": [{"tag": "plain_text",
                  "content": "手动平仓 · 费用已计入净额 · 详情见交易记录"}]},

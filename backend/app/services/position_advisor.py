@@ -286,8 +286,8 @@ ACTION_LABEL = {
 def _notify_exit(rec, advice: dict, total: float) -> None:
     """建议离场 → 飞书交互卡片推送（失败仅记日志）。调用方已保证同单不连续重复推送。
 
-    卡片布局：header 红 → 全宽浮亏高亮行（金额/R 倍数/占比/持仓时长）→
-    四列价格栅格（方向·环境/开仓价/现价/止损）→ AI 建议（动作加粗 +
+    卡片布局：header 红 → 全宽浮亏高亮行（金额/持仓时长）→
+    四列价格栅格（方向/开仓价/现价/止损）→ AI 建议（动作加粗 +
     thesis/trend 标注）→ 理由正文 → 市价平仓按钮（feishu_bot 回调执行）→
     note 脚注。经自建应用发送；未配置则整体跳过。
     """
@@ -299,7 +299,6 @@ def _notify_exit(rec, advice: dict, total: float) -> None:
         # 防御：total 可能被调用方传 Decimal（Numeric 列），统一转 float；
         # 卡片按钮 value 走 JSON 序列化，UUID 须转字符串
         total = float(total)
-        risk = float(rec.risk_amount or 0)
         trade_id = str(rec.id)
         side = "多" if rec.direction == "long" else "空"
         entry = float(rec.entry_price or 0)
@@ -309,7 +308,6 @@ def _notify_exit(rec, advice: dict, total: float) -> None:
             round((datetime.utcnow() - rec.opened_at).total_seconds() / 3600, 1)
             if rec.opened_at else None
         )
-        r_mult = f"{total / risk:.2f}R" if risk > 0 else "-"
 
         def _num(x):
             if x in (None, "", 0):
@@ -319,8 +317,6 @@ def _notify_exit(rec, advice: dict, total: float) -> None:
             except (TypeError, ValueError):
                 return str(x)
 
-        # 浮亏占比（相对止损金额），防御 risk<=0
-        loss_pct = f"{abs(total) / risk * 100:.0f}%" if risk > 0 else "—"
         held_txt = f" · 已持仓 {held_h}h" if held_h is not None else ""
         advice_line = (
             f"**{ACTION_LABEL.get(action_f, action_f) if (action_f := advice.get('action')) else '-'}**"
@@ -343,11 +339,10 @@ def _notify_exit(rec, advice: dict, total: float) -> None:
                 # 全宽浮亏高亮行：核心结论一眼可见
                 {"tag": "div", "text": {"tag": "lark_md", "content":
                  f"{side}单{held_txt}\n"
-                 f"🔻 **浮亏　<font color='red'>{total:+.2f} USDT</font>**"
-                 f"　{r_mult} · 风险额的 {loss_pct}"}},
+                 f"🔻 **浮亏　<font color='red'>{total:+.2f} USDT</font>**"}},
                 # 四列价格栅格（等宽，窄屏自动堆叠）
                 {"tag": "column_set", "flex_mode": "stretch", "columns": [
-                    _col("方向", f"{side} · {'测试网' if rec.testnet else '正式网'}"),
+                    _col("方向", side),
                     _col("开仓价", _num(entry)),
                     _col("现价", _num(snap.get("current_price"))),
                     _col("止损", _num(sl)),
@@ -392,7 +387,6 @@ def _notify_stale(rec, advice: dict, total: float) -> None:
             logger.info("飞书自建应用未配置，跳过滞留持仓建议推送")
             return
         total = float(total)
-        risk = float(rec.risk_amount or 0)
         trade_id = str(rec.id)
         side = "多" if rec.direction == "long" else "空"
         snap = rec.ai_snapshot or {}
@@ -400,7 +394,6 @@ def _notify_stale(rec, advice: dict, total: float) -> None:
             round((datetime.utcnow() - rec.opened_at).total_seconds() / 3600, 1)
             if rec.opened_at else None
         )
-        r_mult = f"{total / risk:.2f}R" if risk > 0 else "-"
         action_f = advice.get("action")
         advice_line = (
             f"**{ACTION_LABEL.get(action_f, action_f) if action_f else '-'}**"
@@ -441,9 +434,9 @@ def _notify_stale(rec, advice: dict, total: float) -> None:
                 # 全宽浮动盈亏高亮行（浮盈/浮亏都展示）
                 {"tag": "div", "text": {"tag": "lark_md", "content":
                  f"{side}单 · 已持仓 {held_h}h 未触发 TP1\n"
-                 f"{pnl_md}　{r_mult}"}},
+                 f"{pnl_md}"}},
                 {"tag": "column_set", "flex_mode": "stretch", "columns": [
-                    _col("方向", f"{side} · {'测试网' if rec.testnet else '正式网'}"),
+                    _col("方向", side),
                     _col("开仓价", _num(rec.entry_price)),
                     _col("现价", _num(snap.get("current_price"))),
                     _col("止盈一", _num(rec.tp1)),
