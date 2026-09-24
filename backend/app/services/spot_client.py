@@ -63,6 +63,13 @@ class SpotClient:
                 db.close()
             # 注册表构建时已校验 key/secret 成对（半配置启动即抛错），此处 acc 非 None 即可用
             if acc is not None:
+                # 现货测试网 key 覆盖（_with_spot_testnet_keys）：显式传 testnet 账号 key
+                # 时 get_account 直查注册表拿的是合约测试网凭据，必须同样应用覆盖，
+                # 否则现货测试网 401（2026-09-24 实证修复）
+                if acc.testnet:
+                    from app.services.account_registry import _with_spot_testnet_keys
+
+                    acc = _with_spot_testnet_keys([acc])[0]
                 self.account = acc
                 self.testnet = acc.testnet
             else:
