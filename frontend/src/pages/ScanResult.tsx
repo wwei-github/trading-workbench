@@ -150,6 +150,11 @@ export default function ScanResult() {
       children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><FundAnalysisPanel /></div>,
     },
     {
+      key: 'trades',
+      label: '交易记录',
+      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><TradesPanel /></div>,
+    },
+    {
       key: 'review',
       label: '复盘',
       children: (
@@ -183,11 +188,6 @@ export default function ScanResult() {
           />
         </div>
       ),
-    },
-    {
-      key: 'trades',
-      label: '交易记录',
-      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><TradesPanel /></div>,
     },
     {
       key: 'transfers',
