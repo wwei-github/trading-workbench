@@ -1,9 +1,15 @@
 """在跑单 AI 持仓建议（docs/16）
 
-浮亏在跑单的持仓诊断：开单逻辑是否仍成立、走势是否走坏、建议动作
+两类自动触发（2026-09-24 起）：
+- 浮亏触发：首次浮亏 / 3h 冷却到期 / 较上次诊断恶化 ≥0.5R
+- 滞留触发：持仓 ≥24h 且从未触发 TP1（status 仍为 OPENED）——AI 评估继续
+  持有的必要性（资金效率：占用一天未达第一目标），首诊后每 24h 复诊
+
+持仓诊断：开单逻辑是否仍成立、走势是否走坏、建议动作
 （hold 继续持有 / tighten 收紧止损 / reduce 减仓 / exit 离场）。
 模式复用 ai_attribution（事实包 JSON + 单次 LLM + 结构化输出 + 词表校验），
-结论落库 trade_records.ai_advice 并写 AI_ADVICE 事件；action=exit 时飞书推送
+结论落库 trade_records.ai_advice 并写 AI_ADVICE 事件；滞留诊断每次推送飞书
+卡片（浮盈亏 + AI 结果，24h 一次不刷屏），浮亏诊断仅 action=exit 推送
 （同单连续 exit 不重复刷屏）。
 
 调度约束：LLM 调用（单笔 10~30s）只在 Redis 开仓锁外执行——结算巡检
@@ -25,22 +31,28 @@ from app.services.llm_client import get_client
 
 logger = logging.getLogger(__name__)
 
-ADVICE_COOLDOWN_HOURS = 3   # 两次自动诊断最小间隔
+ADVICE_COOLDOWN_HOURS = 3   # 浮亏诊断两次间隔
 ADVICE_WORSEN_R = 0.5       # 冷却期内全程盈亏较上次诊断恶化 ≥0.5R → 提前刷新
+STALE_HOLD_HOURS = 24       # 滞留触发：持仓 ≥24h 且从未触发 TP1
+STALE_RECHECK_HOURS = 24    # 滞留复诊间隔（首诊后每 24h 再评估，直到 TP1/结算）
 
 ACTIONS = ("hold", "tighten", "reduce", "exit")
 
-ADVICE_SYSTEM = """你是期货交易系统的持仓风控顾问。一笔在跑交易当前处于浮亏，\
-根据给出的事实（开单逻辑、当前持仓状态、K线特征、近期K线）做持仓诊断。
+ADVICE_SYSTEM = """你是期货交易系统的持仓风控顾问。一笔在跑交易需要持仓诊断，\
+触发原因见事实包的 diagnosis_trigger 字段：
+- floating_loss：当前处于浮亏，判断浮亏是否在计划波动范围内；
+- stale_no_tp1：持仓已超过 24 小时仍未触发第一档止盈，需重点评估继续持有的必要性——\
+资金已被占用一天而未兑现第一目标，结合走势是否停滞（MFE 距离 TP1 的差距、动能、结构）\
+判断是"接近突破前的蓄势"还是"逻辑失效的空耗"，不要仅因浮盈为正就默认继续持有。
 
 判断与输出要求：
 1. thesis_valid：开仓逻辑是否仍成立（方向依据、关键位、形态是否被破坏）
 2. trend_broken：当前走势是否已走坏（结构破坏/趋势反转/动能衰竭迹象）
 3. action 从以下枚举选择一个：
-   - hold：开仓逻辑未破坏，浮亏在计划波动范围内，继续持有
+   - hold：开仓逻辑未破坏，浮亏在计划波动范围内 / 走势仍在向 TP1 推进，继续持有
    - tighten：逻辑动摇但未失效，建议收紧止损（只描述结构位，不给具体价格）
-   - reduce：走势明显不利，建议先减仓降低风险
-   - exit：开仓逻辑已破坏，建议离场
+   - reduce：走势明显不利或长期停滞，建议先减仓降低风险
+   - exit：开仓逻辑已破坏（或滞留且走势确认走坏），建议离场
 4. 事实优先于推测：给定的 MFE/MAE/入场位置/指标状态是硬数据；浮亏本身不等于逻辑破坏。
 5. 禁止输出具体委托价格，建议只做结构性描述（如"跌破开仓依据的摆动低点"）。
 6. reason ≤120 字；detail ≤500 字（可选，展开分析）。
@@ -49,22 +61,42 @@ ADVICE_SYSTEM = """你是期货交易系统的持仓风控顾问。一笔在跑�
 
 
 def advice_due(rec, total: float, now: datetime) -> bool:
-    """自动诊断触发判定（docs/16 §3.1）：浮亏 + 首次/冷却到期/恶化 ≥0.5R。
+    """自动诊断触发判定：浮亏触发 + 滞留触发（docs/16 §3.1 + 2026-09-24 扩展）。
 
     rec 为 TradeRecord；total = 已实现 + 浮动（巡检刚写入的最新值）。
+    浮亏：首次浮亏 / 3h 冷却到期 / 较上次诊断恶化 ≥0.5R。
+    滞留：持仓 ≥24h 且从未触发 TP1（status 仍 OPENED），首诊后每 24h 复诊。
     """
     if not settings.AI_API_KEY:
         return False
-    if total >= 0:
-        return False
     last = rec.ai_advice_at
-    if last is None:
-        return True  # 首次浮亏
-    if now - last >= _timedelta_hours(ADVICE_COOLDOWN_HOURS):
-        return True  # 冷却到期
-    base = float(rec.ai_advice_pnl or 0)
-    risk = float(rec.risk_amount or 0)
-    return risk > 0 and base - total >= risk * ADVICE_WORSEN_R  # 恶化提前刷新
+    # ── 浮亏触发 ──
+    if total < 0:
+        if last is None:
+            return True  # 首次浮亏
+        if now - last >= _timedelta_hours(ADVICE_COOLDOWN_HOURS):
+            return True  # 冷却到期
+        base = float(rec.ai_advice_pnl or 0)
+        risk = float(rec.risk_amount or 0)
+        if risk > 0 and base - total >= risk * ADVICE_WORSEN_R:  # 恶化提前刷新
+            return True
+    # ── 滞留触发（盈亏皆可）：24h 未触发 TP1，每 24h 复诊 ──
+    if rec.status == "OPENED" and rec.opened_at is not None:
+        if now - rec.opened_at >= _timedelta_hours(STALE_HOLD_HOURS):
+            if last is None or now - last >= _timedelta_hours(STALE_RECHECK_HOURS):
+                return True
+    return False
+
+
+def is_stale_hold(rec, now=None) -> bool:
+    """滞留判定：持仓 ≥24h 且从未触发 TP1（触发原因标注/推送分路由用）"""
+    if now is None:
+        now = datetime.utcnow()
+    return (
+        rec.status == "OPENED"
+        and rec.opened_at is not None
+        and (now - rec.opened_at) >= _timedelta_hours(STALE_HOLD_HOURS)
+    )
 
 
 def _timedelta_hours(h: float):
@@ -147,6 +179,8 @@ def build_facts(db: Session, rec) -> dict:
     return {
         "symbol": rec.symbol,
         "direction": direction,
+        # 触发原因（AI 按场景调整判断侧重，见 ADVICE_SYSTEM）
+        "diagnosis_trigger": "stale_no_tp1" if is_stale_hold(rec) else "floating_loss",
         "opening_thesis": {
             "trade_type": snap.get("trade_type"),
             "recommendation": snap.get("recommendation"),
@@ -166,6 +200,7 @@ def build_facts(db: Session, rec) -> dict:
             "tp2": float(rec.tp2) if rec.tp2 else None,
             "leverage": rec.leverage,
             "remaining_ratio": remaining_ratio,
+            "tp1_hit": rec.status != "OPENED",  # false=第一档止盈从未触发（滞留判定依据）
             "risk_amount": risk or None,
             "realized_pnl": realized,
             "unrealized_pnl": unrealized,
@@ -220,16 +255,22 @@ def diagnose_trade(db: Session, rec) -> dict:
     }
     total = round(float(rec.realized_pnl or 0) + float(rec.unrealized_pnl or 0), 6)
     prev_action = (rec.ai_advice or {}).get("action")
+    stale = is_stale_hold(rec)
 
     rec.ai_advice = advice
     rec.ai_advice_at = datetime.utcnow()
     rec.ai_advice_pnl = total  # 恶化判定基线
     db.add(TradeEvent(trade_record_id=rec.id, event_type="AI_ADVICE", detail={
         **advice, "total_pnl": total,
+        "trigger": "stale_no_tp1" if stale else "floating_loss",
     }))
     db.commit()
 
-    if action == "exit" and prev_action != "exit":
+    # 滞留诊断每次推送（24h 一次不刷屏，浮盈亏 + AI 结果）；
+    # 浮亏诊断沿用 docs/16 规则：仅 exit 且同单不连续重复时推送
+    if stale:
+        _notify_stale(rec, advice, total)
+    elif action == "exit" and prev_action != "exit":
         _notify_exit(rec, advice, total)
     return advice
 
@@ -337,3 +378,98 @@ def _notify_exit(rec, advice: dict, total: float) -> None:
         send_app_card(card)
     except Exception as e:
         logger.warning("持仓建议飞书推送失败 %s: %s", rec.symbol, e)
+
+
+def _notify_stale(rec, advice: dict, total: float) -> None:
+    """滞留诊断（持仓 ≥24h 未触发 TP1）→ 飞书卡片：浮盈亏 + AI 分析结果。
+
+    每次诊断都推送（24h 一次不刷屏）；action=exit 时附带市价平仓按钮
+    （feishu_bot 回调执行，需 FEISHU_ACTION_TOKEN）。失败仅记日志。
+    """
+    try:
+        from app.services.feishu_bot import configured, send_app_card
+        if not configured():
+            logger.info("飞书自建应用未配置，跳过滞留持仓建议推送")
+            return
+        total = float(total)
+        risk = float(rec.risk_amount or 0)
+        trade_id = str(rec.id)
+        side = "多" if rec.direction == "long" else "空"
+        snap = rec.ai_snapshot or {}
+        held_h = (
+            round((datetime.utcnow() - rec.opened_at).total_seconds() / 3600, 1)
+            if rec.opened_at else None
+        )
+        r_mult = f"{total / risk:.2f}R" if risk > 0 else "-"
+        action_f = advice.get("action")
+        advice_line = (
+            f"**{ACTION_LABEL.get(action_f, action_f) if action_f else '-'}**"
+            f"（开仓逻辑{'成立' if advice.get('thesis_valid') else '已破坏'}"
+            f" · 走势{'已走坏' if advice.get('trend_broken') else '未走坏'}）"
+        )
+
+        def _num(x):
+            if x in (None, "", 0):
+                return "—"
+            try:
+                return f"{float(x):g}"
+            except (TypeError, ValueError):
+                return str(x)
+
+        # 浮盈绿 / 浮亏红 / 持平默认
+        if total > 0:
+            pnl_md = f"🟢 **浮盈　<font color='success'>{total:+.2f} USDT</font>**"
+        elif total < 0:
+            pnl_md = f"🔻 **浮亏　<font color='red'>{total:+.2f} USDT</font>**"
+        else:
+            pnl_md = f"**浮动盈亏　{total:+.2f} USDT**"
+
+        def _col(title: str, value: str) -> dict:
+            return {"tag": "column", "width": "weighted", "weight": 1,
+                    "elements": [{"tag": "div", "text": {"tag": "lark_md",
+                                 "content": f"**{title}**\n{value}"}}]}
+
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text",
+                          "content": f"⏰ AI 持仓建议 · 持仓超24h未触发止盈 · {rec.symbol}"},
+                "template": "red" if action_f == "exit"
+                            else ("orange" if action_f in ("reduce", "tighten") else "blue"),
+            },
+            "elements": [
+                # 全宽浮动盈亏高亮行（浮盈/浮亏都展示）
+                {"tag": "div", "text": {"tag": "lark_md", "content":
+                 f"{side}单 · 已持仓 {held_h}h 未触发 TP1\n"
+                 f"{pnl_md}　{r_mult}"}},
+                {"tag": "column_set", "flex_mode": "stretch", "columns": [
+                    _col("方向", f"{side} · {'测试网' if rec.testnet else '正式网'}"),
+                    _col("开仓价", _num(rec.entry_price)),
+                    _col("现价", _num(snap.get("current_price"))),
+                    _col("止盈一", _num(rec.tp1)),
+                ]},
+                {"tag": "hr"},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"🤖 **AI 建议**　{advice_line}"}},
+                {"tag": "div", "text": {"tag": "lark_md",
+                 "content": advice.get("reason") or "—"}},
+            ],
+        }
+        # 仅 exit 带平仓按钮（hold/tighten/reduce 无可执行动作，纯展示）
+        if action_f == "exit" and settings.FEISHU_ACTION_TOKEN:
+            card["elements"] += [
+                {"tag": "action", "actions": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🛑 市价平仓"},
+                    "type": "danger",
+                    "value": {
+                        "act": "close_market",
+                        "token": settings.FEISHU_ACTION_TOKEN,
+                        "trade_id": trade_id,
+                    },
+                }]},
+            ]
+        card["elements"].append({"tag": "note", "elements": [{"tag": "plain_text",
+         "content": "持仓超24h未触发第一档止盈的定期复诊 · 详情见交易记录"}]})
+        send_app_card(card)
+    except Exception as e:
+        logger.warning("滞留持仓建议飞书推送失败 %s: %s", rec.symbol, e)
