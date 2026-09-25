@@ -2,7 +2,8 @@
 
 方向由技术指标多数决确定（technical.compute_indicator_votes），本模块只回答
 "此刻是否出现与候选方向一致的入场触发"：
-- T1 trigger_breakout：收盘突破 Donchian 通道（BREAKOUT_CHANNEL_BARS 根高低轨）
+- T1 trigger_breakout：收盘越过 Donchian 通道（BREAKOUT_CHANNEL_BARS 根高低轨）
+  三重收紧：最小幅度 BREAKOUT_THRESHOLD + 放量 BREAKOUT_VOL_RATIO + 长实体短影线形态
 - T2 trigger_candlestick：信号K线（klines[-2]）出现 GOLDEN_12 形态且方向一致
 - T3 trigger_pullback_confirm：回踩 EMA21 + 同向金K 两段式确认——
   当根同时触碰+金K（当根确认），或上根触碰（pending）+ 本根金K（次根确认）；
@@ -24,6 +25,7 @@ from app.services.strategy.candlestick import (
     detect_all_patterns,
 )
 from app.services.strategy.ema import calc_ema
+from app.services.strategy.indicators import volume_ratio
 import numpy as np
 
 # 触发类型 = signal_type（AI 提示词 SIGNAL_TYPE_LABELS 已注册同名标签）
@@ -31,6 +33,37 @@ BREAKOUT = "trigger_breakout"
 CANDLESTICK = "trigger_candlestick"
 PULLBACK = "trigger_pullback"          # 历史类型：两段式上线后不再产生新记录
 PULLBACK_CONFIRM = "trigger_pullback_confirm"  # 回踩EMA21后金K确认（当根/次根）
+
+# 突破K线形态门槛：长实体、影线几乎不可见（光头光脚，防长影毛刺假突破）
+BREAKOUT_BODY_RANGE_MIN = 0.75   # 实体/K线全长 ≥ 0.75
+BREAKOUT_SHADOW_BODY_MAX = 0.20  # 单侧影线 ≤ 实体的 20%
+
+
+def _is_solid_breakout_candle(klines: list[list], direction: int) -> bool:
+    """突破K线必须为顺向长实体、影线几乎不可见。
+
+    量化（2026-09-25 突破策略收紧）：
+    - 顺向实体：做多要求阳线（close>open），做空要求阴线（close<open）
+    - 长实体：|close-open| / (high-low) ≥ 0.75
+    - 短影线：上影与下影各 ≤ 实体的 20%（接近光头光脚）
+    """
+    o = float(klines[-2][1])
+    h = float(klines[-2][2])
+    l = float(klines[-2][3])
+    c = float(klines[-2][4])
+    body = abs(c - o)
+    rng = h - l
+    if rng <= 0 or body <= 0:
+        return False
+    if direction == 1 and c <= o:
+        return False
+    if direction == -1 and c >= o:
+        return False
+    if body / rng < BREAKOUT_BODY_RANGE_MIN:
+        return False
+    upper = h - max(o, c)
+    lower = min(o, c) - l
+    return upper <= BREAKOUT_SHADOW_BODY_MAX * body and lower <= BREAKOUT_SHADOW_BODY_MAX * body
 
 
 def _detect_touch(klines: list[list], direction: int) -> Optional[float]:
@@ -101,26 +134,34 @@ def detect_trigger(
         except (IndexError, TypeError, ValueError, OSError):
             pending_valid = False
 
-    # T1 Donchian 突破（窗口不含信号K线自身与未收盘根，防"自己破自己"）
+    # T1 Donchian 突破（窗口不含信号K线自身与未收盘根，防"自己破自己"）。
+    # 三重收紧（2026-09-25）：① 最小突破幅度 BREAKOUT_THRESHOLD（毛边不算）
+    # ② 放量 BREAKOUT_VOL_RATIO（量比 ≥ 近20根均量1.2倍）
+    # ③ 长实体短影线形态（光头光脚，防长影毛刺）；任一不满足 → 落入金K/回踩分支
     chan_n = settings.BREAKOUT_CHANNEL_BARS
     if n >= chan_n + 2:
         window = klines[-2 - chan_n:-2]
         chan_high = max(float(k[2]) for k in window)
         chan_low = min(float(k[3]) for k in window)
-        if direction == 1 and close_last > chan_high:
-            return {
-                "type": BREAKOUT, "direction": direction, "position": "resistance",
-                "pattern": None,
-                "breakout_pct": (close_last - chan_high) / chan_high * 100,
-                "reason": f"指标同向·收盘突破{chan_n}根Donchian上轨({chan_high:.6g})",
-            }, _close_op(pending, direction, "breakout")
-        if direction == -1 and close_last < chan_low:
-            return {
-                "type": BREAKOUT, "direction": direction, "position": "support",
-                "pattern": None,
-                "breakout_pct": (close_last - chan_low) / chan_low * 100,
-                "reason": f"指标同向·收盘跌破{chan_n}根Donchian下轨({chan_low:.6g})",
-            }, _close_op(pending, direction, "breakout")
+        vr = volume_ratio(klines)
+        if (_is_solid_breakout_candle(klines, direction)
+                and vr >= settings.BREAKOUT_VOL_RATIO):
+            if direction == 1 and close_last >= chan_high * (1 + settings.BREAKOUT_THRESHOLD):
+                return {
+                    "type": BREAKOUT, "direction": direction, "position": "resistance",
+                    "pattern": None,
+                    "breakout_pct": (close_last - chan_high) / chan_high * 100,
+                    "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘突破{chan_n}根"
+                              f"Donchian上轨({chan_high:.6g})",
+                }, _close_op(pending, direction, "breakout")
+            if direction == -1 and close_last <= chan_low * (1 - settings.BREAKOUT_THRESHOLD):
+                return {
+                    "type": BREAKOUT, "direction": direction, "position": "support",
+                    "pattern": None,
+                    "breakout_pct": (close_last - chan_low) / chan_low * 100,
+                    "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘跌破{chan_n}根"
+                              f"Donchian下轨({chan_low:.6g})",
+                }, _close_op(pending, direction, "breakout")
 
     # 并行计算两个确认证据：当根同向金K + 回踩EMA21触碰
     patterns = detect_all_patterns(klines, idx=-2)

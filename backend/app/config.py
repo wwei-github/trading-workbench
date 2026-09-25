@@ -28,11 +28,12 @@ class Settings(BaseSettings):
     SCAN_INTERVAL_HOURS: int = 1
     KLINE_INTERVAL: str = "1h"
     KLINE_WINDOW: int = 240
-    BREAKOUT_THRESHOLD: float = 0.005  # 0.5%
+    BREAKOUT_THRESHOLD: float = 0.002  # 最小突破幅度：收盘须越过 Donchian 轨 0.2%（毛边突破不算）
     R_SQUARED_THRESHOLD: float = 0.5
     REPEAT_WINDOW_HOURS: int = 3
     SWING_ORDER: int = 3
-    BREAKOUT_CHANNEL_BARS: int = 20  # Donchian 通道突破的回看根数（收盘破 N 根高低轨 + 放量）
+    BREAKOUT_CHANNEL_BARS: int = 20  # Donchian 通道突破的回看根数（收盘破 N 根高低轨 + 放量 + 长实体）
+    BREAKOUT_VOL_RATIO: float = 1.2  # 突破量能门槛：信号K线量 ≥ 近20根均量的1.2倍（volume_ratio 口径）
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
 
     # 排除的币种关键字（杠杆代币等）

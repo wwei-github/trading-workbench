@@ -8,14 +8,25 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.config import settings  # noqa: E402
 from app.services.strategy import trigger as trig  # noqa: E402
 from app.services.strategy.ema import calc_ema  # noqa: E402
 
 TS0 = 1716000000000  # ms
 STEP = 3_600_000     # 1h
 CHAN = 20            # BREAKOUT_CHANNEL_BARS 默认窗口
+
+
+@pytest.fixture(autouse=True)
+def _pin_breakout_settings(monkeypatch):
+    """固定突破三门槛，免疫本地 .env 覆盖（pydantic-settings 优先级高于默认值）"""
+    monkeypatch.setattr(settings, "BREAKOUT_THRESHOLD", 0.002)
+    monkeypatch.setattr(settings, "BREAKOUT_VOL_RATIO", 1.2)
+    monkeypatch.setattr(settings, "BREAKOUT_CHANNEL_BARS", 20)
 
 
 def _klines(closes: list[float], highs: list[float], lows: list[float]) -> list[list]:
@@ -67,9 +78,30 @@ def _touch_long(kl: list[list]) -> None:
 
 
 def _breakout_long(kl: list[list]) -> None:
+    """光头光脚放量长实体突破K线：收盘高于20根上轨约0.5%，量1.5倍均量"""
     chan_high = max(float(k[2]) for k in kl[-2 - CHAN:-2])
+    o = float(kl[-3][4])
     c = chan_high + 0.5
-    _set_signal_candle(kl, c, c + 0.1, c - 0.05)
+    ts, _, _, _, _, _, qv = kl[-2]
+    kl[-2] = [ts, o, c, o, c, 150.0, qv]
+
+
+def _breakout_short(kl: list[list]) -> None:
+    """空头版：光头光脚放量长实体阴线，收盘低于20根下轨约0.5%
+
+    阴线 c < o：high=open、low=close（与阳线夹具的列序相反，勿混用）
+    """
+    chan_low = min(float(k[3]) for k in kl[-2 - CHAN:-2])
+    o = float(kl[-3][4])
+    c = chan_low - 0.5
+    ts, _, _, _, _, _, qv = kl[-2]
+    kl[-2] = [ts, o, o, c, c, 150.0, qv]
+
+
+def _set_breakout_candle(kl, *, open_, close, high, low, vol=150.0) -> None:
+    """自定义突破K线形态（拒绝用例专用：显式控制实体/影线/量能）"""
+    ts, _, _, _, _, _, qv = kl[-2]
+    kl[-2] = [ts, open_, high, low, close, vol, qv]
 
 
 def _anchor(kl: list[list], idx: int) -> datetime:
@@ -136,6 +168,69 @@ def test_row1_breakout_with_flipped_pending_expires_as_flip():
     t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, direction=-1))
     assert t is not None and t["type"] == trig.BREAKOUT
     assert op == {"op": "expire", "reason": "direction_flip"}
+
+
+# ── 突破三重收紧（2026-09-25）：幅度 / 量能 / 长实体短影线 ──────────────────
+
+def test_row1_breakout_rejected_small_move():
+    """毛边突破：收盘仅高于上轨 0.05%（< 0.2% 门槛）→ 不触发；
+    K线跨越 EMA21 落入回踩触碰分支 → upsert pending（正确的管线落空行为）"""
+    kl = _kl(*_base())
+    chan_high = max(float(k[2]) for k in kl[-2 - CHAN:-2])
+    o = float(kl[-3][4])
+    c = chan_high * (1 + 0.0005)
+    _set_breakout_candle(kl, open_=o, close=c, high=c, low=o)
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is None and op is not None and op["op"] == "upsert"
+
+
+def test_row1_breakout_rejected_low_volume():
+    """缩量突破：量比 1.0（< 1.2 门槛）→ 不触发，落空转 pending"""
+    kl = _kl(*_base())
+    chan_high = max(float(k[2]) for k in kl[-2 - CHAN:-2])
+    o = float(kl[-3][4])
+    c = chan_high + 0.5
+    _set_breakout_candle(kl, open_=o, close=c, high=c, low=o, vol=100.0)
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is None and op is not None and op["op"] == "upsert"
+
+
+def test_row1_breakout_rejected_long_upper_shadow():
+    """长上影突破：上影 0.25 > 实体 0.80 的 20% → 不触发（防毛刺假突破），落空转 pending"""
+    kl = _kl(*_base())
+    chan_high = max(float(k[2]) for k in kl[-2 - CHAN:-2])
+    o = float(kl[-3][4])
+    c = chan_high + 0.5
+    _set_breakout_candle(kl, open_=o, close=c, high=c + 0.25, low=o)
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is None and op is not None and op["op"] == "upsert"
+
+
+def test_row1_breakout_rejected_small_body():
+    """短实体突破：实体/全长 0.72 < 0.75 门槛 → 不触发；
+    整根悬于 EMA21 上方不构成回踩 → 观察池"""
+    kl = _kl(*_base())
+    chan_high = max(float(k[2]) for k in kl[-2 - CHAN:-2])
+    o = float(kl[-3][4]) + 0.55
+    c = chan_high + 0.5
+    _set_breakout_candle(kl, open_=o, close=c, high=c + 0.05, low=o - 0.05)
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is None and op is None
+
+
+def test_row1_breakout_short_symmetric_positive():
+    """空头正向：光头光脚放量长实体阴线跌破下轨 ≥0.2% → 触发 BREAKOUT（position=support）"""
+    kl = _kl(*_base())
+    _breakout_short(kl)
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, -1)
+    assert t is not None and t["type"] == trig.BREAKOUT
+    assert t["position"] == "support" and t["direction"] == -1
+    assert op is None  # 无 pending → 无处置动作
 
 
 # ── 行2：当根触碰+金K → 当根确认，pending → superseded ────────────────────
