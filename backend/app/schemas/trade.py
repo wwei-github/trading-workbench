@@ -23,6 +23,8 @@ class TradeOut(BaseModel):
     recommendation: Optional[float] = None
     entry_price: Optional[float] = None
     qty: Optional[float] = None
+    qty_tp1: Optional[float] = None  # TP1 分批数量（读自 raw，旧记录/未开仓 None）
+    qty_tp2: Optional[float] = None  # TP2 分批数量（读自 raw，无 TP2 单为 0/None）
     notional: Optional[float] = None
     leverage: int
     margin_used: Optional[float] = None

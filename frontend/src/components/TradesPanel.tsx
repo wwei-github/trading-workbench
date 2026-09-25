@@ -904,10 +904,11 @@ export default function TradesPanel() {
       render: fmtNum,
     },
     {
-      // TP1预估收益：止盈全数量 × (TP1价 − 开仓价)（多空各按方向取正负）。
-      // App 端止盈单不显示预估收益（API 条件单无关联仓位渲染），此处按记录数据自算
+      // TP1预估收益 = TP1 分批数量 × (TP1价 − 开仓价)（多空各按方向取正负）。
+      // 数量优先用系统真实分批 qty_tp1（有 TP2 平 50%、无 TP2 平 75%），
+      // 旧记录 raw 无该键时回退比例近似（75%，比全数量更贴近无 TP2 场景）
       title: (
-        <Tooltip title="预估收益 = 数量 × (TP1价 − 开仓价)，按开仓时初始价格计算；止盈后实际以成交为准">
+        <Tooltip title="预估收益 = TP1分批数量 × (TP1价 − 开仓价)；有TP2平50%、无TP2平75%（旧记录无分批数量按75%近似）">
           <span>TP1预估</span>
         </Tooltip>
       ),
@@ -915,8 +916,9 @@ export default function TradesPanel() {
       width: 100,
       render: (_: unknown, rec: TradeRecord) => {
         if (rec.qty == null || rec.tp1 == null || rec.entry_price == null) return '-'
+        const q1 = rec.qty_tp1 ?? rec.qty * (rec.tp2 ? 0.5 : 0.75)
         const dir = rec.direction === 'long' ? 1 : -1
-        const est = rec.qty * (rec.tp1 - rec.entry_price) * dir
+        const est = q1 * (rec.tp1 - rec.entry_price) * dir
         return (
           <span style={{ color: schemeValueColor(est, colorScheme), fontVariantNumeric: 'tabular-nums' }}>
             {est >= 0 ? '+' : ''}{est.toFixed(2)}
@@ -932,9 +934,10 @@ export default function TradesPanel() {
       render: (v: number | null) => (v ? fmtNum(v) : '-'),
     },
     {
-      // TP2预估收益：无 TP2 显示 -；TP2 数量为开仓量的 25%（_tp_quantities），全额近似会偏大
+      // TP2预估收益 = TP2 分批数量（开仓量 25%）× (TP2价 − 开仓价)。
+      // 数量优先用系统真实分批 qty_tp2，旧记录回退 25% 近似；无 TP2 不计算
       title: (
-        <Tooltip title="预估收益 = 25%数量 × (TP2价 − 开仓价)（TP2 承接开仓量的 25%）；按开仓时初始价格计算">
+        <Tooltip title="预估收益 = TP2分批数量（开仓量25%）× (TP2价 − 开仓价)；无 TP2 显示 -">
           <span>TP2预估</span>
         </Tooltip>
       ),
@@ -943,8 +946,9 @@ export default function TradesPanel() {
       render: (_: unknown, rec: TradeRecord) => {
         // 无 TP2（null 或旧记录存 0）不计算预估，与 TP2 价格列显示 '-' 同口径
         if (rec.qty == null || !rec.tp2 || rec.entry_price == null) return '-'
+        const q2 = rec.qty_tp2 ?? rec.qty * 0.25
         const dir = rec.direction === 'long' ? 1 : -1
-        const est = rec.qty * 0.25 * (rec.tp2 - rec.entry_price) * dir
+        const est = q2 * (rec.tp2 - rec.entry_price) * dir
         return (
           <span style={{ color: schemeValueColor(est, colorScheme), fontVariantNumeric: 'tabular-nums' }}>
             {est >= 0 ? '+' : ''}{est.toFixed(2)}

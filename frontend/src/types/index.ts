@@ -287,6 +287,8 @@ export interface TradeRecord {
   recommendation: number | null
   entry_price: number | null
   qty: number | null
+  qty_tp1?: number | null // TP1 分批数量（后端读自 raw；旧记录无此键走 75%/50% 比例回退）
+  qty_tp2?: number | null // TP2 分批数量（无 TP2 单为 0/None；旧记录走 25% 比例回退）
   notional: number | null
   leverage: number
   margin_used: number | null

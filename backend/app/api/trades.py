@@ -166,6 +166,10 @@ def list_trades(
     for r in rows:
         item = TradeOut.model_validate(r)
         item.htf = htf_map.get(r.ai_analysis_id)
+        # TP 分批数量（前端预估收益列精确口径；旧记录 raw 无该键 → None 走前端比例回退）
+        raw = r.raw or {}
+        item.qty_tp1 = raw.get("qty_tp1")
+        item.qty_tp2 = raw.get("qty_tp2")
         out.append(item)
     return out
 
