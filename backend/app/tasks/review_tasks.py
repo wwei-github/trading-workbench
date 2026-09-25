@@ -66,7 +66,9 @@ def run_trade_review_task():
     try:
         now = datetime.utcnow()
         cutoff = now - timedelta(hours=OBSERVATION_HOURS)
-        stale = now - timedelta(hours=OBSERVATION_HOURS * 2)  # 数据缺口兜底
+        # 复盘窗口下界：只处理「新近过期」（24~26h，2h 容错任务缺跑）的建议，
+        # 更早的积压不再回溯复盘——否则历史数据清空（复盘重启）后会被整批回填
+        floor = now - timedelta(hours=OBSERVATION_HOURS + 2)
 
         rows = db.execute(
             select(AIAnalysis, ScanResult)
@@ -75,6 +77,7 @@ def run_trade_review_task():
             .where(
                 AIAnalysis.trade_decision == "suggest",
                 AIAnalysis.created_at <= cutoff,
+                AIAnalysis.created_at >= floor,
                 TradeReview.id.is_(None),
             )
         ).all()
@@ -101,11 +104,8 @@ def run_trade_review_task():
                 if entry <= 0 or stop <= 0 or tp1 <= 0 or not a.direction:
                     outcome, tp1_hit, nbars = "expired", False, len(bars)
                 elif not bars:
-                    # 数据不足：超过双倍观察期仍无数据则定 expired，否则下轮再试
-                    if a.created_at <= stale:
-                        outcome, tp1_hit, nbars = "expired", False, 0
-                    else:
-                        continue
+                    # 数据不足：窗口内先等下一轮；超过复盘窗口（26h）后由查询下界排除
+                    continue
                 else:
                     outcome, tp1_hit, nbars = replay_suggestion(
                         a.direction, entry, stop, tp1, tp2, bars

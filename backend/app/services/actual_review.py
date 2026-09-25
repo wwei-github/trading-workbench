@@ -80,15 +80,15 @@ def _trade_type_of(rec: TradeRecord) -> str:
     return (rec.ai_snapshot or {}).get("trade_type") or "unknown"
 
 
-# 触发器家族映射（与 /review/stats 的分组口径同源，含旧管线别名；
+# 触发器家族映射（/review/stats 与实盘归因分组共用同源常量，含旧管线别名；
 # NULL/未识别 → 「未记录」，兼容导入持仓与 signal_type 列上线前的旧行）
 TRIGGER_FAMILY = {
     "trigger_breakout": "同向突破",
     "breakout": "同向突破",            # 旧管线·放量突破
     "downtrend_breakout": "同向突破",  # 旧管线·下跌突破
-    "trigger_pullback": "同向回踩",
-    "trigger_pullback_confirm": "同向回踩",
-    "uptrend_pullback": "同向回踩",    # 旧管线·上涨回调
+    "trigger_pullback": "回踩金K确认",
+    "trigger_pullback_confirm": "回踩金K确认",
+    "uptrend_pullback": "回踩金K确认",  # 旧管线·上涨回调
     "trigger_candlestick": "同向形态",
 }
 

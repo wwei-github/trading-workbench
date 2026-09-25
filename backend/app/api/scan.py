@@ -529,10 +529,10 @@ def _agg_stats(rows: list[TradeReview]) -> dict:
 
 @router.get("/review/stats", response_model=ReviewStatsResponse)
 def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_db)):
-    """AI 建议复盘统计：整体 + 按触发器家族（同向突破/同向回踩/同向形态）分组胜率 + 期望值(R)
+    """AI 建议复盘统计：整体 + 按触发器家族（同向突破/回踩金K确认/同向形态）分组胜率 + 期望值(R)
 
     分组口径（2026-09-25 整理）：
-    - 三家族 = 当前三路触发器；trigger_pullback_confirm（回踩金K确认）归入同向回踩
+    - 三家族 = 当前三路触发器；家族映射 TRIGGER_FAMILY 与实盘归因共用（actual_review.py）
     - 旧管线结构分类（uptrend/downtrend/trend_reversal/range_bound 等）非触发器，不参与分组
     - 位置/均线维度移除：位置仅镜像方向（支撑=多/压力=空），均线碎片化样本过小
     """
@@ -582,19 +582,12 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
         days=days, **_agg_stats(rows), ev_r=_agg_ev(rows), groups=[],
     )
 
-    # 触发器家族映射（含旧管线别名，历史行可归组）
-    trigger_family = {
-        "trigger_breakout": "同向突破",
-        "breakout": "同向突破",            # 旧管线·放量突破
-        "downtrend_breakout": "同向突破",  # 旧管线·下跌突破
-        "trigger_pullback": "同向回踩",
-        "trigger_pullback_confirm": "同向回踩",
-        "uptrend_pullback": "同向回踩",    # 旧管线·上涨回调
-        "trigger_candlestick": "同向形态",
-    }
+    # 触发器家族分组（与实盘归因共用同源常量，防两处漂移）
+    from app.services.actual_review import TRIGGER_FAMILY
+
     buckets: dict[str, list[TradeReview]] = {}
     for r in rows:
-        family = trigger_family.get(r.signal_type or "")
+        family = TRIGGER_FAMILY.get(r.signal_type or "")
         if family:
             buckets.setdefault(family, []).append(r)
     for family, items in sorted(buckets.items()):
