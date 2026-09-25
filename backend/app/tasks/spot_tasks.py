@@ -8,7 +8,9 @@ spot-daily-check（每日 08:08，日K收盘 BJ 08:00 后）：
 复用仅限 task_log / notify / spot_client 基础设施。
 """
 import logging
+import time
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from app.celery_app import celery_app
 from app.models.spot import SPOT_SYMBOLS, SpotKlineCache
@@ -28,9 +30,11 @@ def _bar_close_date(open_ms: int, interval: str) -> str:
 
 
 def _upsert_cache(db, symbol: str, interval: str, raw: list) -> None:
-    """K线缓存 upsert：只存精简列 [t,o,h,l,c,v]。
+    """K线缓存 upsert：只存精简列 [t,o,h,l,c,v]，与已有缓存**合并**（按 t 去重）。
 
-    raw 兼容两种形态（2026-09-25 回测 KeyError: 0 修复）：
+    合并而非替换（2026-09-25）：全量回填的深历史不能被日检/周研判的
+    最近 N 根覆盖——否则缓存永远只有 300 根，回测数据始终不足。
+    raw 兼容两种形态：
     - 币安原始数组 [open_time, o, h, l, c, v, ...]（日检/周研判直传）
     - 缓存/合并后的 dict [{t, o, h, l, c, v}]（回测 _load 回补直传）
     """
@@ -54,7 +58,7 @@ def _upsert_cache(db, symbol: str, interval: str, raw: list) -> None:
     if row is None:
         db.add(SpotKlineCache(symbol=symbol, interval=interval, klines=slim))
     else:
-        row.klines = slim
+        row.klines = _merge_klines(row.klines, slim)
         row.updated_at = datetime.utcnow()
 
 
@@ -164,21 +168,21 @@ def run_backtest_task(bt_id: str) -> dict:
             dca_amount=p.get("dca_amount") or s["dca_amount"],
         )
 
-        # K线：优先缓存，不足/缺失则从币安拉全量历史回补
-        client = SpotClient()
+        # K线：优先缓存，不足/缺失则从正式网公开行情全量回填（免费无 key，
+        # 与交易环境无关——现货测试网历史稀薄，回测必须用正式网市场数据）
+        client = SpotClient(public=True)
 
-        def _load(sym: str, interval: str, need: int, fetch: int) -> list:
-            """读缓存，不足则拉远端回补；拉取失败必须带 币种/周期 上下文。"""
+        def _load(sym: str, interval: str, need: int) -> list:
+            """读缓存，不足则全量回填；回填失败必须带 币种/周期 上下文。"""
             data = _cache_klines(db, sym, interval)
             if len(data) < need:
                 try:
-                    remote = client.klines(sym, interval, fetch)
+                    _backfill_symbol(db, client, sym, interval)
                 except Exception as e:
                     raise RuntimeError(
-                        f"拉取 {sym} {interval} K线失败（缓存仅 {len(data)} 根，需 {need}）: {e}"
+                        f"回补 {sym} {interval} K线失败（缓存仅 {len(data)} 根，需 {need}）: {e}"
                     ) from e
-                data = _merge_klines(data, remote)
-                _upsert_cache(db, sym, interval, data)
+                data = _cache_klines(db, sym, interval)
             logger.info(
                 "回测 %s K线: %s %s %d 根（需 %d）", bt_id[:8], sym, interval, len(data), need
             )
@@ -187,9 +191,9 @@ def run_backtest_task(bt_id: str) -> dict:
         klines = {"daily": {}, "weekly": {}, "monthly": {}}
         try:
             for sym in p["symbols"]:
-                klines["daily"][sym] = _load(sym, "1d", 400, 500)  # MA200 + 环境缓冲
-                klines["weekly"][sym] = _load(sym, "1w", 60, 160)
-                klines["monthly"][sym] = _load(sym, "1M", 14, 150)
+                klines["daily"][sym] = _load(sym, "1d", 400)  # MA200 + 环境缓冲
+                klines["weekly"][sym] = _load(sym, "1w", 60)
+                klines["monthly"][sym] = _load(sym, "1M", 14)
             db.commit()
         finally:
             client.close()
@@ -258,6 +262,96 @@ def _merge_klines(local: list, remote: list) -> list:
                   "l": float(k[3]), "c": float(k[4]), "v": float(k[5])}
         )
     return [by_t[t] for t in sorted(by_t)]
+
+
+# ---------------- K线全量回填（免费公开行情，2026-09-25） ----------------
+
+# 周期跨度（ms）与全量目标根数：1d 拉满上市至今（BTC ~3300 根 ≈ 4 页），
+# 1w/1M 一页即可覆盖全历史
+_KLINE_SPAN_MS = {"1d": 86_400_000, "1w": 7 * 86_400_000, "1M": 30 * 86_400_000}
+_KLINE_MAX_BARS = {"1d": 4000, "1w": 600, "1M": 200}
+
+
+def _backfill_symbol(db, client, symbol: str, interval: str) -> int:
+    """单币单周期全量回填（正式网公开端点，endTime 向前翻页），返回缓存总根数。
+
+    增量口径：缓存已足量且新鲜（末根距今 ≤3 个周期）则跳过；
+    否则先拉最新 1000 根保新鲜，再从最旧一根向前翻页补深度，直至拉到上市。
+    """
+    existing = _cache_klines(db, symbol, interval)
+    now_ms = int(time.time() * 1000)
+    span = _KLINE_SPAN_MS[interval]
+    if (
+        len(existing) >= _KLINE_MAX_BARS[interval]
+        and now_ms - int(existing[-1]["t"]) <= 3 * span
+    ):
+        return len(existing)
+
+    merged = list(existing)
+    end_ms: Optional[int] = None
+    for _ in range(50):  # 防御上限（1d 全历史 ~4 页，足够）
+        if len(merged) >= _KLINE_MAX_BARS[interval]:
+            break
+        batch = client.klines(symbol, interval, 1000, end_ms=end_ms)
+        if not batch:
+            break  # 已翻到上市首根
+        slim = [
+            {"t": int(k[0]), "o": float(k[1]), "h": float(k[2]),
+             "l": float(k[3]), "c": float(k[4]), "v": float(k[5])}
+            for k in batch
+        ]
+        merged = _merge_klines(merged, slim)
+        oldest = slim[0]["t"]
+        if merged and int(merged[0]["t"]) < oldest - 1:
+            break  # 缓存里已有更早历史，无需继续向前翻页
+        end_ms = oldest - 1
+    _upsert_cache(db, symbol, interval, merged)
+    return len(merged)
+
+
+@celery_app.task(name="app.tasks.spot_tasks.run_spot_backfill_task")
+def run_spot_backfill_task() -> dict:
+    """K线全量回填：三币 × 1d/1w/1M，正式网公开端点分页拉全历史 → spot_kline_cache。
+
+    免费（公开数据无需 key，与交易环境无关）；增量幂等：足量且新鲜即跳过。
+    回测/日检/周研判共用同一缓存。"""
+    from app.database import SessionLocal
+    from app.services.spot_client import SpotClient
+    from app.services.task_log import close_task, open_task
+
+    task_id = open_task("spot", "K线全量回填")
+    db = SessionLocal()
+    client = SpotClient(public=True)
+    try:
+        counts = {}
+        for symbol in SPOT_SYMBOLS:
+            for interval in ("1d", "1w", "1M"):
+                before = len(_cache_klines(db, symbol, interval))
+                after = _backfill_symbol(db, client, symbol, interval)
+                counts[f"{symbol}:{interval}"] = after
+                logger.info(
+                    "K线回填 %s %s: %d → %d 根%s",
+                    symbol, interval, before, after,
+                    "（已足量新鲜，跳过）" if before == after else "",
+                )
+        db.commit()
+        close_task(
+            task_id, "completed",
+            summary="；".join(f"{k}={v}根" for k, v in counts.items()),
+            detail={"counts": counts},
+        )
+        return {"ok": True, "counts": counts}
+    except Exception as e:
+        db.rollback()
+        close_task(task_id, "failed", error=str(e))
+        logger.exception("K线全量回填失败")
+        raise
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+        db.close()
 
 
 _ACTION_TEXT = {

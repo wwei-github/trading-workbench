@@ -489,6 +489,42 @@ def put_settings(body: SpotSettingsIn, db: Session = Depends(get_db)):
     return {"ok": True, "settings": merged, "rejected": rejected}
 
 
+# ---------------- K线缓存（全量回填，2026-09-25） ----------------
+
+
+@router.get("/kline-cache-status")
+def kline_cache_status(db: Session = Depends(get_db)):
+    """K线缓存状态：各币各周期根数/覆盖区间/新鲜度（回测数据就绪度）。"""
+    from app.models.spot import SpotKlineCache
+    from app.tasks.spot_tasks import _KLINE_SPAN_MS, _bar_close_date
+
+    now_ms = int(datetime.now().timestamp() * 1000)
+    rows = db.query(SpotKlineCache).filter(SpotKlineCache.symbol.in_(SPOT_SYMBOLS)).all()
+    by_key = {(r.symbol, r.interval): sorted(r.klines, key=lambda k: k["t"]) for r in rows}
+    out: Dict[str, Dict[str, Any]] = {}
+    for sym in SPOT_SYMBOLS:
+        out[sym] = {}
+        for interval in ("1d", "1w", "1M"):
+            ks = by_key.get((sym, interval), [])
+            out[sym][interval] = {
+                "bars": len(ks),
+                "start": _bar_close_date(int(ks[0]["t"]), interval) if ks else None,
+                "end": _bar_close_date(int(ks[-1]["t"]), interval) if ks else None,
+                "fresh": bool(ks) and (now_ms - int(ks[-1]["t"])) <= 3 * _KLINE_SPAN_MS[interval],
+            }
+    return out
+
+
+@router.post("/kline-backfill")
+def kline_backfill():
+    """触发 K线全量回填（异步 celery，免费公开行情，增量幂等）。"""
+    from app.tasks.spot_tasks import run_spot_backfill_task
+
+    run_spot_backfill_task.delay()
+    logger.info("手动触发 K线全量回填")
+    return {"ok": True, "status": "RUNNING"}
+
+
 # ---------------- 回测（docs/18 §10，P1） ----------------
 
 class BacktestIn(BaseModel):

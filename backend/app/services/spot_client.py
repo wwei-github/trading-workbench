@@ -39,7 +39,17 @@ SPOT_KLINE_INTERVALS = ("1d", "1w", "1M")
 class SpotClient:
     """币安现货客户端：每次构造独立 httpx.Client（实例不跨账号缓存）。"""
 
-    def __init__(self, account_key: Optional[str] = None):
+    def __init__(self, account_key: Optional[str] = None, public: bool = False):
+        # 公开行情模式：强制正式网公开端点（无需 key），不做账号解析。
+        # K线是公开市场事实数据，与交易环境无关——现货测试网历史稀薄，
+        # 回测/全量回填必须走正式网公开行情（2026-09-25）。
+        if public:
+            self.account = None
+            self.resolve_error = None
+            self.testnet = False
+            self.base_url = settings.BINANCE_BASE_URL
+            self._client = httpx.Client(timeout=30.0)
+            return
         # 延迟导入避免 registry 循环依赖
         from app.services.account_registry import get_account, resolve_spot_account
 
@@ -89,19 +99,28 @@ class SpotClient:
 
     # ---------- 公开端点 ----------
 
-    def klines(self, symbol: str, interval: str = "1d", limit: int = 300) -> List[List[Any]]:
+    def klines(
+        self,
+        symbol: str,
+        interval: str = "1d",
+        limit: int = 300,
+        end_ms: Optional[int] = None,
+    ) -> List[List[Any]]:
         """现货 K 线。返回币安原始数组（[open_time, o, h, l, c, v, ...]）。
 
         interval 白名单：1d / 1w / 1M（docs/18 §7.2 现货必须走 /api/v3 端点，
         合约 fapi 存在资金费率/溢价基差，屯币执行在现货须用现货价格）。
+        end_ms：返回 open_time ≤ end_ms 的最近 limit 根（全量回填向前翻页用）。
         """
         if interval not in SPOT_KLINE_INTERVALS:
             raise ValueError(f"不支持的现货 K 线周期: {interval}")
+        params: Dict[str, Any] = {
+            "symbol": symbol, "interval": interval, "limit": min(limit, 1000),
+        }
+        if end_ms is not None:
+            params["endTime"] = end_ms
         try:
-            r = self._client.get(
-                f"{self.base_url}/api/v3/klines",
-                params={"symbol": symbol, "interval": interval, "limit": min(limit, 1000)},
-            )
+            r = self._client.get(f"{self.base_url}/api/v3/klines", params=params)
             r.raise_for_status()
             return r.json()
         except Exception as e:

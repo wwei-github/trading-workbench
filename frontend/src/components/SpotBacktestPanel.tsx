@@ -26,9 +26,9 @@ import {
   Typography,
   message,
 } from 'antd'
-import { ExperimentOutlined, ReloadOutlined } from '@ant-design/icons'
+import { ExperimentOutlined, ReloadOutlined, DatabaseOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import { spotApi } from '../api/spot'
+import { spotApi, type KlineCacheStatus } from '../api/spot'
 import type { BacktestOrder, BacktestRecord, BacktestSeriesPoint } from '../types/spot'
 
 const SYMBOL_OPTS = [
@@ -86,18 +86,56 @@ export default function SpotBacktestPanel() {
   const [result, setResult] = useState<BacktestRecord | null>(null)
   const [history, setHistory] = useState<BacktestRecord[]>([])
   const [submitting, setSubmitting] = useState(false)
+  const [cache, setCache] = useState<KlineCacheStatus | null>(null)
+  const [backfilling, setBackfilling] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const cachePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const loadHistory = useCallback(() => {
     spotApi.listBacktests(20).then(setHistory).catch(() => {})
   }, [])
 
+  const loadCache = useCallback(() => {
+    spotApi.klineCacheStatus().then(setCache).catch(() => {})
+  }, [])
+
+  // 手动触发 K线全量回填（免费公开行情；提交后轮询缓存状态直到日K就绪）
+  const triggerBackfill = async () => {
+    setBackfilling(true)
+    try {
+      await spotApi.klineBackfill()
+      message.info('回填任务已提交（正式网公开行情，免费无需 key，约数秒~数十秒）')
+      let ticks = 0
+      cachePollRef.current = setInterval(async () => {
+        ticks += 1
+        try {
+          const s = await spotApi.klineCacheStatus()
+          setCache(s)
+          const ready = Object.values(s).every((iv) => (iv['1d']?.bars ?? 0) >= 400)
+          if (ready || ticks > 30) {
+            if (cachePollRef.current) clearInterval(cachePollRef.current)
+            setBackfilling(false)
+            if (ready) message.success('K线数据已就绪，可开始回测')
+            else message.warning('回填仍在进行或未达标，可稍后刷新查看')
+          }
+        } catch {
+          /* 轮询错误静默，下轮重试 */
+        }
+      }, 3000)
+    } catch {
+      setBackfilling(false)
+      message.error('触发回填失败')
+    }
+  }
+
   useEffect(() => {
     loadHistory()
+    loadCache()
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
+      if (cachePollRef.current) clearInterval(cachePollRef.current)
     }
-  }, [loadHistory])
+  }, [loadHistory, loadCache])
 
   const submit = async () => {
     if (!range) return
@@ -146,7 +184,12 @@ export default function SpotBacktestPanel() {
       {/* 表单 */}
       <Card size="small" title={<><ExperimentOutlined /> 回测参数</>} extra={
         <Space>
-          <Button size="small" icon={<ReloadOutlined />} onClick={loadHistory}>刷新历史</Button>
+          <Tooltip title="免费公开行情全量回填（与交易环境无关）；缓存不足时回测也会自动回补">
+            <Button size="small" icon={<DatabaseOutlined />} loading={backfilling} onClick={triggerBackfill}>
+              补全行情
+            </Button>
+          </Tooltip>
+          <Button size="small" icon={<ReloadOutlined />} onClick={() => { loadHistory(); loadCache() }}>刷新历史</Button>
           <Button type="primary" size="small" loading={submitting} disabled={!!running} onClick={submit}>
             {running ? '回测中…' : '开始回测'}
           </Button>
@@ -204,6 +247,15 @@ export default function SpotBacktestPanel() {
             )}
           </span>
         </Space>
+        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+          {cache
+            ? '行情缓存：' + SYMBOL_OPTS.map((o) => {
+                const d = cache[o.value]?.['1d']
+                if (!d || !d.bars) return `${o.label} 无缓存`
+                return `${o.label} ${d.bars}根（${d.start}~${d.end}）${d.fresh ? '✓' : '数据偏旧'}`
+              }).join(' · ')
+            : '行情缓存：加载中…'}
+        </Typography.Text>
       </Card>
 
       {running && (
