@@ -11,12 +11,18 @@
 
 无未来函数防线：逐日截断喂入——每个交易日 T 只把 ≤T 的收盘数组
 传给 evaluate_day（D[:-N] 截尾），T 之后的数据根本不在输入里。
+
+日志约定：现货域统一走 app.spot.* 命名空间（与合约 app.services/app.tasks 区分，
+系统日志面板按 logger_name 过滤）；本模块为 app.spot.backtest。
 """
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from app.models.spot import SPOT_SYMBOLS
 from app.services.spot_engine import MIN_NOTIONAL_USDT, SpotDefaults, evaluate_day
+
+logger = logging.getLogger("app.spot.backtest")
 
 
 @dataclass
@@ -73,9 +79,29 @@ def run_backtest(
     w_closes = {s: [float(k["c"]) for k in weekly.get(s, [])] for s in symbols}
     m_closes = {s: [float(k["c"]) for k in monthly.get(s, [])] for s in symbols}
 
+    # 日期轴对齐校验：重按下标以 symbols[0] 的日K为轴，任何币种短轴都会
+    # 在快照/成交处 IndexError（此前报「list index out of range」无法定位）——
+    # 这里前置拦下并给出可行动的错误信息
+    short = {s: len(d_closes[s]) for s in symbols if len(d_closes[s]) < len(dates)}
+    if short:
+        raise ValueError(
+            f"日K数据未对齐日期轴（基准 {symbols[0]} {len(dates)} 根）: {short}；"
+            "请先运行现货日检或重试回测以补齐K线缓存"
+        )
+
     # 周/月 bar 的收盘日期数组（重放游标定位用）
     w_dates = {s: [_bar_close_date(int(k["t"]), "1w") for k in weekly.get(s, [])] for s in symbols}
     m_dates = {s: [_bar_close_date(int(k["t"]), "1M") for k in monthly.get(s, [])] for s in symbols}
+
+    logger.info(
+        "回测启动: symbols=%s 区间=%s~%s 预算=%.0fU 单份=%.0fU 定投=%s/%.0fU fee=%.4f",
+        symbols, start or dates[idx[0]], end or dates[idx[-1]], budget,
+        cfg.per_order_usdt, cfg.dca_enabled, cfg.dca_amount, cfg.fee_rate,
+    )
+    logger.info(
+        "回测数据: %s",
+        {s: (len(d_closes[s]), len(w_closes[s]), len(m_closes[s])) for s in symbols},
+    )
 
     cash = budget
     pos = {s: _Pos() for s in symbols}
@@ -85,15 +111,19 @@ def run_backtest(
     sold_total = 0.0  # 累计卖出含费回款（现金口径）
 
     fee = cfg.fee_rate
+    skips = {"cash": 0, "min_notional": 0}  # 买入放弃计数（汇总日志用）
+    decisions_dist: Dict[str, int] = {}
 
     def _buy(s: str, i: int, usdt: float, trigger: str, score: int) -> None:
         nonlocal cash, invested
         price = d_closes[s][i]
         cost = usdt * (1 + fee)
         if cost > cash + 1e-9:
-            return  # 现金不足放弃（保守口径，不部分成交）
+            skips["cash"] += 1  # 现金不足放弃（保守口径，不部分成交）
+            return
         qty = usdt / price
         if usdt < MIN_NOTIONAL_USDT:
+            skips["min_notional"] += 1
             return
         cash -= cost
         invested += cost
@@ -153,8 +183,15 @@ def run_backtest(
 
             if len(d_slice) < 2:
                 continue
-            dec = evaluate_day(s, date, d_slice, w_slice, m_slice, cfg)
+            try:
+                dec = evaluate_day(s, date, d_slice, w_slice, m_slice, cfg)
+            except Exception as e:
+                raise RuntimeError(
+                    f"evaluate_day 失败: {s} @ {date}"
+                    f"（日K {len(d_slice)}/周K {len(w_slice)}/月K {len(m_slice)} 根）: {e}"
+                ) from e
             day_decisions[s] = dec
+            decisions_dist[dec["action"]] = decisions_dist.get(dec["action"], 0) + 1
 
             # ---- 执行信号（AI 复核跳过 → 满额执行，§10.4）----
             if dec["action"] == "BUY":
@@ -184,6 +221,10 @@ def run_backtest(
         })
 
     # ---- 汇总：币本位 KPI（docs/18 §13：vs 定投基准超额）----
+    logger.info(
+        "回测重放完成: %d 个交易日, 决策分布 %s, 成交 %d 笔, 买入放弃 %s",
+        len(idx), decisions_dist, len(orders), skips,
+    )
     summary = _summarize(
         symbols, pos, d_closes, w_closes, m_closes, dates, idx,
         budget, cfg, orders, fee, invested, sold_total,
@@ -200,6 +241,11 @@ def run_backtest(
             if dd < max_dd:
                 max_dd = dd
     summary["max_drawdown"] = round(max_dd, 4)
+    logger.info(
+        "回测汇总: %s~%s 净增币 %s 超额 %s 回撤 %.2f%% 现金余 %.2fU",
+        summary["start"], summary["end"], summary["total_qty"],
+        summary["excess_qty"], summary["max_drawdown"] * 100, summary["cash_left"],
+    )
     return {"summary": summary, "daily_series": series, "orders": orders}
 
 

@@ -137,6 +137,11 @@ def run_backtest_task(bt_id: str) -> dict:
         if row is None:
             raise ValueError(f"回测 {bt_id} 不存在")
         p = row.params
+        logger.info(
+            "回测 %s 开始: symbols=%s 区间=%s~%s 预算=%s 覆盖参数=%s",
+            bt_id[:8], p["symbols"], p.get("start"), p.get("end"), p["budget"],
+            {k: p[k] for k in ("per_order_usdt", "dca_enabled", "dca_amount") if p.get(k) is not None},
+        )
 
         # 配置：请求覆盖 > spot_settings > 默认
         s = load_spot_settings(db)
@@ -149,25 +154,30 @@ def run_backtest_task(bt_id: str) -> dict:
 
         # K线：优先缓存，不足/缺失则从币安拉全量历史回补
         client = SpotClient()
+
+        def _load(sym: str, interval: str, need: int, fetch: int) -> list:
+            """读缓存，不足则拉远端回补；拉取失败必须带 币种/周期 上下文。"""
+            data = _cache_klines(db, sym, interval)
+            if len(data) < need:
+                try:
+                    remote = client.klines(sym, interval, fetch)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"拉取 {sym} {interval} K线失败（缓存仅 {len(data)} 根，需 {need}）: {e}"
+                    ) from e
+                data = _merge_klines(data, remote)
+                _upsert_cache(db, sym, interval, data)
+            logger.info(
+                "回测 %s K线: %s %s %d 根（需 %d）", bt_id[:8], sym, interval, len(data), need
+            )
+            return data
+
         klines = {"daily": {}, "weekly": {}, "monthly": {}}
         try:
             for sym in p["symbols"]:
-                need_daily = 400  # MA200 + 环境缓冲
-                daily = _cache_klines(db, sym, "1d")
-                if len(daily) < need_daily:
-                    daily = _merge_klines(daily, client.klines(sym, "1d", need_daily + 100))
-                    _upsert_cache(db, sym, "1d", daily)
-                weekly = _cache_klines(db, sym, "1w")
-                if len(weekly) < 60:
-                    weekly = _merge_klines(weekly, client.klines(sym, "1w", 160))
-                    _upsert_cache(db, sym, "1w", weekly)
-                monthly = _cache_klines(db, sym, "1M")
-                if len(monthly) < 14:
-                    monthly = _merge_klines(monthly, client.klines(sym, "1M", 150))
-                    _upsert_cache(db, sym, "1M", monthly)
-                klines["daily"][sym] = daily
-                klines["weekly"][sym] = weekly
-                klines["monthly"][sym] = monthly
+                klines["daily"][sym] = _load(sym, "1d", 400, 500)  # MA200 + 环境缓冲
+                klines["weekly"][sym] = _load(sym, "1w", 60, 160)
+                klines["monthly"][sym] = _load(sym, "1M", 14, 150)
             db.commit()
         finally:
             client.close()
@@ -183,6 +193,7 @@ def run_backtest_task(bt_id: str) -> dict:
         row.status = "DONE"
         row.finished_at = datetime.utcnow()
         db.commit()
+        logger.info("回测 %s 完成: %s", bt_id[:8], result["summary"])
         close_task(
             task_id, "completed",
             summary=(
@@ -195,17 +206,18 @@ def run_backtest_task(bt_id: str) -> dict:
         return {"ok": True, "orders": result["summary"]["orders_count"]}
     except Exception as e:
         db.rollback()
+        err = f"{type(e).__name__}: {e}"[:2000]  # 带异常类型，前端/落库可直接定位
         try:
             row = db.get(SpotBacktest, bt_id)
             if row is not None:
                 row.status = "FAILED"
-                row.error = str(e)[:2000]
+                row.error = err
                 row.finished_at = datetime.utcnow()
                 db.commit()
         except Exception:
             logger.exception("回测失败状态写入失败")
-        close_task(task_id, "failed", error=str(e))
-        logger.exception("现货回测失败")
+        close_task(task_id, "failed", error=err)
+        logger.exception("现货回测失败 id=%s", bt_id[:8])
         raise
     finally:
         db.close()

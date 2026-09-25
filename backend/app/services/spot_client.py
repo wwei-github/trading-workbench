@@ -97,12 +97,17 @@ class SpotClient:
         """
         if interval not in SPOT_KLINE_INTERVALS:
             raise ValueError(f"不支持的现货 K 线周期: {interval}")
-        r = self._client.get(
-            f"{self.base_url}/api/v3/klines",
-            params={"symbol": symbol, "interval": interval, "limit": min(limit, 1000)},
-        )
-        r.raise_for_status()
-        return r.json()
+        try:
+            r = self._client.get(
+                f"{self.base_url}/api/v3/klines",
+                params={"symbol": symbol, "interval": interval, "limit": min(limit, 1000)},
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            # WARNING 落库（系统日志面板可见）：所有现货K线拉取失败统一留痕
+            logger.warning("spot klines %s %s 失败: %s", symbol, interval, e)
+            raise
 
     def ticker_price(self, symbol: str) -> Optional[float]:
         """现价（公开端点；失败返回 None 由调用方降级）。"""
