@@ -61,6 +61,8 @@ export interface ScanStatus {
   trading_enabled: boolean;
   trading_testnet: boolean;
   open_trades: number;
+  /** 其中已进入止盈止损阶段的（TP1_HIT/TP2_HIT，止损已移保本，不占上限名额） */
+  open_tp_hit: number;
   max_open_trades: number;
   ai_analysis_enabled: boolean;
 }

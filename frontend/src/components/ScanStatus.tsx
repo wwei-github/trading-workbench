@@ -1,4 +1,4 @@
-import { Statistic, Row, Col, Tag } from 'antd'
+import { Statistic, Row, Col, Tag, Tooltip } from 'antd'
 import { bj } from '../utils/dayjs'
 import { useScanStore } from '../stores/scanStore'
 
@@ -12,9 +12,12 @@ export default function ScanStatus() {
   const trading = status?.trading_enabled ?? false
 
   const openN = status?.open_trades ?? 0
+  const tpHitN = status?.open_tp_hit ?? 0
   const maxN = status?.max_open_trades ?? 5
   const unbounded = maxN <= 0
-  const nearLimit = !unbounded && openN >= maxN
+  // 上限名额仅统计未触发止盈止损的在跑单（TP1_HIT/TP2_HIT 止损已移保本，不占名额）
+  const slotUsed = Math.max(0, openN - tpHitN)
+  const nearLimit = !unbounded && slotUsed >= maxN
 
   return (
     <Row gutter={28}>
@@ -47,14 +50,19 @@ export default function ScanStatus() {
       </Col>
       <Col>
         <Statistic
-          title="在跑单（当前环境）"
+          title="在跑单"
           valueRender={() => (
-            <span style={{ fontSize: 15 }}>
-              <span style={{ color: nearLimit ? '#fa8c16' : undefined, fontWeight: nearLimit ? 600 : undefined }}>
-                {openN}
+            <Tooltip title={`上限名额仅统计未触发止盈止损的 ${slotUsed} 笔；已进入止盈止损阶段的 ${tpHitN} 笔止损已移至保本，不占名额`}>
+              <span style={{ fontSize: 15 }}>
+                <span style={{ color: nearLimit ? '#fa8c16' : undefined, fontWeight: nearLimit ? 600 : undefined }}>
+                  {openN}
+                </span>
+                <span style={{ fontSize: 12, color: '#8c8c8c' }}> / {unbounded ? '不限' : maxN}</span>
+                {tpHitN > 0 && (
+                  <span style={{ fontSize: 12, color: '#8c8c8c', marginLeft: 6 }}>已进止盈 {tpHitN}</span>
+                )}
               </span>
-              <span style={{ fontSize: 12, color: '#8c8c8c' }}> / {unbounded ? '不限' : maxN}</span>
-            </span>
+            </Tooltip>
           )}
         />
       </Col>

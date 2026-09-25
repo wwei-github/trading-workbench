@@ -191,6 +191,12 @@ def scan_status(db: Session = Depends(get_db)):
                 TradeRecord.testnet == cfg.trading_testnet,
             )
         ).scalar_one(),
+        open_tp_hit=db.execute(
+            select(func.count()).select_from(TradeRecord).where(
+                TradeRecord.status.in_(("TP1_HIT", "TP2_HIT")),
+                TradeRecord.testnet == cfg.trading_testnet,
+            )
+        ).scalar_one(),
         max_open_trades=cfg.max_open_trades,
         ai_analysis_enabled=cfg.ai_analysis_enabled,
     )

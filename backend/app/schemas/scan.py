@@ -77,7 +77,8 @@ class ScanStatusResponse(BaseModel):
     # 交易运行状态（2026-09-20 顶部一览）：自动交易开关/当前环境/在跑单数
     trading_enabled: bool = False
     trading_testnet: bool = True
-    open_trades: int = 0          # 当前环境在跑单数（OPENED/TP1_HIT/TP2_HIT）
+    open_trades: int = 0          # 当前环境在跑单数（OPENED/TP1_HIT/TP2_HIT 三状态合计）
+    open_tp_hit: int = 0          # 其中已进入止盈止损阶段的（TP1_HIT/TP2_HIT，止损已移保本，不占上限名额）
     max_open_trades: int = 5
     ai_analysis_enabled: bool = False
 
