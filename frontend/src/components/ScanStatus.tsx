@@ -2,10 +2,11 @@ import { Statistic, Row, Col, Tag, Tooltip } from 'antd'
 import { bj } from '../utils/dayjs'
 import { useScanStore } from '../stores/scanStore'
 
-/** 顶部运行状态一览（2026-09-20 v2）：
+/** 顶部运行状态一览：
  *  自动交易 + 最近扫描（时间+命中）+ 在跑单水位（资金数字全部下沉到各页面概览）。
- *  总收益/收益率去掉（资金分析页与交易记录页概览已有，顶部只留资金存量）；
- *  扫描状态去掉（「扫描中」态在立即扫描按钮上直接可见）。 */
+ *  在跑单口径（2026-09-25 v3）：主数字 = 占上限名额的笔数（OPENED），
+ *  已进止盈止损（TP1_HIT/TP2_HIT，止损已移保本）用绿色 Tag 单独标注、不占名额；
+ *  满仓红色 / 差一满橙色分级预警。 */
 export default function ScanStatus() {
   const { status } = useScanStore()
   const last = status?.last_scan
@@ -17,7 +18,13 @@ export default function ScanStatus() {
   const unbounded = maxN <= 0
   // 上限名额仅统计未触发止盈止损的在跑单（TP1_HIT/TP2_HIT 止损已移保本，不占名额）
   const slotUsed = Math.max(0, openN - tpHitN)
-  const nearLimit = !unbounded && slotUsed >= maxN
+  const full = !unbounded && slotUsed >= maxN
+  const nearFull = !unbounded && !full && maxN >= 2 && slotUsed === maxN - 1
+  const numColor = full ? '#cf1322' : nearFull ? '#fa8c16' : undefined
+
+  const tip = unbounded
+    ? `在跑 ${openN} 笔（未设上限）${tpHitN > 0 ? `；已保本 ${tpHitN} 笔` : ''}`
+    : `在跑 ${openN} 笔 = 占名额 ${slotUsed} / ${maxN} 笔${tpHitN > 0 ? ` + 已保本 ${tpHitN} 笔` : ''}；已保本指止盈止损已触发、止损移至成本以上，不占上限名额`
 
   return (
     <Row gutter={28}>
@@ -52,14 +59,22 @@ export default function ScanStatus() {
         <Statistic
           title="在跑单"
           valueRender={() => (
-            <Tooltip title={`上限名额仅统计未触发止盈止损的 ${slotUsed} 笔；已进入止盈止损阶段的 ${tpHitN} 笔止损已移至保本，不占名额`}>
+            <Tooltip title={tip}>
               <span style={{ fontSize: 15 }}>
-                <span style={{ color: nearLimit ? '#fa8c16' : undefined, fontWeight: nearLimit ? 600 : undefined }}>
-                  {openN}
-                </span>
-                <span style={{ fontSize: 12, color: '#8c8c8c' }}> / {unbounded ? '不限' : maxN}</span>
+                {unbounded ? (
+                  <span>{openN}</span>
+                ) : (
+                  <>
+                    <span style={{ color: numColor, fontWeight: full || nearFull ? 600 : undefined }}>
+                      {slotUsed}
+                    </span>
+                    <span style={{ fontSize: 12, color: '#8c8c8c' }}> / {maxN}</span>
+                  </>
+                )}
                 {tpHitN > 0 && (
-                  <span style={{ fontSize: 12, color: '#8c8c8c', marginLeft: 6 }}>已进止盈 {tpHitN}</span>
+                  <Tag color="green" style={{ fontSize: 12, marginLeft: 8, marginInlineEnd: 0, lineHeight: '20px' }}>
+                    已保本 {tpHitN}
+                  </Tag>
                 )}
               </span>
             </Tooltip>
