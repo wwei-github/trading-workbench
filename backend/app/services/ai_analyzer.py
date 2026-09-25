@@ -69,12 +69,13 @@ SIGNAL_TYPE_LABELS = {
     "trend_reversal": "趋势反转（收盘价破前高/前低）",
     "range_bound": "震荡区间",
     "breakout": "放量突破（收盘破 Donchian 通道 + 放量）",
-    # 指标驱动筛选（2026-09-17）：触发器类型（方向已由指标多数决确定）
-    "trigger_breakout": "指标同向·Donchian突破触发",
+    # 指标驱动筛选（2026-09-17）：触发器类型（方向已由指标多数决确定）；
+    # 括号内注明程序已验证的入场门槛（2026-09-25 三重收紧 + docs/19 两段式），AI 据此评估信号质量
+    "trigger_breakout": "指标同向·Donchian突破触发（程序已验证：收盘越轨≥0.2%·放量≥1.2×20根均量·长实体且单侧影线≤实体20%，近光头光脚）",
     "trigger_candlestick": "指标同向·K线形态触发",
-    "trigger_pullback": "指标同向·回踩EMA21触发",
+    "trigger_pullback": "指标同向·回踩EMA21触发（旧类型，已被两段式金K确认取代，仅历史数据）",
     # 两段式回踩确认（2026-09-25，docs/19）：回踩触碰后等金K确认才入场
-    "trigger_pullback_confirm": "指标同向·回踩EMA21后金K确认",
+    "trigger_pullback_confirm": "指标同向·回踩EMA21后金K确认（上一根触碰EMA21企稳、当根出现同向金K才入场，程序已验证）",
     "unknown": "未分类",
     "manual_search": "手动搜索",
 }

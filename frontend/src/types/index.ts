@@ -323,6 +323,8 @@ export interface TradeRecord {
   pnl_pct: number | null // 相对止损金额 %（运行中=（已实现+浮动）/risk_amount）
   exit_reason: string | null // sl / tp1_then_sl / tp1_trail / trail_sl / breakeven_sl / liquidation / manual / error
   fail_reason?: string | null // 开仓失败原因（仅 FAILED 记录，后端读自 raw.fail_reason）
+  signal_type?: string | null // 触发信号类型（trigger_breakout 等；null=导入持仓/旧行）
+  pattern?: string | null // 触发K线形态（hammer 等；突破类为 null）
   testnet: boolean // 测试网/正式网
   account_key?: string | null // 开单账号（docs/17：testnet-1/live-N；null=旧行按 testnet 回落）
   ai_snapshot: AIAnalysis | null // 开单时 AI 分析结论快照

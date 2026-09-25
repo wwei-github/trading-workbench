@@ -456,6 +456,8 @@ def _attempt_open(
                 scan_result_id=a.scan_result_id,
                 ai_analysis_id=a.id,
                 recommendation=float(a.recommendation) if a.recommendation is not None else None,
+                signal_type=a.signal_type,
+                pattern=(a.scan_result.pattern if a.scan_result is not None else None),
                 testnet=trader.testnet,
                 account_key=trader.account_key,
                 ai_snapshot=_ai_snapshot(a),
@@ -526,6 +528,8 @@ def _attempt_open(
                     rec = TradeRecord(
                         symbol=symbol, direction=direction, ai_analysis_id=a.id,
                         recommendation=float(a.recommendation) if a.recommendation is not None else None,
+                        signal_type=a.signal_type,
+                        pattern=(a.scan_result.pattern if a.scan_result is not None else None),
                         testnet=trader.testnet,
                         account_key=trader.account_key,
                         status="FAILED", raw={"fail_reason": str(e)[:200]},

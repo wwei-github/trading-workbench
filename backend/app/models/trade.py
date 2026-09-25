@@ -32,6 +32,8 @@ class TradeRecord(Base):
         UUID(as_uuid=True), ForeignKey("ai_analyses.id"), nullable=True, unique=True, index=True
     )
     recommendation: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)  # 开单时评分快照
+    signal_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # 触发信号类型（trigger_breakout 等；NULL=导入持仓/旧行）
+    pattern: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # 触发K线形态（hammer 等；突破类为 NULL）
     testnet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)  # 测试网/正式网标识
     account_key: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # 开单账号（docs/17：testnet-1/live-N；NULL=迁移前旧行，读路径按 testnet 回落）
     ai_snapshot: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)

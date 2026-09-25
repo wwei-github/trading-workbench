@@ -27,7 +27,12 @@ from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import calc_atr
 from app.services.strategy.technical import render_indicator_block
 from app.services.strategy.types import POSITION_LABEL_MAP
-from app.services.ai_analyzer import _RULE_HTF_HARD, _RULE_STRUCT, _RULE_VOTE
+from app.services.ai_analyzer import (
+    _RULE_HTF_HARD,
+    _RULE_STRUCT,
+    _RULE_VOTE,
+    SIGNAL_TYPE_LABELS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -513,7 +518,7 @@ def _build_user_msg(
         vol_desc += f"（{float(signal['volume']):.1f}×20根均量）"
     msg = (
         f"币种: {signal['symbol']}\n"
-        f"信号类型: {signal['signal_type']}\n"
+        f"信号类型: {SIGNAL_TYPE_LABELS.get(signal['signal_type'], signal['signal_type'])}（{signal['signal_type']}）\n"
         f"当前价格: {signal['current_price']}\n"
         f"K线形态: {signal.get('pattern') or '无'}（位置: "
         f"{POSITION_LABEL_MAP.get(signal.get('position') or '', signal.get('position') or '未知')}）\n"

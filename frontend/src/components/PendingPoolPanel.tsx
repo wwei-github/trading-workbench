@@ -11,6 +11,8 @@ import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
 import { bj } from '../utils/dayjs'
 import { patternStyle } from '../constants/labels'
+import { schemeTag } from '../utils/scheme'
+import { useScanStore } from '../stores/scanStore'
 import type { PullbackPendingItem } from '../types'
 
 const { Text } = Typography
@@ -52,6 +54,7 @@ export default function PendingPoolPanel() {
   const [rows, setRows] = useState<PullbackPendingItem[]>([])
   const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState<StatusFilter>('pending')
+  const colorScheme = useScanStore((s) => s.colorScheme)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -89,7 +92,9 @@ export default function PendingPoolPanel() {
     {
       title: '方向', dataIndex: 'direction', key: 'direction', width: 90,
       render: (v: 1 | -1) =>
-        v === 1 ? <Tag color="green">看多</Tag> : <Tag color="red">看空</Tag>,
+        v === 1
+          ? <Tag color={schemeTag(colorScheme).up}>看多</Tag>
+          : <Tag color={schemeTag(colorScheme).down}>看空</Tag>,
     },
     {
       title: '状态', dataIndex: 'status', key: 'status', width: 110,

@@ -44,6 +44,7 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
+import { SIGNAL_TYPE_MAP, patternStyle } from '../constants/labels'
 import { bj } from '../utils/dayjs'
 import { SCHEME_UP_DOWN, schemeTag, schemeValueColor } from '../utils/scheme'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
@@ -747,6 +748,30 @@ export default function TradesPanel() {
       width: 80,
       render: (v: boolean) =>
         v === false ? <Tag color="green">正式网</Tag> : <Tag color="gold">测试网</Tag>,
+    },
+    {
+      // 信号类型列（2026-09-25）：开单时触发器类型，与扫描结果页标签同源；导入持仓/旧行显示 -
+      title: '信号类型',
+      dataIndex: 'signal_type',
+      key: 'signal_type',
+      width: 110,
+      render: (v: string | null | undefined) => {
+        if (!v) return '-'
+        const cfg = SIGNAL_TYPE_MAP[v]
+        return <Tag color={cfg?.color ?? 'default'}>{cfg?.label ?? v}</Tag>
+      },
+    },
+    {
+      // K线形态列（2026-09-25）：开单时触发形态，与扫描结果页标签同源；突破类/导入持仓/旧行显示 -
+      title: 'K线形态',
+      dataIndex: 'pattern',
+      key: 'pattern',
+      width: 100,
+      render: (v: string | null | undefined) => {
+        if (!v) return '-'
+        const p = patternStyle(v)
+        return <Tag color={p.color}>{p.label}</Tag>
+      },
     },
     {
       title: '评分',

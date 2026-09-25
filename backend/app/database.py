@@ -24,6 +24,16 @@ def _run_migrations(engine):
     from app.config import settings
 
     with engine.begin() as conn:
+        # trade_records 加触发信号类型列（2026-09-25）：开单时自 AIAnalysis.signal_type 落快照
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS signal_type VARCHAR(32)"
+        ))
+        # trade_records 加触发K线形态列（2026-09-25）：开单时自 ScanResult.pattern 落快照
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS pattern VARCHAR(32)"
+        ))
         # Feature 1: scan_results 加 volume / volume_type
         conn.execute(text("""
             ALTER TABLE scan_results
