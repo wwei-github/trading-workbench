@@ -897,13 +897,6 @@ export default function TradesPanel() {
       render: fmtNum,
     },
     {
-      title: '止损（现值）',
-      dataIndex: 'stop_loss',
-      key: 'stop_loss',
-      width: 110,
-      render: fmtNum,
-    },
-    {
       title: 'TP1',
       dataIndex: 'tp1',
       key: 'tp1',
@@ -932,6 +925,13 @@ export default function TradesPanel() {
       },
     },
     {
+      title: 'TP2',
+      dataIndex: 'tp2',
+      key: 'tp2',
+      width: 90,
+      render: (v: number | null) => (v ? fmtNum(v) : '-'),
+    },
+    {
       // TP2预估收益：无 TP2 显示 -；TP2 数量为开仓量的 25%（_tp_quantities），全额近似会偏大
       title: (
         <Tooltip title="预估收益 = 25%数量 × (TP2价 − 开仓价)（TP2 承接开仓量的 25%）；按开仓时初始价格计算">
@@ -941,7 +941,8 @@ export default function TradesPanel() {
       key: 'tp2_est',
       width: 100,
       render: (_: unknown, rec: TradeRecord) => {
-        if (rec.qty == null || rec.tp2 == null || rec.entry_price == null) return '-'
+        // 无 TP2（null 或旧记录存 0）不计算预估，与 TP2 价格列显示 '-' 同口径
+        if (rec.qty == null || !rec.tp2 || rec.entry_price == null) return '-'
         const dir = rec.direction === 'long' ? 1 : -1
         const est = rec.qty * 0.25 * (rec.tp2 - rec.entry_price) * dir
         return (
@@ -950,6 +951,13 @@ export default function TradesPanel() {
           </span>
         )
       },
+    },
+    {
+      title: '止损（现值）',
+      dataIndex: 'stop_loss',
+      key: 'stop_loss',
+      width: 110,
+      render: fmtNum,
     },
     {
       // 止损预估亏损：数量 × (止损价 − 开仓价)，运行中止损现值随移动更新
@@ -970,13 +978,6 @@ export default function TradesPanel() {
           </span>
         )
       },
-    },
-    {
-      title: 'TP2',
-      dataIndex: 'tp2',
-      key: 'tp2',
-      width: 90,
-      render: (v: number | null) => (v ? fmtNum(v) : '-'),
     },
     {
       title: '数量',

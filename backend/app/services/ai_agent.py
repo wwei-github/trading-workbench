@@ -27,10 +27,29 @@ from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import calc_atr
 from app.services.strategy.technical import render_indicator_block
 from app.services.strategy.types import POSITION_LABEL_MAP
+from app.services.ai_analyzer import _RULE_HTF_HARD, _RULE_STRUCT, _RULE_VOTE
 
 logger = logging.getLogger(__name__)
 
 MAX_ROUNDS = 5
+
+# AGENT_SYSTEM 内嵌片段：公共片段的 P1 适配版（P1 有工具循环，analysis 字段名是 reason）
+_RULE_VOTE_BRIEF = _RULE_VOTE.replace("analysis 第一条", "reason 第一条")
+_RULE_STRUCT_BRIEF = _RULE_STRUCT.replace("analysis", "reason")
+# AGENT_SYSTEM 用 str.format 渲染，公共片段中可能存在的 { } 需先转义
+_RULE_VOTE_BRIEF = _RULE_VOTE_BRIEF.replace("{", "{{").replace("}", "}}")
+_RULE_STRUCT_BRIEF = _RULE_STRUCT_BRIEF.replace("{", "{{").replace("}", "}}")
+
+def render_system_prompt() -> str:
+    """渲染最终生效的 P1 系统提示词（页面「查看当前生效提示词」与实际调用同源）。"""
+    return AGENT_SYSTEM.format(
+        max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
+        rr_min=settings.AI_RR_MIN, risk_pct=settings.RISK_BUDGET_PCT,
+        _RULE_HTF_HARD=_RULE_HTF_HARD,
+        _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
+        _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
+        skill_index="",
+    )
 
 # 锚点枚举：结构位两类（support/resistance，解析到现价下/上方最近的摆动点）
 # + 线外锚点（做多止盈锚摆动高点下方、做空锚摆动低点上方，枚举名沿用 zone/关键位
@@ -44,6 +63,7 @@ LEVEL_REFS = (
 _REF_DESC = "、".join(LEVEL_REFS)
 
 AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随消息给出，规则如下：
+{_RULE_HTF_HARD}
 1. 程序能算的不让你算——事实包数据直接用；需要补充数据才调用工具，最多 {max_rounds} 轮。
 2. **禁止编造绝对价格**：所有价格必须用结构位锚点表达（entry_ref/stop_ref/tp1_ref/tp2_ref + offset_pct），
    ref 取值: {_ref_desc}；offset_pct 为相对锚点的百分比偏移（如支撑位下方 0.5×ATR 用负 offset）。
@@ -64,13 +84,6 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    range_edge 区间边缘反转。
 6. "可用技能"列表中标注【当前命中】的技能，建议先 load_skill 阅读再决策。
 7. **效率与数据边界（重要）**：事实包只含信号与行情数据（60根K线含每根成交量与成交额/摆动结构/均线形态/ATR/技术指标MACD·布林带·RSI·SuperTrend·ADX·OBV·4h背景），
-   指标块末尾的"指标方向"行为程序化统计（各指标投多/空/中性票）：多空票数谁多以谁为主，
-   即使与 1h K线结构矛盾也以多数方向为准（analysis 中写明票数与依据）；
-   多空平衡时自行结合K线结构与量能判断；
-   EMA 排列不构成方向限制（多头排列不禁止做空、空头排列不禁止做多）。
-   例外（最高优先级硬约束）：技术指标块出现「方向约束（硬性）」行时必须遵守——
-   4h强多头背景仅可开多（开空一律 skip），4h强空头背景仅可开空（开多一律 skip）；
-   即使 1h 指标多数决指向反方向也以约束为准（1h 逆强背景信号视为回调噪音）。
    首轮即可直接 submit_decision；资金费率、大盘状态、恐贪指数等环境数据**不在**事实包中，
    确需时在同一轮一次性批量调用 get_funding / get_market_breadth / get_fear_greed 自行获取
    （如资金费率极端可 load_skill 阅读 funding-extreme-handling）；不要为用工具而用工具，
@@ -78,15 +91,18 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 8. 不要输出不带工具调用的纯文字回复（会浪费一轮）；文字只用于简短说明查询意图，
    决策一律通过 submit_decision 提交。
 9. 盈亏比铁律 ≥{rr_min}；止损宽度由结构位决定，不设固定价格百分比上限；仓位不要自己报，
-   程序按固定亏损法计算：仓位 = 3% ÷ 止损距离%，触发止损时恰好亏损账户资金的 3%（止损越远仓位越小）。
-10. 止损锚定（提示词纪律，程序不再改写 stop 值——止损是否合理由你自己把关，
+   程序按固定亏损法计算：仓位 = {risk_pct}% ÷ 止损距离%，触发止损时恰好亏损账户资金的
+   {risk_pct}%（止损越远仓位越小）。
+10. 指标方向判定：{_RULE_VOTE_BRIEF}
+    EMA 排列不构成方向限制（多头排列不禁止做空、空头排列不禁止做多）。
+11. 止损锚定（提示词纪律，程序不再改写 stop 值——止损是否合理由你自己把关，
     程序只复算盈亏比）：结构位优先、极值兜底、两锚取更远者。做多优先锚定入场价下方
     最近摆动低点外 0.3%~0.5%，做空锚定上方最近摆动高点外同幅度；入场贴着结构位时
     止损还须越过影线极值——做多取摆动低点与 5 根最低点中更低者、
     做空取摆动高点与 5 根最高点中更高者外 0.3%
     （止损在近期波动区间内部必被扫损）；入场价与极值间无摆动结构时用极值锚——
     做多严格低于最近 5 根K线最低点（影线极值非收盘价）至少 0.3%，做空相反。
-11. 止盈锚定（提示词纪律，程序不再改挂）：结构位=摆动高低点（事实包"近期摆动结构"）。
+12. 止盈锚定（提示词纪律，程序不再改挂）：结构位=摆动高低点（事实包"近期摆动结构"）。
     距现价特别近（≤1×ATR）的位是价格正在测试/突破的"争夺位"，只回答"是否得到支撑/压力/突破"，
     不算止盈目标；做多止盈一必须挂在更远的第一档结构位（摆动高点）下方 0.2%~0.5%，
     做空挂在下方第一档结构位（摆动低点）上方 0.2%~0.5%
@@ -97,9 +113,11 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     摆动低点上方）且必须比止盈一更远。价格创新高/新低、前方无摆动结构位时
     （如创新高突破），止盈一 = 入场 ± {rr_min}×止损距离、止盈二不设（仅一档）。
     盈亏比 ≥{rr_min} 是开单硬性要求（程序复算，不足即打回）。
-12. 方向纪律（不再程序强制，无 ±0.3% 贴近要求）：优先只在支撑结构做多（摆动低点/
+13. 方向纪律（不再程序强制，无 ±0.3% 贴近要求）：优先只在支撑结构做多（摆动低点/
     近期低点附近）、只在压力结构做空（摆动高点/近期高点附近）；现价已离开结构位时
     不再要求贴近，按动能与盈亏比自行判断入场（breakout 顺势追突破仍用 market 锚）。
+
+{_RULE_STRUCT_BRIEF}
 
 {skill_index}"""
 
@@ -345,6 +363,10 @@ def analyze_coin_agent(
     system = AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
         rr_min=settings.AI_RR_MIN,
+        risk_pct=settings.RISK_BUDGET_PCT,
+        _RULE_HTF_HARD=_RULE_HTF_HARD,
+        _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
+        _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
         skill_index=skill_index,
     )
     if strategy_prompt:

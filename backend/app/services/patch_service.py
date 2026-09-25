@@ -446,7 +446,7 @@ def run_evaluate(db: Session) -> list[PromptPatch]:
 
 def build_prompt_view(db: Session) -> dict:
     """三层拼装：系统自带（代码常量只读）/ 用户自定义 / 补丁覆盖段。"""
-    from app.services.ai_agent import AGENT_SYSTEM
+    from app.services.ai_agent import render_system_prompt
     from app.services.ai_analyzer import SYSTEM_PROMPT
 
     cfg = _get_cfg(db)
@@ -455,7 +455,6 @@ def build_prompt_view(db: Session) -> dict:
         select(PromptPatch).where(PromptPatch.status.in_(("active", "valid")))
     ).scalars().all()
     by_marker = {f"<!-- patch:{p.target_tag}:{p.id[:8]} -->": p for p in patches}
-
     segments: list[dict] = []
     matches = list(MARKER_RE.finditer(text))
     custom_head = text[:matches[0].start()].strip() if matches else text.strip()
@@ -473,7 +472,7 @@ def build_prompt_view(db: Session) -> dict:
         })
     return {
         "system_prompt": SYSTEM_PROMPT,
-        "agent_system": AGENT_SYSTEM,
+        "agent_system": render_system_prompt(),
         "user_custom": custom_head,
         "patch_segments": segments,
         "params": {
