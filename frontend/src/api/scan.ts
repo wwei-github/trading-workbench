@@ -209,6 +209,13 @@ export const scanApi = {
           '/trades/adopt-now', null, { timeout: 60000 },
         )
         .then((r) => r.data),
+    // 市价平仓（与飞书卡片按钮同源）：同步执行约 2~5s，立即结算落终态
+    closeMarket: (tradeId: string) =>
+      api
+        .post<{ ok: boolean; symbol: string; pnl: number; pnl_pct: number | null }>(
+          `/trades/${tradeId}/close-market`, null, { timeout: 60000 },
+        )
+        .then((r) => r.data),
   },
 
   // 关注列表

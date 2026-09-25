@@ -230,6 +230,32 @@ def adopt_now(db: Session = Depends(get_db)):
             "count": len(adopted), "account_key": trader.account_key}
 
 
+@router.post("/{trade_id}/close-market")
+def close_market(trade_id: str, db: Session = Depends(get_db)):
+    """手动市价平仓（2026-09-25）：与飞书卡片「市价平仓」按钮完全同源
+    （共享 manual_close_market：状态校验 + 按开单账号选 trader + 账号口径
+    开仓锁互斥巡检 + 锁内重读）。市价全平后立即按 income 口径结算落终态。
+    平仓约 2~5s，同步执行（adopt-now 同模式）。"""
+    from uuid import UUID as _UUID
+    from app.tasks.trade_tasks import manual_close_market
+
+    try:
+        _UUID(trade_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="交易记录不存在")
+    res = manual_close_market(trade_id)
+    if not res["ok"]:
+        err = str(res.get("error") or "未知错误")
+        if "不存在" in err:
+            raise HTTPException(status_code=404, detail=err)
+        if "系统忙" in err:
+            raise HTTPException(status_code=409, detail=err)
+        if "平仓失败" in err:
+            raise HTTPException(status_code=500, detail=err)
+        raise HTTPException(status_code=400, detail=err)
+    return res
+
+
 def _bj_day(dt: datetime) -> str:
     """UTC naive → 北京时间自然日键（DB 存 UTC，北京 = UTC+8）"""
     return (dt + timedelta(hours=8)).date().isoformat()

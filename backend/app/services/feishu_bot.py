@@ -15,10 +15,8 @@ import json
 import logging
 import threading
 import time
-from uuid import uuid4
 
 import httpx
-from redis import Redis
 
 from app.config import settings
 
@@ -249,51 +247,12 @@ def _exec_spot_confirm(act: str, value: dict) -> None:
 
 
 def _exec_close(trade_id: str) -> None:
-    """后台执行平仓（开仓锁互斥 + 锁内重读防竞态）→ 会话内发结果卡片（新消息）"""
-    from app.database import SessionLocal
-    from app.models.trade import TradeRecord
-    from app.services.binance_trader import BinanceTrader
-    from app.services.trade_engine import close_market_now
-    from app.tasks.trade_tasks import _acquire_open_lock, _OPEN_LOCK_TTL_S, _release_open_lock
+    """后台执行平仓（共享核心 manual_close_market：校验+账号锁互斥+锁内重读）
+    → 会话内发结果卡片（新消息）。执行核心与网页交易记录「市价平仓」按钮同源
+    （2026-09-25 抽取），本函数只负责结果卡片呈现。"""
+    from app.tasks.trade_tasks import manual_close_market
 
-    res = {"ok": False, "error": "未知错误"}
-    db = SessionLocal()
-    try:
-        rec = db.get(TradeRecord, trade_id)
-        if not rec:
-            res = {"ok": False, "error": "交易记录不存在"}
-        elif rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
-            res = {"ok": False, "error": f"该交易已不在跑（{rec.status}），无需平仓"}
-        else:
-            # docs/17：按开单账号结算；account_key 缺失的旧行回落 testnet 标记
-            trader = BinanceTrader(rec.account_key or bool(rec.testnet))
-            if not trader.configured:
-                res = {"ok": False, "error": "币安 API 凭据未配置，无法执行"}
-            else:
-                r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
-                ident = uuid4().hex
-                # 账号口径锁（docs/17 P1）：与该账号的结算巡检/开仓互斥
-                lock_acc = rec.account_key or ("testnet-1" if rec.testnet else "live-1")
-                if not _acquire_open_lock(r, ident, wait_s=20, ttl_s=_OPEN_LOCK_TTL_S,
-                                          account=lock_acc):
-                    res = {"ok": False, "error": "系统忙（巡检/开仓中），请稍后重试"}
-                else:
-                    try:
-                        db.refresh(rec)  # 锁内重读：巡检可能刚好把单子平掉了
-                        if rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
-                            res = {"ok": False, "error": f"该交易刚被结算平仓（{rec.status}）"}
-                        else:
-                            out = close_market_now(db, trader, rec)
-                            res = {"ok": True, "symbol": rec.symbol,
-                                   "pnl": float(out["pnl"]), "pnl_pct": out.get("pnl_pct")}
-                    except Exception as e:
-                        db.rollback()
-                        logger.exception("卡片平仓失败 %s", trade_id)
-                        res = {"ok": False, "error": f"平仓失败：{str(e)[:80]}"}
-                    finally:
-                        _release_open_lock(r, ident, account=lock_acc)
-    finally:
-        db.close()
+    res = manual_close_market(trade_id)
 
     if res["ok"]:
         pnl, pct = res["pnl"], res.get("pnl_pct")

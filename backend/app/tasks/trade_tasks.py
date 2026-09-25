@@ -79,6 +79,58 @@ def _mark_analysis_block(analysis_id: str, reason: str) -> None:
         db.close()
 
 
+def manual_close_market(trade_id: str) -> dict:
+    """手动市价平仓共享执行核心（2026-09-25，飞书卡片按钮与网页交易记录按钮同源）。
+
+    校验状态 → 按开单账号选 trader（docs/17：account_key 缺失旧行按 testnet
+    回落）→ 账号口径开仓锁（与该账号结算巡检/开仓互斥）→ 锁内重读防竞态 →
+    close_market_now（先平仓后撤单，失败时 SL/TP 原封未动）。
+
+    返回 {"ok": True, "symbol", "pnl", "pnl_pct"} 或 {"ok": False, "error"}；
+    调用方（飞书侧发结果卡片 / API 侧映射 HTTP 状态码）只管呈现。
+    """
+    from app.services.trade_engine import close_market_now
+
+    res: dict = {"ok": False, "error": "未知错误"}
+    db = SessionLocal()
+    try:
+        rec = db.get(TradeRecord, UUID(str(trade_id)))
+        if not rec:
+            res = {"ok": False, "error": "交易记录不存在"}
+        elif rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
+            res = {"ok": False, "error": f"该交易已不在跑（{rec.status}），无需平仓"}
+        else:
+            trader = BinanceTrader(rec.account_key or bool(rec.testnet))
+            if not trader.configured:
+                res = {"ok": False, "error": "币安 API 凭据未配置，无法执行"}
+            else:
+                r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+                ident = f"manual-close-{uuid4().hex[:8]}"
+                # 账号口径锁（docs/17 P1）：与该账号的结算巡检/开仓互斥
+                lock_acc = rec.account_key or ("testnet-1" if rec.testnet else "live-1")
+                if not _acquire_open_lock(r, ident, wait_s=20, ttl_s=_OPEN_LOCK_TTL_S,
+                                          account=lock_acc):
+                    res = {"ok": False, "error": "系统忙（巡检/开仓中），请稍后重试"}
+                else:
+                    try:
+                        db.refresh(rec)  # 锁内重读：巡检可能刚好把单子平掉了
+                        if rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
+                            res = {"ok": False, "error": f"该交易刚被结算平仓（{rec.status}）"}
+                        else:
+                            out = close_market_now(db, trader, rec)
+                            res = {"ok": True, "symbol": rec.symbol,
+                                   "pnl": float(out["pnl"]), "pnl_pct": out.get("pnl_pct")}
+                    except Exception as e:
+                        db.rollback()
+                        logger.exception("手动市价平仓失败 %s", trade_id)
+                        res = {"ok": False, "error": f"平仓失败：{str(e)[:80]}"}
+                    finally:
+                        _release_open_lock(r, ident, account=lock_acc)
+    finally:
+        db.close()
+    return res
+
+
 @celery_app.task(name="app.tasks.trade_tasks.run_auto_trade_task", max_retries=0)
 def run_auto_trade_task():
     task_id = open_task(task_type="trade", task_name="结算巡检", trigger="scheduled")

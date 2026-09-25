@@ -528,6 +528,34 @@ export default function TradesPanel() {
     }
   }
 
+  // 市价平仓（2026-09-25，与飞书卡片按钮同源）：二次确认 → 同步执行（约 2~5s）
+  // → 结果提示并刷新。失败分支同样刷新——后端可能实际已平（响应超时/巡检自愈中）
+  const [closingId, setClosingId] = useState<string | null>(null)
+  const handleCloseMarket = (rec: TradeRecord) => {
+    Modal.confirm({
+      title: `市价平仓 ${rec.symbol}？`,
+      content: '将以市价立即全平该仓位并撤销全部挂单，按成交结果结算盈亏，不可撤销。',
+      okText: '市价平仓',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        setClosingId(rec.id)
+        try {
+          const res = await scanApi.trades.closeMarket(rec.id)
+          message.success(
+            `市价平仓成功，净盈亏 ${res.pnl >= 0 ? '+' : ''}${res.pnl.toFixed(2)} USDT` +
+            (res.pnl_pct != null ? `（收益率 ${res.pnl_pct}%）` : ''),
+          )
+        } catch (e: any) {
+          message.error(e?.response?.data?.detail || '市价平仓失败，请稍后重试')
+        } finally {
+          setClosingId(null)
+          await fetchData()
+        }
+      },
+    })
+  }
+
   // 一键清空测试网数据（2026-09-20，仅测试网 scope 显示）：先预检拿将删数量
   // → 弹窗二次确认（含在跑单警告）→ 执行删除并刷新。实盘数据与复盘统计不受影响
   const [purgeInfo, setPurgeInfo] = useState<PurgeStats | null>(null)
@@ -1039,7 +1067,7 @@ export default function TradesPanel() {
     {
       title: '操作',
       key: 'blacklist',
-      width: 120,
+      width: 160,
       fixed: 'right',
       render: (_: unknown, rec) => {
         const inBl = blacklistSet.has(rec.symbol)
@@ -1047,14 +1075,25 @@ export default function TradesPanel() {
         return (
           <Space size={0} onClick={(e) => e.stopPropagation()}>
             {running && (
-              <Button
-                size="small"
-                type="link"
-                loading={advisingId === rec.id}
-                onClick={() => handleAdvice(rec)}
-              >
-                重诊
-              </Button>
+              <>
+                <Button
+                  size="small"
+                  type="link"
+                  loading={advisingId === rec.id}
+                  onClick={() => handleAdvice(rec)}
+                >
+                  重诊
+                </Button>
+                <Button
+                  size="small"
+                  type="link"
+                  danger
+                  loading={closingId === rec.id}
+                  onClick={() => handleCloseMarket(rec)}
+                >
+                  市价平仓
+                </Button>
+              </>
             )}
             {inBl ? (
               <Popconfirm

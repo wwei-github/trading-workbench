@@ -833,26 +833,43 @@ def _record_realized(db: Session, trader: BinanceTrader, rec: TradeRecord) -> fl
 
 
 def close_market_now(db: Session, trader: BinanceTrader, rec: TradeRecord) -> dict:
-    """市价平仓（飞书卡片按钮，2026-09-21）：撤挂单 → reduceOnly 市价全平 →
+    """市价平仓（飞书卡片按钮，2026-09-21）：reduceOnly 市价全平 → 清理挂单 →
     立即按 income 口径结算落终态（复用巡检零仓位的费用拆分/事件口径）。
+
+    执行顺序（2026-09-25 调整为先平仓后撤单）：SL/TP 挂单在市价单执行期间
+    始终在场——下单失败时止损保护原封未动（无裸奔窗口）；reduceOnly 互斥
+    保证不双重平仓（SL 在途先触发则本单被拒 -2022，复查持仓归零视为成功）。
+    挂单清理三道网：币安仓位归零自动撤 reduceOnly/closePosition 挂单 +
+    成交后显式 cancel_all_algo 兜底 + 巡检孤儿单清扫。
 
     调用方须已获取开仓锁、确认 rec 在跑状态（本函数内不再校验）。
     返回 {qty, pnl, pnl_pct}；异常向上抛由调用方回滚。
     """
     import time
-    trader.cancel_all_algo(rec.symbol)
     pos = trader.positions().get(rec.symbol)
     amt = abs(float((pos or {}).get("amt") or 0)) if pos else 0.0
     close_side = _close_side(rec.direction)
     close_qty = trader.round_qty(rec.symbol, amt if amt > 0 else float(rec.qty or 0))
     if close_qty <= 0:
         raise ValueError("无仓位可平（交易所持仓为空且记录无数量）")
+
+    def _pos_amt() -> float:
+        cur = trader.positions().get(rec.symbol)
+        return abs(float((cur or {}).get("amt") or 0)) if cur else 0.0
+
     if amt > 0:
-        trader.market_order(rec.symbol, close_side, close_qty, reduce_only=True)
+        try:
+            trader.market_order(rec.symbol, close_side, close_qty, reduce_only=True)
+        except Exception:
+            # -2022 边界：SL/TP 在途先触发平掉仓位，reduceOnly 单被交易所拒绝；
+            # 复查持仓归零 → 视为已被挂单平掉，走正常结算；仍有持仓 → 重试一次
+            if _pos_amt() > 0:
+                trader.market_order(rec.symbol, close_side,
+                                    trader.round_qty(rec.symbol, _pos_amt()),
+                                    reduce_only=True)
         # 市价单通常即时成交；最多重试一次兜底（成交量未反映到持仓时再补一单）
         for _ in range(2):
-            cur = trader.positions().get(rec.symbol)
-            cur_amt = abs(float((cur or {}).get("amt") or 0)) if cur else 0.0
+            cur_amt = _pos_amt()
             if cur_amt < close_qty * 0.05:
                 break
             try:
@@ -861,6 +878,11 @@ def close_market_now(db: Session, trader: BinanceTrader, rec: TradeRecord) -> di
             except Exception:
                 break
             time.sleep(1)
+        # 平仓成交后再撤挂单（仓位归零时交易所通常已自动撤销，此处兜底）
+        try:
+            trader.cancel_all_algo(rec.symbol)
+        except Exception:
+            logger.warning("平仓后撤销挂单失败 %s（交易所应已自动撤，巡检将清扫孤儿单）", rec.symbol)
     time.sleep(1)  # income 流水落库延迟（REALIZED_PNL/COMMISSION 通常 <1s）
     # 结算：与巡检零仓位分支同口径（费用拆分/全程净额）
     since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000) - 5_000
