@@ -19,11 +19,7 @@ import { scanApi } from '../api/scan'
 import { useScanStore } from '../stores/scanStore'
 import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
 import type { ReviewGroupStat, ReviewStats } from '../types'
-import {
-  EMA_STATE_MAP,
-  POSITION_LABEL_MAP,
-  SIGNAL_TYPE_MAP,
-} from '../constants/labels'
+import { SIGNAL_TYPE_MAP } from '../constants/labels'
 
 /**
  * 复盘统计页：AI 建议开单 24h 后逐K回放定论的汇总统计。
@@ -60,21 +56,12 @@ export default function ReviewStatsPanel() {
     return <span style={{ color, fontWeight: 600 }}>{pct}</span>
   }
 
-  // 根据非空维度字段确定维度名与分组值（groups 每个元素只有一个维度非空）
+  // 根据非空维度字段确定维度名与分组值（后端已归并为触发器家族，signal_type 即家族名）
   const renderDim = (g: ReviewGroupStat): { dim: string; value: string } => {
     if (g.signal_type) {
       return {
         dim: '信号类型',
         value: SIGNAL_TYPE_MAP[g.signal_type]?.label || g.signal_type,
-      }
-    }
-    if (g.position) {
-      return { dim: '位置', value: POSITION_LABEL_MAP[g.position] || g.position }
-    }
-    if (g.ema_state) {
-      return {
-        dim: '均线',
-        value: EMA_STATE_MAP[g.ema_state]?.label || g.ema_state,
       }
     }
     return { dim: '其他', value: '-' }

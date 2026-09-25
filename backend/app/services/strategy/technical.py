@@ -16,6 +16,7 @@ from typing import Optional
 import numpy as np
 
 from app.services.strategy.ema import calc_ema
+from app.services.strategy.indicators import volume_ratio
 
 logger = logging.getLogger(__name__)
 
@@ -584,16 +585,22 @@ def compute_indicator_votes(
     }
 
 
-def compute_quality_score(direction: int, votes: dict, trigger_type: str) -> int:
+def compute_quality_score(
+    direction: int, votes: dict, trigger_type: str,
+    klines: Optional[list] = None,
+) -> int:
     """候选质量分（0-100）：方向一致性为主，修饰项只影响排序不改变方向。
 
     direction: 候选方向（1 多 / -1 空，= net 的符号）
-    trigger_type: trigger_breakout / trigger_candlestick / trigger_pullback
+    trigger_type: trigger_breakout / trigger_candlestick / trigger_pullback_confirm
+    klines: 可选，金K类形态触发的量能加分需要（突破类量能已是触发门槛不重复加）
     修饰规则（2026-09-17 设计评审定稿；2026-09-24 强 4h 背景提权）：
     - 4h背景同向：强 +10 / 弱 +5；反向：强 -12 / 弱 -8
       （强 4h 趋势币在质量分排序与 AI 配额中前置；逆强背景降权更狠，
       与「强多只开多/强空只开空」硬约束呼应）
     - 突破触发且 ADX≥25 +5（强趋势中的突破可信）
+    - 金K类形态触发（同向形态/回踩金K确认）且量比 ≥1.2 +5（放量金K，2026-09-25；
+      缩量形态不加不减，仅在 AI 配额排序中自然落后）
     - RSI>75 做多 / RSI<25 做空 -8（追高杀低）
     - OBV 顶背离做多 / 底背离做空 -6（量价背离）
     - 突破触发且布林带宽分位 ≤10 -5（带宽收窄的突破易假）
@@ -613,6 +620,16 @@ def compute_quality_score(direction: int, votes: dict, trigger_type: str) -> int
     adx = by_short.get("ADX")
     if trigger_type == "trigger_breakout" and adx and float(adx.get("adx") or 0) >= 25:
         score += 5
+
+    # 金K类形态触发的量能加分（2026-09-25）：放量金K +5；缩量/平量不加不减。
+    # 突破类不加——量比 ≥1.2 已是触发门槛，全体通过者无区分度
+    if (trigger_type in ("trigger_candlestick", "trigger_pullback_confirm")
+            and klines):
+        try:
+            if volume_ratio(klines) >= 1.2:
+                score += 5
+        except (ValueError, TypeError, IndexError, ZeroDivisionError):
+            pass  # 量能数据异常只降级该修饰项，不影响基础分
 
     rsi = by_short.get("RSI")
     if rsi:

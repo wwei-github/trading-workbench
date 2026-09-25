@@ -80,6 +80,23 @@ def _trade_type_of(rec: TradeRecord) -> str:
     return (rec.ai_snapshot or {}).get("trade_type") or "unknown"
 
 
+# 触发器家族映射（与 /review/stats 的分组口径同源，含旧管线别名；
+# NULL/未识别 → 「未记录」，兼容导入持仓与 signal_type 列上线前的旧行）
+TRIGGER_FAMILY = {
+    "trigger_breakout": "同向突破",
+    "breakout": "同向突破",            # 旧管线·放量突破
+    "downtrend_breakout": "同向突破",  # 旧管线·下跌突破
+    "trigger_pullback": "同向回踩",
+    "trigger_pullback_confirm": "同向回踩",
+    "uptrend_pullback": "同向回踩",    # 旧管线·上涨回调
+    "trigger_candlestick": "同向形态",
+}
+
+
+def _signal_family_of(rec: TradeRecord) -> str:
+    return TRIGGER_FAMILY.get(rec.signal_type or "") or "未记录"
+
+
 def _hold_hours(rec: TradeRecord) -> float:
     if not rec.opened_at or not rec.closed_at:
         return 0.0
@@ -168,6 +185,7 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
 
     for dim, keyfn in (
         ("开单类型", _trade_type_of),
+        ("信号类型", _signal_family_of),
         ("方向", lambda t: t.direction or "未知"),
         ("出场原因", lambda t: t.exit_reason or "未知"),
         ("开仓时段", _bucket_label),

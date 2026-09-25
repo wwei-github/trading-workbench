@@ -132,7 +132,7 @@ def detect_indicator_candidate(
             pending_op["votes_json"] = _votes_snapshot(votes)
         return None, pending_op
 
-    quality = compute_quality_score(direction, votes, trig["type"])
+    quality = compute_quality_score(direction, votes, trig["type"], klines=klines)
     return {
         "signal_type": trig["type"],
         # 现价 = 未收盘K线最新价（仅作入场价差参考）：信号判定（投票/触发/形态/量能）
