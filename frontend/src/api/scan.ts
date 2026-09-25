@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, PurgeStats, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
+import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, PullbackPendingItem, PurgeStats, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -145,6 +145,15 @@ export const scanApi = {
   // 技能详情（含全文 body markdown，404 = 技能不存在）
   skillDetail: (name: string) =>
     api.get<SkillInfo>(`/scans/skills/${encodeURIComponent(name)}`).then((r) => r.data),
+
+  // ===== 回踩两段式待确认池（docs/19）=====
+
+  pullbackPendings: {
+    list: (status: 'all' | 'pending' | 'confirmed' | 'expired' | 'superseded' = 'all', limit = 100) =>
+      api
+        .get<PullbackPendingItem[]>(`/scans/pullback-pendings`, { params: { status, limit } })
+        .then((r) => r.data),
+  },
 
   // ===== 币种黑名单（手动/自动）=====
 

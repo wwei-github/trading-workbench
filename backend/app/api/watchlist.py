@@ -17,7 +17,7 @@ from app.schemas.scan import (
 )
 from app.services.binance_client import BinanceClient
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
-from app.services.scanner import _get_scan_config, detect_indicator_candidate
+from app.services.scanner import Scanner, _get_scan_config, detect_indicator_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -149,14 +149,18 @@ def refresh_watchlist(symbol: str, db: Session = Depends(get_db)):
     except AllExchangesFailed as e:
         raise HTTPException(status_code=503, detail=f"K线刷新失败（{e.summary}）")
 
-    # 信号判定：与扫描器 scan_one 完全同一套指标多数决+触发确认逻辑（每币至多 1 个候选）
+    # 信号判定：与扫描器 scan_one 完全同一套指标多数决+两段式触发确认逻辑（每币至多 1 个候选）
     signals: list[dict] = []
+    pending_op = None
     if klines:
         try:
-            cand = detect_indicator_candidate(pool, target, klines)
+            pend = Scanner._prefetch_pendings([target]).get(target)
+            cand, pending_op = detect_indicator_candidate(pool, target, klines, pending=pend)
         except Exception as e:
             logger.warning("关注刷新 %s 信号判定失败（按无命中处理）: %s", target, e)
-            cand = None
+            cand, pending_op = None, None
+        if pending_op and pending_op.get("op") == "confirm" and cand:
+            pending_op["confirm_pattern"] = cand.get("pattern")
         if cand:
             signals = [cand]
 
@@ -228,6 +232,12 @@ def refresh_watchlist(symbol: str, db: Session = Depends(get_db)):
     if signals:
         db.refresh(new_rows[-1])
         latest_scan = ScanResultOut.model_validate(new_rows[-1]).model_dump(mode="json")
+
+    # 两段式 pending 处置（docs/19）：confirm 回写新落库的 scan_result_id；
+    # upsert/expire 与候选无关也要落库，放在主事务提交之后用独立 session 执行
+    if pending_op:
+        result_ids = {target: new_rows[-1].id} if signals else {}
+        Scanner._apply_pending_ops({target: pending_op}, result_ids)
 
     return {
         "symbol": target,

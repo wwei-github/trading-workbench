@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Numeric, Index, JSON, UniqueConstraint
+from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Numeric, Index, JSON, UniqueConstraint, SmallInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -147,6 +147,44 @@ class TradeReview(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     ai_analysis: Mapped["AIAnalysis"] = relationship(back_populates="trade_review")
+
+
+class PullbackPending(Base):
+    """回踩金K两段式确认——Stage-1 待确认池（docs/19）
+
+    T3 回踩命中且当根无同向金K 时建立 pending（不落 scan_results、不进 AI）；
+    仅在恰好下一根已收盘K线的扫描轮有资格确认：
+    - confirmed：次根出现同向 GOLDEN_12 且多数决复验通过 → 以
+      trigger_pullback_confirm 落库进 AI（confirmed_scan_result_id 可回溯）
+    - expired：次根无金K（window_expired）/ 方向失守（direction_flip）
+    - superseded：次根 T1 突破或当根触碰+金K 抢先
+    每币至多一条活跃 pending（status=pending）；终态行保留审计，下次触碰新建行。
+    """
+
+    __tablename__ = "pullback_pendings"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    direction: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 1 多 / -1 空
+    # Stage-1 信号K线开盘时间（有效期判定锚点：== 下一轮 klines[-3].open_time）
+    stage1_candle_open: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    ema21: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)  # 触碰时 EMA21
+    quality_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    votes_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    # 终态原因：confirmed 恒空；expired=window_expired/direction_flip；superseded=breakout/same_candle_confirm
+    resolve_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    confirm_pattern: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # 确认形态
+    confirmed_scan_result_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )  # 确认后落库的 scan_results.id（可回溯，不用 FK 避免删除耦合）
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_pullback_pendings_symbol_status", "symbol", "status"),
+    )
 
 
 class Watchlist(Base):

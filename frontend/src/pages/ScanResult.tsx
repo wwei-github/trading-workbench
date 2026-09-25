@@ -4,6 +4,7 @@ import { ThunderboltOutlined } from '@ant-design/icons'
 import { useTabMemory } from '../utils/tabMemory'
 import ScanStatus from '../components/ScanStatus'
 import ResultTable from '../components/ResultTable'
+import PendingPoolPanel from '../components/PendingPoolPanel'
 import TaskList from '../components/TaskList'
 import LogsPanel from '../components/LogsPanel'
 import ScanConfigPanel from '../components/ScanConfigPanel'
@@ -51,7 +52,7 @@ export default function ScanResult() {
   // 合约内部 tab 记忆（既有 key 不动）
   const [activeTab, switchTab] = useTabMemory(
     'tabs.scanResult',
-    ['results', 'watchlist', 'search', 'strategy', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs'],
+    ['results', 'pending-pool', 'watchlist', 'search', 'strategy', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs'],
   )
   // 现货内部 tab 记忆（独立 key，与合约无冲突）
   const [spotTab, switchSpotTab] = useTabMemory('tabs.spot', ['overview', 'backtest', 'history', 'settings'])
@@ -124,6 +125,11 @@ export default function ScanResult() {
       key: 'results',
       label: '扫描结果',
       children: <div style={{ height: '100%', overflow: 'hidden' }}><ResultTable headerExtra={scanButton} /></div>,
+    },
+    {
+      key: 'pending-pool',
+      label: '待确认池',
+      children: <div style={{ height: '100%', overflow: 'hidden' }}><PendingPoolPanel /></div>,
     },
     {
       key: 'watchlist',

@@ -41,7 +41,7 @@ from app.services.strategy.technical import enforce_htf_constraint
 from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
-from app.models.scan import ScanRecord, ScanResult, AIAnalysis, TradeReview
+from app.models.scan import PullbackPending, ScanRecord, ScanResult, AIAnalysis, TradeReview
 from app.models.trade import TradeRecord
 from app.models.patch import PromptPatch
 from app.models.system_config import SystemConfig
@@ -770,6 +770,40 @@ def get_ai_progress(scan_result_id: UUID, db: Session = Depends(get_db)):
     else:
         status = "running" if events else "idle"
     return {"scan_result_id": str(scan_result_id), "status": status, "events": events}
+
+
+# ===== 回踩两段式待确认池（docs/19）=====
+
+@router.get("/pullback-pendings")
+def pullback_pendings_list(
+    status: str = Query("all", pattern="^(all|pending|confirmed|expired|superseded)$"),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """回踩两段式待确认池（docs/19）：Stage-1 触碰后等金K确认的 pending 及近期终态行。
+
+    status=pending 只看活跃等待中；其余值按状态过滤；all 全量按 updated_at 倒序。
+    """
+    q = select(PullbackPending).order_by(desc(PullbackPending.updated_at)).limit(limit)
+    if status != "all":
+        q = q.where(PullbackPending.status == status)
+    rows = db.execute(q).scalars().all()
+    return [{
+        "id": str(r.id),
+        "symbol": r.symbol,
+        "direction": r.direction,  # 1 多 / -1 空
+        "stage1_candle_open": r.stage1_candle_open.isoformat() if r.stage1_candle_open else None,
+        "ema21": float(r.ema21) if r.ema21 is not None else None,
+        "quality_score": r.quality_score,
+        "votes_json": r.votes_json,
+        "status": r.status,  # pending / confirmed / expired / superseded
+        "resolve_reason": r.resolve_reason,
+        "confirm_pattern": r.confirm_pattern,
+        "confirmed_scan_result_id": str(r.confirmed_scan_result_id) if r.confirmed_scan_result_id else None,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+        "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+    } for r in rows]
 
 
 # ===== 币种黑名单（2026-09-18，GRIFFAIN/4USDT 批次教训） =====

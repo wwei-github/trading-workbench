@@ -73,6 +73,8 @@ SIGNAL_TYPE_LABELS = {
     "trigger_breakout": "指标同向·Donchian突破触发",
     "trigger_candlestick": "指标同向·K线形态触发",
     "trigger_pullback": "指标同向·回踩EMA21触发",
+    # 两段式回踩确认（2026-09-25，docs/19）：回踩触碰后等金K确认才入场
+    "trigger_pullback_confirm": "指标同向·回踩EMA21后金K确认",
     "unknown": "未分类",
     "manual_search": "手动搜索",
 }

@@ -222,6 +222,25 @@ export interface BlacklistItem {
   created_at: string | null;
 }
 
+// ===== 回踩两段式待确认池（docs/19）=====
+
+export interface PullbackPendingItem {
+  id: string;
+  symbol: string;
+  direction: 1 | -1; // 1 多 / -1 空
+  stage1_candle_open: string | null; // Stage-1 触碰K线开盘时间（锚点）
+  ema21: number | null; // 触碰时 EMA21
+  quality_score: number | null;
+  votes_json: Record<string, any> | null;
+  status: 'pending' | 'confirmed' | 'expired' | 'superseded';
+  resolve_reason: string | null; // window_expired / direction_flip / breakout / same_candle_confirm
+  confirm_pattern: string | null; // 确认形态（confirmed 行）
+  confirmed_scan_result_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  resolved_at: string | null;
+}
+
 // ===== 规则补丁（docs/12 §10）=====
 
 export type PatchStatus = 'draft' | 'active' | 'valid' | 'invalid' | 'rolled_back'

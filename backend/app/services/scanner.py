@@ -5,8 +5,9 @@
 2. 体检：全池每币 1h K线 → 6 指标投票（MACD/布林/RSI/SuperTrend/ADX/OBV）；
    |净票|≥2 才补拉 4h 算第 7 票（两阶段拉取省 4h 请求）
 3. 分组：7 票净票 |net|≥3 → 多头/空头候选；-2~+2 中性跳过（震荡市不开单）
-4. 触发确认：方向与候选一致的入场触发（Donchian突破/黄金12形态/回踩EMA21企稳，
-   见 strategy/trigger.py）；无触发 → 观察池（不落库，下轮重算）
+4. 触发确认：两段式决策矩阵（docs/19）——Donchian突破 / 回踩+金K确认 / 纯金K形态；
+   回踩触碰无金K 转入 pending 待确认池（pullback_pendings，次根金K才确认）；
+   无触发 → 观察池（不落库，下轮重算）
 5. 质量分排序 + 重复命中抑制（仅定时）+ 落库 → AI 配额（按质量分取前 N）
 
 旧信号管线（Donchian+形态为主动作、EMA 硬门控）已整体替换：
@@ -15,7 +16,7 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -23,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import SessionLocal
-from app.models.scan import ScanRecord, ScanResult
+from app.models.scan import PullbackPending, ScanRecord, ScanResult
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.exchange_pool import ExchangePool
@@ -35,7 +36,7 @@ from app.services.strategy.technical import (
     compute_quality_score,
     HTF_SHORT,
 )
-from app.services.strategy.trigger import detect_trigger
+from app.services.strategy.trigger import PULLBACK, detect_trigger
 
 logger = logging.getLogger(__name__)
 
@@ -86,14 +87,21 @@ def _get_scan_config(db) -> SystemConfig:
 
 def detect_indicator_candidate(
     pool: ExchangePool, symbol: str, klines: list[list],
-) -> Optional[dict]:
+    pending: Optional[dict] = None,
+) -> Tuple[Optional[dict], Optional[dict]]:
     """指标驱动单币检测（Scanner 与 watchlist.refresh 共用同一套逻辑与阈值）。
 
     流程：6 票预筛（|net6|<2 直接判中性，省 4h 请求）→ 补拉 4h 算第 7 票
-    → 多数决分组（|net|≥3 且 voted≥5）→ 方向一致触发确认（trigger.py）→ 质量分。
+    → 多数决分组（|net|≥3 且 voted≥5）→ 两段式触发确认（trigger.py，docs/19）→ 质量分。
 
-    返回候选 dict（signal_type/quality_score/votes 及展示字段），每币至多 1 个；
-    无候选（中性/票数不足/无触发 → 观察池）返回 None；异常向上抛由调用方处理。
+    pending: 该币活跃回踩 pending 快照（{id, direction, stage1_candle_open}）或 None。
+    返回 (候选 dict, pending_op) 二元组：
+    - 候选 dict（signal_type/quality_score/votes 及展示字段），每币至多 1 个；
+      无候选（中性/票数不足/无触发）为 None
+    - pending_op: pending 处置动作（upsert/expire/confirm/supersede），可为 None；
+      候选为 None 时仍可能携带动作（触碰转 pending、票崩/窗口过期）
+
+    异常向上抛由调用方处理。
     """
     ema = analyze_ema(klines)  # 背景展示用（方向判定不依赖 EMA）
     vol, vol_type = classify_volume(klines)
@@ -101,7 +109,8 @@ def detect_indicator_candidate(
     # 两阶段投票：先 6 票预筛（|net6|<2 时第 7 票也够不到 3，省 4h 请求）
     votes6 = compute_indicator_votes(klines)
     if not votes6 or votes6["voted"] < 5 or abs(votes6["net"]) < 2:
-        return None
+        # 前置过期路径：票崩 → 活跃 pending 方向失守（docs/19 §4.1）
+        return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
     # 第 7 票：4h 背景（失败降级为无 4h 票，不中断）
     try:
@@ -112,28 +121,18 @@ def detect_indicator_candidate(
 
     votes = compute_indicator_votes(klines, htf)
     if not votes or votes["voted"] < 5 or abs(votes["net"]) < 3:
-        return None  # 中性/票数不足 → 不分组
+        return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)  # 中性/票数不足
 
     direction = 1 if votes["net"] > 0 else -1
-    trig = detect_trigger(klines, direction)
+    trig, pending_op = detect_trigger(klines, direction, pending)
     if trig is None:
-        return None  # 有方向无触发 → 观察池（不落库）
+        # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩口径计）
+        if pending_op and pending_op.get("op") == "upsert":
+            pending_op["quality_score"] = compute_quality_score(direction, votes, PULLBACK)
+            pending_op["votes_json"] = _votes_snapshot(votes)
+        return None, pending_op
 
     quality = compute_quality_score(direction, votes, trig["type"])
-    votes_json = {
-        "bull": votes["bull"], "bear": votes["bear"],
-        "bull_n": votes["bull_n"], "bear_n": votes["bear_n"],
-        "net": votes["net"], "voted": votes["voted"],
-    }
-    # 4h 背景级别快照（震荡/纠缠/弱·强多空），前端「4h方向」列展示；
-    # 旧扫描行无此键显示 -
-    htf_res = dict(votes["results"]).get(HTF_SHORT)
-    if htf_res:
-        votes_json["htf"] = {
-            "state": htf_res.get("state"),
-            "label": htf_res.get("state_label"),
-            "dir": int(htf_res.get("dir") or 0),
-        }
     return {
         "signal_type": trig["type"],
         # 现价 = 未收盘K线最新价（仅作入场价差参考）：信号判定（投票/触发/形态/量能）
@@ -150,8 +149,25 @@ def detect_indicator_candidate(
         "volume": vol,
         "volume_type": vol_type,
         "quality_score": quality,
-        "votes": votes_json,
+        "votes": _votes_snapshot(votes),
+    }, pending_op
+
+
+def _votes_snapshot(votes: dict) -> dict:
+    """指标票数快照（含 4h 背景级别，前端「4h方向」列展示；旧行无此键显示 -）"""
+    snap = {
+        "bull": votes["bull"], "bear": votes["bear"],
+        "bull_n": votes["bull_n"], "bear_n": votes["bear_n"],
+        "net": votes["net"], "voted": votes["voted"],
     }
+    htf_res = dict(votes["results"]).get(HTF_SHORT)
+    if htf_res:
+        snap["htf"] = {
+            "state": htf_res.get("state"),
+            "label": htf_res.get("state_label"),
+            "dir": int(htf_res.get("dir") or 0),
+        }
+    return snap
 
 
 class Scanner:
@@ -242,9 +258,13 @@ class Scanner:
 
             # 2. 线程池并发扫描每个币种（指标驱动筛选，见模块 docstring）
             hits: list[dict] = []
+            # 两段式回踩确认（docs/19）：批量预取活跃 pending（每轮一次查询，勿逐币查），
+            # 扫描线程只读快照，处置动作（upsert/expire/confirm/supersede）收集后统一落库
+            pendings = self._prefetch_pendings(symbols)
+            pending_ops: dict[str, dict] = {}
 
             def scan_one(symbol: str) -> tuple[str, list[dict], bool]:
-                """指标多数决定向 → 触发确认 → 质量分。返回 (symbol, [候选...], is_error)"""
+                """指标多数决定向 → 两段式触发确认 → 质量分。返回 (symbol, [候选...], is_error)"""
                 try:
                     # EMA144/指标暖机需要足够历史，至少拉 300 根
                     klines = self.pool.get_klines(
@@ -252,7 +272,13 @@ class Scanner:
                         interval=kline_interval,
                         limit=max(kline_window, 300),
                     )
-                    cand = detect_indicator_candidate(self.pool, symbol, klines)
+                    cand, pop = detect_indicator_candidate(
+                        self.pool, symbol, klines, pending=pendings.get(symbol),
+                    )
+                    if pop:
+                        if pop.get("op") == "confirm" and cand:
+                            pop["confirm_pattern"] = cand.get("pattern")
+                        pending_ops[symbol] = pop
                     if cand is None:
                         return symbol, [], False
                     cand["symbol"] = symbol
@@ -292,7 +318,12 @@ class Scanner:
                 new_hits, suppressed = hits, 0
 
             # 5. 写入结果（用独立 session，避免长时间扫描后主 session 连接失效）
-            self._save_results(scan_record_id, new_hits)
+            result_ids = self._save_results(scan_record_id, new_hits)
+
+            # 5.5 两段式 pending 处置（docs/19 §4.2）：确认回写 scan_result_id、
+            # upsert/终态落库。放在 _save_results 之后以便 confirm 关联新记录 id
+            if pending_ops:
+                self._apply_pending_ops(pending_ops, result_ids)
 
             # 6. 触发 AI 分析（任务内自检开关；批量按24h成交额取前 AI_MAX_PER_SCAN 个）
             # 满仓跳过（docs/06）：定时扫描时在跑单已达上限则不做 AI 分析（省 LLM 成本，
@@ -331,34 +362,41 @@ class Scanner:
     def _save_results(
         scan_record_id: UUID,
         hits: list[dict],
-    ) -> None:
-        """用独立 session 写入扫描结果，避免主 session 连接失效或死锁"""
+    ) -> dict[str, UUID]:
+        """用独立 session 写入扫描结果，避免主 session 连接失效或死锁。
+
+        返回 {symbol: 新写入 ScanResult.id}（供 pending confirm 回写关联）。
+        """
         if not hits:
-            return
+            return {}
         sdb = SessionLocal()
+        result_ids: dict[str, UUID] = {}
+        rows: list[ScanResult] = []
         try:
             for h in hits:
-                sdb.add(
-                    ScanResult(
-                        scan_record_id=scan_record_id,
-                        symbol=h["symbol"],
-                        signal_type=h.get("signal_type", "unknown"),
-                        current_price=h["current_price"],
-                        breakout_pct=h["breakout_pct"],
-                        trend_slope=h.get("trend_slope", 0),
-                        r_squared=h.get("r_squared", 0),
-                        pattern=h.get("pattern"),
-                        signal_reason=h.get("signal_reason"),
-                        strength=h.get("strength"),
-                        ema_state=h.get("ema_state"),
-                        position=h.get("position"),
-                        volume_24h=h.get("volume_24h", 0),
-                        volume=h.get("volume", 0),
-                        volume_type=h.get("volume_type", "平量"),
-                        quality_score=h.get("quality_score"),
-                        votes_json=h.get("votes"),
-                    )
+                row = ScanResult(
+                    scan_record_id=scan_record_id,
+                    symbol=h["symbol"],
+                    signal_type=h.get("signal_type", "unknown"),
+                    current_price=h["current_price"],
+                    breakout_pct=h["breakout_pct"],
+                    trend_slope=h.get("trend_slope", 0),
+                    r_squared=h.get("r_squared", 0),
+                    pattern=h.get("pattern"),
+                    signal_reason=h.get("signal_reason"),
+                    strength=h.get("strength"),
+                    ema_state=h.get("ema_state"),
+                    position=h.get("position"),
+                    volume_24h=h.get("volume_24h", 0),
+                    volume=h.get("volume", 0),
+                    volume_type=h.get("volume_type", "平量"),
+                    quality_score=h.get("quality_score"),
+                    votes_json=h.get("votes"),
                 )
+                sdb.add(row)
+                rows.append(row)
+            sdb.flush()  # 应用列默认值（uuid 主键），供 confirm 关联回写
+            result_ids.update({r.symbol: r.id for r in rows})
             sdb.commit()
             logger.info("写入 %d 条扫描结果 #%s", len(hits), scan_record_id)
         except Exception as e:
@@ -452,3 +490,106 @@ class Scanner:
             if (h["symbol"], h.get("signal_type", "unknown")) not in seen
         ]
         return new_hits, len(hits) - len(new_hits)
+
+    # ── 两段式回踩确认：pending 待确认池（docs/19）─────────────────────────
+
+    @staticmethod
+    def _prefetch_pendings(symbols: list[str]) -> dict[str, dict]:
+        """批量预取活跃回踩 pending 快照（每轮一次查询，勿逐币查）。
+
+        返回 {symbol: {id, direction, stage1_candle_open}}；查询失败按无 pending
+        处理（不阻断扫描）。同 symbol 取最新一条（正常至多一条；防御手动/定时
+        并发双行的极端情况）。
+        """
+        if not symbols:
+            return {}
+        sdb = SessionLocal()
+        try:
+            rows = sdb.execute(
+                select(PullbackPending).where(
+                    PullbackPending.symbol.in_(symbols),
+                    PullbackPending.status == "pending",
+                ).order_by(PullbackPending.created_at.desc())
+            ).scalars().all()
+            out: dict[str, dict] = {}
+            for r in rows:
+                if r.symbol not in out:
+                    out[r.symbol] = {
+                        "id": r.id,
+                        "direction": r.direction,
+                        "stage1_candle_open": r.stage1_candle_open,
+                    }
+            return out
+        except Exception as e:
+            logger.warning("预取回踩 pending 失败（按无 pending 处理）: %s", e)
+            return {}
+        finally:
+            sdb.close()
+
+    @staticmethod
+    def _apply_pending_ops(ops: dict[str, dict], result_ids: dict[str, UUID]) -> None:
+        """统一落库 pending 处置动作（独立 session，扫描线程只收集不写库）。
+
+        - upsert：同方向刷新锚点续命；无活跃行则新建；方向反转旧行 expired
+          （direction_flip）后同事务新建（保留审计链，不原地改写方向）
+        - confirm：终态 confirmed，回填确认形态与 confirmed_scan_result_id
+        - supersede：终态 superseded（T1 突破 / 当根确认抢先）
+        - expire：终态 expired（window_expired / direction_flip）
+        失败整体回滚忽略——下轮扫描会按快照重新评估，不产生不可恢复状态。
+        """
+        sdb = SessionLocal()
+        try:
+            now = datetime.utcnow()
+            for symbol, op in ops.items():
+                kind = op.get("op")
+                row = sdb.execute(
+                    select(PullbackPending).where(
+                        PullbackPending.symbol == symbol,
+                        PullbackPending.status == "pending",
+                    ).order_by(PullbackPending.created_at.desc()).limit(1)
+                ).scalars().first()
+
+                if kind == "upsert":
+                    direction = op["direction"]
+                    if row and row.direction != direction:
+                        row.status = "expired"
+                        row.resolve_reason = "direction_flip"
+                        row.resolved_at = now
+                        row = None  # 方向反转：旧行终态后新建（不原地改写方向）
+                    if row:
+                        # 同方向触碰刷新：锚点换新触碰根，等待窗口重新计时
+                        row.stage1_candle_open = op["stage1_candle_open"]
+                        row.ema21 = op.get("ema21")
+                        row.quality_score = op.get("quality_score")
+                        row.votes_json = op.get("votes_json")
+                        row.updated_at = now
+                    else:
+                        sdb.add(PullbackPending(
+                            symbol=symbol,
+                            direction=direction,
+                            stage1_candle_open=op["stage1_candle_open"],
+                            ema21=op.get("ema21"),
+                            quality_score=op.get("quality_score"),
+                            votes_json=op.get("votes_json"),
+                        ))
+                elif row is None:
+                    continue
+                elif kind == "confirm":
+                    row.status = "confirmed"
+                    row.confirm_pattern = op.get("confirm_pattern")
+                    row.confirmed_scan_result_id = result_ids.get(symbol)
+                    row.resolved_at = now
+                elif kind == "supersede":
+                    row.status = "superseded"
+                    row.resolve_reason = op.get("reason") or "superseded"
+                    row.resolved_at = now
+                elif kind == "expire":
+                    row.status = "expired"
+                    row.resolve_reason = op.get("reason") or "window_expired"
+                    row.resolved_at = now
+            sdb.commit()
+        except Exception as e:
+            logger.exception("回踩 pending 处置落库失败（忽略，下轮重评估）: %s", e)
+            sdb.rollback()
+        finally:
+            sdb.close()

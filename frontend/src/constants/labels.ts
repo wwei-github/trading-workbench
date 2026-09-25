@@ -12,6 +12,8 @@ export const SIGNAL_TYPE_MAP: Record<string, { label: string; color: string }> =
   trigger_breakout: { label: "同向突破", color: "gold" },
   trigger_candlestick: { label: "同向形态", color: "blue" },
   trigger_pullback: { label: "同向回踩", color: "cyan" },
+  // 两段式回踩确认（2026-09-25，docs/19）：回踩后等金K确认才入场
+  trigger_pullback_confirm: { label: "回踩金K确认", color: "geekblue" },
   // 旧值保留映射（兼容历史记录）
   downtrend_breakout: { label: "下跌突破", color: "red" },
   uptrend_pullback: { label: "上涨回调", color: "green" },
