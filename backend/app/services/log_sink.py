@@ -1,6 +1,8 @@
 """应用日志落库 sink（前端「系统日志」数据源）
 
-- DBLogHandler：WARNING 及以上、app.* 日志器的记录 → 内存队列 → 后台线程批量写 app_logs
+- DBLogHandler：app.* 日志器的记录 → 内存队列 → 后台线程批量写 app_logs
+- 级别口径：默认 WARNING 及以上；例外——app.spot.*（现货域）INFO 即落库
+  （现货日志 Tab 需要看到回测/日检全过程 INFO，量小可控）
 - 仅捕获本应用（app.*）日志，排除 uvicorn/celery/httpx 等框架噪音；写库失败静默丢弃（防递归）
 - 保留策略：日志 7 天、任务记录 14 天，写线程每 10 分钟清理一次
 - API 进程（main.py）与 celery worker（celery_app.py）各自挂载，幂等
@@ -19,21 +21,33 @@ _TASK_RETENTION_DAYS = 14
 _CLEANUP_INTERVAL_S = 600
 _MESSAGE_MAX_LEN = 4000
 
+# 现货域 logger 前缀：INFO 即落库（现货日志 Tab 数据源）
+_SPOT_LOGGER_PREFIX = "app.spot"
+
 _attached = False
 
 
 class _AppLoggerFilter(logging.Filter):
-    """只放行本应用日志器（app.*），框架与第三方库的日志不落库"""
+    """只放行本应用日志器（app.*），框架与第三方库的日志不落库。
+
+    级别分域：handler 挂 INFO 级，这里二次把关——
+    - app.spot.*：INFO 即放行（现货域全程可观测）
+    - 其余 app.*：仅 WARNING 及以上（与历史口径一致，防止 INFO 刷库）
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return record.name.startswith("app")
+        if not record.name.startswith("app"):
+            return False
+        if record.name.startswith(_SPOT_LOGGER_PREFIX):
+            return True
+        return record.levelno >= logging.WARNING
 
 
 class DBLogHandler(logging.Handler):
-    """把 WARNING+ 日志异步入库；emit 永不抛错、不阻塞业务线程"""
+    """把日志异步入库；emit 永不抛错、不阻塞业务线程"""
 
     def __init__(self, capacity: int = 2000):
-        super().__init__(level=logging.WARNING)
+        super().__init__(level=logging.INFO)
         self._q: "queue.Queue[tuple]" = queue.Queue(maxsize=capacity)
         self._thread: Optional[threading.Thread] = None
 

@@ -55,6 +55,9 @@ def list_logs(
     page_size: int = Query(20, ge=1, le=100),
     level: Optional[str] = Query(None, description="WARNING/ERROR/CRITICAL"),
     q: Optional[str] = Query(None, max_length=100, description="消息关键字"),
+    logger: Optional[str] = Query(
+        None, max_length=64, description="logger_name 前缀过滤（如 app.spot）"
+    ),
     db: Session = Depends(get_db),
 ):
     stmt = select(AppLog)
@@ -62,6 +65,8 @@ def list_logs(
         stmt = stmt.where(AppLog.level == level)
     if q:
         stmt = stmt.where(AppLog.message.ilike(f"%{q}%"))
+    if logger:
+        stmt = stmt.where(AppLog.logger_name.like(f"{logger}%"))
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
     items = (
         db.execute(

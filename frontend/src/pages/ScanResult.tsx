@@ -24,6 +24,7 @@ import FundAnalysisPanel from '../components/FundAnalysisPanel'
 import ColorSchemeToggle from '../components/ColorSchemeToggle'
 import SpotOverviewPanel from '../components/SpotOverviewPanel'
 import SpotBacktestPanel from '../components/SpotBacktestPanel'
+import SpotLogsPanel from '../components/SpotLogsPanel'
 import SpotHistoryPanel from '../components/SpotHistoryPanel'
 import SpotSettingsPanel from '../components/SpotSettingsPanel'
 import { useScanStore } from '../stores/scanStore'
@@ -55,7 +56,7 @@ export default function ScanResult() {
     ['results', 'pending-pool', 'watchlist', 'search', 'strategy', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs'],
   )
   // 现货内部 tab 记忆（独立 key，与合约无冲突）
-  const [spotTab, switchSpotTab] = useTabMemory('tabs.spot', ['overview', 'backtest', 'history', 'settings'])
+  const [spotTab, switchSpotTab] = useTabMemory('tabs.spot', ['overview', 'backtest', 'history', 'settings', 'logs'])
 
   useEffect(() => {
     // 初始加载：状态、配置、结果、任务记录
@@ -233,6 +234,11 @@ export default function ScanResult() {
       key: 'settings',
       label: '策略配置',
       children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><SpotSettingsPanel /></div>,
+    },
+    {
+      key: 'logs',
+      label: '日志',
+      children: <div style={{ height: '100%', overflow: 'hidden' }}><SpotLogsPanel /></div>,
     },
   ]
 

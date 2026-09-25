@@ -28,12 +28,24 @@ def _bar_close_date(open_ms: int, interval: str) -> str:
 
 
 def _upsert_cache(db, symbol: str, interval: str, raw: list) -> None:
-    """K线缓存 upsert：只存精简列 [t,o,h,l,c,v]。"""
-    slim = [
-        {"t": int(k[0]), "o": float(k[1]), "h": float(k[2]),
-         "l": float(k[3]), "c": float(k[4]), "v": float(k[5])}
-        for k in raw
-    ]
+    """K线缓存 upsert：只存精简列 [t,o,h,l,c,v]。
+
+    raw 兼容两种形态（2026-09-25 回测 KeyError: 0 修复）：
+    - 币安原始数组 [open_time, o, h, l, c, v, ...]（日检/周研判直传）
+    - 缓存/合并后的 dict [{t, o, h, l, c, v}]（回测 _load 回补直传）
+    """
+    slim = []
+    for k in raw:
+        if isinstance(k, dict):
+            slim.append({
+                "t": int(k["t"]), "o": float(k["o"]), "h": float(k["h"]),
+                "l": float(k["l"]), "c": float(k["c"]), "v": float(k["v"]),
+            })
+        else:
+            slim.append({
+                "t": int(k[0]), "o": float(k[1]), "h": float(k[2]),
+                "l": float(k[3]), "c": float(k[4]), "v": float(k[5]),
+            })
     row = (
         db.query(SpotKlineCache)
         .filter(SpotKlineCache.symbol == symbol, SpotKlineCache.interval == interval)
