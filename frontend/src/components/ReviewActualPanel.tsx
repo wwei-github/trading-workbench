@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Button,
   Card,
@@ -110,8 +110,29 @@ export default function ReviewActualPanel() {
     v == null || v === 0 ? undefined : v > 0 ? upColor : downColor
 
   // ── 分组表 ──
+  // 排序状态：点排序后维度列合并自动失效（排序顺序会打乱维度分组顺序）
+  const [groupSorted, setGroupSorted] = useState(false)
+  // 维度列合并单元格：后端 groups 已按维度连续输出，同维度首行 rowSpan=组内行数，其余 0
+  const dimSpans = useMemo(() => {
+    const groups = data?.groups ?? []
+    if (groupSorted) return {}
+    const spans: Record<string, number> = {}
+    let i = 0
+    while (i < groups.length) {
+      let j = i + 1
+      while (j < groups.length && groups[j].dim === groups[i].dim) j++
+      spans[`${groups[i].dim}-${groups[i].key}`] = j - i
+      for (let k = i + 1; k < j; k++) spans[`${groups[k].dim}-${groups[k].key}`] = 0
+      i = j
+    }
+    return spans
+  }, [data, groupSorted])
+
   const groupColumns: ColumnsType<ActualGroupStat> = [
-    { title: '维度', dataIndex: 'dim', width: 90 },
+    {
+      title: '维度', dataIndex: 'dim', width: 90,
+      onCell: (g: ActualGroupStat) => ({ rowSpan: dimSpans[`${g.dim}-${g.key}`] ?? 1 }),
+    },
     { title: '分组', dataIndex: 'key', render: (v: string) => EXIT_REASON_MAP[v] || v },
     {
       title: '笔数', dataIndex: 'count', width: 70,
@@ -132,7 +153,6 @@ export default function ReviewActualPanel() {
     {
       title: '盈亏 (USDT)', dataIndex: 'pnl', width: 110,
       sorter: (a, b) => a.pnl - b.pnl,
-      defaultSortOrder: 'ascend', // 复盘先看最差的分组
       render: (v: number) => <span style={{ color: pnlColor(v), fontWeight: 600 }}>{fmtUsd(v)}</span>,
     },
     {
@@ -354,6 +374,10 @@ export default function ReviewActualPanel() {
                 size="small"
                 scroll={{ y: 240 }}
                 pagination={false}
+                onChange={(_pg, _fs, sorter) => {
+                  const s = Array.isArray(sorter) ? sorter[0] : sorter
+                  setGroupSorted(!!s?.order)
+                }}
               />
             </Card>
 

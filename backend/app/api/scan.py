@@ -529,11 +529,14 @@ def _agg_stats(rows: list[TradeReview]) -> dict:
 
 @router.get("/review/stats", response_model=ReviewStatsResponse)
 def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_db)):
-    """AI 建议复盘统计：整体 + 按触发器家族（同向突破/回踩金K确认/同向形态）分组胜率 + 期望值(R)
+    """AI 建议复盘统计：整体 + 按触发器（原始 signal_type）分组胜率 + 期望值(R)
 
-    分组口径（2026-09-25 整理）：
-    - 三家族 = 当前三路触发器；家族映射 TRIGGER_FAMILY 与实盘归因共用（actual_review.py）
-    - 旧管线结构分类（uptrend/downtrend/trend_reversal/range_bound 等）非触发器，不参与分组
+    分组口径（2026-09-25 拆细）：
+    - 按原始 signal_type 分组，不再合并为家族：trigger_pullback_confirm（回踩金K确认，
+      两段式）单独成组，与旧一段式 trigger_pullback（同向回踩）、旧管线 uptrend_pullback
+      （上涨回调）隔离，便于评估新触发器真实胜率
+    - TRIGGER_FAMILY 键集（与实盘归因共用同源常量）作为触发器白名单；旧管线结构分类
+      （uptrend/downtrend/trend_reversal/range_bound 等）非触发器，与 NULL/未识别统一归「未记录」
     - 位置/均线维度移除：位置仅镜像方向（支撑=多/压力=空），均线碎片化样本过小
     """
     cutoff = datetime.utcnow() - timedelta(days=days)
@@ -582,17 +585,18 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
         days=days, **_agg_stats(rows), ev_r=_agg_ev(rows), groups=[],
     )
 
-    # 触发器家族分组（与实盘归因共用同源常量，防两处漂移）
+    # 触发器分组：按原始 signal_type 细分（2026-09-25 拆细，见 docstring）。
+    # TRIGGER_FAMILY 键集与实盘归因共用同源常量，作为触发器白名单防两处漂移
     from app.services.actual_review import TRIGGER_FAMILY
 
     buckets: dict[str, list[TradeReview]] = {}
     for r in rows:
-        family = TRIGGER_FAMILY.get(r.signal_type or "")
-        if family:
-            buckets.setdefault(family, []).append(r)
-    for family, items in sorted(buckets.items()):
+        raw = r.signal_type or ""
+        buckets.setdefault(raw if raw in TRIGGER_FAMILY else "未记录", []).append(r)
+    # 组内样本多的排前面，便于聚焦有效分组
+    for key, items in sorted(buckets.items(), key=lambda kv: (-len(kv[1]), kv[0])):
         agg = _agg_stats(items)
-        resp.groups.append(ReviewGroupStats(signal_type=family, **agg, ev_r=_agg_ev(items)))
+        resp.groups.append(ReviewGroupStats(signal_type=key, **agg, ev_r=_agg_ev(items)))
     return resp
 
 

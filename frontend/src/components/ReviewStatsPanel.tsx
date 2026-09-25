@@ -56,7 +56,8 @@ export default function ReviewStatsPanel() {
     return <span style={{ color, fontWeight: 600 }}>{pct}</span>
   }
 
-  // 根据非空维度字段确定维度名与分组值（后端已归并为触发器家族，signal_type 即家族名）
+  // 根据非空维度字段确定维度名与分组值（后端按原始 signal_type 分组：trigger_pullback_confirm
+  // 单独成组；旧结构分类/未识别统一归「未记录」）
   const renderDim = (g: ReviewGroupStat): { dim: string; value: string } => {
     if (g.signal_type) {
       return {
