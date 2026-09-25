@@ -436,6 +436,8 @@ class Scanner:
     def _slots_full() -> bool:
         """在跑单子数是否已达 max_open_trades 上限（独立短会话，避免长扫描后连接失效）。
 
+        只统计 OPENED：已开始移动止损的单子（TP1_HIT 止损已移保本 / TP2_HIT
+        仅剩跟进仓）风险已锁定，不占上限名额（2026-09-25）。
         查询失败按未满仓处理：宁可多花一次 AI 分析，不因统计故障漏掉开仓机会。
         """
         sdb = SessionLocal()
@@ -444,9 +446,7 @@ class Scanner:
             if not cfg:
                 return False
             running = sdb.execute(
-                select(func.count(TradeRecord.id)).where(
-                    TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT"))
-                )
+                select(func.count(TradeRecord.id)).where(TradeRecord.status == "OPENED")
             ).scalar() or 0
             # 0 = 不限单数，仅靠余额风控兜底
             if not cfg.max_open_trades or cfg.max_open_trades <= 0:

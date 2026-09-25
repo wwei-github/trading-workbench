@@ -598,8 +598,19 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
     # 待回踩单不再在此跳过（2026-09-18）：回踩距离 ≤ pullback_market_pct 容差
     # 时市价入场、超容差维持不下单——判定移入 _attempt_open 偏离闸门
     positions = trader.positions()
-    # 单数上限（0 = 不限单数，仅靠余额风控兜底）
-    if cfg.max_open_trades > 0 and len(positions) >= cfg.max_open_trades:
+    # 单数上限（0 = 不限单数，仅靠余额风控兜底）；已开始移动止损的单子
+    # （TP1_HIT 止损已移保本 / TP2_HIT 仅剩跟进仓）风险已锁定，不占名额（2026-09-25）
+    moved_syms = {
+        sym for (sym,) in db.execute(
+            select(TradeRecord.symbol).where(
+                TradeRecord.status.in_(("TP1_HIT", "TP2_HIT")),
+                TradeRecord.symbol.in_(list(positions.keys())),
+                _adopt_acc_cond(trader),
+            )
+        ).all()
+    }
+    slot_used = len(positions) - len(moved_syms)
+    if cfg.max_open_trades > 0 and slot_used >= cfg.max_open_trades:
         logger.info("即时开仓跳过 %s：在跑单子已达上限 %d", a.symbol, cfg.max_open_trades)
         _mark_open_block(db, a, f"在跑单子已达上限 {cfg.max_open_trades}")
         return False
