@@ -39,6 +39,7 @@ import {
   RocketOutlined,
   StopOutlined,
   SwapOutlined,
+  ThunderboltOutlined,
   UpOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
@@ -599,6 +600,26 @@ export default function TradesPanel() {
       message.error(e?.response?.data?.detail || '导入失败')
     } finally {
       setAdoptingNow(false)
+    }
+  }
+
+  // 「立即巡检」按钮（2026-09-26）：派发 celery 巡检任务（结算+自动导入+AI 诊断），
+  // 后台执行、HTTP 立即返回；延迟刷新 2 次覆盖巡检约 10~30s 的执行窗口
+  const [inspecting, setInspecting] = useState(false)
+  const handleInspectNow = async () => {
+    setInspecting(true)
+    try {
+      await scanApi.trades.inspectNow()
+      message.info('巡检已派发后台执行（结算/导入/AI 诊断），稍后自动刷新')
+      const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
+      await delay(20000)
+      await fetchData()
+      await delay(15000)
+      await fetchData()
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '巡检派发失败')
+    } finally {
+      setInspecting(false)
     }
   }
 
@@ -1225,6 +1246,11 @@ export default function TradesPanel() {
               清空测试网数据
             </Button>
           )}
+          <Tooltip title="立即执行一次结算巡检（结算平仓/自动导入/AI 诊断），与定时巡检同源，后台执行">
+            <Button icon={<ThunderboltOutlined />} loading={inspecting} onClick={handleInspectNow}>
+              立即巡检
+            </Button>
+          </Tooltip>
           <Tooltip title="立即检测币安 App 手动开仓并接管进系统（与每小时巡检逻辑一致；需同时设置止损+止盈条件单）">
             <Button icon={<ImportOutlined />} loading={adoptingNow} onClick={handleAdoptNow}>
               导入持仓

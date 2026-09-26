@@ -283,6 +283,18 @@ def adopt_now(db: Session = Depends(get_db)):
             "count": len(adopted), "account_key": trader.account_key}
 
 
+@router.post("/inspect-now")
+def inspect_now():
+    """手动触发一次结算巡检（2026-09-26）：与每小时定时巡检完全同源——
+    仅派发 celery 任务（run_auto_trade_task），结算/自动导入/AI 诊断全部
+    在后台执行，HTTP 立即返回。并发安全由巡检自身的开仓锁全有全无模式
+    兜底：与定时巡检/手动开单撞车时该轮自动跳过并记录，不会重复结算。"""
+    from app.tasks.trade_tasks import run_auto_trade_task
+    async_res = run_auto_trade_task.delay()
+    return {"ok": True, "task_id": async_res.id,
+            "message": "巡检已派发后台执行，完成后刷新查看结果"}
+
+
 @router.post("/{trade_id}/close-market")
 def close_market(trade_id: str, db: Session = Depends(get_db)):
     """手动市价平仓（2026-09-25）：与飞书卡片「市价平仓」按钮完全同源

@@ -214,6 +214,13 @@ export const scanApi = {
           '/trades/adopt-now', null, { timeout: 60000 },
         )
         .then((r) => r.data),
+    // 「立即巡检」按钮（2026-09-26）：celery 派发即返回，结算/导入/诊断在后台执行
+    inspectNow: () =>
+      api
+        .post<{ ok: boolean; task_id: string; message: string }>(
+          '/trades/inspect-now', null, { timeout: 15000 },
+        )
+        .then((r) => r.data),
     // 市价平仓（与飞书卡片按钮同源）：同步执行约 2~5s，立即结算落终态
     closeMarket: (tradeId: string) =>
       api
