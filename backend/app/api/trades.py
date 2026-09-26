@@ -236,7 +236,7 @@ def transfer_stats(scope: str = "live", db: Session = Depends(get_db)):
     tin_f, tout_f = float(tin), float(tout)  # tout 原始为负值求和
     return {
         "tin": round(tin_f, 2),
-        "tout": round(-tout_f, 2),
+        "tout": round(-tout_f, 2) or 0.0,  # or 0.0 归一化 -0.0（否则前端显示 -0.00）
         "net": round(tin_f + tout_f, 2),  # 净流入 = 转入 + 转出（原始负值）
         "initial_capital": round(initial_capital, 2),
         "wallet_balance": round(wallet, 2),

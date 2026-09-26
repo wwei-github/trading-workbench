@@ -778,28 +778,23 @@ export default function TradesPanel() {
         v === false ? <Tag color="green">正式网</Tag> : <Tag color="gold">测试网</Tag>,
     },
     {
-      // 持仓时间列：已平仓 = 平仓-开仓；运行中 = 现在-开仓（随刷新更新）
+      // 持仓时间列：已平仓 = 平仓-开仓；运行中 = 现在-开仓（随刷新更新）。
+      // 仅显示小时（如 4h，<1h 显示 <1h）；超 12h 红色预警（2026-09-26）
       title: '持仓时间',
       key: 'holding_time',
-      width: 100,
+      width: 80,
       render: (_: unknown, rec: TradeRecord) => {
         if (!rec.opened_at) return '-'
         const start = new Date(rec.opened_at).getTime()
         const end = rec.closed_at ? new Date(rec.closed_at).getTime() : Date.now()
-        const mins = Math.max(0, Math.floor((end - start) / 60000))
-        const text =
-          mins < 60
-            ? `${mins}分`
-            : mins < 1440
-              ? `${Math.floor(mins / 60)}时${mins % 60}分`
-              : `${Math.floor(mins / 1440)}天${Math.floor((mins % 1440) / 60)}时`
+        const h = Math.max(0, (end - start) / 3_600_000)
+        const text = h < 1 ? '<1h' : `${Math.round(h)}h`
         return (
           <Tooltip title={rec.closed_at
             ? `${bj(rec.opened_at).format('MM-DD HH:mm')} 开仓 · ${bj(rec.closed_at).format('MM-DD HH:mm')} 平仓`
             : `${bj(rec.opened_at).format('MM-DD HH:mm')} 开仓 · 持仓中`}>
-            <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontVariantNumeric: 'tabular-nums', color: h > 12 ? '#ff4d4f' : undefined }}>
               {text}
-              {!rec.closed_at && <Tag color="processing" style={{ marginInlineStart: 4, marginInlineEnd: 0, fontSize: 10, lineHeight: '16px' }}>跑</Tag>}
             </span>
           </Tooltip>
         )
