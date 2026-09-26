@@ -217,6 +217,9 @@ class SystemConfigOut(BaseModel):
     pullback_market_pct: Optional[float] = None  # 入场偏离容差（比例 0.01=1%；NULL=默认）
     max_slippage_pct: Optional[float] = None  # 开仓滑点实测上限（比例 0.003=0.3%；NULL=默认）
 
+    # 初始资金（2026-09-26）：正式网主账号首次入金，资金划转面板展示口径
+    live_initial_capital: float = 0
+
     class Config:
         from_attributes = True
 
@@ -269,8 +272,11 @@ class SystemConfigUpdate(BaseModel):
     max_stop_pct: Optional[float] = None
     liq_gate_buffer: Optional[float] = None
     min_adapt_leverage: Optional[int] = None  # 动态杠杆下限（1~20；传 null 恢复默认）
-    pullback_market_pct: Optional[float] = None  # 入场偏离容差（比例；传 null 恢复默认 1%）
-    max_slippage_pct: Optional[float] = None  # 开仓滑点实测上限（比例；传 null 恢复默认 0.3%）
+    pullback_market_pct: Optional[float] = None  # 入场偏离容差（比例 0.01=1%；NULL=默认）
+    max_slippage_pct: Optional[float] = None  # 开仓滑点实测上限（比例 0.003=0.3%；NULL=默认）
+
+    # 初始资金（2026-09-26）：正式网主账号首次入金，资金划转面板展示口径（≥0）
+    live_initial_capital: Optional[float] = None
 
 
 # ===== 复盘统计（docs/04 §10 P2） =====

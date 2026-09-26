@@ -191,6 +191,58 @@ def list_transfers(
     return [AccountTransferOut.model_validate(r) for r in rows]
 
 
+@router.get("/transfer-stats")
+def transfer_stats(scope: str = "live", db: Session = Depends(get_db)):
+    """资金划转统计（2026-09-26）：服务端全量聚合（不受明细 limit 截断影响）。
+
+    - tin/tout/net：account_transfers 按 scope 全量求和（正=转入/负=转出）
+    - initial_capital：系统配置「初始资金」（正式网主账号首次入金口径——划转同步
+      首次接入只回看 7 天，早于接入的入金不进库，以此字段补齐账目闭环）
+    - wallet_balance：scope 覆盖账号的当前钱包余额合计（实时查币安；任一账号
+      查询失败跳过，available=False 表示全部失败前端降级「--」）
+    """
+    from app.services.binance_trader import BinanceTrader
+    from app.services.account_registry import registry
+
+    cond = _account_scope_filter(AccountTransfer, scope)
+    tin = db.execute(
+        select(func.coalesce(func.sum(AccountTransfer.amount), 0.0)).where(
+            AccountTransfer.amount > 0, *( [cond] if cond is not None else [] ))
+    ).scalar_one()
+    tout = db.execute(
+        select(func.coalesce(func.sum(AccountTransfer.amount), 0.0)).where(
+            AccountTransfer.amount < 0, *( [cond] if cond is not None else [] ))
+    ).scalar_one()
+
+    cfg = db.get(SystemConfig, 1)
+    initial_capital = float(cfg.live_initial_capital or 0) if cfg else 0.0
+
+    # scope → 账号清单（与 _account_scope_filter 同口径）
+    if scope == "all":
+        accounts = list(registry())
+    elif scope == "testnet":
+        accounts = [a for a in registry() if a.testnet]
+    elif scope == "live":
+        accounts = [a for a in registry() if not a.testnet]
+    else:
+        accounts = [a for a in registry() if a.key == scope]
+
+    wallet, available = 0.0, bool(accounts)
+    for a in accounts:
+        try:
+            wallet += BinanceTrader(a.key).wallet_balance()["wallet"]
+        except Exception as e:
+            logger.warning("划转统计钱包余额获取失败（%s）：%s", a.key, e)
+    return {
+        "tin": round(float(tin), 2),
+        "tout": round(-float(tout), 2),
+        "net": round(float(tin) - float(tout), 2),
+        "initial_capital": round(initial_capital, 2),
+        "wallet_balance": round(wallet, 2),
+        "available": available,
+    }
+
+
 @router.post("/adopt-now")
 def adopt_now(db: Session = Depends(get_db)):
     """手动触发一次自动导入持仓（2026-09-24）：逻辑与每小时巡检完全一致

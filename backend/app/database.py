@@ -238,6 +238,12 @@ def _run_migrations(engine):
             "ALTER TABLE account_transfers "
             "ADD COLUMN IF NOT EXISTS account_key VARCHAR(20)"
         ))
+        # 初始资金（2026-09-26）：划转同步首次接入只回看 7 天，早于接入的入金
+        # 不进 account_transfers，资金划转面板用本字段展示初始资金
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS live_initial_capital NUMERIC(12, 2) NOT NULL DEFAULT 0"
+        ))
         conn.execute(text(
             "UPDATE trade_records SET account_key = 'testnet-1' "
             "WHERE account_key IS NULL AND testnet"

@@ -100,4 +100,9 @@ class SystemConfig(Base):
         DateTime, nullable=True, default=None
     )
 
+    # 初始资金（2026-09-26）：正式网主账号首次入金口径。划转同步首次接入只回看
+    # 7 天，早于接入的入金不会进 account_transfers——资金划转面板以本字段展示
+    # 初始资金，配合当前钱包余额和划转累计形成账目闭环（页面可改）
+    live_initial_capital: Mapped[float] = mapped_column(Numeric(12, 2), default=0.0)
+
     notes: Mapped[str] = mapped_column(String(255), default="系统运行时配置")

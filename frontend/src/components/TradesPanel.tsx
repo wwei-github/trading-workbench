@@ -778,6 +778,34 @@ export default function TradesPanel() {
         v === false ? <Tag color="green">正式网</Tag> : <Tag color="gold">测试网</Tag>,
     },
     {
+      // 持仓时间列：已平仓 = 平仓-开仓；运行中 = 现在-开仓（随刷新更新）
+      title: '持仓时间',
+      key: 'holding_time',
+      width: 100,
+      render: (_: unknown, rec: TradeRecord) => {
+        if (!rec.opened_at) return '-'
+        const start = new Date(rec.opened_at).getTime()
+        const end = rec.closed_at ? new Date(rec.closed_at).getTime() : Date.now()
+        const mins = Math.max(0, Math.floor((end - start) / 60000))
+        const text =
+          mins < 60
+            ? `${mins}分`
+            : mins < 1440
+              ? `${Math.floor(mins / 60)}时${mins % 60}分`
+              : `${Math.floor(mins / 1440)}天${Math.floor((mins % 1440) / 60)}时`
+        return (
+          <Tooltip title={rec.closed_at
+            ? `${bj(rec.opened_at).format('MM-DD HH:mm')} 开仓 · ${bj(rec.closed_at).format('MM-DD HH:mm')} 平仓`
+            : `${bj(rec.opened_at).format('MM-DD HH:mm')} 开仓 · 持仓中`}>
+            <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+              {text}
+              {!rec.closed_at && <Tag color="processing" style={{ marginInlineStart: 4, marginInlineEnd: 0, fontSize: 10, lineHeight: '16px' }}>跑</Tag>}
+            </span>
+          </Tooltip>
+        )
+      },
+    },
+    {
       // 信号类型列（2026-09-25）：开单时触发器类型，与扫描结果页标签同源；导入持仓/旧行显示 -
       title: '信号类型',
       dataIndex: 'signal_type',

@@ -378,6 +378,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
                              if cfg.pullback_market_pct is not None else None),
         max_slippage_pct=(float(cfg.max_slippage_pct)
                           if cfg.max_slippage_pct is not None else None),
+        live_initial_capital=float(cfg.live_initial_capital or 0),
     )
 
 
@@ -512,6 +513,12 @@ def update_system_config(
         if v is not None and not (0 < v < 0.05):
             raise HTTPException(status_code=400, detail="max_slippage_pct 需为比例值（0.003=0.3%，<5%）")
         cfg.max_slippage_pct = v
+    # 初始资金（2026-09-26）：≥0 USDT，资金划转面板展示口径
+    if "live_initial_capital" in body.model_fields_set:
+        v = body.live_initial_capital
+        if v is not None and v < 0:
+            raise HTTPException(status_code=400, detail="live_initial_capital 需 ≥ 0")
+        cfg.live_initial_capital = v if v is not None else 0
 
     db.commit()
     db.refresh(cfg)

@@ -379,6 +379,16 @@ export interface AccountTransfer {
   transfer_time: string
 }
 
+// 划转统计（服务端全量聚合 + 初始资金 + 实时钱包余额；2026-09-26）
+export interface TransferStats {
+  tin: number
+  tout: number
+  net: number
+  initial_capital: number
+  wallet_balance: number
+  available: boolean // false=钱包余额查询全部失败，前端降级「--」
+}
+
 // ===== 交易复盘K线（交易记录弹窗）=====
 
 // 复盘关键事件（图上打箭头）：开仓 / 止盈成交 / 止损成交

@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, PullbackPendingItem, PurgeStats, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, WatchlistItem } from '../types'
+import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, PullbackPendingItem, PurgeStats, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, TransferStats, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -186,6 +186,11 @@ export const scanApi = {
     transfers: (scope: string = 'live', limit = 200) =>
       api
         .get<AccountTransfer[]>('/trades/transfers', { params: { scope, limit } })
+        .then((r) => r.data),
+    // 划转统计（服务端全量聚合 + 初始资金 + 实时钱包余额）
+    transferStats: (scope: string = 'live') =>
+      api
+        .get<TransferStats>('/trades/transfer-stats', { params: { scope } })
         .then((r) => r.data),
     // 资金分析聚合（docs/14，start/end 为北京时间 YYYY-MM-DD 闭区间）
     analytics: (params: { scope: string; start?: string; end?: string }) =>

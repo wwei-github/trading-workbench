@@ -2,7 +2,7 @@
  * 资金划转页（顶层 Tab）：合约账户转入/转出记录
  * - 数据来源：每小时 :10 结算巡检从币安 income TRANSFER 同步（GET /api/trades/transfers?scope=）
  * - 环境切换（正式网/测试网）与资金分析页一致：默认跟随当前交易环境
- * - 概览：累计转入 / 累计转出 / 净流入；明细表带符号金额着色（随全局涨跌配色）
+ * - 概览：初始资金 / 当前账户资金 / 累计转入 / 累计转出 / 净流入（服务端全量聚合）；明细表带符号金额着色（随全局涨跌配色）
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Empty, Spin, Table, Tag, message } from 'antd'
@@ -14,7 +14,7 @@ import { schemeValueColor } from '../utils/scheme'
 import { useScanStore } from '../stores/scanStore'
 import StatCard from './StatCard'
 import ScopeSelector, { defaultScopeOf } from './ScopeSelector'
-import type { AccountTransfer } from '../types'
+import type { AccountTransfer, TransferStats } from '../types'
 
 function fmtTime(s: string | null | undefined): string {
   if (!s) return '-'
@@ -29,6 +29,7 @@ export default function TransfersPanel() {
   const lastDefaultRef = useRef<string | null>(null)
   const [scope, setScope] = useState<string>(defaultScope)
   const [rows, setRows] = useState<AccountTransfer[]>([])
+  const [statsSrv, setStats] = useState<TransferStats | null>(null)
   const [loading, setLoading] = useState(false)
   const colorScheme = useScanStore((s) => s.colorScheme)
 
@@ -49,9 +50,14 @@ export default function TransfersPanel() {
     const seq = ++seqRef.current
     setLoading(true)
     try {
-      const data = await scanApi.trades.transfers(scope)
+      // 统计走服务端全量聚合（不受明细 limit 截断），含初始资金与实时钱包余额
+      const [data, st] = await Promise.all([
+        scanApi.trades.transfers(scope),
+        scanApi.trades.transferStats(scope).catch(() => null),
+      ])
       if (seq !== seqRef.current) return
       setRows(data)
+      setStats(st)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '获取资金划转失败')
     } finally {
@@ -64,12 +70,14 @@ export default function TransfersPanel() {
     fetchData()
   }, [fetchData])
 
-  // 概览：累计转入 / 累计转出 / 净流入（正=资金净流入合约账户）
+  // 概览：服务端统计优先（全量聚合 + 初始资金 + 实时钱包余额）；
+  // 统计接口失败时回落前端按当前明细行计算（仅前 200 条口径，作降级展示）
   const stats = useMemo(() => {
+    if (statsSrv) return statsSrv
     const tin = rows.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0)
     const tout = rows.filter((t) => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0)
-    return { tin, tout, net: tin - tout }
-  }, [rows])
+    return { tin, tout, net: tin - tout, initial_capital: 0, wallet_balance: 0, available: false }
+  }, [statsSrv, rows])
 
   const columns: ColumnsType<AccountTransfer> = [
     {
@@ -131,6 +139,16 @@ export default function TransfersPanel() {
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <StatCard
+          title="初始资金"
+          value={stats.initial_capital > 0 ? `${stats.initial_capital.toFixed(2)} USDT` : '--'}
+          color="#722ed1"
+        />
+        <StatCard
+          title="当前账户资金（钱包余额）"
+          value={stats.available ? `${stats.wallet_balance.toFixed(2)} USDT` : '--'}
+          color="#13c2c2"
+        />
         <StatCard title="累计转入" value={`+${stats.tin.toFixed(2)} USDT`} color="#1677ff" />
         <StatCard title="累计转出" value={`-${stats.tout.toFixed(2)} USDT`} color="#fa8c16" />
         <StatCard

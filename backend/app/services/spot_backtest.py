@@ -79,14 +79,18 @@ def run_backtest(
     w_closes = {s: [float(k["c"]) for k in weekly.get(s, [])] for s in symbols}
     m_closes = {s: [float(k["c"]) for k in monthly.get(s, [])] for s in symbols}
 
-    # 日期轴对齐校验：重按下标以 symbols[0] 的日K为轴，任何币种短轴都会
-    # 在快照/成交处 IndexError（此前报「list index out of range」无法定位）——
-    # 这里前置拦下并给出可行动的错误信息
-    short = {s: len(d_closes[s]) for s in symbols if len(d_closes[s]) < len(dates)}
-    if short:
+    # 日期 → 各币自身下标映射（2026-09-26 重构）：此前按「各币数组长度 ≥ 基准轴
+    # 长度」整表校验，BNB 等上市晚于 BTC 的币全历史天然短几十~上百根，被误判
+    # 「未对齐」。改为逐日查表：轴上某日该币无 bar（上市前/缺K）跳过该币当日
+    # 决策，估值用最近一次已知收盘价。
+    d_idx = {
+        s: {_bar_close_date(int(k["t"]), "1d"): j for j, k in enumerate(daily[s])}
+        for s in symbols
+    }
+    no_data = [s for s in symbols if not any(dates[i] in d_idx[s] for i in idx)]
+    if no_data:
         raise ValueError(
-            f"日K数据未对齐日期轴（基准 {symbols[0]} {len(dates)} 根）: {short}；"
-            "请先运行现货日检或重试回测以补齐K线缓存"
+            f"币种在回测区间内无日K数据: {no_data}；请检查区间或先补齐K线缓存"
         )
 
     # 周/月 bar 的收盘日期数组（重放游标定位用）
@@ -164,6 +168,7 @@ def run_backtest(
     # ---- 日历重放 ----
     w_cursor = {s: 0 for s in symbols}  # 周/月 bar 游标（≤当前日 的最大下标）
     m_cursor = {s: 0 for s in symbols}
+    last_px = {s: 0.0 for s in symbols}  # 各币最近已知收盘价（缺 bar 日估值用）
     dca_done_weeks: set = set()
 
     for step, i in enumerate(idx):
@@ -171,8 +176,12 @@ def run_backtest(
         day_decisions: Dict[str, Dict[str, Any]] = {}
 
         for s in symbols:
+            # 该币当日 bar 的自身下标：上市前/缺K → 跳过当日（不再要求全历史等长）
+            si = d_idx[s].get(date)
+            if si is None:
+                continue
             # 逐日截断（未来函数防线）：只喂 ≤T 的数组
-            d_slice = d_closes[s][: i + 1]
+            d_slice = d_closes[s][: si + 1]
             # 周/月游标推进：收盘日期 ≤ 当前日的 bar 数
             while w_cursor[s] < len(w_dates[s]) and w_dates[s][w_cursor[s]] <= date:
                 w_cursor[s] += 1
@@ -196,21 +205,24 @@ def run_backtest(
             # ---- 执行信号（AI 复核跳过 → 满额执行，§10.4）----
             if dec["action"] == "BUY":
                 usdt = dec["lots"] * cfg.per_order_usdt
-                _buy(s, i, usdt, "signal", dec["score"]["total"])
+                _buy(s, si, usdt, "signal", dec["score"]["total"])
             elif dec["action"] == "SELL":
-                _sell(s, i, dec["lots"], dec["score"]["total"])
+                _sell(s, si, dec["lots"], dec["score"]["total"])
 
             # ---- 周度定投（周一执行，无信号也买；§5 定投兜底）----
             if cfg.dca_enabled and _is_monday(date):
                 week_key = date[:7] + "-" + date[8:10]  # 同日去重足够（逐日重放）
                 if week_key not in dca_done_weeks:
                     dca_done_weeks.add(week_key)
-                    _buy(s, i, cfg.dca_amount, "dca", dec["score"]["total"])
+                    _buy(s, si, cfg.dca_amount, "dca", dec["score"]["total"])
 
-        # ---- 每日快照（曲线用）----
+        # ---- 每日快照（曲线用）：缺 bar 币按最近已知收盘估值 ----
         total_mv = 0.0
         for s in symbols:
-            total_mv += pos[s].qty * d_closes[s][i]
+            si = d_idx[s].get(date)
+            if si is not None:
+                last_px[s] = d_closes[s][si]
+            total_mv += pos[s].qty * last_px[s]
         series.append({
             "date": date,
             "cash": round(cash, 2),
@@ -226,7 +238,7 @@ def run_backtest(
         len(idx), decisions_dist, len(orders), skips,
     )
     summary = _summarize(
-        symbols, pos, d_closes, w_closes, m_closes, dates, idx,
+        symbols, pos, d_closes, d_idx, w_closes, m_closes, dates, idx,
         budget, cfg, orders, fee, invested, sold_total,
     )
     summary["equity_curve_end"] = series[-1]["equity"] if series else budget
@@ -259,37 +271,53 @@ def _is_monday(date_str: str) -> bool:
 def _benchmark_dca(
     symbols: List[str],
     daily: Dict[str, List[float]],
+    d_idx: Dict[str, Dict[str, int]],
     dates: List[str],
     idx: List[int],
     per_week: float,
     fee: float,
 ) -> Dict[str, float]:
-    """定投基准：每周一各币投入 per_week，按当日收盘买入（含费），持有到期末。"""
+    """定投基准：每周一各币投入 per_week，按当日收盘买入（含费），持有到期末。
+
+    各币按自身下标取价；当日无 bar（上市前）该币该周跳过（与重放口径一致）。
+    """
     qty = {s: 0.0 for s in symbols}
     invested = 0.0
     for i in idx:
         if _is_monday(dates[i]):
             for s in symbols:
+                j = d_idx[s].get(dates[i])
+                if j is None:
+                    continue
                 spend = per_week * (1 + fee)
-                qty[s] += spend / daily[s][i]
+                qty[s] += spend / daily[s][j]
                 invested += spend
     return {"invested": round(invested, 2), "qty": {s: round(q, 8) for s, q in qty.items()}}
 
 
 def _summarize(
-    symbols, pos, d_closes, w_closes, m_closes, dates, idx,
+    symbols, pos, d_closes, d_idx, w_closes, m_closes, dates, idx,
     budget, cfg: SpotDefaults, orders, fee, invested, sold_total,
 ) -> Dict[str, Any]:
     """期末汇总：净增币 / vs 定投基准超额 / 现金守恒 / 评分分布。"""
-    last = idx[-1]
+    last_date = dates[idx[-1]]
+
+    # 期末估值：各币按自身最后一根 ≤ 期末轴日的收盘价
+    # （上市晚于基准币时 d_closes[s][last] 会错位/越界，2026-09-26 修复）
+    def _last_px(s: str) -> float:
+        j = d_idx[s].get(last_date)
+        if j is not None:
+            return d_closes[s][j]
+        return d_closes[s][-1] if d_closes[s] else 0.0
+
     total_qty = sum(pos[s].qty for s in symbols)
-    total_mv = sum(pos[s].qty * d_closes[s][last] for s in symbols)
+    total_mv = sum(pos[s].qty * _last_px(s) for s in symbols)
     total_cost = sum(pos[s].cost_usdt for s in symbols)
     total_realized = sum(pos[s].realized_usdt for s in symbols)
 
     # 定投基准（同预算同节奏：每周一每币 dca_amount）
     bench = _benchmark_dca(
-        symbols, d_closes, dates, idx,
+        symbols, d_closes, d_idx, dates, idx,
         cfg.dca_amount if cfg.dca_enabled else cfg.per_order_usdt, fee,
     )
     bench_qty = sum(bench["qty"].values())
