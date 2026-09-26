@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 ADVICE_COOLDOWN_HOURS = 3   # 浮亏诊断两次间隔
 ADVICE_WORSEN_R = 0.5       # 冷却期内全程盈亏较上次诊断恶化 ≥0.5R → 提前刷新
+PEAK_RETRACE_R = 0.6        # 浮盈回撤触发：峰值回撤 ≥0.6R → 诊断（2026-09-26）
 STALE_HOLD_HOURS = 24       # 滞留触发：持仓 ≥24h 且从未触发 TP1
 STALE_RECHECK_HOURS = 24    # 滞留复诊间隔（首诊后每 24h 再评估，直到 TP1/结算）
 
@@ -41,6 +42,8 @@ ACTIONS = ("hold", "tighten", "reduce", "exit")
 ADVICE_SYSTEM = """你是期货交易系统的持仓风控顾问。一笔在跑交易需要持仓诊断，\
 触发原因见事实包的 diagnosis_trigger 字段：
 - floating_loss：当前处于浮亏，判断浮亏是否在计划波动范围内；
+- profit_retrace：全程盈亏曾达峰值后大幅回吐（峰值见事实包 peak_total_pnl），\
+重点评估是否落袋/收紧保护，而非等回吐演变为浮亏；
 - stale_no_tp1：持仓已超过 24 小时仍未触发第一档止盈，需重点评估继续持有的必要性——\
 资金已被占用一天而未兑现第一目标，结合走势是否停滞（MFE 距离 TP1 的差距、动能、结构）\
 判断是"接近突破前的蓄势"还是"逻辑失效的空耗"，不要仅因浮盈为正就默认继续持有。
@@ -61,15 +64,18 @@ ADVICE_SYSTEM = """你是期货交易系统的持仓风控顾问。一笔在跑�
 
 
 def advice_due(rec, total: float, now: datetime) -> bool:
-    """自动诊断触发判定：浮亏触发 + 滞留触发（docs/16 §3.1 + 2026-09-24 扩展）。
+    """自动诊断触发判定（docs/16 §3.1 + 2026-09-26 扩展）。
 
     rec 为 TradeRecord；total = 已实现 + 浮动（巡检刚写入的最新值）。
     浮亏：首次浮亏 / 3h 冷却到期 / 较上次诊断恶化 ≥0.5R。
+    浮盈回撤：峰值（peak_total_pnl）回撤 ≥0.6R（2026-09-26，修复浮盈回吐盲区；
+    复用 3h 冷却防回撤平台期反复触发，诊断后基线切换为当前值由恶化规则接管）。
     滞留：持仓 ≥24h 且从未触发 TP1（status 仍 OPENED），首诊后每 24h 复诊。
     """
     if not settings.AI_API_KEY:
         return False
     last = rec.ai_advice_at
+    risk = float(rec.risk_amount or 0)
     # ── 浮亏触发 ──
     if total < 0:
         if last is None:
@@ -77,9 +83,14 @@ def advice_due(rec, total: float, now: datetime) -> bool:
         if now - last >= _timedelta_hours(ADVICE_COOLDOWN_HOURS):
             return True  # 冷却到期
         base = float(rec.ai_advice_pnl or 0)
-        risk = float(rec.risk_amount or 0)
         if risk > 0 and base - total >= risk * ADVICE_WORSEN_R:  # 恶化提前刷新
             return True
+    # ── 浮盈回撤触发（盈亏皆可，浮亏场景由上方分支覆盖）──
+    if risk > 0:
+        peak = float(rec.peak_total_pnl or 0)
+        if peak - total >= risk * PEAK_RETRACE_R:
+            if last is None or now - last >= _timedelta_hours(ADVICE_COOLDOWN_HOURS):
+                return True
     # ── 滞留触发（盈亏皆可）：24h 未触发 TP1，每 24h 复诊 ──
     if rec.status == "OPENED" and rec.opened_at is not None:
         if now - rec.opened_at >= _timedelta_hours(STALE_HOLD_HOURS):
@@ -165,6 +176,8 @@ def build_facts(db: Session, rec) -> dict:
     realized = float(rec.realized_pnl or 0)
     unrealized = float(rec.unrealized_pnl or 0)
     risk = float(rec.risk_amount or 0)
+    total = realized + unrealized
+    peak = float(rec.peak_total_pnl or 0)
 
     # 剩余仓位比例：按状态推导（与分批止盈规则一致），避免逐笔查交易所
     remaining_ratio = {"OPENED": 1.0, "TP1_HIT": 0.25 if not rec.tp2 else 0.5, "TP2_HIT": 0.25}.get(
@@ -176,11 +189,20 @@ def build_facts(db: Session, rec) -> dict:
         for k in klines[-72:]
     ]
 
+    # 触发原因路由（与 advice_due 同源）：滞留 > 浮盈回撤（峰值回撤 ≥0.6R）> 浮亏
+    if is_stale_hold(rec):
+        trigger = "stale_no_tp1"
+    elif risk > 0 and peak > 0 and peak - total >= risk * PEAK_RETRACE_R:
+        trigger = "profit_retrace"
+    else:
+        trigger = "floating_loss"
+
     return {
         "symbol": rec.symbol,
         "direction": direction,
         # 触发原因（AI 按场景调整判断侧重，见 ADVICE_SYSTEM）
-        "diagnosis_trigger": "stale_no_tp1" if is_stale_hold(rec) else "floating_loss",
+        "diagnosis_trigger": trigger,
+        "peak_total_pnl": round(peak, 6) if peak > 0 else None,
         "opening_thesis": {
             "trade_type": snap.get("trade_type"),
             "recommendation": snap.get("recommendation"),
@@ -220,12 +242,13 @@ def build_facts(db: Session, rec) -> dict:
     }
 
 
-def diagnose_trade(db: Session, rec) -> dict:
+def diagnose_trade(db: Session, rec) -> "dict | None":
     """单笔诊断：事实包 → LLM → 词表校验 → 落库（ai_advice + AI_ADVICE 事件）→ 推送。
 
     手动 API 与定时子任务共用。调用方须保证：rec 为在跑状态、AI_API_KEY 已配置。
     失败抛异常（调用方决定记日志/报错），不落半截数据。
-    """
+    返回 None = 竞态丢弃：LLM 执行期间（1~18 分钟）仓位已平仓结算/被清理，
+    结论陈旧不落库（2026-09-26 竞态守卫）。"""
     if not settings.AI_API_KEY:
         raise ValueError("AI 未配置（AI_API_KEY 为空）")
     client = get_client()
@@ -245,6 +268,18 @@ def diagnose_trade(db: Session, rec) -> dict:
         content = "\n".join(lines).strip()
     data = json.loads(content)
 
+    # 竞态守卫（2026-09-26）：LLM 返回耗时 1~18 分钟，期间 SL 可能已触发结算，
+    # 事实包与结论均已陈旧 → 落库前重读状态，非在跑即丢弃（不落误导数据）
+    try:
+        db.refresh(rec)
+    except Exception:
+        logger.info("AI 持仓诊断丢弃：%s 记录已于诊断期间被清理", rec.symbol)
+        return None
+    if rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
+        logger.info("AI 持仓诊断丢弃：%s 已于诊断执行期间平仓结算（status=%s）",
+                    rec.symbol, rec.status)
+        return None
+
     action = data.get("action") if data.get("action") in ACTIONS else "hold"
     advice = {
         "thesis_valid": bool(data.get("thesis_valid")),
@@ -256,13 +291,21 @@ def diagnose_trade(db: Session, rec) -> dict:
     total = round(float(rec.realized_pnl or 0) + float(rec.unrealized_pnl or 0), 6)
     prev_action = (rec.ai_advice or {}).get("action")
     stale = is_stale_hold(rec)
+    # 事件触发路由（与 build_facts facts.diagnosis_trigger 同源）
+    _risk = float(rec.risk_amount or 0)
+    _peak = float(rec.peak_total_pnl or 0)
+    if stale:
+        trigger_label = "stale_no_tp1"
+    elif _risk > 0 and _peak > 0 and _peak - total >= _risk * PEAK_RETRACE_R:
+        trigger_label = "profit_retrace"
+    else:
+        trigger_label = "floating_loss"
 
     rec.ai_advice = advice
     rec.ai_advice_at = datetime.utcnow()
     rec.ai_advice_pnl = total  # 恶化判定基线
     db.add(TradeEvent(trade_record_id=rec.id, event_type="AI_ADVICE", detail={
-        **advice, "total_pnl": total,
-        "trigger": "stale_no_tp1" if stale else "floating_loss",
+        **advice, "total_pnl": total, "trigger": trigger_label,
     }))
     db.commit()
 

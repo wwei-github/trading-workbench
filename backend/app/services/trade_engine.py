@@ -1228,6 +1228,9 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
             unrealized = float(pos.get("unrealized_pnl") or 0)
             rec.unrealized_pnl = round(unrealized, 6)
             total_pnl = float(rec.realized_pnl or 0) + unrealized
+            # 盈亏峰值跟踪（2026-09-26）：浮盈回撤 ≥0.6R 触发诊断的参照（position_advisor）
+            if total_pnl > float(rec.peak_total_pnl or 0):
+                rec.peak_total_pnl = round(total_pnl, 6)
             if rec.risk_amount and float(rec.risk_amount) > 0:
                 rec.pnl_pct = round(total_pnl / float(rec.risk_amount) * 100, 2)
             # 浮亏在跑单 AI 持仓诊断触发判定（冷却/恶化规则见 position_advisor）；

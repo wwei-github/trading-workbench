@@ -356,6 +356,8 @@ def run_position_advice(trade_id: str):
         if rec is None or rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
             return  # 已结算/不存在，跳过
         advice = diagnose_trade(db, rec)
+        if advice is None:
+            return  # 竞态丢弃：LLM 执行期间已平仓结算（position_advisor 记日志）
         logger.info("AI 持仓诊断 %s：%s（%s）", rec.symbol,
                     advice.get("action"), advice.get("reason", "")[:60])
     except Exception as e:

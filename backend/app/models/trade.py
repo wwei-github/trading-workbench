@@ -75,6 +75,7 @@ class TradeRecord(Base):
     # {thesis_valid, trend_broken, action: hold/tighten/reduce/exit, reason, detail}
     ai_advice_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # 最近诊断时间（NULL=未诊断，冷却判定基准）
     ai_advice_pnl: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)  # 诊断时全程盈亏（恶化 ≥0.5R 提前刷新的基线）
+    peak_total_pnl: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)  # 持仓期间全程盈亏峰值（浮盈回撤 ≥0.6R 触发诊断的参照，2026-09-26）
 
     raw: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # {entry_order_id, sl_order_id, tp1_order_id, tp2_order_id, qty_tp1, qty_tp2, capital_base, wallet}

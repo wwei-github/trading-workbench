@@ -244,6 +244,11 @@ def _run_migrations(engine):
             "ALTER TABLE system_config "
             "ADD COLUMN IF NOT EXISTS live_initial_capital NUMERIC(12, 2) NOT NULL DEFAULT 0"
         ))
+        # 盈亏峰值列（2026-09-26）：持仓期间全程盈亏峰值，浮盈回撤 ≥0.6R 触发 AI 诊断
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS peak_total_pnl NUMERIC(20, 6)"
+        ))
         conn.execute(text(
             "UPDATE trade_records SET account_key = 'testnet-1' "
             "WHERE account_key IS NULL AND testnet"
