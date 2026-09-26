@@ -233,10 +233,11 @@ def transfer_stats(scope: str = "live", db: Session = Depends(get_db)):
             wallet += BinanceTrader(a.key).wallet_balance()["wallet"]
         except Exception as e:
             logger.warning("划转统计钱包余额获取失败（%s）：%s", a.key, e)
+    tin_f, tout_f = float(tin), float(tout)  # tout 原始为负值求和
     return {
-        "tin": round(float(tin), 2),
-        "tout": round(-float(tout), 2),
-        "net": round(float(tin) - float(tout), 2),
+        "tin": round(tin_f, 2),
+        "tout": round(-tout_f, 2),
+        "net": round(tin_f + tout_f, 2),  # 净流入 = 转入 + 转出（原始负值）
         "initial_capital": round(initial_capital, 2),
         "wallet_balance": round(wallet, 2),
         "available": available,
