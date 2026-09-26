@@ -779,7 +779,7 @@ export default function TradesPanel() {
     },
     {
       // 持仓时间列：已平仓 = 平仓-开仓；运行中 = 现在-开仓（随刷新更新）。
-      // 仅显示小时（如 4h，<1h 显示 <1h）；超 12h 红色预警（2026-09-26）。
+      // 仅显示小时（如 4h，<1h 显示 <1h）；超 24h 红色预警（2026-09-26）。
       // 后端存 UTC-naive：必须 bj()（dayjs.utc 解析）取正确 epoch，否则
       // new Date() 按本地时区解析会把运行中时长虚增 8h（2026-09-26 修复）
       title: '持仓时间',
@@ -790,12 +790,12 @@ export default function TradesPanel() {
         const start = bj(rec.opened_at).valueOf()
         const end = rec.closed_at ? bj(rec.closed_at).valueOf() : Date.now()
         const h = Math.max(0, (end - start) / 3_600_000)
-        const text = h < 1 ? '<1h' : `${Math.round(h)}h`
+        const text = h < 1 ? '<1h' : h < 24 ? `${Math.round(h)}h` : `${Math.floor(h / 24)}d${Math.round(h % 24)}h`
         return (
           <Tooltip title={rec.closed_at
             ? `${bj(rec.opened_at).format('MM-DD HH:mm')} 开仓 · ${bj(rec.closed_at).format('MM-DD HH:mm')} 平仓`
             : `${bj(rec.opened_at).format('MM-DD HH:mm')} 开仓 · 持仓中`}>
-            <span style={{ fontVariantNumeric: 'tabular-nums', color: h > 12 ? '#ff4d4f' : undefined }}>
+            <span style={{ fontVariantNumeric: 'tabular-nums', color: h > 24 ? '#ff4d4f' : undefined }}>
               {text}
             </span>
           </Tooltip>
