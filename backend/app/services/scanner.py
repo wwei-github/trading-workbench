@@ -133,8 +133,9 @@ def detect_indicator_candidate(
         logger.warning("%s 关键位计算失败（T3 回落纯EMA21）: %s", symbol, e)
 
     direction = 1 if votes["net"] > 0 else -1
+    atr = calc_atr(klines, 14)
     trig, pending_op = detect_trigger(klines, direction, pending,
-                                      levels=key_levels, atr=calc_atr(klines, 14))
+                                      levels=key_levels, atr=atr)
     if trig is None:
         # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩口径计）
         if pending_op and pending_op.get("op") == "upsert":
@@ -142,7 +143,9 @@ def detect_indicator_candidate(
             pending_op["votes_json"] = _votes_snapshot(votes)
         return None, pending_op
 
-    quality = compute_quality_score(direction, votes, trig["type"], klines=klines)
+    quality = compute_quality_score(direction, votes, trig["type"], klines=klines,
+                                    key_levels=key_levels, atr=atr,
+                                    dual_touch=bool(trig.get("dual_touch")))
     return {
         "signal_type": trig["type"],
         # 现价 = 未收盘K线最新价（仅作入场价差参考）：信号判定（投票/触发/形态/量能）

@@ -180,7 +180,8 @@ def detect_trigger(
     对象升级为双对象（已确认关键位 OR EMA21），缺省回落纯 EMA21 原行为
     （levels=None 时 _detect_level_touch 短路，老调用方零改动兼容）。
     返回 (trigger, pending_op) 二元组：
-    - trigger: 命中的触发 dict（type/direction/position/pattern/breakout_pct/reason）
+    - trigger: 命中的触发 dict（type/direction/position/pattern/breakout_pct/
+      reason/dual_touch——仅 row2 当根确认携带，EMA21 与关键位双锚共振标志）
       或 None（无触发 → 观察池）
     - pending_op: 本轮对活跃 pending 的处置，None 或
       {"op": "supersede"|"confirm"|"expire"|"upsert", ...}
@@ -264,12 +265,14 @@ def detect_trigger(
     else:
         touch_price, touch_label = None, None
 
-    # 行2：当根触碰+金K → 当根确认（比纯形态更强，pending 一律被抢先）
+    # 行2：当根触碰+金K → 当根确认（比纯形态更强，pending 一律被抢先）。
+    # dual_touch：EMA21 与关键位双锚共振（2026-09-27）——质量分加权用
     if touch_price is not None and golden:
         return {
             "type": PULLBACK_CONFIRM, "direction": direction,
             "position": lv_pos or pos_fb,
             "pattern": golden["pattern"], "breakout_pct": 0.0,
+            "dual_touch": touch_ema is not None and touch_lv is not None,
             "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且当根"
                       f"{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}确认",
         }, _close_op(pending, direction, "same_candle_confirm")
@@ -277,7 +280,10 @@ def detect_trigger(
     # 行3/行4：未触碰但有金K → 有效 pending 则次根确认，否则纯金K（T2 原样）。
     # 悬空金K门槛（2026-09-27 正式网复盘）：信号K线收盘距 EMA21 > 阈值（默认 1.5%）
     # 的纯金K不再触发——正式网 17 笔悬空金K全部 SL（-92 USDT），追高入场负期望。
-    # 仅拦 T2 纯金K：row3 次根确认有回踩语境（上根触碰 EMA21/关键位）不受影响。0=关闭。
+    # 拦截语义天然为「EMA21 与关键位双未触达」（OR 闸门）：触及关键位（带内+防守侧）
+    # 时 touch_lv 命中直接走 row2 当根确认、不进本分支——贴结构位的金K距 EMA21
+    # 再远也放行；仅拦"离 EMA21 远且不贴任何关键位"的悬空金K。
+    # row3 次根确认有回踩语境（上根触碰 EMA21/关键位）不受影响。0=关闭。
     if touch_price is None and golden:
         if pending_valid and pending and pending.get("direction") == direction:
             return {

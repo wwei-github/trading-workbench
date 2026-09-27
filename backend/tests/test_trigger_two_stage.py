@@ -607,3 +607,29 @@ def test_position_breakout_down_nearest_resistance():
         t, _ = trig.detect_trigger(kl, -1, levels=[_level_r(99.5, "resistance")])
     assert t is not None and t["type"] == trig.BREAKOUT
     assert t["position"] == "resistance"
+
+
+# ── 双锚共振标志（EMA21 与关键位同时命中，质量分加权用）────────────────────
+
+def test_dual_touch_both_ema_and_level():
+    """当根确认时 EMA21 与关键位同时触碰 → dual_touch=True（reason 仍标关键位）"""
+    kl = _kl(*_base())
+    _touch_long(kl)  # low == ema21、收盘收回线上
+    ema = _ema21_of(kl)
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, _ = trig.detect_trigger(kl, 1, levels=[_level_r(ema, "support")],
+                                   atr=1.0)
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["dual_touch"] is True
+    assert "关键位(" in t["reason"]
+
+
+def test_dual_touch_single_ema_only():
+    """仅 EMA21 触碰（位表存在但位太远）→ dual_touch=False"""
+    kl = _kl(*_base())
+    _touch_long(kl)
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, _ = trig.detect_trigger(kl, 1, levels=[_level_r(95.0, "support")],
+                                   atr=1.0)
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["dual_touch"] is False

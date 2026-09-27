@@ -588,12 +588,17 @@ def compute_indicator_votes(
 def compute_quality_score(
     direction: int, votes: dict, trigger_type: str,
     klines: Optional[list] = None,
+    key_levels: Optional[list] = None, atr: Optional[float] = None,
+    dual_touch: bool = False,
 ) -> int:
     """候选质量分（0-100）：方向一致性为主，修饰项只影响排序不改变方向。
 
     direction: 候选方向（1 多 / -1 空，= net 的符号）
     trigger_type: trigger_breakout / trigger_candlestick / trigger_pullback_confirm
     klines: 可选，金K类形态触发的量能加分需要（突破类量能已是触发门槛不重复加）
+    key_levels/atr: 可选，关键位修饰项（2026-09-27 接入筛选）需要；
+      缺省时跳过（KEY_LEVELS_ENABLED 关闭或数据不足回落纯指标口径）
+    dual_touch: 可选，EMA21 与关键位双锚共振（trigger dict 同名标志）
     修饰规则（2026-09-17 设计评审定稿；2026-09-24 强 4h 背景提权）：
     - 4h背景同向：强 +10 / 弱 +5；反向：强 -12 / 弱 -8
       （强 4h 趋势币在质量分排序与 AI 配额中前置；逆强背景降权更狠，
@@ -604,6 +609,13 @@ def compute_quality_score(
     - RSI>75 做多 / RSI<25 做空 -8（追高杀低）
     - OBV 顶背离做多 / 底背离做空 -6（量价背离）
     - 突破触发且布林带宽分位 ≤10 -5（带宽收窄的突破易假）
+    - 关键位结构支撑（2026-09-27）：方向同侧（做多看下方支撑/做空看上方压力）
+      flipped_confirmed 位距现价 ≤1×ATR +8（趋势延续回踩，docs/21 §10 最可靠
+      形态）；intact 位 ≤1×ATR +5
+    - EMA21 与关键位双锚共振 +4（dual_touch，两个确认对象同时命中）
+    - 前方无锚 -6：入场方向前方（做多=上方/做空=下方）2×ATR 内无 intact/
+      flipped_confirmed 可锚位（止盈空间贫瘠，RR 铁律大概率打回，呼应提示词
+      「到第一结构位不足 rr_min 应 skip」；broken/invalid 禁作止盈锚不计）
     """
     by_short = dict(votes["results"])
     score = 50 + direction * votes["net"] * 7  # net≥3 → 基础 ≥71
@@ -648,5 +660,43 @@ def compute_quality_score(
         rank = boll.get("bw_rank")
         if rank is not None and float(rank) <= 10:
             score -= 5
+
+    # 关键位修饰（2026-09-27 接入筛选）：key_levels/atr 缺省跳过（回落纯指标口径）
+    if key_levels and atr and atr > 0 and klines and len(klines) >= 2:
+        cur = float(klines[-2][4])  # 信号K线收盘价，与 position 统一口径同参照
+        near_best = 0   # 同侧结构支撑档位：3=flipped_confirmed / 2=intact
+        ahead_min = None  # 前方最近可锚位距离（×ATR）
+        for lv in key_levels:
+            p = float(lv.get("price") or 0)
+            state = lv.get("state") or "intact"
+            role = lv.get("role")
+            if p <= 0 or role not in ("support", "resistance"):
+                continue
+            dist = abs(p - cur) / atr
+            # 同侧加分要求位真在入场侧（做多=位在现价下方、做空=上方）：
+            # intact 的 role 按现价侧派生天然满足；flipped_confirmed 的 role 按
+            # 突破方向派生，价格回落到位另一侧（转弱）时不得再拿回踩企稳加分
+            on_entry_side = (direction == 1 and p < cur) or \
+                            (direction == -1 and p > cur)
+            same_side = on_entry_side and (
+                (direction == 1 and role == "support")
+                or (direction == -1 and role == "resistance"))
+            if same_side and dist <= 1.0:
+                if state == "flipped_confirmed":
+                    near_best = max(near_best, 3)
+                elif state == "intact":
+                    near_best = max(near_best, 2)
+            # 前方可锚位（做多=上方/做空=下方；broken 未确认与 invalid 禁作止盈锚）
+            ahead = (direction == 1 and p > cur) or (direction == -1 and p < cur)
+            if ahead and state in ("intact", "flipped_confirmed"):
+                ahead_min = dist if ahead_min is None else min(ahead_min, dist)
+        if near_best >= 3:
+            score += 8
+        elif near_best == 2:
+            score += 5
+        if dual_touch:
+            score += 4
+        if ahead_min is None or ahead_min > 2.0:
+            score -= 6
 
     return max(0, min(100, int(round(score))))
