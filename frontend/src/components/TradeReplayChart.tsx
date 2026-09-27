@@ -7,16 +7,10 @@
  * - 事件：箭头标注在对应K线上（开仓蓝、止盈涨色、止损跌色），多空方向决定上下位置
  * - 配色跟随全局涨跌方案（红涨绿跌 / 绿涨红跌）
  */
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Empty, Spin, Tag, Typography } from 'antd'
 import {
-  createChart,
-  createTextWatermark,
   createSeriesMarkers,
-  CandlestickSeries,
-  LineStyle,
-  ColorType,
-  CrosshairMode,
   type IChartApi,
   type ISeriesApi,
   type SeriesMarker,
@@ -25,7 +19,14 @@ import {
 import { scanApi } from '../api/scan'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { SCHEME_UP_DOWN } from '../utils/scheme'
-import { KEY_LEVEL_STYLES } from './KlineChart'
+import {
+  applyCorridorView,
+  createTradeChart,
+  fmtPrice,
+  fmtTime,
+  GLASS,
+  KEY_LEVEL_STYLES,
+} from './klineShared'
 import { bj, dayjs, BJ } from '../utils/dayjs'
 import type { TradeKlineData, TradeKlineEvent } from '../types'
 
@@ -33,13 +34,6 @@ const { Text } = Typography
 
 const CHART_HEIGHT = 520 // 容器无高度时的兜底值
 
-const CANDLE_COLORS: Record<ColorScheme, { up: string; down: string }> = {
-  'red-up': { up: '#ef5350', down: '#26a69a' },
-  'green-up': { up: '#26a69a', down: '#ef5350' },
-}
-
-const fmtPrice = (p: number) => (p < 1 ? p.toFixed(6) : p < 100 ? p.toFixed(4) : p.toFixed(2))
-const fmtTime = (sec: number) => dayjs.unix(sec).tz(BJ).format('MM-DD HH:mm')
 // 后端 UTC naive → 毫秒（统一按 UTC 解析）
 const utcMs = (v: string) => dayjs.utc(v).valueOf()
 
@@ -78,16 +72,6 @@ function eventMarker(
     default:
       return null
   }
-}
-
-// 悬浮玻璃拟态标签（与 KlineChart 同风格）
-const GLASS: CSSProperties = {
-  background: 'rgba(19, 23, 34, 0.72)',
-  backdropFilter: 'blur(10px)',
-  WebkitBackdropFilter: 'blur(10px)',
-  border: '1px solid rgba(66, 74, 96, 0.45)',
-  borderRadius: 8,
-  boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
 }
 
 export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
@@ -129,61 +113,10 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
     const container = containerRef.current
     if (!container || !data) return
 
-    const chart = createChart(container, {
-      layout: {
-        background: { type: ColorType.VerticalGradient, topColor: '#1c2231', bottomColor: '#12151f' },
-        textColor: '#c9cfdd',
-        fontFamily:
-          "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif",
-        attributionLogo: false,
-      },
-      grid: {
-        vertLines: { color: '#1d2332' },
-        horzLines: { color: '#1d2332' },
-      },
-      rightPriceScale: {
-        borderColor: '#252b3b',
-        entireTextOnly: true,
-        scaleMargins: { top: 0.18, bottom: 0.08 },
-      },
-      timeScale: {
-        borderColor: '#252b3b',
-        timeVisible: false,
-        secondsVisible: false,
-        rightOffset: 4,
-      },
-      crosshair: {
-        mode: CrosshairMode.Normal,
-        vertLine: { color: '#758696', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#363c4e' },
-        horzLine: { color: '#758696', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#363c4e' },
-      },
-      localization: {
-        priceFormatter: (p: number) => fmtPrice(p),
-      },
-      width: container.clientWidth || 520,
-      height: container.clientHeight || CHART_HEIGHT,
-    })
-
-    // 主图中央水印（币种 + 方向）
-    createTextWatermark(chart.panes()[0], {
-      lines: [
-        {
-          text: `${data.symbol} ${isLong ? '做多' : '做空'}`,
-          color: 'rgba(148, 158, 184, 0.09)',
-          fontSize: 44,
-          fontStyle: 'bold',
-          fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        },
-      ],
-    })
-
-    const candleColors = CANDLE_COLORS[colorScheme]
-    const series = chart.addSeries(CandlestickSeries, {
-      upColor: candleColors.up,
-      downColor: candleColors.down,
-      borderVisible: false,
-      wickUpColor: candleColors.up,
-      wickDownColor: candleColors.down,
+    // 统一图表内核（klineShared）：配置/水印/涨跌配色与扫描结果图完全同源
+    const { chart, series } = createTradeChart(container, {
+      watermark: `${data.symbol} ${isLong ? '做多' : '做空'}`,
+      height: CHART_HEIGHT,
     })
     chartRef.current = chart
     seriesRef.current = series
@@ -196,16 +129,25 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
       close: k.close,
     }))
     series.setData(candleData)
-    // 复盘视图固定展示全部根数（开单前100根 + 持仓段，量级适中）。
-    // 右侧预留「价签走廊」：右缘价签（开仓/止盈/止损）宽约 110px，按 barSpacing
-    // 换算成空K线根数，避免标签压住最新K线（2026-09-23 用户反馈）
-    const plotW = Math.max(200, (container.clientWidth || 520) - 64)
-    let corridor = 8
-    for (let i = 0; i < 2; i++) {
-      corridor = Math.max(6, Math.ceil(110 / (plotW / (candleData.length + 2 + corridor))))
+    // 复盘视图固定展示全部根数（开单前100根 + 持仓段，量级适中），from=-2 左侧留白
+    applyCorridorView(chart, container.clientWidth, candleData.length, -2)
+
+    // 关键位价位线（docs/21）：与扫描结果图同一渲染路径（状态着色 price line +
+    // 右轴标签），后端已按统一口径合并（invalid 剔除+权重贪心合并）
+    for (const lv of data.key_levels ?? []) {
+      const conf = KEY_LEVEL_STYLES[lv.state]
+      if (!conf) continue
+      const roleCn =
+        lv.role === 'support' ? '支撑' : lv.role === 'resistance' ? '压力' : '位'
+      series.createPriceLine({
+        price: lv.price,
+        color: conf.color,
+        lineWidth: conf.width,
+        lineStyle: conf.style,
+        axisLabelVisible: true,
+        title: `${roleCn} S${lv.strength}×${lv.touches}t`,
+      })
     }
-    chart.timeScale().applyOptions({ rightOffset: corridor })
-    chart.timeScale().setVisibleLogicalRange({ from: -2, to: candleData.length + corridor })
 
     // 事件箭头：事件时间向下取整到所在K线（事件落在K线中间，取该K线）
     const markers: SeriesMarker<UTCTimestamp>[] = []
@@ -360,60 +302,6 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
     drawLine(data.stop_loss, colorSL, '止损', true)
     drawLine(data.tp1, colorTP, '止盈1', true)
     if (hasTP2) drawLine(data.tp2, colorTP, '止盈2', true)
-
-    // 开单时刻关键位（docs/21）：后端已按统一口径合并（invalid 剔除+权重
-    // 贪心合并），前端只跳过无样式状态。线从图左缘画起（位在开仓前就存在，
-    // 区别于开仓线从开仓K线起）；状态色实/虚线 + 右缘价签（与已有标签防撞错位）
-    const keyLevels = (data.key_levels ?? []).filter(
-      (lv) => KEY_LEVEL_STYLES[lv.state] != null,
-    )
-    for (const lv of keyLevels) {
-      const conf = KEY_LEVEL_STYLES[lv.state]!
-      const ly = series.priceToCoordinate(lv.price)
-      if (ly == null) continue
-      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
-      line.setAttribute('x1', '0')
-      line.setAttribute('y1', String(ly))
-      line.setAttribute('x2', String(rightEdge))
-      line.setAttribute('y2', String(ly))
-      line.setAttribute('stroke', conf.color)
-      line.setAttribute('stroke-width', String(conf.width))
-      line.setAttribute('shape-rendering', 'crispEdges')
-      if (conf.style === LineStyle.Dashed) line.setAttribute('stroke-dasharray', '5,3')
-      svg.appendChild(line)
-
-      const roleCn =
-        lv.role === 'support' ? '支撑' : lv.role === 'resistance' ? '压力' : '位'
-      const text = `${roleCn} S${lv.strength}×${lv.touches}t`
-      const font = 'bold 10px monospace'
-      const ctx = document.createElement('canvas').getContext('2d')!
-      ctx.font = font
-      const tw = ctx.measureText(text).width
-      const boxW = tw + 8
-      const boxH = 13
-      // 价签防撞：与已有标签同高时上下错位（规则与现止损一致）
-      const clash = tagYs.find((uy) => Math.abs(uy - ly) < TAG_GAP)
-      const tagY = clash == null ? ly : clash > ly ? ly - TAG_SHIFT : ly + TAG_SHIFT
-
-      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
-      rect.setAttribute('x', String(rightEdge - boxW))
-      rect.setAttribute('y', String(tagY - boxH / 2))
-      rect.setAttribute('width', String(boxW))
-      rect.setAttribute('height', String(boxH))
-      rect.setAttribute('fill', conf.color)
-      svg.appendChild(rect)
-
-      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text')
-      t.setAttribute('x', String(rightEdge - boxW + 4))
-      t.setAttribute('y', String(tagY + 3))
-      t.setAttribute('fill', '#fff')
-      t.setAttribute('font-size', '10')
-      t.setAttribute('font-family', 'monospace')
-      t.setAttribute('font-weight', 'bold')
-      t.textContent = text
-      svg.appendChild(t)
-      tagYs.push(tagY)
-    }
 
     // 现止损（跟踪移动后的最新位置）：与初始止损不同才加画（琥珀色区分）；
     // 价签与已有标签同高时上下错位（保本止损=开仓价的场景）
