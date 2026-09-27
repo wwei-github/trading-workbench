@@ -1,33 +1,24 @@
 /**
  * 交易复盘K线图（交易记录列表点击币种弹窗）
- * - 数据：后端 /trades/{id}/klines 一次返回——开单前 100 根 + 持仓期间直到止损/平仓，
- *   附开单时初始止损止盈（OPEN 事件快照）与关键事件（开仓/TP1/TP2/止损成交）
- * - 区域：止损区（入场→SL，红半透明）、止盈1/2区（绿半透明），从开仓K线延伸到图右缘
- * - 线：入场（实线，方向色）、止损/止盈（虚线），右侧价签
- * - 事件：箭头标注在对应K线上（开仓蓝、止盈涨色、止损跌色），多空方向决定上下位置
- * - 配色跟随全局涨跌方案（红涨绿跌 / 绿涨红跌）
+ * 图表能力（指标/图例/工具栏/关键位价位线）全部在 ChartCore，与扫描结果图
+ * 完全同源；本组件只负责：
+ * - 数据：后端 /trades/{id}/klines 一次返回——开单前 100 根 + 持仓期间直到
+ *   止损/平仓，附开单时初始止损止盈（OPEN 事件快照）与关键事件
+ * - 复盘特有 SVG 覆盖层（drawOverlay）：止损区（入场→SL，红半透明）、
+ *   止盈1/2区（绿半透明）从开仓K线延伸到图右缘；入场/止损/止盈水平线 +
+ *   右侧价签；现止损琥珀线（跟踪移动后）
+ * - 事件箭头（extraMarkers）：开仓蓝、止盈涨色、止损跌色
+ * - 信息卡（headerExtra）：区间说明 + 三价摘要
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Empty, Spin, Tag, Typography } from 'antd'
-import {
-  createSeriesMarkers,
-  type IChartApi,
-  type ISeriesApi,
-  type SeriesMarker,
-  type UTCTimestamp,
-} from 'lightweight-charts'
+import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts'
 import { scanApi } from '../api/scan'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { SCHEME_UP_DOWN } from '../utils/scheme'
-import {
-  applyCorridorView,
-  createTradeChart,
-  fmtPrice,
-  fmtTime,
-  GLASS,
-  KEY_LEVEL_STYLES,
-} from './klineShared'
-import { bj, dayjs, BJ } from '../utils/dayjs'
+import { fmtPrice, fmtTime, GLASS } from './klineShared'
+import { bj, dayjs } from '../utils/dayjs'
+import ChartCore, { type OverlayCtx } from './ChartCore'
 import type { TradeKlineData, TradeKlineEvent } from '../types'
 
 const { Text } = Typography
@@ -76,13 +67,10 @@ function eventMarker(
 
 export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
   const colorScheme = useScanStore((s) => s.colorScheme)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const svgRef = useRef<SVGSVGElement>(null)
-  const chartRef = useRef<IChartApi | null>(null)
-  const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const [data, setData] = useState<TradeKlineData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [updating, setUpdating] = useState(false)
 
   // 拉取复盘数据（tradeId 变化重拉）
   useEffect(() => {
@@ -106,103 +94,54 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
     }
   }, [tradeId])
 
+  // 「更新」按钮：重拉复盘数据（在跑单的持仓区间会延长）
+  const handleUpdate = useCallback(async () => {
+    setUpdating(true)
+    try {
+      setData(await scanApi.trades.klines(tradeId))
+      setError(null)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || '复盘K线更新失败')
+    } finally {
+      setUpdating(false)
+    }
+  }, [tradeId])
+
   const isLong = data?.direction !== 'short'
 
-  // 初始化图表 + 写入K线与事件标记
-  useEffect(() => {
-    const container = containerRef.current
-    if (!container || !data) return
-
-    // 统一图表内核（klineShared）：配置/水印/涨跌配色与扫描结果图完全同源
-    const { chart, series } = createTradeChart(container, {
-      watermark: `${data.symbol} ${isLong ? '做多' : '做空'}`,
-      height: CHART_HEIGHT,
-    })
-    chartRef.current = chart
-    seriesRef.current = series
-
-    const candleData = data.klines.map((k) => ({
-      time: Math.floor(k.time / 1000) as UTCTimestamp,
-      open: k.open,
-      high: k.high,
-      low: k.low,
-      close: k.close,
-    }))
-    series.setData(candleData)
-    // 复盘视图固定展示全部根数（开单前100根 + 持仓段，量级适中），from=-2 左侧留白
-    applyCorridorView(chart, container.clientWidth, candleData.length, -2)
-
-    // 关键位价位线（docs/21）：与扫描结果图同一渲染路径（状态着色 price line +
-    // 右轴标签），后端已按统一口径合并（invalid 剔除+权重贪心合并）
-    for (const lv of data.key_levels ?? []) {
-      const conf = KEY_LEVEL_STYLES[lv.state]
-      if (!conf) continue
-      const roleCn =
-        lv.role === 'support' ? '支撑' : lv.role === 'resistance' ? '压力' : '位'
-      series.createPriceLine({
-        price: lv.price,
-        color: conf.color,
-        lineWidth: conf.width,
-        lineStyle: conf.style,
-        axisLabelVisible: true,
-        title: `${roleCn} S${lv.strength}×${lv.touches}t`,
-      })
-    }
-
-    // 事件箭头：事件时间向下取整到所在K线（事件落在K线中间，取该K线）
+  // 事件箭头标记（useMemo 保持引用稳定：ChartCore 以引用判断是否重应用标记）
+  const extraMarkers = useMemo<SeriesMarker<UTCTimestamp>[]>(() => {
+    if (!data) return []
     const markers: SeriesMarker<UTCTimestamp>[] = []
     for (const ev of data.events) {
       const m = eventMarker(ev, isLong, colorScheme)
       if (!m) continue
       const evMs = utcMs(ev.created_at)
       // 找事件时刻所在的K线（time <= evMs 的最后一根；早于首根则取首根）
-      let time = candleData[0]?.time
-      for (const c of candleData) {
-        if (c.time * 1000 <= evMs) time = c.time
+      let time = data.klines[0] ? (Math.floor(data.klines[0].time / 1000) as UTCTimestamp) : undefined
+      for (const k of data.klines) {
+        if (k.time <= evMs) time = Math.floor(k.time / 1000) as UTCTimestamp
         else break
       }
       if (time == null) continue
       markers.push({ ...m, time, size: 1 })
     }
-    markers.sort((a, b) => (a.time as number) - (b.time as number))
-    if (markers.length > 0) createSeriesMarkers(series, markers)
+    return markers.sort((a, b) => (a.time as number) - (b.time as number))
+  }, [data, isLong, colorScheme])
 
-    // 自适应容器宽高（弹窗内）
-    const resize = () => {
-      if (container && chartRef.current) {
-        chartRef.current.applyOptions({
-          width: container.clientWidth,
-          height: container.clientHeight || CHART_HEIGHT,
-        })
-      }
-    }
-    const ro = new ResizeObserver(resize)
-    ro.observe(container)
-
-    return () => {
-      ro.disconnect()
-      chart.remove()
-      chartRef.current = null
-      seriesRef.current = null
-    }
-    // colorScheme 变化时重建（联动K线颜色与箭头配色）
-  }, [data, colorScheme, isLong])
-
-  // 区域色块 + 风控线（SVG 覆盖层，rAF 循环重绘保证缩放/平移同步）
-  const drawZones = useCallback(() => {
-    const chart = chartRef.current
-    const series = seriesRef.current
-    const svg = svgRef.current
-    const container = containerRef.current
-    if (!chart || !series || !svg || !container || !data) return
-
-    while (svg.firstChild) svg.removeChild(svg.firstChild)
+  // 复盘特有覆盖层：区域色块 + 风控线（ChartCore 每帧在空白 SVG 上调用）
+  const drawZones = useCallback((ctx: OverlayCtx) => {
+    const { chart, series, svg, container } = ctx
+    if (!data) return
 
     const isL = data.direction !== 'short'
     const { up, down } = SCHEME_UP_DOWN[colorScheme]
     const colorEntry = isL ? up : down
     const colorSL = down
     const colorTP = up
+
+    const NS = 'http://www.w3.org/2000/svg'
+    const el = (tag: string) => document.createElementNS(NS, tag)
 
     const fullWidth = container.clientWidth || 520
     const height = container.clientHeight || CHART_HEIGHT
@@ -213,6 +152,8 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
     svg.setAttribute('viewBox', `0 0 ${fullWidth} ${height}`)
 
     if (data.entry_price == null) return
+    const yEntry = series.priceToCoordinate(data.entry_price)
+    if (yEntry == null) return
 
     // 区域左边界 = 开仓K线的 x 坐标（找不到则从图左缘开始）
     const openMs = data.opened_at ? utcMs(data.opened_at) : null
@@ -237,7 +178,7 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
       const y1 = series.priceToCoordinate(p1)
       const y2 = series.priceToCoordinate(p2)
       if (y1 == null || y2 == null) return
-      const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      const r = el('rect')
       r.setAttribute('x', String(x0))
       r.setAttribute('y', String(Math.min(y1, y2)))
       r.setAttribute('width', String(rightEdge - x0))
@@ -257,7 +198,7 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
       if (price == null) return null
       const y = series.priceToCoordinate(price)
       if (y == null) return null
-      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
+      const line = el('line')
       line.setAttribute('x1', String(x0))
       line.setAttribute('y1', String(y))
       line.setAttribute('x2', String(rightEdge))
@@ -270,15 +211,15 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
 
       const text = `${label} ${fmtPrice(price)}`
       const font = 'bold 10px monospace'
-      const ctx = document.createElement('canvas').getContext('2d')!
-      ctx.font = font
-      const tw = ctx.measureText(text).width
+      const ctx2 = document.createElement('canvas').getContext('2d')!
+      ctx2.font = font
+      const tw = ctx2.measureText(text).width
       const boxW = tw + 8
       const boxH = 13
       const boxX = rightEdge - boxW
       const tagY = y + tagDy
 
-      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      const rect = el('rect')
       rect.setAttribute('x', String(boxX))
       rect.setAttribute('y', String(tagY - boxH / 2))
       rect.setAttribute('width', String(boxW))
@@ -286,7 +227,7 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
       rect.setAttribute('fill', color)
       svg.appendChild(rect)
 
-      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text')
+      const t = el('text')
       t.setAttribute('x', String(boxX + 4))
       t.setAttribute('y', String(tagY + 3))
       t.setAttribute('fill', '#fff')
@@ -316,19 +257,6 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
     }
   }, [data, colorScheme])
 
-  useEffect(() => {
-    if (!data) return
-    // 立即绘制一次（不依赖 rAF：后台/被遮挡标签页 rAF 会暂停，导致区域一直空白）
-    drawZones()
-    let rafId = 0
-    const loop = () => {
-      drawZones()
-      rafId = requestAnimationFrame(loop)
-    }
-    rafId = requestAnimationFrame(loop)
-    return () => cancelAnimationFrame(rafId)
-  }, [data, drawZones])
-
   if (loading) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: 420 }}>
@@ -351,74 +279,61 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 420 }}>
-      {/* 左上角图例：区间说明 + 首尾时间 */}
-      <div
-        style={{
-          position: 'absolute',
-          top: 8,
-          left: 8,
-          zIndex: 20,
-          ...GLASS,
-          padding: '4px 10px',
-          fontSize: 11,
-          lineHeight: '18px',
-          pointerEvents: 'none',
-          color: '#8b93a7',
-        }}>
-        <span style={{ color: '#e8ebf2', fontWeight: 600 }}>{data.symbol}</span>{' '}
-        <Tag color={isLong ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down} style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px' }}>
-          {isLong ? '多' : '空'}
-        </Tag>{' '}
-        <span>
-          {data.interval} · 开单前100根 + 持仓全程{statusPnl}
-        </span>
-        <div>
-          {fmtTime(Math.floor(data.klines[0].time / 1000))} →{' '}
-          {fmtTime(Math.floor(data.klines[data.klines.length - 1].time / 1000))} · 共 {data.klines.length} 根
-        </div>
-        <div>
-          {isLong ? '开多' : '开空'}{' '}
-          <span style={{ color: '#c9cfdd' }}>{data.entry_price != null ? fmtPrice(data.entry_price) : '—'}</span>
-          {data.stop_loss != null && (
-            <>
-              {' '}· 止损 <span style={{ color: SCHEME_UP_DOWN[colorScheme].down }}>{fmtPrice(data.stop_loss)}</span>
-            </>
-          )}
-          {data.tp1 != null && (
-            <>
-              {' '}· 止盈1 <span style={{ color: SCHEME_UP_DOWN[colorScheme].up }}>{fmtPrice(data.tp1)}</span>
-            </>
-          )}
-          {data.current_stop_loss != null && data.stop_loss != null && Math.abs(data.current_stop_loss - data.stop_loss) > 1e-12 && (
-            <>
-              {' '}· 现止损 <span style={{ color: CUR_SL_COLOR }}>{fmtPrice(data.current_stop_loss)}</span>
-            </>
-          )}
-          <span style={{ marginLeft: 8, color: '#5a6377' }}>{bj(data.opened_at).format('MM-DD HH:mm')} 开仓</span>
-        </div>
-      </div>
-      <div
-        ref={containerRef}
-        style={{
-          width: '100%',
-          height: '100%',
-          minHeight: 420,
-          borderRadius: 8,
-          overflow: 'hidden',
-          border: '1px solid #232838',
-        }}
-      />
-      <svg
-        ref={svgRef}
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          pointerEvents: 'none',
-          zIndex: 10,
-        }}
+      <ChartCore
+        chartKey={tradeId}
+        watermark={`${data.symbol} ${isLong ? '做多' : '做空'}`}
+        label={data.symbol}
+        data={data}
+        from={-2}
+        extraMarkers={extraMarkers}
+        drawOverlay={drawZones}
+        height={CHART_HEIGHT}
+        onUpdate={handleUpdate}
+        updating={updating}
+        headerExtra={
+          // 复盘信息卡：区间说明 + 三价摘要（与扫描图工具栏/图例同栈不遮挡）
+          <div
+            style={{
+              padding: '4px 10px',
+              fontSize: 11,
+              lineHeight: '18px',
+              pointerEvents: 'none',
+              color: '#8b93a7',
+              ...GLASS,
+            }}>
+            <span style={{ color: '#e8ebf2', fontWeight: 600 }}>{data.symbol}</span>{' '}
+            <Tag color={isLong ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down} style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px' }}>
+              {isLong ? '多' : '空'}
+            </Tag>{' '}
+            <span>
+              {data.interval} · 开单前100根 + 持仓全程{statusPnl}
+            </span>
+            <div>
+              {fmtTime(Math.floor(data.klines[0].time / 1000))} →{' '}
+              {fmtTime(Math.floor(data.klines[data.klines.length - 1].time / 1000))} · 共 {data.klines.length} 根
+            </div>
+            <div>
+              {isLong ? '开多' : '开空'}{' '}
+              <span style={{ color: '#c9cfdd' }}>{data.entry_price != null ? fmtPrice(data.entry_price) : '—'}</span>
+              {data.stop_loss != null && (
+                <>
+                  {' '}· 止损 <span style={{ color: SCHEME_UP_DOWN[colorScheme].down }}>{fmtPrice(data.stop_loss)}</span>
+                </>
+              )}
+              {data.tp1 != null && (
+                <>
+                  {' '}· 止盈1 <span style={{ color: SCHEME_UP_DOWN[colorScheme].up }}>{fmtPrice(data.tp1)}</span>
+                </>
+              )}
+              {data.current_stop_loss != null && data.stop_loss != null && Math.abs(data.current_stop_loss - data.stop_loss) > 1e-12 && (
+                <>
+                  {' '}· 现止损 <span style={{ color: CUR_SL_COLOR }}>{fmtPrice(data.current_stop_loss)}</span>
+                </>
+              )}
+              <span style={{ marginLeft: 8, color: '#5a6377' }}>{bj(data.opened_at).format('MM-DD HH:mm')} 开仓</span>
+            </div>
+          </div>
+        }
       />
       <Text type="secondary" style={{ position: 'absolute', bottom: 6, right: 10, fontSize: 10, zIndex: 20, color: '#5a6377' }}>
         止损/止盈1/2 为开单时快照 · 琥珀线=现止损（跟踪移动后）· 移动明细见操作历史
