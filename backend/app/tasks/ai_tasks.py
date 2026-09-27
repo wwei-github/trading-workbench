@@ -49,7 +49,7 @@ def _get_redis() -> Redis:
     return _redis
 
 
-def _sem_acquire(timeout_s: int = 300) -> str:
+def _sem_acquire(timeout_s: int = 900) -> str:
     """获取 LLM 并发信号量，返回持有者 id（空串表示超时降级放行）"""
     r = _get_redis()
     ident = uuid4().hex
