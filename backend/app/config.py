@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     CANDLE_MAX_EMA21_DIST_PCT: float = 1.5  # 悬空金K门槛：信号K线收盘距 EMA21 >1.5% 不触发纯金K（0=关闭）
     DAILY_LOSS_STOP_USDT: float = 30.0  # 当日亏损熔断：UTC 日已平仓净亏 ≤-30 USDT 停开仓（0=关闭）
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
+    # ── 关键位子系统（docs/21，2026-09-27）：多源采集→ATR聚类→角色状态机 ──
+    KEY_LEVELS_ENABLED: bool = True  # 总开关；False 时事实包/锚点/触发器全部回落现行为
+    KEY_LEVELS_TOL_ATR: float = 0.5  # 聚类容差（×ATR14）：带内候选位合并为一个关键位
+    KEY_LEVELS_CONFIRM_WINDOW: int = 12  # 回踩确认窗口（1h 根数）：突破后超窗未回踩 → 失效
+    KEY_LEVELS_MIN_SOURCES: int = 1  # 进事实包的最小共振强度（1=全部，2=仅共振位）
+    KEY_LEVELS_PSYCHOLOGICAL: bool = False  # 整数关口源（先关，防噪音稀释共振）
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

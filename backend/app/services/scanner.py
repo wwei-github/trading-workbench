@@ -30,7 +30,8 @@ from app.models.trade import TradeRecord
 from app.services.exchange_pool import ExchangePool
 from app.services.binance_trader import BinanceTrader
 from app.services.strategy.ema import analyze_ema
-from app.services.strategy.indicators import volume_ratio
+from app.services.strategy.indicators import calc_atr, volume_ratio
+from app.services.strategy.key_levels import compute_key_levels
 from app.services.strategy.technical import (
     compute_indicator_votes,
     compute_quality_score,
@@ -123,8 +124,17 @@ def detect_indicator_candidate(
     if not votes or votes["voted"] < 5 or abs(votes["net"]) < 3:
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)  # 中性/票数不足
 
+    # 关键位位表（docs/21 §8）：T3 回踩确认双对象之一。每币每轮现算一次
+    # （500 根 1h 重放毫秒级，不缓存）；失败降级为空表 → 纯 EMA21 原行为
+    try:
+        key_levels = compute_key_levels(klines, htf)
+    except Exception as e:
+        key_levels = []
+        logger.warning("%s 关键位计算失败（T3 回落纯EMA21）: %s", symbol, e)
+
     direction = 1 if votes["net"] > 0 else -1
-    trig, pending_op = detect_trigger(klines, direction, pending)
+    trig, pending_op = detect_trigger(klines, direction, pending,
+                                      levels=key_levels, atr=calc_atr(klines, 14))
     if trig is None:
         # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩口径计）
         if pending_op and pending_op.get("op") == "upsert":

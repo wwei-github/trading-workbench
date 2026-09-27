@@ -33,7 +33,7 @@ import {
   type IndicatorContext,
   type IndicatorResult,
 } from '../constants/indicators'
-import type { AIAnalysis, Kline, KlineData } from '../types'
+import type { AIAnalysis, Kline, KlineData, KeyLevel } from '../types'
 import { dayjs, BJ } from '../utils/dayjs'
 
 const { Text } = Typography
@@ -47,6 +47,18 @@ interface Props {
 }
 
 const CHART_HEIGHT = 560 // 容器无高度时的兜底值
+
+// 关键位价位线样式（docs/21）：状态着色——有效蓝实线 / 翻转确认绿加粗 /
+// 刚突破橙虚线；invalid 不画。独立于涨跌配色方案（结构语义固定色）
+const KEY_LEVEL_STYLES: Record<
+  KeyLevel['state'],
+  { color: string; width: 1 | 2; style: LineStyle } | null
+> = {
+  intact: { color: '#4a90e2', width: 1, style: LineStyle.Solid },
+  flipped_confirmed: { color: '#22ab94', width: 2, style: LineStyle.Solid },
+  broken: { color: '#ff9800', width: 1, style: LineStyle.Dashed },
+  invalid: null,
+}
 
 // 涨跌配色方案：红涨绿跌（国内习惯，默认）/ 绿涨红跌（国际习惯）
 // 全局生效（切换入口在页面顶部 ColorSchemeToggle）：K线实体与 AI 仓位线、
@@ -120,6 +132,10 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const priceLinesRef = useRef<IPriceLine[]>([])
+  // 关键位价位线（docs/21）：独立 ref，不复用 priceLinesRef（AI 仓位 effect 每次清空它）
+  const keyLevelLinesRef = useRef<IPriceLine[]>([])
+  // 关键位数据（applyKlineData 写入，独立 effect 渲染价位线）
+  const [keyLevels, setKeyLevels] = useState<KeyLevel[]>([])
   // 技术指标 series + 图例元信息（目录驱动），effect 重建时统一清理
   const indicatorSeriesRef = useRef<ISeriesApi<SeriesType>[]>([])
   const indicatorMetaRef = useRef<
@@ -205,6 +221,8 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
     }
     // 数据加载完成后触发 AI 仓位标注重绘（等待布局完成）
     requestAnimationFrame(() => redrawFnRef.current?.())
+    // 关键位数据（独立 effect 渲染价位线）
+    setKeyLevels(data.key_levels ?? [])
   }, [])
 
   // "更新"按钮：跳过缓存直连交易所拉最新 K 线，交易所返回后回写重置缓存
@@ -359,6 +377,7 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
       chart.unsubscribeCrosshairMove(handleCrosshair)
       priceLinesRef.current.forEach((l) => series.removePriceLine(l))
       priceLinesRef.current = []
+      keyLevelLinesRef.current = []
       chart.remove()
       chartRef.current = null
       seriesRef.current = null
@@ -377,6 +396,36 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
       wickDownColor: c.down,
     })
   }, [colorScheme])
+
+  // 关键位价位线（docs/21）：状态着色水平线，数据变化或图表重建后重画。
+  // 图表重建（refreshKey/symbol）时旧 line 属于已销毁 series，removePriceLine 需容错
+  useEffect(() => {
+    const series = seriesRef.current
+    if (!series) return
+    keyLevelLinesRef.current.forEach((l) => {
+      try {
+        series.removePriceLine(l)
+      } catch {
+        /* 旧 series 已销毁 */
+      }
+    })
+    keyLevelLinesRef.current = []
+    keyLevelLinesRef.current = keyLevels
+      .filter((lv) => KEY_LEVEL_STYLES[lv.state] != null)
+      .map((lv) => {
+        const conf = KEY_LEVEL_STYLES[lv.state]!
+        const roleCn =
+          lv.role === 'support' ? '支撑' : lv.role === 'resistance' ? '压力' : '位'
+        return series.createPriceLine({
+          price: lv.price,
+          color: conf.color,
+          lineWidth: conf.width,
+          lineStyle: conf.style,
+          axisLabelVisible: true,
+          title: `${roleCn} S${lv.strength}×${lv.touches}t`,
+        })
+      })
+  }, [keyLevels, refreshKey, symbol])
 
   // 渲染技术指标：目录驱动（indicatorts 计算库 + 通用渲染层），无手写指标数学
   // 主图叠加（pane 0）/ 副图（按目录顺序自动分配 pane 1,2,3…）

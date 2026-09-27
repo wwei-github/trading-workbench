@@ -162,11 +162,27 @@ export interface SwingPoint {
   label: string; // HH / LH / H / HL / LL / L
 }
 
+// 关键位（docs/21）：多源融合+状态机，图表状态着色价位线
+export interface KeyLevel {
+  price: number;
+  sources: string[]; // swing_1h / swing_4h / donchian / prev_day / psych
+  touches: number;
+  rejections: number;
+  kind: string; // high / low / mixed / close
+  strength: number;
+  role: 'support' | 'resistance' | null;
+  state: 'intact' | 'broken' | 'flipped_confirmed' | 'invalid';
+  flip_direction: 1 | -1 | null;
+  bars_since_event: number;
+  distance_pct: number;
+}
+
 export interface KlineData {
   symbol: string;
   interval: string;
   klines: Kline[];
   swings?: { highs: SwingPoint[]; lows: SwingPoint[] };
+  key_levels?: KeyLevel[];
 }
 
 export interface SystemConfig {

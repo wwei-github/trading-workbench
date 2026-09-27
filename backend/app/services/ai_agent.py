@@ -32,6 +32,7 @@ from app.services.ai_analyzer import (
     _RULE_STRUCT,
     _RULE_VOTE,
     SIGNAL_TYPE_LABELS,
+    render_key_levels_block,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,11 +63,13 @@ def render_system_prompt(risk_label: str = "") -> str:
 
 # 锚点枚举：结构位两类（support/resistance，解析到现价下/上方最近的摆动点）
 # + 线外锚点（做多止盈锚摆动高点下方、做空锚摆动低点上方，枚举名沿用 zone/关键位
-# 时期历史命名）+ market（市价锚）。next_ 前缀取更前一档（止盈二用）
+# 时期历史命名）+ market（市价锚）。next_ 前缀取更前一档（止盈二用）。
+# key_ 前缀三类（docs/21）：关键位位表锚——位表非空时优先解析到位表
 LEVEL_REFS = (
     "support", "resistance", "market",
     "resistance_zone_low", "support_zone_high",
     "next_resistance_zone_low", "next_support_zone_high",
+    "key_support_confirmed", "key_resistance_confirmed", "key_nearest_strong",
 )
 
 _REF_DESC = "、".join(LEVEL_REFS)
@@ -80,6 +83,10 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    止盈二 tp2_ref=next_resistance_zone_low（更远一档的摆动高点）；做空用 support_zone_high /
    next_support_zone_high（现价下方的摆动低点及其更远一档）。止盈 offset 留余地：
    做多 -0.2~-0.5（位下方），做空 0.2~0.5（位上方）。
+   事实包含「关键位」块时结构锚点从该位表解析（失效位已过滤，共振位价更准）：
+   key_support_confirmed / key_resistance_confirmed=现价下/上方最近的已确认位
+   （入场/止损首选——翻转已确认位的回踩是高质量入场）；key_nearest_strong=
+   距现价最近的强度≥2 位（止盈锚备选）。关键位块缺失时这些锚按普通摆动位解析。
 3. 决策必须通过 submit_decision 工具提交，提交后程序会做风控校验：
    校验不通过时工具会返回违规明细，请按明细修正后重新提交。
 4. **入场价纪律**：当前价格是分析时刻的最新价。顺势追势时 entry 用 market 锚（offset 0 附近）；
@@ -228,41 +235,128 @@ def _nth_swing(signal: dict, side: str, nth: int) -> Optional[float]:
     return prices[nth]
 
 
-def _resolve_price(ref: Optional[str], offset_pct, signal: dict) -> Optional[float]:
+def _key_level_eligible(lv: dict, purpose: str) -> bool:
+    """关键位锚定资格（docs/21 §7）：invalid 一律不可锚；broken（刚突破未
+    回踩确认）不可作入场/止损锚——假突破接飞刀正是本系统要消灭的亏损源，
+    但可作止盈锚（破位后回测原位是常见目标）。"""
+    state = lv.get("state") or "intact"
+    if state == "invalid":
+        return False
+    if state == "broken" and purpose in ("entry", "stop"):
+        return False
+    return True
+
+
+def _nearest(levels: list[dict], cur: float, above: bool) -> Optional[float]:
+    """合格位中现价上/下方最近者（above=True 取上方最小价、False 取下方最大价）。"""
+    prices = [float(lv["price"]) for lv in levels
+              if (float(lv["price"]) > cur) == above and float(lv["price"]) > 0]
+    if not prices:
+        return None
+    return min(prices) if above else max(prices)
+
+
+def _resolve_price(ref: Optional[str], offset_pct, signal: dict,
+                   purpose: str = "entry") -> Optional[float]:
     """锚点 + 偏移 → 绝对价格；非法锚点返回 None。
 
-    support/resistance 解析到现价下方/上方最近的摆动结构位（多位时：
-    support 取价下方最近即价格最大者，resistance 取价上方最近即价格最小者）；
-    线外锚点解析到对应侧第 nth 近的摆动结构位价格本身。
+    事实包关键位表（signal["key_levels"]，docs/21）非空时所有结构锚点优先
+    从位表解析（自动获得状态过滤与多源共振位价）；位表空/None（开关关闭/
+    数据不足）回落原摆动点路径，key_ 前缀锚点按最近同义结构位兜底。
+
+    purpose：entry/stop 排除 broken 位，tp 保留（见 _key_level_eligible）。
     """
     if not ref:
         return None
     if ref == "market":
         base = float(signal.get("current_price") or 0)
-    elif ref in _ZONE_REF_MAP:
-        side, nth = _ZONE_REF_MAP[ref]
-        base = _nth_swing(signal, side, nth)
-        if base is None:
-            return None
+        return base * (1 + _safe_off(offset_pct) / 100.0)
+
+    levels = signal.get("key_levels") or []
+    cur = float(signal.get("current_price") or 0)
+    if levels and cur > 0:
+        base = _resolve_from_levels(ref, levels, cur, purpose)
     else:
-        cur = float(signal.get("current_price") or 0)
-        sw = signal.get("recent_swings") or {}
-        side = "lows" if ref == "support" else "highs"
-        prices = [
-            float(s.get("price", 0))
-            for s in (sw.get(side) or [])
-            if float(s.get("price", 0)) > 0
-        ]
-        if cur > 0:
-            prices = [p for p in prices if (p < cur if ref == "support" else p > cur)]
-        if not prices:
-            return None
-        base = max(prices) if ref == "support" else min(prices)
+        base = _resolve_from_swings(ref, signal, cur)
+    if base is None:
+        return None
+    return base * (1 + _safe_off(offset_pct) / 100.0)
+
+
+def _safe_off(offset_pct) -> float:
     try:
-        off = float(offset_pct or 0)
+        return float(offset_pct or 0)
     except (TypeError, ValueError):
-        off = 0.0
-    return base * (1 + off / 100.0)
+        return 0.0
+
+
+def _resolve_from_levels(ref: str, levels: list[dict], cur: float,
+                         purpose: str) -> Optional[float]:
+    """从关键位表解析锚点基准价（docs/21 §7）。无合格位返回 None。"""
+    elig = [lv for lv in levels if _key_level_eligible(lv, purpose)]
+    if ref == "support":
+        return _nearest(elig, cur, above=False)
+    if ref == "resistance":
+        return _nearest(elig, cur, above=True)
+    if ref in _ZONE_REF_MAP:
+        # zone 系历史命名：highs 侧=现价上方第 nth 近（做多止盈锚）、
+        # lows 侧=现价下方第 nth 近（做空止盈锚）
+        side, nth = _ZONE_REF_MAP[ref]
+        prices = sorted(
+            (float(lv["price"]) for lv in elig
+             if ((float(lv["price"]) > cur) == (side == "highs"))
+             and float(lv["price"]) > 0),
+            reverse=(side == "lows"),
+        )
+        return prices[nth] if len(prices) > nth else None
+    if ref == "key_support_confirmed":
+        # 现价下方最近：intact（支撑侧）或向上翻转已确认（docs/21 §7）
+        cands = [lv for lv in elig if float(lv["price"]) < cur and (
+            (lv.get("state") or "intact") == "intact"
+            or (lv.get("state") == "flipped_confirmed"
+                and lv.get("flip_direction") == 1))]
+        return max((float(lv["price"]) for lv in cands), default=None)
+    if ref == "key_resistance_confirmed":
+        cands = [lv for lv in elig if float(lv["price"]) > cur and (
+            (lv.get("state") or "intact") == "intact"
+            or (lv.get("state") == "flipped_confirmed"
+                and lv.get("flip_direction") == -1))]
+        return min((float(lv["price"]) for lv in cands), default=None)
+    if ref == "key_nearest_strong":
+        # 距现价最近的强度≥2 位（不分角色，止盈锚备用）
+        strong = [lv for lv in elig if (lv.get("strength") or 0) >= 2]
+        return min((float(lv["price"]) for lv in strong),
+                   key=lambda p: abs(p - cur), default=None)
+    return None
+
+
+def _resolve_from_swings(ref: str, signal: dict, cur: float) -> Optional[float]:
+    """原摆动点路径（位表空时兜底）。key_ 前缀按最近同义结构位回落。"""
+    if ref in _ZONE_REF_MAP:
+        side, nth = _ZONE_REF_MAP[ref]
+        return _nth_swing(signal, side, nth)
+    if ref == "key_nearest_strong":
+        # 距现价最近的摆动点（不分侧）
+        best = None
+        for side in ("highs", "lows"):
+            p = _nth_swing(signal, side, 0)
+            if p is not None and (best is None or abs(p - cur) < abs(best - cur)):
+                best = p
+        return best
+    # support/resistance 与 key_support/resistance_confirmed 兜底同义
+    sw = signal.get("recent_swings") or {}
+    side = "lows" if ref in ("support", "key_support_confirmed") else "highs"
+    prices = [
+        float(s.get("price", 0))
+        for s in (sw.get(side) or [])
+        if float(s.get("price", 0)) > 0
+    ]
+    if cur > 0:
+        prices = [p for p in prices
+                  if (p < cur if side == "lows" else p > cur)]
+    if not prices:
+        return None
+    return max(prices) if side == "lows" else min(prices)
 
 
 def _handle_submit(
@@ -292,11 +386,15 @@ def _handle_submit(
         }
         return True, "决策已提交：skip", fixed
 
-    # suggest：锚点换算
-    entry = _resolve_price(args.get("entry_ref"), args.get("entry_offset_pct"), signal)
-    stop = _resolve_price(args.get("stop_ref"), args.get("stop_offset_pct"), signal)
-    tp1 = _resolve_price(args.get("tp1_ref"), args.get("tp1_offset_pct"), signal)
-    tp2 = _resolve_price(args.get("tp2_ref"), args.get("tp2_offset_pct"), signal)
+    # suggest：锚点换算（purpose 决定位表过滤：入场/止损禁锚 broken 未确认位）
+    entry = _resolve_price(args.get("entry_ref"), args.get("entry_offset_pct"),
+                           signal, purpose="entry")
+    stop = _resolve_price(args.get("stop_ref"), args.get("stop_offset_pct"),
+                          signal, purpose="stop")
+    tp1 = _resolve_price(args.get("tp1_ref"), args.get("tp1_offset_pct"),
+                         signal, purpose="tp")
+    tp2 = _resolve_price(args.get("tp2_ref"), args.get("tp2_offset_pct"),
+                         signal, purpose="tp")
     errs = []
     if entry is None:
         errs.append(f"entry_ref 非法（{_REF_DESC} 中选择）")
@@ -551,6 +649,8 @@ def _build_user_msg(
         + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
         + render_indicator_block(klines, htf_klines)
         + swings_section
+        # 关键位块（docs/21）：与 P0 管线共用同源渲染（ai_analyzer 单一实现）
+        + render_key_levels_block(signal.get("key_levels"))
         + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
     )
     if user_input:

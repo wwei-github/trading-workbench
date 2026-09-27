@@ -956,12 +956,23 @@ def get_klines(
         ]
         for kind in ("highs", "lows")
     }
-    # 关键位功能已移除（docs/09）：图表不再返回关键位线，仅保留摆动点标记
+    # 关键位（docs/21，2026-09-27 复活）：图表状态着色价位线；
+    # 失败降级空表，不影响K线返回。4h 源仅用于 swing_4h 收盘序列——
+    # 每 4 根采样一档近似（位价与 AI 管线用交易所真实 4h 略有出入，展示可接受）
+    key_levels: list = []
+    try:
+        from app.services.strategy.key_levels import compute_key_levels
+        step = 4
+        htf = [klines[i] for i in range(0, len(klines) - step + 1, step)] if len(klines) >= 8 else None
+        key_levels = compute_key_levels(klines, htf)
+    except Exception:
+        key_levels = []
     return {
         "symbol": symbol,
         "interval": cfg.kline_interval,
         "klines": result,
         "swings": swings,
+        "key_levels": key_levels,
     }
 
 
@@ -1011,6 +1022,12 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         # 评估结构位的历史密度
         "recent_swings": recent_swings(klines, order=cfg.swing_order, n=20),
     }
+    # 关键位位表（docs/21）：与定时分析链路同源；失败降级空表不中断
+    try:
+        from app.services.strategy.key_levels import compute_key_levels
+        signal["key_levels"] = compute_key_levels(klines, htf_klines)
+    except Exception:
+        signal["key_levels"] = []
 
     strategy_prompt = (
         cfg.strategy_prompt

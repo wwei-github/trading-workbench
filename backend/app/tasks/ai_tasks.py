@@ -228,6 +228,14 @@ def run_ai_analysis_single(
         except Exception as e:
             htf_klines = None
             logger.warning("AI 分析 %s 获取4h K线失败，跳过4h背景: %s", r.symbol, e)
+        # 关键位位表（docs/21，2026-09-27）：多源采集→聚类→状态机，随 signal
+        # 透传给 P0/P1 两管线（事实包块 + P1 锚点解析共用）；开关关/数据不足→[]
+        try:
+            from app.services.strategy.key_levels import compute_key_levels
+            signal["key_levels"] = compute_key_levels(klines, htf_klines)
+        except Exception as e:
+            signal["key_levels"] = []
+            logger.warning("AI 分析 %s 关键位计算失败，按空位表继续: %s", r.symbol, e)
         # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
         # Agent 管线由模型按需调用工具自行获取
         # 止损金额口径（2026-09-27）：与开仓引擎同源的预算模式/金额/文案，
