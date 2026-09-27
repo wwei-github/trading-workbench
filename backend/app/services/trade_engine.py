@@ -1371,6 +1371,95 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
 _ADOPT_RUNNING = ("OPENED", "TP1_HIT", "TP2_HIT")
 
 
+# ── 持仓时长警告（2026-09-27）：在跑单 >12h 黄色预警卡 / >24h 红色预警卡 ──
+# 随结算巡检（每 30 分钟）判定；hold_warn_level 只升级不重发（幂等去重）；
+# 前端交易记录「持仓时间」列用同一阈值着色（12h 黄 #faad14 / 24h 红 #ff4d4f）。
+_HOLD_WARN_YELLOW_H = 12
+_HOLD_WARN_RED_H = 24
+
+
+def _fmt_price(p: float) -> str:
+    """卡片价格展示：按量级适配小数位（与前端 fmtPrice 同口径）"""
+    if p < 1:
+        return f"{p:.6f}"
+    return f"{p:.4f}" if p < 100 else f"{p:.2f}"
+
+
+def check_hold_warnings(db) -> list[dict]:
+    """持仓时长分级警告判定（2026-09-27，随结算巡检每 30 分钟执行）。
+
+    在跑单（OPENED/TP1_HIT/TP2_HIT）持仓超 12h → 黄色预警、超 24h → 红色
+    预警（跨级直接发红卡不补黄卡）。hold_warn_level 只升级不重发；平仓后
+    状态不在跑即不再判定。只做 DB 判定与标记（本函数内 commit），返回待发
+    卡片列表由调用方在开仓锁外发送——飞书 HTTP（超时 10s/张）不进开仓锁。
+    """
+    now = datetime.now(timezone.utc)
+    cards: list[dict] = []
+    recs = db.execute(
+        select(TradeRecord).where(TradeRecord.status.in_(_ADOPT_RUNNING))
+    ).scalars().all()
+    for rec in recs:
+        if not rec.opened_at:
+            continue
+        # opened_at 为 UTC-naive（datetime.utcnow 落库）；挂 tzinfo 后与 now 同源相减
+        hours = (now - rec.opened_at.replace(tzinfo=timezone.utc)).total_seconds() / 3600
+        level = 2 if hours >= _HOLD_WARN_RED_H else 1 if hours >= _HOLD_WARN_YELLOW_H else 0
+        if level == 0 or (rec.hold_warn_level or 0) >= level:
+            continue
+        rec.hold_warn_level = level
+        cards.append(_hold_warn_card(rec, hours, level))
+    if cards:
+        db.commit()
+        logger.warning("持仓时长警告 %d 张：%s", len(cards),
+                       "、".join(f"{c['_symbol']}({c['_hours']:.1f}h)" for c in cards))
+    return cards
+
+
+def _hold_warn_card(rec, hours: float, level: int) -> dict:
+    """构建黄色/红色预警卡片（黄=12h 提醒、红=24h 升级处置）。
+
+    数据取巡检刚刷新的 DB 快照（unrealized_pnl/stop_loss），不调交易所——
+    判定在锁内、展示要快。浮盈/浮亏用 <font color> 着色（green/red）。
+    """
+    is_long = (rec.direction or "long") != "short"
+    dur = f"{hours:.1f}h" if hours < 48 else f"{hours / 24:.1f}d"
+    pnl = rec.unrealized_pnl
+    pnl_txt = "—" if pnl is None else f"{pnl:+.2f} USDT"
+    pnl_color = "green" if (pnl or 0) >= 0 else "red"
+
+    def _col(title: str, value: str) -> dict:
+        return {"tag": "column", "width": "weighted", "weight": 1,
+                "elements": [{"tag": "div", "text": {"tag": "lark_md",
+                             "content": f"**{title}**\n{value}"}}]}
+
+    red = level == 2
+    body = [
+        {"tag": "div", "text": {"tag": "lark_md",
+         "content": f"已持仓 **{dur}**（{'🔴 红色预警' if red else '🟡 黄色预警'}）"}},
+        {"tag": "column_set", "flex_mode": "stretch", "columns": [
+            _col("方向", "做多" if is_long else "做空"),
+            _col("开仓价", _fmt_price(float(rec.entry_price)) if rec.entry_price else "—"),
+            _col("当前止损", _fmt_price(float(rec.stop_loss)) if rec.stop_loss else "—"),
+            _col("浮动盈亏", f"<font color='{pnl_color}'>{pnl_txt}</font>"),
+        ]},
+        {"tag": "note", "elements": [{"tag": "plain_text",
+         "content": ("占用风险预算超 24h · 请检查持仓逻辑或到交易记录页市价平仓"
+                     if red else "超 24h 将升级红色预警 · 交易记录页可市价平仓")}]},
+    ]
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text",
+                      "content": f"{'🚨 持仓超24小时' if red else '⏳ 持仓超12小时'} · {rec.symbol}"},
+            "template": "red" if red else "yellow",
+        },
+        "elements": body,
+        # 内部字段：发送侧日志用，发送前无需剔除（飞书忽略未知键）
+        "_symbol": rec.symbol,
+        "_hours": hours,
+    }
+
+
 def _adopt_acc_cond(trader: BinanceTrader):
     """同账号在跑记录过滤条件（NULL 旧行按环境回落，与 list_trades 口径一致）"""
     return or_(

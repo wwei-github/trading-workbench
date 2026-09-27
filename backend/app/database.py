@@ -270,6 +270,12 @@ def _run_migrations(engine):
             "ALTER TABLE ai_analyses "
             "ADD COLUMN IF NOT EXISTS key_levels_json JSON"
         ))
+        # 持仓时长警告级别（2026-09-27）：0=未告警/1=已发 12h 黄卡/2=已发 24h 红卡，
+        # 巡检每 30 分钟一轮的幂等去重标记
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS hold_warn_level INTEGER NOT NULL DEFAULT 0"
+        ))
         conn.execute(text(
             "UPDATE trade_records SET account_key = 'testnet-1' "
             "WHERE account_key IS NULL AND testnet"

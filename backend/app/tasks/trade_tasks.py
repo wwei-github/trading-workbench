@@ -183,6 +183,7 @@ def run_auto_trade_task():
         try:
             db = SessionLocal()
             adopted_all: list[str] = []
+            hold_cards: list[dict] = []  # 持仓时长预警卡（锁外发送）
             try:
                 settled, advice_ids = settle_trades(db, trader)
                 # 自动导入手动持仓（2026-09-24）：交易所侧未被系统在跑记录接管的
@@ -219,6 +220,13 @@ def run_auto_trade_task():
                         _sweep_orphan_algo_orders(at, run_syms, at.positions())
                     except Exception:
                         logger.exception("孤儿清扫失败（%s）", acc.key)
+                # 持仓时长分级警告（2026-09-27）：在跑单 >12h 黄卡 / >24h 红卡。
+                # 锁内只做判定与 DB 标记（毫秒级），卡片在开仓锁外发送
+                try:
+                    from app.services.trade_engine import check_hold_warnings
+                    hold_cards = check_hold_warnings(db)
+                except Exception:
+                    logger.exception("持仓时长警告判定失败")
             finally:
                 db.close()
             if adopted_all:
@@ -233,6 +241,18 @@ def run_auto_trade_task():
         finally:
             for k in acquired:
                 _release_open_lock(r, ident, account=k)
+
+        # 持仓时长预警卡发送（2026-09-27，锁外）：飞书 HTTP 不进开仓锁；
+        # 失败只记日志不影响巡检结果。_symbol/_hours 为构建侧日志字段，发送前剔除
+        if hold_cards:
+            from app.services.notify import send_feishu_card
+            for c in hold_cards:
+                symbol = c.pop("_symbol", "?")
+                c.pop("_hours", None)
+                try:
+                    send_feishu_card(c)
+                except Exception:
+                    logger.exception("持仓时长警告卡片发送失败：%s", symbol)
 
         # AI 持仓诊断派发（docs/16）：锁外逐单派发子任务——LLM 调用（10~30s）
         # 绝不进开仓锁内，失败隔离（单笔失败不影响其余诊断与结算结果）

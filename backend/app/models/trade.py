@@ -78,6 +78,10 @@ class TradeRecord(Base):
     ai_advice_pnl: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)  # 诊断时全程盈亏（恶化 ≥0.5R 提前刷新的基线）
     peak_total_pnl: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)  # 持仓期间全程盈亏峰值（浮盈回撤 ≥0.6R 触发诊断的参照，2026-09-26）
 
+    # 持仓时长警告级别（2026-09-27）：0=未告警 / 1=已发 12h 黄卡 / 2=已发 24h 红卡。
+    # 巡检幂等去重用（每 30 分钟一轮，不重发已发级别；平仓后不再参与判定）
+    hold_warn_level: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     raw: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # {entry_order_id, sl_order_id, tp1_order_id, tp2_order_id, qty_tp1, qty_tp2, capital_base, wallet}
     # FAILED 记录另存 fail_reason（开仓失败原始报错，见 _attempt_open 的 -1121 落记录分支）
