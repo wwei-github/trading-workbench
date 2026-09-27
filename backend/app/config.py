@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     SWING_ORDER: int = 3
     BREAKOUT_CHANNEL_BARS: int = 20  # Donchian 通道突破的回看根数（收盘破 N 根高低轨 + 放量 + 长实体）
     BREAKOUT_VOL_RATIO: float = 1.2  # 突破量能门槛：信号K线量 ≥ 近20根均量的1.2倍（volume_ratio 口径）
+    BREAKOUT_MAX_PCT: float = 1.5  # 突破幅度上限：越过轨 >1.5% 视为追高，不产生突破触发（0=关闭）
+    CANDLE_MAX_EMA21_DIST_PCT: float = 1.5  # 悬空金K门槛：信号K线收盘距 EMA21 >1.5% 不触发纯金K（0=关闭）
+    DAILY_LOSS_STOP_USDT: float = 30.0  # 当日亏损熔断：UTC 日已平仓净亏 ≤-30 USDT 停开仓（0=关闭）
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
 
     # 排除的币种关键字（杠杆代币等）

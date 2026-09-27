@@ -23,10 +23,12 @@ CHAN = 20            # BREAKOUT_CHANNEL_BARS 默认窗口
 
 @pytest.fixture(autouse=True)
 def _pin_breakout_settings(monkeypatch):
-    """固定突破三门槛，免疫本地 .env 覆盖（pydantic-settings 优先级高于默认值）"""
+    """固定突破门槛与新增上限，免疫本地 .env 覆盖（pydantic-settings 优先级高于默认值）"""
     monkeypatch.setattr(settings, "BREAKOUT_THRESHOLD", 0.002)
     monkeypatch.setattr(settings, "BREAKOUT_VOL_RATIO", 1.2)
     monkeypatch.setattr(settings, "BREAKOUT_CHANNEL_BARS", 20)
+    monkeypatch.setattr(settings, "BREAKOUT_MAX_PCT", 1.5)
+    monkeypatch.setattr(settings, "CANDLE_MAX_EMA21_DIST_PCT", 1.5)
 
 
 def _klines(closes: list[float], highs: list[float], lows: list[float]) -> list[list]:
@@ -369,3 +371,112 @@ def test_short_symmetric_touch_without_golden_upserts():
     _set_signal_candle(kl, c, ema, c - 0.1)
     t, op = trig.detect_trigger(kl, -1)
     assert t is None and op["op"] == "upsert" and op["direction"] == -1
+
+
+# ── 悬空金K距离门槛（2026-09-27 正式网复盘，A 项）───────────────────────────
+
+def _far_golden_long(kl: list[list]) -> None:
+    """信号K线收盘悬于 EMA21 上方约 3%（> 1.5% 门槛），低位悬空不构成触碰"""
+    ema = _ema21_of(kl)
+    c = ema * 1.03
+    _set_signal_candle(kl, c, c + 0.05, c - 0.05)
+
+
+def test_row4_far_from_ema21_golden_rejected():
+    """悬空金K（距 EMA21 ≈3% > 1.5%）→ 纯金K不触发，无 pending 无处置"""
+    kl = _kl(*_base())
+    _far_golden_long(kl)
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is None and op is None
+
+
+def test_row3_far_golden_with_valid_pending_still_confirms():
+    """门槛只拦 T2 纯金K：row3 次根确认有回踩语境（上根触碰）不受影响"""
+    kl = _kl(*_base())
+    _far_golden_long(kl)
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-3))
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert op == {"op": "confirm"}
+
+
+def test_row4_far_golden_with_stale_pending_expires():
+    """悬空金K + 隔轮 pending → 不触发，pending 按窗口过期处置"""
+    kl = _kl(*_base())
+    _far_golden_long(kl)
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-4))
+    assert t is None
+    assert op == {"op": "expire", "reason": "window_expired"}
+
+
+def test_row4_far_golden_with_flipped_pending_expires_as_flip():
+    kl = _kl(*_base())
+    _far_golden_long(kl)
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, direction=-1, anchor_idx=-4))
+    assert t is None
+    assert op == {"op": "expire", "reason": "direction_flip"}
+
+
+def test_row4_distance_gate_disabled_triggers_candlestick(monkeypatch):
+    """CANDLE_MAX_EMA21_DIST_PCT=0 关闭门槛 → row4 T2 原样触发"""
+    monkeypatch.setattr(settings, "CANDLE_MAX_EMA21_DIST_PCT", 0)
+    kl = _kl(*_base())
+    _no_touch_long(kl)
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is not None and t["type"] == trig.CANDLESTICK
+    assert op is None
+
+
+# ── 突破幅度上限（2026-09-27 正式网复盘，B 项）─────────────────────────────
+
+def _far_breakout_candle(kl: list[list], pct: float) -> None:
+    """光头光脚放量长实体突破K线，收盘越上轨 pct%（形态/量能均过三门槛，
+    仅幅度变量隔离测试上限判定）；影线留足余量避开浮点边界"""
+    chan_high = max(float(k[2]) for k in kl[-2 - CHAN:-2])
+    c = chan_high * (1 + pct / 100)
+    _set_breakout_candle(kl, open_=c - 0.1, close=c, high=c, low=c - 0.11, vol=150.0)
+
+
+def test_row1_breakout_over_max_pct_rejected():
+    """越轨 2% > 1.5% 上限 → 突破不触发（追高拦截）；无金K不触碰 → 观察池"""
+    kl = _kl(*_base())
+    _far_breakout_candle(kl, 2.0)
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is None and op is None
+
+
+def test_row1_breakout_within_max_pct_triggers():
+    """越轨 1.4% ≤ 1.5% 上限 → 突破正常触发（上限只拦 '>上限'）；
+    形态打桩隔离 A 门槛（长实体本体会被真实检测命中金K，距 EMA21 1.4% 悬空被拦）"""
+    kl = _kl(*_base())
+    _far_breakout_candle(kl, 1.4)
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is not None and t["type"] == trig.BREAKOUT
+    assert op is None
+
+
+def test_row1_breakout_max_disabled_allows_far_breakout(monkeypatch):
+    """BREAKOUT_MAX_PCT=0 关闭上限 → 超幅突破原样触发（形态打桩隔离 A 门槛）"""
+    monkeypatch.setattr(settings, "BREAKOUT_MAX_PCT", 0)
+    kl = _kl(*_base())
+    _far_breakout_candle(kl, 2.0)
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is not None and t["type"] == trig.BREAKOUT
+
+
+def test_row1_breakout_over_max_short_symmetric_rejected():
+    """空头对称：越下轨 2% 超上限 → 不触发"""
+    kl = _kl(*_base())
+    chan_low = min(float(k[3]) for k in kl[-2 - CHAN:-2])
+    c = chan_low * (1 - 0.02)
+    _set_breakout_candle(kl, open_=c + 0.1, close=c, high=c + 0.11, low=c, vol=150.0)
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, -1)
+    assert t is None and op is None

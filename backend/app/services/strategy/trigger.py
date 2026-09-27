@@ -138,14 +138,22 @@ def detect_trigger(
     # 三重收紧（2026-09-25）：① 最小突破幅度 BREAKOUT_THRESHOLD（毛边不算）
     # ② 放量 BREAKOUT_VOL_RATIO（量比 ≥ 近20根均量1.2倍）
     # ③ 长实体短影线形态（光头光脚，防长影毛刺）；任一不满足 → 落入金K/回踩分支
+    # 幅度上限（2026-09-27 正式网复盘）：越过轨 >BREAKOUT_MAX_PCT（默认 1.5%）视为
+    # 追高——突破类 ≥2% 的 9 笔 7 亏（-0.21R），大幅突破追入负期望；跳过 T1 判定，
+    # 落回金K/回踩分支（趋势日后续回踩 EMA21+金K 由 T3 接住）。0=关闭。
     chan_n = settings.BREAKOUT_CHANNEL_BARS
     if n >= chan_n + 2:
         window = klines[-2 - chan_n:-2]
         chan_high = max(float(k[2]) for k in window)
         chan_low = min(float(k[3]) for k in window)
         vr = volume_ratio(klines)
+        max_brk = settings.BREAKOUT_MAX_PCT
+        over_max = (
+            (direction == 1 and close_last > chan_high * (1 + max_brk / 100))
+            or (direction == -1 and close_last < chan_low * (1 - max_brk / 100))
+        ) if max_brk > 0 else False
         if (_is_solid_breakout_candle(klines, direction)
-                and vr >= settings.BREAKOUT_VOL_RATIO):
+                and vr >= settings.BREAKOUT_VOL_RATIO and not over_max):
             if direction == 1 and close_last >= chan_high * (1 + settings.BREAKOUT_THRESHOLD):
                 return {
                     "type": BREAKOUT, "direction": direction, "position": "resistance",
@@ -179,7 +187,10 @@ def detect_trigger(
                       f"{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}确认",
         }, _close_op(pending, direction, "same_candle_confirm")
 
-    # 行3/行4：未触碰但有金K → 有效 pending 则次根确认，否则纯金K（T2 原样）
+    # 行3/行4：未触碰但有金K → 有效 pending 则次根确认，否则纯金K（T2 原样）。
+    # 悬空金K门槛（2026-09-27 正式网复盘）：信号K线收盘距 EMA21 > 阈值（默认 1.5%）
+    # 的纯金K不再触发——正式网 17 笔悬空金K全部 SL（-92 USDT），追高入场负期望。
+    # 仅拦 T2 纯金K：row3 次根确认有回踩语境（上根触碰 EMA21）不受影响。0=关闭。
     if touch_ema is None and golden:
         if pending_valid and pending and pending.get("direction") == direction:
             return {
@@ -189,6 +200,20 @@ def detect_trigger(
                 "reason": f"指标同向·上根回踩EMA21企稳·本根"
                           f"{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}确认",
             }, {"op": "confirm"}
+        max_dist = settings.CANDLE_MAX_EMA21_DIST_PCT
+        if max_dist > 0:
+            closes = np.array([float(k[4]) for k in klines[:-1]], dtype=float)
+            e21 = calc_ema(closes, 21)
+            if e21 is not None and float(e21[-1]) > 0:
+                dist_pct = abs(close_last - float(e21[-1])) / float(e21[-1]) * 100
+                if dist_pct > max_dist:
+                    # 超距金K不触发；活跃 pending 按方向反转/窗口过期正常处置
+                    if pending:
+                        op_reason = ("direction_flip"
+                                     if pending.get("direction") != direction
+                                     else "window_expired")
+                        return None, {"op": "expire", "reason": op_reason}
+                    return None, None
         return {
             "type": CANDLESTICK, "direction": direction,
             "position": "support" if direction == 1 else "resistance",

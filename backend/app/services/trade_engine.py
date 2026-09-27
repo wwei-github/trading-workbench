@@ -18,6 +18,7 @@ import logging
 import math
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_DOWN, Decimal
+from types import SimpleNamespace
 from uuid import UUID
 from typing import Optional
 
@@ -569,6 +570,21 @@ def _mark_open_block(db: Session, a: AIAnalysis, reason: str) -> None:
         db.rollback()
 
 
+def _daily_closed_pnl(db: Session, account_key: Optional[str], testnet: bool) -> float:
+    """本账号 UTC 当日已平仓净盈亏合计（当日亏损熔断用，docs/20 复盘 C 项）。
+
+    账号口径复用 _adopt_acc_cond（NULL 旧行按 testnet 环境回落，与在跑单检查同源）。
+    """
+    day_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    return float(db.execute(
+        select(func.coalesce(func.sum(TradeRecord.realized_pnl), 0.0)).where(
+            _adopt_acc_cond(SimpleNamespace(account_key=account_key, testnet=testnet)),
+            TradeRecord.status == "CLOSED",
+            TradeRecord.closed_at >= day_start,
+        )
+    ).scalar_one())
+
+
 def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bool:
     """单条分析完成即开仓（2026-09-14：不再等 :42 统一批次，docs/06 §2）。
 
@@ -640,6 +656,21 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
         logger.info("即时开仓跳过 %s：钱包余额低于最小风险档位", a.symbol)
         _mark_open_block(db, a, "钱包余额低于最小风险档位")
         return False
+    # 当日亏损熔断（2026-09-27 正式网复盘）：UTC 日本账号已平仓净亏 ≤-阈值
+    # （默认 30 USDT）停开仓——09-26 全天 13 笔全灭仍持续开单，趋势日的
+    # trail 赢单无法覆盖震荡日的连损。只停开仓，AI 分析/巡检照常。0=关闭。
+    if settings.DAILY_LOSS_STOP_USDT > 0:
+        day_pnl = _daily_closed_pnl(db, trader.account_key, trader.testnet)
+        if day_pnl <= -settings.DAILY_LOSS_STOP_USDT:
+            logger.info(
+                "即时开仓跳过 %s：当日亏损熔断（已平仓净亏 %.2f ≤ -%.0f）",
+                a.symbol, day_pnl, settings.DAILY_LOSS_STOP_USDT,
+            )
+            _mark_open_block(
+                db, a,
+                f"当日亏损熔断：已平仓净亏 {day_pnl:.2f} USDT "
+                f"达 -{settings.DAILY_LOSS_STOP_USDT:.0f} 阈值")
+            return False
     # 即将进入闸门序列：清掉沿用/上一轮尝试残留的拒开原因，本次成败由闸门重新裁定
     if a.open_block_reason:
         try:
