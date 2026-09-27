@@ -410,8 +410,15 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
       }
     })
     keyLevelLinesRef.current = []
+    // 只画被市场验证过的位：强度≥3（共振源+拒绝计分）且触及≥2次，
+    // 过滤后仍按后端 |distance_pct| 升序；避免弱位噪音铺满图表
     keyLevelLinesRef.current = keyLevels
-      .filter((lv) => KEY_LEVEL_STYLES[lv.state] != null)
+      .filter(
+        (lv) =>
+          KEY_LEVEL_STYLES[lv.state] != null &&
+          lv.strength >= 3 &&
+          lv.touches >= 2,
+      )
       .map((lv) => {
         const conf = KEY_LEVEL_STYLES[lv.state]!
         const roleCn =

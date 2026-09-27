@@ -1022,10 +1022,11 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         # 评估结构位的历史密度
         "recent_swings": recent_swings(klines, order=cfg.swing_order, n=20),
     }
-    # 关键位位表（docs/21）：与定时分析链路同源；失败降级空表不中断
+    # 关键位位表（docs/21）：与定时分析链路同源（含 AI 瘦身口径）；
+    # 失败降级空表不中断
     try:
-        from app.services.strategy.key_levels import compute_key_levels
-        signal["key_levels"] = compute_key_levels(klines, htf_klines)
+        from app.services.strategy.key_levels import compute_key_levels, select_for_ai
+        signal["key_levels"] = select_for_ai(compute_key_levels(klines, htf_klines))
     except Exception:
         signal["key_levels"] = []
 

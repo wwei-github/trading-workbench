@@ -382,3 +382,29 @@ def compute_key_levels(klines_1h: list, klines_4h: Optional[list]) -> list[dict]
                              settings.KEY_LEVELS_CONFIRM_WINDOW)
     levels.sort(key=lambda lv: abs(lv["distance_pct"]))
     return levels
+
+
+def select_for_ai(levels: list[dict], n_near: int = 3, cap: int = 8) -> list[dict]:
+    """AI 事实包位表瘦身（2026-09-27 用户确认口径：验证位+近场兜底）。
+
+    - invalid 直接剔除：锚点解析对所有 purpose 都拒绝、图表不画，纯噪音
+    - 验证位保留：强度≥3（共振源+拒绝计分）且触及≥2 次（被市场验证过）
+    - 近场兜底：距现价最近 n_near 个其余合格位，保证稀疏行情下结构锚点
+      仍有可解析目标（避免 AI 全打回 market 锚）
+    - 输入已按 |distance_pct| 升序（compute_key_levels 产出），合并重排后
+      截断 cap 条
+
+    事实包块与 P1 锚点解析共用瘦身后的同一张表（消费方注入前调用），
+    保证模型看到的价格与程序解析一致。
+    """
+    if not levels:
+        return []
+    valid = [lv for lv in levels if (lv.get("state") or "intact") != "invalid"]
+    strong = [lv for lv in valid
+              if (lv.get("strength") or 0) >= 3 and (lv.get("touches") or 0) >= 2]
+    if len(strong) >= cap:
+        return strong[:cap]
+    chosen = {id(lv) for lv in strong}
+    near = [lv for lv in valid if id(lv) not in chosen][:n_near]
+    out = sorted(strong + near, key=lambda lv: abs(lv.get("distance_pct") or 0.0))
+    return out[:cap]
