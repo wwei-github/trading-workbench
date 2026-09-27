@@ -956,15 +956,18 @@ def get_klines(
         ]
         for kind in ("highs", "lows")
     }
-    # 关键位（docs/21，2026-09-27 复活）：图表状态着色价位线；
-    # 失败降级空表，不影响K线返回。4h 源仅用于 swing_4h 收盘序列——
-    # 每 4 根采样一档近似（位价与 AI 管线用交易所真实 4h 略有出入，展示可接受）
+    # 关键位（docs/21，2026-09-27 复活）：状态着色价位线。统一口径
+    # select_display_levels（invalid剔除+权重贪心合并）——与 AI 事实包/锚点
+    # 解析共用同一张表，图表与 AI 永久一致。4h 源每 4 根采样一档近似
+    # （位价与 AI 管线用交易所真实 4h 略有出入，展示可接受）；失败降级空表
     key_levels: list = []
     try:
-        from app.services.strategy.key_levels import compute_key_levels
+        from app.services.strategy.key_levels import (
+            compute_key_levels, select_display_levels,
+        )
         step = 4
         htf = [klines[i] for i in range(0, len(klines) - step + 1, step)] if len(klines) >= 8 else None
-        key_levels = compute_key_levels(klines, htf)
+        key_levels = select_display_levels(compute_key_levels(klines, htf))
     except Exception:
         key_levels = []
     return {
@@ -1025,8 +1028,11 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
     # 关键位位表（docs/21）：与定时分析链路同源（含 AI 瘦身口径）；
     # 失败降级空表不中断
     try:
-        from app.services.strategy.key_levels import compute_key_levels, select_for_ai
-        signal["key_levels"] = select_for_ai(compute_key_levels(klines, htf_klines))
+        from app.services.strategy.key_levels import (
+            compute_key_levels, select_display_levels,
+        )
+        signal["key_levels"] = select_display_levels(
+            compute_key_levels(klines, htf_klines))
     except Exception:
         signal["key_levels"] = []
 

@@ -380,31 +380,52 @@ def compute_key_levels(klines_1h: list, klines_4h: Optional[list]) -> list[dict]
               or lv["strength"] >= settings.KEY_LEVELS_MIN_SOURCES]
     levels = classify_levels(levels, klines_1h, atr,
                              settings.KEY_LEVELS_CONFIRM_WINDOW)
+    # 位级 ATR（展示合并窗口用）：同一次计算所有位共享同一 ATR；
+    # 老快照（key_levels_json）无此键，消费方按固定 % 回落
+    for lv in levels:
+        lv["atr"] = atr
     levels.sort(key=lambda lv: abs(lv["distance_pct"]))
     return levels
 
 
-def select_for_ai(levels: list[dict], n_near: int = 3, cap: int = 8) -> list[dict]:
-    """AI 事实包位表瘦身（2026-09-27 用户确认口径：验证位+近场兜底）。
+# 展示合并窗口（2026-09-27 用户口径）：权重最高位窗口内的其余位被吸收。
+# 窗口 = 1.5×ATR（与系统其余粒度同尺度：聚类容差 0.5×ATR/触及带 0.25×ATR；
+# 两位相距 <1.5×ATR 图上即一个区，再宽会吸掉真实中间位、伤锚点解析）；
+# 无 ATR（老快照）回落固定 2%
+_MERGE_ATR_MULT = 1.5
+_MERGE_PCT_FALLBACK = 0.02
 
-    - invalid 直接剔除：锚点解析对所有 purpose 都拒绝、图表不画，纯噪音
-    - 验证位保留：强度≥3（共振源+拒绝计分）且触及≥2 次（被市场验证过）
-    - 近场兜底：距现价最近 n_near 个其余合格位，保证稀疏行情下结构锚点
-      仍有可解析目标（避免 AI 全打回 market 锚）
-    - 输入已按 |distance_pct| 升序（compute_key_levels 产出），合并重排后
-      截断 cap 条
 
-    事实包块与 P1 锚点解析共用瘦身后的同一张表（消费方注入前调用），
-    保证模型看到的价格与程序解析一致。
+def select_display_levels(levels: list[dict]) -> list[dict]:
+    """展示/分析统一口径位表（docs/21，2026-09-27 用户拍板：合并替代过滤）。
+
+    - invalid 剔除：锚点解析拒绝、图表不画，纯噪音
+    - 权重贪心合并：权重 = 强度 + 触及（S 与 t 综合考虑），从高到低逐个选中，
+      淘汰其合并窗口（1.5×ATR，缺省回落 2%）内的其余位——密集重叠位只留
+      最高权重，不再有「强度/触及不达标整批剔除」的粗过滤
+    - 权重并列时先到先得（输入按距现价升序 → 近者胜出）
+    - 输出按 |distance_pct| 升序
+
+    图表 /klines 端点、AI 事实包与 P1 锚点解析、复盘重算共用本函数输出——
+    模型看到什么价、图表画什么线、程序就解析什么价，两端永久一致。
     """
     if not levels:
         return []
     valid = [lv for lv in levels if (lv.get("state") or "intact") != "invalid"]
-    strong = [lv for lv in valid
-              if (lv.get("strength") or 0) >= 3 and (lv.get("touches") or 0) >= 2]
-    if len(strong) >= cap:
-        return strong[:cap]
-    chosen = {id(lv) for lv in strong}
-    near = [lv for lv in valid if id(lv) not in chosen][:n_near]
-    out = sorted(strong + near, key=lambda lv: abs(lv.get("distance_pct") or 0.0))
-    return out[:cap]
+    ranked = sorted(
+        valid,
+        key=lambda lv: (lv.get("strength") or 0) + (lv.get("touches") or 0),
+        reverse=True,
+    )
+    kept: list[dict] = []
+    for lv in ranked:
+        p = lv["price"]
+        for k in kept:
+            kw = k.get("atr")
+            win = _MERGE_ATR_MULT * kw if kw and kw > 0 else _MERGE_PCT_FALLBACK * k["price"]
+            if abs(p - k["price"]) <= win:
+                break
+        else:
+            kept.append(lv)
+    kept.sort(key=lambda lv: abs(lv.get("distance_pct") or 0.0))
+    return kept

@@ -49,8 +49,9 @@ interface Props {
 const CHART_HEIGHT = 560 // 容器无高度时的兜底值
 
 // 关键位价位线样式（docs/21）：状态着色——有效蓝实线 / 翻转确认绿加粗 /
-// 刚突破橙虚线；invalid 不画。独立于涨跌配色方案（结构语义固定色）
-const KEY_LEVEL_STYLES: Record<
+// 刚突破橙虚线；invalid 不画。独立于涨跌配色方案（结构语义固定色）。
+// export 供交易复盘图（TradeReplayChart）共用同一套状态语义
+export const KEY_LEVEL_STYLES: Record<
   KeyLevel['state'],
   { color: string; width: 1 | 2; style: LineStyle } | null
 > = {
@@ -410,15 +411,10 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
       }
     })
     keyLevelLinesRef.current = []
-    // 只画被市场验证过的位：强度≥3（共振源+拒绝计分）且触及≥2次，
-    // 过滤后仍按后端 |distance_pct| 升序；避免弱位噪音铺满图表
+    // 后端已按统一口径合并（invalid 剔除+权重贪心合并，与 AI 事实包同一张表），
+    // 前端只跳过无样式状态，仍按后端 |distance_pct| 升序
     keyLevelLinesRef.current = keyLevels
-      .filter(
-        (lv) =>
-          KEY_LEVEL_STYLES[lv.state] != null &&
-          lv.strength >= 3 &&
-          lv.touches >= 2,
-      )
+      .filter((lv) => KEY_LEVEL_STYLES[lv.state] != null)
       .map((lv) => {
         const conf = KEY_LEVEL_STYLES[lv.state]!
         const roleCn =

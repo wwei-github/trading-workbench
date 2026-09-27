@@ -692,6 +692,31 @@ def trade_klines(trade_id: str, db: Session = Depends(get_db)):
     tp1 = _nz(open_detail.get("tp1") or rec.tp1)
     tp2 = _nz(open_detail.get("tp2") or rec.tp2)
 
+    # 开单时刻关键位（docs/21，2026-09-27）：优先取 AI 分析落库的位表快照
+    # （严格还原「AI 看到的位」，含结论沿用链复制）；无快照（老记录/导入单）回落
+    # 截至开仓K线的前缀重放状态机，统一走 select_display_levels 口径（与图表
+    # /AI 一致）。4h 源按 1h 采样近似。失败/数据不足降级空表，不影响主数据返回。
+    key_levels: list = []
+    if rec.ai_analysis_id:
+        from app.models.scan import AIAnalysis
+        a = db.get(AIAnalysis, rec.ai_analysis_id)
+        if a is not None and a.key_levels_json:
+            key_levels = a.key_levels_json
+    if not key_levels:
+        try:
+            from app.services.strategy.key_levels import (
+                compute_key_levels, select_display_levels,
+            )
+            opened_ms = int(opened_dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+            pre = [k for k in klines if int(k[0]) <= opened_ms]
+            if len(pre) >= 30:
+                step = 4
+                htf = ([pre[i] for i in range(0, len(pre) - step + 1, step)]
+                       if len(pre) >= 8 else None)
+                key_levels = select_display_levels(compute_key_levels(pre, htf))
+        except Exception:
+            key_levels = []
+
     return {
         "trade_id": str(rec.id),
         "symbol": rec.symbol,
@@ -727,4 +752,6 @@ def trade_klines(trade_id: str, db: Session = Depends(get_db)):
             for e in evts
             if e.event_type in ("OPEN", "TP1_FILL", "TP2_FILL", "SL_FILL")
         ],
+        # 开单时刻关键位（全量，前端按强度/触及过滤渲染）
+        "key_levels": key_levels,
     }

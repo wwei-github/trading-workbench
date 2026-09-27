@@ -264,6 +264,12 @@ def _run_migrations(engine):
             "ALTER TABLE trade_records "
             "ADD COLUMN IF NOT EXISTS risk_budget_mode VARCHAR(8)"
         ))
+        # 关键位快照列（docs/21，2026-09-27）：AI 分析时刻位表（瘦身口径），
+        # 交易复盘严格还原「AI 看到的位」；旧行 NULL 复盘回落前缀重算
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS key_levels_json JSON"
+        ))
         conn.execute(text(
             "UPDATE trade_records SET account_key = 'testnet-1' "
             "WHERE account_key IS NULL AND testnet"

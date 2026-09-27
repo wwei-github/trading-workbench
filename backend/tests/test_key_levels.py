@@ -286,44 +286,72 @@ def test_classify_intact_role_by_price_side():
     assert lv[0]["role"] == "support"
 
 
-# ── AI 位表瘦身（select_for_ai，验证位+近场兜底口径）──────────────────
+# ── 展示统一口径（select_display_levels：invalid剔除+权重贪心合并）──────
 
 def _ai_lv(price: float, dist: float, strength: int = 1,
-           touches: int = 1, state: str = "intact") -> dict:
+           touches: int = 1, state: str = "intact",
+           atr: "float | None" = None) -> dict:
     lv = _lv(price, state=state)
     lv["strength"] = strength
     lv["touches"] = touches
     lv["distance_pct"] = dist
+    if atr is not None:
+        lv["atr"] = atr
     return lv
 
 
-def test_select_for_ai_drop_invalid_keep_strong():
-    # invalid 剔除；强位无论远近保留；输出按距离升序
-    out = kl.select_for_ai([
+def test_select_display_invalid_removed():
+    # invalid 剔除；输出按距离升序
+    out = kl.select_display_levels([
         _ai_lv(90.0, 10.0, strength=3, touches=2),
         _ai_lv(95.0, 5.0, state="invalid"),
-        _ai_lv(101.0, 1.0, strength=1),
     ])
-    assert [lv["price"] for lv in out] == [101.0, 90.0]
+    assert [lv["price"] for lv in out] == [90.0]
 
 
-def test_select_for_ai_near_fallback_and_cap():
-    # 验证位优先 + 近场兜底 3 个；强位≥cap 时全部取强位按距离截断
-    levels = ([_ai_lv(100 + i, float(i), strength=1) for i in range(1, 6)]
-              + [_ai_lv(120.0, 20.0, strength=4, touches=3)])
-    out = kl.select_for_ai(levels)
-    assert 120.0 in [lv["price"] for lv in out]          # 强位保留
-    assert len(out) <= 8
-    assert out[0]["price"] == 101.0                      # 距离升序
-    # 强位超过 cap → 只取前 cap 个强位（近场弱位不进）
-    many_strong = [_ai_lv(100 + i, float(i), strength=4, touches=3)
-                   for i in range(1, 12)]
-    assert [lv["price"] for lv in kl.select_for_ai(many_strong)] == \
-        [101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0]
+def test_select_display_merge_atr_window():
+    # 窗口 = 1.5×ATR：atr=2 → 窗 3。110(6) 与 105(4) 相距 5>3 各自保留；
+    # 103 落入 105 窗口内被吸收；90 远离保留。结果按距现价升序
+    out = kl.select_display_levels([
+        _ai_lv(103.0, 3.0, strength=1, atr=2.0),
+        _ai_lv(90.0, 12.0, strength=2, touches=1, atr=2.0),
+        _ai_lv(105.0, 5.0, strength=2, touches=2, atr=2.0),
+        _ai_lv(110.0, 10.0, strength=4, touches=2, atr=2.0),
+    ])
+    assert [lv["price"] for lv in out] == [105.0, 110.0, 90.0]
 
 
-def test_select_for_ai_empty():
-    assert kl.select_for_ai([]) == []
+def test_select_display_merge_pct_fallback():
+    # 无 atr（老快照）回落固定 2%：100(3) 保留，101.5 在 2% 窗口内被吸收，
+    # 103 距 100 达 3%>2% 保留
+    out = kl.select_display_levels([
+        _ai_lv(100.0, 0.0, strength=2, touches=1),
+        _ai_lv(101.5, 1.5, strength=1),
+        _ai_lv(103.0, 3.0, strength=1),
+    ])
+    assert [lv["price"] for lv in out] == [100.0, 103.0]
+
+
+def test_select_display_tie_prefers_near():
+    # 权重并列时先到先得：输入按距离升序 → 近者胜出、远者被吸收（1% < 1.5×ATR 窗）
+    out = kl.select_display_levels([
+        _ai_lv(100.0, 0.0, strength=2, touches=1, atr=2.0),
+        _ai_lv(101.0, 1.0, strength=2, touches=1, atr=2.0),
+    ])
+    assert [lv["price"] for lv in out] == [100.0]
+
+
+def test_select_display_distant_weak_kept():
+    # 无阈值过滤：低权重位只要不落入更高权重位的合并窗口就保留
+    out = kl.select_display_levels([
+        _ai_lv(101.0, 1.0, strength=1),
+        _ai_lv(130.0, 30.0, strength=1),
+    ])
+    assert [lv["price"] for lv in out] == [101.0, 130.0]
+
+
+def test_select_display_empty():
+    assert kl.select_display_levels([]) == []
 
 
 # ── P1 锚点接位表（docs/21 §7）────────────────────────────────────────

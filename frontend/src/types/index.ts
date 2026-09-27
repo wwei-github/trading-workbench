@@ -434,6 +434,7 @@ export interface TradeKlineData {
   closed_at: string | null
   klines: Kline[]
   events: TradeKlineEvent[]
+  key_levels?: KeyLevel[] // 开单时刻关键位（状态机重放截至开仓K线），可缺省（老后端）
 }
 
 // ===== AI 建议复盘系统（P2）=====

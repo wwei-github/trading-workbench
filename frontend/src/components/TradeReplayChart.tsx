@@ -25,6 +25,7 @@ import {
 import { scanApi } from '../api/scan'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { SCHEME_UP_DOWN } from '../utils/scheme'
+import { KEY_LEVEL_STYLES } from './KlineChart'
 import { bj, dayjs, BJ } from '../utils/dayjs'
 import type { TradeKlineData, TradeKlineEvent } from '../types'
 
@@ -359,6 +360,60 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
     drawLine(data.stop_loss, colorSL, '止损', true)
     drawLine(data.tp1, colorTP, '止盈1', true)
     if (hasTP2) drawLine(data.tp2, colorTP, '止盈2', true)
+
+    // 开单时刻关键位（docs/21）：后端已按统一口径合并（invalid 剔除+权重
+    // 贪心合并），前端只跳过无样式状态。线从图左缘画起（位在开仓前就存在，
+    // 区别于开仓线从开仓K线起）；状态色实/虚线 + 右缘价签（与已有标签防撞错位）
+    const keyLevels = (data.key_levels ?? []).filter(
+      (lv) => KEY_LEVEL_STYLES[lv.state] != null,
+    )
+    for (const lv of keyLevels) {
+      const conf = KEY_LEVEL_STYLES[lv.state]!
+      const ly = series.priceToCoordinate(lv.price)
+      if (ly == null) continue
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
+      line.setAttribute('x1', '0')
+      line.setAttribute('y1', String(ly))
+      line.setAttribute('x2', String(rightEdge))
+      line.setAttribute('y2', String(ly))
+      line.setAttribute('stroke', conf.color)
+      line.setAttribute('stroke-width', String(conf.width))
+      line.setAttribute('shape-rendering', 'crispEdges')
+      if (conf.style === LineStyle.Dashed) line.setAttribute('stroke-dasharray', '5,3')
+      svg.appendChild(line)
+
+      const roleCn =
+        lv.role === 'support' ? '支撑' : lv.role === 'resistance' ? '压力' : '位'
+      const text = `${roleCn} S${lv.strength}×${lv.touches}t`
+      const font = 'bold 10px monospace'
+      const ctx = document.createElement('canvas').getContext('2d')!
+      ctx.font = font
+      const tw = ctx.measureText(text).width
+      const boxW = tw + 8
+      const boxH = 13
+      // 价签防撞：与已有标签同高时上下错位（规则与现止损一致）
+      const clash = tagYs.find((uy) => Math.abs(uy - ly) < TAG_GAP)
+      const tagY = clash == null ? ly : clash > ly ? ly - TAG_SHIFT : ly + TAG_SHIFT
+
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      rect.setAttribute('x', String(rightEdge - boxW))
+      rect.setAttribute('y', String(tagY - boxH / 2))
+      rect.setAttribute('width', String(boxW))
+      rect.setAttribute('height', String(boxH))
+      rect.setAttribute('fill', conf.color)
+      svg.appendChild(rect)
+
+      const t = document.createElementNS('http://www.w3.org/2000/svg', 'text')
+      t.setAttribute('x', String(rightEdge - boxW + 4))
+      t.setAttribute('y', String(tagY + 3))
+      t.setAttribute('fill', '#fff')
+      t.setAttribute('font-size', '10')
+      t.setAttribute('font-family', 'monospace')
+      t.setAttribute('font-weight', 'bold')
+      t.textContent = text
+      svg.appendChild(t)
+      tagYs.push(tagY)
+    }
 
     // 现止损（跟踪移动后的最新位置）：与初始止损不同才加画（琥珀色区分）；
     // 价签与已有标签同高时上下错位（保本止损=开仓价的场景）
