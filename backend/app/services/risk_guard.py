@@ -3,8 +3,10 @@
 校验链已收缩（2026-09-15 拍板：② AI 分析校验链仅保留两条——RR 铁律 + 双评委辩论复核）：
 - Schema 强约束（Pydantic）+ suggest 基本项（方向/开单类型/三价为正）
 - **RR 铁律**：按 AI 给的三价复算盈亏比 ≥ AI_RR_MIN(1.5)，声称值不信
-- 仓位公式化（固定亏损法）：仓位 = 风险预算 ÷ 止损距离，触止损恰好亏
-  RISK_BUDGET_PCT（3%），AI 不自报仓位
+- 仓位公式化（固定亏损法）：仓位 = 风险预算 ÷ 止损距离。风险预算两种口径
+  （2026-09-27 止损金额模式，resolve 见 risk_budget.py）：pct=触止损恰好亏
+  RISK_BUDGET_PCT（3%，默认）；fixed=亏固定 USDT 实额（position_pct 不折算），
+  AI 不自报仓位
 
 已移除的校验（方法论降级为 AI 提示词纪律，程序不再打回/改挂）：
 - 入场偏离现价 ≤2%（2026-09-15 移除）
@@ -148,12 +150,17 @@ def is_pullback_wait(ai_result: dict, current_price) -> bool:
 
 def validate_decision(
     d: TradeDecision, signal: dict, klines: list,
+    risk_budget: Optional[float] = None,
 ) -> tuple[bool, list[str], dict]:
     """校验并修正决策（2026-09-15 拍板收缩：仅保留 RR 铁律 + 仓位复算）。
 
     返回 (ok, violations, fixed_dict)；ok=False 时 fixed_dict 为空。
     ok=True 时 fixed_dict 中 rr / position_pct 为程序复算值，直接落库。
     signal / klines 保留入参以稳定调用方接口（当前校验不再使用）。
+    risk_budget（2026-09-27 止损金额模式）：fixed 模式下为单笔固定亏损 USDT
+    实额（调用方从 system_config.risk_fixed_amount 传入），此时 position_pct
+    置 None（仓位%依赖钱包，分析期不可得）；None 时按 RISK_BUDGET_PCT 百分比
+    口径复算（pct 模式，现行默认）。
     """
     violations: list[str] = []
 
@@ -229,12 +236,21 @@ def validate_decision(
         return False, violations, {}
 
     # ── 修正：程序复算值落库，AI 声称值不信 ──
-    # 固定亏损仓位法：仓位（名义价值占账户%）= 风险预算 ÷ 止损距离，
-    # 触发止损时账户恰好亏损 RISK_BUDGET_PCT（3%）。止损越远仓位越小，不设 clamp。
-    # 例：止损距离 2% → 仓位 150%（10×杠杆下占用保证金 15%）
+    # 固定亏损仓位法：仓位（名义价值占账户%）= 风险预算 ÷ 止损距离。
+    # 风险预算两种口径（2026-09-27 止损金额模式，与开仓引擎 trade_engine 同源）：
+    # pct（默认）= RISK_BUDGET_PCT%（3%）× 账户资金 → 触止损恰好亏账户 3%；
+    # fixed      = risk_budget 实额 USDT（由调用方从 system_config 传入）。
+    # 止损越远仓位越小，不设 clamp。例：止损距离 2% + 3% 口径 → 仓位 150%
+    # （10×杠杆下占用保证金 15%）
     position_pct = 0.0
     if stop_pct > 0:
-        position_pct = round(settings.RISK_BUDGET_PCT / stop_pct, 2)
+        if risk_budget is not None and risk_budget > 0:
+            # fixed 模式（2026-09-27）：仓位%依赖钱包余额，分析期（多账号扇出前）
+            # 无账号上下文，不做折算——置 None 让卡片「仓位建议」显示 -，
+            # 真实仓位由开仓引擎按 固定金额÷止损距离 实算（trade_engine）
+            position_pct = None
+        else:
+            position_pct = round(settings.RISK_BUDGET_PCT / stop_pct, 2)
     fixed = {
         "trade_decision": "suggest",
         "skip_reason": "",
@@ -269,10 +285,13 @@ def build_forced_skip(reason: str, violations: Optional[list[str]] = None) -> di
     }
 
 
-def parse_and_validate(raw: dict, signal: dict, klines: list) -> tuple[bool, list[str], dict]:
-    """normalize + pydantic 校验 + 业务校验 的一步入口"""
+def parse_and_validate(
+    raw: dict, signal: dict, klines: list,
+    risk_budget: Optional[float] = None,
+) -> tuple[bool, list[str], dict]:
+    """normalize + pydantic 校验 + 业务校验 的一步入口（预算参数透传 validate_decision）"""
     try:
         d = normalize_raw(raw)
     except (ValidationError, ValueError) as e:
         return False, [f"输出格式不合法: {str(e)[:200]}"], {}
-    return validate_decision(d, signal, klines)
+    return validate_decision(d, signal, klines, risk_budget=risk_budget)

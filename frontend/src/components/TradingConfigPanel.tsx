@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, InputNumber, message, Button, Spin } from 'antd'
+import { Modal, Form, InputNumber, message, Button, Spin, Radio } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
@@ -24,6 +24,9 @@ export default function TradingConfigPanel() {
         max_open_trades: aiConfig.max_open_trades ?? 5,
         // 表单里按百分比（0~100）编辑，保存时换算回 0~1 比例
         trading_min_free_pct: Math.round((aiConfig.trading_min_free_pct ?? 0.5) * 10000) / 100,
+        // 止损金额模式：pct=风险基数分档×3%（默认）/ fixed=固定 USDT 金额
+        risk_budget_mode: aiConfig.risk_budget_mode ?? 'pct',
+        risk_fixed_amount: aiConfig.risk_fixed_amount ?? 3,
         // 补丁参数（比例→%编辑；null = 未设/默认）
         max_stop_pct: aiConfig.max_stop_pct != null ? Math.round(aiConfig.max_stop_pct * 10000) / 100 : null,
         liq_gate_buffer: aiConfig.liq_gate_buffer != null ? Math.round(aiConfig.liq_gate_buffer * 10000) / 100 : null,
@@ -46,6 +49,9 @@ export default function TradingConfigPanel() {
         max_open_trades: values.max_open_trades,
         trading_min_free_pct:
           values.trading_min_free_pct != null ? values.trading_min_free_pct / 100 : undefined,
+        // 止损金额模式（2026-09-27）
+        risk_budget_mode: values.risk_budget_mode ?? 'pct',
+        risk_fixed_amount: values.risk_fixed_amount ?? 3,
         // 补丁参数（null/清空 = 恢复默认；后端区分「未传」与「传 null」）
         max_stop_pct: values.max_stop_pct != null ? values.max_stop_pct / 100 : null,
         liq_gate_buffer: values.liq_gate_buffer != null ? values.liq_gate_buffer / 100 : null,
@@ -99,6 +105,39 @@ export default function TradingConfigPanel() {
             tooltip="可用余额低于总资金该比例时不开新单"
           >
             <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} />
+          </Form.Item>
+
+          {/* 止损金额模式（2026-09-27）：pct=现行风险基数分档级别；fixed=固定 USDT 金额 */}
+          <Form.Item
+            label="止损金额模式"
+            name="risk_budget_mode"
+            initialValue="pct"
+            tooltip="单笔交易触发止损时的目标亏损金额。分档级别：风险基数（钱包余额首位取整，100~5000）× 3%，随钱包规模自动缩放；固定金额：每笔固定亏损指定 USDT，不随钱包变化"
+          >
+            <Radio.Group
+              options={[
+                { label: '分档级别（基数×3%）', value: 'pct' },
+                { label: '固定金额', value: 'fixed' },
+              ]}
+              optionType="button"
+              buttonStyle="solid"
+            />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(p, c) => p.risk_budget_mode !== c.risk_budget_mode}>
+            {({ getFieldValue }) =>
+              getFieldValue('risk_budget_mode') === 'fixed' ? (
+                <Form.Item
+                  label="单笔止损金额（USDT）"
+                  name="risk_fixed_amount"
+                  initialValue={3}
+                  rules={[{ required: true, message: '请输入固定止损金额' }]}
+                  tooltip="固定金额模式下每笔交易触发止损的目标亏损额（仓位 = 金额 ÷ 止损距离）。默认 3 USDT，范围 0.1~1000"
+                  style={{ marginTop: 0 }}
+                >
+                  <InputNumber min={0.1} max={1000} step={0.5} style={{ width: '100%' }} addonAfter="USDT" />
+                </Form.Item>
+              ) : null
+            }
           </Form.Item>
 
           <Form.Item

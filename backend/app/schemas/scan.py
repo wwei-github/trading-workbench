@@ -198,6 +198,9 @@ class SystemConfigOut(BaseModel):
     # 自动交易（docs/06）
     max_open_trades: int = 5
     trading_min_free_pct: float = 0.5  # 开仓最低可用余额占钱包比例（0~1；2026-09-15 由固定 70% 改为可配置）
+    # 止损金额模式（2026-09-27）：pct=风险基数分档×3%（默认）/ fixed=固定 USDT 金额
+    risk_budget_mode: str = "pct"
+    risk_fixed_amount: float = 3.0
 
     # 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面可改）
     trading_testnet: bool = True
@@ -259,6 +262,9 @@ class SystemConfigUpdate(BaseModel):
     # 自动交易（docs/06）
     max_open_trades: Optional[int] = None
     trading_min_free_pct: Optional[float] = None  # 0~1，开仓最低可用余额占比
+    # 止损金额模式（2026-09-27）：pct/fixed；fixed 金额 0.1~1000 USDT
+    risk_budget_mode: Optional[str] = None
+    risk_fixed_amount: Optional[float] = None
 
     # 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面可改）
     trading_testnet: Optional[bool] = None

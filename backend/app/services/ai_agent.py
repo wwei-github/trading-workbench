@@ -45,11 +45,15 @@ _RULE_STRUCT_BRIEF = _RULE_STRUCT.replace("analysis", "reason")
 _RULE_VOTE_BRIEF = _RULE_VOTE_BRIEF.replace("{", "{{").replace("}", "}}")
 _RULE_STRUCT_BRIEF = _RULE_STRUCT_BRIEF.replace("{", "{{").replace("}", "}}")
 
-def render_system_prompt() -> str:
-    """渲染最终生效的 P1 系统提示词（页面「查看当前生效提示词」与实际调用同源）。"""
+def render_system_prompt(risk_label: str = "") -> str:
+    """渲染最终生效的 P1 系统提示词（页面「查看当前生效提示词」与实际调用同源）。
+
+    risk_label（2026-09-27 止损金额模式）：单笔止损预算文案（如"固定 3 USDT"/
+    "账户风险基数 × 3%"），空时回落默认百分比口径。"""
     return AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
-        rr_min=settings.AI_RR_MIN, risk_pct=settings.RISK_BUDGET_PCT,
+        rr_min=settings.AI_RR_MIN,
+        risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
@@ -96,8 +100,8 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 8. 不要输出不带工具调用的纯文字回复（会浪费一轮）；文字只用于简短说明查询意图，
    决策一律通过 submit_decision 提交。
 9. 盈亏比铁律 ≥{rr_min}；止损宽度由结构位决定，不设固定价格百分比上限；仓位不要自己报，
-   程序按固定亏损法计算：仓位 = {risk_pct}% ÷ 止损距离%，触发止损时恰好亏损账户资金的
-   {risk_pct}%（止损越远仓位越小）。
+   程序按固定亏损法计算，单笔止损预算={risk_label}：仓位 = 预算 ÷ 止损距离
+   （止损越远仓位越小）。
 10. 指标方向判定：{_RULE_VOTE_BRIEF}
     EMA 排列不构成方向限制（多头排列不禁止做空、空头排列不禁止做多）。
 11. 止损锚定（提示词纪律，程序不再改写 stop 值——止损是否合理由你自己把关，
@@ -261,8 +265,13 @@ def _resolve_price(ref: Optional[str], offset_pct, signal: dict) -> Optional[flo
     return base * (1 + off / 100.0)
 
 
-def _handle_submit(args: dict, signal: dict, klines: list) -> tuple[bool, str, Optional[dict]]:
-    """submit_decision：锚点换算 → Risk Guard。返回 (done, tool_result, fixed)"""
+def _handle_submit(
+    args: dict, signal: dict, klines: list,
+    risk_budget: Optional[float] = None,
+) -> tuple[bool, str, Optional[dict]]:
+    """submit_decision：锚点换算 → Risk Guard。返回 (done, tool_result, fixed)
+
+    risk_budget（2026-09-27 止损金额模式）：fixed 模式预算实额，透传校验。"""
     decision = args.get("trade_decision")
     if decision not in ("suggest", "skip"):
         return False, "trade_decision 必须是 suggest 或 skip", None
@@ -308,7 +317,9 @@ def _handle_submit(args: dict, signal: dict, klines: list) -> tuple[bool, str, O
         recommendation=float(args.get("recommendation") or 60),
         analysis=args.get("reason") or "",
     )
-    ok, violations, fixed = validate_decision(d, signal, klines)
+    ok, violations, fixed = validate_decision(
+        d, signal, klines, risk_budget=risk_budget,
+    )
     if ok:
         return True, "决策已提交并通过风控校验", fixed
     return False, (
@@ -341,7 +352,9 @@ def _dispatch_tool(name: str, args: dict, ctx: dict) -> tuple[bool, str, Optiona
     if name == "load_skill":
         return False, skill_library.load_skill(str(args.get("name", ""))), None
     if name == "submit_decision":
-        return _handle_submit(args, ctx["signal"], ctx["klines"])
+        return _handle_submit(
+            args, ctx["signal"], ctx["klines"], risk_budget=ctx.get("risk_budget"),
+        )
     return False, f"unknown tool: {name}", None
 
 
@@ -351,11 +364,15 @@ def analyze_coin_agent(
     pool=None,
     progress_cb=None,
     htf_klines: Optional[list] = None,
+    risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
     返回值额外带 "stage_trace" 键（工具循环 trace，docs/04 §5.9），落库时一并存储。
     progress_cb: 可选回调，接收 {"t": round/tool, ...} 进度事件供前端流式展示。
+    risk_*（2026-09-27 止损金额模式）：调用方（ai_tasks）从 system_config 解析的
+    预算口径，注入提示词 risk_label 槽位 + submit_decision 校验的 risk_budget；
+    缺省时回落百分比口径（pct），与历史行为一致。
     """
     client = get_client()
 
@@ -368,7 +385,7 @@ def analyze_coin_agent(
     system = AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
         rr_min=settings.AI_RR_MIN,
-        risk_pct=settings.RISK_BUDGET_PCT,
+        risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
@@ -388,7 +405,12 @@ def analyze_coin_agent(
         {"role": "user", "content": user_msg},
     ]
 
-    ctx = {"signal": signal, "klines": klines, "pool": pool}
+    ctx = {
+        "signal": signal, "klines": klines, "pool": pool,
+        # 止损金额 fixed 模式预算实额（pct 模式为 None → validate_decision 内走
+        # RISK_BUDGET_PCT% 口径）；2026-09-27 统一口径
+        "risk_budget": risk_amount if risk_mode == "fixed" and risk_amount > 0 else None,
+    }
     fixed: Optional[dict] = None
     tool_rounds = 0
     trace: list[dict] = []

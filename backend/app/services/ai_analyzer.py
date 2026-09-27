@@ -80,7 +80,7 @@ SIGNAL_TYPE_LABELS = {
     "manual_search": "手动搜索",
 }
 
-SYSTEM_PROMPT = f"""你是加密货币合约交易分析师。基于提供的信号与近期K线数据，给出是否开单的建议。
+SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信号与近期K线数据，给出是否开单的建议。
 直接输出JSON，不要思考过程，不要markdown包裹。
 
 【最高优先级硬约束】
@@ -96,21 +96,21 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
   计划等回踩时给回踩锚定价（摆动低/高点）并在 analysis 中写明"等回踩"（程序会据此标记
   "待回踩"，仅作展示、不会为其下单）；若现价已显著离开
   摆动结构位且无合理入场计划，应 skip。
-- 方向纪律：{_RULE_DIRECTION.replace(chr(10), ' ')}
+- 方向纪律：{_RULE_DIRECTION}
 - stop_loss: 止损价，做多时低于入场价，做空时高于入场价，基于结构位。
   三价硬约束（程序强制，违反直接打回浪费重试）：做多必须 SL < 入场 < TP1，做空必须
   TP1 < 入场 < SL。止损锚定只看入场价不利侧的摆动结构/影线极值——
   做空绝不允许锚定低点、做多绝不允许锚定高点。
 - take_profit_1: 第一档止盈价，做多=上方摆动高点下方留 0.2%~0.5% 余地，
   做空=下方摆动低点上方留 0.2%~0.5%。盈亏比铁律（程序按三价复算打回，声称值无效）：
-  RR = |TP1 − 入场| ÷ |入场 − 止损| 必须 ≥ {settings.AI_RR_MIN}，输出前先自行代入验算。
+  RR = |TP1 − 入场| ÷ |入场 − 止损| 必须 ≥ {rr_min}，输出前先自行代入验算。
   距现价特别近（≤1×ATR）的位
   是当前争夺位、不算止盈目标，止盈一从更远的第一档结构位起算。
 - take_profit_2: 第二档止盈价，锚定更前方一档摆动结构位（做多=更高一档摆动高点下方，
   做空=更低一档摆动低点上方，同样留余地）且必须比止盈一更远。
 - risk_reward_ratio: take_profit_1 的盈亏比，2位小数。
 - position_pct: 建议名义仓位占账户资金百分比，2位小数。程序会按固定亏损复算覆盖
-  （仓位={settings.RISK_BUDGET_PCT:g}%÷止损距离%），此处报估算值即可。
+  （单笔止损预算={risk_label}：仓位=预算÷止损距离），此处报估算值即可。
 - recommendation: 推荐程度，0-100的整数。skip 时≤30，suggest 时≥50
 - analysis: ≤300字中文推理，用"1. 2. 3."序号逐条展示，每条独占一行（JSON内换行写\\n），格式如下：
   先逐条列出满足的条件（如：1. EMA多头排列，趋势向上 2. 回踩支撑位企稳，触及2次）；
@@ -120,16 +120,33 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 
 {_RULE_SL}
 
-{_RULE_TP.format(rr_min=settings.AI_RR_MIN)}
+{_RULE_TP}
 
 所有价格为数值，单位 USDT。
 均线与指标纪律：
-- {_RULE_EMA.replace(chr(10), ' ')}
-- {_RULE_VOTE.replace(chr(10), ' ')}
+- {_RULE_EMA}
+- {_RULE_VOTE}
 - 入场/止损/止盈的结构位锚定规则不受指标方向影响，仍按上方规则执行。
 
 资金费率/持仓量/大盘状态/恐贪指数等市场环境数据未随消息提供，请勿臆测：
 仅基于给定的 K 线、量能、均线、摆动结构、技术指标与 4h 背景数据进行分析。"""
+
+def render_system_prompt(risk_label: Optional[str] = None) -> str:
+    """渲染最终生效的 P0 系统提示词（SYSTEM_PROMPT 为带槽位模板）。
+
+    risk_label（2026-09-27 止损金额模式）：单笔止损预算文案，None 时回落
+    百分比口径。页面预览与实际调用共用本函数保证同源。"""
+    return SYSTEM_PROMPT.format(
+        _RULE_HTF_HARD=_RULE_HTF_HARD,
+        _RULE_DIRECTION=_RULE_DIRECTION.replace(chr(10), ' '),
+        _RULE_STRUCT=_RULE_STRUCT,
+        _RULE_SL=_RULE_SL,
+        _RULE_TP=_RULE_TP.format(rr_min=settings.AI_RR_MIN),
+        _RULE_EMA=_RULE_EMA.replace(chr(10), ' '),
+        _RULE_VOTE=_RULE_VOTE.replace(chr(10), ' '),
+        rr_min=settings.AI_RR_MIN,
+        risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
+    )  # 模板槽位均为纯名称：表达式在渲染前预处理（f-string 时代的 .format 内嵌已移除）
 
 
 def _get_client() -> OpenAI:
@@ -141,6 +158,7 @@ def analyze_coin(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
+    risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -150,11 +168,13 @@ def analyze_coin(
     strategy_prompt: 用户自定义交易策略（MD 格式），提供时附加到系统提示词供 AI 参考
     user_input: 本次分析的用户补充说明（要求/持仓计划/个人观点），附加到用户提示词
     htf_klines: 可选 4h 高周期 K 线（大方向背景；None 时注入块缺省 4h 行）
+    risk_*: 止损金额模式口径（2026-09-27），仅 risk_label 注入提示词
     """
     client = _get_client()
     return _call_llm(
         client,
-        _build_messages(signal, klines, strategy_prompt, user_input, htf_klines),
+        _build_messages(signal, klines, strategy_prompt, user_input, htf_klines,
+                        risk_label=risk_label),
     )
 
 
@@ -162,8 +182,12 @@ def _build_messages(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
+    risk_label: str = "",
 ) -> list:
-    """构造 LLM messages（analyze_coin / analyze_with_guard 共用）"""
+    """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
+
+    risk_label（2026-09-27 止损金额模式）：单笔止损预算文案，注入系统提示词
+    仓位口径说明；空时用默认百分比口径。"""
     # 取最近 60 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-61:-1]）
     recent = klines[-61:-1] if len(klines) >= 61 else klines[:-1]
     # 每根K线自带成交量与成交额（quote_vol，USDT），与 Agent 管线同格式
@@ -229,7 +253,7 @@ def _build_messages(
             f"{user_input.strip()}"
         )
 
-    system_prompt = SYSTEM_PROMPT
+    system_prompt = render_system_prompt(risk_label or None)
     # 技能注入（P0 管线无工具循环，命中技能正文直接进系统提示词；与 Agent 管线共用同一事实判定）
     skill_block = skill_library.render_matched(skill_library.build_facts(signal, klines))
     if skill_block:
@@ -279,16 +303,20 @@ def analyze_with_guard(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
+    risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
     返回值为校验修正后的决策 dict（rr/position_pct 为程序复算值），可直接落库。
+    risk_*（2026-09-27 止损金额模式）：risk_label 注入提示词；fixed 模式下
+    risk_amount 作为预算实额传入仓位复算（与开仓引擎同口径）。
     """
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
-        htf_klines=htf_klines,
+        htf_klines=htf_klines, risk_label=risk_label,
     )
     client = _get_client()
+    _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None
 
     last_violations: list[str] = []
     for attempt in range(3):  # 1 次初始 + 2 次反馈重试
@@ -299,7 +327,9 @@ def analyze_with_guard(
             logger.warning("AI 第%d次输出解析失败: %s", attempt + 1, e)
             continue  # messages 不变直接重试
 
-        ok, violations, fixed = parse_and_validate(raw, signal, klines)
+        ok, violations, fixed = parse_and_validate(
+            raw, signal, klines, risk_budget=_risk_budget,
+        )
         if ok:
             logger.info(
                 "AI 决策通过校验: %s %s rr=%s",

@@ -293,7 +293,15 @@ def _attempt_open(
                 liquidation_gate_pct(mmr=mmr_eff, buffer=liq_buf) * 100,
                 mmr_eff * 100, leverage, liq_gate * 100,
             )
-        risk_budget = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
+        # 止损金额模式（2026-09-27）：pct=风险基数分档×TRADING_RISK_PCT%（现行默认，
+        # 随钱包首位取整缩放）；fixed=固定 USDT 金额（risk_fixed_amount），不随钱包缩放，
+        # 仓位=金额÷止损距离（钱包 ≤0 仍由闸门拦截，固定金额不放大透支风险）
+        if (cfg.risk_budget_mode or "pct") == "fixed":
+            risk_budget = float(
+                cfg.risk_fixed_amount if cfg.risk_fixed_amount is not None else 3.0
+            )
+        else:
+            risk_budget = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
         notional = risk_budget / stop_pct
         # 复验按名义所在档位精确取（2026-09-18 -2027 修复）：MMR / 档位最大杠杆 /
         # 档位名义上限。杠杆超档位 initialLeverage 会被交易所拒单（-2027 Exceeded
@@ -468,6 +476,7 @@ def _attempt_open(
                 margin_mode="isolated",
                 margin_used=round(qty * fill_price / leverage, 4),
                 risk_amount=round(risk_amount, 4),
+                risk_budget_mode=(cfg.risk_budget_mode or "pct"),  # 开仓时刻模式快照（追溯口径）
                 stop_loss=sl,
                 tp1=tp1,
                 tp2=tp2 if tp2_order else 0,
@@ -1420,6 +1429,8 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
     pos = trader.positions().get(symbol)
     if not pos or abs(float(pos["amt"])) == 0:
         raise ValueError(f"交易所已无 {symbol} 持仓（可能已平仓），请刷新列表")
+    # 止损金额模式快照（2026-09-27）：接管单同样记录开仓口径，便于追溯
+    _adopt_cfg = db.get(SystemConfig, 1)
     amt = float(pos["amt"])
     direction = "long" if amt > 0 else "short"
     close_side = _close_side(direction)
@@ -1522,6 +1533,10 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
         margin_mode="isolated",
         margin_used=round(margin_used, 4),
         risk_amount=round(abs(entry - stop_loss) * qty, 4),  # 实际风险 = 止损距离 × 数量
+        risk_budget_mode=(
+            (_adopt_cfg.risk_budget_mode or "pct")
+            if _adopt_cfg is not None else "pct"
+        ),  # 接管时刻模式快照（无 AI 分析行的手动单同样记录）
         stop_loss=stop_loss,
         tp1=tp1,
         tp2=tp2 if tp2_order else 0,

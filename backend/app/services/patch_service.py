@@ -195,7 +195,8 @@ param_value 为比例值（0.04=4%%）。
 def _generate_draft(db: Session, tag: str, heat: float, stats: dict,
                     case_ids: list) -> Optional[PromptPatch]:
     """调 LLM 生成单条补丁草稿（程序校验通过才建 draft，失败返回 None）。"""
-    from app.services.ai_analyzer import SYSTEM_PROMPT
+    from app.services.ai_analyzer import SYSTEM_PROMPT  # noqa: F401  # 原文常量供子串校验
+    from app.services.ai_analyzer import render_system_prompt as render_p0_prompt
 
     cfg = _get_cfg(db)
     active_patches = db.execute(
@@ -226,7 +227,7 @@ def _generate_draft(db: Session, tag: str, heat: float, stats: dict,
         ],
     }
     user_msg = (
-        f"系统提示词（old_text 必须是它的原文子串）：\n{SYSTEM_PROMPT}\n\n"
+        f"系统提示词（old_text 必须是它的原文子串）：\n{render_p0_prompt()}\n\n"
         f"触发证据：\n{json.dumps(evidence, ensure_ascii=False)}"
     )
     try:
@@ -252,8 +253,9 @@ def _generate_draft(db: Session, tag: str, heat: float, stats: dict,
     new_text = str(data.get("new_text") or "").strip()
     if kind == "prompt":
         old_text = str(data.get("old_text") or "").strip()
-        # 程序校验：old_text 逐字存在于系统提示词；new_text 非空限长
-        if not old_text or old_text not in SYSTEM_PROMPT:
+        # 程序校验：old_text 逐字存在于系统提示词渲染结果（含风险预算文案）；
+        # new_text 非空限长
+        if not old_text or old_text not in render_p0_prompt():
             logger.warning("补丁草稿校验失败（%s）：old_text 非系统提示词原文子串", tag)
             return None
         if not new_text or len(new_text) > 500:
@@ -447,9 +449,11 @@ def run_evaluate(db: Session) -> list[PromptPatch]:
 def build_prompt_view(db: Session) -> dict:
     """三层拼装：系统自带（代码常量只读）/ 用户自定义 / 补丁覆盖段。"""
     from app.services.ai_agent import render_system_prompt
-    from app.services.ai_analyzer import SYSTEM_PROMPT
+    from app.services.ai_analyzer import render_system_prompt as render_p0_prompt
+    from app.services.risk_budget import resolve_risk_budget
 
     cfg = _get_cfg(db)
+    _, _, risk_label = resolve_risk_budget(cfg)
     text = cfg.strategy_prompt or ""
     patches = db.execute(
         select(PromptPatch).where(PromptPatch.status.in_(("active", "valid")))
@@ -471,8 +475,8 @@ def build_prompt_view(db: Session) -> dict:
             "text": text[m.end():end].strip(),
         })
     return {
-        "system_prompt": SYSTEM_PROMPT,
-        "agent_system": render_system_prompt(),
+        "system_prompt": render_p0_prompt(risk_label),
+        "agent_system": render_system_prompt(risk_label),
         "user_custom": custom_head,
         "patch_segments": segments,
         "params": {

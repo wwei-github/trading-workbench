@@ -363,6 +363,8 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         fib_enabled=bool(cfg.fib_enabled),
         max_open_trades=cfg.max_open_trades,
         trading_min_free_pct=float(cfg.trading_min_free_pct),
+        risk_budget_mode=cfg.risk_budget_mode or "pct",
+        risk_fixed_amount=float(cfg.risk_fixed_amount if cfg.risk_fixed_amount is not None else 3.0),
         trading_testnet=cfg.trading_testnet,
         trading_enabled=cfg.trading_enabled,
         current_account_key=cfg.current_account_key,
@@ -513,6 +515,17 @@ def update_system_config(
         if v is not None and not (0 < v < 0.05):
             raise HTTPException(status_code=400, detail="max_slippage_pct 需为比例值（0.003=0.3%，<5%）")
         cfg.max_slippage_pct = v
+    # 止损金额模式（2026-09-27）：pct=风险基数分档×3%（默认）/ fixed=固定 USDT 金额
+    if "risk_budget_mode" in body.model_fields_set:
+        v = body.risk_budget_mode
+        if v not in ("pct", "fixed"):
+            raise HTTPException(status_code=400, detail="risk_budget_mode 仅支持 pct / fixed")
+        cfg.risk_budget_mode = v
+    if "risk_fixed_amount" in body.model_fields_set:
+        v = body.risk_fixed_amount
+        if v is not None and not (0.1 <= v <= 1000):
+            raise HTTPException(status_code=400, detail="risk_fixed_amount 需在 0.1~1000 USDT 之间")
+        cfg.risk_fixed_amount = v if v is not None else 3.0
     # 初始资金（2026-09-26）：≥0 USDT，资金划转面板展示口径
     if "live_initial_capital" in body.model_fields_set:
         v = body.live_initial_capital
@@ -1005,8 +1018,11 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         else None
     )
     try:
+        from app.services.risk_budget import resolve_risk_budget
+        _rm, _ra, _rl = resolve_risk_budget(cfg)
         ai_result = analyze_coin(
             signal, klines, strategy_prompt=strategy_prompt, htf_klines=htf_klines,
+            risk_mode=_rm, risk_amount=_ra, risk_label=_rl,
         )
         # 4h 强背景方向硬约束兜底（强多只开多/强空只开空）
         ai_result = enforce_htf_constraint(ai_result, htf_klines)

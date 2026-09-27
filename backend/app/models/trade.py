@@ -47,6 +47,7 @@ class TradeRecord(Base):
     margin_mode: Mapped[str] = mapped_column(String(12), default="isolated")
     margin_used: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)
     risk_amount: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)  # 止损金额（USDT）
+    risk_budget_mode: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)  # 开仓时止损金额模式快照：pct/fixed（NULL=旧行，按 pct 理解；2026-09-27）
 
     # 三价（现值；SL 跟进移动后更新，历史在 trade_events）
     stop_loss: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)

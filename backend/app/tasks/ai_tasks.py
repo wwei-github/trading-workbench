@@ -230,6 +230,10 @@ def run_ai_analysis_single(
             logger.warning("AI 分析 %s 获取4h K线失败，跳过4h背景: %s", r.symbol, e)
         # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
         # Agent 管线由模型按需调用工具自行获取
+        # 止损金额口径（2026-09-27）：与开仓引擎同源的预算模式/金额/文案，
+        # 传给两管线统一提示词与仓位复算（risk_budget.resolve）
+        from app.services.risk_budget import resolve_risk_budget
+        _risk_mode, _risk_amount, _risk_label = resolve_risk_budget(cfg)
         # 管线选择：批量（每小时扫描自动触发/手动全量）固定走 P0 单次调用管线，
         # 不受「AI 管线」开关影响；仅手动单币重分析（force）跟随开关走 Agent 管线
         if cfg.ai_pipeline_enabled and force:
@@ -243,6 +247,9 @@ def run_ai_analysis_single(
                 pool=pool,
                 progress_cb=_cb,
                 htf_klines=htf_klines,
+                risk_mode=_risk_mode,
+                risk_amount=_risk_amount,
+                risk_label=_risk_label,
             )
         else:
             ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
@@ -251,6 +258,9 @@ def run_ai_analysis_single(
                 strategy_prompt=strategy_prompt,
                 user_input=user_input,
                 htf_klines=htf_klines,
+                risk_mode=_risk_mode,
+                risk_amount=_risk_amount,
+                risk_label=_risk_label,
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto
         if cfg.dual_judge_enabled:

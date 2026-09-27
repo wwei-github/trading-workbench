@@ -1075,10 +1075,15 @@ export default function TradesPanel() {
         if (rec.qty == null || rec.stop_loss == null || rec.entry_price == null) return '-'
         const dir = rec.direction === 'long' ? 1 : -1
         const est = rec.qty * (rec.stop_loss - rec.entry_price) * dir
+        // 开仓时止损金额模式快照（2026-09-27）：旧行 NULL 按 pct 理解
+        const budgetTip =
+          rec.risk_budget_mode === 'fixed' ? '预算：固定金额模式' : '预算：分档级别（风险基数×3%）'
         return (
-          <span style={{ color: schemeValueColor(est, colorScheme), fontVariantNumeric: 'tabular-nums' }}>
-            {est >= 0 ? '+' : ''}{est.toFixed(2)}
-          </span>
+          <Tooltip title={budgetTip}>
+            <span style={{ color: schemeValueColor(est, colorScheme), fontVariantNumeric: 'tabular-nums' }}>
+              {est >= 0 ? '+' : ''}{est.toFixed(2)}
+            </span>
+          </Tooltip>
         )
       },
     },

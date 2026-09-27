@@ -249,6 +249,21 @@ def _run_migrations(engine):
             "ALTER TABLE trade_records "
             "ADD COLUMN IF NOT EXISTS peak_total_pnl NUMERIC(20, 6)"
         ))
+        # 止损金额模式（2026-09-27）：pct=风险基数分档×3%（默认）/ fixed=固定 USDT 金额
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS risk_budget_mode VARCHAR(8) NOT NULL DEFAULT 'pct'"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS risk_fixed_amount NUMERIC(12, 2) NOT NULL DEFAULT 3"
+        ))
+        # 交易记录模式快照列（2026-09-27）：开仓时止损金额模式（pct/fixed），
+        # 旧行 NULL 按 pct 理解，无需回填
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS risk_budget_mode VARCHAR(8)"
+        ))
         conn.execute(text(
             "UPDATE trade_records SET account_key = 'testnet-1' "
             "WHERE account_key IS NULL AND testnet"

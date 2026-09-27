@@ -60,6 +60,12 @@ class SystemConfig(Base):
     # （2026-09-15 拍板：trade_type 仅作记录不再拦截开仓；DB 历史列保留不删）
     trading_min_free_pct: Mapped[float] = mapped_column(Numeric(10, 6), default=0.5)
 
+    # 止损金额（单笔固定亏损预算）模式（2026-09-27，交易配置弹窗可改）：
+    # pct   = 风险基数分档（_capital_base 首位取整，100~5000）× TRADING_RISK_PCT%（现行默认）
+    # fixed = 固定 USDT 金额 risk_fixed_amount（默认 3），不随钱包缩放
+    risk_budget_mode: Mapped[str] = mapped_column(String(8), default="pct")
+    risk_fixed_amount: Mapped[float] = mapped_column(Numeric(12, 2), default=3.0)
+
     # 规则补丁参数（docs/12 §10，AI 复盘补丁的程序参数落点；NULL/默认=不限制）：
     # max_stop_pct：止损宽度硬上限（比例，如 0.04=4%），开仓闸门读取；
     #                NULL 历史默认=不强平闸门兜底（liquidation_gate_pct）

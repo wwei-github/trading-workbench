@@ -186,6 +186,9 @@ export interface SystemConfig {
   dual_judge_enabled?: boolean; // 双评委辩论：对 suggest 决策做多空辩论复核
   max_open_trades?: number; // 自动交易：同时在跑单子上限
   trading_min_free_pct?: number; // 开仓最低可用余额占钱包比例（0~1，原 70% 规则）
+  // 止损金额模式（2026-09-27）：pct=风险基数分档×3%（默认）/ fixed=固定 USDT 金额
+  risk_budget_mode?: 'pct' | 'fixed';
+  risk_fixed_amount?: number; // fixed 模式的单笔止损金额（USDT，默认 3）
   max_stop_pct?: number | null; // 规则补丁参数：止损宽度硬上限（比例 0.04=4%；null=不限制）
   liq_gate_buffer?: number | null; // 规则补丁参数：强平闸门缓冲（比例 0.005=0.5%；null=默认）
   min_adapt_leverage?: number | null; // 动态杠杆下限（整数倍数；null=默认 8，宽止损单限制层）
@@ -314,6 +317,7 @@ export interface TradeRecord {
   leverage: number
   margin_used: number | null
   risk_amount: number | null
+  risk_budget_mode?: string | null // 开仓时止损金额模式快照：pct/fixed（null=旧行按 pct 理解）
   stop_loss: number | null
   tp1: number | null
   tp2: number | null
