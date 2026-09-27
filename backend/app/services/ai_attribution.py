@@ -132,7 +132,7 @@ def attribute_trade(rec, klines: list) -> dict:
             {"role": "user", "content": json.dumps(facts, ensure_ascii=False)},
         ],
         temperature=0.2,
-        max_tokens=12000,  # GLM 思考型：reasoning tokens 计入配额（同 ai_analyzer 口径）
+        max_tokens=32000,  # GLM 思考型：reasoning 计入配额，12000 被思考耗尽过（同 ai_analyzer 口径）
     )
     content = (resp.choices[0].message.content or "").strip()
     if content.startswith("```"):

@@ -334,12 +334,13 @@ def _build_messages(
 def _call_llm(client: OpenAI, messages: list) -> dict:
     """单次 LLM 调用 → 原始 JSON dict；空内容/解析失败抛异常"""
     # GLM 系列为思考型模型，reasoning tokens 也计入 max_tokens，
-    # 配额太小会导致正文为空或被截断（finish_reason=length），这里放大配额
+    # 配额太小会导致正文为空或被截断（finish_reason=length）：
+    # 12000 曾被思考过程整体耗尽（2026-09-28 线上：3 次重试全空内容强制 skip），放大至 32000
     resp = client.chat.completions.create(
         model=settings.AI_MODEL,
         messages=messages,
         temperature=0.3,
-        max_tokens=12000,
+        max_tokens=32000,
     )
     finish = resp.choices[0].finish_reason
     content = (resp.choices[0].message.content or "").strip()

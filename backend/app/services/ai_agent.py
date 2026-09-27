@@ -523,7 +523,7 @@ def analyze_coin_agent(
             messages=messages,
             tools=TOOLS_SCHEMA,
             temperature=0.3,
-            max_tokens=12000,
+            max_tokens=32000,  # GLM 思考型：reasoning 计入配额，12000 被思考耗尽过（同 ai_analyzer 口径）
         )
         msg = resp.choices[0].message
         tool_calls = msg.tool_calls or []
