@@ -16,6 +16,11 @@ class TradeEventOut(BaseModel):
         from_attributes = True
 
 
+class OpenFromAnalysisRequest(BaseModel):
+    """手动开单请求（扫描结果表「开单」按钮）：AI 分析 id"""
+    analysis_id: str
+
+
 class TradeOut(BaseModel):
     id: uuid.UUID
     symbol: str

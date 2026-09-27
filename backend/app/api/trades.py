@@ -18,6 +18,7 @@ from app.schemas.trade import (
     ExitReasonStat,
     FundAnalyticsOut,
     FundSummary,
+    OpenFromAnalysisRequest,
     PnlBucket,
     SymbolPnl,
     TradeEventOut,
@@ -293,6 +294,87 @@ def inspect_now():
     async_res = run_auto_trade_task.delay()
     return {"ok": True, "task_id": async_res.id,
             "message": "巡检已派发后台执行，完成后刷新查看结果"}
+
+
+@router.post("/open-from-analysis")
+def open_from_analysis(payload: OpenFromAnalysisRequest, db: Session = Depends(get_db)):
+    """手动开单（2026-09-27 扫描结果表「开单」按钮）：对指定 AI 分析立即走一次
+    完整开仓闸门（try_open_for_analysis），仅当前账号、不做多账号扇出。
+
+    与自动开仓路径（open_trade_for_analysis celery 任务）的差异：
+    - 仅 resolve_current_account 当前账号（手动点击是单行明确意图，扇出会在
+      所有启用账号真实下单，语义不对）
+    - 同样尊重 trading_enabled 总开关、共用账号开仓锁（等锁 10s → 409）
+    - 闸门未过返回 200 opened=false + block_reason（业务拦截非 HTTP 错误），
+      拦截原因已由 _mark_open_block 落 ai_analyses.open_block_reason
+    """
+    import uuid as _uuid
+
+    from redis import Redis
+
+    from app.config import settings
+    from app.models.scan import AIAnalysis
+    from app.services import account_registry as reg
+    from app.services.binance_trader import BinanceTrader
+    from app.services.trade_engine import try_open_for_analysis
+    from app.tasks.trade_tasks import (
+        _OPEN_LOCK_TTL_S,
+        _acquire_open_lock,
+        _release_open_lock,
+    )
+
+    cfg = db.get(SystemConfig, 1)
+    if cfg is None or not cfg.trading_enabled:
+        raise HTTPException(status_code=400, detail="自动交易总开关已关闭，无法开单")
+
+    try:
+        analysis_id = _uuid.UUID(payload.analysis_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="analysis_id 格式非法")
+    a = db.get(AIAnalysis, analysis_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="AI 分析不存在")
+    if a.trade_decision != "suggest":
+        raise HTTPException(status_code=400, detail="该分析非建议开单（suggest）结论")
+
+    acc = reg.resolve_current_account(db)
+    acc_key = acc.key if acc else ("testnet-1" if cfg.trading_testnet else "live-1")
+    trader = BinanceTrader(acc_key)
+    if not trader.configured:
+        raise HTTPException(status_code=400, detail="当前账号未配置 API 凭据")
+
+    r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    ident = f"open-from-analysis-{uuid4().hex[:8]}"
+    if not _acquire_open_lock(r, ident, wait_s=10, ttl_s=_OPEN_LOCK_TTL_S,
+                              account=trader.account_key):
+        raise HTTPException(status_code=409, detail="与结算巡检/其他开仓互斥中，请稍后重试")
+    try:
+        opened = try_open_for_analysis(db, trader, analysis_id)
+        db.refresh(a)
+        block_reason = a.open_block_reason
+        trade_id = None
+        if opened:
+            rec = db.execute(
+                select(TradeRecord).where(
+                    TradeRecord.ai_analysis_id == analysis_id,
+                    or_(
+                        TradeRecord.account_key == trader.account_key,
+                        and_(TradeRecord.account_key.is_(None),
+                             TradeRecord.testnet == trader.testnet),
+                    ),
+                ).order_by(TradeRecord.opened_at.desc()).limit(1)
+            ).scalars().first()
+            trade_id = str(rec.id) if rec else None
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception("手动开单失败 analysis=%s", analysis_id)
+        raise HTTPException(status_code=500, detail=f"开单失败：{e}")
+    finally:
+        _release_open_lock(r, ident, account=trader.account_key)
+    return {"ok": True, "opened": opened, "block_reason": block_reason,
+            "trade_id": trade_id, "account_key": trader.account_key}
 
 
 @router.post("/{trade_id}/close-market")

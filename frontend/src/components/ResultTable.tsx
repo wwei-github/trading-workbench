@@ -4,6 +4,7 @@ import {
   Tooltip,
   Empty,
   Button,
+  Modal,
   message,
 } from "antd";
 import {
@@ -27,7 +28,7 @@ import {
   patternStyle,
   positionTag,
 } from "../constants/labels";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import KlineChart from "./KlineChart";
 import AiExpandContent from "./AiExpandContent";
 import type { AIAnalysis, ScanResult } from "../types";
@@ -68,23 +69,22 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
   // 开单状态映射：ai_analysis_id -> 交易状态（"开单状态"列判定已开单/开单失败）。
   // 随结果列表刷新拉取（limit 500 足够覆盖当前页分析的近期交易）
   const [tradeMap, setTradeMap] = useState<Record<string, string>>({});
+  // tradeMap 拉取（"开单"按钮点击后手动调用刷新，与 results effect 共用）
+  const refreshTradeMap = useCallback(async () => {
+    try {
+      const rows = await scanApi.trades.list(undefined, 500);
+      const m: Record<string, string> = {};
+      for (const t of rows) {
+        if (t.ai_analysis_id) m[t.ai_analysis_id] = t.status;
+      }
+      setTradeMap(m);
+    } catch {
+      // 静默：开单状态列缺失可接受，下次列表刷新重拉
+    }
+  }, []);
   useEffect(() => {
-    let cancelled = false;
-    scanApi.trades
-      .list(undefined, 500)
-      .then((rows) => {
-        if (cancelled) return;
-        const m: Record<string, string> = {};
-        for (const t of rows) {
-          if (t.ai_analysis_id) m[t.ai_analysis_id] = t.status;
-        }
-        setTradeMap(m);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [results, currentScanId]);
+    refreshTradeMap();
+  }, [results, currentScanId, refreshTradeMap]);
   const watchedSymbols = useMemo(
     () => new Set(watchlist.map((w) => w.symbol)),
     [watchlist],
@@ -150,6 +150,81 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
     } catch (e: any) {
       message.error(e?.message || "AI 分析失败");
     }
+  };
+
+  // ── 手动开单（2026-09-27）─────────────────────────────────────────────
+  // 推荐度门槛（前端启发式预判；后端 TRADING_MIN_RECOMMENDATION=60 为权威，
+  // 不一致时以点击后端闸门判定为准）
+  const MIN_RECOMMENDATION = 60;
+
+  // 置灰判定：返回不可点原因文本；null = 可点。纯前端启发式——
+  // 钱包/在跑上限等运行时条件由点击后端闸门权威判定（拦截原因落库展示）
+  const getOpenDisabledReason = (record: ScanResult): string | null => {
+    const ai = aiMap[record.id];
+    if (analyzingMap[record.id]?.loading) return "AI 分析中，请稍候";
+    if (!ai) return "无 AI 分析";
+    if (ai.trade_decision !== "suggest") {
+      return ai.skip_reason ? `AI 建议跳过：${ai.skip_reason}` : "AI 建议跳过";
+    }
+    if (!ai.direction || !ai.entry_price || !ai.stop_loss || !ai.take_profit_1) {
+      return "AI 未给出完整开单位";
+    }
+    if ((ai.recommendation ?? 0) < MIN_RECOMMENDATION) {
+      return `推荐度 ${Math.round(ai.recommendation ?? 0)} 低于门槛 ${MIN_RECOMMENDATION}`;
+    }
+    // 信号时效与自动开仓同口径（try_open_for_analysis：1 小时内有效）。
+    // 后端 UTC-naive，末尾无 Z，必须补 Z 按 UTC 解析（本地解析会偏移 8h）
+    if (ai.created_at) {
+      const ageMin = (Date.now() - new Date(`${ai.created_at}Z`).getTime()) / 60000;
+      if (ageMin > 60) return "信号已过期（分析超过 1 小时）";
+    }
+    const tradeStatus = tradeMap[ai.id];
+    if (tradeStatus) {
+      const label = TRADE_STATUS_LABEL[tradeStatus] || tradeStatus;
+      return tradeStatus === "FAILED"
+        ? `已有开单尝试（${label}），不支持重试`
+        : `已开单（${label}）`;
+    }
+    return null;
+  };
+
+  // 行级 loading 防连点（scanResultId -> true）
+  const [openLoadingMap, setOpenLoadingMap] = useState<Record<string, boolean>>({});
+
+  const handleOpenTrade = (record: ScanResult) => {
+    const ai = aiMap[record.id];
+    if (!ai) return;
+    const dirLabel = ai.direction === "long" ? "开多" : "开空";
+    Modal.confirm({
+      title: `确认手动开单：${record.symbol} ${dirLabel}？`,
+      content: (
+        <div style={{ fontSize: 12, lineHeight: 1.9 }}>
+          <div>入场价：{ai.entry_price}　止损：{ai.stop_loss}　止盈一：{ai.take_profit_1}</div>
+          <div>推荐度：{Math.round(ai.recommendation ?? 0)}　当前交易账号</div>
+          {ai.open_block_reason && (
+            <div style={{ color: "#fa8c16" }}>上次拦截：{ai.open_block_reason}</div>
+          )}
+        </div>
+      ),
+      okText: "确认开单",
+      cancelText: "取消",
+      onOk: async () => {
+        setOpenLoadingMap((m) => ({ ...m, [record.id]: true }));
+        try {
+          const res = await scanApi.trades.openFromAnalysis(ai.id);
+          if (res.opened) {
+            message.success(`${record.symbol} 开单成功（${res.account_key}），详见交易记录`);
+          } else {
+            message.warning(res.block_reason || "闸门未过，未开单");
+          }
+          await refreshTradeMap();
+        } catch (e: any) {
+          message.error(e?.response?.data?.detail || e?.message || "开单请求失败");
+        } finally {
+          setOpenLoadingMap((m) => ({ ...m, [record.id]: false }));
+        }
+      },
+    });
   };
 
   // 服务端过滤（antd 官方模式）：列只声明 filters（非受控，不传 filteredValue），
@@ -539,6 +614,42 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       render: (v: boolean) =>
         v ? <Tag color="default">重复</Tag> : <Tag color="green">新</Tag>,
     },
+    {
+      // 操作列：手动开单（2026-09-27）。置灰条件=无 AI 分析/建议跳过/缺价位/
+      // 推荐度不足/信号过期/已开单；钱包/在跑上限等运行时条件由点击后端闸门
+      // 权威判定。disabled Button 不触发 hover——外层 span 承接 Tooltip
+      title: "操作",
+      key: "actions",
+      width: 76,
+      render: (_: unknown, record: ScanResult) => {
+        const ai = aiMap[record.id];
+        const reason = getOpenDisabledReason(record);
+        const disabled = reason !== null;
+        const tip = disabled
+          ? reason!
+          : `手动开单：${record.symbol} ${ai?.direction === "long" ? "开多" : "开空"}（当前账号，走完整开仓闸门）`
+            + (ai?.open_block_reason ? `　上次拦截：${ai.open_block_reason}` : "");
+        return (
+          <Tooltip title={tip}>
+            <span>
+              <Button
+                type="link"
+                size="small"
+                style={{ padding: 0 }}
+                disabled={disabled}
+                loading={!!openLoadingMap[record.id]}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleOpenTrade(record);
+                }}
+              >
+                开单
+              </Button>
+            </span>
+          </Tooltip>
+        );
+      },
+    },
   ];
 
   return (
@@ -567,7 +678,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           loading={loading}
           size="small"
           tableLayout="fixed"
-          scroll={{ x: 1468 }}
+          scroll={{ x: 1544 }}
           onChange={handleTableChange}
           pagination={{
             current: resultsPage,

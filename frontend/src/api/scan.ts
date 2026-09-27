@@ -221,6 +221,18 @@ export const scanApi = {
           '/trades/inspect-now', null, { timeout: 15000 },
         )
         .then((r) => r.data),
+    // 扫描结果表「开单」按钮（2026-09-27）：对 AI 分析立即走完整开仓闸门，
+    // 仅当前账号；opened=false 为闸门拦截（业务结果），block_reason 给前端提示
+    openFromAnalysis: (analysisId: string) =>
+      api
+        .post<{
+          ok: boolean;
+          opened: boolean;
+          block_reason: string | null;
+          trade_id: string | null;
+          account_key: string;
+        }>('/trades/open-from-analysis', { analysis_id: analysisId }, { timeout: 60000 })
+        .then((r) => r.data),
     // 市价平仓（与飞书卡片按钮同源）：同步执行约 2~5s，立即结算落终态
     closeMarket: (tradeId: string) =>
       api
