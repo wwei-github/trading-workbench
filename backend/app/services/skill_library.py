@@ -98,8 +98,8 @@ def build_facts(signal: dict, klines: list) -> dict:
         "narrow_range": False,
         "role": None,
     }
-    # 信号位置角色：position 即形态/突破方向派生的 support/resistance，直接作 role；
-    # 旧数据的 prev_high 等历史值不命中（role=None，技能不自动触发）
+    # 信号位置角色：position 即现价最近关键位的 support/resistance（2026-09-27
+    # 统一口径），直接作 role；旧数据的 prev_high 等历史值不命中（role=None，技能不自动触发）
     hit_kind = signal.get("position")
     if hit_kind in ("support", "resistance"):
         facts["role"] = hit_kind

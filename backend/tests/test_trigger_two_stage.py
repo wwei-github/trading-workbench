@@ -556,3 +556,54 @@ def test_level_touch_without_golden_upserts_pending():
     assert op is not None and op["op"] == "upsert"
     assert op["direction"] == 1
     assert abs(op["ema21"] - 99.0) < 1e-9
+
+
+# ── position 统一口径：现价最近关键位角色（2026-09-27）──────────────────────
+
+def _level_r(price: float, role: str, state: str = "intact") -> dict:
+    """带角色的关键位条目（compute_key_levels 产出 role 非空）"""
+    lv = _level(price, state)
+    lv["role"] = role
+    return lv
+
+
+def test_position_nearest_key_level_overrides_direction():
+    """位置统一口径：多头金K 但现价最近的关键位是上方压力位 → position=resistance
+    （不再按方向派生 support），与关键位块展示同源"""
+    kl = _kl(*_base())
+    _no_touch_long(kl)  # close ≈ EMA21+0.2 ≈ 100.2
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, _ = trig.detect_trigger(kl, 1, levels=[
+            _level_r(100.5, "resistance"), _level_r(95.0, "support")], atr=1.0)
+    assert t is not None and t["type"] == trig.CANDLESTICK
+    assert t["position"] == "resistance"
+
+
+def test_position_fallback_when_roles_missing():
+    """位表存在但全部无角色（invalid/旧数据）→ 回落按方向派生：多头=support"""
+    kl = _kl(*_base())
+    _no_touch_long(kl)
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, _ = trig.detect_trigger(kl, 1, levels=[_level(100.5), _level(95.0)], atr=1.0)
+    assert t is not None
+    assert t["position"] == "support"
+
+
+def test_position_breakout_up_nearest_support():
+    """向上突破但最近位是下方支撑位（无更高位）→ position=support（旧口径固定 resistance）"""
+    kl = _kl(*_base())
+    _breakout_long(kl)  # close ≈ 上轨+0.5 ≈ 100.8，下方 100.5 为最近位
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, _ = trig.detect_trigger(kl, 1, levels=[_level_r(100.5, "support")])
+    assert t is not None and t["type"] == trig.BREAKOUT
+    assert t["position"] == "support"
+
+
+def test_position_breakout_down_nearest_resistance():
+    """跌破下轨但最近位是上方压力位（无更低位）→ position=resistance（旧口径固定 support）"""
+    kl = _kl(*_base())
+    _breakout_short(kl)  # close ≈ 下轨-0.5 ≈ 99.2，上方 99.5 为最近位
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, _ = trig.detect_trigger(kl, -1, levels=[_level_r(99.5, "resistance")])
+    assert t is not None and t["type"] == trig.BREAKOUT
+    assert t["position"] == "resistance"

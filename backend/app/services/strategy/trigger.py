@@ -13,8 +13,9 @@
 优先级（决策矩阵，docs/19 §4.1）：T1 > 当根确认 > 次根确认 > 纯金K(T2) >
 触碰转 pending；pending 仅在"恰好下一根K线"有效（开盘时间精确比对）。
 
-position 语义沿用旧约定：触发所锚定的位角色——向上突破/反抽受阻=resistance、
-看涨形态/回踩企稳=support。
+position 语义（2026-09-27 统一）：按当前关键位口径——信号K线收盘价最近的
+（非失效）关键位角色即位置，与关键位块展示同源（位在现价上方=压力、下方=支撑）；
+无位表/无有效角色时回落旧约定（向上突破/反抽受阻=resistance、看涨形态/回踩企稳=support）。
 """
 from datetime import datetime
 from typing import Optional, Tuple
@@ -144,6 +145,27 @@ def _close_op(pending: Optional[dict], direction: int, supersede_reason: str) ->
     return {"op": "supersede", "reason": supersede_reason}
 
 
+def _position_by_levels(close: float, levels: Optional[list]) -> Optional[str]:
+    """信号位置统一按关键位口径（2026-09-27）：距信号K线收盘价最近的
+    非失效关键位角色即位置——与关键位块展示同源（intact 位在现价上方=压力、
+    下方=支撑；broken 保留原角色；invalid 无角色不参选）。
+    无位表/无有效角色时返回 None，调用方回落旧的按方向派生口径。"""
+    if not levels:
+        return None
+    cands = []
+    for lv in levels:
+        role = lv.get("role")
+        if role not in ("support", "resistance"):
+            continue
+        p = float(lv.get("price") or 0)
+        if p > 0:
+            cands.append((abs(p - close), role))
+    if not cands:
+        return None
+    cands.sort(key=lambda t: t[0])
+    return cands[0][1]
+
+
 def detect_trigger(
     klines: list[list], direction: int,
     pending: Optional[dict] = None,
@@ -172,6 +194,9 @@ def detect_trigger(
     if n < 30 or direction not in (1, -1):
         return None, None
     close_last = float(klines[-2][4])
+    # 位置统一口径：现价最近关键位角色（无位表/无有效角色回落按方向派生）
+    lv_pos = _position_by_levels(close_last, levels)
+    pos_fb = "support" if direction == 1 else "resistance"
     wanted = "bullish" if direction == 1 else "bearish"
 
     # pending 有效期判定：Stage-1 锚点必须是上一根已收盘K线（klines[-3]）
@@ -205,7 +230,8 @@ def detect_trigger(
                 and vr >= settings.BREAKOUT_VOL_RATIO and not over_max):
             if direction == 1 and close_last >= chan_high * (1 + settings.BREAKOUT_THRESHOLD):
                 return {
-                    "type": BREAKOUT, "direction": direction, "position": "resistance",
+                    "type": BREAKOUT, "direction": direction,
+                    "position": lv_pos or "resistance",
                     "pattern": None,
                     "breakout_pct": (close_last - chan_high) / chan_high * 100,
                     "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘突破{chan_n}根"
@@ -213,7 +239,8 @@ def detect_trigger(
                 }, _close_op(pending, direction, "breakout")
             if direction == -1 and close_last <= chan_low * (1 - settings.BREAKOUT_THRESHOLD):
                 return {
-                    "type": BREAKOUT, "direction": direction, "position": "support",
+                    "type": BREAKOUT, "direction": direction,
+                    "position": lv_pos or "support",
                     "pattern": None,
                     "breakout_pct": (close_last - chan_low) / chan_low * 100,
                     "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘跌破{chan_n}根"
@@ -241,7 +268,7 @@ def detect_trigger(
     if touch_price is not None and golden:
         return {
             "type": PULLBACK_CONFIRM, "direction": direction,
-            "position": "support" if direction == 1 else "resistance",
+            "position": lv_pos or pos_fb,
             "pattern": golden["pattern"], "breakout_pct": 0.0,
             "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且当根"
                       f"{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}确认",
@@ -255,7 +282,7 @@ def detect_trigger(
         if pending_valid and pending and pending.get("direction") == direction:
             return {
                 "type": PULLBACK_CONFIRM, "direction": direction,
-                "position": "support" if direction == 1 else "resistance",
+                "position": lv_pos or pos_fb,
                 "pattern": golden["pattern"], "breakout_pct": 0.0,
                 "reason": f"指标同向·上根回踩企稳·本根"
                           f"{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}确认",
@@ -276,7 +303,7 @@ def detect_trigger(
                     return None, None
         return {
             "type": CANDLESTICK, "direction": direction,
-            "position": "support" if direction == 1 else "resistance",
+            "position": lv_pos or pos_fb,
             "pattern": golden["pattern"], "breakout_pct": 0.0,
             "reason": f"指标同向·{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}",
         }, ({"op": "expire",
