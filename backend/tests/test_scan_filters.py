@@ -304,43 +304,37 @@ def _hammer_touching_level(level_price=100.0):
     return kl
 
 
-def test_key_level_only_still_confirms_on_level_touch():
-    """仅关键位模式：关键位触碰 + 金K → 当根确认照常（EMA21 仅是双锚加成）"""
-    trig, op = detect_trigger(_hammer_touching_level(), 1,
-                              levels=_LEVEL, atr=0.4,
-                              flt=_key_level_only_flt())
-    assert trig is not None and trig["type"] == PULLBACK_CONFIRM
-    assert "关键位" in trig["reason"]
-    assert op is None or op.get("op") != "upsert"
+def test_pullback_touch_pure_ema21_regardless_of_levels():
+    """2026-09-28 晚拍板：触碰恢复纯 EMA21 口径——EMA21 触碰+金K 即当根确认，
+    关键位不再参与触碰判定（levels/atr 是否传入结果一致）"""
+    kl = _hammer_touching_level()  # 锤线触碰 EMA21=100.05（low 99.9 ≤ 100.05 ≤ close 100.55）
+    with_levels, _ = detect_trigger(kl, 1, levels=_LEVEL, atr=0.4,
+                                    flt=_key_level_only_flt())
+    without_levels, _ = detect_trigger(kl, 1)
+    assert with_levels is not None and with_levels["type"] == PULLBACK_CONFIRM
+    assert without_levels is not None and without_levels["type"] == PULLBACK_CONFIRM
+    assert "EMA21" in with_levels["reason"]
 
 
-def test_key_level_only_ema21_touch_no_longer_confirms():
-    """仅关键位模式：EMA21 触碰 + 金K（不贴关键位）→ 不再当根确认，
-    降级为纯金K触发（白名单若只留回踩则由 scanner 丢弃）"""
-    far_level = [{"price": 98.0, "state": "intact", "role": "support"}]
-    kl = _hammer_touching_level()  # 锤线触碰 EMA21=100，距 98 远超 0.1 带
-    trig, _ = detect_trigger(kl, 1, levels=far_level, atr=0.4,
-                             flt=_key_level_only_flt())
-    assert trig is not None and trig["type"] == CANDLESTICK
-    # 对照：默认模式（EMA21 兜底）→ 当根确认
-    trig2, _ = detect_trigger(kl, 1, levels=far_level, atr=0.4)
-    assert trig2 is not None and trig2["type"] == PULLBACK_CONFIRM
-
-
-def test_key_level_only_ema21_touch_no_pending():
-    """仅关键位模式：EMA21 触碰无金K → 不建 pending（EMA21 退出 Stage-1）"""
-    far_level = [{"price": 98.0, "state": "intact", "role": "support"}]
-    kl = _flat_bars(50)
-    ts = 1_700_000_000_000 + 50 * 3_600_000
-    # 无形态中性K线：触碰 EMA21（low 99.95 ≤ 100 ≤ close 100.25）但不贴 98 位
-    kl.append([ts, 100.0, 100.35, 99.95, 100.25, 100.0, 100.0])
-    kl.append([ts + 3_600_000, 100.25, 100.35, 100.15, 100.25, 100.0, 100.0])
-    trig, op = detect_trigger(kl, 1, levels=far_level, atr=0.4,
-                              flt=_key_level_only_flt())
-    assert trig is None and op is None
-    # 对照：默认模式 → 转 pending 待确认
-    trig2, op2 = detect_trigger(kl, 1, levels=far_level, atr=0.4)
-    assert trig2 is None and op2 is not None and op2["op"] == "upsert"
+def test_key_level_only_flag_is_noop():
+    """pullback_key_level_only 开关已撤：置 True 不改变判定（保留字段仅为
+    DB 兼容，后续如回归再启用）"""
+    flt_off = ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=20,
+        breakout_threshold=0.002, breakout_vol_ratio=1.2,
+        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
+        ai_max_per_scan=10, pullback_key_level_only=False,
+    )
+    flt_on = ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=20,
+        breakout_threshold=0.002, breakout_vol_ratio=1.2,
+        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
+        ai_max_per_scan=10, pullback_key_level_only=True,
+    )
+    kl = _hammer_touching_level()
+    a, _ = detect_trigger(kl, 1, flt=flt_off)
+    b, _ = detect_trigger(kl, 1, flt=flt_on)
+    assert a["type"] == b["type"] == PULLBACK_CONFIRM
 
 
 def test_candidate_whitelist_drops_disallowed_triggers(monkeypatch):

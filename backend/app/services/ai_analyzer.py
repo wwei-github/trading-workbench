@@ -151,11 +151,9 @@ def render_signal_gate_block(signal_type: str) -> str:
         ]
     else:
         if signal_type in ("trigger_pullback", "trigger_pullback_confirm"):
-            touch_obj = ("仅已确认关键位（EMA21 不作为触碰对象）"
-                         if flt.pullback_key_level_only
-                         else "已确认关键位 或 EMA21（关键位优先）")
+            # 2026-09-28 晚：触碰恢复纯 EMA21 口径（关键位不再参与触碰判定）
             lines += [
-                f"- 回踩触碰对象: {touch_obj}，位带内触碰且收盘收回防守侧",
+                "- 回踩触碰对象: EMA21（下影触及且收盘收回线上；做空对称）",
                 "- 两段式确认: 触碰后当根出现同向金K，或上根触碰+本根金K（次根确认）",
             ]
         if flt.candle_max_ema21_dist_pct > 0:

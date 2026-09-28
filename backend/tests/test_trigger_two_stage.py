@@ -482,7 +482,10 @@ def test_row1_breakout_over_max_short_symmetric_rejected():
     assert t is None and op is None
 
 
-# ── T3 回踩双对象：已确认关键位（docs/21 §8，2026-09-27）──────────────────
+# ── 触碰对象口径：纯 EMA21（2026-09-28 晚拍板）───────────────────────────
+# 关键位触碰（docs/21 §8 双对象）与 pullback_key_level_only 当日撤下：
+# _detect_level_touch 不再被调用，触碰只认 EMA21；levels/atr 参数保留
+# （position 标注/突破等仍消费位表），原关键位触碰行为测试随之删除。
 
 def _level(price: float, state: str = "intact", flip: int | None = None) -> dict:
     """关键位位表条目（compute_key_levels 产出的最小字段集）"""
@@ -492,70 +495,16 @@ def _level(price: float, state: str = "intact", flip: int | None = None) -> dict
             "bars_since_event": 1, "distance_pct": 0.0}
 
 
-def test_level_touch_flipped_pullback_confirms():
-    """翻转已确认位回踩+金K → 当根确认，reason 标注「翻转位」（EMA21 未触碰，
-    证据只可能来自关键位——收盘 99.3 低于 EMA21≈100.02）"""
+def test_level_touch_ignored_touch_is_ema21_only():
+    """位表存在且信号K线贴近关键位（EMA21 未触碰）→ 不再因关键位确认，
+    金K 落回 T2 纯形态（2026-09-28 晚：触碰恢复纯 EMA21 口径）"""
     kl = _kl(*_base())
     _set_signal_candle(kl, 99.3, 99.4, 99.1)  # low 进 99.0±0.25 带内、收盘收回位上
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
-        t, op = trig.detect_trigger(kl, 1, levels=[_level(99.0, "flipped_confirmed", 1)],
-                                    atr=1.0)
-    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
-    assert "翻转位(99" in t["reason"] and "当根" in t["reason"]
-    assert op is None
-
-
-def test_level_touch_ema21_fallback_unchanged():
-    """位表存在但位未触碰（95 距现价过远）、EMA21 触碰 → 原行为兜底，
-    reason 仍是「回踩EMA21(...)」——levels/atr 传入不改变 EMA21 路径"""
-    kl = _kl(*_base())
-    _touch_long(kl)  # low == ema21 ≈ 100.02，远在 95 位带之外
-    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
-        t, op = trig.detect_trigger(kl, 1, levels=[_level(95.0)], atr=1.0)
-    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
-    assert "回踩EMA21(" in t["reason"]
-
-
-def test_level_touch_band_boundary():
-    """0.25×ATR 边界：low 恰在位+0.25×ATR（99.25）→ 触碰成立；
-    99.26（带外）→ 不触碰，金K 落回 T2 纯形态路径"""
-    kl = _kl(*_base())
-    _set_signal_candle(kl, 99.5, 99.6, 99.25)
-    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
-        t, _ = trig.detect_trigger(kl, 1, levels=[_level(99.0)], atr=1.0)
-    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
-    assert "关键位(99" in t["reason"]  # intact 位标注「关键位」
-    # 带外一根：影线差 0.01 不构成触碰
-    kl2 = _kl(*_base())
-    _set_signal_candle(kl2, 99.5, 99.6, 99.26)
-    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
-        t2, _ = trig.detect_trigger(kl2, 1, levels=[_level(99.0)], atr=1.0)
-    assert t2 is not None and t2["type"] == trig.CANDLESTICK  # 纯金K，非回踩确认
-    assert "关键位" not in t2["reason"]
-
-
-def test_level_touch_broken_and_invalid_excluded():
-    """broken（刚突破未确认）/invalid 位不参与回踩确认——假突破回踩正是
-    要避开的入场；位全被排除后金K 落回 T2 纯形态"""
-    kl = _kl(*_base())
-    _set_signal_candle(kl, 99.3, 99.4, 99.1)
-    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
-        t, _ = trig.detect_trigger(kl, 1, levels=[
-            _level(99.0, "broken", 1), _level(98.5, "invalid")], atr=1.0)
+        t, _ = trig.detect_trigger(kl, 1, levels=[_level(99.0, "flipped_confirmed", 1)],
+                                   atr=1.0)
     assert t is not None and t["type"] == trig.CANDLESTICK
     assert "关键位" not in t["reason"] and "翻转位" not in t["reason"]
-
-
-def test_level_touch_without_golden_upserts_pending():
-    """触碰关键位但无金K → 行5 转 pending，ema21 键存位价（DB 列兼容）"""
-    kl = _kl(*_base())
-    _set_signal_candle(kl, 99.3, 99.4, 99.1)
-    with patch.object(trig, "detect_all_patterns", return_value=[]):
-        t, op = trig.detect_trigger(kl, 1, levels=[_level(99.0)], atr=1.0)
-    assert t is None
-    assert op is not None and op["op"] == "upsert"
-    assert op["direction"] == 1
-    assert abs(op["ema21"] - 99.0) < 1e-9
 
 
 # ── position 统一口径：现价最近关键位角色（2026-09-27）──────────────────────
@@ -609,23 +558,10 @@ def test_position_breakout_down_nearest_resistance():
     assert t["position"] == "resistance"
 
 
-# ── 双锚共振标志（EMA21 与关键位同时命中，质量分加权用）────────────────────
-
-def test_dual_touch_both_ema_and_level():
-    """当根确认时 EMA21 与关键位同时触碰 → dual_touch=True（reason 仍标关键位）"""
-    kl = _kl(*_base())
-    _touch_long(kl)  # low == ema21、收盘收回线上
-    ema = _ema21_of(kl)
-    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
-        t, _ = trig.detect_trigger(kl, 1, levels=[_level_r(ema, "support")],
-                                   atr=1.0)
-    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
-    assert t["dual_touch"] is True
-    assert "关键位(" in t["reason"]
-
+# ── 双锚共振标志（触碰恢复纯 EMA21 后恒为 False）────────────────────────────
 
 def test_dual_touch_single_ema_only():
-    """仅 EMA21 触碰（位表存在但位太远）→ dual_touch=False"""
+    """仅 EMA21 触碰 → dual_touch=False（关键位退出触碰判定后恒 False）"""
     kl = _kl(*_base())
     _touch_long(kl)
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
