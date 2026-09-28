@@ -162,27 +162,14 @@ export interface SwingPoint {
   label: string; // HH / LH / H / HL / LL / L
 }
 
-// 关键位（docs/21）：多源融合+状态机，图表状态着色价位线
-export interface KeyLevel {
-  price: number;
-  sources: string[]; // swing_1h / swing_4h / donchian / prev_day / psych
-  touches: number;
-  rejections: number;
-  kind: string; // high / low / mixed / close
-  strength: number;
-  role: 'support' | 'resistance' | null;
-  state: 'intact' | 'broken' | 'flipped_confirmed' | 'invalid';
-  flip_direction: 1 | -1 | null;
-  bars_since_event: number;
-  distance_pct: number;
-}
+// 关键位（docs/21）已随功能整体移除（2026-09-28）：KeyLevel 接口不再定义，
+// K 线/复盘接口不再携带 key_levels；历史字段按后端惯例不 DROP、前端忽略
 
 export interface KlineData {
   symbol: string;
   interval: string;
   klines: Kline[];
   swings?: { highs: SwingPoint[]; lows: SwingPoint[] };
-  key_levels?: KeyLevel[];
 }
 
 export interface SystemConfig {
@@ -221,7 +208,7 @@ export interface SystemConfig {
   binance_key_testnet?: boolean; // 测试网 API key 已配置（未配置时回落正式网 key）
   // 筛选参数组（2026-09-28）：scan_filters=库内定制值（null=回落 env/代码默认）；
   // scan_filters_effective=实际生效值（后端解析结果），表单初值用它。
-  // 2026-09-28 增量：allowed_triggers（数组）与 pullback_key_level_only（布尔）
+  // 2026-09-28 增量：allowed_triggers（数组）
   scan_filters?: Record<string, number | string[] | boolean> | null;
   scan_filters_effective?: Record<string, number | string[] | boolean>;
 }
@@ -439,7 +426,6 @@ export interface TradeKlineData {
   closed_at: string | null
   klines: Kline[]
   events: TradeKlineEvent[]
-  key_levels?: KeyLevel[] // 开单时刻关键位（状态机重放截至开仓K线），可缺省（老后端）
 }
 
 // ===== AI 建议复盘系统（P2）=====

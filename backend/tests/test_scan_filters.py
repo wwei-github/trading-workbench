@@ -196,7 +196,7 @@ def _hanging_hammer_klines():
 
 
 def test_trigger_hanging_golden_blocked_by_default():
-    """悬空金K默认 1.5% 拦截：距 EMA21 ≈5% 且不贴关键位 → 不触发"""
+    """悬空金K默认 1.5% 拦截：距 EMA21 ≈5% → 不触发"""
     trig, _ = detect_trigger(_hanging_hammer_klines(), 1)
     assert trig is None
 
@@ -231,17 +231,13 @@ def test_validate_scan_filters_clean_and_reject():
         _validate_scan_filters({"breakout_vol_ratio": "x"})
 
 
-# ── 触发类型白名单 + 回踩仅限关键位（2026-09-28 只留回踩金K） ──────────
+# ── 触发类型白名单（2026-09-28 只留回踩金K） ────────────────────────────
 
 
-def test_resolve_trigger_whitelist_and_bool():
-    cfg = SimpleNamespace(scan_filters={
-        "allowed_triggers": ["trigger_pullback_confirm"],
-        "pullback_key_level_only": True,
-    })
+def test_resolve_trigger_whitelist():
+    cfg = SimpleNamespace(scan_filters={"allowed_triggers": ["trigger_pullback_confirm"]})
     flt = resolve_scan_filters(cfg)
     assert flt.allowed_triggers == ("trigger_pullback_confirm",)
-    assert flt.pullback_key_level_only is True
 
 
 def test_resolve_trigger_whitelist_invalid_falls_back():
@@ -254,22 +250,12 @@ def test_resolve_trigger_whitelist_invalid_falls_back():
     assert resolve_scan_filters(cfg).allowed_triggers == ("trigger_breakout",)
 
 
-def test_resolve_bool_non_bool_falls_back():
-    for bad in ("true", 1, None, "yes"):
-        cfg = SimpleNamespace(scan_filters={"pullback_key_level_only": bad})
-        assert resolve_scan_filters(cfg).pullback_key_level_only is False, bad
-
-
-def test_validate_scan_filters_trigger_and_bool():
+def test_validate_scan_filters_trigger_whitelist():
     from fastapi import HTTPException
 
     from app.api.scan import _validate_scan_filters
-    out = _validate_scan_filters({
-        "allowed_triggers": ["trigger_pullback_confirm"],
-        "pullback_key_level_only": True,
-    })
-    assert out == {"allowed_triggers": ["trigger_pullback_confirm"],
-                   "pullback_key_level_only": True}
+    out = _validate_scan_filters({"allowed_triggers": ["trigger_pullback_confirm"]})
+    assert out == {"allowed_triggers": ["trigger_pullback_confirm"]}
     with pytest.raises(HTTPException):
         _validate_scan_filters({"allowed_triggers": []})
     with pytest.raises(HTTPException):
@@ -277,64 +263,7 @@ def test_validate_scan_filters_trigger_and_bool():
     with pytest.raises(HTTPException):
         _validate_scan_filters({"allowed_triggers": "trigger_breakout"})
     with pytest.raises(HTTPException):
-        _validate_scan_filters({"pullback_key_level_only": "yes"})
-
-
-def _key_level_only_flt(**kw):
-    return ScanFilters(
-        min_volume_24h=3_000_000, breakout_channel_bars=20,
-        breakout_threshold=0.002, breakout_vol_ratio=1.2,
-        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
-        ai_max_per_scan=10,
-        allowed_triggers=ALL_TRIGGERS, pullback_key_level_only=True, **kw,
-    )
-
-
-_LEVEL = [{"price": 100.0, "state": "intact", "role": "support"}]
-
-
-def _hammer_touching_level(level_price=100.0):
-    """平盘 + 触碰 level_price 的锤形金K信号K（klines[-2]）+ 未收盘根"""
-    kl = _flat_bars(50)
-    ts = 1_700_000_000_000 + 50 * 3_600_000
-    # o=100.45 c=100.55（body 0.1）h=100.6（上影 0.05）l=99.9（下影 0.55≥2×body）
-    kl.append([ts, 100.45, 100.6, 99.9, 100.55, 150.0, 150.0])
-    kl.append([ts + 3_600_000, 100.55, 100.65, 100.45, 100.55, 150.0, 150.0])
-    assert level_price == 100.0  # 锤线 low=99.9 落在 100±0.1 带内
-    return kl
-
-
-def test_pullback_touch_pure_ema21_regardless_of_levels():
-    """2026-09-28 晚拍板：触碰恢复纯 EMA21 口径——EMA21 触碰+金K 即当根确认，
-    关键位不再参与触碰判定（levels/atr 是否传入结果一致）"""
-    kl = _hammer_touching_level()  # 锤线触碰 EMA21=100.05（low 99.9 ≤ 100.05 ≤ close 100.55）
-    with_levels, _ = detect_trigger(kl, 1, levels=_LEVEL, atr=0.4,
-                                    flt=_key_level_only_flt())
-    without_levels, _ = detect_trigger(kl, 1)
-    assert with_levels is not None and with_levels["type"] == PULLBACK_CONFIRM
-    assert without_levels is not None and without_levels["type"] == PULLBACK_CONFIRM
-    assert "EMA21" in with_levels["reason"]
-
-
-def test_key_level_only_flag_is_noop():
-    """pullback_key_level_only 开关已撤：置 True 不改变判定（保留字段仅为
-    DB 兼容，后续如回归再启用）"""
-    flt_off = ScanFilters(
-        min_volume_24h=3_000_000, breakout_channel_bars=20,
-        breakout_threshold=0.002, breakout_vol_ratio=1.2,
-        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
-        ai_max_per_scan=10, pullback_key_level_only=False,
-    )
-    flt_on = ScanFilters(
-        min_volume_24h=3_000_000, breakout_channel_bars=20,
-        breakout_threshold=0.002, breakout_vol_ratio=1.2,
-        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
-        ai_max_per_scan=10, pullback_key_level_only=True,
-    )
-    kl = _hammer_touching_level()
-    a, _ = detect_trigger(kl, 1, flt=flt_off)
-    b, _ = detect_trigger(kl, 1, flt=flt_on)
-    assert a["type"] == b["type"] == PULLBACK_CONFIRM
+        _validate_scan_filters({"unknown_key": 1})
 
 
 def test_candidate_whitelist_drops_disallowed_triggers(monkeypatch):

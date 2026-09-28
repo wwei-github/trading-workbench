@@ -1,6 +1,6 @@
 /**
  * 扫描结果 K 线图（扫描表/搜索/关注列表共用）
- * 图表能力（指标/图例/工具栏/关键位/AI 仓位标注）全部在 ChartCore，
+ * 图表能力（指标/图例/工具栏/AI 仓位标注）全部在 ChartCore，
  * 本组件只负责按 symbol 拉取 K 线数据与「更新」按钮的强制刷新。
  */
 import { useCallback, useEffect, useState } from 'react'

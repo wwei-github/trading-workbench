@@ -1,7 +1,7 @@
 /**
  * K 线图表共享内核（2026-09-27 统一组件）
  * - 扫描结果图（KlineChart）与交易复盘图（TradeReplayChart）共用：
- *   图表创建配置 / 涨跌配色 / 关键位状态样式 / 数值格式化 / 价签走廊
+ *   图表创建配置 / 涨跌配色 / 数值格式化 / 价签走廊
  * - 新增 K 线图一律走 createTradeChart，禁止再各自 createChart 复制配置
  */
 import type { CSSProperties } from 'react'
@@ -17,19 +17,6 @@ import {
 } from 'lightweight-charts'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { dayjs, BJ } from '../utils/dayjs'
-import type { KeyLevel } from '../types'
-
-// 关键位价位线样式（docs/21）：状态着色——有效蓝实线 / 翻转确认绿加粗 /
-// 刚突破橙虚线；invalid 不画。独立于涨跌配色方案（结构语义固定色）。
-export const KEY_LEVEL_STYLES: Record<
-  KeyLevel['state'],
-  { color: string; width: 1 | 2; style: LineStyle } | null
-> = {
-  intact: { color: '#4a90e2', width: 1, style: LineStyle.Solid },
-  flipped_confirmed: { color: '#22ab94', width: 2, style: LineStyle.Solid },
-  broken: { color: '#ff9800', width: 1, style: LineStyle.Dashed },
-  invalid: null,
-}
 
 // 涨跌配色方案：红涨绿跌（国内习惯，默认）/ 绿涨红跌（国际习惯）
 // 全局生效（切换入口在页面顶部 ColorSchemeToggle）：K线实体与 AI 仓位线、

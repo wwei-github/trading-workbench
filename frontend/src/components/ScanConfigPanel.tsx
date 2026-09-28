@@ -23,7 +23,7 @@ const FILTER_FIELDS: { name: string; label: string; min: number; max: number; st
   { name: 'breakout_max_pct', label: '突破幅度上限（%）', min: 0, max: 20, step: 0.5,
     tooltip: '越过轨超过此幅度视为追高，不产生突破触发（正式网复盘：大幅突破追入负期望）；0=关闭' },
   { name: 'candle_max_ema21_dist_pct', label: '悬空金K距离上限（%）', min: 0, max: 20, step: 0.5,
-    tooltip: '信号K线收盘距 EMA21 超过此幅度的纯金K不触发（触及关键位仍放行）；0=关闭' },
+    tooltip: '信号K线收盘距 EMA21 超过此幅度的纯金K不触发；0=关闭' },
   { name: 'breakout_channel_bars', label: 'Donchian通道根数', min: 5, max: 200,
     tooltip: '突破判定的回看窗口根数（收盘破 N 根高低轨）' },
   { name: 'ai_max_per_scan', label: 'AI单轮分析上限（个）', min: 1, max: 50,
@@ -64,7 +64,6 @@ export default function ScanConfigPanel() {
         swing_order: aiConfig.swing_order,
         ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
         allowed_triggers: eff.allowed_triggers ?? ALL_TRIGGER_VALUES,
-        pullback_key_level_only: eff.pullback_key_level_only ?? false,
         ai_analysis_enabled: aiConfig.ai_analysis_enabled ?? false,
         strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
         ai_pipeline_enabled: aiConfig.ai_pipeline_enabled ?? true,
@@ -105,10 +104,6 @@ export default function ScanConfigPanel() {
         || curTriggers.some((t) => !snapTriggers.includes(t))) {
         scanFilters.allowed_triggers = curTriggers
       }
-      if (Boolean(values.pullback_key_level_only)
-        !== Boolean(filtersSnapshot.pullback_key_level_only)) {
-        scanFilters.pullback_key_level_only = values.pullback_key_level_only
-      }
       if (Object.keys(scanFilters).length > 0) data.scan_filters = scanFilters
       await updateConfig(data)
       message.success('配置已保存')
@@ -130,7 +125,6 @@ export default function ScanConfigPanel() {
       form.setFieldsValue({
         ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
         allowed_triggers: eff.allowed_triggers ?? ALL_TRIGGER_VALUES,
-        pullback_key_level_only: eff.pullback_key_level_only ?? false,
       })
       message.success('筛选参数已恢复默认')
     } catch (e: any) {
@@ -223,14 +217,6 @@ export default function ScanConfigPanel() {
             tooltip="只产生勾选类型的信号（其余类型直接不进候选/AI 分析）；全部不勾视为配置错误，后端按全选处理"
           >
             <Checkbox.Group options={TRIGGER_OPTIONS} />
-          </Form.Item>
-          <Form.Item
-            label="回踩金K仅限关键位"
-            name="pullback_key_level_only"
-            valuePropName="checked"
-            tooltip="开启：回踩确认的触碰对象仅认已确认关键位，EMA21 完全退出判定（关键位计算失败时不产生回踩信号）；关闭：关键位优先、EMA21 兜底"
-          >
-            <Switch />
           </Form.Item>
           <Button size="small" icon={<UndoOutlined />} onClick={handleResetFilters} loading={saving}>
             恢复默认

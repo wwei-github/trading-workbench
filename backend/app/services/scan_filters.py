@@ -30,7 +30,6 @@ SCAN_FILTER_KEYS = (
     "candle_max_ema21_dist_pct",  # ③ 触发层：悬空金K距 EMA21 上限（0=关闭）
     "ai_max_per_scan",            # ④ 配额层：单轮扫描 AI 分析上限
     "allowed_triggers",           # ③ 触发层：触发类型白名单（2026-09-28）
-    "pullback_key_level_only",    # ③ 触发层：回踩金K仅限关键位触碰（2026-09-28）
 )
 
 
@@ -44,14 +43,13 @@ class ScanFilters:
     candle_max_ema21_dist_pct: float
     ai_max_per_scan: int
     allowed_triggers: tuple = ALL_TRIGGERS
-    pullback_key_level_only: bool = False
 
 
 def resolve_scan_filters(cfg=None) -> ScanFilters:
     """从 SystemConfig 行解析筛选参数（cfg 可 None；JSONB 缺键/非法值逐键回落）。
 
     逐键容错：类型错误/负数等非法值按缺失处理回落 env，不让一条坏配置
-    烧掉整轮扫描（与关键位/量能降级口径一致）。
+    烧掉整轮扫描（与量能降级口径一致）。
     """
     raw = (getattr(cfg, "scan_filters", None) or {}) if cfg is not None else {}
 
@@ -79,9 +77,6 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
         allowed = tuple(t for t in v if t in ALL_TRIGGERS)
         return allowed or ALL_TRIGGERS
 
-    def _bool(key: str) -> bool:
-        return raw.get(key) if isinstance(raw.get(key), bool) else False
-
     return ScanFilters(
         min_volume_24h=_num("min_volume_24h", float(settings.MIN_VOLUME_24H)),
         breakout_channel_bars=_int("breakout_channel_bars", settings.BREAKOUT_CHANNEL_BARS, minimum=5),
@@ -91,5 +86,4 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
         candle_max_ema21_dist_pct=_num("candle_max_ema21_dist_pct", settings.CANDLE_MAX_EMA21_DIST_PCT),
         ai_max_per_scan=_int("ai_max_per_scan", settings.AI_MAX_PER_SCAN, minimum=1),
         allowed_triggers=_triggers("allowed_triggers"),
-        pullback_key_level_only=_bool("pullback_key_level_only"),
     )

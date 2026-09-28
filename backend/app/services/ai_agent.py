@@ -32,7 +32,6 @@ from app.services.ai_analyzer import (
     _RULE_STRUCT,
     _RULE_VOTE,
     SIGNAL_TYPE_LABELS,
-    render_key_levels_block,
     render_signal_gate_block,
 )
 
@@ -63,14 +62,12 @@ def render_system_prompt(risk_label: str = "") -> str:
     )
 
 # 锚点枚举：结构位两类（support/resistance，解析到现价下/上方最近的摆动点）
-# + 线外锚点（做多止盈锚摆动高点下方、做空锚摆动低点上方，枚举名沿用 zone/关键位
+# + 线外锚点（做多止盈锚摆动高点下方、做空锚摆动低点上方，枚举名沿用 zone
 # 时期历史命名）+ market（市价锚）。next_ 前缀取更前一档（止盈二用）。
-# key_ 前缀三类（docs/21）：关键位位表锚——位表非空时优先解析到位表
 LEVEL_REFS = (
     "support", "resistance", "market",
     "resistance_zone_low", "support_zone_high",
     "next_resistance_zone_low", "next_support_zone_high",
-    "key_support_confirmed", "key_resistance_confirmed", "key_nearest_strong",
 )
 
 _REF_DESC = "、".join(LEVEL_REFS)
@@ -84,10 +81,6 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    止盈二 tp2_ref=next_resistance_zone_low（更远一档的摆动高点）；做空用 support_zone_high /
    next_support_zone_high（现价下方的摆动低点及其更远一档）。止盈 offset 留余地：
    做多 -0.2~-0.5（位下方），做空 0.2~0.5（位上方）。
-   事实包含「关键位」块时结构锚点从该位表解析（失效位已过滤，共振位价更准）：
-   key_support_confirmed / key_resistance_confirmed=现价下/上方最近的已确认位
-   （入场/止损首选——翻转已确认位的回踩是高质量入场）；key_nearest_strong=
-   距现价最近的强度≥2 位（止盈锚备选）。关键位块缺失时这些锚按普通摆动位解析。
 3. 决策必须通过 submit_decision 工具提交，提交后程序会做风控校验：
    校验不通过时工具会返回违规明细，请按明细修正后重新提交。
 4. **入场价纪律**：当前价格是分析时刻的最新价。顺势追势时 entry 用 market 锚（offset 0 附近）；
@@ -119,9 +112,8 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     做空取摆动高点与 5 根最高点中更高者外 0.3%
     （止损在近期波动区间内部必被扫损）；入场价与极值间无摆动结构时用极值锚——
     做多严格低于最近 5 根K线最低点（影线极值非收盘价）至少 0.3%，做空相反。
-12. 止盈锚定（提示词纪律，程序不再改挂）：结构位=摆动高低点（事实包"近期摆动结构"）
-    与关键位块中的位（权重=S+t 综合越高越可靠；刚突破待确认位不作止盈目标、
-    可作突破回测目标，已失效位禁用）。距现价特别近（≤1×ATR）的位是价格正在
+12. 止盈锚定（提示词纪律，程序不再改挂）：结构位=摆动高低点（事实包"近期摆动结构"）。
+    距现价特别近（≤1×ATR）的位是价格正在
     测试/突破的"争夺位"，只回答"是否得到支撑/压力/突破"，
     不算止盈目标；做多止盈一必须挂在更远的第一档结构位（摆动高点）下方 0.2%~0.5%，
     做空挂在下方第一档结构位（摆动低点）上方 0.2%~0.5%
@@ -238,49 +230,24 @@ def _nth_swing(signal: dict, side: str, nth: int) -> Optional[float]:
     return prices[nth]
 
 
-def _key_level_eligible(lv: dict, purpose: str) -> bool:
-    """关键位锚定资格（docs/21 §7）：invalid 一律不可锚；broken（刚突破未
-    回踩确认）不可作入场/止损锚——假突破接飞刀正是本系统要消灭的亏损源，
-    但可作止盈锚（破位后回测原位是常见目标）。"""
-    state = lv.get("state") or "intact"
-    if state == "invalid":
-        return False
-    if state == "broken" and purpose in ("entry", "stop"):
-        return False
-    return True
-
-
-def _nearest(levels: list[dict], cur: float, above: bool) -> Optional[float]:
-    """合格位中现价上/下方最近者（above=True 取上方最小价、False 取下方最大价）。"""
-    prices = [float(lv["price"]) for lv in levels
-              if (float(lv["price"]) > cur) == above and float(lv["price"]) > 0]
-    if not prices:
-        return None
-    return min(prices) if above else max(prices)
-
-
 def _resolve_price(ref: Optional[str], offset_pct, signal: dict,
                    purpose: str = "entry") -> Optional[float]:
-    """锚点 + 偏移 → 绝对价格；非法锚点返回 None。
+    """锚点 + 偏移 → 绝对价格；非法/未知锚点返回 None。
 
-    事实包关键位表（signal["key_levels"]，docs/21）非空时所有结构锚点优先
-    从位表解析（自动获得状态过滤与多源共振位价）；位表空/None（开关关闭/
-    数据不足）回落原摆动点路径，key_ 前缀锚点按最近同义结构位兜底。
-
-    purpose：entry/stop 排除 broken 位，tp 保留（见 _key_level_eligible）。
-    """
+    结构锚点一律解析到摆动结构位（docs/09 口径）。ref 必须在 LEVEL_REFS
+    枚举内——关键位时代的 key_ 前缀锚点已移除，模型沿旧习惯报出时按非法
+    锚点打回（走 _handle_submit 的 errs 重试路径），而非静默落到错误侧。
+    purpose 保留参数以维持调用方签名稳定。"""
     if not ref:
         return None
     if ref == "market":
         base = float(signal.get("current_price") or 0)
         return base * (1 + _safe_off(offset_pct) / 100.0)
+    if ref not in LEVEL_REFS:
+        return None
 
-    levels = signal.get("key_levels") or []
     cur = float(signal.get("current_price") or 0)
-    if levels and cur > 0:
-        base = _resolve_from_levels(ref, levels, cur, purpose)
-    else:
-        base = _resolve_from_swings(ref, signal, cur)
+    base = _resolve_from_swings(ref, signal, cur)
     if base is None:
         return None
     return base * (1 + _safe_off(offset_pct) / 100.0)
@@ -293,62 +260,13 @@ def _safe_off(offset_pct) -> float:
         return 0.0
 
 
-def _resolve_from_levels(ref: str, levels: list[dict], cur: float,
-                         purpose: str) -> Optional[float]:
-    """从关键位表解析锚点基准价（docs/21 §7）。无合格位返回 None。"""
-    elig = [lv for lv in levels if _key_level_eligible(lv, purpose)]
-    if ref == "support":
-        return _nearest(elig, cur, above=False)
-    if ref == "resistance":
-        return _nearest(elig, cur, above=True)
-    if ref in _ZONE_REF_MAP:
-        # zone 系历史命名：highs 侧=现价上方第 nth 近（做多止盈锚）、
-        # lows 侧=现价下方第 nth 近（做空止盈锚）
-        side, nth = _ZONE_REF_MAP[ref]
-        prices = sorted(
-            (float(lv["price"]) for lv in elig
-             if ((float(lv["price"]) > cur) == (side == "highs"))
-             and float(lv["price"]) > 0),
-            reverse=(side == "lows"),
-        )
-        return prices[nth] if len(prices) > nth else None
-    if ref == "key_support_confirmed":
-        # 现价下方最近：intact（支撑侧）或向上翻转已确认（docs/21 §7）
-        cands = [lv for lv in elig if float(lv["price"]) < cur and (
-            (lv.get("state") or "intact") == "intact"
-            or (lv.get("state") == "flipped_confirmed"
-                and lv.get("flip_direction") == 1))]
-        return max((float(lv["price"]) for lv in cands), default=None)
-    if ref == "key_resistance_confirmed":
-        cands = [lv for lv in elig if float(lv["price"]) > cur and (
-            (lv.get("state") or "intact") == "intact"
-            or (lv.get("state") == "flipped_confirmed"
-                and lv.get("flip_direction") == -1))]
-        return min((float(lv["price"]) for lv in cands), default=None)
-    if ref == "key_nearest_strong":
-        # 距现价最近的强度≥2 位（不分角色，止盈锚备用）
-        strong = [lv for lv in elig if (lv.get("strength") or 0) >= 2]
-        return min((float(lv["price"]) for lv in strong),
-                   key=lambda p: abs(p - cur), default=None)
-    return None
-
-
 def _resolve_from_swings(ref: str, signal: dict, cur: float) -> Optional[float]:
-    """原摆动点路径（位表空时兜底）。key_ 前缀按最近同义结构位回落。"""
+    """摆动点路径：结构锚点解析到现价同侧最近的摆动点。"""
     if ref in _ZONE_REF_MAP:
         side, nth = _ZONE_REF_MAP[ref]
         return _nth_swing(signal, side, nth)
-    if ref == "key_nearest_strong":
-        # 距现价最近的摆动点（不分侧）
-        best = None
-        for side in ("highs", "lows"):
-            p = _nth_swing(signal, side, 0)
-            if p is not None and (best is None or abs(p - cur) < abs(best - cur)):
-                best = p
-        return best
-    # support/resistance 与 key_support/resistance_confirmed 兜底同义
     sw = signal.get("recent_swings") or {}
-    side = "lows" if ref in ("support", "key_support_confirmed") else "highs"
+    side = "lows" if ref == "support" else "highs"
     prices = [
         float(s.get("price", 0))
         for s in (sw.get(side) or [])
@@ -389,7 +307,7 @@ def _handle_submit(
         }
         return True, "决策已提交：skip", fixed
 
-    # suggest：锚点换算（purpose 决定位表过滤：入场/止损禁锚 broken 未确认位）
+    # suggest：锚点换算（结构锚点一律解析到摆动结构位，docs/09 口径）
     entry = _resolve_price(args.get("entry_ref"), args.get("entry_offset_pct"),
                            signal, purpose="entry")
     stop = _resolve_price(args.get("stop_ref"), args.get("stop_offset_pct"),
@@ -658,8 +576,6 @@ def _build_user_msg(
         + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
         + render_indicator_block(klines, htf_klines)
         + swings_section
-        # 关键位块（docs/21）：与 P0 管线共用同源渲染（ai_analyzer 单一实现）
-        + render_key_levels_block(signal.get("key_levels"))
         + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
     )
     if user_input:

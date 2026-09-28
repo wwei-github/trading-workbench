@@ -86,7 +86,7 @@ def test_ranging_4h_expires_pending():
 
 
 def test_trending_4h_not_filtered():
-    """对照组：4h 趋势背景不被 ranging 过滤误杀（能走到触发/关键位环节）"""
+    """对照组：4h 趋势背景不被 ranging 过滤误杀（能走到触发环节）"""
     cand, op = detect_indicator_candidate(
         _FakePool(_trend_1h(), _trending_4h_up()), "TEST/USDT", _trend_1h()
     )

@@ -1,7 +1,7 @@
 /**
  * K 线图核心组件（2026-09-27 统一组件）
  * - 扫描结果图（KlineChart）与交易复盘图（TradeReplayChart）共用：
- *   图表生命周期 / 摆动标注 / 关键位价位线 / 技术指标（目录驱动）/
+ *   图表生命周期 / 摆动标注 / 技术指标（目录驱动）/
  *   工具栏（指标下拉 + 更新按钮）/ OHLC 图例 / AI 仓位标注 / SVG 覆盖层
  * - 差异通过 props 注入：复盘图传 drawOverlay（区域色块）+ extraMarkers
  *   （事件箭头）+ headerExtra（复盘信息面板）；数据拉取由父组件负责
@@ -34,7 +34,6 @@ import {
   fmtTime,
   fmtVol,
   GLASS,
-  KEY_LEVEL_STYLES,
 } from './klineShared'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { SCHEME_UP_DOWN } from '../utils/scheme'
@@ -43,7 +42,7 @@ import {
   type IndicatorContext,
   type IndicatorResult,
 } from '../constants/indicators'
-import type { AIAnalysis, Kline, KlineData, KeyLevel } from '../types'
+import type { AIAnalysis, Kline, KlineData } from '../types'
 
 const { Text } = Typography
 
@@ -51,7 +50,6 @@ const { Text } = Typography
 export interface ChartCoreData {
   klines: Kline[]
   swings?: KlineData['swings']
-  key_levels?: KeyLevel[]
 }
 
 // SVG 覆盖层绘制上下文（AI 仓位标注与自定义覆盖层共用）
@@ -251,8 +249,6 @@ export default function ChartCore({
   const svgRef = useRef<SVGSVGElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
-  // AI 仓位价位线（独立 ref，不复用 keyLevelLinesRef：每次绘制前清空）
-  const keyLevelLinesRef = useRef<IPriceLine[]>([])
   // 技术指标 series + 图例元信息（目录驱动），effect 重建时统一清理
   const indicatorSeriesRef = useRef<ISeriesApi<SeriesType>[]>([])
   const indicatorMetaRef = useRef<
@@ -330,7 +326,6 @@ export default function ChartCore({
     return () => {
       ro.disconnect()
       chart.unsubscribeCrosshairMove(handleCrosshair)
-      keyLevelLinesRef.current = []
       chart.remove()
       chartRef.current = null
       seriesRef.current = null
@@ -345,7 +340,7 @@ export default function ChartCore({
     if (seriesRef.current) applyCandleScheme(seriesRef.current, colorScheme)
   }, [colorScheme])
 
-  // 应用 K 线数据：主图 series + 可视范围 + 摆动/事件标记 + 关键位价位线
+  // 应用 K 线数据：主图 series + 可视范围 + 摆动/事件标记
   useEffect(() => {
     const series = seriesRef.current
     const chart = chartRef.current
@@ -405,32 +400,6 @@ export default function ChartCore({
       markersApiRef.current = createSeriesMarkers(series, markers)
     }
 
-    // 关键位价位线（docs/21）：状态着色水平线。后端已按统一口径合并
-    // （invalid 剔除+权重贪心合并，与 AI 事实包同一张表），前端只跳过无样式状态。
-    // 先移除上一轮价位线再重建——createPriceLine 只增不减，不移除的话
-    // 「更新」按钮/数据重拉后同价位会叠加多个线与轴标签
-    keyLevelLinesRef.current.forEach((pl) => {
-      try {
-        series.removePriceLine(pl)
-      } catch {
-        /* 旧图表已销毁 */
-      }
-    })
-    keyLevelLinesRef.current = (data.key_levels ?? [])
-      .filter((lv) => KEY_LEVEL_STYLES[lv.state] != null)
-      .map((lv) => {
-        const conf = KEY_LEVEL_STYLES[lv.state]!
-        const roleCn =
-          lv.role === 'support' ? '支撑' : lv.role === 'resistance' ? '压力' : '位'
-        return series.createPriceLine({
-          price: lv.price,
-          color: conf.color,
-          lineWidth: conf.width,
-          lineStyle: conf.style,
-          axisLabelVisible: true,
-          title: `${roleCn} S${lv.strength}×${lv.touches}t`,
-        })
-      })
     // extraMarkers 由父组件 useMemo 保证引用稳定
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, chartKey, from, extraMarkers])

@@ -233,18 +233,6 @@ def run_ai_analysis_single(
         except Exception as e:
             htf_klines = None
             logger.warning("AI 分析 %s 获取4h K线失败，跳过4h背景: %s", r.symbol, e)
-        # 关键位位表（docs/21，2026-09-27）：多源采集→聚类→状态机→AI瘦身，
-        # 随 signal 透传给 P0/P1 两管线（事实包块 + P1 锚点解析共用同一张表）；
-        # 开关关/数据不足→[]
-        try:
-            from app.services.strategy.key_levels import (
-                compute_key_levels, select_display_levels,
-            )
-            signal["key_levels"] = select_display_levels(
-                compute_key_levels(klines, htf_klines))
-        except Exception as e:
-            signal["key_levels"] = []
-            logger.warning("AI 分析 %s 关键位计算失败，按空位表继续: %s", r.symbol, e)
         # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
         # Agent 管线由模型按需调用工具自行获取
         # 止损金额口径（2026-09-27）：与开仓引擎同源的预算模式/金额/文案，
@@ -296,9 +284,6 @@ def run_ai_analysis_single(
         # （工具 schema 强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返
         # 待回踩判定（2026-09-15）：入场在现价回踩侧的建议仅展示标识、不下单
         ai_result["pullback_wait"] = is_pullback_wait(ai_result, signal.get("current_price"))
-        # 关键位快照（docs/21）：AI 分析时刻的瘦身位表随结论落库，
-        # 交易复盘严格还原「AI 看到的位」（重放重算会因分析/开单时刻不同而漂移）
-        ai_result["key_levels"] = signal.get("key_levels")
         _finish(db, r, r.symbol, ai_result, fp)
         ai_progress.push_done(
             r.id, ai_result.get("trade_decision"),
@@ -386,8 +371,6 @@ def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str) -
         "position_pct": float(src.position_pct or 0),
         "recommendation": float(src.recommendation or 0),
         "pullback_wait": bool(src.pullback_wait),
-        # 快照随结论沿用链复制：沿用结论看到的就是源分析时刻的位
-        "key_levels": src.key_levels_json,
     }
     _finish(db, r, symbol, result, fp)
     logger.info("AI 结论沿用: %s ← %s", symbol, src.id)
@@ -455,7 +438,6 @@ def _upsert_ai_analysis(
         ),
         "fingerprint": fingerprint,
         "stage_trace": ai_result.get("stage_trace"),
-        "key_levels_json": ai_result.get("key_levels"),
     }
     existing = db.execute(
         select(AIAnalysis).where(AIAnalysis.scan_result_id == scan_result_id)

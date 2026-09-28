@@ -159,7 +159,7 @@ def test_gate_block_pullback_touch_object():
     assert "EMA21" in block
     assert "两段式确认" in block
     assert "Donchian" not in block  # 突破专属行不进回踩块
-    assert "触碰对象: EMA21" in block  # 触碰对象不再提关键位
+    assert "触碰对象: EMA21" in block
 
 
 # ── _build_messages 接线 ──────────────────────────────────────────────
@@ -170,7 +170,7 @@ def _minimal_signal(signal_type):
         "symbol": "TESTUSDT", "signal_type": signal_type,
         "current_price": 100.0, "breakout_pct": 0.5, "pattern": None,
         "signal_reason": "r", "position": "support", "volume_type": "正常",
-        "volume": 1.0, "recent_swings": {}, "key_levels": None,
+        "volume": 1.0, "recent_swings": {},
     }
 
 

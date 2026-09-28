@@ -7,16 +7,13 @@
 - T2 trigger_candlestick：信号K线（klines[-2]）出现 GOLDEN_12 形态且方向一致
 - T3 trigger_pullback_confirm：回踩 EMA21 企稳 + 同向金K 两段式确认——
   当根同时触碰+金K（当根确认），或上根触碰（pending）+ 本根金K（次根确认）；
-  仅触碰无金K 不再当根触发，转入 pending 待确认池（scanner 持久化）。
-  2026-09-28 晚：关键位触碰（双对象）与 pullback_key_level_only 撤下，
-  触碰恢复纯 EMA21 单对象口径（关键位不再参与触碰判定）
+  仅触碰无金K 不再当根触发，转入 pending 待确认池（scanner 持久化）
 
 优先级（决策矩阵，docs/19 §4.1）：T1 > 当根确认 > 次根确认 > 纯金K(T2) >
 触碰转 pending；pending 仅在"恰好下一根K线"有效（开盘时间精确比对）。
 
-position 语义（2026-09-27 统一）：按当前关键位口径——信号K线收盘价最近的
-（非失效）关键位角色即位置，与关键位块展示同源（位在现价上方=压力、下方=支撑）；
-无位表/无有效角色时回落旧约定（向上突破/反抽受阻=resistance、看涨形态/回踩企稳=support）。
+position 语义（docs/09 方向派生口径，2026-09-28 关键位移除后回归）：
+看涨形态/回踩企稳=support、向上突破/反抽受阻=resistance。
 """
 from datetime import datetime
 from typing import Optional, Tuple
@@ -92,49 +89,6 @@ def _detect_touch(klines: list[list], direction: int) -> Optional[float]:
     return None
 
 
-def _detect_level_touch(
-    klines: list[list], direction: int, levels: list, atr: float,
-) -> Optional[tuple[float, dict]]:
-    """已确认关键位触碰检测（docs/21 §8）：T3 回踩确认双对象之二。
-
-    候选 = state∈{intact, flipped_confirmed} 且与候选方向同侧（做多回踩现价
-    下方支撑位、做空反抽现价上方压力位），按距现价最近排序；信号K线（klines[-2]）
-    low/high 进位带（price ± 0.25×ATR）且收盘收回防守侧（做多收盘≥位价、
-    做空≤位价）。命中返回 (位价, 位dict)，未命中 None。
-
-    broken（刚突破未确认）与 invalid 一律不参触——假突破回踩正是要避开的入场。
-    """
-    if not levels or not atr or atr <= 0:
-        return None
-    close_last = float(klines[-2][4])
-    high_last = float(klines[-2][2])
-    low_last = float(klines[-2][3])
-    band = 0.25 * atr
-    cands = []
-    for lv in levels:
-        if (lv.get("state") or "intact") not in ("intact", "flipped_confirmed"):
-            continue
-        p = float(lv.get("price") or 0)
-        if p <= 0:
-            continue
-        if direction == 1 and p >= close_last:
-            continue
-        if direction == -1 and p <= close_last:
-            continue
-        cands.append((abs(close_last - p), p, lv))
-    if not cands:
-        return None
-    cands.sort(key=lambda t: t[0])
-    for _, p, lv in cands:
-        if direction == 1:
-            if low_last <= p + band and close_last >= p:
-                return p, lv
-        else:
-            if high_last >= p - band and close_last <= p:
-                return p, lv
-    return None
-
-
 def _close_op(pending: Optional[dict], direction: int, supersede_reason: str) -> Optional[dict]:
     """pending 终态处置（行1/行2 路径）：方向反转一律 expire(direction_flip)——
     死因是票崩而非被抢先，审计语义优先；同方向被更强触发（T1 突破/当根确认）
@@ -146,47 +100,20 @@ def _close_op(pending: Optional[dict], direction: int, supersede_reason: str) ->
     return {"op": "supersede", "reason": supersede_reason}
 
 
-def _position_by_levels(close: float, levels: Optional[list]) -> Optional[str]:
-    """信号位置统一按关键位口径（2026-09-27）：距信号K线收盘价最近的
-    非失效关键位角色即位置——与关键位块展示同源（intact 位在现价上方=压力、
-    下方=支撑；broken 保留原角色；invalid 无角色不参选）。
-    无位表/无有效角色时返回 None，调用方回落旧的按方向派生口径。"""
-    if not levels:
-        return None
-    cands = []
-    for lv in levels:
-        role = lv.get("role")
-        if role not in ("support", "resistance"):
-            continue
-        p = float(lv.get("price") or 0)
-        if p > 0:
-            cands.append((abs(p - close), role))
-    if not cands:
-        return None
-    cands.sort(key=lambda t: t[0])
-    return cands[0][1]
-
-
 def detect_trigger(
     klines: list[list], direction: int,
     pending: Optional[dict] = None,
-    levels: Optional[list] = None,
-    atr: Optional[float] = None,
     flt: Optional[ScanFilters] = None,
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """检测与候选方向一致的入场触发（两段式决策矩阵，docs/19 §4.1）。
 
     direction: 1 多 / -1 空（指标多数决的符号）
     pending: 该币活跃 pending 快照（{id, direction, stage1_candle_open}）或 None
-    levels/atr（docs/21 §8，可选）：关键位位表与 1h ATR——提供时 T3 回踩确认
-    对象升级为双对象（已确认关键位 OR EMA21），缺省回落纯 EMA21 原行为
-    （levels=None 时 _detect_level_touch 短路，老调用方零改动兼容）。
     flt（可选）：筛选参数组（2026-09-28 筛选配置上页面）；None=按 settings
     解析（env/代码默认），策略函数不读 DB。
     返回 (trigger, pending_op) 二元组：
     - trigger: 命中的触发 dict（type/direction/position/pattern/breakout_pct/
-      reason/dual_touch——仅 row2 当根确认携带，EMA21 与关键位双锚共振标志）
-      或 None（无触发 → 观察池）
+      reason）或 None（无触发 → 观察池）
     - pending_op: 本轮对活跃 pending 的处置，None 或
       {"op": "supersede"|"confirm"|"expire"|"upsert", ...}
       ——upsert/expire 后续在 scanner 侧结合 DB 行补全（方向反转拆两步、
@@ -201,8 +128,8 @@ def detect_trigger(
     if n < 30 or direction not in (1, -1):
         return None, None
     close_last = float(klines[-2][4])
-    # 位置统一口径：现价最近关键位角色（无位表/无有效角色回落按方向派生）
-    lv_pos = _position_by_levels(close_last, levels)
+    # position 按方向派生（2026-09-28 关键位移除后回到 docs/09 原始口径）：
+    # 看涨形态/回踩企稳=support、向上突破/反抽受阻=resistance
     pos_fb = "support" if direction == 1 else "resistance"
     wanted = "bullish" if direction == 1 else "bearish"
 
@@ -238,7 +165,7 @@ def detect_trigger(
             if direction == 1 and close_last >= chan_high * (1 + flt.breakout_threshold):
                 return {
                     "type": BREAKOUT, "direction": direction,
-                    "position": lv_pos or "resistance",
+                    "position": "resistance",
                     "pattern": None,
                     "breakout_pct": (close_last - chan_high) / chan_high * 100,
                     "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘突破{chan_n}根"
@@ -247,18 +174,15 @@ def detect_trigger(
             if direction == -1 and close_last <= chan_low * (1 - flt.breakout_threshold):
                 return {
                     "type": BREAKOUT, "direction": direction,
-                    "position": lv_pos or "support",
+                    "position": "support",
                     "pattern": None,
                     "breakout_pct": (close_last - chan_low) / chan_low * 100,
                     "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘跌破{chan_n}根"
                               f"Donchian下轨({chan_low:.6g})",
                 }, _close_op(pending, direction, "breakout")
 
-    # 并行计算两个确认证据：当根同向金K + 回踩触碰（docs/21 §8 双对象：
-    # 已确认关键位优先展示——结构位语义强于动态均线，EMA21 兜底）。
-    # 2026-09-28 晚：pullback_key_level_only 撤下——用户拍板回踩触碰恢复
-    # 纯 EMA21 口径（EMA21 触碰+金K 即确认），关键位仅保留展示/质量分用途，
-    # 不再参与触碰判定（_detect_level_touch 调用移除，flt 参数保留防后续回归）
+    # 并行计算两个确认证据：当根同向金K + 回踩触碰（纯 EMA21 口径，
+    # 2026-09-28 晚恢复并彻底移除关键位触碰——docs/21 双对象当日撤销）
     patterns = detect_all_patterns(klines, idx=-2)
     golden = next((p for p in patterns if p["pattern"] in GOLDEN_12), None)
     golden = golden if (golden and golden["direction"] == wanted) else None
@@ -266,13 +190,11 @@ def detect_trigger(
     touch_label = "EMA21" if touch_price is not None else None
 
     # 行2：当根触碰+金K → 当根确认（比纯形态更强，pending 一律被抢先）。
-    # dual_touch：EMA21 与关键位双锚共振（2026-09-27）——质量分加权用
     if touch_price is not None and golden:
         return {
             "type": PULLBACK_CONFIRM, "direction": direction,
-            "position": lv_pos or pos_fb,
+            "position": pos_fb,
             "pattern": golden["pattern"], "breakout_pct": 0.0,
-            "dual_touch": False,
             "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且当根"
                       f"{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}确认",
         }, _close_op(pending, direction, "same_candle_confirm")
@@ -280,15 +202,12 @@ def detect_trigger(
     # 行3/行4：未触碰但有金K → 有效 pending 则次根确认，否则纯金K（T2 原样）。
     # 悬空金K门槛（2026-09-27 正式网复盘）：信号K线收盘距 EMA21 > 阈值（默认 1.5%）
     # 的纯金K不再触发——正式网 17 笔悬空金K全部 SL（-92 USDT），追高入场负期望。
-    # 拦截语义天然为「EMA21 与关键位双未触达」（OR 闸门）：触及关键位（带内+防守侧）
-    # 时 touch_lv 命中直接走 row2 当根确认、不进本分支——贴结构位的金K距 EMA21
-    # 再远也放行；仅拦"离 EMA21 远且不贴任何关键位"的悬空金K。
-    # row3 次根确认有回踩语境（上根触碰 EMA21/关键位）不受影响。0=关闭。
+    # row3 次根确认有回踩语境（上根触碰 EMA21）不受影响。0=关闭。
     if touch_price is None and golden:
         if pending_valid and pending and pending.get("direction") == direction:
             return {
                 "type": PULLBACK_CONFIRM, "direction": direction,
-                "position": lv_pos or pos_fb,
+                "position": pos_fb,
                 "pattern": golden["pattern"], "breakout_pct": 0.0,
                 "reason": f"指标同向·上根回踩企稳·本根"
                           f"{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}确认",
@@ -309,7 +228,7 @@ def detect_trigger(
                     return None, None
         return {
             "type": CANDLESTICK, "direction": direction,
-            "position": lv_pos or pos_fb,
+            "position": pos_fb,
             "pattern": golden["pattern"], "breakout_pct": 0.0,
             "reason": f"指标同向·{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}",
         }, ({"op": "expire",
@@ -317,7 +236,7 @@ def detect_trigger(
             if pending else None)
 
     # 行5：触碰但无金K → 不触发，转 pending 待确认（scanner 侧 upsert）。
-    # ema21 键存触碰价（EMA21 值或关键位价，DB 列兼容不迁移）
+    # ema21 键存触碰时的 EMA21 值
     if touch_price is not None:
         return None, {
             "op": "upsert", "direction": direction,

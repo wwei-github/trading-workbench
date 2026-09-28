@@ -6,9 +6,8 @@ trigger_* 接管；历史行旧值仅前端 labels.ts 做兼容展示。
 """
 from __future__ import annotations
 
-# position 统一按关键位口径派生（2026-09-27，trigger._position_by_levels）：
-# 信号K线收盘价最近的非失效关键位角色即位置；关键位不可用时回落信号方向
-# （看涨形态/回踩企稳=support、向上突破/反抽受阻=resistance）。
+# position 按信号方向派生（docs/09 原始口径，2026-09-28 关键位子系统移除后回归）：
+# 看涨形态/回踩企稳=support、向上突破/反抽受阻=resistance。
 # 前高/前低/区间顶底不再作为新值产生，仅用于历史数据兼容展示
 POS_SUPPORT = "support"              # 支撑位
 POS_RESISTANCE = "resistance"        # 压力位

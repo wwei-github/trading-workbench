@@ -33,14 +33,11 @@ _RULE_EMA = """EMA 排列不构成方向限制：多头排列不禁止做空、�
 _RULE_SL = """止损纪律（结构位优先，影线极值兜底，两锚取更远者；程序不再改写止损价，合理性自行把关）：
 - 优先：做多锚定入场价下方最近摆动低点外 0.3%（建议 0.3%~0.5%），做空锚定入场价上方最近摆动高点外同幅度。
 - 两锚取更远者：入场贴着结构位是区间边缘类开单的常态，此时位在 5 根影线范围内，只锚结构位会把止损放进近期波动区间内部、极易被扫损。止损必须同时在结构位外与影线极值外——做多取摆动低点与最近 5 根最低点中更低者外 0.3%，做空取摆动高点与最近 5 根最高点中更高者外 0.3%。
-- 关键位口径（用户消息中"关键位"块）：止损优先锚已确认翻转位（翻转已确认）或有效位的外侧；刚突破待确认位与已失效位禁止作止损锚。
 - 兜底：入场价与极值之间没有任何摆动结构位时，用极值锚——做多严格低于最近 5 根最低点（影线极值即最低价，非收盘价）至少 0.3%，做空严格高于最高点至少 0.3%。
 - 止损宽度不设固定百分比上限；若盈亏比不达标，优先调整入场价，仍不行则 skip。"""
 
 _RULE_TP = """止盈锚定（多空方向不同，必须遵守；程序不再改挂止盈价）：
-- 结构位=摆动高低点（用户消息中"近期摆动结构"）与关键位块中的位
-  （权重=S+t 综合越高越可靠——多源共振或位上有影线拒绝史者优先；
-  刚突破待确认位不作止盈目标、可作突破回测目标，已失效位禁用）。
+- 结构位=摆动高低点（用户消息中"近期摆动结构"）。
   **近位不算止盈目标**：距现价特别近（≤1×ATR）的位是价格正在测试/突破的
   "争夺位"，它回答的是"价格是否得到支撑/压力/突破"，不是盈利空间；
   止盈一必须挂在更远的第一档结构位外侧：
@@ -63,53 +60,7 @@ _RULE_STRUCT = """结构破位回踩打法（structure_break）详解——三�
 
 _RULE_DIRECTION = """方向纪律（不再程序强制，无 ±0.3% 贴近要求）：优先只在支撑结构做多、
 只在压力结构做空；现价已离开结构位时不再要求贴近，可按动能顺势给入场价（顺势追势
-入场贴近现价即可），入场是否合理由盈亏比与止损结构把关。
-关键位纪律（用户消息中"关键位"块）：优先在已确认翻转位（翻转已确认）的回踩企稳处
-入场（趋势延续最可靠形态）；现价刚突破但未回踩确认时（刚突破待确认），宁可 skip 等
-回踩，不追突破价。位上影线拒绝与组合拒绝（触及·影线拒绝次数）= 2B 防守证据：
-支撑位拒绝偏多、压力位拒绝偏空，可与指标多数决叠加参考。已失效位仅供结构参考，
-禁止锚定三价。"""
-
-# 关键位状态中文标签（docs/21 §6 事实包格式）
-_KEY_STATE_LABELS = {
-    "intact": "有效",
-    "broken": "刚突破待确认",
-    "flipped_confirmed": "翻转已确认",
-    "invalid": "已失效",
-}
-
-
-def render_key_levels_block(levels: Optional[list]) -> str:
-    """关键位事实包块（docs/21 §6 格式，P0/P1 两管线共用同源渲染）。
-
-    levels 为 compute_key_levels 产出（空/None 返回空串——开关关闭或数据
-    不足时事实包不含该块，模型按摆动结构旧口径分析）。
-    """
-    if not levels:
-        return ""
-    lines = ["关键位（多源融合,ATR容差聚类,按距现价排序）:"]
-    for i, lv in enumerate(levels, 1):
-        state = lv.get("state") or "intact"
-        role = lv.get("role")
-        role_cn = ("支撑" if role == "support"
-                   else "压力" if role == "resistance" else "结构位")
-        src_n = len(lv.get("sources") or [])
-        rej = lv.get("rejections") or 0
-        touches = lv.get("touches") or 0
-        dist = lv.get("distance_pct") or 0.0
-        strength = lv.get("strength") or src_n
-        # 拒绝计分封顶 +2（key_levels.merge_levels 口径），公式展示同口径防算式矛盾
-        line = (f"  {i}. {lv['price']:.6g} [{role_cn}·{_KEY_STATE_LABELS.get(state, state)}] "
-                f"强度{strength}=共振{src_n}+拒绝{min(rej, 2)} "
-                f"触及{touches}次·影线拒绝{rej}次 距现价{dist:+.1f}%")
-        if state == "flipped_confirmed":
-            line += f"\n     ↑突破后回踩确认（{lv.get('bars_since_event', 0)}根前）"
-        elif state == "broken":
-            line += " ⚠未确认勿作回踩买点"
-        elif state == "invalid":
-            line += " （仅供结构参考，不可锚定）"
-        lines.append(line)
-    return "\n".join(lines) + "\n"
+入场贴近现价即可），入场是否合理由盈亏比与止损结构把关。"""
 
 # 信号类型中文对照（结构分类）
 SIGNAL_TYPE_LABELS = {
@@ -159,7 +110,6 @@ def render_signal_gate_block(signal_type: str) -> str:
         if flt.candle_max_ema21_dist_pct > 0:
             lines.append(
                 f"- 悬空金K拦截: 纯金K距 EMA21 >{flt.candle_max_ema21_dist_pct:.1f}% 不触发"
-                "（触及关键位仍放行）"
             )
     if not lines:
         return ""
@@ -200,7 +150,7 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
   （单笔止损预算={risk_label}：仓位=预算÷止损距离），此处报估算值即可。
 - recommendation: 推荐程度，0-100的整数。skip 时≤30，suggest 时≥50。锚点（评分需可区分强度）：
   50=仅勉强达标（单一条件满足，无共振）；70=多重共振（趋势+位置/量能两项以上同向）；
-  85+=强信号（趋势+关键位+盈亏比三重共振且历史战绩同家族胜率不差）。中间分数线性内插。
+  85+=强信号（趋势+位置+盈亏比三重共振且历史战绩同家族胜率不差）。中间分数线性内插。
 - analysis: ≤300字中文推理，用"1. 2. 3."序号逐条展示，每条独占一行（JSON内换行写\\n），格式如下：
   先逐条列出满足的条件（如：1. EMA多头排列，趋势向上 2. 回踩支撑位企稳，触及2次）；
   再列出不满足的条件或风险点；最后一条写明确结论（如：4. 结论：建议开单，盈亏比与趋势背景共振）。
@@ -286,7 +236,7 @@ def _build_messages(
     （ai_tasks）经 review_stats_inject 生成，空串时不占位。"""
     # 取最近 40 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-41:-1]）。
     # 60→40（2026-09-28）：CSV 是 user 消息 token 大头（60 根 ≈5000+），思考型模型
-    # reasoning 时长与输入量正相关；浓缩结论（指标/摆动/关键位块）已覆盖形态识别所需，
+    # reasoning 时长与输入量正相关；浓缩结论（指标/摆动块）已覆盖形态识别所需，
     # 窗口内 EMA/MACD 等指标块照常现算不受影响
     recent = klines[-41:-1] if len(klines) >= 41 else klines[:-1]
     # 每根K线自带成交量与成交额（quote_vol，USDT），与 Agent 管线同格式
@@ -325,10 +275,6 @@ def _build_messages(
             )
         swings_summary = "\n".join(sw_lines) + "\n"
 
-    # 关键位（多源融合位表，docs/21：与 Agent 管线共用同源渲染；
-    # 开关关闭/数据不足时为空串，事实包不含该块）
-    key_levels_summary = render_key_levels_block(signal.get("key_levels"))
-
     # 量能（放量突破判定依据，volume_ratio 口径：相对近20根已收盘均量的倍数）
     vol_desc = signal.get("volume_type") or "—"
     if signal.get("volume"):
@@ -349,7 +295,6 @@ def _build_messages(
         f"{ema_summary}"
         f"{indicator_summary}"
         f"{swings_summary}"
-        f"{key_levels_summary}"
         f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
     )
 

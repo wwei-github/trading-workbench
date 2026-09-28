@@ -88,10 +88,8 @@ class AIAnalysis(Base):
     # 未开单原因（2026-09-15）：suggest 被开仓闸门拦下时记录（强平闸门/在跑上限/余额不足等），
     # 仅覆盖进入下单序列之前的拦截；下单序列内的成败由 trade_records 呈现
     open_block_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    # 关键位快照（docs/21，2026-09-27）：AI 分析时刻的位表（select_display_levels
-    # 统一口径，与图表展示永久一致）。
-    # 推导数据不落 DB 的原则在此让位——交易复盘需要严格还原「AI 看到的位」，
-    # 重放重算会因分析/开单时刻不同而漂移；快照随结论沿用链复制
+    # key_levels_json 快照（docs/21，2026-09-27 上线；2026-09-28 功能整体移除后
+    # 停止写入）：存量列按仓库惯例保留不 DROP，历史行原样可查
     key_levels_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 

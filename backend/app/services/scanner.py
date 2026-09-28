@@ -31,8 +31,7 @@ from app.services.scan_filters import ScanFilters, resolve_scan_filters
 from app.services.exchange_pool import ExchangePool
 from app.services.binance_trader import BinanceTrader
 from app.services.strategy.ema import analyze_ema
-from app.services.strategy.indicators import calc_atr, volume_ratio
-from app.services.strategy.key_levels import compute_key_levels
+from app.services.strategy.indicators import volume_ratio
 from app.services.strategy.technical import (
     compute_indicator_votes,
     compute_quality_score,
@@ -140,18 +139,8 @@ def detect_indicator_candidate(
         if htf_res and htf_res.get("state") == "ranging":
             return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
-    # 关键位位表（docs/21 §8）：T3 回踩确认双对象之一。每币每轮现算一次
-    # （500 根 1h 重放毫秒级，不缓存）；失败降级为空表 → 纯 EMA21 原行为
-    try:
-        key_levels = compute_key_levels(klines, htf)
-    except Exception as e:
-        key_levels = []
-        logger.warning("%s 关键位计算失败（T3 回落纯EMA21）: %s", symbol, e)
-
     direction = 1 if votes["net"] > 0 else -1
-    atr = calc_atr(klines, 14)
-    trig, pending_op = detect_trigger(klines, direction, pending,
-                                      levels=key_levels, atr=atr, flt=flt)
+    trig, pending_op = detect_trigger(klines, direction, pending, flt=flt)
     if trig is not None and trig["type"] not in flt.allowed_triggers:
         # 触发类型白名单（2026-09-28 筛选配置）：白名单外类型不产生候选（连 AI
         # 分析都不进）；pending 处置照常执行——如突破抢先 supersede、pending
@@ -164,9 +153,7 @@ def detect_indicator_candidate(
             pending_op["votes_json"] = _votes_snapshot(votes)
         return None, pending_op
 
-    quality = compute_quality_score(direction, votes, trig["type"], klines=klines,
-                                    key_levels=key_levels, atr=atr,
-                                    dual_touch=bool(trig.get("dual_touch")))
+    quality = compute_quality_score(direction, votes, trig["type"], klines=klines)
     return {
         "signal_type": trig["type"],
         # 现价 = 未收盘K线最新价（仅作入场价差参考）：信号判定（投票/触发/形态/量能）

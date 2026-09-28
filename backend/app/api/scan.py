@@ -396,7 +396,6 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
             "candle_max_ema21_dist_pct": flt.candle_max_ema21_dist_pct,
             "ai_max_per_scan": flt.ai_max_per_scan,
             "allowed_triggers": list(flt.allowed_triggers),
-            "pullback_key_level_only": flt.pullback_key_level_only,
         },
     )
 
@@ -416,7 +415,7 @@ _SCAN_FILTER_RANGES: dict[str, tuple[float, float, str]] = {
 def _validate_scan_filters(raw: dict) -> dict:
     """筛选参数组校验：未知键拒绝（防拼错静默失效）、范围越界 400、数值化清洗。
     合法但缺省的键不补齐——缺键回落 env（逐键覆盖语义）。
-    非数值键：allowed_triggers（非空合法类型列表）、pullback_key_level_only（布尔）。"""
+    非数值键：allowed_triggers（非空合法类型列表）。"""
     from app.services.scan_filters import ALL_TRIGGERS
 
     out: dict = {}
@@ -429,11 +428,6 @@ def _validate_scan_filters(raw: dict) -> dict:
                     detail="scan_filters.allowed_triggers 需为非空触发类型列表"
                            f"（合法值: {', '.join(ALL_TRIGGERS)}）",
                 )
-            out[k] = v
-        elif k == "pullback_key_level_only":
-            if not isinstance(v, bool):
-                raise HTTPException(
-                    status_code=400, detail="scan_filters.pullback_key_level_only 需为布尔值")
             out[k] = v
         elif k in _SCAN_FILTER_RANGES:
             lo, hi, label = _SCAN_FILTER_RANGES[k]
@@ -1034,26 +1028,11 @@ def get_klines(
         ]
         for kind in ("highs", "lows")
     }
-    # 关键位（docs/21，2026-09-27 复活）：状态着色价位线。统一口径
-    # select_display_levels（invalid剔除+权重贪心合并）——与 AI 事实包/锚点
-    # 解析共用同一张表，图表与 AI 永久一致。4h 源每 4 根采样一档近似
-    # （位价与 AI 管线用交易所真实 4h 略有出入，展示可接受）；失败降级空表
-    key_levels: list = []
-    try:
-        from app.services.strategy.key_levels import (
-            compute_key_levels, select_display_levels,
-        )
-        step = 4
-        htf = [klines[i] for i in range(0, len(klines) - step + 1, step)] if len(klines) >= 8 else None
-        key_levels = select_display_levels(compute_key_levels(klines, htf))
-    except Exception:
-        key_levels = []
     return {
         "symbol": symbol,
         "interval": eff_interval,
         "klines": result,
         "swings": swings,
-        "key_levels": key_levels,
     }
 
 
@@ -1104,16 +1083,6 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         # 评估结构位的历史密度
         "recent_swings": recent_swings(klines, order=cfg.swing_order, n=20),
     }
-    # 关键位位表（docs/21）：与定时分析链路同源（含 AI 瘦身口径）；
-    # 失败降级空表不中断
-    try:
-        from app.services.strategy.key_levels import (
-            compute_key_levels, select_display_levels,
-        )
-        signal["key_levels"] = select_display_levels(
-            compute_key_levels(klines, htf_klines))
-    except Exception:
-        signal["key_levels"] = []
 
     strategy_prompt = (
         cfg.strategy_prompt
