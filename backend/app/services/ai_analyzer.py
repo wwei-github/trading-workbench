@@ -11,6 +11,7 @@ from app.services.llm_client import get_client, parse_llm_json
 from app.services.risk_guard import build_forced_skip, parse_and_validate
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.technical import render_indicator_block
+from app.services.strategy.trigger import TOUCH_LABELS
 from app.services.strategy.types import POSITION_LABEL_MAP
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,13 @@ _RULE_DIRECTION = """方向纪律（不再程序强制，无 ±0.3% 贴近要求
 只在压力结构做空；现价已离开结构位时不再要求贴近，可按动能顺势给入场价（顺势追势
 入场贴近现价即可），入场是否合理由盈亏比与止损结构把关。"""
 
+# 回踩触点语义注解（docs/22 触点体系，2026-09-28）：信号块"回踩触点"行的解读口径
+_RULE_TOUCH = """回踩触点语义（信号块出现"回踩触点"行时程序已验证金K上一根触碰该位企稳）：
+retest=突破回测位（破轨后横向验证，结构意义最强，止盈/止损参考被测轨位）、
+swing=摆动结构位（HL/LH 防守位）、ema21=趋势动态价值区、ema55/ema144=大周期深回撤
+价值区（数据/排列/斜率三道门已程序验证）。有触点时止损优先锚定触点位：做多放触点位
+下外侧、做空放上外侧（仍按止损纪律两锚取更远者结合影线极值）。"""
+
 # 信号类型中文对照（结构分类）
 SIGNAL_TYPE_LABELS = {
     "uptrend": "上涨趋势（HH+HL）",
@@ -73,9 +81,10 @@ SIGNAL_TYPE_LABELS = {
     # 括号内注明程序已验证的入场门槛（2026-09-25 三重收紧 + docs/19 两段式），AI 据此评估信号质量
     "trigger_breakout": "指标同向·Donchian突破触发",
     "trigger_candlestick": "指标同向·K线形态触发",
-    "trigger_pullback": "指标同向·回踩EMA21触发（旧类型，已被两段式金K确认取代，仅历史数据）",
-    # 两段式回踩确认（2026-09-25，docs/19）：回踩触碰后等金K确认才入场
-    "trigger_pullback_confirm": "指标同向·回踩EMA21后金K确认（上一根触碰EMA21企稳、当根出现同向金K才入场）",
+    "trigger_pullback": "指标同向·回踩触发（旧类型，已被两段式金K确认取代，仅历史数据）",
+    # 两段式回踩确认（2026-09-25，docs/19）：回踩触碰后等金K确认才入场；
+    # 2026-09-28 docs/22 触点体系：触碰对象扩为 5 类触点（信号块"回踩触点"行注明具体位）
+    "trigger_pullback_confirm": "指标同向·回踩触点后金K确认（上一根触碰触点位企稳、当根出现同向金K才入场）",
     "unknown": "未分类",
     "manual_search": "手动搜索",
 }
@@ -102,9 +111,13 @@ def render_signal_gate_block(signal_type: str) -> str:
         ]
     else:
         if signal_type in ("trigger_pullback", "trigger_pullback_confirm"):
-            # 2026-09-28 晚：触碰恢复纯 EMA21 口径（关键位不再参与触碰判定）
+            # 2026-09-28 docs/22 触点体系：触碰对象由纯 EMA21 扩为 5 类触点，
+            # 具体命中位看信号块"回踩触点"行（trigger 按优先级只标一个）
             lines += [
-                "- 回踩触碰对象: EMA21（下影触及且收盘收回线上；做空对称）",
+                "- 回踩触点: retest=突破回测位 / swing=摆动结构位 / ema21 / ema55 / ema144"
+                "（优先级 retest>swing>ema21>ema55>ema144，命中位见信号块「回踩触点」行）",
+                f"- 横向位触碰带宽: 影线可入带（{flt.structure_touch_band_pct:.1f}% 内）且收盘守住位；"
+                "EMA 触点=下影触及且收盘收回线上（做空对称）",
                 "- 两段式确认: 触碰后当根出现同向金K，或上根触碰+本根金K（次根确认）",
             ]
         if flt.candle_max_ema21_dist_pct > 0:
@@ -163,6 +176,8 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 
 {_RULE_TP}
 
+{_RULE_TOUCH}
+
 所有价格为数值，单位 USDT。
 均线与指标纪律：
 - {_RULE_EMA}
@@ -183,6 +198,7 @@ def render_system_prompt(risk_label: Optional[str] = None) -> str:
         _RULE_STRUCT=_RULE_STRUCT,
         _RULE_SL=_RULE_SL,
         _RULE_TP=_RULE_TP.format(rr_min=settings.AI_RR_MIN),
+        _RULE_TOUCH=_RULE_TOUCH,
         _RULE_EMA=_RULE_EMA.replace(chr(10), ' '),
         _RULE_VOTE=_RULE_VOTE.replace(chr(10), ' '),
         rr_min=settings.AI_RR_MIN,
@@ -280,6 +296,12 @@ def _build_messages(
     if signal.get("volume"):
         vol_desc += f"（{float(signal['volume']):.1f}×20根均量）"
 
+    # 回踩触点（docs/22 触点体系）：程序已验证的触碰位类型，触点位价在信号理由中
+    touch_ref = signal.get("touch_ref")
+    touch_line = ""
+    if touch_ref:
+        touch_line = f"回踩触点: {TOUCH_LABELS.get(touch_ref, touch_ref)}（{touch_ref}）\n"
+
     # 市场环境（资金费率/恐贪/大盘）不再注入——单次调用管线无工具，模型仅凭给定数据分析
     user_prompt = (
         f"币种: {signal['symbol']}\n"
@@ -288,6 +310,7 @@ def _build_messages(
         f"突破幅度: {signal['breakout_pct']:.2f}%\n"
         f"K线形态: {signal.get('pattern') or '无'}\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
+        f"{touch_line}"
         f"{track_record}"
         f"{render_signal_gate_block(signal['signal_type'])}"
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"

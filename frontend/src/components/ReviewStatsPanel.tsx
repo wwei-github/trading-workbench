@@ -56,13 +56,24 @@ export default function ReviewStatsPanel() {
     return <span style={{ color, fontWeight: 600 }}>{pct}</span>
   }
 
-  // 根据非空维度字段确定维度名与分组值（后端按原始 signal_type 分组：trigger_pullback_confirm
-  // 单独成组；旧结构分类/未识别统一归「未记录」）
+  // 根据非空维度字段确定维度名与分组值（后端按 (signal_type, touch_ref) 联合分组：
+  // 触发器类型先按信号类型成组，docs/22 起同类型再按回踩触点细分；旧结构分类/未识别统一归「未记录」）
+  // 触点中文标签（与后端 trigger.TOUCH_LABELS 同源）
+  const TOUCH_LABELS: Record<string, string> = {
+    retest: '突破回测位',
+    swing: '摆动结构位',
+    ema21: 'EMA21',
+    ema55: 'EMA55',
+    ema144: 'EMA144',
+  }
   const renderDim = (g: ReviewGroupStat): { dim: string; value: string } => {
     if (g.signal_type) {
+      const base = SIGNAL_TYPE_MAP[g.signal_type]?.label || g.signal_type
       return {
-        dim: '信号类型',
-        value: SIGNAL_TYPE_MAP[g.signal_type]?.label || g.signal_type,
+        dim: g.touch_ref ? '信号类型·触点' : '信号类型',
+        value: g.touch_ref
+          ? `${base}·${TOUCH_LABELS[g.touch_ref] || g.touch_ref}`
+          : base,
       }
     }
     return { dim: '其他', value: '-' }
@@ -249,7 +260,7 @@ export default function ReviewStatsPanel() {
             >
               <Table<ReviewGroupStat>
                 rowKey={(g) =>
-                  `${g.signal_type ?? ''}-${g.position ?? ''}-${g.ema_state ?? ''}`
+                  `${g.signal_type ?? ''}-${g.touch_ref ?? ''}-${g.position ?? ''}-${g.ema_state ?? ''}`
                 }
                 columns={columns}
                 dataSource={stats!.groups}

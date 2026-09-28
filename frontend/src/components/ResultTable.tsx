@@ -42,6 +42,16 @@ const TRADE_STATUS_LABEL: Record<string, string> = {
   FAILED: "开单失败",
 };
 
+// 回踩触点标签（docs/22 触点体系，与后端 trigger.TOUCH_LABELS 同源）：
+// retest=突破回测位 / swing=摆动结构位 / ema21=趋势价值区 / ema55·ema144=深回撤
+const TOUCH_TAG_MAP: Record<string, { label: string; color: string; tip: string }> = {
+  retest: { label: "回测", color: "geekblue", tip: "突破回测位：破轨后横向验证，结构意义最强" },
+  swing: { label: "结构", color: "purple", tip: "摆动结构位：最近 HL（多）/LH（空）防守位" },
+  ema21: { label: "EMA21", color: "gold", tip: "回踩 EMA21 趋势价值区企稳" },
+  ema55: { label: "EMA55", color: "orange", tip: "回踩 EMA55 深回撤价值区（数据/排列/斜率门已过）" },
+  ema144: { label: "EMA144", color: "volcano", tip: "回踩 EMA144 大周期深回撤价值区（数据/排列/斜率门已过）" },
+};
+
 export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }) {
   const {
     results,
@@ -365,10 +375,21 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       render: (v: string, record: ScanResult) => {
         const cfg = SIGNAL_TYPE_MAP[v] || { label: v, color: "default" };
         // 触发原因挂信号类型悬停（突破/回踩行无 K线形态，原因只在这里可见）
+        // 回踩触点标签（docs/22）：retest=回测 / swing=结构 / ema21/55/144
+        const touch = record.touch_ref ? TOUCH_TAG_MAP[record.touch_ref] : undefined;
         return (
-          <Tooltip title={record.signal_reason || undefined}>
-            <Tag color={cfg.color}>{cfg.label}</Tag>
-          </Tooltip>
+          <span>
+            <Tooltip title={record.signal_reason || undefined}>
+              <Tag color={cfg.color}>{cfg.label}</Tag>
+            </Tooltip>
+            {touch && (
+              <Tooltip title={touch.tip}>
+                <Tag color={touch.color} style={{ marginInlineStart: 0 }}>
+                  {touch.label}
+                </Tag>
+              </Tooltip>
+            )}
+          </span>
         );
       },
     },

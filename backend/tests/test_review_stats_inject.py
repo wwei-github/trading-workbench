@@ -36,6 +36,7 @@ def _fixed_settings(monkeypatch):
     monkeypatch.setattr(settings, "BREAKOUT_VOL_RATIO", 1.2)
     monkeypatch.setattr(settings, "BREAKOUT_MAX_PCT", 1.5)
     monkeypatch.setattr(settings, "CANDLE_MAX_EMA21_DIST_PCT", 1.5)
+    monkeypatch.setattr(settings, "STRUCTURE_TOUCH_BAND_PCT", 0.3)
 
 
 class FakeResult:
@@ -153,13 +154,14 @@ def test_gate_block_non_trigger_empty():
 
 
 def test_gate_block_pullback_touch_object():
-    """回踩类门槛块：触碰对象为 EMA21（2026-09-28 晚恢复纯 EMA21 口径）；
+    """回踩类门槛块（docs/22 触点体系）：触点 5 类说明 + 带宽口径（读生效值）；
     突破专属行（Donchian/量比）不出现在回踩块里"""
     block = render_signal_gate_block("trigger_pullback_confirm")
-    assert "EMA21" in block
+    assert "回踩触点" in block
+    assert "retest=突破回测位" in block
     assert "两段式确认" in block
+    assert "0.3%" in block  # structure_touch_band_pct 生效值
     assert "Donchian" not in block  # 突破专属行不进回踩块
-    assert "触碰对象: EMA21" in block
 
 
 # ── _build_messages 接线 ──────────────────────────────────────────────
@@ -198,3 +200,51 @@ def test_build_messages_non_trigger_no_gate():
     user = msgs[-1]["content"]
     assert "程序入场门槛" not in user
     assert "历史战绩" not in user
+
+
+# ── 回踩触点接线（docs/22）────────────────────────────────────────────
+
+
+def test_build_messages_injects_touch_line():
+    """信号带 touch_ref → user 消息渲染「回踩触点」行（中文标签+原值）"""
+    sig = {**_minimal_signal("trigger_pullback_confirm"), "touch_ref": "retest"}
+    user = _build_messages(sig, _KLINES)[-1]["content"]
+    assert "回踩触点: 突破回测位（retest）" in user
+
+
+def test_build_messages_no_touch_line_without_ref():
+    """无触点信号（历史行/非回踩类型）不渲染触点行"""
+    user = _build_messages(
+        _minimal_signal("trigger_pullback_confirm"), _KLINES,
+    )[-1]["content"]
+    assert "回踩触点: 突破回测位（" not in user
+
+
+# ── 触点分组战绩（docs/22 §6.3）───────────────────────────────────────
+
+
+def test_touch_scoped_group_hit():
+    """触点样本充足：按（类型+触点）分组，标题带触点名，仅复盘行一次查询
+    （第二个槽位预留给 _avg_ev_r 的 AI 三价查询，空表 → EV 省略）"""
+    rows = [_review(outcome="win_tp1", ai_analysis_id=f"a{i}") for i in range(3)]
+    rows += [_review(outcome="loss", ai_analysis_id=f"b{i}") for i in range(2)]
+    db = FakeSession([rows, []])
+    block = build_track_record_block(db, "trigger_pullback_confirm", touch_ref="ema21")
+    assert "样本5笔" in block
+    assert "回踩金K确认·EMA21" in block
+
+
+def test_touch_scoped_falls_back_to_type_group():
+    """触点样本不足（<5）：回落纯类型组（第二次查询），标题不带触点"""
+    thin = [_review(outcome="win_tp1") for _ in range(2)]
+    wide = [_review(outcome="loss") for _ in range(6)]
+    db = FakeSession([thin, wide])
+    block = build_track_record_block(db, "trigger_pullback_confirm", touch_ref="ema55")
+    assert "样本6笔" in block
+    assert "·EMA55" not in block
+
+
+def test_touch_ref_unknown_type_still_empty():
+    assert build_track_record_block(
+        FakeSession([]), "uptrend", touch_ref="ema21",
+    ) == ""

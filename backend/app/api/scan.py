@@ -396,6 +396,11 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
             "candle_max_ema21_dist_pct": flt.candle_max_ema21_dist_pct,
             "ai_max_per_scan": flt.ai_max_per_scan,
             "allowed_triggers": list(flt.allowed_triggers),
+            # 回踩触点体系（docs/22）：启用触点白名单 + 触点参数
+            "pullback_touch_refs": list(flt.pullback_touch_refs),
+            "retest_window_bars": flt.retest_window_bars,
+            "structure_touch_band_pct": flt.structure_touch_band_pct,
+            "ema_touch_min_bars": flt.ema_touch_min_bars,
         },
     )
 
@@ -409,14 +414,18 @@ _SCAN_FILTER_RANGES: dict[str, tuple[float, float, str]] = {
     "breakout_max_pct": (0, 20, "突破幅度上限（%，防追高，0=关闭）"),
     "candle_max_ema21_dist_pct": (0, 20, "悬空金K距 EMA21 上限（%，0=关闭）"),
     "ai_max_per_scan": (1, 50, "单轮扫描 AI 分析上限（个）"),
+    # 回踩触点体系（docs/22）
+    "retest_window_bars": (0, 500, "突破回测触点有效窗口（已收盘根数，0=关闭 retest 触点）"),
+    "structure_touch_band_pct": (0, 5, "retest/swing 触碰带宽（%，影线可入带收盘须守住）"),
+    "ema_touch_min_bars": (50, 1000, "EMA 触点最小已收盘根数（数据门）"),
 }
 
 
 def _validate_scan_filters(raw: dict) -> dict:
     """筛选参数组校验：未知键拒绝（防拼错静默失效）、范围越界 400、数值化清洗。
     合法但缺省的键不补齐——缺键回落 env（逐键覆盖语义）。
-    非数值键：allowed_triggers（非空合法类型列表）。"""
-    from app.services.scan_filters import ALL_TRIGGERS
+    非数值键：allowed_triggers / pullback_touch_refs（非空合法类型列表）。"""
+    from app.services.scan_filters import ALL_TRIGGERS, ALL_TOUCH_REFS
 
     out: dict = {}
     for k, v in raw.items():
@@ -427,6 +436,16 @@ def _validate_scan_filters(raw: dict) -> dict:
                     status_code=400,
                     detail="scan_filters.allowed_triggers 需为非空触发类型列表"
                            f"（合法值: {', '.join(ALL_TRIGGERS)}）",
+                )
+            out[k] = v
+        elif k == "pullback_touch_refs":
+            # 空列表拒绝（触点全空会让回踩管线停摆）；非法项拒绝（防拼错静默失效）
+            if (not isinstance(v, list) or not v
+                    or not all(t in ALL_TOUCH_REFS for t in v)):
+                raise HTTPException(
+                    status_code=400,
+                    detail="scan_filters.pullback_touch_refs 需为非空触点类型列表"
+                           f"（合法值: {', '.join(ALL_TOUCH_REFS)}）",
                 )
             out[k] = v
         elif k in _SCAN_FILTER_RANGES:
@@ -678,17 +697,24 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
     )
 
     # 触发器分组：按原始 signal_type 细分（2026-09-25 拆细，见 docstring）。
-    # TRIGGER_FAMILY 键集与实盘归因共用同源常量，作为触发器白名单防两处漂移
+    # TRIGGER_FAMILY 键集与实盘归因共用同源常量，作为触发器白名单防两处漂移；
+    # 2026-09-28 docs/22 触点体系：组键扩为 (signal_type, touch_ref)——同触发类型
+    # 不同触点位的回放行为分开统计（无触点行 touch_ref=None 单独成组）
     from app.services.actual_review import TRIGGER_FAMILY
 
-    buckets: dict[str, list[TradeReview]] = {}
+    buckets: dict[tuple[str, Optional[str]], list[TradeReview]] = {}
     for r in rows:
         raw = r.signal_type or ""
-        buckets.setdefault(raw if raw in TRIGGER_FAMILY else "未记录", []).append(r)
-    # 组内样本多的排前面，便于聚焦有效分组
-    for key, items in sorted(buckets.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        key = (raw if raw in TRIGGER_FAMILY else "未记录", getattr(r, "touch_ref", None))
+        buckets.setdefault(key, []).append(r)
+    # 组内样本多的排前面，便于聚焦有效分组（touch_ref 可能为 None，排序转字符串）
+    for (sig, tref), items in sorted(
+        buckets.items(), key=lambda kv: (-len(kv[1]), kv[0][0], kv[0][1] or ""),
+    ):
         agg = _agg_stats(items)
-        resp.groups.append(ReviewGroupStats(signal_type=key, **agg, ev_r=_agg_ev(items)))
+        resp.groups.append(
+            ReviewGroupStats(signal_type=sig, touch_ref=tref, **agg, ev_r=_agg_ev(items))
+        )
     return resp
 
 

@@ -30,6 +30,7 @@ class ScanResultOut(BaseModel):
     r_squared: float
     pattern: Optional[str] = None
     signal_reason: Optional[str] = None
+    touch_ref: Optional[str] = None  # 回踩触点（docs/22：retest/swing/ema21/55/144）
     ema_state: Optional[str] = None  # 均线形态状态（bullish_align 等）
     position: Optional[str] = None  # 信号位置（形态/突破方向派生）
     volume_24h: float
@@ -298,6 +299,7 @@ class SystemConfigUpdate(BaseModel):
 
 class ReviewGroupStats(BaseModel):
     signal_type: Optional[str] = None
+    touch_ref: Optional[str] = None  # 回踩触点（docs/22：分组维度，None=无触点行）
     position: Optional[str] = None
     ema_state: Optional[str] = None
     total: int

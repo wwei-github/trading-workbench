@@ -336,6 +336,29 @@ def _run_migrations(engine):
             "UPDATE spot_orders SET account_key = 'live-1' "
             "WHERE account_key IS NULL AND NOT testnet"
         ))
+        # 回踩触点体系（2026-09-28 docs/22）：触点维度三列 + 破轨事件表。
+        # breakout_events 全新表由 create_all 建表，此处只为存量库兜底
+        # （create_all 不改既有表）；列语义与消费方见 models/scan.py
+        conn.execute(text(
+            "ALTER TABLE scan_results "
+            "ADD COLUMN IF NOT EXISTS touch_ref VARCHAR(16)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_scan_results_touch_ref "
+            "ON scan_results (touch_ref)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE pullback_pendings "
+            "ADD COLUMN IF NOT EXISTS touch_ref VARCHAR(16)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE trade_reviews "
+            "ADD COLUMN IF NOT EXISTS touch_ref VARCHAR(16)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_trade_reviews_touch_ref "
+            "ON trade_reviews (touch_ref)"
+        ))
         # 确保系统配置表有默认行（初始值从 env 注入）。
         # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有
         # Python 端 default 没有 server_default，漏列的裸 INSERT 会 NotNullViolation

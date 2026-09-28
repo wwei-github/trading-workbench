@@ -42,6 +42,7 @@ class ScanResult(Base):
     # 信号位置（形态/突破方向派生：看涨形态/向上突破=resistance、看跌形态/向下突破=support；
     # 历史行为关键位角色口径，2026-09-14 关键位功能移除后不再产生关键位明细）
     position: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    touch_ref: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # 回踩触点（docs/22：retest/swing/ema21/55/144）
     volume_24h: Mapped[float] = mapped_column(Numeric(20, 2), nullable=False, default=0)
     volume: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False, default=0)
     volume_type: Mapped[str] = mapped_column(String(16), nullable=False, default="平量", index=True)
@@ -143,6 +144,7 @@ class TradeReview(Base):
     # 分析时点的统计维度快照（分组统计用）
     signal_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
     position: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    touch_ref: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)  # 回踩触点（docs/22）
     ema_state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)
     recommendation: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)
 
@@ -150,6 +152,27 @@ class TradeReview(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     ai_analysis: Mapped["AIAnalysis"] = relationship(back_populates="trade_review")
+
+
+class BreakoutEvent(Base):
+    """Donchian 破轨事件（docs/22 §4）：突破回测触点的事实源。
+
+    T1 突破触发时 scanner upsert（同币同方向刷新位价/锚点，反向破轨旧事件
+    失效）；回测触点确认（touch_ref=retest 的回踩金K）后 consumed；
+    超过 retest_window_bars 窗口的 active 行由 scanner 批量置 expired。
+    只记最近一次破轨（裸事件），不做 docs/21 的聚类状态机。
+    """
+
+    __tablename__ = "breakout_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    direction: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 1 多 / -1 空
+    level_price: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)  # 被穿轨价（回测位）
+    candle_open: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)  # 破轨信号K线开盘
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    # active → consumed（回测确认）| expired（窗口过期/反向破轨）
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class PullbackPending(Base):
@@ -171,7 +194,8 @@ class PullbackPending(Base):
     direction: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 1 多 / -1 空
     # Stage-1 信号K线开盘时间（有效期判定锚点：== 下一轮 klines[-3].open_time）
     stage1_candle_open: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
-    ema21: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)  # 触碰时 EMA21
+    ema21: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)  # Stage-1 触碰锚点价（docs/22 起为命中触点位价）
+    touch_ref: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # Stage-1 命中触点（docs/22；旧行 NULL）
     quality_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     votes_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)

@@ -19,12 +19,12 @@ from datetime import datetime, timedelta
 from typing import Optional, Tuple
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import SessionLocal
-from app.models.scan import PullbackPending, ScanRecord, ScanResult
+from app.models.scan import BreakoutEvent, PullbackPending, ScanRecord, ScanResult
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.scan_filters import ScanFilters, resolve_scan_filters
@@ -38,7 +38,13 @@ from app.services.strategy.technical import (
     analyze_htf_background,
     HTF_SHORT,
 )
-from app.services.strategy.trigger import PULLBACK, detect_trigger
+from app.services.strategy.trigger import (
+    BREAKOUT,
+    PULLBACK,
+    PULLBACK_CONFIRM,
+    TOUCH_RETEST,
+    detect_trigger,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,16 +97,23 @@ def detect_indicator_candidate(
     pool: ExchangePool, symbol: str, klines: list[list],
     pending: Optional[dict] = None,
     flt: Optional[ScanFilters] = None,
+    retest: Optional[dict] = None,
+    event_out: Optional[dict] = None,
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """指标驱动单币检测（Scanner 与 watchlist.refresh 共用同一套逻辑与阈值）。
 
     流程：6 票预筛（|net6|<2 直接判中性，省 4h 请求）→ 补拉 4h 算第 7 票
     → 多数决分组（|net|≥3 且 voted≥5）→ 两段式触发确认（trigger.py，docs/19）→ 质量分。
 
-    pending: 该币活跃回踩 pending 快照（{id, direction, stage1_candle_open}）或 None。
+    pending: 该币活跃回踩 pending 快照（{id, direction, stage1_candle_open, touch_ref}）或 None。
     flt: 筛选参数组（2026-09-28 筛选配置上页面）；None=按 settings 解析。
+    retest: 活跃破轨事件快照 {price, direction, candle_open}（docs/22 回测触点）或 None。
+    event_out: 可选出参 dict——T1 突破触发时写入破轨事件动作
+      {"op": "upsert", direction, level_price, candle_open}（scanner 落库
+      breakout_events，回测触点事实源）；触发类型白名单过滤不影响事件记录
+      （破轨是市场事实，与是否产生突破信号无关）。
     返回 (候选 dict, pending_op) 二元组：
-    - 候选 dict（signal_type/quality_score/votes 及展示字段），每币至多 1 个；
+    - 候选 dict（signal_type/touch_ref/quality_score/votes 及展示字段），每币至多 1 个；
       无候选（中性/票数不足/无触发）为 None
     - pending_op: pending 处置动作（upsert/expire/confirm/supersede），可为 None；
       候选为 None 时仍可能携带动作（触碰转 pending、票崩/窗口过期）
@@ -140,12 +153,22 @@ def detect_indicator_candidate(
             return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
     direction = 1 if votes["net"] > 0 else -1
-    trig, pending_op = detect_trigger(klines, direction, pending, flt=flt)
-    if trig is not None and trig["type"] not in flt.allowed_triggers:
-        # 触发类型白名单（2026-09-28 筛选配置）：白名单外类型不产生候选（连 AI
-        # 分析都不进）；pending 处置照常执行——如突破抢先 supersede、pending
-        # 窗口过期 expire，让回踩池状态机保持自洽
-        trig = None
+    trig, pending_op = detect_trigger(klines, direction, pending, flt=flt, retest=retest)
+    if trig is not None:
+        # T1 突破 → 破轨事件动作（docs/22 §4）：白名单过滤前记录——破轨是市场
+        # 事实，触发类型白名单只决定是否产生突破信号，不影响回测触点事实源
+        if trig["type"] == BREAKOUT and event_out is not None:
+            event_out.update({
+                "op": "upsert",
+                "direction": direction,
+                "level_price": trig.get("breakout_level"),
+                "candle_open": trig.get("candle_open"),
+            })
+        if trig["type"] not in flt.allowed_triggers:
+            # 触发类型白名单（2026-09-28 筛选配置）：白名单外类型不产生候选（连 AI
+            # 分析都不进）；pending 处置照常执行——如突破抢先 supersede、pending
+            # 窗口过期 expire，让回踩池状态机保持自洽
+            trig = None
     if trig is None:
         # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩口径计）
         if pending_op and pending_op.get("op") == "upsert":
@@ -165,6 +188,7 @@ def detect_indicator_candidate(
         "pattern": trig.get("pattern"),
         "signal_reason": trig["reason"][:120],
         "position": trig["position"],
+        "touch_ref": trig.get("touch_ref"),
         "strength": quality / 100.0,
         "ema_state": ema["state"] if ema else None,
         "volume": vol,
@@ -285,6 +309,9 @@ class Scanner:
             # 扫描线程只读快照，处置动作（upsert/expire/confirm/supersede）收集后统一落库
             pendings = self._prefetch_pendings(symbols)
             pending_ops: dict[str, dict] = {}
+            # 破轨事件（docs/22 §4）：回测触点事实源，预取/动作收集后统一落库
+            retests = self._prefetch_retest_events(symbols)
+            event_ops: dict[str, dict] = {}
 
             def scan_one(symbol: str) -> tuple[str, list[dict], bool]:
                 """指标多数决定向 → 两段式触发确认 → 质量分。返回 (symbol, [候选...], is_error)"""
@@ -295,14 +322,26 @@ class Scanner:
                         interval=kline_interval,
                         limit=max(kline_window, 300),
                     )
+                    ev_out: dict = {}
                     cand, pop = detect_indicator_candidate(
                         self.pool, symbol, klines, pending=pendings.get(symbol),
-                        flt=flt,
+                        flt=flt, retest=retests.get(symbol), event_out=ev_out,
                     )
+                    # 破轨事件动作（T1 触发记录 / 回测触点确认消费）
+                    if ev_out.get("op"):
+                        event_ops[symbol] = ev_out
                     if pop:
                         if pop.get("op") == "confirm" and cand:
                             pop["confirm_pattern"] = cand.get("pattern")
+                        # 次根确认消费：pending 的 Stage-1 是回测触点 → 事件 consumed
+                        if (pop.get("op") == "confirm"
+                                and (pendings.get(symbol) or {}).get("touch_ref") == TOUCH_RETEST):
+                            event_ops[symbol] = {"op": "consume"}
                         pending_ops[symbol] = pop
+                    # 当根确认消费：本次回踩金K命中的触点是回测位 → 事件 consumed
+                    if (cand and cand.get("signal_type") == PULLBACK_CONFIRM
+                            and cand.get("touch_ref") == TOUCH_RETEST):
+                        event_ops[symbol] = {"op": "consume"}
                     if cand is None:
                         return symbol, [], False
                     cand["symbol"] = symbol
@@ -370,6 +409,12 @@ class Scanner:
             if pending_ops:
                 self._apply_pending_ops(pending_ops, result_ids)
 
+            # 5.6 破轨事件处置（docs/22 §4）：upsert/consume + 窗口过期批处理
+            if event_ops:
+                self._apply_breakout_events(
+                    event_ops, flt.retest_window_bars, kline_interval,
+                )
+
             # 6. 触发 AI 分析（任务内自检开关；批量按24h成交额取前 AI_MAX_PER_SCAN 个）
             # 满仓跳过（docs/06）：定时扫描时在跑单已达上限则不做 AI 分析（省 LLM 成本，
             # 反正开不了仓）；手动扫描/手动分析不受限。下次结算释放额度后自然恢复
@@ -432,6 +477,7 @@ class Scanner:
                     strength=h.get("strength"),
                     ema_state=h.get("ema_state"),
                     position=h.get("position"),
+                    touch_ref=h.get("touch_ref"),
                     volume_24h=h.get("volume_24h", 0),
                     volume=h.get("volume", 0),
                     volume_type=h.get("volume_type", "平量"),
@@ -564,11 +610,112 @@ class Scanner:
                         "id": r.id,
                         "direction": r.direction,
                         "stage1_candle_open": r.stage1_candle_open,
+                        "touch_ref": r.touch_ref,
                     }
             return out
         except Exception as e:
             logger.warning("预取回踩 pending 失败（按无 pending 处理）: %s", e)
             return {}
+        finally:
+            sdb.close()
+
+    # ── 破轨事件（docs/22 §4）：突破回测触点的事实源 ─────────────────────────
+
+    @staticmethod
+    def _interval_hours(interval: str) -> float:
+        """K线周期字符串 → 小时数（"1h"/"4h"/"15m"/"1d"）；解析失败按 1h"""
+        try:
+            unit, n = interval[-1], int(interval[:-1])
+            return {"m": n / 60.0, "h": float(n), "d": float(n * 24)}.get(unit, 1.0)
+        except (ValueError, TypeError, IndexError):
+            return 1.0
+
+    @staticmethod
+    def _prefetch_retest_events(symbols: list[str]) -> dict[str, dict]:
+        """批量预取活跃破轨事件快照（docs/22 回测触点；每轮一次查询，勿逐币查）。
+
+        返回 {symbol: {price, direction, candle_open}}；查询失败按无事件处理
+        （不阻断扫描）。同 symbol 取最新一条 active（正常至多一条；防御并发双行）。
+        """
+        if not symbols:
+            return {}
+        sdb = SessionLocal()
+        try:
+            rows = sdb.execute(
+                select(BreakoutEvent).where(
+                    BreakoutEvent.symbol.in_(symbols),
+                    BreakoutEvent.status == "active",
+                ).order_by(BreakoutEvent.created_at.desc())
+            ).scalars().all()
+            out: dict[str, dict] = {}
+            for r in rows:
+                if r.symbol not in out:
+                    out[r.symbol] = {
+                        "price": float(r.level_price),
+                        "direction": r.direction,
+                        "candle_open": r.candle_open,
+                    }
+            return out
+        except Exception as e:
+            logger.warning("预取破轨事件失败（按无事件处理）: %s", e)
+            return {}
+        finally:
+            sdb.close()
+
+    @staticmethod
+    def _apply_breakout_events(
+        ops: dict[str, dict], window_bars: int, kline_interval: str,
+    ) -> None:
+        """破轨事件落库（独立 session，扫描线程只收集不写库）。
+
+        - upsert：T1 突破触发记录/刷新（同方向换新位价与锚点K线；反向破轨旧行
+          expired 后新建——旧方向回测位随趋势反转失效）
+        - consume：回测触点确认（touch_ref=retest 的回踩金K落库）→ consumed
+        - 窗口过期：active 且破轨K线早于 retest_window_bars 根之前 → 批量 expired
+        失败整体回滚忽略——事件是派生事实，下轮 T1 触发会重新记录。
+        """
+        sdb = SessionLocal()
+        try:
+            now = datetime.utcnow()
+            if window_bars and window_bars > 0:
+                cutoff = now - timedelta(
+                    hours=Scanner._interval_hours(kline_interval) * window_bars
+                )
+                sdb.execute(
+                    update(BreakoutEvent)
+                    .where(BreakoutEvent.status == "active",
+                           BreakoutEvent.candle_open < cutoff)
+                    .values(status="expired")
+                )
+            for symbol, op in ops.items():
+                kind = op.get("op")
+                row = sdb.execute(
+                    select(BreakoutEvent).where(
+                        BreakoutEvent.symbol == symbol,
+                        BreakoutEvent.status == "active",
+                    ).order_by(BreakoutEvent.created_at.desc()).limit(1)
+                ).scalars().first()
+                if kind == "upsert":
+                    direction = op["direction"]
+                    if row and row.direction != direction:
+                        row.status = "expired"  # 反向破轨：旧方向回测位失效
+                        row = None
+                    if row:
+                        row.level_price = op["level_price"]
+                        row.candle_open = op["candle_open"]
+                    else:
+                        sdb.add(BreakoutEvent(
+                            symbol=symbol,
+                            direction=direction,
+                            level_price=op["level_price"],
+                            candle_open=op["candle_open"],
+                        ))
+                elif kind == "consume" and row is not None:
+                    row.status = "consumed"
+            sdb.commit()
+        except Exception as e:
+            logger.exception("破轨事件落库失败（忽略，下轮重评估）: %s", e)
+            sdb.rollback()
         finally:
             sdb.close()
 
@@ -606,6 +753,7 @@ class Scanner:
                         # 同方向触碰刷新：锚点换新触碰根，等待窗口重新计时
                         row.stage1_candle_open = op["stage1_candle_open"]
                         row.ema21 = op.get("ema21")
+                        row.touch_ref = op.get("touch_ref")
                         row.quality_score = op.get("quality_score")
                         row.votes_json = op.get("votes_json")
                         row.updated_at = now
@@ -615,6 +763,7 @@ class Scanner:
                             direction=direction,
                             stage1_candle_open=op["stage1_candle_open"],
                             ema21=op.get("ema21"),
+                            touch_ref=op.get("touch_ref"),
                             quality_score=op.get("quality_score"),
                             votes_json=op.get("votes_json"),
                         ))

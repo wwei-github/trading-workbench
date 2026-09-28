@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     BREAKOUT_VOL_RATIO: float = 1.2  # 突破量能门槛：信号K线量 ≥ 近20根均量的1.2倍（volume_ratio 口径）
     BREAKOUT_MAX_PCT: float = 1.5  # 突破幅度上限：越过轨 >1.5% 视为追高，不产生突破触发（0=关闭）
     CANDLE_MAX_EMA21_DIST_PCT: float = 1.5  # 悬空金K门槛：信号K线收盘距 EMA21 >1.5% 不触发纯金K（0=关闭）
+    RETEST_WINDOW_BARS: int = 24  # 突破回测触点有效窗口（已收盘根数，0=关闭 retest 触点）
+    STRUCTURE_TOUCH_BAND_PCT: float = 0.3  # retest/swing 横向位触碰带宽（%，影线可入带收盘须守住）
+    EMA_TOUCH_MIN_BARS: int = 200  # EMA 触碰最小已收盘根数（数据门，EMA144 收敛兜底）
     DAILY_LOSS_STOP_USDT: float = 30.0  # 当日亏损熔断：UTC 日已平仓净亏 ≤-30 USDT 停开仓（0=关闭）
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
 

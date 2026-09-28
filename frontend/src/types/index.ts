@@ -21,6 +21,7 @@ export interface ScanResult {
   r_squared: number;
   pattern: string | null;
   signal_reason: string | null;
+  touch_ref: string | null; // 回踩触点（docs/22：retest/swing/ema21/ema55/ema144）
   ema_state: string | null; // 均线形态状态（bullish_align / bearish_cross 等）
   position: string | null; // 信号位置（形态/突破方向派生：支撑位/压力位）
   volume_24h: number;
@@ -433,6 +434,7 @@ export interface TradeKlineData {
 // 单个维度分组的复盘统计（groups 数组每个元素只有一个维度字段非空）
 export interface ReviewGroupStat {
   signal_type: string | null;
+  touch_ref: string | null; // 回踩触点（docs/22：与 signal_type 联合分组，null=无触点行）
   position: string | null;
   ema_state: string | null;
   total: number;

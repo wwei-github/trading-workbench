@@ -30,11 +30,14 @@ _INJECTABLE = {
 
 def build_track_record_block(
     db: Session, signal_type: str, days: int = 30, min_sample: int = 5,
+    touch_ref: Optional[str] = None,
 ) -> str:
     """生成当前信号类型的历史战绩块（注入 user 提示词）。
 
     胜率口径：win=win_tp1/win_tp2，loss=loss，expired 不计入；EV_R 与
     /review/stats 同式（loss=-1R，tp1=RR1，tp2=RR2，扣 taker 往返+资金费）。
+    touch_ref（docs/22 触点体系）：非空时优先按（signal_type+touch_ref）分组，
+    样本 < min_sample 回落纯 signal_type 组（触点维度细但样本积累慢）。
     样本 < min_sample 或查询失败 → 空串（不给 AI 噪音小样本）。
     """
     family = _INJECTABLE.get(signal_type or "")
@@ -42,12 +45,22 @@ def build_track_record_block(
         return ""
     try:
         cutoff = datetime.utcnow() - timedelta(days=days)
-        rows = db.execute(
-            select(TradeReview).where(
-                TradeReview.created_at >= cutoff,
-                TradeReview.signal_type == signal_type,
-            )
-        ).scalars().all()
+        base = [
+            TradeReview.created_at >= cutoff,
+            TradeReview.signal_type == signal_type,
+        ]
+        # 触点分组优先（同触点位的回放行为才可比），不足回落类型组
+        rows = []
+        scoped = False
+        if touch_ref:
+            rows = db.execute(
+                select(TradeReview).where(
+                    *base, TradeReview.touch_ref == touch_ref,
+                )
+            ).scalars().all()
+            scoped = len(rows) >= min_sample
+        if not scoped:
+            rows = db.execute(select(TradeReview).where(*base)).scalars().all()
     except Exception as e:
         logger.warning("战绩块查询失败，跳过注入: %s", e)
         return ""
@@ -62,6 +75,9 @@ def build_track_record_block(
     win_rate = wins / (wins + losses)
 
     ev_r = _avg_ev_r(db, rows)
+    if scoped:
+        from app.services.strategy.trigger import TOUCH_LABELS
+        family = f"{family}·{TOUCH_LABELS.get(touch_ref, touch_ref)}"
     lines = [
         f"历史战绩（近{days}日回放，触发类型「{family}」，样本{len(rows)}笔）:",
         f"- 胜率 {win_rate:.0%}（盈{wins}/亏{losses}，未决{expired}笔不计入）",

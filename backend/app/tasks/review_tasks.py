@@ -121,6 +121,7 @@ def run_trade_review_task():
                     tp1_hit=tp1_hit,
                     bars_to_exit=nbars or None,
                     signal_type=sr.signal_type,
+                    touch_ref=sr.touch_ref,  # 回踩触点快照（docs/22），复盘按触点分组
                     position=sr.position,
                     ema_state=sr.ema_state,
                     recommendation=float(a.recommendation) if a.recommendation is not None else None,

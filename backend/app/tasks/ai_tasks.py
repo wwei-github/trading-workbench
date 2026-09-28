@@ -85,6 +85,7 @@ def compute_fingerprint(signal: dict) -> str:
         signal.get("signal_type", ""),
         signal.get("position") or "",
         signal.get("pattern") or "",
+        signal.get("touch_ref") or "",  # 触点进指纹（docs/22）：同价位桶不同触点不复用结论
         str(bucket),
     ])
     return hashlib.sha1(raw.encode()).hexdigest()[:40]
@@ -178,6 +179,7 @@ def run_ai_analysis_single(
             "breakout_pct": float(r.breakout_pct),
             "pattern": r.pattern,
             "signal_reason": r.signal_reason,
+            "touch_ref": r.touch_ref,  # 回踩触点（docs/22），无触点信号为 None
             "position": r.position,
             "volume_type": r.volume_type,
             "volume": float(r.volume),
@@ -242,7 +244,10 @@ def run_ai_analysis_single(
         # 战绩回注（2026-09-28）：同触发类型近30日回放胜率/EV 注入提示词，
         # AI 评估时参考历史表现（查询失败/样本<5 笔返回空串，不阻断）
         from app.services.review_stats_inject import build_track_record_block
-        track_record = build_track_record_block(db, signal.get("signal_type") or "")
+        # 战绩优先按（触发类型+触点）分组回注，触点样本不足回落纯类型组（docs/22 §6.3）
+        track_record = build_track_record_block(
+            db, signal.get("signal_type") or "", touch_ref=signal.get("touch_ref"),
+        )
         # 管线选择：批量（每小时扫描自动触发/手动全量）固定走 P0 单次调用管线，
         # 不受「AI 管线」开关影响；仅手动单币重分析（force）跟随开关走 Agent 管线
         if cfg.ai_pipeline_enabled and force:
