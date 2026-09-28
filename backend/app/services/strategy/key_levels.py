@@ -190,7 +190,7 @@ def _pattern_at(klines: list, idx: int, want: str) -> bool:
         for p in detect_all_patterns(klines, idx):
             if p.get("direction") == want and p["pattern"] in (
                 "hammer", "bullish_engulfing", "morning_star",
-                "hanging_man", "bearish_engulfing", "evening_star",
+                "shooting_star", "bearish_engulfing", "evening_star",
             ):
                 return True
     except Exception:

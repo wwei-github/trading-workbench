@@ -115,7 +115,7 @@ def _pending(kl: list[list], direction: int = 1, anchor_idx: int = -3) -> dict:
 
 
 GOLDEN_LONG = [{"pattern": "hammer", "direction": "bullish"}]
-GOLDEN_SHORT = [{"pattern": "hanging_man", "direction": "bearish"}]
+GOLDEN_SHORT = [{"pattern": "shooting_star", "direction": "bearish"}]
 
 
 # ── 行7：无触碰无金K无 pending → 观察池 ────────────────────────────────────

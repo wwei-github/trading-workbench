@@ -35,6 +35,7 @@ from app.services.strategy.key_levels import compute_key_levels
 from app.services.strategy.technical import (
     compute_indicator_votes,
     compute_quality_score,
+    analyze_htf_background,
     HTF_SHORT,
 )
 from app.services.strategy.trigger import PULLBACK, detect_trigger
@@ -123,6 +124,18 @@ def detect_indicator_candidate(
     votes = compute_indicator_votes(klines, htf)
     if not votes or votes["voted"] < 5 or abs(votes["net"]) < 3:
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)  # 中性/票数不足
+
+    # 4h 震荡过滤（2026-09-28）：震荡背景无趋势方向，EMA 反复交叉下 1h 信号
+    # 胜率塌陷，直接不进候选（连 AI 分析都不给）。4h 拉取失败（htf=None）
+    # 不过滤——数据缺失降级放行，与第 7 票降级口径一致
+    if htf:
+        try:
+            htf_res = analyze_htf_background(htf)
+        except Exception as e:
+            htf_res = None
+            logger.warning("%s 4h背景复算失败（过滤降级放行）: %s", symbol, e)
+        if htf_res and htf_res.get("state") == "ranging":
+            return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
     # 关键位位表（docs/21 §8）：T3 回踩确认双对象之一。每币每轮现算一次
     # （500 根 1h 重放毫秒级，不缓存）；失败降级为空表 → 纯 EMA21 原行为
@@ -333,6 +346,27 @@ class Scanner:
             # 5. 写入结果（用独立 session，避免长时间扫描后主 session 连接失效）
             result_ids = self._save_results(scan_record_id, new_hits)
 
+            # 5.2 筛选命中飞书通知（2026-09-28，仅定时扫描——手动扫描用户在场，
+            # 不推送）。new_hits 已过重复命中抑制，只在真新命中时提醒；
+            # 失败只记日志不影响扫描与 AI 分析链路
+            if record.scan_type == "scheduled" and new_hits:
+                try:
+                    from app.services.actual_review import TRIGGER_FAMILY
+                    from app.services.feishu_bot import send_app_text
+                    from app.services.strategy.candlestick import PATTERN_LABEL_MAP
+                    lines = "\n".join(
+                        f"{h['symbol']}　"
+                        f"{TRIGGER_FAMILY.get(h.get('signal_type') or '', '未知信号')}"
+                        + (f"·{PATTERN_LABEL_MAP.get(h['pattern'], h['pattern'])}"
+                           if h.get("pattern") else "")
+                        + f"　质量分 {h.get('quality_score', 0)}"
+                        for h in new_hits[:8]
+                    )
+                    more = f"\n…等共 {len(new_hits)} 个" if len(new_hits) > 8 else ""
+                    send_app_text(f"🔎 定时扫描命中 {len(new_hits)} 个\n{lines}{more}")
+                except Exception:
+                    logger.exception("扫描命中飞书通知失败 #%s", scan_record_id)
+
             # 5.5 两段式 pending 处置（docs/19 §4.2）：确认回写 scan_result_id、
             # upsert/终态落库。放在 _save_results 之后以便 confirm 关联新记录 id
             if pending_ops:
@@ -418,6 +452,7 @@ class Scanner:
             raise
         finally:
             sdb.close()
+        return result_ids
 
     @staticmethod
     def _update_scan_status(

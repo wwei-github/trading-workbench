@@ -3,6 +3,7 @@
 支持形态：
 - 锤形线（Hammer）：长下影 + 小实体 + 短上影，出现在下跌末端
 - 倒锤形线（Inverted Hammer）：长上影 + 小实体 + 短下影，出现在下跌末端
+- 流星线（Shooting Star）：倒锤形（长上影冲高回落）的看跌判定，反抽压力位语境
 - 看涨吞没（Bullish Engulfing）：阳线实体完全包住前根阴线实体
 - 看跌吞没（Bearish Engulfing）：阴线实体完全包住前根阳线实体
 - 启明星（Morning Star）：三根形态，阴线 + 小实体 + 阳线突破
@@ -412,6 +413,23 @@ def detect_hanging_man(klines: list[list], idx: int = -1) -> Optional[dict]:
     return None
 
 
+def detect_shooting_star(klines: list[list], idx: int = -1) -> Optional[dict]:
+    """流星线：倒锤形（长上影冲高回落）的看空语境判定
+
+    形状与倒锤形线完全相同（长上影 + 小实体 + 短下影），区别仅在语境：
+    反抽压力位/EMA21 受阻回落时为看跌（2026-09-28 起替代上吊线进入看空
+    金K清单——反抽受阻的语义锚是"冲高回落长上影"）。顶部不限于近期区间
+    高位（顶部也可以是压力位），锚定语境由触发层保证（指标多数决定方向 +
+    信号K线触碰 EMA21/关键位收回防守侧 + 悬空金K拦截），检测器仅做形状
+    判定——与锤形线无位置门控对称；同形双报（倒锤形线/流星线并列）与
+    锤形线/上吊线对的设计一致。
+    """
+    shape = detect_inverted_hammer(klines, idx)
+    if not shape:
+        return None
+    return {"pattern": "shooting_star", "direction": "bearish", "strength": shape["strength"]}
+
+
 def detect_harami_breakout(klines: list[list], idx: int = -1) -> Optional[dict]:
     """孕线突破（三根 K 线）
 
@@ -470,16 +488,21 @@ def detect_harami_breakout(klines: list[list], idx: int = -1) -> Optional[dict]:
     return None
 
 
-# ===== 12 金K 清单（与 docs/03-交易系统.md §6.2 对齐）=====
+# ===== 12 金K 清单（回踩金K按方向筛选，docs/03-交易系统.md §6.2 基础上有偏离）=====
 # 2026-09-12 精简：去掉刺透线/孕线突破/蜻蜓/乌云盖顶/墓碑（信号质量弱或与保留形态高度重叠），
 # 保留 6 种实体结构更明确的形态。检测函数保留（历史扫描结果展示用），仅不再参与信号判定
+# 2026-09-28 看空侧调整：上吊线 → 流星线——回踩金K的语义是"回撤/反抽到关键位后的
+# 反转确认"：看多回踩支撑配锤形线（长下影），看空反抽阻力配倒锤形线（长上影，即流星线），
+# 上吊线（长下影出现在顶部）与反抽受阻语义不符。看多三种维持不变。
+# 流星线仅形状判定（无区间高位门）：顶部=压力位/EMA21 反抽受阻的锚定语境
+# 由触发层方向门控 + 触碰/悬空拦截保证，不要求近期区间高位
 GOLDEN_12 = {
     # 看涨 3 种
     "hammer",              # 锤形线
     "bullish_engulfing",   # 看涨吞没
     "morning_star",        # 启明星
     # 看跌 3 种
-    "hanging_man",         # 上吊线
+    "shooting_star",       # 流星线（倒锤形出现在顶部）
     "bearish_engulfing",   # 看跌吞没
     "evening_star",        # 黄昏星
 }
@@ -491,6 +514,7 @@ PATTERN_LABEL_MAP = {
     "bearish_engulfing": "看跌吞没",
     "morning_star": "启明星",
     "evening_star": "黄昏星",
+    "shooting_star": "倒锤形线（流星）",
     "piercing_line": "刺透线",
     "dark_cloud_cover": "乌云盖顶",
     "bullish_harami": "看涨孕线突破",
@@ -519,6 +543,7 @@ def detect_all_patterns(klines: list[list], idx: int = -2) -> list[dict]:
         detect_dark_cloud_cover,
         detect_doji,
         detect_hanging_man,
+        detect_shooting_star,
         detect_harami_breakout,
     ]:
         try:

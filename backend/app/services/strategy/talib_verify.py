@@ -26,6 +26,7 @@ _TALIB_MAP = {
     "bullish_engulfing": ("CDLENGULFING", "bullish"),
     "morning_star": ("CDLMORNINGSTAR", "bullish"),
     # 看跌
+    "shooting_star": ("CDLSHOOTINGSTAR", "bearish"),
     "hanging_man": ("CDLHANGINGMAN", "bearish"),
     "bearish_engulfing": ("CDLENGULFING", "bearish"),
     "evening_star": ("CDLEVENINGSTAR", "bearish"),
