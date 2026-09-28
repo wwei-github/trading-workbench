@@ -281,8 +281,11 @@ def trigger_ai_analysis(
 ):
     """触发 AI 分析（全量或单币）"""
     cfg = _get_system_config(db)
-    # 检查：数据库开关打开 + 后端已配置 API_KEY
-    if not cfg.ai_analysis_enabled or not settings.AI_API_KEY:
+    # 手动单币重分析（scan_result_id 非空）不受「筛选后自动 AI 分析」开关限制，
+    # 仅要求已配置 API_KEY；无 scan_result_id 的全量触发仍受开关约束（批量自动分析语义）
+    if not settings.AI_API_KEY or (
+        not body.scan_result_id and not cfg.ai_analysis_enabled
+    ):
         raise HTTPException(status_code=403, detail="AI 分析未启用或未配置 API Key")
 
     record = db.get(ScanRecord, scan_id)
@@ -991,8 +994,9 @@ def get_klines(
 def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
     """手动分析任意币种（搜索币种页签）：拉取 K 线后同步调用 AI，返回结构化建议"""
     cfg = _get_system_config(db)
-    if not cfg.ai_analysis_enabled or not settings.AI_API_KEY:
-        raise HTTPException(status_code=403, detail="AI 分析未启用或未配置 API Key")
+    # 手动分析不受「筛选后自动 AI 分析」开关限制，仅要求已配置 API_KEY
+    if not settings.AI_API_KEY:
+        raise HTTPException(status_code=403, detail="未配置 AI API Key，无法分析")
 
     symbol = normalize_symbol(body.symbol)
     pool = ExchangePool()

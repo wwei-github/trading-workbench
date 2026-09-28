@@ -114,7 +114,8 @@ function AiProgressPanel({ scanResultId }: { scanResultId: string }) {
 
 /**
  * AI 分析展开内容（扫描结果行展开 / 关注列表行展开共用）：
- * 未开启提示 → 分析中（流式进度）→ 无结果（补充说明 + 分析按钮）→ 已有结果（卡片 + 重新分析）
+ * 分析中（流式进度）→ 无结果（补充说明 + 分析按钮）→ 已有结果（卡片 + 重新分析）。
+ * 手动单币分析不受「筛选后自动 AI 分析」开关限制，开关关闭时仍可手动触发。
  * 分析结束后仅展示分析结果（进度面板随 loading 结束而消失）。
  */
 export default function AiExpandContent({
@@ -127,14 +128,6 @@ export default function AiExpandContent({
   onTrigger,
   scanResultId,
 }: Props) {
-  if (!aiEnabled) {
-    return (
-      <div style={{ textAlign: "center", padding: "20px 0" }}>
-        <Text type="secondary">AI 分析未开启</Text>
-      </div>
-    );
-  }
-
   // 分析进行中：流式展示进度（替代结果卡片，结束后仅展示结果）
   if (loading) {
     return (
@@ -173,6 +166,11 @@ export default function AiExpandContent({
             showIcon
             style={{ marginBottom: 12, textAlign: "left" }}
           />
+        )}
+        {!aiEnabled && (
+          <Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
+            自动 AI 分析已关闭，可手动分析
+          </Text>
         )}
         <Input.TextArea
           rows={2}

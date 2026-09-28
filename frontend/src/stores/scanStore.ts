@@ -251,9 +251,8 @@ export const useScanStore = create<ScanState>((set, get) => ({
         resultsPageSize: ps,
         currentScanId: newScanId,
       })
-      // 如果 AI 开启且有扫描 ID，只加载已有 AI 分析结果（不自动触发）
-      const cfg = get().aiConfig
-      if (cfg?.ai_analysis_enabled && newScanId) {
+      // 加载已有 AI 分析结果（展示与自动分析开关无关，有数据就展示）
+      if (newScanId) {
         await get().fetchAiAnalyses(newScanId)
       }
     } catch (e) {
