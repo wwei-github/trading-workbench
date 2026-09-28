@@ -120,14 +120,40 @@ SIGNAL_TYPE_LABELS = {
     "breakout": "放量突破（收盘破 Donchian 通道 + 放量）",
     # 指标驱动筛选（2026-09-17）：触发器类型（方向已由指标多数决确定）；
     # 括号内注明程序已验证的入场门槛（2026-09-25 三重收紧 + docs/19 两段式），AI 据此评估信号质量
-    "trigger_breakout": "指标同向·Donchian突破触发（程序已验证：收盘越轨≥0.2%·放量≥1.2×20根均量·长实体且单侧影线≤实体20%，近光头光脚）",
+    "trigger_breakout": "指标同向·Donchian突破触发",
     "trigger_candlestick": "指标同向·K线形态触发",
     "trigger_pullback": "指标同向·回踩EMA21触发（旧类型，已被两段式金K确认取代，仅历史数据）",
     # 两段式回踩确认（2026-09-25，docs/19）：回踩触碰后等金K确认才入场
-    "trigger_pullback_confirm": "指标同向·回踩EMA21后金K确认（上一根触碰EMA21企稳、当根出现同向金K才入场，程序已验证）",
+    "trigger_pullback_confirm": "指标同向·回踩EMA21后金K确认（上一根触碰EMA21企稳、当根出现同向金K才入场）",
     "unknown": "未分类",
     "manual_search": "手动搜索",
 }
+
+
+def render_signal_gate_block(signal_type: str) -> str:
+    """触发器入场门槛说明（2026-09-28 动态化）：阈值读 scan_filters 生效值，
+    消除与页面筛选配置的文本分叉（此前 0.2%/1.2× 硬编码，页面改配置后
+    AI 看到的口径与程序实际闸门不一致）。仅触发器类型输出，其他类型空串。"""
+    if signal_type not in ("trigger_breakout", "trigger_candlestick",
+                           "trigger_pullback", "trigger_pullback_confirm"):
+        return ""
+    from app.services.scan_filters import resolve_scan_filters
+    flt = resolve_scan_filters(None)  # 任务侧无 cfg 行时按 env/代码默认
+    lines = [
+        "程序入场门槛（已程序化验证，评估信号质量时以此为基准而非自行估算）:",
+        f"- Donchian 通道: 收盘越过 {flt.breakout_channel_bars} 根高低轨",
+        f"- 突破幅度: ≥{flt.breakout_threshold * 100:.1f}%（毛边不算）"
+        + (f"，>{flt.breakout_max_pct:.1f}% 视为追高不触发" if flt.breakout_max_pct > 0 else "，追高上限未启用"),
+        f"- 放量: 信号K线量 ≥ 近20根均量 {flt.breakout_vol_ratio:g} 倍",
+        "- 突破K线形态: 长实体（≥75%全长）且单侧影线 ≤实体20%，近光头光脚",
+    ]
+    if flt.candle_max_ema21_dist_pct > 0:
+        lines.append(
+            f"- 悬空金K拦截: 纯金K距 EMA21 >{flt.candle_max_ema21_dist_pct:.1f}% 不触发"
+            "（触及关键位仍放行）"
+        )
+    return "\n".join(lines) + "\n"
+
 
 SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信号与近期K线数据，给出是否开单的建议。
 直接输出JSON，不要思考过程，不要markdown包裹。
@@ -160,10 +186,14 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 - risk_reward_ratio: take_profit_1 的盈亏比，2位小数。
 - position_pct: 建议名义仓位占账户资金百分比，2位小数。程序会按固定亏损复算覆盖
   （单笔止损预算={risk_label}：仓位=预算÷止损距离），此处报估算值即可。
-- recommendation: 推荐程度，0-100的整数。skip 时≤30，suggest 时≥50
+- recommendation: 推荐程度，0-100的整数。skip 时≤30，suggest 时≥50。锚点（评分需可区分强度）：
+  50=仅勉强达标（单一条件满足，无共振）；70=多重共振（趋势+位置/量能两项以上同向）；
+  85+=强信号（趋势+关键位+盈亏比三重共振且历史战绩同家族胜率不差）。中间分数线性内插。
 - analysis: ≤300字中文推理，用"1. 2. 3."序号逐条展示，每条独占一行（JSON内换行写\\n），格式如下：
   先逐条列出满足的条件（如：1. EMA多头排列，趋势向上 2. 回踩支撑位企稳，触及2次）；
   再列出不满足的条件或风险点；最后一条写明确结论（如：4. 结论：建议开单，盈亏比与趋势背景共振）。
+  trade_decision="skip" 时 analysis 只写一句总括（如：信号强度不足且盈亏比不佳，不建议开单），
+  具体理由已在 skip_reason 逐条列出，勿重复。
 
 {_RULE_STRUCT}
 
@@ -208,6 +238,7 @@ def analyze_coin(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
+    track_record: str = "",
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -218,12 +249,13 @@ def analyze_coin(
     user_input: 本次分析的用户补充说明（要求/持仓计划/个人观点），附加到用户提示词
     htf_klines: 可选 4h 高周期 K 线（大方向背景；None 时注入块缺省 4h 行）
     risk_*: 止损金额模式口径（2026-09-27），仅 risk_label 注入提示词
+    track_record: 战绩回注块（2026-09-28），调用方生成，空串不注入
     """
     client = _get_client()
     return _call_llm(
         client,
         _build_messages(signal, klines, strategy_prompt, user_input, htf_klines,
-                        risk_label=risk_label),
+                        risk_label=risk_label, track_record=track_record),
     )
 
 
@@ -232,13 +264,19 @@ def _build_messages(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
     risk_label: str = "",
+    track_record: str = "",
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
 
     risk_label（2026-09-27 止损金额模式）：单笔止损预算文案，注入系统提示词
-    仓位口径说明；空时用默认百分比口径。"""
-    # 取最近 60 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-61:-1]）
-    recent = klines[-61:-1] if len(klines) >= 61 else klines[:-1]
+    仓位口径说明；空时用默认百分比口径。
+    track_record（2026-09-28 战绩回注）：同触发类型历史胜率/EV 块，调用方
+    （ai_tasks）经 review_stats_inject 生成，空串时不占位。"""
+    # 取最近 40 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-41:-1]）。
+    # 60→40（2026-09-28）：CSV 是 user 消息 token 大头（60 根 ≈5000+），思考型模型
+    # reasoning 时长与输入量正相关；浓缩结论（指标/摆动/关键位块）已覆盖形态识别所需，
+    # 窗口内 EMA/MACD 等指标块照常现算不受影响
+    recent = klines[-41:-1] if len(klines) >= 41 else klines[:-1]
     # 每根K线自带成交量与成交额（quote_vol，USDT），与 Agent 管线同格式
     kline_summary = "\n".join(
         f"{int(k[0]/1000)},{k[1]},{k[2]},{k[3]},{k[4]},{k[5]},{k[7]}" for k in recent
@@ -292,6 +330,8 @@ def _build_messages(
         f"突破幅度: {signal['breakout_pct']:.2f}%\n"
         f"K线形态: {signal.get('pattern') or '无'}\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
+        f"{track_record}"
+        f"{render_signal_gate_block(signal['signal_type'])}"
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
         f"量能: {vol_desc}\n"
         f"{ema_summary}"
@@ -312,7 +352,8 @@ def _build_messages(
     skill_block = skill_library.render_matched(skill_library.build_facts(signal, klines))
     if skill_block:
         system_prompt += (
-            "\n\n以下技能与当前信号命中相关（use_when 条件已程序判定），请遵循其规则：\n"
+            "\n\n以下技能与当前信号命中相关（use_when 条件已程序判定），请遵循其规则"
+            "（优先级：用户自定义策略 > 技能规则 > 默认纪律，冲突时取高优先级）：\n"
             f"{skill_block}"
         )
     if strategy_prompt:
@@ -360,16 +401,18 @@ def analyze_with_guard(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
+    track_record: str = "",
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
     返回值为校验修正后的决策 dict（rr/position_pct 为程序复算值），可直接落库。
     risk_*（2026-09-27 止损金额模式）：risk_label 注入提示词；fixed 模式下
     risk_amount 作为预算实额传入仓位复算（与开仓引擎同口径）。
+    track_record（2026-09-28 战绩回注）：透传 _build_messages。
     """
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
-        htf_klines=htf_klines, risk_label=risk_label,
+        htf_klines=htf_klines, risk_label=risk_label, track_record=track_record,
     )
     client = _get_client()
     _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None

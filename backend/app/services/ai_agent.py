@@ -33,6 +33,7 @@ from app.services.ai_analyzer import (
     _RULE_VOTE,
     SIGNAL_TYPE_LABELS,
     render_key_levels_block,
+    render_signal_gate_block,
 )
 
 logger = logging.getLogger(__name__)
@@ -465,6 +466,7 @@ def analyze_coin_agent(
     progress_cb=None,
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
+    track_record: str = "",
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -499,7 +501,8 @@ def analyze_coin_agent(
             "===== 自定义策略结束 ====="
         )
 
-    user_msg = _build_user_msg(signal, klines, ema, atr, user_input, htf_klines)
+    user_msg = _build_user_msg(signal, klines, ema, atr, user_input, htf_klines,
+                               track_record=track_record)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
@@ -609,9 +612,11 @@ def _build_facts(signal: dict, klines: list, atr: float) -> dict:
 def _build_user_msg(
     signal: dict, klines: list, ema: Optional[dict], atr: float,
     user_input: Optional[str], htf_klines: Optional[list] = None,
+    track_record: str = "",
 ) -> str:
     closed = klines[:-1] if len(klines) >= 2 else klines
-    recent = closed[-60:]
+    # 40 根与 P0 管线同口径（60→40，2026-09-28 缩 token 提速，见 ai_analyzer._build_messages）
+    recent = closed[-40:]
     # 每根K线自带成交量与成交额（quote_vol，USDT），不再给汇总口径
     kline_summary = "\n".join(
         f"{int(k[0]/1000)},{k[1]},{k[2]},{k[3]},{k[4]},{k[5]},{k[7]}" for k in recent
@@ -645,6 +650,8 @@ def _build_user_msg(
         f"K线形态: {signal.get('pattern') or '无'}（位置: "
         f"{POSITION_LABEL_MAP.get(signal.get('position') or '', signal.get('position') or '未知')}）\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
+        f"{track_record}"
+        f"{render_signal_gate_block(signal['signal_type'])}"
         f"信号强度: {signal.get('strength', '—')}\n"
         f"量能: {vol_desc}\n"
         f"ATR(14): {atr:.6g}\n"

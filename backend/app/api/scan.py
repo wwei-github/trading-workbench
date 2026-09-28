@@ -1103,9 +1103,13 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
     try:
         from app.services.risk_budget import resolve_risk_budget
         _rm, _ra, _rl = resolve_risk_budget(cfg)
+        # 战绩回注（2026-09-28）：手动分析也带同触发类型历史胜率（manual_search
+        # 信号类型不在白名单，返回空串，开销可忽略）
+        from app.services.review_stats_inject import build_track_record_block
         ai_result = analyze_coin(
             signal, klines, strategy_prompt=strategy_prompt, htf_klines=htf_klines,
             risk_mode=_rm, risk_amount=_ra, risk_label=_rl,
+            track_record=build_track_record_block(db, signal["signal_type"]),
         )
         # 4h 强背景方向硬约束兜底（强多只开多/强空只开空）
         ai_result = enforce_htf_constraint(ai_result, htf_klines)

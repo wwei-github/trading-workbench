@@ -251,6 +251,10 @@ def run_ai_analysis_single(
         # 传给两管线统一提示词与仓位复算（risk_budget.resolve）
         from app.services.risk_budget import resolve_risk_budget
         _risk_mode, _risk_amount, _risk_label = resolve_risk_budget(cfg)
+        # 战绩回注（2026-09-28）：同触发类型近30日回放胜率/EV 注入提示词，
+        # AI 评估时参考历史表现（查询失败/样本<5 笔返回空串，不阻断）
+        from app.services.review_stats_inject import build_track_record_block
+        track_record = build_track_record_block(db, signal.get("signal_type") or "")
         # 管线选择：批量（每小时扫描自动触发/手动全量）固定走 P0 单次调用管线，
         # 不受「AI 管线」开关影响；仅手动单币重分析（force）跟随开关走 Agent 管线
         if cfg.ai_pipeline_enabled and force:
@@ -267,6 +271,7 @@ def run_ai_analysis_single(
                 risk_mode=_risk_mode,
                 risk_amount=_risk_amount,
                 risk_label=_risk_label,
+                track_record=track_record,
             )
         else:
             ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
@@ -278,6 +283,7 @@ def run_ai_analysis_single(
                 risk_mode=_risk_mode,
                 risk_amount=_risk_amount,
                 risk_label=_risk_label,
+                track_record=track_record,
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto
         if cfg.dual_judge_enabled:
