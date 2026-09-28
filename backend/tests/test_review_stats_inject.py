@@ -132,7 +132,7 @@ def test_expired_only_returns_empty():
 
 def test_gate_block_renders_live_thresholds():
     block = render_signal_gate_block("trigger_breakout")
-    assert "收盘越过 20 根高低轨" in block
+    assert "收盘越过最近一个未被突破的摆动结构前高" in block
     assert "≥0.2%" in block
     assert ">1.5% 视为追高" in block
     assert "1.2 倍" in block

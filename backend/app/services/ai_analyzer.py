@@ -79,7 +79,7 @@ SIGNAL_TYPE_LABELS = {
     "breakout": "放量突破（收盘破 Donchian 通道 + 放量）",
     # 指标驱动筛选（2026-09-17）：触发器类型（方向已由指标多数决确定）；
     # 括号内注明程序已验证的入场门槛（2026-09-25 三重收紧 + docs/19 两段式），AI 据此评估信号质量
-    "trigger_breakout": "指标同向·Donchian突破触发",
+    "trigger_breakout": "指标同向·突破前高触发（收盘越过未破的摆动结构前高）",
     "trigger_candlestick": "指标同向·K线形态触发",
     "trigger_pullback": "指标同向·回踩触发（旧类型，已被两段式金K确认取代，仅历史数据）",
     # 两段式回踩确认（2026-09-25，docs/19）：回踩触碰后等金K确认才入场；
@@ -103,11 +103,12 @@ def render_signal_gate_block(signal_type: str) -> str:
     lines: list[str] = []
     if signal_type == "trigger_breakout":
         lines += [
-            f"- Donchian 通道: 收盘越过 {flt.breakout_channel_bars} 根高低轨",
+            "- 突破位: 收盘越过最近一个未被突破的摆动结构前高（做多；做空=跌破前低对称）"
+            "——结构性破位才算突破，窗口滚动新高不算",
             f"- 突破幅度: ≥{flt.breakout_threshold * 100:.1f}%（毛边不算）"
             + (f"，>{flt.breakout_max_pct:.1f}% 视为追高不触发" if flt.breakout_max_pct > 0 else "，追高上限未启用"),
             f"- 放量: 信号K线量 ≥ 近20根均量 {flt.breakout_vol_ratio:g} 倍",
-            "- 突破K线形态: 长实体（≥75%全长）且单侧影线 ≤实体20%，近光头光脚",
+            "- 突破K线形态: 长实体占K线主体（实体 ≥75% 全长，影线可有但合计 ≤25%）",
         ]
     else:
         if signal_type in ("trigger_pullback", "trigger_pullback_confirm"):

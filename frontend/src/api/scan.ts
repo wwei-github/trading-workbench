@@ -6,7 +6,6 @@ const api = axios.create({ baseURL: '/api', timeout: 30000 })
 // 结果列表过滤条件（服务端过滤）
 export interface ResultFilters {
   signal_type?: string
-  position?: string
   pattern?: string
   ema_state?: string
 }

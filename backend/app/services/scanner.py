@@ -143,6 +143,7 @@ def detect_indicator_candidate(
     # 4h 震荡过滤（2026-09-28）：震荡背景无趋势方向，EMA 反复交叉下 1h 信号
     # 胜率塌陷，直接不进候选（连 AI 分析都不给）。4h 拉取失败（htf=None）
     # 不过滤——数据缺失降级放行，与第 7 票降级口径一致
+    htf_res = None
     if htf:
         try:
             htf_res = analyze_htf_background(htf)
@@ -153,6 +154,13 @@ def detect_indicator_candidate(
             return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
     direction = 1 if votes["net"] > 0 else -1
+    # 4h 方向一致性门（2026-09-28）：4h 有趋势方向（bullish/bearish）时，1h 信号
+    # 方向必须与 4h 一致——4h 看多只产生多头信号，回踩确认金K 自然只会是看涨吞没/
+    # 锤形线/启明星等看涨形态（4h 看空对称）。纠缠（mixed，dir=0）不设限；
+    # 4h 拉取/复算失败（htf_res=None）降级放行，与上方过滤同口径。
+    # 与 4h 冲突的活跃 pending 不可能被确认（金K 方向跟着多数决走），按方向失守过期
+    if htf_res and htf_res.get("dir") and direction != htf_res["dir"]:
+        return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
     trig, pending_op = detect_trigger(klines, direction, pending, flt=flt, retest=retest)
     if trig is not None:
         # T1 突破 → 破轨事件动作（docs/22 §4）：白名单过滤前记录——破轨是市场

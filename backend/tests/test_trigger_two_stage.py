@@ -18,7 +18,10 @@ from app.services.strategy.ema import calc_ema  # noqa: E402
 
 TS0 = 1716000000000  # ms
 STEP = 3_600_000     # 1h
-CHAN = 20            # BREAKOUT_CHANNEL_BARS 默认窗口
+# _base 微扰序列的摆动结构（收盘价口径 pivot：i%5==4 为高点、i%5==0 为低点），
+# 2026-09-28 突破位改摆动结构口径——最近未破前高/前低
+SWING_HIGH = 100.04
+SWING_LOW = 100.00
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +29,6 @@ def _pin_breakout_settings(monkeypatch):
     """固定突破门槛与新增上限，免疫本地 .env 覆盖（pydantic-settings 优先级高于默认值）"""
     monkeypatch.setattr(settings, "BREAKOUT_THRESHOLD", 0.002)
     monkeypatch.setattr(settings, "BREAKOUT_VOL_RATIO", 1.2)
-    monkeypatch.setattr(settings, "BREAKOUT_CHANNEL_BARS", 20)
     monkeypatch.setattr(settings, "BREAKOUT_MAX_PCT", 1.5)
     monkeypatch.setattr(settings, "CANDLE_MAX_EMA21_DIST_PCT", 1.5)
 
@@ -80,22 +82,20 @@ def _touch_long(kl: list[list]) -> None:
 
 
 def _breakout_long(kl: list[list]) -> None:
-    """光头光脚放量长实体突破K线：收盘高于20根上轨约0.5%，量1.5倍均量"""
-    chan_high = max(float(k[2]) for k in kl[-2 - CHAN:-2])
+    """光头光脚放量长实体突破K线：收盘高于摆动前高约0.5%，量1.5倍均量"""
     o = float(kl[-3][4])
-    c = chan_high + 0.5
+    c = SWING_HIGH + 0.5
     ts, _, _, _, _, _, qv = kl[-2]
     kl[-2] = [ts, o, c, o, c, 150.0, qv]
 
 
 def _breakout_short(kl: list[list]) -> None:
-    """空头版：光头光脚放量长实体阴线，收盘低于20根下轨约0.5%
+    """空头版：光头光脚放量长实体阴线，收盘低于摆动前低约0.5%
 
     阴线 c < o：high=open、low=close（与阳线夹具的列序相反，勿混用）
     """
-    chan_low = min(float(k[3]) for k in kl[-2 - CHAN:-2])
     o = float(kl[-3][4])
-    c = chan_low - 0.5
+    c = SWING_LOW - 0.5
     ts, _, _, _, _, _, qv = kl[-2]
     kl[-2] = [ts, o, o, c, c, 150.0, qv]
 
@@ -175,12 +175,11 @@ def test_row1_breakout_with_flipped_pending_expires_as_flip():
 # ── 突破三重收紧（2026-09-25）：幅度 / 量能 / 长实体短影线 ──────────────────
 
 def test_row1_breakout_rejected_small_move():
-    """毛边突破：收盘仅高于上轨 0.05%（< 0.2% 门槛）→ 不触发；
+    """毛边突破：收盘仅高于前高 0.05%（< 0.2% 门槛）→ 不触发；
     K线跨越 EMA21 落入回踩触碰分支 → upsert pending（正确的管线落空行为）"""
     kl = _kl(*_base())
-    chan_high = max(float(k[2]) for k in kl[-2 - CHAN:-2])
     o = float(kl[-3][4])
-    c = chan_high * (1 + 0.0005)
+    c = SWING_HIGH * (1 + 0.0005)
     _set_breakout_candle(kl, open_=o, close=c, high=c, low=o)
     with patch.object(trig, "detect_all_patterns", return_value=[]):
         t, op = trig.detect_trigger(kl, 1)
@@ -190,9 +189,8 @@ def test_row1_breakout_rejected_small_move():
 def test_row1_breakout_rejected_low_volume():
     """缩量突破：量比 1.0（< 1.2 门槛）→ 不触发，落空转 pending"""
     kl = _kl(*_base())
-    chan_high = max(float(k[2]) for k in kl[-2 - CHAN:-2])
     o = float(kl[-3][4])
-    c = chan_high + 0.5
+    c = SWING_HIGH + 0.5
     _set_breakout_candle(kl, open_=o, close=c, high=c, low=o, vol=100.0)
     with patch.object(trig, "detect_all_patterns", return_value=[]):
         t, op = trig.detect_trigger(kl, 1)
@@ -200,24 +198,34 @@ def test_row1_breakout_rejected_low_volume():
 
 
 def test_row1_breakout_rejected_long_upper_shadow():
-    """长上影突破：上影 0.25 > 实体 0.80 的 20% → 不触发（防毛刺假突破），落空转 pending"""
+    """长上影突破：上影把实体占比压到 0.67 < 0.75 门槛 → 不触发，落空转 pending"""
     kl = _kl(*_base())
-    chan_high = max(float(k[2]) for k in kl[-2 - CHAN:-2])
     o = float(kl[-3][4])
-    c = chan_high + 0.5
+    c = SWING_HIGH + 0.5
     _set_breakout_candle(kl, open_=o, close=c, high=c + 0.25, low=o)
     with patch.object(trig, "detect_all_patterns", return_value=[]):
         t, op = trig.detect_trigger(kl, 1)
     assert t is None and op is not None and op["op"] == "upsert"
 
 
+def test_row1_breakout_short_shadow_allowed():
+    """影线短但非零：单侧上影 22% 全长、实体 78% 占主体 → 放行触发
+    （2026-09-28 放宽影线口径：不再要求近光头光脚，主体占比即影线约束）"""
+    kl = _kl(*_base())
+    o = float(kl[-3][4])
+    c = o + 0.78  # 实体 0.78 / 全长 1.00 = 78% ≥ 75%
+    _set_breakout_candle(kl, open_=o, close=c, high=c + 0.22, low=o)
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is not None and t["type"] == trig.BREAKOUT
+
+
 def test_row1_breakout_rejected_small_body():
     """短实体突破：实体/全长 0.72 < 0.75 门槛 → 不触发；
     整根悬于 EMA21 上方不构成回踩 → 观察池"""
     kl = _kl(*_base())
-    chan_high = max(float(k[2]) for k in kl[-2 - CHAN:-2])
     o = float(kl[-3][4]) + 0.55
-    c = chan_high + 0.5
+    c = SWING_HIGH + 0.5
     _set_breakout_candle(kl, open_=o, close=c, high=c + 0.05, low=o - 0.05)
     with patch.object(trig, "detect_all_patterns", return_value=[]):
         t, op = trig.detect_trigger(kl, 1)
@@ -225,7 +233,7 @@ def test_row1_breakout_rejected_small_body():
 
 
 def test_row1_breakout_short_symmetric_positive():
-    """空头正向：光头光脚放量长实体阴线跌破下轨 ≥0.2% → 触发 BREAKOUT（position=support）"""
+    """空头正向：长实体放量阴线跌破前低 ≥0.2% → 触发 BREAKOUT（position=support）"""
     kl = _kl(*_base())
     _breakout_short(kl)
     with patch.object(trig, "detect_all_patterns", return_value=[]):
@@ -434,10 +442,9 @@ def test_row4_distance_gate_disabled_triggers_candlestick(monkeypatch):
 # ── 突破幅度上限（2026-09-27 正式网复盘，B 项）─────────────────────────────
 
 def _far_breakout_candle(kl: list[list], pct: float) -> None:
-    """光头光脚放量长实体突破K线，收盘越上轨 pct%（形态/量能均过三门槛，
+    """光头光脚放量长实体突破K线，收盘越前高 pct%（形态/量能均过三门槛，
     仅幅度变量隔离测试上限判定）；影线留足余量避开浮点边界"""
-    chan_high = max(float(k[2]) for k in kl[-2 - CHAN:-2])
-    c = chan_high * (1 + pct / 100)
+    c = SWING_HIGH * (1 + pct / 100)
     _set_breakout_candle(kl, open_=c - 0.1, close=c, high=c, low=c - 0.11, vol=150.0)
 
 
@@ -472,10 +479,9 @@ def test_row1_breakout_max_disabled_allows_far_breakout(monkeypatch):
 
 
 def test_row1_breakout_over_max_short_symmetric_rejected():
-    """空头对称：越下轨 2% 超上限 → 不触发"""
+    """空头对称：破前低 2% 超上限 → 不触发"""
     kl = _kl(*_base())
-    chan_low = min(float(k[3]) for k in kl[-2 - CHAN:-2])
-    c = chan_low * (1 - 0.02)
+    c = SWING_LOW * (1 - 0.02)
     _set_breakout_candle(kl, open_=c + 0.1, close=c, high=c + 0.11, low=c, vol=150.0)
     with patch.object(trig, "detect_all_patterns", return_value=[]):
         t, op = trig.detect_trigger(kl, -1)

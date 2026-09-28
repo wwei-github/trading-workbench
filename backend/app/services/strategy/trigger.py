@@ -3,7 +3,7 @@
 
 方向由技术指标多数决确定（technical.compute_indicator_votes），本模块只回答
 "此刻是否出现与候选方向一致的入场触发"：
-- T1 trigger_breakout：收盘越过 Donchian 通道（BREAKOUT_CHANNEL_BARS 根高低轨）
+- T1 trigger_breakout：收盘越过最近未破的摆动结构前高（做多；做空=前低对称），
   三重收紧：最小幅度 BREAKOUT_THRESHOLD + 放量 BREAKOUT_VOL_RATIO + 长实体短影线形态
 - T2 trigger_candlestick：信号K线（klines[-2]）出现 GOLDEN_12 形态且方向一致
 - T3 trigger_pullback_confirm：回踩触点企稳 + 同向金K 两段式确认——
@@ -11,7 +11,7 @@
   仅触碰无金K 不再当根触发，转入 pending 待确认池（scanner 持久化）
 
 回踩触点（docs/22 §2，启用白名单见 ScanFilters.pullback_touch_refs）：
-- retest  突破回测位：Donchian 破轨价（scanner 维护 breakout_events，T1 触发时记录），
+- retest  突破回测位：前高/前低破位价（scanner 维护 breakout_events，T1 触发时记录），
   影线可入带、收盘须守住——回踩不破 = 突破有效性确认
 - swing   摆动结构位：最近的 HL（多）/LH（空）防守位，只认结构延续标签
 - ema21   趋势动态价值区（原口径，不加门，行为与 docs/19 完全一致）
@@ -67,18 +67,18 @@ TOUCH_LABELS = {
 # 摆动结构位时效门：防守点太老（>40 根前确认）防守意义衰减
 SWING_MAX_BARS_AGO = 40
 
-# 突破K线形态门槛：长实体、影线几乎不可见（光头光脚，防长影毛刺假突破）
+# 突破K线形态门槛（2026-09-28 口径）：长实体占据K线主体，影线可有但要短——
+# 实体 ≥75% 全长即影线合计 ≤25%，不再单独限制单侧影线（防长影毛刺由主体占比承担）
 BREAKOUT_BODY_RANGE_MIN = 0.75   # 实体/K线全长 ≥ 0.75
-BREAKOUT_SHADOW_BODY_MAX = 0.20  # 单侧影线 ≤ 实体的 20%
 
 
 def _is_solid_breakout_candle(klines: list[list], direction: int) -> bool:
-    """突破K线必须为顺向长实体、影线几乎不可见。
+    """突破K线必须为顺向长实体，影线可有但要短（2026-09-28 口径）。
 
-    量化（2026-09-25 突破策略收紧）：
+    量化（2026-09-25 突破策略收紧，2026-09-28 放宽影线口径）：
     - 顺向实体：做多要求阳线（close>open），做空要求阴线（close<open）
-    - 长实体：|close-open| / (high-low) ≥ 0.75
-    - 短影线：上影与下影各 ≤ 实体的 20%（接近光头光脚）
+    - 长实体：|close-open| / (high-low) ≥ 0.75——实体占据 K 线主体，
+      影线合计 ≤25% 即天然短影线，不做单侧影线额外限制
     """
     o = float(klines[-2][1])
     h = float(klines[-2][2])
@@ -92,11 +92,7 @@ def _is_solid_breakout_candle(klines: list[list], direction: int) -> bool:
         return False
     if direction == -1 and c >= o:
         return False
-    if body / rng < BREAKOUT_BODY_RANGE_MIN:
-        return False
-    upper = h - max(o, c)
-    lower = min(o, c) - l
-    return upper <= BREAKOUT_SHADOW_BODY_MAX * body and lower <= BREAKOUT_SHADOW_BODY_MAX * body
+    return body / rng >= BREAKOUT_BODY_RANGE_MIN
 
 
 def _detect_ema_touch(
@@ -227,6 +223,28 @@ def _detect_swing_touch(
     return lvl if (high_last >= lvl * (1 - band) and close_last <= lvl) else None
 
 
+def _unbroken_pivot_level(swings: list[dict], klines: list[list], high: bool) -> Optional[float]:
+    """最近一个自形成以来未被收盘价突破的摆动极值位（新→旧扫描，2026-09-28）。
+
+    swings 为 recent_swings(klines[:-1]) 的 highs/lows（按 bars_ago 新→旧，相对
+    最后一根已收盘根）；摆动点为收盘价口径、两侧各 3 根确认。判定区间 =
+    摆动K线后一根 ~ 信号K线前一根（klines[idx+1:-2]）：做高向任一收盘 > 该位
+    即前高已破，做空向任一收盘 < 该位即前低已破（收盘恰等于该位是触碰不是破位），
+    继续向更旧一个找。全部已破（强趋势连续新高）返回 None——
+    无结构前高可破，不触发突破信号。"""
+    n_bars = len(klines)
+    for s in swings:
+        idx = n_bars - 2 - int(s["bars_ago"])
+        level = float(s["price"])
+        if idx < 0 or idx >= n_bars - 2:
+            continue
+        seg = [float(k[4]) for k in klines[idx + 1:n_bars - 2]]
+        broken = any(c > level for c in seg) if high else any(c < level for c in seg)
+        if not broken:
+            return level
+    return None
+
+
 def _close_op(pending: Optional[dict], direction: int, supersede_reason: str) -> Optional[dict]:
     """pending 终态处置（行1/行2 路径）：方向反转一律 expire(direction_flip)——
     死因是票崩而非被抢先，审计语义优先；同方向被更强触发（T1 突破/当根确认）
@@ -284,49 +302,51 @@ def detect_trigger(
         except (IndexError, TypeError, ValueError, OSError):
             pending_valid = False
 
-    # T1 Donchian 突破（窗口不含信号K线自身与未收盘根，防"自己破自己"）。
-    # 三重收紧（2026-09-25）：① 最小突破幅度 BREAKOUT_THRESHOLD（毛边不算）
-    # ② 放量 BREAKOUT_VOL_RATIO（量比 ≥ 近20根均量1.2倍）
-    # ③ 长实体短影线形态（光头光脚，防长影毛刺）；任一不满足 → 落入金K/回踩分支
-    # 幅度上限（2026-09-27 正式网复盘）：越过轨 >BREAKOUT_MAX_PCT（默认 1.5%）视为
-    # 追高——突破类 ≥2% 的 9 笔 7 亏（-0.21R），大幅突破追入负期望；跳过 T1 判定，
-    # 落回金K/回踩分支（趋势日后续回踩 EMA21+金K 由 T3 接住）。0=关闭。
-    # 突破返回携带 breakout_level（被穿轨价）与 candle_open（信号K线开盘），
-    # scanner 据此维护 breakout_events（回测触点的事实源，docs/22 §4）。
-    chan_n = flt.breakout_channel_bars
-    if n >= chan_n + 2:
-        window = klines[-2 - chan_n:-2]
-        chan_high = max(float(k[2]) for k in window)
-        chan_low = min(float(k[3]) for k in window)
+    # T1 结构突破（2026-09-28 改口径）：突破位 = 最近一个自形成以来未被收盘价
+    # 突破的摆动结构前高（做多）/前低（做空）——收盘越过它才算真突破，是 N 字/
+    # 趋势延续的结构性破位，而非窗口滚动新高（趋势日每根都在破，无结构意义）。
+    # 保留既有闸门：① 最小突破幅度（毛边不算）② 放量 ③ 长实体短影线（实体≥75%全长）；
+    # 追高上限改按前高/前低衡量（越过 >1.5% 视为追高，落回金K/回踩分支，0=关闭）。
+    # 突破返回携带 breakout_level（前高/前低价）与 candle_open（信号K线开盘），
+    # scanner 据此维护 breakout_events（回测触点=前高回测的事实源，docs/22 §4）。
+    if n >= 30:
+        # 摆动结构取信号K线之前的已收盘K线（klines[:-1]）——信号K线是潜在破位者，
+        # 不参与结构检测，否则其极值收盘会杀死邻近 pivot（如破位阴线压掉前低）
+        swings = recent_swings(klines[:-1], order=3, n=10)
         vr = volume_ratio(klines)
         max_brk = flt.breakout_max_pct
-        over_max = (
-            (direction == 1 and close_last > chan_high * (1 + max_brk / 100))
-            or (direction == -1 and close_last < chan_low * (1 - max_brk / 100))
-        ) if max_brk > 0 else False
-        if (_is_solid_breakout_candle(klines, direction)
-                and vr >= flt.breakout_vol_ratio and not over_max):
-            sig_open = datetime.utcfromtimestamp(float(klines[-2][0]) / 1000)
-            if direction == 1 and close_last >= chan_high * (1 + flt.breakout_threshold):
-                return {
-                    "type": BREAKOUT, "direction": direction,
-                    "position": "resistance",
-                    "breakout_level": chan_high, "candle_open": sig_open,
-                    "pattern": None,
-                    "breakout_pct": (close_last - chan_high) / chan_high * 100,
-                    "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘突破{chan_n}根"
-                              f"Donchian上轨({chan_high:.6g})",
-                }, _close_op(pending, direction, "breakout")
-            if direction == -1 and close_last <= chan_low * (1 - flt.breakout_threshold):
-                return {
-                    "type": BREAKOUT, "direction": direction,
-                    "position": "support",
-                    "breakout_level": chan_low, "candle_open": sig_open,
-                    "pattern": None,
-                    "breakout_pct": (close_last - chan_low) / chan_low * 100,
-                    "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘跌破{chan_n}根"
-                              f"Donchian下轨({chan_low:.6g})",
-                }, _close_op(pending, direction, "breakout")
+        thr = flt.breakout_threshold
+        sig_open = datetime.utcfromtimestamp(float(klines[-2][0]) / 1000)
+        ref = None
+        if _is_solid_breakout_candle(klines, direction) and vr >= flt.breakout_vol_ratio:
+            ref = _unbroken_pivot_level(
+                swings["highs"] if direction == 1 else swings["lows"],
+                klines, high=(direction == 1),
+            )
+        if ref is not None:
+            over_max = (
+                (direction == 1 and close_last > ref * (1 + max_brk / 100))
+                or (direction == -1 and close_last < ref * (1 - max_brk / 100))
+            ) if max_brk > 0 else False
+            if not over_max:
+                if direction == 1 and close_last >= ref * (1 + thr):
+                    return {
+                        "type": BREAKOUT, "direction": direction,
+                        "position": "resistance",
+                        "breakout_level": ref, "candle_open": sig_open,
+                        "pattern": None,
+                        "breakout_pct": (close_last - ref) / ref * 100,
+                        "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘突破前高({ref:.6g})",
+                    }, _close_op(pending, direction, "breakout")
+                if direction == -1 and close_last <= ref * (1 - thr):
+                    return {
+                        "type": BREAKOUT, "direction": direction,
+                        "position": "support",
+                        "breakout_level": ref, "candle_open": sig_open,
+                        "pattern": None,
+                        "breakout_pct": (close_last - ref) / ref * 100,
+                        "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘跌破前低({ref:.6g})",
+                    }, _close_op(pending, direction, "breakout")
 
     # 并行计算当根同向金K（两段式确认证据，形态检测与触点判定解耦）
     patterns = detect_all_patterns(klines, idx=-2)

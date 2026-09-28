@@ -21,12 +21,10 @@ import { schemeTag } from "../utils/scheme";
 import {
   SIGNAL_TYPE_MAP,
   SIGNAL_TYPE_FILTERS,
-  POSITION_FILTERS,
   PATTERN_FILTERS,
   EMA_STATE_MAP,
   EMA_STATE_FILTERS,
   patternStyle,
-  positionTag,
 } from "../constants/labels";
 import { useState, useMemo, useEffect, useCallback } from "react";
 import KlineChart from "./KlineChart";
@@ -42,15 +40,37 @@ const TRADE_STATUS_LABEL: Record<string, string> = {
   FAILED: "开单失败",
 };
 
-// 回踩触点标签（docs/22 触点体系，与后端 trigger.TOUCH_LABELS 同源）：
-// retest=突破回测位 / swing=摆动结构位 / ema21=趋势价值区 / ema55·ema144=深回撤
-const TOUCH_TAG_MAP: Record<string, { label: string; color: string; tip: string }> = {
-  retest: { label: "回测", color: "geekblue", tip: "突破回测位：破轨后横向验证，结构意义最强" },
-  swing: { label: "结构", color: "purple", tip: "摆动结构位：最近 HL（多）/LH（空）防守位" },
-  ema21: { label: "EMA21", color: "gold", tip: "回踩 EMA21 趋势价值区企稳" },
-  ema55: { label: "EMA55", color: "orange", tip: "回踩 EMA55 深回撤价值区（数据/排列/斜率门已过）" },
-  ema144: { label: "EMA144", color: "volcano", tip: "回踩 EMA144 大周期深回撤价值区（数据/排列/斜率门已过）" },
+// 回踩触点（docs/22 触点体系，与后端 trigger.TOUCH_LABELS 同源）：
+// 颜色/悬停说明固定，展示文案由 touchLabel 按方向生成（EMA21 / 前高回测 / 摆动低点…）
+const TOUCH_TAG_MAP: Record<string, { color: string; tip: string }> = {
+  retest: { color: "geekblue", tip: "突破回测位：破轨后横向验证，结构意义最强" },
+  swing: { color: "purple", tip: "摆动结构位：最近 HL（多）/LH（空）防守位" },
+  ema21: { color: "gold", tip: "回踩 EMA21 趋势价值区企稳" },
+  ema55: { color: "orange", tip: "回踩 EMA55 深回撤价值区（数据/排列/斜率门已过）" },
+  ema144: { color: "volcano", tip: "回踩 EMA144 大周期深回撤价值区（数据/排列/斜率门已过）" },
 };
+
+// 回踩位置展示文案：EMA 触点直接显示周期；retest/swing 按方向给 前高/前低 措辞。
+// 方向推断：指标多数决净票（程序判定方向的真实依据）→ 趋势斜率符号兜底
+function touchLabel(ref: string, record: ScanResult): string {
+  if (ref === "ema21") return "EMA21";
+  if (ref === "ema55") return "EMA55";
+  if (ref === "ema144") return "EMA144";
+  const votes = record.votes_json;
+  const dir =
+    votes && votes.net !== 0
+      ? votes.net > 0
+        ? 1
+        : -1
+      : record.trend_slope > 0
+        ? 1
+        : record.trend_slope < 0
+          ? -1
+          : 0;
+  if (ref === "retest") return dir > 0 ? "前高回测" : dir < 0 ? "前低回测" : "突破回测位";
+  if (ref === "swing") return dir > 0 ? "摆动低点" : dir < 0 ? "摆动高点" : "摆动结构位";
+  return ref;
+}
 
 export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }) {
   const {
@@ -243,7 +263,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
   // 注意2：pagination 不要传 onChange——antd 筛选确认时会额外回调它，
   // 导致带着旧 filters 的重复请求竞态（UI 停留在重置前状态）。
   const filterProps = (
-    key: "signal_type" | "position" | "pattern" | "ema_state",
+    key: "signal_type" | "pattern" | "ema_state",
     options: { text: string; value: string }[],
   ) => ({
     filters: options,
@@ -256,7 +276,6 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
     if (extra.action === "filter") {
       setFilters({
         signal_type: (tableFilters.signal_type?.[0] as string) || undefined,
-        position: (tableFilters.position?.[0] as string) || undefined,
         pattern: (tableFilters.pattern?.[0] as string) || undefined,
         ema_state: (tableFilters.ema_state?.[0] as string) || undefined,
       });
@@ -367,33 +386,6 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       ),
     },
     {
-      title: "信号类型",
-      dataIndex: "signal_type",
-      key: "signal_type",
-      width: 108,
-      ...filterProps("signal_type", SIGNAL_TYPE_FILTERS),
-      render: (v: string, record: ScanResult) => {
-        const cfg = SIGNAL_TYPE_MAP[v] || { label: v, color: "default" };
-        // 触发原因挂信号类型悬停（突破/回踩行无 K线形态，原因只在这里可见）
-        // 回踩触点标签（docs/22）：retest=回测 / swing=结构 / ema21/55/144
-        const touch = record.touch_ref ? TOUCH_TAG_MAP[record.touch_ref] : undefined;
-        return (
-          <span>
-            <Tooltip title={record.signal_reason || undefined}>
-              <Tag color={cfg.color}>{cfg.label}</Tag>
-            </Tooltip>
-            {touch && (
-              <Tooltip title={touch.tip}>
-                <Tag color={touch.color} style={{ marginInlineStart: 0 }}>
-                  {touch.label}
-                </Tag>
-              </Tooltip>
-            )}
-          </span>
-        );
-      },
-    },
-    {
       title: "质量分",
       dataIndex: "quality_score",
       key: "quality_score",
@@ -414,6 +406,45 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           <Tooltip title={detail}>
             <Tag color={color} style={{ marginInlineEnd: 0, cursor: "default" }}>
               {v}
+            </Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: "信号类型",
+      dataIndex: "signal_type",
+      key: "signal_type",
+      width: 108,
+      ...filterProps("signal_type", SIGNAL_TYPE_FILTERS),
+      render: (v: string, record: ScanResult) => {
+        const cfg = SIGNAL_TYPE_MAP[v] || { label: v, color: "default" };
+        // 触发原因挂信号类型悬停（突破/回踩行无 K线形态，原因只在这里可见）
+        return (
+          <Tooltip title={record.signal_reason || undefined}>
+            <Tag color={cfg.color}>{cfg.label}</Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      // 回踩位置（docs/22）：原「位置」列改为触点口径——显示回踩到哪
+      // （EMA21/前高回测/摆动低点等），retest/swing 按方向措辞
+      title: (
+        <Tooltip title="回踩触点：本信号回踩企稳的位置。retest=突破回测（多=前高/空=前低），swing=摆动结构（多=摆动低点/空=摆动高点），ema21/55/144=均线价值区">
+          <span>回踩位置</span>
+        </Tooltip>
+      ),
+      dataIndex: "touch_ref",
+      key: "touch_ref",
+      width: 92,
+      render: (v: string | null, record: ScanResult) => {
+        if (!v) return <span style={{ color: "#999" }}>-</span>;
+        const touch = TOUCH_TAG_MAP[v];
+        return (
+          <Tooltip title={touch?.tip}>
+            <Tag color={touch?.color || "default"} style={{ marginInlineEnd: 0 }}>
+              {touchLabel(v, record)}
             </Tag>
           </Tooltip>
         );
@@ -556,57 +587,6 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       },
     },
     {
-      // 复盘列：AI 建议开单 24h 后逐K回放定论（数据来自 aiMap，AI 开关关闭时为空显示 -）
-      title: (
-        <Tooltip title="AI 建议开单 24h 后逐K回放结果：先触止损=负，触止盈=胜，24h内未触任何价位=超时">
-          <span>复盘</span>
-        </Tooltip>
-      ),
-      key: "review",
-      width: 92,
-      render: (_: unknown, record: ScanResult) => {
-        const status = aiMap[record.id]?.review_status;
-        if (!status) return <span style={{ color: "#999" }}>-</span>;
-        switch (status) {
-          case "win_tp1":
-            return <Tag color={schemeTag(colorScheme).up}>胜·TP1</Tag>;
-          case "win_tp2":
-            return <Tag color={schemeTag(colorScheme).up}>胜·TP2</Tag>;
-          case "loss":
-            return <Tag color={schemeTag(colorScheme).down}>负·止损</Tag>;
-          case "expired":
-            return <Tag color="default">超时</Tag>;
-          default:
-            return <span style={{ color: "#999" }}>-</span>;
-        }
-      },
-    },
-    {
-      title: "位置",
-      dataIndex: "position",
-      key: "position",
-      width: 88,
-      ...filterProps("position", POSITION_FILTERS),
-      render: (v: string | null, record: ScanResult) => {
-        if (!v) return <span style={{ color: "#999" }}>-</span>;
-        // position 即形态/突破方向派生的角色
-        const { label, color } = positionTag(v);
-        return <Tag color={color}>{label}</Tag>;
-      },
-    },
-    {
-      title: "EMA",
-      dataIndex: "ema_state",
-      key: "ema_state",
-      width: 132,
-      ...filterProps("ema_state", EMA_STATE_FILTERS),
-      render: (v: string | null) => {
-        if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const cfg = EMA_STATE_MAP[v] || { label: v, color: "default" };
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
-      },
-    },
-    {
       title: "K线形态",
       dataIndex: "pattern",
       key: "pattern",
@@ -620,6 +600,18 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
             <Tag color={color}>{label}</Tag>
           </Tooltip>
         );
+      },
+    },
+    {
+      title: "EMA",
+      dataIndex: "ema_state",
+      key: "ema_state",
+      width: 132,
+      ...filterProps("ema_state", EMA_STATE_FILTERS),
+      render: (v: string | null) => {
+        if (!v) return <span style={{ color: "#999" }}>-</span>;
+        const cfg = EMA_STATE_MAP[v] || { label: v, color: "default" };
+        return <Tag color={cfg.color}>{cfg.label}</Tag>;
       },
     },
     {

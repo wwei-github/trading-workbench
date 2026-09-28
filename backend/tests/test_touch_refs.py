@@ -353,14 +353,13 @@ def test_touch_disabled_by_whitelist():
 def test_breakout_trigger_carries_event_payload():
     """T1 突破触发携带 breakout_level + candle_open（scanner 记事件的事实源）"""
     kl = _kl(*_base())
-    chan_high = max(float(k[2]) for k in kl[-2 - CHAN:-2])
     o = float(kl[-3][4])
-    c = chan_high + 0.5
+    c = 100.04 + 0.5  # 收盘越过摆动前高 100.04（_base 微扰序列最近未破 pivot）
     ts, _, _, _, _, _, qv = kl[-2]
     kl[-2] = [ts, o, c, o, c, 150.0, qv]
     t, _ = trig.detect_trigger(kl, 1, flt=_flt())
     assert t is not None and t["type"] == trig.BREAKOUT
-    assert t["breakout_level"] == pytest.approx(chan_high)
+    assert t["breakout_level"] == pytest.approx(100.04)
     assert t["candle_open"] == datetime.utcfromtimestamp(kl[-2][0] / 1000)
 
 

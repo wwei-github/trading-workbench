@@ -13,6 +13,7 @@ autouse monkeypatch 固定 settings 基线，免疫本地 .env 覆盖（BREAKOUT
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -23,6 +24,7 @@ from app.services.scan_filters import (  # noqa: E402
     ALL_TRIGGERS,
     resolve_scan_filters,
 )
+from app.services.strategy import trigger as trig_mod  # noqa: E402  # detect_all_patterns 打桩用
 from app.services.strategy.trigger import (  # noqa: E402
     BREAKOUT,
     CANDLESTICK,
@@ -132,9 +134,13 @@ def _flat_bars(n=50, close=100.0, hi_off=0.2, lo_off=0.2, vol=100.0):
 
 
 def _breakout_klines(close=101.5, vol=250.0):
-    """50 根平盘 + 实体长影线短的放量阳线信号K（klines[-2]）+ 未收盘根"""
-    kl = _flat_bars(50)
-    ts = 1_700_000_000_000 + 50 * 3_600_000
+    """48 根平盘 + 局部摆动前高（close=101.0，其后 3 根更低收盘确认且未破）
+    + 放量阳线信号K（klines[-2]）+ 未收盘根；突破位=摆动结构前高口径"""
+    kl = _flat_bars(48)
+    ts0 = 1_700_000_000_000
+    for i, c in ((48, 101.0), (49, 99.9), (50, 99.9), (51, 99.9)):
+        kl.append([ts0 + i * 3_600_000, 100.0, c + 0.1, c - 0.1, c, 100.0, 100.0])
+    ts = ts0 + 52 * 3_600_000
     # 信号K线：o=100.2 c=close h=close+0.1 l=100.1（阳线长实体，body/range≥0.75）
     kl.append([ts, 100.2, close + 0.1, 100.1, close, vol, vol])
     kl.append([ts + 3_600_000, close, close + 0.1, close - 0.1, close, vol, vol])  # 未收盘
@@ -147,33 +153,37 @@ def test_trigger_breakout_with_default_threshold():
 
 
 def test_trigger_respects_custom_breakout_threshold():
-    """阈值 5%：收盘 101.5 仅越轨 1.3%，自定义 flt 拦下（透传生效）"""
+    """阈值 5%：收盘 101.5 仅越前高 1.3%（101.0 前高），自定义 flt 拦下（透传生效）；
+    形态打桩隔离金K分支（信号K线本体会被判看涨吞没+触碰 EMA21）"""
     flt = ScanFilters(
         min_volume_24h=3_000_000, breakout_channel_bars=20,
         breakout_threshold=0.05, breakout_vol_ratio=1.2,
         breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
         ai_max_per_scan=10,
     )
-    trig, _ = detect_trigger(_breakout_klines(), 1, flt=flt)
+    with patch.object(trig_mod, "detect_all_patterns", return_value=[]):
+        trig, _ = detect_trigger(_breakout_klines(), 1, flt=flt)
     assert trig is None
 
 
 def test_trigger_respects_custom_vol_ratio():
-    """量比门槛 5：信号K量 250/均量 100=2.5 不达标"""
+    """量比门槛 5：信号K量 250/均量 100=2.5 不达标（形态打桩同上）"""
     flt = ScanFilters(
         min_volume_24h=3_000_000, breakout_channel_bars=20,
         breakout_threshold=0.002, breakout_vol_ratio=5.0,
         breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
         ai_max_per_scan=10,
     )
-    trig, _ = detect_trigger(_breakout_klines(), 1, flt=flt)
+    with patch.object(trig_mod, "detect_all_patterns", return_value=[]):
+        trig, _ = detect_trigger(_breakout_klines(), 1, flt=flt)
     assert trig is None
 
 
 def test_trigger_breakout_max_pct_zero_disables_chase_guard():
-    """越过轨 3.8%：默认 1.5% 上限拦下；上限 0（关闭）放行突破"""
+    """越前高 3.0%：默认 1.5% 上限拦下；上限 0（关闭）放行突破（形态打桩隔离金K分支）"""
     kl = _breakout_klines(close=104.0)
-    trig, _ = detect_trigger(kl, 1)
+    with patch.object(trig_mod, "detect_all_patterns", return_value=[]):
+        trig, _ = detect_trigger(kl, 1)
     assert trig is None  # 默认 1.5% 追高拦截
     flt = ScanFilters(
         min_volume_24h=3_000_000, breakout_channel_bars=20,
@@ -181,7 +191,8 @@ def test_trigger_breakout_max_pct_zero_disables_chase_guard():
         breakout_max_pct=0, candle_max_ema21_dist_pct=1.5,
         ai_max_per_scan=10,
     )
-    trig, _ = detect_trigger(kl, 1, flt=flt)
+    with patch.object(trig_mod, "detect_all_patterns", return_value=[]):
+        trig, _ = detect_trigger(kl, 1, flt=flt)
     assert trig is not None and trig["type"] == BREAKOUT
 
 
