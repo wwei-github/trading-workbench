@@ -1,8 +1,26 @@
 import { useState, useEffect } from 'react'
 import { Modal, Form, InputNumber, Select, Switch, message, Button, Spin, Divider, Tooltip } from 'antd'
-import { SettingOutlined, RobotOutlined, FileTextOutlined, ApiOutlined } from '@ant-design/icons'
+import { SettingOutlined, RobotOutlined, FileTextOutlined, ApiOutlined, UndoOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
+
+/** 筛选参数组（2026-09-28 筛选配置上页面）：字段元数据驱动渲染 */
+const FILTER_FIELDS: { name: string; label: string; min: number; max: number; step?: number; tooltip: string }[] = [
+  { name: 'min_volume_24h', label: '24h成交额门槛（USDT）', min: 0, max: 1e9, step: 100000,
+    tooltip: '扫描候选池流动性门槛，低于此不进扫描；0=不过滤' },
+  { name: 'breakout_threshold', label: '最小突破幅度（比例）', min: 0, max: 0.05, step: 0.001,
+    tooltip: '收盘须越过 Donchian 轨此幅度才算突破（0.002=0.2%），毛边突破不算；0=关闭' },
+  { name: 'breakout_vol_ratio', label: '突破量比门槛', min: 0, max: 10, step: 0.1,
+    tooltip: '信号K线成交量 ≥ 近20根均量的此倍数才确认放量突破' },
+  { name: 'breakout_max_pct', label: '突破幅度上限（%）', min: 0, max: 20, step: 0.5,
+    tooltip: '越过轨超过此幅度视为追高，不产生突破触发（正式网复盘：大幅突破追入负期望）；0=关闭' },
+  { name: 'candle_max_ema21_dist_pct', label: '悬空金K距离上限（%）', min: 0, max: 20, step: 0.5,
+    tooltip: '信号K线收盘距 EMA21 超过此幅度的纯金K不触发（触及关键位仍放行）；0=关闭' },
+  { name: 'breakout_channel_bars', label: 'Donchian通道根数', min: 5, max: 200,
+    tooltip: '突破判定的回看窗口根数（收盘破 N 根高低轨）' },
+  { name: 'ai_max_per_scan', label: 'AI单轮分析上限（个）', min: 1, max: 50,
+    tooltip: '单次扫描批量 AI 分析的币种上限，按质量分/24h成交额取前N（控制 LLM 成本）' },
+]
 
 /** 策略配置弹窗：扫描策略 + AI 分析/策略/Agent 开关 + AI 实验功能。
  *  （2026-09-20 工具栏的 AI/策略/Agent 三个快捷开关收敛至此；交易参数见
@@ -12,6 +30,9 @@ export default function ScanConfigPanel() {
   const [form] = Form.useForm()
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
+  // 打开弹窗时的筛选参数生效值快照：保存时比对，未改动则不提交 scan_filters
+  // （避免把 env 派生值固化进 DB，保持「缺省回落 env」语义）
+  const [filtersSnapshot, setFiltersSnapshot] = useState<Record<string, number>>({})
   const { aiConfig, updateConfig, fetchConfig } = useScanStore()
 
   // 每次打开 Modal 时，从后端拉取最新配置数据
@@ -23,14 +44,17 @@ export default function ScanConfigPanel() {
     })
   }, [open, fetchConfig])
 
-  // 拿到最新配置后赋值给表单
+  // 拿到最新配置后赋值给表单（筛选参数用实际生效值做初值）
   useEffect(() => {
     if (open && aiConfig) {
+      const eff = aiConfig.scan_filters_effective || {}
+      setFiltersSnapshot({ ...eff })
       form.setFieldsValue({
         kline_interval: aiConfig.kline_interval,
         kline_window: aiConfig.kline_window,
         repeat_window_hours: aiConfig.repeat_window_hours,
         swing_order: aiConfig.swing_order,
+        ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
         ai_analysis_enabled: aiConfig.ai_analysis_enabled ?? false,
         strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
         ai_pipeline_enabled: aiConfig.ai_pipeline_enabled ?? true,
@@ -56,11 +80,36 @@ export default function ScanConfigPanel() {
         ai_pipeline_enabled: values.ai_pipeline_enabled,
         dual_judge_enabled: values.dual_judge_enabled,
       }
+      // 筛选参数组：仅在有改动时提交（后端逐键校验范围）；未动则保持
+      // 「缺省回落 env」，不把生效值固化进 DB
+      const filters = FILTER_FIELDS.reduce(
+        (acc, f) => ({ ...acc, [f.name]: values[f.name] }), {},
+      ) as Record<string, number>
+      const dirty = FILTER_FIELDS.some(
+        (f) => Number(filters[f.name]) !== Number(filtersSnapshot[f.name]),
+      )
+      if (dirty) data.scan_filters = filters
       await updateConfig(data)
       message.success('配置已保存')
       setOpen(false)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // 恢复默认：清除库内定制（scan_filters=null），后端回落 env/代码默认
+  const handleResetFilters = async () => {
+    try {
+      setSaving(true)
+      await updateConfig({ scan_filters: null } as Partial<SystemConfig>)
+      await fetchConfig()
+      const eff = useScanStore.getState().aiConfig?.scan_filters_effective || {}
+      form.setFieldsValue(FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}))
+      message.success('筛选参数已恢复默认')
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '恢复默认失败')
     } finally {
       setSaving(false)
     }
@@ -127,6 +176,25 @@ export default function ScanConfigPanel() {
           >
             <InputNumber min={1} max={10} style={{ width: '100%' }} />
           </Form.Item>
+
+          {/* 筛选参数组（2026-09-28 筛选配置上页面）：DB > env > 代码默认 */}
+          <Divider style={{ margin: '8px 0 16px' }}>
+            <span style={{ fontSize: 13, color: '#999' }}>筛选参数</span>
+          </Divider>
+          {FILTER_FIELDS.map((f) => (
+            <Form.Item
+              key={f.name}
+              label={f.label}
+              name={f.name}
+              rules={[{ required: true, message: `请填写${f.label}` }]}
+              tooltip={f.tooltip}
+            >
+              <InputNumber min={f.min} max={f.max} step={f.step} style={{ width: '100%' }} />
+            </Form.Item>
+          ))}
+          <Button size="small" icon={<UndoOutlined />} onClick={handleResetFilters} loading={saving}>
+            恢复默认
+          </Button>
 
           {/* AI 分析开关区（原工具栏快捷开关，2026-09-20 收敛至此） */}
           <Divider style={{ margin: '8px 0 16px' }}>

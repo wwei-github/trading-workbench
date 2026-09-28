@@ -193,6 +193,11 @@ class SystemConfigOut(BaseModel):
     swing_order: int
     pullback_tolerance: float
 
+    # 筛选参数组（2026-09-28）：scan_filters=库内原始值（null=未定制，回落 env）；
+    # scan_filters_effective=实际生效值（DB>env>代码默认解析结果），前端表单初值用
+    scan_filters: Optional[dict] = None
+    scan_filters_effective: dict = {}
+
     fib_enabled: bool
 
     # 自动交易（docs/06）
@@ -256,6 +261,10 @@ class SystemConfigUpdate(BaseModel):
     repeat_window_hours: Optional[int] = None
     swing_order: Optional[int] = None
     pullback_tolerance: Optional[float] = None
+
+    # 筛选参数组（2026-09-28）：整组覆盖；传 null=清除定制（恢复 env/代码默认）。
+    # 键集与范围校验见 api/scan.py _validate_scan_filters
+    scan_filters: Optional[dict] = None
 
     fib_enabled: Optional[bool] = None
 

@@ -18,6 +18,7 @@ from app.schemas.scan import (
 from app.services.binance_client import BinanceClient
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services.scanner import Scanner, _get_scan_config, detect_indicator_candidate
+from app.services.scan_filters import resolve_scan_filters
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,10 @@ def refresh_watchlist(symbol: str, db: Session = Depends(get_db)):
     if klines:
         try:
             pend = Scanner._prefetch_pendings([target]).get(target)
-            cand, pending_op = detect_indicator_candidate(pool, target, klines, pending=pend)
+            cand, pending_op = detect_indicator_candidate(
+                pool, target, klines, pending=pend,
+                flt=resolve_scan_filters(cfg),
+            )
         except Exception as e:
             logger.warning("关注刷新 %s 信号判定失败（按无命中处理）: %s", target, e)
             cand, pending_op = None, None

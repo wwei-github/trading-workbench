@@ -1,0 +1,227 @@
+# -*- coding: utf-8 -*-
+"""筛选参数组（scan_filters）解析与透传回归（2026-09-28 筛选配置上页面）。
+
+覆盖：
+1. resolve_scan_filters 优先级：DB JSONB > env(settings) > 代码默认；逐键容错
+   （非法值/负数按缺失回落，不烧整轮扫描）
+2. detect_trigger 透传：自定义阈值生效（突破幅度/量比/幅度上限 0=关闭/悬空距离 0=关闭）
+3. PUT /config 的 _validate_scan_filters 校验（未知键/越界 400）
+
+K线夹具按阴阳方向排列列序（ lessons：阳线 high=close/low=open 对齐），
+autouse monkeypatch 固定 settings 基线，免疫本地 .env 覆盖（BREAKOUT_THRESHOLD=0.005）。
+"""
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import pytest  # noqa: E402
+
+from app.config import settings  # noqa: E402
+from app.services.scan_filters import resolve_scan_filters  # noqa: E402
+from app.services.strategy.trigger import (  # noqa: E402
+    BREAKOUT,
+    CANDLESTICK,
+    ScanFilters,
+    detect_trigger,
+)
+
+
+@pytest.fixture(autouse=True)
+def _fixed_settings(monkeypatch):
+    """固定筛选基线，免疫本地/服务器 .env 的 pydantic-settings 覆盖"""
+    monkeypatch.setattr(settings, "MIN_VOLUME_24H", 3_000_000)
+    monkeypatch.setattr(settings, "BREAKOUT_CHANNEL_BARS", 20)
+    monkeypatch.setattr(settings, "BREAKOUT_THRESHOLD", 0.002)
+    monkeypatch.setattr(settings, "BREAKOUT_VOL_RATIO", 1.2)
+    monkeypatch.setattr(settings, "BREAKOUT_MAX_PCT", 1.5)
+    monkeypatch.setattr(settings, "CANDLE_MAX_EMA21_DIST_PCT", 1.5)
+    monkeypatch.setattr(settings, "AI_MAX_PER_SCAN", 10)
+
+
+# ── resolve_scan_filters：优先级与容错 ────────────────────────────────
+
+
+def test_resolve_none_falls_back_to_settings():
+    flt = resolve_scan_filters(None)
+    assert flt.min_volume_24h == 3_000_000
+    assert flt.breakout_threshold == 0.002
+    assert flt.breakout_vol_ratio == 1.2
+    assert flt.breakout_max_pct == 1.5
+    assert flt.candle_max_ema21_dist_pct == 1.5
+    assert flt.breakout_channel_bars == 20
+    assert flt.ai_max_per_scan == 10
+
+
+def test_resolve_db_overrides_settings():
+    cfg = SimpleNamespace(scan_filters={
+        "min_volume_24h": 5_000_000,
+        "breakout_threshold": 0.003,
+        "breakout_vol_ratio": 1.5,
+        "breakout_max_pct": 0,          # 0=关闭是合法值
+        "candle_max_ema21_dist_pct": 2.0,
+        "breakout_channel_bars": 30,
+        "ai_max_per_scan": 5,
+    })
+    flt = resolve_scan_filters(cfg)
+    assert flt.min_volume_24h == 5_000_000
+    assert flt.breakout_threshold == 0.003
+    assert flt.breakout_vol_ratio == 1.5
+    assert flt.breakout_max_pct == 0.0
+    assert flt.candle_max_ema21_dist_pct == 2.0
+    assert flt.breakout_channel_bars == 30
+    assert flt.ai_max_per_scan == 5
+
+
+def test_resolve_partial_keys_fall_back():
+    """部分定制：缺键逐项回落 env，而非整组失效"""
+    cfg = SimpleNamespace(scan_filters={"breakout_vol_ratio": 2.0})
+    flt = resolve_scan_filters(cfg)
+    assert flt.breakout_vol_ratio == 2.0
+    assert flt.breakout_threshold == 0.002
+    assert flt.ai_max_per_scan == 10
+
+
+def test_resolve_invalid_values_fall_back():
+    """非法值（垃圾串/负数）逐键容错回落，不抛异常"""
+    cfg = SimpleNamespace(scan_filters={
+        "min_volume_24h": "abc",
+        "breakout_vol_ratio": -1,       # 负数非法
+        "ai_max_per_scan": 0,           # 低于下限 1
+        "breakout_channel_bars": 1,     # 低于内部下限 2
+    })
+    flt = resolve_scan_filters(cfg)
+    assert flt.min_volume_24h == 3_000_000
+    assert flt.breakout_vol_ratio == 1.2
+    assert flt.ai_max_per_scan == 10
+    assert flt.breakout_channel_bars == 20
+
+
+def test_resolve_null_column_and_none_cfg():
+    assert resolve_scan_filters(SimpleNamespace(scan_filters=None)) == resolve_scan_filters(None)
+
+
+def test_resolve_inf_nan_fall_back():
+    """inf/nan（直改 DB 可注入）：isfinite 防护回落默认，int(inf) 的
+    OverflowError 也须被吞掉而非烧掉调用方"""
+    cfg = SimpleNamespace(scan_filters={
+        "min_volume_24h": "inf",
+        "breakout_threshold": float("nan"),
+        "breakout_channel_bars": "inf",
+        "ai_max_per_scan": float("inf"),
+    })
+    flt = resolve_scan_filters(cfg)
+    assert flt.min_volume_24h == 3_000_000
+    assert flt.breakout_threshold == 0.002
+    assert flt.breakout_channel_bars == 20
+    assert flt.ai_max_per_scan == 10
+
+
+# ── detect_trigger 透传 ───────────────────────────────────────────────
+
+
+def _flat_bars(n=50, close=100.0, hi_off=0.2, lo_off=0.2, vol=100.0):
+    ts = 1_700_000_000_000
+    return [[ts + i * 3_600_000, close, close + hi_off, close - lo_off, close, vol, vol]
+            for i in range(n)]
+
+
+def _breakout_klines(close=101.5, vol=250.0):
+    """50 根平盘 + 实体长影线短的放量阳线信号K（klines[-2]）+ 未收盘根"""
+    kl = _flat_bars(50)
+    ts = 1_700_000_000_000 + 50 * 3_600_000
+    # 信号K线：o=100.2 c=close h=close+0.1 l=100.1（阳线长实体，body/range≥0.75）
+    kl.append([ts, 100.2, close + 0.1, 100.1, close, vol, vol])
+    kl.append([ts + 3_600_000, close, close + 0.1, close - 0.1, close, vol, vol])  # 未收盘
+    return kl
+
+
+def test_trigger_breakout_with_default_threshold():
+    trig, op = detect_trigger(_breakout_klines(), 1)
+    assert trig is not None and trig["type"] == BREAKOUT
+
+
+def test_trigger_respects_custom_breakout_threshold():
+    """阈值 5%：收盘 101.5 仅越轨 1.3%，自定义 flt 拦下（透传生效）"""
+    flt = ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=20,
+        breakout_threshold=0.05, breakout_vol_ratio=1.2,
+        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
+        ai_max_per_scan=10,
+    )
+    trig, _ = detect_trigger(_breakout_klines(), 1, flt=flt)
+    assert trig is None
+
+
+def test_trigger_respects_custom_vol_ratio():
+    """量比门槛 5：信号K量 250/均量 100=2.5 不达标"""
+    flt = ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=20,
+        breakout_threshold=0.002, breakout_vol_ratio=5.0,
+        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
+        ai_max_per_scan=10,
+    )
+    trig, _ = detect_trigger(_breakout_klines(), 1, flt=flt)
+    assert trig is None
+
+
+def test_trigger_breakout_max_pct_zero_disables_chase_guard():
+    """越过轨 3.8%：默认 1.5% 上限拦下；上限 0（关闭）放行突破"""
+    kl = _breakout_klines(close=104.0)
+    trig, _ = detect_trigger(kl, 1)
+    assert trig is None  # 默认 1.5% 追高拦截
+    flt = ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=20,
+        breakout_threshold=0.002, breakout_vol_ratio=1.2,
+        breakout_max_pct=0, candle_max_ema21_dist_pct=1.5,
+        ai_max_per_scan=10,
+    )
+    trig, _ = detect_trigger(kl, 1, flt=flt)
+    assert trig is not None and trig["type"] == BREAKOUT
+
+
+def _hanging_hammer_klines():
+    """50 根平盘 + 远离 EMA21 的悬空锤形线（下影≥2×实体、上影≤15%全长）"""
+    kl = _flat_bars(50)
+    ts = 1_700_000_000_000 + 50 * 3_600_000
+    # 锤形线：o=105.2 c=105.4（body=0.2）l=103.6（下影1.6≥2×0.2）h=105.5（上影0.1）
+    kl.append([ts, 105.2, 105.5, 103.6, 105.4, 150.0, 150.0])
+    kl.append([ts + 3_600_000, 105.4, 105.5, 105.3, 105.4, 150.0, 150.0])
+    return kl
+
+
+def test_trigger_hanging_golden_blocked_by_default():
+    """悬空金K默认 1.5% 拦截：距 EMA21 ≈5% 且不贴关键位 → 不触发"""
+    trig, _ = detect_trigger(_hanging_hammer_klines(), 1)
+    assert trig is None
+
+
+def test_trigger_hanging_golden_allowed_when_disabled():
+    """悬空金K门槛 0（关闭）：同一根锤形线放行为纯金K触发"""
+    flt = ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=20,
+        breakout_threshold=0.002, breakout_vol_ratio=1.2,
+        breakout_max_pct=1.5, candle_max_ema21_dist_pct=0,
+        ai_max_per_scan=10,
+    )
+    trig, _ = detect_trigger(_hanging_hammer_klines(), 1, flt=flt)
+    assert trig is not None and trig["type"] == CANDLESTICK
+
+
+# ── _validate_scan_filters（PUT /config 校验器）────────────────────────
+
+
+def test_validate_scan_filters_clean_and_reject():
+    from fastapi import HTTPException
+
+    from app.api.scan import _validate_scan_filters
+    out = _validate_scan_filters({"breakout_vol_ratio": "1.8", "ai_max_per_scan": 5})
+    assert out == {"breakout_vol_ratio": 1.8, "ai_max_per_scan": 5.0}
+
+    with pytest.raises(HTTPException):
+        _validate_scan_filters({"unknown_key": 1})
+    with pytest.raises(HTTPException):
+        _validate_scan_filters({"breakout_max_pct": 99})
+    with pytest.raises(HTTPException):
+        _validate_scan_filters({"breakout_vol_ratio": "x"})

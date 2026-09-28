@@ -349,6 +349,8 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         registry,
         testnet_accounts,
     )
+    from app.services.scan_filters import resolve_scan_filters
+    flt = resolve_scan_filters(cfg)
     return SystemConfigOut(
         ai_analysis_enabled=cfg.ai_analysis_enabled,
         ai_pipeline_enabled=cfg.ai_pipeline_enabled,
@@ -384,7 +386,47 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         max_slippage_pct=(float(cfg.max_slippage_pct)
                           if cfg.max_slippage_pct is not None else None),
         live_initial_capital=float(cfg.live_initial_capital or 0),
+        scan_filters=(cfg.scan_filters if isinstance(cfg.scan_filters, dict) else None),
+        scan_filters_effective={
+            "min_volume_24h": flt.min_volume_24h,
+            "breakout_channel_bars": flt.breakout_channel_bars,
+            "breakout_threshold": flt.breakout_threshold,
+            "breakout_vol_ratio": flt.breakout_vol_ratio,
+            "breakout_max_pct": flt.breakout_max_pct,
+            "candle_max_ema21_dist_pct": flt.candle_max_ema21_dist_pct,
+            "ai_max_per_scan": flt.ai_max_per_scan,
+        },
     )
+
+
+# 筛选参数组校验表（2026-09-28）：键 → (最小值, 最大值, 说明)
+_SCAN_FILTER_RANGES: dict[str, tuple[float, float, str]] = {
+    "min_volume_24h": (0, 1e9, "24h 成交额门槛（USDT），0=不过滤"),
+    "breakout_channel_bars": (5, 200, "Donchian 通道回看根数"),
+    "breakout_threshold": (0, 0.05, "最小突破幅度（比例，0.002=0.2%）"),
+    "breakout_vol_ratio": (0, 10, "突破量比门槛（信号K线量/近20根均量）"),
+    "breakout_max_pct": (0, 20, "突破幅度上限（%，防追高，0=关闭）"),
+    "candle_max_ema21_dist_pct": (0, 20, "悬空金K距 EMA21 上限（%，0=关闭）"),
+    "ai_max_per_scan": (1, 50, "单轮扫描 AI 分析上限（个）"),
+}
+
+
+def _validate_scan_filters(raw: dict) -> dict:
+    """筛选参数组校验：未知键拒绝（防拼错静默失效）、范围越界 400、数值化清洗。
+    合法但缺省的键不补齐——缺键回落 env（逐键覆盖语义）。"""
+    out: dict = {}
+    for k, v in raw.items():
+        if k not in _SCAN_FILTER_RANGES:
+            raise HTTPException(status_code=400, detail=f"scan_filters 未知参数: {k}")
+        lo, hi, label = _SCAN_FILTER_RANGES[k]
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"scan_filters.{k} 需为数值")
+        if not (lo <= v <= hi):
+            raise HTTPException(status_code=400, detail=f"scan_filters.{k}（{label}）需在 {lo}~{hi} 之间")
+        out[k] = v
+    return out
 
 
 @router.get("/config", response_model=SystemConfigOut)
@@ -535,6 +577,13 @@ def update_system_config(
         if v is not None and v < 0:
             raise HTTPException(status_code=400, detail="live_initial_capital 需 ≥ 0")
         cfg.live_initial_capital = v if v is not None else 0
+
+    # 筛选参数组（2026-09-28）：整组覆盖；显式传 null=清除定制恢复 env/代码默认
+    if "scan_filters" in body.model_fields_set:
+        cfg.scan_filters = (
+            _validate_scan_filters(body.scan_filters)
+            if body.scan_filters is not None else None
+        )
 
     db.commit()
     db.refresh(cfg)

@@ -28,6 +28,7 @@ from app.models.system_config import SystemConfig
 from app.services import ai_progress
 from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
+from app.services.scan_filters import resolve_scan_filters
 from app.services.dual_judge import run_dual_judge
 from app.services.strategy.technical import enforce_htf_constraint
 from app.services.exchange_pool import ExchangePool
@@ -117,11 +118,12 @@ def run_ai_analysis_task(
             q = q.where(ScanResult.id == UUID(only_scan_result_id))
         else:
             # 批量：按质量分降序（指标驱动筛选的排序键，旧数据无分排后）、
-            # 同分按 24h 成交额——控制 LLM 成本；单币重分析不受限
+            # 同分按 24h 成交额——控制 LLM 成本；单币重分析不受限。
+            # 配额走筛选参数组（scan_filters > env > 默认，2026-09-28）
             q = q.order_by(
                 ScanResult.quality_score.desc().nulls_last(),
                 ScanResult.volume_24h.desc(),
-            ).limit(settings.AI_MAX_PER_SCAN)
+            ).limit(resolve_scan_filters(cfg).ai_max_per_scan)
         results = db.execute(q).scalars().all()
         if not results:
             logger.info("无可分析的扫描结果 #%s", scan_record_id)

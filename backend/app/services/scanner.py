@@ -27,6 +27,7 @@ from app.database import SessionLocal
 from app.models.scan import PullbackPending, ScanRecord, ScanResult
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
+from app.services.scan_filters import ScanFilters, resolve_scan_filters
 from app.services.exchange_pool import ExchangePool
 from app.services.binance_trader import BinanceTrader
 from app.services.strategy.ema import analyze_ema
@@ -90,6 +91,7 @@ def _get_scan_config(db) -> SystemConfig:
 def detect_indicator_candidate(
     pool: ExchangePool, symbol: str, klines: list[list],
     pending: Optional[dict] = None,
+    flt: Optional[ScanFilters] = None,
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """指标驱动单币检测（Scanner 与 watchlist.refresh 共用同一套逻辑与阈值）。
 
@@ -97,6 +99,7 @@ def detect_indicator_candidate(
     → 多数决分组（|net|≥3 且 voted≥5）→ 两段式触发确认（trigger.py，docs/19）→ 质量分。
 
     pending: 该币活跃回踩 pending 快照（{id, direction, stage1_candle_open}）或 None。
+    flt: 筛选参数组（2026-09-28 筛选配置上页面）；None=按 settings 解析。
     返回 (候选 dict, pending_op) 二元组：
     - 候选 dict（signal_type/quality_score/votes 及展示字段），每币至多 1 个；
       无候选（中性/票数不足/无触发）为 None
@@ -148,7 +151,7 @@ def detect_indicator_candidate(
     direction = 1 if votes["net"] > 0 else -1
     atr = calc_atr(klines, 14)
     trig, pending_op = detect_trigger(klines, direction, pending,
-                                      levels=key_levels, atr=atr)
+                                      levels=key_levels, atr=atr, flt=flt)
     if trig is None:
         # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩口径计）
         if pending_op and pending_op.get("op") == "upsert":
@@ -220,6 +223,8 @@ class Scanner:
             kline_interval = cfg.kline_interval
             kline_window = cfg.kline_window
             repeat_window_hours = cfg.repeat_window_hours
+            # 筛选参数组（scan_filters JSONB > env > 代码默认）
+            flt = resolve_scan_filters(cfg)
 
             logger.info("开始扫描 #%s (interval=%s, window=%d)", scan_record_id, kline_interval, kline_window)
 
@@ -230,7 +235,7 @@ class Scanner:
             logger.info("共 %d 个合约交易对待扫描（按24h成交额降序）", len(symbols_data))
 
             # 24h 成交额过滤：流动性差的合约不进扫描（省K线请求，剔除不可交易标的）
-            min_vol = settings.MIN_VOLUME_24H
+            min_vol = flt.min_volume_24h
             before = len(symbols_data)
             symbols_data = [
                 s for s in symbols_data
@@ -300,6 +305,7 @@ class Scanner:
                     )
                     cand, pop = detect_indicator_candidate(
                         self.pool, symbol, klines, pending=pendings.get(symbol),
+                        flt=flt,
                     )
                     if pop:
                         if pop.get("op") == "confirm" and cand:

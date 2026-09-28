@@ -20,7 +20,7 @@ position 语义（2026-09-27 统一）：按当前关键位口径——信号K�
 from datetime import datetime
 from typing import Optional, Tuple
 
-from app.config import settings
+from app.services.scan_filters import ScanFilters, resolve_scan_filters
 from app.services.strategy.candlestick import (
     GOLDEN_12,
     PATTERN_LABEL_MAP,
@@ -171,6 +171,7 @@ def detect_trigger(
     pending: Optional[dict] = None,
     levels: Optional[list] = None,
     atr: Optional[float] = None,
+    flt: Optional[ScanFilters] = None,
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """检测与候选方向一致的入场触发（两段式决策矩阵，docs/19 §4.1）。
 
@@ -179,6 +180,8 @@ def detect_trigger(
     levels/atr（docs/21 §8，可选）：关键位位表与 1h ATR——提供时 T3 回踩确认
     对象升级为双对象（已确认关键位 OR EMA21），缺省回落纯 EMA21 原行为
     （levels=None 时 _detect_level_touch 短路，老调用方零改动兼容）。
+    flt（可选）：筛选参数组（2026-09-28 筛选配置上页面）；None=按 settings
+    解析（env/代码默认），策略函数不读 DB。
     返回 (trigger, pending_op) 二元组：
     - trigger: 命中的触发 dict（type/direction/position/pattern/breakout_pct/
       reason/dual_touch——仅 row2 当根确认携带，EMA21 与关键位双锚共振标志）
@@ -191,6 +194,8 @@ def detect_trigger(
     信号判定全部基于已收盘K线（klines[-2]）；pending 有效期 = 其 stage1_candle_open
     恰为 klines[-3] 的开盘时间（上一根已收盘K线），免疫扫描时刻漂移与轮次缺失。
     """
+    # 筛选参数组（None=按 settings 解析，env/代码默认兜底）
+    flt = flt or resolve_scan_filters(None)
     n = len(klines)
     if n < 30 or direction not in (1, -1):
         return None, None
@@ -216,20 +221,20 @@ def detect_trigger(
     # 幅度上限（2026-09-27 正式网复盘）：越过轨 >BREAKOUT_MAX_PCT（默认 1.5%）视为
     # 追高——突破类 ≥2% 的 9 笔 7 亏（-0.21R），大幅突破追入负期望；跳过 T1 判定，
     # 落回金K/回踩分支（趋势日后续回踩 EMA21+金K 由 T3 接住）。0=关闭。
-    chan_n = settings.BREAKOUT_CHANNEL_BARS
+    chan_n = flt.breakout_channel_bars
     if n >= chan_n + 2:
         window = klines[-2 - chan_n:-2]
         chan_high = max(float(k[2]) for k in window)
         chan_low = min(float(k[3]) for k in window)
         vr = volume_ratio(klines)
-        max_brk = settings.BREAKOUT_MAX_PCT
+        max_brk = flt.breakout_max_pct
         over_max = (
             (direction == 1 and close_last > chan_high * (1 + max_brk / 100))
             or (direction == -1 and close_last < chan_low * (1 - max_brk / 100))
         ) if max_brk > 0 else False
         if (_is_solid_breakout_candle(klines, direction)
-                and vr >= settings.BREAKOUT_VOL_RATIO and not over_max):
-            if direction == 1 and close_last >= chan_high * (1 + settings.BREAKOUT_THRESHOLD):
+                and vr >= flt.breakout_vol_ratio and not over_max):
+            if direction == 1 and close_last >= chan_high * (1 + flt.breakout_threshold):
                 return {
                     "type": BREAKOUT, "direction": direction,
                     "position": lv_pos or "resistance",
@@ -238,7 +243,7 @@ def detect_trigger(
                     "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘突破{chan_n}根"
                               f"Donchian上轨({chan_high:.6g})",
                 }, _close_op(pending, direction, "breakout")
-            if direction == -1 and close_last <= chan_low * (1 - settings.BREAKOUT_THRESHOLD):
+            if direction == -1 and close_last <= chan_low * (1 - flt.breakout_threshold):
                 return {
                     "type": BREAKOUT, "direction": direction,
                     "position": lv_pos or "support",
@@ -293,7 +298,7 @@ def detect_trigger(
                 "reason": f"指标同向·上根回踩企稳·本根"
                           f"{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}确认",
             }, {"op": "confirm"}
-        max_dist = settings.CANDLE_MAX_EMA21_DIST_PCT
+        max_dist = flt.candle_max_ema21_dist_pct
         if max_dist > 0:
             closes = np.array([float(k[4]) for k in klines[:-1]], dtype=float)
             e21 = calc_ema(closes, 21)

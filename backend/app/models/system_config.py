@@ -93,6 +93,9 @@ class SystemConfig(Base):
     # 现货屯币配置（docs/18）：JSON 列（三币开关/单份金额/投入上限/定投 + 全局预算）。
     # 零侵入约束：新增独立列，不改既有列语义；NULL=全部默认值
     spot_settings: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, default=None)
+    # 筛选参数组（2026-09-28 筛选配置上页面）：JSON 列，键集见 services/scan_filters.py。
+    # NULL=全部回落 env/代码默认；旧 breakout_threshold 等 3 个散列已废弃不再读
+    scan_filters: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, default=None)
     # 现货环境开关（docs/18，2026-09-23 用户拍板：现货环境与合约完全独立）：
     # true=现货测试网（默认），false=现货正式网；与 trading_testnet（合约）互不影响
     spot_trading_testnet: Mapped[bool] = mapped_column(Boolean, default=True)

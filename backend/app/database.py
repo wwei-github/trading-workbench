@@ -306,6 +306,12 @@ def _run_migrations(engine):
             "ALTER TABLE system_config "
             "ADD COLUMN IF NOT EXISTS spot_settings JSONB"
         ))
+        # 筛选参数组（2026-09-28 筛选配置上页面）：JSON 列，NULL=回落 env/代码默认；
+        # 键集与解析见 services/scan_filters.py，旧 breakout_threshold 等散列废弃不删
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS scan_filters JSONB"
+        ))
         # 现货环境与合约完全独立（docs/18，2026-09-23）：默认现货=测试网；
         # 启用账号集合空回落 live-1。共用 docs/17 的 .env 账号注册表
         conn.execute(text(
