@@ -179,7 +179,7 @@ export default function SystemConfigPanel() {
               marginBottom: 16,
             }}
           >
-            <span style={{ fontWeight: 600 }}>自动交易总开关</span>
+            <span style={{ fontWeight: 600 }}>自动成交开关（AI 分析后自动开单）</span>
             <Switch
               checked={tradingEnabled}
               onChange={(v) => setTradingEnabled(v)}
@@ -188,7 +188,8 @@ export default function SystemConfigPanel() {
             />
           </div>
           <div style={{ color: '#999', fontSize: 12, lineHeight: 1.7, marginBottom: 16 }}>
-            关闭后定时扫描的 AI 分析与开新单停止（省 AI 配额）；结算巡检、复盘、日报照常执行。
+            仅控制每小时 AI 分析完成后是否自动开新单；关闭后手动「开单」按钮、AI 分析
+            （由策略配置「筛选后自动 AI 分析」独立控制）、结算巡检、复盘、日报均不受影响。
             切到正式网会自动关闭此开关，确认无误后需手动开启。
           </div>
 

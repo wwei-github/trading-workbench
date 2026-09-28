@@ -288,6 +288,42 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
 
   const columns: ColumnsType<ScanResult> = [
     {
+      // 操作列：手动开单（2026-09-27）。置灰条件=无 AI 分析/建议跳过/缺价位/
+      // 推荐度不足/信号过期/已开单；钱包/在跑上限等运行时条件由点击后端闸门
+      // 权威判定。disabled Button 不触发 hover——外层 span 承接 Tooltip
+      title: "操作",
+      key: "actions",
+      width: 76,
+      render: (_: unknown, record: ScanResult) => {
+        const ai = aiMap[record.id];
+        const reason = getOpenDisabledReason(record);
+        const disabled = reason !== null;
+        const tip = disabled
+          ? reason!
+          : `手动开单：${record.symbol} ${ai?.direction === "long" ? "开多" : "开空"}（当前账号，走完整开仓闸门）`
+            + (ai?.open_block_reason ? `　上次拦截：${ai.open_block_reason}` : "");
+        return (
+          <Tooltip title={tip}>
+            <span>
+              <Button
+                type="link"
+                size="small"
+                style={{ padding: 0 }}
+                disabled={disabled}
+                loading={!!openLoadingMap[record.id]}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleOpenTrade(record);
+                }}
+              >
+                开单
+              </Button>
+            </span>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: "币种",
       dataIndex: "symbol",
       key: "symbol",
@@ -613,42 +649,6 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       width: 68,
       render: (v: boolean) =>
         v ? <Tag color="default">重复</Tag> : <Tag color="green">新</Tag>,
-    },
-    {
-      // 操作列：手动开单（2026-09-27）。置灰条件=无 AI 分析/建议跳过/缺价位/
-      // 推荐度不足/信号过期/已开单；钱包/在跑上限等运行时条件由点击后端闸门
-      // 权威判定。disabled Button 不触发 hover——外层 span 承接 Tooltip
-      title: "操作",
-      key: "actions",
-      width: 76,
-      render: (_: unknown, record: ScanResult) => {
-        const ai = aiMap[record.id];
-        const reason = getOpenDisabledReason(record);
-        const disabled = reason !== null;
-        const tip = disabled
-          ? reason!
-          : `手动开单：${record.symbol} ${ai?.direction === "long" ? "开多" : "开空"}（当前账号，走完整开仓闸门）`
-            + (ai?.open_block_reason ? `　上次拦截：${ai.open_block_reason}` : "");
-        return (
-          <Tooltip title={tip}>
-            <span>
-              <Button
-                type="link"
-                size="small"
-                style={{ padding: 0 }}
-                disabled={disabled}
-                loading={!!openLoadingMap[record.id]}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleOpenTrade(record);
-                }}
-              >
-                开单
-              </Button>
-            </span>
-          </Tooltip>
-        );
-      },
     },
   ];
 

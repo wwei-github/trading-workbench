@@ -304,7 +304,10 @@ def open_from_analysis(payload: OpenFromAnalysisRequest, db: Session = Depends(g
     与自动开仓路径（open_trade_for_analysis celery 任务）的差异：
     - 仅 resolve_current_account 当前账号（手动点击是单行明确意图，扇出会在
       所有启用账号真实下单，语义不对）
-    - 同样尊重 trading_enabled 总开关、共用账号开仓锁（等锁 10s → 409）
+    - 不受 trading_enabled 约束（2026-09-28 语义拆分：自动交易开关仅指
+      每小时 AI 分析后自动成交；开单按钮是用户对当下价格的明确意图）
+    - force_market=True：以现价市价即时入场，跳过入场偏离/待回踩时机闸门；
+      其余风控闸门（RR 现价复算 / SL-TP 可挂性 / 保证金 / 滑点）全部保留
     - 闸门未过返回 200 opened=false + block_reason（业务拦截非 HTTP 错误），
       拦截原因已由 _mark_open_block 落 ai_analyses.open_block_reason
     """
@@ -323,9 +326,7 @@ def open_from_analysis(payload: OpenFromAnalysisRequest, db: Session = Depends(g
         _release_open_lock,
     )
 
-    cfg = db.get(SystemConfig, 1)
-    if cfg is None or not cfg.trading_enabled:
-        raise HTTPException(status_code=400, detail="自动交易总开关已关闭，无法开单")
+    cfg = db.get(SystemConfig, 1)  # 环境回落用；开单按钮不受交易开关约束（2026-09-28）
 
     try:
         analysis_id = _uuid.UUID(payload.analysis_id)
@@ -338,7 +339,9 @@ def open_from_analysis(payload: OpenFromAnalysisRequest, db: Session = Depends(g
         raise HTTPException(status_code=400, detail="该分析非建议开单（suggest）结论")
 
     acc = reg.resolve_current_account(db)
-    acc_key = acc.key if acc else ("testnet-1" if cfg.trading_testnet else "live-1")
+    acc_key = acc.key if acc else (
+        "testnet-1" if (cfg is None or cfg.trading_testnet) else "live-1"
+    )
     trader = BinanceTrader(acc_key)
     if not trader.configured:
         raise HTTPException(status_code=400, detail="当前账号未配置 API 凭据")
@@ -349,7 +352,7 @@ def open_from_analysis(payload: OpenFromAnalysisRequest, db: Session = Depends(g
                               account=trader.account_key):
         raise HTTPException(status_code=409, detail="与结算巡检/其他开仓互斥中，请稍后重试")
     try:
-        opened = try_open_for_analysis(db, trader, analysis_id)
+        opened = try_open_for_analysis(db, trader, analysis_id, force_market=True)
         db.refresh(a)
         block_reason = a.open_block_reason
         trade_id = None

@@ -121,12 +121,18 @@ def _attempt_open(
     db: Session, trader: BinanceTrader, cfg: SystemConfig,
     a: AIAnalysis,
     wallet: float, positions: dict,
+    force_market: bool = False,
 ) -> bool:
     """对单条分析过全部开仓闸门并尝试开仓（docs/06 §3 逐项检查）。
 
     返回是否成功开仓；成功时更新 positions（供调用方累计在跑数与占用保证金）。
     即时开仓唯一入口（try_open_for_analysis，分析完成即分发）调用；
     开仓失败统一 rollback 并落 FAILED 记录（仅 -1121 未上架）。
+
+    force_market（2026-09-28 手动开单语义）：跳过入场偏离/待回踩时机闸门，
+    以现价市价立即入场——等待回踩是自动成交的时机安排，手动点击是用户对
+    当下价格的明确意图；其余风控闸门（RR 现价复算 / SL-TP 可挂性 / 保证金 /
+    滑点 / 上限 / 黑名单）全部保留。
     """
     occupied = sum(p["initial_margin"] for p in positions.values())
     symbol = a.symbol
@@ -169,7 +175,13 @@ def _attempt_open(
             if cfg.pullback_market_pct is not None else PULLBACK_MARKET_PCT
         )
         deviation = abs(price - entry_ai) / entry_ai
-        if deviation > dev_tol:
+        if force_market:
+            logger.info(
+                "开仓 %s：手动开单市价入场（现价 %s 对 AI 入场 %s 偏离 %.2f%%，"
+                "跳过偏离/待回踩判定）",
+                symbol, price, entry_ai, deviation * 100,
+            )
+        elif deviation > dev_tol:
             if a.pullback_wait:
                 logger.info(
                     "开仓跳过 %s：待回踩距离 %.2f%% 超容差 %.2f%%（pullback_market_pct），"
@@ -186,7 +198,7 @@ def _attempt_open(
                 _mark_open_block(db, a, f"现价偏离 AI 入场价超 {dev_tol * 100:.2f}%"
                                         f"（入场 {entry_ai}，开仓时现价 {price}）")
             return False
-        if a.pullback_wait:
+        if a.pullback_wait and not force_market:
             logger.info(
                 "开仓 %s：待回踩距离 %.2f%% ≤ 容差 %.2f%%，市价入场（RR 按现价复算把关）",
                 symbol, deviation * 100, dev_tol * 100,
@@ -585,12 +597,17 @@ def _daily_closed_pnl(db: Session, account_key: Optional[str], testnet: bool) ->
     ).scalar_one())
 
 
-def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bool:
+def try_open_for_analysis(
+    db: Session, trader: BinanceTrader, analysis_id,
+    force_market: bool = False,
+) -> bool:
     """单条分析完成即开仓（2026-09-14：不再等 :42 统一批次，docs/06 §2）。
 
     闸门与批量开仓完全一致（§3）：上限 / 70% 余额 / 最小资金 / 同币无仓 /
     策略开关 / 方向价格复验 / 盈亏比复验 / EMA / 强平闸门。
     返回是否成功开仓；闸门未过即放弃（无批次重试，等该币下次信号重新分析）。
+    force_market=True（2026-09-28 手动开单按钮）：市价即时入场，跳过
+    入场偏离/待回踩时机闸门（自动成交路径默认 False，语义不变）。
     """
     a = db.get(AIAnalysis, UUID(str(analysis_id)))
     if a is None:
@@ -678,7 +695,8 @@ def try_open_for_analysis(db: Session, trader: BinanceTrader, analysis_id) -> bo
             db.commit()
         except Exception:
             db.rollback()
-    return _attempt_open(db, trader, cfg, a, wallet, positions)
+    return _attempt_open(db, trader, cfg, a, wallet, positions,
+                         force_market=force_market)
 
 
 # ── 结算 ──────────────────────────────────────────────────────

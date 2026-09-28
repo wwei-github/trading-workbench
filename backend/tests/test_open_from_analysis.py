@@ -5,8 +5,10 @@ open_from_analysis 的闸门语义验证：不开真实 HTTP/DB/Redis，通过 m
 stub 掉 BinanceTrader / 开仓锁 / try_open_for_analysis，直接调用端点函数
 （FastAPI 端点即普通函数，db 传 SimpleNamespace 会话桩）。
 
-覆盖：总开关关 400 / 非 suggest 400 / 分析不存在 404 / 锁超时 409 /
-闸门拦截 opened=false / 成功 opened=true + trade_id 反查。
+覆盖：非 suggest 400 / 分析不存在 404 / 锁超时 409 / 闸门拦截 opened=false /
+成功 opened=true + trade_id 反查。
+2026-09-28 语义拆分：交易开关不再约束手动开单（原「总开关关 400」用例改为
+「开关关仍可开」），且端点必须以 force_market=True 调用（市价即时入场）。
 """
 import uuid
 from datetime import datetime
@@ -115,9 +117,10 @@ def _patch_common(monkeypatch):
     monkeypatch.setattr(_redis_mod, "Redis", _FakeRedis)
     monkeypatch.setattr(trade_tasks, "_acquire_open_lock", lambda *a, **kw: True)
     monkeypatch.setattr(trade_tasks, "_release_open_lock", lambda *a, **kw: None)
-    holder = {"opened": True, "trade_row": None}
+    holder = {"opened": True, "trade_row": None, "force_market": None}
 
-    def _fake_try(db, trader, analysis_id):
+    def _fake_try(db, trader, analysis_id, force_market=False):
+        holder["force_market"] = force_market
         if holder["opened"] and holder["trade_row"] is not None:
             db._state["trade_row"] = holder["trade_row"]
         return holder["opened"]
@@ -142,6 +145,8 @@ def test_happy_path_opened(_patch_http, _patch_common, _analysis, _cfg_on):
     assert res["opened"] is True and res["ok"] is True
     assert res["trade_id"] == str(_cfg_on._state["trade_row"].id)
     assert res["account_key"] == "testnet-1"
+    # 手动开单 = 市价即时入场（跳过偏离/待回踩时机闸门）
+    assert _patch_common["force_market"] is True
 
 
 def test_gate_blocked_returns_200_with_reason(_patch_http, _patch_common,
@@ -154,12 +159,13 @@ def test_gate_blocked_returns_200_with_reason(_patch_http, _patch_common,
     assert res["trade_id"] is None
 
 
-def test_total_switch_off_400(_patch_http, _patch_common, _analysis, _cfg_on):
+def test_switch_off_still_allowed(_patch_http, _patch_common, _analysis, _db):
+    """2026-09-28 语义拆分：自动成交开关关闭不再拦手动开单（原 400 用例反转）"""
     from app.models.system_config import SystemConfig
-    _cfg_on._state["cfg"] = SystemConfig(id=1, trading_enabled=False)
-    with pytest.raises(_HTTPException) as ei:
-        open_from_analysis(_payload(), _cfg_on)
-    assert ei.value.status_code == 400
+    _db._state["cfg"] = SystemConfig(id=1, trading_enabled=False)
+    _patch_common["trade_row"] = _trade_row()
+    res = open_from_analysis(_payload(), _db)
+    assert res["opened"] is True and res["ok"] is True
 
 
 def test_non_suggest_400(_patch_http, _patch_common, _analysis, _cfg_on):

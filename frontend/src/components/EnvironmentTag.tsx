@@ -25,8 +25,8 @@ export default function EnvironmentTag() {
   return (
     <Tooltip
       title={
-        `当前交易账号：${label}；自动交易${trading ? '已开启' : '已关闭'}` +
-        `（关=定时扫描的 AI 分析与开新单停止，结算/复盘/日报照常）。在「系统配置」弹窗中可切换。`
+        `当前交易账号：${label}；自动成交${trading ? '已开启' : '已关闭'}` +
+        `（仅控 AI 分析后自动开新单；手动开单/AI 分析不受限）。在「系统配置」弹窗中可切换。`
       }
     >
       <Tag

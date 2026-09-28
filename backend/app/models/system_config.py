@@ -43,8 +43,9 @@ class SystemConfig(Base):
     # 运行时环境与总开关（2026-09-20 由 env 静态配置迁移而来，页面可改、任务即时生效）：
     # trading_testnet：当前交易环境（true=测试网 false=正式网），开仓/扫描宇宙/复核用；
     #                  存量单按记录自带 testnet 标记结算，切环境不影响在跑单
-    # trading_enabled：自动交易总开关（关=定时扫描的 AI 分析跳过 + 停开新单，
-    #                  结算巡检/复盘/日报照常；2026-09-20 合并原系统总开关）
+    # trading_enabled：自动成交开关（2026-09-28 语义收窄：仅指每小时 AI 分析
+    # 后自动开新单；手动开单按钮/AI 分析/结算巡检/复盘/日报均不受它控制。
+    # AI 分析由 ai_analysis_enabled 独立控制）
     trading_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
     trading_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # 当前正式网账号（docs/17 P0）：正式网模式（trading_testnet=false）下生效，

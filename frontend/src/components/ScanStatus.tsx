@@ -3,7 +3,7 @@ import { bj } from '../utils/dayjs'
 import { useScanStore } from '../stores/scanStore'
 
 /** 顶部运行状态一览：
- *  自动交易 + 最近扫描（时间+命中）+ 在跑单水位（资金数字全部下沉到各页面概览）。
+ *  自动成交 + 最近扫描（时间+命中）+ 在跑单水位（资金数字全部下沉到各页面概览）。
  *  在跑单口径（2026-09-25 v3）：主数字 = 占上限名额的笔数（OPENED），
  *  已进止盈止损（TP1_HIT/TP2_HIT，止损已移保本）用绿色 Tag 单独标注、不占名额；
  *  满仓红色 / 差一满橙色分级预警。 */
@@ -30,7 +30,7 @@ export default function ScanStatus() {
     <Row gutter={28}>
       <Col>
         <Statistic
-          title="自动交易"
+          title="自动成交"
           valueRender={() =>
             trading ? (
               <Tag color="green" style={{ fontSize: 14, marginInlineEnd: 0 }}>

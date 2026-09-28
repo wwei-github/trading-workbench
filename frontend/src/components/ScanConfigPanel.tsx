@@ -135,12 +135,12 @@ export default function ScanConfigPanel() {
           <Form.Item
             label={
               <span>
-                <RobotOutlined style={{ marginRight: 6 }} />AI 分析
+                <RobotOutlined style={{ marginRight: 6 }} />筛选后自动 AI 分析
               </span>
             }
             name="ai_analysis_enabled"
             valuePropName="checked"
-            tooltip={aiConfigured ? '开启后扫描命中币种自动触发 AI 分析（展开行查看结果）' : '后端未配置 AI_API_KEY，无法使用 AI 分析'}
+            tooltip={aiConfigured ? '开启后扫描命中币种自动触发 AI 分析（独立于自动交易开关；手动单币分析不受影响）' : '后端未配置 AI_API_KEY，无法使用 AI 分析'}
           >
             <Switch disabled={!aiConfigured} />
           </Form.Item>

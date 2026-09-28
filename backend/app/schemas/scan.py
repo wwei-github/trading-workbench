@@ -204,7 +204,7 @@ class SystemConfigOut(BaseModel):
 
     # 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面可改）
     trading_testnet: bool = True
-    trading_enabled: bool = False     # 自动交易总开关：关=定时扫描 AI 分析跳过+停开新单（结算/复盘/日报照常）
+    trading_enabled: bool = False     # 自动成交开关（2026-09-28 收窄）：仅控每小时 AI 分析后自动开新单；手动开单/AI 分析/结算巡检不受限
     # 多账号（docs/17 P0/P1）：.env 注册表只读展示 + 主账号 + 启用自动交易的 live 账号集合
     current_account_key: Optional[str] = None
     live_trading_keys: list[str] = []   # P1 扇出：正式网模式下执行自动交易的账号（空=回落 live-1）
@@ -268,7 +268,7 @@ class SystemConfigUpdate(BaseModel):
 
     # 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面可改）
     trading_testnet: Optional[bool] = None
-    trading_enabled: Optional[bool] = None
+    trading_enabled: Optional[bool] = None  # 自动成交开关：仅控自动开新单（2026-09-28 收窄，见 SystemConfigOut）
     # 当前正式网账号（docs/17）：需为注册表内 live 账号；切到正式网账号自动关总闸
     current_account_key: Optional[str] = None
     # P1 扇出（docs/17 §3）：启用自动交易的正式网账号集合；正式网模式下生效

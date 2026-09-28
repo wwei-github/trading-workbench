@@ -23,7 +23,7 @@ from sqlalchemy import select
 from app.celery_app import celery_app
 from app.config import settings
 from app.database import SessionLocal
-from app.models.scan import ScanRecord, ScanResult, AIAnalysis
+from app.models.scan import ScanResult, AIAnalysis
 from app.models.system_config import SystemConfig
 from app.services import ai_progress
 from app.services.ai_agent import analyze_coin_agent
@@ -103,18 +103,15 @@ def run_ai_analysis_task(
     db = SessionLocal()
     try:
         cfg = db.get(SystemConfig, 1)
-        if not cfg or not cfg.ai_analysis_enabled or not settings.AI_API_KEY:
-            logger.warning("AI 分析未启用，跳过")
+        if not cfg or not settings.AI_API_KEY:
+            logger.warning("AI 分析未启用（未配置 API Key），跳过")
             return
-        # 自动交易总开关（2026-09-20 合并系统总开关，单一开关）：关闭后定时扫描的
-        # 批量 AI 分析跳过（省 AI 配额），开单环节同样停——分析不产出，分发不发生。
-        # 结算巡检/复盘/归因/日报照常；手动单币重分析（only_scan_result_id 非空）
-        # 与手动扫描链路不受限
-        if only_scan_result_id is None:
-            scan_type = db.get(ScanRecord, UUID(scan_record_id)).scan_type
-            if scan_type == "scheduled" and not cfg.trading_enabled:
-                logger.info("自动交易开关关闭，定时扫描的 AI 分析跳过 #%s", scan_record_id)
-                return
+        if cfg and not cfg.ai_analysis_enabled and only_scan_result_id is None:
+            # 「筛选后自动 AI 分析」开关（2026-09-28 与交易开关解耦）：仅拦截
+            # 扫描链路的批量自动分析；手动单币重分析（only_scan_result_id 非空）
+            # 不受限。交易开关（trading_enabled）只管自动成交，不再拦分析
+            logger.info("筛选后自动 AI 分析开关关闭，批量分析跳过 #%s", scan_record_id)
+            return
         q = select(ScanResult).where(ScanResult.scan_record_id == UUID(scan_record_id))
         if only_scan_result_id:
             q = q.where(ScanResult.id == UUID(only_scan_result_id))
