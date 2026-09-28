@@ -5,7 +5,7 @@
  * - 数据源：GET /api/scans/pullback-pendings（一次拉全量，前端按状态过滤）
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, Empty, Segmented, Spin, Table, Tag, Tooltip, Typography, message } from 'antd'
+import { Button, Empty, Modal, Segmented, Spin, Table, Tag, Tooltip, Typography, message } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
@@ -13,9 +13,10 @@ import { bj } from '../utils/dayjs'
 import { patternStyle } from '../constants/labels'
 import { schemeTag } from '../utils/scheme'
 import { useScanStore } from '../stores/scanStore'
+import KlineChart from './KlineChart'
 import type { PullbackPendingItem } from '../types'
 
-const { Text } = Typography
+const { Text, Link } = Typography
 
 type StatusFilter = 'pending' | 'confirmed' | 'expired' | 'superseded' | 'all'
 
@@ -54,6 +55,8 @@ export default function PendingPoolPanel() {
   const [rows, setRows] = useState<PullbackPendingItem[]>([])
   const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState<StatusFilter>('pending')
+  // 弹窗展示的币种 K 线（null=关闭）；所有 tab 的币种名称均点击可看
+  const [klineSymbol, setKlineSymbol] = useState<string | null>(null)
   const colorScheme = useScanStore((s) => s.colorScheme)
 
   const fetchData = useCallback(async () => {
@@ -87,7 +90,11 @@ export default function PendingPoolPanel() {
   const columns: ColumnsType<PullbackPendingItem> = [
     {
       title: '币种', dataIndex: 'symbol', key: 'symbol', width: 130,
-      render: (v: string) => <Text strong>{v}</Text>,
+      render: (v: string) => (
+        <Tooltip title="点击查看最新K线">
+          <Link strong onClick={() => setKlineSymbol(v)}>{v}</Link>
+        </Tooltip>
+      ),
     },
     {
       title: '方向', dataIndex: 'direction', key: 'direction', width: 90,
@@ -182,6 +189,16 @@ export default function PendingPoolPanel() {
           />
         </Spin>
       </div>
+      <Modal
+        open={!!klineSymbol}
+        title={klineSymbol ? `${klineSymbol} 最新K线` : ''}
+        footer={null}
+        width={980}
+        destroyOnClose
+        onCancel={() => setKlineSymbol(null)}
+      >
+        {klineSymbol && <KlineChart symbol={klineSymbol} limit={500} />}
+      </Modal>
     </div>
   )
 }
