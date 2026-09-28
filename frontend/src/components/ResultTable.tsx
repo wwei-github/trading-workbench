@@ -483,6 +483,34 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       },
     },
     {
+      title: "K线形态",
+      dataIndex: "pattern",
+      key: "pattern",
+      width: 116,
+      ...filterProps("pattern", PATTERN_FILTERS),
+      render: (v: string | null, record: ScanResult) => {
+        if (!v) return <span style={{ color: "#999" }}>-</span>;
+        const { label, color } = patternStyle(v);
+        return (
+          <Tooltip title={record.signal_reason || undefined}>
+            <Tag color={color}>{label}</Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: "EMA",
+      dataIndex: "ema_state",
+      key: "ema_state",
+      width: 132,
+      ...filterProps("ema_state", EMA_STATE_FILTERS),
+      render: (v: string | null) => {
+        if (!v) return <span style={{ color: "#999" }}>-</span>;
+        const cfg = EMA_STATE_MAP[v] || { label: v, color: "default" };
+        return <Tag color={cfg.color}>{cfg.label}</Tag>;
+      },
+    },
+    {
       // AI 方向列：开多/开空。扫描完成后自动分析（按24h成交额取前 AI_MAX_PER_SCAN 个）
       title: (
         <Tooltip title="AI 分析方向：开多/开空。扫描完成后自动分析成交额前 10 的命中币种">
@@ -584,34 +612,6 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           );
         }
         return <span style={{ color: "#999" }}>-</span>;
-      },
-    },
-    {
-      title: "K线形态",
-      dataIndex: "pattern",
-      key: "pattern",
-      width: 116,
-      ...filterProps("pattern", PATTERN_FILTERS),
-      render: (v: string | null, record: ScanResult) => {
-        if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const { label, color } = patternStyle(v);
-        return (
-          <Tooltip title={record.signal_reason || undefined}>
-            <Tag color={color}>{label}</Tag>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      title: "EMA",
-      dataIndex: "ema_state",
-      key: "ema_state",
-      width: 132,
-      ...filterProps("ema_state", EMA_STATE_FILTERS),
-      render: (v: string | null) => {
-        if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const cfg = EMA_STATE_MAP[v] || { label: v, color: "default" };
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
       },
     },
     {
