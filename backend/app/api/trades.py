@@ -198,7 +198,8 @@ def transfer_stats(scope: str = "live", db: Session = Depends(get_db)):
 
     - tin/tout/net：account_transfers 按 scope 全量求和（正=转入/负=转出）
     - initial_capital：系统配置「初始资金」（正式网主账号首次入金口径——划转同步
-      首次接入只回看 7 天，早于接入的入金不进库，以此字段补齐账目闭环）
+      首次接入只回看 7 天，早于接入的入金不进库，以此字段补齐账目闭环）；
+      仅 scope=live 返回，测试网/全部/单账号返回 0（前端显示「--」）
     - wallet_balance：scope 覆盖账号的当前钱包余额合计（实时查币安；任一账号
       查询失败跳过，available=False 表示全部失败前端降级「--」）
     """
@@ -216,7 +217,10 @@ def transfer_stats(scope: str = "live", db: Session = Depends(get_db)):
     ).scalar_one()
 
     cfg = db.get(SystemConfig, 1)
-    initial_capital = float(cfg.live_initial_capital or 0) if cfg else 0.0
+    # 初始资金仅正式网口径（live_initial_capital=正式网主账号首次入金补齐）：
+    # 测试网/全部/单账号范围无此概念，返回 0 由前端显示「--」。
+    # 2026-09-28 修复：此前所有 scope 都返回 live_initial_capital，测试网页签串显正式网数据
+    initial_capital = float(cfg.live_initial_capital or 0) if (cfg and scope == "live") else 0.0
 
     # scope → 账号清单（与 _account_scope_filter 同口径）
     if scope == "all":
