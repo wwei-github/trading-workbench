@@ -8,7 +8,9 @@
 - T3 trigger_pullback_confirm：回踩 EMA21 或已确认关键位（docs/21 §8 双对象，
   levels/atr 缺省时回落纯 EMA21）+ 同向金K 两段式确认——
   当根同时触碰+金K（当根确认），或上根触碰（pending）+ 本根金K（次根确认）；
-  仅触碰无金K 不再当根触发，转入 pending 待确认池（scanner 持久化）
+  仅触碰无金K 不再当根触发，转入 pending 待确认池（scanner 持久化）；
+  flt.pullback_key_level_only（2026-09-28）开启时 EMA21 退出触碰判定，
+  仅已确认关键位可作触碰对象
 
 优先级（决策矩阵，docs/19 §4.1）：T1 > 当根确认 > 次根确认 > 纯金K(T2) >
 触碰转 pending；pending 仅在"恰好下一根K线"有效（开盘时间精确比对）。
@@ -265,9 +267,12 @@ def detect_trigger(
         touch_price = touch_lv[0]
         touch_label = ("翻转位" if touch_lv[1].get("state") == "flipped_confirmed"
                        else "关键位")
-    elif touch_ema is not None:
+    elif touch_ema is not None and not flt.pullback_key_level_only:
         touch_price, touch_label = touch_ema, "EMA21"
     else:
+        # 回踩金K仅限关键位（2026-09-28 筛选配置）：EMA21 完全退出 T3 判定——
+        # 当根确认、Stage-1 pending 建池都不认 EMA21 触碰；关键位计算失败
+        # （levels/atr 缺失）时该模式下 T3 整体静默（无触碰对象即无回踩确认）
         touch_price, touch_label = None, None
 
     # 行2：当根触碰+金K → 当根确认（比纯形态更强，pending 一律被抢先）。

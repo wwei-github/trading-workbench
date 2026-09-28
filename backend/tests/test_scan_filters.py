@@ -19,10 +19,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest  # noqa: E402
 
 from app.config import settings  # noqa: E402
-from app.services.scan_filters import resolve_scan_filters  # noqa: E402
+from app.services.scan_filters import (  # noqa: E402
+    ALL_TRIGGERS,
+    resolve_scan_filters,
+)
 from app.services.strategy.trigger import (  # noqa: E402
     BREAKOUT,
     CANDLESTICK,
+    PULLBACK_CONFIRM,
     ScanFilters,
     detect_trigger,
 )
@@ -225,3 +229,152 @@ def test_validate_scan_filters_clean_and_reject():
         _validate_scan_filters({"breakout_max_pct": 99})
     with pytest.raises(HTTPException):
         _validate_scan_filters({"breakout_vol_ratio": "x"})
+
+
+# ── 触发类型白名单 + 回踩仅限关键位（2026-09-28 只留回踩金K） ──────────
+
+
+def test_resolve_trigger_whitelist_and_bool():
+    cfg = SimpleNamespace(scan_filters={
+        "allowed_triggers": ["trigger_pullback_confirm"],
+        "pullback_key_level_only": True,
+    })
+    flt = resolve_scan_filters(cfg)
+    assert flt.allowed_triggers == ("trigger_pullback_confirm",)
+    assert flt.pullback_key_level_only is True
+
+
+def test_resolve_trigger_whitelist_invalid_falls_back():
+    """非 list/全不勾/全非法 → 回落全量（静默空转比多出信号更难排查）"""
+    for bad in ("trigger_breakout", 3, [], ["bogus"], ["bogus", 1], None):
+        cfg = SimpleNamespace(scan_filters={"allowed_triggers": bad})
+        assert resolve_scan_filters(cfg).allowed_triggers == ALL_TRIGGERS, bad
+    # 非法项过滤、合法项保留
+    cfg = SimpleNamespace(scan_filters={"allowed_triggers": ["trigger_breakout", "bogus"]})
+    assert resolve_scan_filters(cfg).allowed_triggers == ("trigger_breakout",)
+
+
+def test_resolve_bool_non_bool_falls_back():
+    for bad in ("true", 1, None, "yes"):
+        cfg = SimpleNamespace(scan_filters={"pullback_key_level_only": bad})
+        assert resolve_scan_filters(cfg).pullback_key_level_only is False, bad
+
+
+def test_validate_scan_filters_trigger_and_bool():
+    from fastapi import HTTPException
+
+    from app.api.scan import _validate_scan_filters
+    out = _validate_scan_filters({
+        "allowed_triggers": ["trigger_pullback_confirm"],
+        "pullback_key_level_only": True,
+    })
+    assert out == {"allowed_triggers": ["trigger_pullback_confirm"],
+                   "pullback_key_level_only": True}
+    with pytest.raises(HTTPException):
+        _validate_scan_filters({"allowed_triggers": []})
+    with pytest.raises(HTTPException):
+        _validate_scan_filters({"allowed_triggers": ["bogus"]})
+    with pytest.raises(HTTPException):
+        _validate_scan_filters({"allowed_triggers": "trigger_breakout"})
+    with pytest.raises(HTTPException):
+        _validate_scan_filters({"pullback_key_level_only": "yes"})
+
+
+def _key_level_only_flt(**kw):
+    return ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=20,
+        breakout_threshold=0.002, breakout_vol_ratio=1.2,
+        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
+        ai_max_per_scan=10,
+        allowed_triggers=ALL_TRIGGERS, pullback_key_level_only=True, **kw,
+    )
+
+
+_LEVEL = [{"price": 100.0, "state": "intact", "role": "support"}]
+
+
+def _hammer_touching_level(level_price=100.0):
+    """平盘 + 触碰 level_price 的锤形金K信号K（klines[-2]）+ 未收盘根"""
+    kl = _flat_bars(50)
+    ts = 1_700_000_000_000 + 50 * 3_600_000
+    # o=100.45 c=100.55（body 0.1）h=100.6（上影 0.05）l=99.9（下影 0.55≥2×body）
+    kl.append([ts, 100.45, 100.6, 99.9, 100.55, 150.0, 150.0])
+    kl.append([ts + 3_600_000, 100.55, 100.65, 100.45, 100.55, 150.0, 150.0])
+    assert level_price == 100.0  # 锤线 low=99.9 落在 100±0.1 带内
+    return kl
+
+
+def test_key_level_only_still_confirms_on_level_touch():
+    """仅关键位模式：关键位触碰 + 金K → 当根确认照常（EMA21 仅是双锚加成）"""
+    trig, op = detect_trigger(_hammer_touching_level(), 1,
+                              levels=_LEVEL, atr=0.4,
+                              flt=_key_level_only_flt())
+    assert trig is not None and trig["type"] == PULLBACK_CONFIRM
+    assert "关键位" in trig["reason"]
+    assert op is None or op.get("op") != "upsert"
+
+
+def test_key_level_only_ema21_touch_no_longer_confirms():
+    """仅关键位模式：EMA21 触碰 + 金K（不贴关键位）→ 不再当根确认，
+    降级为纯金K触发（白名单若只留回踩则由 scanner 丢弃）"""
+    far_level = [{"price": 98.0, "state": "intact", "role": "support"}]
+    kl = _hammer_touching_level()  # 锤线触碰 EMA21=100，距 98 远超 0.1 带
+    trig, _ = detect_trigger(kl, 1, levels=far_level, atr=0.4,
+                             flt=_key_level_only_flt())
+    assert trig is not None and trig["type"] == CANDLESTICK
+    # 对照：默认模式（EMA21 兜底）→ 当根确认
+    trig2, _ = detect_trigger(kl, 1, levels=far_level, atr=0.4)
+    assert trig2 is not None and trig2["type"] == PULLBACK_CONFIRM
+
+
+def test_key_level_only_ema21_touch_no_pending():
+    """仅关键位模式：EMA21 触碰无金K → 不建 pending（EMA21 退出 Stage-1）"""
+    far_level = [{"price": 98.0, "state": "intact", "role": "support"}]
+    kl = _flat_bars(50)
+    ts = 1_700_000_000_000 + 50 * 3_600_000
+    # 无形态中性K线：触碰 EMA21（low 99.95 ≤ 100 ≤ close 100.25）但不贴 98 位
+    kl.append([ts, 100.0, 100.35, 99.95, 100.25, 100.0, 100.0])
+    kl.append([ts + 3_600_000, 100.25, 100.35, 100.15, 100.25, 100.0, 100.0])
+    trig, op = detect_trigger(kl, 1, levels=far_level, atr=0.4,
+                              flt=_key_level_only_flt())
+    assert trig is None and op is None
+    # 对照：默认模式 → 转 pending 待确认
+    trig2, op2 = detect_trigger(kl, 1, levels=far_level, atr=0.4)
+    assert trig2 is None and op2 is not None and op2["op"] == "upsert"
+
+
+def test_candidate_whitelist_drops_disallowed_triggers(monkeypatch):
+    """scanner 白名单：白名单外触发类型不产生候选；pending 处置照常透传"""
+    import app.services.scanner as scanner_mod
+
+    votes = {"bull": 5, "bear": 0, "bull_n": 6, "bear_n": 6,
+             "net": 5, "voted": 6, "results": {}}
+    monkeypatch.setattr(scanner_mod, "analyze_ema", lambda k: None)
+    monkeypatch.setattr(scanner_mod, "classify_volume", lambda k: (1.0, "平量"))
+    monkeypatch.setattr(scanner_mod, "compute_indicator_votes", lambda k, h=None: votes)
+
+    class FakePool:
+        def get_klines(self, *a, **k):
+            return []
+
+    breakout = {"type": BREAKOUT, "direction": 1, "position": "resistance",
+                "pattern": None, "breakout_pct": 0.5, "reason": "r"}
+    monkeypatch.setattr(scanner_mod, "detect_trigger",
+                        lambda *a, **k: (dict(breakout), None))
+
+    def _flt(allowed):
+        return ScanFilters(
+            min_volume_24h=3_000_000, breakout_channel_bars=20,
+            breakout_threshold=0.002, breakout_vol_ratio=1.2,
+            breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
+            ai_max_per_scan=10, allowed_triggers=allowed,
+        )
+
+    # 白名单只留回踩 → 突破触发被丢弃
+    cand, op = scanner_mod.detect_indicator_candidate(
+        FakePool(), "XUSDT", _flat_bars(), flt=_flt((PULLBACK_CONFIRM,)))
+    assert cand is None and op is None
+    # 白名单含突破 → 候选照常产生
+    cand, _ = scanner_mod.detect_indicator_candidate(
+        FakePool(), "XUSDT", _flat_bars(), flt=_flt(ALL_TRIGGERS))
+    assert cand is not None and cand["signal_type"] == BREAKOUT

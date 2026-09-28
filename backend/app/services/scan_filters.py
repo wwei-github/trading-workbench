@@ -14,6 +14,12 @@ from math import isfinite
 
 from app.config import settings
 
+# 触发类型白名单键值（与 trigger.py 同名字符串同源；此处独立定义避免循环导入）
+TRIGGER_BREAKOUT = "trigger_breakout"
+TRIGGER_CANDLESTICK = "trigger_candlestick"
+TRIGGER_PULLBACK_CONFIRM = "trigger_pullback_confirm"
+ALL_TRIGGERS = (TRIGGER_BREAKOUT, TRIGGER_CANDLESTICK, TRIGGER_PULLBACK_CONFIRM)
+
 # scan_filters JSONB 的合法键集（PUT /config 校验与前端字段一一对应）
 SCAN_FILTER_KEYS = (
     "min_volume_24h",             # ① 宇宙层：24h 成交额门槛（USDT）
@@ -23,6 +29,8 @@ SCAN_FILTER_KEYS = (
     "breakout_max_pct",           # ③ 触发层：突破幅度上限（防追高，0=关闭）
     "candle_max_ema21_dist_pct",  # ③ 触发层：悬空金K距 EMA21 上限（0=关闭）
     "ai_max_per_scan",            # ④ 配额层：单轮扫描 AI 分析上限
+    "allowed_triggers",           # ③ 触发层：触发类型白名单（2026-09-28）
+    "pullback_key_level_only",    # ③ 触发层：回踩金K仅限关键位触碰（2026-09-28）
 )
 
 
@@ -35,6 +43,8 @@ class ScanFilters:
     breakout_max_pct: float
     candle_max_ema21_dist_pct: float
     ai_max_per_scan: int
+    allowed_triggers: tuple = ALL_TRIGGERS
+    pullback_key_level_only: bool = False
 
 
 def resolve_scan_filters(cfg=None) -> ScanFilters:
@@ -60,6 +70,18 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
             return default
         return v if v >= minimum else default
 
+    def _triggers(key: str) -> tuple:
+        """白名单：list 且至少一个合法类型才生效；全不勾/全非法视为配置事故
+        回落全量（静默空转一整轮扫描比多出几个信号更难排查）"""
+        v = raw.get(key)
+        if not isinstance(v, list):
+            return ALL_TRIGGERS
+        allowed = tuple(t for t in v if t in ALL_TRIGGERS)
+        return allowed or ALL_TRIGGERS
+
+    def _bool(key: str) -> bool:
+        return raw.get(key) if isinstance(raw.get(key), bool) else False
+
     return ScanFilters(
         min_volume_24h=_num("min_volume_24h", float(settings.MIN_VOLUME_24H)),
         breakout_channel_bars=_int("breakout_channel_bars", settings.BREAKOUT_CHANNEL_BARS, minimum=5),
@@ -68,4 +90,6 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
         breakout_max_pct=_num("breakout_max_pct", settings.BREAKOUT_MAX_PCT),
         candle_max_ema21_dist_pct=_num("candle_max_ema21_dist_pct", settings.CANDLE_MAX_EMA21_DIST_PCT),
         ai_max_per_scan=_int("ai_max_per_scan", settings.AI_MAX_PER_SCAN, minimum=1),
+        allowed_triggers=_triggers("allowed_triggers"),
+        pullback_key_level_only=_bool("pullback_key_level_only"),
     )

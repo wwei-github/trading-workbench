@@ -152,6 +152,11 @@ def detect_indicator_candidate(
     atr = calc_atr(klines, 14)
     trig, pending_op = detect_trigger(klines, direction, pending,
                                       levels=key_levels, atr=atr, flt=flt)
+    if trig is not None and trig["type"] not in flt.allowed_triggers:
+        # 触发类型白名单（2026-09-28 筛选配置）：白名单外类型不产生候选（连 AI
+        # 分析都不进）；pending 处置照常执行——如突破抢先 supersede、pending
+        # 窗口过期 expire，让回踩池状态机保持自洽
+        trig = None
     if trig is None:
         # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩口径计）
         if pending_op and pending_op.get("op") == "upsert":

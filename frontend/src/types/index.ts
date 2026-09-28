@@ -220,9 +220,10 @@ export interface SystemConfig {
   binance_key_live?: boolean; // 正式网 API key 已配置（只读状态，不返回 key）
   binance_key_testnet?: boolean; // 测试网 API key 已配置（未配置时回落正式网 key）
   // 筛选参数组（2026-09-28）：scan_filters=库内定制值（null=回落 env/代码默认）；
-  // scan_filters_effective=实际生效值（后端解析结果），表单初值用它
-  scan_filters?: Record<string, number> | null;
-  scan_filters_effective?: Record<string, number>;
+  // scan_filters_effective=实际生效值（后端解析结果），表单初值用它。
+  // 2026-09-28 增量：allowed_triggers（数组）与 pullback_key_level_only（布尔）
+  scan_filters?: Record<string, number | string[] | boolean> | null;
+  scan_filters_effective?: Record<string, number | string[] | boolean>;
 }
 
 // 账号注册表条目（docs/17）：key 稳定标识（testnet-1/live-N），只读不回传凭据

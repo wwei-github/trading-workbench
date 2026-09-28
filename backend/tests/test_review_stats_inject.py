@@ -135,7 +135,9 @@ def test_gate_block_renders_live_thresholds():
     assert "≥0.2%" in block
     assert ">1.5% 视为追高" in block
     assert "1.2 倍" in block
-    assert ">1.5% 不触发" in block  # 悬空金K拦截
+    # 悬空金K拦截行归属回踩/金K块（突破块只渲染突破门槛）
+    pullback_block = render_signal_gate_block("trigger_candlestick")
+    assert ">1.5% 不触发" in pullback_block
 
 
 def test_gate_block_disabled_items_omitted(monkeypatch):
@@ -148,6 +150,32 @@ def test_gate_block_disabled_items_omitted(monkeypatch):
 def test_gate_block_non_trigger_empty():
     assert render_signal_gate_block("uptrend") == ""
     assert render_signal_gate_block("manual_search") == ""
+
+
+def test_gate_block_pullback_touch_object_by_mode(monkeypatch):
+    """回踩类门槛块：触碰对象文案随 pullback_key_level_only 切换；
+    突破专属行（Donchian/量比）不再出现在回踩块里"""
+    from dataclasses import replace
+
+    from app.services import scan_filters as sf_mod
+
+    base = sf_mod.resolve_scan_filters(None)
+
+    def _with_mode(on: bool):
+        return replace(base, pullback_key_level_only=on)
+
+    monkeypatch.setattr(sf_mod, "resolve_scan_filters",
+                        lambda _cfg=None: _with_mode(False))
+    block = render_signal_gate_block("trigger_pullback_confirm")
+    assert "已确认关键位 或 EMA21" in block
+    assert "两段式确认" in block
+    assert "Donchian" not in block  # 突破专属行不进回踩块
+
+    monkeypatch.setattr(sf_mod, "resolve_scan_filters",
+                        lambda _cfg=None: _with_mode(True))
+    block = render_signal_gate_block("trigger_pullback_confirm")
+    assert "仅已确认关键位" in block
+    assert "EMA21 不作为触碰对象" in block
 
 
 # ── _build_messages 接线 ──────────────────────────────────────────────

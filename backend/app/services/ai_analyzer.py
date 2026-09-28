@@ -133,26 +133,40 @@ SIGNAL_TYPE_LABELS = {
 def render_signal_gate_block(signal_type: str) -> str:
     """触发器入场门槛说明（2026-09-28 动态化）：阈值读 scan_filters 生效值，
     消除与页面筛选配置的文本分叉（此前 0.2%/1.2× 硬编码，页面改配置后
-    AI 看到的口径与程序实际闸门不一致）。仅触发器类型输出，其他类型空串。"""
+    AI 看到的口径与程序实际闸门不一致）。按触发类型渲染对应门槛，
+    非触发器类型输出空串。"""
     if signal_type not in ("trigger_breakout", "trigger_candlestick",
                            "trigger_pullback", "trigger_pullback_confirm"):
         return ""
     from app.services.scan_filters import resolve_scan_filters
     flt = resolve_scan_filters(None)  # 任务侧无 cfg 行时按 env/代码默认
-    lines = [
-        "程序入场门槛（已程序化验证，评估信号质量时以此为基准而非自行估算）:",
-        f"- Donchian 通道: 收盘越过 {flt.breakout_channel_bars} 根高低轨",
-        f"- 突破幅度: ≥{flt.breakout_threshold * 100:.1f}%（毛边不算）"
-        + (f"，>{flt.breakout_max_pct:.1f}% 视为追高不触发" if flt.breakout_max_pct > 0 else "，追高上限未启用"),
-        f"- 放量: 信号K线量 ≥ 近20根均量 {flt.breakout_vol_ratio:g} 倍",
-        "- 突破K线形态: 长实体（≥75%全长）且单侧影线 ≤实体20%，近光头光脚",
-    ]
-    if flt.candle_max_ema21_dist_pct > 0:
-        lines.append(
-            f"- 悬空金K拦截: 纯金K距 EMA21 >{flt.candle_max_ema21_dist_pct:.1f}% 不触发"
-            "（触及关键位仍放行）"
-        )
-    return "\n".join(lines) + "\n"
+    lines: list[str] = []
+    if signal_type == "trigger_breakout":
+        lines += [
+            f"- Donchian 通道: 收盘越过 {flt.breakout_channel_bars} 根高低轨",
+            f"- 突破幅度: ≥{flt.breakout_threshold * 100:.1f}%（毛边不算）"
+            + (f"，>{flt.breakout_max_pct:.1f}% 视为追高不触发" if flt.breakout_max_pct > 0 else "，追高上限未启用"),
+            f"- 放量: 信号K线量 ≥ 近20根均量 {flt.breakout_vol_ratio:g} 倍",
+            "- 突破K线形态: 长实体（≥75%全长）且单侧影线 ≤实体20%，近光头光脚",
+        ]
+    else:
+        if signal_type in ("trigger_pullback", "trigger_pullback_confirm"):
+            touch_obj = ("仅已确认关键位（EMA21 不作为触碰对象）"
+                         if flt.pullback_key_level_only
+                         else "已确认关键位 或 EMA21（关键位优先）")
+            lines += [
+                f"- 回踩触碰对象: {touch_obj}，位带内触碰且收盘收回防守侧",
+                "- 两段式确认: 触碰后当根出现同向金K，或上根触碰+本根金K（次根确认）",
+            ]
+        if flt.candle_max_ema21_dist_pct > 0:
+            lines.append(
+                f"- 悬空金K拦截: 纯金K距 EMA21 >{flt.candle_max_ema21_dist_pct:.1f}% 不触发"
+                "（触及关键位仍放行）"
+            )
+    if not lines:
+        return ""
+    return ("程序入场门槛（已程序化验证，评估信号质量时以此为基准而非自行估算）:\n"
+            + "\n".join(lines) + "\n")
 
 
 SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信号与近期K线数据，给出是否开单的建议。

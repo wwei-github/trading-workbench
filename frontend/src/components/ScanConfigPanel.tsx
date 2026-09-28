@@ -1,8 +1,16 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, InputNumber, Select, Switch, message, Button, Spin, Divider, Tooltip } from 'antd'
+import { Modal, Form, InputNumber, Select, Switch, Checkbox, message, Button, Spin, Divider, Tooltip } from 'antd'
 import { SettingOutlined, RobotOutlined, FileTextOutlined, ApiOutlined, UndoOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
+
+/** 触发类型白名单选项（与后端 ALL_TRIGGERS 一一对应） */
+const TRIGGER_OPTIONS = [
+  { value: 'trigger_breakout', label: '突破触发' },
+  { value: 'trigger_candlestick', label: '纯金K触发' },
+  { value: 'trigger_pullback_confirm', label: '回踩金K确认' },
+]
+const ALL_TRIGGER_VALUES = TRIGGER_OPTIONS.map((o) => o.value)
 
 /** 筛选参数组（2026-09-28 筛选配置上页面）：字段元数据驱动渲染 */
 const FILTER_FIELDS: { name: string; label: string; min: number; max: number; step?: number; tooltip: string }[] = [
@@ -30,9 +38,9 @@ export default function ScanConfigPanel() {
   const [form] = Form.useForm()
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
-  // 打开弹窗时的筛选参数生效值快照：保存时比对，未改动则不提交 scan_filters
-  // （避免把 env 派生值固化进 DB，保持「缺省回落 env」语义）
-  const [filtersSnapshot, setFiltersSnapshot] = useState<Record<string, number>>({})
+  // 打开弹窗时的筛选参数生效值快照：保存时逐键比对，仅提交有改动的键
+  // （后端缺键回落 env，避免把 env 派生值固化进 DB）
+  const [filtersSnapshot, setFiltersSnapshot] = useState<Record<string, unknown>>({})
   const { aiConfig, updateConfig, fetchConfig } = useScanStore()
 
   // 每次打开 Modal 时，从后端拉取最新配置数据
@@ -55,6 +63,8 @@ export default function ScanConfigPanel() {
         repeat_window_hours: aiConfig.repeat_window_hours,
         swing_order: aiConfig.swing_order,
         ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
+        allowed_triggers: eff.allowed_triggers ?? ALL_TRIGGER_VALUES,
+        pullback_key_level_only: eff.pullback_key_level_only ?? false,
         ai_analysis_enabled: aiConfig.ai_analysis_enabled ?? false,
         strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
         ai_pipeline_enabled: aiConfig.ai_pipeline_enabled ?? true,
@@ -80,15 +90,26 @@ export default function ScanConfigPanel() {
         ai_pipeline_enabled: values.ai_pipeline_enabled,
         dual_judge_enabled: values.dual_judge_enabled,
       }
-      // 筛选参数组：仅在有改动时提交（后端逐键校验范围）；未动则保持
-      // 「缺省回落 env」，不把生效值固化进 DB
-      const filters = FILTER_FIELDS.reduce(
-        (acc, f) => ({ ...acc, [f.name]: values[f.name] }), {},
-      ) as Record<string, number>
-      const dirty = FILTER_FIELDS.some(
-        (f) => Number(filters[f.name]) !== Number(filtersSnapshot[f.name]),
-      )
-      if (dirty) data.scan_filters = filters
+      // 筛选参数组：逐键比对快照，仅提交有改动的键（后端缺键回落 env）；
+      // 未动则完全不提交 scan_filters
+      const scanFilters: Record<string, number | boolean | string[]> = {}
+      for (const f of FILTER_FIELDS) {
+        if (Number(values[f.name]) !== Number(filtersSnapshot[f.name])) {
+          scanFilters[f.name] = values[f.name]
+        }
+      }
+      const curTriggers: string[] = values.allowed_triggers || []
+      const snapTriggers: string[] =
+        (filtersSnapshot.allowed_triggers as string[]) || ALL_TRIGGER_VALUES
+      if (curTriggers.length !== snapTriggers.length
+        || curTriggers.some((t) => !snapTriggers.includes(t))) {
+        scanFilters.allowed_triggers = curTriggers
+      }
+      if (Boolean(values.pullback_key_level_only)
+        !== Boolean(filtersSnapshot.pullback_key_level_only)) {
+        scanFilters.pullback_key_level_only = values.pullback_key_level_only
+      }
+      if (Object.keys(scanFilters).length > 0) data.scan_filters = scanFilters
       await updateConfig(data)
       message.success('配置已保存')
       setOpen(false)
@@ -106,7 +127,11 @@ export default function ScanConfigPanel() {
       await updateConfig({ scan_filters: null } as Partial<SystemConfig>)
       await fetchConfig()
       const eff = useScanStore.getState().aiConfig?.scan_filters_effective || {}
-      form.setFieldsValue(FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}))
+      form.setFieldsValue({
+        ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
+        allowed_triggers: eff.allowed_triggers ?? ALL_TRIGGER_VALUES,
+        pullback_key_level_only: eff.pullback_key_level_only ?? false,
+      })
       message.success('筛选参数已恢复默认')
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '恢复默认失败')
@@ -192,6 +217,21 @@ export default function ScanConfigPanel() {
               <InputNumber min={f.min} max={f.max} step={f.step} style={{ width: '100%' }} />
             </Form.Item>
           ))}
+          <Form.Item
+            label="触发类型白名单"
+            name="allowed_triggers"
+            tooltip="只产生勾选类型的信号（其余类型直接不进候选/AI 分析）；全部不勾视为配置错误，后端按全选处理"
+          >
+            <Checkbox.Group options={TRIGGER_OPTIONS} />
+          </Form.Item>
+          <Form.Item
+            label="回踩金K仅限关键位"
+            name="pullback_key_level_only"
+            valuePropName="checked"
+            tooltip="开启：回踩确认的触碰对象仅认已确认关键位，EMA21 完全退出判定（关键位计算失败时不产生回踩信号）；关闭：关键位优先、EMA21 兜底"
+          >
+            <Switch />
+          </Form.Item>
           <Button size="small" icon={<UndoOutlined />} onClick={handleResetFilters} loading={saving}>
             恢复默认
           </Button>

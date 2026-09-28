@@ -395,6 +395,8 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
             "breakout_max_pct": flt.breakout_max_pct,
             "candle_max_ema21_dist_pct": flt.candle_max_ema21_dist_pct,
             "ai_max_per_scan": flt.ai_max_per_scan,
+            "allowed_triggers": list(flt.allowed_triggers),
+            "pullback_key_level_only": flt.pullback_key_level_only,
         },
     )
 
@@ -413,19 +415,37 @@ _SCAN_FILTER_RANGES: dict[str, tuple[float, float, str]] = {
 
 def _validate_scan_filters(raw: dict) -> dict:
     """筛选参数组校验：未知键拒绝（防拼错静默失效）、范围越界 400、数值化清洗。
-    合法但缺省的键不补齐——缺键回落 env（逐键覆盖语义）。"""
+    合法但缺省的键不补齐——缺键回落 env（逐键覆盖语义）。
+    非数值键：allowed_triggers（非空合法类型列表）、pullback_key_level_only（布尔）。"""
+    from app.services.scan_filters import ALL_TRIGGERS
+
     out: dict = {}
     for k, v in raw.items():
-        if k not in _SCAN_FILTER_RANGES:
+        if k == "allowed_triggers":
+            if (not isinstance(v, list) or not v
+                    or not all(t in ALL_TRIGGERS for t in v)):
+                raise HTTPException(
+                    status_code=400,
+                    detail="scan_filters.allowed_triggers 需为非空触发类型列表"
+                           f"（合法值: {', '.join(ALL_TRIGGERS)}）",
+                )
+            out[k] = v
+        elif k == "pullback_key_level_only":
+            if not isinstance(v, bool):
+                raise HTTPException(
+                    status_code=400, detail="scan_filters.pullback_key_level_only 需为布尔值")
+            out[k] = v
+        elif k in _SCAN_FILTER_RANGES:
+            lo, hi, label = _SCAN_FILTER_RANGES[k]
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"scan_filters.{k} 需为数值")
+            if not (lo <= v <= hi):
+                raise HTTPException(status_code=400, detail=f"scan_filters.{k}（{label}）需在 {lo}~{hi} 之间")
+            out[k] = v
+        else:
             raise HTTPException(status_code=400, detail=f"scan_filters 未知参数: {k}")
-        lo, hi, label = _SCAN_FILTER_RANGES[k]
-        try:
-            v = float(v)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=f"scan_filters.{k} 需为数值")
-        if not (lo <= v <= hi):
-            raise HTTPException(status_code=400, detail=f"scan_filters.{k}（{label}）需在 {lo}~{hi} 之间")
-        out[k] = v
     return out
 
 
