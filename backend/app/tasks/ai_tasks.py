@@ -299,14 +299,20 @@ def run_ai_analysis_single(
             str(ai_result.get("analysis") or "")[:80],
         )
     except Exception as e:
-        # 网关超时（延迟波动剧烈，实测 130s~>240s 随机）：延迟自动重试，不推 error 事件
+        # 网关超时（延迟波动剧烈，实测 130s~>240s 随机）：延迟自动重试，不推 error 事件。
+        # 重试额度用尽（self.retry 抛 MaxRetriesExceeded）必须推 error 收尾，
+        # 否则前端进度流永远停在「重试中」（2026-09-28 排查网关超时卡死）
         if "timed out" in str(e).lower() or "timeout" in str(e).lower():
-            logger.warning(
-                "AI 分析 %s 网关超时，%ds 后自动重试（第 %d/2 次）",
-                scan_result_id, 90, self.request.retries + 1,
-            )
-            ai_progress.push(scan_result_id, "gate", note="⏳ 网关超时，90s 后自动重试")
-            raise self.retry(countdown=90)
+            if self.request.retries >= self.max_retries:
+                logger.error("AI 分析 %s 网关超时且重试额度用尽，标记失败", scan_result_id)
+                ai_progress.push(scan_result_id, "error", note="⏳ 网关超时，重试 2 次后仍失败")
+            else:
+                logger.warning(
+                    "AI 分析 %s 网关超时，%ds 后自动重试（第 %d/2 次）",
+                    scan_result_id, 90, self.request.retries + 1,
+                )
+                ai_progress.push(scan_result_id, "gate", note="⏳ 网关超时，90s 后自动重试")
+                raise self.retry(countdown=90)
         logger.warning("AI 分析 %s 失败: %s", scan_result_id, e)
         ai_progress.push(scan_result_id, "error", note=str(e)[:200])
         try:
