@@ -155,7 +155,13 @@ def run_ai_analysis_single(
         if r is None:
             return
         cfg = db.get(SystemConfig, 1)
-        if not cfg or not cfg.ai_analysis_enabled or not settings.AI_API_KEY:
+        if not cfg or not settings.AI_API_KEY:
+            return
+        if not cfg.ai_analysis_enabled and not force:
+            # 「筛选后自动 AI 分析」开关只拦批量自动分析（与父任务闸门口径一致）；
+            # 手动单币重分析（force = only_scan_result_id 非空）不受限。
+            # 此前这里静默 return 且不写进度事件 → 前端「等待分析任务开始」卡死
+            logger.info("筛选后自动 AI 分析开关关闭，批量分析子任务跳过 %s", r.symbol)
             return
 
         strategy_prompt = (

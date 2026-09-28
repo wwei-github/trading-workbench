@@ -78,6 +78,20 @@ def run_scan_task(self, scan_record_id: Optional[str] = None, scan_type: str = "
                 close_task(task_id, "skipped", summary="10 分钟内已有定时扫描完成，跳过（唤醒积压）")
                 return
 
+            # 定时扫描小时锁（2026-09-28）：beat 双发/消息重投/两执行几乎同时启动时，
+            # 上面的 running 与 10 分钟防重存在「都在对方 commit 前查询」的竞态窗口，
+            # 双双放行 → 双扫描 → 「扫描命中」飞书通知双发。以 UTC 小时为 bucket 的
+            # SETNX 原子锁，同一小时只有第一个执行能拿到；TTL 2h 自动清理
+            from app.tasks.ai_tasks import _get_redis
+            bucket = datetime.utcnow().strftime("%Y%m%d%H")
+            if not _get_redis().set(f"scan:hourly:{bucket}", str(record.id), nx=True, ex=7200):
+                logger.info("小时锁已被占（同小时已有定时扫描启动），跳过本次扫描 #%s", scan_record_id)
+                record.status = "failed"
+                record.finished_at = datetime.utcnow()
+                db.commit()
+                close_task(task_id, "skipped", summary="同小时已有定时扫描启动（小时锁），跳过")
+                return
+
         scanner = Scanner()
         scanner.run(record.id)
 
