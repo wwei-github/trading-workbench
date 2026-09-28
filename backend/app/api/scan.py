@@ -914,6 +914,10 @@ def skill_detail(name: str):
 def get_klines(
     symbol: str,
     limit: int = Query(100, ge=1, le=500),
+    interval: str = Query(
+        None, pattern="^(1h|4h)$",
+        description="K线周期（1h 默认 / 4h）；缺省用系统配置周期",
+    ),
     force_refresh: bool = Query(False, description="跳过缓存直接拉取交易所最新数据并重置缓存"),
     db: Session = Depends(get_db),
 ):
@@ -922,12 +926,14 @@ def get_klines(
     多交易所故障转移（币安→欧易→Bitget）；全部失败时降级返回旧缓存，
     仍失败则 503，detail 含各交易所失败原因与解禁时长。
     force_refresh=True 时跳过缓存直连交易所（图表"更新"按钮），结果回写缓存。
+    interval 支持图表周期切换（2026-09-28：1h 默认，可切 4h）。
     """
     cfg = _get_system_config(db)
+    eff_interval = interval or cfg.kline_interval
     pool = ExchangePool()
     try:
         klines = pool.get_klines(
-            symbol, cfg.kline_interval, limit, allow_stale=True, force_refresh=force_refresh
+            symbol, eff_interval, limit, allow_stale=True, force_refresh=force_refresh
         )
     except AllExchangesFailed as e:
         raise HTTPException(status_code=503, detail=f"K线获取失败（{e.summary}）")
@@ -972,7 +978,7 @@ def get_klines(
         key_levels = []
     return {
         "symbol": symbol,
-        "interval": cfg.kline_interval,
+        "interval": eff_interval,
         "klines": result,
         "swings": swings,
         "key_levels": key_levels,

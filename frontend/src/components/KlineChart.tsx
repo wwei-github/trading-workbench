@@ -24,13 +24,15 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
   const [error, setError] = useState<string | null>(null)
   // 「更新」按钮进行中状态
   const [updating, setUpdating] = useState(false)
+  // 周期切换（默认 1h，可切 4h；切换即重拉数据）
+  const [interval, setInterval] = useState<'1h' | '4h'>('1h')
 
-  // 拉取 K 线（symbol/refreshKey 变化重建数据；先清空避免旧币种数据串图）
+  // 拉取 K 线（symbol/interval/refreshKey 变化重建数据；先清空避免旧数据串图）
   useEffect(() => {
     setData(null)
     let cancelled = false
     scanApi
-      .klines(symbol, limit)
+      .klines(symbol, limit, false, interval)
       .then((d) => {
         if (!cancelled) {
           setData(d)
@@ -44,20 +46,20 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
     return () => {
       cancelled = true
     }
-  }, [symbol, limit, refreshKey])
+  }, [symbol, limit, refreshKey, interval])
 
   // 「更新」按钮：跳过缓存直连交易所拉最新 K 线，交易所返回后回写重置缓存
   const handleUpdate = useCallback(async () => {
     setUpdating(true)
     try {
-      setData(await scanApi.klines(symbol, limit, true))
+      setData(await scanApi.klines(symbol, limit, true, interval))
       setError(null)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'K线更新失败')
     } finally {
       setUpdating(false)
     }
-  }, [symbol, limit])
+  }, [symbol, limit, interval])
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 360 }}>
@@ -78,6 +80,8 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
         ai={ai}
         onUpdate={handleUpdate}
         updating={updating}
+        interval={interval}
+        onIntervalChange={setInterval}
         height={CHART_HEIGHT}
       />
     </div>

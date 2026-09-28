@@ -212,7 +212,7 @@ export interface SystemConfig {
   max_slippage_pct?: number | null; // 开仓滑点实测上限（比例 0.003=0.3%；null=默认；按本单数量走订单簿计算）
   // 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面「系统配置」弹窗可改）
   trading_testnet?: boolean; // 当前交易环境：true=测试网 false=正式网
-  trading_enabled?: boolean; // 自动交易总开关（关=定时扫描 AI 分析跳过+停开新单，结算/复盘/日报照常）
+  trading_enabled?: boolean; // 自动成交开关（2026-09-28 收窄）：仅控每小时 AI 分析后自动开新单；手动开单/AI 分析不受限
   // 多账号（docs/17 P0/P1）：.env 注册表只读展示 + 主账号 + 启用自动交易的 live 账号集合
   current_account_key?: string | null;
   live_trading_keys?: string[]; // P1 扇出：正式网模式下执行自动交易的账号（空=回落 live-1）

@@ -7,7 +7,7 @@
  *   （事件箭头）+ headerExtra（复盘信息面板）；数据拉取由父组件负责
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Button, Checkbox, Dropdown, InputNumber, Tooltip, Typography } from 'antd'
+import { Button, Checkbox, Dropdown, InputNumber, Radio, Tooltip, Typography } from 'antd'
 import { PlusOutlined, SyncOutlined } from '@ant-design/icons'
 import {
   createSeriesMarkers,
@@ -83,6 +83,10 @@ interface Props {
   // 提供则显示「更新」按钮（父组件负责重拉数据）
   onUpdate?: () => void
   updating?: boolean
+  // 周期切换（2026-09-28 扫描图用）：提供则显示 1h/4h 切换按钮组，
+  // 值变化由父组件重拉数据；复盘图不传（复盘数据周期固定）
+  interval?: '1h' | '4h'
+  onIntervalChange?: (v: '1h' | '4h') => void
   // 容器无高度时的兜底高度
   height: number
 }
@@ -235,7 +239,8 @@ function drawAiPosition(
 
 export default function ChartCore({
   chartKey, watermark, label, data, from,
-  ai, extraMarkers, drawOverlay, headerExtra, onUpdate, updating, height,
+  ai, extraMarkers, drawOverlay, headerExtra, onUpdate, updating,
+  interval, onIntervalChange, height,
 }: Props) {
   // 全局涨跌配色（切换入口在页面顶部）/ 技术指标（store 共享，切换后所有图表同步生效）
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -401,7 +406,16 @@ export default function ChartCore({
     }
 
     // 关键位价位线（docs/21）：状态着色水平线。后端已按统一口径合并
-    // （invalid 剔除+权重贪心合并，与 AI 事实包同一张表），前端只跳过无样式状态
+    // （invalid 剔除+权重贪心合并，与 AI 事实包同一张表），前端只跳过无样式状态。
+    // 先移除上一轮价位线再重建——createPriceLine 只增不减，不移除的话
+    // 「更新」按钮/数据重拉后同价位会叠加多个线与轴标签
+    keyLevelLinesRef.current.forEach((pl) => {
+      try {
+        series.removePriceLine(pl)
+      } catch {
+        /* 旧图表已销毁 */
+      }
+    })
     keyLevelLinesRef.current = (data.key_levels ?? [])
       .filter((lv) => KEY_LEVEL_STYLES[lv.state] != null)
       .map((lv) => {
@@ -694,6 +708,18 @@ export default function ChartCore({
               指标
             </Button>
           </Dropdown>
+          {onIntervalChange && (
+            <Radio.Group
+              size="small"
+              value={interval ?? '1h'}
+              onChange={(e) => onIntervalChange(e.target.value)}
+              optionType="button"
+              options={[
+                { label: '1h', value: '1h' },
+                { label: '4h', value: '4h' },
+              ]}
+            />
+          )}
           {onUpdate && (
             <Tooltip title="直连交易所拉取最新K线并重置缓存">
               <Button
