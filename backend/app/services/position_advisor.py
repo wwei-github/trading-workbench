@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeEvent
-from app.services.llm_client import get_client
+from app.services.llm_client import get_client, parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +266,7 @@ def diagnose_trade(db: Session, rec) -> "dict | None":
     if content.startswith("```"):
         lines = [l for l in content.split("\n") if not l.strip().startswith("```")]
         content = "\n".join(lines).strip()
-    data = json.loads(content)
+    data = parse_llm_json(content)
 
     # 竞态守卫（2026-09-26）：LLM 返回耗时 1~18 分钟，期间 SL 可能已触发结算，
     # 事实包与结论均已陈旧 → 落库前重读状态，非在跑即丢弃（不落误导数据）

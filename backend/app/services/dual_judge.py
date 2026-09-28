@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from app.config import settings
-from app.services.llm_client import get_client
+from app.services.llm_client import get_client, parse_llm_json
 from app.services.risk_guard import build_forced_skip
 
 logger = logging.getLogger(__name__)
@@ -109,7 +109,7 @@ def run_dual_judge(
             raw = "\n".join(
                 l for l in raw.split("\n") if not l.strip().startswith("```")
             ).strip()
-        verdict = json.loads(raw)
+        verdict = parse_llm_json(raw)
         v = verdict.get("verdict")
         reason = str(verdict.get("reason", "")).strip()
         logger.info(

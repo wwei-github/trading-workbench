@@ -7,7 +7,7 @@ from openai import OpenAI
 
 from app.config import settings
 from app.services import skill_library
-from app.services.llm_client import get_client
+from app.services.llm_client import get_client, parse_llm_json
 from app.services.risk_guard import build_forced_skip, parse_and_validate
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.technical import render_indicator_block
@@ -351,7 +351,8 @@ def _call_llm(client: OpenAI, messages: list) -> dict:
     if content.startswith("```"):
         lines = [l for l in content.split("\n") if not l.strip().startswith("```")]
         content = "\n".join(lines).strip()
-    return json.loads(content)
+    # 标准解析失败降级 json_repair（未转义引号/尾逗号等 LLM 常见语法瑕疵）
+    return parse_llm_json(content)
 
 
 def analyze_with_guard(

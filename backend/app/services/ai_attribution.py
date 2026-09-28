@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from app.config import settings
-from app.services.llm_client import get_client
+from app.services.llm_client import get_client, parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ def attribute_trade(rec, klines: list) -> dict:
     if content.startswith("```"):
         lines = [l for l in content.split("\n") if not l.strip().startswith("```")]
         content = "\n".join(lines).strip()
-    data = json.loads(content)
+    data = parse_llm_json(content)
 
     raw_tags = data.get("tags") or []
     tags = [t for t in raw_tags if t in ERROR_TAGS][:3]

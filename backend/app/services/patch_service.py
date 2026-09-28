@@ -26,7 +26,7 @@ from app.models.scan import AIAnalysis
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.ai_attribution import ERROR_TAGS
-from app.services.llm_client import get_client
+from app.services.llm_client import get_client, parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +244,7 @@ def _generate_draft(db: Session, tag: str, heat: float, stats: dict,
         if content.startswith("```"):
             lines = [l for l in content.split("\n") if not l.strip().startswith("```")]
             content = "\n".join(lines).strip()
-        data = json.loads(content)
+        data = parse_llm_json(content)
     except Exception as e:
         logger.warning("补丁草稿生成失败（%s）：%s", tag, e)
         return None
