@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     RETEST_WINDOW_BARS: int = 24  # 突破回测触点有效窗口（已收盘根数，0=关闭 retest 触点）
     STRUCTURE_TOUCH_BAND_PCT: float = 0.3  # retest/swing 横向位触碰带宽（%，影线可入带收盘须守住）
     EMA_TOUCH_MIN_BARS: int = 200  # EMA 触碰最小已收盘根数（数据门，EMA144 收敛兜底）
-    DAILY_LOSS_STOP_USDT: float = 30.0  # 当日亏损熔断：UTC 日已平仓净亏 ≤-30 USDT 停开仓（0=关闭）
+    DAILY_LOSS_STOP_PCT: float = 9.0  # 当日亏损熔断：UTC 日已平仓净亏 ≤ -风险基数×9%（≈3笔满损）停开仓（0=关闭）
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
 
     # 排除的币种关键字（杠杆代币等）

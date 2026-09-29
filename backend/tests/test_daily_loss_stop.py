@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import settings  # noqa: E402
-from app.services.trade_engine import _daily_closed_pnl  # noqa: E402
+from app.services.trade_engine import _daily_closed_pnl, _daily_loss_cap  # noqa: E402
 
 _DDL = (
     "CREATE TABLE trade_records ("
@@ -65,20 +65,35 @@ def test_sum_account_scope_and_day_boundary(db):
 
 
 def test_fuse_triggers_at_threshold(db, monkeypatch):
-    """净亏 ≤ -DAILY_LOSS_STOP_USDT 判熔断；补一笔 -10 后 -35 ≤ -30 触发"""
-    monkeypatch.setattr(settings, "DAILY_LOSS_STOP_USDT", 30.0)
-    assert _daily_closed_pnl(db, "live-1", False) > -settings.DAILY_LOSS_STOP_USDT
+    """净亏 ≤ -熔断阈值判熔断；补一笔 -10 后 -35 达到 -30 阈值触发
+   （阈值 30 = 风险基数 500 × 6%，monkeypatch PCT 构造）"""
+    monkeypatch.setattr(settings, "DAILY_LOSS_STOP_PCT", 6.0)
+    cap = _daily_loss_cap(500.0)  # 基数 500 × 6% = 30
+    assert cap == pytest.approx(30.0)
+    assert _daily_closed_pnl(db, "live-1", False) > -cap
     db.execute(text(_row("live-1", False, "CLOSED", datetime.utcnow(), -10.0)))
     db.commit()
-    assert _daily_closed_pnl(db, "live-1", False) <= -settings.DAILY_LOSS_STOP_USDT
+    assert _daily_closed_pnl(db, "live-1", False) <= -cap
+
+
+def test_loss_cap_scales_with_wallet():
+    """熔断阈值按账户金额动态缩放（2026-09-29 由写死 30 USDT 改 PCT 口径）"""
+    assert _daily_loss_cap(1000.0) == pytest.approx(90.0)   # 基数 1000 × 9%
+    assert _daily_loss_cap(2000.0) == pytest.approx(180.0)  # 基数 2000 × 9%
+    assert _daily_loss_cap(5000.0) == pytest.approx(450.0)  # 基数 5000 封顶 × 9%
+    assert _daily_loss_cap(5200.0) == pytest.approx(450.0)  # 超上限回落基数 5000
+    assert _daily_loss_cap(65.0) == pytest.approx(9.0)      # 低于下限回落基数 100
+    assert _daily_loss_cap(4800.0) == pytest.approx(360.0)  # 首位取整 4000 × 9%
+    assert _daily_loss_cap(0.0) == pytest.approx(0.0)
 
 
 def test_other_account_not_fused(db, monkeypatch):
     """熔断按账号隔离：live-2 不含 live-1 的亏损，仅自身 +3 与 NULL 回落 -10 = -7，
-    未达 -30 熔断阈值"""
-    monkeypatch.setattr(settings, "DAILY_LOSS_STOP_USDT", 30.0)
+    未达熔断阈值"""
+    monkeypatch.setattr(settings, "DAILY_LOSS_STOP_PCT", 6.0)
+    cap = _daily_loss_cap(500.0)
     assert _daily_closed_pnl(db, "live-2", False) == pytest.approx(-7.0)
-    assert _daily_closed_pnl(db, "live-2", False) > -settings.DAILY_LOSS_STOP_USDT
+    assert _daily_closed_pnl(db, "live-2", False) > -cap
 
 
 def test_other_env_not_matched(db):

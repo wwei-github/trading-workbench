@@ -612,6 +612,12 @@ def _daily_closed_pnl(db: Session, account_key: Optional[str], testnet: bool) ->
     ).scalar_one())
 
 
+def _daily_loss_cap(wallet: float) -> float:
+    """当日亏损熔断阈值 = 风险基数 × DAILY_LOSS_STOP_PCT（2026-09-29 由写死
+    30 USDT 改按账户动态：1000 账户 90、5000 账户 450；9% ≈ 3 笔满损）。"""
+    return _capital_base(wallet) * settings.DAILY_LOSS_STOP_PCT / 100.0
+
+
 def try_open_for_analysis(
     db: Session, trader: BinanceTrader, analysis_id,
     force_market: bool = False,
@@ -688,20 +694,23 @@ def try_open_for_analysis(
         logger.info("即时开仓跳过 %s：钱包余额低于最小风险档位", a.symbol)
         _mark_open_block(db, a, "钱包余额低于最小风险档位")
         return False
-    # 当日亏损熔断（2026-09-27 正式网复盘）：UTC 日本账号已平仓净亏 ≤-阈值
-    # （默认 30 USDT）停开仓——09-26 全天 13 笔全灭仍持续开单，趋势日的
-    # trail 赢单无法覆盖震荡日的连损。只停开仓，AI 分析/巡检照常。0=关闭。
-    if settings.DAILY_LOSS_STOP_USDT > 0:
+    # 当日亏损熔断（2026-09-27 正式网复盘）：UTC 日本账号已平仓净亏 ≤ -阈值
+    # （风险基数 × DAILY_LOSS_STOP_PCT，默认 9% ≈ 3 笔满损，随账户金额缩放）
+    # 停开仓——09-26 全天 13 笔全灭仍持续开单，趋势日的 trail 赢单无法覆盖
+    # 震荡日的连损。只停开仓，AI 分析/巡检照常。0=关闭。
+    if settings.DAILY_LOSS_STOP_PCT > 0:
         day_pnl = _daily_closed_pnl(db, trader.account_key, trader.testnet)
-        if day_pnl <= -settings.DAILY_LOSS_STOP_USDT:
+        loss_cap = _daily_loss_cap(wallet)
+        if day_pnl <= -loss_cap:
             logger.info(
                 "即时开仓跳过 %s：当日亏损熔断（已平仓净亏 %.2f ≤ -%.0f）",
-                a.symbol, day_pnl, settings.DAILY_LOSS_STOP_USDT,
+                a.symbol, day_pnl, loss_cap,
             )
             _mark_open_block(
                 db, a,
                 f"当日亏损熔断：已平仓净亏 {day_pnl:.2f} USDT "
-                f"达 -{settings.DAILY_LOSS_STOP_USDT:.0f} 阈值")
+                f"达 -{loss_cap:.0f} 阈值（风险基数 {_capital_base(wallet):.0f} "
+                f"× {settings.DAILY_LOSS_STOP_PCT:.0f}%）")
             return False
     # 即将进入闸门序列：清掉沿用/上一轮尝试残留的拒开原因，本次成败由闸门重新裁定
     if a.open_block_reason:
