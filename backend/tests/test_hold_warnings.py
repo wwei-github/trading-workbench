@@ -38,15 +38,15 @@ _COLS = (
 )
 
 
-def _row(symbol, status, opened_h_ago, warn_level=0):
+def _row(symbol, status, opened_h_ago, warn_level=0, testnet=0):
     opened = f"'{(datetime.utcnow() - timedelta(hours=opened_h_ago)).isoformat(sep=' ')}'"
     # id 用无连字符 hex：sqlite 下 PG UUID 类型绑定为 hex 串（带连字符不匹配，
     # 否则 ORM UPDATE WHERE id 报 StaleDataError）
     return (
         f"INSERT INTO trade_records (id, symbol, direction, status, opened_at,"
-        f" entry_price, stop_loss, unrealized_pnl, hold_warn_level) VALUES ("
+        f" entry_price, stop_loss, unrealized_pnl, hold_warn_level, testnet) VALUES ("
         f"'{uuid.uuid4().hex}', '{symbol}', 'long', '{status}', {opened},"
-        f" 100.0, 99.0, -5.0, {warn_level})"
+        f" 100.0, 99.0, -5.0, {warn_level}, {testnet})"
     )
 
 
@@ -102,3 +102,13 @@ def test_card_body_structure():
     titles = [c["elements"][0]["text"]["content"].split("\n")[0].strip("*") for c in cols]
     assert titles == ["方向", "开仓价", "当前止损", "浮动盈亏"]
     assert card["_symbol"] == "BIG/USDT" and card["_hours"] == pytest.approx(13.0, abs=0.1)
+
+
+def test_testnet_always_skipped():
+    """测试网巡检停用（2026-09-29 写死）：测试网在跑单不出卡、级别不动，
+    正式网照常判定"""
+    db = _db(_row("T", "OPENED", 13.0, testnet=1), _row("L", "OPENED", 13.0))
+    cards = check_hold_warnings(db)
+    assert [c["_symbol"] for c in cards] == ["L"]
+    assert db.execute(text(
+        "SELECT hold_warn_level FROM trade_records WHERE symbol='T'")).scalar() in (0, None)

@@ -188,18 +188,22 @@ def run_auto_trade_task():
                 settled, advice_ids = settle_trades(db, trader)
                 # 自动导入手动持仓（2026-09-24）：交易所侧未被系统在跑记录接管的
                 # 非零持仓 = App 手动单，SL/TP 取 App 条件单原值接管
-                # （裸仓/校验不过跳过只记日志）
-                try:
-                    from app.services.trade_engine import auto_adopt_positions
-                    adopted_all.extend(auto_adopt_positions(db, trader))
-                except Exception:
-                    logger.exception("自动导入持仓失败（%s）", trader.account_key)
+                # （裸仓/校验不过跳过只记日志）；测试网主账号不接管（2026-09-29
+                # 测试网巡检停用，避免误接管测试网 App 单）
+                if not trader.testnet:
+                    try:
+                        from app.services.trade_engine import auto_adopt_positions
+                        adopted_all.extend(auto_adopt_positions(db, trader))
+                    except Exception:
+                        logger.exception("自动导入持仓失败（%s）", trader.account_key)
                 # 多账号孤儿清扫（docs/17 P1）：settle_trades 仅兜底主账号，
                 # 其余启用账号各扫各的（无持仓、无在跑记录的残留挂单）
                 from app.services.trade_engine import _sweep_orphan_algo_orders
                 for acc in accs:
                     if acc.key == trader.account_key:
                         continue
+                    if acc.testnet:
+                        continue  # 测试网账号不巡检（2026-09-29 停用）
                     at = BinanceTrader(acc.key)
                     if not at.configured:
                         continue

@@ -1019,14 +1019,18 @@ def sync_account_transfers(db: Session) -> int:
     testnet + account_key 落库；key 未配置的账号自然不在注册表。增量拉取：
     从该账号库内最新 transfer_time 前移 60s 重叠窗口开始（首次从 7 天前起），
     tran_id 唯一约束 + on_conflict_do_nothing 幂等去重。返回新插入条数（全部账号合计）。
+
+    测试网账号不同步（2026-09-29 测试网巡检停用）。
     """
     inserted = 0
     cfg = db.get(SystemConfig, 1)
     # 测试网清除水位：一键清空删光划转后记录时刻，testnet 分支以它为下限，
-    # 防止「库内无记录→从 7 天前重拉」把刚删掉的划转回灌（仅对 testnet 生效）
+    # 防止「无记录→从 7 天前重拉」把刚删掉的划转回灌（仅对 testnet 生效）
     purge_at = cfg.testnet_transfer_purge_at if cfg else None
     from app.services.account_registry import registry
     for acc in registry():
+        if acc.testnet:
+            continue
         trader = BinanceTrader(acc.key)
         if not trader.configured:
             continue
@@ -1164,12 +1168,17 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
 
     每条记录按自带 account_key 选对应账号结算（docs/17 P0；NULL 旧行按 testnet
     回落 testnet-1/live-1）；trader 参数为当前环境实例，仅作同账号复用与孤儿清扫兜底。
+
+    测试网巡检已停用（2026-09-29 写死）：测试网在跑单不再结算，孤儿清扫兜底
+    也不碰测试网主账号；正式网不受影响。
     """
     cfg = db.get(SystemConfig, 1)
     interval = cfg.kline_interval if cfg else "1h"
     records = db.execute(
         select(TradeRecord).where(TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")))
     ).scalars().all()
+    # 测试网巡检停用（2026-09-29）：只结算正式网在跑单
+    records = [r for r in records if not r.testnet]
 
     def _rec_acc_key(rec: TradeRecord) -> str:
         return rec.account_key or ("testnet-1" if rec.testnet else "live-1")
@@ -1196,7 +1205,9 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
         return {r.symbol for r in records if _rec_acc_key(r) == key}
 
     if not records:
-        _sweep_orphan_algo_orders(trader, set(), trader.positions())
+        # 孤儿清扫兜底只针对巡检仍在服务的账号：测试网主账号不扫（2026-09-29）
+        if not trader.testnet:
+            _sweep_orphan_algo_orders(trader, set(), trader.positions())
         return 0, []
     handled = 0
     advice_ids: list[str] = []
@@ -1410,6 +1421,8 @@ def check_hold_warnings(db) -> list[dict]:
     预警（跨级直接发红卡不补黄卡）。hold_warn_level 只升级不重发；平仓后
     状态不在跑即不再判定。只做 DB 判定与标记（本函数内 commit），返回待发
     卡片列表由调用方在开仓锁外发送——飞书 HTTP（超时 10s/张）不进开仓锁。
+
+    测试网在跑单不判定（2026-09-29 测试网巡检停用）。
     """
     now = datetime.now(timezone.utc)
     cards: list[dict] = []
@@ -1417,6 +1430,8 @@ def check_hold_warnings(db) -> list[dict]:
         select(TradeRecord).where(TradeRecord.status.in_(_ADOPT_RUNNING))
     ).scalars().all()
     for rec in recs:
+        if rec.testnet:
+            continue
         if not rec.opened_at:
             continue
         # opened_at 为 UTC-naive（datetime.utcnow 落库）；挂 tzinfo 后与 now 同源相减
