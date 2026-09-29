@@ -120,8 +120,9 @@ class Settings(BaseSettings):
     CONSECUTIVE_LOSS_DERATE: bool = True
     # 组合热度上限（docs/24 A3'）：在跑单（OPENED/TP1_HIT/TP2_HIT）止损金额合计
     # / 钱包余额的上限（0.15=15%），本单预估止损计入后超限则不开新单；
-    # 0=关闭
-    PORTFOLIO_HEAT_CAP: float = 0.15
+    # 0=关闭。2026-09-29 用户拍板默认 0（关闭）：单数控制（max_open_trades +
+    # 同向上限）已足够，金额维度不重复设限
+    PORTFOLIO_HEAT_CAP: float = 0.0
     # 同向持仓上限（docs/24 A3'）：同方向（long/short）在跑单数上限，
     # 防趋势同震时单边敞口过度集中；0=不限
     SAME_DIRECTION_CAP: int = 6
