@@ -1118,9 +1118,10 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
     try:
         from app.services.risk_budget import resolve_risk_budget
         _rm, _ra, _rl = resolve_risk_budget(cfg)
+        _stop_cap = float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None
         ai_result = analyze_coin(
             signal, klines, strategy_prompt=strategy_prompt, htf_klines=htf_klines,
-            risk_mode=_rm, risk_amount=_ra, risk_label=_rl,
+            risk_mode=_rm, risk_amount=_ra, risk_label=_rl, stop_cap_pct=_stop_cap,
         )
         # 4h 强背景方向硬约束兜底（强多只开多/强空只开空）
         ai_result = enforce_htf_constraint(ai_result, htf_klines)

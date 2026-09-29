@@ -98,6 +98,43 @@ def test_gate_block_pullback_touch_object():
     assert "Donchian" not in block  # 突破专属行不进回踩块
 
 
+# ── 止损宽度硬上限透传（2026-09-29 max_stop_pct 注入）──────────────────
+
+
+def test_gate_block_stop_cap_injected():
+    """配置 max_stop_pct → 门槛块注入宽度硬上限，突破类带"超限无降级资格"尾句"""
+    block = render_signal_gate_block("trigger_breakout", stop_cap_pct=0.05)
+    assert "止损宽度硬上限" in block
+    assert "不得超过 5%" in block
+    assert "结构锚宽度已超上限时无近锚降级资格" in block
+    # 趋势突破与回踩类同样注入（回踩类无近锚尾句，宽度闸对全类型生效）
+    assert "止损宽度硬上限" in render_signal_gate_block(
+        "trigger_trend_breakout", stop_cap_pct=0.05)
+    pullback = render_signal_gate_block(
+        "trigger_pullback_confirm", stop_cap_pct=0.05)
+    assert "止损宽度硬上限" in pullback
+    assert "近锚" not in pullback
+
+
+def test_gate_block_stop_cap_none_omitted():
+    """未配置（None）→ 不注入宽度行（NULL=不限制，与程序闸门口径一致）"""
+    for st in ("trigger_breakout", "trigger_pullback_confirm"):
+        block = render_signal_gate_block(st)
+        assert "止损宽度硬上限" not in block
+
+
+def test_build_messages_injects_stop_cap():
+    """_build_messages 接线：stop_cap_pct 透传到 user 消息"""
+    user = _build_messages(
+        _minimal_signal("trigger_breakout"), _KLINES, stop_cap_pct=0.05,
+    )[-1]["content"]
+    assert "止损宽度硬上限" in user
+    assert "不得超过 5%" in user
+    # 不传 → 不出现
+    user2 = _build_messages(_minimal_signal("trigger_breakout"), _KLINES)
+    assert "止损宽度硬上限" not in user2[-1]["content"]
+
+
 # ── _build_messages 接线 ──────────────────────────────────────────────
 
 

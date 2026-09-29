@@ -241,6 +241,9 @@ def run_ai_analysis_single(
         # 传给两管线统一提示词与仓位复算（risk_budget.resolve）
         from app.services.risk_budget import resolve_risk_budget
         _risk_mode, _risk_amount, _risk_label = resolve_risk_budget(cfg)
+        # 止损宽度硬上限透传（2026-09-29）：max_stop_pct 补丁参数注入门槛块，
+        # AI 定止损前自验不超限，避免"AI 建议开单→程序宽度闸弃单"的无效调用
+        _stop_cap = float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None
         # 管线选择：批量（每小时扫描自动触发/手动全量）固定走 P0 单次调用管线，
         # 不受「AI 管线」开关影响；仅手动单币重分析（force）跟随开关走 Agent 管线
         if cfg.ai_pipeline_enabled and force:
@@ -257,6 +260,7 @@ def run_ai_analysis_single(
                 risk_mode=_risk_mode,
                 risk_amount=_risk_amount,
                 risk_label=_risk_label,
+                stop_cap_pct=_stop_cap,
             )
         else:
             ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
@@ -268,6 +272,7 @@ def run_ai_analysis_single(
                 risk_mode=_risk_mode,
                 risk_amount=_risk_amount,
                 risk_label=_risk_label,
+                stop_cap_pct=_stop_cap,
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto
         if cfg.dual_judge_enabled:

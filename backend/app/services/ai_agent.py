@@ -55,8 +55,9 @@ NEAR_STOP_RULE_AGENT = """11.5 突破类止损近锚降级链：结构锚（摆�
     止盈与盈亏比按新锚复算；近锚仍不达标 → skip。硬约束：仅当 skip 的唯一原因是
     盈亏比不达标（信号方向、4h 背景、趋势状态、量能特征、质量分等其余开单条件
     必须全部满足）才允许用近锚；量比 <1 的缩量突破无近锚资格；近锚后盈亏比 >4
-    时重新评估或 skip；近锚止损宽度仍须 ≥0.3×ATR。程序会校验近锚止损必须贴近
-    突破K线极值 ±0.5%，偏离过远会被打回。"""
+    时重新评估或 skip；近锚止损宽度仍须 ≥0.3×ATR。{stop_cap_clause}结构锚止损宽度
+    已超程序硬上限（见信号门槛块）时无近锚资格，直接 skip。程序会校验近锚止损必须
+    贴近突破K线极值 ±0.5%，偏离过远会被打回。"""
 
 def render_system_prompt(risk_label: str = "") -> str:
     """渲染最终生效的 P1 系统提示词（页面「查看当前生效提示词」与实际调用同源）。
@@ -71,7 +72,10 @@ def render_system_prompt(risk_label: str = "") -> str:
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
-        near_stop_rule=NEAR_STOP_RULE_AGENT.format(rr_min=settings.AI_RR_MIN),
+        near_stop_rule=NEAR_STOP_RULE_AGENT.format(
+            rr_min=settings.AI_RR_MIN,
+            stop_cap_clause="止损宽度硬上限值以信号门槛块为准。",
+        ),
         skill_index="",
     )
 
@@ -420,6 +424,7 @@ def analyze_coin_agent(
     progress_cb=None,
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
+    stop_cap_pct: Optional[float] = None,
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -428,6 +433,8 @@ def analyze_coin_agent(
     risk_*（2026-09-27 止损金额模式）：调用方（ai_tasks）从 system_config 解析的
     预算口径，注入提示词 risk_label 槽位 + submit_decision 校验的 risk_budget；
     缺省时回落百分比口径（pct），与历史行为一致。
+    stop_cap_pct（2026-09-29）：止损宽度硬上限（max_stop_pct 补丁参数，比例；
+    None=不限制），注入门槛块与近锚规则供 AI 自验。
     """
     client = get_client()
 
@@ -437,9 +444,15 @@ def analyze_coin_agent(
     facts = _build_facts(signal, klines, atr)
 
     skill_index = skill_library.render_index(facts)
+    # 止损宽度硬上限子句（2026-09-29）：配置了 max_stop_pct 才注入具体数值
+    stop_cap_clause = (
+        f"程序止损宽度硬上限 {stop_cap_pct * 100:g}%（见信号门槛块），"
+        if stop_cap_pct is not None and stop_cap_pct > 0 else ""
+    )
     # 近锚降级链仅突破类注入（docs/23）；回踩/其他类槽位留空
     near_stop_rule = (
-        NEAR_STOP_RULE_AGENT.format(rr_min=settings.AI_RR_MIN)
+        NEAR_STOP_RULE_AGENT.format(rr_min=settings.AI_RR_MIN,
+                                    stop_cap_clause=stop_cap_clause)
         if (signal.get("signal_type") or "") in ("trigger_breakout", "trigger_trend_breakout")
         else ""
     )
@@ -461,7 +474,8 @@ def analyze_coin_agent(
             "===== 自定义策略结束 ====="
         )
 
-    user_msg = _build_user_msg(signal, klines, ema, atr, user_input, htf_klines)
+    user_msg = _build_user_msg(signal, klines, ema, atr, user_input, htf_klines,
+                               stop_cap_pct=stop_cap_pct)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
@@ -571,6 +585,7 @@ def _build_facts(signal: dict, klines: list, atr: float) -> dict:
 def _build_user_msg(
     signal: dict, klines: list, ema: Optional[dict], atr: float,
     user_input: Optional[str], htf_klines: Optional[list] = None,
+    stop_cap_pct: Optional[float] = None,
 ) -> str:
     closed = klines[:-1] if len(klines) >= 2 else klines
     # 40 根与 P0 管线同口径（60→40，2026-09-28 缩 token 提速，见 ai_analyzer._build_messages）
@@ -608,7 +623,7 @@ def _build_user_msg(
         f"K线形态: {signal.get('pattern') or '无'}（位置: "
         f"{POSITION_LABEL_MAP.get(signal.get('position') or '', signal.get('position') or '未知')}）\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
-        f"{render_signal_gate_block(signal['signal_type'])}"
+        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct)}"
         f"信号强度: {signal.get('strength', '—')}\n"
         f"量能: {vol_desc}\n"
         f"ATR(14): {atr:.6g}\n"

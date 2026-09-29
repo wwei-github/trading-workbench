@@ -91,7 +91,7 @@ SIGNAL_TYPE_LABELS = {
 }
 
 
-def render_signal_gate_block(signal_type: str) -> str:
+def render_signal_gate_block(signal_type: str, stop_cap_pct: Optional[float] = None) -> str:
     """触发器入场门槛说明（2026-09-28 动态化）：阈值读 scan_filters 生效值，
     消除与页面筛选配置的文本分叉（此前 0.2%/1.2× 硬编码，页面改配置后
     AI 看到的口径与程序实际闸门不一致）。按触发类型渲染对应门槛，
@@ -101,6 +101,13 @@ def render_signal_gate_block(signal_type: str) -> str:
         return ""
     from app.services.scan_filters import resolve_scan_filters
     flt = resolve_scan_filters(None)  # 任务侧无 cfg 行时按 env/代码默认
+    # 止损宽度硬上限（2026-09-29 透传 max_stop_pct 补丁参数）：AI 定止损前先自验
+    # 不超限，避免"AI 建议开单→程序宽度闸弃单"的无效调用；None/0=未配置不注入
+    cap_line = (
+        f"- 止损宽度硬上限: 止损价与入场价距离不得超过 {stop_cap_pct * 100:g}%"
+        "（程序硬闸，超限必弃单）"
+        if stop_cap_pct is not None and stop_cap_pct > 0 else ""
+    )
     lines: list[str] = []
     if signal_type == "trigger_breakout":
         lines += [
@@ -131,6 +138,8 @@ def render_signal_gate_block(signal_type: str) -> str:
                 "EMA 触点=下影触及且收盘收回线上（做空对称）",
                 "- 两段式确认: 触碰后当根出现同向金K，或上根触碰+本根金K（次根确认）",
             ]
+            if cap_line:
+                lines.append(cap_line)
             return ("程序入场门槛（已程序化验证，评估信号质量时以此为基准而非自行估算）:\n"
                     + "\n".join(lines) + "\n")
     # 突破类公共段：止损锚降级链（docs/23，2026-09-29）——近锚只救
@@ -147,6 +156,10 @@ def render_signal_gate_block(signal_type: str) -> str:
         "近锚后盈亏比 >4 时重新评估或 skip（止损过近说明失效位无意义）；"
         "近锚止损宽度仍须 ≥0.3×ATR（止损宽度方法区间下限）",
     ]
+    if cap_line:
+        lines.append(
+            cap_line + "；结构锚宽度已超上限时无近锚降级资格，直接 skip"
+        )
     return ("程序入场门槛（已程序化验证，评估信号质量时以此为基准而非自行估算）:\n"
             + "\n".join(lines) + "\n")
 
@@ -238,6 +251,7 @@ def analyze_coin(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
+    stop_cap_pct: Optional[float] = None,
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -248,12 +262,14 @@ def analyze_coin(
     user_input: 本次分析的用户补充说明（要求/持仓计划/个人观点），附加到用户提示词
     htf_klines: 可选 4h 高周期 K 线（大方向背景；None 时注入块缺省 4h 行）
     risk_*: 止损金额模式口径（2026-09-27），仅 risk_label 注入提示词
+    stop_cap_pct: 止损宽度硬上限（max_stop_pct 补丁参数，比例；None=不限制），
+    注入门槛块供 AI 自验（2026-09-29）
     """
     client = _get_client()
     return _call_llm(
         client,
         _build_messages(signal, klines, strategy_prompt, user_input, htf_klines,
-                        risk_label=risk_label),
+                        risk_label=risk_label, stop_cap_pct=stop_cap_pct),
     )
 
 
@@ -262,11 +278,13 @@ def _build_messages(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
     risk_label: str = "",
+    stop_cap_pct: Optional[float] = None,
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
 
     risk_label（2026-09-27 止损金额模式）：单笔止损预算文案，注入系统提示词
-    仓位口径说明；空时用默认百分比口径。"""
+    仓位口径说明；空时用默认百分比口径。
+    stop_cap_pct（2026-09-29）：止损宽度硬上限，注入门槛块（None=不限制不注入）。"""
     # 取最近 40 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-41:-1]）。
     # 60→40（2026-09-28）：CSV 是 user 消息 token 大头（60 根 ≈5000+），思考型模型
     # reasoning 时长与输入量正相关；浓缩结论（指标/摆动块）已覆盖形态识别所需，
@@ -328,7 +346,7 @@ def _build_messages(
         f"K线形态: {signal.get('pattern') or '无'}\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
         f"{touch_line}"
-        f"{render_signal_gate_block(signal['signal_type'])}"
+        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct)}"
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
         f"量能: {vol_desc}\n"
         f"{ema_summary}"
@@ -397,16 +415,18 @@ def analyze_with_guard(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
+    stop_cap_pct: Optional[float] = None,
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
     返回值为校验修正后的决策 dict（rr/position_pct 为程序复算值），可直接落库。
     risk_*（2026-09-27 止损金额模式）：risk_label 注入提示词；fixed 模式下
     risk_amount 作为预算实额传入仓位复算（与开仓引擎同口径）。
+    stop_cap_pct（2026-09-29）：止损宽度硬上限注入门槛块（None=不限制）。
     """
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
-        htf_klines=htf_klines, risk_label=risk_label,
+        htf_klines=htf_klines, risk_label=risk_label, stop_cap_pct=stop_cap_pct,
     )
     client = _get_client()
     _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None
