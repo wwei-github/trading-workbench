@@ -170,7 +170,7 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
   （单笔止损预算={risk_label}：仓位=预算÷止损距离），此处报估算值即可。
 - recommendation: 推荐程度，0-100的整数。skip 时≤30，suggest 时≥50。锚点（评分需可区分强度）：
   50=仅勉强达标（单一条件满足，无共振）；70=多重共振（趋势+位置/量能两项以上同向）；
-  85+=强信号（趋势+位置+盈亏比三重共振且历史战绩同家族胜率不差）。中间分数线性内插。
+  85+=强信号（趋势+位置+盈亏比三重共振）。中间分数线性内插。
 - analysis: ≤300字中文推理，用"1. 2. 3."序号逐条展示，每条独占一行（JSON内换行写\\n），格式如下：
   先逐条列出满足的条件（如：1. EMA多头排列，趋势向上 2. 回踩支撑位企稳，触及2次）；
   再列出不满足的条件或风险点；最后一条写明确结论（如：4. 结论：建议开单，盈亏比与趋势背景共振）。
@@ -223,7 +223,6 @@ def analyze_coin(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
-    track_record: str = "",
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -234,13 +233,12 @@ def analyze_coin(
     user_input: 本次分析的用户补充说明（要求/持仓计划/个人观点），附加到用户提示词
     htf_klines: 可选 4h 高周期 K 线（大方向背景；None 时注入块缺省 4h 行）
     risk_*: 止损金额模式口径（2026-09-27），仅 risk_label 注入提示词
-    track_record: 战绩回注块（2026-09-28），调用方生成，空串不注入
     """
     client = _get_client()
     return _call_llm(
         client,
         _build_messages(signal, klines, strategy_prompt, user_input, htf_klines,
-                        risk_label=risk_label, track_record=track_record),
+                        risk_label=risk_label),
     )
 
 
@@ -249,14 +247,11 @@ def _build_messages(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
     risk_label: str = "",
-    track_record: str = "",
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
 
     risk_label（2026-09-27 止损金额模式）：单笔止损预算文案，注入系统提示词
-    仓位口径说明；空时用默认百分比口径。
-    track_record（2026-09-28 战绩回注）：同触发类型历史胜率/EV 块，调用方
-    （ai_tasks）经 review_stats_inject 生成，空串时不占位。"""
+    仓位口径说明；空时用默认百分比口径。"""
     # 取最近 40 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-41:-1]）。
     # 60→40（2026-09-28）：CSV 是 user 消息 token 大头（60 根 ≈5000+），思考型模型
     # reasoning 时长与输入量正相关；浓缩结论（指标/摆动块）已覆盖形态识别所需，
@@ -318,7 +313,6 @@ def _build_messages(
         f"K线形态: {signal.get('pattern') or '无'}\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
         f"{touch_line}"
-        f"{track_record}"
         f"{render_signal_gate_block(signal['signal_type'])}"
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
         f"量能: {vol_desc}\n"
@@ -388,18 +382,16 @@ def analyze_with_guard(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
-    track_record: str = "",
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
     返回值为校验修正后的决策 dict（rr/position_pct 为程序复算值），可直接落库。
     risk_*（2026-09-27 止损金额模式）：risk_label 注入提示词；fixed 模式下
     risk_amount 作为预算实额传入仓位复算（与开仓引擎同口径）。
-    track_record（2026-09-28 战绩回注）：透传 _build_messages。
     """
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
-        htf_klines=htf_klines, risk_label=risk_label, track_record=track_record,
+        htf_klines=htf_klines, risk_label=risk_label,
     )
     client = _get_client()
     _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None

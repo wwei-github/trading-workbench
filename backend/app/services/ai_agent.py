@@ -384,7 +384,6 @@ def analyze_coin_agent(
     progress_cb=None,
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
-    track_record: str = "",
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -419,8 +418,7 @@ def analyze_coin_agent(
             "===== 自定义策略结束 ====="
         )
 
-    user_msg = _build_user_msg(signal, klines, ema, atr, user_input, htf_klines,
-                               track_record=track_record)
+    user_msg = _build_user_msg(signal, klines, ema, atr, user_input, htf_klines)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
@@ -530,7 +528,6 @@ def _build_facts(signal: dict, klines: list, atr: float) -> dict:
 def _build_user_msg(
     signal: dict, klines: list, ema: Optional[dict], atr: float,
     user_input: Optional[str], htf_klines: Optional[list] = None,
-    track_record: str = "",
 ) -> str:
     closed = klines[:-1] if len(klines) >= 2 else klines
     # 40 根与 P0 管线同口径（60→40，2026-09-28 缩 token 提速，见 ai_analyzer._build_messages）
@@ -568,7 +565,6 @@ def _build_user_msg(
         f"K线形态: {signal.get('pattern') or '无'}（位置: "
         f"{POSITION_LABEL_MAP.get(signal.get('position') or '', signal.get('position') or '未知')}）\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
-        f"{track_record}"
         f"{render_signal_gate_block(signal['signal_type'])}"
         f"信号强度: {signal.get('strength', '—')}\n"
         f"量能: {vol_desc}\n"
