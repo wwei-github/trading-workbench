@@ -276,6 +276,12 @@ def _run_migrations(engine):
             "ALTER TABLE trade_records "
             "ADD COLUMN IF NOT EXISTS hold_warn_level INTEGER NOT NULL DEFAULT 0"
         ))
+        # 止损锚类型（docs/23，2026-09-29）：structure/near，仅突破类信号有值，
+        # 旧行 NULL 按 structure 理解
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS stop_anchor VARCHAR(16)"
+        ))
         conn.execute(text(
             "UPDATE trade_records SET account_key = 'testnet-1' "
             "WHERE account_key IS NULL AND testnet"

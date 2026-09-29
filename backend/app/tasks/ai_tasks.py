@@ -425,6 +425,9 @@ def _upsert_ai_analysis(
         "risk_reward_ratio": ai_result.get("risk_reward_ratio"),
         "position_pct": ai_result.get("position_pct"),
         "recommendation": ai_result.get("recommendation"),
+        # 止损锚类型（docs/23）：suggest 时由 risk_guard fixed dict 保证有值
+        # （None→structure），skip 行为 None（旧行同样按 structure 理解）
+        "stop_anchor": ai_result.get("stop_anchor"),
         "pullback_wait": bool(ai_result.get("pullback_wait")),
         # 待回踩结论在分发前就被跳过（_dispatch_immediate_open），不会进入开仓闸门，
         # 未开单原因在此预置；其余结论的原因由开仓闸门拦截时写入

@@ -109,12 +109,26 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
         "risk_reward_ratio": _num(a.risk_reward_ratio),
         "position_pct": _num(a.position_pct),
         "recommendation": _num(a.recommendation),
+        # 止损锚类型（docs/23）：structure/near，交易记录随快照自持，复盘分组用
+        "stop_anchor": a.stop_anchor,
         "created_at": a.created_at.isoformat() if a.created_at else None,
         "scan_result_id": None,
     }
 
 
 # ── 开仓 ──────────────────────────────────────────────────────
+
+
+def _near_discounted_budget(risk_budget: float, stop_anchor: Optional[str]) -> float:
+    """近锚单风险折价（docs/23，2026-09-29）。
+
+    止损贴突破K极值的单被扫率未知（观察期敞口折价），且止损窄 → 名义仓位放大
+    → 手续费/滑点磨损绝对额放大；risk_amount 随 qty 同步变小，复盘 R 口径自洽。
+    仅 AI 显式声明 near（risk_guard 已校验止损确贴突破K极值）时生效；
+    折价不改变 EV/R 符号只缩敞口，复盘胜率验证后可把系数调回 1.0 放开。"""
+    if stop_anchor == "near":
+        return risk_budget * settings.NEAR_ANCHOR_RISK_FACTOR
+    return risk_budget
 
 
 def _attempt_open(
@@ -315,6 +329,7 @@ def _attempt_open(
             )
         else:
             risk_budget = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
+        risk_budget = _near_discounted_budget(risk_budget, a.stop_anchor)
         notional = risk_budget / stop_pct
         # 复验按名义所在档位精确取（2026-09-18 -2027 修复）：MMR / 档位最大杠杆 /
         # 档位名义上限。杠杆超档位 initialLeverage 会被交易所拒单（-2027 Exceeded

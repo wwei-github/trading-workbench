@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     TRADING_ENABLED: bool = False     # 自动交易总开关初始值（运行时以 system_config.trading_enabled 为准）
     TRADING_MIN_RECOMMENDATION: float = 60.0  # 开单推荐度门槛
     TRADING_RISK_PCT: float = 3.0     # 止损金额占风险基数比例（%）
+    # 近锚单风险折价（docs/23，2026-09-29）：突破类 stop_anchor=near 的单，
+    # 风险预算 ×此系数——止损贴突破K极值被扫率未知（观察期敞口折价），
+    # 且止损窄使名义仓位放大、手续费/滑点磨损绝对额相应放大（30→21 USDT 例）。
+    # 不改变 EV/R 符号只缩敞口；复盘胜率验证后可调回 1.0 放开
+    NEAR_ANCHOR_RISK_FACTOR: float = 0.7
     # 风险基数取整（2026-09-21 由分档表改首位数取整：4800→4000、5200→5000，
     # 低于 10不开仓；字段保留供 .env 兼容，代码已不再读取）
     TRADING_CAPITAL_TIERS: str = "100,200,500,1000,2000,5000,10000"

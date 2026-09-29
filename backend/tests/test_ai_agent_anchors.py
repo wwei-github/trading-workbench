@@ -71,3 +71,33 @@ def test_legacy_key_ref_rejected():
     assert _resolve_price("key_support_confirmed", 0, sig) is None
     assert _resolve_price("key_nearest_strong", 0, sig) is None
     assert _resolve_price("bogus_ref", 0, sig) is None
+
+
+# ── 信号K线极值锚（docs/23 近锚降级链）────────────────────────────────
+
+
+def _klines_with_signal_candle(low=99.0, high=99.8):
+    """3 根K线：[-2] 为突破K（low/high 可控），[-1] 未收盘"""
+    return [
+        [0, 98.0, 98.5, 97.5, 98.2, 10.0, 0, 10000.0],
+        [1, 99.0, high, low, 99.7, 20.0, 0, 20000.0],  # 突破K
+        [2, 99.8, 100.2, 99.6, 100.0, 5.0, 0, 5000.0],  # 未收盘
+    ]
+
+
+def test_signal_extreme_refs_resolve_to_klines_minus2():
+    """signal_low/signal_high 解析到突破K（klines[-2]，[-1] 未收盘）极值"""
+    sig = _signal()
+    kl = _klines_with_signal_candle(low=99.0, high=99.8)
+    assert _resolve_price("signal_low", 0, sig, klines=kl) == 99.0
+    assert _resolve_price("signal_high", 0, sig, klines=kl) == 99.8
+    # offset：做多近锚 = 突破K最低 × (1 - 0.3%)
+    assert _resolve_price("signal_low", -0.3, sig, klines=kl) == 99.0 * 0.997
+
+
+def test_signal_extreme_without_klines_is_none():
+    """klines 缺失时极值锚返回 None（走 _handle_submit 打回重试），不静默落 0"""
+    sig = _signal()
+    assert _resolve_price("signal_low", 0, sig, klines=None) is None
+    assert _resolve_price("signal_low", 0, sig, klines=[_klines_with_signal_candle()[0]]) is None
+    assert _resolve_price("signal_high", 0, sig, klines=[]) is None

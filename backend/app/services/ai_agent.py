@@ -46,11 +46,24 @@ _RULE_STRUCT_BRIEF = _RULE_STRUCT.replace("analysis", "reason")
 _RULE_VOTE_BRIEF = _RULE_VOTE_BRIEF.replace("{", "{{").replace("}", "}}")
 _RULE_STRUCT_BRIEF = _RULE_STRUCT_BRIEF.replace("{", "{{").replace("}", "}}")
 
+# 近锚降级链（docs/23，2026-09-29，仅突破类信号注入；P1 版：锚点用 signal_low/signal_high
+# 表达，stop_anchor 由程序从 stop_ref 推导、无需自报）。近锚只救"万事俱备、只差盈亏比"
+# 的突破单，其余条件任一不满足时无近锚资格
+NEAR_STOP_RULE_AGENT = """11.5 突破类止损近锚降级链：结构锚（摆动前低/前低）优先；按结构锚复算盈亏比 <{rr_min}
+    且调整入场价仍无法达标（本应 skip）时，才降级近锚——stop_ref=signal_low
+    （做多，突破K线最低价）或 signal_high（做空，最高价）+ offset_pct=-0.3，
+    止盈与盈亏比按新锚复算；近锚仍不达标 → skip。硬约束：仅当 skip 的唯一原因是
+    盈亏比不达标（信号方向、4h 背景、趋势状态、量能特征、质量分等其余开单条件
+    必须全部满足）才允许用近锚；量比 <1 的缩量突破无近锚资格；近锚后盈亏比 >4
+    时重新评估或 skip；近锚止损宽度仍须 ≥0.3×ATR。程序会校验近锚止损必须贴近
+    突破K线极值 ±0.5%，偏离过远会被打回。"""
+
 def render_system_prompt(risk_label: str = "") -> str:
     """渲染最终生效的 P1 系统提示词（页面「查看当前生效提示词」与实际调用同源）。
 
     risk_label（2026-09-27 止损金额模式）：单笔止损预算文案（如"固定 3 USDT"/
-    "账户风险基数 × 3%"），空时回落默认百分比口径。"""
+    "账户风险基数 × 3%"），空时回落默认百分比口径。
+    near_stop_rule 按突破类注入完整文案（预览无信号上下文，展示通用版）。"""
     return AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
         rr_min=settings.AI_RR_MIN,
@@ -58,16 +71,20 @@ def render_system_prompt(risk_label: str = "") -> str:
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
+        near_stop_rule=NEAR_STOP_RULE_AGENT.format(rr_min=settings.AI_RR_MIN),
         skill_index="",
     )
 
 # 锚点枚举：结构位两类（support/resistance，解析到现价下/上方最近的摆动点）
 # + 线外锚点（做多止盈锚摆动高点下方、做空锚摆动低点上方，枚举名沿用 zone
 # 时期历史命名）+ market（市价锚）。next_ 前缀取更前一档（止盈二用）。
+# signal_low/signal_high（docs/23，2026-09-29）：突破K线（信号K线）极值，
+# 仅止损近锚降级链用（解析见 _resolve_price；stop_ref 命中即推导 stop_anchor=near）
 LEVEL_REFS = (
     "support", "resistance", "market",
     "resistance_zone_low", "support_zone_high",
     "next_resistance_zone_low", "next_support_zone_high",
+    "signal_low", "signal_high",
 )
 
 _REF_DESC = "、".join(LEVEL_REFS)
@@ -112,6 +129,7 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     做空取摆动高点与 5 根最高点中更高者外 0.3%
     （止损在近期波动区间内部必被扫损）；入场价与极值间无摆动结构时用极值锚——
     做多严格低于最近 5 根K线最低点（影线极值非收盘价）至少 0.3%，做空相反。
+{near_stop_rule}
 12. 止盈锚定（提示词纪律，程序不再改挂）：结构位=摆动高低点（事实包"近期摆动结构"）。
     距现价特别近（≤1×ATR）的位是价格正在
     测试/突破的"争夺位"，只回答"是否得到支撑/压力/突破"，
@@ -177,10 +195,11 @@ TOOLS_SCHEMA = [
             },
             "entry_ref": {"type": "string", "enum": list(LEVEL_REFS), "description": "入场锚点"},
             "entry_offset_pct": {"type": "number", "description": "入场相对锚点偏移%，默认0"},
-            "stop_ref": {"type": "string", "enum": list(LEVEL_REFS), "description": "止损锚点"},
+            "stop_ref": {"type": "string", "enum": list(LEVEL_REFS),
+                         "description": "止损锚点。signal_low/signal_high=突破K线（本信号K线）最低/最高价，仅限突破类近锚降级链使用（见系统规则11.5），其余情况用结构锚点"},
             "stop_offset_pct": {"type": "number", "description": "止损相对锚点偏移%（通常负/反向）"},
             "tp1_ref": {"type": "string", "enum": list(LEVEL_REFS),
-                        "description": "止盈1锚点：做多=resistance_zone_low（更远的第一条压力位价格线，距现价≤1×ATR的争夺位线不算），做空=support_zone_high（更远的第一条支撑位价格线）"},
+                        "description": "止盈1锚点：做多=resistance_zone_low（更远的第一条压力位价格线，距现价≤1×ATR的争夺位线不算），做空=support_zone_high（更远的第一条支撑位价格线）；signal_low/signal_high 仅限止损近锚，不用于止盈"},
             "tp1_offset_pct": {"type": "number",
                                "description": "止盈1相对锚点偏移%，留余地：做多 -0.2~-0.5（线下方），做空 0.2~0.5（线上方）"},
             "tp2_ref": {"type": "string", "enum": list(LEVEL_REFS),
@@ -231,12 +250,14 @@ def _nth_swing(signal: dict, side: str, nth: int) -> Optional[float]:
 
 
 def _resolve_price(ref: Optional[str], offset_pct, signal: dict,
-                   purpose: str = "entry") -> Optional[float]:
+                   purpose: str = "entry", klines: Optional[list] = None) -> Optional[float]:
     """锚点 + 偏移 → 绝对价格；非法/未知锚点返回 None。
 
     结构锚点一律解析到摆动结构位（docs/09 口径）。ref 必须在 LEVEL_REFS
     枚举内——关键位时代的 key_ 前缀锚点已移除，模型沿旧习惯报出时按非法
     锚点打回（走 _handle_submit 的 errs 重试路径），而非静默落到错误侧。
+    signal_low/signal_high（docs/23）解析到突破K线（信号K线，klines[-2]；
+    klines[-1] 未收盘）的最低/最高价，仅止损近锚降级链使用。
     purpose 保留参数以维持调用方签名稳定。"""
     if not ref:
         return None
@@ -245,6 +266,18 @@ def _resolve_price(ref: Optional[str], offset_pct, signal: dict,
         return base * (1 + _safe_off(offset_pct) / 100.0)
     if ref not in LEVEL_REFS:
         return None
+
+    if ref in ("signal_low", "signal_high"):
+        # 突破K极值锚：数据不足视为非法（走 errs 重试路径），不静默落 0
+        try:
+            sig_candle = (klines or [])[len(klines) - 2] if klines and len(klines) >= 2 else None
+            idx = 3 if ref == "signal_low" else 2
+            base = float(sig_candle[idx]) if sig_candle else 0.0
+        except (IndexError, TypeError, ValueError):
+            base = 0.0
+        if base <= 0:
+            return None
+        return base * (1 + _safe_off(offset_pct) / 100.0)
 
     cur = float(signal.get("current_price") or 0)
     base = _resolve_from_swings(ref, signal, cur)
@@ -311,7 +344,7 @@ def _handle_submit(
     entry = _resolve_price(args.get("entry_ref"), args.get("entry_offset_pct"),
                            signal, purpose="entry")
     stop = _resolve_price(args.get("stop_ref"), args.get("stop_offset_pct"),
-                          signal, purpose="stop")
+                          signal, purpose="stop", klines=klines)
     tp1 = _resolve_price(args.get("tp1_ref"), args.get("tp1_offset_pct"),
                          signal, purpose="tp")
     tp2 = _resolve_price(args.get("tp2_ref"), args.get("tp2_offset_pct"),
@@ -330,6 +363,9 @@ def _handle_submit(
         trade_decision="suggest",
         direction=args.get("direction"),
         trade_type=args.get("trade_type"),
+        # 止损锚类型程序推导（docs/23）：stop_ref 用信号K线极值锚即 near，
+        # 其余（含缺省）structure——比 AI 自报更难滥用
+        stop_anchor="near" if args.get("stop_ref") in ("signal_low", "signal_high") else "structure",
         entry_price=entry, stop_loss=stop,
         take_profit_1=tp1,
         take_profit_2=tp2 or 0.0,
@@ -401,6 +437,12 @@ def analyze_coin_agent(
     facts = _build_facts(signal, klines, atr)
 
     skill_index = skill_library.render_index(facts)
+    # 近锚降级链仅突破类注入（docs/23）；回踩/其他类槽位留空
+    near_stop_rule = (
+        NEAR_STOP_RULE_AGENT.format(rr_min=settings.AI_RR_MIN)
+        if (signal.get("signal_type") or "") in ("trigger_breakout", "trigger_trend_breakout")
+        else ""
+    )
     system = AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
         rr_min=settings.AI_RR_MIN,
@@ -408,6 +450,7 @@ def analyze_coin_agent(
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
+        near_stop_rule=near_stop_rule,
         skill_index=skill_index,
     )
     if strategy_prompt:

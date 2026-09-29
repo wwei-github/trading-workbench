@@ -19,6 +19,7 @@ def _decision(**kw):
         trade_type="trend_follow", entry_price=100.0, stop_loss=98.0,
         take_profit_1=104.0, take_profit_2=0.0, risk_reward_ratio=2.0,
         position_pct=50.0, recommendation=70, analysis="1. ok",
+        stop_anchor=None,  # docs/23：决策契约新增，缺省=结构锚
     )
     base.update(kw)
     return SimpleNamespace(**base)

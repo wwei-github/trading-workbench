@@ -92,6 +92,9 @@ class AIAnalysis(Base):
     # key_levels_json 快照（docs/21，2026-09-27 上线；2026-09-28 功能整体移除后
     # 停止写入）：存量列按仓库惯例保留不 DROP，历史行原样可查
     key_levels_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    # 止损锚类型（docs/23，2026-09-29）：structure/near，仅突破类信号有值；
+    # near=突破K线极值近锚降级链，复盘按锚类型分组对比胜率/EV；旧行 NULL 按 structure 理解
+    stop_anchor: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")

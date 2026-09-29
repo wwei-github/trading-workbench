@@ -221,6 +221,8 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         "fee_total": float(t.fee_total) if t.fee_total is not None else None,
         "funding_total": float(t.funding_total) if t.funding_total is not None else None,
         "recommendation": (t.ai_snapshot or {}).get("recommendation"),
+        # 止损锚类型（docs/23）：structure/near，供归因按锚类型对比近锚单胜率/EV
+        "stop_anchor": (t.ai_snapshot or {}).get("stop_anchor") or "structure",
         "opened_at": t.opened_at.isoformat() if t.opened_at else None,
         "closed_at": t.closed_at.isoformat() if t.closed_at else None,
         "hold_hours": _hold_hours(t),

@@ -56,6 +56,8 @@ class TradeDecision(BaseModel):
     skip_reason: str = ""
     direction: Optional[Literal["long", "short"]] = None
     trade_type: Optional[str] = None  # 开单类型：trend_follow / structure_break / range_edge
+    # 止损锚类型（docs/23，仅突破类信号需要）：structure=结构锚（默认）/ near=突破K极值近锚
+    stop_anchor: Optional[Literal["structure", "near"]] = None
     entry_price: float = 0.0
     stop_loss: float = 0.0
     take_profit_1: float = 0.0
@@ -86,6 +88,9 @@ def normalize_raw(raw: dict) -> TradeDecision:
             data[f] = 0.0
     if data.get("direction") == "":
         data["direction"] = None
+    # stop_anchor 非法值回退 None（suggest 落库时再回退 structure；docs/23）
+    if data.get("stop_anchor") not in ("structure", "near", None, ""):
+        data["stop_anchor"] = None
     if data.get("trade_decision") not in ("suggest", "skip"):
         raise ValueError(f"trade_decision 非法: {data.get('trade_decision')!r}")
     return TradeDecision(**data)
@@ -111,6 +116,15 @@ LIQ_GATE_BUFFER = 0.005
 # 回踩距离 ≤ 容差时市价进场（RR 按现价复算仍须 ≥AI_RR_MIN，见开仓闸门），
 # 超容差才维持「待回踩不下单」。回踩不远时市价进也能满足盈亏比，不必干等
 PULLBACK_MARKET_PCT = 0.01
+
+# 近锚一致性校验（docs/23，2026-09-29）：突破类信号 AI 声明 stop_anchor=near 时，
+# 止损必须贴近突破K线极值（信号K线，klines[-2]；klines[-1] 未收盘）——提示词要求
+# 突破K极值外 0.3% 缓冲，容差 0.5% 覆盖合理偏移；AI 挂近锚名义报远离止损（把
+# 结构锚止损伪装成近锚）时程序打回。数据不足时放行（防数据异常锁死开单，
+# 同 MAX_SLIPPAGE 接口抖动不阻断的哲学），仅记 warning
+NEAR_ANCHOR_BUFFER = 0.003  # 与提示词口径一致：极值外 0.3%
+NEAR_ANCHOR_TOLERANCE = 0.005  # 止损对锚价的最大相对偏离
+BREAKOUT_SIGNAL_TYPES = ("trigger_breakout", "trigger_trend_breakout")
 
 # 开仓前盘口滑点实测上限（system_config.max_slippage_pct 可页面覆盖，NULL=默认 0.003）：
 # 按本单数量走订单簿逐层吃的加权均价对最优价的偏离（0.003=0.3%）。GRIFFAIN 案例：
@@ -221,6 +235,34 @@ def validate_decision(
     if violations:
         return False, violations, {}
 
+    # ── 近锚一致性校验（docs/23）：突破类 AI 声明 stop_anchor=near 时，
+    # 止损必须贴近突破K线极值 ±0.5%——防 AI 挂近锚名义用远止损绕过
+    # "仅 RR 不达标才降级" 的降级链前提 ──
+    if (
+        d.stop_anchor == "near"
+        and (signal.get("signal_type") or "") in BREAKOUT_SIGNAL_TYPES
+        and len(klines) >= 2
+    ):
+        sig_candle = klines[-2]  # klines[-1] 未收盘，突破K = 最后一根已收盘
+        try:
+            sig_high, sig_low = float(sig_candle[2]), float(sig_candle[3])
+        except (IndexError, TypeError, ValueError):
+            sig_high = sig_low = 0.0
+        if sig_high > 0 and sig_low > 0:
+            if d.direction == "long":
+                anchor = sig_low * (1 - NEAR_ANCHOR_BUFFER)
+            else:
+                anchor = sig_high * (1 + NEAR_ANCHOR_BUFFER)
+            if abs(d.stop_loss - anchor) / anchor > NEAR_ANCHOR_TOLERANCE:
+                violations.append(
+                    f"stop_anchor=near 但止损偏离突破K极值锚过远"
+                    f"（锚={anchor:.8g}，SL={d.stop_loss}）：近锚仅允许突破K线"
+                    f"{'最低' if d.direction == 'long' else '最高'}价外 {NEAR_ANCHOR_BUFFER:.1%} 缓冲"
+                )
+                return False, violations, {}
+        else:
+            logger.warning("near 校验跳过：突破K线数据异常 %s", signal.get("symbol"))
+
     stop_dist = abs(d.entry_price - d.stop_loss)
     stop_pct = stop_dist / d.entry_price if d.entry_price else 0
 
@@ -256,6 +298,14 @@ def validate_decision(
         "skip_reason": "",
         "direction": d.direction,
         "trade_type": d.trade_type,
+        # 止损锚类型落库（docs/23）：near 仅突破类有效（AI 在回踩类误报时按
+        # structure 落库防分组污染）；None（未声明/非法值）同样按 structure 理解
+        "stop_anchor": (
+            "near"
+            if d.stop_anchor == "near"
+            and (signal.get("signal_type") or "") in BREAKOUT_SIGNAL_TYPES
+            else "structure"
+        ),
         "analysis": d.analysis or "",
         "entry_price": round(d.entry_price, 8),
         "stop_loss": round(d.stop_loss, 8),

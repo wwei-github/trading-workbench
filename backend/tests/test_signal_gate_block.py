@@ -58,6 +58,24 @@ def test_gate_block_trend_breakout_renders_donchian():
     assert render_signal_gate_block("trigger_candlestick") == ""
 
 
+def test_gate_block_breakout_near_anchor_chain():
+    """突破类门槛块含止损锚降级链（docs/23）：降级链+前提硬约束+资格附加线"""
+    for st in ("trigger_breakout", "trigger_trend_breakout"):
+        block = render_signal_gate_block(st)
+        assert "止损锚（突破类专用）" in block
+        assert "近锚适用前提" in block          # 仅 RR 不达标才降级
+        assert "近锚资格附加线" in block        # 量比<1 无资格 / RR>4 重估 / 0.3×ATR
+        assert 'stop_anchor="near"' in block
+        assert "突破K线（本信号K线）" in block  # 近锚=突破K极值口径
+
+
+def test_gate_block_pullback_no_near_anchor():
+    """近锚降级链仅注入突破类，回踩类块不出现（防注入面扩大）"""
+    block = render_signal_gate_block("trigger_pullback_confirm")
+    assert "止损锚（突破类专用）" not in block
+    assert "stop_anchor" not in block
+
+
 def test_gate_block_disabled_items_omitted():
     block = render_signal_gate_block("trigger_pullback_confirm")
     assert "悬空金K拦截" not in block
