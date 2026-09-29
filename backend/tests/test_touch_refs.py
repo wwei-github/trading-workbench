@@ -86,7 +86,8 @@ def _retest_event(kl: list[list], price: float, direction: int = 1,
             "candle_open": datetime.utcfromtimestamp(kl[open_idx][0] / 1000)}
 
 
-GOLDEN_LONG = [{"pattern": "hammer", "direction": "bullish"}]
+# 2026-09-29-2 复合确认：单影线锤不再单根确认，打桩改用复合形态（吞没）直通
+GOLDEN_LONG = [{"pattern": "bullish_engulfing", "direction": "bullish"}]
 
 
 # ── retest：突破回测位（docs/22 §3.1） ────────────────────────────────────

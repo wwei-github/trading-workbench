@@ -113,8 +113,10 @@ def _pending(kl: list[list], direction: int = 1, anchor_idx: int = -3) -> dict:
     return {"id": "x", "direction": direction, "stage1_candle_open": _anchor(kl, anchor_idx)}
 
 
-GOLDEN_LONG = [{"pattern": "hammer", "direction": "bullish"}]
-GOLDEN_SHORT = [{"pattern": "shooting_star", "direction": "bearish"}]
+# 2026-09-29 复合确认规则后，单影线（锤/流星）不再单根确认——矩阵测试用
+# 复合形态（吞没）打桩走"单形态直通"路径；锤/流星复合确认见文件末尾专测
+GOLDEN_LONG = [{"pattern": "bullish_engulfing", "direction": "bullish"}]
+GOLDEN_SHORT = [{"pattern": "bearish_engulfing", "direction": "bearish"}]
 
 
 # ── 行7：无触碰无金K无 pending → 观察池 ────────────────────────────────────
@@ -252,7 +254,7 @@ def test_row2_touch_and_golden_same_candle_confirm():
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
         t, op = trig.detect_trigger(kl, 1, pending=_pending(kl))
     assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
-    assert t["position"] == "support" and t["pattern"] == "hammer"
+    assert t["position"] == "support" and t["pattern"] == "bullish_engulfing"
     assert "当根" in t["reason"]
     assert op == {"op": "supersede", "reason": "same_candle_confirm"}
 
@@ -274,7 +276,7 @@ def test_row3_next_candle_confirm():
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
         t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-3))
     assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
-    assert t["pattern"] == "hammer"
+    assert t["pattern"] == "bullish_engulfing"
     assert op == {"op": "confirm"}
 
 
@@ -612,3 +614,118 @@ def test_row1_breakout_over_max_short_symmetric_rejected():
     with patch.object(trig, "detect_all_patterns", return_value=[]):
         t, op = trig.detect_trigger(kl, -1)
     assert t is None and op is None
+
+
+# ── 单影线形态复合确认（2026-09-29 用户拍板：单锤/单流星不再单根确认）──────
+# 真实形态构造（不 mock detect_all_patterns）：锤形线=小实体长下影短上影，
+# 流星线=小实体长上影短下影，趋势K=实体≥75%全长
+
+def _hammer_at(kl: list[list], idx: int) -> None:
+    """把 kl[idx] 改写为看多锤形线：o=100.10 c=100.30（body 0.2）、
+    l=99.10（下影 1.0 ≥ 2×body）、h=100.40（上影 0.1 ≤ 15%×1.3=0.195）"""
+    ts = kl[idx][0]
+    kl[idx] = [ts, 100.10, 100.40, 99.10, 100.30, 100.0, 1e6]
+
+
+def _shooting_star_at(kl: list[list], idx: int) -> None:
+    """把 kl[idx] 改写为看空流星线（倒锤形）：o=100.20 c=100.00（body 0.2）、
+    h=101.20（上影 1.0 ≥ 2×body）、l=100.05（下影 0.05 ≤ 15%×1.15=0.1725）"""
+    ts = kl[idx][0]
+    kl[idx] = [ts, 100.20, 101.20, 100.05, 100.00, 100.0, 1e6]
+
+
+def _trend_candle_at(kl: list[list], idx: int, direction: int = 1) -> None:
+    """把 kl[idx] 改写为顺向趋势K：实体 0.15 / 全长 0.19 ≈0.79 ≥0.75（阳/阴按方向）。
+
+    收盘控制在摆动结构区间内（c=100.15 < 前高 100.04×1.002），避免实体过大
+    抢先触发突破分支（T1 优先）或与微扰序列凑成黄昏星（k3 大实体 + k2 小实体）。
+    """
+    ts = kl[idx][0]
+    if direction == 1:
+        o, h, l, c = 100.00, 100.17, 99.98, 100.15
+    else:
+        o, h, l, c = 100.15, 100.17, 99.98, 100.00
+    kl[idx] = [ts, o, h, l, c, 100.0, 1e6]
+
+
+def test_single_hammer_touch_no_trigger_becomes_pending():
+    """单锤触碰触点 → 不触发（旧行为是当根确认），转 pending 等次根确认"""
+    kl = _kl(*_base())
+    _touch_long(kl)          # 当根触碰 EMA21（收盘收回线上）
+    _hammer_at(kl, -2)       # 当根锤形（close=100.30 > ema、low=99.10 触及 → 仍触碰）
+    t, op = trig.detect_trigger(kl, 1)
+    assert t is None
+    assert op is not None and op["op"] == "upsert"  # 触碰无有效金K → 转待确认
+
+
+def test_double_hammer_confirms():
+    """双锤：前根+当根连续锤形 → 有效金K证据，触碰路径当根确认"""
+    kl = _kl(*_base())
+    _hammer_at(kl, -3)       # 前根锤
+    _hammer_at(kl, -2)       # 当根锤（low 触及 ema、收盘线上 → 当根触碰成立）
+    t, op = trig.detect_trigger(kl, 1)
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["pattern"] == "hammer"
+    assert "双锤组合" in t["reason"]
+
+
+def test_double_shooting_star_confirms_short():
+    """空头对称：前根+当根连续流星线 → 有效金K证据"""
+    kl = _kl(*_base())
+    _shooting_star_at(kl, -3)
+    _shooting_star_at(kl, -2)
+    t, op = trig.detect_trigger(kl, -1)
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["pattern"] == "shooting_star"
+    assert "双锤组合" in t["reason"]
+
+
+def test_hammer_plus_trend_candle_confirms():
+    """锤+趋势K：前根锤 + 当根顺向长实体阳线 → 组合确认（pattern 落前根锤）"""
+    kl = _kl(*_base())
+    _hammer_at(kl, -3)
+    _trend_candle_at(kl, -2, direction=1)
+    t, op = trig.detect_trigger(kl, 1)
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["pattern"] == "hammer"
+    assert "前根锤形线+当根趋势K" in t["reason"]
+
+
+def test_trend_candle_without_prev_hammer_no_trigger():
+    """当根趋势K但前根不是锤 → 无有效证据，不触发"""
+    kl = _kl(*_base())
+    _trend_candle_at(kl, -2, direction=1)  # 前根保持普通微扰K线
+    t, op = trig.detect_trigger(kl, 1)
+    assert t is None
+
+
+def test_shooting_star_plus_trend_candle_confirms_short():
+    """空头对称：前根流星 + 当根顺向长实体阴线 → 组合确认"""
+    kl = _kl(*_base())
+    _shooting_star_at(kl, -3)
+    _trend_candle_at(kl, -2, direction=-1)
+    t, op = trig.detect_trigger(kl, -1)
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["pattern"] == "shooting_star"
+    assert "前根倒锤形线（流星）+当根趋势K" in t["reason"]
+
+
+# ── resolve_golden_evidence 裁决函数直测（规则1/2/3 与否决路径）────────────
+
+def test_resolve_direct_pass_for_composite_pattern():
+    """规则1：复合形态（吞没）方向匹配 → 单形态直通、note 为空"""
+    kl = _kl(*_base())
+    golden, note = trig.resolve_golden_evidence(
+        kl, "bullish", [{"pattern": "bullish_engulfing", "direction": "bullish"}])
+    assert golden is not None and golden["pattern"] == "bullish_engulfing"
+    assert note == ""
+
+
+def test_resolve_direction_mismatch_rejected():
+    """方向不匹配的金K（看多语境遇流星）→ 无证据"""
+    kl = _kl(*_base())
+    _hammer_at(kl, -3)
+    _hammer_at(kl, -2)
+    golden, _ = trig.resolve_golden_evidence(
+        kl, "bearish", [{"pattern": "hammer", "direction": "bullish"}])
+    assert golden is None

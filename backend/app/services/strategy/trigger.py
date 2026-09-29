@@ -45,9 +45,9 @@ from app.services.scan_filters import (
 )
 from app.services.strategy import recent_swings
 from app.services.strategy.candlestick import (
-    GOLDEN_12,
     PATTERN_LABEL_MAP,
     detect_all_patterns,
+    resolve_golden_evidence,
 )
 from app.services.strategy.ema import calc_ema
 from app.services.strategy.indicators import volume_ratio
@@ -393,10 +393,11 @@ def detect_trigger(
                                   f"Donchian下轨({chan_low:.6g})",
                     }, _close_op(pending, direction, "breakout")
 
-    # 并行计算当根同向金K（两段式确认证据，形态检测与触点判定解耦）
+    # 当根金K证据统一裁决（2026-09-29 复合确认：单影线锤/流星单根不再确认，
+    # 须双锤或锤+趋势K；复合形态（吞没/启明星/黄昏星）单根照旧——
+    # 见 candlestick.resolve_golden_evidence；触点框架要求不变）
     patterns = detect_all_patterns(klines, idx=-2)
-    golden = next((p for p in patterns if p["pattern"] in GOLDEN_12), None)
-    golden = golden if (golden and golden["direction"] == wanted) else None
+    golden, golden_note = resolve_golden_evidence(klines, wanted, patterns)
 
     # 并行探测启用触点（docs/22 §3）：命中收集为 {ref: 位价}，标注取最高优先
     # （横向结构语义强于均线；均线取最快——最早确认、止损最紧）
@@ -422,12 +423,15 @@ def detect_trigger(
 
     # 行2：当根触碰+金K → 当根确认（比纯形态更强，pending 一律被抢先）。
     if touch_ref is not None and golden:
+        _label = PATTERN_LABEL_MAP.get(golden["pattern"], golden["pattern"])
+        # 证据描述：单形态="当根X确认"；组合=note 原文+确认（如
+        # "双锤组合确认"/"前根锤形线+当根趋势K确认"）
+        _ev = f"当根{_label}确认" if not golden_note else f"{golden_note}确认"
         return {
             "type": PULLBACK_CONFIRM, "direction": direction,
             "position": pos_fb, "touch_ref": touch_ref,
             "pattern": golden["pattern"], "breakout_pct": 0.0,
-            "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且当根"
-                      f"{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}确认",
+            "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且{_ev}",
         }, _close_op(pending, direction, "same_candle_confirm")
 
     # 行3/行4：未触碰但有金K → 有效 pending 则次根确认（有回踩语境）。
@@ -439,12 +443,13 @@ def detect_trigger(
         if pending_valid and pending and pending.get("direction") == direction:
             p_ref = pending.get("touch_ref")
             p_label = TOUCH_LABELS.get(p_ref, "触点") if p_ref else "触点"
+            _label = PATTERN_LABEL_MAP.get(golden["pattern"], golden["pattern"])
+            _ev = f"本根{_label}确认" if not golden_note else f"{golden_note}确认"
             return {
                 "type": PULLBACK_CONFIRM, "direction": direction,
                 "position": pos_fb, "touch_ref": p_ref,
                 "pattern": golden["pattern"], "breakout_pct": 0.0,
-                "reason": f"指标同向·上根回踩{p_label}企稳·本根"
-                          f"{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}确认",
+                "reason": f"指标同向·上根回踩{p_label}企稳·{_ev}",
             }, {"op": "confirm"}
         if pending:
             return None, {"op": "expire",

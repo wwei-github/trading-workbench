@@ -43,8 +43,10 @@ class Settings(BaseSettings):
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
     # 规则版本标记（docs/24 A0，2026-09-29）：随规则集变更递增（改 trigger/risk_guard/
     # 提示词纪律/分批比例均算改版），开仓与分析落库时快照到 trade_records/ai_analyses；
-    # 复盘/归因按版本分组对比，跨版本混谈从机制上杜绝（NULL=上线前旧行按 legacy 理解）
-    RULE_VERSION: str = "v2026-09-29"
+    # 复盘/归因按版本分组对比，跨版本混谈从机制上杜绝（NULL=上线前旧行按 legacy 理解）。
+    # v2026-09-29-2：回踩金K复合确认（用户拍板）——单影线锤/流星单根不再确认，
+    # 须双锤或锤+趋势K（candlestick.resolve_golden_evidence）
+    RULE_VERSION: str = "v2026-09-29-2"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

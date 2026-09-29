@@ -526,6 +526,106 @@ PATTERN_LABEL_MAP = {
 }
 
 
+# ===== 单影线形态的复合确认（2026-09-29 用户拍板）=====
+# 锤形线（看多）/流星线即倒锤形（看空）是"单根单影线"形态，单独作为回踩
+# 金K确认证据太弱：单根不再触发，须满足其一——
+#   ① 双锤：连续两根同形态（前根+当根，探底回升连续两次确认）
+#   ② 锤+趋势K：前根锤/流星 + 当根顺向趋势K（短影线长实体，实体 ≥75% 全长，
+#      与突破K线同口径）
+# 复合形态（吞没/启明星/黄昏星）本身由多根K线构成、结构更强，维持单根确认。
+SINGLE_SHADOW_PATTERNS = {"hammer", "shooting_star"}
+
+# 顺向趋势K线实体/K线全长下限（与 trigger.BREAKOUT_BODY_RANGE_MIN 同口径；
+# 复制常量避免 strategy 内部反向 import trigger）
+TREND_CANDLE_BODY_RANGE_MIN = 0.75
+
+
+def detect_solid_trend_candle(klines: list[list], direction: int,
+                              idx: int = -1) -> Optional[dict]:
+    """顺向趋势K线：长实体（≥75% 全长）+ 顺向（做多=阳线、做空=阴线）。
+
+    供"锤+趋势K"复合确认使用（docs 口径同突破K线长实体：影线合计 ≤25%
+    即天然短影线，不做单侧影线额外限制）。
+    """
+    k = klines[idx]
+    o, h, l, c = float(k[1]), float(k[2]), float(k[3]), float(k[4])
+    body = abs(c - o)
+    rng = h - l
+    if rng <= 0 or body <= 0:
+        return None
+    if direction == 1 and c <= o:
+        return None
+    if direction == -1 and c >= o:
+        return None
+    if body / rng < TREND_CANDLE_BODY_RANGE_MIN:
+        return None
+    return {
+        "pattern": "trend_candle",
+        "direction": "bullish" if direction == 1 else "bearish",
+        "strength": 0.6,
+    }
+
+
+def resolve_golden_evidence(klines: list[list], wanted: str,
+                            patterns: list[dict]) -> tuple[Optional[dict], str]:
+    """回踩金K证据统一裁决（2026-09-29 复合确认规则）。
+
+    入参：
+    - klines：全量K线（[-2]=当根已收盘、[-3]=前根已收盘）
+    - wanted：期望方向 "bullish"/"bearish"（指标多数决方向）
+    - patterns：detect_all_patterns(klines, idx=-2) 的当根形态检测结果
+    返回 (golden, note)：
+    - golden：确认证据形态 dict（pattern/direction），None=无有效证据
+    - note：组合说明（""=单形态直接确认），trigger 层拼进触发 reason
+
+    裁决顺序：
+    1. 当根复合形态（吞没/启明星/黄昏星）方向匹配 → 直接确认
+    2. 当根锤/流星方向匹配 → 前根同形态（双锤）才确认，否则不确认
+    3. 当根无金K → 前根锤/流星（方向匹配）+ 当根顺向趋势K → 组合确认，
+       pattern 落前根形态（前端展示/AI 提示词兼容）
+    触点框架（当根触碰或 pending 次根确认）由 trigger 层负责，本函数只裁
+    "形态证据是否成立"——无触碰语境的悬空组合不会绕过触点要求。
+    """
+    golden = next((p for p in patterns if p["pattern"] in GOLDEN_12), None)
+    golden = golden if (golden and golden["direction"] == wanted) else None
+
+    # 规则1：复合形态直接确认
+    if golden and golden["pattern"] not in SINGLE_SHADOW_PATTERNS:
+        return golden, ""
+
+    direction = 1 if wanted == "bullish" else -1
+
+    # 规则2：当根单影线（锤/流星）→ 双锤组合确认
+    if golden:
+        try:
+            prev = (detect_hammer(klines, -3) if golden["pattern"] == "hammer"
+                    else detect_shooting_star(klines, -3))
+        except Exception:
+            prev = None
+        if prev:
+            return golden, "双锤组合"
+        return None, ""  # 单锤/单流星不确认
+
+    # 规则3：当根趋势K + 前根锤/流星 → 组合确认
+    try:
+        solid = detect_solid_trend_candle(klines, direction, -2)
+    except Exception:
+        solid = None
+    if solid is None:
+        return None, ""
+    try:
+        prev = (detect_hammer(klines, -3) if wanted == "bullish"
+                else detect_shooting_star(klines, -3))
+    except Exception:
+        prev = None
+    if prev and prev["direction"] == wanted:
+        label = PATTERN_LABEL_MAP.get(prev["pattern"], prev["pattern"])
+        return ({"pattern": prev["pattern"], "direction": wanted,
+                 "strength": prev["strength"]},
+                f"前根{label}+当根趋势K")
+    return None, ""
+
+
 def detect_all_patterns(klines: list[list], idx: int = -2) -> list[dict]:
     """检测指定位置的所有形态
 
