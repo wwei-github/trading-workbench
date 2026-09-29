@@ -1020,7 +1020,7 @@ def sync_account_transfers(db: Session) -> int:
     从该账号库内最新 transfer_time 前移 60s 重叠窗口开始（首次从 7 天前起），
     tran_id 唯一约束 + on_conflict_do_nothing 幂等去重。返回新插入条数（全部账号合计）。
 
-    测试网账号不同步（2026-09-29 测试网巡检停用）。
+    测试网账号不同步划转（2026-09-29 写死，仅正式网）。
     """
     inserted = 0
     cfg = db.get(SystemConfig, 1)
@@ -1169,16 +1169,15 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
     每条记录按自带 account_key 选对应账号结算（docs/17 P0；NULL 旧行按 testnet
     回落 testnet-1/live-1）；trader 参数为当前环境实例，仅作同账号复用与孤儿清扫兜底。
 
-    测试网巡检已停用（2026-09-29 写死）：测试网在跑单不再结算，孤儿清扫兜底
-    也不碰测试网主账号；正式网不受影响。
+    巡检范围 = 系统自开的单（含测试网），App 手动单不在库内天然不巡检；
+    接管入口在任务层按环境守卫（2026-09-29：测试网不接管，避免同步手动单）。
+    孤儿清扫兜底不碰测试网主账号，防误撤测试网 App 手动单的挂单。
     """
     cfg = db.get(SystemConfig, 1)
     interval = cfg.kline_interval if cfg else "1h"
     records = db.execute(
         select(TradeRecord).where(TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")))
     ).scalars().all()
-    # 测试网巡检停用（2026-09-29）：只结算正式网在跑单
-    records = [r for r in records if not r.testnet]
 
     def _rec_acc_key(rec: TradeRecord) -> str:
         return rec.account_key or ("testnet-1" if rec.testnet else "live-1")
@@ -1421,8 +1420,6 @@ def check_hold_warnings(db) -> list[dict]:
     预警（跨级直接发红卡不补黄卡）。hold_warn_level 只升级不重发；平仓后
     状态不在跑即不再判定。只做 DB 判定与标记（本函数内 commit），返回待发
     卡片列表由调用方在开仓锁外发送——飞书 HTTP（超时 10s/张）不进开仓锁。
-
-    测试网在跑单不判定（2026-09-29 测试网巡检停用）。
     """
     now = datetime.now(timezone.utc)
     cards: list[dict] = []
@@ -1430,8 +1427,6 @@ def check_hold_warnings(db) -> list[dict]:
         select(TradeRecord).where(TradeRecord.status.in_(_ADOPT_RUNNING))
     ).scalars().all()
     for rec in recs:
-        if rec.testnet:
-            continue
         if not rec.opened_at:
             continue
         # opened_at 为 UTC-naive（datetime.utcnow 落库）；挂 tzinfo 后与 now 同源相减

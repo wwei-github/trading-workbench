@@ -188,8 +188,8 @@ def run_auto_trade_task():
                 settled, advice_ids = settle_trades(db, trader)
                 # 自动导入手动持仓（2026-09-24）：交易所侧未被系统在跑记录接管的
                 # 非零持仓 = App 手动单，SL/TP 取 App 条件单原值接管
-                # （裸仓/校验不过跳过只记日志）；测试网主账号不接管（2026-09-29
-                # 测试网巡检停用，避免误接管测试网 App 单）
+                # （裸仓/校验不过跳过只记日志）。测试网不接管（2026-09-29 写死：
+                # 不同步 App 手动单），测试网系统单的结算巡检不受影响
                 if not trader.testnet:
                     try:
                         from app.services.trade_engine import auto_adopt_positions
@@ -203,7 +203,7 @@ def run_auto_trade_task():
                     if acc.key == trader.account_key:
                         continue
                     if acc.testnet:
-                        continue  # 测试网账号不巡检（2026-09-29 停用）
+                        continue  # 测试网账号不同步手动单、不孤儿清扫（2026-09-29 写死）
                     at = BinanceTrader(acc.key)
                     if not at.configured:
                         continue

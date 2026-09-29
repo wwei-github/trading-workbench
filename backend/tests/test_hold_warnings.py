@@ -104,11 +104,10 @@ def test_card_body_structure():
     assert card["_symbol"] == "BIG/USDT" and card["_hours"] == pytest.approx(13.0, abs=0.1)
 
 
-def test_testnet_always_skipped():
-    """测试网巡检停用（2026-09-29 写死）：测试网在跑单不出卡、级别不动，
-    正式网照常判定"""
-    db = _db(_row("T", "OPENED", 13.0, testnet=1), _row("L", "OPENED", 13.0))
+def test_testnet_managed_too():
+    """测试网系统单照常判定（2026-09-29：巡检只排除 App 手动单接管，
+    系统自开的单含测试网都在巡检范围内）——测试网/正式网都出卡"""
+    db = _db(_row("T", "OPENED", 13.0, testnet=1), _row("L", "OPENED", 13.0, testnet=0))
     cards = check_hold_warnings(db)
-    assert [c["_symbol"] for c in cards] == ["L"]
-    assert db.execute(text(
-        "SELECT hold_warn_level FROM trade_records WHERE symbol='T'")).scalar() in (0, None)
+    assert sorted(c["_symbol"] for c in cards) == ["L", "T"]
+    assert cards[0]["header"]["template"] == "yellow"
