@@ -133,6 +133,24 @@ class BinanceClient:
         resp = self._request(self.futures_client, "/fapi/v1/ticker/24hr")
         return resp.json()
 
+    def get_futures_klines(
+        self, symbol: str, interval: str = "1h", limit: int = 100,
+    ) -> list[list]:
+        """合约 K 线（薄封装，市场环境块拉 BTC 背景数据用，docs/24 A4①）。
+
+        返回 [ts, o, h, l, c, base_vol, close_ts, quote_vol] 数值化数组
+        （与 exchange_pool._fetch_binance 同格式）；走 _request 限流退避。
+        """
+        resp = self._request(
+            self.futures_client, "/fapi/v1/klines",
+            params={"symbol": symbol, "interval": interval, "limit": limit},
+        )
+        return [
+            [float(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]),
+             float(r[5]), float(r[6]), float(r[7])]
+            for r in resp.json()
+        ]
+
     # ── 现货 API（保留备用）──
 
     def get_exchange_info(self) -> dict:

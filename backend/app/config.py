@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     EMA_TOUCH_MIN_BARS: int = 200  # EMA 触碰最小已收盘根数（数据门，EMA144 收敛兜底）
     DAILY_LOSS_STOP_PCT: float = 9.0  # 当日亏损熔断：UTC 日已平仓净亏 ≤ -风险基数×9%（≈3笔满损）停开仓（0=关闭）
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
+    # 规则版本标记（docs/24 A0，2026-09-29）：随规则集变更递增（改 trigger/risk_guard/
+    # 提示词纪律/分批比例均算改版），开仓与分析落库时快照到 trade_records/ai_analyses；
+    # 复盘/归因按版本分组对比，跨版本混谈从机制上杜绝（NULL=上线前旧行按 legacy 理解）
+    RULE_VERSION: str = "v2026-09-29"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]
@@ -69,11 +73,22 @@ class Settings(BaseSettings):
     AI_CALL_TIMEOUT_S: int = 300      # 单次 LLM 调用超时（防网关挂起拖垮整轮分析；
                                       # 实测单轮 85~130s，拥塞尾延迟随机破 240s →
                                       # 2026-09-28 240→300 覆盖尾部，留足余量）
+    # JSON 输出模式（docs/24 D2，2026-09-29）：开启时 chat/completions 请求带
+    # response_format={"type":"json_object"}（OpenAI 兼容参数），促使模型直接产出
+    # 合法 JSON、降低解析失败重试率；默认关——部分兼容网关不支持该参数（会 400）
+    LLM_JSON_MODE: bool = False
     AI_RR_MIN: float = 1.5            # 盈亏比复算下限（交易系统铁律）
     RISK_BUDGET_PCT: float = 3.0      # 单笔固定亏损预算（%账户资金）：仓位 = 预算÷止损距离%，触止损恰好亏3%
     FINGERPRINT_TTL_MIN: int = 60     # 指纹缓存复用窗口（分钟，0.3% 价格分桶）
     AI_MAX_PER_SCAN: int = 10         # 单次扫描批量 AI 分析上限（按24h成交额取前N）
     MIN_VOLUME_24H: float = 3_000_000  # 扫描候选池 24h 成交额下限（USDT），低于此不进扫描
+
+    # 市场环境注入（docs/24 A4①）：AI 事实包（P0 单次调用管线）追加本币资金费率
+    # 与 BTC 状态摘要——系统提示词要求"勿臆测"，普跌日无环境数据 AI 只能凭本币
+    # 指标判断；任一数据源失败静默降级为不注入
+    MARKET_CONTEXT_ENABLED: bool = True   # 环境注入总开关（False=不注入，测试/降级用）
+    BTC_CRASH_PAUSE_PCT: float = 1.0      # BTC 1h 近3根累计急跌阈值（%，跌破注入
+                                          # 「BTC 短线急跌，山寨开单需谨慎」警示；0=关闭警示）
 
     # 自动交易（docs/06，币安 USDT-M 合约）
     # 账号凭据（docs/17 注册表在 account_registry.py 读取）：正式网统一命名
@@ -98,6 +113,26 @@ class Settings(BaseSettings):
     # 且止损窄使名义仓位放大、手续费/滑点磨损绝对额相应放大（30→21 USDT 例）。
     # 不改变 EV/R 符号只缩敞口；复盘胜率验证后可调回 1.0 放开
     NEAR_ANCHOR_RISK_FACTOR: float = 0.7
+    # 连损降速软熔断（docs/24 A3）：当日连续亏损时提升开仓评分门槛
+    # （连损 2 → 评分 ≥75，连损 ≥3 → ≥85，绝对档位；低于现行门槛值时不生效），
+    # 且定时批量分析配额减半——连损趋势日降频观望，但不像当日亏损熔断那样停摆；
+    # False=关闭
+    CONSECUTIVE_LOSS_DERATE: bool = True
+    # 组合热度上限（docs/24 A3'）：在跑单（OPENED/TP1_HIT/TP2_HIT）止损金额合计
+    # / 钱包余额的上限（0.15=15%），本单预估止损计入后超限则不开新单；
+    # 0=关闭
+    PORTFOLIO_HEAT_CAP: float = 0.15
+    # 同向持仓上限（docs/24 A3'）：同方向（long/short）在跑单数上限，
+    # 防趋势同震时单边敞口过度集中；0=不限
+    SAME_DIRECTION_CAP: int = 6
+    # 盘口价差预检（docs/24 A4'）：开仓前 bookTicker 的 bid-ask 价差/中间价上限
+    # （0.003=0.3%），价差过宽说明流动性枯竭/行情剧烈，市价成交即承担点差成本，
+    # 放弃开单（查询异常不拦截，走滑点实测兜底）；0=关闭
+    SPREAD_MAX_PCT: float = 0.003
+    # Taker 手续费率（docs/24 A1''）：保本止损价 = 成本价 ± 往返费用缓冲
+    # （开+平两腿各收一次）——窄止损下费用/R 被名义杠杆放大，
+    # 纯成本价保本实际仍亏往返手续费
+    TAKER_FEE_RATE: float = 0.0005
     # 风险基数取整（2026-09-21 由分档表改首位数取整：4800→4000、5200→5000，
     # 低于 10不开仓；字段保留供 .env 兼容，代码已不再读取）
     TRADING_CAPITAL_TIERS: str = "100,200,500,1000,2000,5000,10000"

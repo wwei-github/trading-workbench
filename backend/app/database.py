@@ -282,6 +282,27 @@ def _run_migrations(engine):
             "ALTER TABLE ai_analyses "
             "ADD COLUMN IF NOT EXISTS stop_anchor VARCHAR(16)"
         ))
+        # 规则版本标记（docs/24 A0，2026-09-29）：trade_records/ai_analyses 快照
+        # 开仓/分析时点规则集（settings.RULE_VERSION，如 v2026-09-29），
+        # 复盘/归因按版本分组；NULL=标记上线前旧行，统计口径归 legacy
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS rule_version VARCHAR(16)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS rule_version VARCHAR(16)"
+        ))
+        # 双评委 veto 闭环（docs/24 A5a，2026-09-29）：veto 原始建议快照 +
+        # 复盘否决单回放标记，对比"被否决建议假想表现 vs 通过单表现"
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS veto_original JSONB"
+        ))
+        conn.execute(text(
+            "ALTER TABLE trade_reviews "
+            "ADD COLUMN IF NOT EXISTS is_veto BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
         conn.execute(text(
             "UPDATE trade_records SET account_key = 'testnet-1' "
             "WHERE account_key IS NULL AND testnet"

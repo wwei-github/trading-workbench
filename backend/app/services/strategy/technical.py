@@ -196,6 +196,34 @@ def analyze_rsi(klines: list[list], period: int = 14) -> Optional[dict]:
     }
 
 
+def atr_series(klines: list[list], period: int = 14) -> Optional[np.ndarray]:
+    """Wilder 平滑 ATR 序列（D1，docs/24）：与 SuperTrend 内部 ATR 同口径抽出复用。
+
+    TR[i] = max(高-低, |高-前收|, |低-前收|)（首根取高-低），
+    种子 = 前 period 根 TR 均值，其后 atr[i] = (atr[i-1]*(p-1)+tr[i])/p。
+    输入含未收盘根（内部剔除最后一根，与文件内其他函数同口径）；
+    序列前 period-1 项为 NaN（种子未成形）。已收盘不足 period+5 根返回 None。
+    """
+    closed = klines[:-1] if len(klines) >= 2 else klines
+    n = len(closed)
+    if n < period + 5:
+        return None
+    h = np.array([float(k[2]) for k in closed], dtype=float)
+    low = np.array([float(k[3]) for k in closed], dtype=float)
+    c = np.array([float(k[4]) for k in closed], dtype=float)
+
+    tr = np.empty(n)
+    tr[0] = h[0] - low[0]
+    tr[1:] = np.maximum(
+        h[1:] - low[1:], np.maximum(abs(h[1:] - c[:-1]), abs(low[1:] - c[:-1])),
+    )
+    atr = np.full(n, np.nan)
+    atr[period - 1] = tr[:period].mean()
+    for i in range(period, n):
+        atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period
+    return atr
+
+
 def analyze_supertrend(
     klines: list[list], period: int = 10, mult: float = 3.0,
 ) -> Optional[dict]:
@@ -211,16 +239,8 @@ def analyze_supertrend(
     low = np.array([float(k[3]) for k in closed], dtype=float)
     c = np.array([float(k[4]) for k in closed], dtype=float)
 
-    # Wilder ATR
-    tr = np.empty(n)
-    tr[0] = h[0] - low[0]
-    tr[1:] = np.maximum(
-        h[1:] - low[1:], np.maximum(abs(h[1:] - c[:-1]), abs(low[1:] - c[:-1])),
-    )
-    atr = np.full(n, np.nan)
-    atr[period - 1] = tr[:period].mean()
-    for i in range(period, n):
-        atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period
+    # Wilder ATR（D1：抽出 atr_series 供指标块 ATR 行复用，口径与原实现一致）
+    atr = atr_series(klines, period)
 
     start = period  # 首个同时具备完整 ATR 与前收盘的索引
     hl2 = (h + low) / 2
@@ -460,11 +480,35 @@ def enforce_htf_constraint(ai_result: dict, htf_klines: Optional[list]) -> dict:
             ai_result["skip_reason"] = (
                 "方向约束：4h强多头背景禁止开空（程序强制 skip）"
             )
+            # veto 闭环（docs/24 A5a）：程序否决的 suggest 同样快照原始建议，
+            # 复盘回放假想表现，验证 4h 硬约束的贡献（键名与 dual_judge 对齐）
+            ai_result["veto_original"] = {
+                "source": "htf_constraint",
+                "direction": ai_result.get("direction"),
+                "entry_price": ai_result.get("entry_price"),
+                "stop_loss": ai_result.get("stop_loss"),
+                "take_profit_1": ai_result.get("take_profit_1"),
+                "take_profit_2": ai_result.get("take_profit_2"),
+                "risk_reward_ratio": ai_result.get("risk_reward_ratio"),
+                "recommendation": ai_result.get("recommendation"),
+                "reason": "4h 强背景方向硬约束",
+            }
         elif htf["state"] == "bearish" and direction == "long":
             ai_result["trade_decision"] = "skip"
             ai_result["skip_reason"] = (
                 "方向约束：4h强空头背景禁止开多（程序强制 skip）"
             )
+            ai_result["veto_original"] = {
+                "source": "htf_constraint",
+                "direction": ai_result.get("direction"),
+                "entry_price": ai_result.get("entry_price"),
+                "stop_loss": ai_result.get("stop_loss"),
+                "take_profit_1": ai_result.get("take_profit_1"),
+                "take_profit_2": ai_result.get("take_profit_2"),
+                "risk_reward_ratio": ai_result.get("risk_reward_ratio"),
+                "recommendation": ai_result.get("recommendation"),
+                "reason": "4h 强背景方向硬约束",
+            }
     except Exception as e:
         logger.warning("4h方向约束兜底检查失败（放行）: %s", e)
     return ai_result
@@ -510,6 +554,41 @@ def build_indicator_lines(klines: list[list]) -> list[str]:
     ]
 
 
+def _render_atr_line(
+    klines: list[list], period: int = 14, rank_window: int = 100,
+) -> str:
+    """渲染 ATR 信息行（D1，docs/24）：- ATR(14)=值（占现价% · N根分位 p%）
+
+    提示词纪律多处按 ATR 定规则（≤1×ATR 的位是争夺位、近锚资格止损宽度
+    ≥0.3×ATR），注入数值与分位让 AI 有据可依；非方向票，仅波动率参考。
+    分位=当前 ATR 在最近 rank_window 根有效 ATR 序列中按"小于当前值"计的
+    百分位（与布林带宽分位同口径），序列不足 rank_window 根按实际根数算。
+    数据不足/现价或 ATR 非正时返回空串（整行省略）。
+    """
+    try:
+        atr = atr_series(klines, period)
+        if atr is None:
+            return ""
+        valid = atr[~np.isnan(atr)]
+        if len(valid) == 0:
+            return ""
+        cur = float(valid[-1])
+        closed = klines[:-1] if len(klines) >= 2 else klines
+        price = float(closed[-1][4])
+        if not np.isfinite(cur) or cur <= 0 or price <= 0:
+            return ""
+        seq = valid[-rank_window:]
+        rank = sum(1 for v in seq if v < cur) / len(seq) * 100
+        pct = cur / price * 100
+        return (
+            f"- ATR({period})={cur:.4f}（{pct:.1f}% · "
+            f"{len(seq)}根分位 {rank:.0f}%）"
+        )
+    except Exception as e:
+        logger.warning("ATR 行渲染失败（跳过）: %s", e)
+        return ""
+
+
 def render_indicator_block(klines: list[list], htf_klines: Optional[list] = None) -> str:
     """整块注入文本（含标题、4h 背景与多数决结论行，尾带换行）；无可用指标返回空串。
 
@@ -523,6 +602,12 @@ def render_indicator_block(klines: list[list], htf_klines: Optional[list] = None
     ]
     if not lines:
         return ""
+
+    # ATR 行（D1，docs/24）：紧跟指标行追加，在"指标方向"结论行之前；
+    # 数据不足整行省略，不影响其余指标与多数决统计
+    atr_line = _render_atr_line(klines)
+    if atr_line:
+        lines.append(atr_line)
 
     # 多数决统计（布林带按中轨上下投票）
     bull = [s for _, s, r in results if r and int(r.get("dir") or 0) > 0]

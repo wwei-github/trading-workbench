@@ -437,6 +437,8 @@ export interface ReviewGroupStat {
   touch_ref: string | null; // 回踩触点（docs/22：与 signal_type 联合分组，null=无触点行）
   position: string | null;
   ema_state: string | null;
+  rule_version: string | null; // 规则版本分组维度（docs/24 A0，null=非版本组）
+  is_veto: boolean | null; // 双评委否决单回放标记（docs/24 A5a，null=非 veto 组）
   total: number;
   win_tp1: number;
   win_tp2: number;
@@ -457,6 +459,30 @@ export interface ReviewStats {
   win_rate: number;
   ev_r: number | null;
   groups: ReviewGroupStat[];
+  // 胜率口径说明（docs/24 A2：建议质量口径 vs 实盘净胜率）
+  win_rate_note: string;
+  // 规则版本分组（docs/24 A0）：每版本一行，legacy=标记上线前的旧行
+  rule_version_groups: ReviewGroupStat[];
+  // 双评委否决对比（docs/24 A5a）：被否决建议的假想回放统计 + 对比说明文字
+  veto_stats: ReviewGroupStat | null;
+  veto_note: string;
+}
+
+// 全漏斗阶段（docs/24 A5c）：conversion = 相对上一级转化率，首级为 null
+export interface FunnelStage {
+  stage: string;
+  count: number;
+  conversion: number | null;
+  note: string;
+}
+
+// 全漏斗转化率（信号命中 → AI 分析 → suggest → 过评委 → 开仓 → 盈利）
+export interface ReviewFunnel {
+  days: number;
+  scope: string;
+  stages: FunnelStage[];
+  // 闸门拦截原因 top3（定位开仓级流失主因）
+  block_reasons_top: { reason: string; count: number }[];
 }
 
 // ===== 实盘归因（复盘重设计 2026-09-18）=====
@@ -513,6 +539,9 @@ export interface ActualTradeItem {
   fee_total: number | null;
   funding_total: number | null;
   recommendation: number | null;
+  stop_anchor: string | null; // 止损锚类型（docs/23）：structure/near
+  volume_ratio: number | null; // 量比（docs/24 A5b）：信号K线量 ÷ 近20根基准量
+  rule_version: string | null; // 逐笔规则集快照（docs/24 A0），legacy=标记前旧行
   opened_at: string | null;
   closed_at: string | null;
   hold_hours: number;
@@ -530,6 +559,69 @@ export interface ActualReview {
 export interface AttributionResult {
   processed: number;
   results: { symbol: string; ok: boolean; tags?: string[]; lesson?: string; error?: string }[];
+}
+
+// ===== 逐笔 R 泄漏对账（docs/24 A1）=====
+
+// 泄漏项双口径：不利 = 正 / 有利 = 负；数据缺失为 null
+export interface ReconLeakItem {
+  usdt: number | null;
+  r: number | null;
+}
+
+export interface TradeReconciliation {
+  trade_id: string;
+  symbol: string;
+  direction: string | null;
+  status: string;
+  exit_reason: string | null;
+  account_key: string | null;
+  testnet: boolean;
+  plan: {
+    source: string; // ai_snapshot = AI 快照 / record = 记录现值
+    entry: number | null;
+    sl: number | null;
+    tp1: number | null;
+    tp2: number | null;
+    qty_total: number | null;
+    qty_tp1: number | null;
+    qty_tp2: number | null;
+    risk_amount: number | null;
+    rr1: number | null;
+  };
+  actual: {
+    entry_price: number | null;
+    qty: number | null;
+    slippage_pct: number | null;
+    qty_tp1: number | null;
+    qty_tp2: number | null;
+    tp1_fill: { price: number | null; qty: number | null; pnl: number | null; time: string | null } | null;
+    sl_fill: { trigger_price: number | null; price: number | null; qty: number | null; time: string | null } | null;
+    fee_total: number | null;
+    funding_total: number | null;
+    realized_pnl: number | null;
+  };
+  leakage: {
+    // a)~e) 泄漏分解（成本口径：不利 = 正 / 有利 = 负）
+    entry_slip: ReconLeakItem | null;
+    fee: ReconLeakItem | null;
+    funding: ReconLeakItem | null;
+    sl_breach: ReconLeakItem | null;
+    tp1_slip: ReconLeakItem | null;
+    // f) 汇总：理论 R（TP1 档位 × RR1）vs 实际 R，泄漏 = 理论 − 实际
+    summary: {
+      theoretical_usdt: number | null;
+      theoretical_r: number | null;
+      actual_usdt: number | null;
+      actual_r: number | null;
+      leakage_usdt: number | null;
+      leakage_r: number | null;
+      covered_usdt: number | null;
+      covered_r: number | null;
+      unexplained_usdt: number | null;
+    };
+  };
+  gaps: string[];
 }
 
 // 技能库条目（列表不含 body，详情接口返回全文）

@@ -735,3 +735,23 @@ def trade_klines(trade_id: str, db: Session = Depends(get_db)):
             if e.event_type in ("OPEN", "TP1_FILL", "TP2_FILL", "SL_FILL")
         ],
     }
+
+
+@router.get("/{trade_id}/reconciliation")
+def trade_reconciliation(trade_id: str, db: Session = Depends(get_db)):
+    """逐笔 R 泄漏对账（docs/24 A1 查因先行）：计划三价/分批 vs 实际成交对照，
+    泄漏拆解为入场滑点/手续费/资金费/SL 穿价/TP1 滑点（USDT + R 双口径），
+    附理论 R vs 实际 R 汇总与对账缺口提示（缺失项 null 并落 gaps）。
+    单笔按 id 直查，不加 scope 参数。"""
+    from uuid import UUID as _UUID
+
+    from app.services.trade_recon import reconcile_trade
+
+    try:
+        _UUID(trade_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="交易记录不存在")
+    rec = db.get(TradeRecord, trade_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="交易记录不存在")
+    return reconcile_trade(db, rec)

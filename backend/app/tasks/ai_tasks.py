@@ -30,10 +30,12 @@ from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
 from app.services.scan_filters import resolve_scan_filters
 from app.services.dual_judge import run_dual_judge
-from app.services.strategy.technical import enforce_htf_constraint
+from app.services.strategy.technical import enforce_htf_constraint, render_indicator_block
 from app.services.exchange_pool import ExchangePool
 from app.services.risk_guard import is_pullback_wait
 from app.services.strategy import recent_swings
+from app.services.account_registry import resolve_current_account
+from app.services.trade_engine import _consecutive_losses_today
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +93,22 @@ def compute_fingerprint(signal: dict) -> str:
     return hashlib.sha1(raw.encode()).hexdigest()[:40]
 
 
+def _build_judge_signal(signal: dict, klines: list, htf_klines: Optional[list]) -> dict:
+    """双评委事实包增厚（docs/24 D3）：把调用现场已有的技术指标块与摆动结构摘要
+    注入 signal 副本传给 run_dual_judge——评委用数据核对三价与结构位矛盾
+    （止损落在摆动区间内部、止盈近于争夺位）。零额外计算成本：
+    klines / htf_klines / swings 均为分析现场已有变量；原 signal dict 不被污染。
+    """
+    judge_signal = dict(signal)
+    judge_signal["indicator_block"] = render_indicator_block(klines, htf_klines)
+    sw = signal.get("recent_swings") or {}
+    if sw.get("highs") or sw.get("lows"):
+        hi = f"{sw['highs'][0]['price']:.6g}" if sw.get("highs") else "—"
+        lo = f"{sw['lows'][0]['price']:.6g}" if sw.get("lows") else "—"
+        judge_signal["structure_summary"] = f"最近摆动高点 {hi} / 低点 {lo}"
+    return judge_signal
+
+
 @celery_app.task(name="app.tasks.ai_tasks.run_ai_analysis_task", bind=True, max_retries=3)
 def run_ai_analysis_task(
     self, scan_record_id: str, only_scan_result_id: Optional[str] = None,
@@ -121,10 +139,28 @@ def run_ai_analysis_task(
             # 批量：按质量分降序（指标驱动筛选的排序键，旧数据无分排后）、
             # 同分按 24h 成交额——控制 LLM 成本；单币重分析不受限。
             # 配额走筛选参数组（scan_filters > env > 默认，2026-09-28）
+            quota = resolve_scan_filters(cfg).ai_max_per_scan
+            # 连损降速（docs/24 A3 软熔断）：当前配置账号当日连损 ≥2 → 批量分析
+            # 配额减半——连损趋势日少开新分析、同步降 LLM 成本与开单频率；
+            # 手动单币分析（only_scan_result_id 非空）不受影响。账号/连损解析
+            # 失败不阻断扫描（按无连损处理）
+            try:
+                acc = resolve_current_account(db)
+                losses = _consecutive_losses_today(db, acc.key, acc.testnet) if acc else 0
+            except Exception as e:
+                logger.warning("连损查询失败，批量分析配额不降速: %s", e)
+                losses = 0
+            if losses >= 2:
+                derated = max(1, quota // 2)
+                logger.info(
+                    "连损 %d 笔降速：批量分析配额 %d → %d（扫描 #%s）",
+                    losses, quota, derated, scan_record_id,
+                )
+                quota = derated
             q = q.order_by(
                 ScanResult.quality_score.desc().nulls_last(),
                 ScanResult.volume_24h.desc(),
-            ).limit(resolve_scan_filters(cfg).ai_max_per_scan)
+            ).limit(quota)
         results = db.execute(q).scalars().all()
         if not results:
             logger.info("无可分析的扫描结果 #%s", scan_record_id)
@@ -274,11 +310,14 @@ def run_ai_analysis_single(
                 risk_label=_risk_label,
                 stop_cap_pct=_stop_cap,
             )
-        # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto
+        # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto；
+        # 事实包增厚（docs/24 D3）——指标块 + 摆动结构摘要随 signal 传入（_build_judge_signal）
         if cfg.dual_judge_enabled:
             if ai_result.get("trade_decision") == "suggest":
                 ai_progress.push(r.id, "gate", note="⚖️ 双评委辩论复核中…")
-            ai_result = run_dual_judge(ai_result, signal)
+            ai_result = run_dual_judge(
+                ai_result, _build_judge_signal(signal, klines, htf_klines),
+            )
         # 4h 强背景方向硬约束兜底（强多只开多/强空只开空）：LLM 无视 prompt 时程序强制 skip
         ai_result = enforce_htf_constraint(ai_result, htf_klines)
         # Narrator 已下线（提速）：submit_decision 的 reason 直接承载完整分点分析
@@ -433,6 +472,11 @@ def _upsert_ai_analysis(
         # 止损锚类型（docs/23）：suggest 时由 risk_guard fixed dict 保证有值
         # （None→structure），skip 行为 None（旧行同样按 structure 理解）
         "stop_anchor": ai_result.get("stop_anchor"),
+        # 规则版本快照（docs/24 A0）：复盘统计按版本分组，跨版本不混谈
+        "rule_version": settings.RULE_VERSION,
+        # 双评委 veto 原始建议快照（docs/24 A5a）：仅 veto 强制 skip 携带；
+        # latest-wins 重分析后 None 覆盖旧值，不残留
+        "veto_original": ai_result.get("veto_original"),
         "pullback_wait": bool(ai_result.get("pullback_wait")),
         # 待回踩结论在分发前就被跳过（_dispatch_immediate_open），不会进入开仓闸门，
         # 未开单原因在此预置；其余结论的原因由开仓闸门拦截时写入

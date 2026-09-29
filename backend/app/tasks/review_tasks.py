@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, or_, and_
 
 from app.celery_app import celery_app
 from app.config import settings
@@ -70,12 +70,21 @@ def run_trade_review_task():
         # 更早的积压不再回溯复盘——否则历史数据清空（复盘重启）后会被整批回填
         floor = now - timedelta(hours=OBSERVATION_HOURS + 2)
 
+        # 回放对象（docs/24 A5a 扩容）：suggest 单 + veto 否决单（trade_decision=skip
+        # 但带 veto_original 原始三价快照）——否决单回放"假想表现"，与通过单对比
+        # 验证双评委 veto 是否有正贡献（此前每笔 suggest 花 3 次 LLM 调用无效果度量）
         rows = db.execute(
             select(AIAnalysis, ScanResult)
             .join(ScanResult, AIAnalysis.scan_result_id == ScanResult.id)
             .outerjoin(TradeReview, TradeReview.ai_analysis_id == AIAnalysis.id)
             .where(
-                AIAnalysis.trade_decision == "suggest",
+                or_(
+                    AIAnalysis.trade_decision == "suggest",
+                    and_(
+                        AIAnalysis.trade_decision == "skip",
+                        AIAnalysis.veto_original.isnot(None),
+                    ),
+                ),
                 AIAnalysis.created_at <= cutoff,
                 AIAnalysis.created_at >= floor,
                 TradeReview.id.is_(None),
@@ -92,23 +101,41 @@ def run_trade_review_task():
 
         for a, sr in rows:
             try:
+                # veto 否决单（docs/24 A5a）：三价/方向/评分取 veto_original 快照
+                # （强制 skip 已把分析行自身三价清空），is_veto=True 落库供对比统计
+                veto = (
+                    a.veto_original
+                    if a.trade_decision != "suggest" and a.veto_original
+                    else None
+                )
+                if veto:
+                    r_direction = str(veto.get("direction") or "")
+                    entry = float(veto.get("entry_price") or 0)
+                    stop = float(veto.get("stop_loss") or 0)
+                    tp1 = float(veto.get("take_profit_1") or 0)
+                    tp2 = float(veto.get("take_profit_2") or 0)
+                    r_rating = veto.get("recommendation")
+                else:
+                    r_direction = a.direction
+                    entry = float(a.entry_price or 0)
+                    stop = float(a.stop_loss or 0)
+                    tp1 = float(a.take_profit_1 or 0)
+                    tp2 = float(a.take_profit_2 or 0)
+                    r_rating = a.recommendation
+
                 klines = pool.get_klines(a.symbol, settings.KLINE_INTERVAL, 500)
                 closed = klines[:-1] if len(klines) >= 2 else klines
                 start_ms = int(a.created_at.replace(microsecond=0).timestamp() * 1000)
                 bars = [k for k in closed if int(k[0]) >= start_ms]
 
-                entry = float(a.entry_price or 0)
-                stop = float(a.stop_loss or 0)
-                tp1 = float(a.take_profit_1 or 0)
-                tp2 = float(a.take_profit_2 or 0)
-                if entry <= 0 or stop <= 0 or tp1 <= 0 or not a.direction:
+                if entry <= 0 or stop <= 0 or tp1 <= 0 or not r_direction:
                     outcome, tp1_hit, nbars = "expired", False, len(bars)
                 elif not bars:
                     # 数据不足：窗口内先等下一轮；超过复盘窗口（26h）后由查询下界排除
                     continue
                 else:
                     outcome, tp1_hit, nbars = replay_suggestion(
-                        a.direction, entry, stop, tp1, tp2, bars
+                        r_direction, entry, stop, tp1, tp2, bars
                     )
                     if outcome == "open":
                         continue  # 理论上不会发生（bars 覆盖 24h），防御
@@ -116,7 +143,7 @@ def run_trade_review_task():
                 db.add(TradeReview(
                     ai_analysis_id=UUID(str(a.id)),
                     symbol=a.symbol,
-                    direction=a.direction,
+                    direction=r_direction,
                     outcome=outcome,
                     tp1_hit=tp1_hit,
                     bars_to_exit=nbars or None,
@@ -124,19 +151,24 @@ def run_trade_review_task():
                     touch_ref=sr.touch_ref,  # 回踩触点快照（docs/22），复盘按触点分组
                     position=sr.position,
                     ema_state=sr.ema_state,
-                    recommendation=float(a.recommendation) if a.recommendation is not None else None,
+                    recommendation=float(r_rating) if r_rating is not None else None,
+                    is_veto=bool(veto),
                 ))
                 db.commit()
                 reviewed += 1
                 counts[outcome] = counts.get(outcome, 0) + 1
                 items.append({
                     "symbol": a.symbol,
-                    "direction": a.direction,
+                    "direction": r_direction,
                     "outcome": outcome,
                     "bars_to_exit": nbars or None,
-                    "recommendation": float(a.recommendation) if a.recommendation is not None else None,
+                    "recommendation": float(r_rating) if r_rating is not None else None,
+                    "is_veto": bool(veto),
                 })
-                logger.info("复盘完成: %s %s -> %s", a.symbol, a.direction, outcome)
+                logger.info(
+                    "复盘完成: %s %s -> %s%s",
+                    a.symbol, r_direction, outcome, "（veto 假想回放）" if veto else "",
+                )
             except Exception as e:
                 logger.warning("复盘 %s 失败: %s", a.symbol, e)
                 db.rollback()

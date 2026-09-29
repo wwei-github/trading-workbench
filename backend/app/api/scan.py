@@ -25,6 +25,8 @@ from app.schemas.scan import (
     AccountBrief,
     ReviewGroupStats,
     ReviewStatsResponse,
+    ReviewFunnelResponse,
+    FunnelStage,
     ActualReviewResponse,
     AttributionTriggerResponse,
     PatchListResponse,
@@ -651,26 +653,55 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
     - 位置/均线维度移除：位置仅镜像方向（支撑=多/压力=空），均线碎片化样本过小
     """
     cutoff = datetime.utcnow() - timedelta(days=days)
-    rows = db.execute(
+    all_rows = db.execute(
         select(TradeReview).where(TradeReview.created_at >= cutoff)
     ).scalars().all()
+    # veto 假想回放行（docs/24 A5a）不混入主统计——"建议质量口径"只反映
+    # 通过单；被否决建议的假想表现单列 veto_stats 对比
+    rows = [r for r in all_rows if not getattr(r, "is_veto", False)]
 
     # 期望值口径（R 倍数）：loss=-1R、win_tp1=RR1、win_tp2=RR2（简化：不分批），
     # 减去费用假设——taker 往返 0.1% 名义 + 资金费 0.03%/8h（按持仓 K 线数折算），
     # 费用换算成 R：cost_pct / stop_pct。无对应 AI 三价（手动分析/数据缺失）的行不计
+    # （ai_map 按 all_rows 构建：veto 行的分析行也要能查到 veto_original）
     ai_map: dict = {}
-    ai_ids = [r.ai_analysis_id for r in rows if r.ai_analysis_id]
+    ai_ids = [r.ai_analysis_id for r in all_rows if r.ai_analysis_id]
     if ai_ids:
         for a in db.execute(
             select(AIAnalysis).where(AIAnalysis.id.in_(ai_ids))
         ).scalars().all():
             ai_map[str(a.id)] = a
 
+    def _prices_of(a: AIAnalysis, rev: TradeReview) -> Optional[tuple]:
+        """回放三价来源：veto 否决单从 veto_original 快照取（自身三价已被
+        forced skip 清空），suggest 单取分析行自身字段（docs/24 A5a）"""
+        if getattr(rev, "is_veto", False) and a.veto_original:
+            v = a.veto_original
+            return (
+                v.get("direction"),
+                float(v.get("entry_price") or 0),
+                float(v.get("stop_loss") or 0),
+                float(v.get("take_profit_1") or 0),
+                float(v.get("take_profit_2") or 0),
+            )
+        if not a.entry_price or not a.stop_loss or not a.take_profit_1:
+            return None
+        return (
+            a.direction,
+            float(a.entry_price),
+            float(a.stop_loss),
+            float(a.take_profit_1),
+            float(a.take_profit_2) if a.take_profit_2 else 0.0,
+        )
+
     def _ev_r(rev: TradeReview) -> Optional[float]:
         a = ai_map.get(str(rev.ai_analysis_id)) if rev.ai_analysis_id else None
-        if not a or not a.entry_price or not a.stop_loss or not a.take_profit_1:
+        if not a:
             return None
-        entry, stop, tp1 = float(a.entry_price), float(a.stop_loss), float(a.take_profit_1)
+        prices = _prices_of(a, rev)
+        if not prices:
+            return None
+        direction, entry, stop, tp1, tp2 = prices
         stop_dist = abs(entry - stop)
         if stop_dist <= 0 or entry <= 0:
             return None
@@ -678,15 +709,15 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
             r_mult = -1.0
         elif rev.outcome == "win_tp1":
             r_mult = abs(tp1 - entry) / stop_dist
-        elif rev.outcome == "win_tp2" and a.take_profit_2:
-            r_mult = abs(float(a.take_profit_2) - entry) / stop_dist
+        elif rev.outcome == "win_tp2" and tp2:
+            r_mult = abs(tp2 - entry) / stop_dist
         else:
             return None
         cost_pct = 0.001 + 0.0003 * max(1, (rev.bars_to_exit or 1) // 8)  # 往返手续费 + 资金费(0.03%/8h)
         return round(r_mult - cost_pct / (stop_dist / entry), 3)
 
-    for rev in rows:
-        rev.ev = _ev_r(rev)  # 非映射属性，分组聚合用
+    for rev in all_rows:
+        rev.ev = _ev_r(rev)  # 非映射属性，分组聚合用（veto 行也要算，供 veto 组聚合）
 
     def _agg_ev(items: list) -> Optional[float]:
         vals = [r.ev for r in items if getattr(r, "ev", None) is not None]
@@ -694,6 +725,12 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
 
     resp = ReviewStatsResponse(
         days=days, **_agg_stats(rows), ev_r=_agg_ev(rows), groups=[],
+        # 口径标注（docs/24 A2）：四态口径含"触 TP1 后又止损仍计胜"的美化项，
+        # 仅作建议质量参考；考核主指标 = 实盘净胜率（/review/actual，pnl>0/闭仓数）
+        win_rate_note=(
+            "建议质量口径：win_tp1（触TP1后又止损仍计胜）计入胜率、expired 不计分母；"
+            "考核以实盘净胜率为准（/review/actual）"
+        ),
     )
 
     # 触发器分组：按原始 signal_type 细分（2026-09-25 拆细，见 docstring）。
@@ -715,7 +752,133 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
         resp.groups.append(
             ReviewGroupStats(signal_type=sig, touch_ref=tref, **agg, ev_r=_agg_ev(items))
         )
+
+    # 规则版本分组（docs/24 A0）：同版本内对比，legacy=标记上线前旧行；
+    # 历史跨版本混合成绩不具证明力（docs/24 修订 v2），前端按版本隔离展示
+    rv_buckets: dict[str, list[TradeReview]] = {}
+    for r in rows:
+        a = ai_map.get(str(r.ai_analysis_id)) if r.ai_analysis_id else None
+        rv_buckets.setdefault((a.rule_version if a else None) or "legacy", []).append(r)
+    for rv, items in sorted(rv_buckets.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        resp.rule_version_groups.append(
+            ReviewGroupStats(rule_version=rv, **_agg_stats(items), ev_r=_agg_ev(items))
+        )
+
+    # 双评委 veto 闭环统计（docs/24 A5a）：is_veto=True 的回放行是"被否决建议的
+    # 假想表现"，与整体统计（=通过单，veto 行不混入）对比——若 veto 组假想
+    # 胜率/ev_r 反而更高，说明评委在错杀；一致或更低说明 veto 有正贡献
+    veto_rows = [r for r in all_rows if getattr(r, "is_veto", False)]
+    if veto_rows:
+        resp.veto_stats = ReviewGroupStats(
+            is_veto=True, **_agg_stats(veto_rows), ev_r=_agg_ev(veto_rows)
+        )
+        passed_rows = [r for r in rows if not getattr(r, "is_veto", False)]
+        passed_agg = _agg_stats(passed_rows)
+        v_agg = resp.veto_stats
+        resp.veto_note = (
+            f"veto 假想回放 {v_agg.total} 笔（win_rate {v_agg.win_rate:.0%}）vs "
+            f"通过单 {passed_agg['total']} 笔（win_rate {passed_agg['win_rate']:.0%}）；"
+            "veto 组假想胜率明显更高 = 评委在错杀好单，需审视裁决质量"
+        )
     return resp
+
+
+@router.get("/review/funnel", response_model=ReviewFunnelResponse)
+def review_funnel(
+    days: int = Query(30, ge=1, le=180),
+    scope: str = Query("all", description="live/testnet/all（docs/17）"),
+    db: Session = Depends(get_db),
+):
+    """全漏斗转化率（docs/24 A5c）：信号命中 → AI 分析 → suggest → 过评委 →
+    开仓 → 盈利，逐级转化率定位"价值在哪一级流失"。
+
+    口径：
+    - 信号命中 = 窗口内 scan_results（扫描落库的信号行）
+    - AI 分析 = 命中信号产生 ai_analyses（latest-wins，1:1 挂信号）
+    - suggest = trade_decision=suggest（veto 否决单已转 skip，不计入后续各级）
+    - 过评委 = suggest 数（veto 在 suggest 之后发生，veto 单同级流失另列 note）
+    - 开仓 = 有非 FAILED trade_records 的 suggest；被闸门拦 = open_block_reason 非空
+    - 盈利 = 已闭仓且 realized_pnl > 0
+    """
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    sig_cnt = db.execute(
+        select(func.count()).select_from(ScanResult).where(ScanResult.created_at >= cutoff)
+    ).scalar() or 0
+    ana_cnt = db.execute(
+        select(func.count()).select_from(AIAnalysis).where(AIAnalysis.created_at >= cutoff)
+    ).scalar() or 0
+    suggest_rows = db.execute(
+        select(AIAnalysis).where(
+            AIAnalysis.created_at >= cutoff,
+            AIAnalysis.trade_decision == "suggest",
+        )
+    ).scalars().all()
+    suggest_cnt = len(suggest_rows)
+    veto_cnt = db.execute(
+        select(func.count()).select_from(AIAnalysis).where(
+            AIAnalysis.created_at >= cutoff,
+            AIAnalysis.trade_decision == "skip",
+            AIAnalysis.veto_original.isnot(None),
+        )
+    ).scalar() or 0
+    blocked_cnt = db.execute(
+        select(func.count()).select_from(AIAnalysis).where(
+            AIAnalysis.created_at >= cutoff,
+            AIAnalysis.trade_decision == "suggest",
+            AIAnalysis.open_block_reason.isnot(None),
+        )
+    ).scalar() or 0
+
+    # 开仓：suggest 关联的 trade_records（排除 FAILED 下单失败行）；
+    # scope 过滤（docs/17）只作用于有账号维度的开仓/盈利两级——信号/AI/suggest
+    # 是全局扫描产物，无账号归属，强过滤会让前四级在单账号视图下恒为全局
+    opened_cnt = 0
+    profit_cnt = 0
+    if suggest_rows:
+        ana_ids = [a.id for a in suggest_rows]
+        tfilter = [TradeRecord.ai_analysis_id.in_(ana_ids), TradeRecord.status != "FAILED"]
+        from app.api.trades import _account_scope_filter
+
+        extra = _account_scope_filter(TradeRecord, scope)
+        if extra is not None:
+            tfilter.append(extra)
+        trows = db.execute(
+            select(TradeRecord.status, TradeRecord.realized_pnl).where(*tfilter)
+        ).all()
+        opened_cnt = len(trows)
+        profit_cnt = sum(
+            1 for s, p in trows if s == "CLOSED" and (p or 0) > 0
+        )
+
+    def _stage(name: str, cnt: int, prev: Optional[int], note: str = "") -> FunnelStage:
+        conv = round(cnt / prev, 4) if prev else None
+        return FunnelStage(stage=name, count=cnt, conversion=conv, note=note)
+
+    stages = [
+        _stage("信号命中", sig_cnt, None, "扫描落库的信号行"),
+        _stage("AI 分析", ana_cnt, sig_cnt, "命中信号产生 AI 分析结论"),
+        _stage("suggest", suggest_cnt, ana_cnt, "AI 建议开单"),
+        _stage("过评委", suggest_cnt, suggest_cnt,
+               f"双评委 veto {veto_cnt} 笔（在 suggest 之后否决，假想表现见 /review/stats）"),
+        _stage("开仓", opened_cnt, suggest_cnt,
+               f"闸门拦截 {blocked_cnt} 笔，其余为锁等待/执行异常/待回踩"),
+        _stage("盈利", profit_cnt, opened_cnt, "已闭仓且 realized_pnl > 0"),
+    ]
+
+    # 闸门拦截原因 top3（只统计窗口内 suggest 的 open_block_reason）
+    reason_map: dict[str, int] = {}
+    for a in suggest_rows:
+        if a.open_block_reason:
+            reason_map[a.open_block_reason] = reason_map.get(a.open_block_reason, 0) + 1
+    block_top = [
+        {"reason": k, "count": v}
+        for k, v in sorted(reason_map.items(), key=lambda kv: -kv[1])[:3]
+    ]
+
+    return ReviewFunnelResponse(
+        days=days, scope=scope, stages=stages, block_reasons_top=block_top,
+    )
 
 
 @router.get("/review/actual", response_model=ActualReviewResponse)

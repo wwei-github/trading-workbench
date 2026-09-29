@@ -37,6 +37,19 @@ def get_client() -> OpenAI:
     return _client
 
 
+def json_mode_kwargs() -> dict:
+    """JSON 输出模式的额外请求参数（docs/24 D2）。
+
+    各 chat/completions 调用处用 `**json_mode_kwargs()` 挂接：
+    LLM_JSON_MODE 开启时返回 response_format=json_object（OpenAI 兼容），
+    关闭时返回空 dict（请求参数零变化）。默认关闭：部分 OpenAI 兼容网关
+    不支持该参数（直接 400），按部署网关能力决定是否开启。
+    """
+    if settings.LLM_JSON_MODE:
+        return {"response_format": {"type": "json_object"}}
+    return {}
+
+
 def parse_llm_json(content: str) -> Any:
     """解析 LLM 输出 JSON：标准解析失败时降级 json_repair 修复。
 

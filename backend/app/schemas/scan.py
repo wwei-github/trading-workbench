@@ -302,6 +302,8 @@ class ReviewGroupStats(BaseModel):
     touch_ref: Optional[str] = None  # 回踩触点（docs/22：分组维度，None=无触点行）
     position: Optional[str] = None
     ema_state: Optional[str] = None
+    rule_version: Optional[str] = None  # 规则版本分组维度（docs/24 A0，None=非版本组）
+    is_veto: Optional[bool] = None  # 双评委否决单回放标记（docs/24 A5a，None=非 veto 维度组）
     total: int
     win_tp1: int = 0
     win_tp2: int = 0
@@ -320,7 +322,34 @@ class ReviewStatsResponse(BaseModel):
     expired: int = 0
     win_rate: float = 0.0
     ev_r: Optional[float] = None  # 期望值（R 倍数，含费用假设）
+    # 口径标注（docs/24 A2）：本接口是「建议质量口径」，考核主指标为实盘净胜率
+    win_rate_note: str = ""
     groups: list[ReviewGroupStats] = []
+    # 规则版本分组（docs/24 A0）：每版本一行，legacy=标记上线前旧行；跨版本不混谈
+    rule_version_groups: list[ReviewGroupStats] = []
+    # 双评委 veto 闭环（docs/24 A5a）：被否决建议的假想回放统计（is_veto=True 行），
+    # 与整体（=通过单）对比 win_rate/ev_r 验证 veto 是否有正贡献
+    veto_stats: Optional[ReviewGroupStats] = None
+    veto_note: str = ""
+
+
+# ===== 全漏斗转化率（docs/24 A5c） =====
+
+class FunnelStage(BaseModel):
+    stage: str  # 信号命中 / AI 分析 / suggest / 过评委 / 开仓 / 盈利
+    count: int
+    # 相对上一级的转化率（首级为 None）；未开仓原因等口径说明放 stages 旁 note
+    conversion: Optional[float] = None
+    note: str = ""
+
+
+class ReviewFunnelResponse(BaseModel):
+    days: int
+    scope: str
+    stages: list[FunnelStage] = []
+    # veto 单不计入漏斗（在 suggest 之后被否决，本质是未建议）；
+    # 闸门拦截明细 top3 随附，定位流失主因
+    block_reasons_top: list[dict] = []
 
 
 # ===== 实盘归因统计（复盘重设计 2026-09-18） =====

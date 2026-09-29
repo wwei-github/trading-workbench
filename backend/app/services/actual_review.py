@@ -115,6 +115,47 @@ def _bucket_label(rec: TradeRecord) -> str:
     return "未知"
 
 
+def _rec_bucket(rec: TradeRecord) -> str:
+    """AI 评分分桶（docs/24 D4）：TRADING_MIN_RECOMMENDATION=60 是开仓铁闸，
+    分桶×盈亏交叉表检验评分与后续盈亏的相关性（无相关性→评分体系失效）"""
+    r = (rec.ai_snapshot or {}).get("recommendation")
+    if r is None:
+        return "未知"
+    r = float(r)
+    if r < 60:
+        return "<60"
+    if r < 70:
+        return "60~69"
+    if r < 80:
+        return "70~79"
+    if r < 90:
+        return "80~89"
+    return ">=90"
+
+
+# 评分分桶展示顺序（字符串排序会乱序，显式列出）
+_REC_BUCKETS = ("<60", "60~69", "70~79", "80~89", ">=90", "未知")
+
+
+def _volume_bucket(rec: TradeRecord) -> str:
+    """量比分桶（docs/24 A5b）：量比 = 信号K线量 ÷ 近20根基准量（中位量）。
+    1.0 缩量线（缩量突破无近锚资格 docs/23）、1.2 放量加分线（scan_filters
+    breakout_vol_ratio 默认）——分组验证"放量突破质量更高"假设"""
+    v = (rec.ai_snapshot or {}).get("volume_ratio")
+    if v is None:
+        return "未知"
+    v = float(v)
+    if v < 1.0:
+        return "缩量 <1.0"
+    if v < 1.2:
+        return "常量 1.0~1.2"
+    return "放量 >=1.2"
+
+
+# 量比分桶展示顺序
+_VOLUME_BUCKETS = ("缩量 <1.0", "常量 1.0~1.2", "放量 >=1.2", "未知")
+
+
 def _agg(trades: list) -> dict:
     # Numeric 列经 SQLAlchemy 返回 Decimal，统一转 float 再聚合——
     # 否则空 wins 时 avg_win=0.0(float) / avg_loss=Decimal 触发
@@ -131,6 +172,7 @@ def _agg(trades: list) -> dict:
         "count": len(trades),
         "wins": len(wins),
         "losses": len(losses),
+        # 净胜率（docs/24 A2 主口径）：pnl>0 / 全部闭仓数，不做 win_tp1/expired 之类的口径美化
         "win_rate": round(len(wins) / len(trades), 4) if trades else 0.0,
         "pnl": pnl,
         "avg_win": avg_win,
@@ -190,11 +232,30 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         ("方向", lambda t: t.direction or "未知"),
         ("出场原因", lambda t: t.exit_reason or "未知"),
         ("开仓时段", _bucket_label),
+        # 止损锚类型（docs/24 A5b）：structure/near 分组对比近锚单是否劣化
+        ("止损锚", lambda t: (t.ai_snapshot or {}).get("stop_anchor") or "structure"),
+        # 规则版本（docs/24 A0）：同版本内分组对比，legacy=标记上线前旧行；
+        # 历史跨版本混合成绩不具证明力（docs/24 修订 v2）
+        ("规则版本", lambda t: t.rule_version or "legacy"),
     ):
         buckets: dict[str, list] = {}
         for t in trades:
             buckets.setdefault(keyfn(t), []).append(t)
         for key, bucket in sorted(buckets.items()):
+            push(dim, key, bucket)
+
+    # 有序分桶维度（docs/24 A5b/D4）：按桶的自然顺序输出而非字典序
+    for dim, keyfn, order in (
+        ("评分分桶", _rec_bucket, _REC_BUCKETS),
+        ("量比分桶", _volume_bucket, _VOLUME_BUCKETS),
+    ):
+        buckets: dict[str, list] = {}
+        for t in trades:
+            buckets.setdefault(keyfn(t), []).append(t)
+        for key in order:
+            if key in buckets:
+                push(dim, key, buckets.pop(key))
+        for key, bucket in sorted(buckets.items()):  # 防御：未登记桶名兜底
             push(dim, key, bucket)
 
     # 错误标签维度：一笔多标签拆行（仅统计已归因的）
@@ -223,6 +284,10 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         "recommendation": (t.ai_snapshot or {}).get("recommendation"),
         # 止损锚类型（docs/23）：structure/near，供归因按锚类型对比近锚单胜率/EV
         "stop_anchor": (t.ai_snapshot or {}).get("stop_anchor") or "structure",
+        # 量比（docs/24 A5b）：信号K线量 ÷ 近20根基准量，量比门槛分组数据源
+        "volume_ratio": (t.ai_snapshot or {}).get("volume_ratio"),
+        # 规则版本（docs/24 A0）：逐笔规则集快照，legacy=标记上线前旧行
+        "rule_version": t.rule_version or "legacy",
         "opened_at": t.opened_at.isoformat() if t.opened_at else None,
         "closed_at": t.closed_at.isoformat() if t.closed_at else None,
         "hold_hours": _hold_hours(t),

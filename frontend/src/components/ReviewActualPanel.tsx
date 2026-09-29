@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Button,
   Card,
@@ -21,7 +21,7 @@ import { scanApi } from '../api/scan'
 import { useScanStore } from '../stores/scanStore'
 import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
 import { TRADE_TYPE_MAP } from '../constants/labels'
-import type { ActualGroupStat, ActualReview, ActualTradeItem } from '../types'
+import type { ActualGroupStat, ActualReview, ActualTradeItem, ReviewFunnel } from '../types'
 import TradeReplayChart from './TradeReplayChart'
 import ScopeSelector, { defaultScopeOf } from './ScopeSelector'
 
@@ -37,6 +37,13 @@ const EXIT_REASON_MAP: Record<string, string> = {
   error: '异常平仓',
 }
 
+// 分组 key 中文标注：出场原因见 EXIT_REASON_MAP，其余维度按需补
+// （止损锚 docs/23：structure=结构锚 / near=近锚；评分/量比分桶 key 已是中文）
+const GROUP_KEY_LABELS: Record<string, string> = {
+  structure: '结构锚',
+  near: '近锚',
+}
+
 const fmtUsd = (v: number | null | undefined) =>
   v == null ? '-' : v.toFixed(2)
 
@@ -47,6 +54,8 @@ const fmtUsd = (v: number | null | undefined) =>
 export default function ReviewActualPanel() {
   const [days, setDays] = useState<7 | 30 | 90>(30)
   const [data, setData] = useState<ActualReview | null>(null)
+  // 全漏斗转化率（docs/24 A5c）：与归因统计共用 days/scope，随刷新按钮一起刷新
+  const [funnel, setFunnel] = useState<ReviewFunnel | null>(null)
   const [loading, setLoading] = useState(false)
   const [attributing, setAttributing] = useState(false)
   const [replayTrade, setReplayTrade] = useState<ActualTradeItem | null>(null)
@@ -77,9 +86,14 @@ export default function ReviewActualPanel() {
     const seq = ++seqRef.current
     setLoading(true)
     try {
-      const resp = await scanApi.actualReview(d, sc)
+      const [resp, funnelData] = await Promise.all([
+        scanApi.actualReview(d, sc),
+        // 漏斗失败不阻断主面板（主统计独立可用）
+        scanApi.reviewFunnel(d, sc).catch(() => null),
+      ])
       if (seq !== seqRef.current) return
       setData(resp)
+      setFunnel(funnelData)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '获取实盘归因失败')
     } finally {
@@ -133,7 +147,7 @@ export default function ReviewActualPanel() {
       title: '维度', dataIndex: 'dim', width: 90,
       onCell: (g: ActualGroupStat) => ({ rowSpan: dimSpans[`${g.dim}-${g.key}`] ?? 1 }),
     },
-    { title: '分组', dataIndex: 'key', render: (v: string) => EXIT_REASON_MAP[v] || v },
+    { title: '分组', dataIndex: 'key', render: (v: string) => GROUP_KEY_LABELS[v] || EXIT_REASON_MAP[v] || v },
     {
       title: '笔数', dataIndex: 'count', width: 70,
       sorter: (a, b) => a.count - b.count,
@@ -265,6 +279,47 @@ export default function ReviewActualPanel() {
       </Row>
 
       <Spin spinning={loading}>
+        {/* 全漏斗转化率（docs/24 A5c）：与归因统计共用 days/scope，定位"价值在哪一级流失"；
+            独立于下方已平仓空态展示（信号/AI/suggest 各级可能仍有数据） */}
+        {funnel && funnel.stages.length > 0 && (
+          <Card
+            size="small"
+            title={
+              <Tooltip title="信号命中 → AI 分析 → suggest → 过评委 → 开仓 → 盈利，逐级转化率定位价值在哪一级流失；百分比为相对上一级转化率">
+                <span>全漏斗 <QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} /></span>
+              </Tooltip>
+            }
+            styles={{ body: { padding: '12px 16px' } }}
+          >
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', rowGap: 6 }}>
+              {funnel.stages.map((st, i) => (
+                <Fragment key={st.stage}>
+                  {i > 0 && <span style={{ margin: '0 10px', color: '#bbb' }}>→</span>}
+                  <Tooltip title={st.note || st.stage}>
+                    <span style={{ cursor: st.note ? 'help' : 'default' }}>
+                      {st.stage} <b>{st.count}</b>
+                      {st.conversion != null && (
+                        <span style={{ color: '#999', marginLeft: 4, fontSize: 12 }}>
+                          {(st.conversion * 100).toFixed(1)}%
+                        </span>
+                      )}
+                    </span>
+                  </Tooltip>
+                </Fragment>
+              ))}
+            </div>
+            {funnel.block_reasons_top.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                {funnel.block_reasons_top.map((b) => (
+                  <Tag key={b.reason} color="orange">
+                    {b.reason} ×{b.count}
+                  </Tag>
+                ))}
+              </div>
+            )}
+          </Card>
+        )}
+
         {ov && ov.count > 0 ? (
           <>
             {/* 总览统计卡片 */}

@@ -95,6 +95,13 @@ class AIAnalysis(Base):
     # 止损锚类型（docs/23，2026-09-29）：structure/near，仅突破类信号有值；
     # near=突破K线极值近锚降级链，复盘按锚类型分组对比胜率/EV；旧行 NULL 按 structure 理解
     stop_anchor: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # 规则版本（docs/24 A0，2026-09-29）：分析时规则集快照（如 v2026-09-29），
+    # 复盘统计按版本分组，NULL=标记上线前的旧行（按 legacy 理解）
+    rule_version: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # 双评委否决原始快照（docs/24 A5a，2026-09-29）：veto 强制 skip 前的建议
+    # 三价/方向/评分等（dict），复盘任务据此回放"被否决建议的假想表现"，
+    # 对比通过单表现验证 veto 是否有正贡献；suggest/正常 skip 为 NULL
+    veto_original: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")
@@ -150,6 +157,9 @@ class TradeReview(Base):
     touch_ref: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)  # 回踩触点（docs/22）
     ema_state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)
     recommendation: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)
+    # 双评委否决单回放标记（docs/24 A5a）：True=回放的是"被 veto 建议的假想表现"，
+    # 统计口径与通过单一致，用于对比评委否决的贡献；默认 False=正常 suggest 回放
+    is_veto: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
 
     checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

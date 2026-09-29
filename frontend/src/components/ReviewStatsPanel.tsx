@@ -11,9 +11,10 @@ import {
   Table,
   Tag,
   Tooltip,
+  Typography,
   message,
 } from 'antd'
-import { ReloadOutlined, QuestionCircleOutlined } from '@ant-design/icons'
+import { ReloadOutlined, QuestionCircleOutlined, InfoCircleOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
 import { useScanStore } from '../stores/scanStore'
@@ -162,6 +163,63 @@ export default function ReviewStatsPanel() {
     },
   ]
 
+  // 规则版本分组表（docs/24 A0）：同版本内对比，legacy=版本标记上线前的旧行
+  const rvColumns: ColumnsType<ReviewGroupStat> = [
+    {
+      title: '规则版本',
+      dataIndex: 'rule_version',
+      key: 'rule_version',
+      render: (v: string) =>
+        v === 'legacy' ? (
+          <Tooltip title="版本标记上线前的旧行，仅参考">
+            <span>
+              legacy <QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} />
+            </span>
+          </Tooltip>
+        ) : (
+          v
+        ),
+    },
+    {
+      title: '样本',
+      dataIndex: 'total',
+      key: 'total',
+      width: 70,
+      sorter: (a, b) => a.total - b.total,
+    },
+    {
+      title: '胜',
+      key: 'win',
+      width: 60,
+      render: (_: unknown, g: ReviewGroupStat) => (
+        <Tag color={schemeTag(colorScheme).up}>{g.win_tp1 + g.win_tp2}</Tag>
+      ),
+    },
+    {
+      title: '负',
+      dataIndex: 'loss',
+      key: 'loss',
+      width: 60,
+      render: (v: number) => <Tag color={schemeTag(colorScheme).down}>{v}</Tag>,
+    },
+    {
+      title: '胜率',
+      dataIndex: 'win_rate',
+      key: 'win_rate',
+      width: 90,
+      sorter: (a, b) => a.win_rate - b.win_rate,
+      render: (v: number) => renderWinRate(v),
+    },
+    {
+      title: '平均EV(R)',
+      dataIndex: 'ev_r',
+      key: 'ev_r',
+      width: 100,
+      sorter: (a, b) => (a.ev_r ?? -99) - (b.ev_r ?? -99),
+      render: (v: number | null) => renderEv(v),
+    },
+  ]
+
   const hasData = !!stats && stats.total > 0
 
   return (
@@ -246,6 +304,14 @@ export default function ReviewStatsPanel() {
               </Col>
             </Row>
 
+            {/* 胜率口径说明（docs/24 A2）：建议质量口径 vs 实盘净胜率主考核口径 */}
+            {stats!.win_rate_note && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                <InfoCircleOutlined style={{ marginRight: 4 }} />
+                {stats!.win_rate_note}
+              </Typography.Text>
+            )}
+
             {/* 维度分组统计表 */}
             <Card
               size="small"
@@ -269,6 +335,96 @@ export default function ReviewStatsPanel() {
                 pagination={false}
               />
             </Card>
+
+            {/* 规则版本分组（docs/24 A0）：历史跨版本混合成绩不具证明力，按版本隔离对比 */}
+            {stats!.rule_version_groups.length > 0 && (
+              <Card
+                size="small"
+                title={
+                  <Tooltip title="同版本内对比才有证明力：版本标记上线前的行归入 legacy，仅参考">
+                    <span>规则版本分组 <QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} /></span>
+                  </Tooltip>
+                }
+                styles={{ body: { padding: 0 } }}
+              >
+                <Table<ReviewGroupStat>
+                  rowKey={(g) => `rv-${g.rule_version}`}
+                  columns={rvColumns}
+                  dataSource={stats!.rule_version_groups}
+                  size="small"
+                  pagination={false}
+                />
+              </Card>
+            )}
+
+            {/* 双评委否决对比（docs/24 A5a）：被否决建议的假想回放 vs 通过单 */}
+            {stats!.veto_stats && (
+              <Card
+                size="small"
+                title={
+                  <Tooltip title="veto 行不混入上方统计（=通过单口径）；被否决建议做假想回放单列对比——veto 组假想胜率/期望值反而更高 = 评委在错杀好单，需审视裁决质量">
+                    <span>双评委否决对比 <QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} /></span>
+                  </Tooltip>
+                }
+              >
+                <Row gutter={[12, 12]}>
+                  <Col xs={12} sm={8} md={4}>
+                    <Statistic title="否决单样本" value={stats!.veto_stats.total} suffix="笔" />
+                  </Col>
+                  <Col xs={12} sm={8} md={4}>
+                    <Statistic
+                      title="否决单胜率"
+                      value={(stats!.veto_stats.win_rate * 100).toFixed(1)}
+                      suffix="%"
+                      valueStyle={{
+                        color: stats!.veto_stats.win_rate >= 0.5
+                          ? SCHEME_UP_DOWN[colorScheme].up
+                          : SCHEME_UP_DOWN[colorScheme].down,
+                      }}
+                    />
+                  </Col>
+                  <Col xs={12} sm={8} md={4}>
+                    <Statistic
+                      title="否决单期望值"
+                      value={stats!.veto_stats.ev_r == null ? '-' : stats!.veto_stats.ev_r.toFixed(2)}
+                      suffix={stats!.veto_stats.ev_r == null ? '' : 'R'}
+                      valueStyle={{
+                        color: stats!.veto_stats.ev_r != null && stats!.veto_stats.ev_r > 0
+                          ? SCHEME_UP_DOWN[colorScheme].up
+                          : SCHEME_UP_DOWN[colorScheme].down,
+                      }}
+                    />
+                  </Col>
+                  <Col xs={12} sm={8} md={4}>
+                    <Statistic
+                      title="通过单胜率"
+                      value={(stats!.win_rate * 100).toFixed(1)}
+                      suffix="%"
+                      valueStyle={{
+                        color: stats!.win_rate >= 0.5 ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down,
+                      }}
+                    />
+                  </Col>
+                  <Col xs={12} sm={8} md={4}>
+                    <Statistic
+                      title="通过单期望值"
+                      value={stats!.ev_r == null ? '-' : stats!.ev_r.toFixed(2)}
+                      suffix={stats!.ev_r == null ? '' : 'R'}
+                      valueStyle={{
+                        color: stats!.ev_r != null && stats!.ev_r > 0
+                          ? SCHEME_UP_DOWN[colorScheme].up
+                          : SCHEME_UP_DOWN[colorScheme].down,
+                      }}
+                    />
+                  </Col>
+                </Row>
+                {stats!.veto_note && (
+                  <Typography.Text type="secondary" style={{ fontSize: 12, marginTop: 8, display: 'block' }}>
+                    {stats!.veto_note}
+                  </Typography.Text>
+                )}
+              </Card>
+            )}
           </>
         ) : (
           <Empty description="暂无复盘数据（AI 建议 24h 后自动复盘）" style={{ marginTop: 60 }} />

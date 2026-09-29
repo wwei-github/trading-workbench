@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, PullbackPendingItem, PurgeStats, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, TransferStats, WatchlistItem } from '../types'
+import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, PullbackPendingItem, PurgeStats, ReviewFunnel, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, TradeReconciliation, TransferStats, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -81,6 +81,12 @@ export const scanApi = {
   reviewStats: (days = 30) =>
     api
       .get<ReviewStats>('/scans/review/stats', { params: { days } })
+      .then((r) => r.data),
+
+  // 全漏斗转化率（docs/24 A5c）：信号命中 → AI 分析 → suggest → 过评委 → 开仓 → 盈利
+  reviewFunnel: (days = 30, scope = 'all') =>
+    api
+      .get<ReviewFunnel>('/scans/review/funnel', { params: { days, scope } })
       .then((r) => r.data),
 
   // ===== 实盘归因（复盘重设计 2026-09-18）=====
@@ -184,6 +190,11 @@ export const scanApi = {
     // 交易复盘K线（开单前100根 + 持仓期间，含初始止损止盈与关键事件）
     klines: (tradeId: string) =>
       api.get<TradeKlineData>(`/trades/${tradeId}/klines`, { timeout: 60000 }).then((r) => r.data),
+    // 逐笔 R 泄漏对账（docs/24 A1）：计划 vs 实际 vs 泄漏分解（可能惰性查交易所回补，放宽超时）
+    reconciliation: (tradeId: string) =>
+      api
+        .get<TradeReconciliation>(`/trades/${tradeId}/reconciliation`, { timeout: 60000 })
+        .then((r) => r.data),
     // 合约账户资金划转（正=转入/负=转出，每小时巡检逐账号同步）
     // scope：live/testnet 环境聚合、all、或账号 key（docs/17）
     transfers: (scope: string = 'live', limit = 200) =>

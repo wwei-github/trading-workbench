@@ -225,6 +225,12 @@ class BinanceTrader:
             )
         return float(r["price"])
 
+    def book_ticker(self, symbol: str) -> tuple[float, float]:
+        """最优买卖价（GET /fapi/v1/bookTicker）：返回 (bid, ask)。
+        开仓前盘口价差预检用（docs/24 A4'），查询异常由调用方兜底放行"""
+        r = self._req("GET", "/fapi/v1/bookTicker", {"symbol": symbol})
+        return float(r["bidPrice"]), float(r["askPrice"])
+
     def bracket_info(self, symbol: str, notional: float) -> Optional[tuple]:
         """名义价值所在档位的 (MMR, 档位最大杠杆 initialLeverage, 档位名义上限 notionalCap)。
 
@@ -498,7 +504,8 @@ class BinanceTrader:
         下单时记录的 algo 单号对不上成交回报——只能按成交归集：TP1 触发价更近
         必然先成交，按时间序累计 CLOSE 侧成交量，到达 qty_tp1 即分界，其余归
         TP2。CLOSE 侧 = realizedPnl 非零的成交（开仓成交价差为 0）。
-        两档合计成交量对不上（碎片化/残缺）时抛 ValueError，由调用方回退合计口径。
+        两档合计成交量对不上（碎片化/残缺）时抛 ValueError，由调用方回退合计口径；
+        qty_tp2=0（无 TP2 单）跳过总量校验，仅按分界取 TP1 档盈亏。
         """
         rows = self._req("GET", "/fapi/v1/userTrades", {
             "symbol": symbol, "startTime": since_ms, "limit": 1000,
@@ -507,6 +514,20 @@ class BinanceTrader:
             (r for r in rows if float(r.get("realizedPnl") or 0) != 0),
             key=lambda r: r.get("time") or 0,
         )
+        # 无 TP2（qty_tp2=0）的单：CLOSE 侧 = TP1 档 + SL/追踪档，总量必然
+        # 大于 qty_tp1，不能做两档总量校验（否则必抛 ValueError）——只按
+        # 时间序累计到 qty_tp1 分界取 TP1 档盈亏，pnl2 无意义返回 0
+        if qty_tp2 <= 0:
+            pnl1 = 0.0
+            acc = 0.0
+            for r in closes:
+                q, p = float(r.get("qty") or 0), float(r.get("realizedPnl") or 0)
+                if acc < qty_tp1:
+                    pnl1 += p
+                acc += q
+            if acc <= 0:
+                raise ValueError("CLOSE 侧无成交记录，无法拆分 TP1 档盈亏")
+            return round(pnl1, 6), 0.0
         total_qty = sum(float(r.get("qty") or 0) for r in closes)
         if abs(total_qty - (qty_tp1 + qty_tp2)) > max(qty_tp1 + qty_tp2, 1) * 0.01:
             raise ValueError(

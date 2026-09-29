@@ -10,7 +10,7 @@
     以交易所为真源（持仓量/挂单/已实现盈亏）推断成交事件：
     仓位归零 → 结算收益（正/负值）；TP1/TP2 成交 → 状态迁移；
     止损挂单消失（被撤/交易所异常）→ 按当前止损价补挂（裸仓保护）；
-    TP1 成交 → 止损移至成本价（保本，幂等）；
+    TP1 成交 → 止损移至成本价 ± 往返费缓冲（保本，幂等，docs/24 A1''）；
     无 TP2 的单：TP1 止盈 75%，剩余 25% 从 TP1 起跟进止损；
     TP2 后每次巡检跟进止损（最近3根已收盘K线极值，只收紧不放松）
 """
@@ -111,6 +111,13 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
         "recommendation": _num(a.recommendation),
         # 止损锚类型（docs/23）：structure/near，交易记录随快照自持，复盘分组用
         "stop_anchor": a.stop_anchor,
+        # 量比（docs/24 A5b）：信号K线量 ÷ 近20根基准量（中位量，2026-09-29 口径），
+        # 实盘归因按量比门槛分组对比；旧行/无信号上下文为 None 归「未知」
+        "volume_ratio": (
+            float(a.scan_result.volume)
+            if a.scan_result is not None and a.scan_result.volume is not None
+            else None
+        ),
         "created_at": a.created_at.isoformat() if a.created_at else None,
         "scan_result_id": None,
     }
@@ -427,6 +434,33 @@ def _attempt_open(
                     f"（max_slippage_pct，按本单数量 {qty} 走簿计算），盘口过薄放弃开单",
                 )
                 return False
+        # 盘口价差预检（docs/24 A4'）：bookTicker 的 bid-ask 价差/中间价超
+        # SPREAD_MAX_PCT（补丁前默认 0.3%）放弃开单——点差是市价单越不过去的
+        # 固定成本，过宽说明流动性枯竭/行情剧烈（走簿滑点实测以最优价为基准，
+        # 对点差本身不敏感）。查询异常不拦截（放行，走原有滑点实测兜底）；0=关闭
+        if settings.SPREAD_MAX_PCT > 0:
+            try:
+                bid, ask = trader.book_ticker(symbol)
+                mid = (bid + ask) / 2
+                spread_pct = (ask - bid) / mid if mid > 0 else 0.0
+                if spread_pct > settings.SPREAD_MAX_PCT:
+                    logger.info(
+                        "开仓放弃 %s：盘口价差 %.2f%% 超上限 %.2f%%"
+                        "（SPREAD_MAX_PCT，bid=%s ask=%s）",
+                        symbol, spread_pct * 100, settings.SPREAD_MAX_PCT * 100, bid, ask,
+                    )
+                    _mark_open_block(
+                        db, a,
+                        f"盘口价差过宽 {spread_pct * 100:.2f}%"
+                        f"（上限 {settings.SPREAD_MAX_PCT * 100:.2f}%，SPREAD_MAX_PCT，"
+                        f"bid={bid} ask={ask}）",
+                    )
+                    return False
+            except Exception as spread_err:
+                logger.warning(
+                    "开仓 %s：盘口价差预检查询失败，放行（走滑点实测兜底）: %s",
+                    symbol, spread_err,
+                )
         # TP1 分批数量预检（下单前）：低于交易所最小数量时整单放弃——
         # 开完仓才挂 TP1 被交易所拒单，会走紧急撤单+平仓，且该失败不落记录，
         # 候选每小时重试"开仓→拒单→平仓"空转（docs/07 §8-A1）。TP2 本就有
@@ -494,6 +528,7 @@ def _attempt_open(
                 recommendation=float(a.recommendation) if a.recommendation is not None else None,
                 signal_type=(a.scan_result.signal_type if a.scan_result is not None else None),
                 pattern=(a.scan_result.pattern if a.scan_result is not None else None),
+                rule_version=settings.RULE_VERSION,
                 testnet=trader.testnet,
                 account_key=trader.account_key,
                 ai_snapshot=_ai_snapshot(a),
@@ -567,6 +602,7 @@ def _attempt_open(
                         recommendation=float(a.recommendation) if a.recommendation is not None else None,
                         signal_type=(a.scan_result.signal_type if a.scan_result is not None else None),
                         pattern=(a.scan_result.pattern if a.scan_result is not None else None),
+                        rule_version=settings.RULE_VERSION,
                         testnet=trader.testnet,
                         account_key=trader.account_key,
                         status="FAILED", raw={"fail_reason": str(e)[:200]},
@@ -618,6 +654,31 @@ def _daily_loss_cap(wallet: float) -> float:
     return _capital_base(wallet) * settings.DAILY_LOSS_STOP_PCT / 100.0
 
 
+def _consecutive_losses_today(db: Session, account_key: Optional[str], testnet: bool) -> int:
+    """本账号 UTC 当日从最近一笔平仓起连续亏损的笔数（连损降速软熔断用，docs/24 A3）。
+
+    查本账号当日已平仓记录（status=CLOSED，closed_at 在今日 UTC），按 closed_at
+    倒序数 realized_pnl<0 的连续笔数，中途一笔盈利即停（pnl=0/NULL 不算亏损、
+    同样截断）。账号口径复用 _adopt_acc_cond（NULL 旧行按 testnet 环境回落，
+    与 _daily_closed_pnl / 在跑单检查同源）。
+    """
+    day_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    pnls = db.execute(
+        select(TradeRecord.realized_pnl).where(
+            _adopt_acc_cond(SimpleNamespace(account_key=account_key, testnet=testnet)),
+            TradeRecord.status == "CLOSED",
+            TradeRecord.closed_at >= day_start,
+        ).order_by(TradeRecord.closed_at.desc())
+    ).scalars().all()
+    n = 0
+    for pnl in pnls:
+        if pnl is not None and float(pnl) < 0:
+            n += 1
+        else:
+            break
+    return n
+
+
 def try_open_for_analysis(
     db: Session, trader: BinanceTrader, analysis_id,
     force_market: bool = False,
@@ -658,6 +719,36 @@ def try_open_for_analysis(
         select(TradeRecord.id).where(TradeRecord.ai_analysis_id == a.id).where(acc_cond)
     ).first():
         return False  # 该账号已用此分析开过仓
+    # 连损降速软熔断（docs/24 A3）：紧随评分门槛（TRADING_MIN_RECOMMENDATION）的
+    # 动态提升——当日连损 ≥3 → 评分 ≥85，连损 2 → ≥75（绝对档位；提升档位低于
+    # 现行门槛值时不生效，不会反向放宽）。连损趋势日降低开单频率观望，
+    # 软熔断只提门槛不停摆（区别于当日亏损硬熔断）。0 连损/开关关闭不生效
+    if settings.CONSECUTIVE_LOSS_DERATE:
+        losses = _consecutive_losses_today(db, trader.account_key, trader.testnet)
+        need_score = 85 if losses >= 3 else 75 if losses == 2 else 0
+        if need_score and float(a.recommendation or 0) < need_score:
+            logger.info(
+                "即时开仓跳过 %s：连损 %d 笔降速，评分 %s 低于提升后门槛 %d",
+                a.symbol, losses, a.recommendation, need_score,
+            )
+            _mark_open_block(
+                db, a,
+                f"连损{losses}笔降速：评分门槛提升至{need_score}"
+                f"（当前评分 {float(a.recommendation or 0):.0f}）",
+            )
+            return False
+    # BTC 急跌普跌防护（docs/24 A4② 最低成本版）：BTC 1h 近3根已收盘累计跌幅
+    # 超 BTC_CRASH_PAUSE_PCT 时暂停山寨开单（BTCUSDT 本身照常，AI 分析照常跑）。
+    # 判定带 60s 进程内缓存，查询失败降级放行（不因环境查询失败阻断开仓）
+    if a.symbol != "BTCUSDT":
+        try:
+            from app.services.market_data import btc_crash_active, get_kline_client
+            if btc_crash_active(get_kline_client()):
+                logger.info("即时开仓跳过 %s：BTC 1h 短线急跌，暂停山寨开单", a.symbol)
+                _mark_open_block(db, a, "BTC 1h 短线急跌，暂停山寨开单（普跌防护）")
+                return False
+        except Exception as e:
+            logger.debug("BTC 急跌闸门查询失败（放行）: %s", e)
     # 待回踩单不再在此跳过（2026-09-18）：回踩距离 ≤ pullback_market_pct 容差
     # 时市价入场、超容差维持不下单——判定移入 _attempt_open 偏离闸门
     positions = trader.positions()
@@ -694,6 +785,60 @@ def try_open_for_analysis(
         logger.info("即时开仓跳过 %s：钱包余额低于最小风险档位", a.symbol)
         _mark_open_block(db, a, "钱包余额低于最小风险档位")
         return False
+    # 组合热度上限 + 同向持仓上限（docs/24 A3'，紧随在跑单上限闸门）：在跑单按
+    # 全状态集合（OPENED/TP1_HIT/TP2_HIT）计——TP1_HIT/TP2_HIT 止损已上移不占
+    # 单数名额，但剩余仓的风险敞口与方向集中度仍然真实存在
+    if settings.PORTFOLIO_HEAT_CAP > 0 or settings.SAME_DIRECTION_CAP > 0:
+        running = db.execute(
+            select(TradeRecord.risk_amount, TradeRecord.direction).where(
+                TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")),
+                _adopt_acc_cond(trader),
+            )
+        ).all()
+        # 本单预估止损金额：与 _attempt_open 同源的固定亏损预算口径（金额模式取
+        # 固定值 / 比例模式取基数×比例，含近锚折价）；实际风险在下单时按数量
+        # 取整只会更低，闸门用预算值预检不放大放行
+        if (cfg.risk_budget_mode or "pct") == "fixed":
+            est_risk = float(
+                cfg.risk_fixed_amount if cfg.risk_fixed_amount is not None else 3.0
+            )
+        else:
+            est_risk = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
+        est_risk = _near_discounted_budget(est_risk, a.stop_anchor)
+        # ① 热度：在跑单止损合计 + 本单预估 > 钱包余额 × PORTFOLIO_HEAT_CAP → 拦截。
+        #    单笔 3% 预算下同开 5 单名义敞口即 15%+——组合层面限制同时承受止损的
+        #    总金额，防「单笔合规、组合超载」（0=关闭）
+        if settings.PORTFOLIO_HEAT_CAP > 0:
+            heat_used = sum(float(r or 0) for r, _d in running)
+            if heat_used + est_risk > wallet * settings.PORTFOLIO_HEAT_CAP:
+                logger.info(
+                    "即时开仓跳过 %s：组合热度超限（在跑止损合计 %.2f + 本单预估 %.2f"
+                    " > 钱包 %.2f × %.0f%%）",
+                    a.symbol, heat_used, est_risk, wallet,
+                    settings.PORTFOLIO_HEAT_CAP * 100,
+                )
+                _mark_open_block(
+                    db, a,
+                    f"组合热度超限：在跑单止损合计 {heat_used:.2f} + 本单预估 "
+                    f"{est_risk:.2f} > 钱包 {wallet:.2f} × "
+                    f"{settings.PORTFOLIO_HEAT_CAP * 100:.0f}%（PORTFOLIO_HEAT_CAP）",
+                )
+                return False
+        # ② 同向：同 direction 在跑单数 ≥ SAME_DIRECTION_CAP → 拦截。
+        #    全市场同涨同跌（趋势同震）时同向单几乎同损——方向集中度上限（0=不限）
+        if settings.SAME_DIRECTION_CAP > 0:
+            same_n = sum(1 for _r, d in running if d == a.direction)
+            if same_n >= settings.SAME_DIRECTION_CAP:
+                logger.info(
+                    "即时开仓跳过 %s：同向（%s）在跑 %d 单已达上限 %d",
+                    a.symbol, a.direction, same_n, settings.SAME_DIRECTION_CAP,
+                )
+                _mark_open_block(
+                    db, a,
+                    f"同向持仓达上限：{a.direction} 方向在跑 {same_n} 单 ≥ "
+                    f"{settings.SAME_DIRECTION_CAP}（SAME_DIRECTION_CAP）",
+                )
+                return False
     # 当日亏损熔断（2026-09-27 正式网复盘）：UTC 日本账号已平仓净亏 ≤ -阈值
     # （风险基数 × DAILY_LOSS_STOP_PCT，默认 9% ≈ 3 笔满损，随账户金额缩放）
     # 停开仓——09-26 全天 13 笔全灭仍持续开单，趋势日的 trail 赢单无法覆盖
@@ -838,18 +983,36 @@ def _rehang_lost_sl(db: Session, trader: BinanceTrader, rec: TradeRecord,
     logger.warning("止损挂单丢失已补挂 %s：SL=%s（巡检发现挂单消失）", rec.symbol, cur_sl)
 
 
+def _breakeven_stop_price(rec: TradeRecord) -> float:
+    """保本止损价（docs/24 A1''）：成本价 ± 往返费用缓冲。
+
+    窄止损下费用/R 被名义杠杆放大（taker 开+平两腿各收一次 TAKER_FEE_RATE），
+    止损贴成本价的单被扫时纯成本价保本实际仍亏往返手续费——多单外推到成本价
+    上方、空单下方 buffer = entry × 2 × TAKER_FEE_RATE，止损触发时价差恰好
+    覆盖往返费用。_move_sl_breakeven 与 _derive_exit_reason 共用此口径。
+    """
+    entry = float(rec.entry_price or 0)
+    buffer = entry * 2 * settings.TAKER_FEE_RATE
+    return entry + buffer if rec.direction == "long" else entry - buffer
+
+
 def _move_sl_breakeven(db: Session, trader: BinanceTrader, rec: TradeRecord,
                        open_ids: set[int]) -> bool:
-    """TP1 成交后保本止损：SL 移到成本价（多单 SL=max(现SL,入场价)，空单反之，只收紧不放松）。
+    """TP1 成交后保本止损：SL 移到「成本价 ± 往返费用缓冲」（多单
+    SL=max(现SL,保本价)，空单反之，只收紧不放松）。
 
-    幂等：SL 已不差于成本价（或取整后相同）时不动作；价格已回到成本价另一侧
+    docs/24 A1''：窄止损下费用/R 被名义杠杆放大，纯成本价保本实际仍亏往返
+    手续费（taker 开+平各收一次 TAKER_FEE_RATE），保本价外推一个往返费用缓冲。
+
+    幂等：SL 已不差于保本价（或取整后相同）时不动作；价格已回到保本价另一侧
     （挂上即立即触发）时跳过本轮保留原 SL，下轮巡检再试。返回是否实际移动。
     """
     entry = float(rec.entry_price or 0)
     cur = float(rec.stop_loss or 0)
     if entry <= 0 or cur <= 0:
         return False
-    new_sl = max(cur, entry) if rec.direction == "long" else min(cur, entry)
+    be = _breakeven_stop_price(rec)
+    new_sl = max(cur, be) if rec.direction == "long" else min(cur, be)
     if new_sl == cur:
         return False
     new_sl = trader.round_price(rec.symbol, new_sl)
@@ -861,7 +1024,8 @@ def _move_sl_breakeven(db: Session, trader: BinanceTrader, rec: TradeRecord,
                     rec.symbol, new_sl, price)
         return False
     _replace_sl(db, trader, rec, open_ids, new_sl, reason="tp1_breakeven")
-    logger.info("保本止损 %s：%s → %s（成本价）", rec.symbol, cur, new_sl)
+    logger.info("保本止损 %s：%s → %s（成本价 %s ± 往返费缓冲）",
+                rec.symbol, cur, new_sl, entry)
     return True
 
 
@@ -869,18 +1033,20 @@ def _derive_exit_reason(rec: TradeRecord) -> str:
     if rec.status == "TP2_HIT":
         return "trail_sl"
     if rec.status == "TP1_HIT":
-        # TP1 后止损已移至成本价；无 TP2 的单随后启用跟进止损（只收紧）——
-        # SL 已被收紧越过成本价 → TP1后跟踪止损出场；仍贴着成本价 → 保本出场
+        # TP1 后止损已移至「成本价 ± 往返费缓冲」保本（docs/24 A1''，与
+        # _breakeven_stop_price 同口径）；无 TP2 的单随后启用跟进止损（只收紧）——
+        # SL 已被收紧越过保本价 → TP1后跟踪止损出场；仍贴着保本价 → 保本出场
         entry, sl = float(rec.entry_price or 0), float(rec.stop_loss or 0)
         if entry > 0 and sl > 0:
             eps = entry * 1e-6
+            be = _breakeven_stop_price(rec)
             if rec.direction == "long":
-                if sl > entry + eps:
+                if sl > be + eps:
                     return "tp1_trail"
                 if sl >= entry - eps:
                     return "breakeven_sl"
             else:
-                if sl < entry - eps:
+                if sl < be - eps:
                     return "tp1_trail"
                 if sl <= entry + eps:
                     return "breakeven_sl"
@@ -1372,7 +1538,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                                                      "pnl": tranche,
                                                      "cum_pnl": realized})
                     rec.status = "TP1_HIT"
-                    _move_sl_breakeven(db, rt, rec, open_ids)  # 用户规则：TP1 后止损移至成本价
+                    _move_sl_breakeven(db, rt, rec, open_ids)  # 用户规则：TP1 后止损移至保本价（成本价±往返费缓冲）
                     if not rec.tp2:
                         # 无 TP2：TP1 止盈 75% 后剩余仓即启用跟进止损（与 TP2 后同机制）
                         _move_sl_trailing(db, rt, rec, interval, open_ids)
@@ -1695,6 +1861,7 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
         scan_result_id=None,
         ai_analysis_id=None,  # 手动导入无 AI 分析行（2026-09-24 起该列可空）
         recommendation=None,
+        rule_version=settings.RULE_VERSION,
         testnet=trader.testnet,
         account_key=trader.account_key,
         ai_snapshot=None,

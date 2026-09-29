@@ -9,7 +9,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Alert,
   Button,
+  Col,
   Descriptions,
   Empty,
   Input,
@@ -18,6 +20,7 @@ import {
   Row,
   Space,
   Spin,
+  Statistic,
   Table,
   Tag,
   Timeline,
@@ -52,7 +55,7 @@ import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import AiAnalysisCard from './AiAnalysisCard'
 import TradeReplayChart from './TradeReplayChart'
 import ScopeSelector, { defaultScopeOf, scopeIsTestnet } from './ScopeSelector'
-import type { AccountSummary, FundAnalytics, PurgeStats, TradeEvent, TradeRecord } from '../types'
+import type { AccountSummary, FundAnalytics, PurgeStats, TradeEvent, TradeRecord, TradeReconciliation } from '../types'
 import { ADVICE_ACTION_META } from '../types'
 
 // 状态标签：运行中三态 + 已平仓 + 失败
@@ -63,6 +66,15 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
   CLOSED: { label: '已平仓', color: 'default' },
   FAILED: { label: '失败', color: 'red' },
 }
+
+// R 泄漏对账（docs/24 A1）：泄漏分解五项展示顺序与中文标签
+const RECON_LEAKS: { key: 'entry_slip' | 'fee' | 'funding' | 'sl_breach' | 'tp1_slip'; label: string }[] = [
+  { key: 'entry_slip', label: '入场滑点' },
+  { key: 'fee', label: '手续费' },
+  { key: 'funding', label: '资金费' },
+  { key: 'sl_breach', label: 'SL 穿价' },
+  { key: 'tp1_slip', label: 'TP1 滑点' },
+]
 
 // 导入持仓弹窗：交易所持仓数据直接展示，SL/TP1/TP2 取币安现挂条件单（不可编辑）
 
@@ -163,6 +175,24 @@ interface OverviewGroup {
 // 带符号金额（Tooltip 明细用）：+12.00 / -3.70
 function fmtSigned(n: number): string {
   return `${n > 0 ? '+' : ''}${n.toFixed(2)}`
+}
+
+// 带符号金额（可空）：对账 summary USDT 行内文案用
+function fmtSignedN(n: number | null | undefined): string {
+  return n == null ? '-' : fmtSigned(n)
+}
+
+// 对账泄漏值渲染（docs/24 A1）：不利（正）= 亏损色、有利（负）= 盈利色，
+// 与面板盈亏语义一致（随全局红涨绿跌/绿涨红跌方案翻转）
+function renderLeakVal(v: number | null | undefined, scheme: ColorScheme, suffix = ''): React.ReactNode {
+  if (v == null) return '-'
+  const color = v > 0 ? SCHEME_UP_DOWN[scheme].down : v < 0 ? SCHEME_UP_DOWN[scheme].up : undefined
+  return (
+    <span style={{ color, fontWeight: 600 }}>
+      {fmtSigned(v)}
+      {suffix}
+    </span>
+  )
 }
 
 // 失败原因短文案（状态列直接展示）：已知错误码转人话，其余截断原始报错；
@@ -387,6 +417,26 @@ export default function TradesPanel() {
   }
   // 复盘K线弹窗（点击币种名打开）
   const [replayTrade, setReplayTrade] = useState<TradeRecord | null>(null)
+
+  // R 泄漏对账弹窗（docs/24 A1）：已平仓行「对账」按钮打开，计划 vs 实际 vs 泄漏分解
+  const [reconTrade, setReconTrade] = useState<TradeRecord | null>(null)
+  const [reconData, setReconData] = useState<TradeReconciliation | null>(null)
+  const [reconLoading, setReconLoading] = useState(false)
+
+  const openReconciliation = useCallback(async (rec: TradeRecord) => {
+    setReconTrade(rec)
+    setReconData(null)
+    setReconLoading(true)
+    try {
+      const data = await scanApi.trades.reconciliation(rec.id)
+      setReconData(data)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '获取对账数据失败')
+      setReconTrade(null)
+    } finally {
+      setReconLoading(false)
+    }
+  }, [])
 
   // 黑名单状态：初始拉一次生效列表，操作后局部更新（与复盘 Tab 的 BlacklistPanel 各自独立维护）
   const [blacklistSet, setBlacklistSet] = useState<Set<string>>(new Set())
@@ -1148,6 +1198,13 @@ export default function TradesPanel() {
                 </Button>
               </>
             )}
+            {rec.status === 'CLOSED' && (
+              <Tooltip title="R 泄漏对账：计划 vs 实际 vs 泄漏分解（docs/24 A1）">
+                <Button size="small" type="link" onClick={() => openReconciliation(rec)}>
+                  对账
+                </Button>
+              </Tooltip>
+            )}
             {inBl ? (
               <Popconfirm
                 title="移出黑名单？"
@@ -1606,6 +1663,146 @@ export default function TradesPanel() {
             <TradeReplayChart tradeId={replayTrade.id} />
           </div>
         )}
+      </Modal>
+
+      {/* R 泄漏对账弹窗（docs/24 A1）：逐笔计划 vs 实际 vs 泄漏分解（不利 = 正 / 有利 = 负） */}
+      <Modal
+        open={!!reconTrade}
+        title={
+          reconTrade && (
+            <Space size={6}>
+              <span style={{ fontWeight: 600 }}>对账：{reconTrade.symbol}</span>
+              <Tag
+                color={reconTrade.direction === 'long' ? schemeTag(colorScheme).up : schemeTag(colorScheme).down}
+                style={{ marginInlineEnd: 0 }}
+              >
+                {reconTrade.direction === 'long' ? '多' : '空'}
+              </Tag>
+              <span style={{ fontSize: 12, color: '#999', fontWeight: 400 }}>计划 vs 实际 vs 泄漏</span>
+            </Space>
+          )
+        }
+        footer={null}
+        width={640}
+        onCancel={() => setReconTrade(null)}
+        destroyOnClose
+      >
+        <Spin spinning={reconLoading}>
+          {reconData && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {/* 计划 vs 实际：入场/止损/TP1/数量 */}
+              <div>
+                <Table
+                  rowKey="key"
+                  size="small"
+                  pagination={false}
+                  dataSource={[
+                    { key: 'entry', item: '入场价', plan: fmtNum(reconData.plan.entry), actual: fmtNum(reconData.actual.entry_price) },
+                    { key: 'sl', item: '止损价', plan: fmtNum(reconData.plan.sl), actual: fmtNum(reconData.actual.sl_fill?.price ?? null) },
+                    { key: 'tp1', item: 'TP1', plan: fmtNum(reconData.plan.tp1), actual: fmtNum(reconData.actual.tp1_fill?.price ?? null) },
+                    { key: 'qty', item: '数量', plan: fmtNum(reconData.plan.qty_total), actual: fmtNum(reconData.actual.qty) },
+                  ]}
+                  columns={[
+                    { title: '项目', dataIndex: 'item', width: 90 },
+                    { title: '计划', dataIndex: 'plan' },
+                    { title: '实际', dataIndex: 'actual' },
+                  ]}
+                />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  计划来源：{reconData.plan.source === 'ai_snapshot' ? 'AI 快照' : '记录现值'} · 单笔风险 {fmtNum(reconData.plan.risk_amount)} USDT · RR1 {fmtNum(reconData.plan.rr1)}
+                </Typography.Text>
+              </div>
+
+              {/* 泄漏明细：五项分解（USDT + R 双口径） */}
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>泄漏明细</div>
+                <Table
+                  rowKey="key"
+                  size="small"
+                  pagination={false}
+                  dataSource={RECON_LEAKS.map(({ key, label }) => ({
+                    key,
+                    item: label,
+                    it: reconData.leakage[key],
+                  }))}
+                  columns={[
+                    { title: '泄漏项', dataIndex: 'item' },
+                    {
+                      title: 'USDT', dataIndex: 'it',
+                      render: (it: { usdt: number | null } | null) => renderLeakVal(it?.usdt, colorScheme),
+                    },
+                    {
+                      title: 'R', dataIndex: 'it', width: 100,
+                      render: (it: { r: number | null } | null) => renderLeakVal(it?.r, colorScheme, 'R'),
+                    },
+                  ]}
+                />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  口径：不利 = 正、有利 = 负；颜色随全局涨跌方案（损耗与亏损同色）。理论 R 按 TP1 计划分批、余档保本估算。
+                </Typography.Text>
+              </div>
+
+              {/* 汇总：理论 R vs 实际 R（USDT 明细见小字） */}
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>理论 vs 实际</div>
+                <Row gutter={[8, 8]}>
+                  <Col xs={8} md={4}>
+                    <Statistic title="理论R" value={fmtNum(reconData.leakage.summary.theoretical_r)} />
+                  </Col>
+                  <Col xs={8} md={4}>
+                    <Statistic title="实际R" value={fmtNum(reconData.leakage.summary.actual_r)} />
+                  </Col>
+                  <Col xs={8} md={4}>
+                    <Statistic
+                      title="泄漏R"
+                      value={fmtNum(reconData.leakage.summary.leakage_r)}
+                      valueStyle={{
+                        color:
+                          reconData.leakage.summary.leakage_r != null && reconData.leakage.summary.leakage_r > 0
+                            ? SCHEME_UP_DOWN[colorScheme].down
+                            : reconData.leakage.summary.leakage_r != null && reconData.leakage.summary.leakage_r < 0
+                              ? SCHEME_UP_DOWN[colorScheme].up
+                              : undefined,
+                      }}
+                    />
+                  </Col>
+                  <Col xs={8} md={4}>
+                    <Statistic title="已解释R" value={fmtNum(reconData.leakage.summary.covered_r)} />
+                  </Col>
+                  <Col xs={8} md={4}>
+                    <Statistic
+                      title={<Tooltip title="总泄漏 − 上列可解释项之和；|值|偏大提示可能有未入账成本">未解释R</Tooltip>}
+                      value={
+                        reconData.leakage.summary.unexplained_usdt != null && reconData.plan.risk_amount
+                          ? (reconData.leakage.summary.unexplained_usdt / reconData.plan.risk_amount).toFixed(2)
+                          : '-'
+                      }
+                    />
+                  </Col>
+                </Row>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  理论 {fmtSignedN(reconData.leakage.summary.theoretical_usdt)}U · 实际 {fmtSignedN(reconData.leakage.summary.actual_usdt)}U · 泄漏 {fmtSignedN(reconData.leakage.summary.leakage_usdt)}U · 已解释 {fmtSignedN(reconData.leakage.summary.covered_usdt)}U · 未解释 {fmtSignedN(reconData.leakage.summary.unexplained_usdt)}U
+                </Typography.Text>
+              </div>
+
+              {/* 对账缺口：数据缺失/回补失败等提示 */}
+              {reconData.gaps.length > 0 && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="对账缺口提示"
+                  description={
+                    <ul style={{ margin: 0, paddingLeft: 18 }}>
+                      {reconData.gaps.map((g, i) => (
+                        <li key={i}>{g}</li>
+                      ))}
+                    </ul>
+                  }
+                />
+              )}
+            </div>
+          )}
+        </Spin>
       </Modal>
 
       {/* 拉黑弹窗：备注原因可留空（永久生效，复盘 Tab 可手动移除） */}

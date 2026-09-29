@@ -82,6 +82,10 @@ class TradeRecord(Base):
     # 巡检幂等去重用（每 30 分钟一轮，不重发已发级别；平仓后不再参与判定）
     hold_warn_level: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # 规则版本（docs/24 A0，2026-09-29）：开单时规则集快照（如 v2026-09-29），
+    # 复盘/归因按版本分组对比，NULL=标记上线前的旧行（按 legacy 理解）
+    rule_version: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
     raw: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # {entry_order_id, sl_order_id, tp1_order_id, tp2_order_id, qty_tp1, qty_tp2, capital_base, wallet}
     # FAILED 记录另存 fail_reason（开仓失败原始报错，见 _attempt_open 的 -1121 落记录分支）

@@ -7,7 +7,8 @@ from openai import OpenAI
 
 from app.config import settings
 from app.services import skill_library
-from app.services.llm_client import get_client, parse_llm_json
+from app.services.llm_client import get_client, parse_llm_json, json_mode_kwargs
+from app.services.market_data import build_market_context, get_kline_client
 from app.services.risk_guard import build_forced_skip, parse_and_validate
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.technical import render_indicator_block
@@ -219,8 +220,9 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 - {_RULE_VOTE}
 - 入场/止损/止盈的结构位锚定规则不受指标方向影响，仍按上方规则执行。
 
-资金费率/持仓量/大盘状态/恐贪指数等市场环境数据未随消息提供，请勿臆测：
-仅基于给定的 K 线、量能、均线、摆动结构、技术指标与 4h 背景数据进行分析。"""
+资金费率与 BTC 状态以用户消息【市场环境】块为准（docs/24 A4）；持仓量/恐贪指数等
+其余市场环境数据未随消息提供，请勿臆测：仅基于给定的 K 线、量能、均线、摆动结构、
+技术指标、4h 背景与环境块数据进行分析，环境块缺失时按无环境数据处理。"""
 
 def render_system_prompt(risk_label: Optional[str] = None) -> str:
     """渲染最终生效的 P0 系统提示词（SYSTEM_PROMPT 为带槽位模板）。
@@ -307,6 +309,18 @@ def _build_messages(
     # 技术指标（MACD/布林带/RSI/SuperTrend/ADX/OBV + 4h背景 + 程序化共振结论）
     indicator_summary = render_indicator_block(klines, htf_klines)
 
+    # 市场环境（docs/24 A4①）：本币资金费率 + BTC 状态摘要，紧跟指标块注入——
+    # 系统提示词要求"勿臆测"，普跌日无环境感知 AI 只能凭本币指标判断；
+    # 开关关闭或任一数据源失败静默降级为不注入（测试/无网路径不受影响）
+    market_summary = ""
+    if settings.MARKET_CONTEXT_ENABLED:
+        try:
+            ctx = build_market_context(get_kline_client(), signal["symbol"])
+            if ctx:
+                market_summary = f"【市场环境】\n{ctx}\n"
+        except Exception as e:
+            logger.debug("市场环境块构建失败（不注入）: %s", e)
+
     # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点，与 Agent 管线同源）
     sw = signal.get("recent_swings") or {}
     swings_summary = ""
@@ -337,7 +351,8 @@ def _build_messages(
     if touch_ref:
         touch_line = f"回踩触点: {TOUCH_LABELS.get(touch_ref, touch_ref)}（{touch_ref}）\n"
 
-    # 市场环境（资金费率/恐贪/大盘）不再注入——单次调用管线无工具，模型仅凭给定数据分析
+    # 市场环境块（market_summary，docs/24 A4①）已拼在指标块与摆动结构之间；
+    # 单次调用管线无工具循环，模型仅凭给定数据分析，环境数据缺失时按无环境处理
     user_prompt = (
         f"币种: {signal['symbol']}\n"
         f"信号类型: {SIGNAL_TYPE_LABELS.get(signal['signal_type'], signal['signal_type'])}（{signal['signal_type']}）\n"
@@ -351,6 +366,7 @@ def _build_messages(
         f"量能: {vol_desc}\n"
         f"{ema_summary}"
         f"{indicator_summary}"
+        f"{market_summary}"
         f"{swings_summary}"
         f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
     )
@@ -386,8 +402,20 @@ def _build_messages(
     return messages
 
 
+class _LLMOutputError(ValueError):
+    """LLM 输出不可用（空内容/解析失败），携带原始 content 供 Reflection 反馈。
+
+    解析失败重试时模型需要看到自己上一次的输出才能针对性修正（docs/24 D2）；
+    异常抛出点在 _call_llm 内部，content 只有这里拿得到，附在异常上传递。
+    """
+
+    def __init__(self, msg: str, content: str = ""):
+        super().__init__(msg)
+        self.content = content
+
+
 def _call_llm(client: OpenAI, messages: list) -> dict:
-    """单次 LLM 调用 → 原始 JSON dict；空内容/解析失败抛异常"""
+    """单次 LLM 调用 → 原始 JSON dict；空内容/解析失败抛 _LLMOutputError（携带原文）"""
     # GLM 系列为思考型模型，reasoning tokens 也计入 max_tokens，
     # 配额太小会导致正文为空或被截断（finish_reason=length）：
     # 12000 曾被思考过程整体耗尽（2026-09-28 线上：3 次重试全空内容强制 skip），放大至 32000
@@ -396,18 +424,22 @@ def _call_llm(client: OpenAI, messages: list) -> dict:
         messages=messages,
         temperature=0.3,
         max_tokens=32000,
+        **json_mode_kwargs(),  # LLM_JSON_MODE 开启时带 response_format（docs/24 D2）
     )
     finish = resp.choices[0].finish_reason
     content = (resp.choices[0].message.content or "").strip()
     logger.info("AI 返回原始内容(finish=%s): %s", finish, content[:300])
     if not content:
-        raise ValueError(f"AI 返回空内容 (finish_reason={finish})")
+        raise _LLMOutputError(f"AI 返回空内容 (finish_reason={finish})")
     # 容错处理：去掉可能的 markdown 包裹
     if content.startswith("```"):
         lines = [l for l in content.split("\n") if not l.strip().startswith("```")]
         content = "\n".join(lines).strip()
     # 标准解析失败降级 json_repair（未转义引号/尾逗号等 LLM 常见语法瑕疵）
-    return parse_llm_json(content)
+    try:
+        return parse_llm_json(content)
+    except (ValueError, json.JSONDecodeError) as e:
+        raise _LLMOutputError(str(e)[:150], content) from e
 
 
 def analyze_with_guard(
@@ -435,10 +467,25 @@ def analyze_with_guard(
     for attempt in range(3):  # 1 次初始 + 2 次反馈重试
         try:
             raw = _call_llm(client, prompt_messages)
-        except (ValueError, json.JSONDecodeError) as e:
+        except _LLMOutputError as e:
             last_violations = [f"输出无法解析: {str(e)[:150]}"]
             logger.warning("AI 第%d次输出解析失败: %s", attempt + 1, e)
-            continue  # messages 不变直接重试
+            # 解析失败同样走 Reflection 反馈（docs/24 D2）：此前原样重发 messages，
+            # 模型不知道上次错在哪，同一毛病会反复犯到重试耗尽。错误摘要截断至
+            # 200 字符附进上下文；上次输出非空时以 assistant 消息回放进上下文，
+            # 模型看着自己的原文改错（空内容场景无原文，仅附错误说明）。
+            # 覆盖两条失败路径——直接解析抛异常（空内容/JSONDecodeError）与
+            # json-repair 修复后仍非法（parse_llm_json 重抛）
+            if e.content:
+                prompt_messages.append({"role": "assistant", "content": e.content})
+            prompt_messages.append({
+                "role": "user",
+                "content": (
+                    f"上一次输出 JSON 解析失败：{str(e)[:200]}。"
+                    "请严格只输出合法 JSON 对象，不要任何其他文本"
+                ),
+            })
+            continue
 
         ok, violations, fixed = parse_and_validate(
             raw, signal, klines, risk_budget=_risk_budget,

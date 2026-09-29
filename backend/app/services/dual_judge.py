@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from app.config import settings
-from app.services.llm_client import get_client, parse_llm_json
+from app.services.llm_client import get_client, json_mode_kwargs, parse_llm_json
 from app.services.risk_guard import build_forced_skip
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ JUDGE_PROMPT = """你是交易裁判。一笔已通过风控校验的建议如�
 - "veto"：否决该建议（整体风险/逻辑不成立）
 
 注意：你没有修改价格或方向的权限，只能整体否决与否。摇摆不定时倾向 keep（决策已通过硬校验）。
+用指标块数据核对决策三价是否与结构位矛盾（如止损落在摆动区间内部、止盈近于争夺位）。
 输出 JSON（不要 markdown）：
 {{"verdict": "keep" 或 "veto", "reason": "≤80字裁决理由"}}
 
@@ -58,6 +59,14 @@ def _fmt_facts(signal: dict) -> str:
         f"当前价格: {signal.get('current_price')}",
         f"信号理由: {signal.get('signal_reason') or ''}",
     ]
+    # 事实包增厚（docs/24 D3）：调用方可选注入指标块与摆动结构摘要，
+    # 评委才能用数据核对三价与结构位矛盾；未传字段时保持原有 4 行（向后兼容）
+    if signal.get("indicator_block"):
+        lines.append("【指标数据】")
+        lines.append(str(signal["indicator_block"]).strip())
+    if signal.get("structure_summary"):
+        lines.append("【摆动结构】")
+        lines.append(str(signal["structure_summary"]).strip())
     return "\n".join(lines)
 
 
@@ -88,12 +97,14 @@ def run_dual_judge(
     d_text = _fmt_decision(decision)
     facts = _fmt_facts(signal)
 
-    def _ask(prompt: str) -> str:
+    def _ask(prompt: str, json_mode: bool = False) -> str:
         resp = client.chat.completions.create(
             model=settings.AI_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=2000,
+            # 仅裁判输出 JSON（多空评委输出论据正文），JSON 模式只挂在裁判调用上
+            **(json_mode_kwargs() if json_mode else {}),
         )
         return (resp.choices[0].message.content or "").strip()
 
@@ -104,7 +115,8 @@ def run_dual_judge(
             fut_bear = ex.submit(_ask, BEAR_PROMPT.format(decision=d_text, facts=facts))
         bull = fut_bull.result()
         bear = fut_bear.result()
-        raw = _ask(JUDGE_PROMPT.format(decision=d_text, bull=bull, bear=bear))
+        raw = _ask(JUDGE_PROMPT.format(decision=d_text, bull=bull, bear=bear),
+                   json_mode=True)
         if raw.startswith("```"):
             raw = "\n".join(
                 l for l in raw.split("\n") if not l.strip().startswith("```")
@@ -123,6 +135,20 @@ def run_dual_judge(
             skipped["recommendation"] = min(
                 float(decision.get("recommendation") or 0), 30
             )
+            # veto 闭环（docs/24 A5a）：原始建议三价随 skip 快照落库，
+            # 复盘任务据此回放"被否决建议的假想表现"，对比通过单验证 veto 贡献；
+            # source 标记否决来源（dual_judge / htf_constraint），便于分组对比
+            skipped["veto_original"] = {
+                "source": "dual_judge",
+                "direction": decision.get("direction"),
+                "entry_price": decision.get("entry_price"),
+                "stop_loss": decision.get("stop_loss"),
+                "take_profit_1": decision.get("take_profit_1"),
+                "take_profit_2": decision.get("take_profit_2"),
+                "risk_reward_ratio": decision.get("risk_reward_ratio"),
+                "recommendation": decision.get("recommendation"),
+                "reason": reason,
+            }
             return skipped
     except Exception as e:
         logger.warning("双评委失败（降级 keep）: %s", e)
