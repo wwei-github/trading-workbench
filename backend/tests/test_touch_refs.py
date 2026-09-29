@@ -338,7 +338,8 @@ def test_row3_confirm_legacy_pending_without_ref():
 
 
 def test_touch_disabled_by_whitelist():
-    """白名单未启用 retest：破轨事件在场也不探测 → 纯金K无触点"""
+    """白名单未启用 retest：破轨事件在场也不探测 → 金K无触碰不触发
+    （纯金K 2026-09-29 下线，金K必须与触点配合）"""
     kl = _kl(*_base())
     lvl = 99.5
     ts, o, _, _, _, vol, qv = kl[-2]
@@ -346,8 +347,7 @@ def test_touch_disabled_by_whitelist():
     ev = _retest_event(kl, lvl)
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
         t, _ = trig.detect_trigger(kl, 1, flt=_flt(refs=("ema21",)), retest=ev)
-    assert t is not None and t["type"] == trig.CANDLESTICK
-    assert t.get("touch_ref") is None
+    assert t is None
 
 
 def test_breakout_trigger_carries_event_payload():
@@ -366,20 +366,22 @@ def test_breakout_trigger_carries_event_payload():
 # ── resolve_scan_filters：触点白名单与参数 ───────────────────────────────
 
 def test_resolve_default_touch_refs():
+    """默认触点全开（2026-09-29）：5 类触点各有门控自筛，无需人工缩窄"""
     flt = resolve_scan_filters(None)
-    assert flt.pullback_touch_refs == ("ema21",)
+    assert flt.pullback_touch_refs == ("retest", "swing", "ema21", "ema55", "ema144")
     assert flt.retest_window_bars == 24
     assert flt.structure_touch_band_pct == 0.3
     assert flt.ema_touch_min_bars == 200
 
 
 def test_resolve_touch_refs_filter_and_fallback():
-    """非法项过滤保留合法项；空/全非法/非 list 回落默认（触点全空会停摆回踩管线）"""
+    """非法项过滤保留合法项；空/全非法/非 list 回落默认全开（触点全空会停摆回踩管线）"""
     cfg = SimpleNamespace(scan_filters={"pullback_touch_refs": ["retest", "bogus", "ema55"]})
     assert resolve_scan_filters(cfg).pullback_touch_refs == ("retest", "ema55")
     for bad in (None, "retest", [], ["bogus"], ["bogus", 1]):
         cfg2 = SimpleNamespace(scan_filters={"pullback_touch_refs": bad})
-        assert resolve_scan_filters(cfg2).pullback_touch_refs == ("ema21",), bad
+        assert resolve_scan_filters(cfg2).pullback_touch_refs == \
+            ("retest", "swing", "ema21", "ema55", "ema144"), bad
 
 
 def test_resolve_touch_params_override():

@@ -4,10 +4,11 @@ import { SettingOutlined, RobotOutlined, FileTextOutlined, ApiOutlined, UndoOutl
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
 
-/** 触发类型白名单选项（与后端 ALL_TRIGGERS 一一对应） */
+/** 触发类型白名单选项（与后端 ALL_TRIGGERS 一一对应；纯金K 2026-09-29 下线，
+ *  金K必须与触点配合，历史行标签保留在 labels.ts） */
 const TRIGGER_OPTIONS = [
-  { value: 'trigger_breakout', label: '突破触发' },
-  { value: 'trigger_candlestick', label: '纯金K触发' },
+  { value: 'trigger_breakout', label: '结构突破' },
+  { value: 'trigger_trend_breakout', label: '趋势突破' },
   { value: 'trigger_pullback_confirm', label: '回踩金K确认' },
 ]
 const ALL_TRIGGER_VALUES = TRIGGER_OPTIONS.map((o) => o.value)
@@ -17,15 +18,13 @@ const FILTER_FIELDS: { name: string; label: string; min: number; max: number; st
   { name: 'min_volume_24h', label: '24h成交额门槛（USDT）', min: 0, max: 1e9, step: 100000,
     tooltip: '扫描候选池流动性门槛，低于此不进扫描；0=不过滤' },
   { name: 'breakout_threshold', label: '最小突破幅度（比例）', min: 0, max: 0.05, step: 0.001,
-    tooltip: '收盘须越过 Donchian 轨此幅度才算突破（0.002=0.2%），毛边突破不算；0=关闭' },
+    tooltip: '收盘须越过突破位（结构前高/前低或 Donchian 轨）此幅度才算突破（0.002=0.2%），毛边突破不算；0=关闭' },
   { name: 'breakout_vol_ratio', label: '突破量比门槛', min: 0, max: 10, step: 0.1,
     tooltip: '信号K线成交量 ≥ 近20根均量的此倍数才确认放量突破' },
   { name: 'breakout_max_pct', label: '突破幅度上限（%）', min: 0, max: 20, step: 0.5,
-    tooltip: '越过轨超过此幅度视为追高，不产生突破触发（正式网复盘：大幅突破追入负期望）；0=关闭' },
-  { name: 'candle_max_ema21_dist_pct', label: '悬空金K距离上限（%）', min: 0, max: 20, step: 0.5,
-    tooltip: '信号K线收盘距 EMA21 超过此幅度的纯金K不触发；0=关闭' },
+    tooltip: '越过突破位超过此幅度视为追高，不产生突破触发（正式网复盘：大幅突破追入负期望）；0=关闭' },
   { name: 'breakout_channel_bars', label: 'Donchian通道根数', min: 5, max: 200,
-    tooltip: '突破判定的回看窗口根数（收盘破 N 根高低轨）' },
+    tooltip: '趋势突破触发（trigger_trend_breakout）的回看窗口根数（收盘破 N 根高低轨；结构突破不受此影响）' },
   { name: 'ai_max_per_scan', label: 'AI单轮分析上限（个）', min: 1, max: 50,
     tooltip: '单次扫描批量 AI 分析的币种上限，按质量分/24h成交额取前N（控制 LLM 成本）' },
 ]

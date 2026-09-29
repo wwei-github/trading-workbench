@@ -592,7 +592,7 @@ def compute_quality_score(
     """候选质量分（0-100）：方向一致性为主，修饰项只影响排序不改变方向。
 
     direction: 候选方向（1 多 / -1 空，= net 的符号）
-    trigger_type: trigger_breakout / trigger_candlestick / trigger_pullback_confirm
+    trigger_type: trigger_breakout / trigger_trend_breakout / trigger_pullback_confirm
     klines: 可选，金K类形态触发的量能加分需要（突破类量能已是触发门槛不重复加）
     修饰规则（2026-09-17 设计评审定稿；2026-09-24 强 4h 背景提权）：
     - 4h背景同向：强 +10 / 弱 +5；反向：强 -12 / 弱 -8
@@ -618,13 +618,13 @@ def compute_quality_score(
             score -= 12 if strong else 8
 
     adx = by_short.get("ADX")
-    if trigger_type == "trigger_breakout" and adx and float(adx.get("adx") or 0) >= 25:
+    if (trigger_type in ("trigger_breakout", "trigger_trend_breakout")
+            and adx and float(adx.get("adx") or 0) >= 25):
         score += 5
 
     # 金K类形态触发的量能加分（2026-09-25）：放量金K +5；缩量/平量不加不减。
     # 突破类不加——量比 ≥1.2 已是触发门槛，全体通过者无区分度
-    if (trigger_type in ("trigger_candlestick", "trigger_pullback_confirm")
-            and klines):
+    if trigger_type == "trigger_pullback_confirm" and klines:
         try:
             if volume_ratio(klines) >= 1.2:
                 score += 5

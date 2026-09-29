@@ -14,20 +14,24 @@ from math import isfinite
 
 from app.config import settings
 
-# 触发类型白名单键值（与 trigger.py 同名字符串同源；此处独立定义避免循环导入）
-TRIGGER_BREAKOUT = "trigger_breakout"
-TRIGGER_CANDLESTICK = "trigger_candlestick"
-TRIGGER_PULLBACK_CONFIRM = "trigger_pullback_confirm"
-ALL_TRIGGERS = (TRIGGER_BREAKOUT, TRIGGER_CANDLESTICK, TRIGGER_PULLBACK_CONFIRM)
+# 触发类型白名单键值（与 trigger.py 同名字符串同源；此处独立定义避免循环导入）。
+# trigger_candlestick（纯金K）2026-09-29 下线：金K必须与触点配合（当根/次根确认），
+# 不再作为独立触发类型；历史 scan_results 行的展示映射保留（labels/TRIGGER_FAMILY）
+TRIGGER_BREAKOUT = "trigger_breakout"                  # 结构突破：收盘越过未破摆动前高/前低
+TRIGGER_TREND_BREAKOUT = "trigger_trend_breakout"      # 趋势突破：收盘破 N 根 Donchian 滚动轨
+TRIGGER_PULLBACK_CONFIRM = "trigger_pullback_confirm"  # 回踩触点后金K确认
+ALL_TRIGGERS = (TRIGGER_BREAKOUT, TRIGGER_TREND_BREAKOUT, TRIGGER_PULLBACK_CONFIRM)
 
 # 回踩触点白名单（docs/22）：横向结构语义强于均线，标注优先级即此顺序
-TOUCH_RETEST = "retest"    # 突破回测位（Donchian 破轨价，回踩不破=突破有效性确认）
+TOUCH_RETEST = "retest"    # 突破回测位（破位价：结构前高/前低或 Donchian 轨，回踩不破=突破有效性确认）
 TOUCH_SWING = "swing"      # 摆动结构位（HL/LH，结构防守位）
 TOUCH_EMA21 = "ema21"      # 趋势动态价值区（原口径）
 TOUCH_EMA55 = "ema55"      # 中深度回撤（排列+斜率门）
 TOUCH_EMA144 = "ema144"    # 深回撤（排列+斜率门，K线窗口≥300 才实际生效）
 ALL_TOUCH_REFS = (TOUCH_RETEST, TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA55, TOUCH_EMA144)
-DEFAULT_TOUCH_REFS = (TOUCH_EMA21,)
+# 默认全开（2026-09-29）：5 类触点各有语义（横向结构 > 均线），由门控自筛——
+# retest 无破轨事件自然不命中，ema55/144 有数据/排列/斜率门，ema144 窗口不足自动跳过
+DEFAULT_TOUCH_REFS = ALL_TOUCH_REFS
 
 # scan_filters JSONB 的合法键集（PUT /config 校验与前端字段一一对应）
 SCAN_FILTER_KEYS = (
@@ -36,7 +40,7 @@ SCAN_FILTER_KEYS = (
     "breakout_threshold",         # ③ 触发层：最小突破幅度（0.002=0.2%，毛边不算）
     "breakout_vol_ratio",         # ③ 触发层：放量门槛（量比口径）
     "breakout_max_pct",           # ③ 触发层：突破幅度上限（防追高，0=关闭）
-    "candle_max_ema21_dist_pct",  # ③ 触发层：悬空金K距 EMA21 上限（0=关闭）
+    "candle_max_ema21_dist_pct",  # ③ 触发层：悬空金K距 EMA21 上限（纯金K下线后无消费方，键保留兼容）
     "ai_max_per_scan",            # ④ 配额层：单轮扫描 AI 分析上限
     "allowed_triggers",           # ③ 触发层：触发类型白名单（2026-09-28）
     "pullback_touch_refs",        # ③ 触发层：回踩触点白名单（2026-09-28 docs/22）

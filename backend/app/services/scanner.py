@@ -43,6 +43,7 @@ from app.services.strategy.trigger import (
     PULLBACK,
     PULLBACK_CONFIRM,
     TOUCH_RETEST,
+    TREND_BREAKOUT,
     detect_trigger,
 )
 
@@ -165,7 +166,7 @@ def detect_indicator_candidate(
     if trig is not None:
         # T1 突破 → 破轨事件动作（docs/22 §4）：白名单过滤前记录——破轨是市场
         # 事实，触发类型白名单只决定是否产生突破信号，不影响回测触点事实源
-        if trig["type"] == BREAKOUT and event_out is not None:
+        if trig["type"] in (BREAKOUT, TREND_BREAKOUT) and event_out is not None:
             event_out.update({
                 "op": "upsert",
                 "direction": direction,

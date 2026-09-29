@@ -27,7 +27,6 @@ from app.services.scan_filters import (  # noqa: E402
 from app.services.strategy import trigger as trig_mod  # noqa: E402  # detect_all_patterns 打桩用
 from app.services.strategy.trigger import (  # noqa: E402
     BREAKOUT,
-    CANDLESTICK,
     PULLBACK_CONFIRM,
     ScanFilters,
     detect_trigger,
@@ -207,21 +206,10 @@ def _hanging_hammer_klines():
 
 
 def test_trigger_hanging_golden_blocked_by_default():
-    """悬空金K默认 1.5% 拦截：距 EMA21 ≈5% → 不触发"""
+    """悬空金K（距 EMA21 ≈5%）无触碰 → 不触发（纯金K 2026-09-29 下线，
+    金K必须与触点配合；原悬空距离门槛随之下线，此处覆盖极端距离）"""
     trig, _ = detect_trigger(_hanging_hammer_klines(), 1)
     assert trig is None
-
-
-def test_trigger_hanging_golden_allowed_when_disabled():
-    """悬空金K门槛 0（关闭）：同一根锤形线放行为纯金K触发"""
-    flt = ScanFilters(
-        min_volume_24h=3_000_000, breakout_channel_bars=20,
-        breakout_threshold=0.002, breakout_vol_ratio=1.2,
-        breakout_max_pct=1.5, candle_max_ema21_dist_pct=0,
-        ai_max_per_scan=10,
-    )
-    trig, _ = detect_trigger(_hanging_hammer_klines(), 1, flt=flt)
-    assert trig is not None and trig["type"] == CANDLESTICK
 
 
 # ── _validate_scan_filters（PUT /config 校验器）────────────────────────
@@ -242,13 +230,26 @@ def test_validate_scan_filters_clean_and_reject():
         _validate_scan_filters({"breakout_vol_ratio": "x"})
 
 
-# ── 触发类型白名单（2026-09-28 只留回踩金K） ────────────────────────────
+# ── 触发类型白名单（2026-09-29：结构突破/趋势突破/回踩金K确认，纯金K下线）───
 
 
 def test_resolve_trigger_whitelist():
     cfg = SimpleNamespace(scan_filters={"allowed_triggers": ["trigger_pullback_confirm"]})
     flt = resolve_scan_filters(cfg)
     assert flt.allowed_triggers == ("trigger_pullback_confirm",)
+
+
+def test_resolve_trigger_whitelist_trend_breakout():
+    """趋势突破（2026-09-29 新类型）合法可勾选；纯金K已从 ALL_TRIGGERS 移除，
+    存量配置含它时被过滤、其余合法项保留"""
+    from app.services.scan_filters import TRIGGER_TREND_BREAKOUT
+    cfg = SimpleNamespace(scan_filters={"allowed_triggers": [
+        "trigger_breakout", "trigger_trend_breakout", "trigger_pullback_confirm"]})
+    assert resolve_scan_filters(cfg).allowed_triggers == ALL_TRIGGERS
+    legacy = SimpleNamespace(scan_filters={"allowed_triggers": [
+        "trigger_candlestick", "trigger_breakout"]})
+    assert resolve_scan_filters(legacy).allowed_triggers == ("trigger_breakout",)
+    assert TRIGGER_TREND_BREAKOUT in ALL_TRIGGERS
 
 
 def test_resolve_trigger_whitelist_invalid_falls_back():

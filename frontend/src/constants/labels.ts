@@ -10,7 +10,9 @@ export const SIGNAL_TYPE_MAP: Record<string, { label: string; color: string }> =
   unknown: { label: "未分类", color: "default" },
   // 指标驱动筛选（2026-09-17）：触发类型（多指标同向 + 入场触发确认）
   trigger_breakout: { label: "同向突破", color: "gold" },
-  trigger_candlestick: { label: "同向形态", color: "blue" },
+  // 趋势突破（2026-09-29）：Donchian 滚动轨口径，与结构突破并存区分
+  trigger_trend_breakout: { label: "趋势突破", color: "volcano" },
+  trigger_candlestick: { label: "同向形态", color: "blue" }, // 2026-09-29 纯金K下线，仅历史行
   trigger_pullback: { label: "同向回踩", color: "cyan" },
   // 两段式回踩确认（2026-09-25，docs/19）：回踩后等金K确认才入场
   trigger_pullback_confirm: { label: "回踩金K确认", color: "geekblue" },

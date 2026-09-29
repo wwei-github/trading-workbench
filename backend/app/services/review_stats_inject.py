@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 # 注入白名单：仅新管线触发器（旧管线类型已停产，样本只反映历史行为，不注入）
 _INJECTABLE = {
     "trigger_breakout": "同向突破",
+    "trigger_trend_breakout": "趋势突破",
     "trigger_pullback_confirm": "回踩金K确认",
-    "trigger_candlestick": "同向形态",
+    "trigger_candlestick": "同向形态",  # 2026-09-29 纯金K下线，仅历史行
 }
 
 

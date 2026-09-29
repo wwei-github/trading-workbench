@@ -30,7 +30,6 @@ def _pin_breakout_settings(monkeypatch):
     monkeypatch.setattr(settings, "BREAKOUT_THRESHOLD", 0.002)
     monkeypatch.setattr(settings, "BREAKOUT_VOL_RATIO", 1.2)
     monkeypatch.setattr(settings, "BREAKOUT_MAX_PCT", 1.5)
-    monkeypatch.setattr(settings, "CANDLE_MAX_EMA21_DIST_PCT", 1.5)
 
 
 def _klines(closes: list[float], highs: list[float], lows: list[float]) -> list[list]:
@@ -277,34 +276,34 @@ def test_row3_next_candle_confirm():
     assert op == {"op": "confirm"}
 
 
-def test_row3_pending_stale_falls_to_candlestick_and_expires():
-    """pending 锚点不是上一根（隔轮）→ 失效：金K走 T2 原样，pending 过期"""
+def test_row3_pending_stale_no_trigger_expires():
+    """pending 锚点不是上一根（隔轮）→ 失效：纯金K已下线不触发，pending 过期"""
     kl = _kl(*_base())
     _no_touch_long(kl)
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
         t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-4))
-    assert t is not None and t["type"] == trig.CANDLESTICK
+    assert t is None
     assert op == {"op": "expire", "reason": "window_expired"}
 
 
-def test_row3_pending_direction_flip_falls_to_candlestick():
+def test_row3_pending_direction_flip_no_trigger_expires():
     kl = _kl(*_base())
     _no_touch_long(kl)
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
         t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, direction=-1, anchor_idx=-3))
-    assert t is not None and t["type"] == trig.CANDLESTICK
+    assert t is None
     assert op == {"op": "expire", "reason": "direction_flip"}
 
 
-# ── 行4：金K无触碰无 pending → T2 原样 ─────────────────────────────────────
+# ── 行4：金K无触碰无 pending → 不触发（纯金K 2026-09-29 下线）──────────────
 
-def test_row4_golden_only_candlestick():
+def test_row4_golden_only_no_trigger():
+    """金K必须与触点配合：无触碰无 pending 的金K 一律不触发（正式网复盘负期望）"""
     kl = _kl(*_base())
     _no_touch_long(kl)
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
         t, op = trig.detect_trigger(kl, 1)
-    assert t is not None and t["type"] == trig.CANDLESTICK
-    assert op is None
+    assert t is None and op is None
 
 
 def test_row4_wrong_direction_golden_ignored():
@@ -344,7 +343,7 @@ def test_validity_boundary_exactly_previous_candle():
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
         for idx in (-2, -4):
             t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=idx))
-            assert t is not None and t["type"] == trig.CANDLESTICK, f"anchor_idx={idx} 应失效"
+            assert t is None, f"anchor_idx={idx} 应失效且纯金K不触发"
             assert op == {"op": "expire", "reason": "window_expired"}
 
 
@@ -381,7 +380,7 @@ def test_short_symmetric_touch_without_golden_upserts():
     assert t is None and op["op"] == "upsert" and op["direction"] == -1
 
 
-# ── 悬空金K距离门槛（2026-09-27 正式网复盘，A 项）───────────────────────────
+# ── 行4 补充：远离 EMA21 的悬空金K同样不触发（纯金K下线后无门槛概念，覆盖极端距离）──
 
 def _far_golden_long(kl: list[list]) -> None:
     """信号K线收盘悬于 EMA21 上方约 3%（> 1.5% 门槛），低位悬空不构成触碰"""
@@ -391,7 +390,7 @@ def _far_golden_long(kl: list[list]) -> None:
 
 
 def test_row4_far_from_ema21_golden_rejected():
-    """悬空金K（距 EMA21 ≈3% > 1.5%）→ 纯金K不触发，无 pending 无处置"""
+    """悬空金K（距 EMA21 ≈3%）→ 无触碰不触发（金K必须与触点配合），无 pending 无处置"""
     kl = _kl(*_base())
     _far_golden_long(kl)
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
@@ -400,7 +399,7 @@ def test_row4_far_from_ema21_golden_rejected():
 
 
 def test_row3_far_golden_with_valid_pending_still_confirms():
-    """门槛只拦 T2 纯金K：row3 次根确认有回踩语境（上根触碰）不受影响"""
+    """金K下线只影响零触碰分支：row3 次根确认有回踩语境（上根触碰）不受影响"""
     kl = _kl(*_base())
     _far_golden_long(kl)
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
@@ -428,15 +427,138 @@ def test_row4_far_golden_with_flipped_pending_expires_as_flip():
     assert op == {"op": "expire", "reason": "direction_flip"}
 
 
-def test_row4_distance_gate_disabled_triggers_candlestick(monkeypatch):
-    """CANDLE_MAX_EMA21_DIST_PCT=0 关闭门槛 → row4 T2 原样触发"""
-    monkeypatch.setattr(settings, "CANDLE_MAX_EMA21_DIST_PCT", 0)
-    kl = _kl(*_base())
-    _no_touch_long(kl)
-    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+# ── 趋势突破（2026-09-29 恢复，T1b trigger_trend_breakout）─────────────────
+
+def _trend_long_klines(n: int = 60, base: float = 100.0, step: float = 0.5,
+                       wick: float = 0.01) -> list[list]:
+    """严格上升序列（收盘逐根新高，摆动位全破无未破前高）+ 放量长实体阳线信号K；
+    信号收盘越 20 根滚动上轨（chan_high=前一根高=close+wick）≥0.2%"""
+    closes = [base + step * i for i in range(n)]
+    highs = [c + wick for c in closes]
+    lows = [c - wick for c in closes]
+    kl = _klines(closes, highs, lows)
+    o = float(kl[-3][4])
+    c = float(kl[-2][4])
+    _set_breakout_candle(kl, open_=o, close=c, high=c, low=o, vol=150.0)
+    return kl
+
+
+def _trend_short_klines(n: int = 60, base: float = 100.0, step: float = 0.5,
+                        wick: float = 0.01) -> list[list]:
+    """严格下降序列 + 放量长实体阴线信号K（阴线列序 high=open、low=close）"""
+    closes = [base - step * i for i in range(n)]
+    highs = [c + wick for c in closes]
+    lows = [c - wick for c in closes]
+    kl = _klines(closes, highs, lows)
+    o = float(kl[-3][4])
+    c = float(kl[-2][4])
+    _set_breakout_candle(kl, open_=o, close=c, high=o, low=c, vol=150.0)
+    return kl
+
+
+def test_row1b_trend_breakout_strong_trend_fires():
+    """强趋势连续新高（无未破摆动前高）+ 收盘破 20 根 Donchian 上轨 → 趋势突破"""
+    kl = _trend_long_klines()
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
         t, op = trig.detect_trigger(kl, 1)
-    assert t is not None and t["type"] == trig.CANDLESTICK
+    assert t is not None and t["type"] == trig.TREND_BREAKOUT
+    assert t["position"] == "resistance"
+    assert "Donchian上轨" in t["reason"]
+    assert t["breakout_level"] > 0 and t["candle_open"] is not None
     assert op is None
+
+
+def test_row1b_trend_breakout_short_symmetric():
+    kl = _trend_short_klines()
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, -1)
+    assert t is not None and t["type"] == trig.TREND_BREAKOUT
+    assert t["position"] == "support"
+    assert "Donchian下轨" in t["reason"]
+
+
+def test_row1b_trend_breakout_supersedes_pending():
+    """趋势突破与结构突破同级强触发：同向 pending → supersede"""
+    kl = _trend_long_klines()
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl))
+    assert t is not None and t["type"] == trig.TREND_BREAKOUT
+    assert op == {"op": "supersede", "reason": "breakout"}
+
+
+def test_row1b_trend_breakout_rejected_low_volume():
+    """量比 1.0 < 1.2 → 趋势突破不触发（共享闸门），无金K不触碰 → 观察池"""
+    kl = _trend_long_klines()
+    ts, o, h, l, c, _, qv = kl[-2]
+    kl[-2] = [ts, o, h, l, c, 100.0, qv]  # 量比降回 1.0
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is None and op is None
+
+
+def test_row1b_trend_breakout_over_max_pct_rejected():
+    """越轨幅度超上限 → 追高拦截（上限按轨价衡量）：强趋势逐根推进天然贴近轨价
+    （step/轨价 ≈0.39%），默认 1.5% 上限不拦（前一用例），收窄至 0.3% 拦下"""
+    kl = _trend_long_klines()
+    flt = trig.ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=20,
+        breakout_threshold=0.002, breakout_vol_ratio=1.2,
+        breakout_max_pct=0.3, candle_max_ema21_dist_pct=1.5,
+        ai_max_per_scan=10,
+    )
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, 1, flt=flt)
+    assert t is None and op is None
+
+
+def test_row1b_trend_breakout_channel_bars_configurable():
+    """Donchian 通道根数可配：40 根窗口下强趋势同样触发（breakout_channel_bars 生效）"""
+    kl = _trend_long_klines()
+    flt = trig.ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=40,
+        breakout_threshold=0.002, breakout_vol_ratio=1.2,
+        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
+        ai_max_per_scan=10,
+    )
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, _ = trig.detect_trigger(kl, 1, flt=flt)
+    assert t is not None and t["type"] == trig.TREND_BREAKOUT
+
+
+def test_row1a_structural_priority_over_trend():
+    """互斥归类·结构优先：收盘同时越过结构前高与 Donchian 轨 → 结构突破（T1a）"""
+    kl = _kl(*_base())
+    _breakout_long(kl)
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, _ = trig.detect_trigger(kl, 1)
+    assert t is not None and t["type"] == trig.BREAKOUT
+    assert "前高" in t["reason"]
+
+
+def _range_under_structure_klines() -> list[list]:
+    """前段冲高 105 形成未破结构前高，中后段回落横盘 100.5；
+    信号K线放量长实体破 20 根滚动上轨但未越结构前高 → 趋势突破（非结构突破）"""
+    closes = [100.0] * 60
+    closes[30] = 105.0                                   # 收盘口径摆动前高（3 根两侧更低确认）
+    closes[31:38] = [101.0, 100.2, 100.0, 100.0, 100.0, 100.0, 100.0]
+    for i in range(38, 60):
+        closes[i] = 100.5                                # 20 根窗口横盘，轨 ≈ 100.8
+    highs = [c + 0.3 for c in closes]
+    lows = [c - 0.3 for c in closes]
+    kl = _klines(closes, highs, lows)
+    o = float(kl[-3][4])
+    c = 101.5                                            # 越轨 ≈0.7%（<1.5% 未追高）、低于前高 105
+    _set_breakout_candle(kl, open_=o, close=c, high=c, low=o, vol=150.0)
+    return kl
+
+
+def test_row1b_trend_breakout_under_unbroken_structure():
+    """互斥归类·回落口径：有未破结构前高但收盘未越它、破滚动轨 → 趋势突破"""
+    kl = _range_under_structure_klines()
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, _ = trig.detect_trigger(kl, 1)
+    assert t is not None and t["type"] == trig.TREND_BREAKOUT
+    assert "Donchian上轨" in t["reason"]
 
 
 # ── 突破幅度上限（2026-09-27 正式网复盘，B 项）─────────────────────────────

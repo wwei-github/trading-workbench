@@ -84,12 +84,13 @@ def _trade_type_of(rec: TradeRecord) -> str:
 # NULL/未识别 → 「未记录」，兼容导入持仓与 signal_type 列上线前的旧行）
 TRIGGER_FAMILY = {
     "trigger_breakout": "同向突破",
+    "trigger_trend_breakout": "趋势突破",
     "breakout": "同向突破",            # 旧管线·放量突破
     "downtrend_breakout": "同向突破",  # 旧管线·下跌突破
     "trigger_pullback": "回踩金K确认",
     "trigger_pullback_confirm": "回踩金K确认",
     "uptrend_pullback": "回踩金K确认",  # 旧管线·上涨回调
-    "trigger_candlestick": "同向形态",
+    "trigger_candlestick": "同向形态",  # 2026-09-29 纯金K下线，仅历史行
 }
 
 

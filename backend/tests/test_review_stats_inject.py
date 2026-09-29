@@ -136,13 +136,19 @@ def test_gate_block_renders_live_thresholds():
     assert "≥0.2%" in block
     assert ">1.5% 视为追高" in block
     assert "1.2 倍" in block
-    # 悬空金K拦截行归属回踩/金K块（突破块只渲染突破门槛）
-    pullback_block = render_signal_gate_block("trigger_candlestick")
-    assert ">1.5% 不触发" in pullback_block
 
 
-def test_gate_block_disabled_items_omitted(monkeypatch):
-    monkeypatch.setattr(settings, "CANDLE_MAX_EMA21_DIST_PCT", 0)
+def test_gate_block_trend_breakout_renders_donchian():
+    """趋势突破（2026-09-29）：渲染 Donchian 轨口径门槛，通道根数读生效值"""
+    block = render_signal_gate_block("trigger_trend_breakout")
+    assert "20 根 Donchian 滚动高低轨" in block
+    assert "≥0.2%" in block
+    assert "1.2 倍" in block
+    # 纯金K已下线（金K必须与触点配合）→ 不再渲染门槛块
+    assert render_signal_gate_block("trigger_candlestick") == ""
+
+
+def test_gate_block_disabled_items_omitted():
     block = render_signal_gate_block("trigger_pullback_confirm")
     assert "悬空金K拦截" not in block
     assert "追高上限未启用" not in block  # BREAKOUT_MAX_PCT 仍 1.5

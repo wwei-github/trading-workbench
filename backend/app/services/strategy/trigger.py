@@ -1,14 +1,19 @@
 """入场触发器检测（指标驱动筛选管线，2026-09-17；两段式回踩确认 2026-09-25 docs/19；
-回踩触点体系 2026-09-28 docs/22）
+回踩触点体系 2026-09-28 docs/22；双突破分类+纯金K下线 2026-09-29）
 
 方向由技术指标多数决确定（technical.compute_indicator_votes），本模块只回答
 "此刻是否出现与候选方向一致的入场触发"：
-- T1 trigger_breakout：收盘越过最近未破的摆动结构前高（做多；做空=前低对称），
-  三重收紧：最小幅度 BREAKOUT_THRESHOLD + 放量 BREAKOUT_VOL_RATIO + 长实体短影线形态
-- T2 trigger_candlestick：信号K线（klines[-2]）出现 GOLDEN_12 形态且方向一致
+- T1a trigger_breakout（结构突破）：收盘越过最近未破的摆动结构前高（做多；
+  做空=前低对称）——N 字/趋势延续的结构性破位
+- T1b trigger_trend_breakout（趋势突破）：收盘破 N 根 Donchian 滚动高低轨
+  （BREAKOUT_CHANNEL_BARS，窗口不含信号K线与未收盘根）——强趋势连续新高/新低
+  无未破结构位可越时的追势入场；与 T1a 同轮互斥（结构优先，单币单候选），
+  两类共享三重收紧：最小幅度 + 放量 + 长实体短影线 + 追高上限（各自按突破位衡量）
 - T3 trigger_pullback_confirm：回踩触点企稳 + 同向金K 两段式确认——
   当根同时触碰+金K（当根确认），或上根触碰（pending）+ 本根金K（次根确认）；
   仅触碰无金K 不再当根触发，转入 pending 待确认池（scanner 持久化）
+- 纯金K触发（trigger_candlestick）2026-09-29 下线：金K必须与触点配合，无触碰
+  无有效 pending 的金K 一律不触发（正式网复盘 28 笔 6 胜负期望）
 
 回踩触点（docs/22 §2，启用白名单见 ScanFilters.pullback_touch_refs）：
 - retest  突破回测位：前高/前低破位价（scanner 维护 breakout_events，T1 触发时记录），
@@ -20,7 +25,7 @@
 同根多触点命中按优先级标注（横向结构 > 均线；均线取最快）：
 retest > swing > ema21 > ema55 > ema144
 
-优先级（决策矩阵，docs/19 §4.1）：T1 > 当根确认 > 次根确认 > 纯金K(T2) >
+优先级（决策矩阵，docs/19 §4.1）：T1a/T1b 突破 > 当根确认 > 次根确认 >
 触碰转 pending；pending 仅在"恰好下一根K线"有效（开盘时间精确比对）。
 
 position 语义（docs/09 方向派生口径，2026-09-28 关键位移除后回归）：
@@ -49,8 +54,8 @@ from app.services.strategy.indicators import volume_ratio
 import numpy as np
 
 # 触发类型 = signal_type（AI 提示词 SIGNAL_TYPE_LABELS 已注册同名标签）
-BREAKOUT = "trigger_breakout"
-CANDLESTICK = "trigger_candlestick"
+BREAKOUT = "trigger_breakout"                  # 结构突破：越过未破摆动前高/前低
+TREND_BREAKOUT = "trigger_trend_breakout"      # 趋势突破：破 N 根 Donchian 滚动轨
 PULLBACK = "trigger_pullback"          # 历史类型：两段式上线后不再产生新记录
 PULLBACK_CONFIRM = "trigger_pullback_confirm"  # 回踩触点后金K确认（当根/次根）
 
@@ -302,13 +307,16 @@ def detect_trigger(
         except (IndexError, TypeError, ValueError, OSError):
             pending_valid = False
 
-    # T1 结构突破（2026-09-28 改口径）：突破位 = 最近一个自形成以来未被收盘价
-    # 突破的摆动结构前高（做多）/前低（做空）——收盘越过它才算真突破，是 N 字/
-    # 趋势延续的结构性破位，而非窗口滚动新高（趋势日每根都在破，无结构意义）。
-    # 保留既有闸门：① 最小突破幅度（毛边不算）② 放量 ③ 长实体短影线（实体≥75%全长）；
-    # 追高上限改按前高/前低衡量（越过 >1.5% 视为追高，落回金K/回踩分支，0=关闭）。
-    # 突破返回携带 breakout_level（前高/前低价）与 candle_open（信号K线开盘），
-    # scanner 据此维护 breakout_events（回测触点=前高回测的事实源，docs/22 §4）。
+    # T1 双突破分类（2026-09-29）：同一根信号K线按突破位口径互斥归类，结构优先——
+    # ① T1a 结构突破：突破位 = 最近一个自形成以来未被收盘价突破的摆动结构前高
+    #    （做多）/前低（做空），收盘越过它才算 N 字/趋势延续的结构性破位；
+    # ② T1b 趋势突破：结构突破未命中时回落 20 根 Donchian 滚动轨口径——强趋势
+    #    连续新高/新低时摆动位全破（ref=None）无结构可越，恢复 8373eb6 之前的
+    #    强趋势追势入场，作为独立类型与结构突破并存（复盘分组对比胜率）。
+    # 两类共享闸门：① 最小突破幅度（毛边不算）② 放量 ③ 长实体短影线
+    # （实体≥75%全长）；追高上限各自按突破位衡量（越位 >1.5% 视为追高，0=关闭）。
+    # 突破返回携带 breakout_level（前高/前低/轨价）与 candle_open（信号K线开盘），
+    # scanner 据此维护 breakout_events（回测触点=破位价回测的事实源，docs/22 §4）。
     if n >= 30:
         # 摆动结构取信号K线之前的已收盘K线（klines[:-1]）——信号K线是潜在破位者，
         # 不参与结构检测，否则其极值收盘会杀死邻近 pivot（如破位阴线压掉前低）
@@ -317,8 +325,9 @@ def detect_trigger(
         max_brk = flt.breakout_max_pct
         thr = flt.breakout_threshold
         sig_open = datetime.utcfromtimestamp(float(klines[-2][0]) / 1000)
+        solid_vol = _is_solid_breakout_candle(klines, direction) and vr >= flt.breakout_vol_ratio
         ref = None
-        if _is_solid_breakout_candle(klines, direction) and vr >= flt.breakout_vol_ratio:
+        if solid_vol:
             ref = _unbroken_pivot_level(
                 swings["highs"] if direction == 1 else swings["lows"],
                 klines, high=(direction == 1),
@@ -346,6 +355,39 @@ def detect_trigger(
                         "pattern": None,
                         "breakout_pct": (close_last - ref) / ref * 100,
                         "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘跌破前低({ref:.6g})",
+                    }, _close_op(pending, direction, "breakout")
+        # T1b 趋势突破（Donchian 滚动轨，窗口不含信号K线自身与未收盘根，
+        # 防"自己破自己"）：结构突破未命中（无未破结构位 / 未达幅度 / 追高拦截）
+        # 时的回落口径，2026-09-27 追高复盘的"跳过 T1 判定落回金K分支"改为独立类型
+        chan_n = flt.breakout_channel_bars
+        if solid_vol and n >= chan_n + 2:
+            window = klines[-2 - chan_n:-2]
+            chan_high = max(float(k[2]) for k in window)
+            chan_low = min(float(k[3]) for k in window)
+            over_max = (
+                (direction == 1 and close_last > chan_high * (1 + max_brk / 100))
+                or (direction == -1 and close_last < chan_low * (1 - max_brk / 100))
+            ) if max_brk > 0 else False
+            if not over_max:
+                if direction == 1 and close_last >= chan_high * (1 + thr):
+                    return {
+                        "type": TREND_BREAKOUT, "direction": direction,
+                        "position": "resistance",
+                        "breakout_level": chan_high, "candle_open": sig_open,
+                        "pattern": None,
+                        "breakout_pct": (close_last - chan_high) / chan_high * 100,
+                        "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘突破{chan_n}根"
+                                  f"Donchian上轨({chan_high:.6g})",
+                    }, _close_op(pending, direction, "breakout")
+                if direction == -1 and close_last <= chan_low * (1 - thr):
+                    return {
+                        "type": TREND_BREAKOUT, "direction": direction,
+                        "position": "support",
+                        "breakout_level": chan_low, "candle_open": sig_open,
+                        "pattern": None,
+                        "breakout_pct": (close_last - chan_low) / chan_low * 100,
+                        "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘跌破{chan_n}根"
+                                  f"Donchian下轨({chan_low:.6g})",
                     }, _close_op(pending, direction, "breakout")
 
     # 并行计算当根同向金K（两段式确认证据，形态检测与触点判定解耦）
@@ -385,12 +427,11 @@ def detect_trigger(
                       f"{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}确认",
         }, _close_op(pending, direction, "same_candle_confirm")
 
-    # 行3/行4：未触碰但有金K → 有效 pending 则次根确认，否则纯金K（T2 原样）。
-    # 悬空金K门槛（2026-09-27 正式网复盘）：信号K线收盘距 EMA21 > 阈值（默认 1.5%）
-    # 的纯金K不再触发——正式网 17 笔悬空金K全部 SL（-92 USDT），追高入场负期望。
-    # row3 次根确认有回踩语境（上根触碰触点）不受影响。0=关闭。
-    # 注意：悬空拦截与触点体系语义分离——深回踩由 ema55/144 触碰确认接住，
-    # 不放宽悬空门槛（只在零触碰时生效）。
+    # 行3/行4：未触碰但有金K → 有效 pending 则次根确认（有回踩语境）。
+    # 纯金K独立触发 2026-09-29 下线：正式网复盘纯金K 28 笔 6 胜（-52.15 USDT），
+    # 无回踩语境的形态追入负期望——金K必须与触点配合（当根/次根确认），
+    # 无有效 pending 的金K 一律不触发。悬空金K门槛（candle_max_ema21_dist_pct，
+    # 2026-09-27）随之整体失效，配置键保留向后兼容；活跃 pending 照常终态处置。
     if touch_ref is None and golden:
         if pending_valid and pending and pending.get("direction") == direction:
             p_ref = pending.get("touch_ref")
@@ -402,28 +443,11 @@ def detect_trigger(
                 "reason": f"指标同向·上根回踩{p_label}企稳·本根"
                           f"{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}确认",
             }, {"op": "confirm"}
-        max_dist = flt.candle_max_ema21_dist_pct
-        if max_dist > 0:
-            closes = np.array([float(k[4]) for k in klines[:-1]], dtype=float)
-            e21 = calc_ema(closes, 21)
-            if e21 is not None and float(e21[-1]) > 0:
-                dist_pct = abs(close_last - float(e21[-1])) / float(e21[-1]) * 100
-                if dist_pct > max_dist:
-                    # 超距金K不触发；活跃 pending 按方向反转/窗口过期正常处置
-                    if pending:
-                        op_reason = ("direction_flip"
-                                     if pending.get("direction") != direction
-                                     else "window_expired")
-                        return None, {"op": "expire", "reason": op_reason}
-                    return None, None
-        return {
-            "type": CANDLESTICK, "direction": direction,
-            "position": pos_fb,
-            "pattern": golden["pattern"], "breakout_pct": 0.0,
-            "reason": f"指标同向·{PATTERN_LABEL_MAP.get(golden['pattern'], golden['pattern'])}",
-        }, ({"op": "expire",
-             "reason": "direction_flip" if pending.get("direction") != direction else "window_expired"}
-            if pending else None)
+        if pending:
+            return None, {"op": "expire",
+                          "reason": "direction_flip" if pending.get("direction") != direction
+                          else "window_expired"}
+        return None, None
 
     # 行5：触碰但无金K → 不触发，转 pending 待确认（scanner 侧 upsert）。
     # ema21 键存 Stage-1 触碰锚点价（命中触点的位价），touch_ref 记触点类型

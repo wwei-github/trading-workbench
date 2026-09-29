@@ -80,7 +80,8 @@ SIGNAL_TYPE_LABELS = {
     # 指标驱动筛选（2026-09-17）：触发器类型（方向已由指标多数决确定）；
     # 括号内注明程序已验证的入场门槛（2026-09-25 三重收紧 + docs/19 两段式），AI 据此评估信号质量
     "trigger_breakout": "指标同向·突破前高触发（收盘越过未破的摆动结构前高）",
-    "trigger_candlestick": "指标同向·K线形态触发",
+    "trigger_trend_breakout": "指标同向·趋势突破触发（收盘破 N 根 Donchian 滚动高低轨，强趋势连续新高/新低无未破结构位可越时的追势入场）",
+    "trigger_candlestick": "指标同向·K线形态触发（旧类型，2026-09-29 纯金K下线，仅历史数据）",
     "trigger_pullback": "指标同向·回踩触发（旧类型，已被两段式金K确认取代，仅历史数据）",
     # 两段式回踩确认（2026-09-25，docs/19）：回踩触碰后等金K确认才入场；
     # 2026-09-28 docs/22 触点体系：触碰对象扩为 5 类触点（信号块"回踩触点"行注明具体位）
@@ -95,7 +96,7 @@ def render_signal_gate_block(signal_type: str) -> str:
     消除与页面筛选配置的文本分叉（此前 0.2%/1.2× 硬编码，页面改配置后
     AI 看到的口径与程序实际闸门不一致）。按触发类型渲染对应门槛，
     非触发器类型输出空串。"""
-    if signal_type not in ("trigger_breakout", "trigger_candlestick",
+    if signal_type not in ("trigger_breakout", "trigger_trend_breakout",
                            "trigger_pullback", "trigger_pullback_confirm"):
         return ""
     from app.services.scan_filters import resolve_scan_filters
@@ -105,6 +106,15 @@ def render_signal_gate_block(signal_type: str) -> str:
         lines += [
             "- 突破位: 收盘越过最近一个未被突破的摆动结构前高（做多；做空=跌破前低对称）"
             "——结构性破位才算突破，窗口滚动新高不算",
+            f"- 突破幅度: ≥{flt.breakout_threshold * 100:.1f}%（毛边不算）"
+            + (f"，>{flt.breakout_max_pct:.1f}% 视为追高不触发" if flt.breakout_max_pct > 0 else "，追高上限未启用"),
+            f"- 放量: 信号K线量 ≥ 近20根均量 {flt.breakout_vol_ratio:g} 倍",
+            "- 突破K线形态: 长实体占K线主体（实体 ≥75% 全长，影线可有但合计 ≤25%）",
+        ]
+    elif signal_type == "trigger_trend_breakout":
+        lines += [
+            f"- 突破位: 收盘破 {flt.breakout_channel_bars} 根 Donchian 滚动高低轨"
+            "（窗口不含信号K线自身）——强趋势连续新高/新低、无未破结构前高/前低可越时的追势入场",
             f"- 突破幅度: ≥{flt.breakout_threshold * 100:.1f}%（毛边不算）"
             + (f"，>{flt.breakout_max_pct:.1f}% 视为追高不触发" if flt.breakout_max_pct > 0 else "，追高上限未启用"),
             f"- 放量: 信号K线量 ≥ 近20根均量 {flt.breakout_vol_ratio:g} 倍",
@@ -121,10 +131,6 @@ def render_signal_gate_block(signal_type: str) -> str:
                 "EMA 触点=下影触及且收盘收回线上（做空对称）",
                 "- 两段式确认: 触碰后当根出现同向金K，或上根触碰+本根金K（次根确认）",
             ]
-        if flt.candle_max_ema21_dist_pct > 0:
-            lines.append(
-                f"- 悬空金K拦截: 纯金K距 EMA21 >{flt.candle_max_ema21_dist_pct:.1f}% 不触发"
-            )
     if not lines:
         return ""
     return ("程序入场门槛（已程序化验证，评估信号质量时以此为基准而非自行估算）:\n"
