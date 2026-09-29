@@ -2,14 +2,15 @@
 
 叶子模块：不 import strategy 包内其他模块（防循环导入）。
 - calc_atr：AI 事实包（Agent 管线）共用；
-- volume_ratio：classify_volume 分档与突破量能门槛（BREAKOUT_VOL_RATIO）共用；
+- volume_ratio：classify_volume 分档与突破量能加分（BREAKOUT_VOL_RATIO）共用；
 - fmt_price：signal_reason 价格展示。
 """
 from __future__ import annotations
 
+from statistics import median
 from typing import Optional
 
-# 放量突破的量能门槛：收盘K线成交量 ≥ 该倍数 × 近20根均量（volume_ratio 唯一口径）
+# 放量加分门槛：收盘K线成交量 ≥ 该倍数 × 近20根中位量（volume_ratio 唯一口径）
 BREAKOUT_VOL_RATIO = 1.2
 
 
@@ -30,17 +31,19 @@ def calc_atr(klines: list, period: int = 14) -> Optional[float]:
 
 
 def volume_ratio(klines: list) -> float:
-    """最新已收盘 K 线成交量 ÷ 近 20 根已收盘均量（数据不足或均量为 0 时返回 0）。
+    """最新已收盘 K 线成交量 ÷ 近 20 根已收盘中位量（数据不足或中位量为 0 时返回 0）。
 
-    classify_volume 的分档与突破量能门槛（BREAKOUT_VOL_RATIO）共用此口径。
+    中位数口径（2026-09-29）：算术均值会被极端量根（插针扫量/公告量堆）系统性
+    抬高，放量判定对量堆币失真偏严；中位数抗极值。
+    classify_volume 的分档与突破量能加分（BREAKOUT_VOL_RATIO）共用此口径。
     """
     closed = klines[:-1] if len(klines) >= 2 else klines
     if len(closed) < 22:
         return 0.0
-    avg = sum(float(k[5]) for k in closed[-21:-1]) / 20
-    if avg <= 0:
+    med = median(float(k[5]) for k in closed[-21:-1])
+    if med <= 0:
         return 0.0
-    return float(closed[-1][5]) / avg
+    return float(closed[-1][5]) / med
 
 
 def fmt_price(p: float) -> str:

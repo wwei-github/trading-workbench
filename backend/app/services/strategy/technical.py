@@ -593,14 +593,14 @@ def compute_quality_score(
 
     direction: 候选方向（1 多 / -1 空，= net 的符号）
     trigger_type: trigger_breakout / trigger_trend_breakout / trigger_pullback_confirm
-    klines: 可选，金K类形态触发的量能加分需要（突破类量能已是触发门槛不重复加）
+    klines: 可选，放量加分需要（量比 ≥1.2 +5，各触发类型一致）
     修饰规则（2026-09-17 设计评审定稿；2026-09-24 强 4h 背景提权）：
     - 4h背景同向：强 +10 / 弱 +5；反向：强 -12 / 弱 -8
       （强 4h 趋势币在质量分排序与 AI 配额中前置；逆强背景降权更狠，
       与「强多只开多/强空只开空」硬约束呼应）
     - 突破触发且 ADX≥25 +5（强趋势中的突破可信）
-    - 金K类形态触发（同向形态/回踩金K确认）且量比 ≥1.2 +5（放量金K，2026-09-25；
-      缩量形态不加不减，仅在 AI 配额排序中自然落后）
+    - 放量加分：量比 ≥1.2 +5（2026-09-25 金K类；2026-09-29 起突破放量不再
+      是触发硬门，三类触发统一为加分项；缩量不加不减，仅排序自然落后）
     - RSI>75 做多 / RSI<25 做空 -8（追高杀低）
     - OBV 顶背离做多 / 底背离做空 -6（量价背离）
     - 突破触发且布林带宽分位 ≤10 -5（带宽收窄的突破易假）
@@ -622,9 +622,10 @@ def compute_quality_score(
             and adx and float(adx.get("adx") or 0) >= 25):
         score += 5
 
-    # 金K类形态触发的量能加分（2026-09-25）：放量金K +5；缩量/平量不加不减。
-    # 突破类不加——量比 ≥1.2 已是触发门槛，全体通过者无区分度
-    if trigger_type == "trigger_pullback_confirm" and klines:
+    # 放量加分（三类触发统一，2026-09-29）：量比 ≥1.2 +5；缩量/平量不加不减。
+    # 阈值与 BREAKOUT_VOL_RATIO 同源（1.2）
+    if trigger_type in ("trigger_breakout", "trigger_trend_breakout",
+                        "trigger_pullback_confirm") and klines:
         try:
             if volume_ratio(klines) >= 1.2:
                 score += 5

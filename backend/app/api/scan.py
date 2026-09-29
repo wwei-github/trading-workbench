@@ -410,7 +410,7 @@ _SCAN_FILTER_RANGES: dict[str, tuple[float, float, str]] = {
     "min_volume_24h": (0, 1e9, "24h 成交额门槛（USDT），0=不过滤"),
     "breakout_channel_bars": (5, 200, "Donchian 通道回看根数"),
     "breakout_threshold": (0, 0.05, "最小突破幅度（比例，0.002=0.2%）"),
-    "breakout_vol_ratio": (0, 10, "突破量比门槛（信号K线量/近20根均量）"),
+    "breakout_vol_ratio": (0, 10, "突破量比加分门槛（信号K线量/近20根中位量，达标+5分不卡死）"),
     "breakout_max_pct": (0, 20, "突破幅度上限（%，防追高，0=关闭）"),
     "candle_max_ema21_dist_pct": (0, 20, "悬空金K距 EMA21 上限（%，0=关闭）"),
     "ai_max_per_scan": (1, 50, "单轮扫描 AI 分析上限（个）"),

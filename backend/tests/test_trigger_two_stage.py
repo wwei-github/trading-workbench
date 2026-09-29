@@ -185,15 +185,17 @@ def test_row1_breakout_rejected_small_move():
     assert t is None and op is not None and op["op"] == "upsert"
 
 
-def test_row1_breakout_rejected_low_volume():
-    """缩量突破：量比 1.0（< 1.2 门槛）→ 不触发，落空转 pending"""
+def test_row1_breakout_low_volume_allowed():
+    """缩量突破：量比 1.0（< 1.2）→ 放量已降为加分项不卡死（2026-09-29），
+    仍触发 BREAKOUT，reason 无"放量"前缀（达标才展示）"""
     kl = _kl(*_base())
     o = float(kl[-3][4])
     c = SWING_HIGH + 0.5
     _set_breakout_candle(kl, open_=o, close=c, high=c, low=o, vol=100.0)
     with patch.object(trig, "detect_all_patterns", return_value=[]):
         t, op = trig.detect_trigger(kl, 1)
-    assert t is None and op is not None and op["op"] == "upsert"
+    assert t is not None and t["type"] == trig.BREAKOUT
+    assert "放量" not in t["reason"]
 
 
 def test_row1_breakout_rejected_long_upper_shadow():
@@ -486,14 +488,16 @@ def test_row1b_trend_breakout_supersedes_pending():
     assert op == {"op": "supersede", "reason": "breakout"}
 
 
-def test_row1b_trend_breakout_rejected_low_volume():
-    """量比 1.0 < 1.2 → 趋势突破不触发（共享闸门），无金K不触碰 → 观察池"""
+def test_row1b_trend_breakout_low_volume_allowed():
+    """量比 1.0 < 1.2 → 放量已降为加分项不卡死（2026-09-29），趋势突破仍触发，
+    reason 无"放量"前缀（达标才展示）"""
     kl = _trend_long_klines()
     ts, o, h, l, c, _, qv = kl[-2]
     kl[-2] = [ts, o, h, l, c, 100.0, qv]  # 量比降回 1.0
     with patch.object(trig, "detect_all_patterns", return_value=[]):
         t, op = trig.detect_trigger(kl, 1)
-    assert t is None and op is None
+    assert t is not None and t["type"] == trig.TREND_BREAKOUT
+    assert "放量" not in t["reason"]
 
 
 def test_row1b_trend_breakout_over_max_pct_rejected():

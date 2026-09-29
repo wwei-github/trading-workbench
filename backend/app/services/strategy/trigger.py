@@ -313,8 +313,10 @@ def detect_trigger(
     # ② T1b 趋势突破：结构突破未命中时回落 20 根 Donchian 滚动轨口径——强趋势
     #    连续新高/新低时摆动位全破（ref=None）无结构可越，恢复 8373eb6 之前的
     #    强趋势追势入场，作为独立类型与结构突破并存（复盘分组对比胜率）。
-    # 两类共享闸门：① 最小突破幅度（毛边不算）② 放量 ③ 长实体短影线
-    # （实体≥75%全长）；追高上限各自按突破位衡量（越位 >1.5% 视为追高，0=关闭）。
+    # 两类共享闸门：① 最小突破幅度（毛边不算）② 长实体短影线
+    # （实体≥75%全长）；放量为加分项（2026-09-29：≥量比门槛 +5 质量分，
+    # 不卡死——缩量突破放行但排序自然落后）；追高上限各自按突破位衡量
+    # （越位 >1.5% 视为追高，0=关闭）。
     # 突破返回携带 breakout_level（前高/前低/轨价）与 candle_open（信号K线开盘），
     # scanner 据此维护 breakout_events（回测触点=破位价回测的事实源，docs/22 §4）。
     if n >= 30:
@@ -325,9 +327,10 @@ def detect_trigger(
         max_brk = flt.breakout_max_pct
         thr = flt.breakout_threshold
         sig_open = datetime.utcfromtimestamp(float(klines[-2][0]) / 1000)
-        solid_vol = _is_solid_breakout_candle(klines, direction) and vr >= flt.breakout_vol_ratio
+        solid = _is_solid_breakout_candle(klines, direction)
+        vol_desc = f"放量{vr:.1f}倍·" if vr >= flt.breakout_vol_ratio else ""
         ref = None
-        if solid_vol:
+        if solid:
             ref = _unbroken_pivot_level(
                 swings["highs"] if direction == 1 else swings["lows"],
                 klines, high=(direction == 1),
@@ -345,7 +348,7 @@ def detect_trigger(
                         "breakout_level": ref, "candle_open": sig_open,
                         "pattern": None,
                         "breakout_pct": (close_last - ref) / ref * 100,
-                        "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘突破前高({ref:.6g})",
+                        "reason": f"指标同向·{vol_desc}长实体收盘突破前高({ref:.6g})",
                     }, _close_op(pending, direction, "breakout")
                 if direction == -1 and close_last <= ref * (1 - thr):
                     return {
@@ -354,13 +357,13 @@ def detect_trigger(
                         "breakout_level": ref, "candle_open": sig_open,
                         "pattern": None,
                         "breakout_pct": (close_last - ref) / ref * 100,
-                        "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘跌破前低({ref:.6g})",
+                        "reason": f"指标同向·{vol_desc}长实体收盘跌破前低({ref:.6g})",
                     }, _close_op(pending, direction, "breakout")
         # T1b 趋势突破（Donchian 滚动轨，窗口不含信号K线自身与未收盘根，
         # 防"自己破自己"）：结构突破未命中（无未破结构位 / 未达幅度 / 追高拦截）
         # 时的回落口径，2026-09-27 追高复盘的"跳过 T1 判定落回金K分支"改为独立类型
         chan_n = flt.breakout_channel_bars
-        if solid_vol and n >= chan_n + 2:
+        if solid and n >= chan_n + 2:
             window = klines[-2 - chan_n:-2]
             chan_high = max(float(k[2]) for k in window)
             chan_low = min(float(k[3]) for k in window)
@@ -376,7 +379,7 @@ def detect_trigger(
                         "breakout_level": chan_high, "candle_open": sig_open,
                         "pattern": None,
                         "breakout_pct": (close_last - chan_high) / chan_high * 100,
-                        "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘突破{chan_n}根"
+                        "reason": f"指标同向·{vol_desc}长实体收盘突破{chan_n}根"
                                   f"Donchian上轨({chan_high:.6g})",
                     }, _close_op(pending, direction, "breakout")
                 if direction == -1 and close_last <= chan_low * (1 - thr):
@@ -386,7 +389,7 @@ def detect_trigger(
                         "breakout_level": chan_low, "candle_open": sig_open,
                         "pattern": None,
                         "breakout_pct": (close_last - chan_low) / chan_low * 100,
-                        "reason": f"指标同向·放量{vr:.1f}倍·长实体收盘跌破{chan_n}根"
+                        "reason": f"指标同向·{vol_desc}长实体收盘跌破{chan_n}根"
                                   f"Donchian下轨({chan_low:.6g})",
                     }, _close_op(pending, direction, "breakout")
 

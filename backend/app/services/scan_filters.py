@@ -38,7 +38,7 @@ SCAN_FILTER_KEYS = (
     "min_volume_24h",             # ① 宇宙层：24h 成交额门槛（USDT）
     "breakout_channel_bars",      # ③ 触发层：Donchian 通道回看根数
     "breakout_threshold",         # ③ 触发层：最小突破幅度（0.002=0.2%，毛边不算）
-    "breakout_vol_ratio",         # ③ 触发层：放量门槛（量比口径）
+    "breakout_vol_ratio",         # ③ 触发层：放量加分门槛（量比口径，达标+5分不卡死）
     "breakout_max_pct",           # ③ 触发层：突破幅度上限（防追高，0=关闭）
     "candle_max_ema21_dist_pct",  # ③ 触发层：悬空金K距 EMA21 上限（纯金K下线后无消费方，键保留兼容）
     "ai_max_per_scan",            # ④ 配额层：单轮扫描 AI 分析上限

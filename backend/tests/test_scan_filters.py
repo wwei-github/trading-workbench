@@ -165,8 +165,9 @@ def test_trigger_respects_custom_breakout_threshold():
     assert trig is None
 
 
-def test_trigger_respects_custom_vol_ratio():
-    """量比门槛 5：信号K量 250/均量 100=2.5 不达标（形态打桩同上）"""
+def test_trigger_vol_ratio_not_hard_gate():
+    """量比门槛 5：信号K量 250/中位量 100=2.5 不达标 → 放量为加分项不卡死
+    （2026-09-29），仍触发且 reason 无"放量"前缀（形态打桩同上）"""
     flt = ScanFilters(
         min_volume_24h=3_000_000, breakout_channel_bars=20,
         breakout_threshold=0.002, breakout_vol_ratio=5.0,
@@ -175,7 +176,8 @@ def test_trigger_respects_custom_vol_ratio():
     )
     with patch.object(trig_mod, "detect_all_patterns", return_value=[]):
         trig, _ = detect_trigger(_breakout_klines(), 1, flt=flt)
-    assert trig is None
+    assert trig is not None and trig["type"] == BREAKOUT
+    assert "放量" not in trig["reason"]
 
 
 def test_trigger_breakout_max_pct_zero_disables_chase_guard():

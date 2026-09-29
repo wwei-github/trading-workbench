@@ -108,7 +108,7 @@ def render_signal_gate_block(signal_type: str) -> str:
             "——结构性破位才算突破，窗口滚动新高不算",
             f"- 突破幅度: ≥{flt.breakout_threshold * 100:.1f}%（毛边不算）"
             + (f"，>{flt.breakout_max_pct:.1f}% 视为追高不触发" if flt.breakout_max_pct > 0 else "，追高上限未启用"),
-            f"- 放量: 信号K线量 ≥ 近20根均量 {flt.breakout_vol_ratio:g} 倍",
+            f"- 放量（加分项）: 信号K线量 ≥ 近20根中位量 {flt.breakout_vol_ratio:g} 倍时质量分+5，未达标不拦截",
             "- 突破K线形态: 长实体占K线主体（实体 ≥75% 全长，影线可有但合计 ≤25%）",
         ]
     elif signal_type == "trigger_trend_breakout":
@@ -117,7 +117,7 @@ def render_signal_gate_block(signal_type: str) -> str:
             "（窗口不含信号K线自身）——强趋势连续新高/新低、无未破结构前高/前低可越时的追势入场",
             f"- 突破幅度: ≥{flt.breakout_threshold * 100:.1f}%（毛边不算）"
             + (f"，>{flt.breakout_max_pct:.1f}% 视为追高不触发" if flt.breakout_max_pct > 0 else "，追高上限未启用"),
-            f"- 放量: 信号K线量 ≥ 近20根均量 {flt.breakout_vol_ratio:g} 倍",
+            f"- 放量（加分项）: 信号K线量 ≥ 近20根中位量 {flt.breakout_vol_ratio:g} 倍时质量分+5，未达标不拦截",
             "- 突破K线形态: 长实体占K线主体（实体 ≥75% 全长，影线可有但合计 ≤25%）",
         ]
     else:
