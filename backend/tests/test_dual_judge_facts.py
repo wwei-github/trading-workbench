@@ -9,8 +9,6 @@
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.services.dual_judge as dual_judge  # noqa: E402
@@ -61,18 +59,24 @@ def test_run_dual_judge_enriched_facts_reach_prompts(monkeypatch):
     """mock 层面：增厚字段随事实包进入多空评委提示词，裁判含结构核对指令"""
     captured = []
 
-    class _Msg:
+    class _Delta:
         def __init__(self, content):
             self.content = content
 
     class _Choice:
-        def __init__(self, content):
-            self.finish_reason = "stop"
-            self.message = _Msg(content)
+        def __init__(self, content=None, finish=None):
+            self.delta = _Delta(content)
+            self.finish_reason = finish
 
     class _Resp:
+        """流式增量序列桩（2026-09-30 流式改造后 create 返回可迭代块）"""
+
         def __init__(self, content):
-            self.choices = [_Choice(content)]
+            self._content = content
+
+        def __iter__(self):
+            yield _Choice(self._content)
+            yield _Choice(None, finish="stop")
 
     class _Completions:
         @staticmethod

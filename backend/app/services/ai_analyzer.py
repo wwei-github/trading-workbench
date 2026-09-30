@@ -7,7 +7,7 @@ from openai import OpenAI
 
 from app.config import settings
 from app.services import skill_library
-from app.services.llm_client import get_client, parse_llm_json, json_mode_kwargs
+from app.services.llm_client import get_client, parse_llm_json, json_mode_kwargs, stream_completion
 from app.services.market_data import build_market_context, get_kline_client
 from app.services.risk_guard import build_forced_skip, parse_and_validate
 from app.services.strategy.ema import analyze_ema
@@ -434,20 +434,27 @@ class _LLMOutputError(ValueError):
 
 
 def _call_llm(client: OpenAI, messages: list) -> dict:
-    """单次 LLM 调用 → 原始 JSON dict；空内容/解析失败抛 _LLMOutputError（携带原文）"""
+    """单次 LLM 调用（流式）→ 原始 JSON dict；空内容/解析失败抛 _LLMOutputError（携带原文）
+
+    流式（2026-09-30 网关挂死治理，见 llm_client.stream_completion）：GLM 推理模型
+    非流式长推理零字节返回会被读超时误杀（线上 4 连挂实测），流式下 reasoning
+    增量持续到达保持连接活跃；顺带获得首 token / 总耗时延迟观测。
+    """
     # GLM 系列为思考型模型，reasoning tokens 也计入 max_tokens，
     # 配额太小会导致正文为空或被截断（finish_reason=length）：
     # 12000 曾被思考过程整体耗尽（2026-09-28 线上：3 次重试全空内容强制 skip），放大至 32000
-    resp = client.chat.completions.create(
-        model=settings.AI_MODEL,
-        messages=messages,
+    r = stream_completion(
+        client, messages,
         temperature=0.3,
         max_tokens=32000,
         **json_mode_kwargs(),  # LLM_JSON_MODE 开启时带 response_format（docs/24 D2）
     )
-    finish = resp.choices[0].finish_reason
-    content = (resp.choices[0].message.content or "").strip()
-    logger.info("AI 返回原始内容(finish=%s): %s", finish, content[:300])
+    finish = r.finish_reason
+    content = r.content
+    logger.info(
+        "AI 返回原始内容(finish=%s 首token=%.1fs 总耗时=%.1fs): %s",
+        finish, r.first_token_s, r.total_s, content[:300],
+    )
     if not content:
         raise _LLMOutputError(f"AI 返回空内容 (finish_reason={finish})")
     # 容错处理：去掉可能的 markdown 包裹

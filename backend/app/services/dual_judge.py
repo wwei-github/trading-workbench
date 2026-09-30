@@ -10,13 +10,10 @@
   裁判无权生成新交易参数，杜绝"评委幻觉价位"绕过 Risk Guard
 - 开关 system_config.dual_judge_enabled（默认开）：辩论多花 3 次 LLM 调用
 """
-import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
-from app.config import settings
-from app.services.llm_client import get_client, json_mode_kwargs, parse_llm_json
+from app.services.llm_client import get_client, json_mode_kwargs, parse_llm_json, stream_completion
 from app.services.risk_guard import build_forced_skip
 
 logger = logging.getLogger(__name__)
@@ -98,15 +95,16 @@ def run_dual_judge(
     facts = _fmt_facts(signal)
 
     def _ask(prompt: str, json_mode: bool = False) -> str:
-        resp = client.chat.completions.create(
-            model=settings.AI_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+        # 流式（2026-09-30）：评委/裁判与主分析同网关同模型，非流式长推理挂死
+        # 风险相同（见 llm_client.stream_completion），一并切换
+        r = stream_completion(
+            client, [{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=2000,
             # 仅裁判输出 JSON（多空评委输出论据正文），JSON 模式只挂在裁判调用上
             **(json_mode_kwargs() if json_mode else {}),
         )
-        return (resp.choices[0].message.content or "").strip()
+        return r.content
 
     try:
         # 多空评委互不依赖，并行取论据（原串行 = 两次完整调用时长相加）

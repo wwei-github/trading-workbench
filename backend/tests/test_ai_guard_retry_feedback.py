@@ -20,21 +20,33 @@ from app.services.llm_client import json_mode_kwargs  # noqa: E402
 
 
 # ── 桩件：OpenAI 兼容假客户端（记录每次调用参数，按序回放预设返回内容）──
+# 2026-09-30 流式改造后 create(stream=True) 返回增量块序列，桩件按此形状回放
 
-class _FakeMessage:
+class _FakeDelta:
     def __init__(self, content):
         self.content = content
 
 
-class _FakeChoice:
-    def __init__(self, content):
-        self.finish_reason = "stop"
-        self.message = _FakeMessage(content)
+class _FakeStreamChoice:
+    def __init__(self, content=None, finish=None):
+        self.delta = _FakeDelta(content)
+        self.finish_reason = finish
 
 
-class _FakeResp:
+class _FakeChunk:
+    def __init__(self, content=None, finish=None):
+        self.choices = [_FakeStreamChoice(content, finish)]
+
+
+class _FakeStreamResp:
+    """单段正文块 + 终止块（模拟网关流式增量）"""
+
     def __init__(self, content):
-        self.choices = [_FakeChoice(content)]
+        self._content = content
+
+    def __iter__(self):
+        yield _FakeChunk(self._content)
+        yield _FakeChunk(None, finish="stop")
 
 
 class _FakeCompletions:
@@ -44,7 +56,7 @@ class _FakeCompletions:
     def create(self, model=None, messages=None, **kwargs):
         client = self._client
         client.calls.append({"messages": messages, "kwargs": kwargs})
-        return _FakeResp(client.contents.pop(0))
+        return _FakeStreamResp(client.contents.pop(0))
 
 
 class _FakeChat:
