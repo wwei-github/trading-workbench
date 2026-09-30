@@ -90,8 +90,10 @@ cmd_deploy() {
     local services
     services=$(services_for_scope "$scope")
 
-    step "git pull（Deploy Key）..."
-    git pull --ff-only origin main
+    step "git 同步（Deploy Key，硬对齐）..."
+    # 部署机仓库不允许本地改动，硬对齐远端——防 force push 改写历史后
+    # git pull --ff-only 因分叉 abort 卡死部署（2026-09-30 实测）
+    git fetch origin && git reset --hard origin/main
     local sha
     sha=$(git rev-parse --short HEAD)
     if [ -n "$expected_sha" ] && [ "$sha" != "$expected_sha" ]; then
