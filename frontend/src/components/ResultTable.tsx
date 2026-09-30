@@ -389,7 +389,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       title: "质量分",
       dataIndex: "quality_score",
       key: "quality_score",
-      width: 96,
+      width: 80,
       defaultSortOrder: "descend",
       sorter: (a: ScanResult, b: ScanResult) =>
         (a.quality_score ?? -1) - (b.quality_score ?? -1),
@@ -452,13 +452,14 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
     },
     {
       // 4h方向列：扫描时 4h 背景级别（震荡/纠缠/弱·强多空），来自 votes_json.htf
+      // 表头简称 4h、列宽收窄（2026-09-30 用户拍板）；完整说明保留在悬停
       title: (
         <Tooltip title="扫描时 4h 高周期背景（ADX门控 + EMA21/55 排列与间距分级）：ADX<20=震荡不投票，EMA 间距≥1%=强、0.1%~1%=弱；悬停查看完整判定细节">
-          <span>4h方向</span>
+          <span>4h</span>
         </Tooltip>
       ),
       key: "htf_direction",
-      width: 88,
+      width: 60,
       render: (_: unknown, record: ScanResult) => {
         const htf = record.votes_json?.htf;
         if (!htf) return <span style={{ color: "#999" }}>-</span>;
@@ -502,7 +503,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       title: "EMA",
       dataIndex: "ema_state",
       key: "ema_state",
-      width: 132,
+      width: 100,
       ...filterProps("ema_state", EMA_STATE_FILTERS),
       render: (v: string | null) => {
         if (!v) return <span style={{ color: "#999" }}>-</span>;
@@ -518,7 +519,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
         </Tooltip>
       ),
       key: "ai_direction",
-      width: 92,
+      width: 72,
       render: (_: unknown, record: ScanResult) => {
         const ai = aiMap[record.id];
         if (!ai) {
@@ -548,7 +549,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
         </Tooltip>
       ),
       key: "ai_recommendation",
-      width: 80,
+      width: 64,
       render: (_: unknown, record: ScanResult) => {
         const ai = aiMap[record.id];
         if (!ai) {
@@ -691,7 +692,8 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           loading={loading}
           size="small"
           tableLayout="fixed"
-          scroll={{ x: 1544 }}
+          // 表格总宽 x = 各列 width 之和（2026-09-30 列宽收窄后同步；改列宽须一并维护）
+          scroll={{ x: 1386 }}
           onChange={handleTableChange}
           pagination={{
             current: resultsPage,
