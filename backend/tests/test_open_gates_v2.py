@@ -7,6 +7,7 @@
 2. A3' 组合热度上限 / 同向持仓上限：在跑单（OPENED/TP1_HIT/TP2_HIT）构造拦截
 3. A4' 盘口价差预检：spread 超限拦截 / bookTicker 查询异常放行（mock trader）
 4. A1'' 保本价含往返费用缓冲：多单/空单 buffer 方向 + 幂等 + 出场原因适配
+5. 当日亏损熔断闸门（2026-09-30 开关化）：达阈值拦截 + 开关关闭放行
 
 sqlite 内存库 create_all 建表（SQLAlchemy 2.1 下 PG UUID/JSONB 可编译），
 BinanceTrader 以替身注入，不触网。
@@ -51,6 +52,7 @@ def _fixed_settings(monkeypatch):
     monkeypatch.setattr(settings, "TRADING_MIN_RECOMMENDATION", 60.0)
     monkeypatch.setattr(settings, "TRADING_RISK_PCT", 3.0)
     monkeypatch.setattr(settings, "DAILY_LOSS_STOP_PCT", 9.0)
+    monkeypatch.setattr(settings, "DAILY_LOSS_STOP_ENABLED", True)
     monkeypatch.setattr(settings, "NEAR_ANCHOR_RISK_FACTOR", 0.7)
 
 
@@ -300,6 +302,35 @@ def test_direction_cap_counts_all_running_statuses(db, monkeypatch):
     a = _make_analysis(db, rec=90, direction="long")
     assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) is False
     assert "同向持仓达上限" in (a.open_block_reason or "")
+
+
+# ── 当日亏损熔断闸门（2026-09-30 开关化） ────────────────────────────
+
+
+def test_daily_loss_stop_blocks(db):
+    """当日已平仓净亏 -100 ≤ -阈值 90（基数 1000 × 9%）→ 硬熔断拦截停开仓
+
+    平仓时间锚定 utcnow（而非 _ts 回推）——回推记录在 UTC 日界后一段时间内
+    会落到昨日、被日界口径排除，测试会偶发误失败。
+    """
+    _closed(db, -50.0, datetime.utcnow())
+    _closed(db, -50.0, datetime.utcnow())
+    a = _make_analysis(db, rec=90)
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) is False
+    assert "当日亏损熔断" in (a.open_block_reason or "")
+    assert "-90" in (a.open_block_reason or "")  # 阈值随账户缩放：1000 × 9%
+
+
+def test_daily_loss_stop_switch_off(db, monkeypatch):
+    """开关关闭（DAILY_LOSS_STOP_ENABLED=False）：同样净亏 -100 不再拦截，
+    穿透到 _attempt_open（由替身终止）"""
+    monkeypatch.setattr(settings, "DAILY_LOSS_STOP_ENABLED", False)
+    _closed(db, -50.0, datetime.utcnow())
+    _closed(db, -50.0, datetime.utcnow())
+    a = _make_analysis(db, rec=90)
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) is False
+    assert "熔断" not in (a.open_block_reason or "")
+    assert "开仓失败" in (a.open_block_reason or "")
 
 
 # ── A4'：盘口价差预检 ─────────────────────────────────────────────────

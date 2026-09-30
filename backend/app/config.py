@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     STRUCTURE_TOUCH_BAND_PCT: float = 0.3  # retest/swing 横向位触碰带宽（%，影线可入带收盘须守住）
     EMA_TOUCH_MIN_BARS: int = 200  # EMA 触碰最小已收盘根数（数据门，EMA144 收敛兜底）
     DAILY_LOSS_STOP_PCT: float = 9.0  # 当日亏损熔断：UTC 日已平仓净亏 ≤ -风险基数×9%（≈3笔满损）停开仓（0=关闭）
+    # 当日亏损熔断总开关（2026-09-30 用户拍板开关化）：True=启用（默认，保持现行为），
+    # False=关闭；阈值仍由 DAILY_LOSS_STOP_PCT 控制（9% ≈ 3 笔满损，随账户金额缩放）。
+    # 注意与软熔断（CONSECUTIVE_LOSS_DERATE 提门槛）区别：本开关管的是停开仓的硬闸门
+    DAILY_LOSS_STOP_ENABLED: bool = True
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
     # 规则版本标记（docs/24 A0，2026-09-29）：随规则集变更递增（改 trigger/risk_guard/
     # 提示词纪律/分批比例均算改版），开仓与分析落库时快照到 trade_records/ai_analyses；

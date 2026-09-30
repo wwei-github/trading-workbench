@@ -842,8 +842,10 @@ def try_open_for_analysis(
     # 当日亏损熔断（2026-09-27 正式网复盘）：UTC 日本账号已平仓净亏 ≤ -阈值
     # （风险基数 × DAILY_LOSS_STOP_PCT，默认 9% ≈ 3 笔满损，随账户金额缩放）
     # 停开仓——09-26 全天 13 笔全灭仍持续开单，趋势日的 trail 赢单无法覆盖
-    # 震荡日的连损。只停开仓，AI 分析/巡检照常。0=关闭。
-    if settings.DAILY_LOSS_STOP_PCT > 0:
+    # 震荡日的连损。只停开仓，AI 分析/巡检照常。
+    # 2026-09-30 用户拍板开关化：DAILY_LOSS_STOP_ENABLED 默认 True=保持现行为，
+    # False=关闭；PCT 置 0 亦关闭（阈值语义）
+    if settings.DAILY_LOSS_STOP_ENABLED and settings.DAILY_LOSS_STOP_PCT > 0:
         day_pnl = _daily_closed_pnl(db, trader.account_key, trader.testnet)
         loss_cap = _daily_loss_cap(wallet)
         if day_pnl <= -loss_cap:
