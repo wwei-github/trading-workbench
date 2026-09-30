@@ -50,6 +50,42 @@ from app.services.strategy.trigger import (
 logger = logging.getLogger(__name__)
 
 
+def _scan_hit_card(new_hits: list[dict]) -> dict:
+    """定时扫描命中消息卡片（2026-09-30 由纯文本改卡片）。
+
+    标题计数 + 命中列表（lark_md 加粗币种；信号族/金K形态中文名沿用复盘
+    TRIGGER_FAMILY / PATTERN_LABEL_MAP 映射）；超 8 条截断、余量并入 note
+    脚注。返回卡片体（外层包装与发送通道由 feishu_bot 负责）。
+    """
+    from app.services.actual_review import TRIGGER_FAMILY
+    from app.services.strategy.candlestick import PATTERN_LABEL_MAP
+
+    lines = "\n".join(
+        f"**{h['symbol']}**　"
+        f"{TRIGGER_FAMILY.get(h.get('signal_type') or '', '未知信号')}"
+        + (f"·{PATTERN_LABEL_MAP.get(h['pattern'], h['pattern'])}"
+           if h.get("pattern") else "")
+        + f"　质量分 {h.get('quality_score', 0)}"
+        for h in new_hits[:8]
+    )
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text",
+                      "content": f"🔎 定时扫描命中 {len(new_hits)} 个"},
+            "template": "blue",
+        },
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": lines}},
+        ],
+    }
+    if len(new_hits) > 8:
+        card["elements"].append({"tag": "note", "elements": [
+            {"tag": "plain_text",
+             "content": f"仅列前 8 个，共命中 {len(new_hits)} 个"}]})
+    return card
+
+
 def classify_volume(klines: list[list]) -> tuple[float, str]:
     """提取最新已收盘 K 线成交量并分类（比率口径复用 indicators.volume_ratio，
     与放量突破门槛 BREAKOUT_VOL_RATIO 同源）。
@@ -394,22 +430,12 @@ class Scanner:
 
             # 5.2 筛选命中飞书通知（2026-09-28，仅定时扫描——手动扫描用户在场，
             # 不推送）。new_hits 已过重复命中抑制，只在真新命中时提醒；
-            # 失败只记日志不影响扫描与 AI 分析链路
+            # 失败只记日志不影响扫描与 AI 分析链路。
+            # 2026-09-30 纯文本改消息卡片（_scan_hit_card）
             if record.scan_type == "scheduled" and new_hits:
                 try:
-                    from app.services.actual_review import TRIGGER_FAMILY
-                    from app.services.feishu_bot import send_app_text
-                    from app.services.strategy.candlestick import PATTERN_LABEL_MAP
-                    lines = "\n".join(
-                        f"{h['symbol']}　"
-                        f"{TRIGGER_FAMILY.get(h.get('signal_type') or '', '未知信号')}"
-                        + (f"·{PATTERN_LABEL_MAP.get(h['pattern'], h['pattern'])}"
-                           if h.get("pattern") else "")
-                        + f"　质量分 {h.get('quality_score', 0)}"
-                        for h in new_hits[:8]
-                    )
-                    more = f"\n…等共 {len(new_hits)} 个" if len(new_hits) > 8 else ""
-                    send_app_text(f"🔎 定时扫描命中 {len(new_hits)} 个\n{lines}{more}")
+                    from app.services.feishu_bot import send_app_card
+                    send_app_card(_scan_hit_card(new_hits))
                 except Exception:
                     logger.exception("扫描命中飞书通知失败 #%s", scan_record_id)
 
