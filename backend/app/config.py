@@ -121,8 +121,10 @@ class Settings(BaseSettings):
     # 连损降速软熔断（docs/24 A3）：当日连续亏损时提升开仓评分门槛
     # （连损 2 → 评分 ≥75，连损 ≥3 → ≥85，绝对档位；低于现行门槛值时不生效），
     # 且定时批量分析配额减半——连损趋势日降频观望，但不像当日亏损熔断那样停摆；
-    # False=关闭
-    CONSECUTIVE_LOSS_DERATE: bool = True
+    # False=关闭。2026-09-30 用户拍板默认关闭（False）：评分门槛已由
+    # TRADING_MIN_RECOMMENDATION 统一把关，连损日额外提分档属重复设限，
+    # 且拦截理由「连损3笔降速」对用户不可预期
+    CONSECUTIVE_LOSS_DERATE: bool = False
     # 组合热度上限（docs/24 A3'）：在跑单（OPENED/TP1_HIT/TP2_HIT）止损金额合计
     # / 钱包余额的上限（0.15=15%），本单预估止损计入后超限则不开新单；
     # 0=关闭。2026-09-29 用户拍板默认 0（关闭）：单数控制（max_open_trades +
