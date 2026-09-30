@@ -613,20 +613,19 @@ def render_indicator_block(klines: list[list], htf_klines: Optional[list] = None
     bull = [s for _, s, r in results if r and int(r.get("dir") or 0) > 0]
     bear = [s for _, s, r in results if r and int(r.get("dir") or 0) < 0]
     nb, ns = len(bull), len(bear)
+    # 结论行只承载数据（票数+来源指标），行为规则（谁多以谁为准）由系统提示词
+    # _RULE_VOTE 承载，不在此重复（docs/24 提示词瘦身 B2）
     if nb > ns:
         lines.append(
-            f"- 指标方向: 看多{nb}项（{'/'.join(bull)}） vs 看空{ns}项"
-            f" —— 看多为主，方向判断以看多指标为依据"
+            f"- 指标方向: 看多{nb}项（{'/'.join(bull)}） vs 看空{ns}项 → 看多为主"
         )
     elif ns > nb:
         lines.append(
-            f"- 指标方向: 看多{nb}项 vs 看空{ns}项（{'/'.join(bear)}）"
-            f" —— 看空为主，方向判断以看空指标为依据"
+            f"- 指标方向: 看多{nb}项 vs 看空{ns}项（{'/'.join(bear)}）→ 看空为主"
         )
     else:
         lines.append(
-            f"- 指标方向: 多空平衡（看多{nb}项 vs 看空{ns}项）"
-            f" —— 无多数方向，自行结合K线结构与量能判断"
+            f"- 指标方向: 多空平衡（看多{nb}项 vs 看空{ns}项）→ 结合K线结构与量能判断"
         )
 
     # 4h 强背景方向硬约束（2026-09-24）：强多只开多 / 强空只开空，
@@ -635,16 +634,16 @@ def render_indicator_block(klines: list[list], htf_klines: Optional[list] = None
     if htf_r and htf_r.get("grade") == "strong":
         if htf_r["state"] == "bullish":
             lines.append(
-                "- 方向约束（硬性）: 4h强多头背景 —— 开仓方向仅可 long，"
-                "开空一律 skip；此约束优先于指标多数决"
+                "- 方向约束（硬性）: 4h强多头背景 —— 仅可 long，开空一律 skip"
+                "（优先于指标多数决，细则见系统提示词硬约束）"
             )
         else:
             lines.append(
-                "- 方向约束（硬性）: 4h强空头背景 —— 开仓方向仅可 short，"
-                "开多一律 skip；此约束优先于指标多数决"
+                "- 方向约束（硬性）: 4h强空头背景 —— 仅可 short，开多一律 skip"
+                "（优先于指标多数决，细则见系统提示词硬约束）"
             )
 
-    return "技术指标（方向=多空票数多数决，以票数多的方向为主）:\n" + "\n".join(lines) + "\n"
+    return "技术指标（方向=多空票数多数决）:\n" + "\n".join(lines) + "\n"
 
 
 def compute_indicator_votes(

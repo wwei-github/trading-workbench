@@ -33,32 +33,28 @@ _RULE_EMA = """EMA 排列不构成方向限制：多头排列不禁止做空、�
 均线仅是趋势背景参考之一（金叉/死叉/拐头是动能转换信号）。"""
 
 _RULE_SL = """止损纪律（结构位优先，影线极值兜底，两锚取更远者；程序不再改写止损价，合理性自行把关）：
-- 优先：做多锚定入场价下方最近摆动低点外 0.3%（建议 0.3%~0.5%），做空锚定入场价上方最近摆动高点外同幅度。
-- 两锚取更远者：入场贴着结构位是区间边缘类开单的常态，此时位在 5 根影线范围内，只锚结构位会把止损放进近期波动区间内部、极易被扫损。止损必须同时在结构位外与影线极值外——做多取摆动低点与最近 5 根最低点中更低者外 0.3%，做空取摆动高点与最近 5 根最高点中更高者外 0.3%。
-- 兜底：入场价与极值之间没有任何摆动结构位时，用极值锚——做多严格低于最近 5 根最低点（影线极值即最低价，非收盘价）至少 0.3%，做空严格高于最高点至少 0.3%。
-- 止损宽度不设固定百分比上限；若盈亏比不达标，优先调整入场价，仍不行则 skip。"""
+- 优先：做多锚定入场价下方最近摆动低点外 0.3%（建议 0.3%~0.5%），做空锚定上方最近摆动高点外同幅度。
+- 两锚取更远者（防止损落进近期波动区间内被扫损）：做多取摆动低点与最近 5 根最低点中更低者外 0.3%，做空取摆动高点与最近 5 根最高点中更高者外 0.3%。
+- 兜底（入场价与极值间无摆动结构位时用极值锚）：做多严格低于最近 5 根最低点（影线极值即最低价，非收盘价）至少 0.3%，做空严格高于最高点至少 0.3%。
+- 止损宽度不设固定百分比上限；盈亏比不达标先调入场价，仍不行则 skip。"""
 
 _RULE_TP = """止盈锚定（多空方向不同，必须遵守；程序不再改挂止盈价）：
-- 结构位=摆动高低点（用户消息中"近期摆动结构"）。
-  **近位不算止盈目标**：距现价特别近（≤1×ATR）的位是价格正在测试/突破的
-  "争夺位"，它回答的是"价格是否得到支撑/压力/突破"，不是盈利空间；
-  止盈一必须挂在更远的第一档结构位外侧：
-  做多 = 上方摆动高点下方 0.2%~0.5%，不得挂在位上方或贴死位；
-  做空 = 下方摆动低点上方 0.2%~0.5%，不得挂在位下方或贴死位。
-  价格常在位附近反弹，深入越位才触发的止盈大概率落空。
-- 禁止把止盈一挂到更远结构位凑盈亏比：到第一结构位的盈亏比不足 {rr_min} 说明这笔交易
-  空间不足（第一结构位都够不着 {rr_min}R），应直接 skip，不要跳档（程序按盈亏比铁律
-  复算打回）。
-- 止盈二：挂在止盈一锚定档的下一档结构位外侧（做多=更高一档摆动高点下方，
-  做空=更低一档摆动低点上方），同样留余地；止盈二必须比止盈一更远。
-- 若入场方向前方没有任何结构位可锚定（如创新高突破）：止盈一 = 入场价 ± {rr_min}×止损距离（盈亏比恰达标），
-  止盈二设 0（仅设一档）。"""
+- 结构位=摆动高低点（用户消息中"近期摆动结构"）。距现价 ≤1×ATR 的位是正在
+  测试的争夺位、不算止盈目标，止盈一必须挂更远的第一档结构位外侧：
+  做多 = 上方摆动高点下方 0.2%~0.5%（不得越到位上方或贴死位）；
+  做空 = 下方摆动低点上方 0.2%~0.5%（不得越到位下方或贴死位）。
+- 禁止跳档凑盈亏比：到第一结构位不足 {rr_min}R 就是空间不足，应直接 skip
+  （程序按盈亏比铁律复算打回）。
+- 止盈二：止盈一锚定档的下一档结构位外侧（做多=更高一档摆动高点下方，
+  做空=更低一档摆动低点上方），留同幅余地，且必须比止盈一更远。
+- 前方无任何结构位可锚（如创新高突破）：止盈一 = 入场价 ± {rr_min}×止损距离
+  （盈亏比恰达标），止盈二设 0（仅设一档）。"""
 
-_RULE_STRUCT = """结构破位回踩打法（structure_break）详解——三种子形态按行情阶段择一，判断依据写进 analysis：
-1. 123法则（趋势反转）：跌破支撑位(1) → 反弹不创新低(2) → 再突破反弹高点（上方压力位）时入场(3，决定性确认)；止损放 123 转折点外侧。确认稳但滞后，入场偏晚。
-2. N字结构（趋势延续）：回调不破支撑位 → 突破压力位 → 回踩不破支撑位入场；止损放 N 字中间低点，破即结构失效。
-3. 2B法则（假突破反手）：创阶段新高后迅速收回压力位下方（或阶段新低后收回支撑位上方）→ 反向入场；止损放假突破极值外侧小缓冲。盈亏比最佳但胜率偏低，须严守止损。
-共同缺点：震荡市表现最差（假突破连发）；归为震荡区间的信号应归 range_edge 而非本打法。优缺点与子形态选择理由须在 analysis 中说明。"""
+_RULE_STRUCT = """结构破位回踩打法（structure_break）三子形态按行情阶段择一，选择理由写进 analysis：
+1. 123法则（趋势反转）：破支撑(1) → 反弹不创新低(2) → 突破反弹高点时入场(3)；止损放转折点外侧。稳但滞后。
+2. N字结构（趋势延续）：回调不破支撑 → 突破压力 → 回踩不破入场；止损放 N 字中间低点，破即失效。
+3. 2B法则（假突破反手）：创阶段新高即收回位下方（或新低即收回位上方）→ 反向入场；止损放假突破极值外小缓冲。盈亏比最佳但胜率偏低，须严守止损。
+共同：震荡市最差（假突破连发），震荡区间信号归 range_edge 不用本打法。"""
 
 _RULE_DIRECTION = """方向纪律（不再程序强制，无 ±0.3% 贴近要求）：优先只在支撑结构做多、
 只在压力结构做空；现价已离开结构位时不再要求贴近，可按动能顺势给入场价（顺势追势
@@ -68,7 +64,7 @@ _RULE_DIRECTION = """方向纪律（不再程序强制，无 ±0.3% 贴近要求
 _RULE_TOUCH = """回踩触点语义（信号块出现"回踩触点"行时程序已验证金K上一根触碰该位企稳）：
 retest=突破回测位（破轨后横向验证，结构意义最强，止盈/止损参考被测轨位）、
 swing=摆动结构位（HL/LH 防守位）、ema21=趋势动态价值区、ema55/ema144=大周期深回撤
-价值区（数据/排列/斜率三道门已程序验证）。有触点时止损优先锚定触点位：做多放触点位
+价值区（三道门已程序验证）。有触点时止损优先锚定触点位：做多放触点位
 下外侧、做空放上外侧（仍按止损纪律两锚取更远者结合影线极值）。"""
 
 # 信号类型中文对照（结构分类）
@@ -113,21 +109,20 @@ def render_signal_gate_block(signal_type: str, stop_cap_pct: Optional[float] = N
     lines: list[str] = []
     if signal_type == "trigger_breakout":
         lines += [
-            "- 突破位: 收盘越过最近一个未被突破的摆动结构前高（做多；做空=跌破前低对称）"
-            "——结构性破位才算突破，窗口滚动新高不算",
+            "- 突破位: 收盘越过最近一个未被突破的摆动结构前高（做多；做空=跌破前低对称；窗口滚动新高不算）",
             f"- 突破幅度: ≥{flt.breakout_threshold * 100:.1f}%（毛边不算）"
             + (f"，>{flt.breakout_max_pct:.1f}% 视为追高不触发" if flt.breakout_max_pct > 0 else "，追高上限未启用"),
-            f"- 放量（加分项）: 信号K线量 ≥ 近20根中位量 {flt.breakout_vol_ratio:g} 倍时质量分+5，未达标不拦截",
-            "- 突破K线形态: 长实体占K线主体（实体 ≥75% 全长，影线可有但合计 ≤25%）",
+            f"- 放量（加分项）: 信号K线量 ≥ 近20根中位量 {flt.breakout_vol_ratio:g} 倍 → 质量分+5（不拦截）",
+            "- 突破K线形态: 长实体（实体 ≥75% 全长，影线合计 ≤25%）",
         ]
     elif signal_type == "trigger_trend_breakout":
         lines += [
             f"- 突破位: 收盘破 {flt.breakout_channel_bars} 根 Donchian 滚动高低轨"
-            "（窗口不含信号K线自身）——强趋势连续新高/新低、无未破结构前高/前低可越时的追势入场",
+            "（窗口不含信号K线；强趋势无未破结构位可越时的追势入场）",
             f"- 突破幅度: ≥{flt.breakout_threshold * 100:.1f}%（毛边不算）"
             + (f"，>{flt.breakout_max_pct:.1f}% 视为追高不触发" if flt.breakout_max_pct > 0 else "，追高上限未启用"),
-            f"- 放量（加分项）: 信号K线量 ≥ 近20根中位量 {flt.breakout_vol_ratio:g} 倍时质量分+5，未达标不拦截",
-            "- 突破K线形态: 长实体占K线主体（实体 ≥75% 全长，影线可有但合计 ≤25%）",
+            f"- 放量（加分项）: 信号K线量 ≥ 近20根中位量 {flt.breakout_vol_ratio:g} 倍 → 质量分+5（不拦截）",
+            "- 突破K线形态: 长实体（实体 ≥75% 全长，影线合计 ≤25%）",
         ]
     else:
         if signal_type in ("trigger_pullback", "trigger_pullback_confirm"):
@@ -147,16 +142,15 @@ def render_signal_gate_block(signal_type: str, stop_cap_pct: Optional[float] = N
     # 突破类公共段：止损锚降级链（docs/23，2026-09-29）——近锚只救
     # "万事俱备、只差盈亏比"的突破单，其余条件任一不满足时无近锚资格
     lines += [
-        "- 止损锚（突破类专用）: 结构锚（摆动前低/前低下方 0.3% 缓冲）优先；按结构锚复算"
-        "盈亏比 <1.5 且调整入场价仍无法达标（本应 skip）时，才降级近锚——突破K线（本信号K线）"
-        "最低价（做多）下方 0.3% 缓冲（做空=最高价上方），止盈与盈亏比按新锚复算；近锚达标才可"
-        "建议开单，并输出 stop_anchor=\"near\"（结构锚达标时输出 \"structure\"）；近锚仍不达标 → skip",
+        "- 止损锚（突破类专用）: 结构锚（摆动前低下方 0.3% 缓冲，做空=前高上方）优先；"
+        "仅当按结构锚复算盈亏比 <1.5 且调整入场价仍无法达标时，才降级近锚——突破K线（本信号K线）"
+        "极值外 0.3% 缓冲（做多=最低价下方，做空=最高价上方），止盈与盈亏比按新锚复算；"
+        "近锚达标才可建议开单，并输出 stop_anchor=\"near\"（结构锚达标时输出 \"structure\"）；"
+        "近锚仍不达标 → skip",
         "- 近锚适用前提（硬约束）: 仅当 skip 的唯一原因是盈亏比不达标——信号方向、4h 背景、"
-        "趋势状态、量能特征、质量分等其余开单条件必须全部满足；任何其他条件不满足时"
-        "禁止使用近锚，照常 skip",
-        "- 近锚资格附加线: 量比 <1 的缩量突破无近锚资格（缩量假突破+止损贴脸是最危险组合）；"
-        "近锚后盈亏比 >4 时重新评估或 skip（止损过近说明失效位无意义）；"
-        "近锚止损宽度仍须 ≥0.3×ATR（止损宽度方法区间下限）",
+        "趋势状态、量能特征、质量分等其余开单条件必须全部满足，否则照常 skip",
+        "- 近锚资格附加线: 量比 <1 的缩量突破无近锚资格；近锚后盈亏比 >4 时重新评估或 skip；"
+        "近锚止损宽度仍须 ≥0.3×ATR",
     ]
     if cap_line:
         lines.append(
@@ -177,8 +171,8 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 - trade_decision: 是否建议开单，"suggest"（建议开单）或 "skip"（不建议开单）
 - skip_reason: trade_decision="skip" 时必填，用"1. 2. 3."序号逐条列出不建议开单的主要原因（如：1. 信号强度不足 2. 盈亏比不佳），最多3条，每条一行，JSON内换行写\\n。suggest 时输出空字符串。
 - direction: 交易方向，"long"（做多）或 "short"（做空）。skip 时为空字符串。
-- trade_type: 开单类型（结构打法归类），suggest 时必填其一：trend_follow（顺势交易，趋势方向由 EMA 排列或指标共振确立，如 SuperTrend/MACD/4h背景同向即满足，纯 EMA 排列不是硬门槛）/ structure_break（结构破位回踩，涵盖 123法则·N字结构·2B法则，见下方打法详解）/ range_edge（区间边缘反转）。skip 时为空字符串。
-- stop_anchor: 止损锚类型，仅突破类信号（程序门槛标注"突破类专用"时）需要输出："structure"（结构锚）或 "near"（突破K极值近锚，含义与资格前提见程序入场门槛），降级链规则以门槛块为准；其他信号类型输出空字符串。
+- trade_type: 开单类型（结构打法归类），suggest 时必填其一：trend_follow（顺势，方向由 EMA 排列或指标共振确立，纯 EMA 排列不是硬门槛）/ structure_break（结构破位回踩，涵盖 123法则·N字结构·2B法则，见下方打法详解）/ range_edge（区间边缘反转）。skip 时为空字符串。
+- stop_anchor: 止损锚类型，仅突破类信号需输出："structure"（结构锚）或 "near"（突破K极值近锚），资格与降级链以程序入场门槛块为准；其他信号类型输出空字符串。
 - entry_price: 建议入场价。必须以"当前价格"（分析时刻最新价）为基准：顺势追势时入场贴近现价；
   计划等回踩时给回踩锚定价（摆动低/高点）并在 analysis 中写明"等回踩"（程序会据此标记
   "待回踩"，仅作展示、不会为其下单）；若现价已显著离开
@@ -190,9 +184,8 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
   做空绝不允许锚定低点、做多绝不允许锚定高点。
 - take_profit_1: 第一档止盈价，做多=上方摆动高点下方留 0.2%~0.5% 余地，
   做空=下方摆动低点上方留 0.2%~0.5%。盈亏比铁律（程序按三价复算打回，声称值无效）：
-  RR = |TP1 − 入场| ÷ |入场 − 止损| 必须 ≥ {rr_min}，输出前先自行代入验算。
-  距现价特别近（≤1×ATR）的位
-  是当前争夺位、不算止盈目标，止盈一从更远的第一档结构位起算。
+  RR = |TP1 − 入场| ÷ |入场 − 止损| 必须 ≥ {rr_min}，输出前先自行代入验算
+  （近位争夺位不算止盈目标，细则见下方止盈锚定）。
 - take_profit_2: 第二档止盈价，锚定更前方一档摆动结构位（做多=更高一档摆动高点下方，
   做空=更低一档摆动低点上方，同样留余地）且必须比止盈一更远。
 - risk_reward_ratio: take_profit_1 的盈亏比，2位小数。
@@ -221,9 +214,9 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 - {_RULE_VOTE}
 - 入场/止损/止盈的结构位锚定规则不受指标方向影响，仍按上方规则执行。
 
-资金费率与 BTC 状态以用户消息【市场环境】块为准（docs/24 A4）；持仓量/恐贪指数等
-其余市场环境数据未随消息提供，请勿臆测：仅基于给定的 K 线、量能、均线、摆动结构、
-技术指标、4h 背景与环境块数据进行分析，环境块缺失时按无环境数据处理。"""
+资金费率与 BTC 状态以用户消息【市场环境】块为准（docs/24 A4）；持仓量/恐贪等其余
+环境数据未提供，勿臆测：仅基于给定的 K 线、量能、均线、摆动结构、技术指标、
+4h 背景与环境块数据进行分析，环境块缺失时按无环境数据处理。"""
 
 def render_system_prompt(risk_label: Optional[str] = None) -> str:
     """渲染最终生效的 P0 系统提示词（SYSTEM_PROMPT 为带槽位模板）。
@@ -254,7 +247,7 @@ def analyze_coin(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
-    stop_cap_pct: Optional[float] = None,
+    stop_cap_pct: Optional[float] = None, interval: str = "1h",
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -267,12 +260,15 @@ def analyze_coin(
     risk_*: 止损金额模式口径（2026-09-27），仅 risk_label 注入提示词
     stop_cap_pct: 止损宽度硬上限（max_stop_pct 补丁参数，比例；None=不限制），
     注入门槛块供 AI 自验（2026-09-29）
+    interval: K线周期标签（如 "1h"/"15m"），注入 CSV 表头让模型明确时间尺度
+    （kline_interval 可在系统配置页修改，勿硬编码）
     """
     client = _get_client()
     return _call_llm(
         client,
         _build_messages(signal, klines, strategy_prompt, user_input, htf_klines,
-                        risk_label=risk_label, stop_cap_pct=stop_cap_pct),
+                        risk_label=risk_label, stop_cap_pct=stop_cap_pct,
+                        interval=interval),
     )
 
 
@@ -282,6 +278,7 @@ def _build_messages(
     htf_klines: Optional[list] = None,
     risk_label: str = "",
     stop_cap_pct: Optional[float] = None,
+    interval: str = "1h",
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
 
@@ -293,9 +290,30 @@ def _build_messages(
     # reasoning 时长与输入量正相关；浓缩结论（指标/摆动块）已覆盖形态识别所需，
     # 窗口内 EMA/MACD 等指标块照常现算不受影响
     recent = klines[-41:-1] if len(klines) >= 41 else klines[:-1]
-    # 每根K线自带成交量与成交额（quote_vol，USDT），与 Agent 管线同格式
+
+    # K线价格压缩到定点小数（docs/24 提示词瘦身）：%g 会把大价格变成
+    # 科学计数法（64235→6.424e+04，反直觉且精度错觉），故按价位段动态小数位。
+    # 各段最差相对误差 ≤0.05%（实测候选池 387 币分布，2026-09-30）：
+    # ≥1000→1位(0.005%)、≥100→2位、≥1→3位、≥0.001→6位(0.05%)、
+    # <0.001→8位——小价位币（NEIRO/MEME/MEW 等 6 个在池币）6 位截断误差
+    # 可达 0.54%＞摆动锚 0.3% 缓冲，必须加档（8 位时 NEIRO 误差 0.005%）
+    def _fp(v) -> str:
+        v = float(v)
+        if v >= 1000:
+            return f"{v:.1f}"
+        if v >= 100:
+            return f"{v:.2f}"
+        if v >= 1:
+            return f"{v:.3f}"
+        if v >= 0.001:
+            return f"{v:.6f}"
+        return f"{v:.8f}"
+
+    # 每根K线自带成交量（quote_vol 删除：放量判定看 vol 相对倍数，绝对成交额
+    # 单次管线无行为指向）；timestamp 删绝对时间——K线序列天然等间隔（1h），
+    # 模型只需顺序不需钟点，省 10 字符/根
     kline_summary = "\n".join(
-        f"{int(k[0]/1000)},{k[1]},{k[2]},{k[3]},{k[4]},{k[5]},{k[7]}" for k in recent
+        f"{_fp(k[1])},{_fp(k[2])},{_fp(k[3])},{_fp(k[4])},{_fp(k[5])}" for k in recent
     )
 
     # 信号形态出现位置标签
@@ -369,7 +387,7 @@ def _build_messages(
         f"{indicator_summary}"
         f"{market_summary}"
         f"{swings_summary}"
-        f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
+        f"近{len(recent)}根已收盘{interval} K线(open,high,low,close,vol，等间隔排列，价格按价位段保留小数):\n{kline_summary}"
     )
 
     if user_input:
@@ -448,7 +466,7 @@ def analyze_with_guard(
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
-    stop_cap_pct: Optional[float] = None,
+    stop_cap_pct: Optional[float] = None, interval: str = "1h",
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -456,10 +474,12 @@ def analyze_with_guard(
     risk_*（2026-09-27 止损金额模式）：risk_label 注入提示词；fixed 模式下
     risk_amount 作为预算实额传入仓位复算（与开仓引擎同口径）。
     stop_cap_pct（2026-09-29）：止损宽度硬上限注入门槛块（None=不限制）。
+    interval：K线周期标签（与取数口径一致，ai_tasks 传 cfg.kline_interval）。
     """
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
         htf_klines=htf_klines, risk_label=risk_label, stop_cap_pct=stop_cap_pct,
+        interval=interval,
     )
     client = _get_client()
     _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None
