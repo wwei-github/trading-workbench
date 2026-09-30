@@ -109,14 +109,24 @@ ENGULF_BODY_LOOKBACK = 20
 ENGULF_BODY_MIN_RATIO = 1.0   # 两根实体均须 ≥ 基线均值 × 该系数
 ENGULF_BODY_MIN_BARS = 10
 
+# 决断K线影线质量门（docs/25 §4，2026-09-30 用户拍板，替代提示词降权路线）：
+# 形态中承担「决断」角色的那根K线——总影线占全长比例过高 = 长影拉锯、犹豫非决断，
+# 直接不判金K（不满足要求的不判）。只约束决断K线自身，形态其余K线（被吞没方/
+# 趋势语境K/星）不参与该门；实体占比 ≥60% 即放行（门只拦 >40%）
+# - 吞没：第二根（吞没K线）
+# - 启明星/黄昏星：第三根（确认阳/阴线）
+DECISION_SHADOW_MAX_PCT = 0.40   # 决断K线总影线 / K线全长 上限
+
 
 def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     """吞没形态（看涨/看跌）
 
     看涨吞没：当前阳线实体完全包住前一根阴线实体
     看跌吞没：当前阴线实体完全包住前一根阳线实体
-    两根 K 线实体都必须比较长（≥ 近 20 根平均实体），
-    实体太短的小实体互包不算吞没。
+    质量门（不满足即不判吞没）：
+    1. 两根 K 线实体都必须比较长（≥ 近 20 根平均实体），
+       实体太短的小实体互包不算吞没；
+    2. 吞没K线（第二根）总影线 ≤ 全长 40%（长影吞没=犹豫非决断）。
     """
     # idx 与其他检测器同语义（负数=倒数，正数=绝对位置），统一换算成绝对位置
     pos = idx if idx >= 0 else len(klines) + idx
@@ -142,6 +152,11 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
         return None
     avg_body = sum(base) / len(base)
     if avg_body <= 0 or body1 < avg_body * ENGULF_BODY_MIN_RATIO or body2 < avg_body * ENGULF_BODY_MIN_RATIO:
+        return None
+
+    # 影线质量门：吞没K线实体须占 K 线主体（总影线 ≤ 全长 40%）
+    rng2 = float(k_cur[2]) - float(k_cur[3])
+    if rng2 <= 0 or (rng2 - body2) / rng2 > DECISION_SHADOW_MAX_PCT:
         return None
 
     # 看涨吞没：前阴后阳，阳实体包住阴实体
@@ -170,6 +185,7 @@ def detect_morning_star(klines: list[list], idx: int = -1) -> Optional[dict]:
     1. 第一根：阴线（下跌趋势中）
     2. 第二根：小实体（星），实体较小，可以是阴阳
     3. 第三根：阳线，收盘深入第一根实体
+    4. 第三根影线不过长（总影线 ≤ 全长 40%，决断K线影线质量门）
     """
     if len(klines) < abs(idx) + 2:
         return None
@@ -199,6 +215,13 @@ def detect_morning_star(klines: list[list], idx: int = -1) -> Optional[dict]:
 
     # 第三根阳线，收盘深入第一根实体中部以上
     if not _is_bullish(o3, c3):
+        return None
+
+    # 影线质量门（docs/25 §4，2026-09-30）：第三根是决断K线，总影线 > 全长 40%
+    # （冲高遭上方抛压打回/探底回拉）= 犹豫非决断，不判金K
+    h3, l3 = float(k3[2]), float(k3[3])
+    rng3 = h3 - l3
+    if rng3 <= 0 or (rng3 - body3) / rng3 > DECISION_SHADOW_MAX_PCT:
         return None
 
     midpoint1 = (o1 + c1) / 2
@@ -269,6 +292,7 @@ def detect_evening_star(klines: list[list], idx: int = -1) -> Optional[dict]:
     1. 第一根：阳线
     2. 第二根：小实体（星）
     3. 第三根：阴线，收盘深入第一根实体下半部
+    4. 第三根影线不过长（总影线 ≤ 全长 40%，决断K线影线质量门）
     """
     if len(klines) < abs(idx) + 2:
         return None
@@ -295,6 +319,12 @@ def detect_evening_star(klines: list[list], idx: int = -1) -> Optional[dict]:
         return None
 
     if not _is_bearish(o3, c3):
+        return None
+
+    # 影线质量门：第三根是决断K线（启明星第三根的顶部镜像，口径同 40%）
+    h3, l3 = float(k3[2]), float(k3[3])
+    rng3 = h3 - l3
+    if rng3 <= 0 or (rng3 - body3) / rng3 > DECISION_SHADOW_MAX_PCT:
         return None
 
     midpoint1 = (o1 + c1) / 2

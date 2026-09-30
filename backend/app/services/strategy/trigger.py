@@ -100,6 +100,29 @@ def _is_solid_breakout_candle(klines: list[list], direction: int) -> bool:
     return body / rng >= BREAKOUT_BODY_RANGE_MIN
 
 
+def _pullback_volume_note(klines: list[list]) -> str:
+    """回踩金K量能注记（docs/25 §3.1）：补齐「大量」要素，双口径——
+
+    - 量比 = 信号K线量 ÷ 近 20 根中位量（程序唯一口径，与突破路径一致）
+    - 较前根 = 信号K线量 vs 前一根（知识库口径「第二根量超前一根为加分项」）
+
+    注入 reason 后随信号落库 → AI 事实包 / 前端 / 复盘快照全链路可见；
+    数据不足（volume_ratio 返回 0）或前根量为 0 时静默省略对应段。
+    """
+    vr = volume_ratio(klines)
+    if vr <= 0:
+        return ""
+    note = f"·量比{vr:.1f}(vs中位)"
+    try:
+        prev_v = float(klines[-3][5])
+        cur_v = float(klines[-2][5])
+        if prev_v > 0:
+            note += f"·较前根×{cur_v / prev_v:.1f}"
+    except (IndexError, TypeError, ValueError):
+        pass
+    return note
+
+
 def _detect_ema_touch(
     klines: list[list], direction: int, period: int, flt: ScanFilters,
 ) -> Optional[float]:
@@ -421,6 +444,9 @@ def detect_trigger(
     touch_price = touches.get(touch_ref) if touch_ref else None
     touch_label = TOUCH_LABELS.get(touch_ref, "") if touch_ref else None
 
+    # 量能注记（docs/25 §3.1）：回踩金K路径补「大量」要素，双口径见 helper
+    vol_note = _pullback_volume_note(klines)
+
     # 行2：当根触碰+金K → 当根确认（比纯形态更强，pending 一律被抢先）。
     if touch_ref is not None and golden:
         _label = PATTERN_LABEL_MAP.get(golden["pattern"], golden["pattern"])
@@ -431,7 +457,7 @@ def detect_trigger(
             "type": PULLBACK_CONFIRM, "direction": direction,
             "position": pos_fb, "touch_ref": touch_ref,
             "pattern": golden["pattern"], "breakout_pct": 0.0,
-            "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且{_ev}",
+            "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且{_ev}{vol_note}",
         }, _close_op(pending, direction, "same_candle_confirm")
 
     # 行3/行4：未触碰但有金K → 有效 pending 则次根确认（有回踩语境）。
@@ -449,7 +475,7 @@ def detect_trigger(
                 "type": PULLBACK_CONFIRM, "direction": direction,
                 "position": pos_fb, "touch_ref": p_ref,
                 "pattern": golden["pattern"], "breakout_pct": 0.0,
-                "reason": f"指标同向·上根回踩{p_label}企稳·{_ev}",
+                "reason": f"指标同向·上根回踩{p_label}企稳·{_ev}{vol_note}",
             }, {"op": "confirm"}
         if pending:
             return None, {"op": "expire",

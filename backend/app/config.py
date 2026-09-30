@@ -46,7 +46,10 @@ class Settings(BaseSettings):
     # 复盘/归因按版本分组对比，跨版本混谈从机制上杜绝（NULL=上线前旧行按 legacy 理解）。
     # v2026-09-29-2：回踩金K复合确认（用户拍板）——单影线锤/流星单根不再确认，
     # 须双锤或锤+趋势K（candlestick.resolve_golden_evidence）
-    RULE_VERSION: str = "v2026-09-29-2"
+    # v2026-09-30：决断K线影线质量门（docs/25 §4，用户拍板）——吞没第二根、启明星/
+    # 黄昏星第三根总影线 > 全长 40% 不判金K（candlestick.DECISION_SHADOW_MAX_PCT）；
+    # 同日撤销 docs/25 提示词注入
+    RULE_VERSION: str = "v2026-09-30"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

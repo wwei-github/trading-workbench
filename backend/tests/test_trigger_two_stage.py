@@ -729,3 +729,57 @@ def test_resolve_direction_mismatch_rejected():
     golden, _ = trig.resolve_golden_evidence(
         kl, "bearish", [{"pattern": "hammer", "direction": "bullish"}])
     assert golden is None
+
+
+# ── 回踩金K量能注记（2026-09-30 docs/25 §3.1：补齐知识库「大量」要素）──────
+
+def _set_signal_vol(kl: list[list], vol: float) -> None:
+    """改写信号K线（klines[-2]）成交量，其余列不动"""
+    ts, o, h, l, c, _, qv = kl[-2]
+    kl[-2] = [ts, o, h, l, c, vol, qv]
+
+
+def test_pullback_volume_note_double_ratio():
+    """信号K量 200 vs 中位 100、前根 100 → 双口径全量注记"""
+    kl = _kl(*_base())
+    _set_signal_vol(kl, 200.0)
+    assert trig._pullback_volume_note(kl) == "·量比2.0(vs中位)·较前根×2.0"
+
+
+def test_pullback_volume_note_zero_prev_volume_skips_segment():
+    """前根量为 0 → 较前根段静默省略（防除零），量比段保留"""
+    kl = _kl(*_base())
+    ts3, o3, h3, l3, c3, _, qv3 = kl[-3]
+    kl[-3] = [ts3, o3, h3, l3, c3, 0.0, qv3]  # 前根在 20 根中位窗口内，单根 0 不动中位数
+    _set_signal_vol(kl, 200.0)
+    assert trig._pullback_volume_note(kl) == "·量比2.0(vs中位)"
+
+
+def test_pullback_volume_note_insufficient_data_returns_empty():
+    """已收盘根数不足 volume_ratio 窗口（<22）→ 注记整体为空串"""
+    kl = _kl(*_base(n=10))
+    assert trig._pullback_volume_note(kl) == ""
+
+
+def test_row2_same_candle_reason_includes_volume_note():
+    """当根确认 reason 携带量能注记（随信号落库 → AI 事实包/前端可见）"""
+    kl = _kl(*_base())
+    _touch_long(kl)
+    _set_signal_vol(kl, 200.0)
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl))
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert "量比2.0(vs中位)" in t["reason"]
+    assert "较前根×2.0" in t["reason"]
+
+
+def test_row3_next_candle_reason_includes_volume_note():
+    """次根确认 reason 同样携带量能注记（口径对信号K线=当根金K）"""
+    kl = _kl(*_base())
+    _no_touch_long(kl)
+    _set_signal_vol(kl, 200.0)
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-3))
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert "量比2.0(vs中位)" in t["reason"]
+    assert "较前根×2.0" in t["reason"]
