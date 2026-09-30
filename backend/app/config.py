@@ -126,8 +126,10 @@ class Settings(BaseSettings):
     # 同向上限）已足够，金额维度不重复设限
     PORTFOLIO_HEAT_CAP: float = 0.0
     # 同向持仓上限（docs/24 A3'）：同方向（long/short）在跑单数上限，
-    # 防趋势同震时单边敞口过度集中；0=不限
-    SAME_DIRECTION_CAP: int = 6
+    # 防趋势同震时单边敞口过度集中；0=不限。2026-09-30 用户拍板默认 0（关闭）：
+    # 单数总量控制（max_open_trades=10）已足够，方向维度也不设限；
+    # 代码保留，env 置正数可随时启用
+    SAME_DIRECTION_CAP: int = 0
     # 盘口价差预检（docs/24 A4'）：开仓前 bookTicker 的 bid-ask 价差/中间价上限
     # （0.003=0.3%），价差过宽说明流动性枯竭/行情剧烈，市价成交即承担点差成本，
     # 放弃开单（查询异常不拦截，走滑点实测兜底）；0=关闭
