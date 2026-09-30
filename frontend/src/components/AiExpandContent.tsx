@@ -35,6 +35,15 @@ function describeEvent(ev: AiProgressEvent): { text: string; color?: string } {
       }
     case 'tool':
       return { text: `　↳ ${ev.tool}${ev.args ? `(${ev.args})` : ''}`, color: '#888' }
+    case 'llm': {
+      // 流式活进度（每 ≥2s 一条，面板仅展示最新一条）：推理字数 + 已耗时
+      const parts: string[] = []
+      if ((ev.reasoning_chars ?? 0) > 0) parts.push(`已推理 ${ev.reasoning_chars} 字符`)
+      if ((ev.content_chars ?? 0) > 0) parts.push(`输出 ${ev.content_chars} 字符`)
+      if (ev.elapsed_s != null) parts.push(`${ev.elapsed_s}s`)
+      if ((ev.attempt ?? 0) > 0) parts.push(`第 ${ev.attempt! + 1} 次尝试`)
+      return { text: `🧠 LLM 调用中${parts.length ? `：${parts.join(' · ')}` : '…'}`, color: '#1677ff' }
+    }
     case 'done':
       return {
         text: `✅ 分析完成${ev.decision === 'suggest' ? '：建议开单' : ev.decision === 'skip' ? '：跳过' : ''}`,
@@ -73,6 +82,10 @@ function AiProgressPanel({ scanResultId }: { scanResultId: string }) {
   }, [scanResultId])
 
   const finished = events.some((e) => e.t === 'done' || e.t === 'error')
+  // llm 活进度事件只保留最新一条（每次 LLM 调用每 ≥2s 追加一条，
+  // 5 分钟调用会产生 ~150 条，全量渲染会刷屏且无意义）
+  const lastLlmIdx = events.map((e) => e.t === 'llm').lastIndexOf(true)
+  const shown = events.filter((e, i) => e.t !== 'llm' || i === lastLlmIdx)
 
   return (
     <div
@@ -96,10 +109,10 @@ function AiProgressPanel({ scanResultId }: { scanResultId: string }) {
           </span>
         )}
       </div>
-      {events.length === 0 ? (
+      {shown.length === 0 ? (
         <Text type="secondary">等待分析任务开始…</Text>
       ) : (
-        events.map((ev, i) => {
+        shown.map((ev, i) => {
           const { text, color } = describeEvent(ev)
           return (
             <div key={i} style={{ color: color || undefined, whiteSpace: 'pre-wrap' }}>

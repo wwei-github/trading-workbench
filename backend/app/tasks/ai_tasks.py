@@ -310,6 +310,7 @@ def run_ai_analysis_single(
                 risk_label=_risk_label,
                 stop_cap_pct=_stop_cap,
                 interval=cfg.kline_interval,
+                progress_id=r.id,  # 方案 B 轻量进度：流式增量计数推 "llm" 事件（≥2s 节流）
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto；
         # 事实包增厚（docs/24 D3）——指标块 + 摆动结构摘要随 signal 传入（_build_judge_signal）

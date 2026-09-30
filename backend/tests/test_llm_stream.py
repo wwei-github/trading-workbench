@@ -118,3 +118,92 @@ def test_call_llm_empty_content_raises(monkeypatch):
     with pytest.raises(ai_analyzer._LLMOutputError) as ei:
         ai_analyzer._call_llm(client, [{"role": "user", "content": "x"}])
     assert "空内容" in str(ei.value)
+
+
+# ── 方案 B 轻量进度（2026-09-30）：on_progress 回调 + ai_progress 事件推送 ──
+
+def test_stream_on_progress_immediate_then_throttled():
+    """首个增量立即回调、后续快速增量被 ≥2s 节流（真实时钟下微秒级到达只触发 1 次）；
+    首条回调只含首块数据（content 尚未到达 → 计数 0）"""
+    calls = []
+    client = _FakeClient([
+        _Chunk(_Choice(_Delta(reasoning="想一想"))),
+        _Chunk(_Choice(_Delta(content='{"a"'))),
+        _Chunk(_Choice(_Delta(content=": 1}"))),
+        _Chunk(_Choice(None, finish="stop")),
+    ])
+    r = stream_completion(client, [{"role": "user", "content": "x"}],
+                          on_progress=calls.append)
+    assert r.content == '{"a": 1}'
+    assert len(calls) == 1, "快速到达的增量应被节流，只发首个"
+    m = calls[0]
+    assert m["reasoning_chars"] == 3 and m["content_chars"] == 0
+    assert m["elapsed_s"] >= 0
+
+
+def test_stream_on_progress_cumulative_across_window(monkeypatch):
+    """fake 时钟逐块推进 >2s：每块都触发回调，计数逐块累计"""
+    from types import SimpleNamespace
+    import app.services.llm_client as llm_client_mod
+
+    class _Clock:
+        def __init__(self):
+            self.t = 0.0
+
+        def monotonic(self):
+            self.t += 2.5  # 每次调用推进 2.5s，保证每块都过节流窗口
+            return self.t
+
+    clock = _Clock()
+    monkeypatch.setattr(llm_client_mod, "time",
+                        SimpleNamespace(monotonic=clock.monotonic))
+    calls = []
+    client = _FakeClient([
+        _Chunk(_Choice(_Delta(reasoning="abc"))),
+        _Chunk(_Choice(_Delta(content='{"a"'))),
+        _Chunk(_Choice(_Delta(content=": 1}"))),
+        _Chunk(_Choice(None, finish="stop")),
+    ])
+    r = stream_completion(client, [{"role": "user", "content": "x"}],
+                          on_progress=calls.append)
+    assert r.content == '{"a": 1}'
+    # 4 块各推 1 条（finish 块也过节流窗口 → 终态计数也有事件）
+    assert [c["reasoning_chars"] for c in calls] == [3, 3, 3, 3]
+    assert [c["content_chars"] for c in calls] == [0, 4, 8, 8]
+    assert calls[-1]["elapsed_s"] >= 5.0
+
+
+def test_call_llm_pushes_llm_progress_events(monkeypatch):
+    """progress_id 传入时 _call_llm 把流式计数推为 ai_progress 'llm' 事件（attempt 透传）"""
+    from app.services import ai_progress
+
+    captured = []
+    monkeypatch.setattr(ai_progress, "push",
+                        lambda sid, t, **kw: captured.append((t, kw)))
+    client = _FakeClient([
+        _Chunk(_Choice(_Delta(reasoning="推理中"))),
+        _Chunk(_Choice(_Delta(content='{"verdict": "keep"}'))),
+        _Chunk(_Choice(None, finish="stop")),
+    ])
+    out = ai_analyzer._call_llm(client, [{"role": "user", "content": "x"}],
+                                progress_id="sr-123", attempt=2)
+    assert out == {"verdict": "keep"}
+    assert captured and captured[0][0] == "llm"
+    kw = captured[0][1]
+    assert kw["attempt"] == 2 and kw["reasoning_chars"] == 3
+    assert kw["content_chars"] == 0 and "elapsed_s" in kw
+
+
+def test_call_llm_no_progress_id_no_push(monkeypatch):
+    """progress_id=None（默认）不触发任何进度推送（其余调用点零影响）"""
+    from app.services import ai_progress
+
+    captured = []
+    monkeypatch.setattr(ai_progress, "push",
+                        lambda sid, t, **kw: captured.append((t, kw)))
+    client = _FakeClient([
+        _Chunk(_Choice(_Delta(content='{"a": 1}'))),
+        _Chunk(_Choice(None, finish="stop")),
+    ])
+    ai_analyzer._call_llm(client, [{"role": "user", "content": "x"}])
+    assert captured == []

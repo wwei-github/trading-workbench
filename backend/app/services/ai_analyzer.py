@@ -433,20 +433,31 @@ class _LLMOutputError(ValueError):
         self.content = content
 
 
-def _call_llm(client: OpenAI, messages: list) -> dict:
+def _call_llm(client: OpenAI, messages: list, progress_id=None, attempt: int = 0) -> dict:
     """单次 LLM 调用（流式）→ 原始 JSON dict；空内容/解析失败抛 _LLMOutputError（携带原文）
 
     流式（2026-09-30 网关挂死治理，见 llm_client.stream_completion）：GLM 推理模型
     非流式长推理零字节返回会被读超时误杀（线上 4 连挂实测），流式下 reasoning
     增量持续到达保持连接活跃；顺带获得首 token / 总耗时延迟观测。
+    progress_id（2026-09-30 方案 B 轻量进度）：传入 scan_result_id 时把流式增量
+    计数节流推送为 ai_progress "llm" 事件（≥2s 一条），前端展示「推理中」活进度；
+    push 内部静默失败，进度展示不影响主流程。
     """
     # GLM 系列为思考型模型，reasoning tokens 也计入 max_tokens，
     # 配额太小会导致正文为空或被截断（finish_reason=length）：
     # 12000 曾被思考过程整体耗尽（2026-09-28 线上：3 次重试全空内容强制 skip），放大至 32000
+    on_progress = None
+    if progress_id is not None:
+        from app.services import ai_progress
+
+        def on_progress(m: dict) -> None:
+            ai_progress.push(progress_id, "llm", attempt=attempt, **m)
+
     r = stream_completion(
         client, messages,
         temperature=0.3,
         max_tokens=32000,
+        on_progress=on_progress,
         **json_mode_kwargs(),  # LLM_JSON_MODE 开启时带 response_format（docs/24 D2）
     )
     finish = r.finish_reason
@@ -474,6 +485,7 @@ def analyze_with_guard(
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
     stop_cap_pct: Optional[float] = None, interval: str = "1h",
+    progress_id=None,
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -482,6 +494,7 @@ def analyze_with_guard(
     risk_amount 作为预算实额传入仓位复算（与开仓引擎同口径）。
     stop_cap_pct（2026-09-29）：止损宽度硬上限注入门槛块（None=不限制）。
     interval：K线周期标签（与取数口径一致，ai_tasks 传 cfg.kline_interval）。
+    progress_id：scan_result_id，透传 _call_llm 推送 ai_progress 活进度事件（None=不推）。
     """
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
@@ -494,7 +507,7 @@ def analyze_with_guard(
     last_violations: list[str] = []
     for attempt in range(3):  # 1 次初始 + 2 次反馈重试
         try:
-            raw = _call_llm(client, prompt_messages)
+            raw = _call_llm(client, prompt_messages, progress_id=progress_id, attempt=attempt)
         except _LLMOutputError as e:
             last_violations = [f"输出无法解析: {str(e)[:150]}"]
             logger.warning("AI 第%d次输出解析失败: %s", attempt + 1, e)

@@ -48,7 +48,8 @@ class StreamResult(NamedTuple):
 
 def stream_completion(
     client: OpenAI, messages: list, *,
-    temperature: float = 0.3, max_tokens: int = 32000, **extra,
+    temperature: float = 0.3, max_tokens: int = 32000,
+    on_progress: Optional[Any] = None, **extra,
 ) -> StreamResult:
     """流式调用 chat/completions 并拼接正文（2026-09-30 网关挂死治理）。
 
@@ -61,11 +62,18 @@ def stream_completion(
 
     reasoning_content 增量对调用方不可见（正文只拼 delta.content，与推理过程隔离）；
     首个正文增量耗时与总耗时随结果携带，供调用方打延迟观测日志。
+
+    on_progress: 可选回调 dict(reasoning_chars/content_chars/elapsed_s)，
+    首个增量立即触发、此后 ≥2s 节流——供分析管线把活进度推给前端
+    （ai_progress 事件流），让用户看到「推理中」而非干等。
     """
     t0 = time.monotonic()
     first_at: Optional[float] = None
     parts: list = []
     finish: Optional[str] = None
+    n_reasoning = 0
+    n_content = 0
+    last_pub = -10.0  # 首个增量必触发（节流窗口外）
     stream = client.chat.completions.create(
         model=settings.AI_MODEL,
         messages=messages,
@@ -84,8 +92,19 @@ def stream_completion(
             if first_at is None:
                 first_at = time.monotonic() - t0
             parts.append(piece)
+            n_content += len(piece)
+        n_reasoning += len((getattr(delta, "reasoning_content", None) or "")) if delta is not None else 0
         if choice.finish_reason:
             finish = choice.finish_reason
+        if on_progress is not None:
+            now = time.monotonic()
+            if now - last_pub >= 2.0:
+                last_pub = now
+                on_progress({
+                    "reasoning_chars": n_reasoning,
+                    "content_chars": n_content,
+                    "elapsed_s": round(now - t0, 1),
+                })
     return StreamResult(
         "".join(parts).strip(),
         finish,

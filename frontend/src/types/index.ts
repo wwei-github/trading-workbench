@@ -642,8 +642,9 @@ export interface StageTrace {
 }
 
 // AI 分析进度事件（后端 Redis 事件流，前端 2s 轮询）
+// llm = 流式增量活进度（≥2s 一条，面板只保留最新一条，2026-09-30 方案 B）
 export interface AiProgressEvent {
-  t: 'start' | 'gate' | 'round' | 'tool' | 'done' | 'error'
+  t: 'start' | 'gate' | 'round' | 'tool' | 'llm' | 'done' | 'error'
   ts: number
   symbol?: string
   pipeline?: string
@@ -653,6 +654,10 @@ export interface AiProgressEvent {
   args?: string
   note?: string
   decision?: string
+  attempt?: number
+  reasoning_chars?: number
+  content_chars?: number
+  elapsed_s?: number
 }
 
 export interface AiProgress {
