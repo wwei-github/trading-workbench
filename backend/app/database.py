@@ -44,6 +44,12 @@ def _run_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_scan_results_volume_type "
             "ON scan_results (volume_type)"
         ))
+        # scan_results 加命中位置文案列（2026-10-01）：回踩确认=触点位/突破=前高前低轨价，
+        # 前端「位置」列展示（旧行 NULL 回退 touch_ref 渲染）
+        conn.execute(text(
+            "ALTER TABLE scan_results "
+            "ADD COLUMN IF NOT EXISTS position_ref VARCHAR(48)"
+        ))
         # Feature 2: system_config 加扫描策略列（若表已存在但缺列）
         conn.execute(text("""
             ALTER TABLE system_config

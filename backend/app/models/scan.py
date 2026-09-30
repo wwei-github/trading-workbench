@@ -43,6 +43,7 @@ class ScanResult(Base):
     # 历史行为关键位角色口径，2026-09-14 关键位功能移除后不再产生关键位明细）
     position: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     touch_ref: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # 回踩触点（docs/22：retest/swing/ema21/55/144）
+    position_ref: Mapped[Optional[str]] = mapped_column(String(48), nullable=True)  # 命中位置文案（回踩触点位/突破前高前低轨，前端「位置」列；旧行 NULL）
     volume_24h: Mapped[float] = mapped_column(Numeric(20, 2), nullable=False, default=0)
     volume: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False, default=0)
     volume_type: Mapped[str] = mapped_column(String(16), nullable=False, default="平量", index=True)

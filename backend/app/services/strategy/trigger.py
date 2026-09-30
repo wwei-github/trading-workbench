@@ -69,6 +69,22 @@ TOUCH_LABELS = {
     TOUCH_EMA144: "EMA144",
 }
 
+
+def _touch_ref_label(touch_ref: str, direction: int) -> str:
+    """触点方向化措辞（做多=支撑侧语义/做空=压力侧，与前端 touchLabel 同口径）。
+    retest 用「前高/前低」（position_ref 拼接「回踩」前缀后语义通顺，不重复「回测」）"""
+    if touch_ref == TOUCH_RETEST:
+        return "前高" if direction == 1 else "前低"
+    if touch_ref == TOUCH_SWING:
+        return "摆动低点" if direction == 1 else "摆动高点"
+    return TOUCH_LABELS.get(touch_ref, touch_ref)
+
+
+def _position_ref_of(touch_ref: Optional[str], direction: int) -> Optional[str]:
+    """回踩确认的命中位置文案（scan_results.position_ref，前端「位置」列展示）"""
+    return f"回踩{_touch_ref_label(touch_ref, direction)}" if touch_ref else None
+
+
 # 摆动结构位时效门：防守点太老（>40 根前确认）防守意义衰减
 SWING_MAX_BARS_AGO = 40
 
@@ -373,6 +389,7 @@ def detect_trigger(
                         "position": "resistance",
                         "breakout_level": ref, "candle_open": sig_open,
                         "pattern": None,
+                        "position_ref": f"突破前高 {ref:.6g}",
                         "breakout_pct": (close_last - ref) / ref * 100,
                         "reason": f"指标同向·{vol_desc}长实体收盘突破前高({ref:.6g})",
                     }, _close_op(pending, direction, "breakout")
@@ -382,6 +399,7 @@ def detect_trigger(
                         "position": "support",
                         "breakout_level": ref, "candle_open": sig_open,
                         "pattern": None,
+                        "position_ref": f"跌破前低 {ref:.6g}",
                         "breakout_pct": (close_last - ref) / ref * 100,
                         "reason": f"指标同向·{vol_desc}长实体收盘跌破前低({ref:.6g})",
                     }, _close_op(pending, direction, "breakout")
@@ -404,6 +422,7 @@ def detect_trigger(
                         "position": "resistance",
                         "breakout_level": chan_high, "candle_open": sig_open,
                         "pattern": None,
+                        "position_ref": f"突破{chan_n}根轨高 {chan_high:.6g}",
                         "breakout_pct": (close_last - chan_high) / chan_high * 100,
                         "reason": f"指标同向·{vol_desc}长实体收盘突破{chan_n}根"
                                   f"Donchian上轨({chan_high:.6g})",
@@ -414,6 +433,7 @@ def detect_trigger(
                         "position": "support",
                         "breakout_level": chan_low, "candle_open": sig_open,
                         "pattern": None,
+                        "position_ref": f"跌破{chan_n}根轨低 {chan_low:.6g}",
                         "breakout_pct": (close_last - chan_low) / chan_low * 100,
                         "reason": f"指标同向·{vol_desc}长实体收盘跌破{chan_n}根"
                                   f"Donchian下轨({chan_low:.6g})",
@@ -459,6 +479,7 @@ def detect_trigger(
         return {
             "type": PULLBACK_CONFIRM, "direction": direction,
             "position": pos_fb, "touch_ref": touch_ref,
+            "position_ref": _position_ref_of(touch_ref, direction),
             "pattern": golden["pattern"], "breakout_pct": 0.0,
             "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且{_ev}{vol_note}",
         }, _close_op(pending, direction, "same_candle_confirm")
@@ -477,6 +498,7 @@ def detect_trigger(
             return {
                 "type": PULLBACK_CONFIRM, "direction": direction,
                 "position": pos_fb, "touch_ref": p_ref,
+                "position_ref": _position_ref_of(p_ref, direction),
                 "pattern": golden["pattern"], "breakout_pct": 0.0,
                 "reason": f"指标同向·上根回踩{p_label}企稳·{_ev}{vol_note}",
             }, {"op": "confirm"}

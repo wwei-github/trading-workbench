@@ -22,6 +22,7 @@ export interface ScanResult {
   pattern: string | null;
   signal_reason: string | null;
   touch_ref: string | null; // 回踩触点（docs/22：retest/swing/ema21/ema55/ema144）
+  position_ref: string | null; // 命中位置文案（回踩=触点位/突破=前高前低轨价；旧行 NULL）
   ema_state: string | null; // 均线形态状态（bullish_align / bearish_cross 等）
   position: string | null; // 信号位置（形态/突破方向派生：支撑位/压力位）
   volume_24h: number;

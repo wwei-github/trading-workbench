@@ -162,6 +162,8 @@ def test_row1_breakout_without_pending_no_op():
     t, op = trig.detect_trigger(kl, 1)
     assert t is not None and t["type"] == trig.BREAKOUT
     assert op is None
+    # 命中位置文案（2026-10-01）：结构突破=突破前高位价（%.6g）
+    assert t["position_ref"] == f"突破前高 {SWING_HIGH:.6g}"
 
 
 def test_row1_breakout_with_flipped_pending_expires_as_flip():
@@ -256,6 +258,8 @@ def test_row1_breakout_short_symmetric_positive():
     assert t is not None and t["type"] == trig.BREAKOUT
     assert t["position"] == "support" and t["direction"] == -1
     assert op is None  # 无 pending → 无处置动作
+    # 命中位置文案（2026-10-01）：空头=跌破前低位价（SWING_LOW=100.00，%.6g 无尾零）
+    assert t["position_ref"] == f"跌破前低 {SWING_LOW:.6g}"
 
 
 # ── 行2：当根触碰+金K → 当根确认，pending → superseded ────────────────────
@@ -267,6 +271,8 @@ def test_row2_touch_and_golden_same_candle_confirm():
         t, op = trig.detect_trigger(kl, 1, pending=_pending(kl))
     assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
     assert t["position"] == "support" and t["pattern"] == "bullish_engulfing"
+    # 命中位置文案（2026-10-01）：回踩确认=触点方向化措辞（_touch_long 触 EMA21）
+    assert t["position_ref"] == "回踩EMA21"
     assert "当根" in t["reason"]
     assert op == {"op": "supersede", "reason": "same_candle_confirm"}
 
