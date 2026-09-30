@@ -53,7 +53,10 @@ class Settings(BaseSettings):
     # v2026-09-30：决断K线影线质量门（docs/25 §4，用户拍板）——吞没第二根、启明星/
     # 黄昏星第三根总影线 > 全长 40% 不判金K（candlestick.DECISION_SHADOW_MAX_PCT）；
     # 同日撤销 docs/25 提示词注入
-    RULE_VERSION: str = "v2026-09-30"
+    # v2026-09-30-2：突破K线/趋势K线长实体门 0.75→0.70（用户拍板）——实体 ≥70% 全长
+    # （影线合计 ≤30%）即算长实体；trigger.BREAKOUT_BODY_RANGE_MIN 与
+    # candlestick.TREND_CANDLE_BODY_RANGE_MIN 两常量同步
+    RULE_VERSION: str = "v2026-09-30-2"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

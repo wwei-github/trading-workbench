@@ -140,7 +140,7 @@ def _breakout_klines(close=101.5, vol=250.0):
     for i, c in ((48, 101.0), (49, 99.9), (50, 99.9), (51, 99.9)):
         kl.append([ts0 + i * 3_600_000, 100.0, c + 0.1, c - 0.1, c, 100.0, 100.0])
     ts = ts0 + 52 * 3_600_000
-    # 信号K线：o=100.2 c=close h=close+0.1 l=100.1（阳线长实体，body/range≥0.75）
+    # 信号K线：o=100.2 c=close h=close+0.1 l=100.1（阳线长实体，body/range≥0.70）
     kl.append([ts, 100.2, close + 0.1, 100.1, close, vol, vol])
     kl.append([ts + 3_600_000, close, close + 0.1, close - 0.1, close, vol, vol])  # 未收盘
     return kl

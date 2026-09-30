@@ -113,7 +113,7 @@ def render_signal_gate_block(signal_type: str, stop_cap_pct: Optional[float] = N
             f"- 突破幅度: ≥{flt.breakout_threshold * 100:.1f}%（毛边不算）"
             + (f"，>{flt.breakout_max_pct:.1f}% 视为追高不触发" if flt.breakout_max_pct > 0 else "，追高上限未启用"),
             f"- 放量（加分项）: 信号K线量 ≥ 近20根中位量 {flt.breakout_vol_ratio:g} 倍 → 质量分+5（不拦截）",
-            "- 突破K线形态: 长实体（实体 ≥75% 全长，影线合计 ≤25%）",
+            "- 突破K线形态: 长实体（实体 ≥70% 全长，影线合计 ≤30%）",
         ]
     elif signal_type == "trigger_trend_breakout":
         lines += [
@@ -122,7 +122,7 @@ def render_signal_gate_block(signal_type: str, stop_cap_pct: Optional[float] = N
             f"- 突破幅度: ≥{flt.breakout_threshold * 100:.1f}%（毛边不算）"
             + (f"，>{flt.breakout_max_pct:.1f}% 视为追高不触发" if flt.breakout_max_pct > 0 else "，追高上限未启用"),
             f"- 放量（加分项）: 信号K线量 ≥ 近20根中位量 {flt.breakout_vol_ratio:g} 倍 → 质量分+5（不拦截）",
-            "- 突破K线形态: 长实体（实体 ≥75% 全长，影线合计 ≤25%）",
+            "- 突破K线形态: 长实体（实体 ≥70% 全长，影线合计 ≤30%）",
         ]
     else:
         if signal_type in ("trigger_pullback", "trigger_pullback_confirm"):

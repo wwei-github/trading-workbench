@@ -560,21 +560,21 @@ PATTERN_LABEL_MAP = {
 # 锤形线（看多）/流星线即倒锤形（看空）是"单根单影线"形态，单独作为回踩
 # 金K确认证据太弱：单根不再触发，须满足其一——
 #   ① 双锤：连续两根同形态（前根+当根，探底回升连续两次确认）
-#   ② 锤+趋势K：前根锤/流星 + 当根顺向趋势K（短影线长实体，实体 ≥75% 全长，
-#      与突破K线同口径）
+#   ② 锤+趋势K：前根锤/流星 + 当根顺向趋势K（短影线长实体，实体 ≥70% 全长，
+#      与突破K线同口径，2026-09-30-2 同步放宽）
 # 复合形态（吞没/启明星/黄昏星）本身由多根K线构成、结构更强，维持单根确认。
 SINGLE_SHADOW_PATTERNS = {"hammer", "shooting_star"}
 
-# 顺向趋势K线实体/K线全长下限（与 trigger.BREAKOUT_BODY_RANGE_MIN 同口径；
-# 复制常量避免 strategy 内部反向 import trigger）
-TREND_CANDLE_BODY_RANGE_MIN = 0.75
+# 顺向趋势K线实体/K线全长下限（与 trigger.BREAKOUT_BODY_RANGE_MIN 同口径，
+# 2026-09-30-2 同步放宽 0.75→0.70；复制常量避免 strategy 内部反向 import trigger）
+TREND_CANDLE_BODY_RANGE_MIN = 0.70
 
 
 def detect_solid_trend_candle(klines: list[list], direction: int,
                               idx: int = -1) -> Optional[dict]:
-    """顺向趋势K线：长实体（≥75% 全长）+ 顺向（做多=阳线、做空=阴线）。
+    """顺向趋势K线：长实体（≥70% 全长）+ 顺向（做多=阳线、做空=阴线）。
 
-    供"锤+趋势K"复合确认使用（docs 口径同突破K线长实体：影线合计 ≤25%
+    供"锤+趋势K"复合确认使用（docs 口径同突破K线长实体：影线合计 ≤30%
     即天然短影线，不做单侧影线额外限制）。
     """
     k = klines[idx]

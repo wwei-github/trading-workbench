@@ -201,7 +201,7 @@ def test_row1_breakout_low_volume_allowed():
 
 
 def test_row1_breakout_rejected_long_upper_shadow():
-    """长上影突破：上影把实体占比压到 0.67 < 0.75 门槛 → 不触发，落空转 pending"""
+    """长上影突破：上影把实体占比压到 0.67 < 0.70 门槛 → 不触发，落空转 pending"""
     kl = _kl(*_base())
     o = float(kl[-3][4])
     c = SWING_HIGH + 0.5
@@ -216,16 +216,28 @@ def test_row1_breakout_short_shadow_allowed():
     （2026-09-28 放宽影线口径：不再要求近光头光脚，主体占比即影线约束）"""
     kl = _kl(*_base())
     o = float(kl[-3][4])
-    c = o + 0.78  # 实体 0.78 / 全长 1.00 = 78% ≥ 75%
+    c = o + 0.78  # 实体 0.78 / 全长 1.00 = 78% ≥ 70%（2026-09-30-2 口径）
     _set_breakout_candle(kl, open_=o, close=c, high=c + 0.22, low=o)
     with patch.object(trig, "detect_all_patterns", return_value=[]):
         t, op = trig.detect_trigger(kl, 1)
     assert t is not None and t["type"] == trig.BREAKOUT
 
 
+def test_row1_breakout_body_072_allowed():
+    """边界回归（2026-09-30-2：实体门 0.75→0.70）：实体/全长 0.72（HUMAUSDT
+    个案口径 0.721），旧门槛 0.75 判死、新门槛 0.70 放行 → 触发 BREAKOUT"""
+    kl = _kl(*_base())
+    o = float(kl[-3][4])          # 100.02
+    c = o + 0.72                  # 100.74：越过摆动前高 100.04 约 +0.70%（0.2%~1.5% 内）
+    _set_breakout_candle(kl, open_=o, close=c, high=c + 0.14, low=o - 0.14)
+    with patch.object(trig, "detect_all_patterns", return_value=[]):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is not None and t["type"] == trig.BREAKOUT
+
+
 def test_row1_breakout_rejected_small_body():
-    """短实体突破：实体/全长 0.72 < 0.75 门槛 → 不触发；
-    整根悬于 EMA21 上方不构成回踩 → 观察池"""
+    """短实体突破：实体 0.03 / 全长 0.07 ≈ 0.43 < 0.70 门槛（且收阴，与做多
+    顺向要求不符）→ 不触发；整根悬于 EMA21 上方不构成回踩 → 观察池"""
     kl = _kl(*_base())
     o = float(kl[-3][4]) + 0.55
     c = SWING_HIGH + 0.5
@@ -618,7 +630,7 @@ def test_row1_breakout_over_max_short_symmetric_rejected():
 
 # ── 单影线形态复合确认（2026-09-29 用户拍板：单锤/单流星不再单根确认）──────
 # 真实形态构造（不 mock detect_all_patterns）：锤形线=小实体长下影短上影，
-# 流星线=小实体长上影短下影，趋势K=实体≥75%全长
+# 流星线=小实体长上影短下影，趋势K=实体≥70%全长（2026-09-30-2）
 
 def _hammer_at(kl: list[list], idx: int) -> None:
     """把 kl[idx] 改写为看多锤形线：o=100.10 c=100.30（body 0.2）、
@@ -635,7 +647,7 @@ def _shooting_star_at(kl: list[list], idx: int) -> None:
 
 
 def _trend_candle_at(kl: list[list], idx: int, direction: int = 1) -> None:
-    """把 kl[idx] 改写为顺向趋势K：实体 0.15 / 全长 0.19 ≈0.79 ≥0.75（阳/阴按方向）。
+    """把 kl[idx] 改写为顺向趋势K：实体 0.15 / 全长 0.19 ≈0.79 ≥0.70（阳/阴按方向）。
 
     收盘控制在摆动结构区间内（c=100.15 < 前高 100.04×1.002），避免实体过大
     抢先触发突破分支（T1 优先）或与微扰序列凑成黄昏星（k3 大实体 + k2 小实体）。
