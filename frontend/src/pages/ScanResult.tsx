@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Card, Row, Col, Button, Space, Segmented, Tabs, message } from 'antd'
+import { Card, Row, Col, Button, Space, Tabs, message } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useTabMemory } from '../utils/tabMemory'
 import ScanStatus from '../components/ScanStatus'
@@ -29,10 +29,15 @@ import SpotHistoryPanel from '../components/SpotHistoryPanel'
 import SpotSettingsPanel from '../components/SpotSettingsPanel'
 import { useScanStore } from '../stores/scanStore'
 
-// 业务域模式（docs/18 §9.1 方案 C）：合约 = 现有全部功能；现货 = 屯币系统（独立模块）
-type BizMode = 'futures' | 'spot'
+// 业务域模式（docs/18 §9.1 方案 C）：合约 = 现有全部功能；现货 = 屯币系统（独立模块）。
+// 切换入口在 Header 右上角（App.tsx），本组件受控接收 props
+export type BizMode = 'futures' | 'spot'
 
-export default function ScanResult() {
+interface ScanResultProps {
+  mode: BizMode
+}
+
+export default function ScanResult({ mode }: ScanResultProps) {
   const {
     fetchStatus,
     fetchResults,
@@ -46,10 +51,6 @@ export default function ScanResult() {
   } = useScanStore()
 
   const wasScanning = useRef(false)
-  // 业务域记忆：刷新后保持合约/现货模式（useTabMemory 为 string 口径，此处收窄到 BizMode）
-  const [modeRaw, setModeRaw] = useTabMemory('tabs.mode', ['futures', 'spot'])
-  const mode = modeRaw as BizMode
-  const setMode = (v: BizMode) => setModeRaw(v)
   // 合约内部 tab 记忆（既有 key 不动）
   const [activeTab, switchTab] = useTabMemory(
     'tabs.scanResult',
@@ -249,17 +250,7 @@ export default function ScanResult() {
       <Card style={{ flexShrink: 0, marginBottom: 12 }}>
         <Row justify="space-between" align="middle">
           <Col>
-            <Space size={16}>
-              <Segmented<BizMode>
-                value={mode}
-                onChange={(v) => setMode(v)}
-                options={[
-                  { label: '合约', value: 'futures' },
-                  { label: '现货', value: 'spot' },
-                ]}
-              />
-              {showFutures && <ScanStatus />}
-            </Space>
+            <Space size={16}>{showFutures && <ScanStatus />}</Space>
           </Col>
           <Col>
             <Space>

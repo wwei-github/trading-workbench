@@ -690,3 +690,18 @@ export interface FundAnalytics {
   pnl_distribution: PnlBucket[]
   transfers: TransferPoint[]
 }
+
+// ── 大盘环境/市场情绪（Header 大盘条，GET /api/market/overview）──
+export interface FearGreed {
+  value: number // 0-100，越小越恐惧
+  label: string // alternative.me 原文（Extreme Fear / Fear / Neutral / Greed / Extreme Greed）
+}
+export interface BreadthItem {
+  ema_state: string | null // bullish_align / bearish_cross / mixed 等
+  ema_label: string | null // 中文标签（多头排列/纠缠…）
+  change_24h_pct: number // 24h 涨跌幅（%）
+}
+export interface MarketOverview {
+  fear_greed: FearGreed | null
+  breadth: Record<string, BreadthItem> | null // key: BTCUSDT / ETHUSDT
+}

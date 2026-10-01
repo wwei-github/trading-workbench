@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.api import (
     health_router,
+    market_router,
     ops_router,
     scan_router,
     spot_router,
@@ -45,6 +46,7 @@ app.add_middleware(
 )
 
 app.include_router(health_router)
+app.include_router(market_router)  # 大盘环境/市场情绪（Header 大盘条）
 app.include_router(scan_router)
 app.include_router(watchlist_router)
 app.include_router(trades_router)
