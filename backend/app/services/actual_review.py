@@ -17,11 +17,21 @@ from sqlalchemy.orm import Session
 
 from app.models.trade import TradeRecord
 from app.services.binance_trader import BinanceTrader
+from app.services.strategy.candlestick import PATTERN_LABEL_MAP
 
 logger = logging.getLogger(__name__)
 
 # 开仓时段桶（北京时间，4h 一档）：交易记录 opened_at 为 UTC
 HOUR_BUCKETS = [(0, 4), (4, 8), (8, 12), (12, 16), (16, 20), (20, 24)]
+
+# 金K形态分组固定顺序（2026-10-01-3 完整 12 金K：看涨 6 + 看跌 6，与
+# GOLDEN_12 同源同序）；展示名取 PATTERN_LABEL_MAP，防两处漂移
+GOLDEN_PATTERN_ORDER = (
+    "hammer", "bullish_engulfing", "morning_star",
+    "piercing_line", "bullish_harami", "dragonfly_doji",
+    "shooting_star", "bearish_engulfing", "evening_star",
+    "dark_cloud_cover", "bearish_harami", "gravestone_doji",
+)
 
 # 结算费用回补单轮上限（防一次性拉爆交易所限额；未补完的下轮统计继续）
 _BACKFILL_LIMIT = 20
@@ -257,6 +267,19 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
                 push(dim, key, buckets.pop(key))
         for key, bucket in sorted(buckets.items()):  # 防御：未登记桶名兜底
             push(dim, key, bucket)
+
+    # 金K形态维度（2026-10-01-3 用户拍板）：完整 12 金K全量列出（0 笔也占行，
+    # 12 维度齐全便于横向对比各形态样本）；突破类无金K形态、旧行 pattern 为
+    # NULL → 「未记录」兜底行排最后
+    pat_buckets: dict[str, list] = {}
+    for t in trades:
+        pat_buckets.setdefault(t.pattern or "未记录", []).append(t)
+    for p in GOLDEN_PATTERN_ORDER:
+        groups.append({"dim": "金K形态",
+                       "key": PATTERN_LABEL_MAP.get(p, p),
+                       **_agg(pat_buckets.pop(p, []))})
+    for key, bucket in sorted(pat_buckets.items()):
+        push("金K形态", key, bucket)
 
     # 错误标签维度：一笔多标签拆行（仅统计已归因的）
     tag_buckets: dict[str, list] = {}

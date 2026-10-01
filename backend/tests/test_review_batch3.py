@@ -405,3 +405,31 @@ def test_actual_review_new_dimensions(db):
     assert vols["放量 >=1.2"] == 1 and vols["缩量 <1.0"] == 1 and vols["未知"] == 1
     # items 携带 volume_ratio
     assert out["items"][0]["volume_ratio"] == 1.5
+
+
+def test_actual_review_golden_pattern_groups(db):
+    """金K形态 12 维度全量列出（0 笔也占行，2026-10-01-3 用户拍板）；
+    突破类/旧行 pattern NULL → 未记录兜底；组内聚合正确"""
+    from app.services.actual_review import build_actual_review
+
+    w = _closed_rec({})  # 锤形线赢单
+    w.pattern = "hammer"
+    w.realized_pnl = 20.0
+    l = _closed_rec({})  # 流星线亏单
+    l.pattern = "shooting_star"
+    db.add_all([w, l, _closed_rec({})])  # 第三笔无形态（突破类）
+    db.commit()
+
+    out = build_actual_review(db, days=30)
+    dims: dict = {}
+    for g in out["groups"]:
+        dims.setdefault(g["dim"], []).append((g["key"], g["count"]))
+    pats = dims["金K形态"]
+    assert len(pats) == 13  # 12 金K + 未记录
+    assert pats[0] == ("锤形线", 1)                       # 固定顺序：看涨 6 打头
+    assert ("看涨吞没", 0) in pats and ("墓碑十字", 0) in pats  # 0 笔也占行
+    d = dict(pats)
+    assert d["倒锤形线（流星）"] == 1 and d["未记录"] == 1
+    hammer = next(g for g in out["groups"]
+                  if g["dim"] == "金K形态" and g["key"] == "锤形线")
+    assert hammer["wins"] == 1 and hammer["pnl"] == 20.0
