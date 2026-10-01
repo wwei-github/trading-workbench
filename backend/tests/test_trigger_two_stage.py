@@ -812,6 +812,38 @@ def test_resolve_restored_patterns_direct_confirm():
     assert golden_inv is None
 
 
+def test_resolve_direct_confirm_beats_single_shadow_in_dual_report():
+    """2026-10-01-3 补丁：同向双报（流星 0.7 + 直通形态 0.6）直通优先——
+    复合确认是无直通证据时的降级路径，不拦同根并存的直通证据；
+    流星/墓碑重叠区（body≤10%全长、上影≥60%全长）流星恒 0.7，纯 strength 序
+    会让墓碑永远选不中、body→0 边界还出现 0.0001 被拦/0 直通的矛盾"""
+    kl = _kl(*_base())
+    # 流星+墓碑并存：墓碑直通胜出（补丁前选流星→无前根流星→整体不确认）
+    golden, note = trig.resolve_golden_evidence(kl, "bearish", [
+        {"pattern": "shooting_star", "direction": "bearish", "strength": 0.7},
+        {"pattern": "gravestone_doji", "direction": "bearish", "strength": 0.6},
+    ])
+    assert golden is not None and golden["pattern"] == "gravestone_doji"
+    assert note == ""
+    # 流星+看跌孕线突破并存：孕线突破直通胜出
+    golden2, _ = trig.resolve_golden_evidence(kl, "bearish", [
+        {"pattern": "shooting_star", "direction": "bearish", "strength": 0.7},
+        {"pattern": "bearish_harami", "direction": "bearish", "strength": 0.6},
+    ])
+    assert golden2 is not None and golden2["pattern"] == "bearish_harami"
+    # 仅流星（无直通候选）：维持单影线复合门——无前根流星 → 不确认
+    golden3, note3 = trig.resolve_golden_evidence(kl, "bearish", [
+        {"pattern": "shooting_star", "direction": "bearish", "strength": 0.7},
+    ])
+    assert golden3 is None and note3 == ""
+    # 直通+直通并存（锤 0.9 + 蜻蜓 0.6）：strength 序取锤，不受补丁影响
+    golden4, _ = trig.resolve_golden_evidence(kl, "bullish", [
+        {"pattern": "hammer", "direction": "bullish", "strength": 0.9},
+        {"pattern": "dragonfly_doji", "direction": "bullish", "strength": 0.6},
+    ])
+    assert golden4 is not None and golden4["pattern"] == "hammer"
+
+
 # ── 回踩金K量能注记（2026-09-30 docs/25 §3.1：补齐知识库「大量」要素）──────
 
 def _set_signal_vol(kl: list[list], vol: float) -> None:

@@ -79,7 +79,7 @@ def detect_inverted_hammer(klines: list[list], idx: int = -1) -> Optional[dict]:
 
     条件：
     1. 上影线 >= 2 * 实体
-    2. 下影线 <= 实体 * 0.3
+    2. 下影线 <= 总振幅 * 0.15
     3. 出现在下跌末端，预示可能反转
     """
     k = klines[idx]
@@ -654,7 +654,9 @@ def resolve_golden_evidence(klines: list[list], wanted: str,
     裁决顺序：
     0. 金K候选先按 wanted 方向过滤再取首个——同形双报倒锤/流星 strength
        并列，方向优先防 TA-Lib 单侧提升后反侧误拦（旧口径"取首个再验方向"
-       会把方向不符的首个形态当一票否决，已废弃）
+       会把方向不符的首个形态当一票否决，已废弃）。
+       同向双报（流星 0.7 + 墓碑/孕线突破等直通形态并存）先取非单影线
+       直通候选，取不到才回落 strength 序首个走复合路径（2026-10-01-3 补丁）
     1. 当根金K方向匹配且非单影线（2026-10-01-3 起白名单 12 种里仅流星线是
        单影线；倒锤形线 2026-10-01-2 退出看涨白名单，方向过滤天然不入选）
        → 直接确认
@@ -664,8 +666,16 @@ def resolve_golden_evidence(klines: list[list], wanted: str,
     触点框架（当根触碰或 pending 次根确认）由 trigger 层负责，本函数只裁
     "形态证据是否成立"——无触碰语境的悬空组合不会绕过触点要求。
     """
-    golden = next((p for p in patterns
-                   if p["pattern"] in GOLDEN_12 and p["direction"] == wanted), None)
+    cand = [p for p in patterns
+            if p["pattern"] in GOLDEN_12 and p["direction"] == wanted]
+    # 直通优先（2026-10-01-3 补丁）：同向双报时先取非单影线候选——复合确认
+    # 是"无直通证据时"的降级路径，不该反过来把同根K上并存的直通形态挡在
+    # 门外（流星 0.7 恒高于墓碑/孕线突破 0.6~0.8 重叠区，纯 strength 序会让
+    # 直通证据被单影线复合门误拦；body→0 边界处还会出现 0.0001 被拦、0 直通
+    # 的自相矛盾）。取不到非单影线候选才回落 strength 序首个走复合路径
+    golden = next((p for p in cand if p["pattern"] not in SINGLE_SHADOW_PATTERNS), None)
+    if golden is None and cand:
+        golden = cand[0]
 
     # 规则1：非单影线金K直接确认
     if golden and golden["pattern"] not in SINGLE_SHADOW_PATTERNS:
