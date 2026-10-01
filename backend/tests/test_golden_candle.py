@@ -29,8 +29,9 @@ def _kl_list(closes, o=None, h=None, l=None):
 
 
 def test_golden_sets_by_direction():
-    """金K清单按方向各三种：看多锤/吞没/启明星，看空流星/吞没/黄昏星"""
-    bullish = {"hammer", "bullish_engulfing", "morning_star"}
+    """金K清单按方向：看多四种（锤/倒锤/吞没/启明星），看空三种（流星/吞没/黄昏星）
+    （2026-10-01：倒锤形线加入白名单，单锤/单倒锤恢复单根确认）"""
+    bullish = {"hammer", "inverted_hammer", "bullish_engulfing", "morning_star"}
     bearish = {"shooting_star", "bearish_engulfing", "evening_star"}
     assert GOLDEN_12 == bullish | bearish
     assert "hanging_man" not in GOLDEN_12
@@ -116,16 +117,26 @@ def test_engulfing_clean_shadow_detected():
 
 
 def test_engulfing_long_shadow_rejected():
-    """长影吞没（总影线 1.1/2.6 ≈42% > 40%）→ 不判金K（犹豫非决断）"""
+    """看涨吞没长上影（upper 1.0/rng 2.6 ≈38% > 15% 上影门）→ 不判金K
+    （冲高遭抛压打回=犹豫非决断；2026-10-01 起看涨侧按上影门拦截）"""
     kl = _append_engulf_pair(_engulf_base(), cur_open=99.9, cur_close=101.3,
                              cur_high=102.3, cur_low=99.7)
     assert detect_engulfing(kl, idx=-1) is None
 
 
-def test_engulfing_shadow_boundary_40pct_allowed():
-    """总影线恰 40%（实体占比 60%）→ 边界放行（门只拦 > 40%）"""
-    kl = _append_engulf_pair(_engulf_base(), cur_open=99.8, cur_close=101.3,
-                             cur_high=102.0, cur_low=99.5)
+def test_engulfing_bullish_upper_shadow_boundary_15pct_allowed():
+    """看涨吞没上影恰 15%（upper 0.3/rng 2.0）→ 边界放行（门只拦 >15%）"""
+    kl = _append_engulf_pair(_engulf_base(), cur_open=99.9, cur_close=101.3,
+                             cur_high=101.6, cur_low=99.6)
+    r = detect_engulfing(kl, idx=-1)
+    assert r is not None and r["pattern"] == "bullish_engulfing"
+
+
+def test_engulfing_bullish_long_lower_shadow_allowed():
+    """看涨吞没长下影：下影 0.9、总影线 1.0/2.4≈42%（旧 40% 总影线门会拦）
+    但上影 0.1/2.4≈4% ≤15% → 放行（2026-10-01 不对称化：探底回升=承接强）"""
+    kl = _append_engulf_pair(_engulf_base(), cur_open=99.9, cur_close=101.3,
+                             cur_high=101.4, cur_low=99.0)
     r = detect_engulfing(kl, idx=-1)
     assert r is not None and r["pattern"] == "bullish_engulfing"
 
@@ -190,6 +201,17 @@ def test_morning_star_shadow_boundary_40pct_allowed():
     assert r is not None and r["pattern"] == "morning_star"
 
 
+def test_morning_star_fat_mid_body_rejected():
+    """中K实体 0.7 = 外侧均值×0.41：2026-10-01 收紧（>0.3）→ 不判
+    （2-3 根组合呈看涨吞没观感；旧口径 0.5 会放行）"""
+    kl = _star_first_two(
+        [1700000100000, 102.0, 102.3, 99.7, 100.0, 10.0, 10.0],   # 阴线实体 2
+        [1700000200000, 100.1, 100.4, 99.2, 99.4, 10.0, 10.0],    # 中K实体 0.7（阴）
+    )
+    kl.append([1700000300000, 99.8, 101.4, 99.6, 101.2, 10.0, 10.0])  # 阳线 body1.4
+    assert detect_morning_star(kl, idx=-1) is None
+
+
 def test_evening_star_clean_third_candle_detected():
     """正常黄昏星：阴线收盘破中点、总影线 0.4/1.8 ≈22% → 判金K"""
     kl = _star_first_two(
@@ -209,4 +231,15 @@ def test_evening_star_long_shadow_third_candle_rejected():
         [1700000200000, 102.1, 102.5, 101.9, 102.3, 10.0, 10.0],
     )
     kl.append([1700000300000, 102.2, 102.4, 99.4, 100.8, 10.0, 10.0])
+    assert detect_evening_star(kl, idx=-1) is None
+
+
+def test_evening_star_fat_mid_body_rejected():
+    """中K实体 0.7 = 外侧均值×0.41：2026-10-01 与启明星对齐收紧（>0.3）→ 不判
+    （2-3 根组合呈看跌吞没观感；旧口径 0.5 会放行）"""
+    kl = _star_first_two(
+        [1700000100000, 100.0, 102.3, 99.7, 102.0, 10.0, 10.0],   # 阳线实体 2
+        [1700000200000, 102.3, 102.6, 101.6, 101.6, 10.0, 10.0],  # 中K阴线 body 0.7
+    )
+    kl.append([1700000300000, 102.2, 102.4, 100.6, 100.8, 10.0, 10.0])  # 阴线 body1.4
     assert detect_evening_star(kl, idx=-1) is None

@@ -56,7 +56,11 @@ class Settings(BaseSettings):
     # v2026-09-30-2：突破K线/趋势K线长实体门 0.75→0.70（用户拍板）——实体 ≥70% 全长
     # （影线合计 ≤30%）即算长实体；trigger.BREAKOUT_BODY_RANGE_MIN 与
     # candlestick.TREND_CANDLE_BODY_RANGE_MIN 两常量同步
-    RULE_VERSION: str = "v2026-09-30-2"
+    # v2026-10-01：金K规则三项（用户拍板）——①单锤形线/倒锤形线恢复单根确认
+    # （倒锤加入 GOLDEN_12，复合确认仅剩流星线：双流星/流星+趋势K）；
+    # ②看涨吞没影线门不对称化（上影 ≤15% 全长、下影不限；看跌维持总影线 ≤40%）；
+    # ③启明星中K实体上限收紧 0.5→0.3（防退化为看涨吞没观感）
+    RULE_VERSION: str = "v2026-10-01"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

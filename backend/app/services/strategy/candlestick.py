@@ -117,6 +117,11 @@ ENGULF_BODY_MIN_BARS = 10
 # - 启明星/黄昏星：第三根（确认阳/阴线）
 DECISION_SHADOW_MAX_PCT = 0.40   # 决断K线总影线 / K线全长 上限
 
+# 看涨吞没上影上限（2026-10-01 用户拍板，替代对称总影线门）：第二根上影/K线全长
+# ≤15%（口径同锤形线上影"必须短"）——冲高遭上方抛压打回=犹豫非决断；下影不限
+# （探底回升=下方承接强，长下影不扣分）。看跌吞没维持 DECISION_SHADOW_MAX_PCT。
+ENGULF_UPPER_SHADOW_MAX_PCT = 0.15
+
 
 def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     """吞没形态（看涨/看跌）
@@ -126,7 +131,8 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     质量门（不满足即不判吞没）：
     1. 两根 K 线实体都必须比较长（≥ 近 20 根平均实体），
        实体太短的小实体互包不算吞没；
-    2. 吞没K线（第二根）总影线 ≤ 全长 40%（长影吞没=犹豫非决断）。
+    2. 看涨吞没第二根上影 ≤ 全长 15%（下影不限，2026-10-01 不对称化）；
+       看跌吞没第二根总影线 ≤ 全长 40%（2026-09-30 口径维持）。
     """
     # idx 与其他检测器同语义（负数=倒数，正数=绝对位置），统一换算成绝对位置
     pos = idx if idx >= 0 else len(klines) + idx
@@ -154,14 +160,19 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     if avg_body <= 0 or body1 < avg_body * ENGULF_BODY_MIN_RATIO or body2 < avg_body * ENGULF_BODY_MIN_RATIO:
         return None
 
-    # 影线质量门：吞没K线实体须占 K 线主体（总影线 ≤ 全长 40%）
+    # 影线质量门（2026-10-01 看涨侧不对称化）：先算几何，按方向套不同门
     rng2 = float(k_cur[2]) - float(k_cur[3])
-    if rng2 <= 0 or (rng2 - body2) / rng2 > DECISION_SHADOW_MAX_PCT:
+    if rng2 <= 0:
         return None
+    upper2 = _upper_shadow(o2, float(k_cur[2]), c2)
 
     # 看涨吞没：前阴后阳，阳实体包住阴实体
     if _is_bearish(o1, c1) and _is_bullish(o2, c2):
         if o2 <= c1 and c2 >= o1:
+            # 上影必须短（≤ 全长 15%，口径同锤形线上影）：冲高遭抛压打回=
+            # 犹豫非决断；下影不限（探底回升=下方承接强）
+            if upper2 / rng2 > ENGULF_UPPER_SHADOW_MAX_PCT:
+                return None
             strength = 0.7
             if body2 > body1 * 2:
                 strength = 0.9
@@ -170,6 +181,9 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     # 看跌吞没：前阳后阴，阴实体包住阳实体
     if _is_bullish(o1, c1) and _is_bearish(o2, c2):
         if o2 >= c1 and c2 <= o1:
+            # 决断K线影线质量门（2026-09-30 口径维持）：总影线 ≤ 全长 40%
+            if (rng2 - body2) / rng2 > DECISION_SHADOW_MAX_PCT:
+                return None
             strength = 0.7
             if body2 > body1 * 2:
                 strength = 0.9
@@ -178,12 +192,18 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     return None
 
 
+# 启明星中K（星）实体上限（2026-10-01 用户拍板收紧 0.5→0.3）：中K实体超过
+# 外侧两根均值×0.3 时，2-3 根组合已呈"看涨吞没"观感，不再算星
+MORNING_STAR_MID_BODY_MAX_RATIO = 0.3
+
+
 def detect_morning_star(klines: list[list], idx: int = -1) -> Optional[dict]:
     """启明星（三根 K 线）
 
     条件：
     1. 第一根：阴线（下跌趋势中）
-    2. 第二根：小实体（星），实体较小，可以是阴阳
+    2. 第二根：小实体（星），实体 < 外侧均值×0.3（2026-10-01 收紧，
+       防退化为看涨吞没观感），可以是阴阳
     3. 第三根：阳线，收盘深入第一根实体
     4. 第三根影线不过长（总影线 ≤ 全长 40%，决断K线影线质量门）
     """
@@ -208,9 +228,10 @@ def detect_morning_star(klines: list[list], idx: int = -1) -> Optional[dict]:
     if not _is_bearish(o1, c1):
         return None
 
-    # 第二根小实体（星）
+    # 第二根小实体（星）：2026-10-01 收紧 0.5→0.3——中K实体偏大时第三根
+    # 常已包住中K，形态退化为看涨吞没观感
     avg_body = (body1 + body3) / 2
-    if body2 >= avg_body * 0.5:
+    if body2 >= avg_body * MORNING_STAR_MID_BODY_MAX_RATIO:
         return None
 
     # 第三根阳线，收盘深入第一根实体中部以上
@@ -290,7 +311,8 @@ def detect_evening_star(klines: list[list], idx: int = -1) -> Optional[dict]:
 
     条件：
     1. 第一根：阳线
-    2. 第二根：小实体（星）
+    2. 第二根：小实体（星），实体 < 外侧均值×0.3（2026-10-01 与启明星对齐收紧，
+       防退化为看跌吞没观感），可以是阴阳
     3. 第三根：阴线，收盘深入第一根实体下半部
     4. 第三根影线不过长（总影线 ≤ 全长 40%，决断K线影线质量门）
     """
@@ -314,8 +336,10 @@ def detect_evening_star(klines: list[list], idx: int = -1) -> Optional[dict]:
     if not _is_bullish(o1, c1):
         return None
 
+    # 第二根小实体（星）：2026-10-01 与启明星对齐 0.5→0.3——中K实体偏大时
+    # 第三根常已包住中K，形态退化为看跌吞没观感
     avg_body = (body1 + body3) / 2
-    if body2 >= avg_body * 0.5:
+    if body2 >= avg_body * MORNING_STAR_MID_BODY_MAX_RATIO:
         return None
 
     if not _is_bearish(o3, c3):
@@ -526,9 +550,11 @@ def detect_harami_breakout(klines: list[list], idx: int = -1) -> Optional[dict]:
 # 上吊线（长下影出现在顶部）与反抽受阻语义不符。看多三种维持不变。
 # 流星线仅形状判定（无区间高位门）：顶部=压力位/EMA21 反抽受阻的锚定语境
 # 由触发层方向门控 + 触碰/悬空拦截保证，不要求近期区间高位
+# 2026-10-01 用户拍板：倒锤形线加入白名单（看涨 4 种），单锤/单倒锤恢复单根确认
 GOLDEN_12 = {
-    # 看涨 3 种
+    # 看涨 4 种
     "hammer",              # 锤形线
+    "inverted_hammer",     # 倒锤形线（2026-10-01 加入：单根恢复确认资格）
     "bullish_engulfing",   # 看涨吞没
     "morning_star",        # 启明星
     # 看跌 3 种
@@ -556,14 +582,16 @@ PATTERN_LABEL_MAP = {
 }
 
 
-# ===== 单影线形态的复合确认（2026-09-29 用户拍板）=====
-# 锤形线（看多）/流星线即倒锤形（看空）是"单根单影线"形态，单独作为回踩
+# ===== 单影线形态的复合确认（2026-09-29 用户拍板；2026-10-01 收窄至仅流星线）=====
+# 流星线（倒锤形出现在顶部，看空）是"单根单影线"形态，单独作为回踩
 # 金K确认证据太弱：单根不再触发，须满足其一——
-#   ① 双锤：连续两根同形态（前根+当根，探底回升连续两次确认）
-#   ② 锤+趋势K：前根锤/流星 + 当根顺向趋势K（短影线长实体，实体 ≥70% 全长，
+#   ① 双流星：连续两根同形态（前根+当根，反抽受阻连续两次确认）
+#   ② 流星+趋势K：前根流星 + 当根顺向趋势K（短影线长实体，实体 ≥70% 全长，
 #      与突破K线同口径，2026-09-30-2 同步放宽）
-# 复合形态（吞没/启明星/黄昏星）本身由多根K线构成、结构更强，维持单根确认。
-SINGLE_SHADOW_PATTERNS = {"hammer", "shooting_star"}
+# 2026-10-01 用户拍板：锤形线移出本集合、倒锤形线加入白名单——单锤/单倒锤
+# 恢复单根直接确认（探底回升语义足够强）；复合形态（吞没/启明星/黄昏星）
+# 本身由多根K线构成、结构更强，维持单根确认。
+SINGLE_SHADOW_PATTERNS = {"shooting_star"}
 
 # 顺向趋势K线实体/K线全长下限（与 trigger.BREAKOUT_BODY_RANGE_MIN 同口径，
 # 2026-09-30-2 同步放宽 0.75→0.70；复制常量避免 strategy 内部反向 import trigger）
@@ -598,7 +626,7 @@ def detect_solid_trend_candle(klines: list[list], direction: int,
 
 def resolve_golden_evidence(klines: list[list], wanted: str,
                             patterns: list[dict]) -> tuple[Optional[dict], str]:
-    """回踩金K证据统一裁决（2026-09-29 复合确认规则）。
+    """回踩金K证据统一裁决（2026-09-29 复合确认；2026-10-01 收窄+方向优先）。
 
     入参：
     - klines：全量K线（[-2]=当根已收盘、[-3]=前根已收盘）
@@ -609,32 +637,35 @@ def resolve_golden_evidence(klines: list[list], wanted: str,
     - note：组合说明（""=单形态直接确认），trigger 层拼进触发 reason
 
     裁决顺序：
-    1. 当根复合形态（吞没/启明星/黄昏星）方向匹配 → 直接确认
-    2. 当根锤/流星方向匹配 → 前根同形态（双锤）才确认，否则不确认
-    3. 当根无金K → 前根锤/流星（方向匹配）+ 当根顺向趋势K → 组合确认，
+    0. 金K候选先按 wanted 方向过滤再取首个——同形双报倒锤/流星 strength
+       并列，方向优先防 TA-Lib 单侧提升后反侧误拦（旧口径"取首个再验方向"
+       会把方向不符的首个形态当一票否决，已废弃）
+    1. 当根金K方向匹配且非单影线（吞没/启明星/黄昏星/锤形线/倒锤形线）
+       → 直接确认
+    2. 当根流星方向匹配 → 前根同形态（双流星）才确认，否则不确认
+    3. 当根无金K → 前根锤（看多）/流星（看空）+ 当根顺向趋势K → 组合确认，
        pattern 落前根形态（前端展示/AI 提示词兼容）
     触点框架（当根触碰或 pending 次根确认）由 trigger 层负责，本函数只裁
     "形态证据是否成立"——无触碰语境的悬空组合不会绕过触点要求。
     """
-    golden = next((p for p in patterns if p["pattern"] in GOLDEN_12), None)
-    golden = golden if (golden and golden["direction"] == wanted) else None
+    golden = next((p for p in patterns
+                   if p["pattern"] in GOLDEN_12 and p["direction"] == wanted), None)
 
-    # 规则1：复合形态直接确认
+    # 规则1：非单影线金K直接确认
     if golden and golden["pattern"] not in SINGLE_SHADOW_PATTERNS:
         return golden, ""
 
     direction = 1 if wanted == "bullish" else -1
 
-    # 规则2：当根单影线（锤/流星）→ 双锤组合确认
+    # 规则2：当根流星 → 双流星组合确认（2026-10-01 起单影线复合仅剩流星线）
     if golden:
         try:
-            prev = (detect_hammer(klines, -3) if golden["pattern"] == "hammer"
-                    else detect_shooting_star(klines, -3))
+            prev = detect_shooting_star(klines, -3)
         except Exception:
             prev = None
         if prev:
-            return golden, "双锤组合"
-        return None, ""  # 单锤/单流星不确认
+            return golden, "双流星组合"
+        return None, ""  # 单流星不确认
 
     # 规则3：当根趋势K + 前根锤/流星 → 组合确认
     try:

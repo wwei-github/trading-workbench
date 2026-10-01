@@ -634,7 +634,8 @@ def test_row1_breakout_over_max_short_symmetric_rejected():
     assert t is None and op is None
 
 
-# ── 单影线形态复合确认（2026-09-29 用户拍板：单锤/单流星不再单根确认）──────
+# ── 单影线形态确认（2026-09-29 复合确认 → 2026-10-01 收窄：仅流星线维持复合，
+#    锤形线/倒锤形线恢复单根直接确认）────────────────────────────────────────
 # 真实形态构造（不 mock detect_all_patterns）：锤形线=小实体长下影短上影，
 # 流星线=小实体长上影短下影，趋势K=实体≥70%全长（2026-09-30-2）
 
@@ -643,6 +644,14 @@ def _hammer_at(kl: list[list], idx: int) -> None:
     l=99.10（下影 1.0 ≥ 2×body）、h=100.40（上影 0.1 ≤ 15%×1.3=0.195）"""
     ts = kl[idx][0]
     kl[idx] = [ts, 100.10, 100.40, 99.10, 100.30, 100.0, 1e6]
+
+
+def _inverted_hammer_at(kl: list[list], idx: int) -> None:
+    """把 kl[idx] 改写为看多倒锤形线：o=100.10 c=100.30（body 0.2）、
+    h=101.30（上影 1.0 ≥ 2×body）、l=99.98（下影 0.12 ≤ 15%×1.32≈0.198；
+    low 低于 EMA21≈100.03 → 触碰成立）"""
+    ts = kl[idx][0]
+    kl[idx] = [ts, 100.10, 101.30, 99.98, 100.30, 100.0, 1e6]
 
 
 def _shooting_star_at(kl: list[list], idx: int) -> None:
@@ -666,36 +675,47 @@ def _trend_candle_at(kl: list[list], idx: int, direction: int = 1) -> None:
     kl[idx] = [ts, o, h, l, c, 100.0, 1e6]
 
 
-def test_single_hammer_touch_no_trigger_becomes_pending():
-    """单锤触碰触点 → 不触发（旧行为是当根确认），转 pending 等次根确认"""
+def test_single_hammer_touch_confirms_directly():
+    """单锤触碰触点 → 单根直接确认（2026-10-01 恢复：锤形线移出复合确认集合）"""
     kl = _kl(*_base())
     _touch_long(kl)          # 当根触碰 EMA21（收盘收回线上）
-    _hammer_at(kl, -2)       # 当根锤形（close=100.30 > ema、low=99.10 触及 → 仍触碰）
+    _hammer_at(kl, -2)       # 当根锤形（low=99.10 低于 ema、收盘线上 → 触碰成立）
     t, op = trig.detect_trigger(kl, 1)
-    assert t is None
-    assert op is not None and op["op"] == "upsert"  # 触碰无有效金K → 转待确认
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["pattern"] == "hammer"
+    assert "双锤" not in t["reason"]  # 单形态直通，无组合注记
+
+
+def test_single_inverted_hammer_touch_confirms():
+    """单倒锤形触碰触点 → 单根直接确认（2026-10-01 加入白名单）；
+    同形双报的流星线（bearish）被方向优先过滤，不拦看多确认"""
+    kl = _kl(*_base())
+    _inverted_hammer_at(kl, -2)
+    t, op = trig.detect_trigger(kl, 1)
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["pattern"] == "inverted_hammer"
 
 
 def test_double_hammer_confirms():
-    """双锤：前根+当根连续锤形 → 有效金K证据，触碰路径当根确认"""
+    """双锤：连续两根锤形 → 当根锤走单锤直通确认（2026-10-01，双锤注记成历史）"""
     kl = _kl(*_base())
     _hammer_at(kl, -3)       # 前根锤
     _hammer_at(kl, -2)       # 当根锤（low 触及 ema、收盘线上 → 当根触碰成立）
     t, op = trig.detect_trigger(kl, 1)
     assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
     assert t["pattern"] == "hammer"
-    assert "双锤组合" in t["reason"]
+    assert "双锤" not in t["reason"]
 
 
 def test_double_shooting_star_confirms_short():
-    """空头对称：前根+当根连续流星线 → 有效金K证据"""
+    """空头对称：前根+当根连续流星线 → 有效金K证据（流星线维持复合确认）"""
     kl = _kl(*_base())
     _shooting_star_at(kl, -3)
     _shooting_star_at(kl, -2)
     t, op = trig.detect_trigger(kl, -1)
     assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
     assert t["pattern"] == "shooting_star"
-    assert "双锤组合" in t["reason"]
+    assert "双流星组合" in t["reason"]
 
 
 def test_hammer_plus_trend_candle_confirms():
@@ -747,6 +767,18 @@ def test_resolve_direction_mismatch_rejected():
     golden, _ = trig.resolve_golden_evidence(
         kl, "bearish", [{"pattern": "hammer", "direction": "bullish"}])
     assert golden is None
+
+
+def test_resolve_direction_first_amid_dual_report():
+    """方向优先（2026-10-01）：同形双报（倒锤 bullish + 流星 bearish 并列）时
+    看多语境取倒锤直通——旧口径"取首个再验方向"会被强势反侧一票否决"""
+    kl = _kl(*_base())
+    golden, note = trig.resolve_golden_evidence(kl, "bullish", [
+        {"pattern": "shooting_star", "direction": "bearish", "strength": 0.8},
+        {"pattern": "inverted_hammer", "direction": "bullish", "strength": 0.7},
+    ])
+    assert golden is not None and golden["pattern"] == "inverted_hammer"
+    assert note == ""
 
 
 # ── 回踩金K量能注记（2026-09-30 docs/25 §3.1：补齐知识库「大量」要素）──────

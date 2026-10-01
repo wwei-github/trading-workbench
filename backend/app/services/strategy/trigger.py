@@ -439,8 +439,8 @@ def detect_trigger(
                                   f"Donchian下轨({chan_low:.6g})",
                     }, _close_op(pending, direction, "breakout")
 
-    # 当根金K证据统一裁决（2026-09-29 复合确认：单影线锤/流星单根不再确认，
-    # 须双锤或锤+趋势K；复合形态（吞没/启明星/黄昏星）单根照旧——
+    # 当根金K证据统一裁决（2026-09-29 复合确认；2026-10-01 收窄：仅流星线维持
+    # 复合确认（双流星/流星+趋势K），锤形线/倒锤形线恢复单根直接确认——
     # 见 candlestick.resolve_golden_evidence；触点框架要求不变）
     patterns = detect_all_patterns(klines, idx=-2)
     golden, golden_note = resolve_golden_evidence(klines, wanted, patterns)
@@ -474,7 +474,7 @@ def detect_trigger(
     if touch_ref is not None and golden:
         _label = PATTERN_LABEL_MAP.get(golden["pattern"], golden["pattern"])
         # 证据描述：单形态="当根X确认"；组合=note 原文+确认（如
-        # "双锤组合确认"/"前根锤形线+当根趋势K确认"）
+        # "双流星组合确认"/"前根锤形线+当根趋势K确认"）
         _ev = f"当根{_label}确认" if not golden_note else f"{golden_note}确认"
         return {
             "type": PULLBACK_CONFIRM, "direction": direction,
