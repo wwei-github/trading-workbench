@@ -1085,6 +1085,7 @@ def pullback_pendings_list(
         "id": str(r.id),
         "symbol": r.symbol,
         "direction": r.direction,  # 1 多 / -1 空
+        "touch_ref": r.touch_ref,  # Stage-1 命中触点（docs/22，前端「等待确认」列展示；旧行 NULL）
         "stage1_candle_open": r.stage1_candle_open.isoformat() if r.stage1_candle_open else None,
         "ema21": float(r.ema21) if r.ema21 is not None else None,
         "quality_score": r.quality_score,

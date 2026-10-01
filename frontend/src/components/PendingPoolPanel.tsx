@@ -46,6 +46,15 @@ const REASON_LABEL: Record<string, string> = {
   same_candle_confirm: '当根确认抢先',
 }
 
+// 触点方向化措辞（与后端 trigger._touch_ref_label 同口径）：
+// 「等待确认」列拼接「次根看涨金K·触点摆动低点」这类待确认内容
+function touchWaitLabel(touch_ref: string | null, direction: 1 | -1): string {
+  if (!touch_ref) return ''
+  if (touch_ref === 'retest') return direction === 1 ? '前高' : '前低'
+  if (touch_ref === 'swing') return direction === 1 ? '摆动低点' : '摆动高点'
+  return `EMA${touch_ref.replace('ema', '')}`
+}
+
 function fmtTime(s: string | null | undefined): string {
   if (!s) return '-'
   return bj(s).format('MM-DD HH:mm')
@@ -115,6 +124,19 @@ export default function PendingPoolPanel() {
       },
     },
     {
+      title: '等待确认', key: 'await_confirm', width: 170,
+      render: (_, r) => {
+        if (r.status !== 'pending') return '-'
+        const side = r.direction === 1 ? '看涨' : '看跌'
+        const t = touchWaitLabel(r.touch_ref, r.direction)
+        return (
+          <Tooltip title="确认窗口仅限触碰K线的下一根已收盘K线：出现同向金K即确认入场；无金K过期，突破/当根确认则让位">
+            <Text>{`次根${side}金K${t ? `·触点${t}` : ''}`}</Text>
+          </Tooltip>
+        )
+      },
+    },
+    {
       title: '结果', dataIndex: 'resolve_reason', key: 'resolve_reason', width: 120,
       render: (v: string | null, r) => {
         if (r.status === 'confirmed') return <Text type="success">已进 AI 分析</Text>
@@ -176,7 +198,7 @@ export default function PendingPoolPanel() {
             dataSource={filtered}
             pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
             size="small"
-            scroll={{ x: 900 }}
+            scroll={{ x: 1140 }}
             locale={{
               emptyText: (
                 <Empty

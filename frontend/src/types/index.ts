@@ -243,6 +243,7 @@ export interface PullbackPendingItem {
   id: string;
   symbol: string;
   direction: 1 | -1; // 1 多 / -1 空
+  touch_ref: string | null; // Stage-1 命中触点（docs/22：retest/swing/ema21/55/144；旧行 NULL）
   stage1_candle_open: string | null; // Stage-1 触碰K线开盘时间（锚点）
   ema21: number | null; // 触碰时 EMA21
   quality_score: number | null;
