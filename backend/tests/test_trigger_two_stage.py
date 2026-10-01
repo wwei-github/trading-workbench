@@ -686,14 +686,15 @@ def test_single_hammer_touch_confirms_directly():
     assert "双锤" not in t["reason"]  # 单形态直通，无组合注记
 
 
-def test_single_inverted_hammer_touch_confirms():
-    """单倒锤形触碰触点 → 单根直接确认（2026-10-01 加入白名单）；
-    同形双报的流星线（bearish）被方向优先过滤，不拦看多确认"""
+def test_single_inverted_hammer_no_confirm():
+    """单倒锤触碰触点 → 不确认（2026-10-01-2 退出看涨白名单：看涨回踩语境
+    长上影=上方抛压，不是企稳证据）；当根触碰+无金K → 转 pending 待确认；
+    同形双报的流星线（bearish）方向不符同样不入选"""
     kl = _kl(*_base())
     _inverted_hammer_at(kl, -2)
     t, op = trig.detect_trigger(kl, 1)
-    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
-    assert t["pattern"] == "inverted_hammer"
+    assert t is None
+    assert op is not None and op["op"] == "upsert"
 
 
 def test_double_hammer_confirms():
@@ -770,15 +771,24 @@ def test_resolve_direction_mismatch_rejected():
 
 
 def test_resolve_direction_first_amid_dual_report():
-    """方向优先（2026-10-01）：同形双报（倒锤 bullish + 流星 bearish 并列）时
-    看多语境取倒锤直通——旧口径"取首个再验方向"会被强势反侧一票否决"""
+    """方向优先机制回归（2026-10-01）：同形双报时先按 wanted 方向过滤再取首个。
+    2026-10-01-2 倒锤形线退出看涨白名单后：看多语境双报（倒锤 bullish + 流星
+    bearish）两形态均不入选（倒锤不在 GOLDEN_12、流星方向不符）→ 无金K证据"""
     kl = _kl(*_base())
     golden, note = trig.resolve_golden_evidence(kl, "bullish", [
         {"pattern": "shooting_star", "direction": "bearish", "strength": 0.8},
         {"pattern": "inverted_hammer", "direction": "bullish", "strength": 0.7},
     ])
-    assert golden is not None and golden["pattern"] == "inverted_hammer"
-    assert note == ""
+    assert golden is None and note == ""
+    # 看空语境同双报：流星线正常入选（白名单保留）——前根补流星构成双流星组合确认
+    kl2 = _kl(*_base())
+    _shooting_star_at(kl2, -3)
+    golden2, note2 = trig.resolve_golden_evidence(kl2, "bearish", [
+        {"pattern": "shooting_star", "direction": "bearish", "strength": 0.8},
+        {"pattern": "inverted_hammer", "direction": "bullish", "strength": 0.7},
+    ])
+    assert golden2 is not None and golden2["pattern"] == "shooting_star"
+    assert note2 == "双流星组合"
 
 
 # ── 回踩金K量能注记（2026-09-30 docs/25 §3.1：补齐知识库「大量」要素）──────

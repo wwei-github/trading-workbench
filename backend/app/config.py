@@ -60,7 +60,9 @@ class Settings(BaseSettings):
     # （倒锤加入 GOLDEN_12，复合确认仅剩流星线：双流星/流星+趋势K）；
     # ②看涨吞没影线门不对称化（上影 ≤15% 全长、下影不限；看跌维持总影线 ≤40%）；
     # ③启明星中K实体上限收紧 0.5→0.3（防退化为看涨吞没观感）
-    RULE_VERSION: str = "v2026-10-01"
+    # v2026-10-01-2：倒锤形线退出看涨白名单（KSMUSDT 回踩 EMA21 个案拍板）——
+    # 看涨回踩语境长上影=上方抛压，不是企稳证据；看涨金K回到锤/吞没/启明星 3 种
+    RULE_VERSION: str = "v2026-10-01-2"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

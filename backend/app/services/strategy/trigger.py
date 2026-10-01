@@ -440,8 +440,8 @@ def detect_trigger(
                     }, _close_op(pending, direction, "breakout")
 
     # 当根金K证据统一裁决（2026-09-29 复合确认；2026-10-01 收窄：仅流星线维持
-    # 复合确认（双流星/流星+趋势K），锤形线/倒锤形线恢复单根直接确认——
-    # 见 candlestick.resolve_golden_evidence；触点框架要求不变）
+    # 复合确认（双流星/流星+趋势K），锤形线恢复单根直接确认；2026-10-01-2 倒锤
+    # 形线退出看涨白名单——见 candlestick.resolve_golden_evidence；触点框架要求不变）
     patterns = detect_all_patterns(klines, idx=-2)
     golden, golden_note = resolve_golden_evidence(klines, wanted, patterns)
 
