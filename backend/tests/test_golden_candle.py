@@ -29,12 +29,15 @@ def _kl_list(closes, o=None, h=None, l=None):
 
 
 def test_golden_sets_by_direction():
-    """金K清单按方向：看多三种（锤/吞没/启明星），看空三种（流星/吞没/黄昏星）
-    （2026-10-01-2：倒锤形线退出看涨白名单——看涨回踩语境长上影=上方抛压，
-    不是企稳证据；支撑企稳只认长下影锤形线）"""
-    bullish = {"hammer", "bullish_engulfing", "morning_star"}
-    bearish = {"shooting_star", "bearish_engulfing", "evening_star"}
+    """金K清单按方向：完整 12 金K，看涨看跌各 6 种
+    （2026-10-01-3：恢复 2026-09-12 精简掉的刺透线/孕线突破/蜻蜓/乌云盖顶/墓碑；
+    倒锤形线维持退出（-2 KSM 拍板）、上吊线维持被流星线替代（09-28 拍板））"""
+    bullish = {"hammer", "bullish_engulfing", "morning_star",
+               "piercing_line", "bullish_harami", "dragonfly_doji"}
+    bearish = {"shooting_star", "bearish_engulfing", "evening_star",
+               "dark_cloud_cover", "bearish_harami", "gravestone_doji"}
     assert GOLDEN_12 == bullish | bearish
+    assert len(GOLDEN_12) == 12
     assert "inverted_hammer" not in GOLDEN_12
     assert "hanging_man" not in GOLDEN_12
     for p in GOLDEN_12:

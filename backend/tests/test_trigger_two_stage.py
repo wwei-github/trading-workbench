@@ -791,6 +791,27 @@ def test_resolve_direction_first_amid_dual_report():
     assert note2 == "双流星组合"
 
 
+def test_resolve_restored_patterns_direct_confirm():
+    """2026-10-01-3 恢复的 12 金K新成员直接确认（白名单内非单影线 → note=""）；
+    倒锤形线维持退出（方向过滤不入选）"""
+    kl = _kl(*_base())
+    for pat, want_dir in [
+        ("piercing_line", "bullish"), ("bullish_harami", "bullish"),
+        ("dragonfly_doji", "bullish"), ("dark_cloud_cover", "bearish"),
+        ("bearish_harami", "bearish"), ("gravestone_doji", "bearish"),
+    ]:
+        golden, note = trig.resolve_golden_evidence(kl, want_dir, [
+            {"pattern": pat, "direction": want_dir, "strength": 0.7},
+        ])
+        assert golden is not None and golden["pattern"] == pat, pat
+        assert note == "", pat
+    # 反向语境下恢复形态不入选（方向优先过滤）
+    golden_inv, _ = trig.resolve_golden_evidence(kl, "bullish", [
+        {"pattern": "dark_cloud_cover", "direction": "bearish", "strength": 0.8},
+    ])
+    assert golden_inv is None
+
+
 # ── 回踩金K量能注记（2026-09-30 docs/25 §3.1：补齐知识库「大量」要素）──────
 
 def _set_signal_vol(kl: list[list], vol: float) -> None:
