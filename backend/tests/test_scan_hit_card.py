@@ -1,7 +1,8 @@
-"""定时扫描命中飞书卡片单测（2026-09-30 纯文本改消息卡片）
+"""定时扫描命中飞书卡片单测（2026-09-30 纯文本改卡片；2026-10-01 三列等宽）
 
-_scan_hit_card：标题计数 / lark_md 行（信号族·金K形态·质量分）/ 未知信号
-与未知形态兜底 / 超 8 条截断 + note 脚注。只构造卡片体，不发送不触网。
+_scan_hit_card：标题计数 / 每命中一行 column_set（币种·信号族·质量分三列
+weight 34/33/33 等宽平分）/ 未知信号与未知形态兜底 / 超 8 条截断 + note 脚注。
+只构造卡片体，不发送不触网。
 """
 import sys
 from pathlib import Path
@@ -20,18 +21,27 @@ def _hit(symbol, signal_type=None, pattern=None, quality=0):
     }
 
 
-def test_card_title_and_hit_lines():
-    """标题计数 + 命中两行：信号族中文名 + 金K形态标签 + 质量分"""
+def test_card_title_and_three_equal_columns():
+    """标题计数 + 每命中一行 column_set：三列等宽 34/33/33，内容各就各位"""
     card = _scan_hit_card([
         _hit("API3USDT", "trigger_pullback", "bullish_engulfing", 87),
         _hit("BTCUSDT", "trigger_breakout", None, 66),
     ])
     assert card["header"]["title"]["content"] == "🔎 定时扫描命中 2 个"
     assert card["header"]["template"] == "blue"
-    body = card["elements"][0]["text"]["content"]
-    assert "**API3USDT**　回踩金K确认·看涨吞没　质量分 87" in body
-    assert "**BTCUSDT**　同向突破　质量分 66" in body
-    assert len(card["elements"]) == 1  # ≤8 条无脚注
+
+    row1, row2 = card["elements"][0], card["elements"][1]
+    assert row1["tag"] == "column_set" and row2["tag"] == "column_set"
+    cols = row1["columns"]
+    assert [c["weight"] for c in cols] == [34, 33, 33]
+    assert all(c["width"] == "weighted" for c in cols)
+    assert cols[0]["elements"][0]["content"] == "**API3USDT**"
+    assert cols[1]["elements"][0]["content"] == "回踩金K确认·看涨吞没"
+    assert cols[2]["elements"][0]["content"] == "质量分 87"
+    assert row2["columns"][0]["elements"][0]["content"] == "**BTCUSDT**"
+    assert row2["columns"][1]["elements"][0]["content"] == "同向突破"
+    assert row2["columns"][2]["elements"][0]["content"] == "质量分 66"
+    assert len(card["elements"]) == 2  # ≤8 条无脚注
 
 
 def test_card_unknown_signal_and_pattern_fallback():
@@ -40,9 +50,9 @@ def test_card_unknown_signal_and_pattern_fallback():
         _hit("XYZUSDT", None, None, 60),
         _hit("ABCUSDT", "trigger_pullback", "unknown_pattern", 61),
     ])
-    body = card["elements"][0]["text"]["content"]
-    assert "未知信号" in body
-    assert "unknown_pattern" in body
+    row1, row2 = card["elements"]
+    assert row1["columns"][1]["elements"][0]["content"] == "未知信号"
+    assert row2["columns"][1]["elements"][0]["content"] == "回踩金K确认·unknown_pattern"
 
 
 def test_card_truncates_over_8_with_note():
@@ -50,8 +60,13 @@ def test_card_truncates_over_8_with_note():
     hits = [_hit(f"SYM{i}USDT", "trigger_breakout", None, 60 + i) for i in range(10)]
     card = _scan_hit_card(hits)
     assert card["header"]["title"]["content"] == "🔎 定时扫描命中 10 个"
-    body = card["elements"][0]["text"]["content"]
-    assert body.count("质量分") == 8
-    assert "SYM7USDT" in body and "SYM8USDT" not in body
-    note = card["elements"][1]["elements"][0]["content"]
+    rows = card["elements"][:-1]
+    assert len(rows) == 8
+    contents = "\n".join(
+        c["elements"][0]["content"]
+        for r in rows for c in r["columns"]
+    )
+    assert contents.count("质量分") == 8
+    assert "SYM7USDT" in contents and "SYM8USDT" not in contents
+    note = card["elements"][-1]["elements"][0]["content"]
     assert note == "仅列前 8 个，共命中 10 个"

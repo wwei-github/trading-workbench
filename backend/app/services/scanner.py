@@ -51,23 +51,38 @@ logger = logging.getLogger(__name__)
 
 
 def _scan_hit_card(new_hits: list[dict]) -> dict:
-    """定时扫描命中消息卡片（2026-09-30 由纯文本改卡片）。
+    """定时扫描命中消息卡片（2026-09-30 由纯文本改卡片；2026-10-01 三列等宽）。
 
-    标题计数 + 命中列表（lark_md 加粗币种；信号族/金K形态中文名沿用复盘
+    标题计数 + 每命中一行 column_set：币种 / 信号族·金K形态 / 质量分 三列
+    等宽平分（weight 34/33/33，信号族与金K形态中文名沿用复盘
     TRIGGER_FAMILY / PATTERN_LABEL_MAP 映射）；超 8 条截断、余量并入 note
     脚注。返回卡片体（外层包装与发送通道由 feishu_bot 负责）。
     """
     from app.services.actual_review import TRIGGER_FAMILY
     from app.services.strategy.candlestick import PATTERN_LABEL_MAP
 
-    lines = "\n".join(
-        f"**{h['symbol']}**　"
-        f"{TRIGGER_FAMILY.get(h.get('signal_type') or '', '未知信号')}"
-        + (f"·{PATTERN_LABEL_MAP.get(h['pattern'], h['pattern'])}"
-           if h.get("pattern") else "")
-        + f"　质量分 {h.get('quality_score', 0)}"
-        for h in new_hits[:8]
-    )
+    def _col(weight: int, content: str) -> dict:
+        return {
+            "tag": "column",
+            "width": "weighted",
+            "weight": weight,
+            "elements": [{"tag": "markdown", "content": content}],
+        }
+
+    rows = []
+    for h in new_hits[:8]:
+        sig = TRIGGER_FAMILY.get(h.get("signal_type") or "", "未知信号")
+        if h.get("pattern"):
+            sig += f"·{PATTERN_LABEL_MAP.get(h['pattern'], h['pattern'])}"
+        rows.append({
+            "tag": "column_set",
+            "flex_mode": "stretch",
+            "columns": [
+                _col(34, f"**{h['symbol']}**"),
+                _col(33, sig),
+                _col(33, f"质量分 {h.get('quality_score', 0)}"),
+            ],
+        })
     card = {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -75,9 +90,7 @@ def _scan_hit_card(new_hits: list[dict]) -> dict:
                       "content": f"🔎 定时扫描命中 {len(new_hits)} 个"},
             "template": "blue",
         },
-        "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": lines}},
-        ],
+        "elements": rows,
     }
     if len(new_hits) > 8:
         card["elements"].append({"tag": "note", "elements": [
