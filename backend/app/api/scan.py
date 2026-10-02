@@ -387,6 +387,22 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
                              if cfg.pullback_market_pct is not None else None),
         max_slippage_pct=(float(cfg.max_slippage_pct)
                           if cfg.max_slippage_pct is not None else None),
+        min_recommendation=cfg.min_recommendation,
+        daily_loss_stop_pct=(float(cfg.daily_loss_stop_pct)
+                             if cfg.daily_loss_stop_pct is not None else None),
+        daily_loss_stop_enabled=cfg.daily_loss_stop_enabled,
+        ai_rr_min=(float(cfg.ai_rr_min) if cfg.ai_rr_min is not None else None),
+        risk_pct=(float(cfg.risk_pct) if cfg.risk_pct is not None else None),
+        leverage_max=cfg.leverage_max,
+        taker_fee_rate=(float(cfg.taker_fee_rate)
+                        if cfg.taker_fee_rate is not None else None),
+        near_anchor_factor=(float(cfg.near_anchor_factor)
+                            if cfg.near_anchor_factor is not None else None),
+        portfolio_heat_cap=(float(cfg.portfolio_heat_cap)
+                            if cfg.portfolio_heat_cap is not None else None),
+        same_direction_cap=cfg.same_direction_cap,
+        btc_crash_pause_pct=(float(cfg.btc_crash_pause_pct)
+                             if cfg.btc_crash_pause_pct is not None else None),
         live_initial_capital=float(cfg.live_initial_capital or 0),
         scan_filters=(cfg.scan_filters if isinstance(cfg.scan_filters, dict) else None),
         scan_filters_effective={
@@ -579,10 +595,18 @@ def update_system_config(
         cfg.liq_gate_buffer = v
     if "min_adapt_leverage" in body.model_fields_set:
         v = body.min_adapt_leverage
-        if v is not None and not (1 <= v <= settings.TRADING_LEVERAGE):
+        # 上限按本次请求生效后的杠杆上限（cfg.leverage_max 覆盖优先；
+        # body 同传 leverage_max 时以本次新值为准，2026-10-02 上页面联动）
+        lev_cap = (
+            int(body.leverage_max)
+            if "leverage_max" in body.model_fields_set and body.leverage_max is not None
+            else int(cfg.leverage_max) if cfg.leverage_max is not None
+            else int(settings.TRADING_LEVERAGE)
+        )
+        if v is not None and not (1 <= v <= lev_cap):
             raise HTTPException(
                 status_code=400,
-                detail=f"min_adapt_leverage 需在 1~{settings.TRADING_LEVERAGE} 之间（动态杠杆下限，倍数）",
+                detail=f"min_adapt_leverage 需在 1~{lev_cap} 之间（动态杠杆下限，倍数）",
             )
         cfg.min_adapt_leverage = v
     if "pullback_market_pct" in body.model_fields_set:
@@ -595,6 +619,59 @@ def update_system_config(
         if v is not None and not (0 < v < 0.05):
             raise HTTPException(status_code=400, detail="max_slippage_pct 需为比例值（0.003=0.3%，<5%）")
         cfg.max_slippage_pct = v
+    # 风控参数（2026-10-02 上页面）：显式传 null = 恢复 env 默认；范围越界 400
+    if "min_recommendation" in body.model_fields_set:
+        v = body.min_recommendation
+        if v is not None and not (0 <= v <= 100):
+            raise HTTPException(status_code=400, detail="min_recommendation 需在 0~100 之间（开单评分门槛）")
+        cfg.min_recommendation = v
+    if "daily_loss_stop_pct" in body.model_fields_set:
+        v = body.daily_loss_stop_pct
+        if v is not None and not (0 < v <= 50):
+            raise HTTPException(status_code=400, detail="daily_loss_stop_pct 需在 0~50 % 之间（当日亏损熔断阈值）")
+        cfg.daily_loss_stop_pct = v
+    if "daily_loss_stop_enabled" in body.model_fields_set:
+        cfg.daily_loss_stop_enabled = body.daily_loss_stop_enabled
+    if "ai_rr_min" in body.model_fields_set:
+        v = body.ai_rr_min
+        if v is not None and not (0.5 <= v <= 10):
+            raise HTTPException(status_code=400, detail="ai_rr_min 需在 0.5~10 之间（盈亏比下限）")
+        cfg.ai_rr_min = v
+    if "risk_pct" in body.model_fields_set:
+        v = body.risk_pct
+        if v is not None and not (0.1 <= v <= 20):
+            raise HTTPException(status_code=400, detail="risk_pct 需在 0.1~20 % 之间（单笔风险比例）")
+        cfg.risk_pct = v
+    if "leverage_max" in body.model_fields_set:
+        v = body.leverage_max
+        if v is not None and not (1 <= v <= 125):
+            raise HTTPException(status_code=400, detail="leverage_max 需在 1~125 之间（杠杆上限，倍数）")
+        cfg.leverage_max = v
+    if "taker_fee_rate" in body.model_fields_set:
+        v = body.taker_fee_rate
+        if v is not None and not (0 <= v <= 0.005):
+            raise HTTPException(status_code=400, detail="taker_fee_rate 需为比例值（0.0005=0.05%，≤0.5%）")
+        cfg.taker_fee_rate = v
+    if "near_anchor_factor" in body.model_fields_set:
+        v = body.near_anchor_factor
+        if v is not None and not (0 < v <= 1):
+            raise HTTPException(status_code=400, detail="near_anchor_factor 需在 0~1 之间（近锚折价系数，1=关闭折价）")
+        cfg.near_anchor_factor = v
+    if "portfolio_heat_cap" in body.model_fields_set:
+        v = body.portfolio_heat_cap
+        if v is not None and not (0 <= v <= 1):
+            raise HTTPException(status_code=400, detail="portfolio_heat_cap 需为比例值（0.3=30% 钱包，0=关闭）")
+        cfg.portfolio_heat_cap = v
+    if "same_direction_cap" in body.model_fields_set:
+        v = body.same_direction_cap
+        if v is not None and not (0 <= v <= 20):
+            raise HTTPException(status_code=400, detail="same_direction_cap 需在 0~20 之间（同向上限，0=不限）")
+        cfg.same_direction_cap = v
+    if "btc_crash_pause_pct" in body.model_fields_set:
+        v = body.btc_crash_pause_pct
+        if v is not None and not (0 <= v <= 20):
+            raise HTTPException(status_code=400, detail="btc_crash_pause_pct 需在 0~20 % 之间（BTC 急跌暂停，0=关闭）")
+        cfg.btc_crash_pause_pct = v
     # 止损金额模式（2026-09-27）：pct=风险基数分档×3%（默认）/ fixed=固定 USDT 金额
     if "risk_budget_mode" in body.model_fields_set:
         v = body.risk_budget_mode

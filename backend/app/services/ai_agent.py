@@ -59,21 +59,24 @@ NEAR_STOP_RULE_AGENT = """11.5 突破类止损近锚降级链：结构锚（摆�
     已超程序硬上限（见信号门槛块）时无近锚资格，直接 skip。程序会校验近锚止损必须
     贴近突破K线极值 ±0.5%，偏离过远会被打回。"""
 
-def render_system_prompt(risk_label: str = "") -> str:
+def render_system_prompt(risk_label: str = "", rr_min: Optional[float] = None) -> str:
     """渲染最终生效的 P1 系统提示词（页面「查看当前生效提示词」与实际调用同源）。
 
     risk_label（2026-09-27 止损金额模式）：单笔止损预算文案（如"固定 3 USDT"/
     "账户风险基数 × 3%"），空时回落默认百分比口径。
-    near_stop_rule 按突破类注入完整文案（预览无信号上下文，展示通用版）。"""
+    near_stop_rule 按突破类注入完整文案（预览无信号上下文，展示通用版）。
+    rr_min（2026-10-02 上页面）：盈亏比铁律下限，system_config.ai_rr_min 覆盖时
+    由调用方传入；None 回落 env 默认。"""
+    _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     return AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
-        rr_min=settings.AI_RR_MIN,
+        rr_min=_rr,
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
         near_stop_rule=NEAR_STOP_RULE_AGENT.format(
-            rr_min=settings.AI_RR_MIN,
+            rr_min=_rr,
             stop_cap_clause="止损宽度硬上限值以信号门槛块为准。",
         ),
         skill_index="",
@@ -323,6 +326,8 @@ def _resolve_from_swings(ref: str, signal: dict, cur: float) -> Optional[float]:
 def _handle_submit(
     args: dict, signal: dict, klines: list,
     risk_budget: Optional[float] = None,
+    rr_min: Optional[float] = None,
+    risk_pct: Optional[float] = None,
 ) -> tuple[bool, str, Optional[dict]]:
     """submit_decision：锚点换算 → Risk Guard。返回 (done, tool_result, fixed)
 
@@ -390,6 +395,7 @@ def _handle_submit(
     )
     ok, violations, fixed = validate_decision(
         d, signal, klines, risk_budget=risk_budget,
+        rr_min=rr_min, risk_pct=risk_pct,
     )
     if ok:
         return True, "决策已提交并通过风控校验", fixed
@@ -425,6 +431,7 @@ def _dispatch_tool(name: str, args: dict, ctx: dict) -> tuple[bool, str, Optiona
     if name == "submit_decision":
         return _handle_submit(
             args, ctx["signal"], ctx["klines"], risk_budget=ctx.get("risk_budget"),
+            rr_min=ctx.get("rr_min"), risk_pct=ctx.get("risk_pct"),
         )
     return False, f"unknown tool: {name}", None
 
@@ -437,6 +444,7 @@ def analyze_coin_agent(
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
     stop_cap_pct: Optional[float] = None, tactics_block: str = "",
+    rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -447,7 +455,9 @@ def analyze_coin_agent(
     缺省时回落百分比口径（pct），与历史行为一致。
     stop_cap_pct（2026-09-29）：止损宽度硬上限（max_stop_pct 补丁参数，比例；
     None=不限制），注入门槛块与近锚规则供 AI 自验。
-    tactics_block（2026-10-02）：战法库判定块（调用方预渲染；空=无战法不注入）。"""
+    tactics_block（2026-10-02）：战法库判定块（调用方预渲染；空=无战法不注入）。
+    rr_min / risk_pct（2026-10-02 上页面）：盈亏比铁律下限与单笔风险比例，
+    注入提示词并透传 submit_decision 校验（None=env 默认）。"""
     client = get_client()
 
     # 布尔事实（技能 use_when 判定）
@@ -461,16 +471,17 @@ def analyze_coin_agent(
         f"程序止损宽度硬上限 {stop_cap_pct * 100:g}%（见信号门槛块），"
         if stop_cap_pct is not None and stop_cap_pct > 0 else ""
     )
+    _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     # 近锚降级链仅突破类注入（docs/23）；回踩/其他类槽位留空
     near_stop_rule = (
-        NEAR_STOP_RULE_AGENT.format(rr_min=settings.AI_RR_MIN,
+        NEAR_STOP_RULE_AGENT.format(rr_min=_rr,
                                     stop_cap_clause=stop_cap_clause)
         if (signal.get("signal_type") or "") in ("trigger_breakout", "trigger_trend_breakout")
         else ""
     )
     system = AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
-        rr_min=settings.AI_RR_MIN,
+        rr_min=_rr,
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
@@ -496,8 +507,10 @@ def analyze_coin_agent(
     ctx = {
         "signal": signal, "klines": klines, "pool": pool,
         # 止损金额 fixed 模式预算实额（pct 模式为 None → validate_decision 内走
-        # RISK_BUDGET_PCT% 口径）；2026-09-27 统一口径
+        # 风险比例% 口径）；2026-09-27 统一口径
         "risk_budget": risk_amount if risk_mode == "fixed" and risk_amount > 0 else None,
+        # 盈亏比铁律/风险比例（2026-10-02 上页面）：透传 submit_decision 校验
+        "rr_min": rr_min, "risk_pct": risk_pct,
     }
     fixed: Optional[dict] = None
     tool_rounds = 0

@@ -31,7 +31,10 @@ def resolve_risk_budget(cfg=None, wallet: Optional[float] = None) -> tuple[str, 
         raw = getattr(cfg, "risk_fixed_amount", None) if cfg is not None else None
         amount = float(raw) if raw is not None else 3.0
         return "fixed", amount, f"固定 {amount:g} USDT"
-    return "pct", float(settings.RISK_BUDGET_PCT), (
-        f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%"
+    # pct 模式比例（2026-10-02 上页面）：system_config.risk_pct 可页面覆盖，NULL=env 默认
+    raw_pct = getattr(cfg, "risk_pct", None) if cfg is not None else None
+    pct = float(raw_pct) if raw_pct is not None else float(settings.RISK_BUDGET_PCT)
+    return "pct", pct, (
+        f"账户风险基数 × {pct:g}%"
         + (f"（当前基数 {wallet:g} USDT 口径）" if wallet else "")
     )

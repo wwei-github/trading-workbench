@@ -147,9 +147,12 @@ def liquidation_gate_pct(
     leverage: Optional[int] = None,
     mmr: Optional[float] = None,
     buffer: Optional[float] = None,
+    lev_cap: Optional[int] = None,
 ) -> float:
-    """逐仓强平闸门：止损距离占价格的最大安全比例（1/杠杆 − MMR − 缓冲）"""
-    lev = leverage or settings.TRADING_LEVERAGE
+    """逐仓强平闸门：止损距离占价格的最大安全比例（1/杠杆 − MMR − 缓冲）。
+    lev_cap（2026-10-02 上页面）：leverage 缺省时的回退上限（cfg.leverage_max
+    ?? settings.TRADING_LEVERAGE，由调用方解析传入）"""
+    lev = leverage or lev_cap or settings.TRADING_LEVERAGE
     return 1 / lev - (LIQ_GATE_MMR if mmr is None else mmr) - (LIQ_GATE_BUFFER if buffer is None else buffer)
 
 
@@ -188,6 +191,8 @@ def _tactic_gate(d: TradeDecision, signal: dict) -> tuple[Optional[str], Optiona
 def validate_decision(
     d: TradeDecision, signal: dict, klines: list,
     risk_budget: Optional[float] = None,
+    rr_min: Optional[float] = None,
+    risk_pct: Optional[float] = None,
 ) -> tuple[bool, list[str], dict]:
     """校验并修正决策（2026-09-15 拍板收缩：仅保留 RR 铁律 + 仓位复算）。
 
@@ -196,8 +201,10 @@ def validate_decision(
     signal / klines 保留入参以稳定调用方接口（当前校验不再使用）。
     risk_budget（2026-09-27 止损金额模式）：fixed 模式下为单笔固定亏损 USDT
     实额（调用方从 system_config.risk_fixed_amount 传入），此时 position_pct
-    置 None（仓位%依赖钱包，分析期不可得）；None 时按 RISK_BUDGET_PCT 百分比
-    口径复算（pct 模式，现行默认）。
+    置 None（仓位%依赖钱包，分析期不可得）；None 时按 risk_pct 百分比口径
+    复算（pct 模式，现行默认）。
+    rr_min / risk_pct（2026-10-02 上页面）：盈亏比铁律下限与单笔风险比例，
+    调用方从 system_config 解析传入（cfg 列 ?? env 默认）；None 回落 settings。
     """
     violations: list[str] = []
     tactic_name, tactic_reason = _tactic_gate(d, signal)
@@ -293,12 +300,13 @@ def validate_decision(
     stop_pct = stop_dist / d.entry_price if d.entry_price else 0
 
     # ── RR 铁律（唯一保留的价格校验）：按 AI 三价复算，声称值不信 ──
+    _rr_floor = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     rr = 0.0
     if stop_dist > 0:
         rr = abs(d.take_profit_1 - d.entry_price) / stop_dist
-        if rr < settings.AI_RR_MIN:
+        if rr < _rr_floor:
             violations.append(
-                f"盈亏比复算 {rr:.2f} < {settings.AI_RR_MIN}（交易系统铁律）"
+                f"盈亏比复算 {rr:.2f} < {_rr_floor:g}（交易系统铁律）"
             )
     if violations:
         return False, violations, {}
@@ -306,10 +314,10 @@ def validate_decision(
     # ── 修正：程序复算值落库，AI 声称值不信 ──
     # 固定亏损仓位法：仓位（名义价值占账户%）= 风险预算 ÷ 止损距离。
     # 风险预算两种口径（2026-09-27 止损金额模式，与开仓引擎 trade_engine 同源）：
-    # pct（默认）= RISK_BUDGET_PCT%（3%）× 账户资金 → 触止损恰好亏账户 3%；
-    # fixed      = risk_budget 实额 USDT（由调用方从 system_config 传入）。
-    # 止损越远仓位越小，不设 clamp。例：止损距离 2% + 3% 口径 → 仓位 150%
-    # （10×杠杆下占用保证金 15%）
+    # pct（默认）= 风险比例%（3%，system_config.risk_pct 可页面覆盖）× 账户资金
+    # → 触止损恰好亏账户 3%；fixed = risk_budget 实额 USDT（由调用方从
+    # system_config 传入）。止损越远仓位越小，不设 clamp。
+    # 例：止损距离 2% + 3% 口径 → 仓位 150%（10×杠杆下占用保证金 15%）
     position_pct = 0.0
     if stop_pct > 0:
         if risk_budget is not None and risk_budget > 0:
@@ -318,7 +326,8 @@ def validate_decision(
             # 真实仓位由开仓引擎按 固定金额÷止损距离 实算（trade_engine）
             position_pct = None
         else:
-            position_pct = round(settings.RISK_BUDGET_PCT / stop_pct, 2)
+            _rp = float(risk_pct) if risk_pct is not None else float(settings.RISK_BUDGET_PCT)
+            position_pct = round(_rp / stop_pct, 2)
     fixed = {
         "trade_decision": "suggest",
         "skip_reason": "",
@@ -366,10 +375,13 @@ def build_forced_skip(reason: str, violations: Optional[list[str]] = None) -> di
 def parse_and_validate(
     raw: dict, signal: dict, klines: list,
     risk_budget: Optional[float] = None,
+    rr_min: Optional[float] = None,
+    risk_pct: Optional[float] = None,
 ) -> tuple[bool, list[str], dict]:
     """normalize + pydantic 校验 + 业务校验 的一步入口（预算参数透传 validate_decision）"""
     try:
         d = normalize_raw(raw)
     except (ValidationError, ValueError) as e:
         return False, [f"输出格式不合法: {str(e)[:200]}"], {}
-    return validate_decision(d, signal, klines, risk_budget=risk_budget)
+    return validate_decision(d, signal, klines, risk_budget=risk_budget,
+                             rr_min=rr_min, risk_pct=risk_pct)

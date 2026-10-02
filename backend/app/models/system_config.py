@@ -90,6 +90,31 @@ class SystemConfig(Base):
     # 止损 17%）；NULL=恢复默认 0.003
     max_slippage_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
 
+    # ── 风控参数上页面（2026-10-02，docs/12 §10 补丁参数同款惯例）──
+    # 以下列 NULL/None = 回落 config.py env 默认（页面留空即恢复默认）；
+    # 消费侧统一 `cfg 列 ?? settings.*` 取值，运行时改保存即生效（任务每轮读 DB）。
+    # 评分门槛：开单推荐度下限（NULL=默认 60）
+    min_recommendation: Mapped[int] = mapped_column(nullable=True, default=None)
+    # 当日亏损熔断：阈值 %（NULL=默认 9）+ 开关（NULL=默认 True；False=页面显式关闭）
+    daily_loss_stop_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+    daily_loss_stop_enabled: Mapped[bool] = mapped_column(nullable=True, default=None)
+    # 盈亏比铁律下限（NULL=默认 1.5）：risk_guard 校验 + 开仓现价复算 + AI 提示词共用
+    ai_rr_min: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+    # 单笔风险比例 %（NULL=默认 3，pct 模式：风险基数 × 该比例）
+    risk_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+    # 杠杆上限（NULL=默认 20，逐仓；动态杠杆上边界）
+    leverage_max: Mapped[int] = mapped_column(nullable=True, default=None)
+    # Taker 费率（NULL=默认 0.0005）：保本止损价 = 成本价 ± 往返费缓冲
+    taker_fee_rate: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+    # 近锚折价系数（NULL=默认 0.7；1.0=关闭折价放开近锚单）
+    near_anchor_factor: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+    # 组合热度上限（比例，NULL=默认 0=关闭）：在跑单止损金额合计/钱包余额上限
+    portfolio_heat_cap: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+    # 同向持仓上限（NULL=默认 0=不限）：同方向在跑单数上限
+    same_direction_cap: Mapped[int] = mapped_column(nullable=True, default=None)
+    # BTC 急跌暂停阈值 %（NULL=默认 1.0；0=关闭普跌防护）
+    btc_crash_pause_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+
     # 现货屯币配置（docs/18）：JSON 列（三币开关/单份金额/投入上限/定投 + 全局预算）。
     # 零侵入约束：新增独立列，不改既有列语义；NULL=全部默认值
     spot_settings: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, default=None)

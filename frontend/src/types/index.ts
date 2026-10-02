@@ -215,6 +215,18 @@ export interface SystemConfig {
   min_adapt_leverage?: number | null; // 动态杠杆下限（整数倍数；null=默认 8，宽止损单限制层）
   pullback_market_pct?: number | null; // 入场偏离容差（比例 0.01=1%；null=默认；待回踩距离 ≤ 容差时市价入场）
   max_slippage_pct?: number | null; // 开仓滑点实测上限（比例 0.003=0.3%；null=默认；按本单数量走订单簿计算）
+  // 风控参数（2026-10-02 上页面）：null=回落 env 默认，页面留空即恢复默认
+  min_recommendation?: number | null; // 开单评分门槛（0~100，env 默认 60）
+  daily_loss_stop_pct?: number | null; // 当日亏损熔断阈值（% 值，9=风险基数 9%；null=默认）
+  daily_loss_stop_enabled?: boolean | null; // 当日亏损熔断开关（null=默认开）
+  ai_rr_min?: number | null; // 盈亏比铁律下限（0.5~10，env 默认 1.5）
+  risk_pct?: number | null; // 单笔风险比例（% 值，0.1~20；pct 模式风险基数分档 × 此比例）
+  leverage_max?: number | null; // 杠杆上限（1~125，env 默认 20）
+  taker_fee_rate?: number | null; // taker 手续费率（比例 0.0005=0.05%；保本止损复算）
+  near_anchor_factor?: number | null; // 近锚降级风险折价系数（0~1，env 默认 0.7）
+  portfolio_heat_cap?: number | null; // 组合热度上限（比例 0.2=钱包 20%；0=关闭）
+  same_direction_cap?: number | null; // 同向持仓上限（单数，0=不限）
+  btc_crash_pause_pct?: number | null; // BTC 急跌暂停阈值（% 值，1h 3根累计跌幅；0=关闭）
   // 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面「系统配置」弹窗可改）
   trading_testnet?: boolean; // 当前交易环境：true=测试网 false=正式网
   trading_enabled?: boolean; // 自动成交开关（2026-09-28 收窄）：仅控每小时 AI 分析后自动开新单；手动开单/AI 分析不受限

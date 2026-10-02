@@ -46,6 +46,20 @@ def test_resolver_fixed_none_amount_falls_back():
     assert mode == "fixed" and amount == 3.0
 
 
+def test_resolver_risk_pct_override():
+    """pct 模式比例页面覆盖（2026-10-02）：system_config.risk_pct 覆盖 env 默认"""
+    cfg = SimpleNamespace(risk_budget_mode="pct", risk_pct=5.0)
+    mode, amount, label = resolve_risk_budget(cfg)
+    assert mode == "pct" and amount == 5.0 and "5%" in label
+
+
+def test_resolver_risk_pct_none_falls_back():
+    """risk_pct 列为 NULL（未配置）回落 env RISK_BUDGET_PCT"""
+    cfg = SimpleNamespace(risk_budget_mode="pct", risk_pct=None)
+    mode, amount, _ = resolve_risk_budget(cfg)
+    assert mode == "pct" and amount == settings.RISK_BUDGET_PCT
+
+
 # ── 仓位复算 ──
 
 def test_pct_mode_position_pct_unchanged():
@@ -91,3 +105,22 @@ def test_p1_prompt_fixed_label():
     from app.services.ai_agent import render_system_prompt
     p = render_system_prompt("固定 5 USDT")
     assert "单笔止损预算=固定 5 USDT" in p and "预算 ÷ 止损距离" in p
+
+
+# ── 盈亏比铁律下限页面覆盖（2026-10-02 system_config.ai_rr_min）──────
+
+def test_rr_min_override_tightens():
+    """cfg 覆盖 rr_min=2.5：默认放行（RR=2.0）的单子变打回"""
+    ok_default, _, _ = validate_decision(_decision(), {}, [])  # RR = 4/2 = 2.0
+    assert ok_default
+    ok_tight, violations, _ = validate_decision(_decision(), {}, [], rr_min=2.5)
+    assert not ok_tight and any("盈亏比" in v for v in violations)
+
+
+def test_rr_min_override_relaxes():
+    """cfg 覆盖 rr_min=1.2：RR=1.2 的单子从默认 1.5 门槛打回变放行"""
+    d = _decision(take_profit_1=102.4)  # RR = 2.4/2 = 1.2
+    ok_default, _, _ = validate_decision(d, {}, [])
+    assert not ok_default  # 默认 1.5 打回
+    ok_relaxed, _, _ = validate_decision(d, {}, [], rr_min=1.2)
+    assert ok_relaxed

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, InputNumber, message, Button, Spin, Radio } from 'antd'
+import { Modal, Form, InputNumber, message, Button, Spin, Radio, Select, Divider } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
@@ -37,6 +37,23 @@ export default function TradingConfigPanel() {
         max_slippage_pct: aiConfig.max_slippage_pct != null
           ? Math.round(aiConfig.max_slippage_pct * 10000) / 100
           : null,
+        // 风控参数（2026-10-02 上页面）：null = 回落 env 默认；比例字段按 % 编辑
+        min_recommendation: aiConfig.min_recommendation ?? null,
+        daily_loss_stop_pct: aiConfig.daily_loss_stop_pct ?? null, // % 值（9=9%）直存
+        daily_loss_stop_enabled: aiConfig.daily_loss_stop_enabled == null
+          ? 'default' : aiConfig.daily_loss_stop_enabled ? 'on' : 'off',
+        ai_rr_min: aiConfig.ai_rr_min ?? null,
+        risk_pct: aiConfig.risk_pct ?? null, // % 值（3=3%）直存
+        leverage_max: aiConfig.leverage_max ?? null,
+        taker_fee_rate: aiConfig.taker_fee_rate != null
+          ? Math.round(aiConfig.taker_fee_rate * 10000) / 100
+          : null, // 比例 0.0005 → 0.05%
+        near_anchor_factor: aiConfig.near_anchor_factor ?? null,
+        portfolio_heat_cap: aiConfig.portfolio_heat_cap != null
+          ? Math.round(aiConfig.portfolio_heat_cap * 10000) / 100
+          : null, // 比例 0.2 → 20%
+        same_direction_cap: aiConfig.same_direction_cap ?? null,
+        btc_crash_pause_pct: aiConfig.btc_crash_pause_pct ?? null, // % 值（1=1%）直存
       })
     }
   }, [open, aiConfig, form])
@@ -58,6 +75,19 @@ export default function TradingConfigPanel() {
         min_adapt_leverage: values.min_adapt_leverage ?? null,
         pullback_market_pct: values.pullback_market_pct != null ? values.pullback_market_pct / 100 : null,
         max_slippage_pct: values.max_slippage_pct != null ? values.max_slippage_pct / 100 : null,
+        // 风控参数（null/清空 = 恢复 env 默认；% 值字段直存，比例字段 /100）
+        min_recommendation: values.min_recommendation ?? null,
+        daily_loss_stop_pct: values.daily_loss_stop_pct ?? null,
+        daily_loss_stop_enabled: values.daily_loss_stop_enabled === 'default'
+          ? null : values.daily_loss_stop_enabled === 'on',
+        ai_rr_min: values.ai_rr_min ?? null,
+        risk_pct: values.risk_pct ?? null,
+        leverage_max: values.leverage_max ?? null,
+        taker_fee_rate: values.taker_fee_rate != null ? values.taker_fee_rate / 100 : null,
+        near_anchor_factor: values.near_anchor_factor ?? null,
+        portfolio_heat_cap: values.portfolio_heat_cap != null ? values.portfolio_heat_cap / 100 : null,
+        same_direction_cap: values.same_direction_cap ?? null,
+        btc_crash_pause_pct: values.btc_crash_pause_pct ?? null,
       }
       await updateConfig(data)
       message.success('配置已保存')
@@ -178,6 +208,104 @@ export default function TradingConfigPanel() {
             tooltip="开仓前按本单数量走订单簿逐层吃，预期滑点超上限放弃开单（盘口过薄的小币会撑宽止损、实际风险超预算）。0=关闭滑点闸门"
           >
             <InputNumber min={0} max={5} step={0.05} style={{ width: '100%' }} placeholder="0.3" />
+          </Form.Item>
+
+          <Divider plain style={{ fontSize: 12, color: '#999' }}>
+            风控参数（留空 = 恢复默认，保存即生效）
+          </Divider>
+
+          <Form.Item
+            label="开单评分门槛（留空=默认 60）"
+            name="min_recommendation"
+            tooltip="AI 推荐度 ≥ 该值才分发自动开仓（0~100）；连损降速在此基础上额外提档"
+          >
+            <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} placeholder="60" precision={0} />
+          </Form.Item>
+
+          <Form.Item
+            label="盈亏比铁律下限（留空=默认 1.5）"
+            name="ai_rr_min"
+            tooltip="按 AI 给的三价复算 RR 必须 ≥ 该值，不足直接打回（AI 提示词同源更新）"
+          >
+            <InputNumber min={0.5} max={10} step={0.1} style={{ width: '100%' }} placeholder="1.5" />
+          </Form.Item>
+
+          <Form.Item
+            label="单笔风险比例（%，留空=默认 3）"
+            name="risk_pct"
+            tooltip="分档级别止损金额模式下：单笔止损预算 = 风险基数 × 该比例（仓位 = 预算 ÷ 止损距离）；固定金额模式不使用此值"
+          >
+            <InputNumber min={0.1} max={20} step={0.1} style={{ width: '100%' }} placeholder="3" addonAfter="%" />
+          </Form.Item>
+
+          <Form.Item
+            label="杠杆上限（×，留空=默认 20）"
+            name="leverage_max"
+            tooltip="逐仓杠杆上限；止损距离超该杠杆的强平闸门时动态下调，安全杠杆低于动态下限的宽止损单直接放弃"
+          >
+            <InputNumber min={1} max={125} step={1} style={{ width: '100%' }} placeholder="20" precision={0} />
+          </Form.Item>
+
+          <Form.Item
+            label="taker 手续费率（%，留空=默认 0.05）"
+            name="taker_fee_rate"
+            tooltip="开平仓 taker 费率（0.05% = 0.0005 比例），TP1 止损移保本的复算口径；随交易所费率调整时手改"
+          >
+            <InputNumber min={0} max={0.5} step={0.005} style={{ width: '100%' }} placeholder="0.05" />
+          </Form.Item>
+
+          <Form.Item
+            label="近锚风险折价系数（留空=默认 0.7）"
+            name="near_anchor_factor"
+            tooltip="突破类信号用近锚止损时风险预算 × 该系数（0~1，收紧止损贴极值的单子预算）；1=不折价"
+          >
+            <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} placeholder="0.7" />
+          </Form.Item>
+
+          <Form.Item
+            label="当日亏损熔断开关"
+            name="daily_loss_stop_enabled"
+            tooltip="UTC 当日已平仓净亏达阈值停开新仓（AI 分析/巡检照常）；默认开启"
+          >
+            <Select
+              options={[
+                { label: '默认（开启）', value: 'default' },
+                { label: '开启', value: 'on' },
+                { label: '关闭', value: 'off' },
+              ]}
+            />
+          </Form.Item>
+
+          <Form.Item
+            label="当日亏损熔断阈值（%，留空=默认 9）"
+            name="daily_loss_stop_pct"
+            tooltip="已平仓净亏 ≤ -风险基数 × 该值 时触发熔断（9% ≈ 3 笔满损，随账户金额缩放）；0=关闭"
+          >
+            <InputNumber min={0} max={50} step={0.5} style={{ width: '100%' }} placeholder="9" addonAfter="%" />
+          </Form.Item>
+
+          <Form.Item
+            label="组合热度上限（%，留空=默认关闭）"
+            name="portfolio_heat_cap"
+            tooltip="在跑单止损合计 + 本单预估 > 钱包 × 该值 时拦截新单，限制同时承受止损的总金额（0 或留空 = 关闭）"
+          >
+            <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} placeholder="0" addonAfter="%" />
+          </Form.Item>
+
+          <Form.Item
+            label="同向持仓上限（留空=不限）"
+            name="same_direction_cap"
+            tooltip="同方向在跑单数达上限拦截新单，防全市场同涨同跌时同向单集体同损（0 或留空 = 不限）"
+          >
+            <InputNumber min={0} max={20} step={1} style={{ width: '100%' }} placeholder="0" precision={0} />
+          </Form.Item>
+
+          <Form.Item
+            label="BTC 急跌暂停阈值（%，留空=默认 1）"
+            name="btc_crash_pause_pct"
+            tooltip="BTC 1h 近 3 根已收盘累计跌幅超该值时暂停山寨开单（BTCUSDT 本身照常；AI 提示词同步警示）；0=关闭"
+          >
+            <InputNumber min={0} max={20} step={0.1} style={{ width: '100%' }} placeholder="1" addonAfter="%" />
           </Form.Item>
         </Form>
         </Spin>

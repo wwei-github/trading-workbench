@@ -57,16 +57,19 @@ def _capital_base(wallet: float) -> float:
     return float(min(max(digit * magnitude, 100), 5000))
 
 
-def _adaptive_leverage(stop_pct: float, mmr: float, buffer: float) -> int:
+def _adaptive_leverage(stop_pct: float, mmr: float, buffer: float,
+                       lev_cap: Optional[int] = None) -> int:
     """按止损距离反推逐仓安全杠杆（2026-09-18 动态杠杆）。
 
     固定亏损法下止损亏损金额 = 名义×stop_pct，与杠杆无关；杠杆只决定
-    保证金占用（名义/杠杆）与强平距离（≈1/杠杆−MMR）。从配置上限
-    TRADING_LEVERAGE 向下搜索首个「强平距离 > 止损距离」的杠杆，止损计划
-    （止损价/仓位/风险金额）保持不变，仅多占保证金换取强平不可达。
+    保证金占用（名义/杠杆）与强平距离（≈1/杠杆−MMR）。从配置上限向下搜索
+    首个「强平距离 > 止损距离」的杠杆，止损计划（止损价/仓位/风险金额）保持
+    不变，仅多占保证金换取强平不可达。
+    lev_cap（2026-10-02 上页面）：杠杆上限（system_config.leverage_max ?? env），
+    由调用方解析传入；None 回落 settings.TRADING_LEVERAGE。
     返回 0 表示降到 1× 仍兜不住（stop_pct ≥ 1−MMR−缓冲，实际由下限闸门拦截）。
     """
-    for lev in range(settings.TRADING_LEVERAGE, 0, -1):
+    for lev in range(int(lev_cap or settings.TRADING_LEVERAGE), 0, -1):
         if stop_pct < liquidation_gate_pct(leverage=lev, mmr=mmr, buffer=buffer):
             return lev
     return 0
@@ -129,15 +132,18 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
 # ── 开仓 ──────────────────────────────────────────────────────
 
 
-def _near_discounted_budget(risk_budget: float, stop_anchor: Optional[str]) -> float:
+def _near_discounted_budget(risk_budget: float, stop_anchor: Optional[str],
+                            factor: Optional[float] = None) -> float:
     """近锚单风险折价（docs/23，2026-09-29）。
 
     止损贴突破K极值的单被扫率未知（观察期敞口折价），且止损窄 → 名义仓位放大
     → 手续费/滑点磨损绝对额放大；risk_amount 随 qty 同步变小，复盘 R 口径自洽。
     仅 AI 显式声明 near（risk_guard 已校验止损确贴突破K极值）时生效；
-    折价不改变 EV/R 符号只缩敞口，复盘胜率验证后可把系数调回 1.0 放开。"""
+    折价不改变 EV/R 符号只缩敞口，复盘胜率验证后可在页面把系数调回 1.0 放开
+    （system_config.near_anchor_factor，2026-10-02 上页面；None 回落 env 默认）。"""
     if stop_anchor == "near":
-        return risk_budget * settings.NEAR_ANCHOR_RISK_FACTOR
+        _f = settings.NEAR_ANCHOR_RISK_FACTOR if factor is None else float(factor)
+        return risk_budget * _f
     return risk_budget
 
 
@@ -190,6 +196,24 @@ def _attempt_open(
     tp2 = float(a.take_profit_2 or 0)
     try:
         price = trader.price(symbol)
+        # 风控参数解析（2026-10-02 上页面）：system_config 列可页面覆盖，
+        # NULL（页面留空）= 回落 env 默认；本单内取值一致
+        rr_min = (
+            float(cfg.ai_rr_min) if cfg.ai_rr_min is not None
+            else float(settings.AI_RR_MIN)
+        )
+        lev_cap = (
+            int(cfg.leverage_max) if cfg.leverage_max is not None
+            else int(settings.TRADING_LEVERAGE)
+        )
+        risk_pct = (
+            float(cfg.risk_pct) if cfg.risk_pct is not None
+            else float(settings.TRADING_RISK_PCT)
+        )
+        near_factor = (
+            float(cfg.near_anchor_factor) if cfg.near_anchor_factor is not None
+            else float(settings.NEAR_ANCHOR_RISK_FACTOR)
+        )
         # 入场偏离容差（pullback_market_pct 补丁参数，NULL=默认 1%）：现价对 AI
         # 入场价的最大偏离。一兼两职：① 普通单的开仓漂移上限；② 待回踩单的
         # 市价入场判定——回踩距离 ≤ 容差时不再干等，市价进场（RR 按现价复算
@@ -246,17 +270,17 @@ def _attempt_open(
             return False
         # 盈亏比按现价复算（2026-09-18 补上，此前仅 AI 入场价口径校验）：市价成交
         # 价就是现价，待回踩单/漂移单偏离 AI 入场价后风险变宽、盈利变窄，RR 随之
-        # 退化——按现价复算仍须 ≥AI_RR_MIN 铁律，否则市价进不划算
+        # 退化——按现价复算仍须 ≥盈亏比铁律下限（ai_rr_min 可页面覆盖），否则市价进不划算
         if sl != price:
             rr_now = abs(tp1 - price) / abs(price - sl)
-            if rr_now < settings.AI_RR_MIN:
+            if rr_now < rr_min:
                 logger.info(
                     "开仓跳过 %s：盈亏比按现价复算 %.2f < %s（入场 %s，现价 %s）",
-                    symbol, rr_now, settings.AI_RR_MIN, entry_ai, price,
+                    symbol, rr_now, rr_min, entry_ai, price,
                 )
                 _mark_open_block(
                     db, a,
-                    f"盈亏比按现价复算 {rr_now:.2f} < {settings.AI_RR_MIN}"
+                    f"盈亏比按现价复算 {rr_now:.2f} < {rr_min}"
                     f"（入场 {entry_ai}，现价 {price}），市价进不满足盈亏计划",
                 )
                 return False
@@ -306,7 +330,7 @@ def _attempt_open(
             int(cfg.min_adapt_leverage)
             if cfg.min_adapt_leverage is not None else settings.TRADING_LEVERAGE_MIN
         )
-        leverage = _adaptive_leverage(stop_pct, mmr_eff, liq_buf)
+        leverage = _adaptive_leverage(stop_pct, mmr_eff, liq_buf, lev_cap=lev_cap)
         if leverage < lev_min:
             liq_gate_min = liquidation_gate_pct(leverage=lev_min, mmr=mmr_eff, buffer=liq_buf)
             logger.info(
@@ -321,25 +345,27 @@ def _attempt_open(
                 f" 低于下限 {lev_min}×（min_adapt_leverage 限制），放弃开单",
             )
             return False
-        if leverage < settings.TRADING_LEVERAGE:
+        if leverage < lev_cap:
             liq_gate = liquidation_gate_pct(leverage=leverage, mmr=mmr_eff, buffer=liq_buf)
             logger.info(
                 "开仓 %s：止损距离 %.2f%% 超 %s× 强平闸门 %.2f%%（维持保证金率 %.2f%%"
                 "+ 缓冲），动态降杠杆至 %s×（强平距离 %.2f%%）",
-                symbol, stop_pct * 100, settings.TRADING_LEVERAGE,
-                liquidation_gate_pct(mmr=mmr_eff, buffer=liq_buf) * 100,
+                symbol, stop_pct * 100, lev_cap,
+                liquidation_gate_pct(mmr=mmr_eff, buffer=liq_buf, lev_cap=lev_cap) * 100,
                 mmr_eff * 100, leverage, liq_gate * 100,
             )
-        # 止损金额模式（2026-09-27）：pct=风险基数分档×TRADING_RISK_PCT%（现行默认，
-        # 随钱包首位取整缩放）；fixed=固定 USDT 金额（risk_fixed_amount），不随钱包缩放，
-        # 仓位=金额÷止损距离（钱包 ≤0 仍由闸门拦截，固定金额不放大透支风险）
+        # 止损金额模式（2026-09-27）：pct=风险基数分档×风险比例%（现行默认，
+        # 比例可页面覆盖，随钱包首位取整缩放）；fixed=固定 USDT 金额
+        # （risk_fixed_amount），不随钱包缩放，仓位=金额÷止损距离
+        # （钱包 ≤0 仍由闸门拦截，固定金额不放大透支风险）
         if (cfg.risk_budget_mode or "pct") == "fixed":
             risk_budget = float(
                 cfg.risk_fixed_amount if cfg.risk_fixed_amount is not None else 3.0
             )
         else:
-            risk_budget = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
-        risk_budget = _near_discounted_budget(risk_budget, a.stop_anchor)
+            risk_budget = _capital_base(wallet) * risk_pct / 100
+        risk_budget = _near_discounted_budget(risk_budget, a.stop_anchor,
+                                              factor=near_factor)
         notional = risk_budget / stop_pct
         # 复验按名义所在档位精确取（2026-09-18 -2027 修复）：MMR / 档位最大杠杆 /
         # 档位名义上限。杠杆超档位 initialLeverage 会被交易所拒单（-2027 Exceeded
@@ -368,7 +394,7 @@ def _attempt_open(
         if lev_max is not None and leverage > lev_max:
             cap_reason = f"名义 {notional:.0f} 档位最大杠杆 {lev_max}×"
             leverage = lev_max
-        lev_exact = _adaptive_leverage(stop_pct, mmr_exact, liq_buf)
+        lev_exact = _adaptive_leverage(stop_pct, mmr_exact, liq_buf, lev_cap=lev_cap)
         if lev_exact < leverage:
             cap_reason = f"精确档维持保证金率 {mmr_exact * 100:.2f}% 的强平闸门"
             leverage = lev_exact
@@ -406,7 +432,7 @@ def _attempt_open(
         max_qty = min(f["max_qty"], f.get("market_max_qty", f["max_qty"]))
         if qty > max_qty:
             logger.info("开仓 %s：数量 %s 超交易所单笔上限 %s，按上限缩减（实际风险低于 %.0f%% 预算）",
-                        symbol, qty, max_qty, settings.TRADING_RISK_PCT)
+                        symbol, qty, max_qty, risk_pct)
             qty = trader.round_qty(symbol, max_qty)
         margin_used = qty * price / leverage
         if margin_used > wallet - occupied:
@@ -651,10 +677,13 @@ def _daily_closed_pnl(db: Session, account_key: Optional[str], testnet: bool) ->
     ).scalar_one())
 
 
-def _daily_loss_cap(wallet: float) -> float:
-    """当日亏损熔断阈值 = 风险基数 × DAILY_LOSS_STOP_PCT（2026-09-29 由写死
-    30 USDT 改按账户动态：1000 账户 90、5000 账户 450；9% ≈ 3 笔满损）。"""
-    return _capital_base(wallet) * settings.DAILY_LOSS_STOP_PCT / 100.0
+def _daily_loss_cap(wallet: float, pct: Optional[float] = None) -> float:
+    """当日亏损熔断阈值 = 风险基数 × 熔断阈值%（2026-09-29 由写死
+    30 USDT 改按账户动态：1000 账户 90、5000 账户 450；9% ≈ 3 笔满损）。
+    pct（2026-10-02 上页面）：system_config.daily_loss_stop_pct 覆盖时传入；
+    None 回落 env 默认。"""
+    _pct = settings.DAILY_LOSS_STOP_PCT if pct is None else float(pct)
+    return _capital_base(wallet) * _pct / 100.0
 
 
 def _consecutive_losses_today(db: Session, account_key: Optional[str], testnet: bool) -> int:
@@ -701,11 +730,16 @@ def try_open_for_analysis(
     if not cfg:
         return False
     # 开仓资格快速过滤（suggest / 方向 / 三价 / 评分门槛 / 1 小时内）
+    # 评分门槛（2026-10-02 上页面）：cfg.min_recommendation 覆盖时优先，NULL 回落 env
+    min_rec = (
+        float(cfg.min_recommendation) if cfg.min_recommendation is not None
+        else float(settings.TRADING_MIN_RECOMMENDATION)
+    )
     if (
         a.trade_decision != "suggest"
         or a.direction not in ("long", "short")
         or not a.entry_price or not a.stop_loss or not a.take_profit_1
-        or float(a.recommendation or 0) < settings.TRADING_MIN_RECOMMENDATION
+        or float(a.recommendation or 0) < min_rec
     ):
         return False
     if a.created_at and a.created_at < datetime.utcnow() - timedelta(hours=1):
@@ -746,7 +780,12 @@ def try_open_for_analysis(
     if a.symbol != "BTCUSDT":
         try:
             from app.services.market_data import btc_crash_active, get_kline_client
-            if btc_crash_active(get_kline_client()):
+            # 急跌阈值（2026-10-02 上页面）：cfg.btc_crash_pause_pct 覆盖时优先
+            crash_pct = (
+                float(cfg.btc_crash_pause_pct) if cfg.btc_crash_pause_pct is not None
+                else None
+            )
+            if btc_crash_active(get_kline_client(), crash_pct=crash_pct):
                 logger.info("即时开仓跳过 %s：BTC 1h 短线急跌，暂停山寨开单", a.symbol)
                 _mark_open_block(db, a, "BTC 1h 短线急跌，暂停山寨开单（普跌防护）")
                 return False
@@ -791,7 +830,20 @@ def try_open_for_analysis(
     # 组合热度上限 + 同向持仓上限（docs/24 A3'，紧随在跑单上限闸门）：在跑单按
     # 全状态集合（OPENED/TP1_HIT/TP2_HIT）计——TP1_HIT/TP2_HIT 止损已上移不占
     # 单数名额，但剩余仓的风险敞口与方向集中度仍然真实存在
-    if settings.PORTFOLIO_HEAT_CAP > 0 or settings.SAME_DIRECTION_CAP > 0:
+    # （2026-10-02 上页面：heat_cap/same_cap/risk_pct 均按 cfg 覆盖优先、NULL 回落 env）
+    heat_cap = (
+        float(cfg.portfolio_heat_cap) if cfg.portfolio_heat_cap is not None
+        else float(settings.PORTFOLIO_HEAT_CAP)
+    )
+    same_cap = (
+        int(cfg.same_direction_cap) if cfg.same_direction_cap is not None
+        else int(settings.SAME_DIRECTION_CAP)
+    )
+    near_factor = (
+        float(cfg.near_anchor_factor) if cfg.near_anchor_factor is not None
+        else float(settings.NEAR_ANCHOR_RISK_FACTOR)
+    )
+    if heat_cap > 0 or same_cap > 0:
         running = db.execute(
             select(TradeRecord.risk_amount, TradeRecord.direction).where(
                 TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")),
@@ -806,40 +858,41 @@ def try_open_for_analysis(
                 cfg.risk_fixed_amount if cfg.risk_fixed_amount is not None else 3.0
             )
         else:
-            est_risk = _capital_base(wallet) * settings.TRADING_RISK_PCT / 100
-        est_risk = _near_discounted_budget(est_risk, a.stop_anchor)
-        # ① 热度：在跑单止损合计 + 本单预估 > 钱包余额 × PORTFOLIO_HEAT_CAP → 拦截。
+            _rp = (
+                float(cfg.risk_pct) if cfg.risk_pct is not None
+                else float(settings.TRADING_RISK_PCT)
+            )
+            est_risk = _capital_base(wallet) * _rp / 100
+        est_risk = _near_discounted_budget(est_risk, a.stop_anchor, factor=near_factor)
+        # ① 热度：在跑单止损合计 + 本单预估 > 钱包余额 × 热度上限 → 拦截。
         #    单笔 3% 预算下同开 5 单名义敞口即 15%+——组合层面限制同时承受止损的
         #    总金额，防「单笔合规、组合超载」（0=关闭）
-        if settings.PORTFOLIO_HEAT_CAP > 0:
+        if heat_cap > 0:
             heat_used = sum(float(r or 0) for r, _d in running)
-            if heat_used + est_risk > wallet * settings.PORTFOLIO_HEAT_CAP:
+            if heat_used + est_risk > wallet * heat_cap:
                 logger.info(
                     "即时开仓跳过 %s：组合热度超限（在跑止损合计 %.2f + 本单预估 %.2f"
                     " > 钱包 %.2f × %.0f%%）",
-                    a.symbol, heat_used, est_risk, wallet,
-                    settings.PORTFOLIO_HEAT_CAP * 100,
+                    a.symbol, heat_used, est_risk, wallet, heat_cap * 100,
                 )
                 _mark_open_block(
                     db, a,
                     f"组合热度超限：在跑单止损合计 {heat_used:.2f} + 本单预估 "
-                    f"{est_risk:.2f} > 钱包 {wallet:.2f} × "
-                    f"{settings.PORTFOLIO_HEAT_CAP * 100:.0f}%（PORTFOLIO_HEAT_CAP）",
+                    f"{est_risk:.2f} > 钱包 {wallet:.2f} × {heat_cap * 100:.0f}%",
                 )
                 return False
-        # ② 同向：同 direction 在跑单数 ≥ SAME_DIRECTION_CAP → 拦截。
+        # ② 同向：同 direction 在跑单数 ≥ 同向上限 → 拦截。
         #    全市场同涨同跌（趋势同震）时同向单几乎同损——方向集中度上限（0=不限）
-        if settings.SAME_DIRECTION_CAP > 0:
+        if same_cap > 0:
             same_n = sum(1 for _r, d in running if d == a.direction)
-            if same_n >= settings.SAME_DIRECTION_CAP:
+            if same_n >= same_cap:
                 logger.info(
                     "即时开仓跳过 %s：同向（%s）在跑 %d 单已达上限 %d",
-                    a.symbol, a.direction, same_n, settings.SAME_DIRECTION_CAP,
+                    a.symbol, a.direction, same_n, same_cap,
                 )
                 _mark_open_block(
                     db, a,
-                    f"同向持仓达上限：{a.direction} 方向在跑 {same_n} 单 ≥ "
-                    f"{settings.SAME_DIRECTION_CAP}（SAME_DIRECTION_CAP）",
+                    f"同向持仓达上限：{a.direction} 方向在跑 {same_n} 单 ≥ {same_cap}",
                 )
                 return False
     # 当日亏损熔断（2026-09-27 正式网复盘）：UTC 日本账号已平仓净亏 ≤ -阈值
@@ -848,9 +901,18 @@ def try_open_for_analysis(
     # 震荡日的连损。只停开仓，AI 分析/巡检照常。
     # 2026-09-30 用户拍板开关化：DAILY_LOSS_STOP_ENABLED 默认 True=保持现行为，
     # False=关闭；PCT 置 0 亦关闭（阈值语义）
-    if settings.DAILY_LOSS_STOP_ENABLED and settings.DAILY_LOSS_STOP_PCT > 0:
+    # 2026-10-02 上页面：开关与阈值均 cfg 覆盖优先（三态开关列，NULL 回落 env）
+    loss_enabled = (
+        bool(cfg.daily_loss_stop_enabled) if cfg.daily_loss_stop_enabled is not None
+        else settings.DAILY_LOSS_STOP_ENABLED
+    )
+    loss_pct = (
+        float(cfg.daily_loss_stop_pct) if cfg.daily_loss_stop_pct is not None
+        else float(settings.DAILY_LOSS_STOP_PCT)
+    )
+    if loss_enabled and loss_pct > 0:
         day_pnl = _daily_closed_pnl(db, trader.account_key, trader.testnet)
-        loss_cap = _daily_loss_cap(wallet)
+        loss_cap = _daily_loss_cap(wallet, pct=loss_pct)
         if day_pnl <= -loss_cap:
             logger.info(
                 "即时开仓跳过 %s：当日亏损熔断（已平仓净亏 %.2f ≤ -%.0f）",
@@ -860,7 +922,7 @@ def try_open_for_analysis(
                 db, a,
                 f"当日亏损熔断：已平仓净亏 {day_pnl:.2f} USDT "
                 f"达 -{loss_cap:.0f} 阈值（风险基数 {_capital_base(wallet):.0f} "
-                f"× {settings.DAILY_LOSS_STOP_PCT:.0f}%）")
+                f"× {loss_pct:.0f}%）")
             return False
     # 即将进入闸门序列：清掉沿用/上一轮尝试残留的拒开原因，本次成败由闸门重新裁定
     if a.open_block_reason:
@@ -988,26 +1050,30 @@ def _rehang_lost_sl(db: Session, trader: BinanceTrader, rec: TradeRecord,
     logger.warning("止损挂单丢失已补挂 %s：SL=%s（巡检发现挂单消失）", rec.symbol, cur_sl)
 
 
-def _breakeven_stop_price(rec: TradeRecord) -> float:
+def _breakeven_stop_price(rec: TradeRecord, fee_rate: Optional[float] = None) -> float:
     """保本止损价（docs/24 A1''）：成本价 ± 往返费用缓冲。
 
-    窄止损下费用/R 被名义杠杆放大（taker 开+平两腿各收一次 TAKER_FEE_RATE），
-    止损贴成本价的单被扫时纯成本价保本实际仍亏往返手续费——多单外推到成本价
-    上方、空单下方 buffer = entry × 2 × TAKER_FEE_RATE，止损触发时价差恰好
-    覆盖往返费用。_move_sl_breakeven 与 _derive_exit_reason 共用此口径。
+    窄止损下费用/R 被名义杠杆放大（taker 开+平两腿各收一次费率），止损贴
+    成本价的单被扫时纯成本价保本实际仍亏往返手续费——多单外推到成本价
+    上方、空单下方 buffer = entry × 2 × 费率，止损触发时价差恰好覆盖往返费用。
+    _move_sl_breakeven 与 _derive_exit_reason 共用此口径。
+    fee_rate（2026-10-02 上页面）：system_config.taker_fee_rate 覆盖时传入；
+    None 回落 env 默认。
     """
     entry = float(rec.entry_price or 0)
-    buffer = entry * 2 * settings.TAKER_FEE_RATE
+    _fee = settings.TAKER_FEE_RATE if fee_rate is None else float(fee_rate)
+    buffer = entry * 2 * _fee
     return entry + buffer if rec.direction == "long" else entry - buffer
 
 
 def _move_sl_breakeven(db: Session, trader: BinanceTrader, rec: TradeRecord,
-                       open_ids: set[int]) -> bool:
+                       open_ids: set[int], fee_rate: Optional[float] = None) -> bool:
     """TP1 成交后保本止损：SL 移到「成本价 ± 往返费用缓冲」（多单
     SL=max(现SL,保本价)，空单反之，只收紧不放松）。
 
     docs/24 A1''：窄止损下费用/R 被名义杠杆放大，纯成本价保本实际仍亏往返
-    手续费（taker 开+平各收一次 TAKER_FEE_RATE），保本价外推一个往返费用缓冲。
+    手续费（taker 开+平各收一次），保本价外推一个往返费用缓冲。
+    fee_rate（2026-10-02 上页面）：system_config.taker_fee_rate 覆盖时传入。
 
     幂等：SL 已不差于保本价（或取整后相同）时不动作；价格已回到保本价另一侧
     （挂上即立即触发）时跳过本轮保留原 SL，下轮巡检再试。返回是否实际移动。
@@ -1016,7 +1082,7 @@ def _move_sl_breakeven(db: Session, trader: BinanceTrader, rec: TradeRecord,
     cur = float(rec.stop_loss or 0)
     if entry <= 0 or cur <= 0:
         return False
-    be = _breakeven_stop_price(rec)
+    be = _breakeven_stop_price(rec, fee_rate)
     new_sl = max(cur, be) if rec.direction == "long" else min(cur, be)
     if new_sl == cur:
         return False
@@ -1034,7 +1100,7 @@ def _move_sl_breakeven(db: Session, trader: BinanceTrader, rec: TradeRecord,
     return True
 
 
-def _derive_exit_reason(rec: TradeRecord) -> str:
+def _derive_exit_reason(rec: TradeRecord, fee_rate: Optional[float] = None) -> str:
     if rec.status == "TP2_HIT":
         return "trail_sl"
     if rec.status == "TP1_HIT":
@@ -1044,7 +1110,7 @@ def _derive_exit_reason(rec: TradeRecord) -> str:
         entry, sl = float(rec.entry_price or 0), float(rec.stop_loss or 0)
         if entry > 0 and sl > 0:
             eps = entry * 1e-6
-            be = _breakeven_stop_price(rec)
+            be = _breakeven_stop_price(rec, fee_rate)
             if rec.direction == "long":
                 if sl > be + eps:
                     return "tp1_trail"
@@ -1059,12 +1125,13 @@ def _derive_exit_reason(rec: TradeRecord) -> str:
     return "sl"
 
 
-def _zero_pos_exit_reason(rec: TradeRecord, tp1_gone: bool) -> str:
+def _zero_pos_exit_reason(rec: TradeRecord, tp1_gone: bool,
+                          fee_rate: Optional[float] = None) -> str:
     """仓位归零时的出场原因：OPENED 状态下 TP1 单已消失，说明 TP1 与 SL 在同一巡检间隔内
     先后成交（如 75% TP1 后回踩触发 SL）→ tp1_then_sl；其余按状态推断"""
     if rec.status == "OPENED" and tp1_gone:
         return "tp1_then_sl"
-    return _derive_exit_reason(rec)
+    return _derive_exit_reason(rec, fee_rate)
 
 
 def _record_realized(db: Session, trader: BinanceTrader, rec: TradeRecord) -> float:
@@ -1370,6 +1437,12 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
     """
     cfg = db.get(SystemConfig, 1)
     interval = cfg.kline_interval if cfg else "1h"
+    # 保本止损费率口径（2026-10-02 上页面）：system_config.taker_fee_rate 可页面
+    # 覆盖，NULL=env 默认（_breakeven_stop_price 内回落）；一轮巡检取值一致
+    fee_rate = (
+        float(cfg.taker_fee_rate)
+        if cfg is not None and cfg.taker_fee_rate is not None else None
+    )
     records = db.execute(
         select(TradeRecord).where(TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")))
     ).scalars().all()
@@ -1460,7 +1533,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                         # TP1 与 SL 在同一巡检间隔内先后成交（如 75% TP1 后回踩触发 SL）：补记 TP1_FILL
                         _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
                                                          "realized_pnl": round(pnl, 6)})
-                    exit_reason = _zero_pos_exit_reason(rec, tp1_gone)
+                    exit_reason = _zero_pos_exit_reason(rec, tp1_gone, fee_rate)
                 rec.status = "CLOSED"
                 rec.closed_at = datetime.utcnow()
                 rec.exit_reason = exit_reason
@@ -1543,7 +1616,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                                                      "pnl": tranche,
                                                      "cum_pnl": realized})
                     rec.status = "TP1_HIT"
-                    _move_sl_breakeven(db, rt, rec, open_ids)  # 用户规则：TP1 后止损移至保本价（成本价±往返费缓冲）
+                    _move_sl_breakeven(db, rt, rec, open_ids, fee_rate)  # 用户规则：TP1 后止损移至保本价（成本价±往返费缓冲）
                     if not rec.tp2:
                         # 无 TP2：TP1 止盈 75% 后剩余仓即启用跟进止损（与 TP2 后同机制）
                         _move_sl_trailing(db, rt, rec, interval, open_ids)
@@ -1565,7 +1638,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                         # 回填：部署前已升到 TP1_HIT 的旧单，TP1_FILL 事件未记已止盈金额
                         _record_realized(db, rt, rec)
                     # 保本兜底（幂等）：部署前已处于 TP1_HIT 的旧单、或上次保本移动失败的补偿
-                    _move_sl_breakeven(db, rt, rec, open_ids)
+                    _move_sl_breakeven(db, rt, rec, open_ids, fee_rate)
                     if not rec.tp2:
                         # 无 TP2：与 TP2 后同规则，每次巡检跟进止损（只收紧不放松）
                         _move_sl_trailing(db, rt, rec, interval, open_ids)

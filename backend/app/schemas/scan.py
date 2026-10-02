@@ -233,6 +233,19 @@ class SystemConfigOut(BaseModel):
     pullback_market_pct: Optional[float] = None  # 入场偏离容差（比例 0.01=1%；NULL=默认）
     max_slippage_pct: Optional[float] = None  # 开仓滑点实测上限（比例 0.003=0.3%；NULL=默认）
 
+    # 风控参数（2026-10-02 上页面；NULL=回落 env 默认，页面留空即恢复默认）
+    min_recommendation: Optional[int] = None          # 开单评分门槛（默认 60）
+    daily_loss_stop_pct: Optional[float] = None       # 当日亏损熔断阈值 %（默认 9）
+    daily_loss_stop_enabled: Optional[bool] = None    # 熔断开关（默认开）
+    ai_rr_min: Optional[float] = None                 # 盈亏比铁律下限（默认 1.5）
+    risk_pct: Optional[float] = None                  # 单笔风险比例 %（默认 3，pct 模式）
+    leverage_max: Optional[int] = None                # 杠杆上限（默认 20）
+    taker_fee_rate: Optional[float] = None            # Taker 费率（默认 0.0005）
+    near_anchor_factor: Optional[float] = None        # 近锚折价系数（默认 0.7；1=关闭）
+    portfolio_heat_cap: Optional[float] = None        # 组合热度上限（默认 0=关闭）
+    same_direction_cap: Optional[int] = None          # 同向上限（默认 0=不限）
+    btc_crash_pause_pct: Optional[float] = None       # BTC 急跌暂停 %（默认 1；0=关）
+
     # 初始资金（2026-09-26）：正式网主账号首次入金，资金划转面板展示口径
     live_initial_capital: float = 0
 
@@ -297,6 +310,19 @@ class SystemConfigUpdate(BaseModel):
     min_adapt_leverage: Optional[int] = None  # 动态杠杆下限（1~20；传 null 恢复默认）
     pullback_market_pct: Optional[float] = None  # 入场偏离容差（比例 0.01=1%；NULL=默认）
     max_slippage_pct: Optional[float] = None  # 开仓滑点实测上限（比例 0.003=0.3%；NULL=默认）
+
+    # 风控参数（2026-10-02 上页面；传 null 恢复 env 默认；范围校验见 api/scan.py）
+    min_recommendation: Optional[int] = None
+    daily_loss_stop_pct: Optional[float] = None
+    daily_loss_stop_enabled: Optional[bool] = None
+    ai_rr_min: Optional[float] = None
+    risk_pct: Optional[float] = None
+    leverage_max: Optional[int] = None
+    taker_fee_rate: Optional[float] = None
+    near_anchor_factor: Optional[float] = None
+    portfolio_heat_cap: Optional[float] = None
+    same_direction_cap: Optional[int] = None
+    btc_crash_pause_pct: Optional[float] = None
 
     # 初始资金（2026-09-26）：正式网主账号首次入金，资金划转面板展示口径（≥0）
     live_initial_capital: Optional[float] = None

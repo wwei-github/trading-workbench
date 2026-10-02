@@ -143,11 +143,32 @@ def test_crash_result_cached():
     assert md.btc_crash_active(_Boom()) is True
 
 
+# ── 阈值页面覆盖（2026-10-02 system_config.btc_crash_pause_pct 注入）──
+
+
+def test_crash_pct_override_tightens(monkeypatch):
+    """cfg 覆盖阈值 3%：1% 跌幅不触发（env 默认 1% 会触发）"""
+    stub = _KlineStub([100.0] * 20 + [99.5, 99.0, 98.0, 98.0, 98.0])
+    assert md.btc_crash_active(stub) is True  # env 默认 1%
+    md._cache.pop("btc_crash_active", None)
+    assert md.btc_crash_active(stub, crash_pct=3.0) is False
+
+
+def test_crash_pct_override_zero_disables(monkeypatch):
+    """cfg 覆盖阈值 0=关闭（恒 False，不查 K 线）"""
+    class _Boom:
+        def get_futures_klines(self, symbol, interval, limit):
+            raise RuntimeError("阈值 0 不应查询")
+
+    assert md.btc_crash_active(_Boom(), crash_pct=0) is False
+
+
 # ── 开仓闸门集成 ──────────────────────────────────────────────────────
 
 
 def test_gate_blocks_altcoin_on_crash(db, monkeypatch):
-    monkeypatch.setattr(md, "btc_crash_active", lambda client: True)
+    # 2026-10-02 起开仓闸门传 crash_pct=（cfg 覆盖），替身需接受该关键字
+    monkeypatch.setattr(md, "btc_crash_active", lambda client, crash_pct=None: True)
     a = _analysis(db)
     assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
     assert "BTC 1h 短线急跌" in (a.open_block_reason or "")
@@ -155,7 +176,7 @@ def test_gate_blocks_altcoin_on_crash(db, monkeypatch):
 
 def test_gate_allows_btc_itself_on_crash(db, monkeypatch):
     """BTCUSDT 本身不受山寨暂停影响（穿透到 _attempt_open）"""
-    monkeypatch.setattr(md, "btc_crash_active", lambda client: True)
+    monkeypatch.setattr(md, "btc_crash_active", lambda client, crash_pct=None: True)
     a = _analysis(db, symbol="BTCUSDT")
     assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
     assert "BTC 1h 短线急跌" not in (a.open_block_reason or "")
@@ -163,7 +184,7 @@ def test_gate_allows_btc_itself_on_crash(db, monkeypatch):
 
 
 def test_gate_passes_through_without_crash(db, monkeypatch):
-    monkeypatch.setattr(md, "btc_crash_active", lambda client: False)
+    monkeypatch.setattr(md, "btc_crash_active", lambda client, crash_pct=None: False)
     a = _analysis(db)
     assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
     assert "BTC 1h 短线急跌" not in (a.open_block_reason or "")

@@ -155,11 +155,13 @@ def _btc_trend_label(klines: list) -> Optional[str]:
     return "多头" if fn > sn else "空头"
 
 
-def _btc_market_line(client) -> Optional[str]:
+def _btc_market_line(client, crash_pct: Optional[float] = None) -> Optional[str]:
     """BTC 状态行：4h EMA21/55 排列 + 1h 近3根已收盘累计涨跌幅。
 
     4h 取 60 根（EMA55 需 ≥55 根已收盘数据，50 根不够成形）；
-    1h 近3根累计跌幅超过 BTC_CRASH_PAUSE_PCT 时追加急跌警示（0=关闭）。
+    1h 近3根累计跌幅超过急跌阈值时追加急跌警示（0=关闭）。
+    crash_pct（2026-10-02 上页面）：阈值 %，system_config.btc_crash_pause_pct
+    覆盖时由调用方传入；None 回落 env 默认（与 btc_crash_active 同一口径）。
     两段数据任一失败只降级该段，全失败返回 None。
     """
     # 4h 趋势（EMA 排列）
@@ -190,21 +192,22 @@ def _btc_market_line(client) -> Optional[str]:
     if not parts:
         return None
     line = "，".join(parts)
-    crash_pct = float(settings.BTC_CRASH_PAUSE_PCT)
-    if crash_pct > 0 and chg is not None and chg < -crash_pct:
+    _crash_pct = float(settings.BTC_CRASH_PAUSE_PCT) if crash_pct is None else float(crash_pct)
+    if _crash_pct > 0 and chg is not None and chg < -_crash_pct:
         line += "（BTC 短线急跌，山寨开单需谨慎）"
     return line
 
 
-def btc_crash_active(client) -> bool:
+def btc_crash_active(client, crash_pct: Optional[float] = None) -> bool:
     """BTC 1h 近3根已收盘累计急跌判定（docs/24 A4② 程序级普跌防护闸门用）。
 
-    跌幅阈值 = BTC_CRASH_PAUSE_PCT（0=关闭恒 False，与提示词警示共用同一开关）；
+    跌幅阈值 = BTC 急跌暂停 %（system_config.btc_crash_pause_pct 可页面覆盖，
+    None 回落 env；0=关闭恒 False，与提示词警示共用同一开关）；
     K 线查询失败降级为 False（不因环境查询失败阻断开仓）。60s 进程内缓存，
     开仓闸门逐笔调用不重拉 K 线。
     """
-    crash_pct = float(settings.BTC_CRASH_PAUSE_PCT)
-    if crash_pct <= 0:
+    _crash_pct = float(settings.BTC_CRASH_PAUSE_PCT) if crash_pct is None else float(crash_pct)
+    if _crash_pct <= 0:
         return False
     cached = _cache_get("btc_crash_active")
     if cached is not None:
@@ -217,7 +220,7 @@ def btc_crash_active(client) -> bool:
             base = float(closed[-4][4])
             if base > 0:
                 chg = (float(closed[-1][4]) / base - 1) * 100
-                active = chg < -crash_pct
+                active = chg < -_crash_pct
     except Exception as e:
         logger.debug("BTC 急跌判定查询失败（按无急跌处理）: %s", e)
         return False  # 查询失败不缓存、不拦截
@@ -225,13 +228,17 @@ def btc_crash_active(client) -> bool:
     return active
 
 
-def build_market_context(client, symbol: str) -> Optional[str]:
+def build_market_context(
+    client, symbol: str, crash_pct: Optional[float] = None,
+) -> Optional[str]:
     """AI 事实包市场环境文本块（docs/24 A4①）：本币资金费率 + BTC 状态摘要。
 
     返回两行左右中文文本（不带标题，调用方拼「【市场环境】」标题注入提示词）；
     费率/BTC 任一环节失败静默降级为跳过对应行，全失败返回 None（不注入）。
     client: BinanceClient 实例（拉 BTC K 线；测试传 fake）；资金费率走
     get_funding（/fapi/v1/premiumIndex，带进程内 TTL 缓存）。
+    crash_pct（2026-10-02 上页面）：BTC 急跌阈值 %，透传 _btc_market_line
+    （None=env 默认）。
     """
     lines: list[str] = []
 
@@ -250,7 +257,7 @@ def build_market_context(client, symbol: str) -> Optional[str]:
 
     # 2) BTC 状态摘要（4h 趋势 + 1h 近3根涨跌，急跌加警示）
     try:
-        btc = _btc_market_line(client)
+        btc = _btc_market_line(client, crash_pct=crash_pct)
         if btc:
             lines.append(btc)
     except Exception as e:

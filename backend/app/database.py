@@ -220,6 +220,22 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS max_slippage_pct NUMERIC(10, 6),
               ADD COLUMN IF NOT EXISTS testnet_transfer_purge_at TIMESTAMP
         """))
+        # 风控参数上页面（2026-10-02）：评分门槛/熔断/盈亏比/风险比例/杠杆上限/
+        # 费率/近锚折价/组合热度/同向上限/BTC 急跌——全部 nullable（NULL=回落 env）
+        conn.execute(text("""
+            ALTER TABLE system_config
+              ADD COLUMN IF NOT EXISTS min_recommendation INTEGER,
+              ADD COLUMN IF NOT EXISTS daily_loss_stop_pct NUMERIC(10, 6),
+              ADD COLUMN IF NOT EXISTS daily_loss_stop_enabled BOOLEAN,
+              ADD COLUMN IF NOT EXISTS ai_rr_min NUMERIC(10, 6),
+              ADD COLUMN IF NOT EXISTS risk_pct NUMERIC(10, 6),
+              ADD COLUMN IF NOT EXISTS leverage_max INTEGER,
+              ADD COLUMN IF NOT EXISTS taker_fee_rate NUMERIC(10, 6),
+              ADD COLUMN IF NOT EXISTS near_anchor_factor NUMERIC(10, 6),
+              ADD COLUMN IF NOT EXISTS portfolio_heat_cap NUMERIC(10, 6),
+              ADD COLUMN IF NOT EXISTS same_direction_cap INTEGER,
+              ADD COLUMN IF NOT EXISTS btc_crash_pause_pct NUMERIC(10, 6)
+        """))
         # 多账号支持（docs/17 P0，2026-09-23）：账号配置走 .env 注册表，存量表
         # 补 account_key 归属列并按 testnet 布尔回填（testnet→testnet-1，正式→live-1）
         conn.execute(text(

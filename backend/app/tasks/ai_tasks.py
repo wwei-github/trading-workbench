@@ -292,6 +292,20 @@ def run_ai_analysis_single(
         # 止损宽度硬上限透传（2026-09-29）：max_stop_pct 补丁参数注入门槛块，
         # AI 定止损前自验不超限，避免"AI 建议开单→程序宽度闸弃单"的无效调用
         _stop_cap = float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None
+        # 风控参数上页面（2026-10-02）：RR 铁律 / 风险比例 / BTC 急跌阈值按 cfg
+        # 覆盖优先、NULL 回落 env，透传进两管线（提示词 + Risk Guard 同源）
+        _rr_min = (
+            float(cfg.ai_rr_min) if cfg.ai_rr_min is not None
+            else float(settings.AI_RR_MIN)
+        )
+        _risk_pct = (
+            float(cfg.risk_pct) if cfg.risk_pct is not None
+            else float(settings.TRADING_RISK_PCT)
+        )
+        _crash_pct = (
+            float(cfg.btc_crash_pause_pct) if cfg.btc_crash_pause_pct is not None
+            else None
+        )
         # 管线选择：批量（每小时扫描自动触发/手动全量）固定走 P0 单次调用管线，
         # 不受「AI 管线」开关影响；仅手动单币重分析（force）跟随开关走 Agent 管线
         if cfg.ai_pipeline_enabled and force:
@@ -309,6 +323,9 @@ def run_ai_analysis_single(
                 risk_amount=_risk_amount,
                 risk_label=_risk_label,
                 stop_cap_pct=_stop_cap,
+                rr_min=_rr_min,
+                risk_pct=_risk_pct,
+                crash_pct=_crash_pct,
                 tactics_block=tactics_block,
             )
         else:
@@ -322,6 +339,9 @@ def run_ai_analysis_single(
                 risk_amount=_risk_amount,
                 risk_label=_risk_label,
                 stop_cap_pct=_stop_cap,
+                rr_min=_rr_min,
+                risk_pct=_risk_pct,
+                crash_pct=_crash_pct,
                 interval=cfg.kline_interval,
                 progress_id=r.id,  # 方案 B 轻量进度：流式增量计数推 "llm" 事件（≥2s 节流）
                 tactics_block=tactics_block,
@@ -441,7 +461,7 @@ def _finish(db, r: ScanResult, symbol: str, ai_result: dict, fp: str, commit: bo
 
 
 def _dispatch_immediate_open(a: AIAnalysis) -> None:
-    """唯一开仓通道：suggest 且 ≥60 分的分析一落库即分发开仓任务（2026-09-14 起
+    """唯一开仓通道：suggest 且过评分门槛的分析一落库即分发开仓任务（2026-09-14 起
     取消 :42 批量开仓，本分发失败即无兜底）。
 
     只做分发不做开仓（闸门全在 open_trade_for_analysis → try_open_for_analysis 里）；
@@ -449,15 +469,21 @@ def _dispatch_immediate_open(a: AIAnalysis) -> None:
     """
     if a.trade_decision != "suggest":
         return
-    if float(a.recommendation or 0) < settings.TRADING_MIN_RECOMMENDATION:
-        return
     # 待回踩单照常分发（2026-09-18）：回踩距离 ≤ pullback_market_pct 容差时
     # 市价入场、超容差在 _attempt_open 偏离闸门拦下——不再一刀切不下单
     # 开关以 DB 为运行时权威（2026-09-20 由 env 迁移进 system_config）
+    # 评分门槛（2026-10-02 上页面）：cfg.min_recommendation 覆盖时优先，
+    # NULL 回落 env——门槛检查需 cfg 行，故移入 db 块内
     db = SessionLocal()
     try:
         cfg = db.get(SystemConfig, 1)
         if cfg is None or not cfg.trading_enabled:
+            return
+        min_rec = (
+            float(cfg.min_recommendation) if cfg.min_recommendation is not None
+            else float(settings.TRADING_MIN_RECOMMENDATION)
+        )
+        if float(a.recommendation or 0) < min_rec:
             return
     finally:
         db.close()

@@ -227,21 +227,24 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 环境数据未提供，勿臆测：仅基于给定的 K 线、量能、均线、摆动结构、技术指标、
 4h 背景与环境块数据进行分析，环境块缺失时按无环境数据处理。"""
 
-def render_system_prompt(risk_label: Optional[str] = None) -> str:
+def render_system_prompt(risk_label: Optional[str] = None, rr_min: Optional[float] = None) -> str:
     """渲染最终生效的 P0 系统提示词（SYSTEM_PROMPT 为带槽位模板）。
 
     risk_label（2026-09-27 止损金额模式）：单笔止损预算文案，None 时回落
-    百分比口径。页面预览与实际调用共用本函数保证同源。"""
+    百分比口径。页面预览与实际调用共用本函数保证同源。
+    rr_min（2026-10-02 上页面）：盈亏比铁律下限，system_config.ai_rr_min
+    覆盖时由调用方传入；None 回落 env 默认。"""
+    _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     return SYSTEM_PROMPT.format(
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_DIRECTION=_RULE_DIRECTION.replace(chr(10), ' '),
         _RULE_STRUCT=_RULE_STRUCT,
         _RULE_SL=_RULE_SL,
-        _RULE_TP=_RULE_TP.format(rr_min=settings.AI_RR_MIN),
+        _RULE_TP=_RULE_TP.format(rr_min=_rr),
         _RULE_TOUCH=_RULE_TOUCH,
         _RULE_EMA=_RULE_EMA.replace(chr(10), ' '),
         _RULE_VOTE=_RULE_VOTE.replace(chr(10), ' '),
-        rr_min=settings.AI_RR_MIN,
+        rr_min=_rr,
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
     )  # 模板槽位均为纯名称：表达式在渲染前预处理（f-string 时代的 .format 内嵌已移除）
 
@@ -257,7 +260,8 @@ def analyze_coin(
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
     stop_cap_pct: Optional[float] = None, interval: str = "1h",
-    tactics_block: str = "",
+    tactics_block: str = "", rr_min: Optional[float] = None,
+    crash_pct: Optional[float] = None,
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -273,13 +277,16 @@ def analyze_coin(
     interval: K线周期标签（如 "1h"/"15m"），注入 CSV 表头让模型明确时间尺度
     （kline_interval 可在系统配置页修改，勿硬编码）
     tactics_block: 战法库判定块（2026-10-02，调用方预渲染；空=无战法不注入）
+    rr_min: 盈亏比铁律下限（2026-10-02 上页面覆盖；None=env 默认）
+    crash_pct: BTC 急跌阈值 %（2026-10-02 上页面覆盖；None=env 默认）
     """
     client = _get_client()
     return _call_llm(
         client,
         _build_messages(signal, klines, strategy_prompt, user_input, htf_klines,
                         risk_label=risk_label, stop_cap_pct=stop_cap_pct,
-                        interval=interval, tactics_block=tactics_block),
+                        interval=interval, tactics_block=tactics_block,
+                        rr_min=rr_min, crash_pct=crash_pct),
     )
 
 
@@ -291,12 +298,16 @@ def _build_messages(
     stop_cap_pct: Optional[float] = None,
     interval: str = "1h",
     tactics_block: str = "",
+    rr_min: Optional[float] = None,
+    crash_pct: Optional[float] = None,
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
 
     risk_label（2026-09-27 止损金额模式）：单笔止损预算文案，注入系统提示词
     仓位口径说明；空时用默认百分比口径。
-    stop_cap_pct（2026-09-29）：止损宽度硬上限，注入门槛块（None=不限制不注入）。"""
+    stop_cap_pct（2026-09-29）：止损宽度硬上限，注入门槛块（None=不限制不注入）。
+    rr_min（2026-10-02 上页面）：盈亏比铁律下限，注入系统提示词（None=env 默认）。
+    crash_pct（2026-10-02 上页面）：BTC 急跌阈值 %，透传市场环境块（None=env 默认）。"""
     # 取最近 40 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-41:-1]）。
     # 60→40（2026-09-28）：CSV 是 user 消息 token 大头（60 根 ≈5000+），思考型模型
     # reasoning 时长与输入量正相关；浓缩结论（指标/摆动块）已覆盖形态识别所需，
@@ -346,7 +357,8 @@ def _build_messages(
     market_summary = ""
     if settings.MARKET_CONTEXT_ENABLED:
         try:
-            ctx = build_market_context(get_kline_client(), signal["symbol"])
+            ctx = build_market_context(get_kline_client(), signal["symbol"],
+                                       crash_pct=crash_pct)
             if ctx:
                 market_summary = f"【市场环境】\n{ctx}\n"
         except Exception as e:
@@ -409,7 +421,7 @@ def _build_messages(
             f"{user_input.strip()}"
         )
 
-    system_prompt = render_system_prompt(risk_label or None)
+    system_prompt = render_system_prompt(risk_label or None, rr_min=rr_min)
     # 技能注入（P0 管线无工具循环，命中技能正文直接进系统提示词；与 Agent 管线共用同一事实判定）
     skill_block = skill_library.render_matched(skill_library.build_facts(signal, klines))
     if skill_block:
@@ -499,6 +511,8 @@ def analyze_with_guard(
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
     stop_cap_pct: Optional[float] = None, interval: str = "1h",
     progress_id=None, tactics_block: str = "",
+    rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
+    crash_pct: Optional[float] = None,
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -509,11 +523,14 @@ def analyze_with_guard(
     interval：K线周期标签（与取数口径一致，ai_tasks 传 cfg.kline_interval）。
     progress_id：scan_result_id，透传 _call_llm 推送 ai_progress 活进度事件（None=不推）。
     tactics_block：战法库判定块（2026-10-02，调用方预渲染；空=无战法不注入）。
+    rr_min / risk_pct / crash_pct（2026-10-02 上页面）：盈亏比铁律下限、单笔
+    风险比例与 BTC 急跌阈值，注入提示词并透传 Risk Guard 校验（None=env 默认）。
     """
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
         htf_klines=htf_klines, risk_label=risk_label, stop_cap_pct=stop_cap_pct,
-        interval=interval, tactics_block=tactics_block,
+        interval=interval, tactics_block=tactics_block, rr_min=rr_min,
+        crash_pct=crash_pct,
     )
     client = _get_client()
     _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None
@@ -544,6 +561,7 @@ def analyze_with_guard(
 
         ok, violations, fixed = parse_and_validate(
             raw, signal, klines, risk_budget=_risk_budget,
+            rr_min=rr_min, risk_pct=risk_pct,
         )
         if ok:
             logger.info(
