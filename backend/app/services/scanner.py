@@ -51,21 +51,22 @@ logger = logging.getLogger(__name__)
 
 
 def _scan_hit_card(new_hits: list[dict]) -> dict:
-    """定时扫描命中消息卡片（2026-09-30 由纯文本改卡片；2026-10-01 三列等宽）。
+    """定时扫描命中消息卡片（2026-09-30 由纯文本改卡片；2026-10-02 三列等分）。
 
-    标题计数 + 每命中一行 column_set：币种 / 信号族·金K形态 / 质量分 三列
-    等宽平分（weight 34/33/33，信号族与金K形态中文名沿用复盘
-    TRIGGER_FAMILY / PATTERN_LABEL_MAP 映射）；超 8 条截断、余量并入 note
+    标题计数 + 每命中一行 column_set：币种 / 信号族·金K形态 / 质量分 三列，
+    flex_mode=trisect 强制三等分（stretch+权重会被内容宽度挤歪，2026-10-01
+    的 34/33/33 加权方案在客户端渲染不齐）；信号族与金K形态中文名沿用复盘
+    TRIGGER_FAMILY / PATTERN_LABEL_MAP 映射；超 8 条截断、余量并入 note
     脚注。返回卡片体（外层包装与发送通道由 feishu_bot 负责）。
     """
     from app.services.actual_review import TRIGGER_FAMILY
     from app.services.strategy.candlestick import PATTERN_LABEL_MAP
 
-    def _col(weight: int, content: str) -> dict:
+    def _col(content: str) -> dict:
         return {
             "tag": "column",
             "width": "weighted",
-            "weight": weight,
+            "weight": 1,
             "elements": [{"tag": "markdown", "content": content}],
         }
 
@@ -76,11 +77,11 @@ def _scan_hit_card(new_hits: list[dict]) -> dict:
             sig += f"·{PATTERN_LABEL_MAP.get(h['pattern'], h['pattern'])}"
         rows.append({
             "tag": "column_set",
-            "flex_mode": "stretch",
+            "flex_mode": "trisect",
             "columns": [
-                _col(34, f"**{h['symbol']}**"),
-                _col(33, sig),
-                _col(33, f"质量分 {h.get('quality_score', 0)}"),
+                _col(f"**{h['symbol']}**"),
+                _col(sig),
+                _col(f"质量分 {h.get('quality_score', 0)}"),
             ],
         })
     card = {

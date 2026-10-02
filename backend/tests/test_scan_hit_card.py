@@ -1,8 +1,8 @@
-"""定时扫描命中飞书卡片单测（2026-09-30 纯文本改卡片；2026-10-01 三列等宽）
+"""定时扫描命中飞书卡片单测（2026-09-30 纯文本改卡片；2026-10-02 三列等分）
 
-_scan_hit_card：标题计数 / 每命中一行 column_set（币种·信号族·质量分三列
-weight 34/33/33 等宽平分）/ 未知信号与未知形态兜底 / 超 8 条截断 + note 脚注。
-只构造卡片体，不发送不触网。
+_scan_hit_card：标题计数 / 每命中一行 column_set（币种·信号族·质量分三列，
+flex_mode=trisect 强制三等分）/ 未知信号与未知形态兜底 / 超 8 条截断 +
+note 脚注。只构造卡片体，不发送不触网。
 """
 import sys
 from pathlib import Path
@@ -22,7 +22,7 @@ def _hit(symbol, signal_type=None, pattern=None, quality=0):
 
 
 def test_card_title_and_three_equal_columns():
-    """标题计数 + 每命中一行 column_set：三列等宽 34/33/33，内容各就各位"""
+    """标题计数 + 每命中一行 column_set：trisect 三等分，内容各就各位"""
     card = _scan_hit_card([
         _hit("API3USDT", "trigger_pullback", "bullish_engulfing", 87),
         _hit("BTCUSDT", "trigger_breakout", None, 66),
@@ -32,8 +32,9 @@ def test_card_title_and_three_equal_columns():
 
     row1, row2 = card["elements"][0], card["elements"][1]
     assert row1["tag"] == "column_set" and row2["tag"] == "column_set"
+    assert row1["flex_mode"] == "trisect"
     cols = row1["columns"]
-    assert [c["weight"] for c in cols] == [34, 33, 33]
+    assert [c["weight"] for c in cols] == [1, 1, 1]
     assert all(c["width"] == "weighted" for c in cols)
     assert cols[0]["elements"][0]["content"] == "**API3USDT**"
     assert cols[1]["elements"][0]["content"] == "回踩金K确认·看涨吞没"
