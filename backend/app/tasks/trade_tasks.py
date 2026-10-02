@@ -135,11 +135,15 @@ def manual_close_market(trade_id: str) -> dict:
 def run_auto_trade_task():
     task_id = open_task(task_type="trade", task_name="结算巡检", trigger="scheduled")
     try:
-        from app.services.account_registry import enabled_accounts
+        from app.services.account_registry import enabled_accounts, live_enabled_accounts
 
         db = SessionLocal()
         try:
             accs = enabled_accounts(db)
+            # 手动单接管/孤儿清扫清单 = 正式网启用账号：管理行为不随当前环境
+            # 切换中断（当前环境测试网时正式网 App 手动单仍要接管与巡检）；
+            # 开单扇出仍按 enabled_accounts（当前环境）
+            adopt_accs = live_enabled_accounts(db)
         finally:
             db.close()
         if not accs:
@@ -165,7 +169,9 @@ def run_auto_trade_task():
             }
         finally:
             db.close()
-        lock_keys = list(dict.fromkeys([a.key for a in accs] + sorted(run_keys)))
+        lock_keys = list(dict.fromkeys(
+            [a.key for a in accs] + [a.key for a in adopt_accs] + sorted(run_keys)
+        ))
 
         r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
         ident = uuid4().hex
@@ -186,24 +192,30 @@ def run_auto_trade_task():
             hold_cards: list[dict] = []  # 持仓时长预警卡（锁外发送）
             try:
                 settled, advice_ids = settle_trades(db, trader)
+                # 手动单接管 import 必须无条件执行（2026-10-02 修复）：函数内
+                # from import 是局部绑定，此前放在 if not trader.testnet 分支内，
+                # 当前环境测试网时该分支跳过 → 循环里 auto_adopt_positions
+                # UnboundLocalError 且被 except 静默吞掉——正式网手动单失管的
+                # 直接原因（叠加 enabled_accounts 不含正式网账号的清单问题）
+                from app.services.trade_engine import (
+                    _sweep_orphan_algo_orders,
+                    auto_adopt_positions,
+                )
                 # 自动导入手动持仓（2026-09-24）：交易所侧未被系统在跑记录接管的
-                # 非零持仓 = App 手动单，SL/TP 取 App 条件单原值接管
+                # 非零持仓 = App 手动单，SL/TP 取 App 现挂条件单原值接管
                 # （裸仓/校验不过跳过只记日志）。测试网不接管（2026-09-29 写死：
                 # 不同步 App 手动单），测试网系统单的结算巡检不受影响
                 if not trader.testnet:
                     try:
-                        from app.services.trade_engine import auto_adopt_positions
                         adopted_all.extend(auto_adopt_positions(db, trader))
                     except Exception:
                         logger.exception("自动导入持仓失败（%s）", trader.account_key)
-                # 多账号孤儿清扫（docs/17 P1）：settle_trades 仅兜底主账号，
-                # 其余启用账号各扫各的（无持仓、无在跑记录的残留挂单）
-                from app.services.trade_engine import _sweep_orphan_algo_orders
-                for acc in accs:
+                # 多账号手动单接管 + 孤儿清扫（docs/17 P1）：主账号（当前环境
+                # 正式网时）已在上方接管，这里遍历其余正式网启用账号各管各的
+                # （adopt_accs 只含正式网账号，测试网写死不接管/不清扫，2026-09-29）
+                for acc in adopt_accs:
                     if acc.key == trader.account_key:
                         continue
-                    if acc.testnet:
-                        continue  # 测试网账号不同步手动单、不孤儿清扫（2026-09-29 写死）
                     at = BinanceTrader(acc.key)
                     if not at.configured:
                         continue
