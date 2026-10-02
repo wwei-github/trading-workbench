@@ -595,14 +595,19 @@ def update_system_config(
         cfg.liq_gate_buffer = v
     if "min_adapt_leverage" in body.model_fields_set:
         v = body.min_adapt_leverage
-        # 上限按本次请求生效后的杠杆上限（cfg.leverage_max 覆盖优先；
-        # body 同传 leverage_max 时以本次新值为准，2026-10-02 上页面联动）
-        lev_cap = (
-            int(body.leverage_max)
-            if "leverage_max" in body.model_fields_set and body.leverage_max is not None
-            else int(cfg.leverage_max) if cfg.leverage_max is not None
-            else int(settings.TRADING_LEVERAGE)
-        )
+        # 上限按本次请求生效后的杠杆上限（2026-10-02 上页面联动）：
+        # body 同传 leverage_max 时以本次新值为准（显式 null=恢复 env 默认），
+        # 未传时才读 cfg 现值
+        if "leverage_max" in body.model_fields_set:
+            lev_cap = (
+                int(body.leverage_max) if body.leverage_max is not None
+                else int(settings.TRADING_LEVERAGE)
+            )
+        else:
+            lev_cap = (
+                int(cfg.leverage_max) if cfg.leverage_max is not None
+                else int(settings.TRADING_LEVERAGE)
+            )
         if v is not None and not (1 <= v <= lev_cap):
             raise HTTPException(
                 status_code=400,
@@ -627,8 +632,9 @@ def update_system_config(
         cfg.min_recommendation = v
     if "daily_loss_stop_pct" in body.model_fields_set:
         v = body.daily_loss_stop_pct
-        if v is not None and not (0 < v <= 50):
-            raise HTTPException(status_code=400, detail="daily_loss_stop_pct 需在 0~50 % 之间（当日亏损熔断阈值）")
+        # 0=关闭（与 env 语义一致：消费侧 loss_pct>0 判定，关闭也可用开关）
+        if v is not None and not (0 <= v <= 50):
+            raise HTTPException(status_code=400, detail="daily_loss_stop_pct 需在 0~50 % 之间（当日亏损熔断阈值，0=关闭）")
         cfg.daily_loss_stop_pct = v
     if "daily_loss_stop_enabled" in body.model_fields_set:
         cfg.daily_loss_stop_enabled = body.daily_loss_stop_enabled
@@ -655,7 +661,7 @@ def update_system_config(
     if "near_anchor_factor" in body.model_fields_set:
         v = body.near_anchor_factor
         if v is not None and not (0 < v <= 1):
-            raise HTTPException(status_code=400, detail="near_anchor_factor 需在 0~1 之间（近锚折价系数，1=关闭折价）")
+            raise HTTPException(status_code=400, detail="near_anchor_factor 需 >0 且 ≤1（近锚折价系数，1=关闭折价）")
         cfg.near_anchor_factor = v
     if "portfolio_heat_cap" in body.model_fields_set:
         v = body.portfolio_heat_cap

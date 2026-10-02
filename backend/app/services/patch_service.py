@@ -454,6 +454,9 @@ def build_prompt_view(db: Session) -> dict:
 
     cfg = _get_cfg(db)
     _, _, risk_label = resolve_risk_budget(cfg)
+    # 盈亏比铁律下限（2026-10-02 上页面）：cfg 覆盖时预览与实际调用同源；
+    # None 回落 env 默认（与两管线调用侧同口径）
+    rr_min = float(cfg.ai_rr_min) if cfg.ai_rr_min is not None else None
     text = cfg.strategy_prompt or ""
     patches = db.execute(
         select(PromptPatch).where(PromptPatch.status.in_(("active", "valid")))
@@ -475,8 +478,8 @@ def build_prompt_view(db: Session) -> dict:
             "text": text[m.end():end].strip(),
         })
     return {
-        "system_prompt": render_p0_prompt(risk_label),
-        "agent_system": render_system_prompt(risk_label),
+        "system_prompt": render_p0_prompt(risk_label, rr_min=rr_min),
+        "agent_system": render_system_prompt(risk_label, rr_min=rr_min),
         "user_custom": custom_head,
         "patch_segments": segments,
         "params": {

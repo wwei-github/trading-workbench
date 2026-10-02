@@ -161,3 +161,26 @@ def test_min_adapt_leverage_cap_same_body(client):
     body = r.json()
     assert body["leverage_max"] == 10
     assert body["min_adapt_leverage"] == 8
+
+
+def test_min_adapt_leverage_cap_leverage_max_cleared(client):
+    """同请求显式 leverage_max=null（恢复 env 默认）：min_adapt 按 env 上限校验
+    （回归：修复前误用旧 cfg 值 10 拒绝 15）"""
+    http, _db = client
+    assert http.put("/api/scans/config", json={"leverage_max": 10}).status_code == 200
+    r = http.put(
+        "/api/scans/config",
+        json={"leverage_max": None, "min_adapt_leverage": 15},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["leverage_max"] is None
+    assert body["min_adapt_leverage"] == 15
+
+
+def test_daily_loss_stop_pct_zero_allowed(client):
+    """熔断阈值 0=关闭（与 env 语义/消费侧 loss_pct>0 判定一致）"""
+    http, _db = client
+    r = http.put("/api/scans/config", json={"daily_loss_stop_pct": 0})
+    assert r.status_code == 200
+    assert r.json()["daily_loss_stop_pct"] == 0

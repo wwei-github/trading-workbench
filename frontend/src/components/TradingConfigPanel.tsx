@@ -257,9 +257,9 @@ export default function TradingConfigPanel() {
           <Form.Item
             label="近锚风险折价系数（留空=默认 0.7）"
             name="near_anchor_factor"
-            tooltip="突破类信号用近锚止损时风险预算 × 该系数（0~1，收紧止损贴极值的单子预算）；1=不折价"
+            tooltip="突破类信号用近锚止损时风险预算 × 该系数（>0 且 ≤1，收紧止损贴极值的单子预算）；1=不折价"
           >
-            <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} placeholder="0.7" />
+            <InputNumber min={0.01} max={1} step={0.05} style={{ width: '100%' }} placeholder="0.7" />
           </Form.Item>
 
           <Form.Item
