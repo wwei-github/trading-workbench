@@ -251,41 +251,62 @@ def transfer_stats(scope: str = "live", db: Session = Depends(get_db)):
 
 @router.post("/adopt-now")
 def adopt_now(db: Session = Depends(get_db)):
-    """手动触发一次自动导入持仓（2026-09-24）：逻辑与每小时巡检完全一致
+    """手动触发一次自动导入持仓（2026-09-24）：接管逻辑与每小时巡检一致
     （交易所非零持仓未被接管的 = App 手动单，SL/TP 取条件单原值接管）。
-    与结算巡检在同一账号开仓锁内互斥（等锁 10s，超时 409）。"""
+
+    账号范围（2026-10-03 与巡检接管口径对齐）：
+    - 测试网环境 = 测试网账号 + 正式网启用账号（两网手动单都导入）
+    - 正式网环境 = 仅正式网启用账号
+    逐账号在各自开仓锁内执行，全有全无（任一拿锁失败即 409）。"""
     from redis import Redis
     from app.config import settings
     from app.services.binance_trader import BinanceTrader
     from app.services.trade_engine import auto_adopt_positions
-    from app.services import account_registry as reg
+    from app.services.account_registry import enabled_accounts, live_enabled_accounts
     from app.tasks.trade_tasks import (
         _acquire_open_lock, _release_open_lock, _OPEN_LOCK_TTL_S,
     )
 
     cfg = db.get(SystemConfig, 1)
     testnet = bool(cfg.trading_testnet) if cfg else True
-    acc = reg.resolve_current_account(db)
-    acc_key = acc.key if acc else ("testnet-1" if testnet else "live-1")
-    trader = BinanceTrader(acc_key)
-    if not trader.configured:
-        raise HTTPException(status_code=400, detail="当前账号未配置 API 凭据")
+    # 环境账号清单：测试网环境按 enabled_accounts（测试网扇出口径）；
+    # 正式网环境直接用 live_enabled_accounts（enabled_accounts 正式网模式
+    # 与之相同，但 live 未配置时会回落测试网账号——正式网环境不该导入测试网）
+    env_accs = enabled_accounts(db) if testnet else live_enabled_accounts(db)
+    env_keys = {a.key for a in env_accs}
+    accs = env_accs + [a for a in live_enabled_accounts(db) if a.key not in env_keys]
+    if not accs:
+        raise HTTPException(status_code=400, detail="无已配置的交易账号")
 
     r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     ident = f"adopt-now-{uuid4().hex[:8]}"
-    if not _acquire_open_lock(r, ident, wait_s=10, ttl_s=_OPEN_LOCK_TTL_S,
-                              account=trader.account_key):
+    acquired: list[str] = []
+    for a in accs:
+        if _acquire_open_lock(r, ident, wait_s=10, ttl_s=_OPEN_LOCK_TTL_S,
+                              account=a.key):
+            acquired.append(a.key)
+        else:
+            break
+    if len(acquired) < len(accs):
+        for k in acquired:
+            _release_open_lock(r, ident, account=k)
         raise HTTPException(status_code=409, detail="与结算巡检/开仓互斥中，请稍后重试")
     try:
-        adopted = auto_adopt_positions(db, trader)
-    except Exception as e:
-        db.rollback()
-        logger.exception("手动导入持仓失败")
-        raise HTTPException(status_code=500, detail=f"导入失败：{e}")
+        adopted: list[str] = []
+        for a in accs:
+            at = BinanceTrader(a.key)
+            if not at.configured:
+                continue
+            try:
+                adopted.extend(auto_adopt_positions(db, at))
+            except Exception:
+                db.rollback()
+                logger.exception("导入持仓失败（%s）", a.key)
     finally:
-        _release_open_lock(r, ident, account=trader.account_key)
+        for k in acquired:
+            _release_open_lock(r, ident, account=k)
     return {"ok": True, "adopted": adopted,
-            "count": len(adopted), "account_key": trader.account_key}
+            "count": len(adopted), "accounts": [a.key for a in accs]}
 
 
 @router.post("/inspect-now")

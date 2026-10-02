@@ -203,16 +203,17 @@ def run_auto_trade_task():
                 )
                 # 自动导入手动持仓（2026-09-24）：交易所侧未被系统在跑记录接管的
                 # 非零持仓 = App 手动单，SL/TP 取 App 现挂条件单原值接管
-                # （裸仓/校验不过跳过只记日志）。测试网不接管（2026-09-29 写死：
-                # 不同步 App 手动单），测试网系统单的结算巡检不受影响
-                if not trader.testnet:
-                    try:
-                        adopted_all.extend(auto_adopt_positions(db, trader))
-                    except Exception:
-                        logger.exception("自动导入持仓失败（%s）", trader.account_key)
-                # 多账号手动单接管 + 孤儿清扫（docs/17 P1）：主账号（当前环境
-                # 正式网时）已在上方接管，这里遍历其余正式网启用账号各管各的
-                # （adopt_accs 只含正式网账号，测试网写死不接管/不清扫，2026-09-29）
+                # （裸仓/校验不过跳过只记日志）。2026-10-03 拍板：主账号无条件
+                # 接管（测试网环境 testnet-1 也导入测试网手动单，取代 2026-09-29
+                # "测试网不接管"写死）+ 正式网启用账号照旧 → 测试网环境两网手动
+                # 单都导入；正式网环境仅正式网（下方循环与主账号去重）
+                try:
+                    adopted_all.extend(auto_adopt_positions(db, trader))
+                except Exception:
+                    logger.exception("自动导入持仓失败（%s）", trader.account_key)
+                # 多账号手动单接管 + 孤儿清扫（docs/17 P1）：主账号已在上方接管，
+                # 这里遍历其余正式网启用账号各管各的（adopt_accs 只含正式网账号，
+                # 与主账号 key 去重——测试网环境主账号 testnet-1 不在清单内）
                 for acc in adopt_accs:
                     if acc.key == trader.account_key:
                         continue

@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -37,7 +38,13 @@ _LIVE = Account("live-1", "正式网-1", False, "lk", "ls")
 
 @pytest.fixture()
 def db():
-    engine = create_engine("sqlite:///:memory:")
+    # StaticPool + check_same_thread=False：TestClient 在独立线程跑请求，
+    # 共享同一内存库连接（test_risk_params_api 同款惯例）
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
     session.add(SystemConfig(id=1, trading_enabled=True, trading_testnet=True,
@@ -119,17 +126,18 @@ def _run_task(db, monkeypatch, adopt_calls, sweep_calls):
     trade_tasks.run_auto_trade_task()
 
 
-def test_task_adopts_live_positions_in_testnet_mode(db, both_accounts, monkeypatch):
-    """当前环境测试网：正式网账号仍被接管+清扫（修复点），测试网主账号不接管"""
+def test_task_adopts_both_nets_in_testnet_mode(db, both_accounts, monkeypatch):
+    """当前环境测试网：主账号 testnet-1 + 正式网账号都接管（2026-10-03 拍板：
+    测试网环境两网手动单都导入，取代 09-29 "测试网不接管"写死）；孤儿清扫
+    仍只扫正式网账号（循环体，testnet 主账号不扫）"""
     adopt_calls, sweep_calls = [], []
     _run_task(db, monkeypatch, adopt_calls, sweep_calls)
-    # 主账号 = 当前环境主账号 testnet-1：不接管（测试网写死）
-    assert adopt_calls == ["live-1"]
+    assert adopt_calls == ["testnet-1", "live-1"]
     assert sweep_calls == ["live-1"]
 
 
 def test_task_adopts_via_main_account_in_live_mode(db, both_accounts, monkeypatch):
-    """当前环境正式网：主账号接管走 not trader.testnet 分支，循环不重复调用"""
+    """当前环境正式网：主账号接管走无条件分支，循环不重复调用"""
     db.get(SystemConfig, 1).trading_testnet = False
     db.commit()
     adopt_calls, sweep_calls = [], []
@@ -137,3 +145,65 @@ def test_task_adopts_via_main_account_in_live_mode(db, both_accounts, monkeypatc
     # 主账号 live-1 由上方分支接管；adopt_accs 循环跳过主账号 → 不重复
     assert adopt_calls == ["live-1"]
     assert sweep_calls == []  # 唯一正式网账号即主账号，循环体无其余账号
+
+
+# ── 3. adopt-now 端点账号范围（2026-10-03 与巡检口径对齐）──
+
+
+class _FakeApiTrader:
+    configured = True
+
+    def __init__(self, key=None):
+        self.account_key = key
+
+
+def _run_adopt_now(db, monkeypatch, adopt_calls, lock_calls=None):
+    """adopt-now 端点全替身环境（TestClient + sqlite override，不触网）"""
+    from fastapi.testclient import TestClient
+
+    from app.database import get_db
+    from app.main import app
+
+    monkeypatch.setattr(
+        trade_tasks, "_acquire_open_lock",
+        lambda *a, **k: (lock_calls.append(k.get("account")) if lock_calls is not None else None) or True,
+    )
+    monkeypatch.setattr(trade_tasks, "_release_open_lock", lambda *a, **k: None)
+
+    import redis as _redis
+    monkeypatch.setattr(_redis.Redis, "from_url", lambda *a, **k: None, raising=False)
+
+    from app.services import binance_trader
+    monkeypatch.setattr(binance_trader, "BinanceTrader", _FakeApiTrader)
+    monkeypatch.setattr(trade_engine, "auto_adopt_positions",
+                        lambda db, trader: adopt_calls.append(trader.account_key) or [])
+
+    def _override():
+        yield db
+
+    app.dependency_overrides[get_db] = _override
+    try:
+        client = TestClient(app)
+        resp = client.post("/api/trades/adopt-now")
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_adopt_now_testnet_mode_both_nets(db, both_accounts, monkeypatch):
+    """测试网环境点导入：testnet-1 + live-1 两账号都执行"""
+    adopt_calls = []
+    data = _run_adopt_now(db, monkeypatch, adopt_calls)
+    assert adopt_calls == ["testnet-1", "live-1"]
+    assert data["accounts"] == ["testnet-1", "live-1"]
+
+
+def test_adopt_now_live_mode_live_only(db, both_accounts, monkeypatch):
+    """正式网环境点导入：仅 live-1（不回落测试网账号）"""
+    db.get(SystemConfig, 1).trading_testnet = False
+    db.commit()
+    adopt_calls = []
+    data = _run_adopt_now(db, monkeypatch, adopt_calls)
+    assert adopt_calls == ["live-1"]
+    assert data["accounts"] == ["live-1"]
