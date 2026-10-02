@@ -210,6 +210,9 @@ TOOLS_SCHEMA = [
                         "description": "止盈2锚点（可选）：做多=next_resistance_zone_low（下一档压力线），做空=next_support_zone_high（下一档支撑线）"},
             "tp2_offset_pct": {"type": "number", "description": "止盈2相对锚点偏移%，同止盈1留余地"},
             "recommendation": {"type": "integer", "description": "推荐程度 0-100，skip≤30，suggest≥50"},
+            "tactic_name": {"type": "string",
+                            "description": "战法命中名（仅借鉴标注）：用户消息出现【战法库判定】块且信号符合某战法时逐字输出该名，均不符合输出空字符串"},
+            "tactic_reason": {"type": "string", "description": "战法判定依据 ≤60字；未命中输出空字符串"},
             "reason": {
                 "type": "string",
                 "description": (
@@ -323,10 +326,15 @@ def _handle_submit(
 ) -> tuple[bool, str, Optional[dict]]:
     """submit_decision：锚点换算 → Risk Guard。返回 (done, tool_result, fixed)
 
-    risk_budget（2026-09-27 止损金额模式）：fixed 模式预算实额，透传校验。"""
+    risk_budget（2026-09-27 止损金额模式）：fixed 模式预算实额，透传校验。
+    战法字段（2026-10-02）：随 args 携带，白名单闸门在 validate_decision。"""
     decision = args.get("trade_decision")
     if decision not in ("suggest", "skip"):
         return False, "trade_decision 必须是 suggest 或 skip", None
+
+    # 战法字段预归一（空串→None；白名单校验在 validate_decision/_tactic_gate）
+    _tname = str(args.get("tactic_name") or "").strip()[:64] or None
+    _treason = str(args.get("tactic_reason") or "").strip()[:255] or None
 
     if decision == "skip":
         if not (args.get("skip_reason") or "").strip():
@@ -337,6 +345,8 @@ def _handle_submit(
             "direction": None,
             "trade_type": None,
             "analysis": "",
+            "tactic_name": _tname,
+            "tactic_reason": _treason,
             "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
             "take_profit_2": 0, "risk_reward_ratio": 0,
             "position_pct": 0,
@@ -370,6 +380,8 @@ def _handle_submit(
         # 止损锚类型程序推导（docs/23）：stop_ref 用信号K线极值锚即 near，
         # 其余（含缺省）structure——比 AI 自报更难滥用
         stop_anchor="near" if args.get("stop_ref") in ("signal_low", "signal_high") else "structure",
+        tactic_name=_tname,
+        tactic_reason=_treason,
         entry_price=entry, stop_loss=stop,
         take_profit_1=tp1,
         take_profit_2=tp2 or 0.0,
@@ -424,7 +436,7 @@ def analyze_coin_agent(
     progress_cb=None,
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
-    stop_cap_pct: Optional[float] = None,
+    stop_cap_pct: Optional[float] = None, tactics_block: str = "",
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -435,7 +447,7 @@ def analyze_coin_agent(
     缺省时回落百分比口径（pct），与历史行为一致。
     stop_cap_pct（2026-09-29）：止损宽度硬上限（max_stop_pct 补丁参数，比例；
     None=不限制），注入门槛块与近锚规则供 AI 自验。
-    """
+    tactics_block（2026-10-02）：战法库判定块（调用方预渲染；空=无战法不注入）。"""
     client = get_client()
 
     # 布尔事实（技能 use_when 判定）
@@ -475,7 +487,7 @@ def analyze_coin_agent(
         )
 
     user_msg = _build_user_msg(signal, klines, ema, atr, user_input, htf_klines,
-                               stop_cap_pct=stop_cap_pct)
+                               stop_cap_pct=stop_cap_pct, tactics_block=tactics_block)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
@@ -585,7 +597,7 @@ def _build_facts(signal: dict, klines: list, atr: float) -> dict:
 def _build_user_msg(
     signal: dict, klines: list, ema: Optional[dict], atr: float,
     user_input: Optional[str], htf_klines: Optional[list] = None,
-    stop_cap_pct: Optional[float] = None,
+    stop_cap_pct: Optional[float] = None, tactics_block: str = "",
 ) -> str:
     closed = klines[:-1] if len(klines) >= 2 else klines
     # 40 根与 P0 管线同口径（60→40，2026-09-28 缩 token 提速，见 ai_analyzer._build_messages）
@@ -630,6 +642,7 @@ def _build_user_msg(
         + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
         + render_indicator_block(klines, htf_klines)
         + swings_section
+        + tactics_block
         + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
     )
     if user_input:

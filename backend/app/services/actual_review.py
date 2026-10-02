@@ -244,6 +244,9 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         ("开仓时段", _bucket_label),
         # 止损锚类型（docs/24 A5b）：structure/near 分组对比近锚单是否劣化
         ("止损锚", lambda t: (t.ai_snapshot or {}).get("stop_anchor") or "structure"),
+        # 战法（2026-10-02，仅借鉴标注）：按命中战法分组对比实盘胜率/EV——
+        # 哪个战法真能打，数据说话；未命中/旧行归「未指定」
+        ("战法", lambda t: (t.ai_snapshot or {}).get("tactic_name") or "未指定"),
         # 规则版本（docs/24 A0）：同版本内分组对比，legacy=标记上线前旧行；
         # 历史跨版本混合成绩不具证明力（docs/24 修订 v2）
         ("规则版本", lambda t: t.rule_version or "legacy"),
@@ -307,6 +310,9 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         "recommendation": (t.ai_snapshot or {}).get("recommendation"),
         # 止损锚类型（docs/23）：structure/near，供归因按锚类型对比近锚单胜率/EV
         "stop_anchor": (t.ai_snapshot or {}).get("stop_anchor") or "structure",
+        # 战法命中标注（2026-10-02，仅借鉴）：随快照自持，逐笔展示+分组数据源
+        "tactic_name": (t.ai_snapshot or {}).get("tactic_name"),
+        "tactic_reason": (t.ai_snapshot or {}).get("tactic_reason"),
         # 量比（docs/24 A5b）：信号K线量 ÷ 近20根基准量，量比门槛分组数据源
         "volume_ratio": (t.ai_snapshot or {}).get("volume_ratio"),
         # 规则版本（docs/24 A0）：逐笔规则集快照，legacy=标记上线前旧行

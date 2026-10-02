@@ -134,8 +134,24 @@ export interface AIAnalysis {
   recommendation: number | null; // 0-100
   pullback_wait?: boolean; // AI 建议等回踩（入场在现价回踩侧）——仅展示"待回踩"标识，不下单
   open_block_reason?: string | null; // 未开单原因（suggest 被开仓闸门拦下时后端落库）
+  // 战法命中标注（2026-10-02，仅借鉴）：AI 判定信号符合的战法名 + 判定依据
+  tactic_name?: string | null;
+  tactic_reason?: string | null;
   created_at: string;
   review_status?: string | null; // 复盘结果：win_tp1 / win_tp2 / loss / expired（24h 后回放定论）
+}
+
+// 战法（用户自建战术剧本，仅借鉴标注不做硬闸）
+export interface Tactic {
+  id: string;
+  name: string;
+  description: string;
+  direction: 'all' | 'long' | 'short';
+  scope: 'testnet' | 'live' | 'both';
+  enabled: boolean;
+  trade_count: number; // 该战法累计被 AI 命中的分析数
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface WatchlistItem {

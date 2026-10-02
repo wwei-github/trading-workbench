@@ -332,6 +332,17 @@ def _run_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_symbol_blacklist_origin "
             "ON symbol_blacklist (origin)"
         ))
+        # 战法模块（2026-10-02）：全新表 tactics 由 create_all 建表（init_db 已
+        # 导入 app.models.tactic，name 带 unique=True 自带唯一索引）；命中标注
+        # 快照列随 AIAnalysis 落库，旧行 NULL=战法模块上线前/未命中
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS tactic_name VARCHAR(64)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS tactic_reason VARCHAR(255)"
+        ))
         # 现货屯币（docs/18）：spot_settings 配置 JSON 列（新增独立列，不改既有列语义）。
         # 全新表（spot_orders/spot_weekly_reviews/spot_backtests/spot_kline_cache）
         # 由 create_all 建表（init_db 已导入 app.models.spot）
@@ -434,6 +445,6 @@ def _run_migrations(engine):
 
 def init_db():
     """创建所有表 + 幂等迁移"""
-    from app.models import ops, patch, scan, trade, blacklist, spot  # noqa: F401
+    from app.models import ops, patch, scan, trade, blacklist, spot, tactic  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _run_migrations(engine)

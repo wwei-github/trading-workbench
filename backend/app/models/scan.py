@@ -103,6 +103,10 @@ class AIAnalysis(Base):
     # 三价/方向/评分等（dict），复盘任务据此回放"被否决建议的假想表现"，
     # 对比通过单表现验证 veto 是否有正贡献；suggest/正常 skip 为 NULL
     veto_original: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # 战法命中标注（2026-10-02）：AI 判定该信号符合的战法名（逐字取自 tactics
+    # 表白名单，防幻觉闸门外值清空）+ 判定依据；战法仅借鉴不拦截，旧行 NULL
+    tactic_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    tactic_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")

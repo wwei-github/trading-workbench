@@ -65,7 +65,9 @@ class Settings(BaseSettings):
     # v2026-10-01-3：恢复完整 12 金K（看涨 6 + 看跌 6 对称）——2026-09-12 精简掉的
     # 刺透线/孕线突破/蜻蜓/乌云盖顶/墓碑回归白名单参与信号判定；倒锤维持退出、
     # 上吊线维持被流星线替代；白名单内仅流星线走单影线复合确认
-    RULE_VERSION: str = "v2026-10-01-3"
+    # v2026-10-02：战法模块上线（仅借鉴标注，不影响开单结论）——AI 输出
+    # tactic_name/tactic_reason 经白名单闸门防幻觉，复盘按战法分组
+    RULE_VERSION: str = "v2026-10-02"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

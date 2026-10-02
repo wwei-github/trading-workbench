@@ -199,6 +199,10 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 - recommendation: 推荐程度，0-100的整数。skip 时≤30，suggest 时≥50。锚点（评分需可区分强度）：
   50=仅勉强达标（单一条件满足，无共振）；70=多重共振（趋势+位置/量能两项以上同向）；
   85+=强信号（趋势+位置+盈亏比三重共振）。中间分数线性内插。
+- tactic_name: 战法命中名（2026-10-02，仅借鉴标注不影响开单结论）。用户消息出现
+  【战法库判定】块且信号符合其中某个战法时，逐字输出该战法名（禁止改写/自创）；
+  均不符合或无战法清单时输出空字符串。
+- tactic_reason: 战法判定依据，≤60字（引用战法条件逐条对照结论）；未命中输出空字符串。
 - analysis: ≤300字中文推理，用"1. 2. 3."序号逐条展示，每条独占一行（JSON内换行写\\n），格式如下：
   先逐条列出满足的条件（如：1. EMA多头排列，趋势向上 2. 回踩支撑位企稳，触及2次）；
   再列出不满足的条件或风险点；最后一条写明确结论（如：4. 结论：建议开单，盈亏比与趋势背景共振）。
@@ -253,6 +257,7 @@ def analyze_coin(
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
     stop_cap_pct: Optional[float] = None, interval: str = "1h",
+    tactics_block: str = "",
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -267,13 +272,14 @@ def analyze_coin(
     注入门槛块供 AI 自验（2026-09-29）
     interval: K线周期标签（如 "1h"/"15m"），注入 CSV 表头让模型明确时间尺度
     （kline_interval 可在系统配置页修改，勿硬编码）
+    tactics_block: 战法库判定块（2026-10-02，调用方预渲染；空=无战法不注入）
     """
     client = _get_client()
     return _call_llm(
         client,
         _build_messages(signal, klines, strategy_prompt, user_input, htf_klines,
                         risk_label=risk_label, stop_cap_pct=stop_cap_pct,
-                        interval=interval),
+                        interval=interval, tactics_block=tactics_block),
     )
 
 
@@ -284,6 +290,7 @@ def _build_messages(
     risk_label: str = "",
     stop_cap_pct: Optional[float] = None,
     interval: str = "1h",
+    tactics_block: str = "",
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
 
@@ -392,6 +399,7 @@ def _build_messages(
         f"{indicator_summary}"
         f"{market_summary}"
         f"{swings_summary}"
+        f"{tactics_block}"
         f"近{len(recent)}根已收盘{interval} K线(open,high,low,close,vol，等间隔排列，价格按价位段保留小数):\n{kline_summary}"
     )
 
@@ -490,7 +498,7 @@ def analyze_with_guard(
     htf_klines: Optional[list] = None,
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
     stop_cap_pct: Optional[float] = None, interval: str = "1h",
-    progress_id=None,
+    progress_id=None, tactics_block: str = "",
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -500,11 +508,12 @@ def analyze_with_guard(
     stop_cap_pct（2026-09-29）：止损宽度硬上限注入门槛块（None=不限制）。
     interval：K线周期标签（与取数口径一致，ai_tasks 传 cfg.kline_interval）。
     progress_id：scan_result_id，透传 _call_llm 推送 ai_progress 活进度事件（None=不推）。
+    tactics_block：战法库判定块（2026-10-02，调用方预渲染；空=无战法不注入）。
     """
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
         htf_klines=htf_klines, risk_label=risk_label, stop_cap_pct=stop_cap_pct,
-        interval=interval,
+        interval=interval, tactics_block=tactics_block,
     )
     client = _get_client()
     _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None

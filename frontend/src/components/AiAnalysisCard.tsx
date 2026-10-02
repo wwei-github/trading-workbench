@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Button, Modal, Space, Spin, Statistic, Tag, Tooltip, message } from 'antd'
+import { Button, Modal, Space, Spin, Statistic, Tag, Tooltip, Typography, message } from 'antd'
 import {
   ApiOutlined,
   CheckCircleOutlined,
@@ -13,6 +13,8 @@ import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
 import { scanApi } from '../api/scan'
 import { TRADE_TYPE_MAP } from '../constants/labels'
 import type { AIAnalysis, StageTrace } from '../types'
+
+const { Text } = Typography
 
 function fmtPrice(v: number | null | undefined): string {
   if (v == null) return '-'
@@ -300,6 +302,32 @@ export default function AiAnalysisCard({ ai }: Props) {
             border: '1px solid rgba(250,173,20,0.30)',
           }}>
           ⚠ 未开单原因：{ai.open_block_reason}
+        </div>
+      )}
+
+      {/* 战法命中（2026-10-02，仅借鉴标注）：AI 判定信号符合用户战法库中的某战法；
+          不影响开单结论，复盘按战法分组对比实盘表现。suggest/skip 均可命中 */}
+      {ai.tactic_name && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            flexWrap: 'wrap',
+            padding: '6px 12px',
+            marginBottom: 10,
+            borderRadius: 8,
+            fontSize: 12,
+            lineHeight: '20px',
+            color: '#1677ff',
+            background: 'rgba(22,119,255,0.06)',
+            border: '1px solid rgba(22,119,255,0.30)',
+          }}>
+          <Tag color="blue" style={{ marginInlineEnd: 0, fontWeight: 700 }}>⚔ 战法匹配</Tag>
+          <strong>{ai.tactic_name}</strong>
+          {ai.tactic_reason && (
+            <Text type="secondary" style={{ fontSize: 12 }}>{ai.tactic_reason}</Text>
+          )}
         </div>
       )}
 

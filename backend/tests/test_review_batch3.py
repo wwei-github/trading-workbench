@@ -407,6 +407,29 @@ def test_actual_review_new_dimensions(db):
     assert out["items"][0]["volume_ratio"] == 1.5
 
 
+def test_actual_review_tactic_dimension(db):
+    """战法分组维度（2026-10-02，仅借鉴标注）：按命中战法分组，旧行归「未指定」"""
+    from app.services.actual_review import build_actual_review
+
+    db.add(_closed_rec({
+        "recommendation": 70, "tactic_name": "EMA20回踩做多",
+        "tactic_reason": "回踩企稳",
+    }))
+    db.add(_closed_rec({"recommendation": 65, "tactic_name": "EMA20回踩做多"}))
+    db.add(_closed_rec({"recommendation": 60}))  # 无战法标注 → 未指定
+    db.commit()
+
+    out = build_actual_review(db, days=30)
+    dims = {}
+    for g in out["groups"]:
+        dims.setdefault(g["dim"], []).append((g["key"], g["count"]))
+    tactics = dict(dims["战法"])
+    assert tactics["EMA20回踩做多"] == 2 and tactics["未指定"] == 1
+    # 逐笔 items 带出战法标注（快照自持）
+    named = [i for i in out["items"] if i["tactic_name"] == "EMA20回踩做多"]
+    assert len(named) == 2 and named[0]["tactic_reason"] == "回踩企稳"
+
+
 def test_actual_review_golden_pattern_groups(db):
     """金K形态 12 维度全量列出（0 笔也占行，2026-10-01-3 用户拍板）；
     突破类/旧行 pattern NULL → 未记录兜底；组内聚合正确"""

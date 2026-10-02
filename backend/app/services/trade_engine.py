@@ -111,6 +111,9 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
         "recommendation": _num(a.recommendation),
         # 止损锚类型（docs/23）：structure/near，交易记录随快照自持，复盘分组用
         "stop_anchor": a.stop_anchor,
+        # 战法命中标注（2026-10-02，仅借鉴）：随快照自持，删战法不断链，复盘分组用
+        "tactic_name": a.tactic_name,
+        "tactic_reason": a.tactic_reason,
         # 量比（docs/24 A5b）：信号K线量 ÷ 近20根基准量（中位量，2026-09-29 口径），
         # 实盘归因按量比门槛分组对比；旧行/无信号上下文为 None 归「未知」
         "volume_ratio": (

@@ -58,6 +58,10 @@ class TradeDecision(BaseModel):
     trade_type: Optional[str] = None  # 开单类型：trend_follow / structure_break / range_edge
     # 止损锚类型（docs/23，仅突破类信号需要）：structure=结构锚（默认）/ near=突破K极值近锚
     stop_anchor: Optional[Literal["structure", "near"]] = None
+    # 战法命中标注（2026-10-02，仅借鉴不影响结论）：tactic_name 必须逐字取自
+    # 本次注入的战法清单（validate_decision 白名单闸门，清单外清空防幻觉）
+    tactic_name: Optional[str] = None
+    tactic_reason: Optional[str] = None
     entry_price: float = 0.0
     stop_loss: float = 0.0
     take_profit_1: float = 0.0
@@ -91,6 +95,12 @@ def normalize_raw(raw: dict) -> TradeDecision:
     # stop_anchor 非法值回退 None（suggest 落库时再回退 structure；docs/23）
     if data.get("stop_anchor") not in ("structure", "near", None, ""):
         data["stop_anchor"] = None
+    # 战法字段空串归 None（未命中）；白名单校验在 validate_decision（需注入清单）
+    for _tf in ("tactic_name", "tactic_reason"):
+        if not str(data.get(_tf) or "").strip():
+            data[_tf] = None
+        else:
+            data[_tf] = str(data[_tf]).strip()[:64 if _tf == "tactic_name" else 255]
     if data.get("trade_decision") not in ("suggest", "skip"):
         raise ValueError(f"trade_decision 非法: {data.get('trade_decision')!r}")
     return TradeDecision(**data)
@@ -163,6 +173,18 @@ def is_pullback_wait(ai_result: dict, current_price) -> bool:
     return entry < cur if direction == "long" else entry > cur
 
 
+def _tactic_gate(d: TradeDecision, signal: dict) -> tuple[Optional[str], Optional[str]]:
+    """战法白名单闸门（2026-10-02）：tactic_name 不在本次注入清单（signal 携带的
+    tactic_names，调用方从活动战法装载）→ 清空——LLM 编造/改写战法名直接丢弃，
+    不落库（复盘分组按真实清单聚合，防脏键）。reason 与 name 同进同出。"""
+    allowed = signal.get("tactic_names") or []
+    if d.tactic_name and d.tactic_name in allowed:
+        return d.tactic_name, d.tactic_reason
+    if d.tactic_name:
+        logger.info("战法名未命中白名单，已清空: %r（清单 %s）", d.tactic_name, allowed)
+    return None, None
+
+
 def validate_decision(
     d: TradeDecision, signal: dict, klines: list,
     risk_budget: Optional[float] = None,
@@ -178,6 +200,7 @@ def validate_decision(
     口径复算（pct 模式，现行默认）。
     """
     violations: list[str] = []
+    tactic_name, tactic_reason = _tactic_gate(d, signal)
 
     # ── skip：只要求理由非空（recommendation 超标仅修正，不浪费重试）──
     if d.trade_decision == "skip":
@@ -190,6 +213,8 @@ def validate_decision(
             "direction": None,
             "trade_type": None,
             "analysis": d.analysis or "",
+            "tactic_name": tactic_name,
+            "tactic_reason": tactic_reason,
             "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
             "take_profit_2": 0, "risk_reward_ratio": 0,
             "position_pct": 0,
@@ -299,6 +324,8 @@ def validate_decision(
         "skip_reason": "",
         "direction": d.direction,
         "trade_type": d.trade_type,
+        "tactic_name": tactic_name,
+        "tactic_reason": tactic_reason,
         # 止损锚类型落库（docs/23）：near 仅突破类有效（AI 在回踩类误报时按
         # structure 落库防分组污染）；None（未声明/非法值）同样按 structure 理解
         "stop_anchor": (

@@ -11,6 +11,7 @@ from app.api import (
     ops_router,
     scan_router,
     spot_router,
+    tactics_router,
     trades_router,
     watchlist_router,
 )
@@ -52,6 +53,7 @@ app.include_router(watchlist_router)
 app.include_router(trades_router)
 app.include_router(ops_router)
 app.include_router(spot_router)  # 现货屯币（docs/18，独立模块）
+app.include_router(tactics_router)  # 战法（2026-10-02，仅借鉴标注不拦截）
 
 
 @app.exception_handler(Exception)

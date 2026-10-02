@@ -12,6 +12,7 @@ import TradingConfigPanel from '../components/TradingConfigPanel'
 import SystemConfigPanel from '../components/SystemConfigPanel'
 import EnvironmentTag from '../components/EnvironmentTag'
 import StrategyPromptPanel from '../components/StrategyPromptPanel'
+import TacticsPanel from '../components/TacticsPanel'
 import WatchlistPanel from '../components/WatchlistPanel'
 import SearchPanel from '../components/SearchPanel'
 import ReviewStatsPanel from '../components/ReviewStatsPanel'
@@ -149,6 +150,15 @@ export default function ScanResult({ mode }: ScanResultProps) {
       children: (
         <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
           <StrategyPromptPanel />
+        </div>
+      ),
+    },
+    {
+      key: 'tactics',
+      label: '战法',
+      children: (
+        <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
+          <TacticsPanel />
         </div>
       ),
     },

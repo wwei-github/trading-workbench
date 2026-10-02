@@ -221,6 +221,18 @@ def run_ai_analysis_single(
             "volume": float(r.volume),
             "volume_24h": float(r.volume_24h),
         }
+        # 战法库（2026-10-02）：按当前交易环境装载活动战法 → 渲染判定块注入
+        # 用户消息 + 白名单随 signal 进 risk_guard 闸门（防 LLM 编造战法名）。
+        # 环境解析失败按无战法库降级（不注错环境）；装载失败同样降级不阻断
+        from app.services import tactics_match
+        try:
+            _testnet = resolve_current_account(db).testnet
+        except Exception as _e:
+            logger.warning("战法环境解析失败，本次分析不注入战法块: %s", _e)
+            _testnet = None
+        _tactics = tactics_match.load_active_tactics(_testnet)
+        tactics_block = tactics_match.render_tactics_block(_tactics)
+        signal["tactic_names"] = tactics_match.allowed_names(_tactics)
         fp = compute_fingerprint(signal)
         logger.info(
             "AI 分析开始: %s strength=%s fp=%s", r.symbol, r.strength, fp[:8]
@@ -297,6 +309,7 @@ def run_ai_analysis_single(
                 risk_amount=_risk_amount,
                 risk_label=_risk_label,
                 stop_cap_pct=_stop_cap,
+                tactics_block=tactics_block,
             )
         else:
             ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
@@ -311,6 +324,7 @@ def run_ai_analysis_single(
                 stop_cap_pct=_stop_cap,
                 interval=cfg.kline_interval,
                 progress_id=r.id,  # 方案 B 轻量进度：流式增量计数推 "llm" 事件（≥2s 节流）
+                tactics_block=tactics_block,
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto；
         # 事实包增厚（docs/24 D3）——指标块 + 摆动结构摘要随 signal 传入（_build_judge_signal）
@@ -479,6 +493,10 @@ def _upsert_ai_analysis(
         # 双评委 veto 原始建议快照（docs/24 A5a）：仅 veto 强制 skip 携带；
         # latest-wins 重分析后 None 覆盖旧值，不残留
         "veto_original": ai_result.get("veto_original"),
+        # 战法命中标注（2026-10-02）：白名单闸门后的值（清单外已清空）；
+        # latest-wins 重分析后 None 覆盖旧值，不残留
+        "tactic_name": ai_result.get("tactic_name"),
+        "tactic_reason": ai_result.get("tactic_reason"),
         "pullback_wait": bool(ai_result.get("pullback_wait")),
         # 待回踩结论在分发前就被跳过（_dispatch_immediate_open），不会进入开仓闸门，
         # 未开单原因在此预置；其余结论的原因由开仓闸门拦截时写入

@@ -1279,6 +1279,16 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         if cfg.strategy_prompt_enabled and cfg.strategy_prompt
         else None
     )
+    # 战法库（2026-10-02）：按当前交易环境装载活动战法，注入判定块 + 白名单闸门
+    from app.services import tactics_match
+    from app.services.account_registry import resolve_current_account
+    try:
+        _testnet = resolve_current_account(db).testnet
+    except Exception:
+        _testnet = None
+    _tactics = tactics_match.load_active_tactics(_testnet)
+    tactics_block = tactics_match.render_tactics_block(_tactics)
+    signal["tactic_names"] = tactics_match.allowed_names(_tactics)
     try:
         from app.services.risk_budget import resolve_risk_budget
         _rm, _ra, _rl = resolve_risk_budget(cfg)
@@ -1286,7 +1296,7 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         ai_result = analyze_coin(
             signal, klines, strategy_prompt=strategy_prompt, htf_klines=htf_klines,
             risk_mode=_rm, risk_amount=_ra, risk_label=_rl, stop_cap_pct=_stop_cap,
-            interval=cfg.kline_interval,
+            interval=cfg.kline_interval, tactics_block=tactics_block,
         )
         # 4h 强背景方向硬约束兜底（强多只开多/强空只开空）
         ai_result = enforce_htf_constraint(ai_result, htf_klines)
@@ -1308,6 +1318,8 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         risk_reward_ratio=ai_result.get("risk_reward_ratio"),
         position_pct=ai_result.get("position_pct"),
         recommendation=ai_result.get("recommendation"),
+        tactic_name=ai_result.get("tactic_name"),
+        tactic_reason=ai_result.get("tactic_reason"),
         pullback_wait=is_pullback_wait(ai_result, signal.get("current_price")),
         created_at=datetime.utcnow(),
     )

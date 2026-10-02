@@ -20,6 +20,7 @@ def _decision(**kw):
         take_profit_1=104.0, take_profit_2=0.0, risk_reward_ratio=2.0,
         position_pct=50.0, recommendation=70, analysis="1. ok",
         stop_anchor=None,  # docs/23：决策契约新增，缺省=结构锚
+        tactic_name=None, tactic_reason=None,  # 2026-10-02 战法标注，缺省未命中
     )
     base.update(kw)
     return SimpleNamespace(**base)
