@@ -409,7 +409,14 @@ def detect_dark_cloud_cover(klines: list[list], idx: int = -1) -> Optional[dict]
 
 
 def _detect_doji(klines: list[list], idx: int) -> Optional[dict]:
-    """十字形态公共判定：蜻蜓（长下影） bullish / 墓碑（长上影） bearish"""
+    """十字形态判定：蜻蜓（长下影）bullish / 墓碑（长上影）bearish / 十字星 neutral
+
+    2026-10-02 用户口径：上下影线都很长、实体很短或几乎没有——都是十字星。
+    此前双长影K线两分支均不命中、完全不识别（也不会被误判进锤/流星/蜻蜓/墓碑
+    ——各有对侧影线 ≤15% 门拦截），现显式识别为中性 doji。不进 GOLDEN_12
+    （双长影=多空拉锯、方向未决，不构成回踩企稳证据），
+    resolve_golden_evidence 按方向过滤天然排除，仅用于形态识别与展示。
+    """
     k = klines[idx]
     o, h, l, c = float(k[1]), float(k[2]), float(k[3]), float(k[4])
     body = _body(o, c)
@@ -420,23 +427,29 @@ def _detect_doji(klines: list[list], idx: int) -> Optional[dict]:
     if total <= 0:
         return None
 
-    # 十字：开收接近，实体占比极小
-    if body > total * 0.1:
+    # 蜻蜓十字：开收接近（实体占比极小）、下影长、上影几乎无（探底回升）
+    if body <= total * 0.1:
+        if lower >= total * 0.6 and upper <= total * 0.15:
+            return {"pattern": "dragonfly_doji", "direction": "bullish", "strength": 0.6}
+        # 墓碑十字：上影长、下影几乎无（冲高回落）
+        if upper >= total * 0.6 and lower <= total * 0.15:
+            return {"pattern": "gravestone_doji", "direction": "bearish", "strength": 0.6}
+        # 十字（实体几乎没有）且两侧影线都长（任一侧都不满足"几乎无"）
+        if lower > total * 0.15 and upper > total * 0.15:
+            return {"pattern": "doji", "direction": "neutral", "strength": 0.5}
         return None
 
-    # 蜻蜓十字：下影长、上影几乎无（探底回升）
-    if lower >= total * 0.6 and upper <= total * 0.15:
-        return {"pattern": "dragonfly_doji", "direction": "bullish", "strength": 0.6}
-
-    # 墓碑十字：上影长、下影几乎无（冲高回落）
-    if upper >= total * 0.6 and lower <= total * 0.15:
-        return {"pattern": "gravestone_doji", "direction": "bearish", "strength": 0.6}
+    # 实体很短（≤25% 总长）+ 双侧影线都长：纺锤/高波浪一类拉锯K，按用户口径
+    # 同归十字星（中性）。对侧影线 ≤15% 的归锤形线家族（detect_hammer /
+    # detect_inverted_hammer 上报，本分支条件与之互斥、不抢报）
+    if body <= total * 0.25 and lower > total * 0.15 and upper > total * 0.15:
+        return {"pattern": "doji", "direction": "neutral", "strength": 0.5}
 
     return None
 
 
 def detect_doji(klines: list[list], idx: int = -1) -> Optional[dict]:
-    """蜻蜓/墓碑十字"""
+    """蜻蜓/墓碑/长腿十字"""
     return _detect_doji(klines, idx)
 
 
@@ -590,6 +603,7 @@ PATTERN_LABEL_MAP = {
     "bearish_harami": "看跌孕线突破",
     "dragonfly_doji": "蜻蜓十字",
     "gravestone_doji": "墓碑十字",
+    "doji": "十字星",
     "hanging_man": "上吊线",
     "close_above_prev_high": "收盘破前高",
 }

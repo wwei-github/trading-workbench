@@ -2,15 +2,18 @@
 
 2026-09-28 看空金K：上吊线 → 流星线（倒锤形出现在顶部）。
 回踩金K语义：看多回踩支撑配锤形线（长下影），看空反抽阻力配倒锤形线（长上影）。
+2026-10-02 十字星口径：上下影线都很长、实体很短或几乎没有——都是十字星（中性）。
 """
 from app.services.strategy.candlestick import (
     GOLDEN_12,
     PATTERN_LABEL_MAP,
     detect_all_patterns,
+    detect_doji,
     detect_engulfing,
     detect_evening_star,
     detect_morning_star,
     detect_shooting_star,
+    resolve_golden_evidence,
 )
 
 
@@ -82,6 +85,63 @@ def test_shooting_star_shape_pair_semantics():
     kl_up = _uptrend_kl_with_signal_candle()
     dirs_up = {p["pattern"]: p["direction"] for p in detect_all_patterns(kl_up, idx=-1)}
     assert dirs_up.get("shooting_star") == "bearish"
+
+
+# ── 十字星口径（2026-10-02 用户拍板）：双长影 + 实体很短/几乎没有 = 十字星 ──
+
+
+def _flat_kl_then(candle):
+    """9 根平盘 + 末根指定K线（单根形态判定，无多K复合语境）"""
+    kl = _kl_list([100] * 9)
+    kl.append([1700000090000, *candle, 10.0, 10.0])
+    return kl
+
+
+def test_long_legged_doji_tiny_body():
+    """实体几乎没有 + 双长影 → 中性十字星，且不被误判进任何方向性金K"""
+    # o=100 c=100.05 h=104.9 l=95.1：实体 0.5%，上影 49.5%/下影 50%
+    kl = _flat_kl_then([100.0, 104.9, 95.1, 100.05])
+    r = detect_doji(kl, idx=-1)
+    assert r is not None
+    assert r["pattern"] == "doji" and r["direction"] == "neutral"
+    names = {p["pattern"] for p in detect_all_patterns(kl, idx=-1)}
+    assert "hammer" not in names and "shooting_star" not in names
+    assert "dragonfly_doji" not in names and "gravestone_doji" not in names
+
+
+def test_small_body_both_shadows_doji():
+    """实体很短（≤25% 全长）+ 双长影 → 同样归十字星（纺锤/高波浪一类拉锯K）"""
+    # o=99.5 c=101 h=103 l=97：实体 25%，上影 33%/下影 42%
+    kl = _flat_kl_then([99.5, 103.0, 97.0, 101.0])
+    r = detect_doji(kl, idx=-1)
+    assert r is not None
+    assert r["pattern"] == "doji" and r["direction"] == "neutral"
+
+
+def test_big_body_not_doji():
+    """实体 >25% 总长不归十字星（锤形线家族/普通K线各归其位）"""
+    # o=100 c=102 h=103 l=99：实体 50%，双侧影线各 25%
+    kl = _flat_kl_then([100.0, 103.0, 99.0, 102.0])
+    assert detect_doji(kl, idx=-1) is None
+
+
+def test_doji_never_golden_evidence():
+    """中性十字星不构成回踩金K证据（双向长影=方向未决，多空 wanted 均不确认）"""
+    kl = _flat_kl_then([100.0, 104.9, 95.1, 100.05])
+    patterns = detect_all_patterns(kl, idx=-1)
+    for wanted in ("bullish", "bearish"):
+        golden, _note = resolve_golden_evidence(kl, wanted, patterns)
+        assert golden is None
+
+
+def test_directional_doji_semantics_unchanged():
+    """蜻蜓/墓碑判定不受影响：单侧长影 + 对侧影线几乎无仍各归其位"""
+    dragonfly = _flat_kl_then([100.0, 100.5, 95.0, 100.05])  # 下影 91%/上影 8%
+    r = detect_doji(dragonfly, idx=-1)
+    assert r is not None and r["pattern"] == "dragonfly_doji" and r["direction"] == "bullish"
+    gravestone = _flat_kl_then([100.0, 105.0, 99.5, 99.95])  # 上影 91%/下影 8%
+    r = detect_doji(gravestone, idx=-1)
+    assert r is not None and r["pattern"] == "gravestone_doji" and r["direction"] == "bearish"
 
 
 # ── 吞没影线质量门（2026-09-30 docs/25 §4：吞没K线总影线 > 全长 40% 不判金K）──
