@@ -401,6 +401,15 @@ class BinanceTrader:
             "closePosition": "true", "workingType": "MARK_PRICE",
         })
 
+    def algo_order_detail(self, symbol: str, algo_id: int) -> dict:
+        """查询单个 algo 条件单详情（Algo Order API 无历史列表端点，只能按单号逐个查）。
+
+        关键字段：algoStatus（NEW/FINISHED/EXPIRED/TRIGGERED...）与 actualOrderId——
+        条件单触发后生成的市价子单号精确回填在此（未触发为空串）。子单在
+        /fapi/v1/allOrders 里不带归属字段，本字段是"成交是否来自系统挂单链"
+        的唯一可靠判据（2026-10-02 测试网实测：TP1/SL 两条链均验证）。"""
+        return self._req("GET", "/fapi/v1/algoOrder", {"symbol": symbol, "algoId": int(algo_id)})
+
     def take_profit_reduce(self, symbol: str, side: str, qty: float, stop_price: float) -> dict:
         """止盈单（algo）：触发后市价减仓指定数量（reduceOnly），返回含 algoId
 

@@ -8,7 +8,8 @@
 
 结算（settle_trades，每小时 :42 巡检）：
     以交易所为真源（持仓量/挂单/已实现盈亏）推断成交事件：
-    仓位归零 → 结算收益（正/负值）；TP1/TP2 成交 → 状态迁移；
+    仓位归零 → 结算收益（正/负值）；外部平仓识别（actualOrderId 单链，
+    2026-10-02）→ exit_reason=manual 不误标止损类；TP1/TP2 成交 → 状态迁移；
     止损挂单消失（被撤/交易所异常）→ 按当前止损价补挂（裸仓保护）；
     TP1 成交 → 止损移至成本价 ± 往返费缓冲（保本，幂等，docs/24 A1''）；
     无 TP2 的单：TP1 止盈 75%，剩余 25% 从 TP1 起跟进止损；
@@ -1134,6 +1135,81 @@ def _zero_pos_exit_reason(rec: TradeRecord, tp1_gone: bool,
     return _derive_exit_reason(rec, fee_rate)
 
 
+def _detect_external_close(rt: BinanceTrader, rec: TradeRecord) -> Optional[dict]:
+    """识别外部平仓（交易所网页/App 手动平仓，非本系统挂单链成交）。
+
+    背景（2026-10-02 GTCUSDT 案例）：用户在币安网页一键平仓（IOC 限价单）→
+    巡检发现仓位归零，bookkeeping 推断把出场误标为 tp1_trail/sl——复盘图
+    止损线与实际出场对不上，且污染止损滑点统计。
+
+    识别原理：SL/TP 为 algo 条件单，触发后的市价子单在 allOrders 里不带
+    归属字段，但 /fapi/v1/algoOrder 的 actualOrderId 精确回填触发子单号
+    （TP1/SL 两条链均实测验证）。最后一批平仓侧成交（按时间序，同一
+    orderId 聚合）的 orderId 不在系统单链（入场单 + SL/TP algo 及其触发
+    子单）内 → 外部平仓。
+
+    返回 EXTERNAL_CLOSE 事件 detail；系统单成交 / 链路不完整（algo 查询
+    失败——子单归属无从确认，误判风险大于收益）/ 无平仓侧成交 时返回
+    None（弃权，维持 bookkeeping 推断，不因识别失败阻塞结算）。
+    """
+    try:
+        raw = rec.raw or {}
+        algo_keys = ("sl_order_id", "tp1_order_id", "tp2_order_id")
+        system_ids: set[int] = set()
+        for key in ("entry_order_id",) + algo_keys:
+            if raw.get(key):
+                system_ids.add(int(raw[key]))
+        # algo 触发子单号回填（actualOrderId）；任一查询失败 → 链不完整，弃权
+        for key in algo_keys:
+            algo_id = raw.get(key)
+            if not algo_id:
+                continue
+            try:
+                detail = rt.algo_order_detail(rec.symbol, int(algo_id))
+            except Exception:
+                logger.info("外部平仓识别弃权 %s：algo 单 %s 查询失败", rec.symbol, algo_id)
+                return None
+            sub = str(detail.get("actualOrderId") or "").strip()
+            if sub:
+                system_ids.add(int(sub))
+
+        close_side = "SELL" if rec.direction == "long" else "BUY"
+        since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000) - 5_000
+        rows = rt._req("GET", "/fapi/v1/userTrades", {
+            "symbol": rec.symbol, "startTime": since_ms, "limit": 1000,
+        })
+        closes = sorted(
+            (r for r in rows if r.get("side") == close_side),
+            key=lambda r: int(r.get("time") or 0),
+        )
+        if not closes:
+            return None
+        last_id = int(closes[-1]["orderId"])
+        if last_id in system_ids:
+            return None  # 最后一批平仓是系统单链成交 → 维持原推断
+        group = [r for r in closes if int(r.get("orderId") or 0) == last_id]
+        qty = sum(float(r.get("qty") or 0) for r in group)
+        if qty <= 0:
+            return None
+        vwap = sum(float(r.get("qty") or 0) * float(r.get("price") or 0) for r in group) / qty
+        filled_at_ms = min(int(r.get("time") or 0) for r in group)
+        # 下单渠道特征（IOC 限价=网页一键平仓；MARKET=App 市价键）——仅备注不参与判定
+        try:
+            od = rt.order(rec.symbol, last_id)
+            order_type, tif = od.get("type"), od.get("timeInForce")
+        except Exception:
+            order_type, tif = None, None
+        return {
+            "order_id": last_id, "order_type": order_type, "time_in_force": tif,
+            "exit_price": round(vwap, 8), "qty": qty,
+            "filled_at": datetime.fromtimestamp(filled_at_ms / 1000, tz=timezone.utc)
+            .strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    except Exception as e:
+        logger.warning("外部平仓识别失败 %s: %s", rec.symbol, e)
+        return None
+
+
 def _record_realized(db: Session, trader: BinanceTrader, rec: TradeRecord) -> float:
     """部分止盈后记录截至当前的已实现净盈亏（已实现盈亏−手续费−资金费−强平清算，交易所 income 口径）。
 
@@ -1534,6 +1610,13 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                         _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
                                                          "realized_pnl": round(pnl, 6)})
                     exit_reason = _zero_pos_exit_reason(rec, tp1_gone, fee_rate)
+                    # 外部平仓识别（2026-10-02 GTCUSDT 案例）：最后一批平仓侧成交
+                    # 不在系统单链内 → 交易所网页/App 手动平仓，按 manual 记，
+                    # 不再让 bookkeeping 推断误标为止损类出场
+                    ext = _detect_external_close(rt, rec)
+                    if ext:
+                        exit_reason = "manual"
+                        _add_event(db, rec, "EXTERNAL_CLOSE", ext)
                 rec.status = "CLOSED"
                 rec.closed_at = datetime.utcnow()
                 rec.exit_reason = exit_reason

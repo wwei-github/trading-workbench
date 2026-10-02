@@ -116,6 +116,7 @@ class TradeEvent(Base):
     )
     event_type: Mapped[str] = mapped_column(String(16), nullable=False)
     # OPEN / TP1_FILL / TP2_FILL / SL_MOVE / SL_FILL / CANCEL / ERROR / SETTLE / SKIP
+    # / LIQUIDATION / AI_ADVICE / MANUAL_CLOSE / EXTERNAL_CLOSE（2026-10-02 外部平仓）
     detail: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 

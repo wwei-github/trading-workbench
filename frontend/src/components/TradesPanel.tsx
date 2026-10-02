@@ -36,6 +36,7 @@ import {
   DownOutlined,
   HistoryOutlined,
   ImportOutlined,
+  LogoutOutlined,
   MinusCircleOutlined,
   ReloadOutlined,
   RobotOutlined,
@@ -116,6 +117,7 @@ const EVENT_META: Record<string, { label: string; color: string; icon: React.Rea
   ERROR: { label: '异常', color: '#ff4d4f', icon: <WarningOutlined /> },
   AI_ADVICE: { label: 'AI 持仓诊断', color: '#722ed1', icon: <RobotOutlined /> },
   MANUAL_CLOSE: { label: '市价平仓', color: '#fa541c', icon: <CloseCircleOutlined /> },
+  EXTERNAL_CLOSE: { label: '外部平仓', color: '#722ed1', icon: <LogoutOutlined /> },
 }
 
 // 事件详情按键的中文名
@@ -143,6 +145,12 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   qty_tp1: 'TP1数量',
   qty_tp2: 'TP2数量',
   message: '错误信息',
+  // 外部平仓（2026-10-02）：交易所网页/App 手动平仓识别
+  exit_price: '平仓均价',
+  order_type: '订单类型',
+  time_in_force: '有效期',
+  filled_at: '成交时间',
+  order_id: '订单ID',
   // AI 持仓诊断（docs/16）
   thesis_valid: '开仓逻辑',
   trend_broken: '走势走坏',
