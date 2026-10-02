@@ -1637,7 +1637,7 @@ export default function TradesPanel() {
       <Modal
         open={!!replayTrade}
         onCancel={() => setReplayTrade(null)}
-        width={1080}
+        width={1400}
         footer={null}
         destroyOnClose
         title={
@@ -1659,7 +1659,7 @@ export default function TradesPanel() {
         }
       >
         {replayTrade && (
-          <div style={{ height: 560 }}>
+          <div style={{ height: 700 }}>
             <TradeReplayChart tradeId={replayTrade.id} />
           </div>
         )}

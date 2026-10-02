@@ -471,11 +471,15 @@ export default function ReviewActualPanel() {
         open={!!replayTrade}
         title={`${replayTrade?.symbol ?? ''} 交易复盘K线`}
         footer={null}
-        width={1080}
+        width={1400}
         onCancel={() => setReplayTrade(null)}
         destroyOnClose
       >
-        {replayTrade && <TradeReplayChart tradeId={replayTrade.id} />}
+        {replayTrade && (
+          <div style={{ height: 700 }}>
+            <TradeReplayChart tradeId={replayTrade.id} />
+          </div>
+        )}
       </Modal>
     </div>
   )

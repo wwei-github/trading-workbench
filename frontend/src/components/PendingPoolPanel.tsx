@@ -215,11 +215,15 @@ export default function PendingPoolPanel() {
         open={!!klineSymbol}
         title={klineSymbol ? `${klineSymbol} 最新K线` : ''}
         footer={null}
-        width={980}
+        width={1200}
         destroyOnClose
         onCancel={() => setKlineSymbol(null)}
       >
-        {klineSymbol && <KlineChart symbol={klineSymbol} limit={500} />}
+        {klineSymbol && (
+          <div style={{ height: 640 }}>
+            <KlineChart symbol={klineSymbol} limit={500} />
+          </div>
+        )}
       </Modal>
     </div>
   )
