@@ -316,6 +316,7 @@ def open_trade_for_analysis(analysis_id: str):
 
     r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     opened = 0
+    opened_trade_ids: list[str] = []
     for acc in accs:
         trader = BinanceTrader(acc.key)
         if not trader.configured:
@@ -338,6 +339,17 @@ def open_trade_for_analysis(analysis_id: str):
                 try:
                     if try_open_for_analysis(db, trader, analysis_id):
                         opened += 1
+                        # 锁内只取成交记录 ID（轻查询）；卡片在全部账号扇出
+                        # 结束、锁外统一发送（飞书 HTTP 不进开仓锁）
+                        _rid = db.execute(
+                            select(TradeRecord.id).where(
+                                TradeRecord.ai_analysis_id == UUID(str(analysis_id)),
+                                TradeRecord.account_key == acc.key,
+                                TradeRecord.status == "OPENED",
+                            ).order_by(TradeRecord.opened_at.desc()).limit(1)
+                        ).scalar()
+                        if _rid:
+                            opened_trade_ids.append(str(_rid))
                 finally:
                     db.close()
             except Exception as e:
@@ -350,6 +362,13 @@ def open_trade_for_analysis(analysis_id: str):
 
     if opened:
         logger.info("即时开仓完成：%d/%d 账号成交（analysis=%s）", opened, len(accs), analysis_id)
+        # 开仓飞书卡片：全部账号锁已释放，锁外逐笔发送（失败仅记日志）
+        if opened_trade_ids:
+            try:
+                from app.services.trade_engine import notify_open_cards
+                notify_open_cards(opened_trade_ids)
+            except Exception:
+                logger.exception("开仓飞书卡片推送异常 analysis=%s", analysis_id)
         try:
             db = SessionLocal()
             try:

@@ -1608,6 +1608,99 @@ def _fmt_price(p: float) -> str:
     return f"{p:.4f}" if p < 100 else f"{p:.2f}"
 
 
+def _open_feishu_card(rec: TradeRecord) -> dict:
+    """自动开仓成功消息卡片（2026-10-02）：币种/方向/杠杆/风险 + 入场/止损/止盈
+    价格栅格 + 数量·名义·信号·战法标注行 + 环境脚注。
+
+    返回卡片体（外层包装与发送通道由 feishu_bot 负责）；金K形态/信号族中文
+    沿用复盘映射（与 _scan_hit_card 同源）。战法标注取 ai_snapshot 自持值
+    （快照自持，删战法不断链）。
+    """
+    from app.services.actual_review import TRIGGER_FAMILY
+    from app.services.strategy.candlestick import PATTERN_LABEL_MAP
+
+    def _col(title: str, value: str) -> dict:
+        return {"tag": "column", "width": "weighted", "weight": 1,
+                "elements": [{"tag": "div", "text": {"tag": "lark_md",
+                             "content": f"**{title}**\n{value}"}}]}
+
+    is_long = rec.direction == "long"
+    side = "做多 Long" if is_long else "做空 Short"
+    env = "测试网" if rec.testnet else "正式网"
+    snap = rec.ai_snapshot or {}
+    sig = TRIGGER_FAMILY.get(rec.signal_type or "", rec.signal_type or "未知信号")
+    if snap.get("pattern"):
+        sig += f"·{PATTERN_LABEL_MAP.get(snap['pattern'], snap['pattern'])}"
+    tactic = snap.get("tactic_name")
+    recmd = (
+        f"{float(rec.recommendation):.0f} 分" if rec.recommendation is not None else "—"
+    )
+    qty_line = (
+        f"数量 {rec.qty:g} · 名义 {float(rec.notional or 0):.2f} USDT"
+        if rec.qty else ""
+    )
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"🚀 自动开仓 · {rec.symbol}"},
+            "template": "blue",
+        },
+        "elements": [
+            # 概览行：方向 / 杠杆 / 预估止损风险 / AI 评分
+            {"tag": "column_set", "flex_mode": "stretch", "columns": [
+                _col("方向", side),
+                _col("杠杆", f"{rec.leverage}× 逐仓"),
+                _col("预估风险", f"{float(rec.risk_amount or 0):g} USDT"),
+                _col("AI 评分", recmd),
+            ]},
+            # 价格栅格：入场 / 止损 / 止盈（本单核心计划）
+            {"tag": "column_set", "flex_mode": "stretch", "columns": [
+                _col("入场价", _fmt_price(float(rec.entry_price or 0))),
+                _col("止损 SL", _fmt_price(float(rec.stop_loss or 0))),
+                _col("止盈 TP1", _fmt_price(float(rec.tp1 or 0))),
+                _col("止盈 TP2", _fmt_price(float(rec.tp2)) if rec.tp2 else "—"),
+            ]},
+            {"tag": "div", "text": {"tag": "lark_md", "content":
+             " · ".join(x for x in [qty_line, f"信号 {sig}"] if x)
+             + (f" · 战法 {tactic}" if tactic else "")}},
+            {"tag": "note", "elements": [{"tag": "plain_text",
+             "content": f"{env} · {rec.account_key or '默认账号'} · SL/TP 条件单已挂 · 详情见交易记录"}]},
+        ],
+    }
+
+
+def notify_open_cards(trade_ids: list[str]) -> int:
+    """自动开仓成功 → 逐笔发飞书开仓卡片。必须在开仓锁外调用（飞书 HTTP
+    超时 10s/张不进锁，与 check_hold_warnings 卡片同一惯例）；未配置自建
+    应用整批跳过，单张失败仅记日志不影响其余。返回成功发送张数。"""
+    try:
+        from app.services.feishu_bot import configured, send_app_card
+        if not configured():
+            return 0
+    except Exception as e:
+        logger.warning("开仓卡片通道检查失败，跳过推送: %s", e)
+        return 0
+
+    from app.database import SessionLocal
+
+    sent = 0
+    db = SessionLocal()
+    try:
+        for tid in trade_ids:
+            try:
+                rec = db.get(TradeRecord, UUID(str(tid)))
+                if rec is None:
+                    continue
+                if send_app_card(_open_feishu_card(rec)):
+                    sent += 1
+            except Exception as e:
+                logger.warning("开仓卡片发送失败 %s: %s", tid, e)
+    finally:
+        db.close()
+    return sent
+
+
+
 def check_hold_warnings(db) -> list[dict]:
     """持仓时长分级警告判定（2026-09-27，随结算巡检每 30 分钟执行）。
 
