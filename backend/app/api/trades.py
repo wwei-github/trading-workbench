@@ -3,7 +3,7 @@ import logging
 import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import and_, func, or_, select
@@ -654,7 +654,10 @@ def trade_klines(trade_id: str, db: Session = Depends(get_db)):
     - 总根数 = 100 + 持仓根数，上限 500（超长持仓自动压缩开仓前根数，持仓段始终完整）
     - 历史区间直接请求交易所（多所故障转移），不读不写缓存
     """
-    rec = db.get(TradeRecord, trade_id)
+    try:
+        rec = db.get(TradeRecord, UUID(trade_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="交易记录不存在")
     if not rec:
         raise HTTPException(status_code=404, detail="交易记录不存在")
     if rec.status == "FAILED" or rec.opened_at is None:
@@ -694,7 +697,13 @@ def trade_klines(trade_id: str, db: Session = Depends(get_db)):
         f = float(v)
         return f if f != 0 else None
 
-    entry_price = _nz(open_detail.get("price") or rec.entry_price)
+    entry_price = (
+        _nz(open_detail.get("entry_price") or rec.entry_price)
+        if open_detail.get("adopted")
+        # 接管单 OPEN detail.price 是接管时刻现价（真实持仓均价在 entry_price 字段），
+        # 直接用作入场价会把复盘图画偏（KSMUSDT 案例）；普通单 price 即实际成交价
+        else _nz(open_detail.get("price") or rec.entry_price)
+    )
     stop_loss = _nz(open_detail.get("stop_loss") or rec.stop_loss)
     tp1 = _nz(open_detail.get("tp1") or rec.tp1)
     tp2 = _nz(open_detail.get("tp2") or rec.tp2)

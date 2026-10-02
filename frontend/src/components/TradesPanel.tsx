@@ -315,6 +315,10 @@ function eventSummary(ev: TradeEvent, scheme: ColorScheme): React.ReactNode {
     return <span style={{ fontSize: 12, color: '#595959' }}>成交 {String(d.fill_price)}</span>
   }
   if (d.price != null) {
+    // 接管单 OPEN：price 是接管时点现价（非成交价），真实持仓均价在 entry_price
+    if (d.adopted && d.entry_price != null) {
+      return <span style={{ fontSize: 12, color: '#595959' }}>导入 · 持仓均价 {String(d.entry_price)}</span>
+    }
     return <span style={{ fontSize: 12, color: '#595959' }}>价格 {String(d.price)}</span>
   }
   if (d.message) {
