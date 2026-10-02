@@ -292,18 +292,19 @@ def run_ai_analysis_single(
         # 止损宽度硬上限透传（2026-09-29）：max_stop_pct 补丁参数注入门槛块，
         # AI 定止损前自验不超限，避免"AI 建议开单→程序宽度闸弃单"的无效调用
         _stop_cap = float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None
-        # 风控参数上页面（2026-10-02）：RR 铁律 / 风险比例 / BTC 急跌阈值按 cfg
-        # 覆盖优先、NULL 回落 env，透传进两管线（提示词 + Risk Guard 同源）；
+        # 风控参数上页面（2026-10-02）：RR 铁律 / BTC 急跌阈值按 cfg 覆盖优先、
+        # NULL 回落 env，透传进两管线（提示词 + Risk Guard 同源）；
         # crash_pct 仅 P0 单次调用管线消费（Agent 管线不预注入市场环境，
         # 由模型按需调工具，急跌硬闸在开仓引擎侧按 cfg 生效）
+        # 风险比例单一来源（2026-10-02 复查）：pct 模式下 resolver 的 amount 即
+        # 生效比例（cfg.risk_pct ?? RISK_BUDGET_PCT），直接派生保证提示词 label
+        # 与 Risk Guard 仓位复算同口径（TRADING_RISK_PCT 仅开仓引擎 est_risk 用，
+        # 两 env 默认同 3.0）；fixed 模式 amount 是 USDT 实额，不传 risk_pct
         _rr_min = (
             float(cfg.ai_rr_min) if cfg.ai_rr_min is not None
             else float(settings.AI_RR_MIN)
         )
-        _risk_pct = (
-            float(cfg.risk_pct) if cfg.risk_pct is not None
-            else float(settings.TRADING_RISK_PCT)
-        )
+        _risk_pct = _risk_amount if _risk_mode == "pct" else None
         _crash_pct = (
             float(cfg.btc_crash_pause_pct) if cfg.btc_crash_pause_pct is not None
             else None
