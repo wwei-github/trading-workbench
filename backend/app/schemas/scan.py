@@ -76,8 +76,9 @@ class ScanStatusResponse(BaseModel):
     last_scan: Optional[ScanRecordOut] = None
     is_scanning: bool
     config: ScanConfig
-    # 交易运行状态（2026-09-20 顶部一览）：自动交易开关/当前环境/在跑单数
-    trading_enabled: bool = False
+    # 交易运行状态（2026-09-20 顶部一览；2026-10-03 双网独立开关）
+    trading_enabled_testnet: bool = False  # 测试网自动交易开关
+    trading_enabled_live: bool = False     # 正式网自动交易开关
     trading_testnet: bool = True
     open_trades: int = 0          # 当前环境在跑单数（OPENED/TP1_HIT/TP2_HIT 三状态合计）
     open_tp_hit: int = 0          # 其中已进入止盈止损阶段的（TP1_HIT/TP2_HIT，止损已移保本，不占上限名额）
@@ -215,9 +216,11 @@ class SystemConfigOut(BaseModel):
     risk_budget_mode: str = "pct"
     risk_fixed_amount: float = 3.0
 
-    # 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面可改）
+    # 运行时环境与自动交易开关（2026-09-20 由 env 迁移进 DB，页面可改；
+    # 2026-10-03 总开关拆分为双网独立开关，可同时开启——同一 AI 分析双网各开一单）
     trading_testnet: bool = True
-    trading_enabled: bool = False     # 自动成交开关（2026-09-28 收窄）：仅控每小时 AI 分析后自动开新单；手动开单/AI 分析/结算巡检不受限
+    trading_enabled_testnet: bool = True   # 测试网自动交易（默认开）
+    trading_enabled_live: bool = False     # 正式网自动交易（默认关，实盘安全基线）
     # 多账号（docs/17 P0/P1）：.env 注册表只读展示 + 主账号 + 启用自动交易的 live 账号集合
     current_account_key: Optional[str] = None
     live_trading_keys: list[str] = []   # P1 扇出：正式网模式下执行自动交易的账号（空=回落 live-1）
@@ -296,10 +299,11 @@ class SystemConfigUpdate(BaseModel):
     risk_budget_mode: Optional[str] = None
     risk_fixed_amount: Optional[float] = None
 
-    # 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面可改）
+    # 运行时环境与自动交易开关（2026-10-03 拆分双网独立开关，语义见 SystemConfigOut）
     trading_testnet: Optional[bool] = None
-    trading_enabled: Optional[bool] = None  # 自动成交开关：仅控自动开新单（2026-09-28 收窄，见 SystemConfigOut）
-    # 当前正式网账号（docs/17）：需为注册表内 live 账号；切到正式网账号自动关总闸
+    trading_enabled_testnet: Optional[bool] = None
+    trading_enabled_live: Optional[bool] = None
+    # 当前正式网账号（docs/17）：需为注册表内 live 账号
     current_account_key: Optional[str] = None
     # P1 扇出（docs/17 §3）：启用自动交易的正式网账号集合；正式网模式下生效
     live_trading_keys: Optional[list[str]] = None

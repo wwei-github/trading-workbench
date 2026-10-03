@@ -4,10 +4,12 @@ import { ApiOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { AccountBrief, SystemConfig } from '../types'
 
-/** 系统配置弹窗（docs/17 P1 扇出）：交易环境 + 启用账号 + 自动交易总开关。
+/** 系统配置弹窗（docs/17 P1 扇出）：交易环境 + 启用账号 + 双网自动交易开关。
  *  - 环境：测试网（单账号 testnet-1）/ 正式网（互斥二选一）
  *  - 正式网下多个 live 账号可同时启用自动交易（P1 扇出：共享一次 AI 分析，
  *    各账号独立过闸门下单）；测试网恒为 testnet-1 单账号
+ *  - 自动交易开关（2026-10-03）：测试网/正式网各自独立、可同时开启——
+ *    同一 AI 分析双网各开一单（镜像跟单）；测试网默认开、正式网默认关
  *  - 凭据只在服务器 .env 配置（安全不入库），页面仅展示账号清单与配置状态 */
 export default function SystemConfigPanel() {
   const [open, setOpen] = useState(false)
@@ -15,7 +17,8 @@ export default function SystemConfigPanel() {
   const [loading, setLoading] = useState(false)
   const [envTestnet, setEnvTestnet] = useState(true)   // 交易环境（测试网/正式网互斥）
   const [liveKeys, setLiveKeys] = useState<string[]>([]) // 正式网启用自动交易的账号集合
-  const [tradingEnabled, setTradingEnabled] = useState(false)
+  const [tnTrading, setTnTrading] = useState(true)      // 测试网自动交易（默认开）
+  const [liveTrading, setLiveTrading] = useState(false) // 正式网自动交易（默认关）
   const { aiConfig, updateConfig, fetchConfig } = useScanStore()
 
   useEffect(() => {
@@ -34,19 +37,10 @@ export default function SystemConfigPanel() {
         ? aiConfig.live_trading_keys
         : [aiConfig.current_account_key || accs.find((a) => !a.testnet)?.key || 'live-1']
       setLiveKeys(keys)
-      setTradingEnabled(aiConfig.trading_enabled ?? false)
+      setTnTrading(aiConfig.trading_enabled_testnet ?? true)
+      setLiveTrading(aiConfig.trading_enabled_live ?? false)
     }
   }, [open, aiConfig])
-
-  // 正式网安全联锁：切到正式网自动关闭自动交易开关（需二次保存确认开启）；
-  // 正式网内增减启用账号不联动总闸（总闸是显式安全开关）
-  const handleEnvChange = (v: boolean) => {
-    setEnvTestnet(v)
-    if (!v) {
-      setTradingEnabled(false)
-      message.warning('已切换到正式网：自动交易默认关闭，确认无误后需手动开启')
-    }
-  }
 
   const toggleLive = (key: string, checked: boolean) => {
     setLiveKeys((prev) => (checked ? [...prev, key] : prev.filter((k) => k !== key)))
@@ -61,7 +55,8 @@ export default function SystemConfigPanel() {
       setSaving(true)
       const data: Partial<SystemConfig> = {
         trading_testnet: envTestnet,
-        trading_enabled: tradingEnabled,
+        trading_enabled_testnet: tnTrading,
+        trading_enabled_live: liveTrading,
       }
       if (!envTestnet) {
         data.live_trading_keys = liveKeys
@@ -142,7 +137,7 @@ export default function SystemConfigPanel() {
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>交易环境</div>
             <Segmented
               value={envTestnet ? 'testnet' : 'live'}
-              onChange={(v) => handleEnvChange(v === 'testnet')}
+              onChange={(v) => setEnvTestnet(v === 'testnet')}
               options={[
                 { label: '测试网', value: 'testnet' },
                 { label: '正式网', value: 'live' },
@@ -168,6 +163,7 @@ export default function SystemConfigPanel() {
             </div>
           )}
 
+          <div style={{ fontSize: 13, fontWeight: 600, margin: '16px 0 8px' }}>自动成交开关（AI 分析后自动开单，双网独立）</div>
           <div
             style={{
               display: 'flex',
@@ -176,21 +172,48 @@ export default function SystemConfigPanel() {
               padding: '8px 12px',
               border: '1px solid #f0f0f0',
               borderRadius: 8,
-              marginBottom: 16,
+              marginBottom: 8,
             }}
           >
-            <span style={{ fontWeight: 600 }}>自动成交开关（AI 分析后自动开单）</span>
+            <Space size={8}>
+              <Tag color="orange" style={{ marginInlineEnd: 0 }}>测试网</Tag>
+              <span>自动成交</span>
+            </Space>
             <Switch
-              checked={tradingEnabled}
-              onChange={(v) => setTradingEnabled(v)}
+              checked={tnTrading}
+              onChange={(v) => setTnTrading(v)}
+              checkedChildren="开"
+              unCheckedChildren="关"
+            />
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '8px 12px',
+              border: '1px solid #f0f0f0',
+              borderRadius: 8,
+              marginBottom: 8,
+            }}
+          >
+            <Space size={8}>
+              <Tag color="volcano" style={{ marginInlineEnd: 0 }}>正式网</Tag>
+              <span>自动成交</span>
+            </Space>
+            <Switch
+              checked={liveTrading}
+              onChange={(v) => setLiveTrading(v)}
               checkedChildren="开"
               unCheckedChildren="关"
             />
           </div>
           <div style={{ color: '#999', fontSize: 12, lineHeight: 1.7, marginBottom: 16 }}>
+            两网开关独立判定、可同时开启：同一 AI 分析结论会在测试网与正式网各开一单
+            （镜像跟单，各账号独立过风控闸门）。正式网默认关闭（实盘安全基线）。
             仅控制每小时 AI 分析完成后是否自动开新单；关闭后手动「开单」按钮、AI 分析
             （由策略配置「筛选后自动 AI 分析」独立控制）、结算巡检、复盘、日报均不受影响。
-            切到正式网会自动关闭此开关，确认无误后需手动开启。
+            与上方「交易环境」选择无关——环境只决定扫描/展示口径与账号清单。
           </div>
 
           <Alert

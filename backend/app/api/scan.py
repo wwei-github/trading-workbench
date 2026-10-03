@@ -185,7 +185,8 @@ def scan_status(db: Session = Depends(get_db)):
         last_scan=ScanRecordOut.model_validate(last_scan) if last_scan else None,
         is_scanning=is_scanning,
         config=config,
-        trading_enabled=cfg.trading_enabled,
+        trading_enabled_testnet=cfg.trading_enabled_testnet,
+        trading_enabled_live=cfg.trading_enabled_live,
         trading_testnet=cfg.trading_testnet,
         open_trades=db.execute(
             select(func.count()).select_from(TradeRecord).where(
@@ -373,7 +374,8 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         risk_budget_mode=cfg.risk_budget_mode or "pct",
         risk_fixed_amount=float(cfg.risk_fixed_amount if cfg.risk_fixed_amount is not None else 3.0),
         trading_testnet=cfg.trading_testnet,
-        trading_enabled=cfg.trading_enabled,
+        trading_enabled_testnet=cfg.trading_enabled_testnet,
+        trading_enabled_live=cfg.trading_enabled_live,
         current_account_key=cfg.current_account_key,
         live_trading_keys=parse_live_keys(cfg.live_trading_keys),
         accounts=[AccountBrief(key=a.key, name=a.name, testnet=a.testnet) for a in registry()],
@@ -541,14 +543,11 @@ def update_system_config(
         cfg.trading_min_free_pct = body.trading_min_free_pct
     # 运行时环境与总开关（任务级即时生效：celery 任务每轮读 DB）
     if body.trading_testnet is not None:
-        was_testnet = cfg.trading_testnet
         cfg.trading_testnet = body.trading_testnet
-        # 正式网安全联锁：切到正式网一律先关闭自动交易（需二次保存确认开启），
-        # 防止误切环境直接实盘开单
-        if was_testnet and not body.trading_testnet:
-            cfg.trading_enabled = False
-    # 多账号（docs/17）：切换当前正式网账号；与 trading_testnet 联锁——
-    # 选中 live 账号即进入正式网模式（关总闸），切回测试网保留账号选择便于再切
+        # 2026-10-03 双网独立开关：环境切换不再联锁开关（正式网自动交易
+        # trading_enabled_live 默认关即安全基线，是否开启是页面显式动作）
+    # 多账号（docs/17）：切换当前正式网账号；选中 live 账号即进入正式网模式，
+    # 切回测试网保留账号选择便于再切
     if body.current_account_key is not None:
         from app.services.account_registry import get_account
         acc = get_account(body.current_account_key)
@@ -558,11 +557,8 @@ def update_system_config(
             raise HTTPException(status_code=400, detail="current_account_key 仅接受正式网账号")
         if cfg.current_account_key != acc.key:
             cfg.current_account_key = acc.key
-            if not cfg.trading_testnet:  # 正式网模式下换账号：同属实盘，联锁关总闸
-                cfg.trading_enabled = False
         if cfg.trading_testnet:
             cfg.trading_testnet = False  # 显式选 live 账号 = 进入正式网模式
-            cfg.trading_enabled = False
     # P1 扇出（docs/17 §3）：启用自动交易的正式网账号集合（多账号并行开单）。
     # 正式网模式内加减启用账号不联动总闸（总闸是显式安全开关）；主账号不在
     # 启用集合时自动改为集合第一个
@@ -580,8 +576,11 @@ def update_system_config(
         cfg.live_trading_keys = ",".join(a.key for a in seen)
         if seen and cfg.current_account_key not in {a.key for a in seen}:
             cfg.current_account_key = seen[0].key
-    if body.trading_enabled is not None:
-        cfg.trading_enabled = body.trading_enabled
+    # 双网自动交易开关（2026-10-03 拆分）：独立判定、可同时开启
+    if body.trading_enabled_testnet is not None:
+        cfg.trading_enabled_testnet = body.trading_enabled_testnet
+    if body.trading_enabled_live is not None:
+        cfg.trading_enabled_live = body.trading_enabled_live
     # 规则补丁参数（docs/12 §10）：显式传 null = 恢复默认（用 model_fields_set 区分未传）
     if "max_stop_pct" in body.model_fields_set:
         v = body.max_stop_pct

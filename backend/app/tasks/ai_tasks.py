@@ -479,7 +479,9 @@ def _dispatch_immediate_open(a: AIAnalysis) -> None:
     db = SessionLocal()
     try:
         cfg = db.get(SystemConfig, 1)
-        if cfg is None or not cfg.trading_enabled:
+        # 双网独立开关（2026-10-03）：任一网开启即分发，具体扇出哪些账号
+        # 由 open_trade_for_analysis 按 auto_trade_accounts 逐网判定
+        if cfg is None or not (cfg.trading_enabled_testnet or cfg.trading_enabled_live):
             return
         min_rec = (
             float(cfg.min_recommendation) if cfg.min_recommendation is not None

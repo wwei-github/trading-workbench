@@ -10,7 +10,8 @@ import { useScanStore } from '../stores/scanStore'
 export default function ScanStatus() {
   const { status } = useScanStore()
   const last = status?.last_scan
-  const trading = status?.trading_enabled ?? false
+  const tnTrading = status?.trading_enabled_testnet ?? false
+  const liveTrading = status?.trading_enabled_live ?? false
 
   const openN = status?.open_trades ?? 0
   const tpHitN = status?.open_tp_hit ?? 0
@@ -31,17 +32,20 @@ export default function ScanStatus() {
       <Col>
         <Statistic
           title="自动成交"
-          valueRender={() =>
-            trading ? (
-              <Tag color="green" style={{ fontSize: 14, marginInlineEnd: 0 }}>
-                运行中
-              </Tag>
-            ) : (
-              <Tag color="default" style={{ fontSize: 14, marginInlineEnd: 0 }}>
-                已关闭
-              </Tag>
-            )
-          }
+          valueRender={() => (
+            <span>
+              <Tooltip title={`测试网自动成交（AI 分析后自动开单）${tnTrading ? '运行中' : '已关闭'}`}>
+                <Tag color={tnTrading ? 'orange' : 'default'} style={{ fontSize: 14, marginInlineEnd: 6 }}>
+                  测 {tnTrading ? '运行中' : '关'}
+                </Tag>
+              </Tooltip>
+              <Tooltip title={`正式网自动成交（AI 分析后自动开单，实盘）${liveTrading ? '运行中' : '已关闭'}`}>
+                <Tag color={liveTrading ? 'volcano' : 'default'} style={{ fontSize: 14, marginInlineEnd: 0 }}>
+                  正 {liveTrading ? '运行中' : '关'}
+                </Tag>
+              </Tooltip>
+            </span>
+          )}
         />
       </Col>
       <Col>

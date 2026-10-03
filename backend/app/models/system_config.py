@@ -43,11 +43,20 @@ class SystemConfig(Base):
     # 运行时环境与总开关（2026-09-20 由 env 静态配置迁移而来，页面可改、任务即时生效）：
     # trading_testnet：当前交易环境（true=测试网 false=正式网），开仓/扫描宇宙/复核用；
     #                  存量单按记录自带 testnet 标记结算，切环境不影响在跑单
-    # trading_enabled：自动成交开关（2026-09-28 语义收窄：仅指每小时 AI 分析
-    # 后自动开新单；手动开单按钮/AI 分析/结算巡检/复盘/日报均不受它控制。
-    # AI 分析由 ai_analysis_enabled 独立控制）
+    # trading_enabled：已废弃（2026-10-03 拆分为下方双网独立开关，代码不再读取；
+    # 列保留防旧库升级丢数据）
     trading_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
     trading_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 双网自动交易开关（2026-10-03 拆分，2026-09-28 收窄语义不变：仅控每小时
+    # AI 分析后自动开新单；手动开单按钮/AI 分析/结算巡检/复盘/日报均不受控。
+    # AI 分析由 ai_analysis_enabled 独立控制）：
+    # - trading_enabled_testnet：测试网开关（默认开）→ 扇出 testnet_accounts
+    # - trading_enabled_live：正式网开关（默认关，实盘安全基线）→ 扇出 live_enabled_accounts
+    # 两开关独立判定、可同时开启（同一 AI 分析双网各开一单，扇出见
+    # account_registry.auto_trade_accounts；DB 防重为
+    # (ai_analysis_id, account_key, testnet) 复合唯一）
+    trading_enabled_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
+    trading_enabled_live: Mapped[bool] = mapped_column(Boolean, default=False)
     # 当前正式网账号（docs/17 P0）：正式网模式（trading_testnet=false）下生效，
     # 记 system_config 选中的 live 账号 key（live-1/live-2…）；NULL=回落 live-1。
     # 测试网模式忽略此值（测试网单账号 testnet-1）

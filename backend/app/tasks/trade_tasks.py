@@ -306,25 +306,29 @@ def run_auto_trade_task():
 def open_trade_for_analysis(analysis_id: str):
     """单条 AI 分析完成即开仓——P1 扇出（docs/17 §3，2026-09-23）。
 
-    AI 分析共享一次，对当前环境每个启用账号独立过闸门/下单（各自钱包、风险
-    基数、在跑上限；串行下单共享 IP 权重）。账号锁 lock:trade_open:{key} 与
-    结算巡检互斥；单账号失败不影响其他账号。等锁超时或闸门未过即放弃（无重试）。
-    任一账号成交即清除拒开原因残留（避免「已开单仍显示拒开文案」误导）。
+    AI 分析共享一次，对双网自动交易清单（auto_trade_accounts：测试网开关 +
+    正式网开关各自判定的账号，2026-10-03 起与当前环境无关）每个账号独立过
+    闸门/下单（各自钱包、风险基数、在跑上限；串行下单共享 IP 权重）。
+    账号锁 lock:trade_open:{key} 与结算巡检互斥；单账号失败不影响其他账号。
+    等锁超时或闸门未过即放弃（无重试）。任一账号成交即清除拒开原因残留
+    （避免「已开单仍显示拒开文案」误导）。
     """
-    from app.services.account_registry import enabled_accounts
+    from app.services.account_registry import auto_trade_accounts
 
-    # 开关/启用账号以 DB 为运行时权威（env 仅首次建行注入初始值）
+    # 开关/启用账号以 DB 为运行时权威（env 仅首次建行注入初始值）；
+    # 双网独立开关（2026-10-03 拆分）：测试网/正式网各自判定、可同时开启，
+    # 与当前环境无关（不再用 enabled_accounts 按环境过滤）
     db = SessionLocal()
     try:
         cfg = db.get(SystemConfig, 1)
-        if cfg is None or not cfg.trading_enabled:
-            logger.info("即时开仓跳过：自动交易总开关关闭（analysis=%s）", analysis_id)
+        if cfg is None or not (cfg.trading_enabled_testnet or cfg.trading_enabled_live):
+            logger.info("即时开仓跳过：双网自动交易开关均关闭（analysis=%s）", analysis_id)
             return
-        accs = enabled_accounts(db)
+        accs = auto_trade_accounts(db)
     finally:
         db.close()
     if not accs:
-        logger.warning("即时开仓跳过：无可用交易账号（analysis=%s）", analysis_id)
+        logger.warning("即时开仓跳过：双网开关开启但无可用交易账号（analysis=%s）", analysis_id)
         return
 
     r = Redis.from_url(settings.REDIS_URL, decode_responses=True)

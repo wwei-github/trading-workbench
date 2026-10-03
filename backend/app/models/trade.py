@@ -7,7 +7,8 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import String, Integer, Boolean, Numeric, DateTime, ForeignKey, JSON, Index, Text
+from sqlalchemy import (String, Integer, Boolean, Numeric, DateTime, ForeignKey,
+                        JSON, Index, Text, UniqueConstraint)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -15,9 +16,15 @@ from app.database import Base
 
 
 class TradeRecord(Base):
-    """一笔自动交易。ai_analysis_id 唯一：同一 AI 结论最多开一次仓（DB 级防重）"""
+    """一笔自动交易。同一 AI 分析最多每账号一单（docs/17 P1 扇出）：
+    (ai_analysis_id, account_key, testnet) 复合唯一（2026-10-03 由全局 unique
+    改复合——双网同开需要同一分析在两网各落一单）"""
 
     __tablename__ = "trade_records"
+    __table_args__ = (
+        UniqueConstraint("ai_analysis_id", "account_key", "testnet",
+                         name="uq_trade_analysis_account"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
@@ -27,9 +34,9 @@ class TradeRecord(Base):
     scan_result_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("scan_results.id"), nullable=True
     )
-    # 导入持仓（2026-09-24）无 AI 分析行 → nullable；unique 保留（PG 多 NULL 合法）
+    # 导入持仓（2026-09-24）无 AI 分析行 → nullable；复合唯一见 __table_args__
     ai_analysis_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("ai_analyses.id"), nullable=True, unique=True, index=True
+        UUID(as_uuid=True), ForeignKey("ai_analyses.id"), nullable=True, index=True
     )
     recommendation: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)  # 开单时评分快照
     signal_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # 触发信号类型（trigger_breakout 等；NULL=导入持仓/旧行）

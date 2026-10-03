@@ -168,13 +168,38 @@ def enabled_accounts(db) -> list["Account"]:
       与 BinanceTrader(True) 历史回落语义一致）
     - 正式网模式 → live_trading_keys ∩ 注册表（保持配置顺序）；
       空/未配置回落 live-1（P0 单账号语义）
-    扇出开单/结算兜底/孤儿清扫均以此清单为准。"""
+    扇出开单/结算兜底/孤儿清扫均以此清单为准。
+
+    2026-10-03 起「AI 分析后自动开单」不再用本函数（不随当前环境切换），
+    改用 auto_trade_accounts（双网独立开关）；本函数仍服务于导入持仓
+    环境清单、现货等按环境扇出的场景。"""
     from app.models.system_config import SystemConfig
 
     cfg = db.get(SystemConfig, 1)
     if cfg is not None and cfg.trading_testnet:
         return testnet_accounts() or live_accounts() or testnet_accounts()
     return live_enabled_accounts(db) or testnet_accounts()
+
+
+def auto_trade_accounts(db) -> list["Account"]:
+    """双网自动交易扇出清单（2026-10-03 总开关拆分，用户拍板：两网可同时
+    在 AI 分析后自动交易）：
+    - trading_enabled_testnet（默认开）→ testnet_accounts
+    - trading_enabled_live（默认关，实盘安全基线）→ live_enabled_accounts
+    各网独立判定、互不回落——测试网开关开但无测试网账号时直接跳过该网，
+    不落回正式网账号（防开关语义交叉误开实盘）；与当前环境
+    （trading_testnet）无关。"""
+    from app.models.system_config import SystemConfig
+
+    cfg = db.get(SystemConfig, 1)
+    if cfg is None:
+        return []
+    accs: list[Account] = []
+    if cfg.trading_enabled_testnet:
+        accs.extend(a for a in testnet_accounts() if a not in accs)
+    if cfg.trading_enabled_live:
+        accs.extend(a for a in live_enabled_accounts(db) if a not in accs)
+    return accs
 
 
 # ── 现货（docs/18）：环境与合约完全独立，仅共用 .env 账号注册表 ─────────────

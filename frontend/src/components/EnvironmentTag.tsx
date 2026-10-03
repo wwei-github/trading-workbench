@@ -15,7 +15,8 @@ export default function EnvironmentTag() {
 
   if (!aiConfig) return null
   const testnet = aiConfig.trading_testnet ?? true
-  const trading = aiConfig.trading_enabled ?? false
+  const tnTrading = aiConfig.trading_enabled_testnet ?? false
+  const liveTrading = aiConfig.trading_enabled_live ?? false
   // 正式网模式显示当前选中账号名（docs/17：多账号时区分 live-1/live-2…）
   const accName = !testnet
     ? aiConfig.accounts?.find((a) => a.key === aiConfig.current_account_key)?.name
@@ -25,7 +26,8 @@ export default function EnvironmentTag() {
   return (
     <Tooltip
       title={
-        `当前交易账号：${label}；自动成交${trading ? '已开启' : '已关闭'}` +
+        `当前交易环境：${label}；自动成交开关（双网独立，可同时开启）：` +
+        `测试网${tnTrading ? '已开启' : '已关闭'} / 正式网${liveTrading ? '已开启' : '已关闭'}` +
         `（仅控 AI 分析后自动开新单；手动开单/AI 分析不受限）。在「系统配置」弹窗中可切换。`
       }
     >

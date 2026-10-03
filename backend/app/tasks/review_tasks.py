@@ -190,8 +190,54 @@ def run_trade_review_task():
 ATTRIBUTION_BATCH = 5
 
 
+def _dedup_sibling_trades(db, trades: list) -> tuple[list, list]:
+    """同源镜像单去重（2026-10-03 双网同开）：同一 AI 分析（ai_analysis_id）
+    在测试网/正式网各落一单，行情同源、结论同源——复盘只做一次。
+
+    规则：无 analysis 关联的（导入持仓/手动单）不受影响；同 analysis 的
+    兄弟单组内正式网优先（实盘归因更有价值），且兄弟单已在历史轮归因过的
+    （attributed_at 非空，含跨轮：两网平仓时间不同批）直接跳过。
+
+    返回 (待归因清单, 跳过清单)。调用方负责给跳过单打标（不调 LLM）。"""
+    sibling_ids = {t.ai_analysis_id for t in trades if t.ai_analysis_id}
+    already = set()
+    if sibling_ids:
+        already = {
+            str(aid) for aid in db.execute(
+                select(TradeRecord.ai_analysis_id).where(
+                    TradeRecord.ai_analysis_id.in_(sibling_ids),
+                    TradeRecord.attributed_at.isnot(None),
+                )
+            ).scalars().all()
+        }
+    groups: dict = {}
+    picked: list = []
+    skipped: list = []
+    for t in trades:
+        if t.ai_analysis_id is None or str(t.ai_analysis_id) in already:
+            if t.ai_analysis_id is not None:
+                skipped.append(t)  # 兄弟单已归因过 → 本单跳过
+            else:
+                picked.append(t)   # 无 analysis 关联：独立归因
+            continue
+        groups.setdefault(t.ai_analysis_id, []).append(t)
+    for group in groups.values():
+        # 正式网优先（testnet=False 排前）；同网多账号取闭合最晚的（信息最全）
+        ordered = sorted(
+            group,
+            key=lambda t: (bool(t.testnet), t.closed_at or datetime.utcnow()),
+        )
+        picked.append(ordered[0])
+        skipped.extend(ordered[1:])
+    return picked, skipped
+
+
 def run_ai_attribution(db, pool, trader, trades: list) -> list[dict]:
     """对给定已平仓交易逐笔 AI 归因并落库（定时任务与手动触发共用）。
+
+    同源镜像单只归因一笔（_dedup_sibling_trades，正式网优先）——双网同开的
+    重复单不重复花 LLM 调用、不污染标签统计；被跳过的镜像单打标
+    attributed_at + error_lesson 说明（复盘面板可辨）。
 
     返回逐笔结果 [{symbol, ok, tags/lesson/error}]。
     """
@@ -199,6 +245,23 @@ def run_ai_attribution(db, pool, trader, trades: list) -> list[dict]:
 
     cfg = db.get(SystemConfig, 1)
     interval = cfg.kline_interval if cfg else "1h"
+
+    trades, mirror_skipped = _dedup_sibling_trades(db, trades)
+    for rec in mirror_skipped:
+        try:
+            rec.attributed_at = datetime.utcnow()
+            rec.error_lesson = (
+                "同源镜像单已归因（双网同开的同一 AI 结论只复盘一次，"
+                "正式网优先），本单跳过"
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("镜像单跳过打标失败 %s", rec.symbol)
+        logger.info(
+            "归因跳过 %s %s（%s）：同源镜像单只复盘一次",
+            rec.symbol, rec.direction, "正式网" if rec.testnet else "测试网",
+        )
 
     results = []
     for rec in trades:
@@ -239,13 +302,15 @@ def run_ai_attribution_task():
     trader = None
     task_id = ""
     try:
-        # 费用回补先行（归因事实包需要 fee/funding）；环境以 DB 为运行时权威
+        # 费用回补先行（归因事实包需要 fee/funding）；双网各补各的
+        # （2026-10-03 双网同开：归因队列不再按当前环境过滤——否则另一网的
+        # 平仓单会一直积压，要等手动切环境才能归因）
         from app.services.binance_trader import BinanceTrader
         from app.services.actual_review import backfill_costs
-        cfg = db.get(SystemConfig, 1)
-        env_testnet = bool(cfg.trading_testnet) if cfg else settings.TRADING_TESTNET
-        trader = BinanceTrader(env_testnet)
-        backfill_costs(db, trader, limit=ATTRIBUTION_BATCH)
+        for testnet in (True, False):
+            bt = BinanceTrader(testnet)
+            if bt.configured:
+                backfill_costs(db, bt, limit=ATTRIBUTION_BATCH)
 
         trades = db.execute(
             select(TradeRecord)
@@ -253,7 +318,6 @@ def run_ai_attribution_task():
                 TradeRecord.status == "CLOSED",
                 TradeRecord.exit_reason.isnot(None),
                 TradeRecord.attributed_at.is_(None),
-                TradeRecord.testnet == env_testnet,
             )
             .order_by(TradeRecord.closed_at.desc())
             .limit(ATTRIBUTION_BATCH)
@@ -262,7 +326,7 @@ def run_ai_attribution_task():
             return  # 无待归因不记任务记录（避免刷屏）
 
         task_id = open_task(task_type="review", task_name="AI错误归因", trigger="scheduled")
-        results = run_ai_attribution(db, pool, trader, trades)
+        results = run_ai_attribution(db, pool, None, trades)
         ok_n = sum(1 for r in results if r.get("ok"))
         close_task(task_id, "completed", summary=f"归因 {ok_n}/{len(results)} 笔", detail={
             "items": results,

@@ -173,6 +173,35 @@ def _run_migrations(engine):
             f"ADD COLUMN IF NOT EXISTS trading_testnet BOOLEAN NOT NULL DEFAULT {settings.TRADING_TESTNET}, "
             f"ADD COLUMN IF NOT EXISTS trading_enabled BOOLEAN NOT NULL DEFAULT {settings.TRADING_ENABLED}"
         ))
+        # 双网自动交易开关拆分（2026-10-03）：trading_enabled →
+        # trading_enabled_testnet（默认开）/ trading_enabled_live（默认关）。
+        # 存量回填一次性（列刚新增时）：testnet 继承旧总开关现值、live 恒 FALSE
+        # （实盘安全基线，需页面显式开启）——守卫判断防重启把用户已改的开关重置
+        _has_tn_switch = conn.execute(text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'system_config' AND column_name = 'trading_enabled_testnet'"
+        )).first()
+        if not _has_tn_switch:
+            conn.execute(text(
+                "ALTER TABLE system_config "
+                f"ADD COLUMN trading_enabled_testnet BOOLEAN NOT NULL DEFAULT {settings.TRADING_ENABLED_TESTNET}, "
+                f"ADD COLUMN trading_enabled_live BOOLEAN NOT NULL DEFAULT {settings.TRADING_ENABLED_LIVE}"
+            ))
+            conn.execute(text(
+                "UPDATE system_config SET trading_enabled_testnet = trading_enabled"
+            ))
+        # 双网同开的 DB 防重（2026-10-03）：ai_analysis_id 全局 unique 会挡住
+        # 同一 AI 分析在两网各开一单（应用层防重本就按账号，docs/17 P1）——
+        # 改复合唯一 (ai_analysis_id, account_key, testnet)。旧行 account_key
+        # NULL 在 PG 唯一索引中互不冲突（多 NULL 合法），不受影响
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "DROP CONSTRAINT IF EXISTS trade_records_ai_analysis_id_key"
+        ))
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_trade_analysis_account "
+            "ON trade_records (ai_analysis_id, account_key, testnet)"
+        ))
         # 指标驱动筛选（2026-09-17）：扫描候选质量分（AI 配额排序键）与指标票数明细
         conn.execute(text("""
             ALTER TABLE scan_results
@@ -433,7 +462,8 @@ def _run_migrations(engine):
             " max_open_trades, "
             " strategy_trend_follow_enabled, strategy_structure_break_enabled, "
             " strategy_range_edge_enabled, trading_min_free_pct, "
-            " trading_testnet, trading_enabled) "
+            " trading_testnet, trading_enabled, "
+            " trading_enabled_testnet, trading_enabled_live) "
             "VALUES (1, false, :kline_interval, :kline_window, "
             " :breakout_threshold, :r_squared_threshold, :repeat_window_hours, "
             " :swing_order, :pullback_tolerance, '系统运行时配置', "
@@ -442,7 +472,8 @@ def _run_migrations(engine):
             " 5, "
             " true, false, "
             " true, 0.5, "
-            " :trading_testnet, :trading_enabled) "
+            " :trading_testnet, :trading_enabled, "
+            " :trading_enabled_testnet, :trading_enabled_live) "
             "ON CONFLICT (id) DO NOTHING"
         ),
             {
@@ -455,6 +486,8 @@ def _run_migrations(engine):
                 "pullback_tolerance": settings.PULLBACK_TOLERANCE,
                 "trading_testnet": settings.TRADING_TESTNET,
                 "trading_enabled": settings.TRADING_ENABLED,
+                "trading_enabled_testnet": settings.TRADING_ENABLED_TESTNET,
+                "trading_enabled_live": settings.TRADING_ENABLED_LIVE,
             },
         )
 

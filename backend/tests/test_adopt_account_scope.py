@@ -48,6 +48,7 @@ def db():
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
     session.add(SystemConfig(id=1, trading_enabled=True, trading_testnet=True,
+                             trading_enabled_testnet=True, trading_enabled_live=False,
                              live_trading_keys=None))
     session.commit()
     yield session
@@ -75,6 +76,41 @@ def test_live_enabled_accounts_same_as_enabled_in_live_mode(db, both_accounts):
     db.commit()
     assert [a.key for a in account_registry.enabled_accounts(db)] == ["live-1"]
     assert [a.key for a in account_registry.live_enabled_accounts(db)] == ["live-1"]
+
+
+# ── 1.5 双网自动交易扇出清单（2026-10-03 开关拆分）──
+
+
+def test_auto_trade_accounts_both_switches_on(db, both_accounts):
+    """双开关全开：测试网 + 正式网账号都在扇出清单（与当前环境无关）"""
+    cfg = db.get(SystemConfig, 1)
+    cfg.trading_enabled_testnet = True
+    cfg.trading_enabled_live = True
+    db.commit()
+    assert [a.key for a in account_registry.auto_trade_accounts(db)] == ["testnet-1", "live-1"]
+
+
+def test_auto_trade_accounts_defaults(db, both_accounts):
+    """默认（测试网开/正式网关）：仅测试网账号——正式网安全基线"""
+    assert [a.key for a in account_registry.auto_trade_accounts(db)] == ["testnet-1"]
+
+
+def test_auto_trade_accounts_live_only(db, both_accounts):
+    """仅正式网开：清单只有 live 账号，即使当前环境是测试网也不回落测试网"""
+    cfg = db.get(SystemConfig, 1)
+    cfg.trading_enabled_testnet = False
+    cfg.trading_enabled_live = True
+    db.commit()
+    assert [a.key for a in account_registry.auto_trade_accounts(db)] == ["live-1"]
+
+
+def test_auto_trade_accounts_all_off(db, both_accounts):
+    """全关：空清单（open_trade_for_analysis 侧据此跳过）"""
+    cfg = db.get(SystemConfig, 1)
+    cfg.trading_enabled_testnet = False
+    cfg.trading_enabled_live = False
+    db.commit()
+    assert account_registry.auto_trade_accounts(db) == []
 
 
 # ── 2. 巡检任务端到端（替身注入，不触网）──

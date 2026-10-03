@@ -59,8 +59,9 @@ export interface ScanStatus {
   last_scan: ScanRecord | null;
   is_scanning: boolean;
   config: ScanConfig;
-  // 交易运行状态（2026-09-20 顶部一览）
-  trading_enabled: boolean;
+  // 交易运行状态（2026-09-20 顶部一览；2026-10-03 双网独立开关）
+  trading_enabled_testnet: boolean;
+  trading_enabled_live: boolean;
   trading_testnet: boolean;
   open_trades: number;
   /** 其中已进入止盈止损阶段的（TP1_HIT/TP2_HIT，止损已移保本，不占上限名额） */
@@ -227,9 +228,11 @@ export interface SystemConfig {
   portfolio_heat_cap?: number | null; // 组合热度上限（比例 0.2=钱包 20%；0=关闭）
   same_direction_cap?: number | null; // 同向持仓上限（单数，0=不限）
   btc_crash_pause_pct?: number | null; // BTC 急跌暂停阈值（% 值，1h 3根累计跌幅；0=关闭）
-  // 运行时环境与总开关（2026-09-20 由 env 迁移进 DB，页面「系统配置」弹窗可改）
+  // 运行时环境与自动交易开关（2026-09-20 由 env 迁移进 DB，页面「系统配置」弹窗可改；
+  // 2026-10-03 总开关拆分为双网独立开关，可同时开启——同一 AI 分析双网各开一单）
   trading_testnet?: boolean; // 当前交易环境：true=测试网 false=正式网
-  trading_enabled?: boolean; // 自动成交开关（2026-09-28 收窄）：仅控每小时 AI 分析后自动开新单；手动开单/AI 分析不受限
+  trading_enabled_testnet?: boolean; // 测试网自动交易（默认开）
+  trading_enabled_live?: boolean; // 正式网自动交易（默认关，实盘安全基线）
   // 多账号（docs/17 P0/P1）：.env 注册表只读展示 + 主账号 + 启用自动交易的 live 账号集合
   current_account_key?: string | null;
   live_trading_keys?: string[]; // P1 扇出：正式网模式下执行自动交易的账号（空=回落 live-1）
