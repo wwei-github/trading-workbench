@@ -409,6 +409,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         scan_filters=(cfg.scan_filters if isinstance(cfg.scan_filters, dict) else None),
         scan_filters_effective={
             "min_volume_24h": flt.min_volume_24h,
+            "new_coin_cooldown_days": flt.new_coin_cooldown_days,
             "breakout_channel_bars": flt.breakout_channel_bars,
             "breakout_threshold": flt.breakout_threshold,
             "breakout_vol_ratio": flt.breakout_vol_ratio,

@@ -262,6 +262,23 @@ def test_validate_scan_filters_new_coin_cooldown():
         _validate_scan_filters({"new_coin_cooldown_days": -1})
 
 
+def test_config_effective_contains_all_filter_fields():
+    """/config 的 scan_filters_effective 须覆盖 FILTER_FIELDS 全部数值键——
+    前端表单初值按此渲染，漏键即「配置里不显示默认值」（2026-10-04
+    new_coin_cooldown_days 漏挂案例）"""
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "app" / "api" / "scan.py").read_text(encoding="utf-8")
+    block = src.split("scan_filters_effective={", 1)[1].split("},", 1)[0]
+    emitted = set(re.findall(r'"([a-z0-9_]+)":', block))
+    from app.services.scan_filters import SCAN_FILTER_KEYS
+    numeric_keys = {k for k in SCAN_FILTER_KEYS if k not in ("allowed_triggers", "pullback_touch_refs")}
+    missing = numeric_keys - emitted
+    assert not missing, f"scan_filters_effective 漏键: {missing}"
+
+
 # ── 触发类型白名单（2026-09-29：结构突破/趋势突破/回踩金K确认，纯金K下线）───
 
 
