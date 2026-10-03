@@ -916,9 +916,13 @@ def try_open_for_analysis(
         day_pnl = _daily_closed_pnl(db, trader.account_key, trader.testnet)
         loss_cap = _daily_loss_cap(wallet, pct=loss_pct)
         if day_pnl <= -loss_cap:
-            logger.info(
-                "即时开仓跳过 %s：当日亏损熔断（已平仓净亏 %.2f ≤ -%.0f）",
-                a.symbol, day_pnl, loss_cap,
+            # WARNING 级：熔断拦截是关键风控事件，须进系统日志页——
+            # 否则开单静默被拦，用户只看到测试网开了、正式网没动静，无从归因
+            #（2026-10-04 SOL/SUI 案例：live 被 -19.11 熔断拦下，系统日志无痕）
+            logger.warning(
+                "风控熔断拦截开仓 %s（%s）：当日已平仓净亏 %.2f ≤ -%.0f 阈值"
+                "（UTC 日内合计，UTC 0 点自动恢复；分析/巡检不受影响）",
+                a.symbol, trader.account_key, day_pnl, loss_cap,
             )
             _mark_open_block(
                 db, a,
