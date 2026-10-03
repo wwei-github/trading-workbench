@@ -908,7 +908,7 @@ export default function TradesPanel() {
       width: 100,
       render: (v: string | null | undefined) => {
         if (!v) return '-'
-        const p = patternStyle(v)
+        const p = patternStyle(v, colorScheme)
         return <Tag color={p.color}>{p.label}</Tag>
       },
     },

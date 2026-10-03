@@ -148,7 +148,7 @@ export default function PendingPoolPanel() {
       title: '确认形态', dataIndex: 'confirm_pattern', key: 'confirm_pattern', width: 110,
       render: (v: string | null) => {
         if (!v) return '-'
-        const s = patternStyle(v)
+        const s = patternStyle(v, colorScheme)
         return <Tag color={s.color}>{s.label}</Tag>
       },
     },

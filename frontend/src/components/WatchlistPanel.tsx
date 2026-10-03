@@ -24,8 +24,8 @@ import {
   SIGNAL_TYPE_FILTERS,
   POSITION_FILTERS,
   PATTERN_FILTERS,
-  EMA_STATE_MAP,
   EMA_STATE_FILTERS,
+  emaStateTag,
   patternStyle,
   positionTag,
 } from "../constants/labels";
@@ -61,6 +61,7 @@ export default function WatchlistPanel() {
     fetchResults,
     aiConfig,
   } = useScanStore();
+  const colorScheme = useScanStore((s) => s.colorScheme);
 
   const [quotes, setQuotes] = useState<
     Record<string, { price: number; volume_24h: number }>
@@ -382,7 +383,7 @@ export default function WatchlistPanel() {
       render: (_: unknown, r: WatchRow) => {
         const v = r.scan?.ema_state;
         if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const cfg = EMA_STATE_MAP[v] || { label: v, color: "default" };
+        const cfg = emaStateTag(v, colorScheme);
         return <Tag color={cfg.color}>{cfg.label}</Tag>;
       },
     },
@@ -395,7 +396,7 @@ export default function WatchlistPanel() {
       render: (_: unknown, r: WatchRow) => {
         const v = r.scan?.pattern;
         if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const { label, color } = patternStyle(v);
+        const { label, color } = patternStyle(v, colorScheme);
         return (
           <Tooltip title={r.scan?.signal_reason || undefined}>
             <Tag color={color}>{label}</Tag>

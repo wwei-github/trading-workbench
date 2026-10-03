@@ -1,4 +1,6 @@
 // 信号类型 / 信号位置 / K线形态 标签映射（扫描结果与关注列表共用）
+import { schemeTag } from '../utils/scheme'
+import type { ColorScheme } from '../stores/scanStore'
 
 export const SIGNAL_TYPE_MAP: Record<string, { label: string; color: string }> = {
   // 新结构分类（关键位重构）
@@ -71,9 +73,15 @@ const OTHER_PATTERNS: Record<string, string> = {
   close_above_prev_high: "收盘破前高",
 };
 
-export function patternStyle(v: string): { label: string; color: string } {
-  if (BULLISH_PATTERNS[v]) return { label: BULLISH_PATTERNS[v], color: "green" };
-  if (BEARISH_PATTERNS[v]) return { label: BEARISH_PATTERNS[v], color: "red" };
+// K线形态标签：多/空语义色随全局配色方案翻转（中性类 blue 不翻转）；
+// scheme 缺省 = 旧版固定 green/red（过滤选项构建只取 label，不受影响）
+export function patternStyle(v: string, scheme?: ColorScheme): { label: string; color: string } {
+  if (BULLISH_PATTERNS[v]) {
+    return { label: BULLISH_PATTERNS[v], color: scheme ? schemeTag(scheme).up : "green" };
+  }
+  if (BEARISH_PATTERNS[v]) {
+    return { label: BEARISH_PATTERNS[v], color: scheme ? schemeTag(scheme).down : "red" };
+  }
   return { label: OTHER_PATTERNS[v] || v, color: "blue" };
 }
 
@@ -95,15 +103,24 @@ export const PATTERN_FILTERS = Object.keys({
 }).map((v) => ({ text: patternStyle(v).label, value: v }));
 
 // ===== EMA 均线形态状态 =====
-export const EMA_STATE_MAP: Record<string, { label: string; color: string }> = {
-  bullish_align: { label: "多头排列", color: "green" },
-  bearish_align: { label: "空头排列", color: "red" },
-  bullish_cross: { label: "金叉", color: "cyan" },
-  bearish_cross: { label: "死叉", color: "magenta" },
-  turning_up: { label: "拐头向上", color: "lime" },
-  turning_down: { label: "拐头向下", color: "volcano" },
-  mixed: { label: "纠缠", color: "default" },
+export const EMA_STATE_MAP: Record<string, { label: string }> = {
+  bullish_align: { label: "多头排列" },
+  bearish_align: { label: "空头排列" },
+  bullish_cross: { label: "金叉" },
+  bearish_cross: { label: "死叉" },
+  turning_up: { label: "拐头向上" },
+  turning_down: { label: "拐头向下" },
+  mixed: { label: "纠缠" },
 };
+
+// EMA 形态渲染标签：多/空状态色随全局配色方案翻转（金叉/死叉同为多/空语义；
+// 纠缠/未知 = 中性 default）。label 取 EMA_STATE_MAP，未知值原样回显
+export function emaStateTag(v: string, scheme: ColorScheme): { label: string; color: string } {
+  const label = EMA_STATE_MAP[v]?.label || v;
+  if (v.startsWith("bullish") || v === "turning_up") return { label, color: schemeTag(scheme).up };
+  if (v.startsWith("bearish") || v === "turning_down") return { label, color: schemeTag(scheme).down };
+  return { label, color: "default" };
+}
 
 export const EMA_STATE_FILTERS = Object.entries(EMA_STATE_MAP).map(
   ([value, cfg]) => ({ text: cfg.label, value }),

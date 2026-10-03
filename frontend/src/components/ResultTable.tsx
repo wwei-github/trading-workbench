@@ -23,8 +23,8 @@ import {
   SIGNAL_TYPE_MAP,
   SIGNAL_TYPE_FILTERS,
   PATTERN_FILTERS,
-  EMA_STATE_MAP,
   EMA_STATE_FILTERS,
+  emaStateTag,
   patternStyle,
 } from "../constants/labels";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
@@ -543,7 +543,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       ...filterProps("pattern", PATTERN_FILTERS),
       render: (v: string | null, record: ScanResult) => {
         if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const { label, color } = patternStyle(v);
+        const { label, color } = patternStyle(v, colorScheme);
         return (
           <Tooltip title={record.signal_reason || undefined}>
             <Tag color={color}>{label}</Tag>
@@ -559,7 +559,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       ...filterProps("ema_state", EMA_STATE_FILTERS),
       render: (v: string | null) => {
         if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const cfg = EMA_STATE_MAP[v] || { label: v, color: "default" };
+        const cfg = emaStateTag(v, colorScheme);
         return <Tag color={cfg.color}>{cfg.label}</Tag>;
       },
     },
