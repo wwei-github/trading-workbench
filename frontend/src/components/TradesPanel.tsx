@@ -55,7 +55,7 @@ import { SCHEME_UP_DOWN, schemeTag, schemeValueColor } from '../utils/scheme'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import AiAnalysisCard from './AiAnalysisCard'
 import TradeReplayChart from './TradeReplayChart'
-import ScopeSelector, { defaultScopeOf, scopeIsTestnet } from './ScopeSelector'
+import ScopeSelector, { scopeIsTestnet } from './ScopeSelector'
 import type { AccountSummary, FundAnalytics, PurgeStats, TradeEvent, TradeRecord, TradeReconciliation } from '../types'
 import { ADVICE_ACTION_META } from '../types'
 
@@ -346,22 +346,13 @@ export default function TradesPanel() {
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
-  // 账号范围切换（docs/17）：默认 all（2026-10-03 删环境切换，双网合计口径）。
-  // 面板被 Tabs 保活：defaultScope 恒定不再变化，用户手动选择后保持
+  // 账号范围切换（docs/17）：仅正式网/测试网两档、默认正式网
+  // （2026-10-03 用户指定，不提供「全部」档）；用户手动选择后保持
   const { aiConfig, fetchConfig } = useScanStore()
-  const defaultScope = defaultScopeOf(aiConfig)
-  const lastDefaultRef = useRef<string | null>(null)
-  const [scope, setScope] = useState<string>(defaultScope)
+  const [scope, setScope] = useState<string>('live')
   useEffect(() => {
-    if (!aiConfig) {
-      fetchConfig()
-      return
-    }
-    if (lastDefaultRef.current !== defaultScope) {
-      lastDefaultRef.current = defaultScope
-      setScope(defaultScope)
-    }
-  }, [aiConfig, fetchConfig, defaultScope])
+    if (!aiConfig) fetchConfig()
+  }, [aiConfig, fetchConfig])
   // 概览汇总（与资金分析同源）：closed/wins/win_rate/net_pnl/avg_win_r 来自 analytics 接口
   const [summary, setSummary] = useState<FundAnalytics['summary'] | null>(null)
   // 账户资金概览（当前账号）：总资金/未实现收益/收益率，与列表/统计并发拉
@@ -370,18 +361,17 @@ export default function TradesPanel() {
   // 列表按账号范围服务端过滤（上限 500）供表格与状态计数；概览统计从 analytics 接口取，
   // 保证与资金分析页数字完全一致（接口全表统计，无 500 条截断差异）
   const seqRef = useRef(0)
-  // seq 竞态守卫：scope 切换会并发两批请求（初始环境批 + 校正批），后返回的旧响应
-  // 会覆盖新数据（表现为筛选器显示正式网、数据却是测试网），仅渲染最新一批
+  // seq 竞态守卫：scope 切换会并发两批请求，后返回的旧响应会覆盖新数据
+  // （表现为筛选器显示正式网、数据却是测试网），仅渲染最新一批。
   // 账户概览账号解析（2026-10-03 删环境切换）：account_summary 按账号查询，
-  // scope=环境聚合/all 时取该范围内第一个已配置账号（all 取测试网优先——实盘安全默认）
+  // scope=环境聚合时取该范围内第一个已配置账号
   const resolveAcctKey = useCallback(
     (sc: string): string | undefined => {
       const accs = aiConfig?.accounts ?? []
       const configured = accs.filter((a) => a.configured)
       if (sc.startsWith('testnet-') || sc.startsWith('live-')) return sc
       if (sc === 'live') return configured.find((a) => !a.testnet)?.key
-      if (sc === 'testnet') return configured.find((a) => a.testnet)?.key
-      return configured.find((a) => a.testnet)?.key || configured[0]?.key
+      return configured.find((a) => a.testnet)?.key
     },
     [aiConfig],
   )
@@ -1319,9 +1309,11 @@ export default function TradesPanel() {
           })}
         </Space>
         <Space size={12}>
-          {/* 账号范围切换（docs/17）：单 live 账号=环境 Segmented，多账号=账号下拉 */}
+          {/* 账号范围切换（docs/17）：仅正式网/测试网两档（默认正式网），
+              单 live 账号=环境 Segmented，多账号=账号下拉 */}
           <ScopeSelector
             value={scope}
+            allowAll={false}
             onChange={(v) => {
               setScope(v)
               setPage(1)

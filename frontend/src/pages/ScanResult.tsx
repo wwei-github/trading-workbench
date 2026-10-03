@@ -10,7 +10,6 @@ import LogsPanel from '../components/LogsPanel'
 import ScanConfigPanel from '../components/ScanConfigPanel'
 import TradingConfigPanel from '../components/TradingConfigPanel'
 import SystemConfigPanel from '../components/SystemConfigPanel'
-import EnvironmentTag from '../components/EnvironmentTag'
 import StrategyPromptPanel from '../components/StrategyPromptPanel'
 import TacticsPanel from '../components/TacticsPanel'
 import WatchlistPanel from '../components/WatchlistPanel'
@@ -270,7 +269,6 @@ export default function ScanResult({ mode }: ScanResultProps) {
                   <ScanConfigPanel />
                   <TradingConfigPanel />
                   <SystemConfigPanel />
-                  <EnvironmentTag />
                 </>
               )}
             </Space>

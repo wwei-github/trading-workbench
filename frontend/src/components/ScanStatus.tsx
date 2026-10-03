@@ -4,6 +4,8 @@ import { useScanStore } from '../stores/scanStore'
 
 /** 顶部运行状态一览：
  *  自动成交 + 最近扫描（时间+命中）+ 在跑单水位（资金数字全部下沉到各页面概览）。
+ *  自动成交（2026-10-03 删环境切换）：双网独立开关状态 Tag + 整体 Tooltip
+ *  说明（原按钮右侧 EnvironmentTag 徽标已并入此处，页面仅此一处展示）。
  *  在跑单口径（2026-09-25 v3）：主数字 = 占上限名额的笔数（OPENED），
  *  已进止盈止损（TP1_HIT/TP2_HIT，止损已移保本）用绿色 Tag 单独标注、不占名额；
  *  满仓红色 / 差一满橙色分级预警。 */
@@ -33,18 +35,22 @@ export default function ScanStatus() {
         <Statistic
           title="自动成交"
           valueRender={() => (
-            <span>
-              <Tooltip title={`测试网自动成交（AI 分析后自动开单）${tnTrading ? '运行中' : '已关闭'}`}>
+            <Tooltip
+              title={
+                `自动成交开关（双网独立，可同时开启）：测试网${tnTrading ? '已开启' : '已关闭'}` +
+                ` / 正式网${liveTrading ? '已开启' : '已关闭'}（AI 分析后自动开单，正式网为实盘）。` +
+                `仅控自动开新单；手动开单、AI 分析、结算巡检均不受限。在「系统配置」弹窗中可切换。`
+              }
+            >
+              <span>
                 <Tag color={tnTrading ? 'orange' : 'default'} style={{ fontSize: 14, marginInlineEnd: 6 }}>
                   测 {tnTrading ? '运行中' : '关'}
                 </Tag>
-              </Tooltip>
-              <Tooltip title={`正式网自动成交（AI 分析后自动开单，实盘）${liveTrading ? '运行中' : '已关闭'}`}>
                 <Tag color={liveTrading ? 'volcano' : 'default'} style={{ fontSize: 14, marginInlineEnd: 0 }}>
                   正 {liveTrading ? '运行中' : '关'}
                 </Tag>
-              </Tooltip>
-            </span>
+              </span>
+            </Tooltip>
           )}
         />
       </Col>
