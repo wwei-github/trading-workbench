@@ -83,7 +83,8 @@ def test_sibling_live_preferred(db, fake_attr):
 
     results = review_tasks.run_ai_attribution(db, _FakePool(), None, [live, tn])
     assert len(fake_attr) == 1 and fake_attr[0] == live.id  # 只归因正式网那笔
-    assert len(results) == 1
+    assert len(results) == 2  # 1 笔归因 + 1 笔跳过（明细可见）
+    assert results[0].get("skipped") is True
     db.refresh(tn)
     assert tn.attributed_at is not None
     assert "镜像单" in (tn.error_lesson or "")
@@ -106,6 +107,39 @@ def test_sibling_cross_round_skip(db, fake_attr):
     db.refresh(live)
     assert live.attributed_at is not None
     assert "镜像单" in (live.error_lesson or "")
+
+
+def test_picked_retry_after_llm_failure(db, fake_attr, monkeypatch):
+    """跨轮不误伤（关键回归）：picked 单归因失败（LLM 异常），跳过单的
+    打标不得把它永久挡在门外——下一轮必须重试而不是误判「兄弟已归因」"""
+    aid = uuid.uuid4()
+    live = _rec(testnet=False, analysis_id=aid)
+    tn = _rec(testnet=True, analysis_id=aid)
+    db.add_all([live, tn])
+    db.commit()
+
+    # 轮1：归因抛异常（模拟 LLM 超时/限流）
+    def _boom(rec, klines):
+        raise RuntimeError("LLM timeout")
+
+    monkeypatch.setattr(ai_attribution, "attribute_trade", _boom)
+    results = review_tasks.run_ai_attribution(db, _FakePool(), None, [live, tn])
+    assert results[0].get("skipped") is True   # tn 跳过项（占位）
+    assert results[1].get("ok") is False       # live 归因失败
+    db.refresh(live)
+    assert live.attributed_at is None  # 未归因，留在队列
+
+    # 轮2：live 重进队列（tn 已打标 attributed_at）→ 必须重试归因
+    def _ok(rec, klines):
+        fake_attr.append(rec.id)
+        return {"tags": ["追高"], "lesson": "测试教训"}
+
+    monkeypatch.setattr(ai_attribution, "attribute_trade", _ok)
+    results = review_tasks.run_ai_attribution(db, _FakePool(), None, [live])
+    assert len(fake_attr) == 1 and fake_attr[0] == live.id
+    db.refresh(live)
+    assert live.attributed_at is not None
+    assert live.error_lesson == "测试教训"
 
 
 def test_no_analysis_unaffected(db, fake_attr):

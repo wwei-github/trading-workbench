@@ -189,6 +189,13 @@ def run_trade_review_task():
 # 单轮最多归因笔数（每笔一次 LLM 调用，控制开销与单轮时长）
 ATTRIBUTION_BATCH = 5
 
+# 镜像跳过打标文案（常量）：already 查询以它排除「跳过打标」的兄弟单——
+# 否则 picked 单归因失败重进队列时，会被已打标的跳过单误判为
+# 「兄弟已归因」而永久跳过（跨轮误伤：该单从未真正归因却再无机会）
+MIRROR_SKIP_LESSON = (
+    "同源镜像单已归因（双网同开的同一 AI 结论只复盘一次，正式网优先），本单跳过"
+)
+
 
 def _dedup_sibling_trades(db, trades: list) -> tuple[list, list]:
     """同源镜像单去重（2026-10-03 双网同开）：同一 AI 分析（ai_analysis_id）
@@ -202,11 +209,17 @@ def _dedup_sibling_trades(db, trades: list) -> tuple[list, list]:
     sibling_ids = {t.ai_analysis_id for t in trades if t.ai_analysis_id}
     already = set()
     if sibling_ids:
+        # 已归因判定排除「镜像跳过打标」行（error_lesson == MIRROR_SKIP_LESSON）：
+        # 跳过打标虽写了 attributed_at，但代表的是兄弟单占位而非本组已完成归因
         already = {
             str(aid) for aid in db.execute(
                 select(TradeRecord.ai_analysis_id).where(
                     TradeRecord.ai_analysis_id.in_(sibling_ids),
                     TradeRecord.attributed_at.isnot(None),
+                    or_(
+                        TradeRecord.error_lesson.is_(None),
+                        TradeRecord.error_lesson != MIRROR_SKIP_LESSON,
+                    ),
                 )
             ).scalars().all()
         }
@@ -247,13 +260,11 @@ def run_ai_attribution(db, pool, trader, trades: list) -> list[dict]:
     interval = cfg.kline_interval if cfg else "1h"
 
     trades, mirror_skipped = _dedup_sibling_trades(db, trades)
+    results: list = []
     for rec in mirror_skipped:
         try:
             rec.attributed_at = datetime.utcnow()
-            rec.error_lesson = (
-                "同源镜像单已归因（双网同开的同一 AI 结论只复盘一次，"
-                "正式网优先），本单跳过"
-            )
+            rec.error_lesson = MIRROR_SKIP_LESSON
             db.commit()
         except Exception:
             db.rollback()
@@ -262,8 +273,15 @@ def run_ai_attribution(db, pool, trader, trades: list) -> list[dict]:
             "归因跳过 %s %s（%s）：同源镜像单只复盘一次",
             rec.symbol, rec.direction, "正式网" if rec.testnet else "测试网",
         )
+        # 跳过项也进结果（任务记录明细可见，summary 计数含跳过）
+        results.append({
+            "symbol": rec.symbol,
+            "opened_at": rec.opened_at.isoformat() if rec.opened_at else None,
+            "ok": True,
+            "skipped": True,
+            "lesson": MIRROR_SKIP_LESSON,
+        })
 
-    results = []
     for rec in trades:
         item = {"symbol": rec.symbol, "opened_at": rec.opened_at.isoformat() if rec.opened_at else None}
         try:

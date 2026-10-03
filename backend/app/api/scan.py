@@ -996,12 +996,13 @@ def review_attribute(body: dict, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="AI 未配置（AI_API_KEY 为空）")
 
     trade_id = body.get("trade_id")
+    # 不按当前环境过滤（2026-10-03 双网同开对齐定时任务：归因队列跨双网），
+    # 防重由 attributed_at IS NULL（批量）+ 同源镜像单去重保证
     q = (
         select(TradeRecord)
         .where(
             TradeRecord.status == "CLOSED",
             TradeRecord.exit_reason.isnot(None),
-            TradeRecord.testnet == _get_system_config(db).trading_testnet,
         )
         .order_by(TradeRecord.closed_at.desc())
     )
