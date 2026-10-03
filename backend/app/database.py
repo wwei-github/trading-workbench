@@ -198,6 +198,14 @@ def _run_migrations(engine):
             "ALTER TABLE trade_records "
             "DROP CONSTRAINT IF EXISTS trade_records_ai_analysis_id_key"
         ))
+        # 旧唯一在线上实际是 UNIQUE INDEX 形态（ix_trade_records_ai_analysis_id，
+        # 建库早期对 unique 列同时声明 index 的产物），DROP CONSTRAINT 摸不到它——
+        # 与复合唯一并存导致双网镜像单第二网插入必撞 UniqueViolation，并触发
+        # 开仓保险丝（撤 SL/TP + reduceOnly 市价平仓）：2026-10-03 线上事故
+        # UBUSDT/MANAUSDT live 开仓即被平。幂等补删 INDEX 形态
+        conn.execute(text(
+            "DROP INDEX IF EXISTS ix_trade_records_ai_analysis_id"
+        ))
         conn.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_trade_analysis_account "
             "ON trade_records (ai_analysis_id, account_key, testnet)"
