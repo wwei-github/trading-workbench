@@ -27,6 +27,21 @@ class BinanceTradeError(Exception):
     """币安交易接口错误（含 HTTP 非 2xx 与返回码错误）"""
 
 
+def _brief_body(resp: httpx.Response, limit: int = 160) -> str:
+    """错误响应体摘要（日志可读性）：JSON 错误体保留截断原文（含币安
+    code/msg，排障有价值）；HTML 错误页压成一行标记——币安对部分新合约
+    bookTicker 等 404 返回整页 HTML，原文会把标签垃圾带进 worker 日志与
+    系统日志展示。"""
+    text = (resp.text or "").strip()
+    if not text:
+        return "（空响应体）"
+    if text[:1] == "{":
+        return text[:limit]
+    if text[:1] == "<" or "text/html" in (resp.headers.get("content-type") or ""):
+        return "（HTML 错误页，略）"
+    return text[:limit]
+
+
 # 逐 symbol 的交易规则缓存（进程内，按环境分桶）：stepSize/tickSize/minNotional/minQty
 _filters_cache: dict[tuple[bool, str], dict] = {}
 # 逐 symbol 的杠杆分档缓存（进程内，按环境分桶）：leverageBracket 响应（MMR 按名义档位取）
@@ -109,7 +124,7 @@ class BinanceTrader:
             headers={"X-MBX-APIKEY": self.key},
         )
         if resp.status_code >= 400:
-            raise BinanceTradeError(f"{path} {resp.status_code}: {resp.text[:200]}")
+            raise BinanceTradeError(f"{path} {resp.status_code}: {_brief_body(resp)}")
         return resp.json()
 
     @property
