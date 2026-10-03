@@ -40,8 +40,8 @@ export default function TradingConfigPanel() {
         // 风控参数（2026-10-02 上页面）：null = 回落 env 默认；比例字段按 % 编辑
         min_recommendation: aiConfig.min_recommendation ?? null,
         daily_loss_stop_pct: aiConfig.daily_loss_stop_pct ?? null, // % 值（9=9%）直存
-        daily_loss_stop_enabled: aiConfig.daily_loss_stop_enabled == null
-          ? 'default' : aiConfig.daily_loss_stop_enabled ? 'on' : 'off',
+        // 熔断开关两态化（2026-10-04 去「默认」档）：null（未定制旧行）按开启展示，保存即写布尔
+        daily_loss_stop_enabled: aiConfig.daily_loss_stop_enabled === false ? 'off' : 'on',
         ai_rr_min: aiConfig.ai_rr_min ?? null,
         risk_pct: aiConfig.risk_pct ?? null, // % 值（3=3%）直存
         leverage_max: aiConfig.leverage_max ?? null,
@@ -78,8 +78,7 @@ export default function TradingConfigPanel() {
         // 风控参数（null/清空 = 恢复 env 默认；% 值字段直存，比例字段 /100）
         min_recommendation: values.min_recommendation ?? null,
         daily_loss_stop_pct: values.daily_loss_stop_pct ?? null,
-        daily_loss_stop_enabled: values.daily_loss_stop_enabled === 'default'
-          ? null : values.daily_loss_stop_enabled === 'on',
+        daily_loss_stop_enabled: values.daily_loss_stop_enabled === 'on',
         ai_rr_min: values.ai_rr_min ?? null,
         risk_pct: values.risk_pct ?? null,
         leverage_max: values.leverage_max ?? null,
@@ -265,11 +264,10 @@ export default function TradingConfigPanel() {
           <Form.Item
             label="当日亏损熔断开关"
             name="daily_loss_stop_enabled"
-            tooltip="UTC 当日已平仓净亏达阈值停开新仓（AI 分析/巡检照常）；默认开启"
+            tooltip="UTC 当日已平仓净亏达阈值停开新仓（AI 分析/巡检照常），顶部卡片「熔断状态」实时展示；触发后 UTC 0 点自动恢复"
           >
             <Select
               options={[
-                { label: '默认（开启）', value: 'default' },
                 { label: '开启', value: 'on' },
                 { label: '关闭', value: 'off' },
               ]}

@@ -99,3 +99,104 @@ def test_other_account_not_fused(db, monkeypatch):
 def test_other_env_not_matched(db):
     """测试网账号（live 口径 NULL 行不回落）：仅 testnet=true 的 NULL 行 -77"""
     assert _daily_closed_pnl(db, "any-live-missing", True) == pytest.approx(-77.0)
+
+
+# ── breaker_status_by_net（2026-10-04 顶部卡片「熔断状态」列） ─────────
+
+
+class _FakeTrader:
+    """按账号返回预设钱包，免打币安"""
+    wallets: dict = {}
+
+    def __init__(self, account):
+        self.account = account
+
+    def wallet_balance(self):
+        key = self.account if isinstance(self.account, str) else "?"
+        return {"wallet": _FakeTrader.wallets.get(key, 500.0), "available": 0.0}
+
+
+def _setup_breaker(monkeypatch, accounts):
+    from types import SimpleNamespace
+    import app.services.account_registry as reg
+    import app.services.binance_trader as bt
+    import app.services.trade_engine as te
+
+    cfg = SimpleNamespace(daily_loss_stop_enabled=True, daily_loss_stop_pct=9)
+    monkeypatch.setattr(reg, "auto_trade_accounts", lambda db: accounts)
+    monkeypatch.setattr(bt, "BinanceTrader", _FakeTrader)
+    te._wallet_cache.clear()
+    return cfg
+
+
+def test_breaker_status_by_net_states(db, monkeypatch):
+    """live 亏 -25（阈值 45=基数 500×9%）未熔断；补亏至 -55 → active=True；
+    testnet 无平仓 → 正常。钱包走 fake，不触网"""
+    from types import SimpleNamespace
+    from app.services.trade_engine import breaker_status_by_net
+
+    accounts = [
+        SimpleNamespace(key="live-1", testnet=False),
+        SimpleNamespace(key="testnet-1", testnet=True),
+    ]
+    _FakeTrader.wallets = {"live-1": 500.0, "testnet-1": 500.0}
+    cfg = _setup_breaker(monkeypatch, accounts)
+
+    out = breaker_status_by_net(db, cfg)
+    assert out["live"] == {"enabled": True, "active": False, "day_pnl": -25.0, "cap": 45.0}
+    # testnet 账号吃夹具里 NULL/testnet 回落行 -77 ≤ -45 → 熔断（回落语义与开仓闸门同源）
+    assert out["testnet"]["active"] is True and out["testnet"]["day_pnl"] == -77.0
+
+    db.execute(text(_row("live-1", False, "CLOSED", datetime.utcnow(), -30.0)))
+    db.commit()
+    out = breaker_status_by_net(db, cfg)
+    assert out["live"]["active"] is True and out["live"]["day_pnl"] == -55.0
+
+
+def test_breaker_status_disabled_and_wallet_fail(db, monkeypatch):
+    """开关关 → enabled=False / active=None；钱包查询失败且无缓存 → active=None
+    （未知态），不影响 day_pnl 计算"""
+    from types import SimpleNamespace
+    from app.services.trade_engine import breaker_status_by_net
+
+    accounts = [SimpleNamespace(key="live-1", testnet=False)]
+    cfg = _setup_breaker(monkeypatch, accounts)
+    cfg.daily_loss_stop_enabled = False
+    out = breaker_status_by_net(db, cfg)
+    assert out["live"]["enabled"] is False and out["live"]["active"] is None
+
+    cfg.daily_loss_stop_enabled = True
+
+    class _Boom:
+        def __init__(self, account):
+            pass
+
+        def wallet_balance(self):
+            raise RuntimeError("network down")
+
+    import app.services.binance_trader as bt
+    monkeypatch.setattr(bt, "BinanceTrader", _Boom)
+    out = breaker_status_by_net(db, cfg)
+    assert out["live"]["active"] is None and out["live"]["day_pnl"] == -25.0
+
+
+def test_breaker_status_multi_account_min_cap(db, monkeypatch):
+    """同网多账号：day_pnl 合计、cap 取最小（最保守）、任一口径触发即熔断；
+    该网无自动交易账号 → enabled=False"""
+    from types import SimpleNamespace
+    from app.services.trade_engine import breaker_status_by_net
+
+    accounts = [
+        SimpleNamespace(key="live-1", testnet=False),
+        SimpleNamespace(key="live-2", testnet=False),
+    ]
+    _FakeTrader.wallets = {"live-1": 500.0, "live-2": 1000.0}  # cap 45 / 90
+    cfg = _setup_breaker(monkeypatch, accounts)
+
+    out = breaker_status_by_net(db, cfg)
+    assert out["live"]["day_pnl"] == pytest.approx(-25.0 + -7.0)
+    assert out["live"]["cap"] == 45.0
+    assert out["live"]["active"] is False
+
+    no_acc = breaker_status_by_net(db, cfg)  # 无账号网
+    assert no_acc["testnet"]["enabled"] is False and no_acc["testnet"]["active"] is None

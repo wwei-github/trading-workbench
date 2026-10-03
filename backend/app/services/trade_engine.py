@@ -17,6 +17,7 @@
 """
 import logging
 import math
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_DOWN, Decimal
 from types import SimpleNamespace
@@ -686,6 +687,70 @@ def _daily_loss_cap(wallet: float, pct: Optional[float] = None) -> float:
     None 回落 env 默认。"""
     _pct = settings.DAILY_LOSS_STOP_PCT if pct is None else float(pct)
     return _capital_base(wallet) * _pct / 100.0
+
+
+# 钱包余额缓存（熔断状态卡片用）：account_key → (wallet, ts)，5 分钟 TTL——
+# scan_status 前端 30s 轮询，逐次查币安会把 GET /fapi/v2/account 打成高频
+_wallet_cache: dict[str, tuple[float, float]] = {}
+
+
+def breaker_status_by_net(db: Session, cfg) -> dict:
+    """各网当日熔断状态（顶部卡片「熔断状态」列，2026-10-04）：
+    {"testnet": {...}, "live": {...}}，每网：
+    - enabled：熔断生效前提（开关开 && 阈值>0 && 该网有自动交易账号）
+    - active：True=已熔断 / False=未熔断 / None=无法判定（钱包查询失败或未启用）
+    - day_pnl：该网自动交易账号 UTC 当日已平仓净亏合计
+    - cap：熔断阈值（多账号取最小=最保守）
+    钱包余额 5 分钟进程内缓存；这是展示口径，开仓拦截仍以 open gate 实时判定为准。"""
+    from app.services.account_registry import auto_trade_accounts
+
+    enabled_cfg = (
+        bool(cfg.daily_loss_stop_enabled) if cfg.daily_loss_stop_enabled is not None
+        else settings.DAILY_LOSS_STOP_ENABLED
+    )
+    pct = (
+        float(cfg.daily_loss_stop_pct) if cfg.daily_loss_stop_pct is not None
+        else float(settings.DAILY_LOSS_STOP_PCT)
+    )
+    breaker_on = enabled_cfg and pct > 0
+
+    by_net: dict[bool, list] = {True: [], False: []}
+    for acc in auto_trade_accounts(db):
+        by_net[acc.testnet].append(acc)
+
+    now = time.time()
+    out: dict = {}
+    for net, net_key in ((True, "testnet"), (False, "live")):
+        accs = by_net[net]
+        day_pnl = sum(_daily_closed_pnl(db, a.key, a.testnet) for a in accs)
+        caps: list[float] = []
+        any_active = False
+        if breaker_on and accs:
+            for a in accs:
+                cached = _wallet_cache.get(a.key)
+                wallet = cached[0] if cached and now - cached[1] < 300 else None
+                if wallet is None:
+                    try:
+                        from app.services.binance_trader import BinanceTrader
+                        wallet = BinanceTrader(a.key).wallet_balance()["wallet"]
+                        _wallet_cache[a.key] = (wallet, now)
+                    except Exception as e:
+                        logger.warning("熔断状态取钱包失败（%s）：%s", a.key, e)
+                        if cached:
+                            wallet = cached[0]  # 过期缓存兜底展示，总比未知好
+                if wallet is None:
+                    continue
+                cap = _daily_loss_cap(wallet, pct=pct)
+                caps.append(cap)
+                if day_pnl <= -cap:  # 多账号共用日账，任一账号口径触发即标熔断
+                    any_active = True
+        out[net_key] = {
+            "enabled": breaker_on and bool(accs),
+            "active": (any_active if (breaker_on and accs and caps) else None),
+            "day_pnl": round(day_pnl, 2),
+            "cap": round(min(caps), 2) if caps else None,
+        }
+    return out
 
 
 def _consecutive_losses_today(db: Session, account_key: Optional[str], testnet: bool) -> int:

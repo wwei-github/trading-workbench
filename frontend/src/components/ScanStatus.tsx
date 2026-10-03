@@ -3,9 +3,11 @@ import { bj } from '../utils/dayjs'
 import { useScanStore } from '../stores/scanStore'
 
 /** 顶部运行状态一览：
- *  自动成交 + 最近扫描（时间+命中）+ 在跑单水位（资金数字全部下沉到各页面概览）。
+ *  自动成交 + 熔断状态 + 最近扫描（时间+命中）+ 在跑单水位（资金数字全部下沉到各页面概览）。
  *  自动成交（2026-10-03 删环境切换）：双网独立开关状态 Tag + 整体 Tooltip
  *  说明（原按钮右侧 EnvironmentTag 徽标已并入此处，页面仅此一处展示）。
+ *  熔断状态（2026-10-04）：各网当日亏损熔断展示（展示口径，钱包 5min 缓存；
+ *  开仓拦截以后端 open gate 实时判定为准）——熔断中=红 / 正常=绿 / 关闭未知=灰。
  *  在跑单口径（2026-09-25 v3）：主数字 = 占上限名额的笔数（OPENED），
  *  已进止盈止损（TP1_HIT/TP2_HIT，止损已移保本）用绿色 Tag 单独标注、不占名额；
  *  满仓红色 / 差一满橙色分级预警。 */
@@ -14,6 +16,29 @@ export default function ScanStatus() {
   const last = status?.last_scan
   const tnTrading = status?.trading_enabled_testnet ?? false
   const liveTrading = status?.trading_enabled_live ?? false
+  const lb = status?.loss_breaker
+
+  // 熔断状态 tag（net=testnet/live，prefix=测/正）：active 三态着色 + tooltip 明细
+  const breakerTag = (net: 'testnet' | 'live', prefix: string, lastMargin: boolean) => {
+    const s = lb?.[net]
+    const active = s?.active
+    const color = active === true ? 'red' : active === false ? 'green' : 'default'
+    const text = active === true ? '熔断中' : active === false ? '正常' : s?.enabled ? '未知' : '关'
+    const tip = active === true
+      ? `${prefix === '测' ? '测试网' : '正式网'}当日亏损熔断已触发：UTC 当日已平仓净亏 ${s!.day_pnl} 达阈值 -${s!.cap}，UTC 0 点自动恢复（停开新仓，AI 分析/巡检不受限）`
+      : active === false
+        ? `${prefix === '测' ? '测试网' : '正式网'}未熔断：UTC 当日已平仓净亏 ${s!.day_pnl} / 阈值 -${s!.cap}（风险基数 × 熔断阈值%，系统配置可调）`
+        : s?.enabled
+          ? `${prefix === '测' ? '测试网' : '正式网'}熔断状态未知：钱包余额查询失败，无法判定（不影响实际开仓拦截）`
+          : `${prefix === '测' ? '测试网' : '正式网'}熔断未启用（开关关闭 / 阈值为 0 / 该网未开自动交易）`
+    return (
+      <Tooltip key={net} title={tip}>
+        <Tag color={color} style={{ fontSize: 14, marginInlineEnd: lastMargin ? 6 : 0 }}>
+          {prefix} {text}
+        </Tag>
+      </Tooltip>
+    )
+  }
 
   const openN = status?.open_trades ?? 0
   const tpHitN = status?.open_tp_hit ?? 0
@@ -51,6 +76,17 @@ export default function ScanStatus() {
                 </Tag>
               </span>
             </Tooltip>
+          )}
+        />
+      </Col>
+      <Col>
+        <Statistic
+          title="熔断状态"
+          valueRender={() => (
+            <span>
+              {breakerTag('testnet', '测', true)}
+              {breakerTag('live', '正', false)}
+            </span>
           )}
         />
       </Col>

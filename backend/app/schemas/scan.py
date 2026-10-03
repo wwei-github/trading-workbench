@@ -84,6 +84,10 @@ class ScanStatusResponse(BaseModel):
     open_tp_hit: int = 0          # 其中已进入止盈止损阶段的（TP1_HIT/TP2_HIT，止损已移保本，不占上限名额）
     max_open_trades: int = 5
     ai_analysis_enabled: bool = False
+    # 各网当日熔断状态（2026-10-04 顶部卡片「熔断状态」列）：
+    # {"testnet": {"enabled", "active", "day_pnl", "cap"}, "live": {...}}
+    # active: True=已熔断 / False=未熔断 / None=无法判定（钱包失败或未启用）
+    loss_breaker: dict = {}
 
 
 # ===== AI 分析 =====

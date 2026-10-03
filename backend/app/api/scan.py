@@ -35,6 +35,7 @@ from app.schemas.scan import (
 )
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services.scanner import classify_volume
+from app.services.trade_engine import breaker_status_by_net
 from app.services.ai_analyzer import analyze_coin
 from app.services.risk_guard import is_pullback_wait
 from app.services.skill_library import list_skills
@@ -200,6 +201,8 @@ def scan_status(db: Session = Depends(get_db)):
         ).scalar_one(),
         max_open_trades=cfg.max_open_trades,
         ai_analysis_enabled=cfg.ai_analysis_enabled,
+        # 各网当日熔断状态（顶部卡片；钱包 5min 缓存，展示口径非拦截口径）
+        loss_breaker=breaker_status_by_net(db, cfg),
     )
 
 

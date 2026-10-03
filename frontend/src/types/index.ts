@@ -67,6 +67,13 @@ export interface ScanStatus {
   open_tp_hit: number;
   max_open_trades: number;
   ai_analysis_enabled: boolean;
+  /** 各网当日熔断状态（2026-10-04 顶部卡片）：active true=已熔断/false=未熔断/null=未知（钱包失败或未启用） */
+  loss_breaker?: Record<'testnet' | 'live', {
+    enabled: boolean;
+    active: boolean | null;
+    day_pnl: number;
+    cap: number | null;
+  }>;
 }
 
 export interface AccountSummary {
@@ -218,7 +225,7 @@ export interface SystemConfig {
   // 风控参数（2026-10-02 上页面）：null=回落 env 默认，页面留空即恢复默认
   min_recommendation?: number | null; // 开单评分门槛（0~100，env 默认 60）
   daily_loss_stop_pct?: number | null; // 当日亏损熔断阈值（% 值，9=风险基数 9%；null=默认）
-  daily_loss_stop_enabled?: boolean | null; // 当日亏损熔断开关（null=默认开）
+  daily_loss_stop_enabled?: boolean | null; // 当日亏损熔断开关（null=未定制按 env 默认开；页面两态化后保存即写布尔）
   ai_rr_min?: number | null; // 盈亏比铁律下限（0.5~10，env 默认 1.5）
   risk_pct?: number | null; // 单笔风险比例（% 值，0.1~20；pct 模式风险基数分档 × 此比例）
   leverage_max?: number | null; // 杠杆上限（1~125，env 默认 20）
