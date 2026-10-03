@@ -36,6 +36,7 @@ DEFAULT_TOUCH_REFS = ALL_TOUCH_REFS
 # scan_filters JSONB 的合法键集（PUT /config 校验与前端字段一一对应）
 SCAN_FILTER_KEYS = (
     "min_volume_24h",             # ① 宇宙层：24h 成交额门槛（USDT）
+    "new_coin_cooldown_days",     # ① 宇宙层：新币冷静期（天，上市未满 N 天不进扫描，0=关闭）
     "breakout_channel_bars",      # ③ 触发层：Donchian 通道回看根数
     "breakout_threshold",         # ③ 触发层：最小突破幅度（0.002=0.2%，毛边不算）
     "breakout_vol_ratio",         # ③ 触发层：放量加分门槛（量比口径，达标+5分不卡死）
@@ -64,6 +65,7 @@ class ScanFilters:
     retest_window_bars: int = 24
     structure_touch_band_pct: float = 0.3
     ema_touch_min_bars: int = 200
+    new_coin_cooldown_days: int = 14
 
 
 def resolve_scan_filters(cfg=None) -> ScanFilters:
@@ -110,6 +112,7 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
 
     return ScanFilters(
         min_volume_24h=_num("min_volume_24h", float(settings.MIN_VOLUME_24H)),
+        new_coin_cooldown_days=_int("new_coin_cooldown_days", settings.NEW_COIN_COOLDOWN_DAYS),
         breakout_channel_bars=_int("breakout_channel_bars", settings.BREAKOUT_CHANNEL_BARS, minimum=5),
         breakout_threshold=_num("breakout_threshold", settings.BREAKOUT_THRESHOLD),
         breakout_vol_ratio=_num("breakout_vol_ratio", settings.BREAKOUT_VOL_RATIO),

@@ -57,6 +57,7 @@ def test_resolve_none_falls_back_to_settings():
     assert flt.candle_max_ema21_dist_pct == 1.5
     assert flt.breakout_channel_bars == 20
     assert flt.ai_max_per_scan == 10
+    assert flt.new_coin_cooldown_days == 14
 
 
 def test_resolve_db_overrides_settings():
@@ -230,6 +231,35 @@ def test_validate_scan_filters_clean_and_reject():
         _validate_scan_filters({"breakout_max_pct": 99})
     with pytest.raises(HTTPException):
         _validate_scan_filters({"breakout_vol_ratio": "x"})
+
+
+# ── 新币冷静期（2026-10-04 NIGHT 案例：上市未满 N 天不进扫描）──────────
+
+
+def test_resolve_new_coin_cooldown():
+    """DB 覆盖生效；0=关闭是合法值；负数/垃圾串逐键容错回落 env 默认"""
+    flt = resolve_scan_filters(SimpleNamespace(scan_filters={"new_coin_cooldown_days": 7}))
+    assert flt.new_coin_cooldown_days == 7
+    assert resolve_scan_filters(
+        SimpleNamespace(scan_filters={"new_coin_cooldown_days": 0})
+    ).new_coin_cooldown_days == 0
+    bad = resolve_scan_filters(SimpleNamespace(scan_filters={
+        "new_coin_cooldown_days": "abc", "x": 1}))
+    assert bad.new_coin_cooldown_days == 14
+
+
+def test_validate_scan_filters_new_coin_cooldown():
+    """PUT 校验：0~90 合法，越界 400"""
+    from fastapi import HTTPException
+
+    from app.api.scan import _validate_scan_filters
+    out = _validate_scan_filters({"new_coin_cooldown_days": 14})
+    assert out == {"new_coin_cooldown_days": 14.0}
+    assert _validate_scan_filters({"new_coin_cooldown_days": 0}) == {"new_coin_cooldown_days": 0.0}
+    with pytest.raises(HTTPException):
+        _validate_scan_filters({"new_coin_cooldown_days": 91})
+    with pytest.raises(HTTPException):
+        _validate_scan_filters({"new_coin_cooldown_days": -1})
 
 
 # ── 触发类型白名单（2026-09-29：结构突破/趋势突破/回踩金K确认，纯金K下线）───

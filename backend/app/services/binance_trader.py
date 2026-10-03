@@ -53,6 +53,8 @@ _risk_tier_cached_at: float = 0.0
 # ARX 案例——数据源是正式网（ARXUSDT 存在、AI 分析照常），测试网未上架
 # → 下单 -1121 Invalid symbol
 _listed_cache: dict[bool, tuple[set, float]] = {}
+# 合约上市时间表缓存（扫描新币冷静期，24h 刷新，按环境分桶）：{symbol: onboardDate ms}
+_onboard_cache: dict[bool, tuple[dict, float]] = {}
 
 
 class BinanceTrader:
@@ -355,6 +357,32 @@ class BinanceTrader:
         except Exception as e:
             logger.warning("listed_symbols 拉取失败（扫描侧放行）: %s", e)
             return (cached or (set(), 0))[0]
+
+    def onboard_dates(self) -> dict[str, int]:
+        """合约上市时间表（扫描新币冷静期过滤）：{symbol: onboardDate 毫秒}。
+
+        与 listed_symbols 同源 exchangeInfo（onboardDate 字段），独立缓存 24h。
+        缺 onboardDate 的合约不进表（调用方查不到 → 放行不误拦）；失败返回空
+        dict（调用方放行，不阻断扫描）。
+        """
+        now = time.time()
+        cached = _onboard_cache.get(self.testnet)
+        if cached and now - cached[1] < 86400:
+            return cached[0]
+        try:
+            r = self._req("GET", "/fapi/v1/exchangeInfo", {})
+            out = {
+                s["symbol"]: int(s["onboardDate"])
+                for s in r.get("symbols", [])
+                if s.get("status") == "TRADING" and s.get("contractType") == "PERPETUAL"
+                and s.get("onboardDate")
+            }
+            if out:  # 拉到空列表视为异常，保留旧缓存
+                _onboard_cache[self.testnet] = (out, now)
+            return _onboard_cache.get(self.testnet, (out, 0))[0]
+        except Exception as e:
+            logger.warning("onboard_dates 拉取失败（扫描侧放行）: %s", e)
+            return (cached or ({}, 0))[0]
 
     # ── 杠杆 / 保证金模式 ─────────────────────────────────────
 

@@ -425,6 +425,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
 # 筛选参数组校验表（2026-09-28）：键 → (最小值, 最大值, 说明)
 _SCAN_FILTER_RANGES: dict[str, tuple[float, float, str]] = {
     "min_volume_24h": (0, 1e9, "24h 成交额门槛（USDT），0=不过滤"),
+    "new_coin_cooldown_days": (0, 90, "新币冷静期（天，上市未满 N 天不进扫描，0=关闭）"),
     "breakout_channel_bars": (5, 200, "Donchian 通道回看根数"),
     "breakout_threshold": (0, 0.05, "最小突破幅度（比例，0.002=0.2%）"),
     "breakout_vol_ratio": (0, 10, "突破量比加分门槛（信号K线量/近20根中位量，达标+5分不卡死）"),

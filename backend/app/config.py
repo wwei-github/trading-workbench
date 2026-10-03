@@ -105,6 +105,8 @@ class Settings(BaseSettings):
     FINGERPRINT_TTL_MIN: int = 60     # 指纹缓存复用窗口（分钟，0.3% 价格分桶）
     AI_MAX_PER_SCAN: int = 10         # 单次扫描批量 AI 分析上限（按24h成交额取前N）
     MIN_VOLUME_24H: float = 3_000_000  # 扫描候选池 24h 成交额下限（USDT），低于此不进扫描
+    NEW_COIN_COOLDOWN_DAYS: int = 14   # 新币冷静期（天）：上市未满 N 天不进扫描（0=关闭），
+                                       # scan_filters.new_coin_cooldown_days 可覆盖
 
     # 市场环境注入（docs/24 A4①）：AI 事实包（P0 单次调用管线）追加本币资金费率
     # 与 BTC 状态摘要——系统提示词要求"勿臆测"，普跌日无环境数据 AI 只能凭本币

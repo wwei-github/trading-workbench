@@ -17,6 +17,8 @@ const ALL_TRIGGER_VALUES = TRIGGER_OPTIONS.map((o) => o.value)
 const FILTER_FIELDS: { name: string; label: string; min: number; max: number; step?: number; tooltip: string }[] = [
   { name: 'min_volume_24h', label: '24h成交额门槛（USDT）', min: 0, max: 1e9, step: 100000,
     tooltip: '扫描候选池流动性门槛，低于此不进扫描；0=不过滤' },
+  { name: 'new_coin_cooldown_days', label: '新币冷静期（天）', min: 0, max: 90,
+    tooltip: '上市未满 N 天的合约不进扫描：新币盘口深度极不稳定，开仓滑点达标≠止损出场不滑爆（NIGHT 案例：出场滑点 1.98%，实亏达计划风险 2.34 倍）；0=关闭' },
   { name: 'breakout_threshold', label: '最小突破幅度（比例）', min: 0, max: 0.05, step: 0.001,
     tooltip: '收盘须越过突破位（结构前高/前低或 Donchian 轨）此幅度才算突破（0.002=0.2%），毛边突破不算；0=关闭' },
   { name: 'breakout_vol_ratio', label: '突破量比门槛', min: 0, max: 10, step: 0.1,

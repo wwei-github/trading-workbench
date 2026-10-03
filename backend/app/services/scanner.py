@@ -14,6 +14,7 @@
 方向判定权从信号路径移交给指标多数决，与 AI 提示词的多数决规则同一把尺子。
 """
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
@@ -338,6 +339,28 @@ class Scanner:
                 before = len(symbols_data)
                 symbols_data = [s for s in symbols_data if s["symbol"] in listed]
                 logger.info("下单环境可交易过滤（%d 个合约）：%d → %d", len(listed), before, len(symbols_data))
+
+            # C0' 新币冷静期（2026-10-04 NIGHT 案例，用户拍板默认 14 天可配）：
+            # 上市未满 N 天的合约不进扫描。新币盘口深度极不稳定——开仓时刻滑点
+            # 实测达标 ≠ 止损出场（触发=快速砸盘时刻）不滑爆，NIGHT 出场滑点
+            # 1.98% 致实亏 234% R；近两天超预算自动拉黑的单子全部是上市 1-2 天
+            # 的新合约。onboardDate 与 listed 同源 exchangeInfo（零额外请求语义），
+            # 数据源 live 优先（与 C 段 risk_tier 同口径）；缺表/缺该键放行不误拦；
+            # 冷静期 0=关闭；scan_filters.new_coin_cooldown_days 可覆盖（DB>env>默认）
+            cooldown_days = flt.new_coin_cooldown_days
+            if cooldown_days > 0:
+                onboard = BinanceTrader(False).onboard_dates()
+                if onboard:
+                    cutoff_ms = (time.time() - cooldown_days * 86400) * 1000
+                    before = len(symbols_data)
+                    symbols_data = [
+                        s for s in symbols_data
+                        if (od := onboard.get(s["symbol"])) is None or od <= cutoff_ms
+                    ]
+                    logger.info(
+                        "新币冷静期过滤（上市 <%d 天）：%d → %d",
+                        cooldown_days, before, len(symbols_data),
+                    )
 
             # C 交易所风险档位过滤（2026-09-18）：最大允许杠杆 <10× 的币不进候选
             # （交易所对其流动性/风险的终极标注；4USDT 案例）。注意不能按首档 MMR
