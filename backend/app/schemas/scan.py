@@ -76,11 +76,11 @@ class ScanStatusResponse(BaseModel):
     last_scan: Optional[ScanRecordOut] = None
     is_scanning: bool
     config: ScanConfig
-    # 交易运行状态（2026-09-20 顶部一览；2026-10-03 双网独立开关）
+    # 交易运行状态（2026-09-20 顶部一览；2026-10-03 双网独立开关；
+    # 同日删环境切换，在跑单统计为双网合计）
     trading_enabled_testnet: bool = False  # 测试网自动交易开关
     trading_enabled_live: bool = False     # 正式网自动交易开关
-    trading_testnet: bool = True
-    open_trades: int = 0          # 当前环境在跑单数（OPENED/TP1_HIT/TP2_HIT 三状态合计）
+    open_trades: int = 0          # 在跑单数（双网合计，OPENED/TP1_HIT/TP2_HIT 三状态）
     open_tp_hit: int = 0          # 其中已进入止盈止损阶段的（TP1_HIT/TP2_HIT，止损已移保本，不占上限名额）
     max_open_trades: int = 5
     ai_analysis_enabled: bool = False
@@ -216,14 +216,13 @@ class SystemConfigOut(BaseModel):
     risk_budget_mode: str = "pct"
     risk_fixed_amount: float = 3.0
 
-    # 运行时环境与自动交易开关（2026-09-20 由 env 迁移进 DB，页面可改；
-    # 2026-10-03 总开关拆分为双网独立开关，可同时开启——同一 AI 分析双网各开一单）
-    trading_testnet: bool = True
+    # 自动交易开关（2026-09-20 由 env 迁移进 DB，页面可改；2026-10-03 总开关
+    # 拆分为双网独立开关可同时开启——同一 AI 分析双网各开一单；同日删环境切换）
     trading_enabled_testnet: bool = True   # 测试网自动交易（默认开）
     trading_enabled_live: bool = False     # 正式网自动交易（默认关，实盘安全基线）
     # 多账号（docs/17 P0/P1）：.env 注册表只读展示 + 主账号 + 启用自动交易的 live 账号集合
     current_account_key: Optional[str] = None
-    live_trading_keys: list[str] = []   # P1 扇出：正式网模式下执行自动交易的账号（空=回落 live-1）
+    live_trading_keys: list[str] = []   # P1 扇出：正式网自动交易开关开启时扇出的账号（空=回落 live-1）
     accounts: list["AccountBrief"] = []
     # 双环境凭据配置状态（只读，不返回 key 本身）
     binance_key_live: bool = False      # 正式网 key 已配置
@@ -299,13 +298,12 @@ class SystemConfigUpdate(BaseModel):
     risk_budget_mode: Optional[str] = None
     risk_fixed_amount: Optional[float] = None
 
-    # 运行时环境与自动交易开关（2026-10-03 拆分双网独立开关，语义见 SystemConfigOut）
-    trading_testnet: Optional[bool] = None
+    # 自动交易开关（2026-10-03 拆分双网独立开关，语义见 SystemConfigOut）
     trading_enabled_testnet: Optional[bool] = None
     trading_enabled_live: Optional[bool] = None
-    # 当前正式网账号（docs/17）：需为注册表内 live 账号
+    # 当前正式网主账号（docs/17）：需为注册表内 live 账号（仅前端展示/默认 scope）
     current_account_key: Optional[str] = None
-    # P1 扇出（docs/17 §3）：启用自动交易的正式网账号集合；正式网模式下生效
+    # P1 扇出（docs/17 §3）：启用自动交易的正式网账号集合
     live_trading_keys: Optional[list[str]] = None
 
     # 规则补丁参数（比例口径；传 null 恢复默认）

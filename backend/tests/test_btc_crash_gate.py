@@ -18,7 +18,6 @@ from app.database import Base  # noqa: E402
 from app.models.scan import AIAnalysis  # noqa: E402
 from app.models.system_config import SystemConfig  # noqa: E402
 from app.services import market_data as md  # noqa: E402
-from app.services import binance_trader as bt_mod  # noqa: E402
 from app.services.trade_engine import try_open_for_analysis  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
@@ -40,15 +39,6 @@ def _clear_cache():
     md._cache.pop("btc_crash_active", None)
     yield
     md._cache.pop("btc_crash_active", None)
-
-
-@pytest.fixture(autouse=True)
-def _stub_listed(monkeypatch):
-    class _StubListed:
-        def listed_symbols(self):
-            return set()
-
-    monkeypatch.setattr(bt_mod, "BinanceTrader", _StubListed)
 
 
 @pytest.fixture()
@@ -77,6 +67,10 @@ class _FakeTrader:
 
     account_key = "testnet-1"
     testnet = True
+
+    def listed_symbols(self):
+        # 本单账号 trader 直接调用（2026-10-03）：空集合=放行（同「拉取失败放行」语义）
+        return set()
 
     def positions(self):
         return {}

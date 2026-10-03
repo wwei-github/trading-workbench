@@ -5,6 +5,7 @@ import {
   Empty,
   Button,
   Modal,
+  Radio,
   message,
 } from "antd";
 import {
@@ -26,7 +27,7 @@ import {
   EMA_STATE_FILTERS,
   patternStyle,
 } from "../constants/labels";
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import KlineChart from "./KlineChart";
 import AiExpandContent from "./AiExpandContent";
 import type { AIAnalysis, ScanResult } from "../types";
@@ -221,16 +222,49 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
   // 行级 loading 防连点（scanResultId -> true）
   const [openLoadingMap, setOpenLoadingMap] = useState<Record<string, boolean>>({});
 
+  // 手动开单账号选择（2026-10-03 删环境切换：后端不再猜网，弹窗显式选账号，
+  // 默认 testnet-1 实盘安全基线；ref 收集选择——Modal.confirm 命令式弹窗不响应组件级 state）
+  const openAccountRef = useRef<string>("testnet-1");
+
   const handleOpenTrade = (record: ScanResult) => {
     const ai = aiMap[record.id];
     if (!ai) return;
     const dirLabel = ai.direction === "long" ? "开多" : "开空";
+    const accs = (aiConfig?.accounts ?? []).filter((a) => a.configured);
+    const defaultKey =
+      accs.find((a) => a.key === "testnet-1")?.key || accs[0]?.key || "testnet-1";
+    openAccountRef.current = defaultKey;
     Modal.confirm({
       title: `确认手动开单：${record.symbol} ${dirLabel}？`,
       content: (
         <div style={{ fontSize: 12, lineHeight: 1.9 }}>
           <div>入场价：{ai.entry_price}　止损：{ai.stop_loss}　止盈一：{ai.take_profit_1}</div>
-          <div>推荐度：{Math.round(ai.recommendation ?? 0)}　当前交易账号</div>
+          <div>推荐度：{Math.round(ai.recommendation ?? 0)}</div>
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>开单账号（正式网为实盘，请确认）</div>
+            {accs.length === 0 ? (
+              <div style={{ color: "#fa8c16" }}>账号清单未加载，请先打开「系统配置」确认服务器 .env 已配置账号</div>
+            ) : (
+              <Radio.Group
+                defaultValue={defaultKey}
+                onChange={(e) => {
+                  openAccountRef.current = e.target.value;
+                }}
+                options={accs.map((a) => ({
+                  value: a.key,
+                  label: (
+                    <span>
+                      <Tag color={a.testnet ? "orange" : "volcano"} style={{ marginInlineEnd: 4 }}>
+                        {a.testnet ? "测试网" : "正式网"}
+                      </Tag>
+                      {a.name}
+                      <span style={{ color: "#999", marginLeft: 4 }}>{a.key}</span>
+                    </span>
+                  ),
+                }))}
+              />
+            )}
+          </div>
           {ai.open_block_reason && (
             <div style={{ color: "#fa8c16" }}>上次拦截：{ai.open_block_reason}</div>
           )}
@@ -241,7 +275,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       onOk: async () => {
         setOpenLoadingMap((m) => ({ ...m, [record.id]: true }));
         try {
-          const res = await scanApi.trades.openFromAnalysis(ai.id);
+          const res = await scanApi.trades.openFromAnalysis(ai.id, openAccountRef.current);
           if (res.opened) {
             message.success(`${record.symbol} 开单成功（${res.account_key}），详见交易记录`);
           } else {

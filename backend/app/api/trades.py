@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -53,22 +53,29 @@ def _account_scope_filter(model, scope: str):
 
 
 @router.get("/account-summary")
-def account_summary(db: Session = Depends(get_db)):
-    """当前交易账号合约账户资金概览（docs/06 账户维度补充 + docs/17 多账号）：
+def account_summary(
+    account_key: Optional[str] = Query(None, description="账号 key；缺省 testnet-1（安全默认）"),
+    db: Session = Depends(get_db),
+):
+    """指定账号合约账户资金概览（docs/06 账户维度补充 + docs/17 多账号）：
     总资金=钱包+未实现盈亏；总收益=已实现+未实现；收益率=总收益÷本金，
     本金=总资金−总收益（自洽口径，不依赖划转记录）。
     今日口径按北京自然日切（闭单 closed_at 落当日 00:00–24:00）：
     today_realized=当日闭单已实现盈亏；today_pnl_pct=（今日已实现+未实现）
     ÷ 期初钱包（当前钱包−今日已实现，忽略日内划转，近似自洽）。
-    收益统计按当前账号 account_key 过滤（NULL 旧行按 testnet 回落）。
+    收益统计按账号 account_key 过滤（NULL 旧行按 testnet 回落）。
+    2026-10-03 删环境切换：账号由前端 scope 显式解析传入，缺省 testnet-1。
     请求失败返回 available=False 前端降级显示「--」，不阻塞页面"""
     from app.services.binance_trader import BinanceTrader
     from app.services import account_registry as reg
 
-    cfg = db.get(SystemConfig, 1)
-    testnet = bool(cfg.trading_testnet) if cfg else True
-    acc = reg.resolve_current_account(db)
-    acc_key = acc.key if acc else ("testnet-1" if testnet else "live-1")
+    acc = reg.get_account(account_key) if account_key else None
+    if account_key and acc is None:
+        raise HTTPException(status_code=400, detail=f"账号 {account_key} 不在注册表中（检查服务器 .env）")
+    if acc is None:
+        acc = (reg.testnet_accounts() or reg.live_accounts() or [None])[0]
+    acc_key = acc.key if acc else "testnet-1"
+    testnet = acc.testnet if acc else True
     out: dict = {"testnet": testnet, "account_key": acc_key,
                  "account_name": acc.name if acc else acc_key, "available": False}
     try:
@@ -254,27 +261,19 @@ def adopt_now(db: Session = Depends(get_db)):
     """手动触发一次自动导入持仓（2026-09-24）：接管逻辑与每小时巡检一致
     （交易所非零持仓未被接管的 = App 手动单，SL/TP 取条件单原值接管）。
 
-    账号范围（2026-10-03 与巡检接管口径对齐）：
-    - 测试网环境 = 测试网账号 + 正式网启用账号（两网手动单都导入）
-    - 正式网环境 = 仅正式网启用账号
+    账号范围（2026-10-03 删环境切换）：双网管理清单 = 测试网账号 + 正式网
+    启用账号（managed_accounts）——两网手动单始终全部导入，纳入巡检。
     逐账号在各自开仓锁内执行，全有全无（任一拿锁失败即 409）。"""
     from redis import Redis
     from app.config import settings
     from app.services.binance_trader import BinanceTrader
     from app.services.trade_engine import auto_adopt_positions
-    from app.services.account_registry import enabled_accounts, live_enabled_accounts
+    from app.services.account_registry import managed_accounts
     from app.tasks.trade_tasks import (
         _acquire_open_lock, _release_open_lock, _OPEN_LOCK_TTL_S,
     )
 
-    cfg = db.get(SystemConfig, 1)
-    testnet = bool(cfg.trading_testnet) if cfg else True
-    # 环境账号清单：测试网环境按 enabled_accounts（测试网扇出口径）；
-    # 正式网环境直接用 live_enabled_accounts（enabled_accounts 正式网模式
-    # 与之相同，但 live 未配置时会回落测试网账号——正式网环境不该导入测试网）
-    env_accs = enabled_accounts(db) if testnet else live_enabled_accounts(db)
-    env_keys = {a.key for a in env_accs}
-    accs = env_accs + [a for a in live_enabled_accounts(db) if a.key not in env_keys]
+    accs = managed_accounts(db)
     if not accs:
         raise HTTPException(status_code=400, detail="无已配置的交易账号")
 
@@ -324,11 +323,12 @@ def inspect_now():
 @router.post("/open-from-analysis")
 def open_from_analysis(payload: OpenFromAnalysisRequest, db: Session = Depends(get_db)):
     """手动开单（2026-09-27 扫描结果表「开单」按钮）：对指定 AI 分析立即走一次
-    完整开仓闸门（try_open_for_analysis），仅当前账号、不做多账号扇出。
+    完整开仓闸门（try_open_for_analysis），仅请求指定的账号、不做多账号扇出。
 
     与自动开仓路径（open_trade_for_analysis celery 任务）的差异：
-    - 仅 resolve_current_account 当前账号（手动点击是单行明确意图，扇出会在
-      所有启用账号真实下单，语义不对）
+    - 仅 payload.account_key 指定账号（2026-10-03 删环境切换：开到哪个网由
+      用户在弹窗显式选择；手动点击是单行明确意图，扇出会在所有启用账号
+      真实下单，语义不对）
     - 不受 trading_enabled 约束（2026-09-28 语义拆分：自动交易开关仅指
       每小时 AI 分析后自动成交；开单按钮是用户对当下价格的明确意图）
     - force_market=True：以现价市价即时入场，跳过入场偏离/待回踩时机闸门；
@@ -351,7 +351,7 @@ def open_from_analysis(payload: OpenFromAnalysisRequest, db: Session = Depends(g
         _release_open_lock,
     )
 
-    cfg = db.get(SystemConfig, 1)  # 环境回落用；开单按钮不受交易开关约束（2026-09-28）
+    # 手动开单不受自动交易开关约束（2026-09-28 语义拆分）；账号由请求显式指定
 
     try:
         analysis_id = _uuid.UUID(payload.analysis_id)
@@ -363,11 +363,15 @@ def open_from_analysis(payload: OpenFromAnalysisRequest, db: Session = Depends(g
     if a.trade_decision != "suggest":
         raise HTTPException(status_code=400, detail="该分析非建议开单（suggest）结论")
 
-    acc = reg.resolve_current_account(db)
-    acc_key = acc.key if acc else (
-        "testnet-1" if (cfg is None or cfg.trading_testnet) else "live-1"
-    )
-    trader = BinanceTrader(acc_key)
+    # 2026-10-03 删环境切换：手动开单账号由请求显式指定（前端弹窗选账号），
+    # 后端不猜网——防「以为开测试网实际开了实盘」的语义歧义
+    acc = reg.get_account(payload.account_key)
+    if acc is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"账号 {payload.account_key} 不在注册表中（检查服务器 .env）",
+        )
+    trader = BinanceTrader(acc.key)
     if not trader.configured:
         raise HTTPException(status_code=400, detail="当前账号未配置 API 凭据")
 

@@ -127,10 +127,10 @@ class Settings(BaseSettings):
     # 未配置时回落 BINANCE_TESTNET_*，保持旧行为
     BINANCE_SPOT_TESTNET_API_KEY: str = ""
     BINANCE_SPOT_TESTNET_SECRET_KEY: str = ""
-    TRADING_TESTNET: bool = True      # 初始交易环境（运行时以 system_config.trading_testnet 为准，此值仅首次建行注入）
     TRADING_ENABLED: bool = False     # （废弃 2026-10-03：拆分为下方双网开关；仅旧列首次注入用）
     # 双网自动交易开关初始值（运行时以 system_config.trading_enabled_testnet/live 为准，
-    # 此值仅首次建行注入）：测试网默认开 / 正式网默认关（实盘安全基线，需页面显式开启）
+    # 此值仅首次建行注入）：测试网默认开 / 正式网默认关（实盘安全基线，需页面显式开启）。
+    # TRADING_TESTNET 已废弃（同日删环境切换：自动开单按双网开关、手动开单显式选账号）
     TRADING_ENABLED_TESTNET: bool = True
     TRADING_ENABLED_LIVE: bool = False
     TRADING_MIN_RECOMMENDATION: float = 60.0  # 开单推荐度门槛

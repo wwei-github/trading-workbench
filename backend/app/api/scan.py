@@ -187,17 +187,15 @@ def scan_status(db: Session = Depends(get_db)):
         config=config,
         trading_enabled_testnet=cfg.trading_enabled_testnet,
         trading_enabled_live=cfg.trading_enabled_live,
-        trading_testnet=cfg.trading_testnet,
+        # 2026-10-03 删环境切换：在跑单统计为双网合计（明细按记录自带 testnet 区分）
         open_trades=db.execute(
             select(func.count()).select_from(TradeRecord).where(
                 TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")),
-                TradeRecord.testnet == cfg.trading_testnet,
             )
         ).scalar_one(),
         open_tp_hit=db.execute(
             select(func.count()).select_from(TradeRecord).where(
                 TradeRecord.status.in_(("TP1_HIT", "TP2_HIT")),
-                TradeRecord.testnet == cfg.trading_testnet,
             )
         ).scalar_one(),
         max_open_trades=cfg.max_open_trades,
@@ -373,7 +371,6 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         trading_min_free_pct=float(cfg.trading_min_free_pct),
         risk_budget_mode=cfg.risk_budget_mode or "pct",
         risk_fixed_amount=float(cfg.risk_fixed_amount if cfg.risk_fixed_amount is not None else 3.0),
-        trading_testnet=cfg.trading_testnet,
         trading_enabled_testnet=cfg.trading_enabled_testnet,
         trading_enabled_live=cfg.trading_enabled_live,
         current_account_key=cfg.current_account_key,
@@ -541,13 +538,11 @@ def update_system_config(
         if not (0 <= body.trading_min_free_pct <= 1):
             raise HTTPException(status_code=400, detail="trading_min_free_pct 需在 0~1 之间")
         cfg.trading_min_free_pct = body.trading_min_free_pct
-    # 运行时环境与总开关（任务级即时生效：celery 任务每轮读 DB）
-    if body.trading_testnet is not None:
-        cfg.trading_testnet = body.trading_testnet
-        # 2026-10-03 双网独立开关：环境切换不再联锁开关（正式网自动交易
-        # trading_enabled_live 默认关即安全基线，是否开启是页面显式动作）
-    # 多账号（docs/17）：切换当前正式网账号；选中 live 账号即进入正式网模式，
-    # 切回测试网保留账号选择便于再切
+    # 运行时开关（任务级即时生效：celery 任务每轮读 DB）。
+    # 2026-10-03 删环境切换：不再有 trading_testnet 写入——自动开单由
+    # 双网独立开关控制，手动开单由前端显式选账号
+    # 多账号（docs/17）：current_account_key 为正式网主账号（仅前端展示/
+    # 默认 scope 用），选中 live 账号即更新
     if body.current_account_key is not None:
         from app.services.account_registry import get_account
         acc = get_account(body.current_account_key)
@@ -557,8 +552,6 @@ def update_system_config(
             raise HTTPException(status_code=400, detail="current_account_key 仅接受正式网账号")
         if cfg.current_account_key != acc.key:
             cfg.current_account_key = acc.key
-        if cfg.trading_testnet:
-            cfg.trading_testnet = False  # 显式选 live 账号 = 进入正式网模式
     # P1 扇出（docs/17 §3）：启用自动交易的正式网账号集合（多账号并行开单）。
     # 正式网模式内加减启用账号不联动总闸（总闸是显式安全开关）；主账号不在
     # 启用集合时自动改为集合第一个
@@ -975,9 +968,13 @@ def review_actual(
     from app.services.binance_trader import BinanceTrader
 
     try:
-        backfill_costs(db, BinanceTrader(), limit=20)  # 存量平仓单费用一次性回补
+        # 存量平仓单费用一次性回补：双网各补各的（2026-10-03 删环境切换，
+        # 与定时归因任务同口径）；失败不阻塞统计（费用列显示 None）
+        for testnet in (True, False):
+            bt = BinanceTrader(testnet)
+            if bt.configured:
+                backfill_costs(db, bt, limit=20)
     except Exception as e:
-        # 回补失败不阻塞统计（费用列显示 None）
         import logging
         logging.getLogger(__name__).warning("费用回补失败: %s", e)
 
@@ -1018,15 +1015,18 @@ def review_attribute(body: dict, db: Session = Depends(get_db)):
     if not trades:
         raise HTTPException(status_code=404, detail="没有待归因的交易")
 
-    trader = BinanceTrader()
     try:
-        backfill_costs(db, trader, limit=5)
+        # 双网费用回补（2026-10-03 删环境切换，与定时归因任务同口径）
+        for testnet in (True, False):
+            bt = BinanceTrader(testnet)
+            if bt.configured:
+                backfill_costs(db, bt, limit=5)
     except Exception:
         pass
 
     pool = ExchangePool()
     try:
-        results = run_ai_attribution(db, pool, trader, trades)
+        results = run_ai_attribution(db, pool, None, trades)
     except AllExchangesFailed as e:
         raise HTTPException(status_code=503, detail=f"K线获取失败（{e.summary}）")
     processed = sum(1 for r in results if r.get("ok"))
@@ -1362,14 +1362,10 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         if cfg.strategy_prompt_enabled and cfg.strategy_prompt
         else None
     )
-    # 战法库（2026-10-02）：按当前交易环境装载活动战法，注入判定块 + 白名单闸门
+    # 战法库（2026-10-02）：装载活动战法注入判定块 + 白名单闸门。
+    # 2026-10-03 删环境切换：None = 全部活动战法（同一分析双网各开一单）
     from app.services import tactics_match
-    from app.services.account_registry import resolve_current_account
-    try:
-        _testnet = resolve_current_account(db).testnet
-    except Exception:
-        _testnet = None
-    _tactics = tactics_match.load_active_tactics(_testnet)
+    _tactics = tactics_match.load_active_tactics(None)
     tactics_block = tactics_match.render_tactics_block(_tactics)
     signal["tactic_names"] = tactics_match.allowed_names(_tactics)
     try:

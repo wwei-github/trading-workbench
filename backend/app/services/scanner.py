@@ -323,14 +323,17 @@ class Scanner:
             )
 
             # C0 下单环境可交易过滤（2026-09-19，ARX 案例）：数据源永远走正式网
-            # （ARXUSDT 有 K线、AI 照常分析），下单环境（system_config.trading_testnet
-            # 决定，2026-09-20 起运行时可切）未上架 → 开单 -1121 Invalid symbol
-            # 白白烧 AI 配额 + FAILED 记录。在扫描宇宙阶段用下单环境 exchangeInfo
-            # 剔除；空表（拉取失败）放行不阻断
+            # （ARXUSDT 有 K线、AI 照常分析），下单环境未上架 → 开单 -1121
+            # Invalid symbol 白白烧 AI 配额 + FAILED 记录。2026-10-03 双网同开
+            # +删环境切换：按「启用了自动交易的网」（auto_trade_accounts 账号的
+            # testnet 属性并集）各自拉 exchangeInfo，任一启用网可交易即保留；
+            # 双开关全关（无启用网）放行——不开单无浪费，不阻断。空表放行不阻断
             # （_bt 实例化必须在 C0 之前——此前放在 C 段导致 UnboundLocalError，
             #   04:02/05:02 两轮扫描全崩的根因）
-            _bt = BinanceTrader(bool(cfg.trading_testnet))
-            listed = _bt.listed_symbols()
+            from app.services.account_registry import auto_trade_accounts
+            listed: set = set()
+            for net in sorted({a.testnet for a in auto_trade_accounts(db)}):
+                listed |= set(BinanceTrader(net).listed_symbols())
             if listed:
                 before = len(symbols_data)
                 symbols_data = [s for s in symbols_data if s["symbol"] in listed]
@@ -340,8 +343,10 @@ class Scanner:
             # （交易所对其流动性/风险的终极标注；4USDT 案例）。注意不能按首档 MMR
             # 过滤——币安 2026 已把多数山寨首档 MMR 统一调到 1.5%~2%（首档名义
             # 5k~10k 内 MMR 均为此值，BTC 0.4% 是孤例），按 MMR 过滤会误拦 58%。
-            # 一次 leverageBracket 全市场拉取、进程缓存 24h；失败（空表）放行不阻断
-            risk_tiers = _bt.risk_tier_all()
+            # 档位属市场全局配置，数据源按正式网优先（2026-10-03 删环境切换：
+            # BinanceTrader(False)=live 优先回落测试网）；一次拉取缓存 24h，
+            # 失败（空表）放行不阻断
+            risk_tiers = BinanceTrader(False).risk_tier_all()
             if risk_tiers:
                 before = len(symbols_data)
                 symbols_data = [

@@ -5,10 +5,12 @@ open_from_analysis 的闸门语义验证：不开真实 HTTP/DB/Redis，通过 m
 stub 掉 BinanceTrader / 开仓锁 / try_open_for_analysis，直接调用端点函数
 （FastAPI 端点即普通函数，db 传 SimpleNamespace 会话桩）。
 
-覆盖：非 suggest 400 / 分析不存在 404 / 锁超时 409 / 闸门拦截 opened=false /
-成功 opened=true + trade_id 反查。
-2026-09-28 语义拆分：交易开关不再约束手动开单（原「总开关关 400」用例改为
-「开关关仍可开」），且端点必须以 force_market=True 调用（市价即时入场）。
+覆盖：非 suggest 400 / 分析不存在 404 / 未知账号 400 / 锁超时 409 /
+闸门拦截 opened=false / 成功 opened=true + trade_id 反查。
+2026-09-28 语义拆分：交易开关不再约束手动开单，且端点必须以 force_market=True
+调用（市价即时入场）。
+2026-10-03 删环境切换：开单账号由请求 account_key 显式指定（前端弹窗选账号），
+后端不猜网——未知账号 400；双开关全关也不拦手动开单。
 """
 import uuid
 from datetime import datetime
@@ -66,14 +68,16 @@ def _db():
 
 
 @pytest.fixture()
-def _cfg_on(_db):
+def _cfg_default(_db):
+    """双网开关默认状态（测试网开/正式网关）"""
     from app.models.system_config import SystemConfig
-    _db._state["cfg"] = SystemConfig(id=1, trading_enabled=True, trading_testnet=True)
+    _db._state["cfg"] = SystemConfig(id=1, trading_enabled_testnet=True,
+                                     trading_enabled_live=False)
     return _db
 
 
 @pytest.fixture()
-def _analysis(_cfg_on):
+def _analysis(_cfg_default):
     from app.models.scan import AIAnalysis
     a = AIAnalysis(
         id=ANALYSIS_ID, symbol="BTCUSDT", trade_decision="suggest",
@@ -81,7 +85,7 @@ def _analysis(_cfg_on):
         take_profit_1=104.0, recommendation=70,
         created_at=datetime.utcnow(), open_block_reason=None,
     )
-    _cfg_on._state["analysis"] = a
+    _cfg_default._state["analysis"] = a
     return a
 
 
@@ -110,17 +114,23 @@ def _patch_common(monkeypatch):
         account_key = "testnet-1"
         testnet = True
 
-    monkeypatch.setattr(reg, "resolve_current_account",
-                        lambda db: Account(key="testnet-1", name="t", testnet=True,
-                                           api_key="k", api_secret="s"))
+    def _fake_get_account(key):
+        if key == "testnet-1":
+            return Account(key="testnet-1", name="t", testnet=True,
+                           api_key="k", api_secret="s")
+        return None
+
+    monkeypatch.setattr(reg, "get_account", _fake_get_account)
     monkeypatch.setattr(_bt_mod, "BinanceTrader", lambda key=None: _FakeTrader())
     monkeypatch.setattr(_redis_mod, "Redis", _FakeRedis)
     monkeypatch.setattr(trade_tasks, "_acquire_open_lock", lambda *a, **kw: True)
     monkeypatch.setattr(trade_tasks, "_release_open_lock", lambda *a, **kw: None)
-    holder = {"opened": True, "trade_row": None, "force_market": None}
+    holder = {"opened": True, "trade_row": None, "force_market": None,
+              "trader_key": None}
 
     def _fake_try(db, trader, analysis_id, force_market=False):
         holder["force_market"] = force_market
+        holder["trader_key"] = trader.account_key
         if holder["opened"] and holder["trade_row"] is not None:
             db._state["trade_row"] = holder["trade_row"]
         return holder["opened"]
@@ -136,57 +146,75 @@ def _trade_row():
 
 
 def _payload():
-    return OpenFromAnalysisRequest(analysis_id=str(ANALYSIS_ID))
+    return OpenFromAnalysisRequest(analysis_id=str(ANALYSIS_ID),
+                                   account_key="testnet-1")
 
 
-def test_happy_path_opened(_patch_http, _patch_common, _analysis, _cfg_on):
+def test_happy_path_opened(_patch_http, _patch_common, _analysis, _cfg_default):
     _patch_common["trade_row"] = _trade_row()
-    res = open_from_analysis(_payload(), _cfg_on)
+    res = open_from_analysis(_payload(), _cfg_default)
     assert res["opened"] is True and res["ok"] is True
-    assert res["trade_id"] == str(_cfg_on._state["trade_row"].id)
+    assert res["trade_id"] == str(_cfg_default._state["trade_row"].id)
     assert res["account_key"] == "testnet-1"
     # 手动开单 = 市价即时入场（跳过偏离/待回踩时机闸门）
     assert _patch_common["force_market"] is True
+    # 账号按请求 account_key 解析（2026-10-03 删环境切换：后端不猜网）
+    assert _patch_common["trader_key"] == "testnet-1"
 
 
 def test_gate_blocked_returns_200_with_reason(_patch_http, _patch_common,
-                                              _analysis, _cfg_on):
+                                              _analysis, _cfg_default):
     """闸门拦截（opened=false）是业务结果 200，block_reason 取自分析行"""
     _patch_common["opened"] = False
     _analysis.open_block_reason = "在跑单子已达上限 10"
-    res = open_from_analysis(_payload(), _cfg_on)
+    res = open_from_analysis(_payload(), _cfg_default)
     assert res["opened"] is False and res["block_reason"] == "在跑单子已达上限 10"
     assert res["trade_id"] is None
 
 
 def test_switch_off_still_allowed(_patch_http, _patch_common, _analysis, _db):
-    """2026-09-28 语义拆分：自动成交开关关闭不再拦手动开单（原 400 用例反转）"""
+    """2026-09-28 语义拆分：双网自动成交开关全关不再拦手动开单（原 400 用例反转）"""
     from app.models.system_config import SystemConfig
-    _db._state["cfg"] = SystemConfig(id=1, trading_enabled=False)
+    _db._state["cfg"] = SystemConfig(id=1, trading_enabled_testnet=False,
+                                     trading_enabled_live=False)
     _patch_common["trade_row"] = _trade_row()
     res = open_from_analysis(_payload(), _db)
     assert res["opened"] is True and res["ok"] is True
 
 
-def test_non_suggest_400(_patch_http, _patch_common, _analysis, _cfg_on):
-    _analysis.trade_decision = "skip"
+def test_unknown_account_400(_patch_http, _patch_common, _analysis, _cfg_default):
+    """2026-10-03 删环境切换：account_key 不在注册表 → 400（后端不猜网）"""
     with pytest.raises(_HTTPException) as ei:
-        open_from_analysis(_payload(), _cfg_on)
+        open_from_analysis(
+            OpenFromAnalysisRequest(analysis_id=str(ANALYSIS_ID),
+                                    account_key="live-9"),
+            _cfg_default,
+        )
     assert ei.value.status_code == 400
 
 
-def test_analysis_missing_404(_patch_http, _patch_common, _cfg_on):
+def test_non_suggest_400(_patch_http, _patch_common, _analysis, _cfg_default):
+    _analysis.trade_decision = "skip"
+    with pytest.raises(_HTTPException) as ei:
+        open_from_analysis(_payload(), _cfg_default)
+    assert ei.value.status_code == 400
+
+
+def test_analysis_missing_404(_patch_http, _patch_common, _cfg_default):
     with pytest.raises(_HTTPException) as ei:
         open_from_analysis(
-            OpenFromAnalysisRequest(analysis_id=str(uuid.uuid4())), _cfg_on)
+            OpenFromAnalysisRequest(analysis_id=str(uuid.uuid4()),
+                                    account_key="testnet-1"),
+            _cfg_default,
+        )
     assert ei.value.status_code == 404
 
 
-def test_lock_timeout_409(_patch_http, _patch_common, _analysis, _cfg_on,
+def test_lock_timeout_409(_patch_http, _patch_common, _analysis, _cfg_default,
                           monkeypatch):
     from app.tasks import trade_tasks
     monkeypatch.setattr(trade_tasks, "_acquire_open_lock",
                         lambda *a, **kw: False)
     with pytest.raises(_HTTPException) as ei:
-        open_from_analysis(_payload(), _cfg_on)
+        open_from_analysis(_payload(), _cfg_default)
     assert ei.value.status_code == 409

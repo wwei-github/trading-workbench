@@ -135,15 +135,14 @@ def manual_close_market(trade_id: str) -> dict:
 def run_auto_trade_task():
     task_id = open_task(task_type="trade", task_name="结算巡检", trigger="scheduled")
     try:
-        from app.services.account_registry import enabled_accounts, live_enabled_accounts
+        from app.services.account_registry import managed_accounts
 
         db = SessionLocal()
         try:
-            accs = enabled_accounts(db)
-            # 手动单接管/孤儿清扫清单 = 正式网启用账号：管理行为不随当前环境
-            # 切换中断（当前环境测试网时正式网 App 手动单仍要接管与巡检）；
-            # 开单扇出仍按 enabled_accounts（当前环境）
-            adopt_accs = live_enabled_accounts(db)
+            # 2026-10-03 删环境切换：巡检/接管一律双网（测试网账号 + 正式网
+            # 启用账号）——管理行为覆盖所有已配置账号，是否有单由交易所决定
+            accs = managed_accounts(db)
+            adopt_accs = accs
         finally:
             db.close()
         if not accs:

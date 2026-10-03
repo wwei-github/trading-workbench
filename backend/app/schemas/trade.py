@@ -17,8 +17,12 @@ class TradeEventOut(BaseModel):
 
 
 class OpenFromAnalysisRequest(BaseModel):
-    """手动开单请求（扫描结果表「开单」按钮）：AI 分析 id"""
+    """手动开单请求（扫描结果表「开单」按钮）：AI 分析 id + 目标账号 key。
+
+    account_key 必传（前端弹窗选账号）——2026-10-03 删环境切换后无「当前
+    环境」概念，开到哪个网由用户显式选择，后端不猜。"""
     analysis_id: str
+    account_key: str
 
 
 class TradeOut(BaseModel):

@@ -62,8 +62,8 @@ def test_load_active_tactics_scope_filter(monkeypatch):
     assert [t["name"] for t in tactics_match.load_active_tactics(True)] == ["A"]
     # live 环境：A（both）+ C（live）命中，B 停用不注入
     assert [t["name"] for t in tactics_match.load_active_tactics(False)] == ["A", "C"]
-    # 环境解析失败（None）→ 空表，不注入
-    assert tactics_match.load_active_tactics(None) == []
+    # 删环境切换（2026-10-03）：None=双网 scope 并集，全部活动战法装载
+    assert [t["name"] for t in tactics_match.load_active_tactics(None)] == ["A", "C"]
     s.close()
 
 

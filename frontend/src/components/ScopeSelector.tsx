@@ -9,16 +9,10 @@ import { Segmented, Select } from 'antd'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
 
-/** 页面默认 scope：跟随当前交易环境；正式网多账号时跟随选中账号
- *  （current_account_key 已从 .env 移除时回落 live 聚合，避免 stale scope 触发 400） */
-export function defaultScopeOf(cfg: SystemConfig | null | undefined): string {
-  if (!cfg || (cfg.trading_testnet ?? true)) return 'testnet'
-  const liveAccounts = (cfg.accounts ?? []).filter((a) => !a.testnet && a.configured)
-  if (liveAccounts.length > 1 && cfg.current_account_key
-      && liveAccounts.some((a) => a.key === cfg.current_account_key)) {
-    return cfg.current_account_key
-  }
-  return 'live'
+/** 页面默认 scope（2026-10-03 删环境切换）：无全局「当前环境」概念，
+ *  恒返回 'all'（后端统计口径已改为双网合计）；保留参数兼容 4 个面板调用点 */
+export function defaultScopeOf(_cfg?: SystemConfig | null): string {
+  return 'all'
 }
 
 /** scope 值是否属于测试网侧（如清空测试网数据按钮的显示条件） */
@@ -35,13 +29,15 @@ export default function ScopeSelector({ value, onChange }: Props) {
   const accounts = useScanStore((s) => s.aiConfig?.accounts) ?? []
   const liveAccounts = accounts.filter((a) => !a.testnet && a.configured)
 
-  // 单 live 账号：保持旧版 Segmented 两档（value 若是账号 key 则按环境归一显示）
+  // 单 live 账号：Segmented 三档（2026-10-03 加「全部」=默认双网合计口径；
+  // value 若是账号 key 则按环境归一显示）
   if (liveAccounts.length <= 1) {
     return (
       <Segmented
-        value={scopeIsTestnet(value) ? 'testnet' : 'live'}
+        value={value === 'all' ? 'all' : scopeIsTestnet(value) ? 'testnet' : 'live'}
         onChange={(v) => onChange(v as string)}
         options={[
+          { label: '全部', value: 'all' },
           { label: '正式网', value: 'live' },
           { label: '测试网', value: 'testnet' },
         ]}
@@ -54,6 +50,7 @@ export default function ScopeSelector({ value, onChange }: Props) {
       style={{ minWidth: 168 }}
       onChange={onChange}
       options={[
+        { label: '全部', value: 'all' },
         { label: `正式网（全部 ${liveAccounts.length} 个账号）`, value: 'live' },
         ...liveAccounts.map((a) => ({ label: `${a.name}（${a.key}）`, value: a.key })),
         { label: '测试网', value: 'testnet' },

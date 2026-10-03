@@ -34,7 +34,7 @@ from app.services.strategy.technical import enforce_htf_constraint, render_indic
 from app.services.exchange_pool import ExchangePool
 from app.services.risk_guard import is_pullback_wait
 from app.services.strategy import recent_swings
-from app.services.account_registry import resolve_current_account
+from app.services.account_registry import auto_trade_accounts
 from app.services.trade_engine import _consecutive_losses_today
 
 logger = logging.getLogger(__name__)
@@ -140,13 +140,14 @@ def run_ai_analysis_task(
             # 同分按 24h 成交额——控制 LLM 成本；单币重分析不受限。
             # 配额走筛选参数组（scan_filters > env > 默认，2026-09-28）
             quota = resolve_scan_filters(cfg).ai_max_per_scan
-            # 连损降速（docs/24 A3 软熔断）：当前配置账号当日连损 ≥2 → 批量分析
-            # 配额减半——连损趋势日少开新分析、同步降 LLM 成本与开单频率；
+            # 连损降速（docs/24 A3 软熔断）：启用自动交易的账号当日连损任一 ≥2 →
+            # 批量分析配额减半——连损趋势日少开新分析、同步降 LLM 成本与开单频率；
             # 手动单币分析（only_scan_result_id 非空）不受影响。账号/连损解析
             # 失败不阻断扫描（按无连损处理）
             try:
-                acc = resolve_current_account(db)
-                losses = _consecutive_losses_today(db, acc.key, acc.testnet) if acc else 0
+                losses = 0
+                for acc in auto_trade_accounts(db):
+                    losses = max(losses, _consecutive_losses_today(db, acc.key, acc.testnet))
             except Exception as e:
                 logger.warning("连损查询失败，批量分析配额不降速: %s", e)
                 losses = 0
@@ -221,16 +222,12 @@ def run_ai_analysis_single(
             "volume": float(r.volume),
             "volume_24h": float(r.volume_24h),
         }
-        # 战法库（2026-10-02）：按当前交易环境装载活动战法 → 渲染判定块注入
-        # 用户消息 + 白名单随 signal 进 risk_guard 闸门（防 LLM 编造战法名）。
-        # 环境解析失败按无战法库降级（不注错环境）；装载失败同样降级不阻断
+        # 战法库（2026-10-02）：装载活动战法 → 渲染判定块注入用户消息 + 白名单
+        # 随 signal 进 risk_guard 闸门（防 LLM 编造战法名）。2026-10-03 删环境
+        # 切换：传 None = 装载全部活动战法（同一分析双网各开一单，scope 取并集）；
+        # 装载失败降级不阻断
         from app.services import tactics_match
-        try:
-            _testnet = resolve_current_account(db).testnet
-        except Exception as _e:
-            logger.warning("战法环境解析失败，本次分析不注入战法块: %s", _e)
-            _testnet = None
-        _tactics = tactics_match.load_active_tactics(_testnet)
+        _tactics = tactics_match.load_active_tactics(None)
         tactics_block = tactics_match.render_tactics_block(_tactics)
         signal["tactic_names"] = tactics_match.allowed_names(_tactics)
         fp = compute_fingerprint(signal)

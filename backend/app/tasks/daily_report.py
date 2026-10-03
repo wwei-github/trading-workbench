@@ -6,9 +6,8 @@
 
 统计口径（与交易记录页一致）：
 - 「当日」按北京时间自然日切
-- 环境跟随 system_config.trading_testnet 当前交易环境（2026-09-24）：
-  测试网模式统计测试网数据、正式网模式统计正式网（live 聚合）数据，
-  卡片标题标注环境；环境切换后次日日报自动跟随
+- 2026-10-03 删环境切换：统计为双网合计（测试网 + 正式网），明细区分见
+  交易记录页 scope 筛选
 - 止盈 = 已闭单且净收益 > 0；止损 = 已闭单且净收益 <= 0（保本/微亏归止损侧）
 - 净收益 = 当日闭单 realized_pnl 之和（含手续费/资金费），在跑单浮动盈亏不计
 """
@@ -72,19 +71,12 @@ def notify_daily_report() -> dict:
     with ThreadPoolExecutor(max_workers=3) as ex:
         prices = list(ex.map(_daily_close, _MAJOR_SYMBOLS))
 
-    # 当日交易统计（按当前交易环境过滤：测试网/正式网 live 聚合）
+    # 当日交易统计（2026-10-03 删环境切换：双网合计——交易记录自带 testnet
+    # 标记，明细区分见交易记录页 scope 筛选）
     db = SessionLocal()
     try:
-        from app.models.system_config import SystemConfig
-
-        cfg = db.get(SystemConfig, 1)
-        is_testnet = bool(cfg.trading_testnet) if cfg is not None else True
-        env_label = "测试网" if is_testnet else "正式网"
-        env_filter = TradeRecord.testnet == is_testnet
-
         rows = db.execute(
             select(TradeRecord).where(
-                env_filter,
                 TradeRecord.opened_at >= day_start.replace(tzinfo=None),
                 TradeRecord.opened_at < day_end.replace(tzinfo=None),
             )
@@ -93,7 +85,6 @@ def notify_daily_report() -> dict:
 
         closed_rows = db.execute(
             select(TradeRecord).where(
-                env_filter,
                 TradeRecord.closed_at >= day_start.replace(tzinfo=None),
                 TradeRecord.closed_at < day_end.replace(tzinfo=None),
                 TradeRecord.status == "CLOSED",
@@ -107,15 +98,14 @@ def notify_daily_report() -> dict:
         running = sum(1 for r in rows if r.status in ("OPENED", "TP1_HIT", "TP2_HIT"))
         failed = sum(1 for r in rows if r.status == "FAILED")
 
-        # 胜率口径：该环境全部历史已闭单（不只当日），与交易记录页概览一致
+        # 胜率口径：全部历史已闭单（不只当日），与交易记录页概览一致
         total_closed = db.execute(
             select(func.count(TradeRecord.id)).where(
-                env_filter, TradeRecord.status == "CLOSED"
+                TradeRecord.status == "CLOSED"
             )
         ).scalar() or 0
         total_win = db.execute(
             select(func.count(TradeRecord.id)).where(
-                env_filter,
                 TradeRecord.status == "CLOSED",
                 TradeRecord.realized_pnl > 0,
             )
@@ -157,7 +147,7 @@ def notify_daily_report() -> dict:
     card = {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"{head_emoji} 每日交易日报 · {date_label} · {env_label}"},
+            "title": {"tag": "plain_text", "content": f"{head_emoji} 每日交易日报 · {date_label}"},
             "template": "green" if net > 0 else ("red" if net < 0 else "blue"),
         },
         "elements": [
@@ -185,7 +175,7 @@ def notify_daily_report() -> dict:
              "content": f"💰 **净收益　{_net_str(net)}**"}},
             # ── 口径脚注（小字灰显）──
             {"tag": "note", "elements": [{"tag": "plain_text",
-             "content": (f"统计范围 = 当前交易环境（{env_label}）· 胜率 = 止盈笔数 ÷ 全部已闭单 · "
+             "content": (f"统计范围 = 双网合计（测试网 + 正式网）· 胜率 = 止盈笔数 ÷ 全部已闭单 · "
                          "净收益只计已闭单（含手续费/资金费），在跑单浮动盈亏不计")}]},
         ],
     }
@@ -193,7 +183,7 @@ def notify_daily_report() -> dict:
     if not ok:
         # 卡片发送失败降级为纯文本（保底不让日报丢消息，对齐性让位于送达）
         text = "\n".join([
-            f"📊 每日交易日报 · {date_label} · {env_label}",
+            f"📊 每日交易日报 · {date_label}",
             *[f"{name} 收盘 {price} {chg}" for name, price, chg in prices],
             f"开单 {opened}（在跑 {running} · 失败 {failed}）/ 闭单 {closed}",
             f"止盈 {win} / 止损 {loss} / 胜率 {win_rate}（{total_win}/{total_closed}）",

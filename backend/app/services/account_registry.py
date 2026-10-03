@@ -105,33 +105,6 @@ def testnet_accounts() -> list[Account]:
     return [a for a in registry() if a.testnet]
 
 
-def resolve_current_account(db) -> Account:
-    """解析当前交易账号：system_config.current_account_key（正式网模式）→
-    trading_testnet → 缺省回落 live-1 / testnet-1。
-
-    回落链保证任何配置状态下都有可用账号（迁移期 current_account_key 为 NULL
-    或指向已从 .env 移除的账号时自动降级，行为与单账号时代一致）。"""
-    from app.models.system_config import SystemConfig
-
-    cfg = db.get(SystemConfig, 1)
-    if cfg is not None:
-        if not cfg.trading_testnet:
-            # 正式网模式：优先 current_account_key，失效回落 live-1
-            key = cfg.current_account_key
-            acc = get_account(key) if key else None
-            if acc and not acc.testnet:
-                return acc
-            fallback = live_accounts()
-            if fallback:
-                return fallback[0]
-        else:
-            ta = testnet_accounts()
-            if ta:
-                return ta[0]
-    # 配置行缺失的最终兜底：有正式网用正式网，否则测试网
-    return (live_accounts() or testnet_accounts() or [None])[0]
-
-
 def parse_live_keys(raw: Optional[str]) -> list[str]:
     """逗号分隔的启用账号配置串 → 去重后的 key 列表（保持顺序）"""
     if not raw:
@@ -146,11 +119,11 @@ def parse_live_keys(raw: Optional[str]) -> list[str]:
 
 def live_enabled_accounts(db) -> list["Account"]:
     """正式网启用账号：live_trading_keys ∩ 注册表（保持配置顺序），空/未配置
-    回落 live-1（P0 单账号语义）。与 enabled_accounts 正式网模式返回同一清单。
+    回落 live-1（P0 单账号语义）。
 
-    手动单接管 / 孤儿清扫等「管理行为」按此清单执行——不随当前环境切换中断
-    （docs/17 P1：只有开单扇出按当前环境过滤，测试网模式仍要接管正式网
-    App 手动单并纳入巡检，否则用户正式网手动单完全失管）。"""
+    2026-10-03 删环境切换后语义不变：正式网自动交易开关（trading_enabled_live）
+    开启时由 auto_trade_accounts 按此清单扇出；手动单接管/巡检走
+    managed_accounts（含测试网）。"""
     from app.models.system_config import SystemConfig
 
     cfg = db.get(SystemConfig, 1)
@@ -162,23 +135,16 @@ def live_enabled_accounts(db) -> list["Account"]:
     return accs or live_accounts()
 
 
-def enabled_accounts(db) -> list["Account"]:
-    """当前环境执行自动交易的账号清单（docs/17 P1 扇出）：
-    - 测试网模式 → 全部测试网账号（现仅 testnet-1；未配置回落正式网账号，
-      与 BinanceTrader(True) 历史回落语义一致）
-    - 正式网模式 → live_trading_keys ∩ 注册表（保持配置顺序）；
-      空/未配置回落 live-1（P0 单账号语义）
-    扇出开单/结算兜底/孤儿清扫均以此清单为准。
-
-    2026-10-03 起「AI 分析后自动开单」不再用本函数（不随当前环境切换），
-    改用 auto_trade_accounts（双网独立开关）；本函数仍服务于导入持仓
-    环境清单、现货等按环境扇出的场景。"""
-    from app.models.system_config import SystemConfig
-
-    cfg = db.get(SystemConfig, 1)
-    if cfg is not None and cfg.trading_testnet:
-        return testnet_accounts() or live_accounts() or testnet_accounts()
-    return live_enabled_accounts(db) or testnet_accounts()
+def managed_accounts(db) -> list["Account"]:
+    """双网管理清单（2026-10-03 删环境切换）：测试网账号 + 正式网启用账号，
+    去重保持顺序。手动单接管/导入持仓/结算巡检等「管理行为」一律覆盖两网
+    ——账号是否存在手动单由交易所持仓查询决定，管理范围不随任何开关变化
+    （正式网启用账号见 live_enabled_accounts；测试网恒 testnet-1 单账号）。"""
+    accs: list["Account"] = []
+    for a in testnet_accounts() + live_enabled_accounts(db):
+        if a not in accs:
+            accs.append(a)
+    return accs
 
 
 def auto_trade_accounts(db) -> list["Account"]:
@@ -187,8 +153,7 @@ def auto_trade_accounts(db) -> list["Account"]:
     - trading_enabled_testnet（默认开）→ testnet_accounts
     - trading_enabled_live（默认关，实盘安全基线）→ live_enabled_accounts
     各网独立判定、互不回落——测试网开关开但无测试网账号时直接跳过该网，
-    不落回正式网账号（防开关语义交叉误开实盘）；与当前环境
-    （trading_testnet）无关。"""
+    不落回正式网账号（防开关语义交叉误开实盘）。"""
     from app.models.system_config import SystemConfig
 
     cfg = db.get(SystemConfig, 1)
@@ -247,6 +212,6 @@ def _with_spot_testnet_keys(accs: list["Account"]) -> list["Account"]:
 
 def resolve_spot_account(db) -> "Account":
     """解析现货当前账号（P0 只读查询用：取启用清单第一个）。
-    失败语义与 resolve_current_account 一致：任何配置下都有可用账号。"""
+    失败语义与 spot_enabled_accounts 一致：任何配置下都有可用账号。"""
     accs = spot_enabled_accounts(db)
     return accs[0]

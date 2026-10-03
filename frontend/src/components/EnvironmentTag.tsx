@@ -1,10 +1,10 @@
 import { useEffect } from 'react'
 import { Tooltip, Tag } from 'antd'
-import { GlobalOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 
-/** 当前交易环境徽标（工具栏常驻，高亮醒目）：实心色块 + 环境图标，
- *  测试网=橙色 / 正式网=红色（volcano），一眼可辨。
+/** 双网自动交易状态徽标（工具栏常驻，高亮醒目）：2026-10-03 删环境切换，
+ *  改为双网开关状态——测试网开=橙色实心 / 正式网开=红色实心（volcano），
+ *  关闭=灰色描边，一眼可辨两网自动成交是否在跑。
  *  挂载时拉取一次配置；系统配置弹窗保存后 store 更新即随之刷新。 */
 export default function EnvironmentTag() {
   const { aiConfig, fetchConfig } = useScanStore()
@@ -14,40 +14,35 @@ export default function EnvironmentTag() {
   }, [aiConfig, fetchConfig])
 
   if (!aiConfig) return null
-  const testnet = aiConfig.trading_testnet ?? true
   const tnTrading = aiConfig.trading_enabled_testnet ?? false
   const liveTrading = aiConfig.trading_enabled_live ?? false
-  // 正式网模式显示当前选中账号名（docs/17：多账号时区分 live-1/live-2…）
-  const accName = !testnet
-    ? aiConfig.accounts?.find((a) => a.key === aiConfig.current_account_key)?.name
-    : null
-  const label = testnet ? '测试网' : accName || '正式网'
+
+  const tagStyle = (on: boolean, rgb: string) => ({
+    marginInlineEnd: 0,
+    fontSize: 14,
+    fontWeight: 600,
+    lineHeight: '24px',
+    padding: '2px 12px',
+    borderRadius: 999,
+    boxShadow: on ? `0 0 0 2px rgba(${rgb}, 0.15)` : undefined,
+  })
 
   return (
     <Tooltip
       title={
-        `当前交易环境：${label}；自动成交开关（双网独立，可同时开启）：` +
+        '自动成交开关（双网独立，可同时开启）：' +
         `测试网${tnTrading ? '已开启' : '已关闭'} / 正式网${liveTrading ? '已开启' : '已关闭'}` +
         `（仅控 AI 分析后自动开新单；手动开单/AI 分析不受限）。在「系统配置」弹窗中可切换。`
       }
     >
-      <Tag
-        icon={<GlobalOutlined />}
-        color={testnet ? 'orange' : 'volcano'}
-        style={{
-          marginInlineEnd: 0,
-          fontSize: 14,
-          fontWeight: 600,
-          lineHeight: '24px',
-          padding: '2px 12px',
-          borderRadius: 999,
-          boxShadow: testnet
-            ? '0 0 0 2px rgba(250, 140, 22, 0.15)'
-            : '0 0 0 2px rgba(207, 19, 34, 0.15)',
-        }}
-      >
-        {label}
-      </Tag>
+      <span>
+        <Tag color={tnTrading ? 'orange' : 'default'} style={tagStyle(tnTrading, '250, 140, 22')}>
+          测试网 {tnTrading ? '开' : '关'}
+        </Tag>
+        <Tag color={liveTrading ? 'volcano' : 'default'} style={tagStyle(liveTrading, '207, 19, 34')}>
+          正式网 {liveTrading ? '开' : '关'}
+        </Tag>
+      </span>
     </Tooltip>
   )
 }

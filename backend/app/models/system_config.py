@@ -40,12 +40,11 @@ class SystemConfig(Base):
     # 自动交易（docs/06）：同时在跑单子上限（页面可改）
     max_open_trades: Mapped[int] = mapped_column(Integer, default=5)
 
-    # 运行时环境与总开关（2026-09-20 由 env 静态配置迁移而来，页面可改、任务即时生效）：
-    # trading_testnet：当前交易环境（true=测试网 false=正式网），开仓/扫描宇宙/复核用；
-    #                  存量单按记录自带 testnet 标记结算，切环境不影响在跑单
-    # trading_enabled：已废弃（2026-10-03 拆分为下方双网独立开关，代码不再读取；
-    # 列保留防旧库升级丢数据）
-    trading_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 环境与总开关演进：
+    # trading_testnet：已废弃（2026-10-03 删环境切换——自动开单由双网独立开关
+    # 控制、手动开单由前端显式选账号、统计/巡检双网口径，无全局「当前环境」；
+    # 代码不再读写，列保留防旧库升级丢数据）
+    # trading_enabled：已废弃（同日拆分为下方双网独立开关，代码不再读取；列保留）
     trading_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # 双网自动交易开关（2026-10-03 拆分，2026-09-28 收窄语义不变：仅控每小时
     # AI 分析后自动开新单；手动开单按钮/AI 分析/结算巡检/复盘/日报均不受控。
@@ -57,12 +56,13 @@ class SystemConfig(Base):
     # (ai_analysis_id, account_key, testnet) 复合唯一）
     trading_enabled_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
     trading_enabled_live: Mapped[bool] = mapped_column(Boolean, default=False)
-    # 当前正式网账号（docs/17 P0）：正式网模式（trading_testnet=false）下生效，
-    # 记 system_config 选中的 live 账号 key（live-1/live-2…）；NULL=回落 live-1。
-    # 测试网模式忽略此值（测试网单账号 testnet-1）
+    # 当前正式网主账号（docs/17 P0）：记选中的 live 账号 key（live-1/live-2…），
+    # NULL=回落 live-1。2026-10-03 删环境切换后仅作前端展示/默认 scope 用，
+    # 后端开单/扇出一律显式传账号 key 或走账号清单
     current_account_key: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     # 启用自动交易的正式网账号集合（docs/17 P1 扇出）：逗号分隔 key（live-1,live-2…），
-    # 空回落 live-1（P0 单账号语义）；测试网模式忽略（testnet-1 单账号）
+    # 空回落 live-1（P0 单账号语义）；trading_enabled_live 开启时由
+    # auto_trade_accounts 按此清单扇出
     live_trading_keys: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # 余额风控：开仓最低可用余额占钱包余额比例（0~1，页面可改）。
@@ -131,7 +131,8 @@ class SystemConfig(Base):
     # NULL=全部回落 env/代码默认；旧 breakout_threshold 等 3 个散列已废弃不再读
     scan_filters: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, default=None)
     # 现货环境开关（docs/18，2026-09-23 用户拍板：现货环境与合约完全独立）：
-    # true=现货测试网（默认），false=现货正式网；与 trading_testnet（合约）互不影响
+    # true=现货测试网（默认），false=现货正式网；现货环境与合约完全独立
+    # （合约侧环境切换已于 2026-10-03 删除）
     spot_trading_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
     # 现货正式网启用账号集合（docs/17 注册表共用；docs/18）：逗号分隔 key（live-1,live-2…），
     # 空回落 live-1；现货测试网恒 testnet-1 单账号（忽略此值）

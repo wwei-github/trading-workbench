@@ -20,20 +20,17 @@ logger = logging.getLogger(__name__)
 def load_active_tactics(testnet: Optional[bool]) -> list[dict]:
     """按环境装载活动战法（enabled=true 且 scope 匹配），返回轻量 dict 列表。
 
-    testnet=None（环境解析失败）返回空列表——宁可不注入也不注错环境，
-    调用方按无战法库降级（AI 输出 tactic_name 会被白名单闸门清空）。
+    testnet=None = 不区分环境，装载全部活动战法（2026-10-03 删环境切换：
+    同一次 AI 分析会双网各开一单，战法注入取两网 scope 并集，输出侧由
+    白名单闸门兜底）。装载失败返回空列表——调用方按无战法库降级。
     """
-    if testnet is None:
-        return []
-    scope = "testnet" if testnet else "live"
     db = SessionLocal()
     try:
-        rows = db.execute(
-            select(Tactic).where(
-                Tactic.enabled.is_(True),
-                Tactic.scope.in_(("both", scope)),
-            ).order_by(Tactic.created_at.asc())
-        ).scalars().all()
+        q = select(Tactic).where(Tactic.enabled.is_(True))
+        if testnet is not None:
+            scope = "testnet" if testnet else "live"
+            q = q.where(Tactic.scope.in_(("both", scope)))
+        rows = db.execute(q.order_by(Tactic.created_at.asc())).scalars().all()
         return [{"name": t.name, "description": t.description} for t in rows]
     except Exception as e:
         logger.warning("活动战法装载失败（本次分析不注入战法块）: %s", e)

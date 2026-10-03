@@ -346,8 +346,8 @@ export default function TradesPanel() {
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
-  // 账号范围切换（docs/17）：默认跟随当前交易环境（多 live 账号跟随选中账号）。
-  // 面板被 Tabs 保活：环境切换（defaultScope 变化）后重新跟随，手动选择不被配置刷新打断
+  // 账号范围切换（docs/17）：默认 all（2026-10-03 删环境切换，双网合计口径）。
+  // 面板被 Tabs 保活：defaultScope 恒定不再变化，用户手动选择后保持
   const { aiConfig, fetchConfig } = useScanStore()
   const defaultScope = defaultScopeOf(aiConfig)
   const lastDefaultRef = useRef<string | null>(null)
@@ -364,34 +364,45 @@ export default function TradesPanel() {
   }, [aiConfig, fetchConfig, defaultScope])
   // 概览汇总（与资金分析同源）：closed/wins/win_rate/net_pnl/avg_win_r 来自 analytics 接口
   const [summary, setSummary] = useState<FundAnalytics['summary'] | null>(null)
-  // 账户资金概览（当前环境）：总资金/未实现收益/收益率，与列表/统计并发拉
+  // 账户资金概览（当前账号）：总资金/未实现收益/收益率，与列表/统计并发拉
   const [acct, setAcct] = useState<AccountSummary | null>(null)
 
   // 列表按账号范围服务端过滤（上限 500）供表格与状态计数；概览统计从 analytics 接口取，
   // 保证与资金分析页数字完全一致（接口全表统计，无 500 条截断差异）
+  const seqRef = useRef(0)
   // seq 竞态守卫：scope 切换会并发两批请求（初始环境批 + 校正批），后返回的旧响应
   // 会覆盖新数据（表现为筛选器显示正式网、数据却是测试网），仅渲染最新一批
-  const seqRef = useRef(0)
+  // 账户概览账号解析（2026-10-03 删环境切换）：account_summary 按账号查询，
+  // scope=环境聚合/all 时取该范围内第一个已配置账号（all 取测试网优先——实盘安全默认）
+  const resolveAcctKey = useCallback(
+    (sc: string): string | undefined => {
+      const accs = aiConfig?.accounts ?? []
+      const configured = accs.filter((a) => a.configured)
+      if (sc.startsWith('testnet-') || sc.startsWith('live-')) return sc
+      if (sc === 'live') return configured.find((a) => !a.testnet)?.key
+      if (sc === 'testnet') return configured.find((a) => a.testnet)?.key
+      return configured.find((a) => a.testnet)?.key || configured[0]?.key
+    },
+    [aiConfig],
+  )
   const fetchData = useCallback(async () => {
     const seq = ++seqRef.current
     setLoading(true)
+    const acctKey = resolveAcctKey(scope)
     try {
       const [list, analytics, acctData] = await Promise.all([
         scanApi.trades.list(undefined, 500, scope),
         scanApi.trades.analytics({ scope }),
-        scanApi.trades.accountSummary().catch(() => null),
+        scanApi.trades.accountSummary(acctKey).catch(() => null),
       ])
       if (seq !== seqRef.current) return
       setRows(list)
       setSummary(analytics.summary)
-      // 账户概览为当前交易账号实时数据：scope 是环境聚合时按环境匹配，
-      // scope 是具体账号 key 时按账号精确匹配，不匹配则丢弃（切范围瞬时不串数）
+      // 账户概览为我们显式请求的账号实时数据：key 不匹配（含缺省回落 testnet-1）
+      // 或交易所查询失败时丢弃/降级，不串数
+      const expectKey = acctKey ?? 'testnet-1'
       const acctMatch =
-        acctData && acctData.available
-          ? scope === 'live' || scope === 'testnet'
-            ? acctData.testnet === (scope === 'testnet')
-            : acctData.account_key === scope
-          : false
+        acctData && acctData.available ? acctData.account_key === expectKey : false
       if (acctMatch) {
         setAcct(acctData)
       } else if (acctData && !acctData.available) {
@@ -402,7 +413,7 @@ export default function TradesPanel() {
     } finally {
       setLoading(false)
     }
-  }, [scope])
+  }, [scope, resolveAcctKey])
 
   // 仅初始加载 + 范围切换时重拉，不做轮询：数据源 = 每小时第 10 分结算巡检（按小时变动），
   // 手动点「刷新」按钮即可获取最新数据
@@ -516,7 +527,7 @@ export default function TradesPanel() {
     )
   }, [scopeRows, statusFilter])
 
-  // 概览统计：在跑（三态，从当前环境列表算）；其余与资金分析页同源
+  // 概览统计：在跑（三态，从当前范围列表算）；其余与资金分析页同源
   // （closed/wins/win_rate/net_pnl/avg_win_r 全部取自 analytics 接口，口径见 docs/14）
   const stats = useMemo(() => {
     const running = scopeRows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status)).length
@@ -1348,7 +1359,7 @@ export default function TradesPanel() {
         {([
           {
             accent: '#1677ff',
-            title: '账户资金',
+            title: acct?.account_name ? `账户资金 · ${acct.account_name}` : '账户资金',
             items: [
               {
                 label: '保证金余额',

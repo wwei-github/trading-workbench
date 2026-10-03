@@ -179,9 +179,10 @@ def _attempt_open(
         _mark_open_block(db, a, "币种在黑名单（手动添加或连续止损自动冷却中）")
         return False
     # 下单环境可交易兜底（2026-09-19，ARX 案例）：扫描宇宙已过滤，这里防
-    # 缓存到期瞬间/扫描并发窗口内的新候选。空集合（拉取失败）放行不阻断
-    from app.services.binance_trader import BinanceTrader
-    listed = BinanceTrader().listed_symbols()
+    # 缓存到期瞬间/扫描并发窗口内的新候选。用本单账号 trader（账号属性
+    # testnet 决定基地址）——2026-10-03 双网同开后各网独立校验。空集合
+    # （拉取失败）放行不阻断
+    listed = trader.listed_symbols()
     if listed and symbol not in listed:
         logger.info("开仓跳过 %s：下单环境未上架该合约（exchangeInfo 校验）", symbol)
         _mark_open_block(db, a, "下单环境未上架该合约（无法交易）")

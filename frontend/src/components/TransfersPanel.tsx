@@ -1,7 +1,7 @@
 /**
  * 资金划转页（顶层 Tab）：合约账户转入/转出记录
  * - 数据来源：每小时 :10 结算巡检从币安 income TRANSFER 同步（GET /api/trades/transfers?scope=）
- * - 环境切换（正式网/测试网）与资金分析页一致：默认跟随当前交易环境
+ * - 账号范围（正式网/测试网/全部/单账号）与资金分析页一致：默认全部（2026-10-03 删环境切换）
  * - 概览：初始资金 / 当前账户资金 / 累计转入 / 累计转出 / 净流入（服务端全量聚合）；明细表带符号金额着色（随全局涨跌配色）
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -22,8 +22,8 @@ function fmtTime(s: string | null | undefined): string {
 }
 
 export default function TransfersPanel() {
-  // 默认 scope 跟随当前交易环境（多 live 账号跟随选中账号，docs/17）。
-  // 面板被 Tabs 保活：环境切换（defaultScope 变化）后重新跟随，手动选择不被配置刷新打断
+  // 默认 scope=全部（2026-10-03 删环境切换，双网合计口径）。
+  // 面板被 Tabs 保活：defaultScope 恒定，手动选择后保持
   const { aiConfig, fetchConfig } = useScanStore()
   const defaultScope = defaultScopeOf(aiConfig)
   const lastDefaultRef = useRef<string | null>(null)

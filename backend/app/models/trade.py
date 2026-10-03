@@ -148,7 +148,7 @@ class AccountTransfer(Base):
     asset: Mapped[str] = mapped_column(String(16), nullable=False, default="USDT")
     amount: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
     transfer_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
-    # 环境标识（2026-09-20）：同步自当前配置账户（TRADING_TESTNET），资金分析按 scope 过滤
+    # 环境标识（2026-09-20）：同步自划转所属账号的 testnet 属性，资金分析按 scope 过滤
     testnet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     account_key: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # 划转归属账号（docs/17；NULL=旧行按 testnet 回落）
     raw: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)

@@ -59,8 +59,8 @@ export default function ReviewActualPanel() {
   const [loading, setLoading] = useState(false)
   const [attributing, setAttributing] = useState(false)
   const [replayTrade, setReplayTrade] = useState<ActualTradeItem | null>(null)
-  // 账号范围（docs/17）：默认跟随当前交易环境；面板被 Tabs 保活，
-  // 环境切换（defaultScope 变化）后重新跟随，手动选择不被配置刷新打断
+  // 账号范围（docs/17）：默认全部（2026-10-03 删环境切换，双网合计口径）；
+  // 面板被 Tabs 保活，defaultScope 恒定，手动选择后保持
   const { aiConfig, fetchConfig } = useScanStore()
   const defaultScope = defaultScopeOf(aiConfig)
   const lastDefaultRef = useRef<string | null>(null)

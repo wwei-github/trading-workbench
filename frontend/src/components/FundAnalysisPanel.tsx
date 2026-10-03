@@ -58,8 +58,8 @@ function isNegBucket(bucket: string): boolean {
 
 /** 资金分析页（docs/14） */
 export default function FundAnalysisPanel() {
-  // 账号范围切换（docs/17）：默认跟随当前交易环境，多 live 账号时跟随选中账号。
-  // 面板被 Tabs 保活：环境切换（defaultScope 变化）后重新跟随，手动选择不被配置刷新打断
+  // 账号范围切换（docs/17）：默认全部（2026-10-03 删环境切换，双网合计口径）。
+  // 面板被 Tabs 保活：defaultScope 恒定，手动选择后保持
   const { aiConfig, fetchConfig } = useScanStore()
   const defaultScope = defaultScopeOf(aiConfig)
   const lastDefaultRef = useRef<string | null>(null)

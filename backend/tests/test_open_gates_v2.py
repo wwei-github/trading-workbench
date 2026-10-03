@@ -30,7 +30,6 @@ from app.database import Base  # noqa: E402
 from app.models.scan import AIAnalysis  # noqa: E402
 from app.models.system_config import SystemConfig  # noqa: E402
 from app.models.trade import TradeRecord  # noqa: E402
-from app.services import binance_trader as bt_mod  # noqa: E402
 from app.services.trade_engine import (  # noqa: E402
     _attempt_open,
     _breakeven_stop_price,
@@ -54,18 +53,6 @@ def _fixed_settings(monkeypatch):
     monkeypatch.setattr(settings, "DAILY_LOSS_STOP_PCT", 9.0)
     monkeypatch.setattr(settings, "DAILY_LOSS_STOP_ENABLED", True)
     monkeypatch.setattr(settings, "NEAR_ANCHOR_RISK_FACTOR", 0.7)
-
-
-@pytest.fixture(autouse=True)
-def _stub_listed(monkeypatch):
-    """_attempt_open 内 local import BinanceTrader() 查上架集合：替身避免真实
-    构造（DB 账号解析 / HTTP 客户端）与网络调用；返回空集合=放行（同真实
-    「拉取失败放行」语义），后续由替身 trader 的 price 抛错终止流程"""
-    class _StubListed:
-        def listed_symbols(self):
-            return set()
-
-    monkeypatch.setattr(bt_mod, "BinanceTrader", _StubListed)
 
 
 @pytest.fixture()
@@ -129,6 +116,10 @@ class _FakeTrader:
         self._wallet = wallet
         self._positions = positions or {}
 
+    def listed_symbols(self):
+        # 本单账号 trader 直接调用（2026-10-03）：空集合=放行（同「拉取失败放行」语义）
+        return set()
+
     def positions(self):
         return self._positions
 
@@ -148,6 +139,10 @@ class _SpreadTrader:
     def __init__(self, bid=99.95, ask=100.05, book_error=False):
         self._bid, self._ask, self._book_error = bid, ask, book_error
         self.setup_calls = []
+
+    def listed_symbols(self):
+        # 本单账号 trader 直接调用（2026-10-03）：空集合=放行（同「拉取失败放行」语义）
+        return set()
 
     def price(self, symbol):
         return 100.0

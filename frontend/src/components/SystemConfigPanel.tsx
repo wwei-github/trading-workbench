@@ -1,21 +1,20 @@
 import { useState, useEffect } from 'react'
-import { Modal, Switch, Tag, message, Button, Spin, Alert, Segmented, Space } from 'antd'
+import { Modal, Switch, Tag, message, Button, Spin, Alert, Space } from 'antd'
 import { ApiOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { AccountBrief, SystemConfig } from '../types'
 
-/** 系统配置弹窗（docs/17 P1 扇出）：交易环境 + 启用账号 + 双网自动交易开关。
- *  - 环境：测试网（单账号 testnet-1）/ 正式网（互斥二选一）
- *  - 正式网下多个 live 账号可同时启用自动交易（P1 扇出：共享一次 AI 分析，
+/** 系统配置弹窗（docs/17 P1 扇出 + 2026-10-03 双网独立开关）：
+ *  - 无全局「交易环境」概念（已删除）——账号清单测试网/正式网全量展示
+ *  - 正式网多个 live 账号可同时启用自动交易（P1 扇出：共享一次 AI 分析，
  *    各账号独立过闸门下单）；测试网恒为 testnet-1 单账号
- *  - 自动交易开关（2026-10-03）：测试网/正式网各自独立、可同时开启——
- *    同一 AI 分析双网各开一单（镜像跟单）；测试网默认开、正式网默认关
+ *  - 自动交易开关：测试网/正式网各自独立、可同时开启——同一 AI 分析
+ *    双网各开一单（镜像跟单）；测试网默认开、正式网默认关
  *  - 凭据只在服务器 .env 配置（安全不入库），页面仅展示账号清单与配置状态 */
 export default function SystemConfigPanel() {
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [envTestnet, setEnvTestnet] = useState(true)   // 交易环境（测试网/正式网互斥）
   const [liveKeys, setLiveKeys] = useState<string[]>([]) // 正式网启用自动交易的账号集合
   const [tnTrading, setTnTrading] = useState(true)      // 测试网自动交易（默认开）
   const [liveTrading, setLiveTrading] = useState(false) // 正式网自动交易（默认关）
@@ -30,12 +29,10 @@ export default function SystemConfigPanel() {
   useEffect(() => {
     if (open && aiConfig) {
       const accs = aiConfig.accounts ?? []
-      const testnet = aiConfig.trading_testnet ?? true
-      setEnvTestnet(testnet)
-      // 启用集合：配置值；空回落主账号 / 第一个 live 账号（与后端回落语义一致）
+      // 启用集合：配置值；空回落第一个已配置 live 账号 / live-1（与后端回落语义一致）
       const keys = aiConfig.live_trading_keys?.length
         ? aiConfig.live_trading_keys
-        : [aiConfig.current_account_key || accs.find((a) => !a.testnet)?.key || 'live-1']
+        : [accs.find((a) => !a.testnet && a.configured)?.key || 'live-1']
       setLiveKeys(keys)
       setTnTrading(aiConfig.trading_enabled_testnet ?? true)
       setLiveTrading(aiConfig.trading_enabled_live ?? false)
@@ -47,22 +44,19 @@ export default function SystemConfigPanel() {
   }
 
   const handleSave = async () => {
-    if (!envTestnet && liveKeys.length === 0) {
-      message.error('正式网模式需至少启用一个账号执行自动交易')
+    // 实盘安全基线：正式网自动交易开着却没启用任何账号时拦下，
+    // 防止扇出静默回落 live-1 意外开实盘单
+    if (liveTrading && liveKeys.length === 0) {
+      message.error('正式网自动交易已开启，需至少启用一个正式网账号')
       return
     }
     try {
       setSaving(true)
-      const data: Partial<SystemConfig> = {
-        trading_testnet: envTestnet,
+      await updateConfig({
         trading_enabled_testnet: tnTrading,
         trading_enabled_live: liveTrading,
-      }
-      if (!envTestnet) {
-        data.live_trading_keys = liveKeys
-        data.current_account_key = liveKeys[0] // 主账号 = 启用集合第一个
-      }
-      await updateConfig(data)
+        live_trading_keys: liveKeys, // 后端保存时联动维护主账号 current_account_key
+      } as Partial<SystemConfig>)
       message.success('配置已保存（任务级即时生效，无需重启）')
       setOpen(false)
     } catch (e: any) {
@@ -102,7 +96,6 @@ export default function SystemConfigPanel() {
           ) : (
             <Tag color="red" style={{ marginInlineEnd: 0 }}>未配置</Tag>
           )}
-          {envTestnet && a.testnet && <Tag color="processing" style={{ marginInlineEnd: 0 }}>当前环境</Tag>}
         </Space>
         {actionable && (
           <Switch
@@ -133,20 +126,8 @@ export default function SystemConfigPanel() {
         width={520}
       >
         <Spin spinning={loading}>
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>交易环境</div>
-            <Segmented
-              value={envTestnet ? 'testnet' : 'live'}
-              onChange={(v) => setEnvTestnet(v === 'testnet')}
-              options={[
-                { label: '测试网', value: 'testnet' },
-                { label: '正式网', value: 'live' },
-              ]}
-            />
-          </div>
-
-          <div style={{ fontSize: 13, fontWeight: 600, margin: '16px 0 8px' }}>
-            {envTestnet ? '测试网账号' : '启用自动交易的账号（可多选，扇出跟单）'}
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+            账号清单（正式网账号可多选启用自动交易，扇出跟单）
           </div>
           {accounts.length === 0 ? (
             <Alert
@@ -157,9 +138,8 @@ export default function SystemConfigPanel() {
             />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-              {envTestnet
-                ? testnetAccounts.map((a) => accountRow(a, false))
-                : liveAccounts.map((a) => accountRow(a, true))}
+              {testnetAccounts.map((a) => accountRow(a, false))}
+              {liveAccounts.map((a) => accountRow(a, true))}
             </div>
           )}
 
@@ -213,18 +193,13 @@ export default function SystemConfigPanel() {
             （镜像跟单，各账号独立过风控闸门）。正式网默认关闭（实盘安全基线）。
             仅控制每小时 AI 分析完成后是否自动开新单；关闭后手动「开单」按钮、AI 分析
             （由策略配置「筛选后自动 AI 分析」独立控制）、结算巡检、复盘、日报均不受影响。
-            与上方「交易环境」选择无关——环境只决定扫描/展示口径与账号清单。
           </div>
 
           <Alert
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
-            message={
-              envTestnet
-                ? '切换环境后，新开仓位记入对应环境；存量在跑单按开单时的账号继续结算，互不影响。'
-                : '正式网多账号共用同一次 AI 分析结论，各账号独立按钱包计算仓位并下单（扇出跟单）；单账号失败不影响其他账号。'
-            }
+            message="正式网多账号共用同一次 AI 分析结论，各账号独立按钱包计算仓位并下单（扇出跟单）；单账号失败不影响其他账号。"
           />
 
           <div style={{ color: '#999', fontSize: 12, lineHeight: 1.7 }}>

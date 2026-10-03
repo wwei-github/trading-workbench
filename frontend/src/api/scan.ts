@@ -209,9 +209,15 @@ export const scanApi = {
     // 资金分析聚合（docs/14，start/end 为北京时间 YYYY-MM-DD 闭区间）
     analytics: (params: { scope: string; start?: string; end?: string }) =>
       api.get<FundAnalytics>('/trades/analytics', { params }).then((r) => r.data),
-    // 账户资金概览（当前环境：总资金/总收益/收益率，顶部状态栏展示）
-    accountSummary: () =>
-      api.get<AccountSummary>('/trades/account-summary').then((r) => r.data),
+    // 账户资金概览（账号维度：总资金/总收益/收益率，顶部状态栏展示；
+    // 2026-10-03 删环境切换：accountKey 由页面 scope 显式解析传入，
+    // 缺省时后端回落 testnet-1）
+    accountSummary: (accountKey?: string) =>
+      api
+        .get<AccountSummary>('/trades/account-summary', {
+          params: accountKey ? { account_key: accountKey } : undefined,
+        })
+        .then((r) => r.data),
     // 手动 AI 持仓诊断（docs/16，无视冷却）：异步派发立即返回，前端轮询结果
     advice: (tradeId: string) =>
       api.post<{ queued: boolean; symbol: string }>(`/trades/${tradeId}/advice`).then((r) => r.data),
@@ -235,9 +241,10 @@ export const scanApi = {
           '/trades/inspect-now', null, { timeout: 15000 },
         )
         .then((r) => r.data),
-    // 扫描结果表「开单」按钮（2026-09-27）：对 AI 分析立即走完整开仓闸门，
-    // 仅当前账号；opened=false 为闸门拦截（业务结果），block_reason 给前端提示
-    openFromAnalysis: (analysisId: string) =>
+    // 扫描结果表「开单」按钮（2026-09-27）：对 AI 分析立即走完整开仓闸门；
+    // 2026-10-03 删环境切换：accountKey 必传（前端弹窗选账号），后端不猜网。
+    // opened=false 为闸门拦截（业务结果），block_reason 给前端提示
+    openFromAnalysis: (analysisId: string, accountKey: string) =>
       api
         .post<{
           ok: boolean;
@@ -245,7 +252,11 @@ export const scanApi = {
           block_reason: string | null;
           trade_id: string | null;
           account_key: string;
-        }>('/trades/open-from-analysis', { analysis_id: analysisId }, { timeout: 60000 })
+        }>(
+          '/trades/open-from-analysis',
+          { analysis_id: analysisId, account_key: accountKey },
+          { timeout: 60000 },
+        )
         .then((r) => r.data),
     // 市价平仓（与飞书卡片按钮同源）：同步执行约 2~5s，立即结算落终态
     closeMarket: (tradeId: string) =>
