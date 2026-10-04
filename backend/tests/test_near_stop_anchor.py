@@ -158,6 +158,18 @@ def test_normalize_raw_rejects_bogus_anchor():
     assert d.stop_anchor is None
 
 
+def test_normalize_raw_empty_anchor_to_none():
+    """prompt 教的空串（非突破类「输出空字符串」）→ 归 None 不撞 Literal 校验
+    （2026-10-04：白名单曾放行 ""，TradeDecision literal_error 白烧一次 Reflection）"""
+    d = normalize_raw({
+        "trade_decision": "suggest", "direction": "long",
+        "trade_type": "trend_follow", "stop_anchor": "",
+        "entry_price": "100", "stop_loss": "98.5",
+        "take_profit_1": "105", "recommendation": "60",
+    })
+    assert d.stop_anchor is None  # 曾在此抛 ValidationError
+
+
 # ── Agent 管线：stop_ref → stop_anchor 程序推导 ───────────────────────
 
 

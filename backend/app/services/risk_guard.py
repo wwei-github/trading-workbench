@@ -92,8 +92,10 @@ def normalize_raw(raw: dict) -> TradeDecision:
             data[f] = 0.0
     if data.get("direction") == "":
         data["direction"] = None
-    # stop_anchor 非法值回退 None（suggest 落库时再回退 structure；docs/23）
-    if data.get("stop_anchor") not in ("structure", "near", None, ""):
+    # stop_anchor 非法值（含 prompt 教的空串）一律回退 None（suggest 落库时再回退
+    # structure；docs/23）。此前白名单误把 "" 当合法值原样放行 → 撞 Literal 校验
+    # 「输出格式不合法」白烧一次 Reflection 重试（2026-10-04）
+    if data.get("stop_anchor") not in ("structure", "near"):
         data["stop_anchor"] = None
     # 战法字段空串归 None（未命中）；白名单校验在 validate_decision（需注入清单）
     for _tf in ("tactic_name", "tactic_reason"):

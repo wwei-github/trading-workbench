@@ -175,7 +175,7 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 - skip_reason: trade_decision="skip" 时必填，用"1. 2. 3."序号逐条列出不建议开单的主要原因（如：1. 信号强度不足 2. 盈亏比不佳），最多3条，每条一行，JSON内换行写\\n。suggest 时输出空字符串。
 - direction: 交易方向，"long"（做多）或 "short"（做空）。skip 时为空字符串。
 - trade_type: 开单类型（结构打法归类），suggest 时必填其一：trend_follow（顺势，方向由 EMA 排列或指标共振确立，纯 EMA 排列不是硬门槛）/ structure_break（结构破位回踩，涵盖 123法则·N字结构·2B法则，见下方打法详解）/ range_edge（区间边缘反转）。skip 时为空字符串。
-- stop_anchor: 止损锚类型，仅突破类信号需输出："structure"（结构锚）或 "near"（突破K极值近锚），资格与降级链以程序入场门槛块为准；其他信号类型输出空字符串。
+- stop_anchor: 止损锚类型，仅突破类信号需输出："structure"（结构锚）或 "near"（突破K极值近锚），资格与降级链以程序入场门槛块为准；其他信号类型省略该字段或输出 null（禁止输出空字符串）。
 - entry_price: 建议入场价。**只允许现价入场（2026-09-30 二次拍板）**：entry 必须贴近
   当前价格（顺势追势），**禁止**把入场价放到现价回踩侧（多单低于现价/空单高于现价）——
   程序对"入场价在现价回踩侧"的建议标记"待回踩"且**不会为其下单**（等于放弃该笔）。
