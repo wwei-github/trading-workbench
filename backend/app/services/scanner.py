@@ -102,6 +102,31 @@ def _scan_hit_card(new_hits: list[dict]) -> dict:
     return card
 
 
+def _ai_skip_card(slots_detail: str) -> dict:
+    """定时扫描满仓跳过 AI 分析的消息卡片（2026-10-04）。
+
+    此前跳过只在 celery 日志与任务记录 summary 里，命中通知发了、AI 却没动静，
+    用户无从归因。卡片橙标题 + 两网在跑/上限计数（slots_detail 由 _slots_full
+    生成：「满仓跳过 AI 分析：X网在跑单达上限（测试网 X/Y、正式网 X/Y）」），
+    note 脚注说明恢复条件。仅定时扫描推送（手动扫描用户在场不推）。"""
+    # slots_detail 形如「满仓跳过 AI 分析：测试网在跑单达上限（测试网 10/10、正式网 4/10）」
+    # → 拆出原因与计数行分别渲染
+    reason = slots_detail.split("：", 1)[-1] if "：" in slots_detail else slots_detail
+    counts = slots_detail[slots_detail.find("（") + 1:slots_detail.rfind("）")]
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "⏸️ 满仓跳过本轮 AI 分析"},
+            "template": "orange",
+        },
+        "elements": [
+            {"tag": "markdown", "content": f"**{reason}**\n在跑名额：{counts}"},
+            {"tag": "note", "elements": [{"tag": "plain_text", "content":
+             "定时扫描满仓时跳过批量 AI 分析（省 LLM 成本）；任一网结算释放名额后下一轮自动恢复。命中的币种可在筛选结果页手动单币分析（不受满仓限制）。"}]},
+        ],
+    }
+
+
 def classify_volume(klines: list[list]) -> tuple[float, str]:
     """提取最新已收盘 K 线成交量并分类（比率口径复用 indicators.volume_ratio，
     与放量突破门槛 BREAKOUT_VOL_RATIO 同源）。
@@ -521,6 +546,13 @@ class Scanner:
                     if full:
                         ai_skip_note = slots_detail
                         logger.info("定时扫描后跳过本轮 AI 分析 #%s：%s", scan_record_id, slots_detail)
+                        # 满仓跳过飞书卡片（2026-10-04）：命中通知发了、AI 没动静
+                        # 的静默路径补上推送（仅定时扫描，同命中通知口径）
+                        try:
+                            from app.services.feishu_bot import send_app_card
+                            send_app_card(_ai_skip_card(slots_detail))
+                        except Exception:
+                            logger.exception("满仓跳过飞书通知失败 #%s", scan_record_id)
                     else:
                         run_ai_analysis_task.delay(str(scan_record_id))
                 else:
