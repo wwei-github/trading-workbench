@@ -284,12 +284,15 @@ class Scanner:
         self.pool = ExchangePool()
         self.concurrency = settings.BINANCE_CONCURRENCY
 
-    def run(self, scan_record_id: UUID) -> None:
+    def run(self, scan_record_id: UUID) -> Optional[str]:
+        """执行扫描。返回 AI 分析跳过说明（None=正常分发分析/无需说明），
+        供任务记录 summary 展示「满仓跳过 AI 分析」（2026-10-04）。"""
         db = SessionLocal()
         status = "failed"
         hit_count = 0
         error_count = 0
         coin_count = 0
+        ai_skip_note: Optional[str] = None
         try:
             record = db.get(ScanRecord, scan_record_id)
             if not record:
@@ -508,12 +511,18 @@ class Scanner:
                 )
 
             # 6. 触发 AI 分析（任务内自检开关；批量按24h成交额取前 AI_MAX_PER_SCAN 个）
-            # 满仓跳过（docs/06）：定时扫描时在跑单已达上限则不做 AI 分析（省 LLM 成本，
-            # 反正开不了仓）；手动扫描/手动分析不受限。下次结算释放额度后自然恢复
+            # 满仓跳过（docs/06，2026-10-04 按网判定）：定时扫描时任一网（测试/正式）
+            # OPENED 数达 max_open_trades 上限则不做 AI 分析（省 LLM 成本，该网反正
+            # 开不了仓）；手动扫描/手动分析不受限。跳过说明返回给任务记录 summary 展示
             from app.tasks.ai_tasks import run_ai_analysis_task
             try:
-                if record.scan_type == "scheduled" and self._slots_full():
-                    logger.info("在跑单子已达上限，定时扫描后跳过本轮 AI 分析 #%s", scan_record_id)
+                if record.scan_type == "scheduled":
+                    full, slots_detail = self._slots_full()
+                    if full:
+                        ai_skip_note = slots_detail
+                        logger.info("定时扫描后跳过本轮 AI 分析 #%s：%s", scan_record_id, slots_detail)
+                    else:
+                        run_ai_analysis_task.delay(str(scan_record_id))
                 else:
                     run_ai_analysis_task.delay(str(scan_record_id))
             except Exception as e:
@@ -539,6 +548,7 @@ class Scanner:
                 pass
             self._update_scan_status(scan_record_id, status, hit_count, error_count, coin_count)
             db.close()
+        return ai_skip_note
 
     @staticmethod
     def _save_results(
@@ -642,30 +652,48 @@ class Scanner:
             sdb.close()
 
     @staticmethod
-    def _slots_full() -> bool:
-        """在跑单子数是否已达 max_open_trades 上限（独立短会话，避免长扫描后连接失效）。
+    def _slots_full() -> tuple[bool, str]:
+        """定时扫描 AI 分析跳过判定（docs/06）：在跑单按网区分——测试网/正式网
+        各自统计 OPENED 数对照 max_open_trades 上限，任一网满仓即跳过本轮
+        （2026-10-04 前为两网合计判定，单网额度没用完就整体跳过）。
 
         只统计 OPENED：已开始移动止损的单子（TP1_HIT 止损已移保本 / TP2_HIT
         仅剩跟进仓）风险已锁定，不占上限名额（2026-09-25）。
-        查询失败按未满仓处理：宁可多花一次 AI 分析，不因统计故障漏掉开仓机会。
+        返回 (是否满仓, 明细文案「测试网 X/Y、正式网 X/Y」)；
+        上限 0=不限单数；查询失败按未满仓处理（宁可多花一次 AI 分析，
+        不因统计故障漏掉开仓机会）。
         """
-        sdb = SessionLocal()
+        sdb = None
         try:
+            sdb = SessionLocal()
             cfg = sdb.get(SystemConfig, 1)
             if not cfg:
-                return False
-            running = sdb.execute(
-                select(func.count(TradeRecord.id)).where(TradeRecord.status == "OPENED")
-            ).scalar() or 0
-            # 0 = 不限单数，仅靠余额风控兜底
-            if not cfg.max_open_trades or cfg.max_open_trades <= 0:
-                return False
-            return running >= cfg.max_open_trades
+                return False, ""
+            max_n = cfg.max_open_trades or 0
+            if max_n <= 0:
+                return False, ""
+            rows = sdb.execute(
+                select(
+                    func.coalesce(TradeRecord.testnet, False).label("net"),
+                    func.count(TradeRecord.id),
+                )
+                .where(TradeRecord.status == "OPENED")
+                .group_by("net")
+            ).all()
+            counts = {net: n for net, n in rows}
+            tn = counts.get(True, 0)
+            live = counts.get(False, 0)
+            detail = f"测试网 {tn}/{max_n}、正式网 {live}/{max_n}"
+            if tn >= max_n or live >= max_n:
+                which = "测试网" if tn >= max_n else "正式网"
+                return True, f"满仓跳过 AI 分析：{which}在跑单达上限（{detail}）"
+            return False, detail
         except Exception:
             logger.exception("查询在跑单子数失败，按未满仓处理")
-            return False
+            return False, ""
         finally:
-            sdb.close()
+            if sdb is not None:
+                sdb.close()
 
     @staticmethod
     def _suppress_repeat_hits(hits: list[dict], repeat_window_hours: int) -> tuple[list[dict], int]:

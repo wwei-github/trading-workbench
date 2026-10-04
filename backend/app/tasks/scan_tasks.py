@@ -93,19 +93,24 @@ def run_scan_task(self, scan_record_id: Optional[str] = None, scan_type: str = "
                 return
 
         scanner = Scanner()
-        scanner.run(record.id)
+        # 返回值 = AI 分析跳过说明（满仓跳过时非空，2026-10-04 按网判定）
+        ai_skip_note = scanner.run(record.id)
 
         # scanner.run 用自己的会话收尾，重读最终状态
         db.expire_all()
         record = db.get(ScanRecord, record.id)
+        summary = f"扫描 {record.coin_count} 个，命中 {record.hit_count} 个"
+        if ai_skip_note:
+            summary += f"；{ai_skip_note}"
         close_task(
             task_id,
             "completed" if record.status == "completed" else "failed",
-            summary=f"扫描 {record.coin_count} 个，命中 {record.hit_count} 个",
+            summary=summary,
             detail={
                 "coin_count": record.coin_count,
                 "hit_count": record.hit_count,
                 "error_count": record.error_count,
+                **({"ai_skip": ai_skip_note} if ai_skip_note else {}),
             },
         )
     except Exception as e:

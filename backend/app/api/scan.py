@@ -199,6 +199,17 @@ def scan_status(db: Session = Depends(get_db)):
                 TradeRecord.status.in_(("TP1_HIT", "TP2_HIT")),
             )
         ).scalar_one(),
+        # 在跑 OPENED 按网计数（2026-10-04 拆分显示）：满仓跳过判定 = 任一网达上限
+        open_trades_testnet=db.execute(
+            select(func.count()).select_from(TradeRecord).where(
+                TradeRecord.status == "OPENED", TradeRecord.testnet == True,  # noqa: E712
+            )
+        ).scalar_one(),
+        open_trades_live=db.execute(
+            select(func.count()).select_from(TradeRecord).where(
+                TradeRecord.status == "OPENED", TradeRecord.testnet == False,  # noqa: E712
+            )
+        ).scalar_one(),
         max_open_trades=cfg.max_open_trades,
         ai_analysis_enabled=cfg.ai_analysis_enabled,
         # 各网当日熔断状态（顶部卡片；钱包 5min 缓存，展示口径非拦截口径）

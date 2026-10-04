@@ -82,6 +82,8 @@ class ScanStatusResponse(BaseModel):
     trading_enabled_live: bool = False     # 正式网自动交易开关
     open_trades: int = 0          # 在跑单数（双网合计，OPENED/TP1_HIT/TP2_HIT 三状态）
     open_tp_hit: int = 0          # 其中已进入止盈止损阶段的（TP1_HIT/TP2_HIT，止损已移保本，不占上限名额）
+    open_trades_testnet: int = 0  # 在跑 OPENED 按网计数（2026-10-04 拆分显示；满仓跳过判定=任一网达上限）
+    open_trades_live: int = 0
     max_open_trades: int = 5
     ai_analysis_enabled: bool = False
     # 各网当日熔断状态（2026-10-04 顶部卡片「熔断状态」列）：

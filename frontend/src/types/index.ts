@@ -65,6 +65,9 @@ export interface ScanStatus {
   open_trades: number;
   /** 其中已进入止盈止损阶段的（TP1_HIT/TP2_HIT，止损已移保本，不占上限名额） */
   open_tp_hit: number;
+  /** 在跑 OPENED 按网计数（2026-10-04 拆分显示；满仓跳过判定=任一网达上限） */
+  open_trades_testnet: number;
+  open_trades_live: number;
   max_open_trades: number;
   ai_analysis_enabled: boolean;
   /** 各网当日熔断状态（2026-10-04 顶部卡片）：active true=已熔断/false=未熔断/null=未知（钱包失败或未启用） */
