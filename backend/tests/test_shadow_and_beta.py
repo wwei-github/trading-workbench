@@ -295,6 +295,21 @@ def test_cvd_div_insufficient_none():
     assert compute_cvd_div(_cvd_bars([100.0] * 25, [100.0] * 25, [60.0] * 25)) is None
 
 
+def test_compute_outputs_json_serializable():
+    """compute 输出直接进 value_json（SQLAlchemy JSON 列 = json.dumps）：
+    np.float64 是 float 子类能过，但 np.bool_/np.float32/ndarray 会 TypeError
+    → 打标被 except 吞掉静默全灭——此测试守住未来口径改动不引入非纯类型"""
+    import json
+
+    up = [100 * (1 + 0.0015 * i) for i in range(26)]
+    for value in (
+        compute_cvd_div(_cvd_bars(up, [100.0] * 26, np.linspace(80, 30, 26))),
+        compute_vol_regime(_atr_bars(130, 1.0, 0.1)),
+    ):
+        assert value is not None
+        json.dumps(value)  # 不抛 TypeError
+
+
 def _atr_bars(n, first_n_range, last_m_range):
     """构造 ATR 用 K 线：前 first_n_range 根振幅 1.0，其余 last_m_range"""
     kl = []

@@ -912,14 +912,17 @@ def try_open_for_analysis(
         float(cfg.near_anchor_factor) if cfg.near_anchor_factor is not None
         else float(settings.NEAR_ANCHOR_RISK_FACTOR)
     )
-    # 本单 β（docs/13 #1）：对 BTC 的日收益回归 β，查询失败/缺失按 1.0（保守）；
-    # 闸门加权与落库快照共用（24h 进程缓存，逐笔调用不重拉 K 线；BTCUSDT 恒 1.0）
+    # 本单 β（docs/13 #1）：对 BTC 的日收益回归 β，查询失败/缺失按 1.0（保守）。
+    # beta_raw（None-able）专供落库快照——NULL=不可得（与列注释语义一致，事后
+    # 分析可区分「实测 β=1.0」与「不可得」）；闸门加权用回落后的 beta_new
+    # （24h 进程缓存，逐笔调用不重拉 K 线；BTCUSDT 恒 1.0）
     from app.services.market_data import get_beta, get_kline_client
     try:
-        beta_new = get_beta(get_kline_client(), a.symbol) or 1.0
+        beta_raw = get_beta(get_kline_client(), a.symbol)
     except Exception as e:
         logger.debug("本单 β 查询失败（按 1.0）: %s", e)
-        beta_new = 1.0
+        beta_raw = None
+    beta_new = beta_raw if beta_raw is not None else 1.0
     if heat_cap > 0 or same_cap > 0:
         running = db.execute(
             select(TradeRecord.risk_amount, TradeRecord.direction,
@@ -1022,7 +1025,7 @@ def try_open_for_analysis(
         except Exception:
             db.rollback()
     return _attempt_open(db, trader, cfg, a, wallet, positions,
-                         force_market=force_market, beta=beta_new)
+                         force_market=force_market, beta=beta_raw)
 
 
 # ── 结算 ──────────────────────────────────────────────────────
