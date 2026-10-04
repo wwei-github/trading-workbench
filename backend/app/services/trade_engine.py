@@ -154,6 +154,7 @@ def _attempt_open(
     a: AIAnalysis,
     wallet: float, positions: dict,
     force_market: bool = False,
+    beta: Optional[float] = None,
 ) -> bool:
     """对单条分析过全部开仓闸门并尝试开仓（docs/06 §3 逐项检查）。
 
@@ -572,6 +573,7 @@ def _attempt_open(
                 margin_used=round(qty * fill_price / leverage, 4),
                 risk_amount=round(risk_amount, 4),
                 risk_budget_mode=(cfg.risk_budget_mode or "pct"),  # 开仓时刻模式快照（追溯口径）
+                beta=(round(beta, 4) if beta is not None else None),  # 开仓时 β 快照（docs/13 #1 热度加权；None=不可得按 1.0 计）
                 stop_loss=sl,
                 tp1=tp1,
                 tp2=tp2 if tp2_order else 0,
@@ -910,9 +912,18 @@ def try_open_for_analysis(
         float(cfg.near_anchor_factor) if cfg.near_anchor_factor is not None
         else float(settings.NEAR_ANCHOR_RISK_FACTOR)
     )
+    # 本单 β（docs/13 #1）：对 BTC 的日收益回归 β，查询失败/缺失按 1.0（保守）；
+    # 闸门加权与落库快照共用（24h 进程缓存，逐笔调用不重拉 K 线；BTCUSDT 恒 1.0）
+    from app.services.market_data import get_beta, get_kline_client
+    try:
+        beta_new = get_beta(get_kline_client(), a.symbol) or 1.0
+    except Exception as e:
+        logger.debug("本单 β 查询失败（按 1.0）: %s", e)
+        beta_new = 1.0
     if heat_cap > 0 or same_cap > 0:
         running = db.execute(
-            select(TradeRecord.risk_amount, TradeRecord.direction).where(
+            select(TradeRecord.risk_amount, TradeRecord.direction,
+                   TradeRecord.symbol, TradeRecord.beta).where(
                 TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")),
                 _adopt_acc_cond(trader),
             )
@@ -931,27 +942,35 @@ def try_open_for_analysis(
             )
             est_risk = _capital_base(wallet) * _rp / 100
         est_risk = _near_discounted_budget(est_risk, a.stop_anchor, factor=near_factor)
-        # ① 热度：在跑单止损合计 + 本单预估 > 钱包余额 × 热度上限 → 拦截。
-        #    单笔 3% 预算下同开 5 单名义敞口即 15%+——组合层面限制同时承受止损的
-        #    总金额，防「单笔合规、组合超载」（0=关闭）
+        # ① 热度（2026-10-04 β 加权，docs/13 #1）：在跑单止损合计与本单预估均按
+        #    β 加权——山寨与 BTC 相关性 0.7~0.9，同向单实际是同一 BTC 敞口的
+        #    多份拷贝，「单笔合规、组合隐性集中」。β 缺失（旧行/查询失败）按 1.0
+        #    = 原口径。双口径日志（docs/13 验证要求）：加权值与原值差进日志，
+        #    影子观察期比对误拦率，稳定后原口径日志移除。0=关闭
         if heat_cap > 0:
-            heat_used = sum(float(r or 0) for r, _d in running)
-            if heat_used + est_risk > wallet * heat_cap:
+            heat_used = sum(
+                float(r or 0) * (float(b) if b is not None else 1.0)
+                for r, _d, _s, b in running
+            )
+            heat_used_orig = sum(float(r or 0) for r, _d, _s, _b in running)
+            est_risk_eff = est_risk * beta_new
+            if heat_used + est_risk_eff > wallet * heat_cap:
                 logger.info(
-                    "即时开仓跳过 %s：组合热度超限（在跑止损合计 %.2f + 本单预估 %.2f"
-                    " > 钱包 %.2f × %.0f%%）",
-                    a.symbol, heat_used, est_risk, wallet, heat_cap * 100,
+                    "即时开仓跳过 %s：组合热度超限（β加权：在跑 %.2f + 本单 %.2f×β%.2f"
+                    " > 钱包 %.2f × %.0f%%；原口径：在跑 %.2f + 本单 %.2f）",
+                    a.symbol, heat_used, est_risk, beta_new, wallet,
+                    heat_cap * 100, heat_used_orig, est_risk,
                 )
                 _mark_open_block(
                     db, a,
-                    f"组合热度超限：在跑单止损合计 {heat_used:.2f} + 本单预估 "
-                    f"{est_risk:.2f} > 钱包 {wallet:.2f} × {heat_cap * 100:.0f}%",
+                    f"组合热度超限（β加权）：在跑 {heat_used:.2f} + 本单 "
+                    f"{est_risk_eff:.2f} > 钱包 {wallet:.2f} × {heat_cap * 100:.0f}%",
                 )
                 return False
         # ② 同向：同 direction 在跑单数 ≥ 同向上限 → 拦截。
         #    全市场同涨同跌（趋势同震）时同向单几乎同损——方向集中度上限（0=不限）
         if same_cap > 0:
-            same_n = sum(1 for _r, d in running if d == a.direction)
+            same_n = sum(1 for _r, d, _s, _b in running if d == a.direction)
             if same_n >= same_cap:
                 logger.info(
                     "即时开仓跳过 %s：同向（%s）在跑 %d 单已达上限 %d",
@@ -1003,7 +1022,7 @@ def try_open_for_analysis(
         except Exception:
             db.rollback()
     return _attempt_open(db, trader, cfg, a, wallet, positions,
-                         force_market=force_market)
+                         force_market=force_market, beta=beta_new)
 
 
 # ── 结算 ──────────────────────────────────────────────────────

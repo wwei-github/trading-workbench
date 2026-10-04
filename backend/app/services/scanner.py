@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import SessionLocal
 from app.models.scan import BreakoutEvent, PullbackPending, ScanRecord, ScanResult
+from app.models.shadow import ShadowMark
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.scan_filters import ScanFilters, resolve_scan_filters
@@ -433,6 +434,19 @@ class Scanner:
                     if cand is None:
                         return symbol, [], False
                     cand["symbol"] = symbol
+                    # 影子打标（docs/14）：特征计算挂在此处（klines 在手），
+                    # 值随候选透传给 _save_results 落 shadow_marks；计算失败
+                    # 影子内部吞掉，不影响扫描管线。不写回任何决策字段
+                    try:
+                        from app.services import shadow as shadow_mod
+                        cand["shadow"] = {
+                            k: v for k, v in (
+                                (f.key, f.compute(klines))
+                                for f in shadow_mod.SHADOW_FEATURES.values()
+                            ) if v is not None
+                        }
+                    except Exception as e:
+                        logger.debug("影子特征计算异常（忽略）%s: %s", symbol, e)
                     return symbol, [cand], False
                 except Exception as e:
                     logger.warning("扫描 %s 失败: %s", symbol, e)
@@ -469,7 +483,7 @@ class Scanner:
                 new_hits, suppressed = hits, 0
 
             # 5. 写入结果（用独立 session，避免长时间扫描后主 session 连接失效）
-            result_ids = self._save_results(scan_record_id, new_hits)
+            result_ids = self._save_results(scan_record_id, new_hits, scan_type=record.scan_type)
 
             # 5.2 筛选命中飞书通知（2026-09-28，仅定时扫描——手动扫描用户在场，
             # 不推送）。new_hits 已过重复命中抑制，只在真新命中时提醒；
@@ -530,6 +544,7 @@ class Scanner:
     def _save_results(
         scan_record_id: UUID,
         hits: list[dict],
+        scan_type: str = "scheduled",
     ) -> dict[str, UUID]:
         """用独立 session 写入扫描结果，避免主 session 连接失效或死锁。
 
@@ -567,7 +582,30 @@ class Scanner:
                 rows.append(row)
             sdb.flush()  # 应用列默认值（uuid 主键），供 confirm 关联回写
             result_ids.update({r.symbol: r.id for r in rows})
+            # 先提交扫描结果，再打影子标（docs/14 铁律）：影子若与结果同事务，
+            # 影子 commit 失败的 rollback 会把已 flush 的 ScanResult 一并回滚
+            # （rollback 会丢弃事务开始时的 pending 插入）——影子失败绝不拖累结果本身
             sdb.commit()
+            # 影子打标落库（docs/14）：仅定时扫描（手动扫描用户在场非观察总体）。
+            # 独立事务独立 try：影子失败只回滚影子写入，不影响扫描结果本身
+            if scan_type == "scheduled":
+                for r in rows:
+                    shadow_data = next(
+                        (h.get("shadow") for h in hits if h["symbol"] == r.symbol), None)
+                    if not shadow_data:
+                        continue
+                    try:
+                        for key, value in shadow_data.items():
+                            sdb.add(ShadowMark(
+                                feature_key=key, ref_type="scan_result", ref_id=r.id,
+                                symbol=r.symbol,
+                                value_json=value,
+                                decision_json={"stage": "scan_hit", "scan_type": scan_type},
+                            ))
+                        sdb.commit()
+                    except Exception as e:
+                        sdb.rollback()
+                        logger.debug("影子打标落库失败 %s: %s", r.symbol, e)
             logger.info("写入 %d 条扫描结果 #%s", len(hits), scan_record_id)
         except Exception as e:
             logger.exception("写入扫描结果失败 #%s: %s", scan_record_id, e)

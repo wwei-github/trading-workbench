@@ -144,6 +144,15 @@ def notify_daily_report() -> dict:
                          "content": f"**{name}**\n**{price}**\n{chg or '—'}"}}],
         })
 
+    # ── 影子实验附录（docs/14 §六）：只统计不决策；无任何影子样本时整段省略。
+    #    铁律：影子任何异常不得影响日报主流程，全部吞掉 ──
+    shadow_lines: list[str] = []
+    try:
+        from app.tasks.shadow_tasks import shadow_report_lines
+        shadow_lines = shadow_report_lines()
+    except Exception as e:
+        logger.debug("影子附录构建失败（忽略）: %s", e)
+
     card = {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -173,6 +182,11 @@ def notify_daily_report() -> dict:
             # ── 收益区：独立一行加粗突出 ──
             {"tag": "div", "text": {"tag": "lark_md",
              "content": f"💰 **净收益　{_net_str(net)}**"}},
+            *([
+                {"tag": "hr"},
+                {"tag": "div", "text": {"tag": "lark_md",
+                 "content": "**🔬 影子实验**（只统计不决策，达标≠升格）\n" + "\n".join(shadow_lines)}},
+            ] if shadow_lines else []),
             # ── 口径脚注（小字灰显）──
             {"tag": "note", "elements": [{"tag": "plain_text",
              "content": (f"统计范围 = 双网合计（测试网 + 正式网）· 胜率 = 止盈笔数 ÷ 全部已闭单 · "
@@ -188,6 +202,7 @@ def notify_daily_report() -> dict:
             f"开单 {opened}（在跑 {running} · 失败 {failed}）/ 闭单 {closed}",
             f"止盈 {win} / 止损 {loss} / 胜率 {win_rate}（{total_win}/{total_closed}）",
             f"净收益 {_net_str(net)}",
+            *(["", "🔬 影子实验（只统计不决策）", *shadow_lines] if shadow_lines else []),
         ])
         ok = send_feishu_text(text)
     logger.info("每日日报已%s（%s）", "发送" if ok else "跳过/失败", date_label)

@@ -741,3 +741,26 @@ export interface MarketOverview {
   fear_greed: FearGreed | null
   breadth: Record<string, BreadthItem> | null // key: BTCUSDT / ETHUSDT
 }
+
+// ===== 影子模式（docs/14，2026-10-04：只计算+打标+记录，不参与决策）=====
+
+// 影子单桶统计（n=标记数；counted=有效归因数 win/loss；win_rate 基于 counted）
+export interface ShadowBucketStat {
+  bucket: string
+  n: number
+  counted: number
+  win_rate: number | null
+  insufficient?: boolean // n < 30：样本不足，仅供参考
+}
+
+// 单特征影子评估报告（baseline = 全部桶合计）
+export interface ShadowFeatureReport {
+  feature: string
+  name: string
+  card: string // 预注册标准卡（docs/14 §七：CARD-01 等）
+  min_sample: number // 达标所需最小有效归因样本
+  window_days: number
+  baseline: { n: number; counted: number; win_rate: number | null }
+  buckets: ShadowBucketStat[]
+  sufficient: boolean // 有效归因样本 ≥ min_sample（达标 ≠ 升格，升格走人工流程）
+}

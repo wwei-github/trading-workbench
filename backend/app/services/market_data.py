@@ -228,6 +228,57 @@ def btc_crash_active(client, crash_pct: Optional[float] = None) -> bool:
     return active
 
 
+# ── BTC-beta（docs/13 #1：组合热度 β 加权）────────────────────────────────
+
+_BETA_BARS = 24 * 30 + 25   # 1h K：30 个日采样点 + 回看锚点 + 缓冲
+_BETA_TTL = 24 * 3600.0     # β 是慢变量：24h 进程内缓存
+
+
+def get_beta(client, symbol: str) -> Optional[float]:
+    """币种对 BTC 的日收益回归 β（docs/13 #1 组合热度加权用）。
+
+    口径：1h K 最近 30 个日采样收盘（每 24 根取一）算日收益序列，
+    β = cov(币, BTC) / var(BTC)；样本不足 / BTC 收益零方差 / 任一查询失败
+    → None（调用方按 1.0 保守处理）。BTCUSDT 恒 1.0（自身）。
+    24h 进程内缓存（β 慢变量，开仓闸门逐笔调用不重拉 K 线）。
+    """
+    if symbol == "BTCUSDT":
+        return 1.0
+    key = f"beta:{symbol}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached if cached != 0 else None  # 0 哨兵 = 缓存的 None
+    try:
+        sym_k = client.get_futures_klines(symbol, "1h", _BETA_BARS)
+        btc_k = client.get_futures_klines("BTCUSDT", "1h", _BETA_BARS)
+    except Exception as e:
+        logger.debug("get_beta %s K线获取失败: %s", symbol, e)
+        _cache_set(key, 0, _BETA_TTL)
+        return None
+    beta: Optional[float] = None
+    try:
+        # 已收盘口径，每 24 根采一个收盘价（对齐 UTC 日界附近，取样误差对回归斜率影响可忽略）
+        sym_c = np.array([float(k[4]) for k in sym_k[:-1][::24]], dtype=float)
+        btc_c = np.array([float(k[4]) for k in btc_k[:-1][::24]], dtype=float)
+        n = min(len(sym_c), len(btc_c))
+        if n >= 15:  # 至少 15 个日收益样本（14 个收益差）
+            sym_c, btc_c = sym_c[-n:], btc_c[-n:]
+            sym_r = np.diff(sym_c) / sym_c[:-1]
+            btc_r = np.diff(btc_c) / btc_c[:-1]
+            # β = cov(币,BTC)/var(BTC)：cov 与 var 必须同 ddof（混用会系统放大 n/(n-1)）
+            cov_m = np.cov(sym_r, btc_r)
+            var = float(cov_m[1, 1])
+            if var > 1e-12:
+                beta = float(cov_m[0, 1] / var)
+                if not np.isfinite(beta) or beta <= 0:
+                    beta = None  # 负 β/非有限值：回归不可信，按缺失处理
+    except Exception as e:
+        logger.debug("get_beta %s 回归计算失败: %s", symbol, e)
+        beta = None
+    _cache_set(key, beta if beta is not None else 0, _BETA_TTL)
+    return beta
+
+
 def build_market_context(
     client, symbol: str, crash_pct: Optional[float] = None,
 ) -> Optional[str]:

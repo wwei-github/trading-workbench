@@ -497,10 +497,42 @@ def _run_migrations(engine):
                 "trading_enabled_live": settings.TRADING_ENABLED_LIVE,
             },
         )
+        # trade_records 加 β 快照列（2026-10-04，docs/13 #1 组合热度 β 加权；
+        # NULL=旧行/β 不可得，闸门按 1.0 保守计）
+        conn.execute(text(
+            "ALTER TABLE trade_records ADD COLUMN IF NOT EXISTS beta NUMERIC(10, 4)"
+        ))
+        # 影子模式打标表（2026-10-04，docs/14）：候选信号特征「只计算+打标+记录，
+        # 不参与决策」，事后按 标记×结果 分组统计评估升格/关闭
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS shadow_marks (
+                id UUID PRIMARY KEY,
+                created_at TIMESTAMP NOT NULL DEFAULT now(),
+                feature_key VARCHAR(32) NOT NULL,
+                ref_type VARCHAR(16) NOT NULL,
+                ref_id UUID NOT NULL,
+                symbol VARCHAR(32) NOT NULL,
+                testnet BOOLEAN NOT NULL DEFAULT TRUE,
+                value_json JSON,
+                decision_json JSON
+            )
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_shadow_marks_feature_time "
+            "ON shadow_marks (feature_key, created_at)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_shadow_marks_ref "
+            "ON shadow_marks (ref_type, ref_id)"
+        ))
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_shadow_mark "
+            "ON shadow_marks (feature_key, ref_type, ref_id)"
+        ))
 
 
 def init_db():
     """创建所有表 + 幂等迁移"""
-    from app.models import ops, patch, scan, trade, blacklist, spot, tactic  # noqa: F401
+    from app.models import ops, patch, scan, trade, blacklist, spot, tactic, shadow  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _run_migrations(engine)

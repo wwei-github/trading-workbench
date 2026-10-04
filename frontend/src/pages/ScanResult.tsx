@@ -18,6 +18,7 @@ import ReviewStatsPanel from '../components/ReviewStatsPanel'
 import ReviewActualPanel from '../components/ReviewActualPanel'
 import ReviewPatchesPanel from '../components/ReviewPatchesPanel'
 import BlacklistPanel from '../components/BlacklistPanel'
+import ShadowPanel from '../components/ShadowPanel'
 import TradesPanel from '../components/TradesPanel'
 import TransfersPanel from '../components/TransfersPanel'
 import FundAnalysisPanel from '../components/FundAnalysisPanel'
@@ -200,6 +201,11 @@ export default function ScanResult({ mode }: ScanResultProps) {
                 key: 'blacklist',
                 label: '币种黑名单',
                 children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><BlacklistPanel /></div>,
+              },
+              {
+                key: 'shadow',
+                label: '影子实验',
+                children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><ShadowPanel /></div>,
               },
             ]}
           />

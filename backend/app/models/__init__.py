@@ -6,10 +6,11 @@ from app.models.trade import TradeRecord
 from app.models.blacklist import SymbolBlacklist
 from app.models.spot import SpotOrder, SpotWeeklyReview, SpotBacktest, SpotKlineCache
 from app.models.tactic import Tactic
+from app.models.shadow import ShadowMark
 
 __all__ = [
     "ScanRecord", "ScanResult", "AIAnalysis", "TradeReview", "SystemConfig",
     "AppLog", "TaskRecord", "PromptPatch", "TradeRecord", "SymbolBlacklist",
     "SpotOrder", "SpotWeeklyReview", "SpotBacktest", "SpotKlineCache",
-    "Tactic",
+    "Tactic", "ShadowMark",
 ]
