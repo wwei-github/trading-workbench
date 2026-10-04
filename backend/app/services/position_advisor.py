@@ -326,6 +326,12 @@ ACTION_LABEL = {
 }
 
 
+def _net_label(rec) -> str:
+    """飞书卡片的网络标注（2026-10-04）：双网同符号同向开单时，凭卡片内容
+    （币种/价格）无法区分是哪张网的单，误点平仓按钮会平错网"""
+    return "测试网" if rec.testnet else "正式网"
+
+
 def _notify_exit(rec, advice: dict, total: float) -> None:
     """建议离场 → 飞书交互卡片推送（失败仅记日志）。调用方已保证同单不连续重复推送。
 
@@ -375,13 +381,14 @@ def _notify_exit(rec, advice: dict, total: float) -> None:
         card = {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"tag": "plain_text", "content": f"⚠️ AI 持仓建议 · 建议离场 · {rec.symbol}"},
+                "title": {"tag": "plain_text",
+                          "content": f"⚠️ AI 持仓建议 · 建议离场 · {_net_label(rec)} · {rec.symbol}"},
                 "template": "red",
             },
             "elements": [
                 # 全宽浮亏高亮行：核心结论一眼可见
                 {"tag": "div", "text": {"tag": "lark_md", "content":
-                 f"{side}单{held_txt}\n"
+                 f"{_net_label(rec)} {side}单{held_txt}\n"
                  f"🔻 **浮亏　<font color='red'>{total:+.2f} USDT</font>**"}},
                 # 四列价格栅格（等宽，窄屏自动堆叠）
                 {"tag": "column_set", "flex_mode": "stretch", "columns": [
@@ -469,14 +476,14 @@ def _notify_stale(rec, advice: dict, total: float) -> None:
             "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"tag": "plain_text",
-                          "content": f"⏰ AI 持仓建议 · 持仓超24h未触发止盈 · {rec.symbol}"},
+                          "content": f"⏰ AI 持仓建议 · 持仓超24h未触发止盈 · {_net_label(rec)} · {rec.symbol}"},
                 "template": "red" if action_f == "exit"
                             else ("orange" if action_f in ("reduce", "tighten") else "blue"),
             },
             "elements": [
                 # 全宽浮动盈亏高亮行（浮盈/浮亏都展示）
                 {"tag": "div", "text": {"tag": "lark_md", "content":
-                 f"{side}单 · 已持仓 {held_h}h 未触发 TP1\n"
+                 f"{_net_label(rec)} {side}单 · 已持仓 {held_h}h 未触发 TP1\n"
                  f"{pnl_md}"}},
                 {"tag": "column_set", "flex_mode": "stretch", "columns": [
                     _col("方向", side),
