@@ -516,17 +516,25 @@ export default function TradesPanel() {
     )
   }, [scopeRows, statusFilter])
 
-  // 概览统计：在跑（三态，从当前范围列表算）；其余与资金分析页同源
-  // （closed/wins/win_rate/net_pnl/avg_win_r 全部取自 analytics 接口，口径见 docs/14）
+  // 概览统计：在跑（三态，从当前范围列表算，按网拆分显示 2026-10-04）；
+  // 其余与资金分析页同源（closed/wins/win_rate/net_pnl/avg_win_r 全部取自
+  // analytics 接口，口径见 docs/14）
   const stats = useMemo(() => {
-    const running = scopeRows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status)).length
+    const runningRows = scopeRows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status))
+    const running = runningRows.length
+    // 按网拆分（行数据自带 testnet 标记）：scope 选了单账号时只有一网有数，
+    // 交易统计「运行中」退回纯数字显示
+    const runningTn = runningRows.filter((r) => r.testnet).length
+    const runningLive = running - runningTn
     if (!summary) {
-      return { running, closed: 0, wins: 0, loses: 0, winRate: null as number | null, totalPnl: 0, avgWinR: null as number | null }
+      return { running, runningTn, runningLive, closed: 0, wins: 0, loses: 0, winRate: null as number | null, totalPnl: 0, avgWinR: null as number | null }
     }
     const wins = summary.wins
     const closed = summary.closed
     return {
       running,
+      runningTn,
+      runningLive,
       closed,
       wins,
       loses: closed - wins,
@@ -1361,7 +1369,16 @@ export default function TradesPanel() {
             accent: '#722ed1',
             title: '交易统计',
             items: [
-              { label: '运行中', value: String(stats.running), color: '#1677ff' },
+              {
+                // 运行中按网拆分（2026-10-04，与顶部在跑单卡同口径）；当前范围
+                // 只含一网（scope 选了单账号）时退回纯数字
+                label: '运行中',
+                value:
+                  stats.runningTn > 0 && stats.runningLive > 0
+                    ? `测 ${stats.runningTn} · 正 ${stats.runningLive}`
+                    : String(stats.running),
+                color: '#1677ff',
+              },
               { label: '盈利单', value: String(stats.wins), color: stats.wins > 0 ? SCHEME_UP_DOWN[colorScheme].up : undefined },
               { label: '亏损单', value: String(stats.loses), color: stats.loses > 0 ? SCHEME_UP_DOWN[colorScheme].down : undefined },
               {
