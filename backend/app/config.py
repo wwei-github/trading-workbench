@@ -44,6 +44,16 @@ class Settings(BaseSettings):
     # False=关闭；阈值仍由 DAILY_LOSS_STOP_PCT 控制（9% ≈ 3 笔满损，随账户金额缩放）。
     # 注意与软熔断（CONSECUTIVE_LOSS_DERATE 提门槛）区别：本开关管的是停开仓的硬闸门
     DAILY_LOSS_STOP_ENABLED: bool = True
+    # 周/月回撤分层熔断（docs/13 #2，2026-10-04）：日级熔断之上的二三级减速——
+    # 周回撤（UTC 周一 0 点起已平仓净亏）≥ 风险基数×15% → 本周剩余时间单笔预算减半；
+    # 月回撤 ≥ 基数×25% → 停开新仓，人工复盘确认（monthly_breaker_ack_at）后恢复。
+    # 均只收紧亏损侧，盈利月份零影响；0=关闭该层
+    WEEKLY_DD_STOP_PCT: float = 15.0
+    MONTHLY_DD_STOP_PCT: float = 25.0
+    # ATR 跟进止损倍数（docs/13 #5 Chandelier Exit，2026-10-04）：跟进 SL =
+    # 持仓期极值 ∓ k×ATR(22,D1)，与摆动低点跟进取更紧者（只收紧不放松）。
+    # 0=关闭 ATR 腿（退化为现行摆动跟进）；k 默认 3（海龟系标准）
+    ATR_TRAIL_K: float = 3.0
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
     # 规则版本标记（docs/24 A0，2026-09-29）：随规则集变更递增（改 trigger/risk_guard/
     # 提示词纪律/分批比例均算改版），开仓与分析落库时快照到 trade_records/ai_analyses；

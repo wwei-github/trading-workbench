@@ -63,6 +63,10 @@ export const scanApi = {
   updateConfig: (data: Partial<SystemConfig>) =>
     api.put<SystemConfig>('/scans/config', data).then((r) => r.data),
 
+  // 月度回撤熔断人工复盘确认（docs/13 #2）：写确认时刻恢复开仓
+  ackMonthlyBreaker: () =>
+    api.post<{ ok: boolean; ack_at: string }>('/scans/config/monthly-breaker-ack').then((r) => r.data),
+
   // 手动搜索币种 AI 分析（同步调用，AI 思考耗时较长，放宽超时）
   analyzeCoin: (symbol: string) =>
     api

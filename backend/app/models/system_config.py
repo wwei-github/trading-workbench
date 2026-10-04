@@ -107,6 +107,15 @@ class SystemConfig(Base):
     # 当日亏损熔断：阈值 %（NULL=默认 9）+ 开关（NULL=默认 True；False=页面显式关闭）
     daily_loss_stop_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
     daily_loss_stop_enabled: Mapped[bool] = mapped_column(nullable=True, default=None)
+    # 周/月回撤分层熔断（docs/13 #2，2026-10-04）：阈值 %（NULL=回落 env 15/25；0=关闭该层）。
+    # 周 = UTC 周起净亏 ≥ 基数×阈值 → 单笔预算减半；月 = UTC 月起净亏 ≥ 基数×阈值 → 停开新仓
+    weekly_dd_stop_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+    monthly_dd_stop_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+    # 月熔断人工确认时刻：ack 端点写 utcnow；确认时刻在当前 UTC 月内 = 本月已复盘放行（至月底）
+    monthly_breaker_ack_at: Mapped[Optional[datetime]] = mapped_column(nullable=True, default=None)
+    # ATR 跟进止损倍数 k（docs/13 #5，2026-10-04）：SL = max(现SL, 持仓期极值 ∓ k×ATR22)；
+    # NULL=回落 env（默认 3）
+    atr_trail_k: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
     # 盈亏比铁律下限（NULL=默认 1.5）：risk_guard 校验 + 开仓现价复算 + AI 提示词共用
     ai_rr_min: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
     # 单笔风险比例 %（NULL=默认 3，pct 模式：风险基数 × 该比例）

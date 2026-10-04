@@ -251,6 +251,10 @@ class SystemConfigOut(BaseModel):
     portfolio_heat_cap: Optional[float] = None        # 组合热度上限（默认 0=关闭）
     same_direction_cap: Optional[int] = None          # 同向上限（默认 0=不限）
     btc_crash_pause_pct: Optional[float] = None       # BTC 急跌暂停 %（默认 1；0=关）
+    weekly_dd_stop_pct: Optional[float] = None        # 周回撤减速阈值 %（默认 15；0=关，docs/13 #2）
+    monthly_dd_stop_pct: Optional[float] = None       # 月回撤熔断阈值 %（默认 25；0=关）
+    monthly_breaker_ack_at: Optional[datetime] = None  # 月熔断人工确认时刻（只读，ack 端点写）
+    atr_trail_k: Optional[float] = None               # ATR 跟进倍数（默认 3；0=关 ATR 腿，docs/13 #5）
 
     # 初始资金（2026-09-26）：正式网主账号首次入金，资金划转面板展示口径
     live_initial_capital: float = 0
@@ -329,6 +333,10 @@ class SystemConfigUpdate(BaseModel):
     portfolio_heat_cap: Optional[float] = None
     same_direction_cap: Optional[int] = None
     btc_crash_pause_pct: Optional[float] = None
+    # 周/月回撤分层熔断 + ATR 跟进（docs/13 #2/#5；传 null 恢复 env 默认）
+    weekly_dd_stop_pct: Optional[float] = None
+    monthly_dd_stop_pct: Optional[float] = None
+    atr_trail_k: Optional[float] = None
 
     # 初始资金（2026-09-26）：正式网主账号首次入金，资金划转面板展示口径（≥0）
     live_initial_capital: Optional[float] = None

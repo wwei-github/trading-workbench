@@ -155,6 +155,7 @@ def _attempt_open(
     wallet: float, positions: dict,
     force_market: bool = False,
     beta: Optional[float] = None,
+    risk_scale: float = 1.0,
 ) -> bool:
     """对单条分析过全部开仓闸门并尝试开仓（docs/06 §3 逐项检查）。
 
@@ -368,6 +369,8 @@ def _attempt_open(
             )
         else:
             risk_budget = _capital_base(wallet) * risk_pct / 100
+        # 周回撤减速（docs/13 #2）：周回撤触发时单笔预算减半（fixed/pct 两模式同乘）
+        risk_budget *= risk_scale
         risk_budget = _near_discounted_budget(risk_budget, a.stop_anchor,
                                               factor=near_factor)
         notional = risk_budget / stop_pct
@@ -667,19 +670,25 @@ def _mark_open_block(db: Session, a: AIAnalysis, reason: str) -> None:
         db.rollback()
 
 
-def _daily_closed_pnl(db: Session, account_key: Optional[str], testnet: bool) -> float:
-    """本账号 UTC 当日已平仓净盈亏合计（当日亏损熔断用，docs/20 复盘 C 项）。
+def _closed_pnl_since(db: Session, account_key: Optional[str], testnet: bool,
+                      since: datetime) -> float:
+    """本账号自 since 起已平仓净盈亏合计（分层熔断用，docs/13 #2）。
 
     账号口径复用 _adopt_acc_cond（NULL 旧行按 testnet 环境回落，与在跑单检查同源）。
     """
-    day_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     return float(db.execute(
         select(func.coalesce(func.sum(TradeRecord.realized_pnl), 0.0)).where(
             _adopt_acc_cond(SimpleNamespace(account_key=account_key, testnet=testnet)),
             TradeRecord.status == "CLOSED",
-            TradeRecord.closed_at >= day_start,
+            TradeRecord.closed_at >= since,
         )
     ).scalar_one())
+
+
+def _daily_closed_pnl(db: Session, account_key: Optional[str], testnet: bool) -> float:
+    """本账号 UTC 当日已平仓净盈亏合计（当日亏损熔断用，docs/20 复盘 C 项）。"""
+    day_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    return _closed_pnl_since(db, account_key, testnet, day_start)
 
 
 def _daily_loss_cap(wallet: float, pct: Optional[float] = None) -> float:
@@ -703,6 +712,9 @@ def breaker_status_by_net(db: Session, cfg) -> dict:
     - active：True=已熔断 / False=未熔断 / None=无法判定（钱包查询失败或未启用）
     - day_pnl：该网自动交易账号 UTC 当日已平仓净亏合计
     - cap：熔断阈值（多账号取最小=最保守）
+    - week/month（docs/13 #2 分层，2026-10-04）：周/月回撤状态
+      week: {active, pnl, cap}；month: {active, hit, acked, pnl, cap}
+      month.active = 触发且未人工确认（ack 在当前 UTC 月内 = 已确认放行）
     钱包余额 5 分钟进程内缓存；这是展示口径，开仓拦截仍以 open gate 实时判定为准。"""
     from app.services.account_registry import auto_trade_accounts
 
@@ -715,19 +727,33 @@ def breaker_status_by_net(db: Session, cfg) -> dict:
         else float(settings.DAILY_LOSS_STOP_PCT)
     )
     breaker_on = enabled_cfg and pct > 0
+    week_pct = (
+        float(cfg.weekly_dd_stop_pct) if cfg.weekly_dd_stop_pct is not None
+        else float(settings.WEEKLY_DD_STOP_PCT)
+    )
+    month_pct = (
+        float(cfg.monthly_dd_stop_pct) if cfg.monthly_dd_stop_pct is not None
+        else float(settings.MONTHLY_DD_STOP_PCT)
+    )
 
     by_net: dict[bool, list] = {True: [], False: []}
     for acc in auto_trade_accounts(db):
         by_net[acc.testnet].append(acc)
 
     now = time.time()
+    now_utc = datetime.utcnow()
+    month_start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    week_start = (now_utc - timedelta(days=now_utc.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0)
     out: dict = {}
     for net, net_key in ((True, "testnet"), (False, "live")):
         accs = by_net[net]
         day_pnl = sum(_daily_closed_pnl(db, a.key, a.testnet) for a in accs)
         caps: list[float] = []
+        bases: list[float] = []
         any_active = False
-        if breaker_on and accs:
+        need_wallet = (breaker_on and accs) or ((week_pct > 0 or month_pct > 0) and accs)
+        if need_wallet:
             for a in accs:
                 cached = _wallet_cache.get(a.key)
                 wallet = cached[0] if cached and now - cached[1] < 300 else None
@@ -744,13 +770,34 @@ def breaker_status_by_net(db: Session, cfg) -> dict:
                     continue
                 cap = _daily_loss_cap(wallet, pct=pct)
                 caps.append(cap)
-                if day_pnl <= -cap:  # 多账号共用日账，任一账号口径触发即标熔断
+                bases.append(_capital_base(wallet))
+                if breaker_on and day_pnl <= -cap:  # 多账号共用日账，任一账号口径触发即标熔断
                     any_active = True
+        # 周/月分层状态（docs/13 #2）：基数多账号取最小 = 最保守，与闸门同源
+        week_st: Optional[dict] = None
+        month_st: Optional[dict] = None
+        if accs and bases:
+            base = min(bases)
+            if week_pct > 0:
+                week_pnl = sum(_closed_pnl_since(db, a.key, a.testnet, week_start) for a in accs)
+                week_cap = base * week_pct / 100.0
+                week_st = {"active": week_pnl <= -week_cap,
+                           "pnl": round(week_pnl, 2), "cap": round(week_cap, 2)}
+            if month_pct > 0:
+                month_pnl = sum(_closed_pnl_since(db, a.key, a.testnet, month_start) for a in accs)
+                month_cap = base * month_pct / 100.0
+                hit = month_pnl <= -month_cap
+                acked = (cfg.monthly_breaker_ack_at is not None
+                         and cfg.monthly_breaker_ack_at >= month_start)
+                month_st = {"active": hit and not acked, "hit": hit, "acked": acked,
+                            "pnl": round(month_pnl, 2), "cap": round(month_cap, 2)}
         out[net_key] = {
             "enabled": breaker_on and bool(accs),
             "active": (any_active if (breaker_on and accs and caps) else None),
             "day_pnl": round(day_pnl, 2),
             "cap": round(min(caps), 2) if caps else None,
+            "week": week_st,
+            "month": month_st,
         }
     return out
 
@@ -1017,6 +1064,55 @@ def try_open_for_analysis(
                 f"达 -{loss_cap:.0f} 阈值（风险基数 {_capital_base(wallet):.0f} "
                 f"× {loss_pct:.0f}%）")
             return False
+    # 周/月回撤分层熔断（2026-10-04，docs/13 #2）：日级之上的二三级减速——
+    # 连亏跨日的阴跌行情日熔断天天复位天天开（日亏 5% 连 4 天 = -18.5%），缺少总闸。
+    # 月 ≥ 阈值 → 停开新仓，人工复盘确认（monthly_breaker_ack_at 写确认时刻，
+    # 确认在当前 UTC 月内 = 放行至月底，跨月自动重新武装）；周 ≥ 阈值 → 本周
+    # 剩余时间单笔预算减半（软减速不拦截）。只收紧亏损侧：盈利周/月零影响。
+    # 阈值 cfg ?? env（nullable 上页面，docs/12 §10 惯例），0=关闭该层
+    risk_scale = 1.0
+    now_utc = datetime.utcnow()
+    month_pct = (
+        float(cfg.monthly_dd_stop_pct) if cfg.monthly_dd_stop_pct is not None
+        else float(settings.MONTHLY_DD_STOP_PCT)
+    )
+    week_pct = (
+        float(cfg.weekly_dd_stop_pct) if cfg.weekly_dd_stop_pct is not None
+        else float(settings.WEEKLY_DD_STOP_PCT)
+    )
+    month_start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if month_pct > 0:
+        month_pnl = _closed_pnl_since(db, trader.account_key, trader.testnet, month_start)
+        month_cap = _capital_base(wallet) * month_pct / 100.0
+        if month_pnl <= -month_cap:
+            acked = (cfg.monthly_breaker_ack_at is not None
+                     and cfg.monthly_breaker_ack_at >= month_start)
+            if not acked:
+                # WARNING 级进系统日志页（同日熔断口径：拦截不可无痕）
+                logger.warning(
+                    "月度回撤熔断拦截开仓 %s（%s）：UTC 月已平仓净亏 %.2f ≤ -%.0f 阈值"
+                    "（风险基数 × %.0f%%）——停开新仓，人工复盘确认后恢复"
+                    "（顶部熔断卡片「确认复盘」按钮）",
+                    a.symbol, trader.account_key, month_pnl, month_cap, month_pct,
+                )
+                _mark_open_block(
+                    db, a,
+                    f"月度回撤熔断：本月已平仓净亏 {month_pnl:.2f} USDT "
+                    f"达 -{month_cap:.0f} 阈值（基数 × {month_pct:.0f}%）——"
+                    "人工复盘确认后恢复")
+                return False
+    if week_pct > 0:
+        week_start = (now_utc - timedelta(days=now_utc.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0)  # UTC 周一 0 点
+        week_pnl = _closed_pnl_since(db, trader.account_key, trader.testnet, week_start)
+        week_cap = _capital_base(wallet) * week_pct / 100.0
+        if week_pnl <= -week_cap:
+            risk_scale = 0.5
+            logger.warning(
+                "周度回撤减速 %s（%s）：UTC 周已平仓净亏 %.2f ≤ -%.0f 阈值"
+                "（风险基数 × %.0f%%）——本周剩余时间单笔预算减半（不拦开仓）",
+                a.symbol, trader.account_key, week_pnl, week_cap, week_pct,
+            )
     # 即将进入闸门序列：清掉沿用/上一轮尝试残留的拒开原因，本次成败由闸门重新裁定
     if a.open_block_reason:
         try:
@@ -1025,7 +1121,8 @@ def try_open_for_analysis(
         except Exception:
             db.rollback()
     return _attempt_open(db, trader, cfg, a, wallet, positions,
-                         force_market=force_market, beta=beta_raw)
+                         force_market=force_market, beta=beta_raw,
+                         risk_scale=risk_scale)
 
 
 # ── 结算 ──────────────────────────────────────────────────────
@@ -1058,15 +1155,38 @@ def _trailing_stop(rec: TradeRecord, klines: list[list]) -> Optional[float]:
 
 
 def _move_sl_trailing(db: Session, trader: BinanceTrader, rec: TradeRecord,
-                      interval: str, open_ids: set[int]) -> None:
+                      interval: str, open_ids: set[int],
+                      atr_k: Optional[float] = None) -> None:
     """按跟进规则移动止损（只收紧不放松）；新 SL 会立即触发时跳过本轮（旧 SL 仍有效保护：
-    仓位存在即旧 SL 未触发），避免交易所 -2021 拒单导致整轮结算回滚重试"""
-    klines = ExchangePool().get_klines(rec.symbol, interval, 20)
-    new_sl = _trailing_stop(rec, klines)
-    if new_sl is None:
-        return
-    new_sl = trader.round_price(rec.symbol, new_sl)
+    仓位存在即旧 SL 未触发），避免交易所 -2021 拒单导致整轮结算回滚重试。
+
+    两腿取更紧者（docs/13 #5）：摆动腿（最近3根已收盘K线极值）+ ATR 腿
+    （Chandelier，atr_k None/0 关闭）；聚合后统一 TP1 保本夹紧（与
+    _trailing_stop 内同语义，幂等）。
+    """
     cur = float(rec.stop_loss or 0)
+    if cur <= 0:
+        return
+    klines = ExchangePool().get_klines(rec.symbol, interval, 20)
+    candidates: list[float] = []
+    swing = _trailing_stop(rec, klines)
+    if swing is not None:
+        candidates.append(swing)
+    k = float(settings.ATR_TRAIL_K) if atr_k is None else float(atr_k)
+    if k > 0:
+        chand = _chandelier_sl(rec, trader, k)
+        if chand is not None:
+            candidates.append(chand)
+    if not candidates:
+        return
+    # 只收紧铁律：聚合必须包含现 SL——ATR 腿可能松于现 SL（如回调后高点回落），
+    # 漏掉 cur 会把 SL 反向放松（摆动腿自带 max(cur,·) 兜底，ATR 腿没有）
+    new_sl = (max([cur, *candidates]) if rec.direction == "long"
+              else min([cur, *candidates]))
+    if rec.status == "TP2_HIT" and rec.tp1:
+        new_sl = (max(new_sl, float(rec.tp1)) if rec.direction == "long"
+                  else min(new_sl, float(rec.tp1)))
+    new_sl = trader.round_price(rec.symbol, new_sl)
     if new_sl == cur:
         return
     price = trader.price(rec.symbol)
@@ -1112,6 +1232,45 @@ def _replace_sl(db: Session, trader: BinanceTrader, rec: TradeRecord,
 def _immediate_trigger(new_sl: float, price: float, direction: str) -> bool:
     """新 SL 挂上即会触发：多单 SL ≥ 现价 / 空单 SL ≤ 现价"""
     return new_sl >= price if direction == "long" else new_sl <= price
+
+
+def _chandelier_sl(rec: TradeRecord, trader: BinanceTrader, k: float) -> Optional[float]:
+    """ATR 跟进腿（2026-10-04，docs/13 #5 Chandelier Exit）：
+    多单 = 持仓期最高价 − k×ATR(22,D1)，空单 = 持仓期最低价 + k×ATR22。
+
+    持仓期极值 = opened_at 起已收盘 1h K 的高/低极值（零 schema 改动，随 K 线
+    重算口径可回放）。k 默认 3（海龟系标准）；只收紧语义下本腿与摆动腿取更紧者，
+    最坏 = 恰好等于现行摆动跟进（下界保证）。
+    任一数据不可得（持仓不足 1h 无已收盘根 / ATR 未成形 / 拉取失败）→ None：
+    调用方聚合时 None 即跳过，退化为现行摆动跟进。"""
+    try:
+        from app.services.strategy.technical import atr_series
+
+        opened = rec.opened_at
+        if opened is None:
+            return None
+        opened_ms = opened.replace(tzinfo=timezone.utc).timestamp() * 1000
+        now_utc = datetime.utcnow()
+        hours = max(1, int((now_utc - opened).total_seconds() // 3600) + 1)
+        # 持仓期 1h K（上限 60 天，trail 单实际持仓通常 1-3 天）
+        kl = ExchangePool().get_klines(rec.symbol, "1h", min(hours + 1, 24 * 60))
+        closed = [b for b in (kl[:-1] if len(kl) >= 2 else kl)
+                  if float(b[0]) >= opened_ms]
+        if not closed:
+            return None
+        d1 = ExchangePool().get_klines(rec.symbol, "1d", 30)
+        atr = atr_series(d1, period=22)
+        if atr is None:
+            return None
+        a = float(atr[-1])
+        if not math.isfinite(a) or a <= 0:
+            return None
+        if rec.direction == "long":
+            return max(float(b[2]) for b in closed) - k * a
+        return min(float(b[3]) for b in closed) + k * a
+    except Exception as e:
+        logger.debug("ATR 跟进腿 %s 不可得（退化摆动跟进）: %s", rec.symbol, e)
+        return None
 
 
 def _rehang_lost_sl(db: Session, trader: BinanceTrader, rec: TradeRecord,
@@ -1611,6 +1770,12 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
         float(cfg.taker_fee_rate)
         if cfg is not None and cfg.taker_fee_rate is not None else None
     )
+    # ATR 跟进倍数（2026-10-04 上页面，docs/13 #5）：cfg 覆盖 NULL 回落 env；0=关闭 ATR 腿
+    atr_k = (
+        float(cfg.atr_trail_k)
+        if cfg is not None and cfg.atr_trail_k is not None
+        else float(settings.ATR_TRAIL_K)
+    )
     records = db.execute(
         select(TradeRecord).where(TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")))
     ).scalars().all()
@@ -1781,7 +1946,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                         tp2_detail["realized_pnl"] = realized  # 两档累计（旧口径）
                     _add_event(db, rec, "TP2_FILL", tp2_detail)
                     rec.status = "TP2_HIT"
-                    _move_sl_trailing(db, rt, rec, interval, open_ids)
+                    _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
                     db.commit()
                     handled += 1
                 elif tp1_gone and ratio <= 0.75:
@@ -1794,7 +1959,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                     _move_sl_breakeven(db, rt, rec, open_ids, fee_rate)  # 用户规则：TP1 后止损移至保本价（成本价±往返费缓冲）
                     if not rec.tp2:
                         # 无 TP2：TP1 止盈 75% 后剩余仓即启用跟进止损（与 TP2 后同机制）
-                        _move_sl_trailing(db, rt, rec, interval, open_ids)
+                        _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
                     db.commit()
                     handled += 1
             elif rec.status == "TP1_HIT":
@@ -1805,7 +1970,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                                                      "pnl": tranche,
                                                      "cum_pnl": realized})
                     rec.status = "TP2_HIT"
-                    _move_sl_trailing(db, rt, rec, interval, open_ids)
+                    _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
                     db.commit()
                     handled += 1
                 else:
@@ -1816,12 +1981,12 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                     _move_sl_breakeven(db, rt, rec, open_ids, fee_rate)
                     if not rec.tp2:
                         # 无 TP2：与 TP2 后同规则，每次巡检跟进止损（只收紧不放松）
-                        _move_sl_trailing(db, rt, rec, interval, open_ids)
+                        _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
                     db.commit()
                     handled += 1
             elif rec.status == "TP2_HIT":
                 # 每小时跟进止损（只收紧不放松）
-                _move_sl_trailing(db, rt, rec, interval, open_ids)
+                _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
                 db.commit()
                 handled += 1
         except Exception as e:

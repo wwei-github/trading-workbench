@@ -502,6 +502,16 @@ def _run_migrations(engine):
         conn.execute(text(
             "ALTER TABLE trade_records ADD COLUMN IF NOT EXISTS beta NUMERIC(10, 4)"
         ))
+        # 周/月回撤分层熔断 + ATR 跟进倍数（2026-10-04，docs/13 #2/#5）：
+        # 阈值列 NULL=回落 env（页面留空恢复默认）、0=关闭该层；
+        # ack 时刻 = 月熔断人工复盘确认，确认在当前 UTC 月内即放行至月底
+        conn.execute(text("""
+            ALTER TABLE system_config
+              ADD COLUMN IF NOT EXISTS weekly_dd_stop_pct NUMERIC(10, 6),
+              ADD COLUMN IF NOT EXISTS monthly_dd_stop_pct NUMERIC(10, 6),
+              ADD COLUMN IF NOT EXISTS monthly_breaker_ack_at TIMESTAMP,
+              ADD COLUMN IF NOT EXISTS atr_trail_k NUMERIC(10, 6)
+        """))
         # 影子模式打标表（2026-10-04，docs/14）：候选信号特征「只计算+打标+记录，
         # 不参与决策」，事后按 标记×结果 分组统计评估升格/关闭
         conn.execute(text("""

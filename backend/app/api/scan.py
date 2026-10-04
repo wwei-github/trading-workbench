@@ -405,6 +405,13 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         same_direction_cap=cfg.same_direction_cap,
         btc_crash_pause_pct=(float(cfg.btc_crash_pause_pct)
                              if cfg.btc_crash_pause_pct is not None else None),
+        weekly_dd_stop_pct=(float(cfg.weekly_dd_stop_pct)
+                            if cfg.weekly_dd_stop_pct is not None else None),
+        monthly_dd_stop_pct=(float(cfg.monthly_dd_stop_pct)
+                             if cfg.monthly_dd_stop_pct is not None else None),
+        monthly_breaker_ack_at=cfg.monthly_breaker_ack_at,
+        atr_trail_k=(float(cfg.atr_trail_k)
+                     if cfg.atr_trail_k is not None else None),
         live_initial_capital=float(cfg.live_initial_capital or 0),
         scan_filters=(cfg.scan_filters if isinstance(cfg.scan_filters, dict) else None),
         scan_filters_effective={
@@ -675,6 +682,22 @@ def update_system_config(
         if v is not None and not (0 <= v <= 20):
             raise HTTPException(status_code=400, detail="btc_crash_pause_pct 需在 0~20 % 之间（BTC 急跌暂停，0=关闭）")
         cfg.btc_crash_pause_pct = v
+    # 周/月回撤分层熔断 + ATR 跟进（2026-10-04，docs/13 #2/#5；传 null 恢复 env 默认）
+    if "weekly_dd_stop_pct" in body.model_fields_set:
+        v = body.weekly_dd_stop_pct
+        if v is not None and not (0 <= v <= 100):
+            raise HTTPException(status_code=400, detail="weekly_dd_stop_pct 需在 0~100 % 之间（周回撤减速阈值，0=关闭）")
+        cfg.weekly_dd_stop_pct = v
+    if "monthly_dd_stop_pct" in body.model_fields_set:
+        v = body.monthly_dd_stop_pct
+        if v is not None and not (0 <= v <= 100):
+            raise HTTPException(status_code=400, detail="monthly_dd_stop_pct 需在 0~100 % 之间（月回撤熔断阈值，0=关闭）")
+        cfg.monthly_dd_stop_pct = v
+    if "atr_trail_k" in body.model_fields_set:
+        v = body.atr_trail_k
+        if v is not None and not (0 <= v <= 20):
+            raise HTTPException(status_code=400, detail="atr_trail_k 需在 0~20 之间（ATR 跟进倍数，0=关闭 ATR 腿）")
+        cfg.atr_trail_k = v
     # 止损金额模式（2026-09-27）：pct=风险基数分档×3%（默认）/ fixed=固定 USDT 金额
     if "risk_budget_mode" in body.model_fields_set:
         v = body.risk_budget_mode
@@ -703,6 +726,21 @@ def update_system_config(
     db.commit()
     db.refresh(cfg)
     return _config_response(cfg)
+
+
+@router.post("/config/monthly-breaker-ack")
+def ack_monthly_breaker(db: Session = Depends(get_db)):
+    """月度回撤熔断人工复盘确认（docs/13 #2）：写确认时刻，恢复开仓。
+
+    确认语义 = 「人工已复盘本月回撤成因，知悉并接受继续交易」——确认时刻在
+    当前 UTC 月内即视为本月已确认（放行至月底），跨月自动重新武装。
+    恶性场景下重复确认只是延迟干预，不构成额外风险敞口（预算闸门仍在）。
+    """
+    cfg = _get_system_config(db)
+    cfg.monthly_breaker_ack_at = datetime.utcnow()
+    db.commit()
+    db.refresh(cfg)
+    return {"ok": True, "ack_at": cfg.monthly_breaker_ack_at}
 
 
 # ===== 复盘统计（docs/04 §10 P2） =====

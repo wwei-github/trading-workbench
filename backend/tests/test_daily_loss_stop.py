@@ -122,7 +122,11 @@ def _setup_breaker(monkeypatch, accounts):
     import app.services.binance_trader as bt
     import app.services.trade_engine as te
 
-    cfg = SimpleNamespace(daily_loss_stop_enabled=True, daily_loss_stop_pct=9)
+    cfg = SimpleNamespace(
+        daily_loss_stop_enabled=True, daily_loss_stop_pct=9,
+        weekly_dd_stop_pct=None, monthly_dd_stop_pct=None,  # 分层默认关（本文件只测日层）
+        monthly_breaker_ack_at=None,
+    )
     monkeypatch.setattr(reg, "auto_trade_accounts", lambda db: accounts)
     monkeypatch.setattr(bt, "BinanceTrader", _FakeTrader)
     te._wallet_cache.clear()
@@ -143,7 +147,13 @@ def test_breaker_status_by_net_states(db, monkeypatch):
     cfg = _setup_breaker(monkeypatch, accounts)
 
     out = breaker_status_by_net(db, cfg)
-    assert out["live"] == {"enabled": True, "active": False, "day_pnl": -25.0, "cap": 45.0}
+    # week/month=None：本文件 cfg 分层阈值 None→回落 env，但 env 15/25>0 会算出
+    # week/month 状态——精确断言日层字段 + 分层键存在性（分层行为在
+    # test_tiered_breaker_atr_trail.py 专测）
+    assert out["live"]["enabled"] is True
+    assert out["live"]["active"] is False
+    assert out["live"]["day_pnl"] == -25.0
+    assert out["live"]["cap"] == 45.0
     # testnet 账号吃夹具里 NULL/testnet 回落行 -77 ≤ -45 → 熔断（回落语义与开仓闸门同源）
     assert out["testnet"]["active"] is True and out["testnet"]["day_pnl"] == -77.0
 
@@ -166,6 +176,8 @@ def test_breaker_status_disabled_and_wallet_fail(db, monkeypatch):
     assert out["live"]["enabled"] is False and out["live"]["active"] is None
 
     cfg.daily_loss_stop_enabled = True
+    import app.services.trade_engine as te  # noqa: F811  函数内用 _wallet_cache
+    te._wallet_cache.clear()  # 上分支 enabled=False 也会取 wallet（分层需要），缓存须清
 
     class _Boom:
         def __init__(self, account):

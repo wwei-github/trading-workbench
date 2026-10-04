@@ -54,6 +54,10 @@ export default function TradingConfigPanel() {
           : null, // 比例 0.2 → 20%
         same_direction_cap: aiConfig.same_direction_cap ?? null,
         btc_crash_pause_pct: aiConfig.btc_crash_pause_pct ?? null, // % 值（1=1%）直存
+        // 周/月回撤分层熔断 + ATR 跟进（docs/13 #2/#5，% 值/倍数直存）
+        weekly_dd_stop_pct: aiConfig.weekly_dd_stop_pct ?? null,
+        monthly_dd_stop_pct: aiConfig.monthly_dd_stop_pct ?? null,
+        atr_trail_k: aiConfig.atr_trail_k ?? null,
       })
     }
   }, [open, aiConfig, form])
@@ -87,6 +91,9 @@ export default function TradingConfigPanel() {
         portfolio_heat_cap: values.portfolio_heat_cap != null ? values.portfolio_heat_cap / 100 : null,
         same_direction_cap: values.same_direction_cap ?? null,
         btc_crash_pause_pct: values.btc_crash_pause_pct ?? null,
+        weekly_dd_stop_pct: values.weekly_dd_stop_pct ?? null,
+        monthly_dd_stop_pct: values.monthly_dd_stop_pct ?? null,
+        atr_trail_k: values.atr_trail_k ?? null,
       }
       await updateConfig(data)
       message.success('配置已保存')
@@ -304,6 +311,30 @@ export default function TradingConfigPanel() {
             tooltip="BTC 1h 近 3 根已收盘累计跌幅超该值时暂停山寨开单（BTCUSDT 本身照常；AI 提示词同步警示）；0=关闭"
           >
             <InputNumber min={0} max={20} step={0.1} style={{ width: '100%' }} placeholder="1" addonAfter="%" />
+          </Form.Item>
+
+          <Form.Item
+            label="周回撤减速阈值（%，留空=默认 15）"
+            name="weekly_dd_stop_pct"
+            tooltip="UTC 周一起已平仓净亏 ≤ -风险基数 × 该值 时，本周剩余时间单笔预算减半（不拦开仓，周一 0 点自动恢复）；日熔断之上的二级减速，只收紧亏损侧；0=关闭"
+          >
+            <InputNumber min={0} max={100} step={0.5} style={{ width: '100%' }} placeholder="15" addonAfter="%" />
+          </Form.Item>
+
+          <Form.Item
+            label="月回撤熔断阈值（%，留空=默认 25）"
+            name="monthly_dd_stop_pct"
+            tooltip="UTC 月起已平仓净亏 ≤ -风险基数 × 该值 时停开新仓，需在顶部熔断卡片「确认复盘」人工确认后恢复（本月内有效）；周熔断之上的三级总闸；0=关闭"
+          >
+            <InputNumber min={0} max={100} step={0.5} style={{ width: '100%' }} placeholder="25" addonAfter="%" />
+          </Form.Item>
+
+          <Form.Item
+            label="ATR 跟进倍数（留空=默认 3）"
+            name="atr_trail_k"
+            tooltip="跟进止损加 ATR 腿（Chandelier）：多单 SL=max(现SL, 持仓期最高价−k×ATR22)，空单对称，与摆动低点跟进取更紧者（只收紧不放松）；0=关闭 ATR 腿"
+          >
+            <InputNumber min={0} max={20} step={0.5} style={{ width: '100%' }} placeholder="3" />
           </Form.Item>
         </Form>
         </Spin>
