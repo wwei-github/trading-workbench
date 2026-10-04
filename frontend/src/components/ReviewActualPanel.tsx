@@ -4,6 +4,7 @@ import {
   Card,
   Col,
   Empty,
+  Alert,
   Modal,
   Radio,
   Row,
@@ -23,7 +24,7 @@ import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
 import { TRADE_TYPE_MAP } from '../constants/labels'
 import type { ActualGroupStat, ActualReview, ActualTradeItem, ReviewFunnel } from '../types'
 import TradeReplayChart from './TradeReplayChart'
-import ScopeSelector, { defaultScopeOf } from './ScopeSelector'
+import ScopeSelector from './ScopeSelector'
 
 // 出场原因映射（与 TradesPanel 同口径）
 const EXIT_REASON_MAP: Record<string, string> = {
@@ -59,10 +60,11 @@ export default function ReviewActualPanel() {
   const [loading, setLoading] = useState(false)
   const [attributing, setAttributing] = useState(false)
   const [replayTrade, setReplayTrade] = useState<ActualTradeItem | null>(null)
-  // 账号范围（docs/17）：默认全部（2026-10-03 删环境切换，双网合计口径）；
-  // 面板被 Tabs 保活，defaultScope 恒定，手动选择后保持
+  // 账号范围（docs/17）：复盘面板默认「正式网」（2026-10-04 用户指定）——
+  // 测试网是模拟撮合，成绩证明不了策略期望，归因考核锚定正式网；all 口径
+  // 另含双网镜像单重复计入（顶部有提示）。面板保活，手动选择后保持
   const { aiConfig, fetchConfig } = useScanStore()
-  const defaultScope = defaultScopeOf(aiConfig)
+  const defaultScope = 'live'
   const lastDefaultRef = useRef<string | null>(null)
   const [scope, setScope] = useState<string>(defaultScope)
   useEffect(() => {
@@ -241,6 +243,10 @@ export default function ReviewActualPanel() {
 
   const ov = data?.overview
   const pendingCount = data ? data.items.filter((t) => !t.attributed).length : 0
+  // 双网镜像提示（2026-10-04）：all 口径下同一 AI 决策的双网单重复计入，
+  // 统计口径偏测试网（模拟撮合），归因结论以正式网口径为准
+  const mirrorN = data?.overview.mirror_trades ?? 0
+  const showMirrorHint = mirrorN > 0 && (scope === 'all')
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -411,6 +417,16 @@ export default function ReviewActualPanel() {
                 </div>
               )}
             </Card>
+
+            {/* 双网镜像提示（2026-10-04）：all 口径含同一 AI 决策的双网单，
+                统计偏测试网，归因结论锚定正式网（「网络」分组可直接对比） */}
+            {showMirrorHint && (
+              <Alert
+                type="warning"
+                showIcon
+                message={`当前「全部」口径含 ${mirrorN} 笔双网镜像单（同一 AI 决策在测试网/正式网各开一笔，重复计入），且样本大头来自测试网（模拟撮合）——归因结论请以「正式网」口径为准；「网络」分组可对比两网执行差异（滑点/费用）。`}
+              />
+            )}
 
             {/* 维度分组归因 */}
             <Card

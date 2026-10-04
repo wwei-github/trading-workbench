@@ -554,9 +554,11 @@ export interface ActualOverview {
   planned_risk_total: number;
   plan_gap: number;
   attributed: number;
+  /** 双网镜像单笔数（同一 AI 决策双网都开了；all 口径非 0，2026-10-04） */
+  mirror_trades: number;
 }
 
-// 实盘分组统计（dim = 开单类型/方向/出场原因/开仓时段/错误标签）
+// 实盘分组统计（dim = 开单类型/方向/出场原因/开仓时段/网络/错误标签）
 export interface ActualGroupStat {
   dim: string;
   key: string;

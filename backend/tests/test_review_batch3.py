@@ -456,3 +456,59 @@ def test_actual_review_golden_pattern_groups(db):
     hammer = next(g for g in out["groups"]
                   if g["dim"] == "金K形态" and g["key"] == "锤形线")
     assert hammer["wins"] == 1 and hammer["pnl"] == 20.0
+
+
+# ── 网络分组 + 双网镜像计数（2026-10-04）──
+def test_actual_review_net_dimension_and_mirror_count(db):
+    """网络维度分桶（测试网/正式网）；overview.mirror_trades 统计同一
+    AI 决策双网都开了的 CLOSED 单（all 口径重复计入的提示依据）"""
+    from app.services.actual_review import build_actual_review
+    from sqlalchemy import text
+
+    live = _closed_rec({"recommendation": 70})
+    live.testnet = False
+    live.account_key = "live-1"
+    mirror_t = _closed_rec({"recommendation": 70})
+    mirror_l = _closed_rec({"recommendation": 70})
+    mirror_l.testnet = False
+    mirror_l.account_key = "live-1"
+    db.add_all([live, mirror_t, mirror_l])
+    db.commit()
+    # ai_analysis_id 是 PG Uuid 类型，sqlite 下 ORM 绑定有兼容问题——
+    # 原生 SQL 按 id 精确回填两笔镜像单（同一决策；id 存 32 位无横线 hex）
+    db.execute(text(
+        "UPDATE trade_records SET ai_analysis_id = '11111111-1111-1111-1111-111111111111' "
+        "WHERE id IN (:a, :b)"
+    ), {"a": mirror_t.id.hex, "b": mirror_l.id.hex})
+    db.commit()
+
+    out = build_actual_review(db, days=30)
+    dims: dict = {}
+    for g in out["groups"]:
+        dims.setdefault(g["dim"], []).append((g["key"], g["count"]))
+    nets = dict(dims["网络"])
+    assert nets == {"测试网": 1, "正式网": 2}
+    # 镜像：1111… 决策双网各一笔 → mirror_trades=2（两笔都算镜像，非 1）
+    assert out["overview"]["mirror_trades"] == 2
+
+
+def test_actual_review_mirror_zero_when_single_net(db):
+    """决策只落在单网（或无 ai_analysis_id 的行）→ 不算镜像。
+    注：唯一约束 (ai_analysis_id, account_key, testnet) 本就禁止同决策同账号重复，
+    镜像对必然跨网"""
+    from app.services.actual_review import build_actual_review
+    from sqlalchemy import text
+
+    a = _closed_rec({})
+    b = _closed_rec({})
+    db.add_all([a, b])
+    db.commit()
+    # 仅 a 挂决策 id（同决策同账号二行会被唯一约束拦），b 无关联
+    db.execute(text(
+        "UPDATE trade_records SET ai_analysis_id = '22222222-2222-2222-2222-222222222222' "
+        "WHERE id = :a"
+    ), {"a": a.id.hex})
+    db.commit()
+
+    out = build_actual_review(db, days=30)
+    assert out["overview"]["mirror_trades"] == 0

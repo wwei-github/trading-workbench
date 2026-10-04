@@ -420,6 +420,7 @@ class ActualOverview(BaseModel):
     planned_risk_total: float = 0.0  # 计划风险合计（risk_amount）
     plan_gap: float = 0.0  # 亏超计划的部分（费用/资金费/滑点）
     attributed: int = 0  # 已 AI 归因笔数
+    mirror_trades: int = 0  # 双网镜像单笔数（同一 AI 决策双网都开了；all 口径非 0，2026-10-04）
 
 
 class ActualGroupStats(BaseModel):

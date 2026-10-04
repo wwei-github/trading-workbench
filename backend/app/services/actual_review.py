@@ -215,6 +215,19 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
     total_funding = round(sum(t.funding_total or 0 for t in trades), 2)
     planned_risk = round(sum(float(t.risk_amount or 0) for t in trades), 2)
 
+    # 双网镜像单（2026-10-04）：同一 AI 决策扇出双网的两笔 CLOSED 单，all 口径
+    # 下被当独立样本重复计入。返回计数供前端在 all 视图提示「归因结论以正式网
+    # 口径为准」；不做合并剔除——双网执行差异（滑点/费用/成交价）是免费的执行
+    # 质量对照组，且正式网样本本就少
+    by_analysis: dict = {}
+    for t in trades:
+        if t.ai_analysis_id:
+            by_analysis.setdefault(t.ai_analysis_id, set()).add(bool(t.testnet))
+    mirror_trades = sum(
+        1 for t in trades
+        if t.ai_analysis_id and len(by_analysis[t.ai_analysis_id]) > 1
+    )
+
     overview.update({
         "days": days,
         "total_fee": total_fee,
@@ -226,6 +239,8 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         "avg_hold_hours": round(
             sum(_hold_hours(t) for t in trades) / len(trades), 1) if trades else 0.0,
         "attributed": sum(1 for t in trades if t.attributed_at),  # 已归因笔数
+        # 双网镜像单笔数（同一 AI 决策双网都开了的 CLOSED 单；仅 all 口径非 0）
+        "mirror_trades": mirror_trades,
     })
 
     # 分组：维度 × 桶
@@ -242,6 +257,9 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         ("方向", lambda t: t.direction or "未知"),
         ("出场原因", lambda t: t.exit_reason or "未知"),
         ("开仓时段", _bucket_label),
+        # 网络（2026-10-04）：测试网 vs 正式网分桶——模拟撮合的成绩证明不了策略
+        # 期望，归因考核锚定正式网；all 口径的双网对比 = 执行质量对照（滑点/费用）
+        ("网络", lambda t: "测试网" if t.testnet else "正式网"),
         # 止损锚类型（docs/24 A5b）：structure/near 分组对比近锚单是否劣化
         ("止损锚", lambda t: (t.ai_snapshot or {}).get("stop_anchor") or "structure"),
         # 战法（2026-10-02，仅借鉴标注）：按命中战法分组对比实盘胜率/EV——
