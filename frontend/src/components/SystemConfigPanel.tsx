@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { Modal, Switch, Tag, message, Button, Spin, Alert, Space } from 'antd'
-import { ApiOutlined } from '@ant-design/icons'
+import { ApiOutlined, DeleteOutlined, WarningOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
-import type { AccountBrief, SystemConfig } from '../types'
+import { scanApi } from '../api/scan'
+import type { AccountBrief, PurgeStats, SystemConfig } from '../types'
 
 /** 系统配置弹窗（docs/17 P1 扇出 + 2026-10-03 双网独立开关）：
  *  - 无全局「交易环境」概念（已删除）——账号清单测试网/正式网全量展示
@@ -10,7 +11,9 @@ import type { AccountBrief, SystemConfig } from '../types'
  *    各账号独立过闸门下单）；测试网恒为 testnet-1 单账号
  *  - 自动交易开关：测试网/正式网各自独立、可同时开启——同一 AI 分析
  *    双网各开一单（镜像跟单）；测试网默认开、正式网默认关
- *  - 凭据只在服务器 .env 配置（安全不入库），页面仅展示账号清单与配置状态 */
+ *  - 凭据只在服务器 .env 配置（安全不入库），页面仅展示账号清单与配置状态
+ *  - 危险操作（2026-10-04 自交易记录页迁入）：一键清空测试网数据，
+ *    预检→弹窗二次确认（含在跑单警告）→执行删除 */
 export default function SystemConfigPanel() {
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -18,6 +21,9 @@ export default function SystemConfigPanel() {
   const [liveKeys, setLiveKeys] = useState<string[]>([]) // 正式网启用自动交易的账号集合
   const [tnTrading, setTnTrading] = useState(true)      // 测试网自动交易（默认开）
   const [liveTrading, setLiveTrading] = useState(false) // 正式网自动交易（默认关）
+  // 一键清空测试网数据（2026-10-04 自交易记录页迁入）：预检 → 二次确认 → 执行
+  const [purgeInfo, setPurgeInfo] = useState<PurgeStats | null>(null)
+  const [purging, setPurging] = useState(false)
   const { aiConfig, updateConfig, fetchConfig } = useScanStore()
 
   useEffect(() => {
@@ -41,6 +47,27 @@ export default function SystemConfigPanel() {
 
   const toggleLive = (key: string, checked: boolean) => {
     setLiveKeys((prev) => (checked ? [...prev, key] : prev.filter((k) => k !== key)))
+  }
+
+  // 清空测试网数据：先预检拿将删数量（confirm=false），确认后执行（confirm=true）
+  const openPurge = async () => {
+    try {
+      setPurgeInfo(await scanApi.trades.purgeTestnet(false))
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '预检失败，请重试')
+    }
+  }
+  const handlePurge = async () => {
+    setPurging(true)
+    try {
+      await scanApi.trades.purgeTestnet(true)
+      message.success('测试网数据已清空')
+      setPurgeInfo(null)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '清空失败，请重试')
+    } finally {
+      setPurging(false)
+    }
   }
 
   const handleSave = async () => {
@@ -207,7 +234,70 @@ export default function SystemConfigPanel() {
             正式网 1 号 BINANCE_API_KEY/SECRET_KEY、附加账号 {'BINANCE_LIVE_{N}_API_KEY/SECRET_KEY'}（+可选 _NAME），
             页面不提供编辑与回显。新增账号后需重启服务生效。
           </div>
+
+          <div style={{ fontSize: 13, fontWeight: 600, margin: '16px 0 8px', color: '#cf1322' }}>危险操作</div>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '8px 12px',
+              border: '1px solid #ffccc7',
+              borderRadius: 8,
+              gap: 12,
+            }}
+          >
+            <span style={{ fontSize: 12, color: '#8c8c8c', lineHeight: 1.7 }}>
+              删除测试网全部交易记录/操作历史/划转流水（实盘数据与复盘统计不受影响，
+              交易所侧仓位不平掉，操作不可恢复）
+            </span>
+            <Button danger icon={<DeleteOutlined />} loading={purging} onClick={openPurge} style={{ flexShrink: 0 }}>
+              清空测试网数据
+            </Button>
+          </div>
         </Spin>
+
+        {/* 清空测试网数据二次确认：预检数量 + 在跑单警告 */}
+        <Modal
+          title="清空测试网数据"
+          open={!!purgeInfo}
+          onOk={handlePurge}
+          confirmLoading={purging}
+          onCancel={() => setPurgeInfo(null)}
+          okText="确认清空"
+          cancelText="取消"
+          okButtonProps={{ danger: true }}
+          width={440}
+        >
+          <div style={{ fontSize: 13, lineHeight: 2 }}>
+            将删除测试网的：
+            <div>
+              交易记录 <b>{purgeInfo?.records ?? 0}</b> 条
+              {(purgeInfo?.running ?? 0) > 0 && (
+                <span style={{ color: '#faad14' }}>（其中在跑 {purgeInfo?.running} 笔）</span>
+              )}
+              、操作历史 <b>{purgeInfo?.events ?? 0}</b> 条、划转流水{' '}
+              <b>{purgeInfo?.transfers ?? 0}</b> 条
+            </div>
+          </div>
+          <div
+            style={{
+              marginTop: 8,
+              padding: '8px 12px',
+              borderRadius: 6,
+              background: '#fffbe6',
+              border: '1px solid #ffe58f',
+              fontSize: 12,
+              color: '#874d00',
+            }}
+          >
+            <WarningOutlined style={{ marginRight: 4 }} />
+            {(purgeInfo?.running ?? 0) > 0
+              ? '交易所侧在跑仓位不会被平掉，删除后将无人管理；'
+              : ''}
+            实盘数据与复盘统计不受影响，此操作不可恢复。
+          </div>
+        </Modal>
       </Modal>
     </>
   )

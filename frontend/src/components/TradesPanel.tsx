@@ -32,7 +32,6 @@ import {
   AccountBookOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
-  DeleteOutlined,
   DownOutlined,
   HistoryOutlined,
   ImportOutlined,
@@ -56,7 +55,7 @@ import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import AiAnalysisCard from './AiAnalysisCard'
 import TradeReplayChart from './TradeReplayChart'
 import ScopeSelector, { scopeIsTestnet } from './ScopeSelector'
-import type { AccountSummary, FundAnalytics, PurgeStats, TradeEvent, TradeRecord, TradeReconciliation } from '../types'
+import type { AccountSummary, FundAnalytics, TradeEvent, TradeRecord, TradeReconciliation } from '../types'
 import { ADVICE_ACTION_META } from '../types'
 
 // 状态标签：运行中三态 + 已平仓 + 失败
@@ -618,31 +617,6 @@ export default function TradesPanel() {
         }
       },
     })
-  }
-
-  // 一键清空测试网数据（2026-09-20，仅测试网 scope 显示）：先预检拿将删数量
-  // → 弹窗二次确认（含在跑单警告）→ 执行删除并刷新。实盘数据与复盘统计不受影响
-  const [purgeInfo, setPurgeInfo] = useState<PurgeStats | null>(null)
-  const [purging, setPurging] = useState(false)
-  const openPurge = async () => {
-    try {
-      setPurgeInfo(await scanApi.trades.purgeTestnet(false))
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail || '预检失败，请重试')
-    }
-  }
-  const handlePurge = async () => {
-    setPurging(true)
-    try {
-      await scanApi.trades.purgeTestnet(true)
-      message.success('测试网数据已清空')
-      setPurgeInfo(null)
-      await fetchData()
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail || '清空失败，请重试')
-    } finally {
-      setPurging(false)
-    }
   }
 
   // 导入持仓已自动化（2026-09-24）：每小时结算巡检自动检测币安 App 手动开仓
@@ -1319,12 +1293,6 @@ export default function TradesPanel() {
               setPage(1)
             }}
           />
-          {/* 一键清空测试网数据：仅测试网范围可见，预检→弹窗确认→执行 */}
-          {scopeIsTestnet(scope) && (
-            <Button danger icon={<DeleteOutlined />} loading={purging} onClick={openPurge}>
-              清空测试网数据
-            </Button>
-          )}
           <Tooltip title="立即执行一次结算巡检（结算平仓/自动导入/AI 诊断），与定时巡检同源，后台执行">
             <Button icon={<ThunderboltOutlined />} loading={inspecting} onClick={handleInspectNow}>
               立即巡检
@@ -1842,48 +1810,6 @@ export default function TradesPanel() {
           maxLength={100}
           showCount
         />
-      </Modal>
-
-      {/* 一键清空测试网数据弹窗：预检数量 + 在跑单警告，确认后执行 */}
-      <Modal
-        title="清空测试网数据"
-        open={!!purgeInfo}
-        onOk={handlePurge}
-        confirmLoading={purging}
-        onCancel={() => setPurgeInfo(null)}
-        okText="确认清空"
-        cancelText="取消"
-        okButtonProps={{ danger: true }}
-        width={440}
-      >
-        <div style={{ fontSize: 13, lineHeight: 2 }}>
-          将删除测试网的：
-          <div>
-            交易记录 <b>{purgeInfo?.records ?? 0}</b> 条
-            {(purgeInfo?.running ?? 0) > 0 && (
-              <span style={{ color: '#faad14' }}>（其中在跑 {purgeInfo?.running} 笔）</span>
-            )}
-            、操作历史 <b>{purgeInfo?.events ?? 0}</b> 条、划转流水{' '}
-            <b>{purgeInfo?.transfers ?? 0}</b> 条
-          </div>
-        </div>
-        <div
-          style={{
-            marginTop: 8,
-            padding: '8px 12px',
-            borderRadius: 6,
-            background: '#fffbe6',
-            border: '1px solid #ffe58f',
-            fontSize: 12,
-            color: '#874d00',
-          }}
-        >
-          <WarningOutlined style={{ marginRight: 4 }} />
-          {(purgeInfo?.running ?? 0) > 0
-            ? '交易所侧在跑仓位不会被平掉，删除后将无人管理；'
-            : ''}
-          实盘数据与复盘统计不受影响，此操作不可恢复。
-        </div>
       </Modal>
 
       {/* AI 建议详情弹窗：完整持仓诊断（动作/开仓逻辑/走势/理由/补充说明），
