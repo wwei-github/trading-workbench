@@ -27,12 +27,12 @@ def _closed_closes(klines: list[list]) -> np.ndarray:
     return np.array([float(k[4]) for k in closed], dtype=float)
 
 
-def analyze_macd(
+def _macd_series(
     klines: list[list], fast: int = 12, slow: int = 26, signal: int = 9,
-) -> Optional[dict]:
-    """MACD(fast,slow,signal)：DIF=EMA快-EMA慢，DEA=DIF 的 EMA，柱=DIF-DEA（国际口径）。
+) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """MACD 序列内部计算（analyze_macd / analyze_macd_div 共用）。
 
-    状态优先级：3 根内金叉/死叉 > 零轴同侧动能（多头/空头）> 多空胶着。
+    返回 (dif, dea, hist) 数组——尾部与已收盘K线逐根对齐（截断只影响序列头部），
     数据不足（已收盘 < slow+signal+10）返回 None。
     """
     closes = _closed_closes(klines)
@@ -49,7 +49,21 @@ def analyze_macd(
         return None
     dif = dif_valid[signal - 1:]
     dea = dea_full[signal - 1:]
-    hist = dif - dea
+    return dif, dea, dif - dea
+
+
+def analyze_macd(
+    klines: list[list], fast: int = 12, slow: int = 26, signal: int = 9,
+) -> Optional[dict]:
+    """MACD(fast,slow,signal)：DIF=EMA快-EMA慢，DEA=DIF 的 EMA，柱=DIF-DEA（国际口径）。
+
+    状态优先级：3 根内金叉/死叉 > 零轴同侧动能（多头/空头）> 多空胶着。
+    数据不足（已收盘 < slow+signal+10）返回 None。
+    """
+    series = _macd_series(klines, fast, slow, signal)
+    if series is None:
+        return None
+    dif, dea, hist = series
 
     dn, dea_n, hn = float(dif[-1]), float(dea[-1]), float(hist[-1])
 
@@ -88,6 +102,54 @@ def analyze_macd(
         "dir": 1 if state in ("golden_cross", "bullish")
         else -1 if state in ("death_cross", "bearish") else 0,
         "detail": ", ".join(parts),
+    }
+
+
+def analyze_macd_div(
+    klines: list[list], fast: int = 12, slow: int = 26, signal: int = 9,
+    half: int = 12,
+) -> Optional[dict]:
+    """MACD 背离（docs/14 CARD-04，缠论盘整背驰可取子集）：近 2*half 根已收盘
+    K线前后半段比较。
+
+    - diverge_bear：后半段价格新高（max high 抬升）而 MACD 柱峰值衰减——
+      价新高动能不跟随，多头信号质量差
+    - diverge_bull：后半段价格新低（min low 下移）而柱低谷抬升——空头信号质量差
+    - confirm：其余（与 cvd_div 桶语义对齐）
+    数据不足（MACD 序列未成形或柱序列不足 2*half 根）返回 None。
+    """
+    closed = klines[:-1] if len(klines) >= 2 else klines
+    if len(closed) < 2 * half:
+        return None
+    series = _macd_series(klines, fast, slow, signal)
+    if series is None:
+        return None
+    _dif, _dea, hist = series
+    if len(hist) < 2 * half:
+        return None
+    # 柱序列尾部与已收盘K线尾部逐根对齐，取末 2*half 根比较前后半段
+    closed = closed[-2 * half:]
+    hist = hist[-2 * half:]
+    high = np.array([float(k[2]) for k in closed], dtype=float)
+    low = np.array([float(k[3]) for k in closed], dtype=float)
+
+    hi1, hi2 = float(high[:half].max()), float(high[half:].max())
+    lo1, lo2 = float(low[:half].min()), float(low[half:].min())
+    p1, p2 = float(hist[:half].max()), float(hist[half:].max())
+    v1, v2 = float(hist[:half].min()), float(hist[half:].min())
+
+    if hi2 > hi1 and p2 < p1:
+        bucket = "diverge_bear"
+    elif lo2 < lo1 and v2 > v1:
+        bucket = "diverge_bull"
+    else:
+        bucket = "confirm"
+    return {
+        "price_high_chg_pct": round((hi2 / hi1 - 1) * 100, 3) if hi1 > 0 else None,
+        "price_low_chg_pct": round((lo2 / lo1 - 1) * 100, 3) if lo1 > 0 else None,
+        "hist_peak_delta": round(p2 - p1, 8),
+        "hist_trough_delta": round(v2 - v1, 8),
+        "bucket": bucket,
     }
 
 

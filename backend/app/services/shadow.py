@@ -86,6 +86,27 @@ def compute_vol_regime(klines: list[list]) -> Optional[dict]:
     return {"atr_ratio": round(ratio, 4), "bucket": bucket}
 
 
+def compute_macd_div(klines: list[list]) -> Optional[dict]:
+    """CARD-04 macd_div：MACD 背离（缠论盘整背驰可取子集）。
+
+    口径（technical.analyze_macd_div）：近 24 根已收盘K线前后半段比较——
+    - diverge_bear：后半段价格新高而 MACD 柱峰值衰减（多头信号质量差）
+    - diverge_bull：后半段价格新低而柱低谷抬升（空头信号质量差）
+    - confirm：其余（与 cvd_div 桶语义对齐）
+    样本不足（MACD 柱序列不足 24 根）返回 None。
+    """
+    from app.services.strategy.technical import analyze_macd_div
+    return analyze_macd_div(klines)
+
+
+def compute_oi_conf_scan_stub(klines: list[list]) -> None:
+    """oi_conf 扫描侧占位：该特征需要 symbol 维度的 OI 快照环与网络请求，
+    无法从单币 klines 现算——扫描循环对本特征恒得 None 不打标；
+    实际打标由 tag_oi_conf 在 AI 配额段（tasks/ai_tasks.py）执行。
+    注册表占位仅为让评估报告（build_report）自动覆盖该特征元数据。"""
+    return None
+
+
 # ── 特征注册表（docs/14 §四）────────────────────────────────────────────
 
 @dataclass
@@ -101,8 +122,116 @@ SHADOW_FEATURES: dict[str, ShadowFeature] = {
     f.key: f for f in (
         ShadowFeature("cvd_div", "CVD 背离（订单流免费子集）", "CARD-01", compute_cvd_div, 80),
         ShadowFeature("vol_regime", "波动率状态（ATR14/ATR100）", "CARD-03", compute_vol_regime, 100),
+        ShadowFeature("macd_div", "MACD 背离（缠论背驰子集）", "CARD-04", compute_macd_div, 60),
+        ShadowFeature("oi_conf", "OI 确认度（24h ΔOI）", "CARD-02", compute_oi_conf_scan_stub, 60),
     )
 }
+
+
+# ── oi_conf（CARD-02，AI 侧，docs/14 §十清单4）──────────────────────────
+
+OI_CONF_ENABLED = True  # 代码开关（§九：特征启停改代码不进配置页；紧急置 False 停打）
+
+# 24h OI 快照环（进程内，照 market_data β 缓存模式）：symbol → [(ts, oi), ...]。
+# 只在 AI 配额轮追加（每小时 ≤ 配额数个 symbol）；保留 48h 供跨日 24h 前值比较
+_OI_RING: dict[str, list[tuple[float, float]]] = {}
+_OI_RING_TTL_S = 48 * 3600
+# 24h 前值容差窗口：定时扫描每小时一轮，取距 now-24h 最近的快照，
+# 落在 [18h, 30h] 内才有效（漏扫几轮仍可比，节奏漂移过大不可比）
+_OI_PREV_WINDOW_S = (18 * 3600, 30 * 3600)
+
+
+def tag_oi_conf(scan_results: list) -> int:
+    """AI 配额段 oi_conf 打标（CARD-02）：候选逐币拉当前 OI 快照入环，
+    环内有 18~30h 前值才计算 ΔOI 分桶落 shadow_marks，否则只存快照不打标。
+
+    分桶（CARD-02 预注册）：ΔOI 24h 符号——增=新钱入场 confirm、
+    减=回补/去杠杆 diverge；信号方向（votes net 符号）只进 value_json，
+    供评估期四象限细分，不参与分桶。幂等：uq_shadow_mark 重复打标覆盖。
+    请求预算：每轮 ≤ len(候选)（配额默认 10）个只读请求（docs/14 §四）。
+    任何异常全吞（影子铁律），返回实际落标数。
+    """
+    if not OI_CONF_ENABLED or not scan_results:
+        return 0
+    import time
+
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models.shadow import ShadowMark
+    from app.services.exchange_pool import ExchangePool
+
+    pool = ExchangePool()
+    now = time.time()
+    oi_now_map: dict[str, float] = {}
+    for r in scan_results:
+        if r.symbol in oi_now_map:
+            continue
+        try:
+            oi_now_map[r.symbol] = pool.get_open_interest(r.symbol)
+        except Exception as e:
+            logger.debug("oi_conf OI 拉取失败（不打标）%s: %s", r.symbol, e)
+    if not oi_now_map:
+        return 0
+
+    tagged = 0
+    db = SessionLocal()
+    try:
+        for r in scan_results:
+            sym = r.symbol
+            if sym not in oi_now_map:
+                continue
+            oi_now = oi_now_map[sym]
+            ring = _OI_RING.setdefault(sym, [])
+            lo, hi = now - _OI_PREV_WINDOW_S[1], now - _OI_PREV_WINDOW_S[0]
+            window = [p for p in ring if lo <= p[0] <= hi]
+            prev = (
+                min(window, key=lambda p: abs(p[0] - (now - 86400)))
+                if window else None
+            )
+            # 快照入环（无论是否打标），TTL 清理 + 条数上限双保险
+            ring.append((now, oi_now))
+            _OI_RING[sym] = [p for p in ring if p[0] >= now - _OI_RING_TTL_S][-48:]
+
+            if prev is None or prev[1] <= 0:
+                continue  # 无 24h 前值：先存快照，本轮不打标
+            oi_chg_pct = (oi_now - prev[1]) / prev[1] * 100
+            votes = r.votes_json if isinstance(r.votes_json, dict) else {}
+            net = votes.get("net") or 0
+            value = {
+                "oi_now": round(oi_now, 8), "oi_prev": round(prev[1], 8),
+                "oi_chg_pct": round(oi_chg_pct, 3),
+                "direction": "long" if net > 0 else "short" if net < 0 else None,
+                "bucket": "confirm" if oi_chg_pct > 0 else "diverge",
+            }
+            decision = {
+                "stage": "ai_quota", "signal_type": r.signal_type,
+                "breakout_pct": float(r.breakout_pct or 0),
+            }
+            existing = db.execute(
+                select(ShadowMark).where(
+                    ShadowMark.feature_key == "oi_conf",
+                    ShadowMark.ref_type == "scan_result",
+                    ShadowMark.ref_id == r.id,
+                )
+            ).scalars().first()
+            if existing:
+                existing.value_json = value
+                existing.decision_json = decision
+            else:
+                db.add(ShadowMark(
+                    feature_key="oi_conf", ref_type="scan_result", ref_id=r.id,
+                    symbol=sym, value_json=value, decision_json=decision,
+                ))
+            tagged += 1
+        db.commit()
+        return tagged
+    except Exception as e:
+        db.rollback()
+        logger.debug("oi_conf 影子打标落库失败（忽略）: %s", e)
+        return 0
+    finally:
+        db.close()
 
 
 # ── 归因与评估（docs/14 §五/§六）────────────────────────────────────────

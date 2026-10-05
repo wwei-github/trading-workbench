@@ -85,7 +85,7 @@ def test_error_5xx_error_level(caplog):
 
 def test_slow_request_warning(caplog):
     """耗时 ≥2s：WARNING「接口慢请求」+ 耗时毫秒数"""
-    app = _make_app()  # _make_app 已挂 middleware，勿重复挂载
+    app = _make_app(sleep_s=0.05)  # 真实 50ms 延迟（零延迟时耗时可能 round 到 0ms 不触发）
     # 阈值不可等真 2s——阈值是模块常量，压到 1ms 验证触发路径
     old = main_mod._SLOW_REQUEST_MS
     main_mod._SLOW_REQUEST_MS = 1
