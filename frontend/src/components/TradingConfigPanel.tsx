@@ -10,7 +10,7 @@ export default function TradingConfigPanel() {
   const [form] = Form.useForm()
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
-  const { aiConfig, updateConfig, fetchConfig } = useScanStore()
+  const { aiConfig, updateConfig, fetchConfig, fetchStatus } = useScanStore()
 
   useEffect(() => {
     if (!open) return
@@ -97,6 +97,8 @@ export default function TradingConfigPanel() {
       }
       await updateConfig(data)
       message.success('配置已保存')
+      // 顶部熔断状态卡即时刷新（此前等 30s 轮询，开关切换后被误读为「保存了没生效」）
+      await fetchStatus()
       setOpen(false)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '保存失败')

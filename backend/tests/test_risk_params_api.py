@@ -112,6 +112,42 @@ def test_missing_fields_untouched(client):
     assert r.json()["min_recommendation"] == 65
 
 
+def test_status_reflects_breaker_switch_toggle(client, monkeypatch):
+    """改当日亏损熔断开关保存 → /status loss_breaker enabled 即时翻转
+    （2026-10-06 用户报障回归：顶部卡片熔断状态未随开关更新）。
+    mock 自动交易账号与钱包余额，规避触网。"""
+    from types import SimpleNamespace
+
+    import app.services.account_registry as reg
+    import app.services.binance_trader as bt
+    from app.services.trade_engine import _wallet_cache
+
+    accounts = [SimpleNamespace(key="testnet-1", testnet=True)]
+    monkeypatch.setattr(reg, "auto_trade_accounts", lambda db: accounts)
+
+    class _FakeTrader:
+        def __init__(self, key):
+            pass
+
+        def wallet_balance(self):
+            return {"wallet": 1000.0}
+
+    monkeypatch.setattr(bt, "BinanceTrader", _FakeTrader)
+    _wallet_cache.clear()
+
+    http, _db = client
+    # 开 → enabled=True（有账号、阈值默认 9>0）
+    assert http.put("/api/scans/config", json={"daily_loss_stop_enabled": True}).status_code == 200
+    lb = http.get("/api/scans/status").json()["loss_breaker"]
+    assert lb["testnet"]["enabled"] is True
+
+    # 关 → enabled=False，active=None（顶部卡片显示「关」）
+    assert http.put("/api/scans/config", json={"daily_loss_stop_enabled": False}).status_code == 200
+    lb = http.get("/api/scans/status").json()["loss_breaker"]
+    assert lb["testnet"]["enabled"] is False
+    assert lb["testnet"]["active"] is None
+
+
 @pytest.mark.parametrize("field,value", [
     ("min_recommendation", 101),
     ("min_recommendation", -1),
