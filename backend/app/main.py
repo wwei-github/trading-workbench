@@ -1,4 +1,5 @@
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -46,6 +47,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 请求级访问日志（2026-10-05 补缺口 1）：uvicorn access log 只进 stdout 不落库，
+# 系统日志页看不到「谁何时调了什么接口、哪些慢、哪些 4xx/5xx」。
+# 只落「值得关注」的请求防刷库（正常 2xx 静默——量大会把 WARNING 级日志淹没）：
+# - 耗时 ≥2s 的慢请求（WARNING）
+# - 状态 ≥400 的错误请求（WARNING；未处理异常已由 500 handler 以 ERROR 落库，此处不重复 traceback）
+_SLOW_REQUEST_MS = 2000
+_req_logger = logging.getLogger("app.api.request")
+
+
+@app.middleware("http")
+async def access_log_middleware(request: Request, call_next):
+    started = time.perf_counter()
+    status_code = 500  # call_next 抛异常时按 500 计（异常细节由 500 handler 落库）
+    try:
+        resp = await call_next(request)
+        status_code = resp.status_code
+        return resp
+    finally:
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        slow = elapsed_ms >= _SLOW_REQUEST_MS
+        if slow or status_code >= 400:
+            level = logging.ERROR if status_code >= 500 else logging.WARNING
+            _req_logger.log(
+                level, "接口%s %s %s 状态 %d 耗时 %dms",
+                "慢请求" if slow and status_code < 400 else "错误",
+                request.method, request.url.path, status_code, elapsed_ms)
 
 app.include_router(health_router)
 app.include_router(market_router)  # 大盘环境/市场情绪（Header 大盘条）
