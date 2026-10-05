@@ -19,6 +19,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { useScanStore } from "../stores/scanStore";
 import { scanApi } from "../api/scan";
+import { copyText } from "../utils/clipboard";
 import {
   SIGNAL_TYPE_MAP,
   SIGNAL_TYPE_FILTERS,
@@ -142,13 +143,15 @@ export default function WatchlistPanel() {
     }
   };
 
-  const handleCopySymbol = (e: React.MouseEvent, symbol: string) => {
+  const handleCopySymbol = async (e: React.MouseEvent, symbol: string) => {
     e.stopPropagation();
     const text = symbol + ".P";
-    navigator.clipboard
-      .writeText(text)
-      .then(() => message.success(`已复制: ${text}`))
-      .catch(() => message.error("复制失败"));
+    // navigator.clipboard 在 http 非 localhost 下为 undefined，copyText 内降级 execCommand
+    if (await copyText(text)) {
+      message.success(`已复制: ${text}`);
+    } else {
+      message.error("复制失败（浏览器未授权剪贴板）");
+    }
   };
 
   // ===== K 线手动刷新：强制拉最新 K 线 + 重跑信号判定 =====

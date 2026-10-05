@@ -19,6 +19,7 @@ import type { ReactNode } from "react";
 import { useScanStore } from "../stores/scanStore";
 import { scanApi } from "../api/scan";
 import { schemeTag } from "../utils/scheme";
+import { copyText } from "../utils/clipboard";
 import {
   SIGNAL_TYPE_MAP,
   SIGNAL_TYPE_FILTERS,
@@ -321,17 +322,15 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
     // sort 走客户端排序，无需处理
   };
 
-  const handleCopySymbol = (e: React.MouseEvent, symbol: string) => {
+  const handleCopySymbol = async (e: React.MouseEvent, symbol: string) => {
     e.stopPropagation();
     const text = symbol + ".P";
-    navigator.clipboard
-      .writeText(text)
-      .then(() => {
-        message.success(`已复制: ${text}`);
-      })
-      .catch(() => {
-        message.error("复制失败");
-      });
+    // navigator.clipboard 在 http 非 localhost 下为 undefined，copyText 内降级 execCommand
+    if (await copyText(text)) {
+      message.success(`已复制: ${text}`);
+    } else {
+      message.error("复制失败（浏览器未授权剪贴板）");
+    }
   };
 
   const handleToggleWatch = async (e: React.MouseEvent, record: ScanResult) => {
