@@ -9,7 +9,9 @@ sqlite 内存库不触网。
 1. 接管单：入场价取 detail.entry_price（非 detail.price 接管时点现价）
 2. 普通单：入场价取 detail.price（实际成交价）——历史行为不变
 3. 无 OPEN 事件的老记录：回退 rec.entry_price
+4. 平仓后走势窗（2026-10-05）：已平仓请求区间延至平仓后 5 根，进行中单不变
 """
+import math
 import sys
 import uuid
 from datetime import datetime
@@ -121,3 +123,78 @@ def test_legacy_fallback_rec_entry(client):
     rec = _trade(db, entry_price=9.9)
     body = http.get(f"/api/trades/{rec.id}/klines").json()
     assert body["entry_price"] == 9.9
+
+
+# ── 4. 平仓后走势窗（已平仓 +5 根，进行中不变）────────────────────────
+
+
+def _kline_capture_fixture(monkeypatch):
+    """独立内存库 + get_klines_range 参数捕获桩（不复用上方 client fixture，
+    因其桩不记录请求参数）。返回 (请求函数, captured)。"""
+    captured = []
+
+    def _fake(self, symbol, interval, bars, end_ms):
+        captured.append({"bars": bars, "end_ms": end_ms})
+        base = int(datetime(2026, 10, 1, 0, 0).timestamp() * 1000)
+        return [[base + i * 3_600_000, 10.0, 10.2, 9.8, 10.0, 1.0] for i in range(3)]
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = TestSession()
+    session.add(SystemConfig(id=1))
+    session.commit()
+
+    def _override():
+        yield session
+
+    app.dependency_overrides[get_db] = _override
+    monkeypatch.setattr(trades_api.ExchangePool, "get_klines_range", _fake)
+
+    def _get(trade: TradeRecord):
+        return TestClient(app).get(f"/api/trades/{trade.id}/klines")
+
+    return _get, session, captured
+
+
+def test_closed_trade_requests_5_bars_after_close(monkeypatch):
+    """已平仓：end_ms = closed_at(UTC) + 5×interval − 1ms，bars 含 5 根后置窗"""
+    from datetime import timedelta, timezone
+
+    _get, db, captured = _kline_capture_fixture(monkeypatch)
+    closed = datetime.utcnow() - timedelta(hours=6)  # 平仓已久，5 根窗全部可得
+    rec = _trade(db, status="CLOSED", exit_reason="SL_FILL",
+                 opened_at=closed - timedelta(hours=2, minutes=10))
+    rec.closed_at = closed
+    db.commit()
+
+    assert _get(rec).status_code == 200
+    assert len(captured) == 1
+    interval_ms = 3_600_000  # SystemConfig 默认 1h
+    # 端点内部：end_ms = closed_at 按 UTC 的毫秒 − 1ms + 5×interval
+    expected_end = int(closed.replace(tzinfo=timezone.utc).timestamp() * 1000) - 1 + 5 * interval_ms
+    assert captured[0]["end_ms"] == expected_end
+    assert captured[0]["bars"] == 100 + math.ceil((130 * 60 * 1000) / interval_ms) + 5  # held=3
+
+
+def test_running_trade_no_after_window(monkeypatch):
+    """进行中：区间止于当前时刻（无平仓后窗），bars 不含后置 5 根"""
+    from datetime import timedelta, timezone
+
+    _get, db, captured = _kline_capture_fixture(monkeypatch)
+    rec = _trade(db, opened_at=datetime.utcnow() - timedelta(hours=2))
+
+    assert _get(rec).status_code == 200
+    assert len(captured) == 1
+    interval_ms = 3_600_000
+    now_ms = captured[0]["end_ms"] + 1  # 端点原式 end_ms = now_ms − 1
+    # DB 存 UTC naive——期望值必须按 UTC 解释（replace(tzinfo=None) 会按本地时区，差 8h）
+    opened_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    held = math.ceil((now_ms - opened_ms) / interval_ms)
+    assert captured[0]["bars"] == 100 + held
+    # end_ms = 端点执行时刻的 UTC epoch − 1ms，必然落在真实当前时间附近（±1h 内）
+    assert abs(captured[0]["end_ms"] - datetime.now(timezone.utc).timestamp() * 1000) < 3_600_000

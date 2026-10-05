@@ -673,10 +673,12 @@ def run_advice(trade_id: str, db: Session = Depends(get_db)):
 
 @router.get("/{trade_id}/klines")
 def trade_klines(trade_id: str, db: Session = Depends(get_db)):
-    """交易复盘K线：开单前 100 根 + 持仓期间直到止损/平仓，附初始止损止盈与关键事件
+    """交易复盘K线：开单前 100 根 + 持仓期间直到止损/平仓 + 平仓后至多 5 根，附初始止损止盈与关键事件
 
     - 初始 SL/TP 取自 OPEN 事件 detail（记录上的 stop_loss 是现值，跟踪止损后已被更新）
-    - 总根数 = 100 + 持仓根数，上限 500（超长持仓自动压缩开仓前根数，持仓段始终完整）
+    - 已平仓记录平仓后再多显示至多 5 根 K 线（观察出场后走势，验证出场是否过早；
+      平仓后不足 5 根时交易所有多少给多少，endTime 超前于最新K线不会报错）
+    - 总根数 = 100 + 持仓根数 + 平仓后根数，上限 500（超长持仓自动压缩开仓前根数，持仓段始终完整）
     - 历史区间直接请求交易所（多所故障转移），不读不写缓存
     """
     try:
@@ -696,9 +698,13 @@ def trade_klines(trade_id: str, db: Session = Depends(get_db)):
     opened_dt: datetime = rec.opened_at
     end_dt: datetime = rec.closed_at or datetime.utcnow()
     held_bars = math.ceil(max(0, (end_dt - opened_dt).total_seconds() * 1000) / interval_ms)
-    bars = min(500, 100 + held_bars)
-    # 减 1ms：closed_at 恰在整点边界时不含平仓后的新K线；平仓在K线中间时仍含所在K线
+    after_bars = 5 if rec.closed_at else 0  # 平仓后走势观察窗（进行中单子无）
+    bars = min(500, 100 + held_bars + after_bars)
+    # 减 1ms：边界恰在整点时不含下一根K线（平仓在K线中间时仍含所在K线）；
+    # 已平仓再延 after_bars 根——平仓后第 5 根收盘边界为截止点
     end_ms = int(end_dt.replace(tzinfo=timezone.utc).timestamp() * 1000) - 1
+    if after_bars:
+        end_ms += after_bars * interval_ms
 
     pool = ExchangePool()
     try:
