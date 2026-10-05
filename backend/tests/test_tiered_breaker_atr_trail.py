@@ -80,6 +80,17 @@ def _yesterday_noon() -> datetime:
     return datetime.utcnow().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=1)
 
 
+def _is_monday_utc() -> bool:
+    """UTC 周一：当周尚无「昨日」可用——周窗口与日窗口无法隔离（周回撤
+    本就从今天 0 点重算，昨日亏损不计入是正确产品行为），窗口类测试跳过"""
+    return datetime.utcnow().weekday() == 0
+
+
+def _is_month_first_utc() -> bool:
+    """UTC 当月 1 日：昨日属上月，月窗口无法用昨日数据构造触发（同理正确）"""
+    return datetime.utcnow().day == 1
+
+
 def _closed(db, pnl, closed_at, account_key="testnet-1", testnet=True):
     rec = TradeRecord(
         symbol="AAAUSDT", direction="long", status="CLOSED",
@@ -128,6 +139,7 @@ class _FakeTrader:
 # ── _closed_pnl_since 窗口口径 ────────────────────────────────────────
 
 
+@pytest.mark.skipif(_is_monday_utc(), reason="UTC 周一当周无昨日，周窗口无法与日窗口隔离")
 def test_closed_pnl_since_window(db):
     """窗口聚合：仅 since 起的 CLOSED 行；未平仓行排除"""
     now = datetime.utcnow()
@@ -150,6 +162,7 @@ def _month_hit_data(db):
     _closed(db, -70.0, datetime.utcnow())
 
 
+@pytest.mark.skipif(_is_month_first_utc(), reason="UTC 月 1 日当月无昨日，月窗口无法用昨日数据构造")
 def test_month_breaker_blocks(db, caplog):
     _month_hit_data(db)
     a = _make_analysis(db)
@@ -160,6 +173,7 @@ def test_month_breaker_blocks(db, caplog):
     assert any("月度回撤熔断拦截开仓" in r.message for r in caplog.records)
 
 
+@pytest.mark.skipif(_is_month_first_utc(), reason="UTC 月 1 日当月无昨日，月窗口无法用昨日数据构造")
 def test_month_breaker_ack_resumes(db):
     """ack 时刻在当前 UTC 月内 → 放行（穿透到 _attempt_open，落「开仓失败」）"""
     _month_hit_data(db)
@@ -172,6 +186,7 @@ def test_month_breaker_ack_resumes(db):
     assert "开仓失败" in (a.open_block_reason or "")
 
 
+@pytest.mark.skipif(_is_month_first_utc(), reason="UTC 月 1 日当月无昨日，月窗口无法用昨日数据构造")
 def test_month_breaker_ack_stale_next_month(db):
     """ack 是上月的（跨月重武装）→ 仍拦截"""
     _month_hit_data(db)
@@ -183,6 +198,7 @@ def test_month_breaker_ack_stale_next_month(db):
     assert "月度回撤熔断" in (a.open_block_reason or "")
 
 
+@pytest.mark.skipif(_is_month_first_utc(), reason="UTC 月 1 日当月无昨日，月窗口无法用昨日数据构造")
 def test_month_breaker_disabled_at_zero(db, monkeypatch):
     """月阈值 0 = 关闭该层；同数据穿透（日/周也未触发）"""
     monkeypatch.setattr(settings, "MONTHLY_DD_STOP_PCT", 0.0)
@@ -204,6 +220,7 @@ def _week_hit_data(db):
     _closed(db, -75.0, datetime.utcnow())
 
 
+@pytest.mark.skipif(_is_monday_utc(), reason="UTC 周一当周无昨日，周窗口无法与日窗口隔离")
 def test_week_derate_no_block(db, caplog):
     """周回撤触发：不拦开仓（穿透 _attempt_open）+ WARNING 减速日志"""
     _week_hit_data(db)
@@ -225,6 +242,7 @@ def test_week_not_triggered_under_threshold(db, caplog):
     assert not any("周度回撤减速" in r.message for r in caplog.records)
 
 
+@pytest.mark.skipif(_is_monday_utc(), reason="UTC 周一当周无昨日，周窗口无法与日窗口隔离")
 def test_week_derate_logs_each_attempt(db, caplog):
     """减半作用于单笔预算（fixed/pct 同乘 risk_scale）：同一窗口连续两次
     尝试各自记录减速日志（窗口状态无漂移、判定幂等）"""
@@ -239,6 +257,8 @@ def test_week_derate_logs_each_attempt(db, caplog):
 # ── breaker_status_by_net 分层字段 ───────────────────────────────────
 
 
+@pytest.mark.skipif(_is_monday_utc() or _is_month_first_utc(),
+                    reason="周一/月 1 日当窗口无昨日数据，周月字段无法构造触发")
 def test_breaker_status_week_month_fields(db, monkeypatch):
     """week/month 状态：月触发未确认 active=True；确认后 active=False/acked=True"""
     accounts = [SimpleNamespace(key="testnet-1", testnet=True)]

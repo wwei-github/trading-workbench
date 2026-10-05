@@ -533,10 +533,8 @@ def run_spot_weekly_review_task() -> dict:
 
 def _call_weekly_llm(snapshot: dict) -> dict:
     """快照 → LLM JSON（容错解析 + 字段收紧）。"""
-    import json
-
     from app.config import settings as app_settings
-    from app.services.llm_client import get_client
+    from app.services.llm_client import get_client, parse_llm_json
 
     lines = []
     for sym, d in snapshot.items():
@@ -561,10 +559,10 @@ def _call_weekly_llm(snapshot: dict) -> dict:
         max_tokens=4000,
     )
     content = (resp.choices[0].message.content or "").strip()
-    # 剥掉可能的 markdown 围栏
-    if content.startswith("```"):
-        content = content.strip("`").lstrip("json").strip()
-    raw = json.loads(content)
+    # 统一健壮解析（与 ai_analyzer 同款）：标准解析失败降级 json_repair，
+    # 兼容 JSON 前导文本 / markdown 围栏 / 尾逗号。原围栏剥离逻辑在模型
+    # 输出 JSON 前带一句话说明时直接炸 json.loads（2026-10-05 周度研判失败）
+    raw = parse_llm_json(content)
 
     regime = raw.get("regime")
     if regime not in _WEEKLY_REGIMES:
