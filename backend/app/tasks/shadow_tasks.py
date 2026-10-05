@@ -54,6 +54,9 @@ def shadow_report_lines(window_days: int = 30) -> list[str]:
 def run_shadow_evaluate_task() -> dict:
     """每日影子评估：构建报告 → 记录任务日志。评估结果经 /api/shadow/report
     与次日日报附录输出；此处仅触发统计并落运行记录。"""
+    from app.services.task_log import close_task, open_task
+
+    task_id = open_task("review", "影子实验评估", trigger="scheduled")
     db = SessionLocal()
     try:
         report = build_report_safe(db)
@@ -63,10 +66,23 @@ def run_shadow_evaluate_task() -> dict:
             "影子评估完成：标记 %d 条，达标特征 %s",
             total_marks, ",".join(sufficient) or "无",
         )
+        close_task(
+            task_id, "completed",
+            summary=f"标记 {total_marks} 条，达标特征 {','.join(sufficient) or '无'}",
+            detail={
+                "total_marks": total_marks,
+                "sufficient": sufficient,
+                "features": {r["feature"]: r["baseline"]["n"] for r in report},
+            },
+        )
         return {
             "total_marks": total_marks,
             "sufficient": sufficient,
             "features": {r["feature"]: r["baseline"]["n"] for r in report},
         }
+    except Exception as e:
+        close_task(task_id, "failed", error=str(e))
+        logger.exception("影子评估任务失败")
+        raise
     finally:
         db.close()

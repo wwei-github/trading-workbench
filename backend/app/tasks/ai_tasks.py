@@ -121,16 +121,26 @@ def run_ai_analysis_task(
     user_input: 用户补充说明（单币分析时随请求传入），附加到 AI 提示词
     """
     db = SessionLocal()
+    # 任务记录只在分发层落（2026-10-05 补缺口 3）：单币子任务若逐个落条目，
+    # 每轮扫描最多配额个 × 每小时一轮会刷爆任务列表——子任务失败已有系统日志
+    # + 进度事件（ai_progress）双通道可见
+    from app.services.task_log import close_task, open_task
+    task_id = open_task(
+        "ai", "AI 分析分发",
+        trigger="manual" if only_scan_result_id else "system",
+    )
     try:
         cfg = db.get(SystemConfig, 1)
         if not cfg or not settings.AI_API_KEY:
             logger.warning("AI 分析未启用（未配置 API Key），跳过")
+            close_task(task_id, "skipped", summary="AI 未启用（未配置 API Key）")
             return
         if cfg and not cfg.ai_analysis_enabled and only_scan_result_id is None:
             # 「筛选后自动 AI 分析」开关（2026-09-28 与交易开关解耦）：仅拦截
             # 扫描链路的批量自动分析；手动单币重分析（only_scan_result_id 非空）
             # 不受限。交易开关（trading_enabled）只管自动成交，不再拦分析
             logger.info("筛选后自动 AI 分析开关关闭，批量分析跳过 #%s", scan_record_id)
+            close_task(task_id, "skipped", summary="「筛选后自动 AI 分析」开关关闭")
             return
         q = select(ScanResult).where(ScanResult.scan_record_id == UUID(scan_record_id))
         if only_scan_result_id:
@@ -165,6 +175,7 @@ def run_ai_analysis_task(
         results = db.execute(q).scalars().all()
         if not results:
             logger.info("无可分析的扫描结果 #%s", scan_record_id)
+            close_task(task_id, "skipped", summary="无可分析的扫描结果")
             return
 
         force = only_scan_result_id is not None
@@ -174,7 +185,14 @@ def run_ai_analysis_task(
         )
         jobs.apply_async()
         logger.info("已分发 %d 个 AI 分析子任务 #%s", len(results), scan_record_id)
+        close_task(
+            task_id, "completed",
+            summary=f"已分发 {len(results)} 个分析子任务"
+                    + ("（手动单币重分析）" if force else f"（扫描 #{scan_record_id[:8]}）"),
+            detail={"scan_record_id": scan_record_id, "dispatched": len(results), "force": force},
+        )
     except Exception as e:
+        close_task(task_id, "failed", error=str(e))
         logger.exception("AI 分析任务分发失败: %s", e)
         # 瞬时故障（DB 断连等）自动重试：子任务幂等（闸门/指纹/沿用短路），重发无副作用
         raise self.retry(countdown=30)

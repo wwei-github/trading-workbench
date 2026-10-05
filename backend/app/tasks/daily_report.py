@@ -59,6 +59,19 @@ def _daily_close(symbol: str) -> tuple[str, str, str]:
 @celery_app.task(name="app.tasks.daily_report.notify_daily_report")
 def notify_daily_report() -> dict:
     """每日 08:05（北京）日报：主流币收盘价 + 昨日交易统计。"""
+    from app.services.task_log import close_task, open_task
+
+    task_id = open_task("review", "每日交易日报", trigger="scheduled")
+    try:
+        return _notify_daily_report_body(task_id)
+    except Exception as e:
+        close_task(task_id, "failed", error=str(e))
+        logger.exception("每日日报任务失败")
+        raise
+
+
+def _notify_daily_report_body(task_id: str) -> dict:
+    """日报主体（任务记录由外层管理）：行情 + 统计 + 卡片组装 + 推送。"""
     now = datetime.now(_TZ_BJ)
     # 日报在收盘后 5 分钟跑，统计「昨天」一整天（北京自然日）
     day_start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -206,5 +219,14 @@ def notify_daily_report() -> dict:
         ])
         ok = send_feishu_text(text)
     logger.info("每日日报已%s（%s）", "发送" if ok else "跳过/失败", date_label)
+    from app.services.task_log import close_task
+
+    close_task(
+        task_id, "completed",
+        summary=f"{date_label} 开{opened}/闭{closed} 净{_net_str(net)}"
+                f"（飞书{'已推送' if ok else '未推送'}）",
+        detail={"date": date_label, "opened": opened, "closed": closed,
+                "win": win, "loss": loss, "net": round(net, 2), "notified": ok},
+    )
     return {"date": date_label, "opened": opened, "closed": closed,
             "win": win, "loss": loss, "net": round(net, 2), "notified": ok}
