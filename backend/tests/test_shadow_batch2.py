@@ -257,6 +257,52 @@ def test_oi_conf_scan_stub_never_tags(shadow_db, monkeypatch):
     assert SHADOW_FEATURES["oi_conf"].min_sample == 60
 
 
+# ── 2b. 真实 get_open_interest 路径（其余用例整类替换 ExchangePool，
+#        该方法本身从未被执行过——直连 mock httpx 层堵覆盖缺口）──────────
+
+
+def _fake_oi_client(status=200, oi="12345.5"):
+    class _Resp:
+        def __init__(self):
+            self.status_code = status
+            self.headers = {"retry-after": "30"} if status == 429 else {}
+
+        def json(self):
+            return {"symbol": "BTCUSDT", "openInterest": oi, "time": 1}
+
+    class _Client:
+        def __init__(self):
+            self.paths = []
+
+        def get(self, path, params=None):
+            self.paths.append((path, params))
+            return _Resp()
+
+    return _Client()
+
+
+def test_get_open_interest_real_ok(monkeypatch):
+    """真实方法：/fapi/v1/openInterest + symbol 参数 + float 转换"""
+    from app.services import exchange_pool as ep_mod
+
+    client = _fake_oi_client(oi="12345.5")
+    monkeypatch.setattr(ep_mod, "_get_client", lambda name: client)
+    assert ep_mod.ExchangePool().get_open_interest("BTCUSDT") == 12345.5
+    assert client.paths == [("/fapi/v1/openInterest", {"symbol": "BTCUSDT"})]
+
+
+def test_get_open_interest_real_rate_limited(monkeypatch):
+    """真实方法：429 记冷却并抛 ExchangeError（由 tag_oi_conf 按币吞掉）"""
+    from app.services import exchange_pool as ep_mod
+
+    monkeypatch.setitem(ep_mod._ban_until, "binance", 0)  # 注册键供 teardown 还原
+    monkeypatch.setitem(ep_mod._last_error, "binance", "")
+    monkeypatch.setattr(ep_mod, "_get_client",
+                        lambda name: _fake_oi_client(status=429))
+    with pytest.raises(ep_mod.ExchangeError):
+        ep_mod.ExchangePool().get_open_interest("BTCUSDT")
+
+
 # ── 3. ai_tasks 配额段接线 ────────────────────────────────────────────
 
 
