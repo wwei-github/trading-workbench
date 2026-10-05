@@ -73,3 +73,6 @@ Thumbs.db
 
 # ===== Claude Code =====
 .claude/
+
+# ===== Trae IDE =====
+.trae/
