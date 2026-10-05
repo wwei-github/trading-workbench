@@ -316,7 +316,7 @@ export const scanApi = {
       .then((r) => r.data),
 
   // 系统日志（新→旧；level/q/logger 前缀可选过滤）
-  logs: (page = 1, pageSize = 20, level?: string, q?: string, logger?: string) =>
+  logs: (page = 1, pageSize = 20, level?: string, q?: string, logger_name?: string) =>
     api
       .get<ListResponse<AppLog>>('/logs', {
         params: {
@@ -324,7 +324,7 @@ export const scanApi = {
           page_size: pageSize,
           level: level || undefined,
           q: q || undefined,
-          logger: logger || undefined,
+          logger_name: logger_name || undefined,
         },
       })
       .then((r) => r.data),

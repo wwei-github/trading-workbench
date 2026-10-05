@@ -3,6 +3,7 @@
 战法仅作借鉴参考（AI 判定命中后落库标注，不拦截开单），复盘按战法
 分组对比实盘表现——哪个战法真能打，数据说话。
 """
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,6 +14,8 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.scan import AIAnalysis
 from app.models.tactic import TACTIC_DIRECTIONS, TACTIC_SCOPES, Tactic
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tactics", tags=["tactics"])
 
@@ -81,7 +84,12 @@ def create_tactic(payload: TacticIn, db: Session = Depends(get_db)):
         raise HTTPException(400, f"战法名已存在: {payload.name}")
     t = Tactic(**payload.model_dump())
     db.add(t)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("战法创建落库失败: %s", payload.name)
+        raise
     db.refresh(t)
     return _serialize(t, 0)
 
@@ -98,7 +106,12 @@ def update_tactic(tactic_id: uuid.UUID, payload: TacticIn, db: Session = Depends
         raise HTTPException(400, f"战法名已存在: {payload.name}")
     for k, v in payload.model_dump().items():
         setattr(t, k, v)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("战法更新落库失败: %s", tactic_id)
+        raise
     db.refresh(t)
     counts = db.execute(
         select(func.count(AIAnalysis.id)).where(AIAnalysis.tactic_name == t.name)
@@ -130,5 +143,10 @@ def delete_tactic(tactic_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(
             409, f"已有 {cited} 条分析引用该战法，不可删除（请改为停用）")
     db.delete(t)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("战法删除落库失败: %s", tactic_id)
+        raise
     return {"deleted": str(tactic_id)}

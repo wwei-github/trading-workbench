@@ -3,11 +3,15 @@
 前端「影子实验」面板数据源；实时调用 build_report 与每日评估任务同口径。
 评估只统计不决策——升格必须走 docs/14 §八 人工流程，本接口不提供任何开关。
 """
+import logging
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services.shadow import build_report
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/shadow", tags=["shadow"])
 
@@ -18,4 +22,9 @@ def get_shadow_report(
     db: Session = Depends(get_db),
 ):
     """影子特征分桶评估报告（基线 + 分桶胜率，n<30 的桶标 insufficient）。"""
-    return build_report(db, window_days=window_days)
+    try:
+        return build_report(db, window_days=window_days)
+    except Exception:
+        # 未处理异常虽会由 main 的 500 handler 落库，这里补业务上下文（窗口参数）
+        logger.exception("影子评估报告构建失败 window_days=%s", window_days)
+        raise
