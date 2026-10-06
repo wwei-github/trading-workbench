@@ -275,6 +275,7 @@ def test_tag_reentry_backfill_marks_and_idempotent(shadow_db, monkeypatch):
     assert m.value_json["bucket"] in ("structure_ok", "structure_broken")
     assert m.decision_json["stage"] == "reentry_backfill"
     assert m.decision_json["testnet"] is False
+    assert m.testnet is False  # 列同步自交易（默认 True 会把正式网错标，2026-10-06 修复）
     db.close()
 
     # 幂等：已打标单进 done 集合，重跑 0 行

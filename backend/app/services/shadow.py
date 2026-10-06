@@ -486,6 +486,7 @@ def tag_trade_close(trades: list) -> int:
                         db.add(ShadowMark(
                             feature_key=feat_key, ref_type="trade_record",
                             ref_id=rec.id, symbol=rec.symbol,
+                            testnet=bool(rec.testnet),
                             value_json=value, decision_json=decision,
                         ))
                     tagged += 1
@@ -705,7 +706,8 @@ def tag_reentry_backfill(batch: int = 40, days: int = 90) -> int:
                     db.add(ShadowMark(
                         feature_key="reentry_precond", ref_type="trade_record",
                         ref_id=rec.id, symbol=rec.symbol,
-                        value_json=value, decision_json=decision,
+                        testnet=bool(rec.testnet),
+value_json=value, decision_json=decision,
                     ))
                 db.commit()  # 逐笔提交：单笔失败回滚不拖累已打标行
                 tagged += 1
