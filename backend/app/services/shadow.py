@@ -415,6 +415,7 @@ def tag_trade_close(trades: list) -> int:
         return 0
     from sqlalchemy import select
 
+    from app.database import SessionLocal
     from app.models.shadow import ShadowMark
     from app.services.exchange_pool import ExchangePool
 
