@@ -775,6 +775,14 @@ export interface ShadowProtectStat {
   avg_cf_r: number | null // 平均反事实收益（R）
 }
 
+// 再入场前置统计（docs/13 #12：CARD-07，trade_record 宿主）——
+// 读数是止损后 24h 内回到开仓价的续走率（条件概率），非胜率非 ΣΔR
+export interface ShadowReentryStat {
+  continued: number // 续走笔数（出场后 24h 内 signed-R MFE ≥ 0）
+  cont_rate: number | null // 续走率 = continued / n
+  structure_ok_n: number // 结构完好笔数（占比 = structure_ok_n / n）
+}
+
 // 单特征影子评估报告（baseline = 全部桶合计）
 export interface ShadowFeatureReport {
   feature: string
@@ -782,10 +790,16 @@ export interface ShadowFeatureReport {
   card: string // 预注册标准卡（docs/14 §七：CARD-01 等）
   min_sample: number // 达标所需最小有效归因样本
   window_days: number
-  baseline: { n: number; counted?: number; win_rate?: number | null } & Partial<ShadowProtectStat>
-  buckets: (ShadowBucketStat & Partial<ShadowProtectStat>)[]
-  // CARD-05/06 专用：测试网对照组（分层统计，不进判定）
-  testnet_baseline?: ShadowProtectStat & { n: number; buckets: Record<string, number> }
+  baseline:
+    & { n: number; counted?: number; win_rate?: number | null }
+    & Partial<ShadowProtectStat>
+    & Partial<ShadowReentryStat>
+  buckets: (ShadowBucketStat & Partial<ShadowProtectStat> & Partial<ShadowReentryStat>)[]
+  // CARD-05/06/07 专用：测试网对照组（分层统计，不进判定）——
+  // ProtectStat 字段仅 CARD-05/06 有值，ReentryStat 字段仅 CARD-07 有值
+  testnet_baseline?: ShadowProtectStat
+    & Partial<ShadowReentryStat>
+    & { n: number; buckets: Record<string, number> }
   decided?: number // CARD-05/06：正式网 decided（= baseline.decided）
   sufficient: boolean // 有效归因样本 ≥ min_sample（达标 ≠ 升格，升格走人工流程）
 }

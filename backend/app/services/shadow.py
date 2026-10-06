@@ -129,6 +129,10 @@ SHADOW_FEATURES: dict[str, ShadowFeature] = {
         # build_report 输出元数据与反事实统计。min_sample = 预注册 decided 门槛
         ShadowFeature("be_retrace", "BE@0.8R 保本反事实（A 腿）", "CARD-05", lambda k: None, 30),
         ShadowFeature("tp0_retrace", "TP0 微止盈反事实（B 腿）", "CARD-06", lambda k: None, 60),
+        # 再入场前置（docs/13 #12，CARD-07）：止损后结构×续走条件概率，
+        # trade_record 宿主——出场后 48h 路径在平仓时刻不存在，打标由每日
+        # 回填（tag_reentry_backfill）执行，compute 占位仅为 build_report 元数据
+        ShadowFeature("reentry_precond", "再入场前置（止损后结构×续走）", "CARD-07", lambda k: None, 60),
     )
 }
 
@@ -499,6 +503,225 @@ def tag_trade_close(trades: list) -> int:
         db.close()
 
 
+# ── 再入场前置打标（docs/13 #12，CARD-07，trade_record 宿主，每日回填）────
+#
+# 回答 docs/13 #12 的硬前置问题：止损出场后价格是否同向续走（回到开仓价），
+# 按出场时刻趋势结构是否完好分桶。出场后 48h 路径在平仓时刻不存在，
+# 无法挂归因任务即时打标——由每日回填任务（tasks/shadow_tasks）调
+# tag_reentry_backfill 对出窗止损单补打标，宿主同为 trade_record。
+# 口径预注册（2026-10-06 锁定，事后不可回调）：
+# - 总体 = CLOSED 且 exit_reason="sl"（docs/13 #12 语义：止损出场单）
+# - 结构完好 structure_ok = 出场时三件全过：① EMA 排列（多头 e21>e55，
+#   e144 可用时加 e55>e144，空头对称）② ADX(14,1h) ≥ 20 ③ R² ≥ 0.5
+#   （止损前 48 根已收盘收盘价线性回归）；数据不可判不打标
+# - 续走（主判据）= 出场后 24h 内 signed-R MFE ≥ 0（价格回到开仓价）；
+#   value_json 另存 48h 全窗 post_path/mfe_post_r/hours_to_reentry 供离线
+#   敏感性（N=12/24/48h、阈值 0/0.5/1R），不重拉 K 线
+# - 裁决门槛：正式网 structure_ok 桶 n≥60 且 P(续走|structure_ok) ≥ 40%
+#   → #12 进入预注册回放；< 40% → #12 直接关闭
+
+REENTRY_EXIT_REASON = "sl"   # 预注册总体口径：仅止损出场单
+REENTRY_POST_H = 48          # 出场后观察窗（h）
+REENTRY_CONT_H = 24          # 主判据窗口（h）
+REENTRY_LOOKBACK_H = 350     # 结构窗回看（h；EMA144 需 ~245 根已收盘）
+REENTRY_FETCH_LIMIT = 400    # 一次拉取根数（350 结构窗 + 48 续走窗）
+REENTRY_R2_BARS = 48         # R² 回归窗（根）
+REENTRY_R2_MIN = 0.5         # R² 门槛（= 扫描 R_SQUARED_THRESHOLD 默认）
+REENTRY_ADX_MIN = 20.0       # ADX 门槛（analyze_adx 趋势酝酿语义）
+
+
+def compute_reentry_precond(klines: list[list], rec) -> Optional[dict]:
+    """CARD-07 reentry_precond：止损单出场结构快照 + 出场后同向续走重放。
+
+    klines = 截至 closed_at + REENTRY_POST_H 的已收盘 1h K 线（时间升序，
+    恰含出场前 ~350h 结构窗与出场后 48h 续走窗）。R 空间同 CARD-05/06
+    （signed-R：正向 = 对持仓有利）。返回 None = 不打标
+    （缺止损快照 / 结构数据不可判 / 出场后无路径）。
+    """
+    from app.services.strategy.ema import calc_ema
+    from app.services.strategy.swing import linear_regression
+    from app.services.strategy.technical import analyze_adx
+
+    entry = float(rec.entry_price or 0)
+    stop0 = float(getattr(rec, "stop_initial", 0) or 0)
+    if entry <= 0 or stop0 <= 0 or not klines:
+        return None
+    d = 1 if (rec.direction or "long") == "long" else -1
+    r_unit = abs(entry - stop0)
+    if r_unit <= 0:
+        return None
+
+    def r_of(price: float) -> float:
+        return d * (price - entry) / r_unit
+
+    closed_ms = int(rec.closed_at.replace(tzinfo=None).timestamp() * 1000)
+    exit_bar_open = closed_ms // 3_600_000 * 3_600_000  # 平仓所在根（该根不入任何窗口）
+    pre = [k for k in klines if int(k[0]) + 3_600_000 <= closed_ms]
+    post = [k for k in klines if int(k[0]) > exit_bar_open][:REENTRY_POST_H]
+    closes = np.array([float(k[4]) for k in pre], dtype=float)
+    # ADX(14) 最少 44 根 + EMA55 余量；无出场后路径则续走不可判
+    if len(closes) < 66 or not post:
+        return None
+
+    # ① EMA 排列（e144 不可用降级 21/55 双线，ema144_used 记录口径）
+    e21 = calc_ema(closes, 21)
+    e55 = calc_ema(closes, 55)
+    e144 = calc_ema(closes, 144)
+    if e21 is None or e55 is None:
+        return None
+    f, m = float(e21[-1]), float(e55[-1])
+    if d > 0:
+        ema_ok = f > m and (e144 is None or m > float(e144[-1]))
+    else:
+        ema_ok = f < m and (e144 is None or m < float(e144[-1]))
+    # ② ADX（analyze_adx 内部剔尾，pre 已全为已收盘根，无害）
+    adx_v = analyze_adx(pre, period=14)
+    adx = float(adx_v["adx"]) if adx_v and adx_v.get("adx") is not None else None
+    adx_ok = adx is not None and adx >= REENTRY_ADX_MIN
+    # ③ R²（近 48 根收盘线性回归）
+    win = closes[-REENTRY_R2_BARS:]
+    _slope, _icpt, r2 = linear_regression(np.arange(len(win)), win)
+    r2_ok = float(r2) >= REENTRY_R2_MIN
+    structure_ok = bool(ema_ok and adx_ok and r2_ok)
+
+    # 出场后路径（signed-R，正值 = 对持仓方向有利）与续走判定
+    post_path = [[round(r_of(float(k[2])), 4), round(r_of(float(k[3])), 4)] for k in post]
+    mfe_post_r = max(max(h, l) for h, l in post_path)
+    cont_end_ms = exit_bar_open + REENTRY_CONT_H * 3_600_000
+    hours_to_reentry = None
+    continued_24h = False
+    for k, (h_r, l_r) in zip(post, post_path):
+        if int(k[0]) > cont_end_ms:
+            break
+        if max(h_r, l_r) >= 0.0:
+            continued_24h = True
+            hours_to_reentry = round((int(k[0]) - closed_ms) / 3_600_000, 1)
+            break
+    real_r = None
+    risk = float(rec.risk_amount or 0)
+    if risk > 0:
+        real_r = round(float(rec.realized_pnl or 0) / risk, 4)
+    return {
+        "r_unit": round(r_unit, 8), "stop_initial": stop0,
+        "direction": rec.direction, "exit_reason": rec.exit_reason,
+        "real_r": real_r,
+        "structure_ok": structure_ok,
+        "bucket": "structure_ok" if structure_ok else "structure_broken",
+        "ema_ok": bool(ema_ok), "ema144_used": e144 is not None,
+        "adx": round(adx, 2) if adx is not None else None, "adx_ok": bool(adx_ok),
+        "r2": round(float(r2), 4), "r2_ok": bool(r2_ok),
+        "post_path": post_path, "mfe_post_r": round(mfe_post_r, 4),
+        "continued_24h": continued_24h, "hours_to_reentry": hours_to_reentry,
+        "continued_48h": bool(mfe_post_r >= 0.0),
+    }
+
+
+def tag_reentry_backfill(batch: int = 40, days: int = 90) -> int:
+    """CARD-07 每日回填（docs/13 #12 前置卡）：出场 48h 观察窗已过的止损单补打标。
+
+    入选（预注册总体）：CLOSED + exit_reason="sl" + closed_at ∈
+    [now-days, now-48h] + 尚无 reentry_precond 标记；每轮 ≤ batch 笔
+    （每笔 1 次 K 线请求预算）。K 线 = 截至 closed_at+48h 的最近
+    REENTRY_FETCH_LIMIT 根 1h（一次请求覆盖结构窗 + 续走窗）。
+    已标记单永不重打（出场后路径以首个 48h 窗为准）。铁律不变：
+    任何异常吞掉；结果只进 shadow_marks，不回写 TradeRecord。
+    """
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models.shadow import ShadowMark
+    from app.models.trade import TradeEvent, TradeRecord
+    from app.services.exchange_pool import ExchangePool
+
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        done = set(db.execute(
+            select(ShadowMark.ref_id).where(
+                ShadowMark.feature_key == "reentry_precond")
+        ).scalars().all())
+        rows = db.execute(
+            select(TradeRecord).where(
+                TradeRecord.status == "CLOSED",
+                TradeRecord.exit_reason == REENTRY_EXIT_REASON,
+                TradeRecord.closed_at.isnot(None),
+                TradeRecord.closed_at >= now - timedelta(days=days),
+                TradeRecord.closed_at <= now - timedelta(hours=REENTRY_POST_H),
+            ).order_by(TradeRecord.closed_at.desc())
+        ).scalars().all()
+        pending = [t for t in rows if t.id not in done][:batch]
+        if not pending:
+            return 0
+        # 初始止损快照（同 tag_trade_close 口径：OPEN 事件 detail.stop_loss）
+        events = db.execute(
+            select(TradeEvent.trade_record_id, TradeEvent.detail).where(
+                TradeEvent.trade_record_id.in_([t.id for t in pending]),
+                TradeEvent.event_type == "OPEN",
+            )
+        ).all()
+        stop_map: dict = {}
+        for tr_id, detail in events:
+            try:
+                sl = float((detail or {}).get("stop_loss") or 0)
+            except (TypeError, ValueError):
+                sl = 0.0
+            if sl > 0:
+                stop_map[tr_id] = sl
+        pool = ExchangePool()
+        tagged = 0
+        for rec in pending:
+            try:
+                si = stop_map.get(rec.id)
+                if not si:
+                    continue  # 无初始止损快照：R 空间不可算，跳过
+                rec.stop_initial = si  # compute 读此属性
+                closed_ms = int(rec.closed_at.replace(tzinfo=None).timestamp() * 1000)
+                kls = pool.get_klines_range(
+                    rec.symbol, "1h", REENTRY_FETCH_LIMIT,
+                    closed_ms + REENTRY_POST_H * 3_600_000,
+                ) or []
+                value = compute_reentry_precond(kls, rec)
+                if value is None:
+                    continue
+                decision = {
+                    "stage": "reentry_backfill",
+                    "testnet": bool(rec.testnet),
+                    "account_key": rec.account_key,
+                    "status": rec.status,
+                }
+                existing = db.execute(
+                    select(ShadowMark).where(
+                        ShadowMark.feature_key == "reentry_precond",
+                        ShadowMark.ref_type == "trade_record",
+                        ShadowMark.ref_id == rec.id,
+                    )
+                ).scalars().first()
+                if existing:
+                    existing.value_json = value
+                    existing.decision_json = decision
+                else:
+                    db.add(ShadowMark(
+                        feature_key="reentry_precond", ref_type="trade_record",
+                        ref_id=rec.id, symbol=rec.symbol,
+                        value_json=value, decision_json=decision,
+                    ))
+                db.commit()  # 逐笔提交：单笔失败回滚不拖累已打标行
+                tagged += 1
+            except Exception as e:
+                db.rollback()
+                logger.debug("reentry_backfill 影子打标失败（忽略）%s: %s",
+                             getattr(rec, "symbol", "?"), e)
+        return tagged
+    except Exception as e:
+        db.rollback()
+        logger.debug("reentry_backfill 影子回填批量失败（忽略）: %s", e)
+        return 0
+    finally:
+        db.close()
+
+
 # ── 归因与评估（docs/14 §五/§六）────────────────────────────────────────
 def _bucket_stats(rows: list) -> dict:
     """一批已归因标记 → 统计。outcome ∈ win_tp1/win_tp2/loss/expired/no_analysis/
@@ -535,6 +758,26 @@ def _trade_protect_stats(rows: list, delta_key: str) -> dict:
         "sum_delta_r": round(sum(deltas), 3),
         "avg_real_r": round(sum(real) / n, 4),
         "avg_cf_r": round(sum(cf) / n, 4),
+    }
+
+
+def _reentry_stats(rows: list) -> dict:
+    """再入场前置卡（CARD-07，docs/13 #12）统计：n / continued / cont_rate。
+
+    continued = 出场后 24h 内价格回到开仓价（signed-R MFE ≥ 0）的笔数；
+    cont_rate = continued / n（止损后同向续走条件概率的主读数）。
+    structure_ok_n 为第二前置读数（结构完好占比，docs/13 #12 预估 30-40%）；
+    bucket 本身即 structure_ok/broken 语义，胜率与反事实口径均不适用。"""
+    n = len(rows)
+    if not n:
+        return {"n": 0, "continued": 0, "cont_rate": None, "structure_ok_n": 0}
+    cont = sum(1 for r in rows if r.get("continued_24h"))
+    ok = sum(1 for r in rows if r.get("bucket") == "structure_ok")
+    return {
+        "n": n,
+        "continued": cont,
+        "cont_rate": round(cont / n, 4),
+        "structure_ok_n": ok,
     }
 
 
@@ -612,6 +855,49 @@ def build_report(db, window_days: int = 30) -> list[dict]:
                 # carry/no_arm 与测试网样本不计入
                 "decided": baseline.get("decided", 0),
                 "sufficient": baseline.get("decided", 0) >= feat.min_sample,
+            })
+            continue
+
+        # ── 再入场前置（CARD-07，docs/13 #12）：结构桶 × 续走率 ───────────
+        # 第三种宿主语义（scan_result 归因链 / CARD-05/06 反事实之外）：
+        # bucket = structure_ok/broken，读数 = 止损后 24h 同向续走条件概率。
+        # 分层同 CARD-05/06：正式网主判定组，测试网对照组不进判定。
+        if feat.card == "CARD-07":
+            prod_values: list = []
+            testnet_values: list = []
+            for m in marks:
+                v = m.value_json or {}
+                if (m.decision_json or {}).get("testnet"):
+                    testnet_values.append(v)
+                else:
+                    prod_values.append(v)
+            baseline = _reentry_stats(prod_values)
+            buckets: dict[str, list] = {}
+            for v in prod_values:
+                buckets.setdefault(v.get("bucket", "unknown"), []).append(v)
+            bucket_out = []
+            for b, rows in sorted(buckets.items()):
+                st = _reentry_stats(rows)
+                if st["n"] < 30:
+                    st["insufficient"] = True
+                bucket_out.append({"bucket": b, **st})
+            t_buckets: dict[str, int] = {}
+            for v in testnet_values:
+                b = v.get("bucket", "unknown")
+                t_buckets[b] = t_buckets.get(b, 0) + 1
+            out.append({
+                "feature": key, "name": feat.name, "card": feat.card,
+                "min_sample": feat.min_sample,
+                "window_days": window_days,
+                "baseline": baseline,
+                "buckets": bucket_out,
+                # 对照组：测试网读数（同 _reentry_stats 形状）+ 桶分布计数
+                "testnet_baseline": {
+                    **_reentry_stats(testnet_values),
+                    "buckets": dict(sorted(t_buckets.items())),
+                },
+                # 达标判定：正式网打标笔数（两桶都计入——分桶本身是读数）
+                "sufficient": baseline.get("n", 0) >= feat.min_sample,
             })
             continue
 

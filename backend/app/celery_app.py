@@ -87,6 +87,12 @@ celery_app.conf.update(
             # 结果经 /api/shadow/report 与日报附录输出；评估只统计不决策
             "schedule": crontab(minute=0, hour=8),
         },
+        "reentry-backfill": {
+            "task": "app.tasks.shadow_tasks.run_reentry_backfill_task",
+            # 每日 08:25（北京，docs/13 #12，CARD-07）：出场 48h 观察窗已过的
+            # 止损单补打标（结构×续走）；错开 shadow-evaluate 与 08:05 日报
+            "schedule": crontab(minute=25, hour=8),
+        },
         "spot-daily-check": {
             "task": "app.tasks.spot_tasks.run_spot_daily_task",
             # 现货屯币日检（docs/18 P0，仅评分推送不下单）：日K收盘后 8 分钟，错开 08:05 日报

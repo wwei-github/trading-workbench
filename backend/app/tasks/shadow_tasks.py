@@ -46,6 +46,20 @@ def shadow_report_lines(window_days: int = 30) -> list[str]:
                 diff = f"（{d:+.0f}pp）"
             parts.append(f"{b['bucket']} {wr} n={b['n']}{diff}")
         status = "✅ 达标" if r["sufficient"] else "观察中"
+        if r["card"] == "CARD-07":
+            # 再入场前置（docs/13 #12）：读数是止损后 24h 续走率，非胜率
+            parts = []
+            cr = base.get("cont_rate")
+            parts.append(f"基线续走率 {cr * 100:.0f}%（n={base['n']}）" if cr is not None
+                         else f"基线 n={base['n']}")
+            for b in r["buckets"]:
+                if b["n"] == 0:
+                    continue
+                cb = b.get("cont_rate")
+                cb_s = f"{cb * 100:.0f}%" if cb is not None else "—"
+                parts.append(f"{b['bucket']} {cb_s} n={b['n']}")
+            lines.append(f"🔬 **{r['name']}** [{status}] " + " · ".join(parts))
+            continue
         lines.append(f"🔬 **{r['name']}** [{status}] " + " · ".join(parts))
     return lines
 
@@ -86,3 +100,24 @@ def run_shadow_evaluate_task() -> dict:
         raise
     finally:
         db.close()
+
+
+@celery_app.task(name="app.tasks.shadow_tasks.run_reentry_backfill_task")
+def run_reentry_backfill_task() -> dict:
+    """每日再入场前置回填（docs/13 #12，CARD-07）：出场 48h 观察窗已过的
+    止损单补打标（出场时结构 × 出场后 24/48h 续走）。打标异常全吞
+    （影子铁律），任务仅记录运行结果。"""
+    from app.services.shadow import tag_reentry_backfill
+    from app.services.task_log import close_task, open_task
+
+    task_id = open_task("review", "再入场前置回填", trigger="scheduled")
+    try:
+        tagged = tag_reentry_backfill()
+        logger.info("再入场前置回填完成：%d 行", tagged)
+        close_task(task_id, "completed", summary=f"回填 {tagged} 行",
+                   detail={"tagged": tagged})
+        return {"tagged": tagged}
+    except Exception as e:
+        close_task(task_id, "failed", error=str(e))
+        logger.exception("再入场前置回填任务失败")
+        raise

@@ -11,7 +11,9 @@ import {
 import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { shadowApi } from '../api/shadow'
-import type { ShadowBucketStat, ShadowFeatureReport, ShadowProtectStat } from '../types'
+import type {
+  ShadowBucketStat, ShadowFeatureReport, ShadowProtectStat, ShadowReentryStat,
+} from '../types'
 
 const { Text } = Typography
 
@@ -36,6 +38,12 @@ const PROTECT_BUCKET_META: Record<string, { label: string; tone?: 'success' | 'd
   survived: { label: 'TP0后走到原出场' },
   below_gate: { label: 'TP1<1.2R 未挂TP0' },
   untouched: { label: 'TP0 未成交' },
+}
+
+// 再入场前置桶中文标签（docs/13 #12：CARD-07；unknown 回退原文）
+const REENTRY_BUCKET_META: Record<string, { label: string; tone?: 'success' | 'danger' }> = {
+  structure_ok: { label: '结构完好', tone: 'success' },
+  structure_broken: { label: '结构破坏', tone: 'danger' },
 }
 
 function pct(v: number | null | undefined): string {
@@ -208,6 +216,78 @@ function ProtectFeatureCard({ report }: { report: ShadowFeatureReport }) {
   )
 }
 
+// 再入场前置卡（CARD-07，docs/13 #12）：trade_record 宿主——回答「止损后
+// 结构完好时价格同向续走（回到开仓价）的概率」。读数是续走率 continued/n，
+// 既非胜率也非反事实 ΣΔR；分层同 CARD-05/06（正式网主判定，测试网对照）
+function ReentryFeatureCard({ report }: { report: ShadowFeatureReport }) {
+  const base = report.baseline
+  const tb = report.testnet_baseline
+
+  const columns: ColumnsType<ShadowBucketStat & Partial<ShadowReentryStat> & { key: string }> = [
+    {
+      title: '分桶', dataIndex: 'bucket', key: 'bucket', width: 150,
+      render: (v: string, r) => {
+        const meta = REENTRY_BUCKET_META[v]
+        return (
+          <Space size={4}>
+            <Text strong={!!meta?.tone} type={meta?.tone}>{meta?.label ?? v}</Text>
+            {r.insufficient && (
+              <Tooltip title="n < 30，统计意义有限，仅供参考">
+                <Tag style={{ fontSize: 11 }}>小样本</Tag>
+              </Tooltip>
+            )}
+          </Space>
+        )
+      },
+    },
+    { title: 'n', dataIndex: 'n', key: 'n', width: 70, align: 'right' },
+    { title: '续走', key: 'continued', width: 80, align: 'right',
+      render: (_: unknown, r) => <Text type="secondary">{r.continued ?? 0}</Text> },
+    { title: '续走率', key: 'rate', width: 90, align: 'right',
+      render: (_: unknown, r) => <Text strong>{pct(r.cont_rate)}</Text> },
+  ]
+
+  const rows: (ShadowBucketStat & Partial<ShadowReentryStat> & { key: string })[] = [
+    { key: '__baseline__', bucket: '基线（全部止损单）', n: base.n,
+      continued: base.continued, cont_rate: base.cont_rate },
+    ...report.buckets.map((b) => ({ ...b, key: b.bucket })),
+  ]
+
+  return (
+    <Card
+      size="small"
+      title={
+        <Space size={8}>
+          <Text strong>{report.name}</Text>
+          <Tooltip title={`预注册标准卡 ${report.card}：止损后 24h 回开仓价为「续走」。P(续走|结构完好) ≥40% 才进 #12 预注册回放，<40% 直接关闭（docs/13 #12）`}>
+            <Tag color="geekblue">{report.card}</Tag>
+          </Tooltip>
+          {report.sufficient
+            ? <Tag color="green">样本达标（{report.min_sample}）</Tag>
+            : <Tag color="orange">观察中 {base.n}/{report.min_sample}</Tag>}
+        </Space>
+      }
+      extra={<Text type="secondary" style={{ fontSize: 12 }}>近 {report.window_days} 天 · 正式网</Text>}
+    >
+      <Table
+        rowKey="key"
+        columns={columns}
+        dataSource={rows}
+        size="small"
+        pagination={false}
+        scroll={{ y: 240 }}
+        locale={{ emptyText: <Empty description="该特征暂无影子标记" /> }}
+      />
+      {tb && tb.n > 0 && (
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+          测试网对照（分层统计，不进判定）：n={tb.n} · 续走率 {pct(tb.cont_rate)}
+          {' '}· 桶：{Object.entries(tb.buckets).map(([k, n]) => `${REENTRY_BUCKET_META[k]?.label ?? k} ${n}`).join(' · ')}
+        </Text>
+      )}
+    </Card>
+  )
+}
+
 export default function ShadowPanel() {
   const [reports, setReports] = useState<ShadowFeatureReport[]>([])
   const [loading, setLoading] = useState(false)
@@ -262,7 +342,9 @@ export default function ShadowPanel() {
             {reports.map((r) => (
               r.card === 'CARD-05' || r.card === 'CARD-06'
                 ? <ProtectFeatureCard key={r.feature} report={r} />
-                : <FeatureCard key={r.feature} report={r} />
+                : r.card === 'CARD-07'
+                  ? <ReentryFeatureCard key={r.feature} report={r} />
+                  : <FeatureCard key={r.feature} report={r} />
             ))}
           </div>
         )}
