@@ -124,6 +124,11 @@ SHADOW_FEATURES: dict[str, ShadowFeature] = {
         ShadowFeature("vol_regime", "波动率状态（ATR14/ATR100）", "CARD-03", compute_vol_regime, 100),
         ShadowFeature("macd_div", "MACD 背离（缠论背驰子集）", "CARD-04", compute_macd_div, 60),
         ShadowFeature("oi_conf", "OI 确认度（24h ΔOI）", "CARD-02", compute_oi_conf_scan_stub, 60),
+        # 早期保护反事实（docs/15 §五）：trade_record 宿主，打标不走扫描侧
+        # compute 循环（由 tag_trade_close 在归因任务打标），注册仅为让
+        # build_report 输出元数据与反事实统计。min_sample = 预注册 decided 门槛
+        ShadowFeature("be_retrace", "BE@0.8R 保本反事实（A 腿）", "CARD-05", lambda k: None, 30),
+        ShadowFeature("tp0_retrace", "TP0 微止盈反事实（B 腿）", "CARD-06", lambda k: None, 60),
     )
 }
 
@@ -234,8 +239,244 @@ def tag_oi_conf(scan_results: list) -> int:
         db.close()
 
 
-# ── 归因与评估（docs/14 §五/§六）────────────────────────────────────────
+# ── 早期保护反事实打标（docs/15 §五，CARD-05/06，trade_close 宿主）────────
+#
+# 与上面四特征（开仓前打标）不同：be_retrace / tp0_retrace 是「出场管理规则」
+# 的影子——规则效果取决于持仓期价格路径，必须等平仓后对整段路径做反事实重放。
+# 宿主 = trade_record（ref_type="trade_record"），打标点挂归因任务开头
+# （tasks/review_tasks.run_ai_attribution_task，AI-Key 门之前，不依赖 LLM）。
+# 铁律不变：任何异常吞掉；结果只进 shadow_marks，不回写 TradeRecord、不进 AI。
 
+# BE@1R 巡检保本反事实参数（docs/15 §4.5 定稿 BE@0.8R）
+BE_AT_R = 0.8
+# TP0 前置微止盈反事实参数（docs/15 §4.2 定稿 0.5R/25%/gate1.2；B 腿已归档，
+# 此处按 v0 定稿参数重放——变体比较靠 value_json.path 离线重算，不重拉 K 线）
+TP0_R = 0.5
+TP0_QTY = 0.25
+TP0_GATE_R = 1.2
+_PATH_MAX_POINTS = 60      # 路径数组上限（长持仓降采样）
+
+
+def compute_early_protect(klines: list[list], rec) -> Optional[dict]:
+    """CARD-05/06 共享路径基元：对一笔已平仓交易做持仓期逐根反事实重放。
+
+    口径（docs/15 §二/§4.5）：R = |entry − 初始止损|，初始止损取 OPEN 事件
+    detail.stop_loss 快照（rec 由调用方传入已解包的 stop_initial；跟踪止损后
+    stop_loss 列是现值不可用）。klines 为持仓期已收盘 1h K 线（时间升序，
+    含开仓时刻所在的根）。
+
+    返回 dict：共享基元（r_unit/stop_initial/path/mfe_r/mae_r/tp1_r/duration_h/
+    direction/exit_reason/real_r）+ A 腿（be_retrace）+ B 腿（tp0_retrace）两组；
+    无反事实意义（缺止损快照/风险额/无K线）返回 None 不打标。
+    """
+    entry = float(rec.entry_price or 0)
+    stop0 = float(rec.stop_initial or 0)
+    risk = float(rec.risk_amount or 0)
+    qty = float(rec.qty or 0)
+    if entry <= 0 or stop0 <= 0 or risk <= 0 or qty <= 0 or not klines:
+        return None
+    d = 1 if (rec.direction or "long") == "long" else -1
+    r_unit = abs(entry - stop0)
+    if r_unit <= 0:
+        return None
+
+    def r_of(price: float) -> float:
+        return d * (price - entry) / r_unit
+
+    # 路径基元：逐根 [high_r, low_r]（对 R 空间），>48h 降采样保 ≤60 点
+    path = [[round(r_of(float(k[2])), 4), round(r_of(float(k[3])), 4)] for k in klines]
+    if len(klines) > _PATH_MAX_POINTS:
+        step = -(-len(path) // _PATH_MAX_POINTS)
+        path = path[::step]
+
+    mfe_r = max(max(h, l) for h, l in path)
+    mae_r = min(min(h, l) for h, l in path)
+    tp1 = float(rec.tp1 or 0)
+    tp1_r = r_of(tp1) if tp1 > 0 else None
+    duration_h = None
+    if rec.opened_at and rec.closed_at:
+        duration_h = round((rec.closed_at - rec.opened_at).total_seconds() / 3600, 1)
+    real_r = float(rec.realized_pnl or 0) / risk
+
+    # ── A 腿反事实（BE@BE_AT_R 巡检保本，严格口径：触线K收盘后下一根生效）──
+    armed = False
+    a_r = real_r
+    a_out = "carry"           # carry=窗口结束未触发，沿用真实出场
+    hours_to_arm = None
+    post_arm_below_entry = False
+    for i, (hi_r, lo_r) in enumerate(path):
+        hit_r = hi_r >= BE_AT_R if d > 0 else lo_r <= -BE_AT_R
+        hit_sl = lo_r <= -1.0 if d > 0 else hi_r >= 1.0
+        hit_be = lo_r <= 0.0 if d > 0 else hi_r >= 0.0
+        armed_prev = armed
+        if hit_r:
+            armed = True      # 本根收盘后巡检武装，下一根起生效
+            if hours_to_arm is None:
+                hours_to_arm = round(((i + 1) * (duration_h / len(path)) if duration_h
+                                      else (i + 1)), 1)
+        if hit_sl and not armed_prev:
+            a_r, a_out = -1.0, "loss_keep"
+            break
+        if armed_prev and hit_be:
+            a_r, a_out = 0.0, "be_exit"
+            post_arm_below_entry = True
+            break
+
+    # ── B 腿反事实（TP0 限价单挂上即守，成交即武装保本；docs/15 §4.2）──────
+    gate = tp1_r is not None and tp1_r >= TP0_GATE_R
+    tp0_r = d * TP0_R
+    tp0_hit = False
+    tp0_hit_i = -1
+    if gate:
+        for i, (hi_r, lo_r) in enumerate(path):
+            if (hi_r >= tp0_r if d > 0 else lo_r <= tp0_r):
+                tp0_hit, tp0_hit_i = True, i
+                break
+    b_r = real_r
+    b_out = "carry"
+    survived_pullback = None
+    if gate and tp0_hit:
+        # TP0 成交后：TP0 腿落袋 0.25×0.5R；剩余仓 SL=保本（entry±0，保守），
+        # 之后先触保本（be_after_tp0）或 TP1（win_after_tp0 = TP1 份额的全程收益）
+        b_r = TP0_QTY * TP0_R
+        b_out = "tp0_only"
+        for hi_r, lo_r in path[tp0_hit_i + 1:]:
+            hit_be = lo_r <= 0.0 if d > 0 else hi_r >= 0.0
+            hit_tp1 = hi_r >= tp1_r if d > 0 else lo_r <= tp1_r
+            if hit_be:
+                b_out = "be_after_tp0"  # 剩余仓 ≈0R
+                break
+            if hit_tp1:
+                b_r += (1 - TP0_QTY) * tp1_r
+                b_out = "win_after_tp0"
+                survived_pullback = True
+                break
+        if b_out == "tp0_only":
+            survived_pullback = True  # 撑到真实出场时刻未被保本扫出
+        if b_out == "be_after_tp0":
+            survived_pullback = False
+    elif gate:
+        b_out = "tp0_miss"        # 挂了但价格未到 0.5R：按真实出场（与 carry 同值）
+    else:
+        b_out = "below_gate"      # TP1 距离不足门控：不挂 TP0
+
+    # 桶判据（docs/15 §五 评估层）
+    if a_out in ("loss_keep", "be_exit") and real_r <= -0.5 and a_r >= -0.2:
+        be_bucket = "saved"
+    elif real_r > 0.05 and a_r <= 0.05:
+        be_bucket = "injured"
+    elif not armed:
+        be_bucket = "no_arm"
+    else:
+        be_bucket = "carry"
+
+    if b_out == "be_after_tp0" and real_r > 0.05:
+        tp0_bucket = "injured"    # 真实赢利被保本扫出（误伤）
+    elif b_out == "be_after_tp0" and real_r <= -0.5:
+        tp0_bucket = "protected"  # 真实亏损被保护
+    elif b_out == "win_after_tp0":
+        tp0_bucket = "survived"   # 回踩后仍走到原出场
+    elif b_out == "below_gate":
+        tp0_bucket = "below_gate"
+    else:
+        tp0_bucket = "untouched"  # tp0_only / tp0_miss / carry（无反事实变化）
+
+    return {
+        # 共享路径基元
+        "r_unit": round(r_unit, 8), "stop_initial": stop0,
+        "mfe_r": round(mfe_r, 4), "mae_r": round(mae_r, 4),
+        "tp1_r": round(tp1_r, 4) if tp1_r is not None else None,
+        "duration_h": duration_h, "direction": rec.direction,
+        "exit_reason": rec.exit_reason, "real_r": round(real_r, 4),
+        "path": path,
+        # A 腿（be_retrace）
+        "a_r": round(a_r, 4), "a_out": a_out, "armed": armed,
+        "hours_to_arm": hours_to_arm,
+        "post_arm_below_entry": post_arm_below_entry,
+        "a_delta_r": round(a_r - real_r, 4), "bucket": be_bucket,
+        # B 腿（tp0_retrace）
+        "b_r": round(b_r, 4), "b_out": b_out,
+        "tp0_hit": tp0_hit, "gate": gate,
+        "survived_pullback": survived_pullback,
+        "b_delta_r": round(b_r - real_r, 4), "bucket_tp0": tp0_bucket,
+    }
+
+
+def tag_trade_close(trades: list) -> int:
+    """trade_close 宿主打标（docs/15 §五）：对已平仓交易逐笔做早期保护反事实。
+
+    每笔交易产生两行影子标记：be_retrace（CARD-05）+ tp0_retrace（CARD-06），
+    value_json 同为 compute_early_protect 输出（path 基元共用，≈2KB/笔）。
+    K 线由调用方（归因任务）按持仓区间拉取传入；无 K 线/缺快照的交易静默跳过。
+    幂等：uq_shadow_mark 同 (feature_key, trade_record, ref_id) 覆盖更新。
+    任何异常全吞（影子铁律），返回实际落标行数。
+    """
+    if not trades:
+        return 0
+    from sqlalchemy import select
+
+    from app.models.shadow import ShadowMark
+    from app.services.exchange_pool import ExchangePool
+
+    pool = ExchangePool()
+    tagged = 0
+    db = SessionLocal()
+    try:
+        for rec in trades:
+            try:
+                # 持仓期已收盘 1h K 线（开仓时刻起，到平仓为止）
+                opened_ms = int(rec.opened_at.replace(tzinfo=None).timestamp() * 1000) \
+                    if rec.opened_at else 0
+                closed_ms = int(rec.closed_at.replace(tzinfo=None).timestamp() * 1000) - 1 \
+                    if rec.closed_at else 0
+                if opened_ms <= 0 or closed_ms <= opened_ms:
+                    continue
+                kls = pool.get_klines_range(rec.symbol, "1h", 500, closed_ms) or []
+                held = [k for k in kls if int(k[0]) >= opened_ms - 3600_000]
+                if not held:
+                    continue
+                value = compute_early_protect(held, rec)
+                if value is None:
+                    continue
+                decision = {
+                    "stage": "trade_close",
+                    "testnet": bool(rec.testnet),
+                    "account_key": rec.account_key,
+                    "status": rec.status,
+                }
+                for feat_key in ("be_retrace", "tp0_retrace"):
+                    existing = db.execute(
+                        select(ShadowMark).where(
+                            ShadowMark.feature_key == feat_key,
+                            ShadowMark.ref_type == "trade_record",
+                            ShadowMark.ref_id == rec.id,
+                        )
+                    ).scalars().first()
+                    if existing:
+                        existing.value_json = value
+                        existing.decision_json = decision
+                    else:
+                        db.add(ShadowMark(
+                            feature_key=feat_key, ref_type="trade_record",
+                            ref_id=rec.id, symbol=rec.symbol,
+                            value_json=value, decision_json=decision,
+                        ))
+                    tagged += 1
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.debug("trade_close 影子打标失败（忽略）%s: %s",
+                             getattr(rec, "symbol", "?"), e)
+        return tagged
+    except Exception as e:
+        db.rollback()
+        logger.debug("trade_close 影子打标批量失败（忽略）: %s", e)
+        return 0
+    finally:
+        db.close()
+
+
+# ── 归因与评估（docs/14 §五/§六）────────────────────────────────────────
 def _bucket_stats(rows: list) -> dict:
     """一批已归因标记 → 统计。outcome ∈ win_tp1/win_tp2/loss/expired/no_analysis/
     pending；win = win_tp1/win_tp2；R 仅 trade 宿主有。"""
@@ -249,11 +490,38 @@ def _bucket_stats(rows: list) -> dict:
     return {"n": n, "counted": counted, "win_rate": round(wins / counted, 4) if counted else None}
 
 
+def _trade_protect_stats(rows: list, delta_key: str) -> dict:
+    """早期保护特征（trade_record 宿主）分桶统计：反事实读数为主。
+
+    rows = value_json dict 列表（compute_early_protect 输出，A/B 两组字段同构）；
+    delta_key 区分特征视角（be_retrace→a_delta_r / tp0_retrace→b_delta_r）。
+    核心读数：n / decided / sum_delta_r（净改善）/ avg_real_r / avg_cf_r；
+    胜率口径在此不适用（bucket 已是 saved/injured 语义而非 outcome）。"""
+    n = len(rows)
+    if not n:
+        return {"n": 0, "decided": 0, "sum_delta_r": 0.0,
+                "avg_real_r": None, "avg_cf_r": None}
+    deltas = [float(r.get(delta_key, 0)) for r in rows]
+    real = [float(r.get("real_r", 0)) for r in rows]
+    cf = [real[i] + deltas[i] for i in range(n)]
+    # decided = 反事实改变了结局的笔数（|delta|>0.05R，即 saved+injured 合计）
+    decided = sum(1 for d in deltas if abs(d) > 0.05)
+    return {
+        "n": n,
+        "decided": decided,
+        "sum_delta_r": round(sum(deltas), 3),
+        "avg_real_r": round(sum(real) / n, 4),
+        "avg_cf_r": round(sum(cf) / n, 4),
+    }
+
+
 def build_report(db, window_days: int = 30) -> list[dict]:
     """影子评估报告（docs/14 §六）：按特征分桶 join 复盘结果统计。
 
     归因链（scan_result 宿主）：ScanResult → AIAnalysis → TradeReview.outcome；
     无 AI 分析的标记记 no_analysis（配额未进），未复盘的记 pending 下轮再看。
+    早期保护特征（be_retrace/tp0_retrace，trade_record 宿主，docs/15 §五）：
+    跳过 outcome 归因链（其 bucket 本身即 saved/injured 语义），按反事实 R 统计。
     评估不回填 marks 行（避免双写漂移）。
     """
     from datetime import datetime, timedelta
@@ -276,6 +544,37 @@ def build_report(db, window_days: int = 30) -> list[dict]:
                         "window_days": window_days, "sufficient": False,
                         "buckets": [], "baseline": {"n": 0, "counted": 0, "win_rate": None}})
             continue
+
+        # ── 早期保护特征（trade_record 宿主）：反事实统计分支 ────────────
+        if feat.card in ("CARD-05", "CARD-06"):
+            values = [m.value_json or {} for m in marks]
+            delta_key = "a_delta_r" if key == "be_retrace" else "b_delta_r"
+            bucket_key = "bucket" if key == "be_retrace" else "bucket_tp0"
+            buckets: dict[str, list] = {}
+            for v in values:
+                buckets.setdefault(v.get(bucket_key, "unknown"), []).append(v)
+            all_rows = list(values)
+            baseline = _trade_protect_stats(all_rows, delta_key)
+            bucket_out = []
+            for b, rows in sorted(buckets.items()):
+                st = _trade_protect_stats(rows, delta_key)
+                if st["n"] < 30:
+                    st["insufficient"] = True
+                bucket_out.append({"bucket": b, **st})
+            out.append({
+                "feature": key, "name": feat.name, "card": feat.card,
+                "min_sample": feat.min_sample,
+                "window_days": window_days,
+                "baseline": baseline,
+                "buckets": bucket_out,
+                # 达标判定：反事实有效样本（有 delta 事件的 saved/injured 桶计数）
+                # ——预注册卡按 decided 数（saved+injured），carry/no_arm 不算
+                "decided": baseline.get("decided", 0),
+                "sufficient": baseline.get("decided", 0) >= feat.min_sample,
+            })
+            continue
+
+        # ── 常规特征（scan_result 宿主）：outcome 归因链统计 ─────────────
         # 批量取宿主链结果：ref_id → (outcome)
         ref_ids = [m.ref_id for m in marks]
         sr_rows = db.execute(

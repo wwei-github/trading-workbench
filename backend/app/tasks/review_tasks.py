@@ -19,6 +19,7 @@ from app.models.scan import AIAnalysis, ScanResult, TradeReview
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.exchange_pool import ExchangePool
+from app.services.shadow import tag_trade_close
 from app.services.task_log import close_task, open_task
 
 logger = logging.getLogger(__name__)
@@ -312,7 +313,35 @@ def run_ai_attribution(db, pool, trader, trades: list) -> list[dict]:
 
 @celery_app.task(name="app.tasks.review_tasks.run_ai_attribution_task", max_retries=0)
 def run_ai_attribution_task():
-    """定时归因：找已平仓未归因的交易，逐笔 AI 复盘出错误标签与教训"""
+    """定时归因：找已平仓未归因的交易，逐笔 AI 复盘出错误标签与教训。
+
+    开头先跑 trade_close 影子打标（docs/15 §五，CARD-05/06 早期保护反事实，
+    AI-Key 门之前执行——打标只依赖 K 线不依赖 LLM，AI 未配置时也要积累）；
+    打标与归因共用同一批未归因交易查询，但打标幂等、不受归因结果影响。"""
+    db = SessionLocal()
+    try:
+        # ── 影子打标先行（异常全吞，绝不影响归因）────────────────────────
+        try:
+            pending_for_shadow = db.execute(
+                select(TradeRecord)
+                .where(
+                    TradeRecord.status == "CLOSED",
+                    TradeRecord.exit_reason.isnot(None),
+                    TradeRecord.attributed_at.is_(None),
+                )
+                .order_by(TradeRecord.closed_at.desc())
+                .limit(ATTRIBUTION_BATCH)
+            ).scalars().all()
+            if pending_for_shadow:
+                tagged = tag_trade_close(pending_for_shadow)
+                if tagged:
+                    logger.info("trade_close 影子打标 %d 行（%d 笔交易）",
+                                tagged, len(pending_for_shadow))
+        except Exception as e:
+            logger.debug("trade_close 影子打标批量异常（忽略）: %s", e)
+    finally:
+        db.close()
+
     if not settings.AI_API_KEY:
         return  # AI 未配置，静默跳过
     db = SessionLocal()
