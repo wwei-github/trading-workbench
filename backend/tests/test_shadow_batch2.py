@@ -42,7 +42,16 @@ from app.services.strategy.technical import analyze_macd, analyze_macd_div  # no
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    """固定配置基线 + 清 OI 快照环（模块级进程内状态跨用例污染）"""
+    """固定配置基线 + 环函数换 dict 替身（生产为 Redis zset，测试不依赖外部
+    Redis）+ 清 OI 快照环（模块级状态跨用例污染）"""
+    def _add(sym, ts, oi):
+        shadow_mod._OI_RING.setdefault(sym, []).append((ts, oi))
+
+    def _window(sym, lo, hi):
+        return [p for p in shadow_mod._OI_RING.get(sym, []) if lo <= p[0] <= hi]
+
+    monkeypatch.setattr(shadow_mod, "_ring_add", _add)
+    monkeypatch.setattr(shadow_mod, "_ring_window", _window)
     monkeypatch.setattr(settings, "AI_API_KEY", "test-key")
     shadow_mod._OI_RING.clear()
     yield

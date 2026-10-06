@@ -141,13 +141,50 @@ SHADOW_FEATURES: dict[str, ShadowFeature] = {
 
 OI_CONF_ENABLED = True  # 代码开关（§九：特征启停改代码不进配置页；紧急置 False 停打）
 
-# 24h OI 快照环（进程内，照 market_data β 缓存模式）：symbol → [(ts, oi), ...]。
-# 只在 AI 配额轮追加（每小时 ≤ 配额数个 symbol）；保留 48h 供跨日 24h 前值比较
-_OI_RING: dict[str, list[tuple[float, float]]] = {}
+# 24h OI 快照环：Redis zset（key=shadow:oi:{symbol}，score=ts，member="ts|oi"）。
+# 只在 AI 配额轮追加（每小时 ≤ 配额数个 symbol）；保留 48h / 48 条供跨日 24h 前值
+# 比较。必须跨进程共享——worker --concurrency=10 的 prefork 子进程各持独立内存，
+# 进程内环会让同一币种 24h 前后的快照几乎必然落进不同子进程 → 永远凑不出前值
+# （2026-10-06 修复：上线以来零打标的根因）。broker 同实例，前缀隔离不冲突。
+_OI_RING: dict[str, list[tuple[float, float]]] = {}  # 测试替身用 dict 环（测试 monkeypatch 环函数）
 _OI_RING_TTL_S = 48 * 3600
+_OI_RING_MAXLEN = 48
 # 24h 前值容差窗口：定时扫描每小时一轮，取距 now-24h 最近的快照，
 # 落在 [18h, 30h] 内才有效（漏扫几轮仍可比，节奏漂移过大不可比）
 _OI_PREV_WINDOW_S = (18 * 3600, 30 * 3600)
+
+_oi_redis_client = None
+
+
+def _oi_redis():
+    """惰性单例 Redis 客户端（broker 同实例）。子进程首次打标时才建立连接，
+    不存在 fork 继承 socket 问题（对比 engine.dispose 的 fork 教训）。"""
+    global _oi_redis_client
+    if _oi_redis_client is None:
+        import redis
+
+        from app.config import settings
+
+        _oi_redis_client = redis.Redis.from_url(
+            settings.CELERY_BROKER_URL, decode_responses=True)
+    return _oi_redis_client
+
+
+def _ring_add(sym: str, ts: float, oi: float) -> None:
+    """快照入环：zadd + TTL 清理 + 条数上限，pipeline 原子执行。"""
+    rds = _oi_redis()
+    key = f"shadow:oi:{sym}"
+    pipe = rds.pipeline()
+    pipe.zadd(key, {f"{ts:.6f}|{oi:.12g}": ts})
+    pipe.zremrangebyscore(key, "-inf", ts - _OI_RING_TTL_S)
+    pipe.zremrangebyrank(key, 0, -(_OI_RING_MAXLEN + 1))
+    pipe.execute()
+
+
+def _ring_window(sym: str, lo: float, hi: float) -> list[tuple[float, float]]:
+    """取环内 [lo, hi] 时间窗快照 [(ts, oi), ...]，ts 升序。"""
+    out = _oi_redis().zrangebyscore(f"shadow:oi:{sym}", lo, hi, withscores=True)
+    return [(float(m.split("|")[0]), float(m.split("|")[1])) for m, _s in out]
 
 
 def tag_oi_conf(scan_results: list) -> int:
@@ -191,16 +228,14 @@ def tag_oi_conf(scan_results: list) -> int:
             if sym not in oi_now_map:
                 continue
             oi_now = oi_now_map[sym]
-            ring = _OI_RING.setdefault(sym, [])
             lo, hi = now - _OI_PREV_WINDOW_S[1], now - _OI_PREV_WINDOW_S[0]
-            window = [p for p in ring if lo <= p[0] <= hi]
+            window = _ring_window(sym, lo, hi)
             prev = (
                 min(window, key=lambda p: abs(p[0] - (now - 86400)))
                 if window else None
             )
-            # 快照入环（无论是否打标），TTL 清理 + 条数上限双保险
-            ring.append((now, oi_now))
-            _OI_RING[sym] = [p for p in ring if p[0] >= now - _OI_RING_TTL_S][-48:]
+            # 快照入环（无论是否打标），TTL 清理与条数上限在环函数内消化
+            _ring_add(sym, now, oi_now)
 
             if prev is None or prev[1] <= 0:
                 continue  # 无 24h 前值：先存快照，本轮不打标
