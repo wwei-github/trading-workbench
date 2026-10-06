@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app.models  # noqa: E402,F401
 from app.database import Base  # noqa: E402
 from app.models.shadow import ShadowMark  # noqa: E402
-from app.models.trade import TradeRecord  # noqa: E402
+from app.models.trade import TradeEvent, TradeRecord  # noqa: E402
 from app.services import shadow as shadow_mod  # noqa: E402
 from app.services.shadow import compute_early_protect, tag_trade_close  # noqa: E402
 
@@ -237,6 +237,14 @@ def test_b_leg_tp0_miss():
 # ── 4. tag_trade_close ────────────────────────────────────────────────
 
 
+def _add_open_event(s, trade_id: uuid.UUID, stop_loss: float):
+    """生产口径：OPEN 事件 detail.stop_loss 快照（tag_trade_close 从这里解包）"""
+    s.add(TradeEvent(
+        trade_record_id=trade_id, event_type="OPEN",
+        detail={"stop_loss": stop_loss},
+    ))
+
+
 @pytest.fixture()
 def shadow_db(monkeypatch):
     engine = create_engine(
@@ -250,6 +258,7 @@ def shadow_db(monkeypatch):
     # tag_trade_close 内 SessionLocal 是函数内 import（app.database），一并 patch
     from app import database as db_mod
     monkeypatch.setattr(db_mod, "SessionLocal", maker, raising=False)
+    # 初始止损快照走生产口径：测试插入 TradeEvent OPEN 事件（_add_open_event）
     return maker
 
 
@@ -284,13 +293,11 @@ def test_tag_trade_close_two_rows_and_idempotent(shadow_db, monkeypatch):
         opened_at=datetime(2026, 10, 1, 0, 0), closed_at=datetime(2026, 10, 1, 4, 0),
         testnet=True,
     ))
+    _add_open_event(s, tid, 95.0)
     s.commit()
     rec = s.get(TradeRecord, tid)
     s.close()
 
-    # rec.stop_initial 不在模型列上——compute 读 rec.stop_initial，
-    # tag_trade_close 从 TradeEvent OPEN 快照补（测试里直接挂属性）
-    rec.stop_initial = 95.0
     n = tag_trade_close([rec])
     assert n == 2
 
@@ -328,13 +335,14 @@ def test_tag_trade_close_swallows_errors(shadow_db, monkeypatch):
             opened_at=datetime(2026, 10, 1, 0, 0), closed_at=datetime(2026, 10, 1, 4, 0),
             testnet=True,
         ))
+    # 生产口径：有 OPEN 事件快照才打标——NOSNAPUSDT 无事件（无快照）→ 跳过
+    _add_open_event(s, t1, 95.0)
+    _add_open_event(s, t2, 95.0)
     s.commit()
     recs = [s.get(TradeRecord, t) for t in (t1, t2, t3)]
     s.close()
-    recs[1].stop_initial = 95.0
-    recs[2].stop_initial = None  # 无快照 → compute None → 跳过
     n = tag_trade_close(recs)
-    assert n == 2  # 仅 OKUSDT 两行
+    assert n == 2  # 仅 OKUSDT 两行（BOOM 拉K线炸被吞；NOSNAP 无快照跳过）
 
 
 # ── 5. build_report 早期保护分支 ──────────────────────────────────────

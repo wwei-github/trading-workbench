@@ -260,17 +260,17 @@ _PATH_MAX_POINTS = 60      # 路径数组上限（长持仓降采样）
 def compute_early_protect(klines: list[list], rec) -> Optional[dict]:
     """CARD-05/06 共享路径基元：对一笔已平仓交易做持仓期逐根反事实重放。
 
-    口径（docs/15 §二/§4.5）：R = |entry − 初始止损|，初始止损取 OPEN 事件
-    detail.stop_loss 快照（rec 由调用方传入已解包的 stop_initial；跟踪止损后
-    stop_loss 列是现值不可用）。klines 为持仓期已收盘 1h K 线（时间升序，
-    含开仓时刻所在的根）。
+    口径（docs/15 §二/§4.5）：R = |entry − 初始止损|，初始止损由调用方解包后
+    以 rec.stop_initial 传入（TradeRecord.stop_loss 列是跟踪止损后的现值，
+    不可用；正确来源 = OPEN 事件 detail.stop_loss 快照，见 tag_trade_close）。
+    klines 为持仓期已收盘 1h K 线（时间升序，含开仓时刻所在的根）。
 
     返回 dict：共享基元（r_unit/stop_initial/path/mfe_r/mae_r/tp1_r/duration_h/
     direction/exit_reason/real_r）+ A 腿（be_retrace）+ B 腿（tp0_retrace）两组；
     无反事实意义（缺止损快照/风险额/无K线）返回 None 不打标。
     """
     entry = float(rec.entry_price or 0)
-    stop0 = float(rec.stop_initial or 0)
+    stop0 = float(getattr(rec, "stop_initial", 0) or 0)
     risk = float(rec.risk_amount or 0)
     qty = float(rec.qty or 0)
     if entry <= 0 or stop0 <= 0 or risk <= 0 or qty <= 0 or not klines:
@@ -423,8 +423,30 @@ def tag_trade_close(trades: list) -> int:
     tagged = 0
     db = SessionLocal()
     try:
+        # 初始止损快照（docs/15 口径）：OPEN 事件 detail.stop_loss——
+        # stop_loss 列是跟踪止损后的现值不可用；批量一次查出避免逐笔查事件表
+        trade_ids = [t.id for t in trades]
+        from app.models.trade import TradeEvent
+        open_events = db.execute(
+            select(TradeEvent.trade_record_id, TradeEvent.detail)
+            .where(
+                TradeEvent.trade_record_id.in_(trade_ids),
+                TradeEvent.event_type == "OPEN",
+            )
+        ).all()
+        stop_map: dict = {}
+        for tr_id, detail in open_events:
+            try:
+                sl = float((detail or {}).get("stop_loss") or 0)
+            except (TypeError, ValueError):
+                sl = 0.0
+            if sl > 0:
+                stop_map[tr_id] = sl
         for rec in trades:
             try:
+                si = stop_map.get(rec.id)
+                if si:
+                    rec.stop_initial = si  # compute 读此属性（仅快照有值时挂）
                 # 持仓期已收盘 1h K 线（开仓时刻起，到平仓为止）
                 opened_ms = int(rec.opened_at.replace(tzinfo=None).timestamp() * 1000) \
                     if rec.opened_at else 0
