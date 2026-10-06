@@ -758,12 +758,21 @@ export interface MarketOverview {
 // ===== 影子模式（docs/14，2026-10-04：只计算+打标+记录，不参与决策）=====
 
 // 影子单桶统计（n=标记数；counted=有效归因数 win/loss；win_rate 基于 counted）
+// CARD-05/06（反事实口径）没有 counted/win_rate，改用 decided/sum_delta_r 组
 export interface ShadowBucketStat {
   bucket: string
   n: number
-  counted: number
-  win_rate: number | null
+  counted?: number
+  win_rate?: number | null
   insufficient?: boolean // n < 30：样本不足，仅供参考
+}
+
+// 早期保护反事实统计（docs/15 §五：CARD-05/06，trade_record 宿主）
+export interface ShadowProtectStat {
+  decided: number // |ΔR|>0.05R 的笔数（saved+injured，预注册判定基数）
+  sum_delta_r: number // 净改善 ΣΔR（正=规则救回多于误伤）
+  avg_real_r: number | null // 平均真实收益（R）
+  avg_cf_r: number | null // 平均反事实收益（R）
 }
 
 // 单特征影子评估报告（baseline = 全部桶合计）
@@ -773,7 +782,10 @@ export interface ShadowFeatureReport {
   card: string // 预注册标准卡（docs/14 §七：CARD-01 等）
   min_sample: number // 达标所需最小有效归因样本
   window_days: number
-  baseline: { n: number; counted: number; win_rate: number | null }
-  buckets: ShadowBucketStat[]
+  baseline: { n: number; counted?: number; win_rate?: number | null } & Partial<ShadowProtectStat>
+  buckets: (ShadowBucketStat & Partial<ShadowProtectStat>)[]
+  // CARD-05/06 专用：测试网对照组（分层统计，不进判定）
+  testnet_baseline?: ShadowProtectStat & { n: number; buckets: Record<string, number> }
+  decided?: number // CARD-05/06：正式网 decided（= baseline.decided）
   sufficient: boolean // 有效归因样本 ≥ min_sample（达标 ≠ 升格，升格走人工流程）
 }

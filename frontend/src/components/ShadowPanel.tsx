@@ -11,7 +11,7 @@ import {
 import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { shadowApi } from '../api/shadow'
-import type { ShadowBucketStat, ShadowFeatureReport } from '../types'
+import type { ShadowBucketStat, ShadowFeatureReport, ShadowProtectStat } from '../types'
 
 const { Text } = Typography
 
@@ -26,8 +26,34 @@ const BUCKET_META: Record<string, string> = {
 }
 const CONTROL_BUCKETS = new Set(['confirm', 'normal']) // 对照桶（非信号桶）
 
+// 早期保护桶中文标签（docs/15 §五：CARD-05 A腿 / CARD-06 B腿；unknown 回退原文）
+const PROTECT_BUCKET_META: Record<string, { label: string; tone?: 'success' | 'danger' }> = {
+  saved: { label: '真亏→保本救回', tone: 'success' },
+  injured: { label: '真赢→被扫出', tone: 'danger' },
+  no_arm: { label: '未武装（MFE<0.8R）' },
+  carry: { label: '武装未回踩' },
+  protected: { label: '真亏→TP0救回', tone: 'success' },
+  survived: { label: 'TP0后走到原出场' },
+  below_gate: { label: 'TP1<1.2R 未挂TP0' },
+  untouched: { label: 'TP0 未成交' },
+}
+
 function pct(v: number | null | undefined): string {
   return v === null || v === undefined ? '—' : `${(v * 100).toFixed(0)}%`
+}
+
+function rStr(v: number | null | undefined): string {
+  return v === null || v === undefined ? '—' : v.toFixed(2)
+}
+
+function deltaR(v: number | null | undefined) {
+  if (v === null || v === undefined) return <Text type="secondary">—</Text>
+  if (Math.abs(v) < 0.005) return <Text type="secondary">0.00R</Text>
+  return (
+    <Text type={v > 0 ? 'success' : 'danger'}>
+      {v > 0 ? '+' : ''}{v.toFixed(2)}R
+    </Text>
+  )
 }
 
 function FeatureCard({ report }: { report: ShadowFeatureReport }) {
@@ -56,8 +82,9 @@ function FeatureCard({ report }: { report: ShadowFeatureReport }) {
     {
       title: 'vs 基线', key: 'diff', width: 90, align: 'right',
       render: (_: unknown, r) => {
-        if (r.bucket === '__baseline__' || r.win_rate === null || base.win_rate === null) return '—'
-        const d = (r.win_rate - base.win_rate) * 100
+        // ?? null 兜底 undefined：CARD-05/06 无 win_rate 字段时不得算出 NaNpp
+        if (r.key === '__baseline__' || (r.win_rate ?? null) === null || (base.win_rate ?? null) === null) return '—'
+        const d = ((r.win_rate ?? 0) - (base.win_rate ?? 0)) * 100
         if (Math.abs(d) < 0.5) return <Text type="secondary">±0pp</Text>
         return (
           <Text type={d > 0 ? 'success' : 'danger'}>
@@ -98,6 +125,85 @@ function FeatureCard({ report }: { report: ShadowFeatureReport }) {
         scroll={{ y: 240 }}
         locale={{ emptyText: <Empty description="该特征暂无影子标记" /> }}
       />
+    </Card>
+  )
+}
+
+// 早期保护反事实卡（CARD-05/06，docs/15 §五）：trade_record 宿主，
+// 无胜率口径——读数是反事实重放的 ΣΔR / decided，另附测试网对照组（分层不进判定）
+function ProtectFeatureCard({ report }: { report: ShadowFeatureReport }) {
+  const base = report.baseline
+  const decided = report.decided ?? base.decided ?? 0
+  const tb = report.testnet_baseline
+
+  const columns: ColumnsType<ShadowBucketStat & Partial<ShadowProtectStat> & { key: string }> = [
+    {
+      title: '分桶', dataIndex: 'bucket', key: 'bucket', width: 190,
+      render: (v: string, r) => {
+        const meta = PROTECT_BUCKET_META[v]
+        return (
+          <Space size={4}>
+            <Text strong={!!meta?.tone} type={meta?.tone}>{meta?.label ?? v}</Text>
+            {r.insufficient && (
+              <Tooltip title="n < 30，统计意义有限，仅供参考">
+                <Tag style={{ fontSize: 11 }}>小样本</Tag>
+              </Tooltip>
+            )}
+          </Space>
+        )
+      },
+    },
+    { title: 'n', dataIndex: 'n', key: 'n', width: 70, align: 'right' },
+    { title: 'decided', key: 'decided', width: 80, align: 'right',
+      render: (_: unknown, r) => <Text type="secondary">{r.decided ?? 0}</Text> },
+    { title: 'ΣΔR', key: 'delta', width: 90, align: 'right',
+      render: (_: unknown, r) => deltaR(r.sum_delta_r) },
+    { title: 'real→cf（R）', key: 'rcf', width: 110, align: 'right',
+      render: (_: unknown, r) => (
+        <Text type="secondary">{rStr(r.avg_real_r)} → {rStr(r.avg_cf_r)}</Text>
+      ) },
+  ]
+
+  const rows: (ShadowBucketStat & Partial<ShadowProtectStat> & { key: string })[] = [
+    {
+      key: '__baseline__', bucket: '基线（全部合计）', n: base.n,
+      decided: base.decided, sum_delta_r: base.sum_delta_r,
+      avg_real_r: base.avg_real_r, avg_cf_r: base.avg_cf_r,
+    },
+    ...report.buckets.map((b) => ({ ...b, key: b.bucket })),
+  ]
+
+  return (
+    <Card
+      size="small"
+      title={
+        <Space size={8}>
+          <Text strong>{report.name}</Text>
+          <Tooltip title={`预注册标准卡 ${report.card}：反事实重放口径（docs/15 §五）——ΣΔR>0 且 saved:injured 比达标才可升格`}>
+            <Tag color="geekblue">{report.card}</Tag>
+          </Tooltip>
+          {report.sufficient
+            ? <Tag color="green">样本达标（{report.min_sample}）</Tag>
+            : <Tag color="orange">观察中 {decided}/{report.min_sample}</Tag>}
+        </Space>
+      }
+      extra={<Text type="secondary" style={{ fontSize: 12 }}>近 {report.window_days} 天 · 正式网</Text>}
+    >
+      <Table
+        rowKey="key"
+        columns={columns}
+        dataSource={rows}
+        size="small"
+        pagination={false}
+        scroll={{ y: 240 }}
+        locale={{ emptyText: <Empty description="该特征暂无影子标记" /> }}
+      />
+      {tb && tb.n > 0 && (
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+          测试网对照（分层统计，不进判定）：n={tb.n} · decided={tb.decided} · ΣΔR={rStr(tb.sum_delta_r)}R
+          {' '}· 桶：{Object.entries(tb.buckets).map(([k, n]) => `${PROTECT_BUCKET_META[k]?.label ?? k} ${n}`).join(' · ')}
+        </Text>
+      )}
     </Card>
   )
 }
@@ -153,7 +259,11 @@ export default function ShadowPanel() {
           />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {reports.map((r) => <FeatureCard key={r.feature} report={r} />)}
+            {reports.map((r) => (
+              r.card === 'CARD-05' || r.card === 'CARD-06'
+                ? <ProtectFeatureCard key={r.feature} report={r} />
+                : <FeatureCard key={r.feature} report={r} />
+            ))}
           </div>
         )}
       </Spin>
