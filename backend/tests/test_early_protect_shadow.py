@@ -349,9 +349,11 @@ def test_tag_trade_close_swallows_errors(shadow_db, monkeypatch):
 
 
 def test_build_report_early_protect(shadow_db, monkeypatch):
-    """CARD-05/06 分支：跳过 outcome 链、反事实统计、decided 达标判定"""
+    """CARD-05/06 分层统计（docs/15 §5.3）：正式网为主判定组，
+    测试网单独成组（testnet_baseline），不进 decided/sufficient"""
     maker = shadow_db
     s = maker()
+    # 正式网 4 笔（主判定组）
     for i in range(4):
         tid = uuid.uuid4()
         s.add(TradeRecord(
@@ -359,7 +361,7 @@ def test_build_report_early_protect(shadow_db, monkeypatch):
             qty=10.0, risk_amount=100.0, stop_loss=95.0,
             status="CLOSED", exit_reason="sl", realized_pnl=-55.0,
             opened_at=datetime(2026, 10, 1, 0, 0), closed_at=datetime(2026, 10, 1, 4, 0),
-            testnet=True,
+            testnet=False,
         ))
         value = {
             "real_r": -0.55, "a_r": 0.0, "a_delta_r": 0.55, "bucket": "saved",
@@ -369,6 +371,26 @@ def test_build_report_early_protect(shadow_db, monkeypatch):
             s.add(ShadowMark(
                 feature_key=fk, ref_type="trade_record", ref_id=tid,
                 symbol=f"S{i}USDT", value_json=value,
+                decision_json={"stage": "trade_close", "testnet": False},
+            ))
+    # 测试网 2 笔（对照组：真实赢家被误伤形态）
+    for i in range(2):
+        tid = uuid.uuid4()
+        s.add(TradeRecord(
+            id=tid, symbol=f"T{i}USDT", direction="long", entry_price=100.0,
+            qty=10.0, risk_amount=100.0, stop_loss=95.0,
+            status="CLOSED", exit_reason="tp1_trail", realized_pnl=60.0,
+            opened_at=datetime(2026, 10, 1, 0, 0), closed_at=datetime(2026, 10, 1, 4, 0),
+            testnet=True,
+        ))
+        value = {
+            "real_r": 0.6, "a_r": 0.0, "a_delta_r": -0.6, "bucket": "injured",
+            "b_r": 0.125, "b_delta_r": -0.475, "bucket_tp0": "protected",
+        }
+        for fk in ("be_retrace", "tp0_retrace"):
+            s.add(ShadowMark(
+                feature_key=fk, ref_type="trade_record", ref_id=tid,
+                symbol=f"T{i}USDT", value_json=value,
                 decision_json={"stage": "trade_close", "testnet": True},
             ))
     s.commit()
@@ -378,16 +400,23 @@ def test_build_report_early_protect(shadow_db, monkeypatch):
     by = {r["feature"]: r for r in report}
     be = by["be_retrace"]
     assert be["card"] == "CARD-05" and be["min_sample"] == 30
+    # 主判定组 = 正式网：测试网样本不进 baseline/decided
     assert be["baseline"]["n"] == 4 and be["baseline"]["decided"] == 4
     assert be["baseline"]["sum_delta_r"] == pytest.approx(2.2, abs=0.01)
     assert be["baseline"]["avg_cf_r"] == pytest.approx(0.0, abs=0.01)
     assert be["sufficient"] is False  # 4 < 30
+    # 对照组：测试网读数只进 testnet_baseline（环境差异证据）
+    assert be["testnet_baseline"]["n"] == 2 and be["testnet_baseline"]["decided"] == 2
+    assert be["testnet_baseline"]["sum_delta_r"] == pytest.approx(-1.2, abs=0.01)
+    assert be["testnet_baseline"]["buckets"] == {"injured": 2}
     buckets = {b["bucket"]: b for b in be["buckets"]}
     assert buckets["saved"]["n"] == 4 and buckets["saved"]["sum_delta_r"] > 0
+    assert "injured" not in buckets  # 测试网桶不混进主分组
 
     tp0 = by["tp0_retrace"]
     assert tp0["card"] == "CARD-06"
     assert tp0["baseline"]["sum_delta_r"] == pytest.approx(2.7, abs=0.01)
+    assert tp0["testnet_baseline"]["buckets"] == {"protected": 2}
 
 
 # ── 6. 主线隔离 ───────────────────────────────────────────────────────

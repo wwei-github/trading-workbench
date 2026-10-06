@@ -570,28 +570,46 @@ def build_report(db, window_days: int = 30) -> list[dict]:
 
         # ── 早期保护特征（trade_record 宿主）：反事实统计分支 ────────────
         if feat.card in ("CARD-05", "CARD-06"):
-            values = [m.value_json or {} for m in marks]
+            # 分层口径（docs/15 §5.3）：正式网为主判定组（decided/sufficient 基数），
+            # 测试网单独成组——两网人群结构差异大（测试网首轮 77 笔以赢家为主，
+            # 全量混算会把赢家误伤成本错记进正式网口径），测试网只作环境差异证据
+            prod_values: list = []
+            testnet_values: list = []
+            for m in marks:
+                v = m.value_json or {}
+                if (m.decision_json or {}).get("testnet"):
+                    testnet_values.append(v)
+                else:
+                    prod_values.append(v)
             delta_key = "a_delta_r" if key == "be_retrace" else "b_delta_r"
             bucket_key = "bucket" if key == "be_retrace" else "bucket_tp0"
+            baseline = _trade_protect_stats(prod_values, delta_key)
             buckets: dict[str, list] = {}
-            for v in values:
+            for v in prod_values:
                 buckets.setdefault(v.get(bucket_key, "unknown"), []).append(v)
-            all_rows = list(values)
-            baseline = _trade_protect_stats(all_rows, delta_key)
             bucket_out = []
             for b, rows in sorted(buckets.items()):
                 st = _trade_protect_stats(rows, delta_key)
                 if st["n"] < 30:
                     st["insufficient"] = True
                 bucket_out.append({"bucket": b, **st})
+            t_buckets: dict[str, int] = {}
+            for v in testnet_values:
+                b = v.get(bucket_key, "unknown")
+                t_buckets[b] = t_buckets.get(b, 0) + 1
             out.append({
                 "feature": key, "name": feat.name, "card": feat.card,
                 "min_sample": feat.min_sample,
                 "window_days": window_days,
                 "baseline": baseline,
                 "buckets": bucket_out,
-                # 达标判定：反事实有效样本（有 delta 事件的 saved/injured 桶计数）
-                # ——预注册卡按 decided 数（saved+injured），carry/no_arm 不算
+                # 对照组：测试网读数 + 桶分布计数，不进判定
+                "testnet_baseline": {
+                    **_trade_protect_stats(testnet_values, delta_key),
+                    "buckets": dict(sorted(t_buckets.items())),
+                },
+                # 达标判定：预注册卡按正式网 decided 数（saved+injured），
+                # carry/no_arm 与测试网样本不计入
                 "decided": baseline.get("decided", 0),
                 "sufficient": baseline.get("decided", 0) >= feat.min_sample,
             })
