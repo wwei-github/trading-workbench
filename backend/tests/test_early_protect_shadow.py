@@ -247,6 +247,9 @@ def shadow_db(monkeypatch):
     Base.metadata.create_all(engine)
     maker = sessionmaker(bind=engine)
     monkeypatch.setattr(shadow_mod, "SessionLocal", maker, raising=False)
+    # tag_trade_close 内 SessionLocal 是函数内 import（app.database），一并 patch
+    from app import database as db_mod
+    monkeypatch.setattr(db_mod, "SessionLocal", maker, raising=False)
     return maker
 
 
