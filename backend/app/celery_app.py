@@ -36,6 +36,7 @@ celery_app = Celery(
         "app.tasks.daily_report",
         "app.tasks.spot_tasks",
         "app.tasks.shadow_tasks",
+        "app.tasks.backtest_tasks",
     ],
 )
 
