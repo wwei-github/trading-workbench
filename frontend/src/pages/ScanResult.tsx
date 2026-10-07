@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react'
-import { Card, Row, Col, Button, Space, Tabs, message } from 'antd'
+import { useEffect, useRef, useState } from 'react'
+import { Card, Row, Col, Button, Space, Tabs, Segmented, message } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useTabMemory } from '../utils/tabMemory'
 import ScanStatus from '../components/ScanStatus'
@@ -25,6 +25,7 @@ import FundAnalysisPanel from '../components/FundAnalysisPanel'
 import ColorSchemeToggle from '../components/ColorSchemeToggle'
 import SpotOverviewPanel from '../components/SpotOverviewPanel'
 import SpotBacktestPanel from '../components/SpotBacktestPanel'
+import FuturesBacktestPanel from '../components/FuturesBacktestPanel'
 import SpotLogsPanel from '../components/SpotLogsPanel'
 import SpotHistoryPanel from '../components/SpotHistoryPanel'
 import SpotSettingsPanel from '../components/SpotSettingsPanel'
@@ -230,6 +231,8 @@ export default function ScanResult({ mode }: ScanResultProps) {
   ]
 
   // ── 现货 Tabs（docs/18：持仓总览 / 回测 / 历史记录 / 策略配置）──
+  // 回测 tab：现货/合约双引擎切换（docs/16 P-06 合约回测上线）
+  const [backtestEngine, setBacktestEngine] = useState<'spot' | 'futures'>('spot')
   const spotItems = [
     {
       key: 'overview',
@@ -239,7 +242,17 @@ export default function ScanResult({ mode }: ScanResultProps) {
     {
       key: 'backtest',
       label: '回测',
-      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><SpotBacktestPanel /></div>,
+      children: (
+        <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <Segmented
+            value={backtestEngine}
+            onChange={(v) => setBacktestEngine(v as 'spot' | 'futures')}
+            options={[{ value: 'spot', label: '现货回测' }, { value: 'futures', label: '合约回测' }]}
+            style={{ alignSelf: 'flex-start' }}
+          />
+          {backtestEngine === 'spot' ? <SpotBacktestPanel /> : <FuturesBacktestPanel />}
+        </div>
+      ),
     },
     {
       key: 'history',

@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     NEW_COIN_COOLDOWN_DAYS: int = 14   # 新币冷静期（天）：上市未满 N 天不进扫描（0=关闭），
                                        # scan_filters.new_coin_cooldown_days 可覆盖
 
+    # 合约回测（docs/16 P-06）：单任务规模上限（防误配拖垮 worker 与交易所限速）
+    BACKTEST_MAX_SYMBOLS: int = 50     # 单任务币种数上限（源B 每币一次全段拉取）
+    BACKTEST_MAX_DAYS: int = 90        # 单任务回看天数上限
+
     # 市场环境注入（docs/24 A4①）：AI 事实包（P0 单次调用管线）追加本币资金费率
     # 与 BTC 状态摘要——系统提示词要求"勿臆测"，普跌日无环境数据 AI 只能凭本币
     # 指标判断；任一数据源失败静默降级为不注入

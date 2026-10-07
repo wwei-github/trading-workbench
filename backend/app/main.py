@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import (
+    backtest_router,
     health_router,
     market_router,
     ops_router,
@@ -82,6 +83,7 @@ app.include_router(watchlist_router)
 app.include_router(trades_router)
 app.include_router(ops_router)
 app.include_router(spot_router)  # 现货屯币（docs/18，独立模块）
+app.include_router(backtest_router)  # 合约回测（docs/16 P-06，独立模块）
 app.include_router(tactics_router)  # 战法（2026-10-02，仅借鉴标注不拦截）
 app.include_router(shadow_router)  # 影子模式评估报告（docs/14，只读不决策）
 
