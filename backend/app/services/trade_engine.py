@@ -1926,6 +1926,10 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
             # 零额外交易所请求；交易所为真相
             unrealized = float(pos.get("unrealized_pnl") or 0)
             rec.unrealized_pnl = round(unrealized, 6)
+            # 强平价快照（P-09，2026-10-07）：mark price 流爆仓距离预警的数据源
+            # （巡检顺带落库零额外请求；事件流 refresh_mark_pnl 按此计算距离）
+            if pos.get("liquidation_price"):
+                rec.raw = {**(rec.raw or {}), "liq_price": float(pos["liquidation_price"])}
             total_pnl = float(rec.realized_pnl or 0) + unrealized
             # 盈亏峰值跟踪（2026-09-26）：浮盈回撤 ≥0.6R 触发诊断的参照（position_advisor）
             if total_pnl > float(rec.peak_total_pnl or 0):

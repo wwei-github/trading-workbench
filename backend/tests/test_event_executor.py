@@ -1,0 +1,209 @@
+# -*- coding: utf-8 -*-
+"""P-09 事件驱动执行——动作层单测（docs/16，2026-10-07）。
+
+锁四件事：
+1. react_to_fill：无在跑记录零动作 / 有记录全账号锁获取释放配对 + settle_trades
+   被调 / 锁失败放弃不抛 / 3s 去抖（连击只触发一次结算）；
+2. refresh_mark_pnl：long/short 方向、TP1/TP2 后剩余仓口径、峰值只增、
+   终态跳过、60s 节流；
+3. remaining_qty：分批结构推导（raw 档量优先，缺档按状态回退）；
+4. liquidation_warning：距离阈值与缺数据弃权。
+
+sqlite 内存库夹具镜像 test_ledger_hook.py；锁/结算/trader 全部桩化，
+不开真实 Redis/HTTP。
+"""
+import sys
+import uuid
+from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import app.services.event_executor as ee  # noqa: E402
+import app.services.trade_engine as te  # noqa: E402
+from app.models.trade import TradeRecord  # noqa: E402
+
+ACC = "testnet-1"
+
+
+@pytest.fixture()
+def db(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    from app.database import Base
+
+    Base.metadata.create_all(bind=engine, tables=[TradeRecord.__table__])
+    monkeypatch.setattr(ee, "SessionLocal", lambda: Session(bind=engine))
+    ee.reset_cooldowns()
+    return Session(bind=engine)
+
+
+def _rec(**kw):
+    """标准在跑多单：entry 100 / qty 1 / risk 2，TP1 后余 0.25"""
+    base = dict(
+        id=uuid.uuid4(), symbol="BTCUSDT", direction="long", status="OPENED",
+        testnet=True, account_key=ACC,
+        entry_price=100.0, qty=1.0, risk_amount=2.0,
+        stop_loss=98.0, tp1=101.5, tp2=0.0,
+        realized_pnl=0.0, raw={"qty_tp1": 0.75, "qty_tp2": 0.0},
+        opened_at=datetime(2026, 10, 7, 8, 0, 0),
+    )
+    base.update(kw)
+    return TradeRecord(**base)
+
+
+class _Recorder:
+    def __init__(self, result=True):
+        self.calls = []
+        self.result = result
+
+    def __call__(self, *a, **kw):
+        self.calls.append((a, kw))
+        return self.result
+
+
+@pytest.fixture()
+def locks(monkeypatch):
+    """锁桩：acquire 记录并成功，release 记录；返回两个 recorder"""
+    acq, rel = _Recorder(result=True), _Recorder()
+    monkeypatch.setattr(ee, "acquire_open_lock",
+                        lambda r, ident, wait_s, ttl_s, account=None: acq(
+                            r, ident, wait_s, ttl_s, account=account))
+    monkeypatch.setattr(ee, "release_open_lock",
+                        lambda r, ident, account=None: rel(r, ident, account=account))
+    monkeypatch.setattr(ee, "_all_lock_keys", lambda db: [ACC])
+    return acq, rel
+
+
+@pytest.fixture()
+def settle(monkeypatch):
+    rec = _Recorder(result=(1, []))
+    monkeypatch.setattr(te, "settle_trades", rec)
+    return rec
+
+
+def test_react_to_fill_no_running_record(db, locks, settle):
+    """无在跑记录：零动作（锁/结算都不碰），事件零成本返回"""
+    db.add(_rec(status="CLOSED"))
+    db.commit()
+    assert ee.react_to_fill(ACC, "BTCUSDT") is False
+    assert settle.calls == [] and locks[0].calls == []
+
+
+def test_react_to_fill_triggers_settle(db, locks, settle):
+    """有在跑记录：全账号锁获取释放配对 + settle_trades 恰好一次"""
+    db.add(_rec())
+    db.commit()
+    assert ee.react_to_fill(ACC, "BTCUSDT") is True
+    assert len(settle.calls) == 1
+    acq, rel = locks
+    assert len(acq.calls) == 1 and len(rel.calls) == 1
+    # 结算实例为该账号 trader（settle 桩首参由 react_to_fill 内部构造，
+    # 这里只断言锁账号维度）
+    assert acq.calls[0][1].get("account") == ACC
+    assert rel.calls[0][1].get("account") == ACC
+
+
+def test_react_to_fill_lock_busy_gives_up(db, locks, settle):
+    """锁被巡检占用：放弃（False），不结算、已获取的锁全释放——轮询兜底"""
+    db.add(_rec())
+    db.commit()
+    acq, rel = locks
+    acq.result = False  # 第一个账号就拿不到
+    assert ee.react_to_fill(ACC, "BTCUSDT") is False
+    assert settle.calls == []
+    assert len(acq.calls) == 1
+    assert rel.calls == []  # 一个都没拿到，无需释放
+
+
+def test_react_to_fill_debounce(db, locks, settle):
+    """3s 去抖：TP 分次成交连击只触发一次结算"""
+    db.add(_rec())
+    db.commit()
+    assert ee.react_to_fill(ACC, "BTCUSDT") is True
+    assert ee.react_to_fill(ACC, "BTCUSDT") is False  # 冷却窗口内
+    assert len(settle.calls) == 1
+
+
+def test_react_to_fill_trader_unconfigured(db, locks, settle, monkeypatch):
+    """账号凭据缺失：不结算不抛（轮询兜底）"""
+    db.add(_rec())
+    db.commit()
+    monkeypatch.setattr(ee, "BinanceTrader",
+                        lambda key: SimpleNamespace(configured=False))
+    assert ee.react_to_fill(ACC, "BTCUSDT") is False
+    assert settle.calls == []
+
+
+# ── refresh_mark_pnl ─────────────────────────────────────────────
+
+
+def test_mark_pnl_long_opened(db):
+    """OPENED 多单：uPnL=(mark−entry)×全量，峰值与 pnl_pct 同步"""
+    db.add(_rec(raw={}))
+    db.commit()
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", 101.0) is True
+    r = db.query(TradeRecord).one()
+    assert float(r.unrealized_pnl) == pytest.approx(1.0)
+    assert float(r.peak_total_pnl) == pytest.approx(1.0)
+    assert float(r.pnl_pct) == pytest.approx(50.0)  # 1.0 / risk 2.0
+
+
+def test_mark_pnl_short_and_remaining(db):
+    """空单方向取反；TP1 后按剩余仓 0.25 计"""
+    db.add(_rec(direction="short", status="TP1_HIT",
+                raw={"qty_tp1": 0.75, "qty_tp2": 0.0}))
+    db.commit()
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", 99.0) is True  # 空单跌=赚
+    r = db.query(TradeRecord).one()
+    assert float(r.unrealized_pnl) == pytest.approx(0.25)  # (100−99)×0.25
+
+
+def test_mark_pnl_peak_monotonic(db):
+    """峰值只增：先 101 后回撤 99，peak 保持 1.0"""
+    db.add(_rec(raw={}))
+    db.commit()
+    ee.refresh_mark_pnl(ACC, "BTCUSDT", 101.0)
+    ee.reset_cooldowns()
+    ee.refresh_mark_pnl(ACC, "BTCUSDT", 99.0)
+    r = db.query(TradeRecord).one()
+    assert float(r.peak_total_pnl) == pytest.approx(1.0)
+    assert float(r.unrealized_pnl) == pytest.approx(-1.0)
+
+
+def test_mark_pnl_closed_skipped_and_throttle(db):
+    """终态跳过；同币 60s 节流内第二次不落库"""
+    db.add(_rec(status="CLOSED"))
+    db.commit()
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", 101.0) is False
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", 102.0) is False  # 冷却（首刷已消耗）
+
+
+def test_mark_pnl_bad_price(db):
+    db.add(_rec(raw={}))
+    db.commit()
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", 0.0) is False
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", -1.0) is False
+
+
+# ── remaining_qty / liquidation_warning ──────────────────────────
+
+
+def test_remaining_qty_fallbacks():
+    """raw 缺档按状态回退：TP2_HIT→25%，无 TP2 的 TP1_HIT→25%"""
+    assert ee.remaining_qty(_rec(raw={})) == pytest.approx(1.0)
+    assert ee.remaining_qty(_rec(status="TP2_HIT", raw={})) == pytest.approx(0.25)
+    assert ee.remaining_qty(_rec(status="TP1_HIT", raw={})) == pytest.approx(0.25)
+    assert ee.remaining_qty(_rec(status="TP1_HIT", tp2=103.0, raw={})) == pytest.approx(0.5)
+
+
+def test_liquidation_warning():
+    """mark 距强平价 <10% 告警；缺 liq 快照/距离足够 → 弃权"""
+    r = _rec(raw={"liq_price": 100.0})
+    assert ee.liquidation_warning(r, 95.0)  # 5% → 告警
+    assert ee.liquidation_warning(r, 50.0) is None  # 50% → 距离足够
+    assert ee.liquidation_warning(_rec(raw={}), 95.0) is None  # 无快照弃权

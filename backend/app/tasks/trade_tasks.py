@@ -9,7 +9,6 @@
 每次运行写任务记录（含跳过原因），失败进「系统日志」。
 """
 import logging
-import time
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -33,34 +32,15 @@ from app.services.trade_engine import (
 
 logger = logging.getLogger(__name__)
 
-# 开仓互斥锁（docs/17 P1 按账号拆分）：结算巡检与即时开仓在「同一账号」维度互斥，
-# 扇出后不同账号可各自开单。key = lock:trade_open:{account_key|default}
-_OPEN_LOCK_TTL_S = 900       # 结算巡检最长持锁时间兜底（崩溃自动过期）
-_OPEN_LOCK_WAIT_S = 45       # 即时开仓等锁上限，超时放弃（无批次兜底）
-
-
-def _open_lock_key(account: Optional[str] = None) -> str:
-    return f"lock:trade_open:{account or 'default'}"
-
-
-def _acquire_open_lock(r: Redis, ident: str, wait_s: int, ttl_s: int,
-                       account: Optional[str] = None) -> bool:
-    key = _open_lock_key(account)
-    deadline = time.time() + wait_s
-    while time.time() < deadline:
-        if r.set(key, ident, nx=True, ex=ttl_s):
-            return True
-        time.sleep(0.5)
-    return False
-
-
-def _release_open_lock(r: Redis, ident: str, account: Optional[str] = None) -> None:
-    try:
-        key = _open_lock_key(account)
-        if r.get(key) == ident:
-            r.delete(key)
-    except Exception:
-        pass
+# 开仓互斥锁（docs/17 P1 按账号拆分）已提取至 services/trade_locks.py（2026-10-07
+# P-09：事件流模块同在 services 层共用；以下划线别名保持本文件内调用点不变）
+from app.services.trade_locks import (  # noqa: E402
+    OPEN_LOCK_TTL_S as _OPEN_LOCK_TTL_S,
+    OPEN_LOCK_WAIT_S as _OPEN_LOCK_WAIT_S,
+    acquire_open_lock as _acquire_open_lock,
+    open_lock_key as _open_lock_key,
+    release_open_lock as _release_open_lock,
+)
 
 
 def _mark_analysis_block(analysis_id: str, reason: str) -> None:

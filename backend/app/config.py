@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # 持仓期极值 ∓ k×ATR(22,D1)，与摆动低点跟进取更紧者（只收紧不放松）。
     # 0=关闭 ATR 腿（退化为现行摆动跟进）；k 默认 3（海龟系标准）
     ATR_TRAIL_K: float = 3.0
+    # P-09 事件驱动执行开关（2026-10-07，docs/16）：user-data-stream 成交事件
+    # 秒级触发现有结算链路 + mark price 盈亏快照；False=纯 30 分钟巡检（原行为）。
+    # 30 分钟巡检永久保留兜底，本开关只控制事件流是否叠加；默认关——部署后
+    # 先在测试网账号验证（系统日志看「事件触发结算」）再放开正式网
+    EVENT_EXEC_ENABLED: bool = False
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
     # 规则版本标记（docs/24 A0，2026-09-29）：随规则集变更递增（改 trigger/risk_guard/
     # 提示词纪律/分批比例均算改版），开仓与分析落库时快照到 trade_records/ai_analyses；

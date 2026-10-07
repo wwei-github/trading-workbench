@@ -133,6 +133,37 @@ class BinanceTrader:
     def configured(self) -> bool:
         return bool(self.key and self.secret)
 
+    # ── user-data-stream listenKey（P-09，2026-10-07）──────────────
+    # 币安要求仅带 X-MBX-APIKEY 头、不签名（_req 全量签名不适用），故直用 _client。
+
+    def create_listen_key(self) -> str:
+        """创建 user-data-stream listenKey（POST /fapi/v1/listenKey，weight 1）"""
+        resp = self._client.post(
+            f"{self.base}/fapi/v1/listenKey", headers={"X-MBX-APIKEY": self.key})
+        if resp.status_code >= 400:
+            raise BinanceTradeError(f"listenKey 创建失败 {resp.status_code}: {_brief_body(resp)}")
+        lk = (resp.json() or {}).get("listenKey") or ""
+        if not lk:
+            raise BinanceTradeError("listenKey 创建失败：响应缺 listenKey")
+        return lk
+
+    def keepalive_listen_key(self, listen_key: str) -> None:
+        """续约 listenKey（PUT，weight 1；有效期 60 分钟，调用方按 30 分钟节奏续）"""
+        resp = self._client.put(
+            f"{self.base}/fapi/v1/listenKey", params={"listenKey": listen_key},
+            headers={"X-MBX-APIKEY": self.key})
+        if resp.status_code >= 400:
+            raise BinanceTradeError(f"listenKey 续约失败 {resp.status_code}: {_brief_body(resp)}")
+
+    def close_listen_key(self, listen_key: str) -> None:
+        """关闭 listenKey（DELETE；尽力而为，失败只记日志）"""
+        try:
+            self._client.delete(
+                f"{self.base}/fapi/v1/listenKey", params={"listenKey": listen_key},
+                headers={"X-MBX-APIKEY": self.key})
+        except Exception as e:
+            logger.warning("listenKey 关闭失败 %s（忽略）: %s", self.account_key, e)
+
     # ── 账户 / 持仓 ──────────────────────────────────────────
 
     def wallet_balance(self) -> dict:
@@ -157,6 +188,7 @@ class BinanceTrader:
                     "initial_margin": float(p.get("initialMargin") or 0),
                     "entry_price": float(p.get("entryPrice") or 0),
                     "unrealized_pnl": float(p.get("unRealizedProfit") or 0),
+                    "liquidation_price": float(p.get("liquidationPrice") or 0),
                 }
         return out
 

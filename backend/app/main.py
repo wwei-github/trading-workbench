@@ -37,6 +37,13 @@ logger = logging.getLogger("app.api")
 async def lifespan(app: FastAPI):
     init_db()
     start_card_listener()  # 飞书卡片回调长连接（自建应用，未配置自动跳过）
+    # P-09 事件驱动执行（docs/16）：user-data-stream + mark price 长连接，
+    # EVENT_EXEC_ENABLED 开关控制（默认关）；失败吞掉不影响主服务，巡检兜底
+    try:
+        from app.services.event_stream import start_event_stream
+        start_event_stream()
+    except Exception:
+        logging.getLogger("app.api").exception("事件流启动失败（巡检兜底不受影响）")
     yield
 
 
