@@ -26,6 +26,7 @@ import ColorSchemeToggle from '../components/ColorSchemeToggle'
 import SpotOverviewPanel from '../components/SpotOverviewPanel'
 import SpotBacktestPanel from '../components/SpotBacktestPanel'
 import FuturesBacktestPanel from '../components/FuturesBacktestPanel'
+import LedgerPanel from '../components/LedgerPanel'
 import SpotLogsPanel from '../components/SpotLogsPanel'
 import SpotHistoryPanel from '../components/SpotHistoryPanel'
 import SpotSettingsPanel from '../components/SpotSettingsPanel'
@@ -56,7 +57,7 @@ export default function ScanResult({ mode }: ScanResultProps) {
   // 合约内部 tab 记忆（既有 key 不动）
   const [activeTab, switchTab] = useTabMemory(
     'tabs.scanResult',
-    ['results', 'pending-pool', 'watchlist', 'search', 'strategy', 'backtest', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs'],
+    ['results', 'pending-pool', 'watchlist', 'search', 'strategy', 'backtest', 'ledger', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs'],
   )
   // 现货内部 tab 记忆（独立 key，与合约无冲突）
   const [spotTab, switchSpotTab] = useTabMemory('tabs.spot', ['overview', 'backtest', 'history', 'settings', 'logs'])
@@ -167,6 +168,11 @@ export default function ScanResult({ mode }: ScanResultProps) {
       key: 'backtest',
       label: '回测',
       children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><FuturesBacktestPanel /></div>,
+    },
+    {
+      key: 'ledger',
+      label: '虚拟账本',
+      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><LedgerPanel /></div>,
     },
     {
       key: 'fund-analysis',
