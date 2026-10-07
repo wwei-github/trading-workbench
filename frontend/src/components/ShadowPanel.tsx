@@ -25,6 +25,9 @@ const BUCKET_META: Record<string, string> = {
   compress: '波动收缩',
   expand: '波动扩张',
   normal: '常态',
+  sweep_reclaim: '插针收回',
+  sweep_open: '插针未收回',
+  no_sweep: '干净触碰',
 }
 const CONTROL_BUCKETS = new Set(['confirm', 'normal']) // 对照桶（非信号桶）
 

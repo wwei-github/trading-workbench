@@ -467,12 +467,20 @@ class Scanner:
                     # 影子内部吞掉，不影响扫描管线。不写回任何决策字段
                     try:
                         from app.services import shadow as shadow_mod
-                        cand["shadow"] = {
-                            k: v for k, v in (
-                                (f.key, f.compute(klines))
-                                for f in shadow_mod.SHADOW_FEATURES.values()
-                            ) if v is not None
-                        }
+                        shadow_vals: dict = {}
+                        for f in shadow_mod.SHADOW_FEATURES.values():
+                            if f.key == "sweep_reclaim":
+                                # CARD-08 特例：需生产原生触点位（pending 锚点/
+                                # retest 事件）与 15m 拉取，非 compute(klines) 签名
+                                v = shadow_mod.compute_sweep_reclaim_scan(
+                                    klines, cand, pending=pendings.get(symbol),
+                                    retest=retests.get(symbol), flt=flt,
+                                    pool=self.pool)
+                            else:
+                                v = f.compute(klines)
+                            if v is not None:
+                                shadow_vals[f.key] = v
+                        cand["shadow"] = shadow_vals
                     except Exception as e:
                         logger.debug("影子特征计算异常（忽略）%s: %s", symbol, e)
                     return symbol, [cand], False
@@ -788,6 +796,9 @@ class Scanner:
                         "direction": r.direction,
                         "stage1_candle_open": r.stage1_candle_open,
                         "touch_ref": r.touch_ref,
+                        # Stage-1 触碰锚点价（命中触点位）：CARD-08 影子打标用
+                        # 生产原生触点位（零漂移），对决策路径不可见
+                        "ema21": float(r.ema21) if r.ema21 is not None else None,
                     }
             return out
         except Exception as e:

@@ -133,6 +133,10 @@ SHADOW_FEATURES: dict[str, ShadowFeature] = {
         # trade_record 宿主——出场后 48h 路径在平仓时刻不存在，打标由每日
         # 回填（tag_reentry_backfill）执行，compute 占位仅为 build_report 元数据
         ShadowFeature("reentry_precond", "再入场前置（止损后结构×续走）", "CARD-07", lambda k: None, 60),
+        # 流动性猎取确认（docs/13 #10 转影子，CARD-08）：回踩触点位的插针×收回，
+        # 扫描侧特例接线（需生产原生触点位 + 15m 拉取，compute 占位仅为
+        # build_report 元数据）；EMA 触点族不打标（2026-10-07 预注册回放结论）
+        ShadowFeature("sweep_reclaim", "流动性猎取确认（sweep+reclaim）", "CARD-08", lambda k: None, 30),
     )
 }
 
@@ -977,3 +981,129 @@ def build_report(db, window_days: int = 30) -> list[dict]:
             "sufficient": _bucket_stats([r for rows in buckets.values() for r in rows])["counted"] >= feat.min_sample,
         })
     return out
+
+
+# ── sweep_reclaim（CARD-08，docs/13 #10 转影子，2026-10-07）──────────────
+#
+# 流动性猎取确认档：回踩确认候选触点位的插针×收回形态。docs/26 模式预注册
+# 回放两轮判「转影子」后实施（口径与门槛见 docs/14 §七 CARD-08，锁定不可
+# 回调）。参考位 = 生产原生触点位（零漂移，这是回放两轮的核心教训）：
+# - swing 当根确认：trigger._detect_swing_touch 同输入复算（同 klines 同 band）
+# - swing 次根确认：PullbackPending.ema21（Stage-1 触碰锚点，upsert 时存）
+# - retest：破轨事件 price（当根）/ pending 锚点（次根）
+# EMA 触点族不打标：回放证明该族插针收回是常态（~91%），无选择性。
+# 请求预算：每个 swing/retest 族回踩候选 +1 次 15m 只读拉取（130 根）。
+# 铁律不变：异常全吞、None 不打标、不写回决策字段。
+
+SWEEP_DEPTH = 0.001        # 插针判定深度 d：击穿参考位 0.1%（回放主参数）
+SWEEP_RECLAIM_BARS = 8     # 收回时限 N：末次插针起 8 根 15m（2h，回放主参数）
+SWEEP_BAR_MS = 900_000     # 15m
+SWEEP_WIN_MIN_H = 2        # 无 pending（当根）时插针窗起点 = 信号bar开盘前 2h
+SWEEP_WIN_MAX_H = 24       # 插针窗上限（pending Stage-1 最长 24h）
+
+
+def _sweep_bucket(bars: dict, level: float, long_dir: bool,
+                  t_close_ms: int, win_start_ms: int,
+                  d: float = SWEEP_DEPTH, n_reclaim: int = SWEEP_RECLAIM_BARS) -> Optional[dict]:
+    """纯几何分桶（docs/14 §七 CARD-08 口径）。
+
+    bars: {open_ms: (high, low, close)}，已滤未收盘根。窗 = [win_start, t_close]
+    （信号 bar 收盘 = 打标时刻，未来不可知，收回判定截至此处）。
+    - sweep_reclaim：末次插针起 ≤N 根内 15m 收盘回参考位内侧（k=0 含单根
+      长脚插针当根收回）
+    - sweep_open：有插针、截至打标时刻未收回（升格后门语义关键观察桶）
+    - no_sweep：窗内未击穿 d 深度
+    数据不足（窗内无 bar / level 非法）返回 None（不打标）。
+    """
+    win = {ts: v for ts, v in bars.items()
+           if win_start_ms <= ts and ts + SWEEP_BAR_MS <= t_close_ms}
+    if not win or level <= 0:
+        return None
+    if long_dir:
+        swept = sorted(ts for ts, v in win.items() if v[1] <= level * (1 - d))
+        depth = min((level - win[ts][1]) / level for ts in swept) if swept else 0.0
+        back = lambda c: c > level  # noqa: E731
+    else:
+        swept = sorted(ts for ts, v in win.items() if v[0] >= level * (1 + d))
+        depth = min((win[ts][0] - level) / level for ts in swept) if swept else 0.0
+        back = lambda c: c < level  # noqa: E731
+    facts = {"sweep_bars": len(swept), "depth_pct": round(depth * 100, 3),
+             "reclaim_bars": None}
+    if not swept:
+        return {"bucket": "no_sweep", **facts}
+    last = swept[-1]
+    for k in range(n_reclaim + 1):
+        ts = last + k * SWEEP_BAR_MS
+        if ts in win and back(win[ts][2]):
+            # k 必须在 **facts 之后展开：否则被 facts.reclaim_bars=None 覆盖
+            return {"bucket": "sweep_reclaim", **facts, "reclaim_bars": k}
+    return {"bucket": "sweep_open", **facts}
+
+
+def compute_sweep_reclaim_scan(klines: list, cand: dict, pending: Optional[dict] = None,
+                               retest: Optional[dict] = None, flt=None, pool=None) -> Optional[dict]:
+    """CARD-08 打标入口（scan_one 特例接线，非注册表 compute 签名）。
+
+    生产原生触点位解析（零漂移）→ 15m 拉取（+1 只读请求）→ _sweep_bucket。
+    任何一步失败返回 None（不打标，影子铁律）。
+    """
+    if not klines or len(klines) < 3 or not cand or pool is None:
+        return None
+    if cand.get("signal_type") != "trigger_pullback_confirm":
+        return None
+    touch_ref = cand.get("touch_ref")
+    if touch_ref not in ("swing", "retest"):
+        return None  # EMA 族/None 不打标（2026-10-07 回放结论：常态噪声）
+    net = (cand.get("votes") or {}).get("net") or 0
+    if net == 0:
+        return None
+    long_dir = net > 0
+    direction = 1 if long_dir else -1
+    try:
+        from app.services.strategy import trigger as trigger_mod
+
+        lvl = None
+        path = None
+        if touch_ref == "swing":
+            band = float(getattr(flt, "structure_touch_band_pct", 0.0) or 0.0)
+            lvl = trigger_mod._detect_swing_touch(klines, direction, band)  # 当根
+            if lvl is not None:
+                path = "same_candle"
+        elif (touch_ref == "retest" and retest
+              and retest.get("direction") == direction):
+            lvl = float(retest.get("price") or 0) or None  # 当根：破轨事件价
+            if lvl is not None:
+                path = "same_candle"
+        if lvl is None and pending and pending.get("touch_ref") == touch_ref:
+            anchor = pending.get("ema21")
+            if anchor:
+                lvl = float(anchor)
+                path = "next_candle"  # 次根确认：Stage-1 触碰锚点
+        if not lvl or lvl <= 0:
+            return None
+
+        sig_open_ms = int(float(klines[-2][0]))  # 信号 bar = 最后一根已收盘 1h
+        t_close_ms = sig_open_ms + 3_600_000
+        win_start_ms = sig_open_ms - SWEEP_WIN_MIN_H * 3_600_000
+        if pending and pending.get("stage1_candle_open") is not None:
+            s1_ms = pending["stage1_candle_open"].replace(
+                tzinfo=None).timestamp() * 1000
+            win_start_ms = min(win_start_ms, s1_ms)
+        win_start_ms = max(win_start_ms, t_close_ms - SWEEP_WIN_MAX_H * 3_600_000)
+
+        kl = pool.get_klines_range(cand["symbol"], "15m", 130, t_close_ms)
+        bars = {int(k[0]): (float(k[2]), float(k[3]), float(k[4]))
+                for k in kl if int(k[0]) + SWEEP_BAR_MS <= t_close_ms}
+        res = _sweep_bucket(bars, float(lvl), long_dir, t_close_ms, win_start_ms)
+        if res is None:
+            return None
+        res.update({
+            "touch_ref": touch_ref, "touch_path": path,
+            "direction": "long" if long_dir else "short",
+            "level": round(float(lvl), 8),
+            "window_h": round((t_close_ms - win_start_ms) / 3_600_000, 1),
+        })
+        return res
+    except Exception as e:
+        logger.debug("sweep_reclaim 打标失败（忽略）%s: %s", cand.get("symbol"), e)
+        return None

@@ -66,7 +66,14 @@ def db():
 
 
 def _ts(min_ago: float) -> datetime:
-    return datetime.utcnow() - timedelta(minutes=min_ago)
+    """N 分钟前。日期炸弹修复（2026-10-07）：UTC 0点后 3h 内运行时
+    「180分钟前」落到昨日，_consecutive_losses_today 的当日断言全挂——
+    钳制基准到当日 03:00（相对顺序不变，closed_at 恒为今日）。"""
+    now = datetime.utcnow()
+    floor = now.replace(hour=3, minute=0, second=0, microsecond=0)
+    if now < floor:
+        return floor - timedelta(minutes=min_ago)
+    return now - timedelta(minutes=min_ago)
 
 
 def _closed(db, pnl, closed_at, account_key="testnet-1", testnet=True):
