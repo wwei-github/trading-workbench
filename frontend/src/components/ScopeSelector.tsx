@@ -11,10 +11,11 @@ import { Segmented, Select } from 'antd'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
 
-/** 页面默认 scope（2026-10-03 删环境切换）：无全局「当前环境」概念，
- *  恒返回 'all'（后端统计口径已改为双网合计）；保留参数兼容 4 个面板调用点 */
+/** 页面默认 scope（2026-10-07 统一为 'live'，10-03 删环境切换后原为 'all'）：
+ *  测试网是模拟撮合且仓位大数倍，混网统计会淹没真钱表现（资金分析/资金划转
+ *  与实盘复盘 2026-10-04 的决定对齐）；「全部」档保留供手动对比 */
 export function defaultScopeOf(_cfg?: SystemConfig | null): string {
-  return 'all'
+  return 'live'
 }
 
 /** scope 值是否属于测试网侧（如清空测试网数据按钮的显示条件） */

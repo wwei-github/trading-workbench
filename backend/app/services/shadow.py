@@ -137,6 +137,10 @@ SHADOW_FEATURES: dict[str, ShadowFeature] = {
         # 扫描侧特例接线（需生产原生触点位 + 15m 拉取，compute 占位仅为
         # build_report 元数据）；EMA 触点族不打标（2026-10-07 预注册回放结论）
         ShadowFeature("sweep_reclaim", "流动性猎取确认（sweep+reclaim）", "CARD-08", lambda k: None, 30),
+        # 评分门槛前向对照（docs/14 §七 CARD-09）：rec 60-69 vs 70+ 前向实盘
+        # 分桶——存量回看（09-14~10-07）判 60-69 段负期望，按纪律提门槛前走
+        # 28 天前向影子。trade_record 宿主（tag_trade_close 内打标，不依赖 K 线）
+        ShadowFeature("rec70_shadow", "评分门槛前向对照（60~69 vs 70+）", "CARD-09", lambda k: None, 15),
     )
 }
 
@@ -445,6 +449,92 @@ def compute_early_protect(klines: list[list], rec) -> Optional[dict]:
     }
 
 
+# ── 评分门槛前向对照（CARD-09，docs/14 §七，2026-10-07 预注册锁定）────────
+#
+# 存量回看（09-14~10-07，正式网）：rec 60-69 段 16 笔胜率 12.5% / avg −0.659R，
+# 70+ 段 29 笔 41.4% / +0.324R——但这是事后分桶，直接提门槛有事后选择偏误。
+# 本卡以前向窗口验证「60-69 段真实期望为负」：开仓行为不变（门槛仍 60），
+# 平仓时按开仓评分分桶落标，≥28 天后按预注册门槛裁决是否正式提至 70。
+# 判定期间不改 prompt 评分锚点定义（防分数分布漂移污染对照）。
+
+REC70_NEW_REC = 70.0          # 候选新门槛（分桶分界：60~69 / 70+）
+REC70_MIN_REC = 60.0          # 现行开仓门槛（低于此分不会开仓，不产生样本）
+REC70_START = "2026-10-08"    # 前向窗口起点：之前平仓的存量只打标不计入评估
+
+
+def _tag_rec70(db, rec) -> bool:
+    """CARD-09 打标（tag_trade_close 内调用）：按开仓时 AI 评分分桶落标。
+
+    评分取 ai_snapshot.recommendation（开仓时刻快照，与复盘评分分桶
+    actual_review._rec_bucket 同源）；无快照（手动导入单）或 <60（开仓闸
+    下不会出现，出现即异常）不打标。value_json 存原始数值 + win/r——
+    打标时刻已平仓，真实盈亏即读数，评估期按 closed_at ≥ REC70_START
+    计入前向窗口。幂等：uq_shadow_mark 覆盖。返回是否落标。
+    """
+    from sqlalchemy import select
+
+    from app.models.shadow import ShadowMark
+
+    snap = rec.ai_snapshot if isinstance(rec.ai_snapshot, dict) else {}
+    try:
+        rec_val = float(snap.get("recommendation"))
+    except (TypeError, ValueError):
+        return False
+    if rec_val < REC70_MIN_REC:
+        return False
+    pnl = float(rec.realized_pnl or 0)
+    risk = float(rec.risk_amount or 0)
+    value = {
+        "recommendation": rec_val,
+        "bucket": "rec60_69" if rec_val < REC70_NEW_REC else "rec70plus",
+        "r": round(pnl / risk, 4) if risk > 0 else None,
+        "win": pnl > 0,
+        "closed_at": (rec.closed_at.replace(tzinfo=None).isoformat()
+                      if rec.closed_at else None),
+    }
+    decision = {
+        "stage": "trade_close", "testnet": bool(rec.testnet),
+        "account_key": rec.account_key, "status": rec.status,
+    }
+    existing = db.execute(
+        select(ShadowMark).where(
+            ShadowMark.feature_key == "rec70_shadow",
+            ShadowMark.ref_type == "trade_record",
+            ShadowMark.ref_id == rec.id,
+        )
+    ).scalars().first()
+    if existing:
+        existing.value_json = value
+        existing.decision_json = decision
+    else:
+        db.add(ShadowMark(
+            feature_key="rec70_shadow", ref_type="trade_record",
+            ref_id=rec.id, symbol=rec.symbol,
+            testnet=bool(rec.testnet),
+            value_json=value, decision_json=decision,
+        ))
+    return True
+
+
+def _rec70_stats(rows: list) -> dict:
+    """评分门槛前向对照卡（CARD-09）统计：n / counted / win_rate / avg_r。
+
+    读数为真实盈亏（打标时刻已平仓，counted = n）：win = realized_pnl > 0
+    （pnl=0 计分母不计胜，与复盘主口径 actual_review._agg 一致）；
+    avg_r = mean(realized_pnl ÷ risk_amount)，risk 缺失的行不计入 avg_r。"""
+    n = len(rows)
+    if not n:
+        return {"n": 0, "counted": 0, "win_rate": None, "avg_r": None}
+    wins = sum(1 for r in rows if r.get("win"))
+    rs = [r.get("r") for r in rows if r.get("r") is not None]
+    return {
+        "n": n,
+        "counted": n,
+        "win_rate": round(wins / n, 4),
+        "avg_r": round(sum(rs) / len(rs), 4) if rs else None,
+    }
+
+
 def tag_trade_close(trades: list) -> int:
     """trade_close 宿主打标（docs/15 §五）：对已平仓交易逐笔做早期保护反事实。
 
@@ -486,6 +576,16 @@ def tag_trade_close(trades: list) -> int:
             if sl > 0:
                 stop_map[tr_id] = sl
         for rec in trades:
+            # ── CARD-09 评分门槛前向对照（不依赖 K 线，独立事务）──────────
+            try:
+                marked = _tag_rec70(db, rec)
+                db.commit()
+                if marked:
+                    tagged += 1
+            except Exception as e:
+                db.rollback()
+                logger.debug("rec70 影子打标失败（忽略）%s: %s",
+                             getattr(rec, "symbol", "?"), e)
             try:
                 si = stop_map.get(rec.id)
                 if si:
@@ -938,6 +1038,51 @@ def build_report(db, window_days: int = 30) -> list[dict]:
                     "buckets": dict(sorted(t_buckets.items())),
                 },
                 # 达标判定：正式网打标笔数（两桶都计入——分桶本身是读数）
+                "sufficient": baseline.get("n", 0) >= feat.min_sample,
+            })
+            continue
+
+        # ── 评分门槛前向对照（CARD-09，docs/14 §七）：评分桶 × 真实盈亏 ──
+        # 前向窗口过滤：REC70_START 之前平仓的存量不计入——门槛候选 70 正是
+        # 从这些存量事后分桶看出来的，混入会污染前向判定（自我实现的回看）。
+        # 分层同 CARD-07：正式网主判定组，测试网对照组不进判定。
+        if feat.card == "CARD-09":
+            prod_values: list = []
+            testnet_values: list = []
+            for m in marks:
+                v = m.value_json or {}
+                if ((v.get("closed_at") or "")[:10]) < REC70_START:
+                    continue
+                if (m.decision_json or {}).get("testnet"):
+                    testnet_values.append(v)
+                else:
+                    prod_values.append(v)
+            baseline = _rec70_stats(prod_values)
+            buckets: dict[str, list] = {}
+            for v in prod_values:
+                buckets.setdefault(v.get("bucket", "unknown"), []).append(v)
+            bucket_out = []
+            for b, rows in sorted(buckets.items()):
+                st = _rec70_stats(rows)
+                if st["n"] < 30:
+                    st["insufficient"] = True
+                bucket_out.append({"bucket": b, **st})
+            t_buckets: dict[str, int] = {}
+            for v in testnet_values:
+                b = v.get("bucket", "unknown")
+                t_buckets[b] = t_buckets.get(b, 0) + 1
+            out.append({
+                "feature": key, "name": feat.name, "card": feat.card,
+                "min_sample": feat.min_sample,
+                "window_days": window_days,
+                "baseline": baseline,
+                "buckets": bucket_out,
+                # 对照组：测试网读数（同 _rec70_stats 形状）+ 桶分布计数
+                "testnet_baseline": {
+                    **_rec70_stats(testnet_values),
+                    "buckets": dict(sorted(t_buckets.items())),
+                },
+                # 达标判定：正式网前向窗口打标笔数 ≥ 卡最小样本
                 "sufficient": baseline.get("n", 0) >= feat.min_sample,
             })
             continue

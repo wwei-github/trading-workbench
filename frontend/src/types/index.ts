@@ -764,6 +764,7 @@ export interface ShadowBucketStat {
   n: number
   counted?: number
   win_rate?: number | null
+  avg_r?: number | null // 平均真实 R（仅 CARD-09 有——读数即真实盈亏）
   insufficient?: boolean // n < 30：样本不足，仅供参考
 }
 
@@ -791,15 +792,17 @@ export interface ShadowFeatureReport {
   min_sample: number // 达标所需最小有效归因样本
   window_days: number
   baseline:
-    & { n: number; counted?: number; win_rate?: number | null }
+    & { n: number; counted?: number; win_rate?: number | null; avg_r?: number | null }
     & Partial<ShadowProtectStat>
     & Partial<ShadowReentryStat>
   buckets: (ShadowBucketStat & Partial<ShadowProtectStat> & Partial<ShadowReentryStat>)[]
-  // CARD-05/06/07 专用：测试网对照组（分层统计，不进判定）——
-  // ProtectStat 字段仅 CARD-05/06 有值，ReentryStat 字段仅 CARD-07 有值
+  // CARD-05/06/07/09 专用：测试网对照组（分层统计，不进判定）——
+  // ProtectStat 字段仅 CARD-05/06 有值，ReentryStat 字段仅 CARD-07 有值，
+  // counted/win_rate/avg_r 仅 CARD-09 有值
   testnet_baseline?: ShadowProtectStat
     & Partial<ShadowReentryStat>
     & { n: number; buckets: Record<string, number> }
+    & Partial<{ counted: number; win_rate: number | null; avg_r: number | null }>
   decided?: number // CARD-05/06：正式网 decided（= baseline.decided）
   sufficient: boolean // 有效归因样本 ≥ min_sample（达标 ≠ 升格，升格走人工流程）
 }

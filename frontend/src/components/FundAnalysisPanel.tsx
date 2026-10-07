@@ -15,6 +15,7 @@ import {
   Segmented,
   Space,
   Spin,
+  Typography,
   message,
 } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
@@ -83,6 +84,7 @@ export default function FundAnalysisPanel() {
   const colorScheme = useScanStore((s) => s.colorScheme)
   const up = SCHEME_UP_DOWN[colorScheme].up
   const down = SCHEME_UP_DOWN[colorScheme].down
+  const { Text } = Typography
 
   // seq 竞态守卫：scope/range 快速切换时并发多批请求，仅渲染最新一批（旧响应丢弃）
   const seqRef = useRef(0)
@@ -335,6 +337,13 @@ export default function FundAnalysisPanel() {
                 allowClear={false}
                 placeholder={["开始日期", "结束日期"]}
               />
+            )}
+            {/* 「全部」口径含测试网（模拟撮合、仓位大数倍），混网数字会淹没真钱表现
+                （2026-10-07 默认改正式网后保留全部档作手动对比，此处提示防误读） */}
+            {scope === "all" && (
+              <Text type="warning" style={{ fontSize: 12 }}>
+                「全部」为双网合计：含测试网模拟盘（仓位大数倍），真钱表现请切「正式网」
+              </Text>
             )}
           </Space>
         </Col>

@@ -28,6 +28,8 @@ const BUCKET_META: Record<string, string> = {
   sweep_reclaim: '插针收回',
   sweep_open: '插针未收回',
   no_sweep: '干净触碰',
+  rec60_69: '评分 60~69（弱共振段）',
+  rec70plus: '评分 70+（多重共振段）',
 }
 const CONTROL_BUCKETS = new Set(['confirm', 'normal']) // 对照桶（非信号桶）
 
@@ -104,10 +106,26 @@ function FeatureCard({ report }: { report: ShadowFeatureReport }) {
         )
       },
     },
+    // CARD-09 专属列：读数即真实盈亏（trade_record 宿主），avg R 是预注册
+    // 裁决主读数之一（avg_r(60-69) < 0 才达标）；其他卡无此字段不渲染
+    ...(report.card === 'CARD-09'
+      ? [{
+          title: 'avg R', key: 'avgr', width: 80, align: 'right' as const,
+          render: (_: unknown, r: ShadowBucketStat & { key: string }) => {
+            const v = r.avg_r
+            if (v == null) return <Text type="secondary">—</Text>
+            return (
+              <Text strong type={v > 0 ? 'success' : 'danger'}>
+                {v > 0 ? '+' : ''}{v.toFixed(2)}
+              </Text>
+            )
+          },
+        }]
+      : []),
   ]
 
   const rows: (ShadowBucketStat & { key: string })[] = [
-    { key: '__baseline__', bucket: '基线（全部合计）', n: base.n, counted: base.counted, win_rate: base.win_rate },
+    { key: '__baseline__', bucket: '基线（全部合计）', n: base.n, counted: base.counted, win_rate: base.win_rate, avg_r: base.avg_r },
     ...report.buckets.map((b) => ({ ...b, key: b.bucket })),
   ]
 
