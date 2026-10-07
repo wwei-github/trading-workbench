@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { Card, Row, Col, Button, Space, Tabs, Segmented, message } from 'antd'
+import { useEffect, useRef } from 'react'
+import { Card, Row, Col, Button, Space, Tabs, message } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useTabMemory } from '../utils/tabMemory'
 import ScanStatus from '../components/ScanStatus'
@@ -56,7 +56,7 @@ export default function ScanResult({ mode }: ScanResultProps) {
   // 合约内部 tab 记忆（既有 key 不动）
   const [activeTab, switchTab] = useTabMemory(
     'tabs.scanResult',
-    ['results', 'pending-pool', 'watchlist', 'search', 'strategy', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs'],
+    ['results', 'pending-pool', 'watchlist', 'search', 'strategy', 'backtest', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs'],
   )
   // 现货内部 tab 记忆（独立 key，与合约无冲突）
   const [spotTab, switchSpotTab] = useTabMemory('tabs.spot', ['overview', 'backtest', 'history', 'settings', 'logs'])
@@ -164,6 +164,11 @@ export default function ScanResult({ mode }: ScanResultProps) {
       ),
     },
     {
+      key: 'backtest',
+      label: '回测',
+      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><FuturesBacktestPanel /></div>,
+    },
+    {
       key: 'fund-analysis',
       label: '资金分析',
       children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><FundAnalysisPanel /></div>,
@@ -231,8 +236,6 @@ export default function ScanResult({ mode }: ScanResultProps) {
   ]
 
   // ── 现货 Tabs（docs/18：持仓总览 / 回测 / 历史记录 / 策略配置）──
-  // 回测 tab：现货/合约双引擎切换（docs/16 P-06 合约回测上线）
-  const [backtestEngine, setBacktestEngine] = useState<'spot' | 'futures'>('spot')
   const spotItems = [
     {
       key: 'overview',
@@ -242,17 +245,7 @@ export default function ScanResult({ mode }: ScanResultProps) {
     {
       key: 'backtest',
       label: '回测',
-      children: (
-        <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <Segmented
-            value={backtestEngine}
-            onChange={(v) => setBacktestEngine(v as 'spot' | 'futures')}
-            options={[{ value: 'spot', label: '现货回测' }, { value: 'futures', label: '合约回测' }]}
-            style={{ alignSelf: 'flex-start' }}
-          />
-          {backtestEngine === 'spot' ? <SpotBacktestPanel /> : <FuturesBacktestPanel />}
-        </div>
-      ),
+      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><SpotBacktestPanel /></div>,
     },
     {
       key: 'history',
