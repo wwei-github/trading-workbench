@@ -3,7 +3,8 @@
 
 覆盖：
 1. 分层熔断闸门：月回撤 ≥25% 基数停开仓（ack 前拦 / ack 后放行 / 跨月重武装）、
-   周回撤 ≥15% 基数单笔预算减半（不拦开仓 + WARNING 日志）、窗口边界
+   周回撤 ≥15% 基数在跑/同向上限减半（2026-10-07 改口径，原单笔预算减半；
+   不拦开仓 + WARNING 日志）、窗口边界
 2. breaker_status_by_net 分层字段：week/month 状态与 ack 语义
 3. ATR 跟进（Chandelier）：_chandelier_sl 多/空腿计算 + 开仓前 K 线排除 +
    数据不可得退化；_move_sl_trailing 两腿取紧 + 只收紧铁律（ATR 腿松于现 SL 不放松）
@@ -214,7 +215,7 @@ def test_month_breaker_disabled_at_zero(db, monkeypatch):
     assert "减速" not in (a.open_block_reason or "")
 
 
-# ── 周减速：预算减半不拦截 ────────────────────────────────────────────
+# ── 周减速：上限减半不拦截 ────────────────────────────────────────────
 
 
 def _week_hit_data(db):
@@ -246,9 +247,63 @@ def test_week_not_triggered_under_threshold(db, caplog):
     assert not any("周度回撤减速" in r.message for r in caplog.records)
 
 
+class _TwoPosTrader(_FakeTrader):
+    """两个在跑仓位（initial_margin 供余额风控闸门用）"""
+
+    def positions(self):
+        return {"ETHUSDT": {"initial_margin": 10.0},
+                "SOLUSDT": {"initial_margin": 10.0}}
+
+
+@pytest.mark.skipif(_is_monday_utc(), reason="UTC 周一当周无昨日，周窗口无法与日窗口隔离")
+def test_week_derate_halves_slot_limit(db):
+    """2026-10-07 改口径：周减速 → 在跑上限减半（5 → 2）。在跑 2 单（常规
+    放行穿透）在减速期被单数闸门拦下（标记「周减速减半」）；ack 后同数据恢复放行"""
+    cfg = db.get(SystemConfig, 1)
+    cfg.max_open_trades = 5
+    db.commit()
+    a = _make_analysis(db)
+    assert try_open_for_analysis(db, _TwoPosTrader(), a.id) is False
+    assert "开仓失败" in (a.open_block_reason or "")  # 常规口径：2 < 5 放行穿透
+
+    _week_hit_data(db)
+    a2 = _make_analysis(db)
+    assert try_open_for_analysis(db, _TwoPosTrader(), a2.id) is False
+    assert "在跑单子已达上限 2（周减速减半）" in (a2.open_block_reason or "")
+
+    cfg.weekly_breaker_ack_at = datetime.utcnow()
+    db.commit()
+    a3 = _make_analysis(db)
+    assert try_open_for_analysis(db, _TwoPosTrader(), a3.id) is False
+    assert "开仓失败" in (a3.open_block_reason or "")  # ack 后恢复常规上限
+
+
+@pytest.mark.skipif(_is_monday_utc(), reason="UTC 周一当周无昨日，周窗口无法与日窗口隔离")
+def test_week_derate_halves_same_dir_cap(db):
+    """2026-10-07 改口径：周减速 → 同向上限减半（4 → 2）。同向 2 单（常规
+    放行穿透）在减速期被同向闸门拦下；max_open=0 不限单数 + 热度 CAP=0 隔离同向路径"""
+    cfg = db.get(SystemConfig, 1)
+    cfg.same_direction_cap = 4
+    cfg.max_open_trades = 0  # 不限单数，隔离同向闸门
+    db.commit()
+    for sym in ("ETHUSDT", "SOLUSDT"):
+        db.add(TradeRecord(symbol=sym, direction="long", status="OPENED",
+                           account_key="testnet-1", testnet=True,
+                           opened_at=datetime.utcnow(), risk_amount=10.0))
+    db.commit()
+    a = _make_analysis(db)
+    assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert "开仓失败" in (a.open_block_reason or "")  # 常规：2 < 4 放行穿透
+
+    _week_hit_data(db)
+    a2 = _make_analysis(db)
+    assert try_open_for_analysis(db, _FakeTrader(), a2.id) is False
+    assert "long 方向在跑 2 单 ≥ 2（周减速减半）" in (a2.open_block_reason or "")
+
+
 @pytest.mark.skipif(_is_monday_utc(), reason="UTC 周一当周无昨日，周窗口无法与日窗口隔离")
 def test_week_derate_logs_each_attempt(db, caplog):
-    """减半作用于单笔预算（fixed/pct 同乘 risk_scale）：同一窗口连续两次
+    """减速作用于在跑/同向上限（2026-10-07 改口径）：同一窗口连续两次
     尝试各自记录减速日志（窗口状态无漂移、判定幂等）"""
     _week_hit_data(db)
     with caplog.at_level("WARNING"):

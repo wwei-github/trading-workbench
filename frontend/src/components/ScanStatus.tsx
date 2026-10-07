@@ -66,15 +66,15 @@ export default function ScanStatus() {
       text = '月熔断'
       tip = `${name}月度回撤熔断已触发：UTC 本月已平仓净亏 ${month.pnl} 达阈值 -${month.cap}（风险基数 × 月阈值%），已停开新仓。复盘确认后恢复：点右侧「确认复盘」按钮（本月内有效，跨月重新武装）。`
     } else if (week?.active) {
-      // 周减速：不拦开仓，单笔预算减半（人工复盘确认可恢复全额预算，2026-10-07）
+      // 周减速：不拦开仓，在跑上限/同向上限减半（人工复盘确认可恢复常规，2026-10-07）
       color = 'orange'
       text = '周减速'
-      tip = `${name}周度回撤减速生效中：UTC 本周已平仓净亏 ${week.pnl} 达阈值 -${week.cap}（风险基数 × 周阈值%），本周剩余时间单笔预算减半（不拦开仓）。点右侧「确认复盘」恢复全额预算（本周内有效，周一 0 点自动重新武装）。`
+      tip = `${name}周度回撤减速生效中：UTC 本周已平仓净亏 ${week.pnl} 达阈值 -${week.cap}（风险基数 × 周阈值%），本周剩余时间在跑上限/同向上限减半（不拦开仓）。点右侧「确认复盘」恢复常规上限（本周内有效，周一 0 点自动重新武装）。`
     } else if (week?.hit && week?.acked) {
       // 周减速已人工确认：本周放行（展示口径，下周一重新武装）
       color = 'green'
       text = '周已确认'
-      tip = `${name}周度回撤曾触发（UTC 本周净亏 ${week.pnl} 达阈值 -${week.cap}），已人工复盘确认：本周剩余时间单笔预算恢复全额，下周一 0 点自动重新武装。`
+      tip = `${name}周度回撤曾触发（UTC 本周净亏 ${week.pnl} 达阈值 -${week.cap}），已人工复盘确认：本周剩余时间在跑/同向上限恢复常规，下周一 0 点自动重新武装。`
     } else {
       const active = s?.active
       color = active === true ? 'red' : active === false ? 'green' : 'default'
@@ -168,7 +168,7 @@ export default function ScanStatus() {
               {!monthActive && weekActive && (
                 <Popconfirm
                   title="确认已复盘本周回撤？"
-                  description="确认后周度减速恢复单笔全额预算（不拦开仓的软减速，确认只恢复预算），本周内有效（下周一重新武装）。"
+                  description="确认后周度减速恢复常规在跑/同向上限（软减速不拦开仓，确认只恢复上限），本周内有效（下周一重新武装）。"
                   okText="确认恢复"
                   cancelText="取消"
                   onConfirm={ackWeeklyBreaker}

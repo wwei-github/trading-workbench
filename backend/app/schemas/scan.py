@@ -253,7 +253,7 @@ class SystemConfigOut(BaseModel):
     portfolio_heat_cap: Optional[float] = None        # 组合热度上限（默认 0=关闭）
     same_direction_cap: Optional[int] = None          # 同向上限（默认 0=不限）
     btc_crash_pause_pct: Optional[float] = None       # BTC 急跌暂停 %（默认 1；0=关）
-    weekly_dd_stop_pct: Optional[float] = None        # 周回撤减速阈值 %（默认 15；0=关，docs/13 #2）
+    weekly_dd_stop_pct: Optional[float] = None        # 周回撤减速阈值 %（默认 15；0=关，docs/13 #2；触发时在跑/同向上限减半）
     monthly_dd_stop_pct: Optional[float] = None       # 月回撤熔断阈值 %（默认 25；0=关）
     monthly_breaker_ack_at: Optional[datetime] = None  # 月熔断人工确认时刻（只读，ack 端点写）
     weekly_breaker_ack_at: Optional[datetime] = None  # 周减速人工确认时刻（只读，ack 端点写，2026-10-07）

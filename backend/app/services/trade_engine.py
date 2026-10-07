@@ -155,7 +155,6 @@ def _attempt_open(
     wallet: float, positions: dict,
     force_market: bool = False,
     beta: Optional[float] = None,
-    risk_scale: float = 1.0,
 ) -> bool:
     """对单条分析过全部开仓闸门并尝试开仓（docs/06 §3 逐项检查）。
 
@@ -369,8 +368,6 @@ def _attempt_open(
             )
         else:
             risk_budget = _capital_base(wallet) * risk_pct / 100
-        # 周回撤减速（docs/13 #2）：周回撤触发时单笔预算减半（fixed/pct 两模式同乘）
-        risk_budget *= risk_scale
         risk_budget = _near_discounted_budget(risk_budget, a.stop_anchor,
                                               factor=near_factor)
         notional = risk_budget / stop_pct
@@ -916,6 +913,37 @@ def try_open_for_analysis(
     # 待回踩单不再在此跳过（2026-09-18）：回踩距离 ≤ pullback_market_pct 容差
     # 时市价入场、超容差维持不下单——判定移入 _attempt_open 偏离闸门
     positions = trader.positions()
+    wallet_info = trader.wallet_balance()
+    wallet = wallet_info["wallet"]
+    # 周回撤减速（2026-10-04 docs/13 #2；2026-10-07 改口径：单笔预算减半 →
+    # 在跑上限/同向上限减半）：UTC 周已平仓净亏达基数×阈值且未人工确认时，
+    # 本请求的单数上限与同向上限减半（floor，至少 1）。软减速不拦开仓；
+    # 确认在当前 UTC 周内 = 本周放行，下周一 0 点自动重新武装。
+    # （wallet 提前取：减半后的上限在下方单数/同向闸门即需生效）
+    now_utc = datetime.utcnow()
+    week_pct = (
+        float(cfg.weekly_dd_stop_pct) if cfg.weekly_dd_stop_pct is not None
+        else float(settings.WEEKLY_DD_STOP_PCT)
+    )
+    week_derate = False
+    if week_pct > 0:
+        week_start = (now_utc - timedelta(days=now_utc.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0)  # UTC 周一 0 点
+        week_pnl = _closed_pnl_since(db, trader.account_key, trader.testnet, week_start)
+        week_cap = _capital_base(wallet) * week_pct / 100.0
+        if week_pnl <= -week_cap:
+            # 周减速人工复盘确认（2026-10-07，对称月熔断）：确认时刻在当前 UTC 周
+            # 内 = 本周已复盘放行（上限恢复常规），下周一自动重新武装
+            acked = (cfg.weekly_breaker_ack_at is not None
+                     and cfg.weekly_breaker_ack_at >= week_start)
+            if not acked:
+                week_derate = True
+                logger.warning(
+                    "周度回撤减速 %s（%s）：UTC 周已平仓净亏 %.2f ≤ -%.0f 阈值"
+                    "（风险基数 × %.0f%%）——本周剩余时间在跑上限/同向上限减半"
+                    "（软减速不拦开仓；「确认复盘」可恢复，周一 0 点自动恢复）",
+                    a.symbol, trader.account_key, week_pnl, week_cap, week_pct,
+                )
     # 单数上限（0 = 不限单数，仅靠余额风控兜底）；已开始移动止损的单子
     # （TP1_HIT 止损已移保本 / TP2_HIT 仅剩跟进仓）风险已锁定，不占名额（2026-09-25）
     moved_syms = {
@@ -928,12 +956,16 @@ def try_open_for_analysis(
         ).all()
     }
     slot_used = len(positions) - len(moved_syms)
-    if cfg.max_open_trades > 0 and slot_used >= cfg.max_open_trades:
-        logger.info("即时开仓跳过 %s：在跑单子已达上限 %d", a.symbol, cfg.max_open_trades)
-        _mark_open_block(db, a, f"在跑单子已达上限 {cfg.max_open_trades}")
-        return False
-    wallet_info = trader.wallet_balance()
-    wallet = wallet_info["wallet"]
+    if cfg.max_open_trades > 0:
+        slot_limit = (
+            max(1, cfg.max_open_trades // 2) if week_derate else cfg.max_open_trades
+        )
+        if slot_used >= slot_limit:
+            suffix = "（周减速减半）" if week_derate else ""
+            logger.info("即时开仓跳过 %s：在跑单子已达上限 %d%s",
+                        a.symbol, slot_limit, suffix)
+            _mark_open_block(db, a, f"在跑单子已达上限 {slot_limit}{suffix}")
+            return False
     occupied = sum(p["initial_margin"] for p in positions.values())
     # 余额风控（2026-09-15 起可配置）：开仓最低可用余额占钱包比例，默认 50%（原固定 70%）
     min_free = (
@@ -961,6 +993,8 @@ def try_open_for_analysis(
         int(cfg.same_direction_cap) if cfg.same_direction_cap is not None
         else int(settings.SAME_DIRECTION_CAP)
     )
+    if week_derate and same_cap > 0:
+        same_cap = max(1, same_cap // 2)  # 周减速：同向上限减半（至少 1）
     near_factor = (
         float(cfg.near_anchor_factor) if cfg.near_anchor_factor is not None
         else float(settings.NEAR_ANCHOR_RISK_FACTOR)
@@ -1034,7 +1068,8 @@ def try_open_for_analysis(
                 )
                 _mark_open_block(
                     db, a,
-                    f"同向持仓达上限：{a.direction} 方向在跑 {same_n} 单 ≥ {same_cap}",
+                    f"同向持仓达上限：{a.direction} 方向在跑 {same_n} 单 ≥ {same_cap}"
+                    + ("（周减速减半）" if week_derate else ""),
                 )
                 return False
     # 当日亏损熔断（2026-09-27 正式网复盘）：UTC 日本账号已平仓净亏 ≤ -阈值
@@ -1070,21 +1105,16 @@ def try_open_for_analysis(
                 f"达 -{loss_cap:.0f} 阈值（风险基数 {_capital_base(wallet):.0f} "
                 f"× {loss_pct:.0f}%）")
             return False
-    # 周/月回撤分层熔断（2026-10-04，docs/13 #2）：日级之上的二三级减速——
-    # 连亏跨日的阴跌行情日熔断天天复位天天开（日亏 5% 连 4 天 = -18.5%），缺少总闸。
+    # 月回撤熔断（2026-10-04，docs/13 #2）：日级之上的总闸——连亏跨日的阴跌
+    # 行情日熔断天天复位天天开（日亏 5% 连 4 天 = -18.5%），缺少总闸。
     # 月 ≥ 阈值 → 停开新仓，人工复盘确认（monthly_breaker_ack_at 写确认时刻，
-    # 确认在当前 UTC 月内 = 放行至月底，跨月自动重新武装）；周 ≥ 阈值 → 本周
-    # 剩余时间单笔预算减半（软减速不拦截）。只收紧亏损侧：盈利周/月零影响。
+    # 确认在当前 UTC 月内 = 放行至月底，跨月自动重新武装）。
+    # 周减速（≥ 阈值 → 在跑上限/同向上限减半，软减速不拦开仓）已在单数/同向
+    # 闸门前单独判定。只收紧亏损侧：盈利周/月零影响。
     # 阈值 cfg ?? env（nullable 上页面，docs/12 §10 惯例），0=关闭该层
-    risk_scale = 1.0
-    now_utc = datetime.utcnow()
     month_pct = (
         float(cfg.monthly_dd_stop_pct) if cfg.monthly_dd_stop_pct is not None
         else float(settings.MONTHLY_DD_STOP_PCT)
-    )
-    week_pct = (
-        float(cfg.weekly_dd_stop_pct) if cfg.weekly_dd_stop_pct is not None
-        else float(settings.WEEKLY_DD_STOP_PCT)
     )
     month_start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     if month_pct > 0:
@@ -1107,24 +1137,6 @@ def try_open_for_analysis(
                     f"达 -{month_cap:.0f} 阈值（基数 × {month_pct:.0f}%）——"
                     "人工复盘确认后恢复")
                 return False
-    if week_pct > 0:
-        week_start = (now_utc - timedelta(days=now_utc.weekday())).replace(
-            hour=0, minute=0, second=0, microsecond=0)  # UTC 周一 0 点
-        week_pnl = _closed_pnl_since(db, trader.account_key, trader.testnet, week_start)
-        week_cap = _capital_base(wallet) * week_pct / 100.0
-        if week_pnl <= -week_cap:
-            # 周减速人工复盘确认（2026-10-07，对称月熔断）：确认时刻在当前 UTC 周
-            # 内 = 本周已复盘放行（不再减半），下周一自动重新武装
-            acked = (cfg.weekly_breaker_ack_at is not None
-                     and cfg.weekly_breaker_ack_at >= week_start)
-            if not acked:
-                risk_scale = 0.5
-                logger.warning(
-                    "周度回撤减速 %s（%s）：UTC 周已平仓净亏 %.2f ≤ -%.0f 阈值"
-                    "（风险基数 × %.0f%%）——本周剩余时间单笔预算减半（不拦开仓；"
-                    "顶部熔断卡片「确认复盘」可人工放行，周一 0 点自动恢复）",
-                    a.symbol, trader.account_key, week_pnl, week_cap, week_pct,
-                )
     # 即将进入闸门序列：清掉沿用/上一轮尝试残留的拒开原因，本次成败由闸门重新裁定
     if a.open_block_reason:
         try:
@@ -1133,8 +1145,7 @@ def try_open_for_analysis(
         except Exception:
             db.rollback()
     return _attempt_open(db, trader, cfg, a, wallet, positions,
-                         force_market=force_market, beta=beta_raw,
-                         risk_scale=risk_scale)
+                         force_market=force_market, beta=beta_raw)
 
 
 # ── 结算 ──────────────────────────────────────────────────────

@@ -107,13 +107,14 @@ class SystemConfig(Base):
     daily_loss_stop_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
     daily_loss_stop_enabled: Mapped[bool] = mapped_column(nullable=True, default=None)
     # 周/月回撤分层熔断（docs/13 #2，2026-10-04）：阈值 %（NULL=回落 env 15/25；0=关闭该层）。
-    # 周 = UTC 周起净亏 ≥ 基数×阈值 → 单笔预算减半；月 = UTC 月起净亏 ≥ 基数×阈值 → 停开新仓
+    # 周 = UTC 周起净亏 ≥ 基数×阈值 → 在跑上限/同向上限减半（2026-10-07 改口径，原单笔预算减半）；
+    # 月 = UTC 月起净亏 ≥ 基数×阈值 → 停开新仓
     weekly_dd_stop_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
     monthly_dd_stop_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
     # 月熔断人工确认时刻：ack 端点写 utcnow；确认时刻在当前 UTC 月内 = 本月已复盘放行（至月底）
     monthly_breaker_ack_at: Mapped[Optional[datetime]] = mapped_column(nullable=True, default=None)
     # 周减速人工确认时刻（2026-10-07）：ack 端点写 utcnow；确认时刻在当前 UTC 周内
-    # = 本周已复盘放行（本周剩余时间不再预算减半），下周一自动重新武装
+    # = 本周已复盘放行（在跑/同向上限恢复常规），下周一自动重新武装
     weekly_breaker_ack_at: Mapped[Optional[datetime]] = mapped_column(nullable=True, default=None)
     # ATR 跟进止损倍数 k（docs/13 #5，2026-10-04）：SL = max(现SL, 持仓期极值 ∓ k×ATR22)；
     # NULL=回落 env（默认 3）

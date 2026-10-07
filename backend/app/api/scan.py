@@ -758,7 +758,7 @@ def ack_monthly_breaker(db: Session = Depends(get_db)):
 @router.post("/config/weekly-breaker-ack")
 def ack_weekly_breaker(db: Session = Depends(get_db)):
     """周度回撤减速人工复盘确认（2026-10-07，对称月熔断）：写确认时刻，
-    本周剩余时间不再单笔预算减半（不拦开仓的软减速，确认只恢复全额预算）。
+    本周剩余时间在跑上限/同向上限恢复常规（软减速不拦开仓，确认只恢复上限）。
 
     确认时刻在当前 UTC 周内即视为本周已确认，下周一 0 点自动重新武装。
     """
