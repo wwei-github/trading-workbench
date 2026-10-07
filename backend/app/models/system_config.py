@@ -2,8 +2,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, String, Integer, Numeric, Text, DateTime
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Boolean, String, Integer, Numeric, Text, DateTime, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -134,11 +133,15 @@ class SystemConfig(Base):
     btc_crash_pause_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
 
     # 现货屯币配置（docs/18）：JSON 列（三币开关/单份金额/投入上限/定投 + 全局预算）。
-    # 零侵入约束：新增独立列，不改既有列语义；NULL=全部默认值
-    spot_settings: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, default=None)
+    # 零侵入约束：新增独立列，不改既有列语义；NULL=全部默认值。
+    # 类型用可移植 JSON（与 shadow.py 等模型一致）：线上 PG 实际列仍为 JSONB
+    # （database.py ADD COLUMN DDL），ORM JSON 对 jsonb 列读写兼容；
+    # PG 专用 JSONB 会让 sqlite 内存库测试套件 create_all 直接编译失败
+    # （2026-10-07 修复：全部 db 测试 ERROR 的根因）
+    spot_settings: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=None)
     # 筛选参数组（2026-09-28 筛选配置上页面）：JSON 列，键集见 services/scan_filters.py。
     # NULL=全部回落 env/代码默认；旧 breakout_threshold 等 3 个散列已废弃不再读
-    scan_filters: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, default=None)
+    scan_filters: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=None)
     # 现货环境开关（docs/18，2026-09-23 用户拍板：现货环境与合约完全独立）：
     # true=现货测试网（默认），false=现货正式网；现货环境与合约完全独立
     # （合约侧环境切换已于 2026-10-03 删除）

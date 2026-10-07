@@ -9,8 +9,8 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy import DateTime, Index, Numeric, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import DateTime, Index, JSON, Numeric, String, Text
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -30,7 +30,7 @@ class SpotOrder(Base):
     trigger_type: Mapped[str] = mapped_column(String(8), nullable=False, default="manual")
     # 触发快照：{score, rule_hits[], env:{monthly,weekly}, ai_review:{verdict,reason}}
     # （参照 docs/16 的 32KB 截断原则）
-    trigger_detail: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    trigger_detail: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     qty: Mapped[Optional[float]] = mapped_column(Numeric(28, 10), nullable=True)
     quote_amount: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)
@@ -58,12 +58,12 @@ class SpotWeeklyReview(Base):
 
     # 积累期 / 上升期 / 分配期 / 下降期
     regime: Mapped[str] = mapped_column(String(8), nullable=False)
-    outlook: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)  # {btc: 偏多/…}
-    risks: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)  # 风险提示 ≤3 条
+    outlook: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # {btc: 偏多/…}
+    risks: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)  # 风险提示 ≤3 条
     commentary: Mapped[str] = mapped_column(Text, default="")
 
     # 输入给 LLM 的三周期指标快照（回看 AI 判断依据）
-    indicator_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    indicator_snapshot: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -73,16 +73,16 @@ class SpotBacktest(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # 参数快照（可复现）：{symbols, start, end, budget, per_order_usdt, dca...}
-    params: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    params: Mapped[dict] = mapped_column(JSON, nullable=False)
 
     # RUNNING / DONE / FAILED
     status: Mapped[str] = mapped_column(String(8), nullable=False, default="RUNNING", index=True)
     # 汇总：净增币/超额/笔数/最大回撤/期末市值/评分分布
-    summary: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    summary: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # 每日评分与持仓序列（曲线用）
-    daily_series: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    daily_series: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # 模拟订单明细（32KB 截断惯例）
-    orders_detail: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    orders_detail: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -98,7 +98,7 @@ class SpotKlineCache(Base):
     # 1d / 1w / 1M
     interval: Mapped[str] = mapped_column(String(4), nullable=False)
     # 币安原始K线数组的精简版：[{t, o, h, l, c, v}]（t=ms open_time）
-    klines: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    klines: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
