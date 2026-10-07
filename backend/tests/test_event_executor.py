@@ -201,6 +201,19 @@ def test_remaining_qty_fallbacks():
     assert ee.remaining_qty(_rec(status="TP1_HIT", tp2=103.0, raw={})) == pytest.approx(0.5)
 
 
+def test_remaining_qty_planned_tranches():
+    """50/25/25 计划档（raw 有占位值）：减档与状态对齐——OPENED 不减、
+    TP1_HIT 只减 q1、TP2_HIT 减 q1+q2（2026-10-07 回归：初版把未成交
+    计划档一并减掉，uPnL/peak 系统性低估）"""
+    raw = {"qty_tp1": 0.5, "qty_tp2": 0.25}
+    assert ee.remaining_qty(_rec(raw=raw)) == pytest.approx(1.0)
+    assert ee.remaining_qty(_rec(status="TP1_HIT", raw=raw)) == pytest.approx(0.5)
+    assert ee.remaining_qty(_rec(status="TP2_HIT", raw=raw)) == pytest.approx(0.25)
+    # 75/25 路径：TP1_HIT 后 q2=0 占位不影响
+    raw75 = {"qty_tp1": 0.75, "qty_tp2": 0.0}
+    assert ee.remaining_qty(_rec(status="TP1_HIT", raw=raw75)) == pytest.approx(0.25)
+
+
 def test_liquidation_warning():
     """mark 距强平价 <10% 告警；缺 liq 快照/距离足够 → 弃权"""
     r = _rec(raw={"liq_price": 100.0})

@@ -141,9 +141,10 @@ def react_to_fill(account_key: str, symbol: str) -> bool:
 def remaining_qty(rec: TradeRecord) -> float:
     """按分批结构推导剩余仓位数量（USDT-M 线性，uPnL 自算分母）。
 
-    rec.qty 是开仓量；TP1/TP2 部分止盈后剩余仓 = 开仓量 − 已止盈档。档量取
-    开仓时记录的 qty_tp1/qty_tp2（计划量，交易所分批成交以此为锚）；
-    raw 缺档时按状态回退（TP2_HIT 后剩余 25% 计划仓）。
+    raw.qty_tp1/qty_tp2 是**开仓时写入的计划量**（trader.round_qty 后锚定，
+    未成交也占位）——已减档必须与状态对齐：OPENED 一档未减、TP1_HIT 减
+    q1、TP2_HIT 减 q1+q2。raw 缺档时按 50/25/25 状态回退（2026-10-07 修复：
+    初版把未成交的计划档一并减掉，uPnL/peak 系统性低估，浮盈回撤诊断延迟）。
     """
     qty = float(rec.qty or 0)
     raw = rec.raw or {}
@@ -155,7 +156,11 @@ def remaining_qty(rec: TradeRecord) -> float:
         if rec.status == "TP1_HIT":
             return qty * 0.5 if rec.tp2 else qty * 0.25
         return qty
-    remain = qty - float(q1 or 0) - float(q2 or 0)
+    remain = qty
+    if q1 is not None and rec.status in ("TP1_HIT", "TP2_HIT"):
+        remain -= float(q1)
+    if q2 is not None and rec.status == "TP2_HIT":
+        remain -= float(q2)
     return max(remain, 0.0)
 
 
