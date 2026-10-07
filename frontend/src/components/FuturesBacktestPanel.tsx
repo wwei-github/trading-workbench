@@ -6,7 +6,7 @@
  * - 组合模拟：固定风险额 + 在跑上限 + 同向上限，R/USDT 双口径资金曲线
  * - 提交后轮询（celery 异步）；引擎版本随结果落库可追溯
  */
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -28,8 +28,10 @@ import {
   message,
 } from 'antd'
 import { ExperimentOutlined, ReloadOutlined } from '@ant-design/icons'
+import EChart from './EChart'
+import type { EChartsCoreOption } from 'echarts/core'
 import { backtestApi } from '../api/backtest'
-import { schemeValueColor } from '../utils/scheme'
+import { SCHEME_UP_DOWN, schemeValueColor } from '../utils/scheme'
 import { useScanStore } from '../stores/scanStore'
 import type {
   BacktestOrder,
@@ -56,81 +58,81 @@ function rColor(v: number | null | undefined): string {
   return schemeValueColor(v ?? 0, scheme)
 }
 
-// 组合资金曲线（R 或 USDT 口径，单变体单线 + 悬浮）
+/** hex → 带透明度 rgba（areaStyle 渐变用），与 FundAnalysisPanel 同款 */
+function withAlpha(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return `rgba(${r},${g},${b},${alpha})`
+}
+
+// 组合资金曲线（EChart 实现）：R/USDT 口径单线 + 0 基线 + dataZoom 区间缩放，
+// 悬浮显示当日累计与平仓笔数；涨色随全局红绿方案
 function EquityChart({ series, mode }: { series: PortfolioPoint[]; mode: 'r' | 'usdt' }) {
-  const [hover, setHover] = useState<number | null>(null)
-  const W = 900
-  const H = 240
-  const PAD = { l: 56, r: 60, t: 16, b: 26 }
-  if (series.length < 2) {
-    return <Typography.Text type="secondary" style={{ fontSize: 12 }}>数据点不足，无法绘制曲线</Typography.Text>
-  }
-  const key = mode === 'r' ? 'equity_r' : 'equity_usdt'
-  const vals = series.map((p) => p[key])
-  const min = Math.min(...vals, 0)
-  const max = Math.max(...vals, 0)
-  const pad = (max - min) * 0.08 || 1
-  const lo = min - pad
-  const hi = max + pad
-  const x = (i: number) => PAD.l + (i / (series.length - 1)) * (W - PAD.l - PAD.r)
-  const y = (v: number) => PAD.t + (1 - (v - lo) / (hi - lo || 1)) * (H - PAD.t - PAD.b)
-  const line = vals.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')
-  const zero = y(0)
-  const gridVals = [0, 1, 2, 3].map((k) => lo + ((hi - lo) * k) / 3)
-  const digits = mode === 'r' ? 2 : 0
-  const onMove = (e: ReactMouseEvent<SVGSVGElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect()
-    const px = ((e.clientX - rect.left) / rect.width) * W
-    const i = Math.round(((px - PAD.l) / (W - PAD.l - PAD.r)) * (series.length - 1))
-    if (i >= 0 && i < series.length) setHover(i)
-  }
-  const hp = hover !== null ? series[hover] : null
-  return (
-    <div style={{ position: 'relative' }}>
-      <svg
-        viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: H, display: 'block' }}
-        onMouseMove={onMove} onMouseLeave={() => setHover(null)}
-      >
-        {gridVals.map((v, k) => (
-          <g key={k}>
-            <line x1={PAD.l} x2={W - PAD.r} y1={y(v)} y2={y(v)} stroke="#f0f0f0" />
-            <text x={PAD.l - 6} y={y(v) + 3} fontSize={10} fill="#8c8c8c" textAnchor="end">{fmt(v, digits)}</text>
-          </g>
-        ))}
-        <line x1={PAD.l} x2={W - PAD.r} y1={zero} y2={zero} stroke="#d9d9d9" strokeDasharray="4 3" />
-        <path d={line} fill="none" stroke="#1677ff" strokeWidth={1.6} />
-        <circle cx={x(vals.length - 1)} cy={y(vals[vals.length - 1])} r={3} fill="#1677ff" />
-        <text x={W - PAD.r + 6} y={y(vals[vals.length - 1]) + 3} fontSize={10} fill="#1677ff">
-          {fmt(vals[vals.length - 1], digits)}
-        </text>
-        {[0, Math.floor((series.length - 1) / 2), series.length - 1].map((i, k) => (
-          <text key={k} x={x(i)} y={H - 8} fontSize={10} fill="#8c8c8c"
-            textAnchor={k === 0 ? 'start' : k === 2 ? 'end' : 'middle'}>
-            {series[i].date.slice(5)}
-          </text>
-        ))}
-        {hp && hover !== null && (
-          <g>
-            <line x1={x(hover)} x2={x(hover)} y1={PAD.t} y2={H - PAD.b} stroke="#bfbfbf" strokeDasharray="3 3" />
-            <circle cx={x(hover)} cy={y(vals[hover])} r={3.5} fill="#1677ff" stroke="#fff" />
-          </g>
-        )}
-      </svg>
-      {hp && hover !== null && (
-        <div style={{
-          position: 'absolute', left: `${(x(hover) / W) * 100}%`, top: 8,
-          transform: hover > series.length * 0.6 ? 'translateX(calc(-100% - 12px))' : 'translateX(12px)',
-          background: '#fff', border: '1px solid #eee', borderRadius: 6,
-          boxShadow: '0 2px 8px rgba(0,0,0,0.12)', padding: '6px 10px', fontSize: 12,
-          lineHeight: '20px', pointerEvents: 'none', minWidth: 150, zIndex: 2,
-        }}>
-          <div style={{ fontWeight: 600 }}>{hp.date}</div>
-          <div>累计 <b style={{ color: rColor(hp.equity_r) }}>{fmt(hp.equity_r)} R</b>（{fmt(hp.equity_usdt, 0)} U）</div>
-          <div>当日平仓 {hp.closed} 笔</div>
-        </div>
-      )}
-    </div>
-  )
+  const colorScheme = useScanStore((s) => s.colorScheme)
+  const up = SCHEME_UP_DOWN[colorScheme].up
+  const option = useMemo<EChartsCoreOption>(() => {
+    const key = mode === 'r' ? 'equity_r' : 'equity_usdt'
+    const pts = series
+    const last = pts.length ? pts[pts.length - 1][key] : 0
+    const digits = mode === 'r' ? 2 : 0
+    return {
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: unknown) => {
+          const arr = params as { name: string; value: number }[]
+          const p = pts.find((x) => x.date === arr?.[0]?.name)
+          const v = arr?.[0]?.value
+          const sign = v > 0 ? '+' : ''
+          return [
+            `<b>${p?.date ?? arr?.[0]?.name}</b>`,
+            `累计 ${sign}${fmt(v, digits)} ${mode === 'r' ? 'R' : 'U'}`,
+            p ? `当日平仓 ${p.closed} 笔` : '',
+          ].filter(Boolean).join('<br/>')
+        },
+      },
+      grid: { left: 56, right: 20, top: 24, bottom: 40 },
+      dataZoom: [{ type: 'inside' }],
+      xAxis: { type: 'category', data: pts.map((p) => p.date), boundaryGap: false },
+      yAxis: {
+        type: 'value', scale: true,
+        splitLine: { lineStyle: { color: '#f0f0f0' } },
+        axisLabel: { formatter: (v: number) => fmt(v, digits) },
+      },
+      series: [
+        {
+          name: mode === 'r' ? '累计 R' : '累计 USDT',
+          type: 'line',
+          data: pts.map((p) => p[key]),
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { color: up, width: 2 },
+          itemStyle: { color: up },
+          areaStyle: {
+            color: {
+              type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [
+                { offset: 0, color: withAlpha(up, 0.24) },
+                { offset: 1, color: withAlpha(up, 0.02) },
+              ],
+            },
+          },
+          markLine: {
+            silent: true, symbol: 'none', label: { show: false },
+            lineStyle: { color: '#999', type: 'dashed' },
+            data: [{ yAxis: 0 }],
+          },
+          markPoint: {
+            silent: true, symbol: 'circle', symbolSize: 6,
+            label: { show: true, position: 'right', fontSize: 11, color: up,
+                     formatter: () => `${last > 0 ? '+' : ''}${fmt(last, digits)}` },
+            data: pts.length > 1 ? [{ coord: [pts.length - 1, last] }] : [],
+          },
+        },
+      ],
+    }
+  }, [series, mode, up])
+  return <EChart option={option} height={260} />
 }
 
 function Kpi({ title, value, color, sub }: {
