@@ -486,6 +486,14 @@ def _finish(db, r: ScanResult, symbol: str, ai_result: dict, fp: str, commit: bo
     row = _upsert_ai_analysis(db, r.id, symbol, ai_result, fingerprint=fp)
     if commit:
         db.commit()
+        # P-07 虚拟账本 AI 标注回填（N-02 校准数据）：提交后回填账本行，
+        # 失败吞掉（attach_ai 自吞异常）——不影响 AI 主链路
+        try:
+            from app.services.ledger import attach_ai
+            attach_ai(r.id, ai_result.get("trade_decision"),
+                      ai_result.get("recommendation"), db=db)
+        except Exception as e:
+            logger.debug("账本 AI 标注回填失败（忽略）%s: %s", r.id, e)
         logger.info("AI 分析完成: %s (%s)", symbol, ai_result.get("trade_decision"))
         _dispatch_immediate_open(row)
 
