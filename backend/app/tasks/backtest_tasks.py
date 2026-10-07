@@ -166,7 +166,21 @@ def run_futures_backtest_task(bt_id: str) -> dict:
             trade_rows = db.execute(
                 select(TradeRecord).where(*tr_conds)
             ).scalars().all()
-            signals = build_signals_from_history(ai_rows, list(trade_rows))
+            # 初始三价快照（OPEN 事件）：rec.stop_loss 是现值（TP1 后移保本），
+            # 回放必须用开仓时的初始 SL/TP
+            trade_ids = [r.id for r in trade_rows]
+            open_events: dict[str, dict] = {}
+            if trade_ids:
+                from app.models.trade import TradeEvent
+                for te in db.execute(
+                    select(TradeEvent).where(
+                        TradeEvent.trade_record_id.in_(trade_ids),
+                        TradeEvent.event_type == "OPEN",
+                    )
+                ).scalars().all():
+                    open_events[str(te.trade_record_id)] = te.detail or {}
+            signals = build_signals_from_history(ai_rows, list(trade_rows),
+                                                 open_events)
             # 源A样本 K 线需求：每币 [最早入场 − 1h, 最晚入场 + fwd+1 根] + D1
             need: dict[str, tuple[int, int]] = {}
             for s in signals:

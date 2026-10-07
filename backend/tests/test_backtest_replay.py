@@ -355,14 +355,21 @@ def test_source_a_suggest_veto_actual():
                             "take_profit_2": 0}), _sr()),  # veto
         (_ai(trade_decision="skip", created_at=t), _sr()),  # 无 veto 的 skip → 跳过
     ]
-    tr = SimpleNamespace(symbol="ETHUSDT", direction="long", entry_price=50.0,
-                         stop_initial=48.0, tp1=53.0, tp2=0.0, opened_at=t,
+    tr = SimpleNamespace(id="t1", symbol="ETHUSDT", direction="long",
+                         entry_price=50.0,
+                         stop_loss=50.5,  # 现值：TP1 后已移保本（非初始 48）
+                         tp1=53.0, tp2=0.0, opened_at=t,
                          exit_reason="sl", realized_pnl=-30.0, risk_amount=30.0)
-    sigs = build_signals_from_history(rows, [tr])
+    # OPEN 事件快照 = 开仓时初始三价；回放必须用快照而非移动后的现值
+    open_events = {"t1": {"stop_loss": 48.0, "tp1": 53.0, "tp2": 0}}
+    sigs = build_signals_from_history(rows, [tr], open_events)
     assert [s["meta"]["src"] for s in sigs] == ["suggest", "veto", "actual"]
     assert sigs[1]["direction"] == "short" and sigs[1]["entry"] == 200.0
     assert sigs[2]["stop"] == 48.0 and sigs[2]["meta"]["exit_reason"] == "sl"
     assert sigs[0]["meta"]["signal_type"] == "trigger_pullback_confirm"
+    # 无事件行兜底现值 stop_loss（旧行/事件缺失不炸）
+    sigs_fallback = build_signals_from_history([], [tr])
+    assert sigs_fallback[0]["stop"] == 50.5
 
 
 # ── 9. 组合模拟与聚合 ─────────────────────────────────────────────────

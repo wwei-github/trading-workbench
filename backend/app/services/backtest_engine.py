@@ -305,12 +305,16 @@ def _ms(dt) -> int:
     return int(dt.timestamp() * 1000) if dt else 0
 
 
-def build_signals_from_history(ai_rows: list, trade_rows: list) -> list[dict]:
+def build_signals_from_history(ai_rows: list, trade_rows: list,
+                               trade_open_events: Optional[dict] = None) -> list[dict]:
     """源A：历史 AI 建议单 + veto 否决单 + 真实单（actual）。
 
     ai_rows: (AIAnalysis, ScanResult|None) 二元组列表——suggest 直取三价；
     skip 且带 veto_original 的否决单取快照三价（回放「被否掉的建议」假想表现，
     docs/24 A5a 口径）。trade_rows: TradeRecord 列表（真实出场对照样本）。
+    trade_open_events: {trade_id(str): OPEN 事件 detail}——初始三价快照。
+    rec.stop_loss 是现值（TP1 后移保本/跟进后更新，历史只在 trade_events），
+    直接回放会低估初始风险，故必须优先取 OPEN 快照，无事件行兜底现值。
     无三价/方向残缺的行静默跳过（计数进 meta 不可能——由调用方记 skipped）。
     """
     sigs: list[dict] = []
@@ -344,13 +348,15 @@ def build_signals_from_history(ai_rows: list, trade_rows: list) -> list[dict]:
         })
     for rec in (trade_rows or []):
         entry = float(rec.entry_price or 0)
-        stop = float(rec.stop_initial or 0)
-        tp1 = float(rec.tp1 or 0)
+        ev = (trade_open_events or {}).get(str(rec.id)) or {}
+        stop = float(ev.get("stop_loss") or rec.stop_loss or 0)
+        tp1 = float(ev.get("tp1") or rec.tp1 or 0)
         if entry <= 0 or stop <= 0 or tp1 <= 0 or not rec.direction:
             continue
         sigs.append({
             "symbol": rec.symbol, "direction": rec.direction,
-            "entry": entry, "stop": stop, "tp1": tp1, "tp2": float(rec.tp2 or 0),
+            "entry": entry, "stop": stop, "tp1": tp1,
+            "tp2": float(ev.get("tp2") or rec.tp2 or 0),
             "entry_time_ms": _ms(rec.opened_at),
             "meta": {
                 "src": "actual",
