@@ -713,8 +713,10 @@ def breaker_status_by_net(db: Session, cfg) -> dict:
     - day_pnl：该网自动交易账号 UTC 当日已平仓净亏合计
     - cap：熔断阈值（多账号取最小=最保守）
     - week/month（docs/13 #2 分层，2026-10-04）：周/月回撤状态
-      week: {active, pnl, cap}；month: {active, hit, acked, pnl, cap}
+      week: {active, hit, acked, pnl, cap}；month: {active, hit, acked, pnl, cap}
       month.active = 触发且未人工确认（ack 在当前 UTC 月内 = 已确认放行）
+      week.active = 触发且未人工确认（ack 在当前 UTC 周内 = 已确认放行，
+      2026-10-07 对称月熔断补人工通道）
     钱包余额 5 分钟进程内缓存；这是展示口径，开仓拦截仍以 open gate 实时判定为准。"""
     from app.services.account_registry import auto_trade_accounts
 
@@ -781,7 +783,11 @@ def breaker_status_by_net(db: Session, cfg) -> dict:
             if week_pct > 0:
                 week_pnl = sum(_closed_pnl_since(db, a.key, a.testnet, week_start) for a in accs)
                 week_cap = base * week_pct / 100.0
-                week_st = {"active": week_pnl <= -week_cap,
+                week_hit = week_pnl <= -week_cap
+                week_acked = (cfg.weekly_breaker_ack_at is not None
+                              and cfg.weekly_breaker_ack_at >= week_start)
+                week_st = {"active": week_hit and not week_acked, "hit": week_hit,
+                           "acked": week_acked,
                            "pnl": round(week_pnl, 2), "cap": round(week_cap, 2)}
             if month_pct > 0:
                 month_pnl = sum(_closed_pnl_since(db, a.key, a.testnet, month_start) for a in accs)
@@ -1107,12 +1113,18 @@ def try_open_for_analysis(
         week_pnl = _closed_pnl_since(db, trader.account_key, trader.testnet, week_start)
         week_cap = _capital_base(wallet) * week_pct / 100.0
         if week_pnl <= -week_cap:
-            risk_scale = 0.5
-            logger.warning(
-                "周度回撤减速 %s（%s）：UTC 周已平仓净亏 %.2f ≤ -%.0f 阈值"
-                "（风险基数 × %.0f%%）——本周剩余时间单笔预算减半（不拦开仓）",
-                a.symbol, trader.account_key, week_pnl, week_cap, week_pct,
-            )
+            # 周减速人工复盘确认（2026-10-07，对称月熔断）：确认时刻在当前 UTC 周
+            # 内 = 本周已复盘放行（不再减半），下周一自动重新武装
+            acked = (cfg.weekly_breaker_ack_at is not None
+                     and cfg.weekly_breaker_ack_at >= week_start)
+            if not acked:
+                risk_scale = 0.5
+                logger.warning(
+                    "周度回撤减速 %s（%s）：UTC 周已平仓净亏 %.2f ≤ -%.0f 阈值"
+                    "（风险基数 × %.0f%%）——本周剩余时间单笔预算减半（不拦开仓；"
+                    "顶部熔断卡片「确认复盘」可人工放行，周一 0 点自动恢复）",
+                    a.symbol, trader.account_key, week_pnl, week_cap, week_pct,
+                )
     # 即将进入闸门序列：清掉沿用/上一轮尝试残留的拒开原因，本次成败由闸门重新裁定
     if a.open_block_reason:
         try:

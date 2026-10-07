@@ -510,6 +510,7 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS weekly_dd_stop_pct NUMERIC(10, 6),
               ADD COLUMN IF NOT EXISTS monthly_dd_stop_pct NUMERIC(10, 6),
               ADD COLUMN IF NOT EXISTS monthly_breaker_ack_at TIMESTAMP,
+              ADD COLUMN IF NOT EXISTS weekly_breaker_ack_at TIMESTAMP,
               ADD COLUMN IF NOT EXISTS atr_trail_k NUMERIC(10, 6)
         """))
         # 影子模式打标表（2026-10-04，docs/14）：候选信号特征「只计算+打标+记录，

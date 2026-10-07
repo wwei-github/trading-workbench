@@ -67,6 +67,10 @@ export const scanApi = {
   ackMonthlyBreaker: () =>
     api.post<{ ok: boolean; ack_at: string }>('/scans/config/monthly-breaker-ack').then((r) => r.data),
 
+  // 周度回撤减速人工复盘确认（2026-10-07，对称月熔断）：写确认时刻恢复全额预算
+  ackWeeklyBreaker: () =>
+    api.post<{ ok: boolean; ack_at: string }>('/scans/config/weekly-breaker-ack').then((r) => r.data),
+
   // 手动搜索币种 AI 分析（同步调用，AI 思考耗时较长，放宽超时）
   analyzeCoin: (symbol: string) =>
     api

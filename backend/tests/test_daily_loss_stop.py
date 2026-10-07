@@ -125,7 +125,7 @@ def _setup_breaker(monkeypatch, accounts):
     cfg = SimpleNamespace(
         daily_loss_stop_enabled=True, daily_loss_stop_pct=9,
         weekly_dd_stop_pct=None, monthly_dd_stop_pct=None,  # 分层默认关（本文件只测日层）
-        monthly_breaker_ack_at=None,
+        monthly_breaker_ack_at=None, weekly_breaker_ack_at=None,
     )
     monkeypatch.setattr(reg, "auto_trade_accounts", lambda db: accounts)
     monkeypatch.setattr(bt, "BinanceTrader", _FakeTrader)

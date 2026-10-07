@@ -256,6 +256,7 @@ class SystemConfigOut(BaseModel):
     weekly_dd_stop_pct: Optional[float] = None        # 周回撤减速阈值 %（默认 15；0=关，docs/13 #2）
     monthly_dd_stop_pct: Optional[float] = None       # 月回撤熔断阈值 %（默认 25；0=关）
     monthly_breaker_ack_at: Optional[datetime] = None  # 月熔断人工确认时刻（只读，ack 端点写）
+    weekly_breaker_ack_at: Optional[datetime] = None  # 周减速人工确认时刻（只读，ack 端点写，2026-10-07）
     atr_trail_k: Optional[float] = None               # ATR 跟进倍数（默认 3；0=关 ATR 腿，docs/13 #5）
 
     # 初始资金（2026-09-26）：正式网主账号首次入金，资金划转面板展示口径

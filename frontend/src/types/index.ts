@@ -76,8 +76,9 @@ export interface ScanStatus {
     active: boolean | null;
     day_pnl: number;
     cap: number | null;
-    /** 周/月回撤分层（docs/13 #2，2026-10-04）：null=该层未启用 */
-    week?: { active: boolean; pnl: number; cap: number } | null;
+    /** 周/月回撤分层（docs/13 #2，2026-10-04）：null=该层未启用。
+     *  week.active=触发且未确认（单笔预算减半中）；acked=本周已人工复盘确认（2026-10-07） */
+    week?: { active: boolean; hit: boolean; acked: boolean; pnl: number; cap: number } | null;
     /** month.active=触发且未确认；acked=本月已人工复盘确认（放行至月底） */
     month?: { active: boolean; hit: boolean; acked: boolean; pnl: number; cap: number } | null;
   }>;
@@ -244,6 +245,7 @@ export interface SystemConfig {
   weekly_dd_stop_pct?: number | null; // 周回撤减速阈值（% 值，UTC 周起净亏 ≥ 基数×此值 → 单笔预算减半；0=关闭）
   monthly_dd_stop_pct?: number | null; // 月回撤熔断阈值（% 值，UTC 月起净亏 ≥ 基数×此值 → 停开新仓；0=关闭）
   monthly_breaker_ack_at?: string | null; // 月熔断人工确认时刻（只读，熔断卡片「确认复盘」写）
+  weekly_breaker_ack_at?: string | null; // 周减速人工确认时刻（只读，2026-10-07）
   atr_trail_k?: number | null; // ATR 跟进倍数（Chandelier，默认 3；0=关闭 ATR 腿）
   // 自动交易开关（2026-09-20 由 env 迁移进 DB，页面「系统配置」弹窗可改；
   // 2026-10-03 总开关拆分为双网独立开关可同时开启；同日删环境切换）

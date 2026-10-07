@@ -37,6 +37,20 @@ export default function ScanStatus() {
     }
   }
 
+  // 周减速人工复盘确认（2026-10-07，对称月熔断）：写确认时刻恢复全额预算
+  const ackWeeklyBreaker = async () => {
+    setAcking(true)
+    try {
+      await scanApi.ackWeeklyBreaker()
+      await fetchStatus()
+      message.success('已确认复盘，周度减速恢复全额预算（本周内有效）')
+    } catch {
+      message.error('确认失败，请重试')
+    } finally {
+      setAcking(false)
+    }
+  }
+
   // 熔断状态 tag（net=testnet/live，prefix=测/正）：分层取最严 + tooltip 明细
   const breakerTag = (net: 'testnet' | 'live', prefix: string, lastMargin: boolean) => {
     const s = lb?.[net]
@@ -52,10 +66,15 @@ export default function ScanStatus() {
       text = '月熔断'
       tip = `${name}月度回撤熔断已触发：UTC 本月已平仓净亏 ${month.pnl} 达阈值 -${month.cap}（风险基数 × 月阈值%），已停开新仓。复盘确认后恢复：点右侧「确认复盘」按钮（本月内有效，跨月重新武装）。`
     } else if (week?.active) {
-      // 周减速：不拦开仓，单笔预算减半
+      // 周减速：不拦开仓，单笔预算减半（人工复盘确认可恢复全额预算，2026-10-07）
       color = 'orange'
       text = '周减速'
-      tip = `${name}周度回撤减速生效中：UTC 本周已平仓净亏 ${week.pnl} 达阈值 -${week.cap}（风险基数 × 周阈值%），本周剩余时间单笔预算减半（不拦开仓，周一 0 点自动恢复）。`
+      tip = `${name}周度回撤减速生效中：UTC 本周已平仓净亏 ${week.pnl} 达阈值 -${week.cap}（风险基数 × 周阈值%），本周剩余时间单笔预算减半（不拦开仓）。点右侧「确认复盘」恢复全额预算（本周内有效，周一 0 点自动重新武装）。`
+    } else if (week?.hit && week?.acked) {
+      // 周减速已人工确认：本周放行（展示口径，下周一重新武装）
+      color = 'green'
+      text = '周已确认'
+      tip = `${name}周度回撤曾触发（UTC 本周净亏 ${week.pnl} 达阈值 -${week.cap}），已人工复盘确认：本周剩余时间单笔预算恢复全额，下周一 0 点自动重新武装。`
     } else {
       const active = s?.active
       color = active === true ? 'red' : active === false ? 'green' : 'default'
@@ -63,7 +82,7 @@ export default function ScanStatus() {
       tip = active === true
         ? `${name}当日亏损熔断已触发：UTC 当日已平仓净亏 ${s!.day_pnl} 达阈值 -${s!.cap}，UTC 0 点自动恢复（停开新仓，AI 分析/巡检不受限）`
         : active === false
-          ? `${name}未熔断：UTC 当日已平仓净亏 ${s!.day_pnl} / 阈值 -${s!.cap}（风险基数 × 熔断阈值%，系统配置可调）${month?.hit && month.acked ? '；月熔断已确认复盘' : ''}`
+          ? `${name}未熔断：UTC 当日已平仓净亏 ${s!.day_pnl} / 阈值 -${s!.cap}（风险基数 × 熔断阈值%，系统配置可调）${month?.hit && month.acked ? '；月熔断已确认复盘' : ''}${week?.hit && week.acked ? '；周减速已确认复盘' : ''}`
           : s?.enabled
             ? `${name}熔断状态未知：钱包余额查询失败，无法判定（不影响实际开仓拦截）`
             : `${name}熔断未启用（开关关闭 / 阈值为 0 / 该网未开自动交易）`
@@ -77,8 +96,10 @@ export default function ScanStatus() {
     )
   }
 
-  // 任一网月熔断生效中 → 显示「确认复盘」按钮（确认全局生效，docs/13 #2）
+  // 任一网月熔断生效中 → 显示「确认复盘」按钮（确认全局生效，docs/13 #2）；
+  // 无月熔断但任一网周减速生效中 → 显示周确认按钮（恢复全额预算，2026-10-07）
   const monthActive = !!(lb?.testnet?.month?.active || lb?.live?.month?.active)
+  const weekActive = !!(lb?.testnet?.week?.active || lb?.live?.week?.active)
 
   // 在跑单（2026-10-04 按网拆分显示）：主数字 = 测试网/正式网各自 OPENED 数
   // （TP1_HIT/TP2_HIT 已保本不占名额，绿色 Tag 全局标注）；满仓 = 任一网达上限
@@ -140,6 +161,19 @@ export default function ScanStatus() {
                   onConfirm={ackMonthlyBreaker}
                 >
                   <Button size="small" danger type="primary" loading={acking} style={{ marginLeft: 6 }}>
+                    确认复盘
+                  </Button>
+                </Popconfirm>
+              )}
+              {!monthActive && weekActive && (
+                <Popconfirm
+                  title="确认已复盘本周回撤？"
+                  description="确认后周度减速恢复单笔全额预算（不拦开仓的软减速，确认只恢复预算），本周内有效（下周一重新武装）。"
+                  okText="确认恢复"
+                  cancelText="取消"
+                  onConfirm={ackWeeklyBreaker}
+                >
+                  <Button size="small" type="primary" loading={acking} style={{ marginLeft: 6 }}>
                     确认复盘
                   </Button>
                 </Popconfirm>

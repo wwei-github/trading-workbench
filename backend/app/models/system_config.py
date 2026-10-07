@@ -112,6 +112,9 @@ class SystemConfig(Base):
     monthly_dd_stop_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
     # 月熔断人工确认时刻：ack 端点写 utcnow；确认时刻在当前 UTC 月内 = 本月已复盘放行（至月底）
     monthly_breaker_ack_at: Mapped[Optional[datetime]] = mapped_column(nullable=True, default=None)
+    # 周减速人工确认时刻（2026-10-07）：ack 端点写 utcnow；确认时刻在当前 UTC 周内
+    # = 本周已复盘放行（本周剩余时间不再预算减半），下周一自动重新武装
+    weekly_breaker_ack_at: Mapped[Optional[datetime]] = mapped_column(nullable=True, default=None)
     # ATR 跟进止损倍数 k（docs/13 #5，2026-10-04）：SL = max(现SL, 持仓期极值 ∓ k×ATR22)；
     # NULL=回落 env（默认 3）
     atr_trail_k: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)

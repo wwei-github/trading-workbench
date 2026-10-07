@@ -421,6 +421,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         monthly_dd_stop_pct=(float(cfg.monthly_dd_stop_pct)
                              if cfg.monthly_dd_stop_pct is not None else None),
         monthly_breaker_ack_at=cfg.monthly_breaker_ack_at,
+        weekly_breaker_ack_at=cfg.weekly_breaker_ack_at,
         atr_trail_k=(float(cfg.atr_trail_k)
                      if cfg.atr_trail_k is not None else None),
         live_initial_capital=float(cfg.live_initial_capital or 0),
@@ -752,6 +753,20 @@ def ack_monthly_breaker(db: Session = Depends(get_db)):
     db.commit()
     db.refresh(cfg)
     return {"ok": True, "ack_at": cfg.monthly_breaker_ack_at}
+
+
+@router.post("/config/weekly-breaker-ack")
+def ack_weekly_breaker(db: Session = Depends(get_db)):
+    """周度回撤减速人工复盘确认（2026-10-07，对称月熔断）：写确认时刻，
+    本周剩余时间不再单笔预算减半（不拦开仓的软减速，确认只恢复全额预算）。
+
+    确认时刻在当前 UTC 周内即视为本周已确认，下周一 0 点自动重新武装。
+    """
+    cfg = _get_system_config(db)
+    cfg.weekly_breaker_ack_at = datetime.utcnow()
+    db.commit()
+    db.refresh(cfg)
+    return {"ok": True, "ack_at": cfg.weekly_breaker_ack_at}
 
 
 # ===== 复盘统计（docs/04 §10 P2） =====

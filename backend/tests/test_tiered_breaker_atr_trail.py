@@ -258,6 +258,35 @@ def test_week_derate_logs_each_attempt(db, caplog):
     assert sum(1 for r in caplog.records if "周度回撤减速" in r.message) == 2
 
 
+@pytest.mark.skipif(_is_monday_utc(), reason="UTC 周一当周无昨日，周窗口无法与日窗口隔离")
+def test_week_derate_ack_resumes(db, caplog):
+    """周减速人工复盘确认（2026-10-07）：ack 在当前 UTC 周内 → 本周不再减半"""
+    _week_hit_data(db)
+    cfg = db.get(SystemConfig, 1)
+    cfg.weekly_breaker_ack_at = datetime.utcnow()
+    db.commit()
+    a = _make_analysis(db)
+    with caplog.at_level("WARNING"):
+        assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert "开仓失败" in (a.open_block_reason or "")   # 仍穿透到 _attempt_open
+    assert not any("周度回撤减速" in r.message for r in caplog.records)
+
+
+@pytest.mark.skipif(_is_monday_utc(), reason="UTC 周一当周无昨日，周窗口无法与日窗口隔离")
+def test_week_derate_ack_stale_next_week(db, caplog):
+    """ack 是上周一的（下周一重武装）→ 仍减半"""
+    _week_hit_data(db)
+    cfg = db.get(SystemConfig, 1)
+    cfg.weekly_breaker_ack_at = (
+        datetime.utcnow() - timedelta(days=datetime.utcnow().weekday())
+    ).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(minutes=1)
+    db.commit()
+    a = _make_analysis(db)
+    with caplog.at_level("WARNING"):
+        assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert any("周度回撤减速" in r.message for r in caplog.records)
+
+
 # ── breaker_status_by_net 分层字段 ───────────────────────────────────
 
 
@@ -275,22 +304,31 @@ def test_breaker_status_week_month_fields(db, monkeypatch):
     cfg = SimpleNamespace(
         daily_loss_stop_enabled=True, daily_loss_stop_pct=9,
         weekly_dd_stop_pct=15.0, monthly_dd_stop_pct=25.0,
-        monthly_breaker_ack_at=None,
+        monthly_breaker_ack_at=None, weekly_breaker_ack_at=None,
     )
     # 月触发：-255 ≤ -250（wallet 1000 → 基数 1000）
     _month_hit_data(db)
     out = breaker_status_by_net(db, cfg)
     assert out["testnet"]["week"]["active"] is True       # -255 ≤ -150
+    assert out["testnet"]["week"]["hit"] is True
+    assert out["testnet"]["week"]["acked"] is False
     assert out["testnet"]["month"]["hit"] is True
     assert out["testnet"]["month"]["active"] is True      # 触发且未确认
     assert out["testnet"]["month"]["acked"] is False
 
-    # 确认后：month.active=False（acked=True），week 不受 ack 影响
+    # 确认后：month.active=False（acked=True），week 不受月 ack 影响
     cfg.monthly_breaker_ack_at = datetime.utcnow()
     out = breaker_status_by_net(db, cfg)
     assert out["testnet"]["month"]["acked"] is True
     assert out["testnet"]["month"]["active"] is False
     assert out["testnet"]["week"]["active"] is True
+
+    # 周 ack 后：week.active=False（acked=True，2026-10-07 人工通道）
+    cfg.weekly_breaker_ack_at = datetime.utcnow()
+    out = breaker_status_by_net(db, cfg)
+    assert out["testnet"]["week"]["acked"] is True
+    assert out["testnet"]["week"]["active"] is False
+    assert out["testnet"]["week"]["hit"] is True
 
 
 def test_breaker_status_layers_null_when_no_accounts(db, monkeypatch):
@@ -300,7 +338,7 @@ def test_breaker_status_layers_null_when_no_accounts(db, monkeypatch):
     cfg = SimpleNamespace(
         daily_loss_stop_enabled=True, daily_loss_stop_pct=9,
         weekly_dd_stop_pct=15.0, monthly_dd_stop_pct=25.0,
-        monthly_breaker_ack_at=None,
+        monthly_breaker_ack_at=None, weekly_breaker_ack_at=None,
     )
     out = breaker_status_by_net(db, cfg)
     assert out["live"]["week"] is None and out["live"]["month"] is None
