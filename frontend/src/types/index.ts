@@ -772,6 +772,7 @@ export interface ShadowBucketStat {
 export interface ShadowProtectStat {
   decided: number // |ΔR|>0.05R 的笔数（saved+injured，预注册判定基数）
   sum_delta_r: number // 净改善 ΣΔR（正=规则救回多于误伤）
+  decided_sum_delta_r: number // 净改善只按 decided 桶计（docs/16 P-04：剔除 no_arm/untouched 的 phantom 残差）
   avg_real_r: number | null // 平均真实收益（R）
   avg_cf_r: number | null // 平均反事实收益（R）
 }
@@ -804,5 +805,6 @@ export interface ShadowFeatureReport {
     & { n: number; buckets: Record<string, number> }
     & Partial<{ counted: number; win_rate: number | null; avg_r: number | null }>
   decided?: number // CARD-05/06：正式网 decided（= baseline.decided）
+  excluded_n?: number // CARD-05/06：非机械出场剔除笔数（manual/liquidation，docs/16 P-04）
   sufficient: boolean // 有效归因样本 ≥ min_sample（达标 ≠ 升格，升格走人工流程）
 }

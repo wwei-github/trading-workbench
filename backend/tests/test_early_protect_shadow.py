@@ -419,6 +419,82 @@ def test_build_report_early_protect(shadow_db, monkeypatch):
     assert tp0["testnet_baseline"]["buckets"] == {"protected": 2}
 
 
+def test_build_report_excludes_non_mechanical_and_phantom(shadow_db):
+    """docs/16 P-04 口径修复（线上首日实证）：
+
+    1. manual/liquidation 出场剔除——反事实按「机械原计划出场」（如 TP1 价）
+       补全剩余腿，与真实出场不可比（线上 survived 桶 cf +4.88 vs real +3.57）；
+    2. decided 只按判定桶白名单（saved/injured、protected/injured）——no_arm/
+       untouched 的记账残差（反事实干净 -1.0R vs 真实 -1.264R，|Δ|≈0.264>0.05）
+       曾被 |delta| 阈值误计入 decided（线上首日 A 腿 decided 7 实为 2）；
+    3. decided_sum_delta_r 只合计判定桶 ΔR（phantom 不进判定读数）。"""
+    maker = shadow_db
+    s = maker()
+    rows = [
+        # 2 笔机械止损（saved / protected 形态，ΔR=+0.55/+0.675）
+        ("M0USDT", "sl", {
+            "exit_reason": "sl", "real_r": -0.55,
+            "a_r": 0.0, "a_delta_r": 0.55, "bucket": "saved",
+            "b_r": 0.125, "b_delta_r": 0.675, "bucket_tp0": "protected"}),
+        ("M1USDT", "sl", {
+            "exit_reason": "sl", "real_r": -0.55,
+            "a_r": 0.0, "a_delta_r": 0.55, "bucket": "saved",
+            "b_r": 0.125, "b_delta_r": 0.675, "bucket_tp0": "protected"}),
+        # 手动出场污染源（真实赢单，survived cf>real / injured cf=0）
+        ("M2USDT", "manual", {
+            "exit_reason": "manual", "real_r": 3.5747,
+            "a_r": 0.0, "a_delta_r": -3.5747, "bucket": "injured",
+            "b_r": 4.8828, "b_delta_r": 1.3081, "bucket_tp0": "survived"}),
+        # no_arm phantom：未武装单记账残差 |Δ|=0.2643>0.05，不得计入 decided
+        ("M3USDT", "sl", {
+            "exit_reason": "sl", "real_r": -1.2643,
+            "a_r": -1.0, "a_delta_r": 0.2643, "bucket": "no_arm",
+            "b_r": -1.0, "b_delta_r": 0.2643, "bucket_tp0": "untouched"}),
+    ]
+    for sym, er, value in rows:
+        tid = uuid.uuid4()
+        s.add(TradeRecord(
+            id=tid, symbol=sym, direction="long", entry_price=100.0,
+            qty=10.0, risk_amount=100.0, stop_loss=95.0,
+            status="CLOSED", exit_reason=er, realized_pnl=value["real_r"] * 100.0,
+            opened_at=datetime(2026, 10, 1, 0, 0), closed_at=datetime(2026, 10, 1, 4, 0),
+            testnet=False,
+        ))
+        for fk in ("be_retrace", "tp0_retrace"):
+            s.add(ShadowMark(
+                feature_key=fk, ref_type="trade_record", ref_id=tid,
+                symbol=sym, value_json=value,
+                decision_json={"stage": "trade_close", "testnet": False},
+            ))
+    s.commit()
+    s.close()
+
+    report = shadow_mod.build_report(maker(), window_days=30)
+    by = {r["feature"]: r for r in report}
+
+    be = by["be_retrace"]
+    assert be["excluded_n"] == 1  # manual 单剔除并单列
+    assert be["baseline"]["n"] == 3
+    # decided 只数判定桶：saved 2 笔（manual-injured 已剔除、no_arm 非判定桶）
+    assert be["baseline"]["decided"] == 2
+    assert be["baseline"]["decided_sum_delta_r"] == pytest.approx(1.1, abs=0.01)
+    # 全量 sum_delta_r 保留（诊断用，含 no_arm phantom +0.2643）
+    assert be["baseline"]["sum_delta_r"] == pytest.approx(0.55 * 2 + 0.2643, abs=0.01)
+    buckets = {b["bucket"]: b for b in be["buckets"]}
+    assert "injured" not in buckets  # manual-injured 不进判定桶
+    assert buckets["saved"]["decided"] == 2
+    assert buckets["no_arm"]["decided"] == 0  # phantom 不进 decided
+    assert buckets["no_arm"]["decided_sum_delta_r"] == 0.0
+
+    tp0 = by["tp0_retrace"]
+    assert tp0["excluded_n"] == 1
+    assert tp0["baseline"]["decided"] == 2  # 2×protected；survived/untouched 不计
+    assert tp0["baseline"]["decided_sum_delta_r"] == pytest.approx(1.35, abs=0.01)
+    tp0_buckets = {b["bucket"]: b for b in tp0["buckets"]}
+    assert "survived" not in tp0_buckets
+    assert tp0_buckets["untouched"]["decided"] == 0
+
+
 # ── 6. 主线隔离 ───────────────────────────────────────────────────────
 
 

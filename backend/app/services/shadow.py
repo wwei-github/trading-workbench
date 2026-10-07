@@ -877,26 +877,44 @@ def _bucket_stats(rows: list) -> dict:
     return {"n": n, "counted": counted, "win_rate": round(wins / counted, 4) if counted else None}
 
 
-def _trade_protect_stats(rows: list, delta_key: str) -> dict:
+def _trade_protect_stats(rows: list, delta_key: str,
+                         bucket_key: Optional[str] = None,
+                         judged_buckets: Optional[tuple] = None) -> dict:
     """早期保护特征（trade_record 宿主）分桶统计：反事实读数为主。
 
     rows = value_json dict 列表（compute_early_protect 输出，A/B 两组字段同构）；
     delta_key 区分特征视角（be_retrace→a_delta_r / tp0_retrace→b_delta_r）。
     核心读数：n / decided / sum_delta_r（净改善）/ avg_real_r / avg_cf_r；
-    胜率口径在此不适用（bucket 已是 saved/injured 语义而非 outcome）。"""
+    胜率口径在此不适用（bucket 已是 saved/injured 语义而非 outcome）。
+
+    bucket_key + judged_buckets 同时传入时启用判定白名单（docs/16 P-04）：
+    decided / decided_sum_delta_r 只按白名单桶计——CARD-05 判定桶 = saved/injured，
+    CARD-06 = protected/injured。no_arm/carry/untouched 的 ΔR 是记账口径 artifact
+    （反事实按干净 -1.0R 记账 vs 真实含滑点费 -1.26R，线上首日 no_arm 每笔
+    +0.264R 且 |Δ|>0.05 被 |delta| 阈值误计入 decided）或出场方式差异，
+    不是规则效果；sum_delta_r 保持全量行合计（向后兼容/诊断用）。"""
     n = len(rows)
     if not n:
         return {"n": 0, "decided": 0, "sum_delta_r": 0.0,
+                "decided_sum_delta_r": 0.0,
                 "avg_real_r": None, "avg_cf_r": None}
     deltas = [float(r.get(delta_key, 0)) for r in rows]
     real = [float(r.get("real_r", 0)) for r in rows]
     cf = [real[i] + deltas[i] for i in range(n)]
-    # decided = 反事实改变了结局的笔数（|delta|>0.05R，即 saved+injured 合计）
-    decided = sum(1 for d in deltas if abs(d) > 0.05)
+    if judged_buckets is not None:
+        decided_deltas = [
+            d for d, r in zip(deltas, rows)
+            if (r.get(bucket_key) or "unknown") in judged_buckets
+        ]
+    else:
+        # decided = 反事实改变了结局的笔数（|delta|>0.05R，即 saved+injured 合计）
+        decided_deltas = [d for d in deltas if abs(d) > 0.05]
     return {
         "n": n,
-        "decided": decided,
+        "decided": len(decided_deltas),
         "sum_delta_r": round(sum(deltas), 3),
+        # 净改善只按 decided 计（口径同上，phantom 残差不进判定读数）
+        "decided_sum_delta_r": round(sum(decided_deltas), 3),
         "avg_real_r": round(sum(real) / n, 4),
         "avg_cf_r": round(sum(cf) / n, 4),
     }
@@ -965,15 +983,30 @@ def build_report(db, window_days: int = 30) -> list[dict]:
                     testnet_values.append(v)
                 else:
                     prod_values.append(v)
+            # 非机械出场剔除（docs/16 P-04）：manual/liquidation 的单，反事实
+            # 重放按「机械原计划出场」（如 TP1 价）补全剩余腿，与真实出场方式
+            # 无关——survived 桶 cf>real（+4.88 vs +3.57）即此类污染，正 ΔR
+            # 不是规则效果。从判定集（正式网+测试网）剔除，计数单列供核对
+            def _mechanical(v: dict) -> bool:
+                return (v.get("exit_reason") or "") not in ("manual", "liquidation")
+            excluded_n = sum(1 for v in prod_values if not _mechanical(v))
+            prod_values = [v for v in prod_values if _mechanical(v)]
+            testnet_values = [v for v in testnet_values if _mechanical(v)]
             delta_key = "a_delta_r" if key == "be_retrace" else "b_delta_r"
             bucket_key = "bucket" if key == "be_retrace" else "bucket_tp0"
-            baseline = _trade_protect_stats(prod_values, delta_key)
+            # 判定桶白名单（docs/16 P-04，预注册语义）：decided/净改善只数
+            # 反事实真正改变结局的桶——saved/injured（A）/ protected/injured（B）；
+            # no_arm/carry/untouched/below_gate 的 ΔR 是记账 artifact 或无变化
+            judged = (("saved", "injured") if key == "be_retrace"
+                      else ("protected", "injured"))
+            baseline = _trade_protect_stats(
+                prod_values, delta_key, bucket_key, judged)
             buckets: dict[str, list] = {}
             for v in prod_values:
                 buckets.setdefault(v.get(bucket_key, "unknown"), []).append(v)
             bucket_out = []
             for b, rows in sorted(buckets.items()):
-                st = _trade_protect_stats(rows, delta_key)
+                st = _trade_protect_stats(rows, delta_key, bucket_key, judged)
                 if st["n"] < 30:
                     st["insufficient"] = True
                 bucket_out.append({"bucket": b, **st})
@@ -987,9 +1020,12 @@ def build_report(db, window_days: int = 30) -> list[dict]:
                 "window_days": window_days,
                 "baseline": baseline,
                 "buckets": bucket_out,
+                # 非机械出场剔除笔数（manual/liquidation，反事实不可比）
+                "excluded_n": excluded_n,
                 # 对照组：测试网读数 + 桶分布计数，不进判定
                 "testnet_baseline": {
-                    **_trade_protect_stats(testnet_values, delta_key),
+                    **_trade_protect_stats(
+                        testnet_values, delta_key, bucket_key, judged),
                     "buckets": dict(sorted(t_buckets.items())),
                 },
                 # 达标判定：预注册卡按正式网 decided 数（saved+injured），

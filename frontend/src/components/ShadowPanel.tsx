@@ -186,7 +186,7 @@ function ProtectFeatureCard({ report }: { report: ShadowFeatureReport }) {
     { title: 'decided', key: 'decided', width: 80, align: 'right',
       render: (_: unknown, r) => <Text type="secondary">{r.decided ?? 0}</Text> },
     { title: 'ΣΔR', key: 'delta', width: 90, align: 'right',
-      render: (_: unknown, r) => deltaR(r.sum_delta_r) },
+      render: (_: unknown, r) => deltaR(r.decided_sum_delta_r ?? r.sum_delta_r) },
     { title: 'real→cf（R）', key: 'rcf', width: 110, align: 'right',
       render: (_: unknown, r) => (
         <Text type="secondary">{rStr(r.avg_real_r)} → {rStr(r.avg_cf_r)}</Text>
@@ -197,6 +197,7 @@ function ProtectFeatureCard({ report }: { report: ShadowFeatureReport }) {
     {
       key: '__baseline__', bucket: '基线（全部合计）', n: base.n,
       decided: base.decided, sum_delta_r: base.sum_delta_r,
+      decided_sum_delta_r: base.decided_sum_delta_r,
       avg_real_r: base.avg_real_r, avg_cf_r: base.avg_cf_r,
     },
     ...report.buckets.map((b) => ({ ...b, key: b.bucket })),
@@ -227,9 +228,14 @@ function ProtectFeatureCard({ report }: { report: ShadowFeatureReport }) {
         scroll={{ y: 240 }}
         locale={{ emptyText: <Empty description="该特征暂无影子标记" /> }}
       />
+      {(report.excluded_n ?? 0) > 0 && (
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+          已剔除非机械出场（manual/liquidation）{report.excluded_n} 笔：反事实按机械原计划出场重放，与真实出场不可比（docs/16 P-04）
+        </Text>
+      )}
       {tb && tb.n > 0 && (
         <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-          测试网对照（分层统计，不进判定）：n={tb.n} · decided={tb.decided} · ΣΔR={rStr(tb.sum_delta_r)}R
+          测试网对照（分层统计，不进判定）：n={tb.n} · decided={tb.decided} · ΣΔR={rStr(tb.decided_sum_delta_r ?? tb.sum_delta_r)}R
           {' '}· 桶：{Object.entries(tb.buckets).map(([k, n]) => `${PROTECT_BUCKET_META[k]?.label ?? k} ${n}`).join(' · ')}
         </Text>
       )}
