@@ -544,6 +544,6 @@ def _run_migrations(engine):
 
 def init_db():
     """创建所有表 + 幂等迁移"""
-    from app.models import ops, patch, scan, trade, blacklist, spot, tactic, shadow, backtest  # noqa: F401
+    from app.models import ops, patch, scan, trade, blacklist, spot, tactic, shadow, backtest, ledger  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _run_migrations(engine)

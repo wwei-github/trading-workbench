@@ -379,6 +379,32 @@ class _StubPool:
         return self._htf
 
 
+def derive_signal_prices(
+    direction: int, entry: float, recent5: list, *,
+    rr_tp1: float = 1.5, stop_buf: float = 0.003, tp2_rr: float = 0.0,
+) -> Optional[dict]:
+    """规则三价推导（源B 公式抽取，P-07 虚拟账本实时挂点同源调用）。
+
+    direction: +1 long / -1 short；entry: 信号K收盘价；
+    recent5: 含信号K在内的最近 5 根**已收盘** [[ts,o,h,l,c,v]]（信号K为末根）。
+    stop=近5根极值∓stop_buf（long 取最低×(1-buf)，short 对称）；
+    tp1=entry±rr_tp1·r_unit；tp2=tp2_rr>0 时 entry±tp2_rr·r_unit 否则 0（不设）。
+    返回 {entry, stop, tp1, tp2, r_unit}；entry<=0 或 r_unit<=0 为 None。
+    """
+    if entry is None or entry <= 0 or not recent5:
+        return None
+    if direction > 0:
+        stop = min(float(k[3]) for k in recent5) * (1 - stop_buf)
+    else:
+        stop = max(float(k[2]) for k in recent5) * (1 + stop_buf)
+    r_unit = direction * (entry - stop)
+    if r_unit <= 0:
+        return None
+    tp1 = entry + direction * rr_tp1 * r_unit
+    tp2 = entry + direction * tp2_rr * r_unit if tp2_rr and tp2_rr > 0 else 0.0
+    return {"entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "r_unit": r_unit}
+
+
 def build_signals_by_scan_replay(
     symbol: str, kl_all: list, htf_all: list, flt,
     *, window: int = 240, rr_tp1: float = 1.5, stop_buf: float = 0.003,
@@ -425,21 +451,15 @@ def build_signals_by_scan_replay(
         # 同向信号去重：repeat_bars 内的同向重复不计（生产 repeat 抑制同语义）
         if direction == last_dir and t - last_sig_t < repeat_bars:
             continue
-        entry = float(kl_all[t][4])
-        if entry <= 0:
+        prices = derive_signal_prices(
+            direction, float(kl_all[t][4]), kl_all[max(0, t - 4): t + 1],
+            rr_tp1=rr_tp1, stop_buf=stop_buf, tp2_rr=tp2_rr,
+        )
+        if prices is None:
             continue
-        if direction > 0:
-            stop = min(float(kl_all[j][3]) for j in range(t - 4, t + 1)) * (1 - stop_buf)
-        else:
-            stop = max(float(kl_all[j][2]) for j in range(t - 4, t + 1)) * (1 + stop_buf)
-        r_unit = direction * (entry - stop)
-        if r_unit <= 0:
-            continue
-        tp1 = entry + direction * rr_tp1 * r_unit
-        tp2 = entry + direction * tp2_rr * r_unit if tp2_rr and tp2_rr > 0 else 0.0
         sigs.append({
             "symbol": symbol, "direction": "long" if direction > 0 else "short",
-            "entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2,
+            **prices,
             "entry_time_ms": int(kl_all[t][0]) + HOUR_MS,  # 收盘即入场
             "meta": {
                 "src": "scan",
