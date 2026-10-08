@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.position_advisor import _notify_exit, _notify_stale  # noqa: E402
+from app.services.position_advisor import _notify_advice, _notify_stale  # noqa: E402
 
 
 @pytest.fixture()
@@ -48,8 +48,8 @@ def _first_line(card) -> str:
 
 def test_exit_card_net_label_both_nets(cards):
     """建议离场卡：测试网/正式网单的标题与首行各自带网标注"""
-    _notify_exit(_rec(True), _ADVICE, -3.2)
-    _notify_exit(_rec(False), _ADVICE, -3.2)
+    _notify_advice(_rec(True), _ADVICE, -3.2)
+    _notify_advice(_rec(False), _ADVICE, -3.2)
     assert len(cards) == 2
     tn, live = cards
     assert tn["header"]["title"]["content"].endswith("测试网 · IOUSDT")

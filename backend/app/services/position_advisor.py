@@ -12,6 +12,11 @@
 卡片（浮盈亏 + AI 结果，24h 一次不刷屏），浮亏诊断仅 action=exit 推送
 （同单连续 exit 不重复刷屏）。
 
+N-17（2026-10-08，批次②）：tighten 执行闭环——AI 判收紧时程序按规则预计算
+候选止损价（tighten_candidate，AI 不报价），守卫全过即自动撤旧挂新
+（_auto_tighten，降风险单向：新 SL 恒优于旧），结果卡片飞书知会；
+exit/reduce 仍为人工动作（卡片建议 + 按钮），自动平仓红线不动。
+
 调度约束：LLM 调用（单笔 10~30s）只在 Redis 开仓锁外执行——结算巡检
 每小时整点派发 celery 子任务、手动走 API 同步调用，绝不进巡检锁内。
 
@@ -38,6 +43,12 @@ ADVICE_WORSEN_R = 0.3       # 冷却期内全程盈亏较上次诊断恶化 ≥0
 PEAK_RETRACE_R = 0.6        # 浮盈回撤触发：峰值回撤 ≥0.6R → 诊断（2026-09-26）
 STALE_HOLD_HOURS = 24       # 滞留触发：持仓 ≥24h 且从未触发 TP1
 STALE_RECHECK_HOURS = 24    # 滞留复诊间隔（首诊后每 24h 再评估，直到 TP1/结算）
+
+# ── N-17 自动收紧守卫参数（2026-10-08）────────────────────────────
+TIGHTEN_CAND_LOW_N = 3      # 候选价参照：近 3 根已收盘 K 线极值
+TIGHTEN_CAND_ATR_K = 0.25   # 极值外推缓冲（×ATR）：极值再让一根噪音的余量
+TIGHTEN_NOISE_ATR = 0.3     # 噪音距离：新 SL 距现价 <0.3ATR 不收紧（必被扫）
+TIGHTEN_MIN_IMPROVE_R = 0.1  # 改善 <0.1R 不动挂单（频繁小改单徒增摩擦）
 
 ACTIONS = ("hold", "tighten", "reduce", "exit")
 
@@ -238,10 +249,50 @@ def build_facts(db: Session, rec) -> dict:
             "mae_pct": mae,   # 持仓期间最大不利波动%
             "ema_state": ema_state,
             "atr_pct": atr_pct,
+            "atr_abs": round(atr, 8) if atr else None,  # N-17：绝对值供候选价规则计算
             "held_bars": len(held),
         },
         "klines_recent": recent,  # 升序 OHLCV，含当前未收盘根
     }
+
+
+def tighten_candidate(facts: dict, rec) -> "float | None":
+    """程序规则预计算收紧候选价（N-17 批次②；AI 只判方向，报价权在规则——
+    prompt「禁止报价」约束不破坏）。任一守卫不满足返回 None（不执行不推送）。
+
+    口径：long 候选 = min(近 3 根已收盘 K 线低点) − 0.25×ATR，short 对称；
+    守卫：① 改善 ≥0.1R（价格差 × 剩余仓折 USDT 对比 risk_amount）；
+    ② 距现价 ≥0.3×ATR（太贴必被噪音扫掉，JST 03:31 时距止损仅 ~0.5ATR）；
+    ③ 方向正确（SL 在价格行进反侧，②蕴含但不显式判余量耗尽情形）。
+    """
+    kf = facts.get("kline_facts") or {}
+    atr = kf.get("atr_abs")
+    price = (facts.get("position_now") or {}).get("current_price")
+    klines = facts.get("klines_recent") or []
+    old_sl = float(rec.stop_loss or 0)
+    risk = float(rec.risk_amount or 0)
+    if not atr or not price or len(klines) < TIGHTEN_CAND_LOW_N + 1 \
+            or old_sl <= 0 or risk <= 0:
+        return None
+    closed = klines[:-1][-TIGHTEN_CAND_LOW_N:]
+    long = rec.direction == "long"
+    ext = (min(float(k[3]) for k in closed) if long
+           else max(float(k[2]) for k in closed))
+    cand = (ext - atr * TIGHTEN_CAND_ATR_K if long
+            else ext + atr * TIGHTEN_CAND_ATR_K)
+    from app.services.event_executor import remaining_qty
+    remaining = remaining_qty(rec)
+    improve = (cand - old_sl) * remaining if long else (old_sl - cand) * remaining
+    if improve < risk * TIGHTEN_MIN_IMPROVE_R:
+        return None
+    dist = price - cand if long else cand - price
+    if dist < atr * TIGHTEN_NOISE_ATR:
+        return None
+    if long and cand >= price:
+        return None
+    if not long and cand <= price:
+        return None
+    return round(cand, 8)
 
 
 def diagnose_trade(db: Session, rec) -> "dict | None":
@@ -283,12 +334,15 @@ def diagnose_trade(db: Session, rec) -> "dict | None":
         return None
 
     action = data.get("action") if data.get("action") in ACTIONS else "hold"
+    # N-17：tighten → 程序规则预计算候选止损价（AI 不报价），随建议落库
+    cand = tighten_candidate(facts, rec) if action == "tighten" else None
     advice = {
         "thesis_valid": bool(data.get("thesis_valid")),
         "trend_broken": bool(data.get("trend_broken")),
         "action": action,
         "reason": str(data.get("reason") or "").strip()[:150],
         "detail": str(data.get("detail") or "").strip()[:800],
+        "tighten_candidate": cand,
     }
     total = round(float(rec.realized_pnl or 0) + float(rec.unrealized_pnl or 0), 6)
     prev_action = (rec.ai_advice or {}).get("action")
@@ -311,12 +365,21 @@ def diagnose_trade(db: Session, rec) -> "dict | None":
     }))
     db.commit()
 
-    # 滞留诊断每次推送（24h 一次不刷屏，浮盈亏 + AI 结果）；
-    # 浮亏诊断沿用 docs/16 规则：仅 exit 且同单不连续重复时推送
+    # ── N-17 通知/执行路由 ──────────────────────────────────────
+    # tighten：结果通知制——守卫全过 → 自动撤旧挂新 + 结果卡片（通知制，
+    # 「我已改，知会你」）；守卫未过 → 只落库不推送（噪音控制）。
+    # exit/reduce：人工动作类——卡片建议（exit 带平仓按钮），同单连续同动作不重推。
     if stale:
         _notify_stale(rec, advice, total)
-    elif action == "exit" and prev_action != "exit":
-        _notify_exit(rec, advice, total)
+        return advice
+    if action == "tighten":
+        if cand is not None:
+            atr_abs = (facts.get("kline_facts") or {}).get("atr_abs") or 0
+            _auto_tighten(db, rec, cand, atr_abs, advice)
+        # cand=None（规则否决）→ 不推送
+        return advice
+    if action in ("exit", "reduce") and prev_action != action:
+        _notify_advice(rec, advice, total)
     return advice
 
 
@@ -334,12 +397,13 @@ def _net_label(rec) -> str:
     return "测试网" if rec.testnet else "正式网"
 
 
-def _notify_exit(rec, advice: dict, total: float) -> None:
-    """建议离场 → 飞书交互卡片推送（失败仅记日志）。调用方已保证同单不连续重复推送。
+def _notify_advice(rec, advice: dict, total: float) -> None:
+    """exit/reduce 人工动作建议卡（N-17 改名泛化：AI 永不自动平仓/减仓——
+    这两类仍走「建议+人工确认」）。失败仅记日志，调用方已保证同单不连续重复推送。
 
     卡片布局：header 红 → 全宽浮亏高亮行（金额/持仓时长）→
     四列价格栅格（方向/开仓价/现价/止损）→ AI 建议（动作加粗 +
-    thesis/trend 标注）→ 理由正文 → 市价平仓按钮（feishu_bot 回调执行）→
+    thesis/trend 标注）→ 理由正文 → 市价平仓按钮（仅 exit，feishu_bot 回调）→
     note 脚注。经自建应用发送；未配置则整体跳过。
     """
     try:
@@ -384,7 +448,9 @@ def _notify_exit(rec, advice: dict, total: float) -> None:
             "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"tag": "plain_text",
-                          "content": f"⚠️ AI 持仓建议 · 建议离场 · {_net_label(rec)} · {rec.symbol}"},
+                          "content": (f"⚠️ AI 持仓建议 · "
+                                      f"{ACTION_LABEL.get(advice.get('action'), '建议')} · "
+                                      f"{_net_label(rec)} · {rec.symbol}")},
                 "template": "red",
             },
             "elements": [
@@ -405,9 +471,10 @@ def _notify_exit(rec, advice: dict, total: float) -> None:
                  "content": advice.get("reason") or "—"}},
             ],
         }
-        # 交互按钮：自建应用发的卡片才收得到回调；点击后后台平仓并发结果卡片
+        # 交互按钮：仅 exit（自动平仓红线，reduce 涉及数量拆分留人工）；
+        # 自建应用发的卡片才收得到回调；点击后后台平仓并发结果卡片
         # （feishu_bot._exec_close）。缺 ACTION_TOKEN 时不带按钮（纯展示）
-        if settings.FEISHU_ACTION_TOKEN:
+        if advice.get("action") == "exit" and settings.FEISHU_ACTION_TOKEN:
             card["elements"] += [
                 {"tag": "action", "actions": [{
                     "tag": "button",
@@ -425,6 +492,150 @@ def _notify_exit(rec, advice: dict, total: float) -> None:
         send_app_card(card)
     except Exception as e:
         logger.warning("持仓建议飞书推送失败 %s: %s", rec.symbol, e)
+
+
+def _auto_tighten(db: Session, rec, cand: float, atr: float, advice: dict) -> bool:
+    """自动收紧止损执行（N-17 批次②，所有者 2026-10-08 决策放开）：
+    AI 判 tighten 且规则候选价合法 → 账号锁内撤旧挂新 → 飞书结果卡片。
+
+    降风险单向（新 SL 恒优于旧，与 TP1 后保本移损/ATR 跟进轨同域）；
+    自动平仓/自动开仓红线不动。守卫链（任一不过放弃、只记日志）：
+    ① 状态在跑 ② 幂等（SL 已等于候选）③ 账号凭据 ④ 噪音距离
+    （实时价复验，诊断耗时 10~30s 行情可能已变）⑤ 改善足额
+    ⑥ 全账号锁（与巡检/事件结算/手动平仓互斥，react_to_fill 同款）。
+    失败不落库（旧 SL 由下一轮巡检 _rehang_lost_sl 兜底重挂）。
+    返回是否实际执行。
+    """
+    from uuid import uuid4
+    from redis import Redis
+    from app.services.binance_trader import BinanceTrader
+    from app.services.trade_locks import (
+        OPEN_LOCK_TTL_S, acquire_open_lock, release_open_lock,
+    )
+    try:
+        if rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
+            return False
+        old_sl = float(rec.stop_loss or 0)
+        if old_sl <= 0 or atr <= 0 or abs(old_sl - cand) < 1e-12:
+            return False
+        trader = BinanceTrader(rec.account_key)
+        if not trader.configured:
+            logger.info("自动收紧 %s 跳过：账号凭据未配置", rec.symbol)
+            return False
+        cand = trader.round_price(rec.symbol, cand)
+        price = trader.price(rec.symbol)
+        long = rec.direction == "long"
+        dist = price - cand if long else cand - price
+        if dist < atr * TIGHTEN_NOISE_ATR:
+            logger.info("自动收紧 %s 放弃：新 SL %s 距现价 %s 不足 %.1f×ATR(%.6g)",
+                        rec.symbol, cand, price, TIGHTEN_NOISE_ATR, atr)
+            return False
+        from app.services.event_executor import remaining_qty
+        risk = float(rec.risk_amount or 0)
+        remaining = remaining_qty(rec)
+        improve = ((cand - old_sl) if long else (old_sl - cand)) * remaining
+        if risk <= 0 or improve < risk * TIGHTEN_MIN_IMPROVE_R:
+            logger.info("自动收紧 %s 放弃：改善 %.4fU 不足 %.1fR(%.4fU)",
+                        rec.symbol, improve, TIGHTEN_MIN_IMPROVE_R,
+                        risk * TIGHTEN_MIN_IMPROVE_R)
+            return False
+        r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        account = rec.account_key or ("testnet-1" if rec.testnet else "live-1")
+        ident = f"tighten-{uuid4().hex[:8]}"
+        if not acquire_open_lock(r, ident, wait_s=5, ttl_s=OPEN_LOCK_TTL_S,
+                                 account=account):
+            logger.info("自动收紧 %s 放弃：开仓锁被占用（下一轮触发重试）", rec.symbol)
+            return False
+        try:
+            db.refresh(rec)
+            if rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
+                return False
+            open_ids = set(trader.open_algo_orders(rec.symbol))
+            from app.services.trade_engine import _replace_sl
+            _replace_sl(db, trader, rec, open_ids, cand, reason="ai_auto_tighten")
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.exception("自动收紧 %s 失败（旧 SL %s 由巡检兜底重挂）",
+                             rec.symbol, old_sl)
+            _notify_tighten_result(rec, old_sl, cand, price, advice, ok=False, err=str(e))
+            return False
+        finally:
+            release_open_lock(r, ident, account=account)
+        _notify_tighten_result(rec, old_sl, cand, price, advice, ok=True)
+        return True
+    except Exception:
+        logger.exception("自动收紧 %s 异常", rec.symbol)
+        return False
+
+
+def _notify_tighten_result(rec, old_sl: float, new_sl: float, price: float,
+                           advice: dict, ok: bool, err: str = None) -> None:
+    """自动收紧结果卡片（N-17 通知制：tighten 不再推「建议」，只推「结果」）。
+    成功 orange 回执 / 失败红色告警，均无按钮。失败仅记日志不抛。"""
+    try:
+        from app.services.feishu_bot import configured, send_app_card
+        if not configured():
+            return
+        side = "多" if rec.direction == "long" else "空"
+        entry = float(rec.entry_price or 0)
+        risk = float(rec.risk_amount or 0)
+        from app.services.event_executor import remaining_qty
+        remaining = remaining_qty(rec)
+        loss_new = (entry - new_sl) * remaining if rec.direction == "long" \
+            else (new_sl - entry) * remaining
+        loss_old = (entry - old_sl) * remaining if rec.direction == "long" \
+            else (old_sl - entry) * remaining
+        r_unit = (loss_old - loss_new) / risk if risk > 0 else 0.0
+        held_h = (
+            round((datetime.utcnow() - rec.opened_at).total_seconds() / 3600, 1)
+            if rec.opened_at else None
+        )
+        held_txt = f"已持仓 {held_h}h · " if held_h is not None else ""
+
+        def _num(x) -> str:
+            try:
+                return f"{float(x):g}"
+            except (TypeError, ValueError):
+                return "—"
+
+        if ok:
+            header = f"🔒 止损已自动收紧 · {_net_label(rec)} · {rec.symbol}"
+            template = "orange"
+            body = (
+                f"{_net_label(rec)} {side}单 · {held_txt}现价 {_num(price)}\n"
+                f"旧止损 {_num(old_sl)} → **新止损 {_num(new_sl)}**"
+                f"（改善 {r_unit:+.2f}R）\n"
+                f"扫损 ≈ <font color='green'>{loss_new:+.2f}U"
+                f"（{loss_new / risk:+.2f}R）</font>"
+                f"　原止损为 {loss_old:+.2f}U（{loss_old / risk:+.2f}R）\n"
+                f"🤖 AI 判定：收紧止损（开仓逻辑"
+                f"{'成立' if advice.get('thesis_valid') else '已动摇'}）\n"
+                f"{advice.get('reason') or ''}"
+            )
+            note = "程序按规则价自动改挂（新 SL 恒优于旧）· 自动平仓仍需人工确认"
+        else:
+            header = f"❌ 止损自动收紧失败 · {_net_label(rec)} · {rec.symbol}"
+            template = "red"
+            body = (
+                f"{_net_label(rec)} {side}单 · 目标止损 {_num(new_sl)}\n"
+                f"旧止损 {_num(old_sl)} 未变，下一轮巡检将兜底重挂\n"
+                f"原因：{err or '未知'}"
+            )
+            note = "仓位保护未中断，可忽略或在交易记录中人工处理"
+        send_app_card({
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": header},
+                "template": template,
+            },
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": body}},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": note}]},
+            ],
+        })
+    except Exception as e:
+        logger.warning("自动收紧结果卡片推送失败 %s: %s", rec.symbol, e)
 
 
 def _notify_stale(rec, advice: dict, total: float) -> None:
