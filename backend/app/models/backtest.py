@@ -59,3 +59,23 @@ class BacktestKlineCache(Base):
     __table_args__ = (
         Index("ix_backtest_kline_cache_symbol_interval", "symbol", "interval", unique=True),
     )
+
+
+class RobustnessScan(Base):
+    """参数稳健性扫描（docs/16 P-12）：网格变体 × 同一信号集重放 → PBO/DSR 折扣判据
+
+    params: {source, symbols, days, grid:{override_key:[...]}, n_blocks}
+    summary: {n_trials, n_signals, matrix_rows, excluded_n, pbo:{...},
+              variants:[{name, overrides, decided, win_rate, exp_r, sum_r,
+                         sr, skew, kurt, dsr}], best_is, best_oos,
+              conclusion:{verdict, text}, engine_version, data_range}
+    """
+    __tablename__ = "robustness_scans"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    params: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(8), nullable=False, default="RUNNING", index=True)
+    summary: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

@@ -93,6 +93,97 @@ def _slice_fwd(kl_1h: list, entry_ms: int, n: int) -> list:
     return [k for k in kl_1h if int(k[0]) >= entry_ms][:n]
 
 
+def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
+                    days: int, fwd_slice: int) -> tuple[list, dict]:
+    """信号采样公共分支（P-06 回测与 P-12 稳健性扫描共用；等价重构自原任务体）。
+
+    返回 (signals, need)——need 为每币 1h K 线需求区间 [start_ms, end_ms]
+    （D1 预热由装载层统一加 _D1_BUFFER_DAYS）。
+    """
+    from app.models.scan import AIAnalysis, ScanResult
+    from app.models.trade import TradeRecord
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff_ms = int(cutoff.timestamp() * 1000)
+
+    if source == "history":
+        ai_conds = [
+            or_(
+                AIAnalysis.trade_decision == "suggest",
+                and_(AIAnalysis.trade_decision == "skip",
+                     AIAnalysis.veto_original.isnot(None)),
+            ),
+            AIAnalysis.created_at >= cutoff,
+        ]
+        if symbols:
+            ai_conds.append(AIAnalysis.symbol.in_(symbols))
+        ai_rows = db.execute(
+            select(AIAnalysis, ScanResult)
+            .outerjoin(ScanResult, AIAnalysis.scan_result_id == ScanResult.id)
+            .where(*ai_conds)
+        ).all()
+        tr_conds = [TradeRecord.opened_at >= cutoff]
+        if symbols:
+            tr_conds.append(TradeRecord.symbol.in_(symbols))
+        trade_rows = db.execute(
+            select(TradeRecord).where(*tr_conds)
+        ).scalars().all()
+        # 初始三价快照（OPEN 事件）：rec.stop_loss 是现值（TP1 后移保本），
+        # 回放必须用开仓时的初始 SL/TP
+        trade_ids = [r.id for r in trade_rows]
+        open_events: dict[str, dict] = {}
+        if trade_ids:
+            from app.models.trade import TradeEvent
+            for te in db.execute(
+                select(TradeEvent).where(
+                    TradeEvent.trade_record_id.in_(trade_ids),
+                    TradeEvent.event_type == "OPEN",
+                )
+            ).scalars().all():
+                open_events[str(te.trade_record_id)] = te.detail or {}
+        signals = build_signals_from_history(ai_rows, list(trade_rows),
+                                             open_events)
+        # 源A样本 K 线需求：每币 [最早入场 − 1h, 最晚入场 + fwd+1 根] + D1
+        need: dict[str, tuple[int, int]] = {}
+        for s in signals:
+            lo, hi = need.get(s["symbol"], (10**18, 0))
+            need[s["symbol"]] = (
+                min(lo, s["entry_time_ms"] - 3_600_000),
+                max(hi, s["entry_time_ms"] + (fwd_slice + 1) * 3_600_000),
+            )
+    else:
+        # 源B：滚动扫描重放。预热 window=240 根 + days×24 根；4h 背景 200 根
+        from app.models.system_config import SystemConfig
+        from app.services.scan_filters import resolve_scan_filters
+
+        flt = resolve_scan_filters(db.get(SystemConfig, 1))
+        window = 240
+        n_1h = days * 24 + window + fwd_slice + 1
+        end_1h = int(datetime.utcnow().timestamp() * 1000)
+        start_1h = end_1h - n_1h * 3_600_000
+        signals = []
+        for sym in symbols:
+            try:
+                kl = _load_klines(db, pool, sym, "1h", start_1h, end_1h)
+                htf = _load_klines(
+                    db, pool, sym, "4h",
+                    end_1h - 200 * 4 * 3_600_000, end_1h)
+                if len(kl) < window + 5:
+                    logger.warning("采样 %s: %s 1h 仅 %d 根（预热不足）跳过",
+                                   sym, source, len(kl))
+                    continue
+                signals.extend(build_signals_by_scan_replay(
+                    sym, kl, htf or [], flt))
+            except Exception as e:
+                logger.warning("采样 %s: %s 源B采样失败 %s", sym, source, e)
+                continue
+        need = {
+            sym: (start_1h - _D1_BUFFER_DAYS * 86_400_000, end_1h)
+            for sym in symbols
+        }
+    return signals, need
+
+
 @celery_app.task(name="app.tasks.backtest_tasks.run_futures_backtest_task",
                  soft_time_limit=1800, max_retries=0)
 def run_futures_backtest_task(bt_id: str) -> dict:
@@ -100,13 +191,9 @@ def run_futures_backtest_task(bt_id: str) -> dict:
     聚合统计 + 组合模拟 → 落库。"""
     from app.database import SessionLocal
     from app.models.backtest import FuturesBacktest
-    from app.models.scan import AIAnalysis, ScanResult
-    from app.models.trade import TradeRecord
     from app.services.backtest_engine import (
         BACKTEST_ENGINE_VERSION,
         aggregate,
-        build_signals_by_scan_replay,
-        build_signals_from_history,
         replay_exit,
     )
 
@@ -143,82 +230,9 @@ def run_futures_backtest_task(bt_id: str) -> dict:
         cutoff = now - timedelta(days=days)
         cutoff_ms = int(cutoff.timestamp() * 1000)
 
-        # ── 采样 ──────────────────────────────────────────────────────
-        if source == "history":
-            ai_conds = [
-                or_(
-                    AIAnalysis.trade_decision == "suggest",
-                    and_(AIAnalysis.trade_decision == "skip",
-                         AIAnalysis.veto_original.isnot(None)),
-                ),
-                AIAnalysis.created_at >= cutoff,
-            ]
-            if symbols:
-                ai_conds.append(AIAnalysis.symbol.in_(symbols))
-            ai_rows = db.execute(
-                select(AIAnalysis, ScanResult)
-                .outerjoin(ScanResult, AIAnalysis.scan_result_id == ScanResult.id)
-                .where(*ai_conds)
-            ).all()
-            tr_conds = [TradeRecord.opened_at >= cutoff]
-            if symbols:
-                tr_conds.append(TradeRecord.symbol.in_(symbols))
-            trade_rows = db.execute(
-                select(TradeRecord).where(*tr_conds)
-            ).scalars().all()
-            # 初始三价快照（OPEN 事件）：rec.stop_loss 是现值（TP1 后移保本），
-            # 回放必须用开仓时的初始 SL/TP
-            trade_ids = [r.id for r in trade_rows]
-            open_events: dict[str, dict] = {}
-            if trade_ids:
-                from app.models.trade import TradeEvent
-                for te in db.execute(
-                    select(TradeEvent).where(
-                        TradeEvent.trade_record_id.in_(trade_ids),
-                        TradeEvent.event_type == "OPEN",
-                    )
-                ).scalars().all():
-                    open_events[str(te.trade_record_id)] = te.detail or {}
-            signals = build_signals_from_history(ai_rows, list(trade_rows),
-                                                 open_events)
-            # 源A样本 K 线需求：每币 [最早入场 − 1h, 最晚入场 + fwd+1 根] + D1
-            need: dict[str, tuple[int, int]] = {}
-            for s in signals:
-                lo, hi = need.get(s["symbol"], (10**18, 0))
-                need[s["symbol"]] = (
-                    min(lo, s["entry_time_ms"] - 3_600_000),
-                    max(hi, s["entry_time_ms"] + (fwd_slice + 1) * 3_600_000),
-                )
-        else:
-            # 源B：滚动扫描重放。预热 window=240 根 + days×24 根；4h 背景 200 根
-            from app.models.system_config import SystemConfig
-            from app.services.scan_filters import resolve_scan_filters
-
-            flt = resolve_scan_filters(db.get(SystemConfig, 1))
-            window = 240
-            n_1h = days * 24 + window + fwd_slice + 1
-            end_1h = int(now.timestamp() * 1000)
-            start_1h = end_1h - n_1h * 3_600_000
-            signals = []
-            for sym in symbols:
-                try:
-                    kl = _load_klines(db, pool, sym, "1h", start_1h, end_1h)
-                    htf = _load_klines(
-                        db, pool, sym, "4h",
-                        end_1h - 200 * 4 * 3_600_000, end_1h)
-                    if len(kl) < window + 5:
-                        logger.warning("回测 %s: %s 1h 仅 %d 根（预热不足）跳过",
-                                       bt_id[:8], sym, len(kl))
-                        continue
-                    signals.extend(build_signals_by_scan_replay(
-                        sym, kl, htf or [], flt))
-                except Exception as e:
-                    logger.warning("回测 %s: %s 源B采样失败 %s", bt_id[:8], sym, e)
-                    continue
-            need = {
-                sym: (start_1h - _D1_BUFFER_DAYS * 86_400_000, end_1h)
-                for sym in symbols
-            }
+        # ── 采样（公共分支，P-12 稳健性扫描同款）──────────────────────
+        signals, need = _sample_signals(db, pool, source, symbols, days,
+                                        fwd_slice)
 
         n_signals = len(signals)
         if n_signals == 0:
@@ -317,6 +331,187 @@ def run_futures_backtest_task(bt_id: str) -> dict:
             logger.exception("回测失败状态写入失败")
         close_task(task_id, "failed", error=err)
         logger.exception("合约回测失败 id=%s", bt_id[:8])
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.backtest_tasks.run_robustness_scan_task",
+                 soft_time_limit=1800, max_retries=0)
+def run_robustness_scan_task(scan_id: str) -> dict:
+    """P-12 参数稳健性扫描：网格变体 × 同一信号集重放 → PBO/DSR 折扣判据。
+
+    采样复用 _sample_signals（与 P-06 同源）；逐变体 replay_exit 后：
+    - 每变体用自己的 decided R 序列出统计（decided/exp_r/win_rate/SR/偏度/峰度）
+      + deflated_sharpe（n_trials=网格变体数，SR 方差=跨变体样本方差）；
+    - R 矩阵只留「全部变体均 decided」的行（保守配对，P-04 口径）→ CSCV PBO。
+    纯离线报告：不改任何生产参数，拍板走 docs/16 §0 流程。
+    """
+    from uuid import UUID as _UUID
+
+    from app.database import SessionLocal
+    from app.models.backtest import RobustnessScan
+    from app.services import robustness as rb
+    from app.services.backtest_engine import BACKTEST_ENGINE_VERSION, replay_exit
+
+    task_id = open_task("robustness", f"稳健性扫描 {scan_id[:8]}")
+    db = SessionLocal()
+    pool = ExchangePool()
+    row = None
+    try:
+        row = db.get(RobustnessScan, _UUID(str(scan_id)))
+        if row is None:
+            raise ValueError(f"稳健性扫描 {scan_id} 不存在")
+        p = row.params
+        source = p.get("source", "scan")
+        symbols = list(p.get("symbols") or [])
+        days = int(p.get("days") or 30)
+        n_blocks = int(p.get("n_blocks") or rb.DEFAULT_N_BLOCKS)
+        variants = rb.expand_grid(p.get("grid"))
+        n_variants = len(variants)
+        fwd_slice = max(
+            [DEFAULT_FWD_BARS]
+            + [int(v["overrides"].get("fwd_bars") or 0) for v in variants]
+        )
+        logger.info(
+            "稳健性 %s 开始: source=%s symbols=%s days=%d 网格=%d 变体",
+            scan_id[:8], source, symbols or "(全部)", days, n_variants,
+        )
+
+        signals, need = _sample_signals(db, pool, source, symbols, days,
+                                        fwd_slice)
+        n_signals = len(signals)
+        if n_signals == 0:
+            raise ValueError("采样结果为空：区间内无可用信号（放宽 days/币种后重试）")
+
+        # ── K 线装载（P-06 主任务同款）────────────────────────────────
+        now = datetime.utcnow()
+        kl_1h: dict[str, list] = {}
+        kl_d1: dict[str, list] = {}
+        syms_needed = sorted({s["symbol"] for s in signals} | set(need))
+        for sym in syms_needed:
+            lo, hi = need.get(sym, (int((now - timedelta(days=days)).timestamp() * 1000),
+                                    int(now.timestamp() * 1000)))
+            try:
+                kl_1h[sym] = _load_klines(db, pool, sym, "1h", lo, hi)
+                kl_d1[sym] = _load_klines(
+                    db, pool, sym, "1d", lo - _D1_BUFFER_DAYS * 86_400_000, hi)
+            except Exception as e:
+                logger.warning("稳健性 %s: %s K线拉取失败 %s", scan_id[:8], sym, e)
+
+        # ── 逐变体重放 ────────────────────────────────────────────────
+        def _replay(overrides: dict) -> list[dict]:
+            out = []
+            for s in signals:
+                bars = _slice_fwd(kl_1h.get(s["symbol"], []),
+                                  s["entry_time_ms"], fwd_slice)
+                out.append(replay_exit(
+                    s["direction"], s["entry"], s["stop"], s["tp1"],
+                    s["tp2"], bars, overrides or None,
+                    kl_d1.get(s["symbol"])))
+            return out
+
+        all_results = [_replay(v["overrides"]) for v in variants]
+
+        def _decided(r: dict) -> bool:
+            return r["outcome"] not in ("open", "invalid")
+
+        # 每变体自身 decided R 序列（统计与 DSR 用）
+        per_series: list[list[float]] = []
+        for j in range(n_variants):
+            per_series.append(
+                [all_results[j][i]["r"] for i in range(n_signals)
+                 if _decided(all_results[j][i])])
+        sr_list = [rb.probabilistic_sharpe(s) for s in per_series]
+        mean_sr = sum(sr_list) / n_variants
+        sr_var = (sum((x - mean_sr) ** 2 for x in sr_list) / (n_variants - 1)
+                  if n_variants > 1 else 0.0)
+
+        # R 矩阵（全变体均 decided 的行）→ CSCV PBO
+        matrix: list[list[float]] = []
+        excluded = 0
+        for i in range(n_signals):
+            if all(_decided(all_results[j][i]) for j in range(n_variants)):
+                matrix.append([all_results[j][i]["r"] for j in range(n_variants)])
+            else:
+                excluded += 1
+
+        pbo_out = None
+        if len(matrix) >= n_blocks * 5 and n_variants >= 2:
+            pbo_out = rb.pbo_cscv(matrix, n_blocks=n_blocks)
+            oos_median = pbo_out["oos_sr_median"]
+        else:
+            oos_median = None
+            logger.warning(
+                "稳健性 %s: PBO 样本不足（矩阵 %d 行 < %d×5），跳过 CSCV",
+                scan_id[:8], len(matrix), n_blocks)
+
+        # 逐变体统计 + DSR；best_is=全样本 SR 最优，best_oos=OOS 中位 SR 最优
+        best_is_i = max(range(n_variants), key=lambda c: (sr_list[c], -c))
+        best_oos_i = (max(range(n_variants), key=lambda c: oos_median[c])
+                      if oos_median else best_is_i)
+        variant_rows = []
+        for j, v in enumerate(variants):
+            st = rb.per_variant_stats(per_series[j], sr_var, n_variants)
+            variant_rows.append({"name": v["name"], "overrides": v["overrides"],
+                                 **st})
+        best_is_name = variants[best_is_i]["name"]
+        best_oos_name = variants[best_oos_i]["name"]
+        dsr_best_is = variant_rows[best_is_i]["dsr"]
+
+        conclusion = (
+            rb.conclude(pbo_out["pbo"], dsr_best_is, best_is_name,
+                        best_oos_name)
+            if pbo_out
+            else {"verdict": "insufficient",
+                  "text": f"decided 共同样本不足（矩阵 {len(matrix)} 行），"
+                          "扩 days 或放宽币种后重扫；本轮仅出逐变体统计。",
+                  "best_is": best_is_name, "best_oos": best_oos_name,
+                  "best_is_is_best_oos": best_is_name == best_oos_name}
+        )
+
+        summary = {
+            "n_trials": n_variants,
+            "n_signals": n_signals,
+            "matrix_rows": len(matrix),
+            "excluded_n": excluded,
+            "pbo": pbo_out,
+            "variants": variant_rows,
+            "best_is": best_is_name,
+            "best_oos": best_oos_name,
+            "conclusion": conclusion,
+            "engine_version": BACKTEST_ENGINE_VERSION,
+            "data_range": {"days": days,
+                           "symbols": sorted({s["symbol"] for s in signals})},
+        }
+        row.summary = summary
+        row.status = "DONE"
+        row.finished_at = datetime.utcnow()
+        db.commit()
+        logger.info(
+            "稳健性 %s 完成: %d 信号 矩阵 %d 行 PBO=%s verdict=%s",
+            scan_id[:8], n_signals, len(matrix),
+            round(pbo_out["pbo"], 3) if pbo_out else "—", conclusion["verdict"],
+        )
+        close_task(task_id, "completed",
+                   summary=f"{source} 源 {n_signals} 信号 × {n_variants} 变体 "
+                           f"→ {conclusion['verdict']}",
+                   detail={"scan_id": str(row.id)})
+        return {"ok": True, "signals": n_signals}
+    except Exception as e:
+        db.rollback()
+        err = f"{type(e).__name__}: {e}"[:2000]
+        try:
+            row = db.get(RobustnessScan, _UUID(str(scan_id)))
+            if row is not None:
+                row.status = "FAILED"
+                row.error = err
+                row.finished_at = datetime.utcnow()
+                db.commit()
+        except Exception:
+            logger.exception("稳健性扫描失败状态写入失败")
+        close_task(task_id, "failed", error=err)
+        logger.exception("稳健性扫描失败 id=%s", scan_id[:8])
         raise
     finally:
         db.close()
