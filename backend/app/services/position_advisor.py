@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeEvent
+from app.services.event_executor import remaining_qty
 from app.services.llm_client import get_client, parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -192,9 +193,11 @@ def build_facts(db: Session, rec) -> dict:
     total = realized + unrealized
     peak = float(rec.peak_total_pnl or 0)
 
-    # 剩余仓位比例：按状态推导（与分批止盈规则一致），避免逐笔查交易所
-    remaining_ratio = {"OPENED": 1.0, "TP1_HIT": 0.25 if not rec.tp2 else 0.5, "TP2_HIT": 0.25}.get(
-        rec.status, 1.0)
+    # 剩余仓位比例：与 event_executor.remaining_qty 同源——raw 计划分批量精确推导
+    # （新行），旧行缺 raw 按 50/25/75 状态回退。2026-10-08 分批调整为 60/30/10 后
+    # 不能再按状态硬编码（新行 TP1_HIT 剩 40%、TP2_HIT 剩 10%）
+    qty_total = float(rec.qty or 0)
+    remaining_ratio = (remaining_qty(rec) / qty_total) if qty_total > 0 else 1.0
 
     # 近期K线压缩为紧凑数组（时间戳+OHLCV），上限最近 72 根控制 prompt 体积
     recent = [

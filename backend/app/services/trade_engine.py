@@ -12,7 +12,7 @@
     2026-10-02）→ exit_reason=manual 不误标止损类；TP1/TP2 成交 → 状态迁移；
     止损挂单消失（被撤/交易所异常）→ 按当前止损价补挂（裸仓保护）；
     TP1 成交 → 止损移至成本价 ± 往返费缓冲（保本，幂等，docs/24 A1''）；
-    无 TP2 的单：TP1 止盈 75%，剩余 25% 从 TP1 起跟进止损；
+    无 TP2 的单：TP1 止盈 90%，剩余 10% 从 TP1 起跟进止损（2026-10-08 调整）；
     TP2 后每次巡检跟进止损（最近3根已收盘K线极值，只收紧不放松）
 """
 import logging
@@ -86,12 +86,12 @@ def _close_side(direction: str) -> str:
 
 
 def _tp_quantities(qty: float, tp2: float) -> tuple[float, float]:
-    """TP1/TP2 分配数量：AI 给出 TP2 → 50%/25% 两档分批止盈；
-    未给出（AI 未报 / 前方无结构位程序回退清零）→ TP1 一次止盈 75%，
-    剩余 25% 从 TP1 成交起由跟进止损退出（与 TP2 后同机制）"""
+    """TP1/TP2 分配数量（2026-10-08 调整）：AI 给出 TP2 → 60%/30% 两档分批止盈；
+    未给出（AI 未报 / 前方无结构位程序回退清零 / 配置关闭 TP2）→ TP1 一次止盈 90%，
+    剩余 10% 从 TP1 成交起由跟进止损退出（与 TP2 后同机制）"""
     if tp2 and tp2 > 0:
-        return qty * 0.5, qty * 0.25
-    return qty * 0.75, 0.0
+        return qty * 0.6, qty * 0.3
+    return qty * 0.9, 0.0
 
 
 def _ai_snapshot(a: AIAnalysis) -> dict:
@@ -203,6 +203,10 @@ def _attempt_open(
     sl = float(a.stop_loss)
     tp1 = float(a.take_profit_1)
     tp2 = float(a.take_profit_2 or 0)
+    # TP2 分批止盈开关（2026-10-08，交易配置页）：默认关闭——AI 报出的 TP2 不挂档，
+    # 出场走「仅 TP1 90% + 剩余 10% 跟进」；手动接管单不受此开关限制（显式输入）
+    if not cfg.tp2_enabled:
+        tp2 = 0
     try:
         price = trader.price(symbol)
         # 风控参数解析（2026-10-02 上页面）：system_config 列可页面覆盖，
@@ -2018,7 +2022,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                     rec.status = "TP1_HIT"
                     _move_sl_breakeven(db, rt, rec, open_ids, fee_rate)  # 用户规则：TP1 后止损移至保本价（成本价±往返费缓冲）
                     if not rec.tp2:
-                        # 无 TP2：TP1 止盈 75% 后剩余仓即启用跟进止损（与 TP2 后同机制）
+                        # 无 TP2：TP1 止盈 90% 后剩余仓即启用跟进止损（与 TP2 后同机制）
                         _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
                     db.commit()
                     handled += 1

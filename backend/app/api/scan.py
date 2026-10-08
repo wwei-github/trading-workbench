@@ -370,6 +370,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         ai_analysis_enabled=cfg.ai_analysis_enabled,
         ai_pipeline_enabled=cfg.ai_pipeline_enabled,
         dual_judge_enabled=cfg.dual_judge_enabled,
+        tp2_enabled=cfg.tp2_enabled,
         ai_configured=bool(settings.AI_API_KEY),
         strategy_prompt_enabled=cfg.strategy_prompt_enabled,
         strategy_prompt=cfg.strategy_prompt or "",
@@ -532,6 +533,8 @@ def update_system_config(
         cfg.ai_pipeline_enabled = body.ai_pipeline_enabled
     if body.dual_judge_enabled is not None:
         cfg.dual_judge_enabled = body.dual_judge_enabled
+    if body.tp2_enabled is not None:
+        cfg.tp2_enabled = body.tp2_enabled
 
     # 策略提示词
     if body.strategy_prompt_enabled is not None:

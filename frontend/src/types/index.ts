@@ -248,6 +248,7 @@ export interface SystemConfig {
   monthly_breaker_ack_at?: string | null; // 月熔断人工确认时刻（只读，熔断卡片「确认复盘」写）
   weekly_breaker_ack_at?: string | null; // 周减速人工确认时刻（只读，2026-10-07）
   atr_trail_k?: number | null; // ATR 跟进倍数（Chandelier，默认 3；0=关闭 ATR 腿）
+  tp2_enabled?: boolean; // TP2 分批止盈开关（2026-10-08 默认关：仅 TP1 90%+剩余 10% 跟进；开启后 TP1 60%/TP2 30%）
   // 自动交易开关（2026-09-20 由 env 迁移进 DB，页面「系统配置」弹窗可改；
   // 2026-10-03 总开关拆分为双网独立开关可同时开启；同日删环境切换）
   trading_enabled_testnet?: boolean; // 测试网自动交易（默认开）

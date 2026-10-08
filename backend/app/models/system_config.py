@@ -119,6 +119,11 @@ class SystemConfig(Base):
     # ATR 跟进止损倍数 k（docs/13 #5，2026-10-04）：SL = max(现SL, 持仓期极值 ∓ k×ATR22)；
     # NULL=回落 env（默认 3）
     atr_trail_k: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+
+    # TP2 分批止盈开关（2026-10-08，交易配置页）：默认关闭——AI 报出的 TP2 不挂档，
+    # 出场走「仅 TP1 90% + 剩余 10% 跟进」；开启后有 TP2 的单按 TP1 60% / TP2 30%
+    # 两档分批。手动接管单不受此开关限制
+    tp2_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # 盈亏比铁律下限（NULL=默认 1.5）：risk_guard 校验 + 开仓现价复算 + AI 提示词共用
     ai_rr_min: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
     # 单笔风险比例 %（NULL=默认 3，pct 模式：风险基数 × 该比例）

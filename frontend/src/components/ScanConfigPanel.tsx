@@ -13,6 +13,18 @@ const TRIGGER_OPTIONS = [
 ]
 const ALL_TRIGGER_VALUES = TRIGGER_OPTIONS.map((o) => o.value)
 
+/** 回踩触点白名单选项（与后端 ALL_TOUCH_REFS 同源顺序；docs/22 触点体系。
+ *  金K必须与触点配合（当根/次根确认），此白名单决定允许金K出现的位置） */
+const TOUCH_REF_OPTIONS = [
+  { value: 'retest', label: '突破回测位' },
+  { value: 'swing', label: '摆动结构位' },
+  { value: 'ema21', label: 'EMA21' },
+  { value: 'ema55', label: 'EMA55' },
+  { value: 'ema144', label: 'EMA144' },
+]
+/** 默认仅三条均线（2026-10-08）：横向结构触点（retest/swing）默认关 */
+const DEFAULT_TOUCH_VALUES = ['ema21', 'ema55', 'ema144']
+
 /** 筛选参数组（2026-09-28 筛选配置上页面）：字段元数据驱动渲染 */
 const FILTER_FIELDS: { name: string; label: string; min: number; max: number; step?: number; tooltip: string }[] = [
   { name: 'min_volume_24h', label: '24h成交额门槛（USDT）', min: 0, max: 1e9, step: 100000,
@@ -65,6 +77,7 @@ export default function ScanConfigPanel() {
         swing_order: aiConfig.swing_order,
         ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
         allowed_triggers: eff.allowed_triggers ?? ALL_TRIGGER_VALUES,
+        pullback_touch_refs: eff.pullback_touch_refs ?? DEFAULT_TOUCH_VALUES,
         ai_analysis_enabled: aiConfig.ai_analysis_enabled ?? false,
         strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
         ai_pipeline_enabled: aiConfig.ai_pipeline_enabled ?? true,
@@ -105,6 +118,14 @@ export default function ScanConfigPanel() {
         || curTriggers.some((t) => !snapTriggers.includes(t))) {
         scanFilters.allowed_triggers = curTriggers
       }
+      // 回踩触点白名单：同 allowed_triggers 比对提交（后端 _touch_refs 缺键回落默认）
+      const curRefs: string[] = values.pullback_touch_refs || []
+      const snapRefs: string[] =
+        (filtersSnapshot.pullback_touch_refs as string[]) || DEFAULT_TOUCH_VALUES
+      if (curRefs.length !== snapRefs.length
+        || curRefs.some((t) => !snapRefs.includes(t))) {
+        scanFilters.pullback_touch_refs = curRefs
+      }
       if (Object.keys(scanFilters).length > 0) data.scan_filters = scanFilters
       await updateConfig(data)
       message.success('配置已保存')
@@ -126,6 +147,7 @@ export default function ScanConfigPanel() {
       form.setFieldsValue({
         ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
         allowed_triggers: eff.allowed_triggers ?? ALL_TRIGGER_VALUES,
+        pullback_touch_refs: eff.pullback_touch_refs ?? DEFAULT_TOUCH_VALUES,
       })
       message.success('筛选参数已恢复默认')
     } catch (e: any) {
@@ -218,6 +240,13 @@ export default function ScanConfigPanel() {
             tooltip="只产生勾选类型的信号（其余类型直接不进候选/AI 分析）；全部不勾视为配置错误，后端按全选处理"
           >
             <Checkbox.Group options={TRIGGER_OPTIONS} />
+          </Form.Item>
+          <Form.Item
+            label="回踩触点白名单（金K允许出现的位置）"
+            name="pullback_touch_refs"
+            tooltip="回踩金K确认触发只认勾选的触点：触碰后当根/次根出现同向金K才触发。默认仅三条均线（EMA21/55/144，55/144 另受排列与斜率门自筛）；横向结构触点（突破回测位/摆动结构位）语义强但依赖破轨/摆动质量，按需勾选。全部不勾回落默认三条均线"
+          >
+            <Checkbox.Group options={TOUCH_REF_OPTIONS} />
           </Form.Item>
           <Button size="small" icon={<UndoOutlined />} onClick={handleResetFilters} loading={saving}>
             恢复默认

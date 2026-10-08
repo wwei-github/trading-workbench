@@ -30,8 +30,9 @@ from app.services.binance_trader import BinanceTrader
 
 logger = logging.getLogger(__name__)
 
-# TP 分批回退比例（与 trade_engine._tp_quantities 同规则；常量就地写避免并行改动耦合）：
-# 有 TP2 → TP1 50% / TP2 25%（余 25% 跟进退出）；无 TP2 → TP1 一次止盈 75%
+# TP 分批回退比例：仅供**旧行** raw 缺分批数量时按开仓时点规则估算
+# （2026-10-08 前：有 TP2 → TP1 50%/TP2 25%、无 TP2 → TP1 75%；之后开仓行
+# raw 必带计划量不走此回退，新规则 60%/30%、90% 见 trade_engine._tp_quantities）：
 _TP1_RATIO_WITH_TP2, _TP2_RATIO_WITH_TP2 = 0.5, 0.25
 _TP1_RATIO_NO_TP2 = 0.75
 # TP1 实际成交数量 vs 计划分批的容差（超出记 gap）
@@ -152,12 +153,12 @@ def reconcile_trade(db: Session, rec: TradeRecord, trader: Optional[BinanceTrade
     qty_tp1 = _pick(raw.get("qty_tp1"))
     qty_tp2 = _pick(raw.get("qty_tp2"))
     if qty_tp1 is None and qty_total:
-        # 旧行 raw 缺分批数量：按引擎同规则估算并标记（有 TP2 50%/25%，无 75%/0%）
+        # 旧行 raw 缺分批数量：按开仓时点旧规则估算并标记（有 TP2 50%/25%，无 75%/0%）
         if plan_tp2:
             qty_tp1, qty_tp2 = qty_total * _TP1_RATIO_WITH_TP2, qty_total * _TP2_RATIO_WITH_TP2
         else:
             qty_tp1, qty_tp2 = qty_total * _TP1_RATIO_NO_TP2, 0.0
-        gaps.append("raw 缺分批数量，按引擎规则估算（有 TP2 50%/25%、无 75%/0%）")
+        gaps.append("raw 缺分批数量，按旧规则估算（有 TP2 50%/25%、无 75%/0%）")
     if qty_total is None:
         gaps.append("缺失开仓数量，理论 R 无法计算")
 

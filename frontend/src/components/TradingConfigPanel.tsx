@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, InputNumber, message, Button, Spin, Radio, Select, Divider } from 'antd'
+import { Modal, Form, InputNumber, message, Button, Spin, Radio, Select, Divider, Switch } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
@@ -59,6 +59,7 @@ export default function TradingConfigPanel() {
         weekly_dd_stop_pct: aiConfig.weekly_dd_stop_pct ?? null,
         monthly_dd_stop_pct: aiConfig.monthly_dd_stop_pct ?? null,
         atr_trail_k: aiConfig.atr_trail_k ?? null,
+        tp2_enabled: aiConfig.tp2_enabled ?? false,
       })
     }
   }, [open, aiConfig, form])
@@ -96,6 +97,7 @@ export default function TradingConfigPanel() {
         weekly_dd_stop_pct: values.weekly_dd_stop_pct ?? null,
         monthly_dd_stop_pct: values.monthly_dd_stop_pct ?? null,
         atr_trail_k: values.atr_trail_k ?? null,
+        tp2_enabled: values.tp2_enabled ?? false,
       }
       await updateConfig(data)
       message.success('配置已保存')
@@ -347,6 +349,16 @@ export default function TradingConfigPanel() {
             tooltip="跟进止损加 ATR 腿（Chandelier）：多单 SL=max(现SL, 持仓期最高价−k×ATR22)，空单对称，与摆动低点跟进取更紧者（只收紧不放松）；0=关闭 ATR 腿"
           >
             <InputNumber min={0} max={20} step={0.5} style={{ width: '100%' }} placeholder="3" />
+          </Form.Item>
+
+          <Form.Item
+            label="TP2 分批止盈"
+            name="tp2_enabled"
+            valuePropName="checked"
+            initialValue={false}
+            tooltip="默认关闭：AI 报出的 TP2 不挂档，出场走「TP1 一次止盈 90% + 剩余 10% 跟进」。开启后：有 TP2 的单按 TP1 60% / TP2 30% / 剩余 10% 跟进分批；手动接管单不受此开关限制"
+          >
+            <Switch checkedChildren="启用" unCheckedChildren="关闭" />
           </Form.Item>
         </Form>
         </Spin>

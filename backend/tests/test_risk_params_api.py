@@ -148,6 +148,19 @@ def test_status_reflects_breaker_switch_toggle(client, monkeypatch):
     assert lb["testnet"]["active"] is None
 
 
+def test_tp2_enabled_toggle(client):
+    """TP2 分批止盈开关（2026-10-08）：默认关 → PUT 开/关回读一致（布尔不漂移）"""
+    http, _db = client
+    body = http.get("/api/scans/config").json()
+    assert body["tp2_enabled"] is False
+
+    assert http.put("/api/scans/config", json={"tp2_enabled": True}).status_code == 200
+    assert http.get("/api/scans/config").json()["tp2_enabled"] is True
+
+    assert http.put("/api/scans/config", json={"tp2_enabled": False}).status_code == 200
+    assert http.get("/api/scans/config").json()["tp2_enabled"] is False
+
+
 @pytest.mark.parametrize("field,value", [
     ("min_recommendation", 101),
     ("min_recommendation", -1),

@@ -29,9 +29,10 @@ TOUCH_EMA21 = "ema21"      # 趋势动态价值区（原口径）
 TOUCH_EMA55 = "ema55"      # 中深度回撤（排列+斜率门）
 TOUCH_EMA144 = "ema144"    # 深回撤（排列+斜率门，K线窗口≥300 才实际生效）
 ALL_TOUCH_REFS = (TOUCH_RETEST, TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA55, TOUCH_EMA144)
-# 默认全开（2026-09-29）：5 类触点各有语义（横向结构 > 均线），由门控自筛——
-# retest 无破轨事件自然不命中，ema55/144 有数据/排列/斜率门，ema144 窗口不足自动跳过
-DEFAULT_TOUCH_REFS = ALL_TOUCH_REFS
+# 默认仅三条均线（2026-10-08 调整）：趋势动态价值区/中深度回撤/深回撤；横向结构
+# 触点（retest/swing）默认关——语义不匹配时易产生低质量触点命中，需在配置弹窗
+# 显式勾选启用。ema55/144 仍受排列/斜率/数据门自筛，ema144 窗口不足自动跳过
+DEFAULT_TOUCH_REFS = (TOUCH_EMA21, TOUCH_EMA55, TOUCH_EMA144)
 
 # scan_filters JSONB 的合法键集（PUT /config 校验与前端字段一一对应）
 SCAN_FILTER_KEYS = (

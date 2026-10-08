@@ -514,6 +514,11 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS atr_trail_k NUMERIC(10, 6),
               ADD COLUMN IF NOT EXISTS market_wide_pause_pct NUMERIC(10, 6)
         """))
+        # TP2 分批止盈开关（2026-10-08）：默认关——出场走「仅 TP1 90% + 剩余 10% 跟进」
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS tp2_enabled BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
         # 影子模式打标表（2026-10-04，docs/14）：候选信号特征「只计算+打标+记录，
         # 不参与决策」，事后按 标记×结果 分组统计评估升格/关闭
         conn.execute(text("""

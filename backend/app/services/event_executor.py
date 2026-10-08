@@ -149,8 +149,9 @@ def remaining_qty(rec: TradeRecord) -> float:
 
     raw.qty_tp1/qty_tp2 是**开仓时写入的计划量**（trader.round_qty 后锚定，
     未成交也占位）——已减档必须与状态对齐：OPENED 一档未减、TP1_HIT 减
-    q1、TP2_HIT 减 q1+q2。raw 缺档时按 50/25/25 状态回退（2026-10-07 修复：
-    初版把未成交的计划档一并减掉，uPnL/peak 系统性低估，浮盈回撤诊断延迟）。
+    q1、TP2_HIT 减 q1+q2。raw 缺档（2026-10-08 前旧行）按旧规则 50/25/75
+    状态回退（2026-10-07 修复：初版把未成交的计划档一并减掉，uPnL/peak
+    系统性低估，浮盈回撤诊断延迟；新行 60/30/90 比例由 raw 精确承载）。
     """
     qty = float(rec.qty or 0)
     raw = rec.raw or {}

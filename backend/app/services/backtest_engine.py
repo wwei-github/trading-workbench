@@ -72,11 +72,11 @@ def _resolve_params(overrides: Optional[dict]) -> dict:
 
 
 def _tp_quantities(tp2: float) -> tuple[float, float, float]:
-    """分批数量（生产 _tp_quantities 铁律，不开放配置）：
-    有 TP2 → TP1 50% / TP2 25% / 剩 25% 跟进；无 → TP1 75% / 剩 25% 跟进。"""
+    """分批数量（生产 _tp_quantities 铁律，不开放配置；2026-10-08 同步 60/30/10）：
+    有 TP2 → TP1 60% / TP2 30% / 剩 10% 跟进；无 → TP1 90% / 剩 10% 跟进。"""
     if tp2 and tp2 > 0:
-        return 0.50, 0.25, 0.25
-    return 0.75, 0.0, 0.25
+        return 0.60, 0.30, 0.10
+    return 0.90, 0.0, 0.10
 
 
 def _atr_series_daily(daily_bars: list, period: int) -> list[float]:
