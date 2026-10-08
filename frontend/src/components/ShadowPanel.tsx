@@ -69,6 +69,38 @@ function deltaR(v: number | null | undefined) {
   )
 }
 
+// P-08 序贯判读标签（CARD-07/09）：SPRT 早停三态 + 悬停展示读数
+// h1=早停达标方向 / h0=早停否定方向 / continue=续观察（docs/14 §七 预注册）
+function SeqTag({ seq }: { seq: ShadowFeatureReport['sequential'] }) {
+  if (!seq) return null
+  const meta = seq.verdict === 'h1'
+    ? { color: 'green' as const, label: '序贯达标（早停）' }
+    : seq.verdict === 'h0'
+      ? { color: 'red' as const, label: '序贯否定（早停）' }
+      : { color: 'default' as const, label: '序贯：继续观察' }
+  return (
+    <Tooltip
+      title={
+        <div style={{ maxWidth: 340 }}>
+          <div>P-08 序贯检验（Wald SPRT，α=0.05 / β=0.20，参数预注册不可回调）</div>
+          <div>LLR = {seq.llr.toFixed(2)}（停用界 [{seq.lower.toFixed(2)}, {seq.upper.toFixed(2)}]）· n = {seq.n}</div>
+          {seq.wins !== undefined && seq.posterior && (
+            <div>
+              比例卡：{seq.wins}/{seq.n} · Beta 后验均值 {(seq.posterior.mean * 100).toFixed(1)}%
+              （95% CI [{(seq.posterior.ci95_low * 100).toFixed(1)}%, {(seq.posterior.ci95_high * 100).toFixed(1)}%]）
+            </div>
+          )}
+          {seq.mean !== undefined && (
+            <div>均值卡：样本均值 {seq.mean.toFixed(2)}R（预注册 δ = {seq.delta}R）</div>
+          )}
+        </div>
+      }
+    >
+      <Tag color={meta.color}>{meta.label}</Tag>
+    </Tooltip>
+  )
+}
+
 function FeatureCard({ report }: { report: ShadowFeatureReport }) {
   const base = report.baseline
 
@@ -141,6 +173,7 @@ function FeatureCard({ report }: { report: ShadowFeatureReport }) {
           {report.sufficient
             ? <Tag color="green">样本达标（{report.min_sample}）</Tag>
             : <Tag color="orange">观察中 {base.counted}/{report.min_sample}</Tag>}
+          <SeqTag seq={report.sequential} />
         </Space>
       }
       extra={<Text type="secondary" style={{ fontSize: 12 }}>近 {report.window_days} 天</Text>}
@@ -292,6 +325,7 @@ function ReentryFeatureCard({ report }: { report: ShadowFeatureReport }) {
           {report.sufficient
             ? <Tag color="green">样本达标（{report.min_sample}）</Tag>
             : <Tag color="orange">观察中 {base.n}/{report.min_sample}</Tag>}
+          <SeqTag seq={report.sequential} />
         </Space>
       }
       extra={<Text type="secondary" style={{ fontSize: 12 }}>近 {report.window_days} 天 · 正式网</Text>}
