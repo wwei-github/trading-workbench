@@ -95,6 +95,33 @@ def env(monkeypatch):
     app.dependency_overrides.pop(get_db, None)
 
 
+# ── 采样公共分支（不打桩直调，防重构丢 import 的 NameError 回归）────────
+
+
+def test_sample_signals_history_unpatched():
+    """history 源空库：真实跑通（不 NameError）返回空信号。"""
+    from app.tasks.backtest_tasks import _sample_signals
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    signals, need = _sample_signals(db, None, "history", [], 30, 24)
+    assert signals == []
+    assert need == {}
+
+
+def test_sample_signals_scan_requires_config():
+    """scan 源：SystemConfig 缺行时 resolve_scan_filters 走默认（不炸）。"""
+    from app.tasks.backtest_tasks import _sample_signals
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    signals, need = _sample_signals(db, None, "scan", ["XUSDT"], 3, 24)
+    assert signals == []                       # 无 K 线可拉（pool=None 会被 except 吞）
+    assert "XUSDT" in need                     # need 覆盖请求币种
+
+
 # ── API ───────────────────────────────────────────────────────────────
 
 

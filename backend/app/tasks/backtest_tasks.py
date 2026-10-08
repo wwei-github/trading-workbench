@@ -102,9 +102,12 @@ def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
     """
     from app.models.scan import AIAnalysis, ScanResult
     from app.models.trade import TradeRecord
+    from app.services.backtest_engine import (
+        build_signals_by_scan_replay,
+        build_signals_from_history,
+    )
 
     cutoff = datetime.utcnow() - timedelta(days=days)
-    cutoff_ms = int(cutoff.timestamp() * 1000)
 
     if source == "history":
         ai_conds = [
@@ -386,12 +389,12 @@ def run_robustness_scan_task(scan_id: str) -> dict:
 
         # ── K 线装载（P-06 主任务同款）────────────────────────────────
         now = datetime.utcnow()
+        cutoff_ms = int(now.timestamp() * 1000) - days * 86_400_000
         kl_1h: dict[str, list] = {}
         kl_d1: dict[str, list] = {}
         syms_needed = sorted({s["symbol"] for s in signals} | set(need))
         for sym in syms_needed:
-            lo, hi = need.get(sym, (int((now - timedelta(days=days)).timestamp() * 1000),
-                                    int(now.timestamp() * 1000)))
+            lo, hi = need.get(sym, (cutoff_ms, int(now.timestamp() * 1000)))
             try:
                 kl_1h[sym] = _load_klines(db, pool, sym, "1h", lo, hi)
                 kl_d1[sym] = _load_klines(
