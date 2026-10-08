@@ -130,11 +130,12 @@ def test_legacy_fallback_rec_entry(client):
 
 def _kline_capture_fixture(monkeypatch):
     """独立内存库 + get_klines_range 参数捕获桩（不复用上方 client fixture，
-    因其桩不记录请求参数）。返回 (请求函数, captured)。"""
+    因其桩不记录请求参数）。返回 (请求函数, captured)。
+    _get(trade, params=None)：params 透传查询串（周期切换测试用）。"""
     captured = []
 
     def _fake(self, symbol, interval, bars, end_ms):
-        captured.append({"bars": bars, "end_ms": end_ms})
+        captured.append({"interval": interval, "bars": bars, "end_ms": end_ms})
         base = int(datetime(2026, 10, 1, 0, 0).timestamp() * 1000)
         return [[base + i * 3_600_000, 10.0, 10.2, 9.8, 10.0, 1.0] for i in range(3)]
 
@@ -155,8 +156,8 @@ def _kline_capture_fixture(monkeypatch):
     app.dependency_overrides[get_db] = _override
     monkeypatch.setattr(trades_api.ExchangePool, "get_klines_range", _fake)
 
-    def _get(trade: TradeRecord):
-        return TestClient(app).get(f"/api/trades/{trade.id}/klines")
+    def _get(trade: TradeRecord, params=None):
+        return TestClient(app).get(f"/api/trades/{trade.id}/klines", params=params)
 
     return _get, session, captured
 
@@ -198,3 +199,46 @@ def test_running_trade_no_after_window(monkeypatch):
     assert captured[0]["bars"] == 100 + held
     # end_ms = 端点执行时刻的 UTC epoch − 1ms，必然落在真实当前时间附近（±1h 内）
     assert abs(captured[0]["end_ms"] - datetime.now(timezone.utc).timestamp() * 1000) < 3_600_000
+
+
+# ── 5. 周期切换（2026-10-08 弹窗 1h/4h 复盘）──────────────────────────
+
+
+def test_klines_interval_param_4h(monkeypatch):
+    """interval=4h：透传交易所区间请求按 4h 口径计算，响应 interval 回显 4h"""
+    from datetime import timedelta, timezone
+
+    _get, db, captured = _kline_capture_fixture(monkeypatch)
+    rec = _trade(db, opened_at=datetime.utcnow() - timedelta(hours=10))
+
+    r = _get(rec, params={"interval": "4h"})
+    assert r.status_code == 200
+    assert r.json()["interval"] == "4h"
+    assert len(captured) == 1
+    assert captured[0]["interval"] == "4h"
+    # 10h 持仓按 4h 一根 = 3 根（ceil），bars = 100 + 3（无平仓后窗）
+    assert captured[0]["bars"] == 103
+
+
+def test_klines_interval_param_default_config(monkeypatch):
+    """不带 interval：回落 cfg.kline_interval（默认 1h），历史行为不变"""
+    from datetime import timedelta
+
+    _get, db, captured = _kline_capture_fixture(monkeypatch)
+    rec = _trade(db, opened_at=datetime.utcnow() - timedelta(hours=10))
+
+    r = _get(rec)
+    assert r.status_code == 200
+    assert r.json()["interval"] == "1h"
+    assert captured[0]["interval"] == "1h"
+
+
+def test_klines_interval_param_invalid(monkeypatch):
+    """interval=7x：400，不触交易所"""
+    _get, db, captured = _kline_capture_fixture(monkeypatch)
+    rec = _trade(db)
+
+    r = _get(rec, params={"interval": "7x"})
+    assert r.status_code == 400
+    assert "不支持的周期" in r.json()["detail"]
+    assert captured == []

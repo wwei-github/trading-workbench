@@ -196,8 +196,14 @@ export const scanApi = {
     events: (tradeId: string) =>
       api.get<TradeEvent[]>(`/trades/${tradeId}/events`).then((r) => r.data),
     // 交易复盘K线（开单前100根 + 持仓期间，含初始止损止盈与关键事件）
-    klines: (tradeId: string) =>
-      api.get<TradeKlineData>(`/trades/${tradeId}/klines`, { timeout: 60000 }).then((r) => r.data),
+    // interval 可选（1h/4h），缺省用后端 cfg.kline_interval——弹窗内切换周期
+    klines: (tradeId: string, interval?: string) =>
+      api
+        .get<TradeKlineData>(`/trades/${tradeId}/klines`, {
+          params: interval ? { interval } : undefined,
+          timeout: 60000,
+        })
+        .then((r) => r.data),
     // 逐笔 R 泄漏对账（docs/24 A1）：计划 vs 实际 vs 泄漏分解（可能惰性查交易所回补，放宽超时）
     reconciliation: (tradeId: string) =>
       api

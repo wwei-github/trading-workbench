@@ -71,17 +71,23 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [updating, setUpdating] = useState(false)
+  // 复盘周期切换（2026-10-08）：null=未定（首拉用后端 cfg.kline_interval），
+  // 首拉后固化为服务端返回值，用户可切 1h/4h
+  const [interval, setIntervalState] = useState<string | null>(null)
 
-  // 拉取复盘数据（tradeId 变化重拉）
+  // 拉取复盘数据（tradeId / interval 变化重拉）
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setError(null)
     setData(null)
     scanApi.trades
-      .klines(tradeId)
+      .klines(tradeId, interval ?? undefined)
       .then((d) => {
-        if (!cancelled) setData(d)
+        if (!cancelled) {
+          setData(d)
+          if (interval == null) setIntervalState(d.interval)
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(e?.response?.data?.detail || '复盘K线获取失败')
@@ -92,22 +98,28 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
     return () => {
       cancelled = true
     }
-  }, [tradeId])
+  }, [tradeId, interval])
 
   // 「更新」按钮：重拉复盘数据（在跑单的持仓区间会延长）
   const handleUpdate = useCallback(async () => {
     setUpdating(true)
     try {
-      setData(await scanApi.trades.klines(tradeId))
+      setData(await scanApi.trades.klines(tradeId, interval ?? undefined))
       setError(null)
     } catch (e: any) {
       setError(e?.response?.data?.detail || '复盘K线更新失败')
     } finally {
       setUpdating(false)
     }
-  }, [tradeId])
+  }, [tradeId, interval])
 
   const isLong = data?.direction !== 'short'
+
+  // 周期切换档位：服务端默认档（cfg.kline_interval，可配非 1h/4h）+ 1h/4h，去重保序
+  const intervalOptions = useMemo(() => {
+    const vals = [data?.interval ?? '1h', '1h', '4h']
+    return [...new Set(vals)].map((v) => ({ label: v, value: v }))
+  }, [data?.interval])
 
   // 事件箭头标记（useMemo 保持引用稳定：ChartCore 以引用判断是否重应用标记）
   const extraMarkers = useMemo<SeriesMarker<UTCTimestamp>[]>(() => {
@@ -280,7 +292,8 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 420 }}>
       <ChartCore
-        chartKey={tradeId}
+        // key 含 interval：切换周期重建图表（数据周期变了，指标/可视区需重算）
+        chartKey={`${tradeId}-${interval ?? ''}`}
         watermark={`${data.symbol} ${isLong ? '做多' : '做空'}`}
         label={data.symbol}
         data={data}
@@ -290,6 +303,9 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
         height={CHART_HEIGHT}
         onUpdate={handleUpdate}
         updating={updating}
+        interval={interval ?? '1h'}
+        onIntervalChange={(v) => setIntervalState(v)}
+        intervalOptions={intervalOptions}
         headerExtra={
           // 复盘信息卡：区间说明 + 三价摘要（与扫描图工具栏/图例同栈不遮挡）
           <div

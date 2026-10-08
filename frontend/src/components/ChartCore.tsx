@@ -81,10 +81,12 @@ interface Props {
   // 提供则显示「更新」按钮（父组件负责重拉数据）
   onUpdate?: () => void
   updating?: boolean
-  // 周期切换（2026-09-28 扫描图用）：提供则显示 1h/4h 切换按钮组，
-  // 值变化由父组件重拉数据；复盘图不传（复盘数据周期固定）
-  interval?: '1h' | '4h'
-  onIntervalChange?: (v: '1h' | '4h') => void
+  // 周期切换（2026-09-28 扫描图用；2026-10-08 复盘图也用）：提供 onIntervalChange
+  // 则显示切换按钮组，值变化由父组件重拉数据；档位默认 1h/4h，可用
+  // intervalOptions 定制（复盘图需含服务端默认档，cfg.kline_interval 可配非 1h/4h）
+  interval?: string
+  onIntervalChange?: (v: string) => void
+  intervalOptions?: { label: string; value: string }[]
   // 容器无高度时的兜底高度
   height: number
 }
@@ -238,7 +240,7 @@ function drawAiPosition(
 export default function ChartCore({
   chartKey, watermark, label, data, from,
   ai, extraMarkers, drawOverlay, headerExtra, onUpdate, updating,
-  interval, onIntervalChange, height,
+  interval, onIntervalChange, intervalOptions, height,
 }: Props) {
   // 全局涨跌配色（切换入口在页面顶部）/ 技术指标（store 共享，切换后所有图表同步生效）
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -683,10 +685,12 @@ export default function ChartCore({
               value={interval ?? '1h'}
               onChange={(e) => onIntervalChange(e.target.value)}
               optionType="button"
-              options={[
-                { label: '1h', value: '1h' },
-                { label: '4h', value: '4h' },
-              ]}
+              options={
+                intervalOptions ?? [
+                  { label: '1h', value: '1h' },
+                  { label: '4h', value: '4h' },
+                ]
+              }
             />
           )}
           {onUpdate && (

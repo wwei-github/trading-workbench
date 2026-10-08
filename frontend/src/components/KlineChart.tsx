@@ -81,7 +81,7 @@ export default function KlineChart({ symbol, limit = 500, ai, refreshKey = 0 }: 
         onUpdate={handleUpdate}
         updating={updating}
         interval={interval}
-        onIntervalChange={setInterval}
+        onIntervalChange={(v) => setInterval(v as '1h' | '4h')}
         height={CHART_HEIGHT}
       />
     </div>

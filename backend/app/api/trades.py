@@ -672,7 +672,11 @@ def run_advice(trade_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{trade_id}/klines")
-def trade_klines(trade_id: str, db: Session = Depends(get_db)):
+def trade_klines(
+    trade_id: str,
+    interval: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """交易复盘K线：开单前 100 根 + 持仓期间直到止损/平仓 + 平仓后至多 5 根，附初始止损止盈与关键事件
 
     - 初始 SL/TP 取自 OPEN 事件 detail（记录上的 stop_loss 是现值，跟踪止损后已被更新）
@@ -680,6 +684,8 @@ def trade_klines(trade_id: str, db: Session = Depends(get_db)):
       平仓后不足 5 根时交易所有多少给多少，endTime 超前于最新K线不会报错）
     - 总根数 = 100 + 持仓根数 + 平仓后根数，上限 500（超长持仓自动压缩开仓前根数，持仓段始终完整）
     - 历史区间直接请求交易所（多所故障转移），不读不写缓存
+    - interval（2026-10-08）：可选查询参数（1h/4h 等），缺省回落 cfg.kline_interval
+      ——弹窗内切换周期复盘，事件箭头按事件时刻映射到所在K线，与周期无关
     """
     try:
         rec = db.get(TradeRecord, UUID(trade_id))
@@ -691,7 +697,11 @@ def trade_klines(trade_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="该记录未实际开仓，无复盘K线")
 
     cfg = db.get(SystemConfig, 1)
-    interval = cfg.kline_interval if cfg else "1h"
+    if interval:
+        if interval not in _INTERVAL_MINUTES:
+            raise HTTPException(status_code=400, detail=f"不支持的周期：{interval}")
+    else:
+        interval = cfg.kline_interval if cfg else "1h"
     interval_ms = _INTERVAL_MINUTES.get(interval, 60) * 60_000
 
     # DB 存 UTC naive 时间戳，显式按 UTC 换算（naive.timestamp() 会按本地时区解释）
