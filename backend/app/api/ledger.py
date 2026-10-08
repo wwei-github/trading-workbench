@@ -185,3 +185,11 @@ def ledger_backfill(body: LedgerBackfillIn, db: Session = Depends(get_db)):
     run_ledger_backfill_task.delay(body.days, body.symbols)
     return {"ok": True, "days": body.days,
             "symbols": body.symbols or "(全部，volume 前缀)"}
+
+
+@router.get("/n16")
+def ledger_n16(days: int = Query(14, ge=1, le=60), db: Session = Depends(get_db)):
+    """N-16 入场抑制·度量先行（docs/16 §0.2 #3）：追高度 × 反抽深度两维度
+    分桶读数（账本 decided 行）。K线按币缓存拉取，首跑较慢属正常。"""
+    from app.services.n16_research import run_n16_research
+    return run_n16_research(db, days)
