@@ -30,6 +30,9 @@ const BUCKET_META: Record<string, string> = {
   no_sweep: '干净触碰',
   rec60_69: '评分 60~69（弱共振段）',
   rec70plus: '评分 70+（多重共振段）',
+  r2_high: '强趋势 R²≥0.7',
+  r2_mid: '弱趋势 R²0.4~0.7',
+  r2_low: '震荡 R²<0.4',
 }
 const CONTROL_BUCKETS = new Set(['confirm', 'normal']) // 对照桶（非信号桶）
 

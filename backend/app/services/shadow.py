@@ -107,6 +107,38 @@ def compute_oi_conf_scan_stub(klines: list[list]) -> None:
     return None
 
 
+def compute_r2_slope(klines: list[list]) -> Optional[dict]:
+    """CARD-10 r2_slope：趋势质量（R²/slope，docs/16 S-10，2026-10-08 立卡）。
+
+    口径：近 24 根已收盘 1h 收盘价最小二乘回归（swing.linear_regression，
+    与 CARD-07 结构 R² 同引擎）——r² = 拟合优度，slope_pct = slope ÷ 均价
+    × 100（每根 %，跨币可比）。桶：
+    - r2_high：r² ≥ 0.7（强趋势，回踩/突破延续概率高）
+    - r2_mid：0.4 ≤ r² < 0.7（弱趋势，观察列不进判定）
+    - r2_low：r² < 0.4（震荡，假信号重灾区）
+    slope 方向不进分桶（方向由票数/4h 背景闸门承担），记 value_json 观察。
+    样本不足（<24 根）返回 None。背景：ScanResult.r_squared 列历史门槛废弃时
+    已置 0 恒空，本特征影子侧自算（零成本，与生产判定零耦合）。
+    """
+    from app.services.strategy.swing import linear_regression
+
+    closed = klines[:-1][-24:] if klines else []
+    if len(closed) < 24:
+        return None
+    closes = np.array([float(k[4]) for k in closed], dtype=float)
+    slope, _icpt, r2 = linear_regression(np.arange(len(closes)), closes)
+    mean_px = float(closes.mean())
+    slope_pct = (float(slope) / mean_px * 100.0) if mean_px > 0 else 0.0
+    r2 = float(r2)
+    if r2 >= 0.7:
+        bucket = "r2_high"
+    elif r2 >= 0.4:
+        bucket = "r2_mid"
+    else:
+        bucket = "r2_low"
+    return {"r2": round(r2, 4), "slope_pct": round(slope_pct, 4), "bucket": bucket}
+
+
 # ── 特征注册表（docs/14 §四）────────────────────────────────────────────
 
 @dataclass
@@ -124,6 +156,11 @@ SHADOW_FEATURES: dict[str, ShadowFeature] = {
         ShadowFeature("vol_regime", "波动率状态（ATR14/ATR100）", "CARD-03", compute_vol_regime, 100),
         ShadowFeature("macd_div", "MACD 背离（缠论背驰子集）", "CARD-04", compute_macd_div, 60),
         ShadowFeature("oi_conf", "OI 确认度（24h ΔOI）", "CARD-02", compute_oi_conf_scan_stub, 60),
+        # 趋势质量（docs/16 S-10，CARD-10，2026-10-08 立卡）：r²/slope 影子侧
+        # 自算（ScanResult.r_squared 历史门槛废弃时置 0 恒空）。min_sample=120
+        # 为展示口径（判定桶 r2_high/r2_low 各 ≥60，r2_mid 不进判定——真实
+        # 判据在 docs/14 §七 CARD-10 文本）
+        ShadowFeature("r2_slope", "趋势质量（R²/slope）", "CARD-10", compute_r2_slope, 120),
         # 早期保护反事实（docs/15 §五）：trade_record 宿主，打标不走扫描侧
         # compute 循环（由 tag_trade_close 在归因任务打标），注册仅为让
         # build_report 输出元数据与反事实统计。min_sample = 预注册 decided 门槛
