@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 FILL_DEBOUNCE_S = 3       # 同 (账号, 币) 成交事件冷却：部分成交/多腿事件风暴兜底
 MARK_REFRESH_S = 60       # 同 (账号, 币) mark price 快照刷新节流
+ADVICE_DISPATCH_COOLDOWN_S = 600  # N-17：同单诊断派发冷却——LLM 失败不落库时
+                                  # advice_due 条件持续为真，60s 采样会把重试从
+                                  # 巡检模式的 1 次/h 放大成 60 次/h（broker 堆积），
+                                  # 进程内冷却封顶 6 次/h，与巡检路径语义兼容
 LIQ_WARN_PCT = 0.10       # 爆仓距离预警：mark 距强平价 <10%
 LIQ_WARN_COOLDOWN_S = 3600
 _LOCK_WAIT_S = 10         # 事件结算等锁上限（巡检一轮通常 1-2 分钟内持锁）
@@ -218,11 +222,14 @@ def refresh_mark_pnl(account_key: str, symbol: str, mark_price: float) -> bool:
         db.commit()
         # N-17（2026-10-08）：快照刷新后做诊断触发判定——60s 粒度采样，
         # 频率仍由 advice_due 的 3h 冷却/恶化线/滞留规则把关；只派发 celery
-        # 子任务（毫秒级返回），LLM 在子任务内锁外执行，绝不进任何 Redis 锁
+        # 子任务（毫秒级返回），LLM 在子任务内锁外执行，绝不进任何 Redis 锁。
+        # 派发另有 10 分钟进程内冷却：LLM 失败不落库 → advice_due 持续为真，
+        # 无冷却时重试风暴 60 次/h/单（巡检模式仅 1 次/h）
         try:
             from datetime import datetime
             from app.services.position_advisor import advice_due
-            if settings.AI_API_KEY and advice_due(rec, total, datetime.utcnow()):
+            if settings.AI_API_KEY and advice_due(rec, total, datetime.utcnow()) \
+                    and _cooldown_ok(f"advice:{rec.id}", ADVICE_DISPATCH_COOLDOWN_S):
                 from app.tasks.trade_tasks import run_position_advice
                 run_position_advice.delay(str(rec.id))
         except Exception:

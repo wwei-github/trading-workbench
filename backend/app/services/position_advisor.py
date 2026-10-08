@@ -454,10 +454,13 @@ def _notify_advice(rec, advice: dict, total: float) -> None:
                 "template": "red",
             },
             "elements": [
-                # 全宽浮亏高亮行：核心结论一眼可见
+                # 全宽浮盈亏高亮行：核心结论一眼可见（N-17：reduce 可发生在
+                # 浮盈回吐早期，label/颜色随符号——原版硬编码「浮亏」红色）
                 {"tag": "div", "text": {"tag": "lark_md", "content":
                  f"{_net_label(rec)} {side}单{held_txt}\n"
-                 f"🔻 **浮亏　<font color='red'>{total:+.2f} USDT</font>**"}},
+                 f"{'🔻 浮亏' if total < 0 else '📈 浮盈'}　"
+                 f"<font color='{('red' if total < 0 else 'green')}'>"
+                 f"{total:+.2f} USDT</font>"}},
                 # 四列价格栅格（等宽，窄屏自动堆叠）
                 {"tag": "column_set", "flex_mode": "stretch", "columns": [
                     _col("方向", side),
@@ -518,7 +521,9 @@ def _auto_tighten(db: Session, rec, cand: float, atr: float, advice: dict) -> bo
         old_sl = float(rec.stop_loss or 0)
         if old_sl <= 0 or atr <= 0 or abs(old_sl - cand) < 1e-12:
             return False
-        trader = BinanceTrader(rec.account_key)
+        # 存量单 account_key 可能为 NULL：与下方锁键同款回退（docs/17 前旧数据）
+        trader = BinanceTrader(
+            rec.account_key or ("testnet-1" if rec.testnet else "live-1"))
         if not trader.configured:
             logger.info("自动收紧 %s 跳过：账号凭据未配置", rec.symbol)
             return False
@@ -606,9 +611,9 @@ def _notify_tighten_result(rec, old_sl: float, new_sl: float, price: float,
                 f"{_net_label(rec)} {side}单 · {held_txt}现价 {_num(price)}\n"
                 f"旧止损 {_num(old_sl)} → **新止损 {_num(new_sl)}**"
                 f"（改善 {r_unit:+.2f}R）\n"
-                f"扫损 ≈ <font color='green'>{loss_new:+.2f}U"
-                f"（{loss_new / risk:+.2f}R）</font>"
-                f"　原止损为 {loss_old:+.2f}U（{loss_old / risk:+.2f}R）\n"
+                f"扫损 ≈ <font color='green'>{(-loss_new):+.2f}U"
+                f"（{(-loss_new / risk):+.2f}R）</font>"
+                f"　原止损为 {(-loss_old):+.2f}U（{(-loss_old / risk):+.2f}R）\n"
                 f"🤖 AI 判定：收紧止损（开仓逻辑"
                 f"{'成立' if advice.get('thesis_valid') else '已动摇'}）\n"
                 f"{advice.get('reason') or ''}"

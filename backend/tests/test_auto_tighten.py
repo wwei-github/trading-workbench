@@ -189,6 +189,27 @@ def test_auto_tighten_success(db, env, monkeypatch):
     assert env.acq == [ACC] and env.rel == [ACC]
 
 
+def test_auto_tighten_cancels_old_sl_order(db, env, monkeypatch):
+    """真实在跑单 raw.sl_order_id 存在：先撤旧 SL algo 单再挂新（_replace_sl 链）"""
+    rec = _rec(db, raw={"sl_order_id": 111})
+    assert pa._auto_tighten(db, rec, 98.35, 1.0, _ADVICE) is True
+    assert env.trader.calls == [("cancel", 111), ("hang", "SELL", 98.35)]
+    db.refresh(rec)
+    assert rec.raw["sl_order_id"] == 999  # 新单号回填
+
+
+def test_auto_tighten_card_loss_sign(db, env, monkeypatch):
+    """N-17 检测修复：扫损金额以负号显示（损失方向），改善 R 为正"""
+    rec = _rec(db)
+    pa._auto_tighten(db, rec, 98.35, 1.0, _ADVICE)
+    body = env.cards[0]["elements"][0]["text"]["content"]
+    # entry 100 / qty 1 / risk 2：旧 SL 98 → 旧扫损 -2.00U（-1.00R）；
+    # 新 SL 98.35 → 新扫损 -1.65U（-0.83R）；改善 0.35U = +0.17R
+    assert "-1.65U" in body and "-0.83R" in body
+    assert "-2.00U" in body and "-1.00R" in body
+    assert "改善 +0.17R" in body
+
+
 def test_auto_tighten_skips_closed(db, env):
     """终态单：放弃（守卫①）"""
     rec = _rec(db, status="CLOSED")

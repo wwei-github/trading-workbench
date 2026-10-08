@@ -214,6 +214,20 @@ def test_mark_pnl_dispatches_advice(db, advice_env):
     assert float(r.unrealized_pnl) == pytest.approx(-5.0)  # 派发不影响快照
 
 
+def test_mark_pnl_advice_dispatch_cooldown(db, advice_env):
+    """N-17 检测修复：LLM 失败不落库 → advice_due 持续为真，无冷却时 60s 采样
+    重试风暴 60 次/h——同单派发 10 分钟冷却封顶 6 次/h"""
+    db.add(_rec(raw={}))
+    db.commit()
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", 95.0) is True
+    assert len(advice_env.calls) == 1
+    # 精确移除 mark 节流键（模拟 60s 后下一波推送；不可 reset_cooldowns——
+    # 会把 advice:{id} 派发冷却一并清掉）
+    ee._cooldowns.pop(f"mark:{ACC}:BTCUSDT", None)
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", 94.0) is True
+    assert len(advice_env.calls) == 1  # advice 冷却内：不重派
+
+
 def test_mark_pnl_no_dispatch_within_cooldown(db, advice_env):
     """冷却内 + 恶化不足 → 快照刷新但不派发"""
     db.add(_rec(ai_advice_at=datetime.utcnow(),

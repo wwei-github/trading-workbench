@@ -157,6 +157,9 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   reason: '理由',
   detail: '分析',
   total_pnl: '全程盈亏',
+  trigger: '触发原因',
+  // N-17 自动收紧（2026-10-08）
+  tighten_candidate: '候选止损价',
 }
 
 function fmtNum(n: number | null | undefined): string {
