@@ -10,6 +10,7 @@ import {
   Alert,
   Button,
   Card,
+  DatePicker,
   Descriptions,
   Empty,
   InputNumber,
@@ -23,6 +24,7 @@ import {
   message,
 } from 'antd'
 import { ExperimentOutlined, ReloadOutlined } from '@ant-design/icons'
+import dayjs, { Dayjs } from 'dayjs'
 import type { ColumnsType } from 'antd/es/table'
 import { robustnessApi } from '../api/robustness'
 import type { RobustnessListItem, RobustnessRecord, RobustnessVariant } from '../types/robustness'
@@ -62,6 +64,7 @@ export default function RobustnessPanel() {
   const [source, setSource] = useState<'scan' | 'history'>('scan')
   const [symbols, setSymbols] = useState<string[]>(['BTCUSDT', 'ETHUSDT'])
   const [days, setDays] = useState(30)
+  const [range, setRange] = useState<[Dayjs, Dayjs] | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [record, setRecord] = useState<RobustnessRecord | null>(null)
   const [history, setHistory] = useState<RobustnessListItem[]>([])
@@ -113,9 +116,16 @@ export default function RobustnessPanel() {
     }
     setSubmitting(true)
     try {
-      const { id } = await robustnessApi.create({ source, symbols, days })
+      const body = range
+        ? { source, symbols, start: range[0].format('YYYY-MM-DD'), end: range[1].format('YYYY-MM-DD') }
+        : { source, symbols, days }
+      const { id } = await robustnessApi.create(body)
       message.success('稳健性扫描已提交（默认出厂网格 12 变体）')
-      setRecord({ id, status: 'RUNNING', params: { source, symbols, days, n_blocks: 8, grid: null }, summary: null, error: null, created_at: null, finished_at: null })
+      setRecord({
+        id, status: 'RUNNING',
+        params: { source, symbols, days, ...(range ? { start: body.start, end: body.end } : {}), n_blocks: 8, grid: null },
+        summary: null, error: null, created_at: null, finished_at: null,
+      })
       startPoll(id)
       loadHistory()
     } catch (e) {
@@ -140,13 +150,13 @@ export default function RobustnessPanel() {
   const verdict = s?.conclusion ? VERDICT_META[s.conclusion.verdict] : null
 
   const columns: ColumnsType<RobustnessVariant> = [
+    { title: '变体', dataIndex: 'name', width: 70 },
     {
-      title: '变体', dataIndex: 'name', width: 70,
-      render: (v: string, row) => (
+      title: '标记', key: 'marks', width: 110,
+      render: (_: unknown, row) => (
         <Space size={4}>
-          <span>{v}</span>
-          {s?.best_is === v && <Tag color="blue">IS最优</Tag>}
-          {s?.best_oos === v && <Tag color="purple">OOS最优</Tag>}
+          {s?.best_is === row.name && <Tag color="blue">IS最优</Tag>}
+          {s?.best_oos === row.name && <Tag color="purple">OOS最优</Tag>}
         </Space>
       ),
     },
@@ -206,16 +216,25 @@ export default function RobustnessPanel() {
             style={{ minWidth: 280 }} value={symbols} onChange={setSymbols}
             options={['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT'].map((sym) => ({ value: sym, label: sym }))}
           />
-          <InputNumber min={7} max={90} value={days} onChange={(v) => setDays(v ?? 30)} addonAfter="天" style={{ width: 120 }} />
+          <DatePicker.RangePicker
+            value={range}
+            onChange={(v) => setRange(v as [Dayjs, Dayjs] | null)}
+            allowClear
+            placeholder={['开始日期', '结束日期']}
+            disabledDate={(d) => d.isAfter(dayjs(), 'day')}
+          />
+          <InputNumber min={7} max={90} value={days} onChange={(v) => setDays(v ?? 30)}
+            disabled={!!range} addonAfter="天" style={{ width: 120 }} />
         </Space>
         <Typography.Paragraph type="secondary" style={{ marginTop: 10, marginBottom: 0, fontSize: 12 }}>
+          选择起止日期则按该窗口采样（上限 90 天跨度，end 含当日）；未选时按「最近 N 天」回看。
           出厂网格：保本武装（基线/0.8R 提前）× 微止盈（无/0.5R）× ATR 跟进 k（2.5/3.0/4.0）= 12 变体；
           PBO ≤ 0.2 且 DSR ≥ 0.9 → 高原可信；PBO ≥ 0.5 → 样本内最优多半是过拟合山峰，禁止当规律。
         </Typography.Paragraph>
       </Card>
 
       {record?.status === 'RUNNING' && (
-        <Card size="small"><Space><Spin size="small" />扫描进行中（12 变体 × {days} 天信号重放）…</Space></Card>
+        <Card size="small"><Space><Spin size="small" />扫描进行中（12 变体 × {record.params?.start ? `${record.params.start.slice(5)}~${record.params.end?.slice(5)}` : `${record.params?.days ?? days} 天`}信号重放）…</Space></Card>
       )}
       {record?.status === 'FAILED' && (
         <Alert type="error" showIcon message="扫描失败" description={record.error} />
@@ -237,8 +256,8 @@ export default function RobustnessPanel() {
                 </Typography.Text>
               </Descriptions.Item>
               <Descriptions.Item label="CSCV 组合">{s.pbo ? `${s.pbo.overfit_combos}/${s.pbo.n_combinations}（${s.pbo.n_blocks} 块）` : '—'}</Descriptions.Item>
-              <Descriptions.Item label="IS最优">{s.best_is}{s.conclusion.best_is_is_best_oos ? '（=OOS最优）' : ''}</Descriptions.Item>
-              <Descriptions.Item label="OOS最优">{s.best_oos}</Descriptions.Item>
+              <Descriptions.Item label="IS最优">{s.best_is}{s.best_oos && s.conclusion.best_is_is_best_oos ? '（=OOS最优）' : ''}</Descriptions.Item>
+              <Descriptions.Item label="OOS最优">{s.best_oos ?? '—'}</Descriptions.Item>
               <Descriptions.Item label="信号数">{fmt(s.n_signals, 0)}</Descriptions.Item>
               <Descriptions.Item label="矩阵行（全变体decided）">{fmt(s.matrix_rows, 0)}</Descriptions.Item>
               <Descriptions.Item label="剔除（未决）">{fmt(s.excluded_n, 0)}</Descriptions.Item>
@@ -276,7 +295,7 @@ export default function RobustnessPanel() {
               {
                 title: '参数', key: 'p', ellipsis: true,
                 render: (_: unknown, r: RobustnessListItem) =>
-                  `${r.params?.source === 'history' ? '历史' : '扫描'} · ${(r.params?.symbols ?? []).join(',') || '全部'} · ${r.params?.days}天`,
+                  `${r.params?.source === 'history' ? '历史' : '扫描'} · ${(r.params?.symbols ?? []).join(',') || '全部'} · ${r.params?.start ? `${r.params.start.slice(5)}~${r.params.end?.slice(5)}` : `${r.params?.days}天`}`,
               },
             ]}
           />

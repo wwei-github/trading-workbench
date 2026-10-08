@@ -181,7 +181,8 @@ def test_task_end_to_end_insufficient_pbo(env):
     < 40 → PBO 跳过走 insufficient 结论；逐变体统计形状正确。"""
     client, TestSession, monkeypatch = env
     monkeypatch.setattr(bt, "_sample_signals",
-                        lambda db, pool, source, symbols, days, fwd: (SIGNALS, NEED))
+                        lambda db, pool, source, symbols, days, fwd, window=None:
+                        (SIGNALS, NEED))
     session = TestSession()
     row = RobustnessScan(params={"source": "scan", "symbols": ["RISEUSDT"],
                                  "days": 3, "grid": None, "n_blocks": 8})
@@ -210,6 +211,10 @@ def test_task_end_to_end_insufficient_pbo(env):
     assert v1["dsr"] is not None
     assert s["conclusion"]["verdict"] == "insufficient"
     assert s["best_is"] in {v["name"] for v in s["variants"]}
+    # PBO 未实算：OOS 无读数（不回退成 best_is，防前端「=OOS最优」失真）
+    assert s["best_oos"] is None
+    assert s["conclusion"]["best_oos"] is None
+    assert s["conclusion"]["best_is_is_best_oos"] is False
     # 引擎版本与数据范围落库
     assert s["engine_version"] == "fbe-1"
     assert "RISEUSDT" in s["data_range"]["symbols"]
@@ -218,7 +223,8 @@ def test_task_end_to_end_insufficient_pbo(env):
 def test_task_failed_on_empty_sample(env):
     client, TestSession, monkeypatch = env
     monkeypatch.setattr(bt, "_sample_signals",
-                        lambda db, pool, source, symbols, days, fwd: ([], {}))
+                        lambda db, pool, source, symbols, days, fwd, window=None:
+                        ([], {}))
     session = TestSession()
     row = RobustnessScan(params={"source": "scan", "symbols": ["XUSDT"],
                                  "days": 3, "grid": None, "n_blocks": 8})
@@ -234,3 +240,80 @@ def test_task_failed_on_empty_sample(env):
     failed = chk.get(RobustnessScan, row.id)
     assert failed.status == "FAILED"
     assert "采样结果为空" in (failed.error or "")
+
+
+# ── 任意起止窗口（start/end）──────────────────────────────────────────
+
+
+def test_parse_window():
+    """_parse_window：成对解析 [start0点, end次日0点) ms；缺一/缺双 → None。"""
+    assert bt._parse_window({"start": "2026-09-01", "end": "2026-09-03"}) == (
+        1_788_220_800_000,   # 2026-09-01 00:00 UTC
+        1_788_480_000_000,   # 2026-09-04 00:00 UTC（end 含当日）
+    )
+    assert bt._parse_window({"start": "2026-09-01"}) is None
+    assert bt._parse_window({"end": "2026-09-03"}) is None
+    assert bt._parse_window({"days": 30}) is None
+
+
+def test_post_window_validation(env):
+    """start/end 校验：缺一 422 / 跨度超限 422 / end 早于 start 422 / 正常落 params。"""
+    client, session, monkeypatch = env
+    monkeypatch.setattr(bt.run_robustness_scan_task, "delay",
+                        lambda sid: None, raising=False)
+    base = {"source": "scan", "symbols": ["BTCUSDT"]}
+    # 缺 end
+    assert client.post("/api/backtests/robustness",
+                       json={**base, "start": "2026-09-01"}).status_code == 422
+    # 非法格式
+    assert client.post("/api/backtests/robustness",
+                       json={**base, "start": "2026/09/01",
+                             "end": "2026-09-03"}).status_code == 422
+    # 跨度 91 天 > 90
+    assert client.post("/api/backtests/robustness",
+                       json={**base, "start": "2026-06-01",
+                             "end": "2026-08-31"}).status_code == 422
+    # end <= start
+    assert client.post("/api/backtests/robustness",
+                       json={**base, "start": "2026-09-03",
+                             "end": "2026-09-01"}).status_code == 422
+    # 正常提交 → params 落库 start/end
+    r = client.post("/api/backtests/robustness",
+                    json={**base, "start": "2026-09-01", "end": "2026-09-30"})
+    assert r.status_code == 200
+    sid = r.json()["id"]
+    import uuid as _u
+    row = session().get(RobustnessScan, _u.UUID(sid))
+    assert row.params["start"] == "2026-09-01" and row.params["end"] == "2026-09-30"
+
+
+def test_task_window_passed_to_sampler(env):
+    """任务把 params.start/end 解析成 window 传给采样（端到端接线）。"""
+    client, TestSession, monkeypatch = env
+    captured = {}
+
+    def _fake_sample(db, pool, source, symbols, days, fwd, window=None):
+        captured["window"] = window
+        return (SIGNALS, NEED)
+
+    monkeypatch.setattr(bt, "_sample_signals", _fake_sample)
+    session = TestSession()
+    row = RobustnessScan(params={"source": "scan", "symbols": ["RISEUSDT"],
+                                 "days": 3, "start": "2026-09-01",
+                                 "end": "2026-09-10",
+                                 "grid": None, "n_blocks": 8})
+    session.add(row)
+    session.commit()
+    scan_id = str(row.id)
+    session.close()
+
+    out = bt.run_robustness_scan_task(scan_id)
+    assert out["ok"] is True
+    assert captured["window"] == (1_788_220_800_000, 1_789_084_800_000)
+
+    chk = TestSession()
+    done = chk.get(RobustnessScan, row.id)
+    chk.expire_on_commit = False
+    assert done.status == "DONE"
+    assert done.summary["data_range"]["start"] == "2026-09-01"
+    assert done.summary["data_range"]["end"] == "2026-09-10"

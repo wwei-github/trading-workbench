@@ -9,7 +9,7 @@ pool.get_klines_range 分页回拉（每页 1000 根、0.15s 限速），整段�
 """
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, or_, and_
 
@@ -93,10 +93,29 @@ def _slice_fwd(kl_1h: list, entry_ms: int, n: int) -> list:
     return [k for k in kl_1h if int(k[0]) >= entry_ms][:n]
 
 
+def _parse_window(p: dict) -> tuple[int, int] | None:
+    """params 的 start/end（YYYY-MM-DD，UTC 语义）→ [start_ms, end_ms)。
+
+    end 含当日（取次日 0 点为开区间上界）；缺一或都缺省返回 None（走 days）。
+    """
+    s, e = p.get("start"), p.get("end")
+    if not s or not e:
+        return None
+    start_ms = int(datetime.strptime(s, "%Y-%m-%d")
+                   .replace(tzinfo=timezone.utc).timestamp() * 1000)
+    end_ms = int((datetime.strptime(e, "%Y-%m-%d") + timedelta(days=1))
+                 .replace(tzinfo=timezone.utc).timestamp() * 1000)
+    return start_ms, end_ms
+
+
 def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
-                    days: int, fwd_slice: int) -> tuple[list, dict]:
+                    days: int, fwd_slice: int,
+                    window: tuple[int, int] | None = None) -> tuple[list, dict]:
     """信号采样公共分支（P-06 回测与 P-12 稳健性扫描共用；等价重构自原任务体）。
 
+    window=(start_ms, end_ms) 提供时按任意起止窗口采样（优先于 days）：
+    信号按 entry_time_ms 落在 [start, end) 内过滤，K 线按窗口 + 预热/前向
+    缓冲装载。缺省走「最近 days 天」（原行为，P-06 不受影响）。
     返回 (signals, need)——need 为每币 1h K 线需求区间 [start_ms, end_ms]
     （D1 预热由装载层统一加 _D1_BUFFER_DAYS）。
     """
@@ -107,7 +126,11 @@ def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
         build_signals_from_history,
     )
 
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    if window is not None:
+        lo_dt = datetime.utcfromtimestamp(window[0] / 1000)
+        hi_dt = datetime.utcfromtimestamp(window[1] / 1000)
+    else:
+        cutoff = datetime.utcnow() - timedelta(days=days)
 
     if source == "history":
         ai_conds = [
@@ -116,8 +139,10 @@ def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
                 and_(AIAnalysis.trade_decision == "skip",
                      AIAnalysis.veto_original.isnot(None)),
             ),
-            AIAnalysis.created_at >= cutoff,
+            AIAnalysis.created_at >= (lo_dt if window is not None else cutoff),
         ]
+        if window is not None:
+            ai_conds.append(AIAnalysis.created_at < hi_dt)
         if symbols:
             ai_conds.append(AIAnalysis.symbol.in_(symbols))
         ai_rows = db.execute(
@@ -125,7 +150,10 @@ def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
             .outerjoin(ScanResult, AIAnalysis.scan_result_id == ScanResult.id)
             .where(*ai_conds)
         ).all()
-        tr_conds = [TradeRecord.opened_at >= cutoff]
+        opened_lo = lo_dt if window is not None else cutoff
+        tr_conds = [TradeRecord.opened_at >= opened_lo]
+        if window is not None:
+            tr_conds.append(TradeRecord.opened_at < hi_dt)
         if symbols:
             tr_conds.append(TradeRecord.symbol.in_(symbols))
         trade_rows = db.execute(
@@ -155,15 +183,21 @@ def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
                 max(hi, s["entry_time_ms"] + (fwd_slice + 1) * 3_600_000),
             )
     else:
-        # 源B：滚动扫描重放。预热 window=240 根 + days×24 根；4h 背景 200 根
+        # 源B：滚动扫描重放。预热 warmup=240 根 + 窗口根数；4h 背景 200 根
         from app.models.system_config import SystemConfig
         from app.services.scan_filters import resolve_scan_filters
 
         flt = resolve_scan_filters(db.get(SystemConfig, 1))
-        window = 240
-        n_1h = days * 24 + window + fwd_slice + 1
-        end_1h = int(datetime.utcnow().timestamp() * 1000)
-        start_1h = end_1h - n_1h * 3_600_000
+        warmup = 240
+        now_ms = int(datetime.utcnow().timestamp() * 1000)
+        if window is not None:
+            start_1h = window[0] - (warmup + fwd_slice + 1) * 3_600_000
+            # 窗口尾信号的前向 K 线（越过大窗尾但有前向缓冲；不超当下）
+            end_1h = min(now_ms, window[1] + (fwd_slice + 1) * 3_600_000)
+        else:
+            n_1h = days * 24 + warmup + fwd_slice + 1
+            end_1h = now_ms
+            start_1h = end_1h - n_1h * 3_600_000
         signals = []
         for sym in symbols:
             try:
@@ -184,6 +218,10 @@ def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
             sym: (start_1h - _D1_BUFFER_DAYS * 86_400_000, end_1h)
             for sym in symbols
         }
+    if window is not None:
+        # 窗口外信号剔除（含源B 预热区/前向缓冲区产生的信号）
+        signals = [s for s in signals
+                   if window[0] <= int(s["entry_time_ms"]) < window[1]]
     return signals, need
 
 
@@ -372,20 +410,23 @@ def run_robustness_scan_task(scan_id: str) -> dict:
         n_blocks = int(p.get("n_blocks") or rb.DEFAULT_N_BLOCKS)
         variants = rb.expand_grid(p.get("grid"))
         n_variants = len(variants)
+        window = _parse_window(p)
         fwd_slice = max(
             [DEFAULT_FWD_BARS]
             + [int(v["overrides"].get("fwd_bars") or 0) for v in variants]
         )
         logger.info(
-            "稳健性 %s 开始: source=%s symbols=%s days=%d 网格=%d 变体",
-            scan_id[:8], source, symbols or "(全部)", days, n_variants,
+            "稳健性 %s 开始: source=%s symbols=%s window=%s days=%d 网格=%d 变体",
+            scan_id[:8], source, symbols or "(全部)",
+            f"{p.get('start')}~{p.get('end')}" if window else f"近{days}天",
+            days, n_variants,
         )
 
         signals, need = _sample_signals(db, pool, source, symbols, days,
-                                        fwd_slice)
+                                        fwd_slice, window=window)
         n_signals = len(signals)
         if n_signals == 0:
-            raise ValueError("采样结果为空：区间内无可用信号（放宽 days/币种后重试）")
+            raise ValueError("采样结果为空：区间内无可用信号（扩窗口/放宽币种后重试）")
 
         # ── K 线装载（P-06 主任务同款）────────────────────────────────
         now = datetime.utcnow()
@@ -450,16 +491,17 @@ def run_robustness_scan_task(scan_id: str) -> dict:
                 scan_id[:8], len(matrix), n_blocks)
 
         # 逐变体统计 + DSR；best_is=全样本 SR 最优，best_oos=OOS 中位 SR 最优
+        # （PBO 未实算时 OOS 无读数——回退成 best_is 会被前端误标「=OOS最优」）
         best_is_i = max(range(n_variants), key=lambda c: (sr_list[c], -c))
         best_oos_i = (max(range(n_variants), key=lambda c: oos_median[c])
-                      if oos_median else best_is_i)
+                      if oos_median else None)
         variant_rows = []
         for j, v in enumerate(variants):
             st = rb.per_variant_stats(per_series[j], sr_var, n_variants)
             variant_rows.append({"name": v["name"], "overrides": v["overrides"],
                                  **st})
         best_is_name = variants[best_is_i]["name"]
-        best_oos_name = variants[best_oos_i]["name"]
+        best_oos_name = variants[best_oos_i]["name"] if best_oos_i is not None else None
         dsr_best_is = variant_rows[best_is_i]["dsr"]
 
         conclusion = (
@@ -468,9 +510,9 @@ def run_robustness_scan_task(scan_id: str) -> dict:
             if pbo_out
             else {"verdict": "insufficient",
                   "text": f"decided 共同样本不足（矩阵 {len(matrix)} 行），"
-                          "扩 days 或放宽币种后重扫；本轮仅出逐变体统计。",
-                  "best_is": best_is_name, "best_oos": best_oos_name,
-                  "best_is_is_best_oos": best_is_name == best_oos_name}
+                          "扩窗口/放宽币种后重扫；本轮仅出逐变体统计。",
+                  "best_is": best_is_name, "best_oos": None,
+                  "best_is_is_best_oos": False}
         )
 
         summary = {
@@ -485,7 +527,9 @@ def run_robustness_scan_task(scan_id: str) -> dict:
             "conclusion": conclusion,
             "engine_version": BACKTEST_ENGINE_VERSION,
             "data_range": {"days": days,
-                           "symbols": sorted({s["symbol"] for s in signals})},
+                           "symbols": sorted({s["symbol"] for s in signals}),
+                           **({"start": p.get("start"), "end": p.get("end")}
+                              if window else {})},
         }
         row.summary = summary
         row.status = "DONE"

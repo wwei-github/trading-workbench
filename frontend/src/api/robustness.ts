@@ -7,7 +7,9 @@ const api = axios.create({ baseURL: '/api', timeout: 60000 })
 export interface RobustnessBody {
   source: 'history' | 'scan'
   symbols: string[]
-  days: number
+  days?: number            // start/end 缺省时必传（回看天数）
+  start?: string           // YYYY-MM-DD；与 end 成对，优先于 days
+  end?: string
   n_blocks?: number
 }
 

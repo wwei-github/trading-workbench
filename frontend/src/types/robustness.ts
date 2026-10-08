@@ -26,7 +26,7 @@ export interface RobustnessConclusion {
   verdict: 'plateau' | 'peak' | 'mixed' | 'insufficient'
   text: string
   best_is: string
-  best_oos: string
+  best_oos: string | null
   best_is_is_best_oos: boolean
 }
 
@@ -38,16 +38,18 @@ export interface RobustnessSummary {
   pbo: RobustnessPbo | null
   variants: RobustnessVariant[]
   best_is: string
-  best_oos: string
+  best_oos: string | null
   conclusion: RobustnessConclusion
   engine_version: string
-  data_range: { days: number; symbols: string[] }
+  data_range: { days: number; symbols: string[]; start?: string; end?: string }
 }
 
 export interface RobustnessParams {
   source: 'history' | 'scan'
   symbols: string[]
   days: number
+  start?: string | null
+  end?: string | null
   n_blocks: number
   grid: Record<string, (number | null)[]> | null
 }

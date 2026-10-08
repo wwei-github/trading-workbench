@@ -12,10 +12,11 @@
   overrides 键白名单（引擎 OVERRIDE_KEYS），未知键 400
 """
 import uuid as _uuid
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -148,7 +149,9 @@ def create_backtest(body: BacktestIn, db: Session = Depends(get_db)):
 class RobustnessIn(BaseModel):
     source: str = "scan"                # history / scan
     symbols: List[str] = []
-    days: int = 30
+    days: int = 30                      # start/end 缺省时的回看天数
+    start: Optional[str] = None         # YYYY-MM-DD（UTC）；与 end 成对，优先于 days
+    end: Optional[str] = None           # YYYY-MM-DD（UTC，含当日）
     n_blocks: int = 8                   # CSCV 块数（4~16 偶数）
     grid: Optional[dict] = None         # None=默认出厂网格（12 变体）
 
@@ -185,6 +188,33 @@ class RobustnessIn(BaseModel):
             raise ValueError("n_blocks 须为 4~16 的偶数")
         return v
 
+    @field_validator("start", "end")
+    @classmethod
+    def _date_fmt(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("start/end 须为 YYYY-MM-DD")
+        return v
+
+    @model_validator(mode="after")
+    def _window_pair(self) -> "RobustnessIn":
+        if (self.start is None) != (self.end is None):
+            raise ValueError("start/end 须成对提供（或都缺省走 days）")
+        if self.start and self.end:
+            s = datetime.strptime(self.start, "%Y-%m-%d")
+            e = datetime.strptime(self.end, "%Y-%m-%d")
+            if e <= s:
+                raise ValueError("end 须晚于 start")
+            if (e - s).days > settings.BACKTEST_MAX_DAYS:
+                raise ValueError(f"窗口跨度上限 {settings.BACKTEST_MAX_DAYS} 天")
+            # 允许到 UTC 明天（东八区当天早上尚未到 UTC 当日）
+            if e.date() > datetime.utcnow().date() + timedelta(days=1):
+                raise ValueError("end 不能是未来日期")
+        return self
+
 
 @router.post("/robustness")
 def create_robustness_scan(body: RobustnessIn, db: Session = Depends(get_db)):
@@ -211,6 +241,7 @@ def create_robustness_scan(body: RobustnessIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail=f"已有稳健性扫描在跑（{running.id}），请稍候")
     row = RobustnessScan(params={
         "source": body.source, "symbols": body.symbols, "days": body.days,
+        "start": body.start, "end": body.end,
         "n_blocks": body.n_blocks, "grid": body.grid,
     })
     db.add(row)
