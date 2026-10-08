@@ -303,6 +303,12 @@ def _run_migrations(engine):
             "ALTER TABLE system_config "
             "ADD COLUMN IF NOT EXISTS live_initial_capital NUMERIC(12, 2) NOT NULL DEFAULT 0"
         ))
+        # TP2 分批止盈开关（2026-10-08）：默认关——出场走「仅 TP1 90% + 剩余 10% 跟进」。
+        # 必须在下方裸 INSERT 之前执行：老库先补列（INSERT 引用该列才不炸）
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS tp2_enabled BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
         # 盈亏峰值列（2026-09-26）：持仓期间全程盈亏峰值，浮盈回撤 ≥0.6R 触发 AI 诊断
         conn.execute(text(
             "ALTER TABLE trade_records "
@@ -460,6 +466,9 @@ def _run_migrations(engine):
         # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有
         # Python 端 default 没有 server_default，漏列的裸 INSERT 会 NotNullViolation
         # （存量库行已存在走 ON CONFLICT 跳过，因此本地从未暴露）。
+        # 2026-10-08 补上历史漏掉的 4 个 NOT NULL 列（risk_budget_mode/
+        # risk_fixed_amount/spot_trading_testnet/live_initial_capital——2026-09-27
+        # 起新库 init_db 必炸的潜伏 bug）+ 新增的 tp2_enabled
         conn.execute(text(
             "INSERT INTO system_config "
             "(id, ai_analysis_enabled, kline_interval, kline_window, "
@@ -471,7 +480,9 @@ def _run_migrations(engine):
             " strategy_trend_follow_enabled, strategy_structure_break_enabled, "
             " strategy_range_edge_enabled, trading_min_free_pct, "
             " trading_enabled, "
-            " trading_enabled_testnet, trading_enabled_live) "
+            " trading_enabled_testnet, trading_enabled_live, "
+            " risk_budget_mode, risk_fixed_amount, spot_trading_testnet, "
+            " live_initial_capital, tp2_enabled) "
             "VALUES (1, false, :kline_interval, :kline_window, "
             " :breakout_threshold, :r_squared_threshold, :repeat_window_hours, "
             " :swing_order, :pullback_tolerance, '系统运行时配置', "
@@ -481,7 +492,9 @@ def _run_migrations(engine):
             " true, false, "
             " true, 0.5, "
             " :trading_enabled, "
-            " :trading_enabled_testnet, :trading_enabled_live) "
+            " :trading_enabled_testnet, :trading_enabled_live, "
+            " 'pct', 3, true, "
+            " 0, false) "
             "ON CONFLICT (id) DO NOTHING"
         ),
             {
@@ -514,11 +527,6 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS atr_trail_k NUMERIC(10, 6),
               ADD COLUMN IF NOT EXISTS market_wide_pause_pct NUMERIC(10, 6)
         """))
-        # TP2 分批止盈开关（2026-10-08）：默认关——出场走「仅 TP1 90% + 剩余 10% 跟进」
-        conn.execute(text(
-            "ALTER TABLE system_config "
-            "ADD COLUMN IF NOT EXISTS tp2_enabled BOOLEAN NOT NULL DEFAULT FALSE"
-        ))
         # 影子模式打标表（2026-10-04，docs/14）：候选信号特征「只计算+打标+记录，
         # 不参与决策」，事后按 标记×结果 分组统计评估升格/关闭
         conn.execute(text("""
