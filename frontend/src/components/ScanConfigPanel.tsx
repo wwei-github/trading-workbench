@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, InputNumber, Select, Switch, Checkbox, message, Button, Spin, Divider, Tooltip } from 'antd'
+import { Modal, Form, InputNumber, Select, Switch, Checkbox, message, Button, Spin, Divider, Tooltip, Row, Col } from 'antd'
 import { SettingOutlined, RobotOutlined, FileTextOutlined, ApiOutlined, UndoOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
@@ -171,68 +171,89 @@ export default function ScanConfigPanel() {
         onCancel={() => setOpen(false)}
         onOk={handleSave}
         confirmLoading={saving}
-        width={500}
+        width={860}
       >
         <Spin spinning={loading}>
         <Form form={form} layout="vertical">
-          <Form.Item
-            label="K线周期"
-            name="kline_interval"
-            rules={[{ required: true }]}
-            tooltip="K线的时间周期"
-          >
-            <Select
-              options={[
-                { value: '1m', label: '1分钟' },
-                { value: '5m', label: '5分钟' },
-                { value: '15m', label: '15分钟' },
-                { value: '30m', label: '30分钟' },
-                { value: '1h', label: '1小时' },
-                { value: '2h', label: '2小时' },
-                { value: '4h', label: '4小时' },
-                { value: '1d', label: '1天' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item
-            label="K线数量"
-            name="kline_window"
-            rules={[{ required: true }]}
-            tooltip="每次扫描获取的K线根数"
-          >
-            <InputNumber min={30} max={1500} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item
-            label="重复命中窗口（小时）"
-            name="repeat_window_hours"
-            rules={[{ required: true }]}
-            tooltip="在此时间窗口内的命中视为重复"
-          >
-            <InputNumber min={1} max={168} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item
-            label="摆动点阶数"
-            name="swing_order"
-            rules={[{ required: true }]}
-            tooltip="AI 事实包中摆动点确认的左右比较根数"
-          >
-            <InputNumber min={1} max={10} style={{ width: '100%' }} />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="K线周期"
+                name="kline_interval"
+                rules={[{ required: true }]}
+                tooltip="K线的时间周期"
+              >
+                <Select
+                  options={[
+                    { value: '1m', label: '1分钟' },
+                    { value: '5m', label: '5分钟' },
+                    { value: '15m', label: '15分钟' },
+                    { value: '30m', label: '30分钟' },
+                    { value: '1h', label: '1小时' },
+                    { value: '2h', label: '2小时' },
+                    { value: '4h', label: '4小时' },
+                    { value: '1d', label: '1天' },
+                  ]}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="K线数量"
+                name="kline_window"
+                rules={[{ required: true }]}
+                tooltip="每次扫描获取的K线根数"
+              >
+                <InputNumber min={30} max={1500} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="重复命中窗口（小时）"
+                name="repeat_window_hours"
+                rules={[{ required: true }]}
+                tooltip="在此时间窗口内的命中视为重复"
+              >
+                <InputNumber min={1} max={168} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="摆动点阶数"
+                name="swing_order"
+                rules={[{ required: true }]}
+                tooltip="AI 事实包中摆动点确认的左右比较根数"
+              >
+                <InputNumber min={1} max={10} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
 
-          {/* 筛选参数组（2026-09-28 筛选配置上页面）：DB > env > 代码默认 */}
+          {/* 筛选参数组（2026-09-28 筛选配置上页面）：DB > env > 代码默认；两列排布 */}
           <Divider style={{ margin: '8px 0 16px' }}>
             <span style={{ fontSize: 13, color: '#999' }}>筛选参数</span>
           </Divider>
-          {FILTER_FIELDS.map((f) => (
-            <Form.Item
-              key={f.name}
-              label={f.label}
-              name={f.name}
-              rules={[{ required: true, message: `请填写${f.label}` }]}
-              tooltip={f.tooltip}
-            >
-              <InputNumber min={f.min} max={f.max} step={f.step} style={{ width: '100%' }} />
-            </Form.Item>
+          {FILTER_FIELDS.reduce<typeof FILTER_FIELDS[]>((rows, f, i) => {
+            if (i % 2 === 0) rows.push([f])
+            else rows[rows.length - 1].push(f)
+            return rows
+          }, []).map((row, ri) => (
+            <Row gutter={16} key={ri}>
+              {row.map((f) => (
+                <Col span={12} key={f.name}>
+                  <Form.Item
+                    label={f.label}
+                    name={f.name}
+                    rules={[{ required: true, message: `请填写${f.label}` }]}
+                    tooltip={f.tooltip}
+                  >
+                    <InputNumber min={f.min} max={f.max} step={f.step} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              ))}
+            </Row>
           ))}
           <Form.Item
             label="触发类型白名单"
@@ -252,66 +273,73 @@ export default function ScanConfigPanel() {
             恢复默认
           </Button>
 
-          {/* AI 分析开关区（原工具栏快捷开关，2026-09-20 收敛至此） */}
+          {/* AI 分析开关区（原工具栏快捷开关，2026-09-20 收敛至此）；两列排布 */}
           <Divider style={{ margin: '8px 0 16px' }}>
             <span style={{ fontSize: 13, color: '#999' }}>AI 分析</span>
           </Divider>
-          <Form.Item
-            label={
-              <span>
-                <RobotOutlined style={{ marginRight: 6 }} />筛选后自动 AI 分析
-              </span>
-            }
-            name="ai_analysis_enabled"
-            valuePropName="checked"
-            tooltip={aiConfigured ? '开启后扫描命中币种自动触发 AI 分析（独立于自动交易开关；手动单币分析不受影响）' : '后端未配置 AI_API_KEY，无法使用 AI 分析'}
-          >
-            <Switch disabled={!aiConfigured} />
-          </Form.Item>
-          <Tooltip
-            title={
-              hasStrategy
-                ? '开启后，AI 分析时将"策略提示词"一并发给 AI 参考'
-                : '请先在"策略提示词"页签中编写并保存策略'
-            }
-          >
-            <Form.Item
-              label={
-                <span>
-                  <FileTextOutlined style={{ marginRight: 6 }} />策略开关
-                </span>
-              }
-              name="strategy_prompt_enabled"
-              valuePropName="checked"
-            >
-              <Switch />
-            </Form.Item>
-          </Tooltip>
-          <Form.Item
-            label={
-              <span>
-                <ApiOutlined style={{ marginRight: 6 }} />Agent 管线
-              </span>
-            }
-            name="ai_pipeline_enabled"
-            valuePropName="checked"
-            tooltip="开启：工具循环 + 结构位锚点 + 技能库；关闭：单次调用 + 校验回炉"
-          >
-            <Switch disabled={!aiConfigured} />
-          </Form.Item>
-
-          {/* AI 实验功能（P2，默认关闭） */}
-          <Divider style={{ margin: '8px 0 16px' }}>
-            <span style={{ fontSize: 13, color: '#999' }}>AI 实验功能（默认关闭）</span>
-          </Divider>
-          <Form.Item
-            label="双评委辩论"
-            name="dual_judge_enabled"
-            valuePropName="checked"
-            tooltip="对'建议开单'的决策做多空辩论复核，裁判可否决（额外LLM调用，仅Agent/单次管线的suggest决策生效）"
-          >
-            <Switch />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label={
+                  <span>
+                    <RobotOutlined style={{ marginRight: 6 }} />筛选后自动 AI 分析
+                  </span>
+                }
+                name="ai_analysis_enabled"
+                valuePropName="checked"
+                tooltip={aiConfigured ? '开启后扫描命中币种自动触发 AI 分析（独立于自动交易开关；手动单币分析不受影响）' : '后端未配置 AI_API_KEY，无法使用 AI 分析'}
+              >
+                <Switch disabled={!aiConfigured} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Tooltip
+                title={
+                  hasStrategy
+                    ? '开启后，AI 分析时将"策略提示词"一并发给 AI 参考'
+                    : '请先在"策略提示词"页签中编写并保存策略'
+                }
+              >
+                <Form.Item
+                  label={
+                    <span>
+                      <FileTextOutlined style={{ marginRight: 6 }} />策略开关
+                    </span>
+                  }
+                  name="strategy_prompt_enabled"
+                  valuePropName="checked"
+                >
+                  <Switch />
+                </Form.Item>
+              </Tooltip>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label={
+                  <span>
+                    <ApiOutlined style={{ marginRight: 6 }} />Agent 管线
+                  </span>
+                }
+                name="ai_pipeline_enabled"
+                valuePropName="checked"
+                tooltip="开启：工具循环 + 结构位锚点 + 技能库；关闭：单次调用 + 校验回炉"
+              >
+                <Switch disabled={!aiConfigured} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="双评委辩论"
+                name="dual_judge_enabled"
+                valuePropName="checked"
+                tooltip="对'建议开单'的决策做多空辩论复核，裁判可否决（额外LLM调用，仅Agent/单次管线的suggest决策生效）"
+              >
+                <Switch />
+              </Form.Item>
+            </Col>
+          </Row>
         </Form>
         </Spin>
       </Modal>

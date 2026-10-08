@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, InputNumber, message, Button, Spin, Radio, Select, Divider, Switch } from 'antd'
+import { Modal, Form, InputNumber, message, Button, Spin, Radio, Select, Divider, Switch, Row, Col } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
@@ -125,29 +125,34 @@ export default function TradingConfigPanel() {
         onCancel={() => setOpen(false)}
         onOk={handleSave}
         confirmLoading={saving}
-        width={500}
+        width={860}
       >
         <Spin spinning={loading}>
         <Form form={form} layout="vertical">
-          <Form.Item
-            label="同时在跑单子上限"
-            name="max_open_trades"
-            initialValue={5}
-            rules={[{ required: true, message: '请输入在跑单子上限' }]}
-            tooltip="自动开仓的在跑单子数量上限，0 = 不限单数（仅按开仓最低可用余额判断）；每小时任务先结算再开仓，评分高的优先"
-          >
-            <InputNumber min={0} max={50} style={{ width: '100%' }} />
-          </Form.Item>
-
-          <Form.Item
-            label="开仓最低可用余额（%）"
-            name="trading_min_free_pct"
-            initialValue={50}
-            rules={[{ required: true, message: '请输入开仓最低可用余额比例' }]}
-            tooltip="可用余额低于总资金该比例时不开新单"
-          >
-            <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="同时在跑单子上限"
+                name="max_open_trades"
+                initialValue={5}
+                rules={[{ required: true, message: '请输入在跑单子上限' }]}
+                tooltip="自动开仓的在跑单子数量上限，0 = 不限单数（仅按开仓最低可用余额判断）；每小时任务先结算再开仓，评分高的优先"
+              >
+                <InputNumber min={0} max={50} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="开仓最低可用余额（%）"
+                name="trading_min_free_pct"
+                initialValue={50}
+                rules={[{ required: true, message: '请输入开仓最低可用余额比例' }]}
+                tooltip="可用余额低于总资金该比例时不开新单"
+              >
+                <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
 
           {/* 止损金额模式（2026-09-27）：pct=现行风险基数分档级别；fixed=固定 USDT 金额 */}
           <Form.Item
@@ -182,38 +187,46 @@ export default function TradingConfigPanel() {
             }
           </Form.Item>
 
-          <Form.Item
-            label="止损宽度上限（%，留空=不限制）"
-            name="max_stop_pct"
-            tooltip="开仓闸门的止损宽度硬上限（AI 复盘补丁参数 max_stop_pct 的手改入口，与补丁回滚共用同一列）"
-          >
-            <InputNumber min={0.1} max={10} step={0.1} style={{ width: '100%' }} placeholder="不限制" />
-          </Form.Item>
-
-          <Form.Item
-            label="强平闸门缓冲（%，留空=默认 0.5%）"
-            name="liq_gate_buffer"
-            tooltip="强平闸门 = 1/杠杆 − 维持保证金率 − 缓冲（覆盖手续费/资金费/触发价差；AI 复盘补丁参数 liq_gate_buffer 的手改入口）"
-          >
-            <InputNumber min={0.1} max={5} step={0.1} style={{ width: '100%' }} placeholder="0.5" />
-          </Form.Item>
-
-          <Form.Item
-            label="动态杠杆下限（×，留空=默认 8）"
-            name="min_adapt_leverage"
-            tooltip="止损距离超 20× 强平闸门时自动降杠杆开单；安全杠杆低于此下限的宽止损单直接放弃（限制层：不是所有单都动态算完就开）。8× 约等于止损距离上限 10.5%（小币）"
-          >
-            <InputNumber min={1} max={20} step={1} style={{ width: '100%' }} placeholder="8" precision={0} />
-          </Form.Item>
-
-          <Form.Item
-            label="入场偏离容差（%，留空=默认 1）"
-            name="pullback_market_pct"
-            tooltip="开仓时现价对 AI 入场价的最大偏离。待回踩距离 ≤ 容差时市价入场（盈亏比按现价复算 ≥1.5 才放行），超容差维持待回踩不下单；普通单的开仓漂移上限同用此值"
-          >
-            <InputNumber min={0.1} max={5} step={0.1} style={{ width: '100%' }} placeholder="1" />
-          </Form.Item>
-
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="止损宽度上限（%，留空=不限制）"
+                name="max_stop_pct"
+                tooltip="开仓闸门的止损宽度硬上限（AI 复盘补丁参数 max_stop_pct 的手改入口，与补丁回滚共用同一列）"
+              >
+                <InputNumber min={0.1} max={10} step={0.1} style={{ width: '100%' }} placeholder="不限制" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="强平闸门缓冲（%，留空=默认 0.5%）"
+                name="liq_gate_buffer"
+                tooltip="强平闸门 = 1/杠杆 − 维持保证金率 − 缓冲（覆盖手续费/资金费/触发价差；AI 复盘补丁参数 liq_gate_buffer 的手改入口）"
+              >
+                <InputNumber min={0.1} max={5} step={0.1} style={{ width: '100%' }} placeholder="0.5" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="动态杠杆下限（×，留空=默认 8）"
+                name="min_adapt_leverage"
+                tooltip="止损距离超 20× 强平闸门时自动降杠杆开单；安全杠杆低于此下限的宽止损单直接放弃（限制层：不是所有单都动态算完就开）。8× 约等于止损距离上限 10.5%（小币）"
+              >
+                <InputNumber min={1} max={20} step={1} style={{ width: '100%' }} placeholder="8" precision={0} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="入场偏离容差（%，留空=默认 1）"
+                name="pullback_market_pct"
+                tooltip="开仓时现价对 AI 入场价的最大偏离。待回踩距离 ≤ 容差时市价入场（盈亏比按现价复算 ≥1.5 才放行），超容差维持待回踩不下单；普通单的开仓漂移上限同用此值"
+              >
+                <InputNumber min={0.1} max={5} step={0.1} style={{ width: '100%' }} placeholder="1" />
+              </Form.Item>
+            </Col>
+          </Row>
           <Form.Item
             label="开仓滑点上限（%，留空=默认 0.3）"
             name="max_slippage_pct"
@@ -226,140 +239,173 @@ export default function TradingConfigPanel() {
             风控参数（留空 = 恢复默认，保存即生效）
           </Divider>
 
-          <Form.Item
-            label="开单评分门槛（留空=默认 60）"
-            name="min_recommendation"
-            tooltip="AI 推荐度 ≥ 该值才分发自动开仓（0~100）；连损降速在此基础上额外提档"
-          >
-            <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} placeholder="60" precision={0} />
-          </Form.Item>
-
-          <Form.Item
-            label="盈亏比铁律下限（留空=默认 1.5）"
-            name="ai_rr_min"
-            tooltip="按 AI 给的三价复算 RR 必须 ≥ 该值，不足直接打回（AI 提示词同源更新）"
-          >
-            <InputNumber min={0.5} max={10} step={0.1} style={{ width: '100%' }} placeholder="1.5" />
-          </Form.Item>
-
-          <Form.Item
-            label="单笔风险比例（%，留空=默认 3）"
-            name="risk_pct"
-            tooltip="分档级别止损金额模式下：单笔止损预算 = 风险基数 × 该比例（仓位 = 预算 ÷ 止损距离）；固定金额模式不使用此值"
-          >
-            <InputNumber min={0.1} max={20} step={0.1} style={{ width: '100%' }} placeholder="3" addonAfter="%" />
-          </Form.Item>
-
-          <Form.Item
-            label="杠杆上限（×，留空=默认 20）"
-            name="leverage_max"
-            tooltip="逐仓杠杆上限；止损距离超该杠杆的强平闸门时动态下调，安全杠杆低于动态下限的宽止损单直接放弃"
-          >
-            <InputNumber min={1} max={125} step={1} style={{ width: '100%' }} placeholder="20" precision={0} />
-          </Form.Item>
-
-          <Form.Item
-            label="taker 手续费率（%，留空=默认 0.05）"
-            name="taker_fee_rate"
-            tooltip="开平仓 taker 费率（0.05% = 0.0005 比例），TP1 止损移保本的复算口径；随交易所费率调整时手改"
-          >
-            <InputNumber min={0} max={0.5} step={0.005} style={{ width: '100%' }} placeholder="0.05" />
-          </Form.Item>
-
-          <Form.Item
-            label="近锚风险折价系数（留空=默认 0.7）"
-            name="near_anchor_factor"
-            tooltip="突破类信号用近锚止损时风险预算 × 该系数（>0 且 ≤1，收紧止损贴极值的单子预算）；1=不折价"
-          >
-            <InputNumber min={0.01} max={1} step={0.05} style={{ width: '100%' }} placeholder="0.7" />
-          </Form.Item>
-
-          <Form.Item
-            label="当日亏损熔断开关"
-            name="daily_loss_stop_enabled"
-            tooltip="UTC 当日已平仓净亏达阈值停开新仓（AI 分析/巡检照常），顶部卡片「熔断状态」实时展示；触发后 UTC 0 点自动恢复"
-          >
-            <Select
-              options={[
-                { label: '开启', value: 'on' },
-                { label: '关闭', value: 'off' },
-              ]}
-            />
-          </Form.Item>
-
-          <Form.Item
-            label="当日亏损熔断阈值（%，留空=默认 9）"
-            name="daily_loss_stop_pct"
-            tooltip="已平仓净亏 ≤ -风险基数 × 该值 时触发熔断（9% ≈ 3 笔满损，随账户金额缩放）；0=关闭"
-          >
-            <InputNumber min={0} max={50} step={0.5} style={{ width: '100%' }} placeholder="9" addonAfter="%" />
-          </Form.Item>
-
-          <Form.Item
-            label="组合热度上限（%，留空=默认关闭）"
-            name="portfolio_heat_cap"
-            tooltip="在跑单止损合计 + 本单预估 > 钱包 × 该值 时拦截新单，限制同时承受止损的总金额（0 或留空 = 关闭）"
-          >
-            <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} placeholder="0" addonAfter="%" />
-          </Form.Item>
-
-          <Form.Item
-            label="同向持仓上限（留空=不限）"
-            name="same_direction_cap"
-            tooltip="同方向在跑单数达上限拦截新单，防全市场同涨同跌时同向单集体同损（0 或留空 = 不限）"
-          >
-            <InputNumber min={0} max={20} step={1} style={{ width: '100%' }} placeholder="0" precision={0} />
-          </Form.Item>
-
-          <Form.Item
-            label="BTC 急跌暂停阈值（%，留空=默认 1）"
-            name="btc_crash_pause_pct"
-            tooltip="BTC 1h 近 3 根已收盘累计跌幅超该值时暂停山寨开单（BTCUSDT 本身照常；AI 提示词同步警示）；0=关闭"
-          >
-            <InputNumber min={0} max={20} step={0.1} style={{ width: '100%' }} placeholder="1" addonAfter="%" />
-          </Form.Item>
-
-          <Form.Item
-            label="大盘单边暂停阈值（%，留空=默认 3）"
-            name="market_wide_pause_pct"
-            tooltip="BTC 与 ETH 24h 涨跌幅同时超该值视为单边行情：普跌暂停山寨开多、普涨暂停山寨开空（顺势方向照常；抓单边走一整天、急跌闸门抓不到的形态）；0=关闭"
-          >
-            <InputNumber min={0} max={20} step={0.5} style={{ width: '100%' }} placeholder="3" addonAfter="%" />
-          </Form.Item>
-
-          <Form.Item
-            label="周回撤减速阈值（%，留空=默认 15）"
-            name="weekly_dd_stop_pct"
-            tooltip="UTC 周一起已平仓净亏 ≤ -风险基数 × 该值 时，本周剩余时间单笔预算减半（不拦开仓，周一 0 点自动恢复）；日熔断之上的二级减速，只收紧亏损侧；0=关闭"
-          >
-            <InputNumber min={0} max={100} step={0.5} style={{ width: '100%' }} placeholder="15" addonAfter="%" />
-          </Form.Item>
-
-          <Form.Item
-            label="月回撤熔断阈值（%，留空=默认 25）"
-            name="monthly_dd_stop_pct"
-            tooltip="UTC 月起已平仓净亏 ≤ -风险基数 × 该值 时停开新仓，需在顶部熔断卡片「确认复盘」人工确认后恢复（本月内有效）；周熔断之上的三级总闸；0=关闭"
-          >
-            <InputNumber min={0} max={100} step={0.5} style={{ width: '100%' }} placeholder="25" addonAfter="%" />
-          </Form.Item>
-
-          <Form.Item
-            label="ATR 跟进倍数（留空=默认 3）"
-            name="atr_trail_k"
-            tooltip="跟进止损加 ATR 腿（Chandelier）：多单 SL=max(现SL, 持仓期最高价−k×ATR22)，空单对称，与摆动低点跟进取更紧者（只收紧不放松）；0=关闭 ATR 腿"
-          >
-            <InputNumber min={0} max={20} step={0.5} style={{ width: '100%' }} placeholder="3" />
-          </Form.Item>
-
-          <Form.Item
-            label="TP2 分批止盈"
-            name="tp2_enabled"
-            valuePropName="checked"
-            initialValue={false}
-            tooltip="默认关闭：AI 报出的 TP2 不挂档，出场走「TP1 一次止盈 90% + 剩余 10% 跟进」。开启后：有 TP2 的单按 TP1 60% / TP2 30% / 剩余 10% 跟进分批；手动接管单不受此开关限制"
-          >
-            <Switch checkedChildren="启用" unCheckedChildren="关闭" />
-          </Form.Item>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="开单评分门槛（留空=默认 60）"
+                name="min_recommendation"
+                tooltip="AI 推荐度 ≥ 该值才分发自动开仓（0~100）；连损降速在此基础上额外提档"
+              >
+                <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} placeholder="60" precision={0} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="盈亏比铁律下限（留空=默认 1.5）"
+                name="ai_rr_min"
+                tooltip="按 AI 给的三价复算 RR 必须 ≥ 该值，不足直接打回（AI 提示词同源更新）"
+              >
+                <InputNumber min={0.5} max={10} step={0.1} style={{ width: '100%' }} placeholder="1.5" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="单笔风险比例（%，留空=默认 3）"
+                name="risk_pct"
+                tooltip="分档级别止损金额模式下：单笔止损预算 = 风险基数 × 该比例（仓位 = 预算 ÷ 止损距离）；固定金额模式不使用此值"
+              >
+                <InputNumber min={0.1} max={20} step={0.1} style={{ width: '100%' }} placeholder="3" addonAfter="%" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="杠杆上限（×，留空=默认 20）"
+                name="leverage_max"
+                tooltip="逐仓杠杆上限；止损距离超该杠杆的强平闸门时动态下调，安全杠杆低于动态下限的宽止损单直接放弃"
+              >
+                <InputNumber min={1} max={125} step={1} style={{ width: '100%' }} placeholder="20" precision={0} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="taker 手续费率（%，留空=默认 0.05）"
+                name="taker_fee_rate"
+                tooltip="开平仓 taker 费率（0.05% = 0.0005 比例），TP1 止损移保本的复算口径；随交易所费率调整时手改"
+              >
+                <InputNumber min={0} max={0.5} step={0.005} style={{ width: '100%' }} placeholder="0.05" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="近锚风险折价系数（留空=默认 0.7）"
+                name="near_anchor_factor"
+                tooltip="突破类信号用近锚止损时风险预算 × 该系数（>0 且 ≤1，收紧止损贴极值的单子预算）；1=不折价"
+              >
+                <InputNumber min={0.01} max={1} step={0.05} style={{ width: '100%' }} placeholder="0.7" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="当日亏损熔断开关"
+                name="daily_loss_stop_enabled"
+                tooltip="UTC 当日已平仓净亏达阈值停开新仓（AI 分析/巡检照常），顶部卡片「熔断状态」实时展示；触发后 UTC 0 点自动恢复"
+              >
+                <Select
+                  options={[
+                    { label: '开启', value: 'on' },
+                    { label: '关闭', value: 'off' },
+                  ]}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="当日亏损熔断阈值（%，留空=默认 9）"
+                name="daily_loss_stop_pct"
+                tooltip="已平仓净亏 ≤ -风险基数 × 该值 时触发熔断（9% ≈ 3 笔满损，随账户金额缩放）；0=关闭"
+              >
+                <InputNumber min={0} max={50} step={0.5} style={{ width: '100%' }} placeholder="9" addonAfter="%" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="组合热度上限（%，留空=默认关闭）"
+                name="portfolio_heat_cap"
+                tooltip="在跑单止损合计 + 本单预估 > 钱包 × 该值 时拦截新单，限制同时承受止损的总金额（0 或留空 = 关闭）"
+              >
+                <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} placeholder="0" addonAfter="%" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="同向持仓上限（留空=不限）"
+                name="same_direction_cap"
+                tooltip="同方向在跑单数达上限拦截新单，防全市场同涨同跌时同向单集体同损（0 或留空 = 不限）"
+              >
+                <InputNumber min={0} max={20} step={1} style={{ width: '100%' }} placeholder="0" precision={0} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="BTC 急跌暂停阈值（%，留空=默认 1）"
+                name="btc_crash_pause_pct"
+                tooltip="BTC 1h 近 3 根已收盘累计跌幅超该值时暂停山寨开单（BTCUSDT 本身照常；AI 提示词同步警示）；0=关闭"
+              >
+                <InputNumber min={0} max={20} step={0.1} style={{ width: '100%' }} placeholder="1" addonAfter="%" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="大盘单边暂停阈值（%，留空=默认 3）"
+                name="market_wide_pause_pct"
+                tooltip="BTC 与 ETH 24h 涨跌幅同时超该值视为单边行情：普跌暂停山寨开多、普涨暂停山寨开空（顺势方向照常；抓单边走一整天、急跌闸门抓不到的形态）；0=关闭"
+              >
+                <InputNumber min={0} max={20} step={0.5} style={{ width: '100%' }} placeholder="3" addonAfter="%" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="周回撤减速阈值（%，留空=默认 15）"
+                name="weekly_dd_stop_pct"
+                tooltip="UTC 周一起已平仓净亏 ≤ -风险基数 × 该值 时，本周剩余时间单笔预算减半（不拦开仓，周一 0 点自动恢复）；日熔断之上的二级减速，只收紧亏损侧；0=关闭"
+              >
+                <InputNumber min={0} max={100} step={0.5} style={{ width: '100%' }} placeholder="15" addonAfter="%" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="月回撤熔断阈值（%，留空=默认 25）"
+                name="monthly_dd_stop_pct"
+                tooltip="UTC 月起已平仓净亏 ≤ -风险基数 × 该值 时停开新仓，需在顶部熔断卡片「确认复盘」人工确认后恢复（本月内有效）；周熔断之上的三级总闸；0=关闭"
+              >
+                <InputNumber min={0} max={100} step={0.5} style={{ width: '100%' }} placeholder="25" addonAfter="%" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="ATR 跟进倍数（留空=默认 3）"
+                name="atr_trail_k"
+                tooltip="跟进止损加 ATR 腿（Chandelier）：多单 SL=max(现SL, 持仓期最高价−k×ATR22)，空单对称，与摆动低点跟进取更紧者（只收紧不放松）；0=关闭 ATR 腿"
+              >
+                <InputNumber min={0} max={20} step={0.5} style={{ width: '100%' }} placeholder="3" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="TP2 分批止盈"
+                name="tp2_enabled"
+                valuePropName="checked"
+                initialValue={false}
+                tooltip="默认关闭：AI 报出的 TP2 不挂档，出场走「TP1 一次止盈 90% + 剩余 10% 跟进」。开启后：有 TP2 的单按 TP1 60% / TP2 30% / 剩余 10% 跟进分批；手动接管单不受此开关限制"
+              >
+                <Switch checkedChildren="启用" unCheckedChildren="关闭" />
+              </Form.Item>
+            </Col>
+          </Row>
         </Form>
         </Spin>
       </Modal>
