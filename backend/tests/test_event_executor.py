@@ -190,6 +190,66 @@ def test_mark_pnl_bad_price(db):
     assert ee.refresh_mark_pnl(ACC, "BTCUSDT", -1.0) is False
 
 
+# ── N-17：mark 流诊断派发（2026-10-08）──────────────────────────
+
+
+@pytest.fixture()
+def advice_env(monkeypatch):
+    """AI key + 派发桩：返回 delay recorder（不真发 celery）"""
+    from app.config import settings
+    monkeypatch.setattr(settings, "AI_API_KEY", "test-key")
+    dispatched = _Recorder()
+    import app.tasks.trade_tasks as tt
+    monkeypatch.setattr(tt.run_position_advice, "delay", dispatched)
+    return dispatched
+
+
+def test_mark_pnl_dispatches_advice(db, advice_env):
+    """首次浮亏（advice_due 命中）→ 派发诊断子任务；快照照常落库"""
+    db.add(_rec(raw={}))
+    db.commit()
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", 95.0) is True  # -5 → 首次浮亏
+    assert len(advice_env.calls) == 1
+    r = db.query(TradeRecord).one()
+    assert float(r.unrealized_pnl) == pytest.approx(-5.0)  # 派发不影响快照
+
+
+def test_mark_pnl_no_dispatch_within_cooldown(db, advice_env):
+    """冷却内 + 恶化不足 → 快照刷新但不派发"""
+    db.add(_rec(ai_advice_at=datetime.utcnow(),
+                ai_advice_pnl=-5.0, raw={}))
+    db.commit()
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", 99.0) is True  # 恶化 1 < 3
+    assert advice_env.calls == []
+
+
+def test_mark_pnl_no_dispatch_without_ai_key(db, monkeypatch):
+    """AI 未配置 → 不派发（advice_due 恒 False 的双保险前置）"""
+    from app.config import settings
+    monkeypatch.setattr(settings, "AI_API_KEY", "")
+    dispatched = _Recorder()
+    import app.tasks.trade_tasks as tt
+    monkeypatch.setattr(tt.run_position_advice, "delay", dispatched)
+    db.add(_rec(raw={}))
+    db.commit()
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", 95.0) is True
+    assert dispatched.calls == []
+
+
+def test_mark_pnl_dispatch_failure_isolated(db, advice_env, monkeypatch):
+    """派发异常只记日志：快照照常落库、返回 True（事件流线程不中断）"""
+    import app.tasks.trade_tasks as tt
+
+    def _boom(*a, **kw):
+        raise RuntimeError("broker down")
+    monkeypatch.setattr(tt.run_position_advice, "delay", _boom)
+    db.add(_rec(raw={}))
+    db.commit()
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", 95.0) is True
+    r = db.query(TradeRecord).one()
+    assert float(r.unrealized_pnl) == pytest.approx(-5.0)
+
+
 # ── remaining_qty / liquidation_warning ──────────────────────────
 
 

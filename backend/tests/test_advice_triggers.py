@@ -75,7 +75,7 @@ def test_retrace_no_peak_no_trigger():
         ai_advice_at=NOW - timedelta(hours=1),
         ai_advice_pnl=-0.5,
     )
-    # -0.5 → -1.0：恶化 0.5 < 0.5R 门槛，冷却内 → 仅浮亏分支不足以触发
+    # -0.5 → -1.0：恶化 0.5 < 0.3R(3) 门槛，冷却内 → 仅浮亏分支不足以触发
     assert advice_due(rec, total=-1.0, now=NOW) is False
 
 
@@ -96,7 +96,7 @@ def test_worsen_0_5r_triggers_within_cooldown():
         ai_advice_at=NOW - timedelta(hours=1),
         ai_advice_pnl=-5.0,
     )
-    # -5 → -10.1：恶化 5.1 ≥ 0.5R(5) → 冷却内也触发
+    # -5 → -10.1：恶化 5.1 ≥ 0.3R(3) → 冷却内也触发
     assert advice_due(rec, total=-10.1, now=NOW) is True
 
 
@@ -105,8 +105,28 @@ def test_cooldown_blocks_mild_loss():
         ai_advice_at=NOW - timedelta(hours=1),
         ai_advice_pnl=-5.0,
     )
-    # -5 → -6：恶化 1 < 5，冷却内 → 不触发
+    # -5 → -6：恶化 1 < 3，冷却内 → 不触发
     assert advice_due(rec, total=-6.0, now=NOW) is False
+
+
+# ── N-17 恶化线 0.5R → 0.3R（2026-10-08，JST 案例实证）──
+
+def test_worsen_0_3r_boundary_triggers():
+    """恶化恰 = 0.3R（3.0）→ 冷却内触发（JST 型阴跌单提前重评）"""
+    rec = _rec(
+        ai_advice_at=NOW - timedelta(hours=1),
+        ai_advice_pnl=-5.0,
+    )
+    assert advice_due(rec, total=-8.0, now=NOW) is True
+
+
+def test_worsen_below_0_3r_blocked():
+    """恶化 2.9 < 0.3R → 冷却内不触发（旧 0.5 线下同样不触发，仅边界更灵敏）"""
+    rec = _rec(
+        ai_advice_at=NOW - timedelta(hours=1),
+        ai_advice_pnl=-5.0,
+    )
+    assert advice_due(rec, total=-7.9, now=NOW) is False
 
 
 def test_stale_hold_triggers():

@@ -6,7 +6,9 @@ user-data-stream 成交事件 → 秒级触发现有结算链路；mark price �
 铁律：
 - 不产生任何新策略语义——TP1 后保本移损/TP2 后跟进轨/仓位归零结算全部由
   settle_trades 既有分支推断执行（交易所为真源，零新簿记）；本模块只负责
-  「把下一次巡检提前到秒级」。mark price 只写快照字段，绝不触发动作。
+  「把下一次巡检提前到秒级」。mark price 只写快照字段 + 做诊断触发判定
+  （N-17 2026-10-08：只派发 celery 子任务，触发条件仍由 advice_due 冷却规则
+  把关；绝不直接执行任何动作）。
 - 与 30 分钟巡检/即时开仓/手动平仓严格互斥：复刻 run_auto_trade_task 的
   全账号锁集合模式；等锁失败放弃 → 轮询兜底（最坏回到现状节奏）。
 - 失败安全：任何异常只记日志返回 False，绝不向上抛（事件流线程调用方不中断）。
@@ -185,7 +187,9 @@ def refresh_mark_pnl(account_key: str, symbol: str, mark_price: float) -> bool:
     口径：USDT-M 线性自算 uPnL = ±(mark − entry) × 剩余仓（与交易所
     positionRisk 的 unrealized_pnl 差异在已实现部分的记账路径，快照用途下
     可接受；巡检每 30 分钟以交易所值覆盖校准）。峰值只增；pnl_pct 与巡检
-    同公式（risk_amount 分母）。只写快照字段，不触发任何动作。
+    同公式（risk_amount 分母）。写快照字段后做诊断触发判定（N-17）：
+    advice_due 命中即派发 celery 子任务（60s 采样不放大频率——冷却/恶化/
+    滞留规则在 advice_due 内把关），LLM 在子任务内锁外执行。
     """
     if mark_price <= 0:
         return False
@@ -212,6 +216,17 @@ def refresh_mark_pnl(account_key: str, symbol: str, mark_price: float) -> bool:
             rec.pnl_pct = round(total / float(rec.risk_amount) * 100, 2)
         warn = liquidation_warning(rec, mark_price)
         db.commit()
+        # N-17（2026-10-08）：快照刷新后做诊断触发判定——60s 粒度采样，
+        # 频率仍由 advice_due 的 3h 冷却/恶化线/滞留规则把关；只派发 celery
+        # 子任务（毫秒级返回），LLM 在子任务内锁外执行，绝不进任何 Redis 锁
+        try:
+            from datetime import datetime
+            from app.services.position_advisor import advice_due
+            if settings.AI_API_KEY and advice_due(rec, total, datetime.utcnow()):
+                from app.tasks.trade_tasks import run_position_advice
+                run_position_advice.delay(str(rec.id))
+        except Exception:
+            logger.exception("mark price 诊断派发失败 %s/%s", account_key, symbol)
         if warn and _cooldown_ok(f"liqwarn:{rec.symbol}", LIQ_WARN_COOLDOWN_S):
             logger.warning(warn)
         return True

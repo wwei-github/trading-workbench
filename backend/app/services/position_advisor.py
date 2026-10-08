@@ -1,7 +1,7 @@
 """在跑单 AI 持仓建议（docs/16）
 
 两类自动触发（2026-09-24 起）：
-- 浮亏触发：首次浮亏 / 3h 冷却到期 / 较上次诊断恶化 ≥0.5R
+- 浮亏触发：首次浮亏 / 3h 冷却到期 / 较上次诊断恶化 ≥0.3R
 - 滞留触发：持仓 ≥24h 且从未触发 TP1（status 仍为 OPENED）——AI 评估继续
   持有的必要性（资金效率：占用一天未达第一目标），首诊后每 24h 复诊
 
@@ -32,7 +32,9 @@ from app.services.llm_client import get_client, parse_llm_json
 logger = logging.getLogger(__name__)
 
 ADVICE_COOLDOWN_HOURS = 3   # 浮亏诊断两次间隔
-ADVICE_WORSEN_R = 0.5       # 冷却期内全程盈亏较上次诊断恶化 ≥0.5R → 提前刷新
+ADVICE_WORSEN_R = 0.3       # 冷却期内全程盈亏较上次诊断恶化 ≥0.3R → 提前刷新
+                            # （N-17 2026-10-08：0.5→0.3，JST 案例实证 0.5 线
+                            # 允许先吃掉一半风险预算才重评，阴跌单恰好滑过）
 PEAK_RETRACE_R = 0.6        # 浮盈回撤触发：峰值回撤 ≥0.6R → 诊断（2026-09-26）
 STALE_HOLD_HOURS = 24       # 滞留触发：持仓 ≥24h 且从未触发 TP1
 STALE_RECHECK_HOURS = 24    # 滞留复诊间隔（首诊后每 24h 再评估，直到 TP1/结算）
@@ -67,7 +69,7 @@ def advice_due(rec, total: float, now: datetime) -> bool:
     """自动诊断触发判定（docs/16 §3.1 + 2026-09-26 扩展）。
 
     rec 为 TradeRecord；total = 已实现 + 浮动（巡检刚写入的最新值）。
-    浮亏：首次浮亏 / 3h 冷却到期 / 较上次诊断恶化 ≥0.5R。
+    浮亏：首次浮亏 / 3h 冷却到期 / 较上次诊断恶化 ≥0.3R（N-17：0.5→0.3）。
     浮盈回撤：峰值（peak_total_pnl）回撤 ≥0.6R（2026-09-26，修复浮盈回吐盲区；
     复用 3h 冷却防回撤平台期反复触发，诊断后基线切换为当前值由恶化规则接管）。
     滞留：持仓 ≥24h 且从未触发 TP1（status 仍 OPENED），首诊后每 24h 复诊。
