@@ -478,8 +478,10 @@ def build_prompt_view(db: Session) -> dict:
             "text": text[m.end():end].strip(),
         })
     return {
-        "system_prompt": render_p0_prompt(risk_label, rr_min=rr_min),
-        "agent_system": render_system_prompt(risk_label, rr_min=rr_min),
+        "system_prompt": render_p0_prompt(risk_label, rr_min=rr_min,
+                                          tp2_enabled=bool(cfg.tp2_enabled)),
+        "agent_system": render_system_prompt(risk_label, rr_min=rr_min,
+                                             tp2_enabled=bool(cfg.tp2_enabled)),
         "user_custom": custom_head,
         "patch_segments": segments,
         "params": {

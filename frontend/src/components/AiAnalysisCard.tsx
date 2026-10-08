@@ -78,10 +78,13 @@ function PriceCard({
   label,
   value,
   color,
+  zeroText,
 }: {
   label: string
   value: number | null | undefined
   color: string
+  /** 值为 0 时的占位文案（如止盈2 关闭时显示「未启用」），不传走原数字格式化 */
+  zeroText?: string
 }) {
   return (
     <div
@@ -96,7 +99,7 @@ function PriceCard({
     >
       <div style={{ fontSize: 12, color: '#999', marginBottom: 2 }}>{label}</div>
       <div style={{ fontSize: 16, fontWeight: 700, color, lineHeight: 1.3 }}>
-        {fmtPrice(value)}
+        {value === 0 && zeroText ? zeroText : fmtPrice(value)}
       </div>
     </div>
   )
@@ -354,7 +357,8 @@ export default function AiAnalysisCard({ ai }: Props) {
             <PriceCard label="入场价" value={ai.entry_price} color="#1677ff" />
             <PriceCard label="止损价" value={ai.stop_loss} color={SCHEME_UP_DOWN[colorScheme].down} />
             <PriceCard label="止盈1" value={ai.take_profit_1} color={SCHEME_UP_DOWN[colorScheme].up} />
-            <PriceCard label="止盈2" value={ai.take_profit_2} color={SCHEME_UP_DOWN[colorScheme].up} />
+            {/* TP2 关闭时落库 0：显示「未启用」而非 0.0000 */}
+            <PriceCard label="止盈2" value={ai.take_profit_2} color={SCHEME_UP_DOWN[colorScheme].up} zeroText="未启用" />
           </div>
           {/* 指标行：盈亏比 / 仓位 / 分析时间 / 运行轨迹 */}
           <div

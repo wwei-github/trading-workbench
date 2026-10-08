@@ -240,6 +240,9 @@ def run_ai_analysis_single(
             if cfg.strategy_prompt_enabled and cfg.strategy_prompt
             else None
         )
+        # TP2 分批止盈开关（2026-10-08）：关闭时两管线提示词剔除止盈二 + 输出硬清零；
+        # 定义在指纹缓存沿用（_copy）之前——沿用路径同样需要清零 TP2
+        _tp2_on = bool(cfg.tp2_enabled)
         signal = {
             "symbol": r.symbol,
             "signal_type": r.signal_type,
@@ -290,7 +293,7 @@ def run_ai_analysis_single(
                 if _conclusion_still_valid(cached, signal["current_price"]):
                     note = "⏱️ 沿用近期同信号结论"
                     ai_progress.push(r.id, "gate", note=note)
-                    _copy(db, r, r.symbol, cached, fp, note)
+                    _copy(db, r, r.symbol, cached, fp, note, tp2_enabled=_tp2_on)
                     ai_progress.push_done(r.id, cached.trade_decision, note)
                     return
                 note = "⚠️ 同信号旧结论的价格区已失效（现价越过原止盈/止损），重新分析"
@@ -357,6 +360,7 @@ def run_ai_analysis_single(
                 rr_min=_rr_min,
                 risk_pct=_risk_pct,
                 tactics_block=tactics_block,
+                tp2_enabled=_tp2_on,
             )
         else:
             ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
@@ -375,6 +379,7 @@ def run_ai_analysis_single(
                 interval=cfg.kline_interval,
                 progress_id=r.id,  # 方案 B 轻量进度：流式增量计数推 "llm" 事件（≥2s 节流）
                 tactics_block=tactics_block,
+                tp2_enabled=_tp2_on,
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto；
         # 事实包增厚（docs/24 D3）——指标块 + 摆动结构摘要随 signal 传入（_build_judge_signal）
@@ -458,10 +463,13 @@ def _find_recent(db, symbol: str, fp: str, ttl_min: int) -> Optional[AIAnalysis]
     ).scalars().first()
 
 
-def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str) -> None:
+def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str,
+          tp2_enabled: bool = True) -> None:
     """沿用旧结论：复制到新 scan_result_id（analysis 加沿用说明）。
 
     必须提交：前端行级轮询以"分析记录出现"为完成标志，不提交会导致轮询挂满超时。
+    tp2_enabled（2026-10-08）：TP2 分批关闭时沿用记录同样清零 take_profit_2
+    （旧结论可能带 TP2 价，落库口径须与当前出场规则一致）。
     """
     result = {
         "trade_decision": src.trade_decision,
@@ -472,7 +480,7 @@ def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str) -
         "entry_price": float(src.entry_price or 0),
         "stop_loss": float(src.stop_loss or 0),
         "take_profit_1": float(src.take_profit_1 or 0),
-        "take_profit_2": float(src.take_profit_2 or 0),
+        "take_profit_2": float(src.take_profit_2 or 0) if tp2_enabled else 0,
         "risk_reward_ratio": float(src.risk_reward_ratio or 0),
         "position_pct": float(src.position_pct or 0),
         "recommendation": float(src.recommendation or 0),

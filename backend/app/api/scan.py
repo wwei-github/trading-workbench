@@ -1455,6 +1455,7 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
             signal, klines, strategy_prompt=strategy_prompt, htf_klines=htf_klines,
             risk_mode=_rm, risk_amount=_ra, risk_label=_rl, stop_cap_pct=_stop_cap,
             interval=cfg.kline_interval, tactics_block=tactics_block,
+            tp2_enabled=bool(cfg.tp2_enabled),
         )
         # 4h 强背景方向硬约束兜底（强多只开多/强空只开空）
         ai_result = enforce_htf_constraint(ai_result, htf_klines)

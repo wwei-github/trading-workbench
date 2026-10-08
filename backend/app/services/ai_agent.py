@@ -59,14 +59,19 @@ NEAR_STOP_RULE_AGENT = """11.5 突破类止损近锚降级链：结构锚（摆�
     已超程序硬上限（见信号门槛块）时无近锚资格，直接 skip。程序会校验近锚止损必须
     贴近突破K线极值 ±0.5%，偏离过远会被打回。"""
 
-def render_system_prompt(risk_label: str = "", rr_min: Optional[float] = None) -> str:
+def render_system_prompt(
+    risk_label: str = "", rr_min: Optional[float] = None,
+    tp2_enabled: bool = True,
+) -> str:
     """渲染最终生效的 P1 系统提示词（页面「查看当前生效提示词」与实际调用同源）。
 
     risk_label（2026-09-27 止损金额模式）：单笔止损预算文案（如"固定 3 USDT"/
     "账户风险基数 × 3%"），空时回落默认百分比口径。
     near_stop_rule 按突破类注入完整文案（预览无信号上下文，展示通用版）。
     rr_min（2026-10-02 上页面）：盈亏比铁律下限，system_config.ai_rr_min 覆盖时
-    由调用方传入；None 回落 env 默认。"""
+    由调用方传入；None 回落 env 默认。
+    tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时剔除止盈二锚点语义
+    （system_config.tp2_enabled，默认关），与实际调用（analyze_coin_agent）同源。"""
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     return AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
@@ -79,6 +84,9 @@ def render_system_prompt(risk_label: str = "", rr_min: Optional[float] = None) -
             rr_min=_rr,
             stop_cap_clause="止损宽度硬上限值以信号门槛块为准。",
         ),
+        _price_anchor_desc=_PRICE_ANCHOR_ON if tp2_enabled else _PRICE_ANCHOR_OFF,
+        _tp_anchor_desc=_TP_ANCHOR_DESC_ON if tp2_enabled else _TP_ANCHOR_DESC_OFF,
+        _tp2_rule=(_TP2_RULE_ON if tp2_enabled else _TP2_RULE_OFF).format(rr_min=_rr),
         skill_index="",
     )
 
@@ -99,12 +107,9 @@ _REF_DESC = "、".join(LEVEL_REFS)
 AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随消息给出，规则如下：
 {_RULE_HTF_HARD}
 1. 程序能算的不让你算——事实包数据直接用；需要补充数据才调用工具，最多 {max_rounds} 轮。
-2. **禁止编造绝对价格**：所有价格必须用结构位锚点表达（entry_ref/stop_ref/tp1_ref/tp2_ref + offset_pct），
+2. **禁止编造绝对价格**：所有价格必须用结构位锚点表达{_price_anchor_desc}，
    ref 取值: {_ref_desc}；offset_pct 为相对锚点的百分比偏移（如支撑位下方 0.5×ATR 用负 offset）。
-   止盈用线外锚点：做多止盈一 tp1_ref=resistance_zone_low（现价上方最近的摆动高点，历史命名）、
-   止盈二 tp2_ref=next_resistance_zone_low（更远一档的摆动高点）；做空用 support_zone_high /
-   next_support_zone_high（现价下方的摆动低点及其更远一档）。止盈 offset 留余地：
-   做多 -0.2~-0.5（位下方），做空 0.2~0.5（位上方）。
+   {_tp_anchor_desc}
 3. 决策必须通过 submit_decision 工具提交，提交后程序会做风控校验：
    校验不通过时工具会返回违规明细，请按明细修正后重新提交。
 4. **入场价纪律**：当前价格是分析时刻的最新价。**只允许现价入场（2026-09-30 二次拍板）**：
@@ -145,10 +150,7 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     ——不得贴死位或挂在越位一侧（价格常在位附近反弹，越位才触发的止盈大概率落空）。
     禁止把止盈一挂到更远结构位凑盈亏比：到第一结构位的盈亏比不足 {rr_min} 说明空间不足，
     应直接 skip（程序只复算盈亏比并按铁律打回）。
-    止盈二取止盈一锚定档的下一档同类结构位（做多=更高一档摆动高点下方，做空=更低一档
-    摆动低点上方）且必须比止盈一更远。价格创新高/新低、前方无摆动结构位时
-    （如创新高突破），止盈一 = 入场 ± {rr_min}×止损距离、止盈二不设（仅一档）。
-    盈亏比 ≥{rr_min} 是开单硬性要求（程序复算，不足即打回）。
+    {_tp2_rule}
 13. 方向纪律（不再程序强制，无 ±0.3% 贴近要求）：优先只在支撑结构做多（摆动低点/
     近期低点附近）、只在压力结构做空（摆动高点/近期高点附近）；现价已离开结构位时
     不再要求贴近，按动能与盈亏比自行判断入场（breakout 顺势追突破仍用 market 锚）。
@@ -156,6 +158,32 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 {_RULE_STRUCT_BRIEF}
 
 {skill_index}"""
+
+
+# TP2 分批开关（2026-10-08）槽位变体：关闭时提示词整体剔除止盈二锚点语义，
+# 与 P0 管线（ai_analyzer.compose_rule_tp）同目的——AI 不产出第二档止盈价。
+# 含 {rr_min} 的变体在渲染前须先 .format(rr_min=_rr) 再传入 AGENT_SYSTEM.format。
+_PRICE_ANCHOR_ON = "（entry_ref/stop_ref/tp1_ref/tp2_ref + offset_pct）"
+_PRICE_ANCHOR_OFF = "（entry_ref/stop_ref/tp1_ref + offset_pct）"
+
+_TP_ANCHOR_DESC_ON = """止盈用线外锚点：做多止盈一 tp1_ref=resistance_zone_low（现价上方最近的摆动高点，历史命名）、
+   止盈二 tp2_ref=next_resistance_zone_low（更远一档的摆动高点）；做空用 support_zone_high /
+   next_support_zone_high（现价下方的摆动低点及其更远一档）。止盈 offset 留余地：
+   做多 -0.2~-0.5（位下方），做空 0.2~0.5（位上方）。"""
+
+_TP_ANCHOR_DESC_OFF = """止盈用线外锚点：做多止盈一 tp1_ref=resistance_zone_low（现价上方最近的摆动高点，历史命名）；
+   做空用 support_zone_high（现价下方的摆动低点）。止盈 offset 留余地：
+   做多 -0.2~-0.5（位下方），做空 0.2~0.5（位上方）。"""
+
+_TP2_RULE_ON = """止盈二取止盈一锚定档的下一档同类结构位（做多=更高一档摆动高点下方，做空=更低一档
+    摆动低点上方）且必须比止盈一更远。价格创新高/新低、前方无摆动结构位时
+    （如创新高突破），止盈一 = 入场 ± {rr_min}×止损距离、止盈二不设（仅一档）。
+    盈亏比 ≥{rr_min} 是开单硬性要求（程序复算，不足即打回）。"""
+
+_TP2_RULE_OFF = """当前未启用止盈二（TP2 分批止盈已关闭）：不要提交 tp2_ref/tp2_offset_pct
+    （提交也会被程序置 0），止盈一只挂第一档结构位。价格创新高/新低、前方无摆动
+    结构位时，止盈一 = 入场 ± {rr_min}×止损距离。
+    盈亏比 ≥{rr_min} 是开单硬性要求（程序复算，不足即打回）。"""
 
 TOOLS_SCHEMA = [
     {"type": "function", "function": {
@@ -227,6 +255,23 @@ TOOLS_SCHEMA = [
         }, "required": ["trade_decision"]},
     }},
 ]
+
+
+def _tools_schema(tp2_enabled: bool = True) -> list:
+    """submit_decision 工具 schema 按 TP2 开关过滤（2026-10-08）：
+    关闭时对模型隐藏 tp2_ref/tp2_offset_pct 参数——模型无法提交止盈二。
+    返回深拷贝，不污染模块级 TOOLS_SCHEMA 常量。"""
+    if tp2_enabled:
+        return TOOLS_SCHEMA
+    import copy
+    tools = copy.deepcopy(TOOLS_SCHEMA)
+    for t in tools:
+        fn = t.get("function") or {}
+        if fn.get("name") == "submit_decision":
+            props = (fn.get("parameters") or {}).get("properties") or {}
+            props.pop("tp2_ref", None)
+            props.pop("tp2_offset_pct", None)
+    return tools
 
 
 # 线外锚点：ref -> (swings 侧, 第几档)；第几档 0=现价侧最近、1=下一档（止盈二用）。
@@ -328,11 +373,14 @@ def _handle_submit(
     risk_budget: Optional[float] = None,
     rr_min: Optional[float] = None,
     risk_pct: Optional[float] = None,
+    tp2_enabled: bool = True,
 ) -> tuple[bool, str, Optional[dict]]:
     """submit_decision：锚点换算 → Risk Guard。返回 (done, tool_result, fixed)
 
     risk_budget（2026-09-27 止损金额模式）：fixed 模式预算实额，透传校验。
-    战法字段（2026-10-02）：随 args 携带，白名单闸门在 validate_decision。"""
+    战法字段（2026-10-02）：随 args 携带，白名单闸门在 validate_decision。
+    tp2_enabled（2026-10-08）：关闭时 tp2 参数一律置 0（提示词与工具 schema
+    已隐藏止盈二，此处兜底防模型沿旧习惯提交）。"""
     decision = args.get("trade_decision")
     if decision not in ("suggest", "skip"):
         return False, "trade_decision 必须是 suggest 或 skip", None
@@ -366,8 +414,12 @@ def _handle_submit(
                           signal, purpose="stop", klines=klines)
     tp1 = _resolve_price(args.get("tp1_ref"), args.get("tp1_offset_pct"),
                          signal, purpose="tp")
-    tp2 = _resolve_price(args.get("tp2_ref"), args.get("tp2_offset_pct"),
-                         signal, purpose="tp")
+    # TP2 关闭硬清零（2026-10-08）：不解析 tp2 锚点，落库 take_profit_2=0
+    tp2 = (
+        _resolve_price(args.get("tp2_ref"), args.get("tp2_offset_pct"),
+                       signal, purpose="tp")
+        if tp2_enabled else 0
+    )
     errs = []
     if entry is None:
         errs.append(f"entry_ref 非法（{_REF_DESC} 中选择）")
@@ -432,6 +484,7 @@ def _dispatch_tool(name: str, args: dict, ctx: dict) -> tuple[bool, str, Optiona
         return _handle_submit(
             args, ctx["signal"], ctx["klines"], risk_budget=ctx.get("risk_budget"),
             rr_min=ctx.get("rr_min"), risk_pct=ctx.get("risk_pct"),
+            tp2_enabled=ctx.get("tp2_enabled", True),
         )
     return False, f"unknown tool: {name}", None
 
@@ -445,6 +498,7 @@ def analyze_coin_agent(
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
     stop_cap_pct: Optional[float] = None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
+    tp2_enabled: bool = True,
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -457,7 +511,10 @@ def analyze_coin_agent(
     None=不限制），注入门槛块与近锚规则供 AI 自验。
     tactics_block（2026-10-02）：战法库判定块（调用方预渲染；空=无战法不注入）。
     rr_min / risk_pct（2026-10-02 上页面）：盈亏比铁律下限与单笔风险比例，
-    注入提示词并透传 submit_decision 校验（None=env 默认）。"""
+    注入提示词并透传 submit_decision 校验（None=env 默认）。
+    tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时提示词剔除止盈二锚点语义、
+    submit_decision 工具 schema 隐藏 tp2_* 参数、提交的 tp2 硬清零
+    （system_config.tp2_enabled，默认关）。"""
     client = get_client()
 
     # 布尔事实（技能 use_when 判定）
@@ -472,6 +529,7 @@ def analyze_coin_agent(
         if stop_cap_pct is not None and stop_cap_pct > 0 else ""
     )
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
+    _tp2_on = bool(tp2_enabled)
     # 近锚降级链仅突破类注入（docs/23）；回踩/其他类槽位留空
     near_stop_rule = (
         NEAR_STOP_RULE_AGENT.format(rr_min=_rr,
@@ -487,6 +545,9 @@ def analyze_coin_agent(
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
         near_stop_rule=near_stop_rule,
+        _price_anchor_desc=_PRICE_ANCHOR_ON if _tp2_on else _PRICE_ANCHOR_OFF,
+        _tp_anchor_desc=_TP_ANCHOR_DESC_ON if _tp2_on else _TP_ANCHOR_DESC_OFF,
+        _tp2_rule=(_TP2_RULE_ON if _tp2_on else _TP2_RULE_OFF).format(rr_min=_rr),
         skill_index=skill_index,
     )
     if strategy_prompt:
@@ -511,6 +572,8 @@ def analyze_coin_agent(
         "risk_budget": risk_amount if risk_mode == "fixed" and risk_amount > 0 else None,
         # 盈亏比铁律/风险比例（2026-10-02 上页面）：透传 submit_decision 校验
         "rr_min": rr_min, "risk_pct": risk_pct,
+        # TP2 分批开关（2026-10-08）：透传 submit_decision 硬清零
+        "tp2_enabled": _tp2_on,
     }
     fixed: Optional[dict] = None
     tool_rounds = 0
@@ -522,7 +585,7 @@ def analyze_coin_agent(
         resp = client.chat.completions.create(
             model=settings.AI_MODEL,
             messages=messages,
-            tools=TOOLS_SCHEMA,
+            tools=_tools_schema(tp2_enabled=_tp2_on),
             temperature=0.3,
             max_tokens=32000,  # GLM 思考型：reasoning 计入配额，12000 被思考耗尽过（同 ai_analyzer 口径）
         )

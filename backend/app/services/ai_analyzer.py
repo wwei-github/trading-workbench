@@ -38,17 +38,46 @@ _RULE_SL = """止损纪律（结构位优先，影线极值兜底，两锚取更
 - 兜底（入场价与极值间无摆动结构位时用极值锚）：做多严格低于最近 5 根最低点（影线极值即最低价，非收盘价）至少 0.3%，做空严格高于最高点至少 0.3%。
 - 止损宽度不设固定百分比上限；盈亏比不达标先调入场价，仍不行则 skip。"""
 
-_RULE_TP = """止盈锚定（多空方向不同，必须遵守；程序不再改挂止盈价）：
+_RULE_TP_BASE = """止盈锚定（多空方向不同，必须遵守；程序不再改挂止盈价）：
 - 结构位=摆动高低点（用户消息中"近期摆动结构"）。距现价 ≤1×ATR 的位是正在
   测试的争夺位、不算止盈目标，止盈一必须挂更远的第一档结构位外侧：
   做多 = 上方摆动高点下方 0.2%~0.5%（不得越到位上方或贴死位）；
   做空 = 下方摆动低点上方 0.2%~0.5%（不得越到位下方或贴死位）。
 - 禁止跳档凑盈亏比：到第一结构位不足 {rr_min}R 就是空间不足，应直接 skip
-  （程序按盈亏比铁律复算打回）。
-- 止盈二：止盈一锚定档的下一档结构位外侧（做多=更高一档摆动高点下方，
-  做空=更低一档摆动低点上方），留同幅余地，且必须比止盈一更远。
-- 前方无任何结构位可锚（如创新高突破）：止盈一 = 入场价 ± {rr_min}×止损距离
+  （程序按盈亏比铁律复算打回）。"""
+
+# TP2 分批开关（2026-10-08）：关闭时提示词整体剔除止盈二条目——AI 不再产出
+# 第二档止盈价（落库 take_profit_2=0，与出场引擎 90% 口径一致）
+_RULE_TP2_BULLET_ON = """- 止盈二：止盈一锚定档的下一档结构位外侧（做多=更高一档摆动高点下方，
+  做空=更低一档摆动低点上方），留同幅余地，且必须比止盈一更远。"""
+
+_RULE_TP2_BULLET_OFF = """- 当前未启用止盈二（TP2 分批止盈已关闭）：只规划止盈一，
+  take_profit_2 一律输出 0，即使前方有更远结构位也不要给出第二档止盈价。"""
+
+_RULE_TP_TAIL_ON = """- 前方无任何结构位可锚（如创新高突破）：止盈一 = 入场价 ± {rr_min}×止损距离
   （盈亏比恰达标），止盈二设 0（仅设一档）。"""
+
+_RULE_TP_TAIL_OFF = """- 前方无任何结构位可锚（如创新高突破）：止盈一 = 入场价 ± {rr_min}×止损距离
+  （盈亏比恰达标）。"""
+
+# 兼容名（默认开启版）：外部仅 SYSTEM_PROMPT 槽位引用，经 compose_rule_tp 组装
+_RULE_TP = "\n".join([_RULE_TP_BASE, _RULE_TP2_BULLET_ON, _RULE_TP_TAIL_ON])
+
+
+def compose_rule_tp(tp2_enabled: bool) -> str:
+    """止盈锚定规则块按 TP2 开关组装（tp2_enabled=False 剔除止盈二条目）。"""
+    return "\n".join([
+        _RULE_TP_BASE,
+        _RULE_TP2_BULLET_ON if tp2_enabled else _RULE_TP2_BULLET_OFF,
+        _RULE_TP_TAIL_ON if tp2_enabled else _RULE_TP_TAIL_OFF,
+    ])
+
+
+# 字段说明行按 TP2 开关二选一（SYSTEM_PROMPT 的 {_tp2_field} 槽位）
+_TP2_FIELD_ON = """第二档止盈价，锚定更前方一档摆动结构位（做多=更高一档摆动高点下方，
+  做空=更低一档摆动低点上方，同样留余地）且必须比止盈一更远。"""
+
+_TP2_FIELD_OFF = """当前未启用止盈二（TP2 分批关闭）：一律输出 0。"""
 
 _RULE_STRUCT = """结构破位回踩打法（structure_break）三子形态按行情阶段择一，选择理由写进 analysis：
 1. 123法则（趋势反转）：破支撑(1) → 反弹不创新低(2) → 突破反弹高点时入场(3)；止损放转折点外侧。稳但滞后。
@@ -191,8 +220,7 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
   做空=下方摆动低点上方留 0.2%~0.5%。盈亏比铁律（程序按三价复算打回，声称值无效）：
   RR = |TP1 − 入场| ÷ |入场 − 止损| 必须 ≥ {rr_min}，输出前先自行代入验算
   （近位争夺位不算止盈目标，细则见下方止盈锚定）。
-- take_profit_2: 第二档止盈价，锚定更前方一档摆动结构位（做多=更高一档摆动高点下方，
-  做空=更低一档摆动低点上方，同样留余地）且必须比止盈一更远。
+- take_profit_2: {_tp2_field}
 - risk_reward_ratio: take_profit_1 的盈亏比，2位小数。
 - position_pct: 建议名义仓位占账户资金百分比，2位小数。程序会按固定亏损复算覆盖
   （单笔止损预算={risk_label}：仓位=预算÷止损距离），此处报估算值即可。
@@ -227,23 +255,29 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 环境数据未提供，勿臆测：仅基于给定的 K 线、量能、均线、摆动结构、技术指标、
 4h 背景与环境块数据进行分析，环境块缺失时按无环境数据处理。"""
 
-def render_system_prompt(risk_label: Optional[str] = None, rr_min: Optional[float] = None) -> str:
+def render_system_prompt(
+    risk_label: Optional[str] = None, rr_min: Optional[float] = None,
+    tp2_enabled: bool = True,
+) -> str:
     """渲染最终生效的 P0 系统提示词（SYSTEM_PROMPT 为带槽位模板）。
 
     risk_label（2026-09-27 止损金额模式）：单笔止损预算文案，None 时回落
     百分比口径。页面预览与实际调用共用本函数保证同源。
     rr_min（2026-10-02 上页面）：盈亏比铁律下限，system_config.ai_rr_min
-    覆盖时由调用方传入；None 回落 env 默认。"""
+    覆盖时由调用方传入；None 回落 env 默认。
+    tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时剔除止盈二规则与
+    字段说明，AI 不再产出第二档止盈价（system_config.tp2_enabled，默认关）。"""
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     return SYSTEM_PROMPT.format(
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_DIRECTION=_RULE_DIRECTION.replace(chr(10), ' '),
         _RULE_STRUCT=_RULE_STRUCT,
         _RULE_SL=_RULE_SL,
-        _RULE_TP=_RULE_TP.format(rr_min=_rr),
+        _RULE_TP=compose_rule_tp(tp2_enabled),
         _RULE_TOUCH=_RULE_TOUCH,
         _RULE_EMA=_RULE_EMA.replace(chr(10), ' '),
         _RULE_VOTE=_RULE_VOTE.replace(chr(10), ' '),
+        _tp2_field=_TP2_FIELD_ON if tp2_enabled else _TP2_FIELD_OFF,
         rr_min=_rr,
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
     )  # 模板槽位均为纯名称：表达式在渲染前预处理（f-string 时代的 .format 内嵌已移除）
@@ -261,7 +295,7 @@ def analyze_coin(
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
     stop_cap_pct: Optional[float] = None, interval: str = "1h",
     tactics_block: str = "", rr_min: Optional[float] = None,
-    crash_pct: Optional[float] = None,
+    crash_pct: Optional[float] = None, tp2_enabled: bool = True,
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -279,15 +313,22 @@ def analyze_coin(
     tactics_block: 战法库判定块（2026-10-02，调用方预渲染；空=无战法不注入）
     rr_min: 盈亏比铁律下限（2026-10-02 上页面覆盖；None=env 默认）
     crash_pct: BTC 急跌阈值 %（2026-10-02 上页面覆盖；None=env 默认）
+    tp2_enabled: TP2 分批止盈开关（2026-10-08，system_config.tp2_enabled）——
+    关闭时提示词剔除止盈二条目且输出硬清零（AI 不产出第二档止盈价）
     """
     client = _get_client()
-    return _call_llm(
+    result = _call_llm(
         client,
         _build_messages(signal, klines, strategy_prompt, user_input, htf_klines,
                         risk_label=risk_label, stop_cap_pct=stop_cap_pct,
                         interval=interval, tactics_block=tactics_block,
-                        rr_min=rr_min, crash_pct=crash_pct),
+                        rr_min=rr_min, crash_pct=crash_pct,
+                        tp2_enabled=tp2_enabled),
     )
+    if not tp2_enabled:
+        # TP2 关闭兜底清零（提示词已要求输出 0；防止模型违规输出污染落库记录）
+        result["take_profit_2"] = 0
+    return result
 
 
 def _build_messages(
@@ -300,6 +341,7 @@ def _build_messages(
     tactics_block: str = "",
     rr_min: Optional[float] = None,
     crash_pct: Optional[float] = None,
+    tp2_enabled: bool = True,
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
 
@@ -307,7 +349,9 @@ def _build_messages(
     仓位口径说明；空时用默认百分比口径。
     stop_cap_pct（2026-09-29）：止损宽度硬上限，注入门槛块（None=不限制不注入）。
     rr_min（2026-10-02 上页面）：盈亏比铁律下限，注入系统提示词（None=env 默认）。
-    crash_pct（2026-10-02 上页面）：BTC 急跌阈值 %，透传市场环境块（None=env 默认）。"""
+    crash_pct（2026-10-02 上页面）：BTC 急跌阈值 %，透传市场环境块（None=env 默认）。
+    tp2_enabled（2026-10-08）：TP2 分批止盈开关，注入系统提示词（None 不适用，
+    默认 True）。"""
     # 取最近 40 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-41:-1]）。
     # 60→40（2026-09-28）：CSV 是 user 消息 token 大头（60 根 ≈5000+），思考型模型
     # reasoning 时长与输入量正相关；浓缩结论（指标/摆动块）已覆盖形态识别所需，
@@ -421,7 +465,8 @@ def _build_messages(
             f"{user_input.strip()}"
         )
 
-    system_prompt = render_system_prompt(risk_label or None, rr_min=rr_min)
+    system_prompt = render_system_prompt(risk_label or None, rr_min=rr_min,
+                                         tp2_enabled=tp2_enabled)
     # 技能注入（P0 管线无工具循环，命中技能正文直接进系统提示词；与 Agent 管线共用同一事实判定）
     skill_block = skill_library.render_matched(skill_library.build_facts(signal, klines))
     if skill_block:
@@ -512,7 +557,7 @@ def analyze_with_guard(
     stop_cap_pct: Optional[float] = None, interval: str = "1h",
     progress_id=None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
-    crash_pct: Optional[float] = None,
+    crash_pct: Optional[float] = None, tp2_enabled: bool = True,
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -525,12 +570,14 @@ def analyze_with_guard(
     tactics_block：战法库判定块（2026-10-02，调用方预渲染；空=无战法不注入）。
     rr_min / risk_pct / crash_pct（2026-10-02 上页面）：盈亏比铁律下限、单笔
     风险比例与 BTC 急跌阈值，注入提示词并透传 Risk Guard 校验（None=env 默认）。
+    tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时提示词剔除止盈二条目，
+    且在风控校验前硬清零 take_profit_2（AI 不产出第二档止盈价）。
     """
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
         htf_klines=htf_klines, risk_label=risk_label, stop_cap_pct=stop_cap_pct,
         interval=interval, tactics_block=tactics_block, rr_min=rr_min,
-        crash_pct=crash_pct,
+        crash_pct=crash_pct, tp2_enabled=tp2_enabled,
     )
     client = _get_client()
     _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None
@@ -558,6 +605,10 @@ def analyze_with_guard(
                 ),
             })
             continue
+
+        # TP2 关闭硬清零（校验前生效：Risk Guard 的 TP2 排序检查对 0 值自动跳过）
+        if not tp2_enabled and isinstance(raw, dict):
+            raw["take_profit_2"] = 0
 
         ok, violations, fixed = parse_and_validate(
             raw, signal, klines, risk_budget=_risk_budget,
