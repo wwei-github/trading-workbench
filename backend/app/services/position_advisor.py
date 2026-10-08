@@ -555,7 +555,11 @@ def _auto_tighten(db: Session, rec, cand: float, atr: float, advice: dict) -> bo
             db.refresh(rec)
             if rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
                 return False
-            open_ids = set(trader.open_algo_orders(rec.symbol))
+            # open_algo_orders 返回币安原始 dict 列表（algoId/type/side/...），
+            # 取 algoId 集合供 _replace_sl 判断旧单是否在挂（dict 不可哈希，
+            # 直接 set() 会 TypeError——2026-10-08 LUNA2USDT 首跑实锤）
+            open_ids = {int(o["algoId"]) for o in trader.open_algo_orders(rec.symbol)
+                        if o.get("algoId") is not None}
             from app.services.trade_engine import _replace_sl
             _replace_sl(db, trader, rec, open_ids, cand, reason="ai_auto_tighten")
             db.commit()

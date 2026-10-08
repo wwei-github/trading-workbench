@@ -137,7 +137,10 @@ class _Trader:
         return self.price_value
 
     def open_algo_orders(self, symbol):
-        return [111, 222]
+        # 对齐币安 /fapi/v1/openAlgoOrders 真实结构：dict 列表（含 algoId）。
+        # 曾stub成 int 列表掩盖了 set(dict) unhashable 线上 bug（2026-10-08 LUNA2）
+        return [{"algoId": 111, "type": "STOP_MARKET"},
+                {"algoId": 222, "type": "TAKE_PRO_MARKET"}]
 
     def cancel_order(self, symbol, oid):
         self.calls.append(("cancel", oid))
