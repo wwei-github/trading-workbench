@@ -71,22 +71,24 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [updating, setUpdating] = useState(false)
-  // 复盘周期切换（2026-10-08）：null=未定（首拉用后端 cfg.kline_interval），
-  // 首拉后固化为服务端返回值，用户可切 1h/4h
-  const [interval, setIntervalState] = useState<string | null>(null)
+  // 复盘周期切换（2026-10-08）：reqInterval 为拉取周期（null=跟随服务端默认
+  // cfg.kline_interval，可配非 1h/4h），serverInterval 为服务端实际返回档位。
+  // 两者分离：首拉固化 serverInterval 不触发重拉；切周期不清旧数据、不整块
+  // loading——旧图保留，新数据到达后 ChartCore 原地替换（同 KlineChart 平滑体验）
+  const [reqInterval, setReqInterval] = useState<string | null>(null)
+  const [serverInterval, setServerInterval] = useState<string>('1h')
 
-  // 拉取复盘数据（tradeId / interval 变化重拉）
+  // 拉取复盘数据（tradeId / reqInterval 变化重拉；仅首拉整块 loading）
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
-    setError(null)
-    setData(null)
+    if (reqInterval == null) setLoading(true)
     scanApi.trades
-      .klines(tradeId, interval ?? undefined)
+      .klines(tradeId, reqInterval ?? undefined)
       .then((d) => {
         if (!cancelled) {
           setData(d)
-          if (interval == null) setIntervalState(d.interval)
+          setError(null)
+          setServerInterval(d.interval)
         }
       })
       .catch((e) => {
@@ -98,28 +100,30 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
     return () => {
       cancelled = true
     }
-  }, [tradeId, interval])
+  }, [tradeId, reqInterval])
 
   // 「更新」按钮：重拉复盘数据（在跑单的持仓区间会延长）
   const handleUpdate = useCallback(async () => {
     setUpdating(true)
     try {
-      setData(await scanApi.trades.klines(tradeId, interval ?? undefined))
+      const d = await scanApi.trades.klines(tradeId, reqInterval ?? undefined)
+      setData(d)
+      setServerInterval(d.interval)
       setError(null)
     } catch (e: any) {
       setError(e?.response?.data?.detail || '复盘K线更新失败')
     } finally {
       setUpdating(false)
     }
-  }, [tradeId, interval])
+  }, [tradeId, reqInterval])
 
   const isLong = data?.direction !== 'short'
 
-  // 周期切换档位：服务端默认档（cfg.kline_interval，可配非 1h/4h）+ 1h/4h，去重保序
+  // 周期切换档位：服务端实际档 + 1h/4h，去重保序
   const intervalOptions = useMemo(() => {
-    const vals = [data?.interval ?? '1h', '1h', '4h']
+    const vals = [serverInterval, '1h', '4h']
     return [...new Set(vals)].map((v) => ({ label: v, value: v }))
-  }, [data?.interval])
+  }, [serverInterval])
 
   // 事件箭头标记（useMemo 保持引用稳定：ChartCore 以引用判断是否重应用标记）
   const extraMarkers = useMemo<SeriesMarker<UTCTimestamp>[]>(() => {
@@ -269,20 +273,22 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
     }
   }, [data, colorScheme])
 
-  if (loading) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: 420 }}>
-        <Spin size="large" />
-        <div style={{ marginTop: 12, color: '#8b93a7', fontSize: 12 }}>
-          拉取复盘K线中（历史区间直连交易所，稍慢属正常）
-        </div>
-      </div>
-    )
-  }
-  if (error) {
-    return <Alert type="warning" showIcon message="复盘K线获取失败" description={error} />
-  }
+  // 无数据（首拉中/首拉失败/新周期返回空）：整块反馈；
+  // 有数据时（切周期/更新）旧图保留，错误只出图上方窄条（同 KlineChart）
   if (!data || data.klines.length === 0) {
+    if (loading) {
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: 420 }}>
+          <Spin size="large" />
+          <div style={{ marginTop: 12, color: '#8b93a7', fontSize: 12 }}>
+            拉取复盘K线中（历史区间直连交易所，稍慢属正常）
+          </div>
+        </div>
+      )
+    }
+    if (error) {
+      return <Alert type="warning" showIcon message="复盘K线获取失败" description={error} />
+    }
     return <Empty description="无K线数据" style={{ marginTop: 60 }} />
   }
 
@@ -291,9 +297,19 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 420 }}>
+      {error && (
+        <Alert
+          type="warning"
+          showIcon
+          message="复盘K线更新失败"
+          description={error}
+          style={{ marginBottom: 8 }}
+        />
+      )}
       <ChartCore
-        // key 含 interval：切换周期重建图表（数据周期变了，指标/可视区需重算）
-        chartKey={`${tradeId}-${interval ?? ''}`}
+        // chartKey 不含周期：图表实例跨周期复用——切周期时新数据由 ChartCore
+        // 的 data effect 原地 setData（指标/可视区/标记重算，覆盖层每帧重绘）
+        chartKey={tradeId}
         watermark={`${data.symbol} ${isLong ? '做多' : '做空'}`}
         label={data.symbol}
         data={data}
@@ -303,8 +319,8 @@ export default function TradeReplayChart({ tradeId }: { tradeId: string }) {
         height={CHART_HEIGHT}
         onUpdate={handleUpdate}
         updating={updating}
-        interval={interval ?? '1h'}
-        onIntervalChange={(v) => setIntervalState(v)}
+        interval={serverInterval}
+        onIntervalChange={(v) => setReqInterval(v)}
         intervalOptions={intervalOptions}
         headerExtra={
           // 复盘信息卡：区间说明 + 三价摘要（与扫描图工具栏/图例同栈不遮挡）
