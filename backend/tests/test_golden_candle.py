@@ -8,10 +8,13 @@ from app.services.strategy.candlestick import (
     GOLDEN_12,
     PATTERN_LABEL_MAP,
     detect_all_patterns,
+    detect_dark_cloud_cover,
     detect_doji,
     detect_engulfing,
     detect_evening_star,
+    detect_harami_breakout,
     detect_morning_star,
+    detect_piercing_line,
     detect_shooting_star,
     resolve_golden_evidence,
 )
@@ -308,3 +311,157 @@ def test_evening_star_fat_mid_body_rejected():
     )
     kl.append([1700000300000, 102.2, 102.4, 100.6, 100.8, 10.0, 10.0])  # 阴线 body1.4
     assert detect_evening_star(kl, idx=-1) is None
+
+
+# ── 刺透线/乌云盖顶微跳空容差（2026-10-08：AKTUSDT 12:00→13:00 标准刺透
+#    因开盘 +0.04% 打印差被零容差误拒，平开判定加 0.1% 容差）──
+
+def _two_bar_piercing(cur_open: float) -> list[list]:
+    """AKTUSDT 2026-10-08 12:00→13:00 线上实测复刻：
+    前根阴线 o=0.7378 c=0.7274（mid=0.7326），当根阳线 c=0.7355（过中点、
+    未吞没），cur_open 控制开盘位置"""
+    return [
+        [1700000100000, 0.7378, 0.7456, 0.7265, 0.7274, 10.0, 10.0],
+        [1700000200000, cur_open, 0.7384, 0.7205, 0.7355, 10.0, 10.0],
+    ]
+
+
+def test_piercing_micro_gap_up_within_tolerance_detected():
+    """开盘微高开 +0.04%（0.0003/0.7274，线上实测值）→ 视同平开，判刺透"""
+    kl = _two_bar_piercing(cur_open=0.7277)
+    r = detect_piercing_line(kl, idx=-1)
+    assert r is not None
+    assert r["pattern"] == "piercing_line" and r["direction"] == "bullish"
+
+
+def test_piercing_flat_open_and_low_open_detected():
+    """平开（=前收）与低开 → 照常判刺透（经典路径不回归）"""
+    flat = _two_bar_piercing(cur_open=0.7274)
+    assert detect_piercing_line(flat, idx=-1) is not None
+    low = _two_bar_piercing(cur_open=0.7250)
+    assert detect_piercing_line(low, idx=-1) is not None
+
+
+def test_piercing_gap_at_tolerance_boundary_allowed():
+    """开盘恰 +0.1%（容差边界，0.7274×1.001=0.7281274 → 取 0.7281）→ 放行"""
+    kl = _two_bar_piercing(cur_open=0.7281)
+    assert detect_piercing_line(kl, idx=-1) is not None
+
+
+def test_piercing_real_gap_up_rejected():
+    """真实高开 +0.5%（超出容差）→ 不成立（防用容差吞掉真跳空语义）"""
+    kl = _two_bar_piercing(cur_open=0.7310)
+    assert detect_piercing_line(kl, idx=-1) is None
+
+
+def test_piercing_close_below_midpoint_still_rejected():
+    """收盘未过前实体中点（c=0.7320 ≤ mid=0.7326）→ 照常拒（容差不放宽实体门）"""
+    kl = [
+        [1700000100000, 0.7378, 0.7456, 0.7265, 0.7274, 10.0, 10.0],
+        [1700000200000, 0.7277, 0.7384, 0.7205, 0.7320, 10.0, 10.0],
+    ]
+    assert detect_piercing_line(kl, idx=-1) is None
+
+
+def test_dark_cloud_micro_gap_down_within_tolerance_detected():
+    """乌云盖顶镜像：开盘微低开 −0.04% → 视同平开，判乌云盖顶"""
+    kl = [
+        [1700000100000, 0.7274, 0.7384, 0.7265, 0.7378, 10.0, 10.0],  # 阳线 mid=0.7326
+        [1700000200000, 0.7375, 0.7400, 0.7300, 0.7300, 10.0, 10.0],  # 阴线 o 低 0.0003，c 过中点下方
+    ]
+    r = detect_dark_cloud_cover(kl, idx=-1)
+    assert r is not None
+    assert r["pattern"] == "dark_cloud_cover" and r["direction"] == "bearish"
+
+
+def test_dark_cloud_real_gap_down_rejected():
+    """乌云盖顶镜像：真实低开 −0.5%（超出容差）→ 不成立"""
+    kl = [
+        [1700000100000, 0.7274, 0.7384, 0.7265, 0.7378, 10.0, 10.0],
+        [1700000200000, 0.7341, 0.7400, 0.7300, 0.7300, 10.0, 10.0],
+    ]
+    assert detect_dark_cloud_cover(kl, idx=-1) is None
+
+
+# ── 吞没微跳空容差（2026-10-08：o2 vs c1 同向门加 0.1% 容差，
+#    c2 vs o1 收复门属真语义临界不放宽）──
+
+def test_engulfing_bullish_micro_gap_up_detected():
+    """看涨吞没：阳线开盘微高开 +0.04%（钉在前阴收盘=实体下沿的打印噪声）
+    → 视同平开，判吞没（吞没体的 c2 ≥ o1 收复门独立满足）"""
+    kl = _append_engulf_pair(_engulf_base(), cur_open=100.04, cur_close=101.3,
+                             cur_high=101.5, cur_low=99.7)
+    r = detect_engulfing(kl, idx=-1)
+    assert r is not None and r["pattern"] == "bullish_engulfing"
+
+
+def test_engulfing_bullish_real_gap_up_rejected():
+    """看涨吞没：真实高开 +0.5%（开盘在前阴实体中部，非包住）→ 不成立"""
+    kl = _append_engulf_pair(_engulf_base(), cur_open=100.5, cur_close=101.3,
+                             cur_high=101.5, cur_low=100.2)
+    assert detect_engulfing(kl, idx=-1) is None
+
+
+def test_engulfing_bearish_micro_gap_down_detected():
+    """看跌吞没镜像：阴线开盘微低开 −0.04% → 视同平开，判吞没"""
+    kl = _append_engulf_pair(_engulf_base(), prev_open=100.0, prev_close=101.2,
+                             cur_open=101.16, cur_close=99.8,
+                             cur_high=101.5, cur_low=99.6)
+    r = detect_engulfing(kl, idx=-1)
+    assert r is not None and r["pattern"] == "bearish_engulfing"
+
+
+def test_engulfing_bearish_real_gap_down_rejected():
+    """看跌吞没镜像：真实低开 +0.5%（开盘在前阳实体中部，非包住）→ 不成立"""
+    kl = _append_engulf_pair(_engulf_base(), prev_open=100.0, prev_close=101.2,
+                             cur_open=100.7, cur_close=99.8,
+                             cur_high=101.5, cur_low=99.6)
+    assert detect_engulfing(kl, idx=-1) is None
+
+
+def test_engulfing_close_not_recovering_still_rejected():
+    """看涨吞没：开盘噪声带内但收盘未收复前实体上沿（c2 < o1）→ 照常拒
+    （容差不放宽收复门，避免吞没退化为刺透/孕线观感）"""
+    kl = _append_engulf_pair(_engulf_base(), cur_open=100.04, cur_close=100.6,
+                             cur_high=101.0, cur_low=99.7)
+    assert detect_engulfing(kl, idx=-1) is None
+
+
+# ── 孕线突破内包线微跳空容差（2026-10-08：内包线开盘必然钉在母线实体沿，
+#    严格不等式约半数被噪声方向杀掉，母线边缘侧加 0.1% 容差）──
+
+def _harami_with_inner(cur_inner_open: float):
+    """母线阳线 o=100 c=102（实体沿 100/102）+ 内包线 o 可控 c=101.2
+    （实体在母线内）+ 突破线收盘 102.4 上破母线实体高点"""
+    kl = [
+        [1700000100000, 100.0, 102.3, 99.7, 102.0, 10.0, 10.0],  # 母线
+        [1700000200000, cur_inner_open, 101.5, 100.9, 101.2, 10.0, 10.0],  # 内包线
+        [1700000300000, 101.3, 102.6, 101.0, 102.4, 10.0, 10.0],  # 突破线
+    ]
+    return kl
+
+
+def test_harami_inner_open_pinned_to_mother_edge_detected():
+    """内包线开盘钉在母线实体上沿（o2=101.9 < hi1=102 但仅差 0.05%）
+    → 噪声带内判孕线突破"""
+    kl = _harami_with_inner(cur_inner_open=101.9)
+    r = detect_harami_breakout(kl, idx=-1)
+    assert r is not None and r["pattern"] == "bullish_harami"
+
+
+def test_harami_inner_open_slightly_beyond_mother_edge_detected():
+    """内包线开盘微出母线实体上沿 +0.04%（101.9→102.04，噪声方向随机出界）
+    → 容差放行（修复前严格不等式必拒）"""
+    kl = _harami_with_inner(cur_inner_open=102.04)
+    r = detect_harami_breakout(kl, idx=-1)
+    assert r is not None and r["pattern"] == "bullish_harami"
+
+
+def test_harami_inner_body_truly_outside_still_rejected():
+    """内包线实体真实出界（c2=102.3 > hi1×1.001）→ 照常拒（非孕线）"""
+    kl = [
+        [1700000100000, 100.0, 102.3, 99.7, 102.0, 10.0, 10.0],
+        [1700000200000, 101.9, 102.5, 101.6, 102.3, 10.0, 10.0],  # 实体上沿出界 0.3
+        [1700000300000, 102.4, 103.0, 102.0, 102.8, 10.0, 10.0],
+    ]
+    assert detect_harami_breakout(kl, idx=-1) is None

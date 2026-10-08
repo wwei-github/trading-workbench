@@ -42,6 +42,19 @@ def _is_bearish(open_: float, close: float) -> bool:
     return close < open_
 
 
+# 两根/三根K线形态跨K线边界比较的微跳空容差（2026-10-08）：
+# 加密 7×24 连续交易无真正跳空，但薄盘口品种前后根边界的第一笔成交
+#（=各自 open/close 打印价）天然差几个 bp——零容差比较会把 0.04% 的
+# 打印噪声当成「高开/低开」误拒（线上实例：AKTUSDT 2026-10-08 12:00→13:00
+# 收盘过中点的标准刺透因开盘 +0.04% 被拒）。0.1% 为噪声带与真实高开/低开
+# 的经验分界。适用四处「教科书必然成立却被钉死边界拒判」的比较：
+# 刺透线（o2 vs c1 向上）与乌云盖顶（o2 vs c1 向下）的开盘门、
+# 吞没（o2 vs c1 同向门，另一侧 c2 vs o1 属真语义临界不动）、
+# 孕线内包线（o2/c2 vs 母线实体沿——内包线开盘必然钉在母线实体边缘，
+# 严格不等式下约半数被噪声方向随机杀掉，危害比刺透翻倍）
+MICRO_GAP_TOLERANCE = 0.001
+
+
 def detect_hammer(klines: list[list], idx: int = -1) -> Optional[dict]:
     """锤形线
 
@@ -168,7 +181,10 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
 
     # 看涨吞没：前阴后阳，阳实体包住阴实体
     if _is_bearish(o1, c1) and _is_bullish(o2, c2):
-        if o2 <= c1 and c2 >= o1:
+        # o2 ≤ c1×(1+0.1%)：连续交易下阳线开盘≈前阴收盘（前实体下沿），
+        # 薄盘口打印噪声 ≤0.1% 视同平开（2026-10-08 微跳空容差，同刺透线）；
+        # c2 ≥ o1（收盘收复前实体上沿）属真语义临界，不加容差
+        if o2 <= c1 * (1 + MICRO_GAP_TOLERANCE) and c2 >= o1:
             # 上影必须短（≤ 全长 15%，口径同锤形线上影）：冲高遭抛压打回=
             # 犹豫非决断；下影不限（探底回升=下方承接强）
             if upper2 / rng2 > ENGULF_UPPER_SHADOW_MAX_PCT:
@@ -180,7 +196,9 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
 
     # 看跌吞没：前阳后阴，阴实体包住阳实体
     if _is_bullish(o1, c1) and _is_bearish(o2, c2):
-        if o2 >= c1 and c2 <= o1:
+        # o2 ≥ c1×(1−0.1%)：镜像同口径（阴线开盘≈前阳收盘=前实体上沿，
+        # 打印噪声视同平开）；c2 ≤ o1 属真语义临界，不加容差
+        if o2 >= c1 * (1 - MICRO_GAP_TOLERANCE) and c2 <= o1:
             # 决断K线影线质量门（2026-09-30 口径维持）：总影线 ≤ 全长 40%
             if (rng2 - body2) / rng2 > DECISION_SHADOW_MAX_PCT:
                 return None
@@ -261,8 +279,9 @@ def detect_piercing_line(klines: list[list], idx: int = -1) -> Optional[dict]:
 
     条件：
     1. 第一根：阴线
-    2. 第二根：阳线，开盘不高于前根收盘（加密货币 7x24 连续交易无跳空，
-       经典定义的"低于前低"在此几乎不可能出现，放宽为平开或低开），
+    2. 第二根：阳线，开盘不高于前根收盘的 1.1 倍（加密货币 7x24 连续交易无跳空，
+       经典定义的"低于前低"在此几乎不可能出现，放宽为平开或低开；薄盘口边界
+       成交打印噪声 ≤0.1% 视同平开，2026-10-08 起加微跳空容差），
        收盘深入前根实体上半部
     """
     if len(klines) < abs(idx) + 1:
@@ -286,8 +305,10 @@ def detect_piercing_line(klines: list[list], idx: int = -1) -> Optional[dict]:
     if not _is_bullish(o2, c2):
         return None
 
-    # 开盘不高于前根收盘（连续交易下平开即满足；高于前收盘则不成立）
-    if o2 > c1:
+    # 开盘不高于前根收盘×(1+0.1%)（连续交易下平开即满足；薄盘口边界打印
+    # 噪声 ≤0.1% 视同平开，真实高开超过容差才不成立——2026-10-08 AKTUSDT
+    # 标准刺透因 +0.04% 打印差被零容差误拒，加微跳空容差）
+    if o2 > c1 * (1 + MICRO_GAP_TOLERANCE):
         return None
 
     # 收盘深入前根实体上半部（超过中点）
@@ -367,7 +388,8 @@ def detect_dark_cloud_cover(klines: list[list], idx: int = -1) -> Optional[dict]
 
     条件：
     1. 第一根：阳线
-    2. 第二根：阴线，开盘不低于前根收盘（连续交易放宽，同刺透线），
+    2. 第二根：阴线，开盘不低于前根收盘的 0.99 倍（连续交易放宽，同刺透线；
+       薄盘口边界打印噪声 ≤0.1% 视同平开，2026-10-08 加微跳空容差），
        收盘深入前根实体下半部
     """
     if len(klines) < abs(idx) + 1:
@@ -388,8 +410,9 @@ def detect_dark_cloud_cover(klines: list[list], idx: int = -1) -> Optional[dict]
     if not _is_bearish(o2, c2):
         return None
 
-    # 开盘不低于前根收盘（连续交易下平开即满足；低于前收盘则不成立）
-    if o2 < c1:
+    # 开盘不低于前根收盘×(1−0.1%)（连续交易下平开即满足；薄盘口边界打印
+    # 噪声 ≤0.1% 视同平开，真实低开超过容差才不成立——与刺透线镜像同口径）
+    if o2 < c1 * (1 - MICRO_GAP_TOLERANCE):
         return None
 
     # 收盘深入前根实体下半部（低于中点）
@@ -529,8 +552,11 @@ def detect_harami_breakout(klines: list[list], idx: int = -1) -> Optional[dict]:
     if total1 <= 0 or body1 < total1 * 0.3:
         return None
 
-    # 内包线：实体完全在母线实体内
-    if not (max(o2, c2) < hi1 and min(o2, c2) > lo1):
+    # 内包线：实体完全在母线实体内（±0.1% 微跳空容差）——内包线开盘必然
+    # 钉在母线实体边缘（o2≈母线收盘=hi1 或 lo1），严格不等式下约半数被
+    # 薄盘口打印噪声方向随机杀掉（2026-10-08，同刺透/吞没口径）
+    if not (max(o2, c2) < hi1 * (1 + MICRO_GAP_TOLERANCE)
+            and min(o2, c2) > lo1 * (1 - MICRO_GAP_TOLERANCE)):
         return None
     if body2 >= body1:
         return None
