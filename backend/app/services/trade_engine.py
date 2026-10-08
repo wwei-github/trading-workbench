@@ -1872,6 +1872,11 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
     handled = 0
     advice_ids: list[str] = []
     now = datetime.utcnow()
+    # 双网分析所有权（2026-10-08）：测试网单有在跑正式网孪生 → 不独立诊断，
+    # 建议由正式网诊断镜像同步（position_advisor._mirror_advice_to_testnet）；
+    # records 已全量在内存，预计算集合零额外查询（ai_analysis_id=None 不配对）
+    live_analysis_ids = {r.ai_analysis_id for r in records
+                         if not r.testnet and r.ai_analysis_id is not None}
 
     for rec in records:
         try:
@@ -1974,8 +1979,11 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
             if rec.risk_amount and float(rec.risk_amount) > 0:
                 rec.pnl_pct = round(total_pnl / float(rec.risk_amount) * 100, 2)
             # 浮亏在跑单 AI 持仓诊断触发判定（冷却/恶化规则见 position_advisor）；
-            # 仅收集，锁外由调用方派发子任务执行
-            if advice_due(rec, total_pnl, now):
+            # 仅收集，锁外由调用方派发子任务执行。双网所有权：有在跑正式网
+            # 孪生的测试网单跳过（跟随镜像）
+            if advice_due(rec, total_pnl, now) \
+                    and not (rec.testnet
+                             and rec.ai_analysis_id in live_analysis_ids):
                 advice_ids.append(str(rec.id))
             # 止损挂单存活巡检：SL 单被撤/丢失时补挂（裸仓保护，docs/07 §8-A2）
             _rehang_lost_sl(db, rt, rec, open_ids)

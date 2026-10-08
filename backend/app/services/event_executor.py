@@ -228,9 +228,14 @@ def refresh_mark_pnl(account_key: str, symbol: str, mark_price: float) -> bool:
         # 无冷却时重试风暴 60 次/h/单（巡检模式仅 1 次/h）
         try:
             from datetime import datetime
-            from app.services.position_advisor import advice_due
+            from app.services.position_advisor import (
+                advice_due, has_running_live_twin,
+            )
             if settings.AI_API_KEY and advice_due(rec, total, datetime.utcnow()) \
-                    and _cooldown_ok(f"advice:{rec.id}", ADVICE_DISPATCH_COOLDOWN_S):
+                    and _cooldown_ok(f"advice:{rec.id}", ADVICE_DISPATCH_COOLDOWN_S) \
+                    and not has_running_live_twin(db, rec):
+                # 双网分析所有权（2026-10-08）：测试网单有在跑正式网孪生 → 不独立
+                # 派发，建议由正式网诊断镜像同步（快照/峰值刷新不受影响）
                 from app.tasks.trade_tasks import run_position_advice
                 run_position_advice.delay(str(rec.id))
         except Exception:

@@ -352,3 +352,146 @@ def test_notify_advice_reduce_no_button(db, monkeypatch):
                             "trend_broken": False, "reason": "r"}, -1.0)
     assert "建议减仓" in cards[0]["header"]["title"]["content"]
     assert [e for e in cards[0]["elements"] if e.get("tag") == "action"] == []
+
+
+# ── 双网分析所有权（2026-10-08）：正式网主导，测试网跟随 ──────────
+
+
+def test_has_running_live_twin(db):
+    """Rule A 谓词：同 ai_analysis_id 的在跑正式网单存在 → True；
+    终态 / ai_analysis_id 为空 / 正式网单自身 → False"""
+    aid = uuid.uuid4()
+    live = _rec(db, testnet=False, account_key="live-1", ai_analysis_id=aid)
+    twin = _rec(db, ai_analysis_id=aid)
+    db.commit()
+    assert pa.has_running_live_twin(db, twin) is True
+    assert pa.has_running_live_twin(db, live) is False  # 正式网单不判孪生
+    live.status = "CLOSED"
+    db.commit()
+    assert pa.has_running_live_twin(db, twin) is False  # 正式网已平 → 恢复自主
+    no_aid = _rec(db, ai_analysis_id=None)
+    db.commit()
+    assert pa.has_running_live_twin(db, no_aid) is False  # 手动接管单不配对
+
+
+def _mirror_env(monkeypatch, llm_action, raise_on_twin=False):
+    """live→testnet 镜像全桩：候选价按网区分（live 98.5 / twin 98.35），
+    返回 (执行/推送记录 dict)"""
+    content = json.dumps({
+        "action": llm_action, "thesis_valid": True, "trend_broken": False,
+        "reason": "r", "detail": "d",
+    })
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+        create=lambda **kw: SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=content))]))))
+    monkeypatch.setattr(pa, "get_client", lambda: fake_client)
+
+    def _facts_stub(db, rec):
+        if raise_on_twin and rec.testnet:
+            raise RuntimeError("twin facts failed")
+        return _facts()
+    monkeypatch.setattr(pa, "build_facts", _facts_stub)
+    monkeypatch.setattr(pa, "tighten_candidate",
+                        lambda facts, rec: 98.35 if rec.testnet else 98.5)
+    recs = {"tighten": [], "advice": [], "stale": []}
+    monkeypatch.setattr(pa, "_auto_tighten",
+                        lambda db, rec, cand, atr, advice:
+                        recs["tighten"].append((rec, cand)) or True)
+    monkeypatch.setattr(pa, "_notify_advice",
+                        lambda rec, advice, total: recs["advice"].append(rec))
+    monkeypatch.setattr(pa, "_notify_stale",
+                        lambda rec, advice, total: recs["stale"].append(rec))
+    from app.config import settings
+    monkeypatch.setattr(settings, "AI_API_KEY", "test")
+    return recs
+
+
+def _live_with_twin(db):
+    """同 ai_analysis_id 的 live 单 + testnet 孪生，返回 (live, twin)"""
+    aid = uuid.uuid4()
+    live = _rec(db, testnet=False, account_key="live-1", ai_analysis_id=aid)
+    twin = _rec(db, ai_analysis_id=aid)
+    db.commit()
+    return live, twin
+
+
+def test_mirror_tighten_to_twin(db, monkeypatch):
+    """Rule B 主路径：live tighten → 孪生落镜像建议（mirror=live）+ 按
+    孪生自身数据复算候选价 + 走 _auto_tighten + AI_ADVICE 事件 mirror_live"""
+    live, twin = _live_with_twin(db)
+    recs = _mirror_env(monkeypatch, "tighten")
+    advice = pa.diagnose_trade(db, live)
+    assert advice["tighten_candidate"] == 98.5
+    # live 自身执行；twin 复算 98.35 执行
+    assert (live, 98.5) in recs["tighten"] and (twin, 98.35) in recs["tighten"]
+    db.refresh(twin)
+    assert twin.ai_advice["mirror"] == "live"
+    assert twin.ai_advice["tighten_candidate"] == 98.35
+    assert "mirror" not in (live.ai_advice or {})  # live 建议不被污染
+    ev = db.query(TradeEvent).filter(
+        TradeEvent.trade_record_id == twin.id,
+        TradeEvent.event_type == "AI_ADVICE").one()
+    assert ev.detail["trigger"] == "mirror_live"
+
+
+def test_mirror_hold_only_records(db, monkeypatch):
+    """hold：孪生只落镜像建议，零执行零推送"""
+    live, twin = _live_with_twin(db)
+    recs = _mirror_env(monkeypatch, "hold")
+    pa.diagnose_trade(db, live)
+    db.refresh(twin)
+    assert twin.ai_advice["action"] == "hold"
+    assert twin.ai_advice["mirror"] == "live"
+    assert recs["tighten"] == [] and recs["advice"] == []
+
+
+def test_mirror_exit_twin_card_dedup(db, monkeypatch):
+    """exit：live 与孪生各推一张建议卡；连续第二次同动作双侧去重不重推"""
+    live, twin = _live_with_twin(db)
+    recs = _mirror_env(monkeypatch, "exit")
+    pa.diagnose_trade(db, live)
+    assert recs["advice"] == [live, twin]
+    pa.diagnose_trade(db, live)
+    assert recs["advice"] == [live, twin]  # 双侧 prev_action 去重
+    db.refresh(twin)
+    assert twin.ai_advice["action"] == "exit"
+
+
+def test_mirror_failure_isolated(db, monkeypatch):
+    """孪生镜像抛异常：仅记日志，live 建议正常返回、live 自身路由不受影响"""
+    live, twin = _live_with_twin(db)
+    recs = _mirror_env(monkeypatch, "tighten", raise_on_twin=True)
+    advice = pa.diagnose_trade(db, live)  # 不抛
+    assert advice["action"] == "tighten"
+    assert recs["tighten"] == [(live, 98.5)]  # live 自身执行不受影响
+    db.refresh(twin)
+    assert twin.ai_advice is None  # 孪生未被半截写入
+
+
+def test_testnet_diagnosis_no_back_mirror(db, monkeypatch):
+    """方向隔离：测试网单（正式网孪生已终态）自主诊断，不回镜像正式网"""
+    aid = uuid.uuid4()
+    live = _rec(db, testnet=False, account_key="live-1",
+                ai_analysis_id=aid, status="CLOSED")  # 正式网已平
+    twin = _rec(db, ai_analysis_id=aid)  # 测试网单在跑 → 自主诊断
+    db.commit()
+    recs = _mirror_env(monkeypatch, "tighten")
+    pa.diagnose_trade(db, twin)
+    db.refresh(live)
+    assert live.ai_advice is None  # 单向：不镜像 live
+    assert recs["tighten"] == [(twin, 98.35)]  # 仅自身执行
+
+
+def test_mirror_stale_record_only(db, monkeypatch):
+    """滞留触发镜像只落库：live 滞留分支本就不执行 tighten（仅推滞留卡），
+    孪生不得反向多执行（建议记录但零执行零推卡）"""
+    live, twin = _live_with_twin(db)
+    live.opened_at = datetime.utcnow() - pa._timedelta_hours(25)  # live 滞留
+    db.commit()
+    recs = _mirror_env(monkeypatch, "tighten")
+    pa.diagnose_trade(db, live)
+    assert recs["stale"] == [live]  # live 走滞留卡分支
+    assert recs["tighten"] == [] and recs["advice"] == []  # 双侧零执行/零建议卡
+    db.refresh(twin)
+    assert twin.ai_advice["action"] == "tighten"  # 孪生仅记录镜像建议
+    assert twin.ai_advice["mirror"] == "live"

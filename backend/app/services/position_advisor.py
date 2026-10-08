@@ -17,6 +17,14 @@ N-17（2026-10-08，批次②）：tighten 执行闭环——AI 判收紧时程�
 （_auto_tighten，降风险单向：新 SL 恒优于旧），结果卡片飞书知会；
 exit/reduce 仍为人工动作（卡片建议 + 按钮），自动平仓红线不动。
 
+双网分析所有权（2026-10-08 用户拍板）：正式网主导诊断，测试网跟随——
+- 触发侧（Rule A）：测试网单存在在跑正式网孪生（同 ai_analysis_id）→
+  不独立派发诊断（has_running_live_twin，巡检与事件流两处派发点共用）；
+- 执行侧（Rule B）：正式网建议落库后镜像到在跑测试网孪生
+  （_mirror_advice_to_testnet）：建议落库带 mirror="live" 标记，tighten 由
+  孪生按自身数据复算候选价再走守卫执行，exit/reduce 孪生同推建议卡
+  （各网平各网仓），hold/stale 只落库。单向 live→testnet，不回镜像。
+
 调度约束：LLM 调用（单笔 10~30s）只在 Redis 开仓锁外执行——结算巡检
 每小时整点派发 celery 子任务、手动走 API 同步调用，绝不进巡检锁内。
 
@@ -27,11 +35,12 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.system_config import SystemConfig
-from app.models.trade import TradeEvent
+from app.models.trade import TradeEvent, TradeRecord
 from app.services.event_executor import remaining_qty
 from app.services.llm_client import get_client, parse_llm_json
 
@@ -122,6 +131,28 @@ def is_stale_hold(rec, now=None) -> bool:
         and rec.opened_at is not None
         and (now - rec.opened_at) >= _timedelta_hours(STALE_HOLD_HOURS)
     )
+
+
+_RUNNING_STATUSES = ("OPENED", "TP1_HIT", "TP2_HIT")
+
+
+def has_running_live_twin(db: Session, rec) -> bool:
+    """测试网单是否存在在跑正式网孪生（双网分析所有权守卫 Rule A，2026-10-08）。
+
+    有 → 测试网不独立派发诊断，建议由正式网诊断镜像同步
+    （_mirror_advice_to_testnet）；无（正式网未开/已平/熔断未跟）→ 测试网单
+    走自己的触发管线。ai_analysis_id 为空（手动接管/兜底单）永不配对。
+    派发点调用频率低（事件流 60s 节流 + 巡检每小时），单条 exists 查询可忽略。"""
+    if rec.testnet is not True or not rec.ai_analysis_id:
+        return False
+    twin_id = db.execute(
+        select(TradeRecord.id).where(
+            TradeRecord.ai_analysis_id == rec.ai_analysis_id,
+            TradeRecord.testnet == False,  # noqa: E712
+            TradeRecord.status.in_(_RUNNING_STATUSES),
+        ).limit(1)
+    ).scalar()
+    return twin_id is not None
 
 
 def _timedelta_hours(h: float):
@@ -374,16 +405,81 @@ def diagnose_trade(db: Session, rec) -> "dict | None":
     # exit/reduce：人工动作类——卡片建议（exit 带平仓按钮），同单连续同动作不重推。
     if stale:
         _notify_stale(rec, advice, total)
+        # 滞留镜像只落库：滞留是各网自身持仓状态判定（孪生可能已 TP1），
+        # 且 live 滞留分支本就不执行 tighten——镜像不得反向多执行
+        _mirror_advice_to_testnet(db, rec, advice, execute=False)
         return advice
     if action == "tighten":
         if cand is not None:
             atr_abs = (facts.get("kline_facts") or {}).get("atr_abs") or 0
             _auto_tighten(db, rec, cand, atr_abs, advice)
         # cand=None（规则否决）→ 不推送
+        _mirror_advice_to_testnet(db, rec, advice)
         return advice
     if action in ("exit", "reduce") and prev_action != action:
         _notify_advice(rec, advice, total)
+    _mirror_advice_to_testnet(db, rec, advice)
     return advice
+
+
+def _mirror_advice_to_testnet(db: Session, live_rec, advice: dict,
+                              execute: bool = True) -> None:
+    """正式网建议镜像到测试网孪生（双网分析所有权 Rule B，2026-10-08）。
+
+    正式网（live_rec.testnet=False）建议落库后调用：同 ai_analysis_id 的在跑
+    测试网孪生逐单——建议落库（mirror="live" 标记 + AI_ADVICE 事件 + 基线
+    刷新），tighten 按孪生自身数据复算候选价（结构位同 K 线，entry/risk 各自
+    适配）走 _auto_tighten 守卫执行（结果卡片自带「测试网」标注）；
+    exit/reduce 孪生同推建议卡（各网平各网仓，prev_action 去重）；
+    hold 只落库不推卡；execute=False（滞留触发）仅落库——滞留是各网自身
+    持仓状态判定且 live 滞留分支不执行 tighten，镜像不得反向多执行。
+    单向 live→testnet；每孪生异常隔离，失败仅记日志，绝不影响正式网
+    主流程与其余孪生单。"""
+    if live_rec.testnet or not live_rec.ai_analysis_id:
+        return
+    twins = db.execute(
+        select(TradeRecord).where(
+            TradeRecord.ai_analysis_id == live_rec.ai_analysis_id,
+            TradeRecord.testnet == True,  # noqa: E712
+            TradeRecord.status.in_(_RUNNING_STATUSES),
+        )
+    ).scalars().all()
+    for twin in twins:
+        try:
+            db.refresh(twin)
+            if twin.status not in _RUNNING_STATUSES:
+                continue  # 事实包构建期间（秒级）孪生已平仓结算 → 丢弃
+            prev_action = (twin.ai_advice or {}).get("action")
+            advice_t = {**advice, "mirror": "live"}
+            facts_t = None
+            if advice_t.get("action") == "tighten":
+                # 候选价按孪生自身数据复算（AI 结论复用，报价权仍在规则）
+                facts_t = build_facts(db, twin)
+                advice_t["tighten_candidate"] = tighten_candidate(facts_t, twin)
+            total_t = round(float(twin.realized_pnl or 0)
+                            + float(twin.unrealized_pnl or 0), 6)
+            twin.ai_advice = advice_t
+            twin.ai_advice_at = datetime.utcnow()
+            twin.ai_advice_pnl = total_t  # 恶化判定基线随镜像刷新
+            db.add(TradeEvent(trade_record_id=twin.id, event_type="AI_ADVICE",
+                              detail={**advice_t, "total_pnl": total_t,
+                                      "trigger": "mirror_live"}))
+            db.commit()
+            if not execute:
+                continue  # 滞留镜像：只落库（孪生可能已 TP1，不得反向多执行）
+            if advice_t.get("action") == "tighten":
+                cand_t = advice_t.get("tighten_candidate")
+                if cand_t is not None:
+                    atr_t = ((facts_t.get("kline_facts") or {}).get("atr_abs") or 0)
+                    _auto_tighten(db, twin, cand_t, atr_t, advice_t)
+                # cand=None（孪生侧规则否决）→ 只落库不推送
+            elif advice_t.get("action") in ("exit", "reduce") \
+                    and prev_action != advice_t.get("action"):
+                _notify_advice(twin, advice_t, total_t)
+        except Exception:
+            db.rollback()
+            logger.exception("镜像建议到测试网孪生失败 %s（%s）",
+                             twin.symbol, twin.account_key)
 
 
 ACTION_LABEL = {

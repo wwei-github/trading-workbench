@@ -250,6 +250,42 @@ def test_mark_pnl_no_dispatch_without_ai_key(db, monkeypatch):
     assert dispatched.calls == []
 
 
+# ── 双网分析所有权（2026-10-08）：测试网孪生跟随，不独立派发 ──────
+
+
+def test_mark_pnl_twin_suppressed_but_snapshot_kept(db, advice_env):
+    """测试网单有在跑正式网孪生 → 快照/峰值照常刷新，但不独立派发诊断
+    （建议由正式网诊断镜像同步）"""
+    aid = uuid.uuid4()
+    db.add(_rec(ai_analysis_id=aid, raw={}))
+    db.add(_rec(testnet=False, account_key="live-1", ai_analysis_id=aid))
+    db.commit()
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", 95.0) is True  # -5 → 首次浮亏
+    r = db.query(TradeRecord).filter_by(account_key=ACC).one()
+    assert float(r.unrealized_pnl) == pytest.approx(-5.0)  # 快照不受影响
+    assert advice_env.calls == []  # 孪生在跑：不派发
+
+
+def test_mark_pnl_twin_closed_dispatches(db, advice_env):
+    """正式网孪生已平 → 测试网恢复自主诊断派发"""
+    aid = uuid.uuid4()
+    db.add(_rec(ai_analysis_id=aid, raw={}))
+    db.add(_rec(testnet=False, account_key="live-1",
+                ai_analysis_id=aid, status="CLOSED"))
+    db.commit()
+    assert ee.refresh_mark_pnl(ACC, "BTCUSDT", 95.0) is True
+    assert len(advice_env.calls) == 1
+
+
+def test_mark_pnl_live_always_dispatches(db, advice_env):
+    """正式网单永远正常派发（Rule A 只抑制测试网侧）"""
+    db.add(_rec(testnet=False, account_key="live-1", ai_analysis_id=uuid.uuid4(),
+                raw={}))
+    db.commit()
+    assert ee.refresh_mark_pnl("live-1", "BTCUSDT", 95.0) is True
+    assert len(advice_env.calls) == 1
+
+
 def test_mark_pnl_dispatch_failure_isolated(db, advice_env, monkeypatch):
     """派发异常只记日志：快照照常落库、返回 True（事件流线程不中断）"""
     import app.tasks.trade_tasks as tt
