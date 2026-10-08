@@ -594,6 +594,7 @@ export interface ActualTradeItem {
   recommendation: number | null;
   stop_anchor: string | null; // 止损锚类型（docs/23）：structure/near
   volume_ratio: number | null; // 量比（docs/24 A5b）：信号K线量 ÷ 近20根基准量
+  touch_ref: string | null; // 回踩触点（docs/22，2026-10-08）：retest/swing/ema21/55/144；旧行/突破类 null
   rule_version: string | null; // 逐笔规则集快照（docs/24 A0），legacy=标记前旧行
   opened_at: string | null;
   closed_at: string | null;

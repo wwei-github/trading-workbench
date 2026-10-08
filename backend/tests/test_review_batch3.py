@@ -512,3 +512,54 @@ def test_actual_review_mirror_zero_when_single_net(db):
 
     out = build_actual_review(db, days=30)
     assert out["overview"]["mirror_trades"] == 0
+
+
+# ── 回踩位置分组（2026-10-08，docs/22）──
+def test_actual_review_touch_ref_dimension(db):
+    """回踩触点分组：固定顺序（突破回测位→EMA144）、旧行/突破类归「未记录」；
+    items 携带原始 touch_ref"""
+    from app.services.actual_review import build_actual_review
+
+    db.add(_closed_rec({"touch_ref": "retest"}))
+    db.add(_closed_rec({"touch_ref": "ema144"}))
+    db.add(_closed_rec({"touch_ref": "ema55"}))
+    db.add(_closed_rec(None))  # 旧行快照缺 → 未记录
+    db.commit()
+
+    out = build_actual_review(db, days=30)
+    dims = {}
+    for g in out["groups"]:
+        dims.setdefault(g["dim"], []).append((g["key"], g["count"]))
+    touches = dims["回踩位置"]
+    # 固定顺序输出（空桶不占行，TOUCH_ORDER：retest>swing>ema21>ema55>ema144）
+    assert touches[0] == ("突破回测位", 1)
+    assert [k for k, _ in touches] == ["突破回测位", "EMA55", "EMA144", "未记录"]
+    # items 携带原始值（前端可自行映射）
+    assert out["items"][0]["touch_ref"] == "retest"
+
+
+def test_ai_snapshot_captures_touch_ref(db):
+    """开单快照自持 touch_ref（docs/22）：从 scan_result 现取；无信号上下文 None"""
+    from app.services.trade_engine import _ai_snapshot
+
+    created = datetime.utcnow() - timedelta(hours=1)
+    sr_rec = ScanRecord(scan_type="scheduled", created_at=created)
+    db.add(sr_rec)
+    db.flush()
+    sr = ScanResult(
+        scan_record_id=sr_rec.id, symbol="TESTUSDT", signal_type="trigger_pullback_confirm",
+        current_price=100.0, breakout_pct=1.0, trend_slope=0.0, r_squared=0.5,
+        volume=1.5, touch_ref="swing", created_at=created,
+    )
+    db.add(sr)
+    db.flush()
+    a = AIAnalysis(scan_result_id=sr.id, symbol="TESTUSDT", created_at=created)
+    db.add(a)
+    db.commit()
+    assert _ai_snapshot(a)["touch_ref"] == "swing"
+    # 无信号上下文 → None（旧行兼容）
+    a2 = AIAnalysis(symbol="XUSDT", created_at=created)
+    db.add(a2)
+    db.commit()
+    db.refresh(a2)
+    assert _ai_snapshot(a2)["touch_ref"] is None

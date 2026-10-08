@@ -126,6 +126,11 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
             if a.scan_result is not None and a.scan_result.volume is not None
             else None
         ),
+        # 回踩触点（docs/22）：retest/swing/ema21/55/144，实盘归因按触点分组
+        # 对比胜率/EV（2026-10-08）；开单时点快照自持，旧行/无信号上下文为 None
+        "touch_ref": (
+            a.scan_result.touch_ref if a.scan_result is not None else None
+        ),
         "created_at": a.created_at.isoformat() if a.created_at else None,
         "scan_result_id": None,
     }

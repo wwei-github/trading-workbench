@@ -18,6 +18,8 @@ from sqlalchemy.orm import Session
 from app.models.trade import TradeRecord
 from app.services.binance_trader import BinanceTrader
 from app.services.strategy.candlestick import PATTERN_LABEL_MAP
+from app.services.strategy.trigger import TOUCH_LABELS as _TOUCH_LABELS
+from app.services.strategy.trigger import TOUCH_ORDER as _TOUCH_ORDER
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +167,15 @@ def _volume_bucket(rec: TradeRecord) -> str:
 # 量比分桶展示顺序
 _VOLUME_BUCKETS = ("缩量 <1.0", "常量 1.0~1.2", "放量 >=1.2", "未知")
 
+# 回踩触点分组（2026-10-08，docs/22）：固定顺序与中文标签同源自 trigger.TOUCH_*，
+# 突破类无触点/旧行快照缺 → 「未记录」兜底行排最后
+_TOUCH_BUCKETS = tuple(_TOUCH_LABELS[t] for t in _TOUCH_ORDER) + ("未记录",)
+
+
+def _touch_bucket(rec: TradeRecord) -> str:
+    raw = (rec.ai_snapshot or {}).get("touch_ref")
+    return _TOUCH_LABELS.get(raw) if raw in _TOUCH_LABELS else "未记录"
+
 
 def _agg(trades: list) -> dict:
     # Numeric 列经 SQLAlchemy 返回 Decimal，统一转 float 再聚合——
@@ -279,6 +290,9 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
     for dim, keyfn, order in (
         ("评分分桶", _rec_bucket, _REC_BUCKETS),
         ("量比分桶", _volume_bucket, _VOLUME_BUCKETS),
+        # 回踩触点（2026-10-08，docs/22）：回踩单质量分层——浅触点（突破回测位）
+        # 与深回撤（EMA144）的胜率/EV 对比，验证「回踩越深越稳」假设
+        ("回踩位置", _touch_bucket, _TOUCH_BUCKETS),
     ):
         buckets: dict[str, list] = {}
         for t in trades:
@@ -333,6 +347,9 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         "tactic_reason": (t.ai_snapshot or {}).get("tactic_reason"),
         # 量比（docs/24 A5b）：信号K线量 ÷ 近20根基准量，量比门槛分组数据源
         "volume_ratio": (t.ai_snapshot or {}).get("volume_ratio"),
+        # 回踩触点（docs/22，2026-10-08）：逐笔展示 + 分组数据源（原始值
+        # retest/swing/ema21/55/144，旧行/突破类 None）
+        "touch_ref": (t.ai_snapshot or {}).get("touch_ref"),
         # 规则版本（docs/24 A0）：逐笔规则集快照，legacy=标记上线前旧行
         "rule_version": t.rule_version or "legacy",
         "opened_at": t.opened_at.isoformat() if t.opened_at else None,
