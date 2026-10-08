@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.services.event_stream import (  # noqa: E402
     _extract_fill_symbol,
     _extract_mark,
+    _next_backoff,
     ws_base,
 )
 
@@ -23,6 +24,23 @@ def test_ws_base_mapping():
     assert ws_base("https://testnet.binancefuture.com") == "wss://stream.binancefuture.com"
     assert ws_base("https://api.binance.com") is None
     assert ws_base("") is None
+
+
+def test_next_backoff_growth_and_reset():
+    """N-17 检测修复（2026-10-08 线上）：短命连接指数退避 5→10→…→60 封顶；
+    连接活过 60s（稳定）才重置回 5s——旧版连上即重置，被 1008 踢循环
+    以 12 次/分钟永久锤限流器"""
+    import time as _t
+
+    now = _t.time()
+    # 短命连接（活 5s 被踢）：逐次翻倍
+    assert _next_backoff(now - 5, 5) == 10
+    assert _next_backoff(now - 5, 10) == 20
+    assert _next_backoff(now - 5, 40) == 60   # 封顶
+    assert _next_backoff(now - 5, 60) == 60
+    # 稳定连接（活 ≥60s 正常断开/重连）：重置下限
+    assert _next_backoff(now - 61, 60) == 5
+    assert _next_backoff(now - 120, 5) == 5
 
 
 def test_extract_fill_symbol():

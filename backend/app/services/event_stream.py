@@ -32,12 +32,27 @@ _WS_HOSTS = {
 _KEEPALIVE_S = 1800        # listenKey 有效期 60 分钟，按 30 分钟续约
 _RECONNECT_MIN_S = 5       # 重连退避下限（最坏 12 次/分钟 << 300/5min 限额）
 _RECONNECT_MAX_S = 60
+_STABLE_CONN_S = 60        # 连接活过此时长才视为稳定（才重置退避）——防
+                           # 「连上即被踢」短命连接永久以 5s 间隔锤限流器
 _RECONCILE_S = 60          # mark price 订阅集对账周期（在跑币种增减）
 _RECV_TICK_S = 30          # recv 超时切片：keepalive/对账的调度粒度
 
 _started = False
 _start_mu = threading.Lock()
 _stopped = threading.Event()
+
+
+def _next_backoff(conn_started_at: float, backoff: float) -> float:
+    """退避演化（2026-10-08 线上修复）：连接稳定（活过 _STABLE_CONN_S）才
+    重置到下限；短命连接指数增长到上限。
+
+    背景：Binance 1008 Too many requests 踢连接时，旧版在 connect 成功
+    瞬间重置退避，被踢循环以 ~12 次/分钟永久锤限流器，限流永不冷却；
+    修复后短命连接 5→10→20→40→60s 退避，给对端限流器冷却窗口。
+    """
+    if time.time() - conn_started_at >= _STABLE_CONN_S:
+        return _RECONNECT_MIN_S
+    return min(backoff * 2, _RECONNECT_MAX_S)
 
 
 def ws_base(rest_base: str) -> str | None:
@@ -94,10 +109,10 @@ def _run_user_data(account_key: str) -> None:
             logger.warning("事件流 %s 退出：未知 REST base %s", account_key, trader.base)
             return
         lk = None
+        conn_started_at = time.time()
         try:
             lk = trader.create_listen_key()
             with connect(f"{base}/ws/{lk}", ping_interval=20, ping_timeout=10) as ws:
-                backoff = _RECONNECT_MIN_S
                 logger.info("事件流 %s 已连接（user-data-stream）", account_key)
                 ka_deadline = time.time() + _KEEPALIVE_S
                 while not _stopped.is_set():
@@ -126,9 +141,9 @@ def _run_user_data(account_key: str) -> None:
         except Exception as e:
             if _stopped.is_set():
                 return
+            backoff = _next_backoff(conn_started_at, backoff)
             logger.warning("事件流 %s 断开：%s，%.0fs 后重连", account_key, e, backoff)
             _stopped.wait(backoff)
-            backoff = min(backoff * 2, _RECONNECT_MAX_S)
         finally:
             if lk:
                 trader.close_listen_key(lk)
@@ -164,21 +179,23 @@ def _run_mark_price(domain: str) -> None:
 
     backoff = _RECONNECT_MIN_S
     while not _stopped.is_set():
+        conn_started_at = time.time()
         try:
             with connect(f"{domain}/ws", ping_interval=20, ping_timeout=10) as ws:
-                backoff = _RECONNECT_MIN_S
                 subs: set[str] = set()
                 logger.info("mark price 流已连接（%s）", domain)
                 while not _stopped.is_set():
-                    # 对账：在跑币种增减 → SUBSCRIBE/UNSCRIBE 增量（每域一条连接）
+                    # 对账：在跑币种增减 → SUBSCRIBE/UNSCRIBE 增量（每域一条
+                    # 连接；增减合并为单条批量消息——逐条连发在重连风暴下
+                    # 叠加连接尝试，触发 Binance 1008 限流）
                     desired = _desired_mark_streams()
                     msg_id = int(time.time())
-                    for s in sorted(desired - subs):
-                        ws.send(json.dumps({"method": "SUBSCRIBE", "params": [s], "id": msg_id}))
-                        msg_id += 1
-                    for s in sorted(subs - desired):
-                        ws.send(json.dumps({"method": "UNSUBSCRIBE", "params": [s], "id": msg_id}))
-                        msg_id += 1
+                    to_sub = sorted(desired - subs)
+                    to_unsub = sorted(subs - desired)
+                    if to_sub:
+                        ws.send(json.dumps({"method": "SUBSCRIBE", "params": to_sub, "id": msg_id}))
+                    if to_unsub:
+                        ws.send(json.dumps({"method": "UNSUBSCRIBE", "params": to_unsub, "id": msg_id + 1}))
                     subs = desired
                     # 域内账号 key 本轮缓存（避免每条 mark 事件重建 trader 实例）
                     keys = _domain_account_keys(domain)
@@ -206,9 +223,9 @@ def _run_mark_price(domain: str) -> None:
         except Exception as e:
             if _stopped.is_set():
                 return
+            backoff = _next_backoff(conn_started_at, backoff)
             logger.warning("mark price 流 %s 断开：%s，%.0fs 后重连", domain, e, backoff)
             _stopped.wait(backoff)
-            backoff = min(backoff * 2, _RECONNECT_MAX_S)
 
 
 def _ws_accounts() -> list[BinanceTrader]:
