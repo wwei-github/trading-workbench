@@ -242,7 +242,7 @@ export interface SystemConfig {
   portfolio_heat_cap?: number | null; // 组合热度上限（比例 0.2=钱包 20%；0=关闭）
   same_direction_cap?: number | null; // 同向持仓上限（单数，0=不限）
   btc_crash_pause_pct?: number | null; // BTC 急跌暂停阈值（% 值，1h 3根累计跌幅；0=关闭）
-  market_decline_pause_pct?: number | null; // 大盘普跌暂停阈值（N-15，% 值，BTC+ETH 24h 双跌；0=关闭）
+  market_wide_pause_pct?: number | null; // 大盘单边暂停阈值（N-15，% 值，BTC+ETH 24h 双跌拦开多/双涨拦开空；0=关闭）
   weekly_dd_stop_pct?: number | null; // 周回撤减速阈值（% 值，UTC 周起净亏 ≥ 基数×此值 → 单笔预算减半；0=关闭）
   monthly_dd_stop_pct?: number | null; // 月回撤熔断阈值（% 值，UTC 月起净亏 ≥ 基数×此值 → 停开新仓；0=关闭）
   monthly_breaker_ack_at?: string | null; // 月熔断人工确认时刻（只读，熔断卡片「确认复盘」写）

@@ -248,29 +248,37 @@ def _sym_change_24h(client, symbol: str) -> Optional[float]:
     return (float(closed[-1][4]) / base - 1) * 100
 
 
-def market_wide_decline_active(client, decline_pct: Optional[float] = None) -> bool:
-    """大盘普跌判定（N-15，docs/16 §8.3②）：BTC 与 ETH 24h 涨跌幅**同时**
-    跌破阈值 → 普跌环境（阴跌一整天 1h 急跌闸门抓不到的形态，10-07 案例）。
+def market_wide_regime(client, pause_pct: Optional[float] = None) -> Optional[str]:
+    """大盘单边行情判定（N-15，docs/16 §8.3②）：BTC 与 ETH 24h 涨跌幅**同时**
+    超阈值 → 单边环境：双跌破阈值返回 "down"（普跌）、双涨破阈值返回 "up"
+    （普涨），其余（含任一币数据缺失）返回 None。
 
-    双币确认：单 BTC 下跌可能是资金切换的 BTC 专属行情，双跌才是普跌。
-    阈值 = 大盘普跌暂停 %（system_config.market_decline_pause_pct 页面覆盖，
-    None 回落 env MARKET_DECLINE_PAUSE_PCT；0=关闭恒 False）；任一币查询
-    失败按无普跌处理（降级放行，不因环境查询失败阻断开仓）。60s 进程内
-    缓存，开仓闸门逐笔调用不重拉 K 线。
+    双币确认：单 BTC 下跌可能是资金切换的 BTC 专属行情，双跌才是普跌（普涨
+    同理——逼空日逆势空单与普跌日逆势多单同构）。阈值 = 大盘单边暂停 %
+    （system_config.market_wide_pause_pct 页面覆盖，None 回落 env
+    MARKET_WIDE_PAUSE_PCT；0=关闭恒 None）；交易限制的方向映射在开仓闸门侧
+    （普跌拦山寨开多、普涨拦山寨开空，顺势方向照常）。任一币查询失败返回
+    None（降级放行，不因环境查询失败阻断开仓）。60s 进程内缓存（含 None——
+    直接查 _cache 区分「未缓存」与「缓存了 None」），开仓闸门逐笔调用不重拉
+    K 线。
     """
-    _pct = float(settings.MARKET_DECLINE_PAUSE_PCT) if decline_pct is None else float(decline_pct)
+    _pct = float(settings.MARKET_WIDE_PAUSE_PCT) if pause_pct is None else float(pause_pct)
     if _pct <= 0:
-        return False
-    cached = _cache_get("market_decline_active")
-    if cached is not None:
-        return bool(cached)
+        return None
+    hit = _cache.get("market_wide_regime")
+    if hit and hit[0] > time.time():
+        return hit[1]
     btc = _sym_change_24h(client, "BTCUSDT")
     eth = _sym_change_24h(client, "ETHUSDT")
     if btc is None or eth is None:
-        return False  # 任一缺失不缓存、不拦截（降级放行）
-    active = btc < -_pct and eth < -_pct
-    _cache_set("market_decline_active", active, ttl=60.0)
-    return active
+        return None  # 任一缺失不缓存、不拦截（降级放行）
+    regime: Optional[str] = None
+    if btc < -_pct and eth < -_pct:
+        regime = "down"
+    elif btc > _pct and eth > _pct:
+        regime = "up"
+    _cache_set("market_wide_regime", regime, ttl=60.0)
+    return regime
 
 
 # ── BTC-beta（docs/13 #1：组合热度 β 加权）────────────────────────────────

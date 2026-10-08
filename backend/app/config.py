@@ -133,8 +133,9 @@ class Settings(BaseSettings):
     MARKET_CONTEXT_ENABLED: bool = True   # 环境注入总开关（False=不注入，测试/降级用）
     BTC_CRASH_PAUSE_PCT: float = 1.0      # BTC 1h 近3根累计急跌阈值（%，跌破注入
                                           # 「BTC 短线急跌，山寨开单需谨慎」警示；0=关闭警示）
-    MARKET_DECLINE_PAUSE_PCT: float = 3.0  # 大盘普跌阈值（N-15）：BTC+ETH 24h 涨跌幅
-                                          # 同时跌破该值暂停山寨开多（空单放行；0=关闭）
+    MARKET_WIDE_PAUSE_PCT: float = 3.0    # 大盘单边阈值（N-15）：BTC+ETH 24h 涨跌幅
+                                          # 同时超值视为单边行情——普跌拦山寨开多、
+                                          # 普涨拦山寨开空（顺势方向照常；0=关闭）
 
     # 自动交易（docs/06，币安 USDT-M 合约）
     # 账号凭据（docs/17 注册表在 account_registry.py 读取）：正式网统一命名
