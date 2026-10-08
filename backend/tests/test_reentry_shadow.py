@@ -354,6 +354,13 @@ def test_build_report_reentry(shadow_db):
     assert tbn["buckets"] == {"structure_ok": 1}
     assert rep["sufficient"] is False  # 3 < 60
 
+    # P-08 序贯判读（不打桩直调锁形状，防漂移）：structure_ok 桶 n=2/续走 2
+    # → LLR = 2·ln(0.5/0.4) ≈ 0.446，未跨上界 → continue；后验 Beta(2.5,0.5)
+    seq = rep["sequential"]
+    assert seq["verdict"] == "continue" and seq["n"] == 2 and seq["wins"] == 2
+    assert seq["llr"] == pytest.approx(0.4463, abs=1e-3)
+    assert seq["posterior"]["mean"] == pytest.approx(0.8333, abs=1e-3)
+
     # 空特征占位（无标记的特征照常出现在报告里）
     assert any(r["feature"] == "cvd_div" for r in report)
 

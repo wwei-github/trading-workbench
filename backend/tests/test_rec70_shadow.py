@@ -190,6 +190,15 @@ def test_build_report_rec70(shadow_db):
     assert tbn["n"] == 1 and tbn["win_rate"] == 0.0   # T0USDT 窗口前被滤
     assert tbn["buckets"] == {"rec60_69": 1}
     assert rep["sufficient"] is False  # 3 < 15
+
+    # P-08 序贯判读（不打桩直调锁形状，防漂移）：rec60_69 桶 r=[-0.6,-0.4]
+    # → m=-0.5, sd²=0.02，LLR = 2·(-0.30/0.02)·(-0.35) = 10.5 ≥ ln16 → h1。
+    # n=2 即早停是正态近似小样本 sd 低估的已知表现（docs/14 CARD-09 风险注记）：
+    # 读数仅方向性证据，不直接改门槛
+    seq = rep["sequential"]
+    assert seq["verdict"] == "h1" and seq["n"] == 2
+    assert seq["mean"] == pytest.approx(-0.5)
+    assert seq["llr"] == pytest.approx(10.5, abs=1e-3)
     # 窗口前存量仍打标（过滤在评估侧）——VERIFIED：marks 共 6 行
     db = maker()
     assert len(list(db.execute(select(ShadowMark)).scalars())) == 6
