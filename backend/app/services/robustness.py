@@ -117,9 +117,11 @@ def pbo_cscv(r_matrix: list, n_blocks: int = DEFAULT_N_BLOCKS) -> dict:
 
     r_matrix: T×N 矩阵（行=信号，按时间序；列=变体；值=每笔 R，全 decided 行）
     返回 {"n_blocks", "n_combinations", "pbo", "is_best_oos_rank_median",
-          "overfit_combos", "excluded_rows"}
+          "oos_sr_median", "overfit_combos", "excluded_rows"}
 
     ω = IS 最优变体在 OOS 的相对排名（1=最优）；ω ≤ 0.5 记过拟合选择。
+    oos_sr_median: 各变体在全部组合 OOS 子集上每笔 Sharpe 的中位数
+    （best_oos 判据：argmax——「换一批样本谁最好」）。
     """
     t = len(r_matrix)
     n_var = len(r_matrix[0]) if r_matrix else 0
@@ -142,6 +144,7 @@ def pbo_cscv(r_matrix: list, n_blocks: int = DEFAULT_N_BLOCKS) -> dict:
 
     overfit = 0
     oos_ranks = []
+    oos_sr_hist: list[list[float]] = [[] for _ in range(n_var)]
     n_combos = 0
     for is_idx in itertools.combinations(range(n_blocks), n_blocks // 2):
         is_rows = [r for b in is_idx for r in blocks[b]]
@@ -149,6 +152,8 @@ def pbo_cscv(r_matrix: list, n_blocks: int = DEFAULT_N_BLOCKS) -> dict:
         n_combos += 1
         is_sr = [_sr([r_matrix[r][c] for r in is_rows]) for c in range(n_var)]
         oos_sr = [_sr([r_matrix[r][c] for r in oos_rows]) for c in range(n_var)]
+        for c in range(n_var):
+            oos_sr_hist[c].append(oos_sr[c])
         best = max(range(n_var), key=lambda c: (is_sr[c], -c))
         better = sum(1 for c in range(n_var) if oos_sr[c] > oos_sr[best])
         tie = sum(1 for c in range(n_var) if c != best and oos_sr[c] == oos_sr[best])
@@ -157,6 +162,11 @@ def pbo_cscv(r_matrix: list, n_blocks: int = DEFAULT_N_BLOCKS) -> dict:
         oos_ranks.append(omega)
         if omega <= 0.5:
             overfit += 1
+
+    def _median(xs: list) -> float:
+        s = sorted(xs)
+        m = len(s) // 2
+        return (s[m - 1] + s[m]) / 2 if len(s) % 2 == 0 else s[m]
 
     oos_ranks.sort()
     mid = len(oos_ranks) // 2
@@ -167,6 +177,7 @@ def pbo_cscv(r_matrix: list, n_blocks: int = DEFAULT_N_BLOCKS) -> dict:
         "n_combinations": n_combos,
         "pbo": overfit / n_combos,
         "is_best_oos_rank_median": rank_median,
+        "oos_sr_median": [_median(h) for h in oos_sr_hist],
         "overfit_combos": overfit,
         "excluded_rows": 0,
     }
