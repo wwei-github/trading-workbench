@@ -1062,12 +1062,26 @@ def build_report(db, window_days: int = 30) -> list[dict]:
             for v in testnet_values:
                 b = v.get("bucket", "unknown")
                 t_buckets[b] = t_buckets.get(b, 0) + 1
+            # ── P-08 序贯判读（docs/14 §七 CARD-07 预注册 2026-10-08）────
+            # structure_ok 桶：H0 续走率=40%（裁决门槛）vs H1=50%；
+            # 达标即早停 h1（升格方向），显著低于门槛早停 h0（卡关闭）。
+            # 预注册时点已积累 decided≈7（远未跨边界，判定不受影响）
+            seq = None
+            for item in bucket_out:
+                if item["bucket"] == "structure_ok":
+                    from app.services.sequential import sequential_verdict
+                    seq = sequential_verdict(
+                        item.get("continued", 0), item.get("n", 0),
+                        p0=0.40, p1=0.50)
+                    break
             out.append({
                 "feature": key, "name": feat.name, "card": feat.card,
                 "min_sample": feat.min_sample,
                 "window_days": window_days,
                 "baseline": baseline,
                 "buckets": bucket_out,
+                # P-08 序贯判读（structure_ok 桶，SPRT α=0.05/β=0.20 预注册）
+                "sequential": seq,
                 # 对照组：测试网读数（同 _reentry_stats 形状）+ 桶分布计数
                 "testnet_baseline": {
                     **_reentry_stats(testnet_values),
@@ -1107,12 +1121,30 @@ def build_report(db, window_days: int = 30) -> list[dict]:
             for v in testnet_values:
                 b = v.get("bucket", "unknown")
                 t_buckets[b] = t_buckets.get(b, 0) + 1
+            # ── P-08 序贯判读（docs/14 §七 CARD-09 预注册 2026-10-08）────
+            # rec60_69 桶每笔 R：H0 均值=0 vs H1 均值=−0.30R（效应量取存量
+            # −0.659R 的约半——「显著负」的操作性定义，预注册后不可回调）；
+            # 早停 h1 = 支持提门槛方向，早停 h0 = 存量 16 笔判运气差、卡关闭。
+            # sd 用桶内已决定样本的样本标准差（n<2 → continue，引擎内置）
+            seq = None
+            for item in bucket_out:
+                if item["bucket"] == "rec60_69":
+                    rows_69 = buckets.get("rec60_69") or []
+                    rs = [r.get("r") for r in rows_69 if r.get("r") is not None]
+                    if len(rs) >= 2:
+                        m = sum(rs) / len(rs)
+                        sd = (sum((v - m) ** 2 for v in rs) / (len(rs) - 1)) ** 0.5
+                        from app.services.sequential import sprt_normal_verdict
+                        seq = sprt_normal_verdict(m, len(rs), sd, delta=-0.30)
+                    break
             out.append({
                 "feature": key, "name": feat.name, "card": feat.card,
                 "min_sample": feat.min_sample,
                 "window_days": window_days,
                 "baseline": baseline,
                 "buckets": bucket_out,
+                # P-08 序贯判读（rec60_69 桶 R 均值 SPRT，δ=−0.30R 预注册）
+                "sequential": seq,
                 # 对照组：测试网读数（同 _rec70_stats 形状）+ 桶分布计数
                 "testnet_baseline": {
                     **_rec70_stats(testnet_values),
