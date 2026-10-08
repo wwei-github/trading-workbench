@@ -915,6 +915,27 @@ def try_open_for_analysis(
                 return False
         except Exception as e:
             logger.debug("BTC 急跌闸门查询失败（放行）: %s", e)
+    # 大盘普跌环境闸门（N-15，docs/16 §8.3②）：BTC+ETH 24h 涨跌幅同时跌破
+    # market_decline_pause_pct 时暂停**山寨开多**——普跌日接飞刀是当周最大
+    # 漏损之一（10-07 普跌日 11 笔多单全灭），而空单在普跌日占优（归因盈利
+    # 路径均为空单），故只挡多单放行空单。与上方 1h 急跌闸门（突崩形态、
+    # 全方向）互补：急跌抓「1 小时内突崩」，本闸门抓「阴跌一整天」。
+    # 判定带 60s 进程内缓存，查询失败降级放行
+    if a.symbol != "BTCUSDT" and a.direction == "long":
+        try:
+            from app.services.market_data import market_wide_decline_active, get_kline_client
+            # 普跌阈值：cfg.market_decline_pause_pct 覆盖时优先（NULL 回落 env）
+            decline_pct = (
+                float(cfg.market_decline_pause_pct)
+                if cfg.market_decline_pause_pct is not None
+                else None
+            )
+            if market_wide_decline_active(get_kline_client(), decline_pct=decline_pct):
+                logger.info("即时开仓跳过 %s：大盘普跌（BTC/ETH 24h 双跌），暂停山寨开多", a.symbol)
+                _mark_open_block(db, a, "大盘普跌（BTC/ETH 24h 双跌），暂停山寨开多（环境闸门）")
+                return False
+        except Exception as e:
+            logger.debug("大盘普跌闸门查询失败（放行）: %s", e)
     # 待回踩单不再在此跳过（2026-09-18）：回踩距离 ≤ pullback_market_pct 容差
     # 时市价入场、超容差维持不下单——判定移入 _attempt_open 偏离闸门
     positions = trader.positions()

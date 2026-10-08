@@ -228,6 +228,51 @@ def btc_crash_active(client, crash_pct: Optional[float] = None) -> bool:
     return active
 
 
+def _sym_change_24h(client, symbol: str) -> Optional[float]:
+    """单币 24h 涨跌幅（%）：1h K 26 根 → 25 根已收盘首尾比（24 根间隔）。
+
+    与 get_market_breadth 的 24h 口径同款算法（closed[-1]/closed[-25]-1），
+    数据不足 / 首价非正 → None。
+    """
+    try:
+        k = client.get_futures_klines(symbol, "1h", 26)
+    except Exception as e:
+        logger.debug("24h 涨跌 %s K线获取失败: %s", symbol, e)
+        return None
+    if not k or len(k) < 26:
+        return None
+    closed = k[:-1]  # 已收盘口径
+    base = float(closed[0][4])
+    if base <= 0:
+        return None
+    return (float(closed[-1][4]) / base - 1) * 100
+
+
+def market_wide_decline_active(client, decline_pct: Optional[float] = None) -> bool:
+    """大盘普跌判定（N-15，docs/16 §8.3②）：BTC 与 ETH 24h 涨跌幅**同时**
+    跌破阈值 → 普跌环境（阴跌一整天 1h 急跌闸门抓不到的形态，10-07 案例）。
+
+    双币确认：单 BTC 下跌可能是资金切换的 BTC 专属行情，双跌才是普跌。
+    阈值 = 大盘普跌暂停 %（system_config.market_decline_pause_pct 页面覆盖，
+    None 回落 env MARKET_DECLINE_PAUSE_PCT；0=关闭恒 False）；任一币查询
+    失败按无普跌处理（降级放行，不因环境查询失败阻断开仓）。60s 进程内
+    缓存，开仓闸门逐笔调用不重拉 K 线。
+    """
+    _pct = float(settings.MARKET_DECLINE_PAUSE_PCT) if decline_pct is None else float(decline_pct)
+    if _pct <= 0:
+        return False
+    cached = _cache_get("market_decline_active")
+    if cached is not None:
+        return bool(cached)
+    btc = _sym_change_24h(client, "BTCUSDT")
+    eth = _sym_change_24h(client, "ETHUSDT")
+    if btc is None or eth is None:
+        return False  # 任一缺失不缓存、不拦截（降级放行）
+    active = btc < -_pct and eth < -_pct
+    _cache_set("market_decline_active", active, ttl=60.0)
+    return active
+
+
 # ── BTC-beta（docs/13 #1：组合热度 β 加权）────────────────────────────────
 
 _BETA_BARS = 24 * 30 + 25   # 1h K：30 个日采样点 + 回看锚点 + 缓冲

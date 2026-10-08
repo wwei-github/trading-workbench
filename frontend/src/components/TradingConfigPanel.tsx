@@ -54,6 +54,7 @@ export default function TradingConfigPanel() {
           : null, // 比例 0.2 → 20%
         same_direction_cap: aiConfig.same_direction_cap ?? null,
         btc_crash_pause_pct: aiConfig.btc_crash_pause_pct ?? null, // % 值（1=1%）直存
+        market_decline_pause_pct: aiConfig.market_decline_pause_pct ?? null, // % 值（3=3%）直存（N-15）
         // 周/月回撤分层熔断 + ATR 跟进（docs/13 #2/#5，% 值/倍数直存）
         weekly_dd_stop_pct: aiConfig.weekly_dd_stop_pct ?? null,
         monthly_dd_stop_pct: aiConfig.monthly_dd_stop_pct ?? null,
@@ -91,6 +92,7 @@ export default function TradingConfigPanel() {
         portfolio_heat_cap: values.portfolio_heat_cap != null ? values.portfolio_heat_cap / 100 : null,
         same_direction_cap: values.same_direction_cap ?? null,
         btc_crash_pause_pct: values.btc_crash_pause_pct ?? null,
+        market_decline_pause_pct: values.market_decline_pause_pct ?? null,
         weekly_dd_stop_pct: values.weekly_dd_stop_pct ?? null,
         monthly_dd_stop_pct: values.monthly_dd_stop_pct ?? null,
         atr_trail_k: values.atr_trail_k ?? null,
@@ -313,6 +315,14 @@ export default function TradingConfigPanel() {
             tooltip="BTC 1h 近 3 根已收盘累计跌幅超该值时暂停山寨开单（BTCUSDT 本身照常；AI 提示词同步警示）；0=关闭"
           >
             <InputNumber min={0} max={20} step={0.1} style={{ width: '100%' }} placeholder="1" addonAfter="%" />
+          </Form.Item>
+
+          <Form.Item
+            label="大盘普跌暂停阈值（%，留空=默认 3）"
+            name="market_decline_pause_pct"
+            tooltip="BTC 与 ETH 24h 涨跌幅同时跌破该值时暂停山寨开多（空单放行——普跌日空头占优；抓阴跌一整天、急跌闸门抓不到的形态）；0=关闭"
+          >
+            <InputNumber min={0} max={20} step={0.5} style={{ width: '100%' }} placeholder="3" addonAfter="%" />
           </Form.Item>
 
           <Form.Item
