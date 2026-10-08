@@ -125,12 +125,12 @@ export default function TradingConfigPanel() {
         onCancel={() => setOpen(false)}
         onOk={handleSave}
         confirmLoading={saving}
-        width={860}
+        width={1200}
       >
         <Spin spinning={loading}>
         <Form form={form} layout="vertical">
           <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="同时在跑单子上限"
                 name="max_open_trades"
@@ -141,7 +141,7 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0} max={50} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="开仓最低可用余额（%）"
                 name="trading_min_free_pct"
@@ -150,6 +150,24 @@ export default function TradingConfigPanel() {
                 tooltip="可用余额低于总资金该比例时不开新单"
               >
                 <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="止损宽度上限（%，留空=不限制）"
+                name="max_stop_pct"
+                tooltip="开仓闸门的止损宽度硬上限（AI 复盘补丁参数 max_stop_pct 的手改入口，与补丁回滚共用同一列）"
+              >
+                <InputNumber min={0.1} max={10} step={0.1} style={{ width: '100%' }} placeholder="不限制" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="强平闸门缓冲（%，留空=默认 0.5%）"
+                name="liq_gate_buffer"
+                tooltip="强平闸门 = 1/杠杆 − 维持保证金率 − 缓冲（覆盖手续费/资金费/触发价差；AI 复盘补丁参数 liq_gate_buffer 的手改入口）"
+              >
+                <InputNumber min={0.1} max={5} step={0.1} style={{ width: '100%' }} placeholder="0.5" />
               </Form.Item>
             </Col>
           </Row>
@@ -188,27 +206,7 @@ export default function TradingConfigPanel() {
           </Form.Item>
 
           <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item
-                label="止损宽度上限（%，留空=不限制）"
-                name="max_stop_pct"
-                tooltip="开仓闸门的止损宽度硬上限（AI 复盘补丁参数 max_stop_pct 的手改入口，与补丁回滚共用同一列）"
-              >
-                <InputNumber min={0.1} max={10} step={0.1} style={{ width: '100%' }} placeholder="不限制" />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item
-                label="强平闸门缓冲（%，留空=默认 0.5%）"
-                name="liq_gate_buffer"
-                tooltip="强平闸门 = 1/杠杆 − 维持保证金率 − 缓冲（覆盖手续费/资金费/触发价差；AI 复盘补丁参数 liq_gate_buffer 的手改入口）"
-              >
-                <InputNumber min={0.1} max={5} step={0.1} style={{ width: '100%' }} placeholder="0.5" />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="动态杠杆下限（×，留空=默认 8）"
                 name="min_adapt_leverage"
@@ -217,7 +215,7 @@ export default function TradingConfigPanel() {
                 <InputNumber min={1} max={20} step={1} style={{ width: '100%' }} placeholder="8" precision={0} />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="入场偏离容差（%，留空=默认 1）"
                 name="pullback_market_pct"
@@ -226,21 +224,23 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0.1} max={5} step={0.1} style={{ width: '100%' }} placeholder="1" />
               </Form.Item>
             </Col>
+            <Col span={6}>
+              <Form.Item
+                label="开仓滑点上限（%，留空=默认 0.3）"
+                name="max_slippage_pct"
+                tooltip="开仓前按本单数量走订单簿逐层吃，预期滑点超上限放弃开单（盘口过薄的小币会撑宽止损、实际风险超预算）。0=关闭滑点闸门"
+              >
+                <InputNumber min={0} max={5} step={0.05} style={{ width: '100%' }} placeholder="0.3" />
+              </Form.Item>
+            </Col>
           </Row>
-          <Form.Item
-            label="开仓滑点上限（%，留空=默认 0.3）"
-            name="max_slippage_pct"
-            tooltip="开仓前按本单数量走订单簿逐层吃，预期滑点超上限放弃开单（盘口过薄的小币会撑宽止损、实际风险超预算）。0=关闭滑点闸门"
-          >
-            <InputNumber min={0} max={5} step={0.05} style={{ width: '100%' }} placeholder="0.3" />
-          </Form.Item>
 
           <Divider plain style={{ fontSize: 12, color: '#999' }}>
             风控参数（留空 = 恢复默认，保存即生效）
           </Divider>
 
           <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="开单评分门槛（留空=默认 60）"
                 name="min_recommendation"
@@ -249,7 +249,7 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} placeholder="60" precision={0} />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="盈亏比铁律下限（留空=默认 1.5）"
                 name="ai_rr_min"
@@ -258,9 +258,7 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0.5} max={10} step={0.1} style={{ width: '100%' }} placeholder="1.5" />
               </Form.Item>
             </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="单笔风险比例（%，留空=默认 3）"
                 name="risk_pct"
@@ -269,7 +267,7 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0.1} max={20} step={0.1} style={{ width: '100%' }} placeholder="3" addonAfter="%" />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="杠杆上限（×，留空=默认 20）"
                 name="leverage_max"
@@ -280,7 +278,7 @@ export default function TradingConfigPanel() {
             </Col>
           </Row>
           <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="taker 手续费率（%，留空=默认 0.05）"
                 name="taker_fee_rate"
@@ -289,7 +287,7 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0} max={0.5} step={0.005} style={{ width: '100%' }} placeholder="0.05" />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="近锚风险折价系数（留空=默认 0.7）"
                 name="near_anchor_factor"
@@ -298,9 +296,7 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0.01} max={1} step={0.05} style={{ width: '100%' }} placeholder="0.7" />
               </Form.Item>
             </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="当日亏损熔断开关"
                 name="daily_loss_stop_enabled"
@@ -314,7 +310,7 @@ export default function TradingConfigPanel() {
                 />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="当日亏损熔断阈值（%，留空=默认 9）"
                 name="daily_loss_stop_pct"
@@ -325,7 +321,7 @@ export default function TradingConfigPanel() {
             </Col>
           </Row>
           <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="组合热度上限（%，留空=默认关闭）"
                 name="portfolio_heat_cap"
@@ -334,7 +330,7 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} placeholder="0" addonAfter="%" />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="同向持仓上限（留空=不限）"
                 name="same_direction_cap"
@@ -343,9 +339,7 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0} max={20} step={1} style={{ width: '100%' }} placeholder="0" precision={0} />
               </Form.Item>
             </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="BTC 急跌暂停阈值（%，留空=默认 1）"
                 name="btc_crash_pause_pct"
@@ -354,7 +348,7 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0} max={20} step={0.1} style={{ width: '100%' }} placeholder="1" addonAfter="%" />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="大盘单边暂停阈值（%，留空=默认 3）"
                 name="market_wide_pause_pct"
@@ -365,7 +359,7 @@ export default function TradingConfigPanel() {
             </Col>
           </Row>
           <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="周回撤减速阈值（%，留空=默认 15）"
                 name="weekly_dd_stop_pct"
@@ -374,7 +368,7 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0} max={100} step={0.5} style={{ width: '100%' }} placeholder="15" addonAfter="%" />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="月回撤熔断阈值（%，留空=默认 25）"
                 name="monthly_dd_stop_pct"
@@ -383,9 +377,7 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0} max={100} step={0.5} style={{ width: '100%' }} placeholder="25" addonAfter="%" />
               </Form.Item>
             </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="ATR 跟进倍数（留空=默认 3）"
                 name="atr_trail_k"
@@ -394,7 +386,7 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0} max={20} step={0.5} style={{ width: '100%' }} placeholder="3" />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="TP2 分批止盈"
                 name="tp2_enabled"

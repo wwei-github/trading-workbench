@@ -171,12 +171,12 @@ export default function ScanConfigPanel() {
         onCancel={() => setOpen(false)}
         onOk={handleSave}
         confirmLoading={saving}
-        width={860}
+        width={1200}
       >
         <Spin spinning={loading}>
         <Form form={form} layout="vertical">
           <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="K线周期"
                 name="kline_interval"
@@ -197,7 +197,7 @@ export default function ScanConfigPanel() {
                 />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="K线数量"
                 name="kline_window"
@@ -207,9 +207,7 @@ export default function ScanConfigPanel() {
                 <InputNumber min={30} max={1500} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="重复命中窗口（小时）"
                 name="repeat_window_hours"
@@ -219,7 +217,7 @@ export default function ScanConfigPanel() {
                 <InputNumber min={1} max={168} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="摆动点阶数"
                 name="swing_order"
@@ -231,18 +229,18 @@ export default function ScanConfigPanel() {
             </Col>
           </Row>
 
-          {/* 筛选参数组（2026-09-28 筛选配置上页面）：DB > env > 代码默认；两列排布 */}
+          {/* 筛选参数组（2026-09-28 筛选配置上页面）：DB > env > 代码默认；四列排布 */}
           <Divider style={{ margin: '8px 0 16px' }}>
             <span style={{ fontSize: 13, color: '#999' }}>筛选参数</span>
           </Divider>
           {FILTER_FIELDS.reduce<typeof FILTER_FIELDS[]>((rows, f, i) => {
-            if (i % 2 === 0) rows.push([f])
+            if (i % 4 === 0) rows.push([f])
             else rows[rows.length - 1].push(f)
             return rows
           }, []).map((row, ri) => (
             <Row gutter={16} key={ri}>
               {row.map((f) => (
-                <Col span={12} key={f.name}>
+                <Col span={6} key={f.name}>
                   <Form.Item
                     label={f.label}
                     name={f.name}
@@ -273,12 +271,12 @@ export default function ScanConfigPanel() {
             恢复默认
           </Button>
 
-          {/* AI 分析开关区（原工具栏快捷开关，2026-09-20 收敛至此）；两列排布 */}
+          {/* AI 分析开关区（原工具栏快捷开关，2026-09-20 收敛至此）；四列排布 */}
           <Divider style={{ margin: '8px 0 16px' }}>
             <span style={{ fontSize: 13, color: '#999' }}>AI 分析</span>
           </Divider>
           <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label={
                   <span>
@@ -292,7 +290,7 @@ export default function ScanConfigPanel() {
                 <Switch disabled={!aiConfigured} />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Tooltip
                 title={
                   hasStrategy
@@ -313,9 +311,7 @@ export default function ScanConfigPanel() {
                 </Form.Item>
               </Tooltip>
             </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label={
                   <span>
@@ -329,7 +325,7 @@ export default function ScanConfigPanel() {
                 <Switch disabled={!aiConfigured} />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={6}>
               <Form.Item
                 label="双评委辩论"
                 name="dual_judge_enabled"
