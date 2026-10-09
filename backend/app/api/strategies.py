@@ -4,7 +4,6 @@ S1 范围：只读与影子数据，不提供开单类端点——S2 开单权�
 执行层对本模块不可达。
 """
 import logging
-from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -13,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.strategy import StrategyShadowSignal
 from app.models.system_config import SystemConfig
-from app.services.strategies import KNOWN_STRATEGIES, enabled_plugin_entries
+from app.services.strategies import KNOWN_STRATEGIES, load_registry
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +31,11 @@ class StrategyBrief(BaseModel):
 
 @router.get("", response_model=list[StrategyBrief])
 def list_strategies(db: Session = Depends(get_db)):
-    """策略清单（注册表条目 + 展示名）。registry NULL = 仅内置 golden_k_ai。"""
+    """策略清单（注册表条目 + 展示名）。registry NULL = 仅内置 golden_k_ai。
+    含停用条目——禁用的策略也要可见，否则配置了但被禁用会被误认为配置丢失。"""
     cfg = db.get(SystemConfig, 1)
     raw = cfg.strategy_registry if cfg else None
-    entries = enabled_plugin_entries(raw)
+    entries = load_registry(raw)
     display = {"golden_k_ai": "金K + AI（内置）", "ema_trend": "EMA 趋势跟踪"}
     out = []
     for e in entries:

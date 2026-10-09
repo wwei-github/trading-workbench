@@ -184,6 +184,17 @@ def test_api_list_strategies_default_golden_k_only(client):
     assert body[0]["kind"] == "native"
 
 
+def test_api_list_shows_disabled_plugin(client):
+    """禁用的插件条目也要出现在清单（可见性：防误认为配置丢失）"""
+    http, _db = client
+    http.put("/api/scans/config", json={
+        "strategy_registry": [{"id": "ema_trend", "enabled": False}],
+    })
+    body = http.get("/api/strategies").json()
+    ema = next((s for s in body if s["id"] == "ema_trend"), None)
+    assert ema is not None and ema["enabled"] is False
+
+
 def test_api_config_registry_roundtrip_and_normalize(client):
     http, _db = client
     r = http.put("/api/scans/config", json={
