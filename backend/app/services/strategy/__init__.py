@@ -13,7 +13,7 @@ import numpy as np
 
 from app.services.strategy.swing import find_swing_points, merge_swings
 
-__all__ = ["recent_swings"]
+__all__ = ["recent_swings", "swing_annotations"]
 
 
 def recent_swings(klines: list[list], order: int = 3, n: int = 2) -> dict:
@@ -48,4 +48,24 @@ def recent_swings(klines: list[list], order: int = 3, n: int = 2) -> dict:
     return {
         "highs": _build([s for s in swings if s[1] == "H"], "H"),
         "lows": _build([s for s in swings if s[1] == "L"], "L"),
+    }
+
+
+def swing_annotations(klines: list[list], order: int = 3, n: int = 5) -> dict:
+    """最近摆动点 → 图表标注格式（time/price/label；bars_ago 换算回时间戳）。
+
+    K线接口标注共用（scan.py 扫描图 / trades.py 复盘图），单一事实源防漂移。
+    """
+    sw = recent_swings(klines, order=order, n=n)
+    n_bars = len(klines)
+    return {
+        kind: [
+            {
+                "time": int(klines[n_bars - 1 - it["bars_ago"]][0]),
+                "price": it["price"],
+                "label": it["label"],
+            }
+            for it in sw[kind]
+        ]
+        for kind in ("highs", "lows")
     }

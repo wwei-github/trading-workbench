@@ -27,6 +27,7 @@ from app.schemas.trade import (
 )
 from app.services.binance_client import _INTERVAL_MINUTES
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
+from app.services.strategy import swing_annotations
 
 logger = logging.getLogger(__name__)
 
@@ -722,6 +723,9 @@ def trade_klines(
     except AllExchangesFailed as e:
         raise HTTPException(status_code=503, detail=f"K线获取失败（{e.summary}）")
 
+    # 摆动结构标注（与扫描图同源同参，界面一致性 2026-10-10）
+    swings = swing_annotations(klines, order=cfg.swing_order if cfg else 3, n=5)
+
     evts = db.execute(
         select(TradeEvent)
         .where(TradeEvent.trade_record_id == rec.id)
@@ -774,6 +778,8 @@ def trade_klines(
             }
             for k in klines
         ],
+        # 摆动结构标注（HH/LH/HL/LL，与扫描图一致）
+        "swings": swings,
         # 图上标箭头的关键事件（SL_MOVE 等过程事件不标）
         "events": [
             {

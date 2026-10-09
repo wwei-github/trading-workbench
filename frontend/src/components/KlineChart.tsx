@@ -6,22 +6,21 @@
  *   AI 仓位标注；拉取根数 limit 可配
  * - 复盘模式（tradeId）：/trades/{id}/klines 一次返回——开单前 100 根 +
  *   持仓期间直到止损/平仓；事件箭头（extraMarkers）+ 复盘区域覆盖层
- *   （止损区/止盈区/现止损琥珀线）+ 信息卡（headerExtra）
+ *   （止损区/止盈区/现止损琥珀线）；界面件（水印/图例/工具栏/摆动标注/
+ *   可视范围）与扫描模式完全一致，交易信息由图上价签与区域承载
  * 交互统一（同 2026-10-08 复盘图口径）：切周期不清旧数据不整块 loading，
  * 旧图保留、新数据到达后 ChartCore 原地替换；仅首拉（无数据）整块反馈。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Alert, Empty, Spin, Tag, Typography } from 'antd'
+import { Alert, Empty, Spin } from 'antd'
 import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts'
 import { scanApi } from '../api/scan'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { SCHEME_UP_DOWN } from '../utils/scheme'
-import { fmtPrice, GLASS } from './klineShared'
-import { bj, dayjs } from '../utils/dayjs'
+import { fmtPrice } from './klineShared'
+import { dayjs } from '../utils/dayjs'
 import ChartCore, { type OverlayCtx } from './ChartCore'
 import type { AIAnalysis, KlineData, TradeKlineData, TradeKlineEvent } from '../types'
-
-const { Text } = Typography
 
 const CHART_HEIGHT = 560 // 容器无高度时的兜底值（各挂载点容器均有自身高度）
 
@@ -196,55 +195,8 @@ function drawReplayZones(data: TradeKlineData, colorScheme: ColorScheme, ctx: Ov
   }
 }
 
-// 复盘信息卡（headerExtra）：区间说明 + 三价摘要（与工具栏/图例同栈不遮挡）
-function ReplayInfoCard({ data, colorScheme }: { data: TradeKlineData; colorScheme: ColorScheme }) {
-  const isLong = data.direction !== 'short'
-  const statusPnl = data.exit_reason != null ? ` · ${data.exit_reason}` : ''
-  return (
-    <div
-      style={{
-        padding: '4px 10px',
-        fontSize: 11,
-        lineHeight: '18px',
-        pointerEvents: 'none',
-        color: '#8b93a7',
-        ...GLASS,
-      }}>
-      <span style={{ color: '#e8ebf2', fontWeight: 600 }}>{data.symbol}</span>{' '}
-      <Tag color={isLong ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down} style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px' }}>
-        {isLong ? '多' : '空'}
-      </Tag>{' '}
-      <span>
-        {data.interval} · 开单前100根 + 持仓全程{statusPnl}
-      </span>
-      <div>
-        开仓 {bj(data.opened_at).format('MM-DD HH:mm')} →{' '}
-        {data.closed_at ? `平仓 ${bj(data.closed_at).format('MM-DD HH:mm')}` : '至今'} · 共{' '}
-        {data.klines.length} 根
-      </div>
-      <div>
-        {isLong ? '开多' : '开空'}{' '}
-        <span style={{ color: '#c9cfdd' }}>{data.entry_price != null ? fmtPrice(data.entry_price) : '—'}</span>
-        {data.stop_loss != null && (
-          <>
-            {' '}· 止损 <span style={{ color: SCHEME_UP_DOWN[colorScheme].down }}>{fmtPrice(data.stop_loss)}</span>
-          </>
-        )}
-        {data.tp1 != null && (
-          <>
-            {' '}· 止盈1 <span style={{ color: SCHEME_UP_DOWN[colorScheme].up }}>{fmtPrice(data.tp1)}</span>
-          </>
-        )}
-        {data.current_stop_loss != null && data.stop_loss != null && Math.abs(data.current_stop_loss - data.stop_loss) > 1e-12 && (
-          <>
-            {' '}· 现止损 <span style={{ color: CUR_SL_COLOR }}>{fmtPrice(data.current_stop_loss)}</span>
-          </>
-        )}
-        <span style={{ marginLeft: 8, color: '#5a6377' }}>{bj(data.opened_at).format('MM-DD HH:mm')} 开仓</span>
-      </div>
-    </div>
-  )
-}
+// 复盘模式不再有专属界面件（信息卡/脚注/水印后缀已移除，界面与扫描图完全一致）：
+// 交易信息由图上内容承载——开多/开空价签、止损/止盈线与区域、事件箭头、摆动结构标注
 
 // ── 组件本体 ─────────────────────────────────────────────────────────
 
@@ -371,9 +323,7 @@ export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKe
       return (
         <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: 420 }}>
           <Spin size="large" />
-          <div style={{ marginTop: 12, color: '#8b93a7', fontSize: 12 }}>
-            {isReplay ? '拉取复盘K线中（历史区间直连交易所，稍慢属正常）' : '拉取K线中…'}
-          </div>
+          <div style={{ marginTop: 12, color: '#8b93a7', fontSize: 12 }}>拉取K线中…</div>
         </div>
       )
     }
@@ -383,7 +333,7 @@ export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKe
     return <Empty description="无K线数据" style={{ marginTop: 60 }} />
   }
 
-  const watermark = isReplay ? `${data.symbol} ${isLong ? '做多' : '做空'}` : data.symbol
+  const watermark = data.symbol
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 360 }}>
@@ -403,7 +353,7 @@ export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKe
         watermark={watermark}
         label={data.symbol}
         data={data}
-        from={isReplay ? -2 : undefined}
+        // 可视范围不传 from：两模式同为「最近约 130 根」缺省（复盘不再全区间压缩）
         ai={isReplay ? undefined : ai}
         extraMarkers={isReplay ? extraMarkers : undefined}
         drawOverlay={isReplay ? drawZones : undefined}
@@ -413,13 +363,7 @@ export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKe
         interval={serverInterval}
         onIntervalChange={(v) => setReqInterval(v)}
         intervalOptions={intervalOptions}
-        headerExtra={replayData ? <ReplayInfoCard data={replayData} colorScheme={colorScheme} /> : undefined}
       />
-      {isReplay && (
-        <Text type="secondary" style={{ position: 'absolute', bottom: 6, right: 10, fontSize: 10, zIndex: 20, color: '#5a6377' }}>
-          止损/止盈1/2 为开单时快照 · 琥珀线=现止损（跟踪移动后）· 移动明细见操作历史
-        </Text>
-      )}
     </div>
   )
 }

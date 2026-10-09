@@ -39,7 +39,7 @@ from app.services.trade_engine import breaker_status_by_net
 from app.services.ai_analyzer import analyze_coin
 from app.services.risk_guard import is_pullback_wait
 from app.services.skill_library import list_skills
-from app.services.strategy import recent_swings
+from app.services.strategy import recent_swings, swing_annotations
 from app.services.strategy.technical import enforce_htf_constraint
 from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
@@ -1366,20 +1366,8 @@ def get_klines(
             "close": float(k[4]),
             "volume": float(k[5]),
         })
-    # 近期摆动点（图表标注用，各 5 个；bars_ago 换算回时间戳）
-    sw = recent_swings(klines, order=cfg.swing_order, n=5)
-    n_bars = len(klines)
-    swings = {
-        kind: [
-            {
-                "time": int(klines[n_bars - 1 - it["bars_ago"]][0]),
-                "price": it["price"],
-                "label": it["label"],
-            }
-            for it in sw[kind]
-        ]
-        for kind in ("highs", "lows")
-    }
+    # 近期摆动点（图表标注用，各 5 个）——与复盘接口同源 helper
+    swings = swing_annotations(klines, order=cfg.swing_order, n=5)
     return {
         "symbol": symbol,
         "interval": eff_interval,

@@ -479,6 +479,7 @@ export interface TradeKlineData {
   opened_at: string | null
   closed_at: string | null
   klines: Kline[]
+  swings?: { highs: SwingPoint[]; lows: SwingPoint[] } // 摆动结构标注（与扫描图同源）
   events: TradeKlineEvent[]
 }
 
@@ -812,6 +813,7 @@ export interface ShadowFeatureReport {
   decided?: number // CARD-05/06：正式网 decided（= baseline.decided）
   excluded_n?: number // CARD-05/06：非机械出场剔除笔数（manual/liquidation，docs/16 P-04）
   sufficient: boolean // 有效归因样本 ≥ min_sample（达标 ≠ 升格，升格走人工流程）
+  court_date?: string | null // 预注册开庭日（docs/14 §七 时间锁，YYYY-MM-DD）：到期前不进人工裁决；null=到量即判卡
   // P-08 序贯判读（docs/14 §七 CARD-07/09 预注册 SPRT）：h1=早停达标方向 /
   // h0=早停否定方向 / continue=续观察；posterior 仅比例卡（Beta 后验）
   // locked/declared_at：早停宣告落锁（2026-10-09，仅 CARD-07）——首次跨界
