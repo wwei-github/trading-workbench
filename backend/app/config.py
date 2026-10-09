@@ -82,7 +82,10 @@ class Settings(BaseSettings):
     # 上吊线维持被流星线替代；白名单内仅流星线走单影线复合确认
     # v2026-10-02：战法模块上线（仅借鉴标注，不影响开单结论）——AI 输出
     # tactic_name/tactic_reason 经白名单闸门防幻觉，复盘按战法分组
-    RULE_VERSION: str = "v2026-10-02"
+    # v2026-10-09：孕线突破（两向）与蜻蜓/墓碑十字移出金K白名单（用户拍板，
+    # 同 2026-09-12 精简口径）——金K清单 12→8（看涨/看跌各 4）；检测器保留
+    # 仅历史展示。GOLDEN_12 更名 GOLDEN_PATTERNS（数量随拍板浮动，不再入名）
+    RULE_VERSION: str = "v2026-10-09"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

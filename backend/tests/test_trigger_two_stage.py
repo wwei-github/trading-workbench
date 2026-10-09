@@ -773,7 +773,7 @@ def test_resolve_direction_mismatch_rejected():
 def test_resolve_direction_first_amid_dual_report():
     """方向优先机制回归（2026-10-01）：同形双报时先按 wanted 方向过滤再取首个。
     2026-10-01-2 倒锤形线退出看涨白名单后：看多语境双报（倒锤 bullish + 流星
-    bearish）两形态均不入选（倒锤不在 GOLDEN_12、流星方向不符）→ 无金K证据"""
+    bearish）两形态均不入选（倒锤不在 GOLDEN_PATTERNS、流星方向不符）→ 无金K证据"""
     kl = _kl(*_base())
     golden, note = trig.resolve_golden_evidence(kl, "bullish", [
         {"pattern": "shooting_star", "direction": "bearish", "strength": 0.8},
@@ -791,21 +791,29 @@ def test_resolve_direction_first_amid_dual_report():
     assert note2 == "双流星组合"
 
 
-def test_resolve_restored_patterns_direct_confirm():
-    """2026-10-01-3 恢复的 12 金K新成员直接确认（白名单内非单影线 → note=""）；
+def test_resolve_whitelist_direct_confirm_and_removed():
+    """金K白名单非单影线直接确认（note=""）；2026-10-09 移出白名单的孕线突破/
+    蜻蜓/墓碑不再构成金K证据（检测器保留展示，resolve 白名单+方向双重排除）；
     倒锤形线维持退出（方向过滤不入选）"""
     kl = _kl(*_base())
     for pat, want_dir in [
-        ("piercing_line", "bullish"), ("bullish_harami", "bullish"),
-        ("dragonfly_doji", "bullish"), ("dark_cloud_cover", "bearish"),
-        ("bearish_harami", "bearish"), ("gravestone_doji", "bearish"),
+        ("piercing_line", "bullish"), ("dark_cloud_cover", "bearish"),
     ]:
         golden, note = trig.resolve_golden_evidence(kl, want_dir, [
             {"pattern": pat, "direction": want_dir, "strength": 0.7},
         ])
         assert golden is not None and golden["pattern"] == pat, pat
         assert note == "", pat
-    # 反向语境下恢复形态不入选（方向优先过滤）
+    # 2026-10-09 移出白名单：即使方向匹配也不作金K证据
+    for pat, want_dir in [
+        ("bullish_harami", "bullish"), ("dragonfly_doji", "bullish"),
+        ("bearish_harami", "bearish"), ("gravestone_doji", "bearish"),
+    ]:
+        golden, note = trig.resolve_golden_evidence(kl, want_dir, [
+            {"pattern": pat, "direction": want_dir, "strength": 0.7},
+        ])
+        assert golden is None, pat
+    # 反向语境下白名单形态不入选（方向优先过滤）
     golden_inv, _ = trig.resolve_golden_evidence(kl, "bullish", [
         {"pattern": "dark_cloud_cover", "direction": "bearish", "strength": 0.8},
     ])
@@ -814,32 +822,31 @@ def test_resolve_restored_patterns_direct_confirm():
 
 def test_resolve_direct_confirm_beats_single_shadow_in_dual_report():
     """2026-10-01-3 补丁：同向双报（流星 0.7 + 直通形态 0.6）直通优先——
-    复合确认是无直通证据时的降级路径，不拦同根并存的直通证据；
-    流星/墓碑重叠区（body≤10%全长、上影≥60%全长）流星恒 0.7，纯 strength 序
-    会让墓碑永远选不中、body→0 边界还出现 0.0001 被拦/0 直通的矛盾"""
+    复合确认是无直通证据时的降级路径，不拦同根并存的直通证据
+    （2026-10-09 孕线突破/墓碑移出白名单后，直通伙伴换乌云盖顶/看跌吞没/启明星）"""
     kl = _kl(*_base())
-    # 流星+墓碑并存：墓碑直通胜出（补丁前选流星→无前根流星→整体不确认）
+    # 流星+乌云盖顶并存：乌云盖顶直通胜出（补丁前选流星→无前根流星→整体不确认）
     golden, note = trig.resolve_golden_evidence(kl, "bearish", [
         {"pattern": "shooting_star", "direction": "bearish", "strength": 0.7},
-        {"pattern": "gravestone_doji", "direction": "bearish", "strength": 0.6},
+        {"pattern": "dark_cloud_cover", "direction": "bearish", "strength": 0.6},
     ])
-    assert golden is not None and golden["pattern"] == "gravestone_doji"
+    assert golden is not None and golden["pattern"] == "dark_cloud_cover"
     assert note == ""
-    # 流星+看跌孕线突破并存：孕线突破直通胜出
+    # 流星+看跌吞没并存：看跌吞没直通胜出
     golden2, _ = trig.resolve_golden_evidence(kl, "bearish", [
         {"pattern": "shooting_star", "direction": "bearish", "strength": 0.7},
-        {"pattern": "bearish_harami", "direction": "bearish", "strength": 0.6},
+        {"pattern": "bearish_engulfing", "direction": "bearish", "strength": 0.6},
     ])
-    assert golden2 is not None and golden2["pattern"] == "bearish_harami"
+    assert golden2 is not None and golden2["pattern"] == "bearish_engulfing"
     # 仅流星（无直通候选）：维持单影线复合门——无前根流星 → 不确认
     golden3, note3 = trig.resolve_golden_evidence(kl, "bearish", [
         {"pattern": "shooting_star", "direction": "bearish", "strength": 0.7},
     ])
     assert golden3 is None and note3 == ""
-    # 直通+直通并存（锤 0.9 + 蜻蜓 0.6）：strength 序取锤，不受补丁影响
+    # 直通+直通并存（锤 0.9 + 启明星 0.6）：strength 序取锤，不受补丁影响
     golden4, _ = trig.resolve_golden_evidence(kl, "bullish", [
         {"pattern": "hammer", "direction": "bullish", "strength": 0.9},
-        {"pattern": "dragonfly_doji", "direction": "bullish", "strength": 0.6},
+        {"pattern": "morning_star", "direction": "bullish", "strength": 0.6},
     ])
     assert golden4 is not None and golden4["pattern"] == "hammer"
 

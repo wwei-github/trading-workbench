@@ -47,7 +47,8 @@ export function positionTag(kind: string): { label: string; color: string } {
   return { label, color: POSITION_SUPPORT_KINDS.has(kind) ? "green" : "red" };
 }
 
-// 12 金K + 历史形态映射
+// 金K形态标签映射：白名单 8 种（2026-10-09 起）+ 移出形态（孕线突破/蜻蜓/墓碑
+// 等）——后者仅历史扫描结果展示，不再产生新信号
 const BULLISH_PATTERNS: Record<string, string> = {
   hammer: "锤形线",
   bullish_engulfing: "看涨吞没",

@@ -2,7 +2,7 @@
 """A5b 刺透线/乌云盖顶白名单回归 · 历史回放评估（docs/26）。
 
 完全复用生产管线 detect_indicator_candidate（投票/4h 门/触点两段式全保留），
-仅打桩两处：4h 数据源（按信号时刻切片的历史 K 线）与 GOLDEN_12 白名单扩展
+仅打桩两处：4h 数据源（按信号时刻切片的历史 K 线）与 GOLDEN_PATTERNS 白名单扩展
 （piercing_line / dark_cloud_cover）。基线与变体各跑一遍同一历史，取边际信号
 （变体有、基线无）按近锚止损 + 1.5R 固定止盈做假想回放，预注册规则判定
 （docs/26 §5）。
@@ -120,9 +120,9 @@ def run_pass(symbol: str, kl_all: list, htf_all: list, flt,
              golden_extra: set | None) -> list[dict]:
     """跑一遍扫描管线回放，返回 PULLBACK_CONFIRM 信号 + 假想回放结果列表"""
     htf_opens = [k[0] for k in htf_all]
-    orig_golden = cs.GOLDEN_12
+    orig_golden = cs.GOLDEN_PATTERNS
     if golden_extra:
-        cs.GOLDEN_12 = orig_golden | golden_extra
+        cs.GOLDEN_PATTERNS = orig_golden | golden_extra
     try:
         sigs: list[dict] = []
         pend: dict | None = None
@@ -179,7 +179,7 @@ def run_pass(symbol: str, kl_all: list, htf_all: list, flt,
             })
         return sigs
     finally:
-        cs.GOLDEN_12 = orig_golden
+        cs.GOLDEN_PATTERNS = orig_golden
 
 
 # ── 统计与报表 ─────────────────────────────────────────────────────────

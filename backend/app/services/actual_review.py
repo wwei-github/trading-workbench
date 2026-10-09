@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 HOUR_BUCKETS = [(0, 4), (4, 8), (8, 12), (12, 16), (16, 20), (20, 24)]
 
 # 金K形态分组固定顺序（2026-10-01-3 完整 12 金K：看涨 6 + 看跌 6，与
-# GOLDEN_12 同源同序）；展示名取 PATTERN_LABEL_MAP，防两处漂移
+# GOLDEN_PATTERNS 同源同序——2026-10-09 白名单收缩到 8 种后本表保留 12 种，
+# 历史扫描结果仍按旧形态分组）；展示名取 PATTERN_LABEL_MAP，防两处漂移
 GOLDEN_PATTERN_ORDER = (
     "hammer", "bullish_engulfing", "morning_star",
     "piercing_line", "bullish_harami", "dragonfly_doji",

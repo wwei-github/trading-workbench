@@ -5,7 +5,7 @@
 2026-10-02 十字星口径：上下影线都很长、实体很短或几乎没有——都是十字星（中性）。
 """
 from app.services.strategy.candlestick import (
-    GOLDEN_12,
+    GOLDEN_PATTERNS,
     PATTERN_LABEL_MAP,
     detect_all_patterns,
     detect_dark_cloud_cover,
@@ -35,18 +35,23 @@ def _kl_list(closes, o=None, h=None, l=None):
 
 
 def test_golden_sets_by_direction():
-    """金K清单按方向：完整 12 金K，看涨看跌各 6 种
-    （2026-10-01-3：恢复 2026-09-12 精简掉的刺透线/孕线突破/蜻蜓/乌云盖顶/墓碑；
-    倒锤形线维持退出（-2 KSM 拍板）、上吊线维持被流星线替代（09-28 拍板））"""
-    bullish = {"hammer", "bullish_engulfing", "morning_star",
-               "piercing_line", "bullish_harami", "dragonfly_doji"}
+    """金K清单按方向：2026-10-09 起看涨看跌各 4 种（孕线突破/蜻蜓/墓碑移出——
+    信号质量弱，同 2026-09-12 精简口径；检测器保留仅历史展示。
+    历史沿革：2026-10-01-3 曾恢复完整 12，倒锤形线维持退出（-2 KSM 拍板）、
+    上吊线维持被流星线替代（09-28 拍板））"""
+    bullish = {"hammer", "bullish_engulfing", "morning_star", "piercing_line"}
     bearish = {"shooting_star", "bearish_engulfing", "evening_star",
-               "dark_cloud_cover", "bearish_harami", "gravestone_doji"}
-    assert GOLDEN_12 == bullish | bearish
-    assert len(GOLDEN_12) == 12
-    assert "inverted_hammer" not in GOLDEN_12
-    assert "hanging_man" not in GOLDEN_12
-    for p in GOLDEN_12:
+               "dark_cloud_cover"}
+    assert GOLDEN_PATTERNS == bullish | bearish
+    assert len(GOLDEN_PATTERNS) == 8
+    assert "inverted_hammer" not in GOLDEN_PATTERNS
+    assert "hanging_man" not in GOLDEN_PATTERNS
+    # 2026-10-09 移出：孕线突破（两向）+ 蜻蜓/墓碑十字
+    assert "bullish_harami" not in GOLDEN_PATTERNS
+    assert "bearish_harami" not in GOLDEN_PATTERNS
+    assert "dragonfly_doji" not in GOLDEN_PATTERNS
+    assert "gravestone_doji" not in GOLDEN_PATTERNS
+    for p in GOLDEN_PATTERNS:
         assert p in PATTERN_LABEL_MAP
 
 

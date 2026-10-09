@@ -198,7 +198,7 @@ class PullbackPending(Base):
 
     T3 回踩命中且当根无同向金K 时建立 pending（不落 scan_results、不进 AI）；
     仅在恰好下一根已收盘K线的扫描轮有资格确认：
-    - confirmed：次根出现同向 GOLDEN_12 且多数决复验通过 → 以
+    - confirmed：次根出现同向 GOLDEN_PATTERNS 且多数决复验通过 → 以
       trigger_pullback_confirm 落库进 AI（confirmed_scan_result_id 可回溯）
     - expired：次根无金K（window_expired）/ 方向失守（direction_flip）
     - superseded：次根 T1 突破或当根触碰+金K 抢先
