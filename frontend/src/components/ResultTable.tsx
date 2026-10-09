@@ -98,16 +98,22 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
   const colorScheme = useScanStore((s) => s.colorScheme);
 
   const aiEnabled = !!aiConfig?.ai_analysis_enabled;
-  // 开单状态映射：ai_analysis_id -> 交易状态（"开单状态"列判定已开单/开单失败）。
+  // 开单状态映射：ai_analysis_id -> { status: 最近交易状态, nets: 已开过的网络集合 }。
+  // nets 用于「开单」按钮置灰判定：双网（testnet+live）都有记录才禁点，
+  // 单网已开仍可点（另一网补开——后端按账号判重，docs/17 P1 多账号各开一单）。
   // 随结果列表刷新拉取（limit 500 足够覆盖当前页分析的近期交易）
-  const [tradeMap, setTradeMap] = useState<Record<string, string>>({});
+  const [tradeMap, setTradeMap] = useState<Record<string, { status: string; nets: boolean[] }>>({});
   // tradeMap 拉取（"开单"按钮点击后手动调用刷新，与 results effect 共用）
   const refreshTradeMap = useCallback(async () => {
     try {
       const rows = await scanApi.trades.list(undefined, 500);
-      const m: Record<string, string> = {};
+      const m: Record<string, { status: string; nets: boolean[] }> = {};
       for (const t of rows) {
-        if (t.ai_analysis_id) m[t.ai_analysis_id] = t.status;
+        if (!t.ai_analysis_id) continue;
+        const cur = m[t.ai_analysis_id] ?? { status: t.status, nets: [] };
+        cur.status = t.status;
+        if (!cur.nets.includes(t.testnet)) cur.nets.push(t.testnet);
+        m[t.ai_analysis_id] = cur;
       }
       setTradeMap(m);
     } catch {
@@ -210,12 +216,14 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       const ageMin = (Date.now() - new Date(`${ai.created_at}Z`).getTime()) / 60000;
       if (ageMin > 60) return "信号已过期（分析超过 1 小时）";
     }
-    const tradeStatus = tradeMap[ai.id];
-    if (tradeStatus) {
-      const label = TRADE_STATUS_LABEL[tradeStatus] || tradeStatus;
-      return tradeStatus === "FAILED"
+    // 置灰铁律（2026-10-09）：仅当测试网+正式网都有该单记录才禁点；
+    // 单网已开仍可点（另一网补开，后端按账号判重兜底）
+    const tradeInfo = tradeMap[ai.id];
+    if (tradeInfo && tradeInfo.nets.includes(true) && tradeInfo.nets.includes(false)) {
+      const label = TRADE_STATUS_LABEL[tradeInfo.status] || tradeInfo.status;
+      return tradeInfo.status === "FAILED"
         ? `已有开单尝试（${label}），不支持重试`
-        : `已开单（${label}）`;
+        : `已开单（测试网+正式网，${label}）`;
     }
     return null;
   };
@@ -360,9 +368,14 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
         const ai = aiMap[record.id];
         const reason = getOpenDisabledReason(record);
         const disabled = reason !== null;
+        // 单网已开（按钮仍可点）：tooltip 提示已开/可补开的网络
+        const nets = (ai ? tradeMap[ai.id]?.nets : undefined) ?? [];
+        const netHint = !disabled && nets.length === 1
+          ? `（${nets[0] ? "测试网" : "正式网"}已开，可再开${nets[0] ? "正式网" : "测试网"}）`
+          : "";
         const tip = disabled
           ? reason!
-          : `手动开单：${record.symbol} ${ai?.direction === "long" ? "开多" : "开空"}（当前账号，走完整开仓闸门）`
+          : `手动开单：${record.symbol} ${ai?.direction === "long" ? "开多" : "开空"}（当前账号，走完整开仓闸门）${netHint}`
             + (ai?.open_block_reason ? `　上次拦截：${ai.open_block_reason}` : "");
         return (
           <Tooltip title={tip}>
@@ -633,11 +646,13 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
         if (!ai || ai.trade_decision !== "suggest") {
           return <span style={{ color: "#999" }}>-</span>;
         }
-        // 已开单/开单失败：以 trade_records（按 ai_analysis_id 关联）为准
-        const tradeStatus = tradeMap[ai.id];
-        if (tradeStatus) {
-          const label = TRADE_STATUS_LABEL[tradeStatus] || tradeStatus;
-          if (tradeStatus === "FAILED") {
+        // 已开单/开单失败：以 trade_records（按 ai_analysis_id 关联）为准，
+        // 双网都有记录时展示两网标记
+        const tradeInfo = tradeMap[ai.id];
+        if (tradeInfo) {
+          const bothNets = tradeInfo.nets.includes(true) && tradeInfo.nets.includes(false);
+          const label = TRADE_STATUS_LABEL[tradeInfo.status] || tradeInfo.status;
+          if (tradeInfo.status === "FAILED") {
             return (
               <Tooltip title={`下单序列失败（${label}），详见交易记录 Tab`}>
                 <Tag color="red" style={{ marginInlineEnd: 0, cursor: "default" }}>
@@ -647,9 +662,9 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
             );
           }
           return (
-            <Tooltip title={`已开单（${label}），详见交易记录 Tab`}>
+            <Tooltip title={`已开单${bothNets ? "（测试网+正式网）" : ""}（${label}），详见交易记录 Tab`}>
               <Tag color="green" style={{ marginInlineEnd: 0, cursor: "default" }}>
-                已开单
+                已开单{bothNets ? "·双网" : ""}
               </Tag>
             </Tooltip>
           );
