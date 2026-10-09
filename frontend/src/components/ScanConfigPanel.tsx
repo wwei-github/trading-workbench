@@ -19,11 +19,12 @@ const TOUCH_REF_OPTIONS = [
   { value: 'retest', label: '突破回测位' },
   { value: 'swing', label: '摆动结构位' },
   { value: 'ema21', label: 'EMA21' },
+  { value: 'ema21_4h', label: 'EMA21(4h)' },
   { value: 'ema55', label: 'EMA55' },
   { value: 'ema144', label: 'EMA144' },
 ]
-/** 默认仅三条均线（2026-10-08）：横向结构触点（retest/swing）默认关 */
-const DEFAULT_TOUCH_VALUES = ['ema21', 'ema55', 'ema144']
+/** 默认均线族（2026-10-08，2026-10-09 加入 4h EMA21）：横向结构触点（retest/swing）默认关 */
+const DEFAULT_TOUCH_VALUES = ['ema21', 'ema21_4h', 'ema55', 'ema144']
 
 /** 筛选参数组（2026-09-28 筛选配置上页面）：字段元数据驱动渲染 */
 const FILTER_FIELDS: { name: string; label: string; min: number; max: number; step?: number; tooltip: string }[] = [

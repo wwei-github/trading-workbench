@@ -48,6 +48,7 @@ const TOUCH_TAG_MAP: Record<string, { color: string; tip: string }> = {
   retest: { color: "geekblue", tip: "突破回测位：破轨后横向验证，结构意义最强" },
   swing: { color: "purple", tip: "摆动结构位：最近 HL（多）/LH（空）防守位" },
   ema21: { color: "gold", tip: "回踩 EMA21 趋势价值区企稳" },
+  ema21_4h: { color: "cyan", tip: "回踩 4h EMA21 大周期动态价值区企稳（1h 信号K线影线触及跨周期均线）" },
   ema55: { color: "orange", tip: "回踩 EMA55 深回撤价值区（数据/排列/斜率门已过）" },
   ema144: { color: "volcano", tip: "回踩 EMA144 大周期深回撤价值区（数据/排列/斜率门已过）" },
 };
@@ -56,6 +57,7 @@ const TOUCH_TAG_MAP: Record<string, { color: string; tip: string }> = {
 // 方向推断：指标多数决净票（程序判定方向的真实依据）→ 趋势斜率符号兜底
 function touchLabel(ref: string, record: ScanResult): string {
   if (ref === "ema21") return "EMA21";
+  if (ref === "ema21_4h") return "EMA21(4h)";
   if (ref === "ema55") return "EMA55";
   if (ref === "ema144") return "EMA144";
   const votes = record.votes_json;

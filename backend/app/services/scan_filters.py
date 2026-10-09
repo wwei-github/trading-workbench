@@ -26,13 +26,17 @@ ALL_TRIGGERS = (TRIGGER_BREAKOUT, TRIGGER_TREND_BREAKOUT, TRIGGER_PULLBACK_CONFI
 TOUCH_RETEST = "retest"    # 突破回测位（破位价：结构前高/前低或 Donchian 轨，回踩不破=突破有效性确认）
 TOUCH_SWING = "swing"      # 摆动结构位（HL/LH，结构防守位）
 TOUCH_EMA21 = "ema21"      # 趋势动态价值区（原口径）
+TOUCH_EMA21_4H = "ema21_4h"  # 4h EMA21 大周期动态价值区（1h 信号K线影线触及，2026-10-09）
 TOUCH_EMA55 = "ema55"      # 中深度回撤（排列+斜率门）
 TOUCH_EMA144 = "ema144"    # 深回撤（排列+斜率门，K线窗口≥300 才实际生效）
-ALL_TOUCH_REFS = (TOUCH_RETEST, TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA55, TOUCH_EMA144)
-# 默认仅三条均线（2026-10-08 调整）：趋势动态价值区/中深度回撤/深回撤；横向结构
-# 触点（retest/swing）默认关——语义不匹配时易产生低质量触点命中，需在配置弹窗
-# 显式勾选启用。ema55/144 仍受排列/斜率/数据门自筛，ema144 窗口不足自动跳过
-DEFAULT_TOUCH_REFS = (TOUCH_EMA21, TOUCH_EMA55, TOUCH_EMA144)
+ALL_TOUCH_REFS = (
+    TOUCH_RETEST, TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55, TOUCH_EMA144,
+)
+# 默认仅均线族（2026-10-08 调整，2026-10-09 加入 4h EMA21）：1h 趋势价值区/4h 大周期
+# 价值区/中深度回撤/深回撤；横向结构触点（retest/swing）默认关——语义不匹配时易产生
+# 低质量触点命中，需在配置弹窗显式勾选启用。ema55/144 仍受排列/斜率/数据门自筛，
+# ema144 窗口不足自动跳过
+DEFAULT_TOUCH_REFS = (TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55, TOUCH_EMA144)
 
 # scan_filters JSONB 的合法键集（PUT /config 校验与前端字段一一对应）
 SCAN_FILTER_KEYS = (

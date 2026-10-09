@@ -367,22 +367,23 @@ def test_breakout_trigger_carries_event_payload():
 # ── resolve_scan_filters：触点白名单与参数 ───────────────────────────────
 
 def test_resolve_default_touch_refs():
-    """默认触点仅三条均线（2026-10-08 调整）：横向结构触点（retest/swing）需配置显式启用"""
+    """默认触点均线族（2026-10-08 调整，2026-10-09 加入 4h EMA21）：横向结构触点
+    （retest/swing）需配置显式启用"""
     flt = resolve_scan_filters(None)
-    assert flt.pullback_touch_refs == ("ema21", "ema55", "ema144")
+    assert flt.pullback_touch_refs == ("ema21", "ema21_4h", "ema55", "ema144")
     assert flt.retest_window_bars == 24
     assert flt.structure_touch_band_pct == 0.3
     assert flt.ema_touch_min_bars == 200
 
 
 def test_resolve_touch_refs_filter_and_fallback():
-    """非法项过滤保留合法项；空/全非法/非 list 回落默认（三条均线，触点全空会停摆回踩管线）"""
+    """非法项过滤保留合法项；空/全非法/非 list 回落默认（均线族，触点全空会停摆回踩管线）"""
     cfg = SimpleNamespace(scan_filters={"pullback_touch_refs": ["retest", "bogus", "ema55"]})
     assert resolve_scan_filters(cfg).pullback_touch_refs == ("retest", "ema55")
     for bad in (None, "retest", [], ["bogus"], ["bogus", 1]):
         cfg2 = SimpleNamespace(scan_filters={"pullback_touch_refs": bad})
         assert resolve_scan_filters(cfg2).pullback_touch_refs == \
-            ("ema21", "ema55", "ema144"), bad
+            ("ema21", "ema21_4h", "ema55", "ema144"), bad
 
 
 def test_resolve_touch_params_override():
@@ -424,3 +425,91 @@ def test_validate_scan_filters_touch_keys():
         _validate_scan_filters({"structure_touch_band_pct": -1})
     with pytest.raises(HTTPException):
         _validate_scan_filters({"ema_touch_min_bars": "x"})
+
+
+# ── 4h EMA21 跨周期触点（2026-10-09）──────────────────────────────────────
+
+def _htf_flat(base: float, n: int = 60) -> list[list]:
+    """4h K线夹具：平盘序列（步长 4h，尾根未收盘）——平盘 EMA21 恒等于 base"""
+    return [
+        [i * 4 * 3_600_000, base, base + 0.2, base - 0.2, base, 100.0, 1e6]
+        for i in range(n)
+    ]
+
+
+def test_htf_ema21_touch_long():
+    """多头：1h 信号K线下影触及 4h EMA21（平盘 EMA=base）且收盘收回线上"""
+    kl = _kl(*_base())
+    ts, o, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, o, o + 0.4, 99.8, 100.1, vol, qv]
+    assert trig._detect_htf_ema21_touch(kl, _htf_flat(99.9), 1) == pytest.approx(99.9)
+
+
+def test_htf_ema21_touch_short_symmetric():
+    """空头：上影触及（h ≥ EMA）、收盘压在线下（c ≤ EMA）"""
+    kl = _kl(*_base())
+    ts, o, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, o, 100.2, o - 0.4, 99.9, vol, qv]
+    assert trig._detect_htf_ema21_touch(kl, _htf_flat(100.1), -1) == pytest.approx(100.1)
+
+
+def test_htf_ema21_no_touch_when_off_level():
+    """信号K线整体悬于 4h EMA21 上方（未触及）→ None"""
+    kl = _kl(*_base())
+    assert trig._detect_htf_ema21_touch(kl, _htf_flat(95.0), 1) is None
+
+
+def test_htf_ema21_too_few_bars_skipped():
+    """4h 根数不足（<22，EMA21 无法收敛）→ None 静默跳过"""
+    kl = _kl(*_base())
+    assert trig._detect_htf_ema21_touch(kl, _htf_flat(100.0, n=10), 1) is None
+
+
+def test_row2_htf_ema21_touch_confirm():
+    """4h EMA21 触碰 + 当根金K → 当根确认，touch_ref=ema21_4h（仅 4h 白名单，
+    1h EMA21 未启用故不参与优先级竞争）"""
+    kl = _kl(*_base())
+    ts, o, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, o, o + 0.4, 99.8, 100.1, vol, qv]
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, _ = trig.detect_trigger(
+            kl, 1, flt=_flt(refs=("ema21_4h",)), htf=_htf_flat(99.9))
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["touch_ref"] == "ema21_4h"
+    assert "EMA21(4h)" in t["reason"]
+    assert t["position_ref"] == "回踩EMA21(4h)"
+
+
+def test_row5_htf_ema21_touch_upserts_pending():
+    """触碰无金K → upsert pending：touch_ref=ema21_4h，ema21 键存 4h 触点位价"""
+    kl = _kl(*_base())
+    ts, o, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, o, o + 0.4, 99.8, 100.1, vol, qv]
+    t, op = trig.detect_trigger(kl, 1, flt=_flt(refs=("ema21_4h",)), htf=_htf_flat(99.9))
+    assert t is None and op["op"] == "upsert"
+    assert op["touch_ref"] == "ema21_4h"
+    assert op["ema21"] == pytest.approx(99.9)
+
+
+def test_touch_priority_ema21_over_htf_ema21():
+    """同根 1h/4h EMA21 双触点（同点位）→ 均线取最快，标注 1h EMA21"""
+    kl = _kl(*_base())
+    e = _ema21_of(kl)
+    ts, o, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, o, e + 0.4, e - 0.1, e + 0.2, vol, qv]
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, _ = trig.detect_trigger(
+            kl, 1, flt=_flt(refs=("ema21", "ema21_4h")), htf=_htf_flat(e))
+    assert t is not None and t["touch_ref"] == "ema21"
+
+
+def test_htf_ema21_skipped_without_htf():
+    """4h K线缺失（htf=None）→ ema21_4h 静默跳过，1h 触点体系照常工作"""
+    kl = _kl(*_base())
+    e = _ema21_of(kl)
+    ts, o, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, o, e + 0.4, e - 0.1, e + 0.2, vol, qv]
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, _ = trig.detect_trigger(
+            kl, 1, flt=_flt(refs=("ema21", "ema21_4h")), htf=None)
+    assert t is not None and t["touch_ref"] == "ema21"

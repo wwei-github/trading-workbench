@@ -37,6 +37,7 @@ from typing import Optional, Tuple
 from app.services.scan_filters import (
     TOUCH_EMA144,
     TOUCH_EMA21,
+    TOUCH_EMA21_4H,
     TOUCH_EMA55,
     TOUCH_RETEST,
     TOUCH_SWING,
@@ -59,12 +60,16 @@ TREND_BREAKOUT = "trigger_trend_breakout"      # 趋势突破：破 N 根 Donchi
 PULLBACK = "trigger_pullback"          # 历史类型：两段式上线后不再产生新记录
 PULLBACK_CONFIRM = "trigger_pullback_confirm"  # 回踩触点后金K确认（当根/次根）
 
-# 回踩触点标注优先级与中文标签（docs/22 §2；与 scan_filters.ALL_TOUCH_REFS 同源顺序）
-TOUCH_ORDER = (TOUCH_RETEST, TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA55, TOUCH_EMA144)
+# 回踩触点标注优先级与中文标签（docs/22 §2；与 scan_filters.ALL_TOUCH_REFS 同源顺序；
+# 2026-10-09 加入 4h EMA21——均线取最快原则按更新频率排序：1h EMA21 > 4h EMA21 > 1h EMA55）
+TOUCH_ORDER = (
+    TOUCH_RETEST, TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55, TOUCH_EMA144,
+)
 TOUCH_LABELS = {
     TOUCH_RETEST: "突破回测位",
     TOUCH_SWING: "摆动结构位",
     TOUCH_EMA21: "EMA21",
+    TOUCH_EMA21_4H: "EMA21(4h)",
     TOUCH_EMA55: "EMA55",
     TOUCH_EMA144: "EMA144",
 }
@@ -203,6 +208,40 @@ def _detect_ema_touch(
     return ema
 
 
+def _detect_htf_ema21_touch(
+    klines: list[list], htf_klines: list[list], direction: int,
+) -> Optional[float]:
+    """4h EMA21 跨周期触碰检测（2026-10-09）。
+
+    语义：1h 信号K线（klines[-2]）影线/收盘触及 4h EMA21 水平——大周期动态
+    价值区回踩，是 1h EMA21 的跨周期放大版。触碰带语义与 _detect_ema_touch
+    完全一致（多头 low ≤ EMA ≤ close，空头对称），不带 band（同 ema21 原口径）。
+
+    不加排列/斜率门：4h 震荡（ranging）与方向冲突已被扫描端闸门（震荡过滤 +
+    方向一致门）前置过滤，此处只做触碰判定。4h EMA 取最新已收盘根
+    （htf_klines[-1] 为未收盘根，与 analyze_htf_background 同口径剔除）；
+    尾根差 ≤4h 对 21 周期 EMA 的影响可忽略，且同一 4h 根内的 1h K线共享
+    同一 4h EMA21 快照，口径自洽。
+    """
+    if len(htf_klines) < 22:
+        return None
+    closes = np.array([float(k[4]) for k in htf_klines[:-1]], dtype=float)
+    e = calc_ema(closes, 21)
+    if e is None:
+        return None
+    ema = float(e[-1])
+    if ema <= 0 or not np.isfinite(ema):
+        return None
+    close_last = float(klines[-2][4])
+    high_last = float(klines[-2][2])
+    low_last = float(klines[-2][3])
+    if direction == 1 and low_last <= ema <= close_last:
+        return ema
+    if direction == -1 and close_last <= ema <= high_last:
+        return ema
+    return None
+
+
 def _detect_retest(
     klines: list[list], direction: int, retest: Optional[dict],
     window_bars: int, band_pct: float,
@@ -308,6 +347,7 @@ def detect_trigger(
     pending: Optional[dict] = None,
     flt: Optional[ScanFilters] = None,
     retest: Optional[dict] = None,
+    htf: Optional[list] = None,
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """检测与候选方向一致的入场触发（两段式决策矩阵，docs/19 §4.1 + docs/22 触点）。
 
@@ -317,6 +357,8 @@ def detect_trigger(
     解析（env/代码默认），策略函数不读 DB。
     retest（可选）：scanner 侧活跃破轨事件快照 {price, direction, candle_open}
     （docs/22 §3.1；T1 突破触发时由 scanner 记录 breakout_events）。
+    htf（可选）：4h 原始K线（尾根未收盘，与 analyze_htf_background 同源序列）；
+    None/过短 → ema21_4h 触点静默跳过（4h 数据缺失不阻断 1h 触点体系）。
     返回 (trigger, pending_op) 二元组：
     - trigger: 命中的触发 dict（type/direction/position/touch_ref/pattern/
       breakout_pct/reason）或 None（无触发 → 观察池）；touch_ref 仅回踩确认
@@ -463,6 +505,10 @@ def detect_trigger(
             p = _detect_ema_touch(klines, direction, period, flt)
             if p is not None:
                 touches[ref] = p
+    if TOUCH_EMA21_4H in refs and htf:
+        p = _detect_htf_ema21_touch(klines, htf, direction)
+        if p is not None:
+            touches[TOUCH_EMA21_4H] = p
     touch_ref = next((r for r in TOUCH_ORDER if r in touches), None)
     touch_price = touches.get(touch_ref) if touch_ref else None
     touch_label = TOUCH_LABELS.get(touch_ref, "") if touch_ref else None

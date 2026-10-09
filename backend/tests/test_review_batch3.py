@@ -555,7 +555,7 @@ def test_actual_review_touch_ref_dimension(db):
     for g in out["groups"]:
         dims.setdefault(g["dim"], []).append((g["key"], g["count"]))
     touches = dims["回踩位置"]
-    # 固定顺序输出（空桶不占行，TOUCH_ORDER：retest>swing>ema21>ema55>ema144）
+    # 固定顺序输出（空桶不占行，TOUCH_ORDER：retest>swing>ema21>ema21_4h>ema55>ema144）
     assert touches[0] == ("突破回测位", 1)
     assert [k for k, _ in touches] == ["突破回测位", "EMA55", "EMA144", "未记录"]
     # items 携带原始值（前端可自行映射）

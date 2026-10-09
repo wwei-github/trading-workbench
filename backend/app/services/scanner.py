@@ -239,7 +239,11 @@ def detect_indicator_candidate(
     # 与 4h 冲突的活跃 pending 不可能被确认（金K 方向跟着多数决走），按方向失守过期
     if htf_res and htf_res.get("dir") and direction != htf_res["dir"]:
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
-    trig, pending_op = detect_trigger(klines, direction, pending, flt=flt, retest=retest)
+    # htf 直传触点体系（2026-10-09）：ema21_4h 跨周期触点与第 7 票/方向门共用
+    # 同一份 4h 快照，单轮单币不重复拉取
+    trig, pending_op = detect_trigger(
+        klines, direction, pending, flt=flt, retest=retest, htf=htf,
+    )
     if trig is not None:
         # T1 突破 → 破轨事件动作（docs/22 §4）：白名单过滤前记录——破轨是市场
         # 事实，触发类型白名单只决定是否产生突破信号，不影响回测触点事实源

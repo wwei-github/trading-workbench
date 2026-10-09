@@ -64,6 +64,7 @@ export default function ReviewStatsPanel() {
     retest: '突破回测位',
     swing: '摆动结构位',
     ema21: 'EMA21',
+    ema21_4h: 'EMA21(4h)',
     ema55: 'EMA55',
     ema144: 'EMA144',
   }
