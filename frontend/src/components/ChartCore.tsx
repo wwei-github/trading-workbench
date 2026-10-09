@@ -7,7 +7,7 @@
  *   （事件箭头）+ headerExtra（复盘信息面板）；数据拉取由父组件负责
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Button, Checkbox, Dropdown, Input, InputNumber, Popconfirm, Radio, Tooltip, Typography } from 'antd'
+import { Checkbox, Dropdown, Input, InputNumber, Popconfirm, Tooltip, Typography } from 'antd'
 import {
   ClearOutlined,
   DeleteOutlined,
@@ -345,6 +345,32 @@ function drawAiPosition(
   }
 }
 
+// TV 风格工具栏按钮（全工具栏统一）：无边框透明底、灰图标悬停提亮微底，
+// 激活态 = 深色渐变滑块（与周期胶囊选中态同款），紧凑圆角；antd ghost
+// 按钮边框重、色彩体系与玻璃拟态工具栏不搭，2026-10-09 全量替换
+const TV_BTN_CSS = `
+.tv-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;border:none;background:transparent;color:#8b93a7;cursor:pointer;padding:3px 8px;min-width:26px;border-radius:5px;font-size:12px;line-height:18px;font-family:inherit;transition:background .15s,color .15s;outline:none}
+.tv-btn:hover{color:#d1d4dc;background:rgba(255,255,255,0.06)}
+.tv-btn:active{background:rgba(255,255,255,0.1)}
+.tv-btn:disabled{color:#5a6172;cursor:not-allowed;background:transparent}
+.tv-btn.tv-active{background:linear-gradient(180deg,#2a3244 0%,#20273a 100%);color:#f5f7fa;font-weight:600;box-shadow:inset 0 1px 0 rgba(255,255,255,0.08),0 1px 3px rgba(0,0,0,0.35)}
+`
+
+interface TvButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  active?: boolean
+}
+
+function TvButton({ active, className, style, ...rest }: TvButtonProps) {
+  return (
+    <button
+      type="button"
+      className={`tv-btn${active ? ' tv-active' : ''}${className ? ` ${className}` : ''}`}
+      style={style}
+      {...rest}
+    />
+  )
+}
+
 export default function ChartCore({
   chartKey, watermark, label, data, from,
   ai, extraMarkers, drawOverlay, headerExtra, onUpdate, updating,
@@ -538,23 +564,12 @@ export default function ChartCore({
       low: k.low,
       close: k.close,
     }))
-    // 同实例换数据（切周期/刷新）：先记住当前可视时间范围，新数据就位后按时间
-    // 恢复位置（TV 行为：切周期视口锚定时间而非固定根数）；实例重建时为 null 走缺省
-    const oldRange = chart.timeScale().getVisibleRange()
     series.setData(candleData)
-    // 缺省显示最近约 130 根（更易读），往左滚动可看全量历史
+    // 切周期/更新后一律回到「最新K线靠右 + 预留走廊」视图（约最近 130 根）：
+    // 走廊空位（rightOffset ≈110px）保证止盈止损价格标签不遮挡K线与价格轴；
+    // 不做旧视口时间锚定——恢复范围右沿贴最后一根K线（零边距）会顶掉走廊
     const f = from ?? Math.max(0, candleData.length - 130)
     applyCorridorView(chart, containerRef.current?.clientWidth, candleData.length, f)
-    if (oldRange) {
-      const first = candleData[0]?.time
-      const last = candleData[candleData.length - 1]?.time
-      if (first != null && last != null) {
-        chart.timeScale().setVisibleRange({
-          from: Math.max(oldRange.from as number, first) as UTCTimestamp,
-          to: Math.min(oldRange.to as number, last) as UTCTimestamp,
-        })
-      }
-    }
     // 完整 OHLCV 已由 useMemo 派生（candlePoints），指标/图例同提交更新
     setLegend(null)
 
@@ -824,6 +839,7 @@ export default function ChartCore({
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 360 }}>
+      <style>{TV_BTN_CSS}</style>
       {/* 左上角悬浮层：工具栏 + 额表面板 + 图例（垂直堆叠，自适应换行） */}
       <div
         style={{
@@ -909,9 +925,9 @@ export default function ChartCore({
                 ))}
               </div>
             )}>
-            <Button size="small" ghost icon={<PlusOutlined />}>
-              指标
-            </Button>
+            <TvButton>
+              <PlusOutlined style={{ fontSize: 12 }} />指标
+            </TvButton>
           </Dropdown>
           {/* 画线工具（TV 风格手绘标注，按图表主体持久化）：点击布防、再点取消，
               Esc 取消布防，Delete 删除选中；与业务标注（三线/区域）分层共存 */}
@@ -919,59 +935,64 @@ export default function ChartCore({
             <Fragment key={t.kind}>
               {t.sep && <span style={{ width: 1, height: 16, background: '#2a2e39', margin: '0 2px' }} />}
               <Tooltip title={t.tip}>
-                <Button
-                  size="small"
-                  ghost
-                  type={activeTool === t.kind ? 'primary' : 'default'}
-                  style={{ minWidth: 26, padding: '0 6px', fontWeight: 600 }}
+                <TvButton
+                  active={activeTool === t.kind}
+                  aria-label={t.tip}
                   onClick={() => pickTool(t.kind)}>
                   {t.icon || t.label}
-                </Button>
+                </TvButton>
               </Tooltip>
             </Fragment>
           ))}
           <Tooltip title={MAGNET_TIP[magnet]}>
-            <Button
-              size="small"
-              ghost
-              type={magnet !== 'off' ? 'primary' : 'default'}
-              style={{ minWidth: 26, padding: '0 6px', fontWeight: 600 }}
-              onClick={cycleMagnet}>
+            <TvButton active={magnet !== 'off'} onClick={cycleMagnet} aria-label="磁吸切换">
               ⌖
-            </Button>
+            </TvButton>
           </Tooltip>
           <Tooltip title="删除选中画线（选中后按 Delete 亦可）">
-            <Button size="small" ghost icon={<DeleteOutlined />} onClick={deleteSelected} />
+            <TvButton aria-label="删除选中画线" onClick={deleteSelected}>
+              <DeleteOutlined />
+            </TvButton>
           </Tooltip>
           <Popconfirm title="清空本图全部画线？" okText="清空" cancelText="取消" onConfirm={clearDrawings}>
             <Tooltip title="清空全部画线">
-              <Button size="small" ghost icon={<ClearOutlined />} />
+              <TvButton aria-label="清空全部画线">
+                <ClearOutlined />
+              </TvButton>
             </Tooltip>
           </Popconfirm>
           {onIntervalChange && (
-            <Radio.Group
-              size="small"
-              value={interval ?? '1h'}
-              onChange={(e) => onIntervalChange(e.target.value)}
-              optionType="button"
-              options={
-                intervalOptions ?? [
-                  { label: '1h', value: '1h' },
-                  { label: '4h', value: '4h' },
-                ]
-              }
-            />
+            // 周期切换：TV 风格分段胶囊——深色内嵌槽 + .tv-btn 滑块（与工具栏
+            // 按钮同一套样式体系），选中项深底渐变高亮
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                background: 'rgba(10, 13, 20, 0.55)',
+                border: '1px solid rgba(66, 74, 96, 0.45)',
+                borderRadius: 7,
+                padding: 2,
+                gap: 2,
+              }}>
+              {(intervalOptions ?? [
+                { label: '1h', value: '1h' },
+                { label: '4h', value: '4h' },
+              ]).map((opt) => (
+                <TvButton
+                  key={opt.value}
+                  active={(interval ?? '1h') === opt.value}
+                  style={{ padding: '2px 12px', letterSpacing: 0.3 }}
+                  onClick={() => onIntervalChange(opt.value)}>
+                  {opt.label}
+                </TvButton>
+              ))}
+            </div>
           )}
           {onUpdate && (
             <Tooltip title="直连交易所拉取最新K线并重置缓存">
-              <Button
-                size="small"
-                ghost
-                icon={<SyncOutlined spin={updating} />}
-                loading={updating}
-                onClick={onUpdate}>
-                更新
-              </Button>
+              <TvButton disabled={updating} onClick={onUpdate} aria-label="更新K线">
+                <SyncOutlined spin={updating} />更新
+              </TvButton>
             </Tooltip>
           )}
         </div>
@@ -1129,16 +1150,14 @@ export default function ChartCore({
                     ['remove-column', '−列'],
                   ] as const
                 ).map(([op, label]) => (
-                  <Button
+                  <TvButton
                     key={op}
-                    size="small"
-                    ghost
                     style={{ fontSize: 11, padding: '0 5px' }}
                     // 阻断 mousedown 默认行为防 input 失焦先提交（编辑器卸载吞掉本 click）
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => tableOp(op)}>
                     {label}
-                  </Button>
+                  </TvButton>
                 ))}
               </div>
             </div>
