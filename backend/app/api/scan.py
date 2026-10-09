@@ -427,6 +427,12 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         weekly_breaker_ack_at=cfg.weekly_breaker_ack_at,
         atr_trail_k=(float(cfg.atr_trail_k)
                      if cfg.atr_trail_k is not None else None),
+        tp1_qty_pct_with_tp2=(float(cfg.tp1_qty_pct_with_tp2)
+                              if cfg.tp1_qty_pct_with_tp2 is not None else None),
+        tp2_qty_pct=(float(cfg.tp2_qty_pct)
+                     if cfg.tp2_qty_pct is not None else None),
+        tp1_qty_pct_no_tp2=(float(cfg.tp1_qty_pct_no_tp2)
+                            if cfg.tp1_qty_pct_no_tp2 is not None else None),
         live_initial_capital=float(cfg.live_initial_capital or 0),
         scan_filters=(cfg.scan_filters if isinstance(cfg.scan_filters, dict) else None),
         scan_filters_effective={
@@ -720,6 +726,32 @@ def update_system_config(
         if v is not None and not (0 <= v <= 20):
             raise HTTPException(status_code=400, detail="atr_trail_k 需在 0~20 之间（ATR 跟进倍数，0=关闭 ATR 腿）")
         cfg.atr_trail_k = v
+    # TP 分批比例（2026-10-09；% 值，传 null 恢复 env 默认；合计 ≤95 保证跟进腿 ≥5%）
+    if "tp1_qty_pct_with_tp2" in body.model_fields_set:
+        v = body.tp1_qty_pct_with_tp2
+        if v is not None and not (0 < v < 100):
+            raise HTTPException(status_code=400, detail="tp1_qty_pct_with_tp2 需在 0~100 % 之间（有 TP2 时 TP1 分批比例）")
+        cfg.tp1_qty_pct_with_tp2 = v
+    if "tp2_qty_pct" in body.model_fields_set:
+        v = body.tp2_qty_pct
+        if v is not None and not (0 < v < 100):
+            raise HTTPException(status_code=400, detail="tp2_qty_pct 需在 0~100 % 之间（TP2 分批比例）")
+        cfg.tp2_qty_pct = v
+    if "tp1_qty_pct_no_tp2" in body.model_fields_set:
+        v = body.tp1_qty_pct_no_tp2
+        if v is not None and not (0 < v < 100):
+            raise HTTPException(status_code=400, detail="tp1_qty_pct_no_tp2 需在 0~100 % 之间（无 TP2 时 TP1 一次止盈比例）")
+        cfg.tp1_qty_pct_no_tp2 = v
+    _eff_tp1 = float(cfg.tp1_qty_pct_with_tp2) if cfg.tp1_qty_pct_with_tp2 is not None \
+        else float(settings.TP1_QTY_PCT_WITH_TP2)
+    _eff_tp2 = float(cfg.tp2_qty_pct) if cfg.tp2_qty_pct is not None \
+        else float(settings.TP2_QTY_PCT)
+    _eff_tp1s = float(cfg.tp1_qty_pct_no_tp2) if cfg.tp1_qty_pct_no_tp2 is not None \
+        else float(settings.TP1_QTY_PCT_NO_TP2)
+    if _eff_tp1 + _eff_tp2 > 95:
+        raise HTTPException(status_code=400, detail="有 TP2 时 TP1+TP2 分批合计需 ≤95%（剩余 ≥5% 由跟进止损退出）")
+    if _eff_tp1s > 95:
+        raise HTTPException(status_code=400, detail="无 TP2 时 TP1 比例需 ≤95%（剩余 ≥5% 由跟进止损退出）")
     # 止损金额模式（2026-09-27）：pct=风险基数分档×3%（默认）/ fixed=固定 USDT 金额
     if "risk_budget_mode" in body.model_fields_set:
         v = body.risk_budget_mode

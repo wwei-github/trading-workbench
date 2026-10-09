@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # 持仓期极值 ∓ k×ATR(22,D1)，与摆动低点跟进取更紧者（只收紧不放松）。
     # 0=关闭 ATR 腿（退化为现行摆动跟进）；k 默认 3（海龟系标准）
     ATR_TRAIL_K: float = 3.0
+    # TP 分批止盈比例（2026-10-09 配置化，% 值；system_config 页面值优先，NULL 回落此处）：
+    # 有 TP2 → TP1 60% / TP2 20% / 剩余 20% 跟进；无 TP2 → TP1 80% / 剩余 20% 跟进
+    TP1_QTY_PCT_WITH_TP2: float = 60.0
+    TP2_QTY_PCT: float = 20.0
+    TP1_QTY_PCT_NO_TP2: float = 80.0
     # P-09 事件驱动执行开关（2026-10-07，docs/16）：user-data-stream 成交事件
     # 秒级触发现有结算链路 + mark price 盈亏快照；False=纯 30 分钟巡检（原行为）。
     # 30 分钟巡检永久保留兜底，本开关只控制事件流是否叠加；默认关——部署后

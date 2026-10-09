@@ -60,6 +60,9 @@ export default function TradingConfigPanel() {
         monthly_dd_stop_pct: aiConfig.monthly_dd_stop_pct ?? null,
         atr_trail_k: aiConfig.atr_trail_k ?? null,
         tp2_enabled: aiConfig.tp2_enabled ?? false,
+        tp1_qty_pct_with_tp2: aiConfig.tp1_qty_pct_with_tp2 ?? null, // % 值直存（NULL=默认 60）
+        tp2_qty_pct: aiConfig.tp2_qty_pct ?? null,
+        tp1_qty_pct_no_tp2: aiConfig.tp1_qty_pct_no_tp2 ?? null,
       })
     }
   }, [open, aiConfig, form])
@@ -98,6 +101,9 @@ export default function TradingConfigPanel() {
         monthly_dd_stop_pct: values.monthly_dd_stop_pct ?? null,
         atr_trail_k: values.atr_trail_k ?? null,
         tp2_enabled: values.tp2_enabled ?? false,
+        tp1_qty_pct_with_tp2: values.tp1_qty_pct_with_tp2 ?? null,
+        tp2_qty_pct: values.tp2_qty_pct ?? null,
+        tp1_qty_pct_no_tp2: values.tp1_qty_pct_no_tp2 ?? null,
       }
       await updateConfig(data)
       message.success('配置已保存')
@@ -392,9 +398,38 @@ export default function TradingConfigPanel() {
                 name="tp2_enabled"
                 valuePropName="checked"
                 initialValue={false}
-                tooltip="默认关闭：AI 报出的 TP2 不挂档，出场走「TP1 一次止盈 90% + 剩余 10% 跟进」。开启后：有 TP2 的单按 TP1 60% / TP2 30% / 剩余 10% 跟进分批；手动接管单不受此开关限制"
+                tooltip="默认关闭：AI 报出的 TP2 不挂档，出场走「TP1 一次止盈 80% + 剩余 20% 跟进」。开启后：有 TP2 的单按 TP1 60% / TP2 20% / 剩余 20% 跟进分批（比例可在下方三项配置）；手动接管单不受此开关限制"
               >
                 <Switch checkedChildren="启用" unCheckedChildren="关闭" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={6}>
+              <Form.Item
+                label="TP1 分批比例（有 TP2，留空=默认 60）"
+                name="tp1_qty_pct_with_tp2"
+                tooltip="有 TP2 的单 TP1 档止盈数量占开仓量的比例（%），剩余 = 100 − TP1 − TP2 由跟进止损退出；两档合计需 ≤95%"
+              >
+                <InputNumber min={1} max={99} step={1} style={{ width: '100%' }} placeholder="60" addonAfter="%" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="TP2 分批比例（留空=默认 20）"
+                name="tp2_qty_pct"
+                tooltip="有 TP2 的单 TP2 档止盈数量占开仓量的比例（%）；两档合计需 ≤95%（剩余 ≥5% 跟进）"
+              >
+                <InputNumber min={1} max={99} step={1} style={{ width: '100%' }} placeholder="20" addonAfter="%" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="TP1 止盈比例（无 TP2，留空=默认 80）"
+                name="tp1_qty_pct_no_tp2"
+                tooltip="无 TP2 的单 TP1 一次止盈数量占开仓量的比例（%），剩余由跟进止损退出；需 ≤95%"
+              >
+                <InputNumber min={1} max={99} step={1} style={{ width: '100%' }} placeholder="80" addonAfter="%" />
               </Form.Item>
             </Col>
           </Row>

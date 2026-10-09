@@ -303,11 +303,24 @@ def _run_migrations(engine):
             "ALTER TABLE system_config "
             "ADD COLUMN IF NOT EXISTS live_initial_capital NUMERIC(12, 2) NOT NULL DEFAULT 0"
         ))
-        # TP2 分批止盈开关（2026-10-08）：默认关——出场走「仅 TP1 90% + 剩余 10% 跟进」。
+        # TP2 分批止盈开关（2026-10-08）：默认关——出场走「仅 TP1 80% + 剩余 20% 跟进」。
         # 必须在下方裸 INSERT 之前执行：老库先补列（INSERT 引用该列才不炸）
         conn.execute(text(
             "ALTER TABLE system_config "
             "ADD COLUMN IF NOT EXISTS tp2_enabled BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        # TP 分批比例（2026-10-09，% 值可配）：NULL=env 默认 60/20/80
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS tp1_qty_pct_with_tp2 NUMERIC(5, 2)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS tp2_qty_pct NUMERIC(5, 2)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS tp1_qty_pct_no_tp2 NUMERIC(5, 2)"
         ))
         # 盈亏峰值列（2026-09-26）：持仓期间全程盈亏峰值，浮盈回撤 ≥0.6R 触发 AI 诊断
         conn.execute(text(

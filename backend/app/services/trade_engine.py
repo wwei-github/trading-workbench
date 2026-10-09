@@ -12,7 +12,7 @@
     2026-10-02）→ exit_reason=manual 不误标止损类；TP1/TP2 成交 → 状态迁移；
     止损挂单消失（被撤/交易所异常）→ 按当前止损价补挂（裸仓保护）；
     TP1 成交 → 止损移至成本价 ± 往返费缓冲（保本，幂等，docs/24 A1''）；
-    无 TP2 的单：TP1 止盈 90%，剩余 10% 从 TP1 起跟进止损（2026-10-08 调整）；
+    无 TP2 的单：TP1 止盈 80%，剩余 20% 从 TP1 起跟进止损（2026-10-09 调整）；
     TP2 后每次巡检跟进止损（最近3根已收盘K线极值，只收紧不放松）
 """
 import logging
@@ -85,13 +85,42 @@ def _close_side(direction: str) -> str:
     return "SELL" if direction == "long" else "BUY"
 
 
-def _tp_quantities(qty: float, tp2: float) -> tuple[float, float]:
-    """TP1/TP2 分配数量（2026-10-08 调整）：AI 给出 TP2 → 60%/30% 两档分批止盈；
-    未给出（AI 未报 / 前方无结构位程序回退清零 / 配置关闭 TP2）→ TP1 一次止盈 90%，
-    剩余 10% 从 TP1 成交起由跟进止损退出（与 TP2 后同机制）"""
+def _tp_ratio_cfg(cfg) -> tuple[float, float, float]:
+    """TP 分批比例解析（% 值，2026-10-09 配置化）：system_config 页面值优先，
+    NULL/无 cfg 回落 env 默认（settings.TP*_QTY_PCT，60/20/80）；
+    非法值（越界/两档合计>95%）回落 env 默认——API 层已拦，此处为引擎侧防线。
+    返回 (有TP2时TP1%, TP2%, 无TP2时TP1%)，剩余额一律由跟进止损退出。"""
+    def _pct(v, env_key: str) -> float:
+        if v is not None:
+            try:
+                f = float(v)
+                if 0 < f < 100:
+                    return f
+            except (TypeError, ValueError):
+                pass
+        return float(getattr(settings, env_key))
+    p1 = _pct(cfg.tp1_qty_pct_with_tp2 if cfg is not None else None,
+              "TP1_QTY_PCT_WITH_TP2")
+    p2 = _pct(cfg.tp2_qty_pct if cfg is not None else None, "TP2_QTY_PCT")
+    p1s = _pct(cfg.tp1_qty_pct_no_tp2 if cfg is not None else None,
+               "TP1_QTY_PCT_NO_TP2")
+    if p1 + p2 > 95.0:
+        p1 = float(settings.TP1_QTY_PCT_WITH_TP2)
+        p2 = float(settings.TP2_QTY_PCT)
+    if p1s > 95.0:
+        p1s = float(settings.TP1_QTY_PCT_NO_TP2)
+    return p1, p2, p1s
+
+
+def _tp_quantities(qty: float, tp2: float,
+                   p1: float = 60.0, p2: float = 20.0, p1s: float = 80.0) -> tuple[float, float]:
+    """TP1/TP2 分配数量（比例 % 值由 _tp_ratio_cfg 从 system_config/env 解析）：
+    AI 给出 TP2 → TP1 p1% / TP2 p2% 两档分批止盈，剩余额跟进；
+    未给出（AI 未报 / 前方无结构位程序回退清零 / 配置关闭 TP2）
+    → TP1 一次止盈 p1s%，剩余额从 TP1 成交起由跟进止损退出（与 TP2 后同机制）"""
     if tp2 and tp2 > 0:
-        return qty * 0.6, qty * 0.3
-    return qty * 0.9, 0.0
+        return qty * p1 / 100, qty * p2 / 100
+    return qty * p1s / 100, 0.0
 
 
 def _ai_snapshot(a: AIAnalysis) -> dict:
@@ -207,7 +236,7 @@ def _attempt_open(
     tp1 = float(a.take_profit_1)
     tp2 = float(a.take_profit_2 or 0)
     # TP2 分批止盈开关（2026-10-08，交易配置页）：默认关闭——AI 报出的 TP2 不挂档，
-    # 出场走「仅 TP1 90% + 剩余 10% 跟进」；手动接管单不受此开关限制（显式输入）
+    # 出场走「仅 TP1 80% + 剩余 20% 跟进」；手动接管单不受此开关限制（显式输入）
     if not cfg.tp2_enabled:
         tp2 = 0
     try:
@@ -510,7 +539,8 @@ def _attempt_open(
         # 开完仓才挂 TP1 被交易所拒单，会走紧急撤单+平仓，且该失败不落记录，
         # 候选每小时重试"开仓→拒单→平仓"空转（docs/07 §8-A1）。TP2 本就有
         # min_qty 检查（不足时静默跳过该档），TP1 是主止盈档、缺它无意义
-        q1_pre, _ = _tp_quantities(qty, tp2)
+        p1, p2, p1s = _tp_ratio_cfg(cfg)
+        q1_pre, _ = _tp_quantities(qty, tp2, p1, p2, p1s)
         qty_tp1_pre = trader.round_qty(symbol, q1_pre)
         if qty_tp1_pre < f["min_qty"]:
             logger.info(
@@ -555,7 +585,7 @@ def _attempt_open(
         try:
             sl_order = trader.stop_market_close(
                 symbol, close_side, trader.round_price(symbol, sl))
-            q1, q2 = _tp_quantities(qty, tp2)
+            q1, q2 = _tp_quantities(qty, tp2, p1, p2, p1s)
             qty_tp1 = trader.round_qty(symbol, q1)
             qty_tp2 = trader.round_qty(symbol, q2)
             tp1_order = trader.take_profit_reduce(
@@ -2045,7 +2075,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                     rec.status = "TP1_HIT"
                     _move_sl_breakeven(db, rt, rec, open_ids, fee_rate)  # 用户规则：TP1 后止损移至保本价（成本价±往返费缓冲）
                     if not rec.tp2:
-                        # 无 TP2：TP1 止盈 90% 后剩余仓即启用跟进止损（与 TP2 后同机制）
+                        # 无 TP2：TP1 止盈 80% 后剩余仓即启用跟进止损（与 TP2 后同机制）
                         _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
                     db.commit()
                     handled += 1
@@ -2508,7 +2538,8 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
                 logger.error("导入 %s：新 SL 挂单失败且原价恢复也失败，仓位暂无止损保护！", symbol)
         raise
     f = trader.filters(symbol)
-    qty_tp1, qty_tp2 = _tp_quantities(qty, tp2)
+    _p1, _p2, _p1s = _tp_ratio_cfg(_adopt_cfg)
+    qty_tp1, qty_tp2 = _tp_quantities(qty, tp2, _p1, _p2, _p1s)
     tp1_order = None
     tp2_order = None
     if qty_tp1 >= f["min_qty"]:

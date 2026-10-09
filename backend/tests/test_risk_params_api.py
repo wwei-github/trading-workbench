@@ -161,6 +161,33 @@ def test_tp2_enabled_toggle(client):
     assert http.get("/api/scans/config").json()["tp2_enabled"] is False
 
 
+def test_tp_qty_ratio_config(client):
+    """TP 分批比例（2026-10-09 配置化）：默认 None → PUT 回读一致；
+    越界/两档合计>95% 拒绝（跟进腿 ≥5% 铁律）；传 null 恢复 env 默认"""
+    http, _db = client
+    body = http.get("/api/scans/config").json()
+    assert body["tp1_qty_pct_with_tp2"] is None
+    assert body["tp2_qty_pct"] is None
+    assert body["tp1_qty_pct_no_tp2"] is None
+
+    assert http.put("/api/scans/config", json={
+        "tp1_qty_pct_with_tp2": 55, "tp2_qty_pct": 25, "tp1_qty_pct_no_tp2": 70,
+    }).status_code == 200
+    b = http.get("/api/scans/config").json()
+    assert b["tp1_qty_pct_with_tp2"] == 55
+    assert b["tp2_qty_pct"] == 25
+    assert b["tp1_qty_pct_no_tp2"] == 70
+
+    # 两档合计 >95 拒绝（新值 80 + 库里 TP2 25 = 105）
+    assert http.put("/api/scans/config", json={"tp1_qty_pct_with_tp2": 80}).status_code == 400
+    # 单值越界拒绝
+    assert http.put("/api/scans/config", json={"tp1_qty_pct_no_tp2": 100}).status_code == 400
+    assert http.put("/api/scans/config", json={"tp2_qty_pct": 0}).status_code == 400
+    # 传 null 恢复 env 默认
+    assert http.put("/api/scans/config", json={"tp1_qty_pct_with_tp2": None}).status_code == 200
+    assert http.get("/api/scans/config").json()["tp1_qty_pct_with_tp2"] is None
+
+
 @pytest.mark.parametrize("field,value", [
     ("min_recommendation", 101),
     ("min_recommendation", -1),

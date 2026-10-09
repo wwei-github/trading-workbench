@@ -194,7 +194,7 @@ class SystemConfigOut(BaseModel):
     ai_configured: bool  # 后端是否已配置 AI_API_KEY（不返回 key 本身）
     ai_pipeline_enabled: bool = False  # Agent 管线开关
     dual_judge_enabled: bool = True  # 双评委辩论（P2，2026-09-15 起默认开）
-    tp2_enabled: bool = False  # TP2 分批止盈开关（2026-10-08 默认关：仅 TP1 90%+剩余跟进）
+    tp2_enabled: bool = False  # TP2 分批止盈开关（2026-10-08 默认关：仅 TP1 80%+剩余跟进）
 
     # 自定义策略提示词
     strategy_prompt_enabled: bool
@@ -260,6 +260,10 @@ class SystemConfigOut(BaseModel):
     monthly_breaker_ack_at: Optional[datetime] = None  # 月熔断人工确认时刻（只读，ack 端点写）
     weekly_breaker_ack_at: Optional[datetime] = None  # 周减速人工确认时刻（只读，ack 端点写，2026-10-07）
     atr_trail_k: Optional[float] = None               # ATR 跟进倍数（默认 3；0=关 ATR 腿，docs/13 #5）
+    # TP 分批比例（2026-10-09，% 值；NULL=env 默认 60/20/80，剩余自动跟进）
+    tp1_qty_pct_with_tp2: Optional[float] = None      # 有 TP2 时 TP1 分批比例 %
+    tp2_qty_pct: Optional[float] = None               # TP2 分批比例 %
+    tp1_qty_pct_no_tp2: Optional[float] = None        # 无 TP2 时 TP1 一次止盈比例 %
 
     # 初始资金（2026-09-26）：正式网主账号首次入金，资金划转面板展示口径
     live_initial_capital: float = 0
@@ -344,6 +348,10 @@ class SystemConfigUpdate(BaseModel):
     weekly_dd_stop_pct: Optional[float] = None
     monthly_dd_stop_pct: Optional[float] = None
     atr_trail_k: Optional[float] = None
+    # TP 分批比例（2026-10-09；% 值，传 null 恢复 env 默认；两档合计 ≤95 剩余跟进）
+    tp1_qty_pct_with_tp2: Optional[float] = None
+    tp2_qty_pct: Optional[float] = None
+    tp1_qty_pct_no_tp2: Optional[float] = None
 
     # 初始资金（2026-09-26）：正式网主账号首次入金，资金划转面板展示口径（≥0）
     live_initial_capital: Optional[float] = None

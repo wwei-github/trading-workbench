@@ -72,11 +72,15 @@ def _resolve_params(overrides: Optional[dict]) -> dict:
 
 
 def _tp_quantities(tp2: float) -> tuple[float, float, float]:
-    """分批数量（生产 _tp_quantities 铁律，不开放配置；2026-10-08 同步 60/30/10）：
-    有 TP2 → TP1 60% / TP2 30% / 剩 10% 跟进；无 → TP1 90% / 剩 10% 跟进。"""
+    """分批数量（生产 _tp_quantities 同口径，2026-10-09 起页面可配——回测基线
+    取 env 默认比例，与生产出厂默认一致；比例存 DB 的页面覆盖不进回测）：
+    有 TP2 → TP1 60% / TP2 20% / 剩 20% 跟进；无 → TP1 80% / 剩 20% 跟进。"""
     if tp2 and tp2 > 0:
-        return 0.60, 0.30, 0.10
-    return 0.90, 0.0, 0.10
+        q1 = float(getattr(config.settings, "TP1_QTY_PCT_WITH_TP2", 60.0)) / 100
+        q2 = float(getattr(config.settings, "TP2_QTY_PCT", 20.0)) / 100
+        return q1, q2, round(1.0 - q1 - q2, 6)
+    q1 = float(getattr(config.settings, "TP1_QTY_PCT_NO_TP2", 80.0)) / 100
+    return q1, 0.0, round(1.0 - q1, 6)
 
 
 def _atr_series_daily(daily_bars: list, period: int) -> list[float]:

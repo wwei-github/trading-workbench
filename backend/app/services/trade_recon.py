@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 # TP 分批回退比例：仅供**旧行** raw 缺分批数量时按开仓时点规则估算
 # （2026-10-08 前：有 TP2 → TP1 50%/TP2 25%、无 TP2 → TP1 75%；之后开仓行
-# raw 必带计划量不走此回退，新规则 60%/30%、90% 见 trade_engine._tp_quantities）：
+# raw 必带计划量不走此回退，新规则 60%/20%、80% 见 trade_engine._tp_quantities）：
 _TP1_RATIO_WITH_TP2, _TP2_RATIO_WITH_TP2 = 0.5, 0.25
 _TP1_RATIO_NO_TP2 = 0.75
 # TP1 实际成交数量 vs 计划分批的容差（超出记 gap）

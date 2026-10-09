@@ -225,8 +225,8 @@ def build_facts(db: Session, rec) -> dict:
     peak = float(rec.peak_total_pnl or 0)
 
     # 剩余仓位比例：与 event_executor.remaining_qty 同源——raw 计划分批量精确推导
-    # （新行），旧行缺 raw 按 50/25/75 状态回退。2026-10-08 分批调整为 60/30/10 后
-    # 不能再按状态硬编码（新行 TP1_HIT 剩 40%、TP2_HIT 剩 10%）
+    # （新行），旧行缺 raw 按 50/25/75 状态回退。2026-10-09 分批调整为 60/20/20 后
+    # 不能再按状态硬编码（新行 TP1_HIT 剩 40%、TP2_HIT 剩 20%）
     qty_total = float(rec.qty or 0)
     remaining_ratio = (remaining_qty(rec) / qty_total) if qty_total > 0 else 1.0
 

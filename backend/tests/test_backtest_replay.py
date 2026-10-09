@@ -262,7 +262,7 @@ def test_tp2_clamp_to_tp1():
 
 
 def test_tp2_split_quantities():
-    """有 TP2：tp1 60% / tp2 30% / 跟进 10%（生产 _tp_quantities，2026-10-08 调整）"""
+    """有 TP2：tp1 60% / tp2 20% / 跟进 20%（生产 _tp_quantities，2026-10-09 调整）"""
     d1 = daily(atr=0.1)
     r = replay_exit("long", E, S, TP1, TP2,
                     kb((113.0, 100.5), (114.0, 109.0), (110.0, 109.5)),
@@ -285,18 +285,18 @@ def test_tp2_split_quantities_v2():
     if "tp1" in qty:
         assert qty["tp1"] == pytest.approx(0.60)
     if "tp2" in qty:
-        assert qty["tp2"] == pytest.approx(0.30)
+        assert qty["tp2"] == pytest.approx(0.20)
 
 
 def test_no_tp2_split_quantities():
-    """无 TP2：TP1 90% / 跟进 10%（2026-10-08 调整）"""
+    """无 TP2：TP1 80% / 跟进 20%（2026-10-09 调整）"""
     r = replay_exit("long", E, S, TP1, 0.0,
                     kb((108.0, 99.5), (104.0, 100.0, 100.05)))
-    # bar1 low 100.0 ≤ be 100.1 → trail_tp1 出 10%
+    # bar1 low 100.0 ≤ be 100.1 → trail_tp1 出 20%
     names = [l["name"] for l in r["legs"]]
     qty = {l["name"]: l["qty_pct"] for l in r["legs"]}
     assert names == ["tp1", "trail_tp1"]
-    assert qty["tp1"] == pytest.approx(0.90) and qty["trail_tp1"] == pytest.approx(0.10)
+    assert qty["tp1"] == pytest.approx(0.80) and qty["trail_tp1"] == pytest.approx(0.20)
 
 
 def test_fee_accounting():
