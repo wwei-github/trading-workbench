@@ -182,6 +182,23 @@ SHADOW_FEATURES: dict[str, ShadowFeature] = {
     )
 }
 
+# 预注册开庭日（docs/14 §七 时间锁，2026-10-10 汇总成表）：打标上线/标准卡锁定
+# 日 + 评估周期。到期前即使样本达标也只算「达标待期」——§八 人工裁决不得提前
+# （时间窗防的是单一行情 regime 的自相关样本，与样本量正交，docs/16 S-01「不提前」）。
+# None = 到量即判卡（SPRT/decided 门槛，无日历窗，样本达标即可开庭）。
+COURT_DATES: dict[str, Optional[str]] = {
+    "CARD-01": "2026-10-18",  # 打标上线 10-04 + 14 天
+    "CARD-02": "2026-10-19",  # 打标上线 10-05 + 14 天
+    "CARD-03": "2026-10-25",  # 打标上线 10-04 + 21 天（regime 切换慢）
+    "CARD-04": "2026-10-19",  # 打标上线 10-05 + 14 天
+    "CARD-05": None,          # decided ≥30 且 saved:injured ≥4:1，到量即判
+    "CARD-06": None,          # decided ≥60 且 ΣΔR>0 且被扫<45%，到量即判
+    "CARD-07": None,          # SPRT 早停通道，跨界即终局（落锁后仍走 §八）
+    "CARD-08": "2026-10-21",  # 锁定 10-07 + 14 天
+    "CARD-09": "2026-11-05",  # REC70_START(10-08) + 28 天（评估仅计 closed_at ≥ REC70_START）
+    "CARD-10": "2026-10-22",  # 锁定 10-08 + 14 天
+}
+
 
 # ── oi_conf（CARD-02，AI 侧，docs/14 §十清单4）──────────────────────────
 
@@ -1287,6 +1304,11 @@ def build_report(db, window_days: int = 30) -> list[dict]:
             # 达标判定：有效归因样本 ≥ 卡最小样本（docs/14 §七 预注册后不可回调）
             "sufficient": _bucket_stats([r for rows in buckets.values() for r in rows])["counted"] >= feat.min_sample,
         })
+    # 开庭日期感知（2026-10-10）：每卡带预注册开庭日（docs/14 §七 时间锁），
+    # 前端据此三态——样本不足=观察中 / 达标未到期=达标·开庭待期 / 到期=可开庭。
+    # 统一在出口注入，五条组装分支免逐个接线
+    for card in out:
+        card["court_date"] = COURT_DATES.get(card.get("card"))
     return out
 
 

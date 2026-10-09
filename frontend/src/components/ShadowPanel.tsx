@@ -110,6 +110,35 @@ function SeqTag({ seq }: { seq: ShadowFeatureReport['sequential'] }) {
   )
 }
 
+// 达标状态标签三态（2026-10-10 开庭日期感知，docs/14 §七 时间锁）：
+// 样本不足 = 观察中（橙）；样本达标但未到预注册开庭日 = 达标·MM-DD 开庭（蓝，
+// §八 人工裁决不得提前——时间窗防单一行情 regime 的自相关样本，与样本量正交）；
+// 达标且到期（或无日历窗的到量即判卡 court_date=null）= 可开庭（绿）
+function SufficiencyTag({ report, count }: { report: ShadowFeatureReport; count: number }) {
+  if (!report.sufficient) {
+    return <Tag color="orange">观察中 {count}/{report.min_sample}</Tag>
+  }
+  const court = report.court_date
+  if (court) {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const days = Math.round((new Date(`${court}T00:00:00`).getTime() - today.getTime()) / 86_400_000)
+    if (days > 0) {
+      return (
+        <Tooltip title={`预注册开庭日 ${court}（docs/14 §七 时间锁）：到期前不进人工裁决，样本继续累积覆盖更多行情阶段`}>
+          <Tag color="blue">达标 · {court.slice(5)} 开庭（剩 {days} 天）</Tag>
+        </Tooltip>
+      )
+    }
+    return (
+      <Tooltip title={`预注册开庭日 ${court} 已到：可按 docs/14 §八 流程人工裁决（快照 → 标准卡核对 → 拍板）`}>
+        <Tag color="green">可开庭</Tag>
+      </Tooltip>
+    )
+  }
+  return <Tag color="green">可开庭</Tag>
+}
+
 function FeatureCard({ report }: { report: ShadowFeatureReport }) {
   const base = report.baseline
 
@@ -179,9 +208,7 @@ function FeatureCard({ report }: { report: ShadowFeatureReport }) {
           <Tooltip title={`预注册标准卡 ${report.card}：口径与最小样本预注册后不可回调（docs/14 §七）`}>
             <Tag color="geekblue">{report.card}</Tag>
           </Tooltip>
-          {report.sufficient
-            ? <Tag color="green">样本达标（{report.min_sample}）</Tag>
-            : <Tag color="orange">观察中 {base.counted}/{report.min_sample}</Tag>}
+          <SufficiencyTag report={report} count={base.counted ?? 0} />
           <SeqTag seq={report.sequential} />
         </Space>
       }
@@ -254,9 +281,7 @@ function ProtectFeatureCard({ report }: { report: ShadowFeatureReport }) {
           <Tooltip title={`预注册标准卡 ${report.card}：反事实重放口径（docs/15 §五）——ΣΔR>0 且 saved:injured 比达标才可升格`}>
             <Tag color="geekblue">{report.card}</Tag>
           </Tooltip>
-          {report.sufficient
-            ? <Tag color="green">样本达标（{report.min_sample}）</Tag>
-            : <Tag color="orange">观察中 {decided}/{report.min_sample}</Tag>}
+          <SufficiencyTag report={report} count={decided} />
         </Space>
       }
       extra={<Text type="secondary" style={{ fontSize: 12 }}>近 {report.window_days} 天 · 正式网</Text>}
@@ -331,9 +356,7 @@ function ReentryFeatureCard({ report }: { report: ShadowFeatureReport }) {
           <Tooltip title={`预注册标准卡 ${report.card}：止损后 24h 回开仓价为「续走」。P(续走|结构完好) ≥40% 才进 #12 预注册回放，<40% 直接关闭（docs/13 #12）`}>
             <Tag color="geekblue">{report.card}</Tag>
           </Tooltip>
-          {report.sufficient
-            ? <Tag color="green">样本达标（{report.min_sample}）</Tag>
-            : <Tag color="orange">观察中 {base.n}/{report.min_sample}</Tag>}
+          <SufficiencyTag report={report} count={base.n} />
           <SeqTag seq={report.sequential} />
         </Space>
       }
