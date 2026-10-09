@@ -17,7 +17,7 @@ import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts'
 import { scanApi } from '../api/scan'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { SCHEME_UP_DOWN } from '../utils/scheme'
-import { fmtPrice } from './klineShared'
+import { fmtPrice, pctDelta, rrRatio } from './klineShared'
 import { dayjs } from '../utils/dayjs'
 import ChartCore, { type OverlayCtx } from './ChartCore'
 import type { AIAnalysis, KlineData, TradeKlineData, TradeKlineEvent } from '../types'
@@ -142,7 +142,7 @@ function drawReplayZones(data: TradeKlineData, colorScheme: ColorScheme, ctx: Ov
     line.setAttribute('x2', String(rightEdge))
     line.setAttribute('y2', String(y))
     line.setAttribute('stroke', color)
-    line.setAttribute('stroke-width', '1')
+    line.setAttribute('stroke-width', '1.5')
     line.setAttribute('shape-rendering', 'crispEdges')
     if (dashed) line.setAttribute('stroke-dasharray', '5,3')
     svg.appendChild(line)
@@ -178,9 +178,10 @@ function drawReplayZones(data: TradeKlineData, colorScheme: ColorScheme, ctx: Ov
     return tagY
   }
   drawLine(data.entry_price, colorEntry, isL ? '开多' : '开空', false)
-  drawLine(data.stop_loss, colorSL, '止损', true)
-  drawLine(data.tp1, colorTP, '止盈1', true)
-  if (hasTP2) drawLine(data.tp2, colorTP, '止盈2', true)
+  const ep = data.entry_price
+  drawLine(data.stop_loss, colorSL, data.stop_loss != null ? `止损 ${pctDelta(ep, data.stop_loss)}` : '止损', false)
+  drawLine(data.tp1, colorTP, data.tp1 != null ? `止盈1 ${pctDelta(ep, data.tp1)}` : '止盈1', false)
+  if (hasTP2) drawLine(data.tp2, colorTP, `止盈2 ${pctDelta(ep, data.tp2!)}`, false)
 
   // 现止损（跟踪移动后的最新位置）：与初始止损不同才加画（琥珀色区分）；
   // 价签与已有标签同高时上下错位（保本止损=开仓价的场景）
@@ -190,7 +191,42 @@ function drawReplayZones(data: TradeKlineData, colorScheme: ColorScheme, ctx: Ov
     if (cy != null) {
       const clash = tagYs.find((uy) => Math.abs(uy - cy) < TAG_GAP)
       const dy = clash == null ? 0 : clash > cy ? -TAG_SHIFT : TAG_SHIFT
-      drawLine(curSl, CUR_SL_COLOR, '现止损', true, dy)
+      drawLine(curSl, CUR_SL_COLOR, `现止损 ${pctDelta(ep, curSl)}`, false, dy)
+    }
+  }
+
+  // RR 徽标（TV 仓位框 riskRewardRatio，与 ChartCore AI 标注同款）：
+  // 区域水平居中、入场↔止盈1（缺则入场↔止损）垂直居中
+  const rr = rrRatio(ep, data.stop_loss, data.tp1)
+  if (rr != null) {
+    const anchor = data.tp1 ?? data.stop_loss
+    const yA = series.priceToCoordinate(anchor!)
+    if (yA != null) {
+      const text = `RR 1:${rr.toFixed(1)}`
+      const ctx2 = document.createElement('canvas').getContext('2d')!
+      ctx2.font = 'bold 10px monospace'
+      const boxW = ctx2.measureText(text).width + 10
+      const boxH = 15
+      const cx = x0 + (rightEdge - x0) / 2
+      const cy = (yEntry + yA) / 2
+      const rect = el('rect')
+      rect.setAttribute('x', String(cx - boxW / 2))
+      rect.setAttribute('y', String(cy - boxH / 2))
+      rect.setAttribute('width', String(boxW))
+      rect.setAttribute('height', String(boxH))
+      rect.setAttribute('fill', 'rgba(13, 17, 27, 0.85)')
+      rect.setAttribute('stroke', '#2a2e39')
+      rect.setAttribute('rx', '3')
+      svg.appendChild(rect)
+      const t = el('text')
+      t.setAttribute('x', String(cx - boxW / 2 + 5))
+      t.setAttribute('y', String(cy + 3.5))
+      t.setAttribute('fill', '#d1d4dc')
+      t.setAttribute('font-size', '10')
+      t.setAttribute('font-family', 'monospace')
+      t.setAttribute('font-weight', 'bold')
+      t.textContent = text
+      svg.appendChild(t)
     }
   }
 }

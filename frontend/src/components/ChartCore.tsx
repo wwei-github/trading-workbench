@@ -47,6 +47,8 @@ import {
   fmtTime,
   fmtVol,
   GLASS,
+  pctDelta,
+  rrRatio,
 } from './klineShared'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { SCHEME_UP_DOWN } from '../utils/scheme'
@@ -181,7 +183,9 @@ interface LegendData {
   inds: LegendIndicator[]
 }
 
-// AI 仓位价格线 + 区域色块（TradingView 仓位标注风格，从 KlineChart 原样迁入）
+// AI 仓位价格线 + 区域色块（TradingView 仓位预演框风格，数据驱动只读版）：
+// 区域从最新K线延伸到右缘、入场/止损/止盈实线 + 百分比对价 + RR 徽标。
+// 语义上与画线工具的多/空预演互补：这是已发生的 AI 决策（不可拖拽，以 DB 为真源）
 function drawAiPosition(
   ctx: OverlayCtx, ai: AIAnalysis | undefined, label: string, colorScheme: ColorScheme,
 ) {
@@ -202,13 +206,19 @@ function drawAiPosition(
   const colorTP2 = up
   const labelEntry = isLong ? '做多' : '做空'
 
-  // 固定标注宽度：放在右侧价格轴左边，向左延伸
+  // 区域左边界 = 最新K线的 x（TV 仓位框从放置点延伸到右缘；无数据回退固定 140px）
   const MARK_W = 140
   const fullWidth = container.clientWidth || 520
   const height = container.clientHeight || CHART_HEIGHT_FALLBACK
   const priceScaleWidth = chart.priceScale('right').width()
   const rightEdge = Math.max(MARK_W, fullWidth - priceScaleWidth)
-  const x0 = rightEdge - MARK_W // 线条左端
+  let x0 = rightEdge - MARK_W
+  const candles = series.data() as CandlestickData[]
+  const lastTime = candles.length ? candles[candles.length - 1].time : null
+  if (lastTime != null) {
+    const cx = chart.timeScale().timeToCoordinate(lastTime as UTCTimestamp)
+    if (cx != null) x0 = Math.max(0, Math.min(cx, rightEdge - 20))
+  }
   const x1 = rightEdge // 线条右端（紧贴价格轴）
   svg.setAttribute('width', String(fullWidth))
   svg.setAttribute('height', String(height))
@@ -218,7 +228,7 @@ function drawAiPosition(
   const yEntry = series.priceToCoordinate(ai.entry_price)
   if (yEntry == null) return
 
-  // 先画区域色块（固定宽度，右侧）
+  // 先画区域色块（从最新K线到价格轴）
   const zone = (p1: number, p2: number, fill: string) => {
     const y1 = series.priceToCoordinate(p1)
     const y2 = series.priceToCoordinate(p2)
@@ -226,7 +236,7 @@ function drawAiPosition(
     const r = el('rect')
     r.setAttribute('x', String(x0))
     r.setAttribute('y', String(Math.min(y1, y2)))
-    r.setAttribute('width', String(MARK_W))
+    r.setAttribute('width', String(x1 - x0))
     r.setAttribute('height', String(Math.abs(y2 - y1)))
     r.setAttribute('fill', fill)
     svg.appendChild(r)
@@ -238,17 +248,16 @@ function drawAiPosition(
   const hasTP2 = tp2 != null && tp2 > 0
   if (ai.take_profit_1 != null && hasTP2) zone(ai.take_profit_1, tp2!, 'rgba(38, 166, 154, 0.08)')
 
-  // 画水平线 + 右侧标签（text 已含价格，如「止损 99.1234」）
-  const drawLine = (y: number, color: string, text: string, dashed: boolean) => {
+  // 画水平线 + 右侧标签（text 已含价格与百分比对价，如「止损 99.1234 -3.1%」）
+  const drawLine = (y: number, color: string, text: string) => {
     const line = el('line')
     line.setAttribute('x1', String(x0))
     line.setAttribute('y1', String(y))
     line.setAttribute('x2', String(x1))
     line.setAttribute('y2', String(y))
     line.setAttribute('stroke', color)
-    line.setAttribute('stroke-width', '1')
+    line.setAttribute('stroke-width', '1.5')
     line.setAttribute('shape-rendering', 'crispEdges')
-    if (dashed) line.setAttribute('stroke-dasharray', '5,3')
     svg.appendChild(line)
 
     const font = 'bold 10px monospace'
@@ -279,22 +288,57 @@ function drawAiPosition(
     svg.appendChild(txt)
   }
 
+  const ep = ai.entry_price
   // 入场线（实线，带方向标签）
-  drawLine(yEntry, colorEntry, `${labelEntry} ${fmtPrice(ai.entry_price)}`, false)
-  // 止损线（虚线）
+  drawLine(yEntry, colorEntry, `${labelEntry} ${fmtPrice(ep)}`)
+  // 止损/止盈线（实线 + 相对入场的百分比对价，对齐 TV 仓位框 offset 标签）
   if (ai.stop_loss != null) {
     const ySL = series.priceToCoordinate(ai.stop_loss)
-    if (ySL != null) drawLine(ySL, colorSL, `止损 ${fmtPrice(ai.stop_loss)}`, true)
+    if (ySL != null) drawLine(ySL, colorSL, `止损 ${fmtPrice(ai.stop_loss)} ${pctDelta(ep, ai.stop_loss)}`)
   }
-  // 止盈1线（虚线）
   if (ai.take_profit_1 != null) {
     const yTP1 = series.priceToCoordinate(ai.take_profit_1)
-    if (yTP1 != null) drawLine(yTP1, colorTP1, `止盈1 ${fmtPrice(ai.take_profit_1)}`, true)
+    if (yTP1 != null) drawLine(yTP1, colorTP1, `止盈1 ${fmtPrice(ai.take_profit_1)} ${pctDelta(ep, ai.take_profit_1)}`)
   }
-  // 止盈2线（虚线；tp2 为 0/null 时不绘制）
+  // 止盈2线（实线；tp2 为 0/null 时不绘制）
   if (hasTP2) {
     const yTP2 = series.priceToCoordinate(tp2!)
-    if (yTP2 != null) drawLine(yTP2, colorTP2, `止盈2 ${fmtPrice(tp2!)}`, true)
+    if (yTP2 != null) drawLine(yTP2, colorTP2, `止盈2 ${fmtPrice(tp2!)} ${pctDelta(ep, tp2!)}`)
+  }
+
+  // RR 徽标（TV 仓位框 riskRewardRatio）：区域水平居中、入场↔止盈1 垂直居中
+  const rr = rrRatio(ep, ai.stop_loss, ai.take_profit_1)
+  if (rr != null && ai.take_profit_1 != null) {
+    const yTP1 = series.priceToCoordinate(ai.take_profit_1)
+    if (yTP1 != null) {
+      const text = `RR 1:${rr.toFixed(1)}`
+      const font = 'bold 10px monospace'
+      const ctx2 = document.createElement('canvas').getContext('2d')!
+      ctx2.font = font
+      const tw = ctx2.measureText(text).width
+      const boxW = tw + 10
+      const boxH = 15
+      const cx = (x0 + x1) / 2
+      const cy = (yEntry + yTP1) / 2
+      const rect = el('rect')
+      rect.setAttribute('x', String(cx - boxW / 2))
+      rect.setAttribute('y', String(cy - boxH / 2))
+      rect.setAttribute('width', String(boxW))
+      rect.setAttribute('height', String(boxH))
+      rect.setAttribute('fill', 'rgba(13, 17, 27, 0.85)')
+      rect.setAttribute('stroke', '#2a2e39')
+      rect.setAttribute('rx', '3')
+      svg.appendChild(rect)
+      const t = el('text')
+      t.setAttribute('x', String(cx - boxW / 2 + 5))
+      t.setAttribute('y', String(cy + 3.5))
+      t.setAttribute('fill', '#d1d4dc')
+      t.setAttribute('font-size', '10')
+      t.setAttribute('font-family', 'monospace')
+      t.setAttribute('font-weight', 'bold')
+      t.textContent = text
+      svg.appendChild(t)
+    }
   }
 }
 

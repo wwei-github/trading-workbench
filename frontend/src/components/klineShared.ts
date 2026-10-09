@@ -41,6 +41,17 @@ export const fmtTime = (sec: number) => {
   // K 线时间戳为 UTC epoch，统一转北京时区展示（与其他面板一致）
   return dayjs.unix(sec).tz(BJ).format('MM-DD HH:mm')
 }
+// 相对入场价的百分比对价（SL -3.1% / TP +4.5%，带符号一位小数）
+export const pctDelta = (entry: number, p: number) => {
+  const d = ((p - entry) / entry) * 100
+  return `${d > 0 ? '+' : ''}${d.toFixed(1)}%`
+}
+// 盈亏比 RR = |TP1-入场| / |入场-SL|（风险为 0 或缺侧返回 null 不显示）
+export const rrRatio = (entry: number, sl: number | null, tp: number | null): number | null => {
+  if (sl == null || tp == null) return null
+  const risk = Math.abs(entry - sl)
+  return risk > 1e-12 ? Math.abs(tp - entry) / risk : null
+}
 
 // 悬浮玻璃拟态面板（工具栏/图例共用）
 export const GLASS: CSSProperties = {
