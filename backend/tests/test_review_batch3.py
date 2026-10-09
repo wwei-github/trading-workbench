@@ -334,14 +334,15 @@ def test_htf_constraint_veto_snapshot():
     from app.services.strategy.technical import enforce_htf_constraint
 
     def _htf_klines(state):
-        # analyze_htf_background 要求 ≥ EMA55+12=67 根（内部取 k[4] 收盘价），
-        # 线性爬升 +2/根 → EMA21/55 间距远超 1%（strong）且 ADX≥20 → bullish
+        # analyze_htf_background 要求 ≥155 已收盘根（EMA144 种子+余量），
+        # 线性爬升 +2/根 → EMA21/55 交叉早已发生（趋势后期）且宏观同侧
+        #（EMA55>EMA144）→ 锁逆势档；ADX≥20 → bullish
         base = 100.0
         drift = 2.0 if state == "bullish" else -2.0
         return [
             [i * 3600_000, base + drift * i, base + drift * i,
              base + drift * i, base + drift * i, 1000.0]
-            for i in range(80)
+            for i in range(170)
         ]
 
     # 强多头背景 + AI 开空 → 强制 skip + 快照
@@ -428,6 +429,29 @@ def test_actual_review_tactic_dimension(db):
     # 逐笔 items 带出战法标注（快照自持）
     named = [i for i in out["items"] if i["tactic_name"] == "EMA20回踩做多"]
     assert len(named) == 2 and named[0]["tactic_reason"] == "回踩企稳"
+
+
+def test_actual_review_htf_phase_dimension(db):
+    """4h趋势期维度（2026-10-09 r2，docs/17）：launch/mid/late/exhausted 有序
+    四桶 + 未知兜底，验证「仅前中后开单」矩阵的分组贡献；旧行 NULL→未知"""
+    from app.services.actual_review import build_actual_review
+
+    db.add(_closed_rec({"recommendation": 70, "htf_phase": "exhausted"}))
+    db.add(_closed_rec({"recommendation": 65, "htf_phase": "mid"}))
+    db.add(_closed_rec({"recommendation": 60, "htf_phase": "launch"}))
+    db.add(_closed_rec({"recommendation": 72}))  # 旧行/无 4h 数据 → 未知
+    db.commit()
+
+    out = build_actual_review(db, days=30)
+    dims = {}
+    for g in out["groups"]:
+        dims.setdefault(g["dim"], []).append((g["key"], g["count"]))
+    # 有序输出：前期 → 中期 → 衰竭期 → 未知（后期无样本不占行）
+    assert dims["4h趋势期"] == [("前期", 1), ("中期", 1), ("衰竭期", 1), ("未知", 1)]
+    # 逐笔 items 带原始值
+    assert sorted(
+        i["htf_phase"] for i in out["items"] if i["htf_phase"]
+    ) == ["exhausted", "launch", "mid"]
 
 
 def test_actual_review_golden_pattern_groups(db):

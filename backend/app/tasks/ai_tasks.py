@@ -308,9 +308,9 @@ def run_ai_analysis_single(
         # 近期摆动结构（HH/LH/HL/LL，高低点各 20 个）随事实包给 AI，与图表标注同源；
         # 分析时刻现算（现价已更新），锚点解析（ai_agent）与风控锚定共用
         signal["recent_swings"] = recent_swings(klines, order=cfg.swing_order, n=20)
-        # 4h 高周期 K 线（大方向背景注入，约 200 根）；失败只降级为无 4h 行，不中断分析
+        # 4h 高周期 K 线（大方向背景注入，300 根）；失败只降级为无 4h 行，不中断分析
         try:
-            htf_klines = pool.get_klines(r.symbol, "4h", 200)
+            htf_klines = pool.get_klines(r.symbol, "4h", 300)  # 300 根：EMA144 收敛残留 ~12%（docs/17 §6）
         except Exception as e:
             htf_klines = None
             logger.warning("AI 分析 %s 获取4h K线失败，跳过4h背景: %s", r.symbol, e)
@@ -389,7 +389,7 @@ def run_ai_analysis_single(
             ai_result = run_dual_judge(
                 ai_result, _build_judge_signal(signal, klines, htf_klines),
             )
-        # 4h 强背景方向硬约束兜底（强多只开多/强空只开空）：LLM 无视 prompt 时程序强制 skip
+        # 4h 趋势年龄方向硬约束兜底（中期/后期+宏观同侧锁逆势）：LLM 无视 prompt 时程序强制 skip
         ai_result = enforce_htf_constraint(ai_result, htf_klines)
         # Narrator 已下线（提速）：submit_decision 的 reason 直接承载完整分点分析
         # （工具 schema 强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返
@@ -571,6 +571,9 @@ def _upsert_ai_analysis(
         # latest-wins 重分析后 None 覆盖旧值，不残留
         "tactic_name": ai_result.get("tactic_name"),
         "tactic_reason": ai_result.get("tactic_reason"),
+        # 4h 趋势期别（2026-10-09 r2）：enforce 阶段 stash，复盘维度分组用；
+        # latest-wins 重分析后 None 覆盖旧值，不残留
+        "htf_phase": ai_result.get("htf_phase"),
         "pullback_wait": bool(ai_result.get("pullback_wait")),
         # 待回踩结论在分发前就被跳过（_dispatch_immediate_open），不会进入开仓闸门，
         # 未开单原因在此预置；其余结论的原因由开仓闸门拦截时写入

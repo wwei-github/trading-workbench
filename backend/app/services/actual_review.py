@@ -178,6 +178,19 @@ def _touch_bucket(rec: TradeRecord) -> str:
     return _TOUCH_LABELS.get(raw) if raw in _TOUCH_LABELS else "未记录"
 
 
+# 4h 趋势期别（2026-10-09 r2，docs/17）：launch/mid/late/exhausted 四档有序桶，
+# 验证「仅前中后开单」矩阵（衰竭期双向禁开）——旧行/无 4h 数据 NULL→「未知」
+_HTF_PHASE_LABELS = {
+    "launch": "前期", "mid": "中期", "late": "后期", "exhausted": "衰竭期",
+}
+_HTF_PHASE_BUCKETS = ("前期", "中期", "后期", "衰竭期", "未知")
+
+
+def _htf_phase_bucket(rec: TradeRecord) -> str:
+    return _HTF_PHASE_LABELS.get(
+        (rec.ai_snapshot or {}).get("htf_phase"), "未知")
+
+
 def _agg(trades: list) -> dict:
     # Numeric 列经 SQLAlchemy 返回 Decimal，统一转 float 再聚合——
     # 否则空 wins 时 avg_win=0.0(float) / avg_loss=Decimal 触发
@@ -294,6 +307,9 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         # 回踩触点（2026-10-08，docs/22）：回踩单质量分层——浅触点（突破回测位）
         # 与深回撤（EMA144）的胜率/EV 对比，验证「回踩越深越稳」假设
         ("回踩位置", _touch_bucket, _TOUCH_BUCKETS),
+        # 4h趋势期（2026-10-09 r2，docs/17）：前/中/后/衰竭期 × 胜率/EV，
+        # 验证「仅前中后开单」硬约束矩阵的分组贡献；旧行 NULL→「未知」
+        ("4h趋势期", _htf_phase_bucket, _HTF_PHASE_BUCKETS),
     ):
         buckets: dict[str, list] = {}
         for t in trades:
@@ -351,6 +367,9 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         # 回踩触点（docs/22，2026-10-08）：逐笔展示 + 分组数据源（原始值
         # retest/swing/ema21/55/144，旧行/突破类 None）
         "touch_ref": (t.ai_snapshot or {}).get("touch_ref"),
+        # 4h 趋势期别（2026-10-09 r2）：逐笔展示 + 分组数据源（原始值
+        # launch/mid/late/exhausted，旧行/无 4h 数据 None）
+        "htf_phase": (t.ai_snapshot or {}).get("htf_phase"),
         # 规则版本（docs/24 A0）：逐笔规则集快照，legacy=标记上线前旧行
         "rule_version": t.rule_version or "legacy",
         "opened_at": t.opened_at.isoformat() if t.opened_at else None,

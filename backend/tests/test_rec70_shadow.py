@@ -162,7 +162,7 @@ def test_build_report_rec70(shadow_db):
     maker = shadow_db
     s = maker()
     # 正式网 rec60_69：2 亏（前向窗内）+ 1 笔窗口前（应被过滤）
-    _mark(s, uuid.uuid4(), "A1USDT", False, 65, -60.0, "2026-10-09")
+    _mark(s, uuid.uuid4(), "A1USDT", False, 65, -60.0, "2026-10-11")
     _mark(s, uuid.uuid4(), "A2USDT", False, 68, -40.0, "2026-10-12")
     _mark(s, uuid.uuid4(), "OLDUSDT", False, 66, -70.0, "2026-10-01")  # 窗口前
     # 正式网 rec70plus：1 赢
@@ -206,8 +206,9 @@ def test_build_report_rec70(shadow_db):
 
 
 def test_build_report_rec70_empty_start():
-    """REC70_START 常量即预注册前向窗口起点（锁定不可回调）"""
-    assert REC70_START == "2026-10-08"
+    """REC70_START 常量即预注册前向窗口起点（锁定不可回调；2026-10-10 因
+    RULE_VERSION r2 评分函数变更重置，dated 修订见 docs/14 §七）"""
+    assert REC70_START == "2026-10-10"
 
 
 # ── 4. registry ──────────────────────────────────────────────────────

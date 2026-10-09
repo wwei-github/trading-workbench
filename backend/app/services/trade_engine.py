@@ -119,6 +119,9 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
         # 战法命中标注（2026-10-02，仅借鉴）：随快照自持，删战法不断链，复盘分组用
         "tactic_name": a.tactic_name,
         "tactic_reason": a.tactic_reason,
+        # 4h 趋势期别（2026-10-09 r2）：launch/mid/late/exhausted，随快照自持，
+        # 复盘「4h趋势期」维度分组用；旧行/无 4h 数据 None→「未知」
+        "htf_phase": a.htf_phase,
         # 量比（docs/24 A5b）：信号K线量 ÷ 近20根基准量（中位量，2026-09-29 口径），
         # 实盘归因按量比门槛分组对比；旧行/无信号上下文为 None 归「未知」
         "volume_ratio": (

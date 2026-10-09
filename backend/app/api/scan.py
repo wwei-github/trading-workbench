@@ -1401,7 +1401,7 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
 
     # 4h 高周期 K 线（大方向背景注入）；失败只降级为无 4h 行，不中断分析
     try:
-        htf_klines = pool.get_klines(symbol, "4h", 200)
+        htf_klines = pool.get_klines(symbol, "4h", 300)  # 300 根：EMA144 收敛残留 ~12%（docs/17 §6）
     except Exception:
         htf_klines = None
 
@@ -1445,7 +1445,7 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
             interval=cfg.kline_interval, tactics_block=tactics_block,
             tp2_enabled=bool(cfg.tp2_enabled),
         )
-        # 4h 强背景方向硬约束兜底（强多只开多/强空只开空）
+        # 4h 趋势年龄方向硬约束兜底（衰竭期双向禁开；中期/后期+宏观同侧锁逆势）
         ai_result = enforce_htf_constraint(ai_result, htf_klines)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI 分析失败: {e}")

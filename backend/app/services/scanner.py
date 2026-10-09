@@ -209,7 +209,7 @@ def detect_indicator_candidate(
 
     # 第 7 票：4h 背景（失败降级为无 4h 票，不中断）
     try:
-        htf = pool.get_klines(symbol, "4h", 200)
+        htf = pool.get_klines(symbol, "4h", 300)  # 300 根：EMA144 SMA 种子后递推 155 步，收敛残留 ~12%
     except Exception as e:
         htf = None
         logger.warning("%s 获取4h K线失败（跳过4h票）: %s", symbol, e)

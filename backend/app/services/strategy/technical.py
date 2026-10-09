@@ -468,29 +468,68 @@ def analyze_obv(klines: list[list], lookback: int = 20) -> Optional[dict]:
     }
 
 
+# 趋势年龄分档常量（2026-10-09 重设计）：分类主轴从「EMA 间距（水平量）」换成
+# 「EMA21/55 交叉后根数（时间量）」——间距是波动率的函数（高波币 3 根就 1%、
+# 低波币 40 根不到），根数跨币可比，且直接回答「该追势还是该反转」：
+# 前期（≤10根）交叉未证明；中期（≤30根）结构证明+动能健康；后期（>30根）老而未衰；
+# 衰竭期=后期且 MACD 柱线已翻向（动能先死，趋势老化）。
+TREND_LAUNCH_MAX_BARS = 10
+TREND_MID_MAX_BARS = 30
+
+_PHASE_LABELS = {
+    "launch": "趋势前期", "mid": "趋势中期", "late": "趋势后期", "exhausted": "衰竭期",
+}
+
+
+def _htf_cross_age(f: np.ndarray, m: np.ndarray) -> tuple[Optional[int], int]:
+    """EMA21/55 最后一次交叉：(距最新已收盘根的根数, 交叉后方向 ±1)。
+
+    序列内无交叉的极端情况返回 (None, 当前排列方向)。
+    慢线 EMA 以 SMA 种子成形，种子位之前 diff 为 NaN（NaN>0 恒 False）——
+    从首个有效位的下一位起扫，避免 NaN→有效值边界被误判为一次交叉。
+    """
+    diff = f - m
+    n = len(diff)
+    side_now = 1 if diff[-1] > 0 else -1
+    valid = np.where(~np.isnan(diff))[0]
+    if len(valid) == 0:
+        return None, side_now
+    for i in range(n - 1, int(valid[0]), -1):
+        if (diff[i] > 0) != (diff[i - 1] > 0):
+            return n - 1 - i, (1 if diff[i] > 0 else -1)
+    return None, side_now
+
+
 def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 55) -> Optional[dict]:
-    """4h 高周期背景：ADX(14) 门控 + EMA21/55 排列与间距分级（1h 分析的大方向参照）。
+    """4h 高周期背景：ADX 门控 + EMA21/55 趋势年龄四档（1h 分析的大方向参照）。
 
     htf_klines 为 4h 周期 K 线（最后一根未收盘，内部剔除）。
+    状态优先级：
     - ADX<20：4h 震荡，EMA 排列不投方向票（治震荡市 EMA 反复交叉的误标）
-    - ADX≥20 按 EMA 排列投方向，间距分级：≥1% 强趋势 / 0.1%~1% 弱趋势
-      （刚金叉的小间距趋势可信度低，标签供 AI 区分背景强度）
-    - ADX 计算失败静默降级为仅 EMA 判定（单指标失败不阻塞背景注入）
+    - EMA21/55 间距<0.1%：均线纠缠
+    - 趋势年龄四档（按最后一次交叉距今根数）：前期 ≤TREND_LAUNCH_MAX_BARS /
+      中期 ≤TREND_MID_MAX_BARS / 后期 >MID / 衰竭期=后期且 MACD 柱线已翻向
+      （柱线翻向但 ≤MID 根按年龄定档 + 动能背离注记——交叉太新不足以判衰竭）
+    - ADX 计算失败静默降级（单指标失败不阻塞背景注入）
+
+    返回 {state(bullish/bearish/ranging/mixed), state_label, dir, phase,
+          age_bars, macro_aligned(EMA55 在 EMA144 顺势侧?), momentum, detail}
     """
-    if not htf_klines or len(htf_klines) < slow + 12:
+    if not htf_klines or len(htf_klines) < 2:
         return None
-    closed = htf_klines[:-1] if len(htf_klines) >= 2 else htf_klines
+    closed = htf_klines[:-1]
     closes = np.array([float(k[4]) for k in closed], dtype=float)
-    if len(closes) < slow + 10:
+    # EMA144 需要 144 根 SMA 种子 + 收敛余量（各调用方固定拉 200 根=199 已收盘）
+    if len(closes) < 155:
         return None
     f = calc_ema(closes, fast)
-    s = calc_ema(closes, slow)
-    if f is None or s is None:
+    m = calc_ema(closes, slow)
+    s144 = calc_ema(closes, 144)
+    if f is None or m is None or s144 is None:
         return None
-    fn, sn = float(f[-1]), float(s[-1])
+    fn, mn, sn = float(f[-1]), float(m[-1]), float(s144[-1])
     if sn <= 0 or not np.isfinite(fn):
         return None
-    price = float(closes[-1])
 
     # ADX 门控：analyze_adx 内部同样剔除未收盘根，口径一致；失败降级不门控
     adx_res = analyze_adx(htf_klines)
@@ -498,79 +537,161 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
     if adx_v is not None and adx_v < 20:
         return {
             "state": "ranging", "state_label": "震荡（无趋势，不作方向参考）", "dir": 0,
+            "phase": None, "age_bars": None, "macro_aligned": None, "momentum": None,
             "detail": f"ADX={adx_v:.1f}(<20), EMA{fast}/{slow}排列仅记录不投票",
         }
 
-    dist_pct = abs(fn - sn) / sn * 100
+    dist_pct = abs(fn - mn) / mn * 100
     if dist_pct < 0.1:
-        state, label, d = "mixed", "均线纠缠", 0
-    elif fn > sn:
-        pos = "价格在EMA21上方" if price > fn else "价格回落至EMA21下方"
-        grade = "strong" if dist_pct >= 1.0 else "weak"
-        state, label, d = "bullish", f"{'强' if grade == 'strong' else '弱'}多头背景（{pos}）", 1
-    else:
-        pos = "价格在EMA21下方" if price < fn else "价格反弹至EMA21上方"
-        grade = "strong" if dist_pct >= 1.0 else "weak"
-        state, label, d = "bearish", f"{'强' if grade == 'strong' else '弱'}空头背景（{pos}）", -1
+        return {
+            "state": "mixed", "state_label": "均线纠缠", "dir": 0,
+            "phase": None, "age_bars": None, "macro_aligned": None, "momentum": None,
+            "detail": f"EMA{fast}={fn:.6g}, EMA{slow}={mn:.6g}, 间距{dist_pct:.2f}%",
+        }
 
-    detail = f"EMA{fast}={fn:.6g}, EMA{slow}={sn:.6g}, 间距{dist_pct:.2f}%"
+    dir_ = 1 if fn > mn else -1
+    age, cross_dir = _htf_cross_age(f, m)
+    age_note = None
+    if cross_dir != dir_:  # 交叉方向与排列不一致（刚交叉即回穿的罕见态）按排列为准
+        age = None
+        age_note = "交叉方向与排列不一致（按当前排列为准）"
+    elif age is None:
+        age_note = "窗口内无交叉（极老趋势，按后期处理）"
+    state = "bullish" if dir_ > 0 else "bearish"
+
+    # MACD 柱线动能（12/26/9，尾部与已收盘根对齐）：柱线翻向 = 动能先于均线死亡。
+    # 单边匀速行情柱线渐近收敛到 0，浮点尾数 ±1e-15 不是真翻向——数值零保护
+    momentum, shrinking = "same", False
+    macd = _macd_series(htf_klines)
+    if macd is not None:
+        hist = macd[2]
+        h_now = float(hist[-1])
+        if abs(h_now) > 1e-12 and (h_now > 0) != (dir_ > 0):
+            momentum = "opposite"
+        elif len(hist) >= 4:
+            seg = [abs(float(v)) for v in hist[-4:]]
+            shrinking = seg[3] < seg[2] < seg[1] < seg[0] and seg[0] > 1e-12
+
+    # 衰竭判定：柱线翻向只在中期之后才算衰竭（交叉太新=动能背离，不足以判衰老）
+    if age is not None and age <= TREND_LAUNCH_MAX_BARS:
+        phase = "launch"
+    elif age is not None and age <= TREND_MID_MAX_BARS:
+        phase = "mid"
+    elif momentum == "opposite":
+        phase = "exhausted"
+    else:
+        phase = "late"
+
+    # 宏观守卫：EMA55 是否在 EMA144 顺势侧（= 三线是否按方向完整排列）。
+    # 逆宏观按 EMA21 相对 EMA144 的位置分两档注记 + EMA144 斜率（宏观劲度）：
+    # - EMA21 已收复/跌破 144 而EMA55 未跟上（V型反转中期）：反弹/回調已走深，
+    #   距全排列只差 EMA55 一步
+    # - 144 仍压制/托底（教科书熊内反弹/牛内回调）：144 斜率区分宏观趋势劲度
+    macro_aligned = (mn > sn) == (dir_ > 0)
+    if macro_aligned:
+        macro_note = f"三线{'多头' if dir_ > 0 else '空头'}排列"
+    else:
+        s_slope = (
+            "上行" if sn > float(s144[-3])
+            else ("下行" if sn < float(s144[-3]) else "走平")
+        )
+        if dir_ > 0:
+            macro_note = (
+                "V型反转中期（EMA21已上穿144，EMA55未跟上）"
+                if fn > sn else f"熊内反弹（144压制中·{s_slope}）"
+            )
+        else:
+            macro_note = (
+                "V型反转中期（EMA21已下穿144，EMA55未跟上）"
+                if fn < sn else f"牛内回调（144托底中·{s_slope}）"
+            )
+
+    word = "金叉" if dir_ > 0 else "死叉"
+    notes = [
+        f"{word}{'刚发生·' if age is not None and age <= 3 else ''}{age}根"
+        if age is not None else age_note  # 双成因分注：回穿 vs 极老趋势
+    ]
+    if momentum == "opposite":
+        notes.append("动能背离（柱线已翻向）" if phase != "exhausted" else "柱线已翻向")
+    elif shrinking:
+        notes.append("动能衰减")
+    notes.append(macro_note)
+
+    label = f"{_PHASE_LABELS[phase]}{'多头' if dir_ > 0 else '空头'}背景"
+    detail = (
+        f"EMA{fast}={fn:.6g}, EMA{slow}={mn:.6g}, EMA144={sn:.6g} · "
+        + " · ".join(notes)
+    )
     if adx_v is not None:
-        detail += f", ADX={adx_v:.1f}"
+        detail += f" · ADX={adx_v:.1f}"
     return {
-        "state": state, "state_label": label, "dir": d, "detail": detail,
-        # 趋势强度分级（仅方向性背景有值）：质量分加权与 AI 方向硬约束都读它
-        "grade": grade if state in ("bullish", "bearish") else None,
+        "state": state, "state_label": label, "dir": dir_, "phase": phase,
+        "age_bars": age, "macro_aligned": macro_aligned, "momentum": momentum,
+        "detail": detail,
     }
 
 
 def enforce_htf_constraint(ai_result: dict, htf_klines: Optional[list]) -> dict:
-    """4h 强背景方向硬约束的程序化兜底（原地修改并返回 ai_result）。
+    """4h 趋势年龄硬约束的程序化兜底（原地修改并返回 ai_result）。
 
-    强多头背景下 AI 返回开空 / 强空头背景下返回开多 → 强制改 skip
-    （LLM 可能无视 prompt 注入的约束行，开单前程序把关）。无 4h 数据、
-    非强趋势、非 suggest 或方向合规时原样返回。
+    锁单矩阵（2026-10-09 r2，仅前中后开单）：
+    - 衰竭期（动能已翻向）→ 双向禁开任何新单，最先判；
+    - 中期/后期（结构已证明，老而未衰照样杀逆势单）∧ 宏观同侧 → 锁逆势；
+    - 前期（交叉未证明）与逆宏观（熊内反弹/牛内回调）任何期 → 放行，
+      放行侧均由质量分惩罚兜底排序。
+    LLM 可能无视 prompt 注入的约束行，开单前程序把关。无 4h 数据或非
+    suggest 时原样返回；suggest 且有 4h 数据时顺带 stash htf_phase，
+    供 AIAnalysis / 复盘「4h趋势期」维度落库。
     """
     try:
         if not htf_klines or ai_result.get("trade_decision") != "suggest":
             return ai_result
         htf = analyze_htf_background(htf_klines)
-        if not htf or htf.get("grade") != "strong":
+        if not htf:
             return ai_result
+        ai_result["htf_phase"] = htf.get("phase")
         direction = (ai_result.get("direction") or "").lower()
+
+        def _veto(reason: str) -> dict:
+            # veto 闭环（docs/24 A5a）：程序否决的 suggest 同样快照原始建议，
+            # 复盘回放假想表现，验证 4h 硬约束的贡献（键名与 dual_judge 对齐）
+            return {
+                "source": "htf_constraint",
+                "direction": ai_result.get("direction"),
+                "entry_price": ai_result.get("entry_price"),
+                "stop_loss": ai_result.get("stop_loss"),
+                "take_profit_1": ai_result.get("take_profit_1"),
+                "take_profit_2": ai_result.get("take_profit_2"),
+                "risk_reward_ratio": ai_result.get("risk_reward_ratio"),
+                "recommendation": ai_result.get("recommendation"),
+                "reason": reason,
+            }
+
+        # 衰竭期最先判：动能已翻向，顺势/逆势都不给开
+        if htf.get("phase") == "exhausted":
+            ai_result["trade_decision"] = "skip"
+            ai_result["skip_reason"] = (
+                f"方向约束：4h衰竭期{'多头' if htf['state'] == 'bullish' else '空头'}"
+                "背景禁止开新单（程序强制 skip）"
+            )
+            ai_result["veto_original"] = _veto("4h 趋势衰竭期禁止开新单")
+            return ai_result
+
+        # 中期/后期 ∧ 宏观同侧 → 锁逆势
+        if htf.get("phase") not in ("mid", "late") or not htf.get("macro_aligned"):
+            return ai_result
         if htf["state"] == "bullish" and direction == "short":
             ai_result["trade_decision"] = "skip"
             ai_result["skip_reason"] = (
-                "方向约束：4h强多头背景禁止开空（程序强制 skip）"
+                f"方向约束：4h{_PHASE_LABELS[htf['phase']]}多头背景禁止开空（程序强制 skip）"
             )
-            # veto 闭环（docs/24 A5a）：程序否决的 suggest 同样快照原始建议，
-            # 复盘回放假想表现，验证 4h 硬约束的贡献（键名与 dual_judge 对齐）
-            ai_result["veto_original"] = {
-                "source": "htf_constraint",
-                "direction": ai_result.get("direction"),
-                "entry_price": ai_result.get("entry_price"),
-                "stop_loss": ai_result.get("stop_loss"),
-                "take_profit_1": ai_result.get("take_profit_1"),
-                "take_profit_2": ai_result.get("take_profit_2"),
-                "risk_reward_ratio": ai_result.get("risk_reward_ratio"),
-                "recommendation": ai_result.get("recommendation"),
-                "reason": "4h 强背景方向硬约束",
-            }
+            ai_result["veto_original"] = _veto("4h 趋势中期/后期方向硬约束（宏观同侧）")
         elif htf["state"] == "bearish" and direction == "long":
             ai_result["trade_decision"] = "skip"
             ai_result["skip_reason"] = (
-                "方向约束：4h强空头背景禁止开多（程序强制 skip）"
+                f"方向约束：4h{_PHASE_LABELS[htf['phase']]}空头背景禁止开多（程序强制 skip）"
             )
-            ai_result["veto_original"] = {
-                "source": "htf_constraint",
-                "direction": ai_result.get("direction"),
-                "entry_price": ai_result.get("entry_price"),
-                "stop_loss": ai_result.get("stop_loss"),
-                "take_profit_1": ai_result.get("take_profit_1"),
-                "take_profit_2": ai_result.get("take_profit_2"),
-                "risk_reward_ratio": ai_result.get("risk_reward_ratio"),
-                "recommendation": ai_result.get("recommendation"),
-                "reason": "4h 强背景方向硬约束",
-            }
+            ai_result["veto_original"] = _veto("4h 趋势中期/后期方向硬约束（宏观同侧）")
     except Exception as e:
         logger.warning("4h方向约束兜底检查失败（放行）: %s", e)
     return ai_result
@@ -585,7 +706,7 @@ _INDICATORS = (
     ("ADX(14)", "ADX", analyze_adx),
     ("OBV(20)", "OBV", analyze_obv),
 )
-HTF_DISPLAY, HTF_SHORT = "4h背景(EMA21/55)", "4h背景"
+HTF_DISPLAY, HTF_SHORT = "4h背景(趋势年龄)", "4h背景"
 
 
 def _compute_all(klines: list[list], htf_klines: Optional[list] = None) -> list[tuple]:
@@ -690,19 +811,27 @@ def render_indicator_block(klines: list[list], htf_klines: Optional[list] = None
             f"- 指标方向: 多空平衡（看多{nb}项 vs 看空{ns}项）→ 结合K线结构与量能判断"
         )
 
-    # 4h 强背景方向硬约束（2026-09-24）：强多只开多 / 强空只开空，
-    # 优先级高于指标多数决；程序侧另有 enforce_htf_constraint 兜底
+    # 4h 趋势年龄方向硬约束（2026-10-09 重设计替代强背景口径）：
+    # 衰竭期双向禁开新单；中期/后期（宏观同侧）只可顺势；
+    # 前期（交叉未证明）与逆宏观不锁，程序侧另有 enforce_htf_constraint 兜底
     htf_r = next((r for _, s, r in results if s == HTF_SHORT and r), None)
-    if htf_r and htf_r.get("grade") == "strong":
+    if htf_r and htf_r.get("phase") == "exhausted":
+        lines.append(
+            f"- 方向约束（硬性）: 4h{htf_r['state_label']}"
+            " —— 衰竭期禁止开任何新单，顺势/逆势一律 skip"
+            "（优先于指标多数决，细则见系统提示词硬约束）"
+        )
+    elif (htf_r and htf_r.get("phase") in ("mid", "late")
+            and htf_r.get("macro_aligned")):
         if htf_r["state"] == "bullish":
             lines.append(
-                "- 方向约束（硬性）: 4h强多头背景 —— 仅可 long，开空一律 skip"
-                "（优先于指标多数决，细则见系统提示词硬约束）"
+                f"- 方向约束（硬性）: 4h{htf_r['state_label']}（宏观同侧）"
+                " —— 仅可 long，开空一律 skip（优先于指标多数决，细则见系统提示词硬约束）"
             )
         else:
             lines.append(
-                "- 方向约束（硬性）: 4h强空头背景 —— 仅可 short，开多一律 skip"
-                "（优先于指标多数决，细则见系统提示词硬约束）"
+                f"- 方向约束（硬性）: 4h{htf_r['state_label']}（宏观同侧）"
+                " —— 仅可 short，开多一律 skip（优先于指标多数决，细则见系统提示词硬约束）"
             )
 
     return "技术指标（方向=多空票数多数决）:\n" + "\n".join(lines) + "\n"
@@ -740,10 +869,12 @@ def compute_quality_score(
     direction: 候选方向（1 多 / -1 空，= net 的符号）
     trigger_type: trigger_breakout / trigger_trend_breakout / trigger_pullback_confirm
     klines: 可选，放量加分需要（量比 ≥1.2 +5，各触发类型一致）
-    修饰规则（2026-09-17 设计评审定稿；2026-09-24 强 4h 背景提权）：
-    - 4h背景同向：强 +10 / 弱 +5；反向：强 -12 / 弱 -8
-      （强 4h 趋势币在质量分排序与 AI 配额中前置；逆强背景降权更狠，
-      与「强多只开多/强空只开空」硬约束呼应）
+    修饰规则（2026-09-17 设计评审定稿；2026-09-24 4h 背景提权；2026-10-10
+    趋势年龄重设计替代强/弱二级）：
+    - 4h背景按趋势年龄：同向 前期+5 / 中期+8 / 后期+10 / 衰竭-6（追老化趋势）；
+      逆向 前期-6 / 中期-10 / 后期-12 / 衰竭-4（反转空间）——中期/后期才进
+      硬约束，此处逆向重罚主要压前期/衰竭期的逆势单排序
+    - 逆宏观（熊内反弹/牛内回调）额外 -4（硬约束不锁，分数兜底）
     - 突破触发且 ADX≥25 +5（强趋势中的突破可信）
     - 放量加分：量比 ≥1.2 +5（2026-09-25 金K类；2026-09-29 起突破放量不再
       是触发硬门，三类触发统一为加分项；缩量不加不减，仅排序自然落后）
@@ -757,11 +888,14 @@ def compute_quality_score(
     htf = by_short.get(HTF_SHORT)
     if htf and int(htf.get("dir") or 0):
         same = int(htf["dir"]) == direction
-        strong = htf.get("grade") == "strong"
-        if same:
-            score += 10 if strong else 5
-        else:
-            score -= 12 if strong else 8
+        # 同向 / 逆向 按趋势年龄分档（phase 缺失时退回中性 ±5/−8）
+        phase_mod = {
+            "launch": (5, -6), "mid": (8, -10),
+            "late": (10, -12), "exhausted": (-6, -4),
+        }
+        score += phase_mod.get(htf.get("phase"), (5, -8))[0 if same else 1]
+        if htf.get("macro_aligned") is False:
+            score -= 4  # 逆宏观：熊内反弹做多/牛内回调做空一律压分
 
     adx = by_short.get("ADX")
     if (trigger_type in ("trigger_breakout", "trigger_trend_breakout")
