@@ -6,9 +6,22 @@
  * - 差异通过 props 注入：复盘图传 drawOverlay（区域色块）+ extraMarkers
  *   （事件箭头）+ headerExtra（复盘信息面板）；数据拉取由父组件负责
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Button, Checkbox, Dropdown, InputNumber, Radio, Tooltip, Typography } from 'antd'
-import { PlusOutlined, SyncOutlined } from '@ant-design/icons'
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Button, Checkbox, Dropdown, Input, InputNumber, Popconfirm, Radio, Tooltip, Typography } from 'antd'
+import {
+  ClearOutlined,
+  DeleteOutlined,
+  FallOutlined,
+  FontSizeOutlined,
+  FormOutlined,
+  MessageOutlined,
+  PlusOutlined,
+  RiseOutlined,
+  SyncOutlined,
+  TableOutlined,
+  TagOutlined,
+} from '@ant-design/icons'
+import { DrawingManager, type Drawing, type DrawingKind, type MagnetMode, type TableCellRef } from 'lightweight-charts-drawing'
 import {
   createSeriesMarkers,
   HistogramSeries,
@@ -92,6 +105,54 @@ interface Props {
 }
 
 const CHART_HEIGHT_FALLBACK = 560
+
+// ── 画线工具（docs/18：lightweight-charts-drawing 0.2.4，TV 风格手绘标注）──
+// 四组：几何 / 斐波·测量 / 文本·标注 / 仓位预演（组间分隔线）；不追求 86 种全集
+const DRAW_TOOLS: { kind: DrawingKind; label: string; tip: string; icon?: ReactNode; sep?: boolean }[] = [
+  // 几何
+  { kind: 'trend-line', label: '╱', tip: '趋势线' },
+  { kind: 'horizontal-line', label: '─', tip: '水平线' },
+  { kind: 'horizontal-ray', label: '→', tip: '水平射线' },
+  { kind: 'vertical-line', label: '│', tip: '垂直线' },
+  { kind: 'rectangle', label: '▭', tip: '矩形' },
+  { kind: 'parallel-channel', label: '⫽', tip: '平行通道' },
+  { kind: 'brush', label: '✎', tip: '画笔' },
+  // 斐波 / 测量
+  { kind: 'fib-retracement', label: '₣', tip: '斐波那契回调', sep: true },
+  { kind: 'trend-based-fib-extension', label: '₣+', tip: '斐波那契扩展（三点：目标位投射）' },
+  { kind: 'price-range', label: '↔', tip: '价格区间测量（涨跌幅/价差）' },
+  // 文本 / 标注
+  { kind: 'text', label: '', tip: '文本', icon: <FontSizeOutlined />, sep: true },
+  { kind: 'note', label: '', tip: '便签', icon: <FormOutlined /> },
+  { kind: 'price-note', label: '', tip: '价格便签', icon: <TagOutlined /> },
+  { kind: 'callout', label: '', tip: '气泡标注', icon: <MessageOutlined /> },
+  { kind: 'arrow', label: '↗', tip: '箭头' },
+  { kind: 'table', label: '', tip: '表格（点选单元格编辑）', icon: <TableOutlined /> },
+  // 仓位预演（1 点放置，自带入场/止损/止盈框与 RR 徽标）
+  { kind: 'long-position', label: '', tip: '多单预演（入场/止损/止盈框）', icon: <RiseOutlined />, sep: true },
+  { kind: 'short-position', label: '', tip: '空单预演（入场/止损/止盈框）', icon: <FallOutlined /> },
+]
+const MAGNET_CYCLE: MagnetMode[] = ['off', 'weak', 'strong']
+const MAGNET_TIP: Record<MagnetMode, string> = { off: '磁吸：关', weak: '磁吸：弱（吸K线）', strong: '磁吸：强（吸开收高低）' }
+// 画线持久化 key：按图表主体（币种/交易）分区，时间锚定跨周期有效
+const drawingsLSKey = (chartKey: string) => `kline-drawings:${chartKey}`
+
+// 文本/表格宿主编辑器状态（textEdit/tableEdit 事件打开；pane 坐标定位）
+interface InlineEditor {
+  mode: 'text' | 'table'
+  id: string
+  x: number
+  y: number
+  w: number
+  h: number
+  value: string
+  // text 模式：被编辑的完整 drawing（update 用）
+  drawing?: Drawing
+  // table 模式：被编辑的单元格 [row, col]
+  cell?: TableCellRef
+  // 放置流（文本为空提交 → 移除，TV 行为）；编辑流空提交 = 清空文本
+  isNew: boolean
+}
 
 // 从序列尾部找最后一个有效值（指标前段常有空值）
 const lastFinite = (values: (number | null)[]): number | null => {
@@ -258,6 +319,13 @@ export default function ChartCore({
   >([])
   // 摆动结构标注插件实例（更新数据时用 setMarkers 原位替换，不重复创建）
   const markersApiRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
+  // 画线工具管理器（docs/18）：生命周期与图表实例一致，chartKey 变化销毁重建
+  const dmRef = useRef<DrawingManager | null>(null)
+  const [activeTool, setActiveTool] = useState<DrawingKind | null>(null)
+  const [magnet, setMagnet] = useState<MagnetMode>('off')
+  // 文本/表格内联编辑器 + 提交防抖守卫（Enter 提交后失焦不再二次提交）
+  const [editor, setEditor] = useState<InlineEditor | null>(null)
+  const editorBusyRef = useRef(false)
   // 已加载的 K 线（完整 OHLCV），供指标计算与标注使用
   const [candlePoints, setCandlePoints] = useState<
     { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }[]
@@ -277,6 +345,57 @@ export default function ChartCore({
     })
     chartRef.current = chart
     seriesRef.current = series
+
+    // 画线工具管理器（挂在主 series 上的 primitive，与 SVG 业务覆盖层分层共存）；
+    // 持久化：localStorage 按图表主体分区，add/update/remove/import/clear 统一走 change 事件
+    const dm = new DrawingManager(chart, series)
+    dmRef.current = dm
+    try {
+      const saved = localStorage.getItem(drawingsLSKey(chartKey))
+      if (saved) dm.importJSON(saved)
+    } catch {
+      /* 损坏的存档直接忽略，画线从空白开始 */
+    }
+    dm.on('change', () => {
+      try {
+        localStorage.setItem(drawingsLSKey(chartKey), dm.exportJSON())
+      } catch {
+        /* 存储满/隐私模式：画线仅本次会话有效 */
+      }
+    })
+    // 工具布防状态同步（放置后插件自动解除布防，'tool' 事件回传 null）
+    dm.on('tool', (kind) => setActiveTool(kind))
+    // 文本族放置/双击 → 打开宿主编辑器（pane 坐标）；提交走 commitEditor
+    dm.on('textEdit', (d, screen) => {
+      editorBusyRef.current = false
+      setEditor({
+        mode: 'text',
+        id: d.id,
+        drawing: d,
+        x: screen.x,
+        y: screen.y,
+        w: 240,
+        h: 0,
+        value: d.text ?? '',
+        isNew: !d.text,
+      })
+    })
+    // 表格单元格点击（选中后）→ 打开单元格编辑器；texts 存于 style.tableCells
+    dm.on('tableEdit', (d, cell, box) => {
+      editorBusyRef.current = false
+      const cells = (d.style as { tableCells?: string[][] }).tableCells ?? []
+      setEditor({
+        mode: 'table',
+        id: d.id,
+        cell,
+        x: box.left,
+        y: box.top,
+        w: box.width,
+        h: box.height,
+        value: cells[cell[0]]?.[cell[1]] ?? '',
+        isNew: false,
+      })
+    })
 
     // 图例联动：十字线悬浮时显示该根 K 线的 OHLC/成交量 + 各指标线在该位置的值
     const handleCrosshair = (param: MouseEventParams) => {
@@ -328,6 +447,10 @@ export default function ChartCore({
     return () => {
       ro.disconnect()
       chart.unsubscribeCrosshairMove(handleCrosshair)
+      dmRef.current?.destroy()
+      dmRef.current = null
+      setActiveTool(null)
+      setEditor(null)
       chart.remove()
       chartRef.current = null
       seriesRef.current = null
@@ -588,6 +711,68 @@ export default function ChartCore({
   // 悬浮时成交量取悬浮值；未悬浮时固定显示最新成交量（VOL 指标关闭则隐藏）
   const legendVol = legend ? legend.v : lastCandle && indicatorMetaRef.current.some((m) => m.name === 'VOL') ? lastCandle.volume : null
 
+  // ── 画线工具交互 ──
+  const pickTool = (kind: DrawingKind) => {
+    const dm = dmRef.current
+    if (!dm) return
+    const next = activeTool === kind ? null : kind // 再点一次取消布防
+    dm.setTool(next)
+    setActiveTool(next)
+  }
+  const cycleMagnet = () => {
+    const dm = dmRef.current
+    if (!dm) return
+    const next = MAGNET_CYCLE[(MAGNET_CYCLE.indexOf(magnet) + 1) % MAGNET_CYCLE.length]
+    dm.setMagnet(next)
+    setMagnet(next)
+  }
+  const deleteSelected = () => {
+    const dm = dmRef.current
+    if (!dm) return
+    for (const id of dm.selection()) dm.remove(id)
+  }
+  const clearDrawings = () => dmRef.current?.clear()
+
+  // ── 文本/表格内联编辑器提交 ──
+  // 文本：Enter（无 Shift）/失焦提交；空文本 + 放置流 → 移除（TV 行为），
+  //       空文本 + 编辑流 → 清空（渲染占位）；Esc 取消（新画的空文本同样移除）
+  const commitText = (value: string) => {
+    const dm = dmRef.current
+    if (editorBusyRef.current || !dm || !editor) return
+    editorBusyRef.current = true
+    if (!value.trim()) {
+      dm.remove(editor.id)
+    } else if (editor.drawing) {
+      dm.update({ ...editor.drawing, text: value } as Drawing)
+    }
+    setEditor(null)
+  }
+  // 表格：单元格文本写回 + 行列操作后都要 endTableEdit 关闭插件编辑态
+  const commitCell = (value: string) => {
+    const dm = dmRef.current
+    if (editorBusyRef.current || !dm || !editor?.cell) return
+    editorBusyRef.current = true
+    dm.setTableCellText(editor.id, editor.cell, value)
+    dm.endTableEdit()
+    setEditor(null)
+  }
+  const tableOp = (op: 'insert-row' | 'remove-row' | 'insert-column' | 'remove-column') => {
+    const dm = dmRef.current
+    if (!dm || !editor) return
+    dm.tableOp(editor.id, op)
+    dm.endTableEdit()
+    setEditor(null)
+  }
+  const cancelEditor = () => {
+    const dm = dmRef.current
+    if (editorBusyRef.current) return
+    editorBusyRef.current = true
+    if (editor?.mode === 'table') dm?.endTableEdit()
+    // 放置流 Esc：未输入文本的画线移除（TV 行为）
+    if (editor?.mode === 'text' && editor.isNew && !editor.value.trim()) dm?.remove(editor.id)
+    setEditor(null)
+  }
+
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 360 }}>
       {/* 左上角悬浮层：工具栏 + 额表面板 + 图例（垂直堆叠，自适应换行） */}
@@ -679,6 +864,41 @@ export default function ChartCore({
               指标
             </Button>
           </Dropdown>
+          {/* 画线工具（TV 风格手绘标注，按图表主体持久化）：点击布防、再点取消，
+              Esc 取消布防，Delete 删除选中；与业务标注（三线/区域）分层共存 */}
+          {DRAW_TOOLS.map((t) => (
+            <Fragment key={t.kind}>
+              {t.sep && <span style={{ width: 1, height: 16, background: '#2a2e39', margin: '0 2px' }} />}
+              <Tooltip title={t.tip}>
+                <Button
+                  size="small"
+                  ghost
+                  type={activeTool === t.kind ? 'primary' : 'default'}
+                  style={{ minWidth: 26, padding: '0 6px', fontWeight: 600 }}
+                  onClick={() => pickTool(t.kind)}>
+                  {t.icon || t.label}
+                </Button>
+              </Tooltip>
+            </Fragment>
+          ))}
+          <Tooltip title={MAGNET_TIP[magnet]}>
+            <Button
+              size="small"
+              ghost
+              type={magnet !== 'off' ? 'primary' : 'default'}
+              style={{ minWidth: 26, padding: '0 6px', fontWeight: 600 }}
+              onClick={cycleMagnet}>
+              ⌖
+            </Button>
+          </Tooltip>
+          <Tooltip title="删除选中画线（选中后按 Delete 亦可）">
+            <Button size="small" ghost icon={<DeleteOutlined />} onClick={deleteSelected} />
+          </Tooltip>
+          <Popconfirm title="清空本图全部画线？" okText="清空" cancelText="取消" onConfirm={clearDrawings}>
+            <Tooltip title="清空全部画线">
+              <Button size="small" ghost icon={<ClearOutlined />} />
+            </Tooltip>
+          </Popconfirm>
           {onIntervalChange && (
             <Radio.Group
               size="small"
@@ -792,6 +1012,90 @@ export default function ChartCore({
           zIndex: 10,
         }}
       />
+      {/* 文本/表格内联编辑器（pane 坐标定位，clamp 在图内；置于业务覆盖层之上） */}
+      {editor && (
+        <div
+          style={{
+            position: 'absolute',
+            left: Math.max(0, Math.min(editor.x, (containerRef.current?.clientWidth ?? 600) - 260)),
+            top: Math.max(0, Math.min(editor.y, (containerRef.current?.clientHeight ?? 400) - 60)),
+            zIndex: 30,
+          }}>
+          {editor.mode === 'text' ? (
+            <Input.TextArea
+              autoFocus
+              defaultValue={editor.value}
+              placeholder="输入文本，Esc 取消"
+              autoSize={{ minRows: 1, maxRows: 6 }}
+              style={{
+                width: 240,
+                background: '#1b1f2a',
+                color: '#d1d4dc',
+                fontSize: 12,
+                borderColor: '#2a2e39',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+              }}
+              onPressEnter={(e) => {
+                if (e.shiftKey) return // Shift+Enter 换行不提交
+                commitText((e.target as HTMLTextAreaElement).value)
+              }}
+              onBlur={(e) => commitText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.stopPropagation()
+                  e.preventDefault()
+                  cancelEditor()
+                }
+              }}
+            />
+          ) : (
+            <div>
+              <Input
+                autoFocus
+                defaultValue={editor.value}
+                size="small"
+                style={{
+                  width: Math.max(120, editor.w),
+                  background: '#1b1f2a',
+                  color: '#d1d4dc',
+                  fontSize: 12,
+                  borderColor: '#2a2e39',
+                }}
+                onPressEnter={(e) => commitCell((e.target as HTMLInputElement).value)}
+                onBlur={(e) => commitCell(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.stopPropagation()
+                    e.preventDefault()
+                    cancelEditor()
+                  }
+                }}
+              />
+              <div style={{ display: 'flex', gap: 2, marginTop: 2 }}>
+                {(
+                  [
+                    ['insert-row', '+行'],
+                    ['remove-row', '−行'],
+                    ['insert-column', '+列'],
+                    ['remove-column', '−列'],
+                  ] as const
+                ).map(([op, label]) => (
+                  <Button
+                    key={op}
+                    size="small"
+                    ghost
+                    style={{ fontSize: 11, padding: '0 5px' }}
+                    // 阻断 mousedown 默认行为防 input 失焦先提交（编辑器卸载吞掉本 click）
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => tableOp(op)}>
+                    {label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
