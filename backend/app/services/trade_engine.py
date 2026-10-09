@@ -839,6 +839,23 @@ def _consecutive_losses_today(db: Session, account_key: Optional[str], testnet: 
     return n
 
 
+def analysis_open_eligible(a: AIAnalysis, min_rec: float) -> bool:
+    """开仓资格快速过滤（suggest / 方向合法 / 三价齐 / 评分达门槛）。
+
+    与 try_open_for_analysis 顶部闸门同源（单一事实源，防两处漂移）；不含
+    账号维度闸门（去重/在跑/熔断/降速/环境闸门，按账号实时判定）与 1h 时效。
+    正式网自动开单关闭提醒（notify_live_auto_open_off）复用本判定回答
+    「这条信号达标可开单吗」。
+    """
+    return bool(
+        a is not None
+        and a.trade_decision == "suggest"
+        and a.direction in ("long", "short")
+        and a.entry_price and a.stop_loss and a.take_profit_1
+        and float(a.recommendation or 0) >= min_rec
+    )
+
+
 def try_open_for_analysis(
     db: Session, trader: BinanceTrader, analysis_id,
     force_market: bool = False,
@@ -863,12 +880,7 @@ def try_open_for_analysis(
         float(cfg.min_recommendation) if cfg.min_recommendation is not None
         else float(settings.TRADING_MIN_RECOMMENDATION)
     )
-    if (
-        a.trade_decision != "suggest"
-        or a.direction not in ("long", "short")
-        or not a.entry_price or not a.stop_loss or not a.take_profit_1
-        or float(a.recommendation or 0) < min_rec
-    ):
+    if not analysis_open_eligible(a, min_rec):
         return False
     if a.created_at and a.created_at < datetime.utcnow() - timedelta(hours=1):
         logger.info("即时开仓跳过 %s：分析已超过 1 小时", a.symbol)
@@ -2183,6 +2195,83 @@ def notify_open_cards(trade_ids: list[str]) -> int:
     finally:
         db.close()
     return sent
+
+
+def _live_off_card(a: AIAnalysis) -> dict:
+    """正式网自动开单关闭提醒卡片（2026-10-09）：价格栅格复用开仓卡片风格，
+    橙色头区分（蓝=开仓成功、橙=实盘错过达标信号）。"""
+    def _col(title: str, value: str) -> dict:
+        return {"tag": "column", "width": "weighted", "weight": 1,
+                "elements": [{"tag": "div", "text": {"tag": "lark_md",
+                             "content": f"**{title}**\n{value}"}}]}
+
+    is_long = a.direction == "long"
+    recmd = f"{float(a.recommendation):.0f} 分" if a.recommendation is not None else "—"
+    rr = f"{float(a.risk_reward_ratio):.1f}" if a.risk_reward_ratio else "—"
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"⚠️ 正式网未开单 · {a.symbol}"},
+            "template": "orange",
+        },
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content":
+             "该信号已达标可开单，但**正式网自动开单开关关闭**，本次未开实盘单（测试网照常）。"}},
+            {"tag": "column_set", "flex_mode": "stretch", "columns": [
+                _col("方向", "做多 Long" if is_long else "做空 Short"),
+                _col("AI 评分", recmd),
+                _col("盈亏比", rr),
+            ]},
+            {"tag": "column_set", "flex_mode": "stretch", "columns": [
+                _col("入场价", _fmt_price(float(a.entry_price or 0))),
+                _col("止损 SL", _fmt_price(float(a.stop_loss or 0))),
+                _col("止盈 TP1", _fmt_price(float(a.take_profit_1 or 0))),
+                _col("止盈 TP2", _fmt_price(float(a.take_profit_2)) if a.take_profit_2 else "—"),
+            ]},
+            {"tag": "note", "elements": [{"tag": "plain_text",
+             "content": (f"战法 {a.tactic_name} · " if a.tactic_name else "")
+             + "如需实盘可在扫描结果/交易记录手动开单，或开启正式网自动开单"}]},
+        ],
+    }
+
+
+def notify_live_auto_open_off(db: Session, cfg, analysis_id: str) -> None:
+    """正式网自动开单开关关闭 → 达标信号错过实盘开仓，飞书提醒（2026-10-09）。
+
+    「可以开单」口径 = 开仓资格快速过滤（analysis_open_eligible，与开仓闸门
+    同源；评分门槛分发层已过，此处复验防门槛中途上调）。不含账号维度闸门
+    ——正式网开关关着本就没跑到账号闸门那一步，无法也不必预判其结果。
+    该分析正式网任一账号已有成交（含此前提醒后手动开的单）则不提醒。
+    每条分析至多随任务分发提醒一次；发送失败仅记日志不影响开仓扇出。
+    """
+    try:
+        if cfg is None:
+            return
+        a = db.get(AIAnalysis, UUID(str(analysis_id)))
+        if a is None:
+            return
+        min_rec = (
+            float(cfg.min_recommendation) if cfg.min_recommendation is not None
+            else float(settings.TRADING_MIN_RECOMMENDATION)
+        )
+        if not analysis_open_eligible(a, min_rec):
+            return
+        # 实盘已有单（提醒后手动开/重新分析前已开）不再重复提醒
+        if db.execute(
+            select(TradeRecord.id).where(
+                TradeRecord.ai_analysis_id == a.id,
+                TradeRecord.testnet.is_(False),
+            ).limit(1)
+        ).first():
+            return
+        from app.services.feishu_bot import configured, send_app_card
+        if not configured():
+            return
+        if send_app_card(_live_off_card(a)):
+            logger.info("已发送正式网开关关闭提醒 analysis=%s symbol=%s",
+                        analysis_id, a.symbol)
+    except Exception:
+        logger.exception("正式网开关关闭提醒异常 analysis=%s", analysis_id)
 
 
 

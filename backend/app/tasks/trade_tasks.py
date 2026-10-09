@@ -291,6 +291,9 @@ def open_trade_for_analysis(analysis_id: str):
     账号锁 lock:trade_open:{key} 与结算巡检互斥；单账号失败不影响其他账号。
     等锁超时或闸门未过即放弃（无重试）。任一账号成交即清除拒开原因残留
     （避免「已开单仍显示拒开文案」误导）。
+
+    正式网自动开单开关关闭时，达标信号错过实盘开仓 → 飞书提醒（2026-10-09）；
+    双网开关全关在分发层（_dispatch_immediate_open）已短路，不会进本任务。
     """
     from app.services.account_registry import auto_trade_accounts
 
@@ -303,6 +306,11 @@ def open_trade_for_analysis(analysis_id: str):
         if cfg is None or not (cfg.trading_enabled_testnet or cfg.trading_enabled_live):
             logger.info("即时开仓跳过：双网自动交易开关均关闭（analysis=%s）", analysis_id)
             return
+        # 正式网自动开单关闭：达标信号将错过实盘开仓 → 飞书提醒（2026-10-09）。
+        # 测试网照常扇出；提醒自带异常兜底，失败不影响开仓流程
+        if not cfg.trading_enabled_live:
+            from app.services.trade_engine import notify_live_auto_open_off
+            notify_live_auto_open_off(db, cfg, str(analysis_id))
         accs = auto_trade_accounts(db)
     finally:
         db.close()
