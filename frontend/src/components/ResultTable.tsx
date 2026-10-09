@@ -5,7 +5,7 @@ import {
   Empty,
   Button,
   Modal,
-  Radio,
+  Checkbox,
   message,
 } from "antd";
 import {
@@ -231,18 +231,55 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
   // 行级 loading 防连点（scanResultId -> true）
   const [openLoadingMap, setOpenLoadingMap] = useState<Record<string, boolean>>({});
 
-  // 手动开单账号选择（2026-10-03 删环境切换：后端不再猜网，弹窗显式选账号，
-  // 默认 testnet-1 实盘安全基线；ref 收集选择——Modal.confirm 命令式弹窗不响应组件级 state）
-  const openAccountRef = useRef<string>("testnet-1");
+  // 手动开单网络勾选（2026-10-10 改版）：两个复选框按网选单（每网内部取该网
+  // 第一个已配置账号下单），替代原 Radio 选账号。已开单的网禁选并标注，
+  // 另一网默认选中（测试网已开 → 默认勾正式网）；两网都没开 → 只勾测试网
+  //（实盘安全基线，同旧默认 testnet-1）。ref 收集勾选——Modal.confirm 命令式
+  // 弹窗不响应组件级 state
+  const openNetsRef = useRef<{ testnet: boolean; live: boolean }>({
+    testnet: false,
+    live: false,
+  });
 
   const handleOpenTrade = (record: ScanResult) => {
     const ai = aiMap[record.id];
     if (!ai) return;
     const dirLabel = ai.direction === "long" ? "开多" : "开空";
     const accs = (aiConfig?.accounts ?? []).filter((a) => a.configured);
-    const defaultKey =
-      accs.find((a) => a.key === "testnet-1")?.key || accs[0]?.key || "testnet-1";
-    openAccountRef.current = defaultKey;
+    const testnetAcc = accs.find((a) => a.testnet);
+    const liveAcc = accs.find((a) => !a.testnet);
+    const nets = tradeMap[ai.id]?.nets ?? [];
+    const testnetOpened = nets.includes(true);
+    const liveOpened = nets.includes(false);
+    const init = { testnet: !testnetOpened, live: testnetOpened && !liveOpened };
+    openNetsRef.current = { ...init };
+    const netCheckbox = (
+      net: "testnet" | "live",
+      tag: string,
+      acc: { key: string; name: string } | undefined,
+      opened: boolean,
+    ) => (
+      <Checkbox
+        defaultChecked={init[net]}
+        disabled={opened || !acc}
+        onChange={(e) => {
+          openNetsRef.current[net] = e.target.checked;
+        }}
+      >
+        <Tag color={net === "testnet" ? "orange" : "volcano"} style={{ marginInlineEnd: 4 }}>
+          {tag}
+        </Tag>
+        {acc ? (
+          <>
+            {acc.name}
+            <span style={{ color: "#999", marginLeft: 4 }}>{acc.key}</span>
+          </>
+        ) : (
+          <span style={{ color: "#fa8c16" }}>无已配置账号</span>
+        )}
+        {opened && <span style={{ color: "#999", marginLeft: 4 }}>（已开单，禁选）</span>}
+      </Checkbox>
+    );
     Modal.confirm({
       title: `确认手动开单：${record.symbol} ${dirLabel}？`,
       content: (
@@ -250,28 +287,14 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           <div>入场价：{ai.entry_price}　止损：{ai.stop_loss}　止盈一：{ai.take_profit_1}</div>
           <div>推荐度：{Math.round(ai.recommendation ?? 0)}</div>
           <div style={{ marginTop: 8 }}>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>开单账号（正式网为实盘，请确认）</div>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>开单网络（正式网为实盘，请确认）</div>
             {accs.length === 0 ? (
               <div style={{ color: "#fa8c16" }}>账号清单未加载，请先打开「系统配置」确认服务器 .env 已配置账号</div>
             ) : (
-              <Radio.Group
-                defaultValue={defaultKey}
-                onChange={(e) => {
-                  openAccountRef.current = e.target.value;
-                }}
-                options={accs.map((a) => ({
-                  value: a.key,
-                  label: (
-                    <span>
-                      <Tag color={a.testnet ? "orange" : "volcano"} style={{ marginInlineEnd: 4 }}>
-                        {a.testnet ? "测试网" : "正式网"}
-                      </Tag>
-                      {a.name}
-                      <span style={{ color: "#999", marginLeft: 4 }}>{a.key}</span>
-                    </span>
-                  ),
-                }))}
-              />
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {netCheckbox("testnet", "测试网", testnetAcc, testnetOpened)}
+                {netCheckbox("live", "正式网", liveAcc, liveOpened)}
+              </div>
             )}
           </div>
           {ai.open_block_reason && (
@@ -282,17 +305,38 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       okText: "确认开单",
       cancelText: "取消",
       onOk: async () => {
+        const targets: Array<{ net: string; accKey: string }> = [];
+        if (openNetsRef.current.testnet && testnetAcc)
+          targets.push({ net: "测试网", accKey: testnetAcc.key });
+        if (openNetsRef.current.live && liveAcc)
+          targets.push({ net: "正式网", accKey: liveAcc.key });
+        if (targets.length === 0) {
+          message.warning("请至少勾选一个可开单的网络");
+          return Promise.reject();
+        }
         setOpenLoadingMap((m) => ({ ...m, [record.id]: true }));
         try {
-          const res = await scanApi.trades.openFromAnalysis(ai.id, openAccountRef.current);
-          if (res.opened) {
-            message.success(`${record.symbol} 开单成功（${res.account_key}），详见交易记录`);
-          } else {
-            message.warning(res.block_reason || "闸门未过，未开单");
+          // 逐网顺序开单（共享 IP 权重，同自动扇出惯例）；单网失败不中断另一网
+          const results: string[] = [];
+          let okCount = 0;
+          for (const t of targets) {
+            try {
+              const res = await scanApi.trades.openFromAnalysis(ai.id, t.accKey);
+              if (res.opened) {
+                okCount += 1;
+                results.push(`${t.net}开单成功（${res.account_key}）`);
+              } else {
+                results.push(`${t.net}未开：${res.block_reason || "闸门未过"}`);
+              }
+            } catch (e: any) {
+              results.push(`${t.net}失败：${e?.response?.data?.detail || e?.message || "请求异常"}`);
+            }
           }
+          const summary = `${record.symbol}：${results.join("；")}`;
+          if (okCount === targets.length) message.success(summary, 5);
+          else if (okCount > 0) message.warning(summary, 5);
+          else message.error(summary, 5);
           await refreshTradeMap();
-        } catch (e: any) {
-          message.error(e?.response?.data?.detail || e?.message || "开单请求失败");
         } finally {
           setOpenLoadingMap((m) => ({ ...m, [record.id]: false }));
         }
