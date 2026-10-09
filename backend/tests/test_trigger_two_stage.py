@@ -162,8 +162,8 @@ def test_row1_breakout_without_pending_no_op():
     t, op = trig.detect_trigger(kl, 1)
     assert t is not None and t["type"] == trig.BREAKOUT
     assert op is None
-    # 命中位置文案（2026-10-01）：结构突破=突破前高位价（%.6g）
-    assert t["position_ref"] == f"突破前高 {SWING_HIGH:.6g}"
+    # 命中位置文案（2026-10-01，2026-10-09 瘦身改短前缀）：结构突破=破前高位价（%.6g）
+    assert t["position_ref"] == f"破前高 {SWING_HIGH:.6g}"
 
 
 def test_row1_breakout_with_flipped_pending_expires_as_flip():
@@ -258,8 +258,8 @@ def test_row1_breakout_short_symmetric_positive():
     assert t is not None and t["type"] == trig.BREAKOUT
     assert t["position"] == "support" and t["direction"] == -1
     assert op is None  # 无 pending → 无处置动作
-    # 命中位置文案（2026-10-01）：空头=跌破前低位价（SWING_LOW=100.00，%.6g 无尾零）
-    assert t["position_ref"] == f"跌破前低 {SWING_LOW:.6g}"
+    # 命中位置文案（2026-10-01，2026-10-09 瘦身改短前缀）：空头=破前低位价（SWING_LOW=100.00，%.6g 无尾零）
+    assert t["position_ref"] == f"破前低 {SWING_LOW:.6g}"
 
 
 # ── 行2：当根触碰+金K → 当根确认，pending → superseded ────────────────────

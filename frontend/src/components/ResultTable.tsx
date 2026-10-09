@@ -521,27 +521,32 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       // 位置（2026-10-01）：命中位置双口径——回踩确认=回踩企稳的触点位，
       // 突破触发=突破/跌破的结构前高前低或 20 根 Donchian 轨（附位价）；
       // 旧行无 position_ref 时回退 touch_ref→touchLabel
+      // 列宽瘦身（2026-10-09）：tag 只留位置文字，突破位价剥离进悬停
       title: (
-        <Tooltip title="命中位置：回踩确认=回踩企稳的触点位（EMA21/前高回测/摆动低点等），突破触发=突破或跌破的结构前高/前低/20根Donchian轨，附突破位价格">
+        <Tooltip title="命中位置：回踩确认=回踩企稳的触点位（EMA21/前高回测/摆动低点等），突破触发=突破或跌破的结构前高/前低/20根Donchian轨，突破位价悬停查看">
           <span>位置</span>
         </Tooltip>
       ),
       dataIndex: "position_ref",
       key: "position_ref",
-      width: 150,
+      width: 100,
       render: (v: string | null, record: ScanResult) => {
         if (v) {
           const isPullback = v.startsWith("回踩");
+          // 价格尾巴（「破前高 0.123456」/旧行「突破20根轨高 0.12」）移入悬停；
+          // 回踩类无空格分隔的数字尾巴（EMA21 不受影响）
+          const short = v.replace(/\s+[0-9][\d.eE+-]*$/, "");
+          const px = v.slice(short.length).trim();
           const tip = isPullback
             ? TOUCH_TAG_MAP[record.touch_ref || ""]?.tip
-            : "突破/跌破的结构位或趋势轨，价格即突破位（信号K线收盘越过该位触发）";
+            : `突破/跌破的结构位或趋势轨${px ? `，突破位 ${px}` : ""}（信号K线收盘越过该位触发）`;
           return (
             <Tooltip title={tip}>
               <Tag
                 color={isPullback ? TOUCH_TAG_MAP[record.touch_ref || ""]?.color || "purple" : "geekblue"}
                 style={{ marginInlineEnd: 0 }}
               >
-                {v}
+                {short}
               </Tag>
             </Tooltip>
           );

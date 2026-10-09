@@ -389,7 +389,7 @@ def detect_trigger(
                         "position": "resistance",
                         "breakout_level": ref, "candle_open": sig_open,
                         "pattern": None,
-                        "position_ref": f"突破前高 {ref:.6g}",
+                        "position_ref": f"破前高 {ref:.6g}",
                         "breakout_pct": (close_last - ref) / ref * 100,
                         "reason": f"指标同向·{vol_desc}长实体收盘突破前高({ref:.6g})",
                     }, _close_op(pending, direction, "breakout")
@@ -399,7 +399,7 @@ def detect_trigger(
                         "position": "support",
                         "breakout_level": ref, "candle_open": sig_open,
                         "pattern": None,
-                        "position_ref": f"跌破前低 {ref:.6g}",
+                        "position_ref": f"破前低 {ref:.6g}",
                         "breakout_pct": (close_last - ref) / ref * 100,
                         "reason": f"指标同向·{vol_desc}长实体收盘跌破前低({ref:.6g})",
                     }, _close_op(pending, direction, "breakout")
@@ -422,7 +422,7 @@ def detect_trigger(
                         "position": "resistance",
                         "breakout_level": chan_high, "candle_open": sig_open,
                         "pattern": None,
-                        "position_ref": f"突破{chan_n}根轨高 {chan_high:.6g}",
+                        "position_ref": f"破轨高 {chan_high:.6g}",
                         "breakout_pct": (close_last - chan_high) / chan_high * 100,
                         "reason": f"指标同向·{vol_desc}长实体收盘突破{chan_n}根"
                                   f"Donchian上轨({chan_high:.6g})",
@@ -433,7 +433,7 @@ def detect_trigger(
                         "position": "support",
                         "breakout_level": chan_low, "candle_open": sig_open,
                         "pattern": None,
-                        "position_ref": f"跌破{chan_n}根轨低 {chan_low:.6g}",
+                        "position_ref": f"破轨低 {chan_low:.6g}",
                         "breakout_pct": (close_last - chan_low) / chan_low * 100,
                         "reason": f"指标同向·{vol_desc}长实体收盘跌破{chan_n}根"
                                   f"Donchian下轨({chan_low:.6g})",
