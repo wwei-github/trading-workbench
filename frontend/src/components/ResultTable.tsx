@@ -448,10 +448,11 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       title: "币种",
       dataIndex: "symbol",
       key: "symbol",
-      width: 150,
+      width: 110,
       render: (v: string, record: ScanResult) => (
+        // 仅显示基础币（BTC），USDT 计价由表头语义自明——收窄列宽
         <span>
-          <strong>{v.replace("USDT", "")}/USDT</strong>
+          <strong>{v.replace(/USDT$/, "")}</strong>
           <Tooltip title={watchedSymbols.has(v) ? "取消关注" : "加入关注列表"}>
             <Button
               type="text"
@@ -608,7 +609,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       title: "K线形态",
       dataIndex: "pattern",
       key: "pattern",
-      width: 116,
+      width: 100,
       ...filterProps("pattern", PATTERN_FILTERS),
       render: (v: string | null, record: ScanResult) => {
         if (!v) return <span style={{ color: "#999" }}>-</span>;
@@ -816,7 +817,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           size="small"
           tableLayout="fixed"
           // 表格总宽 x = 各列 width 之和（2026-09-30 列宽收窄后同步；改列宽须一并维护）
-          scroll={{ x: 1444 }}
+          scroll={{ x: 1388 }}
           onChange={handleTableChange}
           pagination={{
             current: resultsPage,
