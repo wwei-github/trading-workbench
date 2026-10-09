@@ -16,7 +16,7 @@ import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts'
 import { scanApi } from '../api/scan'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { SCHEME_UP_DOWN } from '../utils/scheme'
-import { fmtPrice, fmtTime, GLASS } from './klineShared'
+import { fmtPrice, GLASS } from './klineShared'
 import { bj, dayjs } from '../utils/dayjs'
 import ChartCore, { type OverlayCtx } from './ChartCore'
 import type { AIAnalysis, KlineData, TradeKlineData, TradeKlineEvent } from '../types'
@@ -218,8 +218,9 @@ function ReplayInfoCard({ data, colorScheme }: { data: TradeKlineData; colorSche
         {data.interval} · 开单前100根 + 持仓全程{statusPnl}
       </span>
       <div>
-        {fmtTime(Math.floor(data.klines[0].time / 1000))} →{' '}
-        {fmtTime(Math.floor(data.klines[data.klines.length - 1].time / 1000))} · 共 {data.klines.length} 根
+        开仓 {bj(data.opened_at).format('MM-DD HH:mm')} →{' '}
+        {data.closed_at ? `平仓 ${bj(data.closed_at).format('MM-DD HH:mm')}` : '至今'} · 共{' '}
+        {data.klines.length} 根
       </div>
       <div>
         {isLong ? '开多' : '开空'}{' '}
