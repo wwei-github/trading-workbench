@@ -316,12 +316,16 @@ export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKe
   const replayData = isReplay ? (data as TradeKlineData | null) : null
   const isLong = replayData?.direction !== 'short'
 
-  // 周期切换档位（复盘模式）：服务端实际档 + 1h/4h，去重保序；
+  // 周期切换档位（复盘模式）：1h/4h 固定顺序，服务端实际档（cfg.kline_interval
+  // 可配非 1h/4h，如 15m/30m/1d）按固定档序就近插入——之前把 serverInterval
+  // 放在最前，切到 4h 后列表变 [4h,1h]，选中档跑到了 1h 前面（位置漂移）
   // 扫描模式固定 1h/4h（ChartCore 缺省档）
   const intervalOptions = useMemo(() => {
     if (!isReplay) return undefined
-    const vals = [serverInterval, '1h', '4h']
-    return [...new Set(vals)].map((v) => ({ label: v, value: v }))
+    const base = ['1h', '4h']
+    const extra = serverInterval !== '1h' && serverInterval !== '4h' ? [serverInterval] : []
+    return [...new Set([...base, ...extra])]
+      .map((v) => ({ label: v, value: v }))
   }, [isReplay, serverInterval])
 
   // 事件箭头标记（useMemo 保持引用稳定：ChartCore 以引用判断是否重应用标记）
