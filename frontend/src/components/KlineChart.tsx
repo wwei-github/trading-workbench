@@ -384,7 +384,7 @@ export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKe
       )}
       <ChartCore
         // chartKey 不含周期：图表实例跨周期复用——切周期时新数据由 ChartCore
-        // 的 data effect 原地 setData（指标/可视区/标记重算，覆盖层每帧重绘）
+        // 的 data effect 原地 setData（可视范围按时间锚定恢复，指标同提交重建）
         chartKey={isReplay ? tradeId! : data.symbol}
         watermark={watermark}
         label={data.symbol}
@@ -400,6 +400,26 @@ export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKe
         onIntervalChange={(v) => setReqInterval(v)}
         intervalOptions={intervalOptions}
       />
+      {/* 切周期/更新重拉中：旧图保留，右上角轻量反馈（不遮工具栏与价格轴） */}
+      {loading && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 6,
+            right: 66,
+            zIndex: 30,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '2px 10px',
+            background: 'rgba(19, 23, 34, 0.72)',
+            borderRadius: 10,
+            fontSize: 12,
+            color: '#8b93a7',
+          }}>
+          <Spin size="small" /> 拉取K线中…
+        </div>
+      )}
     </div>
   )
 }

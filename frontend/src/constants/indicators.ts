@@ -1,94 +1,90 @@
-// 图表指标目录：计算全部委托开源库 indicatorts（https://github.com/cinar/indicatorts，TS 原生，242 个指标）
-// 本文件只做两件事：① 声明指标目录（名称/位置/参数）；② 把库函数输出适配成统一渲染结构
-// 新增指标 = 在 INDICATOR_CATALOG 加一项配置，不需要写指标数学
+// 图表指标目录（2026-10-09 换插件）：lightweight-charts-indicators@0.10.0
+// （oakscriptjs Pine v6 口径，95 标准指标 + 1150 社区指标），画线走其
+// IndicatorRenderer——本文件只做目录声明：包装插件的 calculate/metadata，
+// 新增指标 = 从插件 import 后加一项配置（社区指标走 executeScript，见 docs/18 §七）
+import type { Bar, IndicatorResult, PlotConfig } from 'oakscriptjs'
 import {
-  ao,
-  atr,
-  bb,
-  cci,
-  donchianChannel,
-  ema,
-  kdj,
-  kc,
-  mfi,
-  macd,
-  obv,
-  psar,
-  roc,
-  rsi,
-  sma,
-  williamsR,
-  type Trend,
-} from 'indicatorts'
+  ATR,
+  AwesomeOscillator,
+  BollingerBands,
+  CCI,
+  DonchianChannels,
+  EMA,
+  KDJ,
+  KeltnerChannels,
+  MACD,
+  MFI,
+  OBV,
+  ParabolicSAR,
+  ROC,
+  RSI,
+  SMA,
+  WilliamsPercentRange,
+} from 'lightweight-charts-indicators'
+import type { RenderableIndicator } from 'lightweight-charts-indicators/render'
 
-// 渲染层输入上下文：一份 K 线 + 全局涨跌配色
-export interface IndicatorContext {
-  opens: number[]
-  highs: number[]
-  lows: number[]
-  closes: number[]
-  volumes: number[]
-  cc: { up: string; down: string }
-}
+// 插件 Bar 形状（time 为秒级 int，与宿主 candlePoints 一致）
+export type IndicatorBar = Bar
 
-export interface IndicatorLine {
-  color: string
-  values: (number | null)[]
-  lineStyle?: 'solid' | 'dotted' | 'dashed'
-  // 图例短名（如 EMA21 / K / DIF）；缺省用指标 label
-  name?: string
+// 插件指标模块 → RenderableIndicator 适配：overlay 在 metadata 里、
+// hline/fill/arrow 配置按需携带
+type IndicatorModule = {
+  metadata: { overlay: boolean }
+  plotConfig: PlotConfig[]
+  hlineConfig?: RenderableIndicator['hlineConfig']
+  fillConfig?: RenderableIndicator['fillConfig']
 }
-
-export interface IndicatorBar {
-  value: number
-  color: string
-}
-
-export interface IndicatorResult {
-  lines: IndicatorLine[]
-  bars?: IndicatorBar[]
-}
+const mod = (m: IndicatorModule): RenderableIndicator => ({
+  overlay: m.metadata.overlay,
+  plotConfig: m.plotConfig,
+  ...(m.hlineConfig ? { hlineConfig: m.hlineConfig } : {}),
+  ...(m.fillConfig ? { fillConfig: m.fillConfig } : {}),
+})
 
 export interface IndicatorDef {
   key: string
   label: string
-  pane: 'main' | 'sub' // 主图叠加 / 独立副图
+  // 主图叠加 / 独立副图（插件 metadata.overlay 决定 renderer 行为，
+  // 这里保留目录语义用于 pane 分配）
+  pane: 'main' | 'sub'
   defaults: number[]
   paramLabels: string[]
-  // 柱状副图是否按成交量格式化刻度（如 VOL）
-  volumeFormat?: boolean
-  compute: (ctx: IndicatorContext, p: number[]) => IndicatorResult
+  // 计算：params 为用户可调参数（目录 defaults 覆盖插件默认）
+  calculate: (bars: IndicatorBar[], params: number[]) => IndicatorResult
+  // 渲染描述：插件模块自带（overlay + plotConfig），多周期均线族为合成配置
+  renderable: (params: number[]) => RenderableIndicator
+  // 图例短名（按 renderable.plotConfig 顺序；缺省用插件 title）
+  legendNames?: string[]
+  // 不进图例的 plot 下标（如 MACD 柱）
+  legendSkip?: number[]
 }
 
-const LINE_COLORS = ['#f0b90b', '#00bcd4', '#ff9800', '#b39ddb', '#ef5350']
+// 多周期均线族：插件 EMA/SMA 单实例只出一条 EMA 线（plot0），多周期 =
+// 多次 calculate 合并（plot0_0/1/2…）+ 合成 plotConfig
+const MA_COLORS = ['#f0b90b', '#00bcd4', '#ff9800', '#b39ddb', '#ef5350']
+const multiPeriodMA = (mod: typeof EMA | typeof SMA, labelPrefix: string) => ({
+  calculate: (bars: IndicatorBar[], periods: number[]): IndicatorResult => {
+    const plots: IndicatorResult['plots'] = {}
+    periods.forEach((p, i) => {
+      const r = mod.calculate(bars, { length: p })
+      plots[`plot0_${i}`] = r.plots.plot0 ?? []
+    })
+    return { metadata: mod.metadata, plots }
+  },
+  renderable: (periods: number[]): RenderableIndicator => ({
+    overlay: true,
+    plotConfig: periods.map((p, i): PlotConfig => ({
+      id: `plot0_${i}`,
+      title: `${labelPrefix}${p}`,
+      color: MA_COLORS[i % MA_COLORS.length],
+      style: 'line',
+    })),
+  }),
+  legendNames: (periods: number[]) => periods.map((p) => `${labelPrefix}${p}`),
+})
 
-// 多周期均线通用适配（EMA/MA）：每个周期一条线，图例显示 EMA21 / MA60 等短名
-const periodLines = (
-  closes: number[],
-  periods: number[],
-  calc: (values: number[], period: number) => (number | null)[],
-  colors: string[] = LINE_COLORS,
-  nameOf?: (period: number) => string,
-): IndicatorLine[] =>
-  periods.map((period, i) => ({
-    color: colors[i % colors.length],
-    values: calc(closes, period),
-    ...(nameOf ? { name: nameOf(period) } : {}),
-  }))
-
-// SAR 点位着色：上涨点/下跌点区分（trends: 1 上涨 / -1 下跌）
-const sarLines = (r: { trends: Trend[]; psarResult: number[] }): IndicatorLine[] => {
-  const up: (number | null)[] = []
-  const down: (number | null)[] = []
-  r.psarResult.forEach((v, i) => {
-    up.push(r.trends[i] === 1 ? v : null)
-    down.push(r.trends[i] === -1 ? v : null)
-  })
-  return [
-    { color: '#26a69a', values: up, lineStyle: 'dotted', name: 'SAR ↑' },
-    { color: '#ef5350', values: down, lineStyle: 'dotted', name: 'SAR ↓' },
-  ]
-}
+const EMA_MULTI = multiPeriodMA(EMA, 'EMA')
+const SMA_MULTI = multiPeriodMA(SMA, 'MA')
 
 export const INDICATOR_CATALOG: IndicatorDef[] = [
   // ===== 主图叠加 =====
@@ -98,15 +94,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'main',
     defaults: [21, 55, 144],
     paramLabels: ['周期1', '周期2', '周期3'],
-    compute: (ctx, periods) => ({
-      lines: periodLines(
-        ctx.closes,
-        periods,
-        (v, period) => ema(v, { period }),
-        ['#f0b90b', '#00bcd4', '#ff9800'],
-        (p) => `EMA${p}`,
-      ),
-    }),
+    calculate: EMA_MULTI.calculate,
+    renderable: EMA_MULTI.renderable,
+    legendNames: EMA_MULTI.legendNames([21, 55, 144]),
   },
   {
     key: 'ma',
@@ -114,9 +104,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'main',
     defaults: [5, 10, 30, 60],
     paramLabels: ['周期1', '周期2', '周期3', '周期4'],
-    compute: (ctx, periods) => ({
-      lines: periodLines(ctx.closes, periods, (v, period) => sma(v, { period }), LINE_COLORS, (p) => `MA${p}`),
-    }),
+    calculate: SMA_MULTI.calculate,
+    renderable: SMA_MULTI.renderable,
+    legendNames: SMA_MULTI.legendNames([5, 10, 30, 60]),
   },
   {
     key: 'boll',
@@ -124,16 +114,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'main',
     defaults: [20],
     paramLabels: ['周期'],
-    compute: (ctx, [period]) => {
-      const r = bb(ctx.closes, { period })
-      return {
-        lines: [
-          { color: '#4d8ef7', values: r.upper, name: '上轨' },
-          { color: '#d1d4dc', values: r.middle, name: '中轨' },
-          { color: '#4d8ef7', values: r.lower, name: '下轨' },
-        ],
-      }
-    },
+    calculate: (bars, [length]) => BollingerBands.calculate(bars, { length }),
+    renderable: () => mod(BollingerBands),
+    legendNames: ['中轨', '上轨', '下轨'],
   },
   {
     key: 'kc',
@@ -141,16 +124,8 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'main',
     defaults: [20],
     paramLabels: ['周期'],
-    compute: (ctx, [period]) => {
-      const r = kc(ctx.highs, ctx.lows, ctx.closes, { period })
-      return {
-        lines: [
-          { color: '#00bcd4', values: r.upper, name: '上轨' },
-          { color: '#d1d4dc', values: r.middle, name: '中轨' },
-          { color: '#00bcd4', values: r.lower, name: '下轨' },
-        ],
-      }
-    },
+    calculate: (bars, [length]) => KeltnerChannels.calculate(bars, { length }),
+    renderable: () => mod(KeltnerChannels),
   },
   {
     key: 'donchian',
@@ -158,17 +133,8 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'main',
     defaults: [20],
     paramLabels: ['周期'],
-    compute: (ctx, [period]) => {
-      // 库实现：上轨 = 收盘价滚动最高，下轨 = 滚动最低，中轨 = 两者均值
-      const r = donchianChannel(ctx.closes, { period })
-      return {
-        lines: [
-          { color: '#ef5350', values: r.upper, name: '上轨' },
-          { color: '#f0b90b', values: r.middle, name: '中轨' },
-          { color: '#26a69a', values: r.lower, name: '下轨' },
-        ],
-      }
-    },
+    calculate: (bars, [length]) => DonchianChannels.calculate(bars, { length }),
+    renderable: () => mod(DonchianChannels),
   },
   {
     key: 'psar',
@@ -176,23 +142,20 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'main',
     defaults: [],
     paramLabels: [],
-    compute: (ctx) => ({ lines: sarLines(psar(ctx.highs, ctx.lows, ctx.closes)) }),
+    calculate: (bars) => ParabolicSAR.calculate(bars),
+    renderable: () => mod(ParabolicSAR),
   },
   // ===== 副图 =====
   {
+    // VOL 成交量：宿主直绘（up/down 着色 + volume 刻度，插件无此定制），
+    // calculate/renderable 不走（ChartCore 按 key 特判）
     key: 'vol',
     label: 'VOL 成交量',
     pane: 'sub',
     defaults: [],
     paramLabels: [],
-    volumeFormat: true,
-    compute: (ctx) => ({
-      lines: [],
-      bars: ctx.volumes.map((v, i) => ({
-        value: v,
-        color: ctx.closes[i] >= ctx.opens[i] ? ctx.cc.up : ctx.cc.down,
-      })),
-    }),
+    calculate: () => ({ metadata: { title: 'Volume', overlay: false }, plots: {} }),
+    renderable: () => ({ overlay: false, plotConfig: [] }),
   },
   {
     key: 'macd',
@@ -200,20 +163,11 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'sub',
     defaults: [12, 26, 9],
     paramLabels: ['快线', '慢线', '信号'],
-    compute: (ctx, [fast, slow, signal]) => {
-      const r = macd(ctx.closes, { fast, slow, signal })
-      return {
-        lines: [
-          { color: '#f0b90b', values: r.macdLine, name: 'DIF' },
-          { color: '#00bcd4', values: r.signalLine, name: 'DEA' },
-        ],
-        // 库只给两线，柱 = DIF - DEA（标准 MACD 定义，一行差值）
-        bars: r.macdLine.map((v, i) => {
-          const hist = v - r.signalLine[i]
-          return { value: hist, color: hist >= 0 ? ctx.cc.up : ctx.cc.down }
-        }),
-      }
-    },
+    calculate: (bars, [fastLength, slowLength, signalLength]) =>
+      MACD.calculate(bars, { fastLength, slowLength, signalLength }),
+    renderable: () => mod(MACD),
+    legendNames: ['MACD', 'DIF', 'DEA'],
+    legendSkip: [0], // 柱线不进图例（两线已表达趋势）
   },
   {
     key: 'kdj',
@@ -221,21 +175,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'sub',
     defaults: [9, 3],
     paramLabels: ['N', 'M'],
-    compute: (ctx, [period, signalPeriod]) => {
-      // 库配置字段：rPeriod（RSV）/ kPeriod / dPeriod，M 同时作用于 K、D 平滑
-      const r = kdj(ctx.highs, ctx.lows, ctx.closes, {
-        rPeriod: period,
-        kPeriod: signalPeriod,
-        dPeriod: signalPeriod,
-      })
-      return {
-        lines: [
-          { color: '#f0b90b', values: r.k, name: 'K' },
-          { color: '#00bcd4', values: r.d, name: 'D' },
-          { color: '#ef5350', values: r.j, name: 'J' },
-        ],
-      }
-    },
+    calculate: (bars, [period, signal]) => KDJ.calculate(bars, { period, signal }),
+    renderable: () => mod(KDJ),
+    legendNames: ['K', 'D', 'J'],
   },
   {
     key: 'rsi',
@@ -243,9 +185,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'sub',
     defaults: [14],
     paramLabels: ['周期'],
-    compute: (ctx, [period]) => ({
-      lines: [{ color: '#b39ddb', values: rsi(ctx.closes, { period }), name: 'RSI' }],
-    }),
+    calculate: (bars, [length]) => RSI.calculate(bars, { length }),
+    renderable: () => mod(RSI), // 70/50/30 参考线由插件 hlineConfig 自带
+    legendNames: ['RSI'],
   },
   {
     key: 'wr',
@@ -253,15 +195,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'sub',
     defaults: [14],
     paramLabels: ['周期'],
-    compute: (ctx, [period]) => ({
-      lines: [
-        {
-          color: '#00bcd4',
-          values: williamsR(ctx.highs, ctx.lows, ctx.closes, { period }),
-          name: 'WR',
-        },
-      ],
-    }),
+    calculate: (bars, [length]) => WilliamsPercentRange.calculate(bars, { length }),
+    renderable: () => mod(WilliamsPercentRange),
+    legendNames: ['WR'],
   },
   {
     key: 'cci',
@@ -269,9 +205,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'sub',
     defaults: [20],
     paramLabels: ['周期'],
-    compute: (ctx, [period]) => ({
-      lines: [{ color: '#f0b90b', values: cci(ctx.highs, ctx.lows, ctx.closes, { period }), name: 'CCI' }],
-    }),
+    calculate: (bars, [length]) => CCI.calculate(bars, { length }),
+    renderable: () => mod(CCI),
+    legendNames: ['CCI'],
   },
   {
     key: 'atr',
@@ -279,15 +215,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'sub',
     defaults: [14],
     paramLabels: ['周期'],
-    compute: (ctx, [period]) => ({
-      lines: [
-        {
-          color: '#ff9800',
-          values: atr(ctx.highs, ctx.lows, ctx.closes, { period }).atrLine,
-          name: 'ATR',
-        },
-      ],
-    }),
+    calculate: (bars, [length]) => ATR.calculate(bars, { length }),
+    renderable: () => mod(ATR),
+    legendNames: ['ATR'],
   },
   {
     key: 'obv',
@@ -295,9 +225,8 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'sub',
     defaults: [],
     paramLabels: [],
-    compute: (ctx) => ({
-      lines: [{ color: '#b39ddb', values: obv(ctx.closes, ctx.volumes), name: 'OBV' }],
-    }),
+    calculate: (bars) => OBV.calculate(bars),
+    renderable: () => mod(OBV),
   },
   {
     key: 'mfi',
@@ -305,15 +234,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'sub',
     defaults: [14],
     paramLabels: ['周期'],
-    compute: (ctx, [period]) => ({
-      lines: [
-        {
-          color: '#00bcd4',
-          values: mfi(ctx.highs, ctx.lows, ctx.closes, ctx.volumes, { period }),
-          name: 'MFI',
-        },
-      ],
-    }),
+    calculate: (bars, [length]) => MFI.calculate(bars, { length }),
+    renderable: () => mod(MFI),
+    legendNames: ['MFI'],
   },
   {
     key: 'roc',
@@ -321,9 +244,9 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'sub',
     defaults: [12],
     paramLabels: ['周期'],
-    compute: (ctx, [period]) => ({
-      lines: [{ color: '#f0b90b', values: roc(ctx.closes, { period }), name: 'ROC' }],
-    }),
+    calculate: (bars, [length]) => ROC.calculate(bars, { length }),
+    renderable: () => mod(ROC),
+    legendNames: ['ROC'],
   },
   {
     key: 'ao',
@@ -331,12 +254,7 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
     pane: 'sub',
     defaults: [],
     paramLabels: [],
-    compute: (ctx) => ({
-      lines: [],
-      bars: ao(ctx.highs, ctx.lows).map((v) => ({
-        value: v,
-        color: v >= 0 ? ctx.cc.up : ctx.cc.down,
-      })),
-    }),
+    calculate: (bars) => AwesomeOscillator.calculate(bars),
+    renderable: () => mod(AwesomeOscillator),
   },
 ]

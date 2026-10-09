@@ -18,6 +18,8 @@
     "indicatorts": "^2.2.2",
     "lightweight-charts": "^5.2.1",
     "lightweight-charts-drawing": "0.2.4",
+    "lightweight-charts-indicators": "0.10.0",
+    "oakscriptjs": "0.10.1",
     "react": "^18.2.0",
     "react-chrono": "^2.6.1",
     "react-dom": "^18.2.0",

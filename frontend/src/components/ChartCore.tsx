@@ -6,7 +6,7 @@
  * - 差异通过 props 注入：复盘图传 drawOverlay（区域色块）+ extraMarkers
  *   （事件箭头）+ headerExtra（复盘信息面板）；数据拉取由父组件负责
  */
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Button, Checkbox, Dropdown, Input, InputNumber, Popconfirm, Radio, Tooltip, Typography } from 'antd'
 import {
   ClearOutlined,
@@ -25,8 +25,6 @@ import { DrawingManager, type Drawing, type DrawingKind, type MagnetMode, type T
 import {
   createSeriesMarkers,
   HistogramSeries,
-  LineSeries,
-  LineStyle,
   type IChartApi,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
@@ -54,9 +52,9 @@ import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { SCHEME_UP_DOWN } from '../utils/scheme'
 import {
   INDICATOR_CATALOG,
-  type IndicatorContext,
-  type IndicatorResult,
+  type IndicatorBar,
 } from '../constants/indicators'
+import { IndicatorRenderer } from 'lightweight-charts-indicators/render'
 import type { AIAnalysis, Kline, KlineData } from '../types'
 
 const { Text } = Typography
@@ -164,6 +162,11 @@ const lastFinite = (values: (number | null)[]): number | null => {
   }
   return null
 }
+
+// 插件 plot 结果（{time,value,color} 点集）取最新有限值（图例用）
+const lastFiniteOf = (
+  pts: { value: number | null }[] | undefined,
+): number | null => (pts ? lastFinite(pts.map((p) => p.value ?? null)) : null)
 
 // 图例中的一条指标线（悬浮时取悬浮位置的值，未悬浮取最新值）
 interface LegendIndicator {
@@ -356,7 +359,8 @@ export default function ChartCore({
   const svgRef = useRef<SVGSVGElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
-  // 技术指标 series + 图例元信息（目录驱动），effect 重建时统一清理
+  // 技术指标 renderer/series + 图例元信息（目录驱动），effect 重建时统一清理
+  const indicatorRenderersRef = useRef<IndicatorRenderer[]>([])
   const indicatorSeriesRef = useRef<ISeriesApi<SeriesType>[]>([])
   const indicatorMetaRef = useRef<
     { series: ISeriesApi<SeriesType>; name: string; color: string; lastValue: number | null }[]
@@ -370,10 +374,22 @@ export default function ChartCore({
   // 文本/表格内联编辑器 + 提交防抖守卫（Enter 提交后失焦不再二次提交）
   const [editor, setEditor] = useState<InlineEditor | null>(null)
   const editorBusyRef = useRef(false)
-  // 已加载的 K 线（完整 OHLCV），供指标计算与标注使用
-  const [candlePoints, setCandlePoints] = useState<
-    { time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }[]
-  >([])
+  // 已加载的 K 线（完整 OHLCV），供指标计算与标注使用。
+  // useMemo 派生（勿改回 state）：切周期时 data effect 的 series.setData 与指标
+  // effect 必须在同一提交里用同一份新数据——state 写入会晚一拍，产生
+  // 「新K线 + 旧指标」的错位中间帧（2026-10-09 周期切换渲染 bug）
+  const candlePoints = useMemo(
+    () =>
+      (data?.klines ?? []).map((k: Kline) => ({
+        time: Math.floor(k.time / 1000) as UTCTimestamp,
+        open: k.open,
+        high: k.high,
+        low: k.low,
+        close: k.close,
+        volume: k.volume,
+      })),
+    [data],
+  )
   // 图例数据：null 表示未悬浮 → 显示最新一根 K 线
   const [legend, setLegend] = useState<LegendData | null>(null)
 
@@ -522,21 +538,24 @@ export default function ChartCore({
       low: k.low,
       close: k.close,
     }))
+    // 同实例换数据（切周期/刷新）：先记住当前可视时间范围，新数据就位后按时间
+    // 恢复位置（TV 行为：切周期视口锚定时间而非固定根数）；实例重建时为 null 走缺省
+    const oldRange = chart.timeScale().getVisibleRange()
     series.setData(candleData)
     // 缺省显示最近约 130 根（更易读），往左滚动可看全量历史
     const f = from ?? Math.max(0, candleData.length - 130)
     applyCorridorView(chart, containerRef.current?.clientWidth, candleData.length, f)
-    // 直接从原始数据取完整 OHLCV（candleData 是给 series 用的精简结构）
-    setCandlePoints(
-      data.klines.map((k: Kline) => ({
-        time: Math.floor(k.time / 1000) as UTCTimestamp,
-        open: k.open,
-        high: k.high,
-        low: k.low,
-        close: k.close,
-        volume: k.volume,
-      })),
-    )
+    if (oldRange) {
+      const first = candleData[0]?.time
+      const last = candleData[candleData.length - 1]?.time
+      if (first != null && last != null) {
+        chart.timeScale().setVisibleRange({
+          from: Math.max(oldRange.from as number, first) as UTCTimestamp,
+          to: Math.min(oldRange.to as number, last) as UTCTimestamp,
+        })
+      }
+    }
+    // 完整 OHLCV 已由 useMemo 派生（candlePoints），指标/图例同提交更新
     setLegend(null)
 
     // K 线标记：摆动结构（借鉴 Pine 结构标签：高点 HH/LH，低点 HL/LL，各取 5 个）
@@ -573,13 +592,22 @@ export default function ChartCore({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, chartKey, from, extraMarkers])
 
-  // 渲染技术指标：目录驱动（indicatorts 计算库 + 通用渲染层），无手写指标数学
-  // 主图叠加（pane 0）/ 副图（按目录顺序自动分配 pane 1,2,3…）
+  // 渲染技术指标：目录驱动（lightweight-charts-indicators 插件 + IndicatorRenderer），
+  // 计算与画线全部插件内建（Pine v6 口径）；VOL 仍为宿主直绘（成交量刻度插件不支持）。
+  // 主图叠加（pane 0）/ 副图（按目录顺序分配 pane 1,2,3…）
   useEffect(() => {
     const chart = chartRef.current
     if (!chart || candlePoints.length === 0) return
 
-    // 清理旧指标 series 与已空的副图 pane（pane 0 主图保留）
+    // 清理旧 renderer（series/hline 随 clear() 一并移除）、VOL series 与空副图 pane
+    indicatorRenderersRef.current.forEach((r) => {
+      try {
+        r.clear()
+      } catch {
+        /* 旧图表已销毁 */
+      }
+    })
+    indicatorRenderersRef.current = []
     indicatorSeriesRef.current.forEach((s) => {
       try {
         chart.removeSeries(s)
@@ -597,14 +625,8 @@ export default function ChartCore({
       }
     }
 
-    const ctx: IndicatorContext = {
-      opens: candlePoints.map((c) => c.open),
-      highs: candlePoints.map((c) => c.high),
-      lows: candlePoints.map((c) => c.low),
-      closes: candlePoints.map((c) => c.close),
-      volumes: candlePoints.map((c) => c.volume),
-      cc: CANDLE_COLORS[colorScheme],
-    }
+    // 插件 Bar 形状与 candlePoints 一致（time 秒级 int），直接传引用
+    const bars: IndicatorBar[] = candlePoints
 
     // 为开启的副图指标按目录顺序分配 pane（1 起）
     const subPane: Record<string, number> = {}
@@ -615,14 +637,6 @@ export default function ChartCore({
       }
     }
 
-    const toLineData = (values: (number | null)[]) =>
-      candlePoints
-        .map((c, j) => ({ time: c.time, value: values[j] ?? null }))
-        .filter(
-          (d): d is { time: UTCTimestamp; value: number } =>
-            d.value != null && Number.isFinite(d.value),
-        )
-
     // 汇总图例元信息（effect 末尾一次性写入 ref）
     const metas: typeof indicatorMetaRef.current = []
 
@@ -630,70 +644,61 @@ export default function ChartCore({
       const setting = indicatorSettings[def.key]
       if (!setting?.enabled) continue
 
-      let out: IndicatorResult
+      // VOL 成交量：宿主直绘（up/down 着色 + volume 刻度，插件无此定制）
+      if (def.key === 'vol') {
+        const hist = chart.addSeries(
+          HistogramSeries,
+          { priceLineVisible: false, lastValueVisible: false, priceFormat: { type: 'volume' as const } },
+          subPane[def.key] ?? 1,
+        )
+        hist.setData(
+          candlePoints.map((c) => ({
+            time: c.time,
+            value: c.volume,
+            color: c.close >= c.open ? CANDLE_COLORS[colorScheme].up : CANDLE_COLORS[colorScheme].down,
+          })),
+        )
+        indicatorSeriesRef.current.push(hist)
+        metas.push({ series: hist, name: 'VOL', color: '#8b93a7', lastValue: candlePoints[candlePoints.length - 1]?.volume ?? null })
+        continue
+      }
+
+      let out: import('oakscriptjs').IndicatorResult
       try {
-        out = def.compute(ctx, setting.params)
+        out = def.calculate(bars, setting.params)
       } catch (e) {
         console.error(`指标 ${def.label} 计算失败`, e)
         continue
       }
 
       const paneIndex = def.pane === 'main' ? 0 : subPane[def.key]
+      const renderer = new IndicatorRenderer(chart, {
+        paneIndex,
+        mainSeries: seriesRef.current ?? undefined,
+      })
+      try {
+        renderer.render(def.renderable(setting.params), out, bars, {})
+      } catch (e) {
+        console.error(`指标 ${def.label} 渲染失败`, e)
+        continue
+      }
+      indicatorRenderersRef.current.push(renderer)
 
-      for (const ln of out.lines) {
-        const line = chart.addSeries(
-          LineSeries,
-          {
-            color: ln.color,
-            lineWidth: 1,
-            lineStyle:
-              ln.lineStyle === 'dotted'
-                ? LineStyle.Dotted
-                : ln.lineStyle === 'dashed'
-                  ? LineStyle.Dashed
-                  : LineStyle.Solid,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false,
-          },
-          paneIndex,
-        )
-        line.setData(toLineData(ln.values))
-        indicatorSeriesRef.current.push(line)
+      // 图例：plot series 在 plotConfig 顺序（renderer.series() 前 N 个），取最新有限值
+      const plotSeries = renderer.series().slice(0, def.renderable(setting.params).plotConfig.length)
+      const names =
+        def.legendNames ??
+        def.renderable(setting.params).plotConfig.map((p) => p.title ?? p.id)
+      plotSeries.forEach((s, i) => {
+        if (def.legendSkip?.includes(i)) return
+        const cfg = def.renderable(setting.params).plotConfig[i]
         metas.push({
-          series: line,
-          name: ln.name ?? def.label,
-          color: ln.color,
-          lastValue: lastFinite(ln.values),
+          series: s,
+          name: names[i] ?? cfg.title,
+          color: cfg.color ?? '#8b93a7',
+          lastValue: lastFiniteOf(out.plots[cfg.id]),
         })
-      }
-
-      if (out.bars && out.bars.length > 0) {
-        const bars = chart.addSeries(
-          HistogramSeries,
-          {
-            priceLineVisible: false,
-            lastValueVisible: false,
-            ...(def.volumeFormat ? { priceFormat: { type: 'volume' as const } } : {}),
-          },
-          paneIndex,
-        )
-        bars.setData(
-          out.bars
-            .map((b, j) => ({ time: candlePoints[j].time, value: b.value, color: b.color }))
-            .filter((d) => d.value != null && Number.isFinite(d.value)),
-        )
-        indicatorSeriesRef.current.push(bars)
-        // 成交量进图例（MACD/AO 柱已有线表达趋势，不重复展示）
-        if (def.volumeFormat) {
-          metas.push({
-            series: bars,
-            name: 'VOL',
-            color: '#8b93a7',
-            lastValue: lastFinite(out.bars.map((b) => b.value)),
-          })
-        }
-      }
+      })
     }
     indicatorMetaRef.current = metas
 
