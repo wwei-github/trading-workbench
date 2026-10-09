@@ -53,7 +53,7 @@ import { bj } from '../utils/dayjs'
 import { SCHEME_UP_DOWN, schemeTag, schemeValueColor } from '../utils/scheme'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import AiAnalysisCard from './AiAnalysisCard'
-import TradeReplayChart from './TradeReplayChart'
+import KlineChart from './KlineChart' // 统一K线图组件（tradeId 复盘模式）
 import ScopeSelector, { scopeIsTestnet } from './ScopeSelector'
 import type { AccountSummary, FundAnalytics, TradeEvent, TradeRecord, TradeReconciliation } from '../types'
 import { ADVICE_ACTION_META } from '../types'
@@ -1663,7 +1663,7 @@ export default function TradesPanel() {
       >
         {replayTrade && (
           <div style={{ height: 700 }}>
-            <TradeReplayChart tradeId={replayTrade.id} />
+            <KlineChart tradeId={replayTrade.id} />
           </div>
         )}
       </Modal>

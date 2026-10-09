@@ -23,7 +23,7 @@ import { useScanStore } from '../stores/scanStore'
 import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
 import { TRADE_TYPE_MAP } from '../constants/labels'
 import type { ActualGroupStat, ActualReview, ActualTradeItem, ReviewFunnel } from '../types'
-import TradeReplayChart from './TradeReplayChart'
+import KlineChart from './KlineChart' // 统一K线图组件（tradeId 复盘模式）
 import ScopeSelector from './ScopeSelector'
 
 // 出场原因映射（与 TradesPanel 同口径）
@@ -493,7 +493,7 @@ export default function ReviewActualPanel() {
       >
         {replayTrade && (
           <div style={{ height: 700 }}>
-            <TradeReplayChart tradeId={replayTrade.id} />
+            <KlineChart tradeId={replayTrade.id} />
           </div>
         )}
       </Modal>

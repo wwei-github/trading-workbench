@@ -1,6 +1,6 @@
 /**
  * K 线图表共享内核（2026-09-27 统一组件）
- * - 扫描结果图（KlineChart）与交易复盘图（TradeReplayChart）共用：
+ * - 全站唯一 K 线图组件 KlineChart（symbol 扫描 / tradeId 复盘双数据源）共用：
  *   图表创建配置 / 涨跌配色 / 数值格式化 / 价签走廊
  * - 新增 K 线图一律走 createTradeChart，禁止再各自 createChart 复制配置
  */

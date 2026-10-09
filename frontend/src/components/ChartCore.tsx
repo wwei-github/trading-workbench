@@ -1,6 +1,6 @@
 /**
  * K 线图核心组件（2026-09-27 统一组件）
- * - 扫描结果图（KlineChart）与交易复盘图（TradeReplayChart）共用：
+ * - 全站唯一 K 线图组件 KlineChart（symbol 扫描 / tradeId 复盘双数据源）共用：
  *   图表生命周期 / 摆动标注 / 技术指标（目录驱动）/
  *   工具栏（指标下拉 + 更新按钮）/ OHLC 图例 / AI 仓位标注 / SVG 覆盖层
  * - 差异通过 props 注入：复盘图传 drawOverlay（区域色块）+ extraMarkers
