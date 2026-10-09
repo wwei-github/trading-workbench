@@ -41,3 +41,25 @@ class ShadowMark(Base):
     value_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # 打标时刻真实系统行为快照：{"scan_type": "scheduled", "stage": "scan_hit"}
     decision_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+
+class ShadowEarlyStop(Base):
+    """P-08 早停宣告落锁（docs/14 §七，2026-10-09）。
+
+    预注册语义：序贯检验（SPRT）首次跨界（h1/h0）即终局宣告——宣告后该卡
+    sequential 读数固定用宣告快照，不再随滚动窗口内新样本重算（应停不停
+    会放大 α/β 错误率保证的失真；跨界→回摆→再跨界的状态抖动也污染面板）。
+    build_report 首次算出跨界 verdict 时落一条（card 唯一，一卡一宣告），
+    detail 存宣告时刻完整 seq 快照（llr/wins/n/p0/p1/posterior...）供展示。
+    仅限预注册含早停通道的卡（CARD-07）；CARD-09 为固定窗口协议，不落锁。
+    """
+    __tablename__ = "shadow_early_stops"
+    __table_args__ = (
+        UniqueConstraint("card", name="uq_shadow_early_stop_card"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    card: Mapped[str] = mapped_column(String(16), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(4), nullable=False)  # h1 / h0
+    detail: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)

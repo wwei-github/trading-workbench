@@ -11,6 +11,7 @@
 """
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable, Optional
 
 import numpy as np
@@ -977,6 +978,53 @@ def _reentry_stats(rows: list) -> dict:
     }
 
 
+def _early_stop_verdict(db, card: str, compute: Callable[[], dict]) -> dict:
+    """早停宣告落锁（docs/14 §七，2026-10-09）：SPRT 三态判读的持久化封装。
+
+    - 已有宣告（该卡曾跨界）→ 直接返回宣告快照 + locked/declared_at，
+      不再现算——宣告后不随滚动窗口新样本回摆（跨界=检验终止，预注册语义）
+    - 无宣告 → 现算；跨界（h1/h0）时首次落宣告（card 唯一）；
+      continue 不落锁继续现算
+    - 落锁任何异常只记 warning 不影响评估读数（吞异常铁律延伸）
+    仅限预注册含早停通道的卡（CARD-07）；CARD-09 固定窗口协议不接本函数。
+    """
+    from app.models.shadow import ShadowEarlyStop
+    try:
+        declared = db.query(ShadowEarlyStop).filter(
+            ShadowEarlyStop.card == card).first()
+    except Exception as e:
+        logger.warning("早停宣告查询失败（card=%s，降级现算）: %s", card, e)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        declared = None
+    if declared is not None:
+        out = dict(declared.detail or {})
+        out.setdefault("verdict", declared.verdict)
+        out["locked"] = True
+        out["declared_at"] = declared.created_at.isoformat()
+        return out
+
+    out = compute()
+    if out.get("verdict") not in ("h1", "h0"):
+        return out
+    try:
+        row = ShadowEarlyStop(card=card, verdict=out["verdict"], detail=dict(out))
+        db.add(row)
+        db.commit()
+        out["locked"] = True
+        # 时间源统一用行 created_at（与宣告读取路径同源，避免双钟微秒漂移）
+        out["declared_at"] = row.created_at.isoformat()
+    except Exception as e:
+        logger.warning("早停宣告落锁失败（card=%s，本次现算展示）: %s", card, e)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    return out
+
+
 def build_report(db, window_days: int = 30) -> list[dict]:
     """影子评估报告（docs/14 §六）：按特征分桶 join 复盘结果统计。
 
@@ -1102,14 +1150,19 @@ def build_report(db, window_days: int = 30) -> list[dict]:
             # ── P-08 序贯判读（docs/14 §七 CARD-07 预注册 2026-10-08）────
             # structure_ok 桶：H0 续走率=40%（裁决门槛）vs H1=50%；
             # 达标即早停 h1（升格方向），显著低于门槛早停 h0（卡关闭）。
+            # 早停落锁（2026-10-09）：首次跨界写宣告（shadow_early_stops），
+            # 此后固定用宣告快照——不再随窗口新样本回摆（昨天 h1 今天
+            # continue 的状态抖动）。
             # 预注册时点已积累 decided≈7（远未跨边界，判定不受影响）
             seq = None
             for item in bucket_out:
                 if item["bucket"] == "structure_ok":
                     from app.services.sequential import sequential_verdict
-                    seq = sequential_verdict(
-                        item.get("continued", 0), item.get("n", 0),
-                        p0=0.40, p1=0.50)
+                    seq = _early_stop_verdict(
+                        db, "CARD-07",
+                        lambda it=item: sequential_verdict(
+                            it.get("continued", 0), it.get("n", 0),
+                            p0=0.40, p1=0.50))
                     break
             out.append({
                 "feature": key, "name": feat.name, "card": feat.card,
@@ -1163,6 +1216,10 @@ def build_report(db, window_days: int = 30) -> list[dict]:
             # −0.659R 的约半——「显著负」的操作性定义，预注册后不可回调）；
             # 早停 h1 = 支持提门槛方向，早停 h0 = 存量 16 笔判运气差、卡关闭。
             # sd 用桶内已决定样本的样本标准差（n<2 → continue，引擎内置）
+            # 注意：CARD-09 不走 _early_stop_verdict 落锁——协议为固定
+            # 28 天窗口 + 三条件联合判定，无早停通道（docs/16 §0.4 S-01
+            # 「不提前」纪律）；此 SPRT 是观察读数，跨界≠裁决，随数据
+            # 滚动回摆属预期
             seq = None
             for item in bucket_out:
                 if item["bucket"] == "rec60_69":

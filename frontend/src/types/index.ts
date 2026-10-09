@@ -814,6 +814,8 @@ export interface ShadowFeatureReport {
   sufficient: boolean // 有效归因样本 ≥ min_sample（达标 ≠ 升格，升格走人工流程）
   // P-08 序贯判读（docs/14 §七 CARD-07/09 预注册 SPRT）：h1=早停达标方向 /
   // h0=早停否定方向 / continue=续观察；posterior 仅比例卡（Beta 后验）
+  // locked/declared_at：早停宣告落锁（2026-10-09，仅 CARD-07）——首次跨界
+  // 写宣告后固定用宣告快照，不随窗口新样本回摆
   sequential?: {
     verdict: 'h1' | 'h0' | 'continue'
     llr: number
@@ -825,6 +827,8 @@ export interface ShadowFeatureReport {
     p0?: number
     p1?: number
     delta?: number
+    locked?: boolean
+    declared_at?: string
     posterior?: { mean: number; ci95_low: number; ci95_high: number; n: number }
   } | null
 }

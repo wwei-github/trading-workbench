@@ -68,7 +68,9 @@ class _Recorder:
 
 @pytest.fixture()
 def locks(monkeypatch):
-    """锁桩：acquire 记录并成功，release 记录；返回两个 recorder"""
+    """锁桩：acquire 记录并成功，release 记录；返回两个 recorder。
+    同时桩化 BinanceTrader（react_to_fill 凭据守卫检查 configured，
+    测试环境无 API key 会跳过结算——2026-10-07 后加入的守卫需替身）"""
     acq, rel = _Recorder(result=True), _Recorder()
     monkeypatch.setattr(ee, "acquire_open_lock",
                         lambda r, ident, wait_s, ttl_s, account=None: acq(
@@ -76,6 +78,8 @@ def locks(monkeypatch):
     monkeypatch.setattr(ee, "release_open_lock",
                         lambda r, ident, account=None: rel(r, ident, account=account))
     monkeypatch.setattr(ee, "_all_lock_keys", lambda db: [ACC])
+    monkeypatch.setattr(ee, "BinanceTrader",
+                        lambda key: SimpleNamespace(configured=True))
     return acq, rel
 
 

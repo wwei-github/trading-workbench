@@ -96,6 +96,12 @@ function SeqTag({ seq }: { seq: ShadowFeatureReport['sequential'] }) {
           {seq.mean !== undefined && (
             <div>均值卡：样本均值 {seq.mean.toFixed(2)}R（预注册 δ = {seq.delta}R）</div>
           )}
+          {seq.locked && seq.declared_at && (
+            <div style={{ marginTop: 4, color: '#faad14' }}>
+              早停宣告已落锁（{new Date(seq.declared_at).toLocaleString()}）——
+              首次跨界即终局，此后不随新样本回摆（预注册语义）
+            </div>
+          )}
         </div>
       }
     >
