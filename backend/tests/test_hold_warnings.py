@@ -25,7 +25,7 @@ from app.services.trade_engine import (  # noqa: E402
 _COLS = (
     "id VARCHAR(40) PRIMARY KEY, symbol VARCHAR(32), direction VARCHAR(8),"
     " scan_result_id VARCHAR(40), ai_analysis_id VARCHAR(40), recommendation FLOAT,"
-    " signal_type VARCHAR(32), pattern VARCHAR(32), testnet BOOLEAN,"
+    " signal_type VARCHAR(32), pattern VARCHAR(32), strategy_id VARCHAR(16), testnet BOOLEAN,"
     " account_key VARCHAR(20), ai_snapshot JSON, entry_price FLOAT, qty FLOAT,"
     " notional FLOAT, leverage INTEGER, margin_mode VARCHAR(12), margin_used FLOAT,"
     " risk_amount FLOAT, risk_budget_mode VARCHAR(8), beta FLOAT, stop_loss FLOAT, tp1 FLOAT,"

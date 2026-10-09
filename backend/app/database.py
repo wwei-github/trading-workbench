@@ -428,6 +428,39 @@ def _run_migrations(engine):
             "ALTER TABLE system_config "
             "ADD COLUMN IF NOT EXISTS scan_filters JSONB"
         ))
+        # 多策略可插拔（docs/20 S0/S1）：
+        # trade_records.strategy_id 策略归因列——带 DEFAULT，存量单自动归 golden_k_ai
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS strategy_id VARCHAR(16) "
+            "NOT NULL DEFAULT 'golden_k_ai'"
+        ))
+        # system_config.strategy_registry 策略注册表 JSON（NULL=仅内置 golden_k_ai）
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS strategy_registry JSONB"
+        ))
+        # strategy_shadow_signals 影子信号表（S1 ema_trend 等插件只产信号不开单）
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS strategy_shadow_signals ("
+            "id UUID PRIMARY KEY, "
+            "strategy_id VARCHAR(16) NOT NULL, "
+            "symbol VARCHAR(32) NOT NULL, "
+            "direction VARCHAR(8) NOT NULL, "
+            "entry NUMERIC(20, 8) NOT NULL, "
+            "stop NUMERIC(20, 8) NOT NULL, "
+            "tp1 NUMERIC(20, 8) NOT NULL DEFAULT 0, "
+            "tp2 NUMERIC(20, 8) NOT NULL DEFAULT 0, "
+            "signal_type VARCHAR(24), "
+            "reason VARCHAR(255), "
+            "confidence NUMERIC(5, 4) NOT NULL DEFAULT 0, "
+            "raw JSONB, "
+            "created_at TIMESTAMP NOT NULL)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_shadow_sig_strategy_created "
+            "ON strategy_shadow_signals (strategy_id, created_at)"
+        ))
         # 现货环境与合约完全独立（docs/18，2026-09-23）：默认现货=测试网；
         # 启用账号集合空回落 live-1。共用 docs/17 的 .env 账号注册表
         conn.execute(text(
@@ -576,6 +609,6 @@ def _run_migrations(engine):
 
 def init_db():
     """创建所有表 + 幂等迁移"""
-    from app.models import ops, patch, scan, trade, blacklist, spot, tactic, shadow, backtest, ledger  # noqa: F401
+    from app.models import ops, patch, scan, trade, blacklist, spot, tactic, shadow, backtest, ledger, strategy  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _run_migrations(engine)

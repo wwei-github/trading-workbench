@@ -268,6 +268,9 @@ class SystemConfigOut(BaseModel):
     # 初始资金（2026-09-26）：正式网主账号首次入金，资金划转面板展示口径
     live_initial_capital: float = 0
 
+    # 策略注册表（docs/20 S1）：[{id, enabled, max_positions, risk_weight, config}]
+    strategy_registry: Optional[list] = None
+
     class Config:
         from_attributes = True
 
@@ -306,6 +309,10 @@ class SystemConfigUpdate(BaseModel):
     # 筛选参数组（2026-09-28）：整组覆盖；传 null=清除定制（恢复 env/代码默认）。
     # 键集与范围校验见 api/scan.py _validate_scan_filters
     scan_filters: Optional[dict] = None
+
+    # 策略注册表（docs/20 S1）：整组覆盖；null=清除定制（回落仅内置 golden_k_ai）。
+    # 条目校验与规范化见 services/strategies/registry.py
+    strategy_registry: Optional[list] = None
 
     fib_enabled: Optional[bool] = None
 

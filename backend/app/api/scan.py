@@ -434,6 +434,8 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         tp1_qty_pct_no_tp2=(float(cfg.tp1_qty_pct_no_tp2)
                             if cfg.tp1_qty_pct_no_tp2 is not None else None),
         live_initial_capital=float(cfg.live_initial_capital or 0),
+        strategy_registry=(cfg.strategy_registry
+                           if isinstance(cfg.strategy_registry, list) else None),
         scan_filters=(cfg.scan_filters if isinstance(cfg.scan_filters, dict) else None),
         scan_filters_effective={
             "min_volume_24h": flt.min_volume_24h,
@@ -776,6 +778,22 @@ def update_system_config(
             _validate_scan_filters(body.scan_filters)
             if body.scan_filters is not None else None
         )
+
+    # 策略注册表（docs/20 S1）：整组覆盖；null=清除定制（回落仅内置 golden_k_ai）。
+    # 校验+规范化：未知 id/键拒绝，数值 clamp（见 strategies.registry.load_registry）
+    if "strategy_registry" in body.model_fields_set:
+        if body.strategy_registry is None:
+            cfg.strategy_registry = None
+        else:
+            from app.services.strategies.registry import load_registry
+            entries = load_registry(body.strategy_registry)
+            # golden_k_ai 恒在由 load_registry 补齐；持久化规范化条目（剔除内置占位）
+            cfg.strategy_registry = [
+                {"id": e.id, "enabled": e.enabled,
+                 "max_positions": e.max_positions, "risk_weight": e.risk_weight,
+                 "config": e.config}
+                for e in entries if e.id != "golden_k_ai"
+            ]
 
     db.commit()
     db.refresh(cfg)
