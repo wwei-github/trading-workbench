@@ -298,6 +298,9 @@ def _votes_snapshot(votes: dict) -> dict:
             "state": htf_res.get("state"),
             "label": htf_res.get("state_label"),
             "dir": int(htf_res.get("dir") or 0),
+            # 趋势年龄四档（2026-10-09 r2）：launch/mid/late/exhausted，
+            # 前端「4h方向」列短标签用；旧行无此键回退强/弱 label 解析
+            "phase": htf_res.get("phase"),
         }
     return snap
 

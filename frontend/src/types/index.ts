@@ -38,8 +38,9 @@ export interface ScanResult {
     voted: number;
     htf?: { // 4h 背景级别快照（旧扫描行无此键）
       state: string | null; // ranging / mixed / bullish / bearish
-      label: string | null; // 完整标签（含价格位置与 ADX/间距）
+      label: string | null; // 完整标签（r2=趋势年龄+宏观注记；旧行=价格位置与 ADX/间距）
       dir: number; // 1 多 / -1 空 / 0 中性
+      phase?: string | null; // r2 趋势年龄四档 launch/mid/late/exhausted（旧行无此键）
     };
   } | null;
   is_repeat: boolean;
@@ -401,6 +402,7 @@ export interface TradeRecord {
     state: string | null
     label: string | null
     dir: number
+    phase?: string | null // r2 趋势年龄四档 launch/mid/late/exhausted（旧行无此键）
   } | null
   ai_advice: { // AI 持仓诊断（docs/16，浮亏在跑单）
     thesis_valid: boolean // 开仓逻辑是否仍成立

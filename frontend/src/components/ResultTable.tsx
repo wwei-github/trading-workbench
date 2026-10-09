@@ -559,26 +559,32 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       },
     },
     {
-      // 4h方向列：扫描时 4h 背景级别（震荡/纠缠/弱·强多空），来自 votes_json.htf
-      // 表头简称 4h、列宽收窄（2026-09-30 用户拍板）；完整说明保留在悬停
+      // 4h方向列：扫描时 4h 背景级别（震荡/纠缠/趋势年龄期别），来自 votes_json.htf
+      // 表头简称 4h（2026-09-30 用户拍板）；完整说明保留在悬停
       title: (
-        <Tooltip title="扫描时 4h 高周期背景（ADX门控 + EMA21/55 排列与间距分级）：ADX<20=震荡不投票，EMA 间距≥1%=强、0.1%~1%=弱；悬停查看完整判定细节">
+        <Tooltip title="扫描时 4h 高周期背景（r2 趋势年龄口径）：EMA21/55 交叉后根数分前期≤10/中期≤30/后期>30，柱线翻向=衰竭期禁开新单；EMA55 vs EMA144 定宏观同侧/逆侧；悬停查看完整判定细节">
           <span>4h</span>
         </Tooltip>
       ),
       key: "htf_direction",
-      width: 60,
+      width: 72,
       render: (_: unknown, record: ScanResult) => {
         const htf = record.votes_json?.htf;
         if (!htf) return <span style={{ color: "#999" }}>-</span>;
-        // 短标签：完整标签形如「强多头背景（价格在EMA21上方）」「震荡（无趋势，不作方向参考）」
         const isBull = htf.state === "bullish";
         const isBear = htf.state === "bearish";
+        // 短标签三段式：r2 新行有 phase → 期别（前期/中期/后期/衰竭 + 多/空）；
+        // 历史行无 phase → 旧强/弱口径回退（完整标签形如「强多头背景（…）」）
+        const PHASE_SHORT: Record<string, string> = {
+          launch: "前期", mid: "中期", late: "后期", exhausted: "衰竭",
+        };
         const short = htf.state === "ranging"
           ? "震荡"
           : htf.state === "mixed"
             ? "纠缠"
-            : `${htf.label?.startsWith("强") ? "强" : "弱"}${isBull ? "多" : "空"}`;
+            : htf.phase
+              ? `${PHASE_SHORT[htf.phase] ?? ""}${isBull ? "多" : "空"}`
+              : `${htf.label?.startsWith("强") ? "强" : "弱"}${isBull ? "多" : "空"}`;
         const color = isBull
           ? schemeTag(colorScheme).up
           : isBear
