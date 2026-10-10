@@ -55,6 +55,11 @@ class EmaGateConfig:
     div_fast_mid: float = 0.5       # 1h |EMA21-EMA55|/ATR 下限
     div_mid_slow: float = 1.0       # 1h |EMA55-EMA144|/ATR 下限
     adx_min: float = 20.0           # 4h ADX 趋势闸门下限
+    # 分离史回看根数（2026-10-10 三次拍板）：发散度两腿按近 N 根已收盘的最大值
+    # 判定——深回踩（触 EMA55/144）会把 EMA21/55 间距压缩到不达标，触点时刻
+    # 现值误杀深回踩；「这波趋势曾分离过」即可，三线黏着的假趋势整段无分离
+    # 史照样被杀（反震荡能力不丢）。半窗口出厂默认，参数定标待实盘证据（docs/19 #15）
+    div_lookback: int = 12
 
 
 def gate_4h(k4: list[list], cfg: Optional[EmaGateConfig] = None) -> Optional[tuple[str, dict]]:
@@ -109,7 +114,13 @@ def gate_4h(k4: list[list], cfg: Optional[EmaGateConfig] = None) -> Optional[tup
 
 def structure_1h(k1: list[list], direction: str,
                  cfg: Optional[EmaGateConfig] = None) -> Optional[tuple[dict, dict]]:
-    """1H 三线排列 + 发散度结构门（direction="long"/"short"）。
+    """1H 三线排列 + ATR 归一发散度结构门（direction="long"/"short"）。
+
+    2026-10-10 三次拍板（分离史口径）：排列 aligned 仍在最后一根硬查（「趋势
+    没坏」的结构声明，与回踩深度无关）；发散度两腿改按近 div_lookback 根已
+    收盘的**带方向**最大值判定——深回踩把 EMA21/55 间距压缩是回踩的定义而非
+    缺陷，触点时刻现值会误杀 EMA55/144 深回踩；「沿信号方向曾分离过」即可
+    （与旧现值口径同号，反方向残差不计数），假趋势整段无分离史照样否决。
 
     返回 ({d21,d55,d144,atr}, 结构证据 dict) 或 None（结构不过）。
     """
@@ -135,15 +146,39 @@ def structure_1h(k1: list[list], direction: str,
     d21, d55, d144 = float(e21[-1]), float(e55[-1]), float(e144[-1])
     if direction == "long":
         aligned = d21 > d55 > d144
-        div_fm = (d21 - d55) / atr
-        div_ms = (d55 - d144) / atr
     else:
         aligned = d21 < d55 < d144
-        div_fm = (d55 - d21) / atr
-        div_ms = (d144 - d55) / atr
-    ev = {"aligned": aligned, "div_fast_mid": round(div_fm, 3),
-          "div_mid_slow": round(div_ms, 3), "atr": round(atr, 8)}
-    if not aligned or div_fm < cfg.div_fast_mid or div_ms < cfg.div_mid_slow:
+    if not aligned:
+        return None
+
+    # 分离史：两腿各取近 div_lookback 根已收盘的带方向最大分离度（正语义 =
+    # 沿信号方向曾分离，与旧现值口径同号；反方向残差如 e55×e144 刚翻多的空头
+    # 排列历史不计数）。窗口须整体落在 EMA 有限区——ema_series 前 period-1 根
+    # 为 NaN，e144 有限区自 index 143 起，lb 截断到 len-143；NaN 兜底
+    # fail-closed（np.max 传 NaN 会让 <阈值 判 False 静默放行，必须挡住）
+    lb = max(int(cfg.div_lookback), 1)
+    lb = min(lb, len(c) - 143)
+    if lb < 1:
+        return None
+    if direction == "long":
+        fm_seq = (e21[-lb:] - e55[-lb:]) / atr
+        ms_seq = (e55[-lb:] - e144[-lb:]) / atr
+        fm_now, ms_now = d21 - d55, d55 - d144
+    else:
+        fm_seq = (e55[-lb:] - e21[-lb:]) / atr
+        ms_seq = (e144[-lb:] - e55[-lb:]) / atr
+        fm_now, ms_now = d55 - d21, d144 - d55
+    div_fm = float(fm_seq.max())
+    div_ms = float(ms_seq.max())
+    if not (np.isfinite(div_fm) and np.isfinite(div_ms)):
+        return None
+    ev = {"aligned": aligned,
+          "div_fast_mid": round(div_fm, 3), "div_mid_slow": round(div_ms, 3),
+          # 现值快照（审计口径）：复盘「深回踩压间距」占比与 lookback 定标用
+          "div_fast_mid_now": round(float(fm_now / atr), 3),
+          "div_mid_slow_now": round(float(ms_now / atr), 3),
+          "div_lookback": lb, "atr": round(atr, 8)}
+    if div_fm < cfg.div_fast_mid or div_ms < cfg.div_mid_slow:
         return None
     return {"d21": d21, "d55": d55, "d144": d144, "atr": atr}, ev
 

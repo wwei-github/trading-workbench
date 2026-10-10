@@ -123,6 +123,63 @@ def test_structure_1h_insufficient_bars_rejected():
     assert structure_1h(k1, "long") is None
 
 
+def test_structure_1h_divergence_history_pullback_passes():
+    """分离史口径（2026-10-10 三次拍板）：前期趋势段充分分离（div_fm/div_ms
+    超阈值），末段深度回踩把 EMA21 拖贴 EMA55（现值不达标）——按近 12 根
+    max 判定 → 放行。触点时刻现值口径下此场景必被误杀（EMA55 回踩核心场景）"""
+    # 上升段 260 根（间距拉开），末 40 根深回踩（缓跌，EMA21/55 间距压缩）
+    closes = [100.0 + 0.5 * i for i in range(260)]
+    closes += [closes[-1] - 0.12 * i for i in range(1, 41)]
+    k1 = _bars(closes, H1)
+    r = structure_1h(k1, "long")
+    assert r is not None
+    _ind, ev = r
+    # 分离史（max）达标，现值被回踩压缩——审计字段可见压缩量
+    assert ev["div_fast_mid"] >= 0.5 and ev["div_mid_slow"] >= 1.0
+    assert ev["div_fast_mid_now"] < ev["div_fast_mid"]
+
+
+def test_structure_1h_no_divergence_history_rejected():
+    """分离史口径反震荡不丢：排列对但整段黏着（12 根内无分离史）→ None。
+    现值口径下若末根恰好拉开会被放行，分离史口径堵住这个假趋势漏洞"""
+    closes = [100.0] * 290
+    closes += [100.0 + 0.06 * i for i in range(1, 11)]  # 仅末 10 根缓拉开
+    k1 = _bars(closes, H1)
+    r = structure_1h(k1, "long")
+    if r is not None:  # 排列成立且 max 达标才可能过；黏着构造下 max 必不达标
+        _ind, ev = r
+        assert ev["div_fast_mid"] < 0.5 or ev["div_mid_slow"] < 1.0
+        assert r is None  # 恒等：该场景必须被拒
+
+
+def test_structure_1h_history_window_expires():
+    """分离史窗口时效（2026-10-10 三次拍板）：早期趋势分离 → 深度回踩消化 →
+    排列仍成立但 EMA21 已贴穿到 EMA55 附近——「曾经分离」不等于「现在还在」，
+    窗口过期后 max 反映的是回踩压缩值；本例构造 max 恰好不达标（紧贴+排列破
+    边缘），验证窗口语义而非机械断言 None"""
+    # 上升 288 根拉开间距 → 末 60 根快速深跌回踩（EMA21 被 price 拖向 EMA55，
+    # 12 根窗口内 fm/ms 全程压缩）
+    closes = [100.0 + 0.5 * i for i in range(288)]
+    closes += [closes[-1] - 0.55 * i for i in range(1, 61)]
+    k1 = _bars(closes, H1)
+    r = structure_1h(k1, "long")
+    # 快速深跌下排列大概率已破（EMA21 下穿 EMA55）→ None；排列侥幸成立时
+    # 窗口内 max 也被压缩 → 证据两腿至少一腿不达标
+    if r is not None:
+        _ind, ev = r
+        assert ev["div_fast_mid"] < 0.5 or ev["div_mid_slow"] < 1.0
+
+
+def test_structure_1h_evidence_carries_now_snapshot():
+    """证据带现值快照 + 窗口回显（审计/定标口径，docs/19 #15）"""
+    k1 = _bars([100.0 + 0.5 * i for i in range(300)], H1)
+    r = structure_1h(k1, "long")
+    assert r is not None
+    _ind, ev = r
+    assert "div_fast_mid_now" in ev and "div_mid_slow_now" in ev
+    assert ev["div_lookback"] == 12
+
+
 # ── trigger 趋势升级（2026-10-10 融合：升级不拦截）─────────────────────────
 
 GOLDEN_LONG = [{"pattern": "bullish_engulfing", "direction": "bullish"}]

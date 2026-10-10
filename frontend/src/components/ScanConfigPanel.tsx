@@ -15,17 +15,17 @@ const TRIGGER_OPTIONS = [
 const ALL_TRIGGER_VALUES = TRIGGER_OPTIONS.map((o) => o.value)
 
 /** 回踩触点白名单选项（与后端 ALL_TOUCH_REFS 同源顺序；docs/22 触点体系。
- *  金K必须与触点配合（当根/次根确认），此白名单决定允许金K出现的位置） */
+ *  金K必须与触点配合（当根/次根确认），此白名单决定允许金K出现的位置。
+ *  ema144 已退役（2026-10-10 三次拍板：深回撤存活率极低，后端强制过滤不再展示） */
 const TOUCH_REF_OPTIONS = [
   { value: 'retest', label: '突破回测位' },
   { value: 'swing', label: '摆动结构位' },
   { value: 'ema21', label: 'EMA21' },
   { value: 'ema21_4h', label: 'EMA21(4h)' },
   { value: 'ema55', label: 'EMA55' },
-  { value: 'ema144', label: 'EMA144' },
 ]
-/** 默认均线族（2026-10-08，2026-10-09 加入 4h EMA21）：横向结构触点（retest/swing）默认关 */
-const DEFAULT_TOUCH_VALUES = ['ema21', 'ema21_4h', 'ema55', 'ema144']
+/** 默认均线族（2026-10-08，2026-10-09 加入 4h EMA21，2026-10-10 ema144 退役）：横向结构触点（retest/swing）默认关 */
+const DEFAULT_TOUCH_VALUES = ['ema21', 'ema21_4h', 'ema55']
 
 /** 筛选参数组（2026-09-28 筛选配置上页面）：字段元数据驱动渲染 */
 const FILTER_FIELDS: { name: string; label: string; min: number; max: number; step?: number; tooltip: string }[] = [
@@ -265,7 +265,7 @@ export default function ScanConfigPanel() {
           <Form.Item
             label="回踩触点白名单（金K允许出现的位置）"
             name="pullback_touch_refs"
-            tooltip="回踩金K确认触发只认勾选的触点：触碰后当根/次根出现同向金K才触发。默认仅三条均线（EMA21/55/144，55/144 另受排列与斜率门自筛）；横向结构触点（突破回测位/摆动结构位）语义强但依赖破轨/摆动质量，按需勾选。全部不勾回落默认三条均线"
+            tooltip="回踩金K确认触发只认勾选的触点：触碰后当根/次根出现同向金K才触发。默认仅三条均线（EMA21/EMA21(4h)/EMA55；ema144 已退役；EMA55 另受排列+分离史结构门自筛）；横向结构触点（突破回测位/摆动结构位）语义强但依赖破轨/摆动质量，按需勾选。全部不勾回落默认三条均线"
           >
             <Checkbox.Group options={TOUCH_REF_OPTIONS} />
           </Form.Item>

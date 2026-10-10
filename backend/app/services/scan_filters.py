@@ -35,10 +35,13 @@ ALL_TOUCH_REFS = (
     TOUCH_RETEST, TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55, TOUCH_EMA144,
 )
 # 默认仅均线族（2026-10-08 调整，2026-10-09 加入 4h EMA21）：1h 趋势价值区/4h 大周期
-# 价值区/中深度回撤/深回撤；横向结构触点（retest/swing）默认关——语义不匹配时易产生
-# 低质量触点命中，需在配置弹窗显式勾选启用。ema55/144 仍受排列/斜率/数据门自筛，
-# ema144 窗口不足自动跳过
-DEFAULT_TOUCH_REFS = (TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55, TOUCH_EMA144)
+# 价值区/中深度回撤；横向结构触点（retest/swing）默认关——语义不匹配时易产生
+# 低质量触点命中，需在配置弹窗显式勾选启用。ema55 受分离史结构门自筛（2026-10-10
+# 三次拍板：发散度改分离史口径，深回踩不再被触点时刻现值误杀）。
+# ema144 触点退役（同批拍板）：深回撤存活率极低（排列门常先杀）且偏离「回踩入场」
+# 语义，检测代码保留但白名单默认剔除，_touch_refs 解析层强制过滤
+RETIRED_TOUCH_REFS = (TOUCH_EMA144,)
+DEFAULT_TOUCH_REFS = (TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55)
 
 # scan_filters JSONB 的合法键集（PUT /config 校验与前端字段一一对应）
 SCAN_FILTER_KEYS = (
@@ -110,11 +113,13 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
     def _touch_refs(key: str) -> tuple:
         """回踩触点白名单（docs/22）：list 过滤非法项后须非空，空/全非法回落
         默认 ["ema21"]（回踩触点与触发类型不同——静默全空会让回踩管线整体
-        停摆，回落默认比全量放行安全）。"""
+        停摆，回落默认比全量放行安全）。退役触点（ema144，2026-10-10 三次拍板）
+        强制过滤——即使 DB 旧配置显式勾选也失效，保证「退役」语义不留暗门。"""
         v = raw.get(key)
         if not isinstance(v, list):
             return DEFAULT_TOUCH_REFS
-        allowed = tuple(t for t in v if t in ALL_TOUCH_REFS)
+        allowed = tuple(t for t in v
+                        if t in ALL_TOUCH_REFS and t not in RETIRED_TOUCH_REFS)
         return allowed or DEFAULT_TOUCH_REFS
 
     return ScanFilters(
