@@ -258,6 +258,105 @@ def analyze_rsi(klines: list[list], period: int = 14) -> Optional[dict]:
     }
 
 
+def macd_zero_state(klines: list[list], fast: int = 12, slow: int = 26,
+                    signal: int = 9) -> Optional[dict]:
+    """MACD 零轴状态（docs/19 §3.3 策略 A 第三道企稳确认的证据函数）。
+
+    判定（多头口径，空头镜像）：
+    - above: DIF 与 DEA 均在零轴上方（动量确认最强）；
+    - pullback_hold: 回踩零轴不破——最近 3 根内 DIF 或 DEA 曾触及零轴下侧
+      但当前双双回到零轴上方（健康回踩，未真正破位）；
+    - below / mixed: 零轴下方 / 胶着（多头动量不确认）。
+    数据不足返回 None。纯证据函数，不投权重——供 ema_trend raw 证据与
+    未来 golden_k 企稳确认（P1 观测后）复用。
+    """
+    series = _macd_series(klines, fast, slow, signal)
+    if series is None or len(series[0]) < 5:
+        return None
+    dif, dea, _hist = series
+    d_now, e_now = float(dif[-1]), float(dea[-1])
+    d_min3 = float(min(dif[-3:]))
+    e_min3 = float(min(dea[-3:]))
+
+    if d_now > 0 and e_now > 0:
+        if d_min3 <= 0 or e_min3 <= 0:
+            state, label = "pullback_hold", "回踩零轴不破"
+        else:
+            state, label = "above", "零轴上方"
+        dir_ = 1
+    elif d_now < 0 and e_now < 0:
+        if d_min3 >= 0 or e_min3 >= 0:
+            state, label = "pullback_hold", "反抽零轴不破"
+        else:
+            state, label = "below", "零轴下方"
+        dir_ = -1
+    else:
+        state, label, dir_ = "mixed", "零轴胶着", 0
+    return {"state": state, "state_label": label, "dir": dir_,
+            "dif": d_now, "dea": e_now}
+
+
+def analyze_stochastic(
+    klines: list[list], k_period: int = 14, k_smooth: int = 3, d_smooth: int = 3,
+) -> Optional[dict]:
+    """Stochastic（KDJ 口径，docs/19 L1 观测候选：股票流派「KDJ 20~50 金叉」）。
+
+    RSV = (收 − N 最低) / (N 最高 − N 最低) × 100；K = RSV 的 k_smooth SMA；
+    D = K 的 d_smooth SMA；J = 3K − 2D（国内 KDJ 口径）。
+    状态：超买（K≥80）/偏强/中性/偏弱/超卖（K≤20）+ 近 3 根内金叉/死叉标记。
+    数据不足（已收盘 < k_period + k_smooth + d_smooth + 5）返回 None。
+    """
+    closed = klines[:-1] if len(klines) >= 2 else klines
+    n = len(closed)
+    need = k_period + k_smooth + d_smooth + 5
+    if n < need:
+        return None
+    h = np.array([float(k[2]) for k in closed], dtype=float)
+    low = np.array([float(k[3]) for k in closed], dtype=float)
+    c = np.array([float(k[4]) for k in closed], dtype=float)
+
+    hh = np.array([h[i - k_period + 1:i + 1].max() for i in range(k_period - 1, n)])
+    ll = np.array([low[i - k_period + 1:i + 1].min() for i in range(k_period - 1, n)])
+    rng = hh - ll
+    rsv = np.where(rng > 0, (c[k_period - 1:] - ll) / np.where(rng > 0, rng, 1.0) * 100.0, 50.0)
+
+    def _sma(x: np.ndarray, w: int) -> np.ndarray:
+        return np.convolve(x, np.ones(w) / w, mode="valid")
+
+    k_full = _sma(rsv, k_smooth)
+    if len(k_full) < d_smooth:
+        return None
+    d_full = _sma(k_full, d_smooth)
+    k_line = k_full[d_smooth - 1:]   # 截头与 D 线对齐（K 多经一次平滑）
+    d_line = d_full
+    k, d = float(k_line[-1]), float(d_line[-1])
+    j_val = 3 * k - 2 * d
+
+    cross = 0
+    for i in range(max(1, len(d_line) - 3), len(d_line)):
+        if k_line[i] > d_line[i] and k_line[i - 1] <= d_line[i - 1]:
+            cross = 1
+        elif k_line[i] < d_line[i] and k_line[i - 1] >= d_line[i - 1]:
+            cross = -1
+
+    if k >= 80:
+        state, label = "overbought", "超买"
+    elif k >= 55:
+        state, label = "strong", "偏强"
+    elif k >= 45:
+        state, label = "neutral", "中性"
+    elif k >= 20:
+        state, label = "weak", "偏弱"
+    else:
+        state, label = "oversold", "超卖"
+    return {
+        "k": k, "d": d, "j": j_val, "state": state, "state_label": label,
+        "cross": cross,  # 1=近3根金叉 -1=近3根死叉 0=无
+        "dir": 1 if (cross == 1 and k <= 50) else -1 if (cross == -1 and k >= 50) else 0,
+        "detail": f"K={k:.1f} D={d:.1f} J={j_val:.1f} {label}",
+    }
+
+
 def atr_series(klines: list[list], period: int = 14) -> Optional[np.ndarray]:
     """Wilder 平滑 ATR 序列（D1，docs/24）：与 SuperTrend 内部 ATR 同口径抽出复用。
 

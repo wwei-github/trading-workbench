@@ -24,6 +24,8 @@ import math
 from bisect import bisect_right
 from typing import Optional
 
+import numpy as np
+
 import app.config as config
 
 # ── 引擎版本（随结果落库，口径演进可追溯）──
@@ -41,6 +43,12 @@ OVERRIDE_KEYS = (
     "atr_period",       # ATR 周期（默认 22，生产 _chandelier_sl 语义）
     "fee_rate",         # taker 费率（默认 settings.TAKER_FEE_RATE）
     "fwd_bars",         # 前向窗口根数上限（超时 outcome=open）
+    "tp_qty_override",  # docs/19 P2 出场变体：None=基线分批；(q1,q2) 覆盖 TP1/TP2
+                        # 出仓比例——(0,0)=纯跟踪 V1（全部仓位走保本/跟进/信号出场）
+    "sig_exit",         # 信号出场（docs/19 §3.4 V2 菜单）：None=关；"ema55_break"=
+                        # 收盘破 EMA55；"ma20_break_2bar"=连续 2 根收盘破 MA20；
+                        # "macd_death_cross"=零上死叉（多头）/零下金叉（空头）。
+                        # 收盘判定、当根收盘价出场（已收盘纪律，无前视）
 )
 
 # 基线参数（默认=生产语义）
@@ -55,6 +63,8 @@ _BASELINE = {
     "atr_period": 22,
     "fee_rate": None,          # None → 运行时取 settings.TAKER_FEE_RATE
     "fwd_bars": None,          # None → 用完调用方给的 bars 即 open
+    "tp_qty_override": None,
+    "sig_exit": None,
 }
 
 
@@ -128,6 +138,77 @@ def _final_outcome(filled: dict, armed: bool) -> str:
     return "loss"
 
 
+def _ema_np(closes: np.ndarray, period: int) -> Optional[np.ndarray]:
+    """EMA 序列（前 period-1 根 NaN），样本不足返回 None。"""
+    if len(closes) < period + 2:
+        return None
+    a = 2.0 / (period + 1)
+    out = np.full(len(closes), np.nan)
+    out[period - 1] = closes[:period].mean()
+    for i in range(period, len(closes)):
+        out[i] = a * closes[i] + (1 - a) * out[i - 1]
+    return out
+
+
+def _sma_np(closes: np.ndarray, period: int) -> Optional[np.ndarray]:
+    """SMA 序列（前 period-1 根 NaN），样本不足返回 None。"""
+    if len(closes) < period:
+        return None
+    c = np.cumsum(np.insert(closes, 0, 0.0))
+    out = np.full(len(closes), np.nan)
+    out[period - 1:] = (c[period:] - c[:-period]) / period
+    return out
+
+
+def _sig_exit_flags(bars: list, mode: str, d: int) -> list[bool]:
+    """信号出场逐根旗标（docs/19 §3.4 V2 菜单）。收盘判定、无前视：
+    第 i 根旗标只用 ≤i 的收盘数据。指标未成形段一律 False（不出场）。
+
+    - ema55_break：收盘破 EMA55（多头收在下/空头收在上）；
+    - ma20_break_2bar：连续 2 根收盘破 MA20（「无法快速收回」量化）；
+    - macd_death_cross：零上死叉（多头）/零下金叉（空头）——策略 A
+      「MACD 零轴上方死叉 → 清仓」的反向镜像对称实现。
+    """
+    closes = np.array([float(k[4]) for k in bars], dtype=float)
+    n = len(closes)
+    flags = [False] * n
+    if mode in ("ema55_break", "ma20_break_2bar"):
+        period = 55 if mode == "ema55_break" else 20
+        ma = _sma_np(closes, period)
+        if ma is None:
+            return flags
+        beyond = np.zeros(n, dtype=bool)
+        for i in range(period - 1, n):
+            beyond[i] = (closes[i] - ma[i]) * d < 0
+        if mode == "ema55_break":
+            flags = [bool(b) for b in beyond]
+        else:
+            for i in range(period, n):
+                flags[i] = bool(beyond[i] and beyond[i - 1])
+        return flags
+    if mode == "macd_death_cross":
+        f = _ema_np(closes, 12)
+        s = _ema_np(closes, 26)
+        if f is None or s is None:
+            return flags
+        dif_full = f - s
+        dif_use = dif_full[33:]      # EMA26(25)+DEA(8) 预热截除，与 dea 逐根对齐
+        dea = _ema_np(dif_full[25:], 9)[8:]
+        if dea is None or len(dif_use) != len(dea):
+            return flags
+        off = n - len(dea)           # dea[j] 对应 bars[j+off]
+        eps = float(np.nanmax(np.abs(dif_use))) * 1e-9  # 浮点噪声守卫（防 ε 级伪死叉）
+        for j in range(1, len(dea)):  # 已截 33 根预热，无需再跳
+            i = j + off
+            cross_dn = dif_use[j] < dea[j] - eps and dif_use[j - 1] >= dea[j - 1] - eps
+            cross_up = dif_use[j] > dea[j] + eps and dif_use[j - 1] <= dea[j - 1] + eps
+            if d > 0 and cross_dn and dif_use[j] > 0 and dea[j] > 0:
+                flags[i] = True
+            elif d < 0 and cross_up and dif_use[j] < 0 and dea[j] < 0:
+                flags[i] = True
+    return flags
+
+
 def replay_exit(
     direction: str, entry: float, stop: float, tp1: float, tp2: float,
     bars: list, overrides: Optional[dict] = None,
@@ -141,7 +222,8 @@ def replay_exit(
     _chandelier_sl 数据不可得时退化摆动跟进同口径）。
 
     返回 {outcome, r, legs, sl_price, bars, armed_be, trail_used}：
-    - outcome: loss / win_tp1 / win_tp2 / tp0_be / open
+    - outcome: loss / win_tp1 / win_tp2 / be_exit（保本/跟进扫出，含仅 tp0）/
+      open
     - r: 含费净 R（全部腿合计）；open 为 None（已落袋部分见 legs，
       不进 decided 分母——P-04 口径教训）
     """
@@ -163,6 +245,11 @@ def replay_exit(
         tp0_price = entry + d * float(p["tp0_r"]) * r_unit
         tp0_qty = float(p["tp0_qty_pct"])
     q1, q2, _q_trail = _tp_quantities(tp2 if use_tp2 else 0.0)
+    qo = p["tp_qty_override"]
+    if qo is not None:
+        q1, q2 = float(qo[0]), float(qo[1])  # P2 变体：(0,0)=纯跟踪 V1
+    pure_trail = qo is not None and q1 <= 0 and q2 <= 0
+    sig_flags = _sig_exit_flags(bars, p["sig_exit"], d) if p["sig_exit"] else None
 
     # 保本价（生产 _breakeven_stop_price：成本价 ± 往返费缓冲）
     be_buf = entry * 2 * fee if p["be_fee_buffer"] else 0.0
@@ -220,9 +307,12 @@ def replay_exit(
         if tp0_price is not None and "tp0" not in filled and (
                 (high >= tp0_price) if d > 0 else (low <= tp0_price)):
             tg.append((tp0_price, "tp0", tp0_qty))
-        if "tp1" not in filled and ((high >= tp1) if d > 0 else (low <= tp1)):
+        # tp1>0 守卫：tp1=0（纯跟踪信号，docs/20 影子信号语义）不挂目标腿——
+        # 多头 high>=0 恒真会造成零价成交的废腿；q1<=0 同理跳过
+        if q1 > 0 and tp1 > 0 and "tp1" not in filled and (
+                (high >= tp1) if d > 0 else (low <= tp1)):
             tg.append((tp1, "tp1", q1))
-        if use_tp2 and "tp2" not in filled and (
+        if use_tp2 and q2 > 0 and "tp2" not in filled and (
                 (high >= tp2) if d > 0 else (low <= tp2)):
             tg.append((tp2, "tp2", q2))
         sl_name = ("trail_tp2" if "tp2" in filled
@@ -257,6 +347,11 @@ def replay_exit(
             # 仓位已全部落袋（如 TP0 25% + TP1 75%）：即告终局，不再等跟进
             return _finish(_final_outcome(filled, armed), None, n_bars)
 
+        # ── 2b) 信号出场（P2 V2 菜单）：收盘判定、当根收盘价出场 ──
+        if sig_flags is not None and sig_flags[i]:
+            _leg("sig_exit", close, _remaining())
+            return _finish(_final_outcome(filled, armed), close, n_bars)
+
         # ── 3) 根收盘：武装判定 + SL 更新（下根生效）──
         if not armed:
             if "tp1" in filled or "tp2" in filled:
@@ -266,7 +361,7 @@ def replay_exit(
         if tp0_price is not None and "tp0" in filled:
             armed = True  # CARD-06：TP0 成交立即武装保本
 
-        trailing_active = ("tp2" in filled) or ("tp1" in filled and not use_tp2)
+        trailing_active = pure_trail or ("tp2" in filled) or ("tp1" in filled and not use_tp2)
         new_sl = sl
         if armed:
             new_sl = max(new_sl, be_price) if d > 0 else min(new_sl, be_price)

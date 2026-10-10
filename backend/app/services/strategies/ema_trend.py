@@ -17,7 +17,8 @@ from typing import Optional
 import numpy as np
 
 from app.services.strategies.base import StrategySignal
-from app.services.strategy.technical import analyze_adx
+from app.services.strategies.range_score import compute_range_score
+from app.services.strategy.technical import analyze_adx, analyze_stochastic, macd_zero_state
 
 # EMA144 斜率回看根数（4h）与走平阈值（20 根变化幅度/价格 < 0.5% → 走平）
 SLOPE_BARS = 20
@@ -112,7 +113,37 @@ class EmaTrendStrategy:
             return None
         sig.raw["gate_4h"] = ev4
         sig.raw["structure_1h"] = ev1
+        # L2 评分卡 + 动量证据随信号落库（观测口径，不拦截）
+        score = compute_range_score(klines_1h, klines_4h)
+        sig.raw["range_score"] = score.score
+        mz = macd_zero_state(klines_1h)
+        if mz:
+            sig.raw["macd_zero"] = mz["state"]
         return sig
+
+    def observe(self, klines_1h: list[list], klines_4h: list[list]) -> dict:
+        """L1 观测证据包（docs/19 §3.1，纯算不拦）：闸门/结构允许 None。
+        与 build_signal 共用内部判定，保证信号证据与观测数据同口径。"""
+        k1, k4 = _closed(klines_1h), _closed(klines_4h)
+        out: dict = {"range_score": None, "stochastic": None, "macd_zero": None}
+        score = compute_range_score(klines_1h, klines_4h)
+        out["range_score"] = {"score": score.score, "items": score.items}
+        st = analyze_stochastic(klines_1h)
+        if st:
+            out["stochastic"] = {k2: st[k2] for k2 in ("k", "d", "j", "state", "cross")}
+        mz = macd_zero_state(klines_1h)
+        if mz:
+            out["macd_zero"] = mz["state"]
+        gate = self._gate_4h(k4) if len(k4) >= 200 else None
+        out["gate_4h"] = gate[1] if gate else None
+        if gate:
+            structure = self._structure_1h(k1, gate[0])
+            out["structure_1h"] = structure[1] if structure else None
+            # direction 语义：ev 自带 4h K 线趋势方向 "up"/"down"（_gate_4h 内置），
+            # 不得覆写成 gate[0]（"long"/"short"）——前端观测卡按 up/down 渲染
+        else:
+            out["structure_1h"] = None
+        return out
 
     def exit_spec(self) -> dict:
         """出场语义声明（S3 前不被引擎消费）：纯跟踪 + 结构失效出场，

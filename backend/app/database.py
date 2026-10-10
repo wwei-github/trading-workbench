@@ -461,6 +461,41 @@ def _run_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_shadow_sig_strategy_created "
             "ON strategy_shadow_signals (strategy_id, created_at)"
         ))
+        # 影子信号推演回填列（docs/20 影子分析：replay_exit 假想结果）
+        conn.execute(text(
+            "ALTER TABLE strategy_shadow_signals "
+            "ADD COLUMN IF NOT EXISTS outcome VARCHAR(16)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE strategy_shadow_signals "
+            "ADD COLUMN IF NOT EXISTS r NUMERIC(10, 4)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE strategy_shadow_signals "
+            "ADD COLUMN IF NOT EXISTS eval_bars INTEGER"
+        ))
+        conn.execute(text(
+            "ALTER TABLE strategy_shadow_signals "
+            "ADD COLUMN IF NOT EXISTS evaluated_at TIMESTAMP"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_shadow_sig_outcome "
+            "ON strategy_shadow_signals (strategy_id, outcome)"
+        ))
+        # strategy_observations L1 观测快照表（docs/19 §3.1，纯观测不拦截）
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS strategy_observations ("
+            "id UUID PRIMARY KEY, "
+            "strategy_id VARCHAR(16) NOT NULL DEFAULT 'ema_trend', "
+            "symbol VARCHAR(32) NOT NULL, "
+            "metrics JSONB NOT NULL, "
+            "metrics_version VARCHAR(8) NOT NULL DEFAULT 'fobs-1', "
+            "created_at TIMESTAMP NOT NULL)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_obs_strategy_symbol_created "
+            "ON strategy_observations (strategy_id, symbol, created_at)"
+        ))
         # 现货环境与合约完全独立（docs/18，2026-09-23）：默认现货=测试网；
         # 启用账号集合空回落 live-1。共用 docs/17 的 .env 账号注册表
         conn.execute(text(

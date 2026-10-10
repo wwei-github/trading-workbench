@@ -98,8 +98,14 @@ def run_scan_task(self, scan_record_id: Optional[str] = None, scan_type: str = "
 
         # 插件策略影子信号（docs/20 S1）：fire-and-forget，失败不影响扫描主流程
         try:
-            from app.tasks.strategy_tasks import run_strategy_signals_task
+            from app.tasks.strategy_tasks import (
+                evaluate_shadow_signals_task,
+                run_strategy_observations_task,
+                run_strategy_signals_task,
+            )
             run_strategy_signals_task.delay(scan_record_id=str(record.id))
+            run_strategy_observations_task.delay()      # L1 观测（docs/19 §3.1）
+            evaluate_shadow_signals_task.delay()        # 影子推演回填
         except Exception as e:
             logger.warning("策略影子信号任务派发失败（忽略）: %s", e)
 

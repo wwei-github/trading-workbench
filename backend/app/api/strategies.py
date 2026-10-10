@@ -82,3 +82,108 @@ def refresh_signals(body: SignalRefreshBody):
     from app.tasks.strategy_tasks import run_strategy_signals_task
     run_strategy_signals_task.delay(symbols=body.symbols)
     return {"accepted": True}
+
+
+@router.post("/observations/refresh")
+def refresh_observations():
+    """手动触发 L1 观测任务（docs/19 §3.1，纯算不拦）。"""
+    from app.tasks.strategy_tasks import run_strategy_observations_task
+    run_strategy_observations_task.delay(trigger="manual")
+    return {"accepted": True}
+
+
+@router.post("/signals/evaluate")
+def evaluate_signals():
+    """手动触发影子信号推演回填（replay_exit 假想结果）。"""
+    from app.tasks.strategy_tasks import evaluate_shadow_signals_task
+    evaluate_shadow_signals_task.delay(trigger="manual")
+    return {"accepted": True}
+
+
+@router.get("/observations")
+def list_observations(
+    symbol: str | None = Query(None, description="按币种过滤"),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    """L1 观测快照列表（新→旧）。metrics 含评分卡 8 项明细。"""
+    from app.models.strategy import StrategyObservation
+    q = db.query(StrategyObservation)
+    if symbol:
+        q = q.filter(StrategyObservation.symbol == symbol)
+    rows = q.order_by(StrategyObservation.created_at.desc()).limit(limit).all()
+    return [
+        {
+            "id": str(r.id), "symbol": r.symbol, "metrics": r.metrics,
+            "metrics_version": r.metrics_version,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/analysis")
+def analysis(db: Session = Depends(get_db)):
+    """影子期分析（docs/20 §4.2 并发准入判定的数据源）：
+
+    - 每策略信号统计：总量/已推演/decided/胜率/期望 R（open 不进分母）；
+    - 插件策略两两信号重叠率：同标的同方向、信号时间窗 ±24h 内双发的频率
+      （相对较少一方的信号数）。重叠率 >50% → 伪分散，只跑其一。
+    """
+    from datetime import datetime, timedelta
+
+    from app.models.strategy import StrategyShadowSignal
+
+    rows = db.query(StrategyShadowSignal).all()
+    by_strategy: dict[str, list] = {}
+    for r in rows:
+        by_strategy.setdefault(r.strategy_id, []).append(r)
+
+    DECIDED_EXCLUDE = {"open", "invalid"}
+    stats = []
+    for sid, rs in sorted(by_strategy.items()):
+        evaluated = [r for r in rs if r.outcome is not None]
+        decided = [r for r in evaluated if r.outcome not in DECIDED_EXCLUDE]
+        wins = [r for r in decided if (r.outcome or "").startswith("win")]
+        r_vals = [float(r.r) for r in decided if r.r is not None]
+        stats.append({
+            "strategy_id": sid,
+            "signals": len(rs),
+            "evaluated": len(evaluated),
+            "decided": len(decided),
+            "open": len(evaluated) - len(decided),
+            "wins": len(wins),
+            "win_rate": round(len(wins) / len(decided), 4) if decided else None,
+            "avg_r": round(sum(r_vals) / len(r_vals), 4) if r_vals else None,
+            "total_r": round(sum(r_vals), 4) if r_vals else None,
+        })
+
+    # 两两重叠率（插件策略之间；golden_k 信号不落影子表，不参与）。
+    # 口径：较少一方中有多大比例与另一方 ±24h 内同标的同方向双发——
+    # 遍历较少方计数（每条最多命中 1 次），保证 overlap_rate ≤ 1
+    overlaps = []
+    sids = [s for s in by_strategy if s != "golden_k_ai"]
+    for i in range(len(sids)):
+        for j in range(i + 1, len(sids)):
+            a_rows, b_rows = by_strategy[sids[i]], by_strategy[sids[j]]
+            if not a_rows or not b_rows:
+                continue
+            if len(a_rows) > len(b_rows):
+                a_rows, b_rows = b_rows, a_rows  # 保证遍历较少方
+            hits = 0
+            for a in a_rows:
+                for b in b_rows:
+                    if a.symbol != b.symbol or a.direction != b.direction:
+                        continue
+                    if not (a.created_at and b.created_at):
+                        continue
+                    if abs((a.created_at - b.created_at).total_seconds()) <= 86400:
+                        hits += 1
+                        break
+            overlaps.append({
+                "pair": [sids[i], sids[j]],
+                "overlap_rate": round(hits / len(a_rows), 4),
+                "hits": hits,
+            })
+
+    return {"stats": stats, "overlaps": overlaps}

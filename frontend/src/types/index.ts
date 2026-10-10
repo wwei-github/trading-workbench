@@ -253,6 +253,8 @@ export interface SystemConfig {
   tp1_qty_pct_with_tp2?: number | null; // 有 TP2 时 TP1 分批比例 %（NULL=默认 60）
   tp2_qty_pct?: number | null; // TP2 分批比例 %（NULL=默认 20；两档剩余自动跟进）
   tp1_qty_pct_no_tp2?: number | null; // 无 TP2 时 TP1 一次止盈比例 %（NULL=默认 80）
+  // 策略注册表（docs/20 S1）：NULL=仅内置 golden_k_ai；启用 ema_trend 后随扫描产影子信号
+  strategy_registry?: { id: string; enabled: boolean; max_positions?: number; risk_weight?: number; config?: Record<string, unknown> }[] | null;
   // 自动交易开关（2026-09-20 由 env 迁移进 DB，页面「系统配置」弹窗可改；
   // 2026-10-03 总开关拆分为双网独立开关可同时开启；同日删环境切换）
   trading_enabled_testnet?: boolean; // 测试网自动交易（默认开）
