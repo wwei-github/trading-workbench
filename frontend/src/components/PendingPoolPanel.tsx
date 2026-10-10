@@ -31,7 +31,7 @@ const STATUS_META: Record<string, { color: string; label: string; hint: string }
   },
   expired: {
     color: 'default', label: '已过期',
-    hint: 'window_expired=次根无金K确认失效；direction_flip=指标方向失守作废',
+    hint: 'ranging=4h 趋势闸门（走平/缠绕/ADX弱）一票否决；structure_1h=1H 三线排列/发散度不符；range_score=震荡评分卡≥3；window_expired=次根无金K确认失效；direction_flip=指标方向失守作废',
   },
   superseded: {
     color: 'warning', label: '已让位',
@@ -40,6 +40,9 @@ const STATUS_META: Record<string, { color: string; label: string; hint: string }
 }
 
 const REASON_LABEL: Record<string, string> = {
+  ranging: '4h无明确趋势',
+  structure_1h: '1H结构不符',
+  range_score: '震荡评分≥3',
   window_expired: '次根无金K',
   direction_flip: '方向失守',
   breakout: '突破抢先',

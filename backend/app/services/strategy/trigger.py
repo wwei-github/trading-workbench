@@ -502,8 +502,7 @@ def detect_trigger(
     gate_ev = None
     if htf:
         try:
-            htf_closed = htf[:-1] if len(htf) >= 2 else []
-            g = gate_4h(htf_closed)
+            g = gate_4h(htf)  # 原始 4h 序列，gate_4h 内部自剔尾
             if g is not None:
                 g_dir, gate_ev = g
                 if (direction == 1 and g_dir == "long") or (direction == -1 and g_dir == "short"):

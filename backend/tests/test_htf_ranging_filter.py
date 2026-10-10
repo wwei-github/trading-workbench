@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
-"""筛选 4h 震荡过滤回归（2026-09-28）。
+"""筛选链 EMA 三件套硬门回归（2026-09-28 引入 ranging，2026-10-10 二次拍板硬门化）。
 
-detect_indicator_candidate 在多数决通过后增加 4h 背景检查：
-analyze_htf_background state=ranging（ADX<20）→ 不产生候选（返回 None），
-活跃 pending 同轮 expire（方向失守路径复用，语义=震荡下信号失效）。
-4h 拉取失败（htf=None）不过滤——降级放行与第 7 票口径一致。
+detect_indicator_candidate 判定链（docs/01 §3.2）：
+gate_4h（4h 趋势闸门一票否决：走平/缠绕/ADX<20 → 不跑票数不触发，pending
+expire(ranging)）→ 7 票多数决 → 闸门方向一致 → structure_1h（1H 三线排列+发散度，
+不过 → expire(structure_1h)）→ range_score（震荡评分 ≥3 → expire(range_score)）
+→ 触发。4h 拉取失败（htf=None）降级放行与第 7 票口径一致；1h 结构门/评分卡
+不依赖 4h，htf 缺失时照常生效。
 
-用假 pool 注入 1h/4h K 线，不触网。K 线构造保证 6 票预筛与多数决通过
-（|net6|≥2、|net7|≥3、voted≥5），使过滤命中点唯一落在 ranging 检查处。
+用假 pool 注入 1h/4h K 线，不触网。K 线构造保证 7 票多数决通过（|net|≥3、
+voted≥5），使过滤命中点唯一落在被测闸门处；票崩夹具（1h 横盘）用于证明
+4h 闸门先于票数。1h 夹具须 ≥201 根（结构门/评分卡的 EMA144 种子门槛）。
 """
 import sys
 from pathlib import Path
@@ -17,14 +20,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest  # noqa: E402
 
 from app.services.scanner import detect_indicator_candidate  # noqa: E402
+from app.services.strategy.ema_gate import range_score  # noqa: E402
 
 
 def _trend_1h(closes_start: float = 100.0, drift: float = 0.35) -> list[list]:
-    """110 根稳步上行 1h：让多数 EMA/MACD/RSI 等投多票（|net| 达标）"""
+    """300 根稳步上行 1h：让多数 EMA/MACD/RSI 等投多票（|net| 达标），
+    且满足结构门三线排列+发散（长度 ≥201 供 EMA144 种子）"""
     kl = []
     price = closes_start
     ts = 1_700_000_000_000
-    for i in range(110):
+    for i in range(300):
         o = price
         price += drift
         kl.append([ts + i * 3_600_000, o, price + 0.15, price - 0.25, price, 100.0, 100.0])
@@ -32,7 +37,7 @@ def _trend_1h(closes_start: float = 100.0, drift: float = 0.35) -> list[list]:
 
 
 def _ranging_4h() -> list[list]:
-    """220 根窄幅来回 4h：EMA21/55 纠缠、ADX<20 → analyze_htf_background=ranging"""
+    """220 根窄幅来回 4h：EMA144 走平 + ADX<20 → gate_4h 否决"""
     kl = []
     ts = 1_700_000_000_000
     price = 100.0
@@ -46,7 +51,7 @@ def _ranging_4h() -> list[list]:
 
 
 def _trending_4h_up() -> list[list]:
-    """220 根稳步上行 4h：强/弱多头背景（非 ranging，对照组）"""
+    """220 根稳步上行 4h：斜率/缠绕/ADX 全过 → gate_4h 给 long（对照组）"""
     kl = []
     ts = 1_700_000_000_000
     price = 60.0
@@ -67,8 +72,22 @@ class _FakePool:
         return self._m[interval][:limit]
 
 
+def _flat_1h(n: int = 110) -> list[list]:
+    """窄幅来回 1h：票崩夹具（票数不过）兼震荡评分高分夹具（n≥201 时）"""
+    kl = []
+    ts = 1_700_000_000_000
+    for i in range(n):
+        o = 100.0 + 0.3 * ((i % 8) - 4) / 4
+        c = 100.0 + 0.3 * (((i + 4) % 8) - 4) / 4
+        kl.append([ts + i * 3_600_000, o, max(o, c) + 0.1, min(o, c) - 0.1, c, 80.0, 80.0])
+    return kl
+
+
+# ── gate_4h：4h 趋势闸门一票否决 ────────────────────────────────────────
+
+
 def test_ranging_4h_filtered_out():
-    """4h 震荡（ADX<20）：即使 1h 指标多数决通过也不产生候选"""
+    """4h 走平/ADX弱（gate_4h 否决）：即使 1h 指标多数决通过也不产生候选"""
     cand, op = detect_indicator_candidate(
         _FakePool(_trend_1h(), _ranging_4h()), "TEST/USDT", _trend_1h()
     )
@@ -76,26 +95,37 @@ def test_ranging_4h_filtered_out():
 
 
 def test_ranging_4h_expires_pending():
-    """4h 震荡且有活跃 pending → 同轮 expire（复用方向失守路径）"""
+    """4h 闸门否决且有活跃 pending → 同轮 expire，reason=ranging（终态死因=4h 无明确趋势）"""
     pending = {"id": "x", "direction": 1, "stage1_candle_open": 1_700_000_000_000}
     cand, op = detect_indicator_candidate(
         _FakePool(_trend_1h(), _ranging_4h()), "TEST/USDT", _trend_1h(), pending=pending
     )
     assert cand is None
-    assert op is not None and op["op"] == "expire"
+    assert op is not None and op["op"] == "expire" and op["reason"] == "ranging"
+
+
+def test_gate_checked_before_votes():
+    """回归：1h 票崩 + 4h 闸门否决 + pending → 死因是 ranging 而非 direction_flip。
+    证明闸门在票数之前命中——待确认池过滤不看票数、只看 4h 趋势背景。"""
+    pending = {"id": "x", "direction": 1, "stage1_candle_open": 1_700_000_000_000}
+    cand, op = detect_indicator_candidate(
+        _FakePool(_flat_1h(), _ranging_4h()), "TEST/USDT", _flat_1h(), pending=pending
+    )
+    assert cand is None
+    assert op is not None and op["op"] == "expire" and op["reason"] == "ranging"
 
 
 def test_trending_4h_not_filtered():
-    """对照组：4h 趋势背景不被 ranging 过滤误杀（能走到触发环节）"""
+    """对照组：4h 闸门通过（斜率/缠绕/ADX 全过）+ 1h 趋势上行 → 一路走到触发环节
+    （无 pending 时硬门路径不产生 expire）"""
     cand, op = detect_indicator_candidate(
         _FakePool(_trend_1h(), _trending_4h_up()), "TEST/USDT", _trend_1h()
     )
-    # 无 pending 时 ranging 过滤路径不会产生 expire —— op 为 None 或非过滤 expire
     assert not (op and op.get("op") == "expire")
 
 
 def test_htf_fetch_failure_not_filtered():
-    """4h 拉取失败（htf=None）：降级放行，不因缺数据过滤"""
+    """4h 拉取失败（htf=None）：闸门降级放行，不因缺数据过滤"""
     kl = _trend_1h()
 
     class _BrokenPool:
@@ -105,5 +135,65 @@ def test_htf_fetch_failure_not_filtered():
             return kl[:limit]
 
     cand, op = detect_indicator_candidate(_BrokenPool(), "TEST/USDT", kl)
-    # 候选可能因无触发为 None，但不得被 ranging 过滤挡住 —— 与趋势对照组同判
+    # 候选可能因无触发为 None，但不得被闸门挡住 —— 与趋势对照组同判
     assert not (cand is None and op and op.get("op") == "expire")
+
+
+def test_gate_direction_mismatch_expires_pending():
+    """4h 闸门多头 + 1h 多数决空头 → 方向一致性门杀（direction_flip），不进结构门"""
+    kl = _trend_1h(closes_start=300.0, drift=-0.35)  # 1h 稳步下行 → 空头多数决
+    pending = {"id": "x", "direction": -1, "stage1_candle_open": 1_700_000_000_000}
+    cand, op = detect_indicator_candidate(
+        _FakePool(kl, _trending_4h_up()), "TEST/USDT", kl, pending=pending
+    )
+    assert cand is None
+    assert op is not None and op["op"] == "expire" and op["reason"] == "direction_flip"
+
+
+# ── structure_1h / range_score：筛选链硬门（monkeypatch 强制命中）────────
+
+
+def test_structure_gate_veto_expires_pending(monkeypatch):
+    """1H 结构门不过（桩强制 None）→ 不产生候选，pending expire(structure_1h)"""
+    import app.services.scanner as scanner_mod
+
+    monkeypatch.setattr(scanner_mod, "structure_1h", lambda k, d, cfg=None: None)
+    kl = _trend_1h()
+    pending = {"id": "x", "direction": 1, "stage1_candle_open": 1_700_000_000_000}
+    cand, op = detect_indicator_candidate(
+        _FakePool(kl, _trending_4h_up()), "TEST/USDT", kl, pending=pending
+    )
+    assert cand is None
+    assert op is not None and op["op"] == "expire" and op["reason"] == "structure_1h"
+
+
+def test_range_score_gate_veto_expires_pending(monkeypatch):
+    """震荡评分 ≥3（桩强制命中）→ 不产生候选，pending expire(range_score)"""
+    import app.services.scanner as scanner_mod
+
+    monkeypatch.setattr(scanner_mod, "range_score",
+                        lambda k, gate_ev=None: (3, ["1H ADX过低", "布林带收口", "成交量低迷"]))
+    kl = _trend_1h()
+    pending = {"id": "x", "direction": 1, "stage1_candle_open": 1_700_000_000_000}
+    cand, op = detect_indicator_candidate(
+        _FakePool(kl, _trending_4h_up()), "TEST/USDT", kl, pending=pending
+    )
+    assert cand is None
+    assert op is not None and op["op"] == "expire" and op["reason"] == "range_score"
+
+
+# ── range_score 评分卡本身 ─────────────────────────────────────────────
+
+
+def test_range_score_choppy_high():
+    """正弦震荡 1h（n≥201）：距离过近/ADX 预警/反复穿越 EMA21/量低迷共振 → ≥3"""
+    score, reasons = range_score(_flat_1h(300))
+    assert score >= 3
+    assert "21/55距离过近" in reasons
+    assert "55/144距离过近" in reasons
+
+
+def test_range_score_trending_low():
+    """稳步趋势 1h：评分卡不误伤（唯一命中是恒量成交的 cv 项，<3）"""
+    score, reasons = range_score(_trend_1h())
+    assert score < 3

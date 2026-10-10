@@ -1,11 +1,12 @@
 """扫描编排器（指标驱动筛选管线，2026-09-17 重设计）
 
-筛选漏斗（指标为主、信号为触发器）：
+筛选漏斗（指标为主、信号为触发器，EMA 三件套硬门 2026-10-10 二次拍板）：
 1. 宇宙：USDT 永续，24h 成交额 ≥ MIN_VOLUME_24H（流动性门槛）
-2. 体检：全池每币 1h K线 → 6 指标投票（MACD/布林/RSI/SuperTrend/ADX/OBV）；
-   |净票|≥2 才补拉 4h 算第 7 票（两阶段拉取省 4h 请求）
-3. 分组：7 票净票 |net|≥3 → 多头/空头候选；-2~+2 中性跳过（震荡市不开单）
-4. 触发确认：两段式决策矩阵（docs/19）——Donchian突破 / 回踩+金K确认 / 纯金K形态；
+2. 4h 趋势闸门 gate_4h 一票否决：EMA144 斜率/缠绕/ADX 三重条件必须同时成立，
+   否决直接不看（不跑票数不触发不进 AI）；1H 结构门 + 震荡评分卡 ≥3 同为硬门
+   （ema_gate.py，docs/19 §2/§3）
+3. 分组：单趟 7 票净票 |net|≥3 → 多头/空头候选；-2~+2 中性跳过（震荡市不开单）
+4. 触发确认：两段式决策矩阵（docs/19）——结构突破/趋势突破 / 回踩+金K确认；
    回踩触碰无金K 转入 pending 待确认池（pullback_pendings，次根金K才确认）；
    无触发 → 观察池（不落库，下轮重算）
 5. 质量分排序 + 重复命中抑制（仅定时）+ 落库 → AI 配额（按质量分取前 N）
@@ -47,6 +48,12 @@ from app.services.strategy.trigger import (
     TOUCH_RETEST,
     TREND_BREAKOUT,
     detect_trigger,
+)
+from app.services.strategy.ema_gate import (
+    RANGE_SCORE_REJECT,
+    gate_4h,
+    range_score,
+    structure_1h,
 )
 
 logger = logging.getLogger(__name__)
@@ -180,8 +187,12 @@ def detect_indicator_candidate(
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """指标驱动单币检测（Scanner 与 watchlist.refresh 共用同一套逻辑与阈值）。
 
-    流程：6 票预筛（|net6|<2 直接判中性，省 4h 请求）→ 补拉 4h 算第 7 票
-    → 多数决分组（|net|≥3 且 voted≥5）→ 两段式触发确认（trigger.py，docs/19）→ 质量分。
+    流程（2026-10-10 二次拍板：EMA 三件套硬门化）：4h 趋势闸门 gate_4h 一票否决
+    （走平/缠绕/ADX<20 任一命中直接不看，取代原 ranging 过滤+htf_res 方向门）
+    → 单趟 7 票投票 → 闸门方向一致 → 1H 结构门 structure_1h（三线排列+发散度）
+    → 震荡评分卡 range_score（≥3 不入场）→ 两段式触发确认（trigger.py）
+    → 质量分。原 6 票预筛已于同日撤销（4h 前置后失去省请求价值，|net6|<2 被
+    终判 |net|<3 完全蕴含），4h 背景复用第一步结果、6 项指标不再双算。
 
     pending: 该币活跃回踩 pending 快照（{id, direction, stage1_candle_open, touch_ref}）或 None。
     flt: 筛选参数组（2026-09-28 筛选配置上页面）；None=按 settings 解析。
@@ -201,45 +212,78 @@ def detect_indicator_candidate(
     ema = analyze_ema(klines)  # 背景展示用（方向判定不依赖 EMA）
     vol, vol_type = classify_volume(klines)
 
-    # 两阶段投票：先 6 票预筛（|net6|<2 时第 7 票也够不到 3，省 4h 请求）
-    votes6 = compute_indicator_votes(klines)
-    if not votes6 or votes6["voted"] < 5 or abs(votes6["net"]) < 2:
-        # 前置过期路径：票崩 → 活跃 pending 方向失守（docs/19 §4.1）
-        return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
-
-    # 第 7 票：4h 背景（失败降级为无 4h 票，不中断）
+    # 第一步：4h 趋势闸门 gate_4h（2026-10-10 二次拍板，check_4h_gate 一票否决
+    # 语义落地为筛选硬门，取代原 ranging 过滤 + htf_res 方向门）——整个筛选系统
+    # 最重要的过滤器：只有 4H 趋势明确（EMA144 斜率 ≥0.5%/20根、近10根缠绕
+    # ≤2次、ADX≥20，三者同时成立）才允许 1H 入场，4h 走平或缠绕时 1h 信号再
+    # 漂亮也不做。命中否决 → 直接不看：不跑票数、不触发、不进候选（连 AI 分析
+    # 都不给），活跃 pending 同轮 expire(ranging)（ranging 词义="4h 无明确趋势"，
+    # 涵盖走平与缠绕，死因沿用既有词表）。
+    # 4h 每轮对全币池拉取（kline 缓存按 4h 桶对齐，实际新请求 ≈ 池子 ÷4 每小时）；
+    # 拉取失败（htf=None）与闸门计算异常降级放行——gate_4h 返回 None=主动否决，
+    # 异常=数据/实现问题，二者区分（原 ranging 过滤同口径）。4h 历史 <200 根
+    # （新币冷静期默认 45 天≈270 根，正常覆盖不到）一并否决。
     try:
         htf = pool.get_klines(symbol, "4h", 300)  # 300 根：EMA144 SMA 种子后递推 155 步，收敛残留 ~12%
     except Exception as e:
         htf = None
         logger.warning("%s 获取4h K线失败（跳过4h票）: %s", symbol, e)
-
-    votes = compute_indicator_votes(klines, htf)
-    if not votes or votes["voted"] < 5 or abs(votes["net"]) < 3:
-        return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)  # 中性/票数不足
-
-    # 4h 震荡过滤（2026-09-28）：震荡背景无趋势方向，EMA 反复交叉下 1h 信号
-    # 胜率塌陷，直接不进候选（连 AI 分析都不给）。4h 拉取失败（htf=None）
-    # 不过滤——数据缺失降级放行，与第 7 票降级口径一致
     htf_res = None
+    gate = None
     if htf:
         try:
             htf_res = analyze_htf_background(htf)
         except Exception as e:
             htf_res = None
             logger.warning("%s 4h背景复算失败（过滤降级放行）: %s", symbol, e)
-        if htf_res and htf_res.get("state") == "ranging":
-            return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
+        try:
+            gate = gate_4h(htf)
+        except Exception as e:
+            gate = None
+            logger.warning("%s 4h闸门计算异常（降级放行）: %s", symbol, e)
+        else:
+            # 仅"正常返回 None"= 主动否决；异常路径 gate=None 走下方降级放行，
+            # 不死因归类 ranging（异常=数据/实现问题，与市场状态无关）
+            if gate is None:
+                return None, ({"op": "expire", "reason": "ranging"} if pending else None)
+
+    # 投票单趟计算（2026-10-10 精简）：6 票预筛层撤销——4h 前置拉取后预筛失去
+    # 「省 4h 请求」的存在理由，|net6|<2 被终判 |net|<3 完全蕴含（第 7 票至多
+    # ±1），有损的 voted<5 分支删除（voted6=4 + 第 7 票 → voted=5 本可通过终判，
+    # 不再被预筛误杀）。|net6|<2 的币照样死于终判 |net|<3，pending 过期原因不变；
+    # 4h 背景复用第一步的 htf_bg，6 项 1h 指标也不再双算（原两次
+    # compute_indicator_votes 各跑一遍全量指标）
+    votes = compute_indicator_votes(klines, htf_bg=htf_res)
+    if not votes or votes["voted"] < 5 or abs(votes["net"]) < 3:
+        # 中性/票数不足 → 活跃 pending 方向失守（docs/19 §4.1 前置过期路径）
+        return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
     direction = 1 if votes["net"] > 0 else -1
-    # 4h 方向一致性门（2026-09-28）：4h 有趋势方向（bullish/bearish）时，1h 信号
-    # 方向必须与 4h 一致——4h 看多只产生多头信号，回踩确认金K 自然只会是看涨吞没/
-    # 锤形线/启明星等看涨形态（4h 看空对称）。纠缠（mixed，dir=0）不设限；
-    # 4h 拉取/复算失败（htf_res=None）降级放行，与上方过滤同口径。
+    # 闸门方向一致性（2026-10-10 二次拍板，取代原 htf_res dir 门）：gate_4h 给出
+    # 的 4h 方向（价格×EMA144 位置+斜率方向）必须与多数决方向一致——gate 在上面
+    # 已保证非 None（htf 拉取失败降级时 gate=None，跳过检查与原降级口径一致）。
     # 与 4h 冲突的活跃 pending 不可能被确认（金K 方向跟着多数决走），按方向失守过期
-    if htf_res and htf_res.get("dir") and direction != htf_res["dir"]:
+    if gate is not None and gate[0] != ("long" if direction == 1 else "short"):
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
-    # htf 直传触点体系（2026-10-09）：ema21_4h 跨周期触点与第 7 票/方向门共用
+
+    # 第二步：1H 结构校验（2026-10-10 二次拍板，check_1h_structure 语义硬门化）：
+    # 三线排列（EMA21>55>144 多头镜像）+ ATR 归一发散度（|21-55|/ATR≥0.5、
+    # |55-144|/ATR≥1.0）必须成立——仅有排列还不够，三线挤在一起即使顺序对也是
+    # 震荡；ATR 归一化让同一套阈值跨品种可用。1h 历史 <200 根（新币）一并否决
+    st = structure_1h(klines[:-1] if len(klines) >= 2 else klines,
+                      "long" if direction == 1 else "short")
+    if st is None:
+        return None, ({"op": "expire", "reason": "structure_1h"} if pending else None)
+
+    # 第三步：震荡评分卡（2026-10-10 二次拍板，calc_range_score 语义硬门化）：
+    # 8 项独立评分 ≥3 不入场——单一指标可能失效，多指标共振才可靠。闸门与结构
+    # 门已通过的币，评分实际来自 1h ADX 预警/布林带收口/价格反复穿越 EMA21/
+    # 成交量低迷四项（项 1-4 恒 0），≥3 即强震荡共识
+    rs, _rs_reasons = range_score(klines, gate_ev=gate[1] if gate else None)
+    if rs >= RANGE_SCORE_REJECT:
+        return None, ({"op": "expire", "reason": "range_score"} if pending else None)
+
+    # htf 直传触点体系（2026-10-09）：ema21_4h 跨周期触点与第 7 票/闸门共用
     # 同一份 4h 快照，单轮单币不重复拉取
     trig, pending_op = detect_trigger(
         klines, direction, pending, flt=flt, retest=retest, htf=htf,
@@ -959,7 +1003,7 @@ class Scanner:
           （direction_flip）后同事务新建（保留审计链，不原地改写方向）
         - confirm：终态 confirmed，回填确认形态与 confirmed_scan_result_id
         - supersede：终态 superseded（T1 突破 / 当根确认抢先）
-        - expire：终态 expired（window_expired / direction_flip）
+        - expire：终态 expired（ranging=4h 震荡第一步过滤 / direction_flip / window_expired）
         失败整体回滚忽略——下轮扫描会按快照重新评估，不产生不可恢复状态。
         """
         sdb = SessionLocal()

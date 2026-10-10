@@ -808,8 +808,15 @@ _INDICATORS = (
 HTF_DISPLAY, HTF_SHORT = "4h背景(趋势年龄)", "4h背景"
 
 
-def _compute_all(klines: list[list], htf_klines: Optional[list] = None) -> list[tuple]:
-    """计算全部指标，返回 [(显示名, 短名, result|None)]；单指标异常降级为 None"""
+def _compute_all(
+    klines: list[list], htf_klines: Optional[list] = None,
+    htf_bg: Optional[dict] = None,
+) -> list[tuple]:
+    """计算全部指标，返回 [(显示名, 短名, result|None)]；单指标异常降级为 None。
+
+    htf_bg（2026-10-10）：调用方已算好的 4h 背景结果（如 scanner ranging 过滤
+    步骤的产物），传入则直接复用不再重算；htf_klines 仅在 htf_bg 缺席时使用
+    （旧路径兼容：AI 管线仍传原始 4h K 线）。"""
     results = []
     for display, short, fn in _INDICATORS:
         try:
@@ -818,7 +825,9 @@ def _compute_all(klines: list[list], htf_klines: Optional[list] = None) -> list[
             logger.warning("指标 %s 计算失败（跳过）: %s", display, e)
             r = None
         results.append((display, short, r))
-    if htf_klines:
+    if htf_bg is not None:
+        results.append((HTF_DISPLAY, HTF_SHORT, htf_bg))
+    elif htf_klines:
         try:
             htf = analyze_htf_background(htf_klines)
         except Exception as e:
@@ -938,14 +947,20 @@ def render_indicator_block(klines: list[list], htf_klines: Optional[list] = None
 
 def compute_indicator_votes(
     klines: list[list], htf_klines: Optional[list] = None,
+    htf_bg: Optional[dict] = None,
 ) -> Optional[dict]:
     """指标方向票数统计——扫描筛选与 AI 注入同一把尺子（指标驱动管线核心）。
+
+    htf_bg：预计算的 4h 背景结果（scanner ranging 过滤产物），复用免重算；
+    与 htf_klines 二选一（htf_bg 优先），两者皆缺 → 第 7 票弃权。
 
     返回 None = 无任何可用指标；否则：
     {bull: [多票短名], bear: [空票短名], bull_n, bear_n, net, voted,
      results: [(短名, 指标结果dict)]}
     """
-    results = [(short, r) for _, short, r in _compute_all(klines, htf_klines) if r]
+    results = [
+        (short, r) for _, short, r in _compute_all(klines, htf_klines, htf_bg) if r
+    ]
     if not results:
         return None
     bull = [s for s, r in results if int(r.get("dir") or 0) > 0]

@@ -1,11 +1,16 @@
-"""EMA 趋势方向门（docs/19 §2，2026-10-10 融合拍板：影子层退役并入原生触发层）。
+"""EMA 趋势门 + 震荡评分卡（docs/19 §2/§3）。
 
-两个纯函数，供 trigger.py 的 trend_pullback 触发类型作前置方向过滤：
+2026-10-10 融合拍板：影子层退役并入原生触发层（trend_pullback 升级标注）；
+同日二次拍板：三件套提为筛选链硬门（scanner.detect_indicator_candidate，
+一票否决语义，借鉴外部设计 check_4h_gate / check_1h_structure / calc_range_score）：
 - gate_4h：4H EMA144 趋势闸门（三重否决——斜率走平 / 缠绕震荡 / ADX 弱），
   输出方向 long/short 或 None；
-- structure_1h：1H 三线排列 + ATR 归一发散度结构门，输出结构证据或 None。
+- structure_1h：1H 三线排列 + ATR 归一发散度结构门，输出结构证据或 None；
+- range_score：震荡评分卡 8 项独立评分，≥3 判震荡不入场。
 
-已收盘判定纪律由调用方保证（klines 已剔除未收盘根）。
+K 线口径：gate_4h 收原始 4h 序列（尾根未收盘，内部剔除，analyze_adx 同口径）；
+structure_1h 由调用方传已剔尾序列（scanner/trigger 均传 klines[:-1]）；
+range_score 收原始 1h 序列（内部自剔尾，项 5 analyze_adx 同口径）。
 """
 from dataclasses import dataclass
 from typing import Optional
@@ -20,6 +25,16 @@ SLOPE_FLAT_PCT = 0.005
 # 缠绕判定：近 10 根收盘价穿越 EMA144 次数 ≥3 → 震荡拒绝
 WRAP_WINDOW = 10
 WRAP_MAX = 2
+
+# ── 震荡评分卡常量（docs/19 §3，≥RANGE_SCORE_REJECT 分不入场）──────────────
+RANGE_SCORE_REJECT = 3
+ADX_WARN_MIN = 18.0        # 项5：1h ADX 预警下限（比闸门 20 略低，作"预警"档）
+BBW_HISTORY = 100          # 项6：带宽分位的回看根数
+BBW_PCTL = 30.0            # 项6：当前带宽低于历史 30 分位 → 波动率压缩
+BBW_MIN_HIST = 20          # 项6：历史样本下限（不足跳过该项，不给分）
+CROSS_WINDOW = 20          # 项7：价格穿越 EMA21 的回看根数
+CROSS_MAX = 4              # 项7：穿越 ≥4 次 → 震荡最直观的表现
+VOL_CV_MIN = 0.3           # 项8：近 20 根成交量变异系数下限（<0.3 → 无规律低迷）
 
 
 def ema_series(closes: np.ndarray, period: int) -> Optional[np.ndarray]:
@@ -45,13 +60,16 @@ class EmaGateConfig:
 def gate_4h(k4: list[list], cfg: Optional[EmaGateConfig] = None) -> Optional[tuple[str, dict]]:
     """4H EMA144 趋势闸门：三重否决（走平/缠绕/ADX）全过才给方向。
 
+    k4：原始 4h K线（尾根未收盘，内部统一剔除——与 analyze_adx 的自剔尾
+    口径一致，避免对已剔除序列再剔一次导致 ADX 慢一拍）。
     返回 (direction "long"/"short", 证据 dict) 或 None（闸门不过）。
     证据 direction 语义为 "up"/"down"（4h K 线趋势方向，观测/前端展示口径）。
     """
     cfg = cfg or EmaGateConfig()
-    if len(k4) < 200:
+    closed = k4[:-1] if len(k4) >= 2 else k4
+    if len(closed) < 200:
         return None
-    c = np.array([float(k[4]) for k in k4], dtype=float)
+    c = np.array([float(k[4]) for k in closed], dtype=float)
     e144 = ema_series(c, 144)
     if e144 is None or not np.isfinite(e144[-1]) or not np.isfinite(e144[-SLOPE_BARS]):
         return None
@@ -60,13 +78,13 @@ def gate_4h(k4: list[list], cfg: Optional[EmaGateConfig] = None) -> Optional[tup
 
     # 缠绕：近 WRAP_WINDOW 根收盘价在 EMA144 两侧的穿越次数
     wraps = 0
-    for i in range(len(k4) - WRAP_WINDOW, len(k4)):
+    for i in range(len(closed) - WRAP_WINDOW, len(closed)):
         side_now = c[i] - e144[i]
         side_prev = c[i - 1] - e144[i - 1]
         if side_now * side_prev < 0:
             wraps += 1
 
-    adx_info = analyze_adx(k4, period=14)
+    adx_info = analyze_adx(k4, period=14)  # 原始序列，函数内部自剔尾
     adx_val = float(adx_info["adx"]) if adx_info else None
 
     ev = {"slope_pct": round(slope_pct, 5), "wraps": wraps,
@@ -128,3 +146,103 @@ def structure_1h(k1: list[list], direction: str,
     if not aligned or div_fm < cfg.div_fast_mid or div_ms < cfg.div_mid_slow:
         return None
     return {"d21": d21, "d55": d55, "d144": d144, "atr": atr}, ev
+
+
+def range_score(klines: list[list],
+                gate_ev: Optional[dict] = None) -> tuple[int, list[str]]:
+    """震荡评分卡：8 项独立评分，累计 ≥RANGE_SCORE_REJECT 判震荡不入场。
+
+    设计思想（docs/19 §3）：单一指标可能失效，多个指标共振时判断更可靠；
+    每项独立评分，得分越高震荡概率越大——评分制比硬条件更灵活。
+
+    项 1（4H EMA144 走平）复用 gate_4h 斜率证据不重算，筛选链中位于闸门之后
+    故恒为 0（standalone 使用时才可能命中）；项 2-4 与 structure_1h 同源，结构
+    门通过时亦恒为 0——评分卡在筛选链的实际杀伤力来自项 5-8（1h ADX 预警 /
+    布林带收口 / 价格反复穿越 EMA21 / 成交量低迷），即闸门与结构门漏掉的
+    残余震荡，≥3 即强震荡共识。
+
+    klines：1h 原始K线（尾根未收盘，内部取已收盘）；gate_ev：gate_4h 证据
+    （可 None，缺失跳过项 1）。返回 (score, reasons)。"""
+    closed = klines[:-1] if len(klines) >= 2 else klines
+    n = len(closed)
+    score, reasons = 0, []
+
+    # 1. 4H EMA144 走平——最硬的条件，若走平直接高分
+    if gate_ev is not None and float(gate_ev.get("slope_pct") or 0) < SLOPE_FLAT_PCT:
+        score += 1
+        reasons.append("4H EMA144走平")
+
+    if n < 200:  # EMA144 种子 + 余量（与 structure_1h 同门槛），不足不给分
+        return score, reasons
+    closes = np.array([float(k[4]) for k in closed], dtype=float)
+    e21 = ema_series(closes, 21)
+    e55 = ema_series(closes, 55)
+    e144 = ema_series(closes, 144)
+    if any(e is None or not np.isfinite(e[-1]) for e in (e21, e55, e144)):
+        return score, reasons
+    d21, d55, d144 = float(e21[-1]), float(e55[-1]), float(e144[-1])
+
+    # ATR14（与 structure_1h 同口径：TR 均值滚动）
+    h = np.array([float(k[2]) for k in closed], dtype=float)
+    low = np.array([float(k[3]) for k in closed], dtype=float)
+    tr = np.maximum(h[1:] - low[1:],
+                    np.maximum(np.abs(h[1:] - closes[:-1]), np.abs(low[1:] - closes[:-1])))
+    atr = float(tr[-14:].mean()) if len(tr) >= 14 else 0.0
+
+    # 2. 1H 三线交错——排列错误 = 结构混乱
+    if not (d21 > d55 > d144 or d21 < d55 < d144):
+        score += 1
+        reasons.append("1H三线交错")
+
+    # 3/4. 快中/中慢线距离过近（ATR 归一化跨品种统一阈值：0.5 是"粘合"与
+    # "发散"的分界线，中慢线要求更高因代表更长期趋势）
+    if atr > 0:
+        if abs(d21 - d55) / atr < 0.5:
+            score += 1
+            reasons.append("21/55距离过近")
+        if abs(d55 - d144) / atr < 1.0:
+            score += 1
+            reasons.append("55/144距离过近")
+
+    # 5. 1H ADX 预警——已低于 18 说明趋势明显不足
+    try:
+        adx_info = analyze_adx(klines, period=14)
+    except Exception:
+        adx_info = None
+    if adx_info and float(adx_info["adx"]) < ADX_WARN_MIN:
+        score += 1
+        reasons.append("1H ADX过低")
+
+    # 6. 布林带收口：当前带宽 < 过去 BBW_HISTORY 根的 BBW_PCTL 分位 = 波动率
+    #    压缩，往往伴随震荡（带宽 = 4σ/中轨，布林带 (upper-lower)/mid 同构）
+    if n >= 20 + BBW_MIN_HIST + 1:
+        csum = np.cumsum(np.insert(closes, 0, 0.0))
+        csum2 = np.cumsum(np.insert(closes ** 2, 0, 0.0))
+        idx = np.arange(19, n)  # 每个位置 i 的 20 根窗口 [i-19, i]
+        mid = (csum[idx + 1] - csum[idx + 1 - 20]) / 20
+        var = (csum2[idx + 1] - csum2[idx + 1 - 20]) / 20 - mid ** 2
+        bw = 4.0 * np.sqrt(np.maximum(var, 0.0)) / np.maximum(mid, 1e-12)
+        hist = bw[max(0, len(bw) - 1 - BBW_HISTORY): len(bw) - 1]
+        if len(hist) >= BBW_MIN_HIST and np.isfinite(bw[-1]) \
+                and float(bw[-1]) < float(np.percentile(hist, BBW_PCTL)):
+            score += 1
+            reasons.append("布林带收口")
+
+    # 7. 价格反复穿越 EMA21——近 CROSS_WINDOW 根穿越 ≥CROSS_MAX 次
+    crosses = 0
+    for i in range(max(1, n - CROSS_WINDOW), n):
+        if (closes[i - 1] - float(e21[i - 1])) * (closes[i] - float(e21[i])) < 0:
+            crosses += 1
+    if crosses >= CROSS_MAX:
+        score += 1
+        reasons.append("价格反复穿越EMA21")
+
+    # 8. 成交量低迷——变异系数（std/mean）低于阈值 = 无规律；趋势行情中量应
+    #    有明显的放大与萎缩
+    vols = np.array([float(k[5]) for k in closed[-CROSS_WINDOW:]], dtype=float)
+    vmean = float(vols.mean()) if len(vols) else 0.0
+    if vmean > 0 and float(vols.std(ddof=0)) / vmean < VOL_CV_MIN:
+        score += 1
+        reasons.append("成交量低迷")
+
+    return score, reasons
