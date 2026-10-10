@@ -42,6 +42,12 @@ export interface ScanResult {
       dir: number; // 1 多 / -1 空 / 0 中性
       phase?: string | null; // r2 趋势年龄四档 launch/mid/late/exhausted（旧行无此键）
     };
+    stabilize?: { // 回踩企稳加分项证据（docs/19 §3.3 条件2/3，旧行/非回踩行无此键）
+      mod: number; // 合计分值（缩量+3/放量-5/MACD +4~+5/-4）
+      touch_vol_ratio: number | null; // 触碰根量比（当根确认跳过量能语义时 null）
+      macd_zero: string | null; // above / below / pullback_hold / mixed
+      items: string[]; // 命中名目
+    };
   } | null;
   is_repeat: boolean;
   created_at: string;

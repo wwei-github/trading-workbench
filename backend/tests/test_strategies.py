@@ -6,7 +6,7 @@
 - trigger 趋势升级：闸门+结构全过 → trigger_trend_pullback（质量分层标注），
   任一门不过/无 htf → 普通回踩金K确认（升级不拦截，行为零回归）；
 - P2 出场变体（docs/19 §3.4）：backtest_engine 的 sig_exit/tp_qty_override 回测能力；
-- technical：KDJ / MACD 零轴状态（融合保留资产）。
+- technical：KDJ / MACD 零轴状态（融合保留资产）+ 回踩企稳加分项（§3.3 条件2/3）。
 """
 import sys
 from datetime import datetime
@@ -22,6 +22,7 @@ from app.services.backtest_engine import (  # noqa: E402
     _sig_exit_flags,
     replay_exit,
 )
+from app.services.strategy import technical as tech  # noqa: E402
 from app.services.strategy import trigger as trig  # noqa: E402
 from app.services.strategy.ema import calc_ema  # noqa: E402
 from app.services.strategy.ema_gate import (  # noqa: E402
@@ -30,7 +31,9 @@ from app.services.strategy.ema_gate import (  # noqa: E402
 )
 from app.services.strategy.technical import (  # noqa: E402
     analyze_stochastic,
+    compute_quality_score,
     macd_zero_state,
+    pullback_stabilize_bonus,
 )
 
 TS0 = 1_791_000_000_000
@@ -343,3 +346,111 @@ def test_analyze_stochastic_kdj():
     c = [200 - i * 1.5 for i in range(50)] + [125 + i * 2.0 for i in range(3)]
     rev = analyze_stochastic(_mk_klines(c))
     assert rev and rev["cross"] == 1
+
+
+# ── 回踩企稳加分项（docs/19 §3.3 条件2/3，2026-10-10 拍板：加分不拦截）──────
+
+
+def _stab_klines(touch_vol: float, base_vol: float = 1000.0) -> list[list]:
+    """300 根稳步上行 1h（MACD 真算 = above/多头）：触碰根（closed[-3]，即
+    kl[-4]）量 = touch_vol，其余 base_vol → 触碰根量比 = touch_vol / base_vol"""
+    kl = []
+    ts = 1_791_000_000_000
+    price = 100.0
+    for i in range(300):
+        o = price
+        price += 0.3
+        vol = touch_vol if i == 296 else base_vol  # kl[-4] = closed[-3] 触碰根
+        kl.append([ts + i * H1, o, price + 0.2, price - 0.2, price, vol, vol * 10])
+    return kl
+
+
+def test_stabilize_light_volume_and_macd_above(monkeypatch):
+    """缩量回踩 +3、MACD 零轴上方同向 +4 → mod +7"""
+    monkeypatch.setattr(tech, "macd_zero_state",
+                        lambda k, **kw: {"state": "above", "dir": 1})
+    ev = pullback_stabilize_bonus(_stab_klines(touch_vol=500.0), 1, touch_idx=-3)
+    assert ev["mod"] == 7
+    assert ev["touch_vol_ratio"] == 0.5
+    assert "缩量回踩+3" in ev["items"] and "MACD零轴上方+4" in ev["items"]
+
+
+def test_stabilize_heavy_volume_and_macd_against(monkeypatch):
+    """放量回踩 -5（抛压重）、MACD 反向 -4 → mod -9"""
+    monkeypatch.setattr(tech, "macd_zero_state",
+                        lambda k, **kw: {"state": "below", "dir": -1})
+    ev = pullback_stabilize_bonus(_stab_klines(touch_vol=2000.0), 1, touch_idx=-3)
+    assert ev["mod"] == -9
+    assert "放量回踩-5" in ev["items"] and "MACD动量不确认-4" in ev["items"]
+
+
+def test_stabilize_pullback_hold_top_bonus(monkeypatch):
+    """回踩零轴不破（同向最强企稳证据）+5；常量区间量比不加不减"""
+    monkeypatch.setattr(tech, "macd_zero_state",
+                        lambda k, **kw: {"state": "pullback_hold", "dir": 1})
+    ev = pullback_stabilize_bonus(_stab_klines(touch_vol=1000.0), 1, touch_idx=-3)
+    assert ev["mod"] == 5 and "回踩零轴不破+5" in ev["items"]
+
+
+def test_stabilize_same_candle_skips_volume_semantics(monkeypatch):
+    """当根确认（volume_semantics=False）：触碰根即金K根，量能已由放量加分
+    评估——本项跳过（无量比），只算 MACD"""
+    monkeypatch.setattr(tech, "macd_zero_state",
+                        lambda k, **kw: {"state": "above", "dir": 1})
+    ev = pullback_stabilize_bonus(_stab_klines(touch_vol=2000.0), 1, -2,
+                                  volume_semantics=False)
+    assert ev["mod"] == 4 and ev["touch_vol_ratio"] is None
+
+
+def test_stabilize_short_direction_mirror(monkeypatch):
+    """空头镜像：零轴下方 dir=-1 与做空同向 → +4"""
+    monkeypatch.setattr(tech, "macd_zero_state",
+                        lambda k, **kw: {"state": "below", "dir": -1})
+    ev = pullback_stabilize_bonus(_stab_klines(touch_vol=1000.0), -1, touch_idx=-3)
+    assert ev["mod"] == 4
+
+
+def test_stabilize_insufficient_data_skips_items():
+    """数据不足：触碰根前中位量不够（23 根内 touch_idx=-3 索引 <20）静默跳过
+    量能项；MACD 需 ≥45 根已收盘同样跳过 → mod 0、无名目"""
+    kl = _stab_klines(touch_vol=500.0)[:23]
+    ev = pullback_stabilize_bonus(kl, 1, touch_idx=-3)
+    assert ev is not None
+    assert ev["touch_vol_ratio"] is None and ev["macd_zero"] is None
+    assert ev["mod"] == 0 and ev["items"] == []
+
+
+def test_trigger_stabilize_attached_both_paths():
+    """行2/行3 触发 dict 均带 stabilize 证据：当根确认无量比（跳过量能语义）、
+    次根确认有触碰根量比；上涨序列 MACD above 同向 → mod 含 +4"""
+    # 行2 当根确认（触碰+金K 同根）
+    kl = _pullback_klines_1h()
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, _ = trig.detect_trigger(kl, 1)
+    assert t["stabilize"] is not None
+    assert t["stabilize"]["touch_vol_ratio"] is None       # volume_semantics=False
+    assert t["stabilize"]["macd_zero"] == "above"
+    assert t["stabilize"]["mod"] == 4
+
+    # 行3 次根确认（有效 pending + 金K）
+    kl2 = _pullback_klines_1h(touch=False)
+    pending = {"id": "x", "direction": 1,
+               "stage1_candle_open": datetime.utcfromtimestamp(kl2[-3][0] / 1000)}
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t2, op = trig.detect_trigger(kl2, 1, pending=pending)
+    assert t2["stabilize"]["touch_vol_ratio"] is not None   # 量比正常评估
+    assert t2["stabilize"]["macd_zero"] == "above"
+    assert op == {"op": "confirm"}
+
+
+def test_quality_score_applies_stabilize():
+    """compute_quality_score 接线：stabilize.mod 进总分（加分不拦截）"""
+    votes = {"bull": ["MACD"], "bear": [], "bull_n": 4, "bear_n": 0,
+             "net": 4, "voted": 6, "results": [("MACD", {"dir": 1})]}
+    base = compute_quality_score(1, votes, "trigger_pullback_confirm")
+    up = compute_quality_score(1, votes, "trigger_pullback_confirm",
+                               stabilize={"mod": 7})
+    dn = compute_quality_score(1, votes, "trigger_pullback_confirm",
+                               stabilize={"mod": -9})
+    assert up == min(100, base + 7)
+    assert dn == max(0, base - 9)

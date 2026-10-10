@@ -11,6 +11,7 @@ AI 分析两条管线共用注入（P0 ai_analyzer._build_messages 与 P1 ai_age
 - calc_ema 复用 ema.py（其不依赖 strategy 包内其他模块，无循环导入）
 """
 import logging
+from statistics import median
 from typing import Optional
 
 import numpy as np
@@ -974,9 +975,81 @@ def compute_indicator_votes(
     }
 
 
+def pullback_stabilize_bonus(
+    klines: list[list], direction: int, touch_idx: int = -3,
+    volume_semantics: bool = True,
+) -> Optional[dict]:
+    """回踩企稳加分项（docs/19 §3.3 条件2/3，2026-10-10 拍板：加分不拦截）。
+
+    条件2 量能语义——触碰根量比 = 触碰根量 ÷ 其前 20 根中位量（volume_ratio
+    同口径：中位数抗量堆根极值，比外部设计的 MA20 更稳）：
+    - 量比 >1.5 → -5：放量回踩 = 抛压重，是放量下跌而非健康回踩；
+    - 量比 <0.8 → +3：缩量回踩（策略 A「量能配合：回调缩量」，阈值我们自定）；
+    - 其间 → 0。当根确认时触碰根即金K根，其量能已由放量加分（≥1.2 +5）评估，
+      语义冲突，调用方传 volume_semantics=False 跳过本项。
+
+    条件3 MACD 零轴状态（macd_zero_state，动量维度独立于均线排列；state 与
+    dir 绑定——above 仅多头 / below 仅空头 / pullback_hold 双向）：
+    - dir 与信号同向：pullback_hold 回踩/反抽零轴不破 +5（健康回踩、动量保持，
+      最强企稳证据）；above/below 零轴同侧 +4（动量确认）；
+    - 反向或 mixed 零轴胶着 → -4（动量不确认）。
+
+    touch_idx：触碰根下标（次根确认 -3 / 触碰当根 pending 快照 -2 / 当根确认
+    -2）。数据不足的项静默跳过；klines 为空返回 None。
+    返回 {"mod": 合计, "touch_vol_ratio", "macd_zero", "items": [名目]}。
+    """
+    if not klines:
+        return None
+    mod, items = 0, []
+    ev: dict = {"mod": 0, "touch_vol_ratio": None, "macd_zero": None, "items": items}
+
+    # 条件2：触碰根量比（触碰根前 20 根中位量作分母）；数据异常只降级本项
+    if volume_semantics:
+        try:
+            closed = klines[:-1] if len(klines) >= 2 else klines
+            ti = len(closed) + touch_idx
+            if 20 <= ti < len(closed):
+                med = median(float(k[5]) for k in closed[ti - 20:ti])
+                if med > 0:
+                    vr = float(closed[ti][5]) / med
+                    ev["touch_vol_ratio"] = round(vr, 2)
+                    if vr > 1.5:
+                        mod -= 5
+                        items.append("放量回踩-5")
+                    elif vr < 0.8:
+                        mod += 3
+                        items.append("缩量回踩+3")
+        except (ValueError, TypeError, IndexError, ZeroDivisionError):
+            pass  # 量能数据异常只降级该修饰项，不影响其余证据
+
+    # 条件3：MACD 零轴状态（原始 K 线传入，函数内部自剔尾）。
+    # state 与 dir 绑定（macd_zero_state）：above→dir=1 / below→dir=-1 /
+    # pullback_hold 双向皆有（回踩不破=1 / 反抽不破=-1）→ dir==direction 即同向
+    try:
+        macd = macd_zero_state(klines)
+    except Exception:
+        macd = None
+    if macd and macd.get("state"):
+        ev["macd_zero"] = macd["state"]
+        if int(macd.get("dir") or 0) == direction:
+            if macd["state"] == "pullback_hold":
+                mod += 5
+                items.append("回踩零轴不破+5" if direction == 1 else "反抽零轴不破+5")
+            else:  # above（多头）/ below（空头）：零轴同侧 = 动量确认
+                mod += 4
+                items.append("MACD零轴上方+4" if direction == 1 else "MACD零轴下方+4")
+        else:
+            mod -= 4
+            items.append("MACD动量不确认-4")
+
+    ev["mod"] = mod
+    return ev
+
+
 def compute_quality_score(
     direction: int, votes: dict, trigger_type: str,
     klines: Optional[list] = None,
+    stabilize: Optional[dict] = None,
 ) -> int:
     """候选质量分（0-100）：方向一致性为主，修饰项只影响排序不改变方向。
 
@@ -984,6 +1057,9 @@ def compute_quality_score(
     trigger_type: trigger_breakout / trigger_trend_breakout / trigger_pullback_confirm /
     trigger_trend_pullback
     klines: 可选，放量加分需要（量比 ≥1.2 +5，各触发类型一致）
+    stabilize: 可选，回踩企稳加分项（pullback_stabilize_bonus 产物，docs/19
+    §3.3 条件2/3：缩量回踩 +3 / 放量回踩 -5 / MACD 零轴同向 +4~+5 / 动量
+    不确认 -4；仅回踩类触发传入，加分不拦截）
     修饰规则（2026-09-17 设计评审定稿；2026-09-24 4h 背景提权；2026-10-10
     趋势年龄重设计替代强/弱二级）：
     - 4h背景按趋势年龄：同向 前期+5 / 中期+8 / 后期+10 / 衰竭-6（追老化趋势）；
@@ -1044,5 +1120,10 @@ def compute_quality_score(
         rank = boll.get("bw_rank")
         if rank is not None and float(rank) <= 10:
             score -= 5
+
+    # 回踩企稳加分项（docs/19 §3.3 条件2/3，2026-10-10 拍板）：缩量/放量回踩
+    # 与 MACD 零轴动量证据，加分不拦截，仅回踩类触发由调用方传入
+    if stabilize:
+        score += int(stabilize.get("mod") or 0)
 
     return max(0, min(100, int(round(score))))

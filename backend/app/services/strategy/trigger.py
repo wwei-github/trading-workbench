@@ -53,6 +53,7 @@ from app.services.strategy.candlestick import (
 from app.services.strategy.ema import calc_ema
 from app.services.strategy.ema_gate import EmaGateConfig, gate_4h, structure_1h
 from app.services.strategy.indicators import volume_ratio
+from app.services.strategy.technical import pullback_stabilize_bonus
 import numpy as np
 
 # 触发类型 = signal_type（AI 提示词 SIGNAL_TYPE_LABELS 已注册同名标签）
@@ -551,6 +552,9 @@ def detect_trigger(
         # "双流星组合确认"/"前根锤形线+当根趋势K确认"）
         _ev = f"当根{_label}确认" if not golden_note else f"{golden_note}确认"
         _trend_prefix = "4H趋势闸门+1H结构通过·" if trend_gated else ""
+        # 企稳加分项（docs/19 §3.3 条件2/3，2026-10-10 拍板：加分不拦截）：
+        # 当根确认时触碰根即金K根，量能已由放量加分评估，volume_semantics=False
+        _stab = pullback_stabilize_bonus(klines, direction, -2, volume_semantics=False)
         return {
             "type": TREND_PULLBACK_CONFIRM if trend_gated else PULLBACK_CONFIRM,
             "direction": direction,
@@ -558,6 +562,7 @@ def detect_trigger(
             "position_ref": _position_ref_of(touch_ref, direction),
             "pattern": golden["pattern"], "breakout_pct": 0.0,
             "trend_gate": gate_ev if trend_gated else None,
+            "stabilize": _stab,
             "reason": f"指标同向·{_trend_prefix}回踩{touch_label}({touch_price:.6g})企稳且{_ev}{vol_note}",
         }, _close_op(pending, direction, "same_candle_confirm")
 
@@ -573,6 +578,9 @@ def detect_trigger(
             _label = PATTERN_LABEL_MAP.get(golden["pattern"], golden["pattern"])
             _ev = f"本根{_label}确认" if not golden_note else f"{golden_note}确认"
             _trend_prefix = "4H趋势闸门+1H结构通过·" if trend_gated else ""
+            # 企稳加分项：次根确认时触碰根 = 金K 的前一根（klines[-3]，即
+            # pending 的 Stage-1 根），量能语义照常评估
+            _stab = pullback_stabilize_bonus(klines, direction, -3)
             return {
                 "type": TREND_PULLBACK_CONFIRM if trend_gated else PULLBACK_CONFIRM,
                 "direction": direction,
@@ -580,6 +588,7 @@ def detect_trigger(
                 "position_ref": _position_ref_of(p_ref, direction),
                 "pattern": golden["pattern"], "breakout_pct": 0.0,
                 "trend_gate": gate_ev if trend_gated else None,
+                "stabilize": _stab,
                 "reason": f"指标同向·{_trend_prefix}上根回踩{p_label}企稳·{_ev}{vol_note}",
             }, {"op": "confirm"}
         if pending:

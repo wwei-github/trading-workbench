@@ -38,6 +38,7 @@ from app.services.strategy.indicators import volume_ratio
 from app.services.strategy.technical import (
     compute_indicator_votes,
     compute_quality_score,
+    pullback_stabilize_bonus,
     analyze_htf_background,
     HTF_SHORT,
 )
@@ -304,13 +305,20 @@ def detect_indicator_candidate(
             # 窗口过期 expire，让回踩池状态机保持自洽
             trig = None
     if trig is None:
-        # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩口径计）
+        # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩口径计，
+        # 触碰根即当前信号根 klines[-2]，企稳加分项量能语义照常评估）
         if pending_op and pending_op.get("op") == "upsert":
-            pending_op["quality_score"] = compute_quality_score(direction, votes, PULLBACK)
-            pending_op["votes_json"] = _votes_snapshot(votes)
+            _stab = pullback_stabilize_bonus(klines, direction, -2)
+            pending_op["quality_score"] = compute_quality_score(
+                direction, votes, PULLBACK, klines=klines, stabilize=_stab,
+            )
+            pending_op["votes_json"] = _votes_snapshot(votes, stabilize=_stab)
         return None, pending_op
 
-    quality = compute_quality_score(direction, votes, trig["type"], klines=klines)
+    # 企稳加分项证据（docs/19 §3.3，trigger 回踩路径产出）：进质量分 + votes 快照
+    stabilize = trig.get("stabilize")
+    quality = compute_quality_score(direction, votes, trig["type"], klines=klines,
+                                    stabilize=stabilize)
     return {
         "signal_type": trig["type"],
         # 现价 = 未收盘K线最新价（仅作入场价差参考）：信号判定（投票/触发/形态/量能）
@@ -329,17 +337,21 @@ def detect_indicator_candidate(
         "volume": vol,
         "volume_type": vol_type,
         "quality_score": quality,
-        "votes": _votes_snapshot(votes),
+        "votes": _votes_snapshot(votes, stabilize=stabilize),
     }, pending_op
 
 
-def _votes_snapshot(votes: dict) -> dict:
-    """指标票数快照（含 4h 背景级别，前端「4h方向」列展示；旧行无此键显示 -）"""
+def _votes_snapshot(votes: dict, stabilize: Optional[dict] = None) -> dict:
+    """指标票数快照（含 4h 背景级别，前端「4h方向」列展示；旧行无此键显示 -）。
+    stabilize：回踩企稳加分项证据（docs/19 §3.3 条件2/3，可 None）——
+    落 votes_json["stabilize"] 供复盘审计（加分名目/触碰根量比/MACD 零轴态）"""
     snap = {
         "bull": votes["bull"], "bear": votes["bear"],
         "bull_n": votes["bull_n"], "bear_n": votes["bear_n"],
         "net": votes["net"], "voted": votes["voted"],
     }
+    if stabilize:
+        snap["stabilize"] = stabilize
     htf_res = dict(votes["results"]).get(HTF_SHORT)
     if htf_res:
         snap["htf"] = {
