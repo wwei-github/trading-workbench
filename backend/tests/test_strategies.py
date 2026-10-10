@@ -1,249 +1,239 @@
 # -*- coding: utf-8 -*-
-"""多策略可插拔（docs/20 S0/S1）单测：registry + ema_trend 插件 + 影子信号 API。
+"""EMA 趋势门单测（docs/19 §2，2026-10-10 融合拍板：影子层退役并入原生触发层）。
 
-- registry：NULL=仅内置 golden_k_ai；未知 id 拒绝；clamp；golden_k 不可禁用；
-- ema_trend：合成 K 线构造 4H 闸门通过 + 1H 结构成立的多/空回踩信号，
-  走平拒绝；K 线格式 [ts, o, h, l, c, v]（与 ExchangePool 一致）；
-- API：/api/strategies 清单、配置回写规范化、影子信号查询。
-sqlite 内存库 + TestClient，不触网不触 Celery。
+- ema_gate：gate_4h 三重否决（斜率走平/缠绕/ADX）与方向判定、structure_1h
+  三线排列 + ATR 归一发散度；K 线格式 [ts, o, h, l, c, v]（与 ExchangePool 一致）；
+- trigger 趋势升级：闸门+结构全过 → trigger_trend_pullback（质量分层标注），
+  任一门不过/无 htf → 普通回踩金K确认（升级不拦截，行为零回归）；
+- P2 出场变体（docs/19 §3.4）：backtest_engine 的 sig_exit/tp_qty_override 回测能力；
+- technical：KDJ / MACD 零轴状态（融合保留资产）。
 """
 import sys
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
-import numpy as np
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import app.models  # noqa: E402,F401
-from app.database import Base, get_db  # noqa: E402
-from app.main import app  # noqa: E402
-from app.models.strategy import StrategyShadowSignal  # noqa: E402
-from app.services.strategies.registry import (  # noqa: E402
-    get_strategy,
-    load_registry,
+from app.config import settings  # noqa: E402
+from app.services.backtest_engine import (  # noqa: E402
+    _sig_exit_flags,
+    replay_exit,
 )
-from app.services.strategies.ema_trend import EmaTrendStrategy, ema_series  # noqa: E402
-
-
-# ── K 线构造 ──────────────────────────────────────────────────────────────
+from app.services.strategy import trigger as trig  # noqa: E402
+from app.services.strategy.ema import calc_ema  # noqa: E402
+from app.services.strategy.ema_gate import (  # noqa: E402
+    gate_4h,
+    structure_1h,
+)
+from app.services.strategy.technical import (  # noqa: E402
+    analyze_stochastic,
+    macd_zero_state,
+)
 
 TS0 = 1_791_000_000_000
 H1, H4 = 3_600_000, 14_400_000
 
 
-def _bars(closes, ts_step, volumes=None):
-    """closes → K 线（h=c+0.5, l=c-0.5, o=前收盘, v 默认 1000）。"""
+def _bars(closes, ts_step, vol=1000.0):
+    """closes → 6 列 K 线（o=前收盘、h=c+0.5、l=c-0.5）。"""
     out = []
+    prev = float(closes[0])
     for i, c in enumerate(closes):
         c = float(c)
-        out.append([TS0 + i * ts_step, c - 0.0, c + 0.5, c - 0.5, c,
-                    volumes[i] if volumes else 1000.0])
+        out.append([TS0 + i * ts_step, prev, c + 0.5, c - 0.5, c, vol])
+        prev = c
     return out
 
 
-def _trend_closes(n, step=0.05, start=100.0):
-    return [start + i * step for i in range(n)]
+# ── gate_4h：4H EMA144 趋势闸门（三重否决）────────────────────────────────
 
 
-def _pullback_klines_1h(direction: str):
-    """1h 上升趋势 + 倒数第二根（末根已收盘）回踩 EMA21 企稳（多头）/反抽（空头），
-    再追加一根尾随未收盘 K 线（插件 _closed 会剔除，只作输入形态仿真）。
+def test_gate_4h_uptrend_passes_long():
+    k4 = _bars([100.0 + 0.8 * i for i in range(300)], H4)
+    g = gate_4h(k4)
+    assert g is not None
+    g_dir, ev = g
+    assert g_dir == "long"
+    assert ev["direction"] == "up"
+    assert ev["slope_pct"] >= 0.005
+    assert ev["wraps"] == 0
+    assert ev["adx"] is not None and ev["adx"] >= 20.0
 
-    触点设计：以 299 根收盘的 EMA21 末值作影线端点——EMA(300) 仅前移
-    ~0.07（a×Δclose），落容差带 ±0.3×ATR(=1.0) 内。"""
-    n = 300
-    step = 0.05 if direction == "long" else -0.05
-    closes = _trend_closes(n - 1, step)
-    e21 = ema_series(np.array(closes, dtype=float), 21)
-    touch = float(e21[-1])
-    last_c = closes[-1]
-    if direction == "long":
-        sig_bar = [TS0 + (n - 1) * H1, last_c, last_c + 0.8, touch, last_c + 0.3, 1100.0]
-        tail = [TS0 + n * H1, last_c + 0.3, last_c + 0.9, last_c + 0.1, last_c + 0.5, 900.0]
+
+def test_gate_4h_downtrend_passes_short():
+    k4 = _bars([400.0 - 0.8 * i for i in range(300)], H4)
+    g = gate_4h(k4)
+    assert g is not None and g[0] == "short" and g[1]["direction"] == "down"
+
+
+def test_gate_4h_flat_market_rejected():
+    """走平否决：EMA144 近 20 根变化 < 0.5% → None"""
+    k4 = _bars([100.0 + 0.01 * (i % 5) for i in range(300)], H4)
+    assert gate_4h(k4) is None
+
+
+def test_gate_4h_insufficient_bars_rejected():
+    k4 = _bars([100.0 + 0.8 * i for i in range(150)], H4)
+    assert gate_4h(k4) is None
+
+
+# 缠绕否决（wraps>2）无法与 ADX 弱隔离——缠绕序列必然压低 ADX，由
+# test_gate_4h_flat_market_rejected 的"否决并集"行为覆盖，不设专测
+
+
+# ── structure_1h：三线排列 + ATR 归一发散度 ────────────────────────────────
+
+
+def test_structure_1h_bullish_aligned_passes():
+    k1 = _bars([100.0 + 0.5 * i for i in range(300)], H1)
+    r = structure_1h(k1, "long")
+    assert r is not None
+    _ind, ev = r
+    assert ev["aligned"] is True
+    assert ev["div_fast_mid"] >= 0.5
+    assert ev["div_mid_slow"] >= 1.0
+
+
+def test_structure_1h_bearish_aligned_passes():
+    k1 = _bars([400.0 - 0.5 * i for i in range(300)], H1)
+    r = structure_1h(k1, "short")
+    assert r is not None and r[1]["aligned"] is True
+
+
+def test_structure_1h_direction_mismatch_rejected():
+    """多头排列语境问空头结构 → aligned False → None"""
+    k1 = _bars([100.0 + 0.5 * i for i in range(300)], H1)
+    assert structure_1h(k1, "short") is None
+
+
+def test_structure_1h_choppy_rejected():
+    """三线黏着横盘 → 排列不成立 → None"""
+    k1 = _bars([100.0 + 0.01 * (i % 5) for i in range(300)], H1)
+    assert structure_1h(k1, "long") is None
+
+
+def test_structure_1h_insufficient_bars_rejected():
+    k1 = _bars([100.0 + 0.5 * i for i in range(150)], H1)
+    assert structure_1h(k1, "long") is None
+
+
+# ── trigger 趋势升级（2026-10-10 融合：升级不拦截）─────────────────────────
+
+GOLDEN_LONG = [{"pattern": "bullish_engulfing", "direction": "bullish"}]
+
+
+@pytest.fixture(autouse=True)
+def _pin_breakout_settings(monkeypatch):
+    """固定突破门槛与新增上限，免疫本地 .env 覆盖（与 test_trigger_two_stage 同口径）"""
+    monkeypatch.setattr(settings, "BREAKOUT_THRESHOLD", 0.002)
+    monkeypatch.setattr(settings, "BREAKOUT_VOL_RATIO", 1.2)
+    monkeypatch.setattr(settings, "BREAKOUT_MAX_PCT", 1.5)
+
+
+def _kl7(closes, highs, lows):
+    """7 列 K 线：[ts, o, h, l, c, v, qv]；o=前收，尾根未收盘"""
+    out = []
+    prev = closes[0]
+    for i, c in enumerate(closes):
+        out.append([TS0 + i * H1, prev, highs[i], lows[i], c, 100.0, 1e6])
+        prev = c
+    return out
+
+
+def _pullback_klines_1h(touch: bool = True):
+    """1h 强上涨 + 末段横盘回踩：信号K线（倒数第 2 根，已收盘）触碰 EMA21。
+
+    触点设计：以 klines[:-1] 的 EMA21 末值作影线端点（touch=True 时 low=ema ≤
+    close，触碰成立）；信号收盘低于横盘段摆动前高（≈204.49）与 20 根 Donchian
+    上轨（≈204.79）→ 突破分支零干扰。touch=False 时信号K线悬于 EMA21 上方
+    （行3 次根确认路径用）。
+    """
+    closes = [100.0 + 0.5 * i for i in range(210)]
+    closes += [closes[-1] - 0.01 * (i % 5) for i in range(19)]   # 横盘已收盘 19 根
+    closes.append(closes[-1] + 0.01)                              # 尾根（未收盘）
+    highs = [c + 0.3 for c in closes]
+    lows = [c - 0.3 for c in closes]
+    kl = _kl7(closes, highs, lows)
+    e21 = calc_ema([float(k[4]) for k in kl[:-1]], 21)
+    ema = float(e21[-1])
+    ts, _, _, _, _, vol, qv = kl[-2]
+    if touch:
+        # 下影触 EMA21、收盘收回线上（触碰判定 low ≤ ema ≤ close）。
+        # low/close 各留 0.2 余量：改写信号K线收盘会挪动 klines[:-1] 重算的
+        # EMA21 末值，带内余量保证重算后触碰仍成立；实体/全长 0.4<0.7 →
+        # 非长实体，突破分支零干扰
+        kl[-2] = [ts, ema, ema + 0.3, ema - 0.2, ema + 0.2, vol, qv]
     else:
-        sig_bar = [TS0 + (n - 1) * H1, last_c, touch, last_c - 0.8, last_c - 0.3, 1100.0]
-        tail = [TS0 + n * H1, last_c - 0.3, last_c - 0.1, last_c - 0.9, last_c - 0.5, 900.0]
-    return _bars(closes, H1) + [sig_bar, tail]
+        c = ema + 0.4
+        # 悬于 EMA21 上方（low > ema）且实体 0 → 非 solid，不触任何突破分支
+        kl[-2] = [ts, c, c + 0.05, c - 0.05, c, vol, qv]
+    return kl
 
 
-@pytest.fixture()
-def client():
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    session = TestSession()
-
-    def _override():
-        try:
-            yield session
-        finally:
-            pass
-
-    app.dependency_overrides[get_db] = _override
-    yield TestClient(app), session
-    app.dependency_overrides.pop(get_db, None)
-    session.close()
+def _htf_up() -> list[list]:
+    """4h 强上涨（240 根，detect_trigger 内取前 239 根已收盘判定）"""
+    return _bars([100.0 + 2.0 * i for i in range(240)], H4)
 
 
-# ── registry ──────────────────────────────────────────────────────────────
+def test_trend_pullback_upgrade_on_gate_pass():
+    """闸门+结构全过 → 升级 trend_pullback：type/trend_gate/reason 三处标注"""
+    kl = _pullback_klines_1h()
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(kl, 1, htf=_htf_up())
+    assert t is not None and t["type"] == trig.TREND_PULLBACK_CONFIRM
+    assert t["trend_gate"] is not None
+    assert t["trend_gate"]["direction"] == "up"
+    assert t["trend_gate"]["structure_1h"]["aligned"] is True
+    assert "4H趋势闸门+1H结构通过" in t["reason"]
+    assert op is None          # 无 pending：当根确认无处置动作
 
 
-def test_registry_null_only_golden_k():
-    entries = load_registry(None)
-    assert [e.id for e in entries] == ["golden_k_ai"]
-    assert entries[0].enabled is True
+def test_next_candle_confirm_upgrade_with_pending():
+    """行3 次根确认同样升级：闸门全过 + 有效 pending → trend_pullback + confirm"""
+    kl = _pullback_klines_1h(touch=False)
+    pending = {"id": "x", "direction": 1,
+               "stage1_candle_open": datetime.utcfromtimestamp(kl[-3][0] / 1000)}
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(kl, 1, pending=pending, htf=_htf_up())
+    assert t is not None and t["type"] == trig.TREND_PULLBACK_CONFIRM
+    assert t["trend_gate"] is not None
+    assert op == {"op": "confirm"}
 
 
-def test_registry_unknown_id_rejected_and_clamp():
-    entries = load_registry([
-        {"id": "bogus", "enabled": True},
-        {"id": "ema_trend", "enabled": True, "max_positions": 99,
-         "risk_weight": 5.0, "config": {"adx_min": 25}, "junk": 1},
-        {"id": "golden_k_ai", "enabled": False},  # 内置不可禁用
-    ])
-    ids = [e.id for e in entries]
-    assert ids[0] == "golden_k_ai" and "bogus" not in ids
-    ema = next(e for e in entries if e.id == "ema_trend")
-    assert ema.enabled is True
-    assert ema.max_positions == 10   # clamp 1~10
-    assert ema.risk_weight == 1.0    # clamp 0.1~1.0
-    assert ema.config == {"adx_min": 25}  # 未知键丢弃
-    golden = entries[0]
-    assert golden.enabled is True    # 恒启用
+def test_pullback_without_htf_stays_plain():
+    """htf=None（4h 拉取失败）→ 不升级，普通回踩金K确认（行为零回归）"""
+    kl = _pullback_klines_1h()
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["trend_gate"] is None
+    assert "4H趋势闸门" not in t["reason"]
 
 
-def test_get_strategy_injects_config():
-    raw = [{"id": "ema_trend", "enabled": True, "config": {"adx_min": 25}}]
-    s = get_strategy("ema_trend", raw)
-    assert s.cfg.adx_min == 25
-    assert s.id == "ema_trend"
+def test_trend_gate_direction_mismatch_stays_plain():
+    """4h 闸门方向与信号方向相反（多头信号遇空头闸门）→ 不升级"""
+    kl = _pullback_klines_1h()
+    htf = _bars([500.0 - 2.0 * i for i in range(240)], H4)   # 4h 下跌 → short
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, _ = trig.detect_trigger(kl, 1, htf=htf)
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["trend_gate"] is None
 
 
-# ── ema_trend 插件 ────────────────────────────────────────────────────────
+def test_trend_gate_flat_4h_stays_plain():
+    """4h 走平（闸门三重否决）→ 不升级，回落普通回踩"""
+    kl = _pullback_klines_1h()
+    htf = _bars([100.0 + 0.01 * (i % 5) for i in range(240)], H4)
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, _ = trig.detect_trigger(kl, 1, htf=htf)
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["trend_gate"] is None
 
 
-def test_ema_trend_long_pullback_signal():
-    s = EmaTrendStrategy({})
-    k1 = _pullback_klines_1h("long")
-    k4 = _bars(_trend_closes(300, 0.05), H4)
-    sig = s.build_signal("TESTUSDT", klines_1h=k1, klines_4h=k4)
-    assert sig is not None
-    assert sig.strategy_id == "ema_trend"
-    assert sig.direction == "long"
-    assert sig.signal_type == "pullback"
-    assert sig.stop < sig.entry                      # 多头止损在下方
-    assert sig.raw["gate_4h"]["direction"] == "up"
-    assert sig.raw["structure_1h"]["aligned"] is True
-    assert sig.raw["touched"] in ("EMA21", "EMA55")
-    # 前高距入场不足 min_rr → TP1=0（不设固定目标）
-    assert sig.tp1 == 0.0 and sig.tp2 == 0.0
-
-
-def test_ema_trend_short_pullback_signal():
-    s = EmaTrendStrategy({})
-    k1 = _pullback_klines_1h("short")
-    k4 = _bars(_trend_closes(300, -0.05), H4)
-    sig = s.build_signal("TESTUSDT", klines_1h=k1, klines_4h=k4)
-    assert sig is not None and sig.direction == "short"
-    assert sig.stop > sig.entry                      # 空头止损在上方
-    assert sig.raw["gate_4h"]["direction"] == "down"
-
-
-def test_ema_trend_flat_market_rejected():
-    s = EmaTrendStrategy({})
-    k1 = _bars([100.0] * 300, H1)
-    k4 = _bars([100.0] * 300, H4)
-    assert s.build_signal("TESTUSDT", klines_1h=k1, klines_4h=k4) is None
-
-
-def test_ema_trend_insufficient_bars_rejected():
-    s = EmaTrendStrategy({})
-    k1 = _bars(_trend_closes(100), H1)
-    k4 = _bars(_trend_closes(100), H4)
-    assert s.build_signal("TESTUSDT", klines_1h=k1, klines_4h=k4) is None
-
-
-# ── API ───────────────────────────────────────────────────────────────────
-
-
-def test_api_list_strategies_default_golden_k_only(client):
-    http, _db = client
-    r = http.get("/api/strategies")
-    assert r.status_code == 200
-    body = r.json()
-    assert [s["id"] for s in body] == ["golden_k_ai"]
-    assert body[0]["kind"] == "native"
-
-
-def test_api_list_shows_disabled_plugin(client):
-    """禁用的插件条目也要出现在清单（可见性：防误认为配置丢失）"""
-    http, _db = client
-    http.put("/api/scans/config", json={
-        "strategy_registry": [{"id": "ema_trend", "enabled": False}],
-    })
-    body = http.get("/api/strategies").json()
-    ema = next((s for s in body if s["id"] == "ema_trend"), None)
-    assert ema is not None and ema["enabled"] is False
-
-
-def test_api_config_registry_roundtrip_and_normalize(client):
-    http, _db = client
-    r = http.put("/api/scans/config", json={
-        "strategy_registry": [
-            {"id": "ema_trend", "enabled": True, "max_positions": 2,
-             "risk_weight": 0.5, "config": {"adx_min": 25}},
-            {"id": "bogus", "enabled": True},
-        ],
-    })
-    assert r.status_code == 200
-    assert r.json()["strategy_registry"] == [
-        {"id": "ema_trend", "enabled": True, "max_positions": 2,
-         "risk_weight": 0.5, "config": {"adx_min": 25}},
-    ]
-    # 清单读出 ema_trend enabled
-    lst = http.get("/api/strategies").json()
-    ids = {s["id"] for s in lst}
-    assert "ema_trend" in ids
-    assert [s for s in lst if s["id"] == "ema_trend"][0]["enabled"] is True
-    # 显式 null = 清除定制
-    r2 = http.put("/api/scans/config", json={"strategy_registry": None})
-    assert r2.status_code == 200 and r2.json()["strategy_registry"] is None
-
-
-def test_api_signals_empty_and_after_insert(client):
-    http, session = client
-    assert http.get("/api/strategies/signals").json() == []
-    session.add(StrategyShadowSignal(
-        strategy_id="ema_trend", symbol="TESTUSDT", direction="long",
-        entry=100.0, stop=99.0, tp1=0.0, tp2=0.0, signal_type="pullback",
-        reason="单测", confidence=0.6, raw={"touched": "EMA21"},
-    ))
-    session.commit()
-    rows = http.get("/api/strategies/signals?strategy_id=ema_trend").json()
-    assert len(rows) == 1
-    assert rows[0]["symbol"] == "TESTUSDT" and rows[0]["direction"] == "long"
-    assert rows[0]["raw"]["touched"] == "EMA21"
-    bad = http.get("/api/strategies/signals?strategy_id=bogus")
-    assert bad.status_code == 400
-
-
-# ── P2 出场变体（docs/19 §3.4）+ 影子推演口径 ────────────────────────
-
-from app.services.backtest_engine import (  # noqa: E402
-    OVERRIDE_KEYS,
-    _sig_exit_flags,
-    replay_exit,
-)
-from app.tasks.strategy_tasks import EVAL_EXIT_OVERRIDES  # noqa: E402
+# ── P2 出场变体（docs/19 §3.4）：backtest_engine overrides 回测能力 ────────
 
 
 def _trend_bars(n_up=60, n_dn=20, up_step=0.5, dn_step=1.2, peak=130.0):
@@ -309,12 +299,6 @@ def test_tp1_zero_guard_no_phantom_leg():
     assert r["outcome"] == "open" and r["legs"] == []
 
 
-def test_eval_exit_overrides_keys_legal():
-    """影子推演的每策略出场 overrides 必须全在引擎白名单内"""
-    for sid, ov in EVAL_EXIT_OVERRIDES.items():
-        assert set(ov) <= set(OVERRIDE_KEYS), sid
-
-
 def test_baseline_unaffected_by_new_keys():
     """新键缺省 None 时基线分批与既有口径完全一致（硬门不漂移）"""
     bars = _trend_bars()
@@ -324,16 +308,7 @@ def test_baseline_unaffected_by_new_keys():
     assert r["legs"][1]["qty_pct"] == pytest.approx(0.20)
 
 
-# ── L2 震荡评分卡 + L1 观测指标（docs/19 §3.1/§3.2）──────────────────
-
-from app.services.strategies.ema_trend import EmaTrendStrategy  # noqa: E402
-from app.services.strategies.range_score import (  # noqa: E402
-    compute_range_score,
-)
-from app.services.strategy.technical import (  # noqa: E402
-    analyze_stochastic,
-    macd_zero_state,
-)
+# ── 技术指标（融合保留资产）：KDJ / MACD 零轴 ─────────────────────────────
 
 
 def _mk_klines(closes, h=None, l=None, vol=100.0):
@@ -346,41 +321,13 @@ def _mk_klines(closes, h=None, l=None, vol=100.0):
     return out
 
 
-def test_range_score_trending_scores_low():
-    """强趋势（三线排列/发散/ADX 高/不缠绕）→ 低分"""
-    closes = [100 + i * 0.8 for i in range(220)]
-    k1 = _mk_klines(closes)
-    k4 = _mk_klines([100 + i * 3.2 for i in range(120)])
-    res = compute_range_score(k1, k4)
-    assert res.score <= 2
-    assert len(res.items) == 8
-
-
-def test_range_score_oscillating_scores_high():
-    """横盘震荡（三线黏着反复穿越/量能低迷）→ 高分"""
-    closes = []
-    for i in range(220):
-        closes.append(100 + (1.2 if i % 4 < 2 else -1.2))
-    k1 = _mk_klines(closes, vol=10.0)
-    k4 = _mk_klines([100 + (3 if i % 4 < 2 else -3) for i in range(120)], vol=10.0)
-    res = compute_range_score(k1, k4)
-    assert res.score >= 3
-
-
-def test_range_score_insufficient_data_no_crash():
-    """K 线不足：hit=None 不计分不崩溃（恒定量能 cv=0 属合法低迷判定）"""
-    res = compute_range_score(_mk_klines([100.0] * 30), _mk_klines([100.0] * 10))
-    assert len(res.items) == 8
-    assert all(it["hit"] is not True or it["no"] == 8 for it in res.items)
-
-
 def test_macd_zero_state_directions():
-    """上升段零轴上方；深跌段零轴下方；胶着 mixed"""
+    """上升段零轴上方；深跌段零轴下方；平盘调用不崩"""
     up = macd_zero_state(_mk_klines([100 + i * 1.0 for i in range(80)]))
     assert up and up["state"] == "above" and up["dir"] == 1
     dn = macd_zero_state(_mk_klines([200 - i * 1.0 for i in range(80)]))
     assert dn and dn["state"] == "below" and dn["dir"] == -1
-    assert macd_zero_state(_mk_klines([100.0] * 40)) is None or True  # 平盘不崩
+    macd_zero_state(_mk_klines([100.0] * 40))  # 平盘不崩即可
 
 
 def test_analyze_stochastic_kdj():
@@ -396,15 +343,3 @@ def test_analyze_stochastic_kdj():
     c = [200 - i * 1.5 for i in range(50)] + [125 + i * 2.0 for i in range(3)]
     rev = analyze_stochastic(_mk_klines(c))
     assert rev and rev["cross"] == 1
-
-
-def test_observe_package_shape():
-    """L1 观测证据包：键集完整、评分卡 items 8 项、不足样本不崩"""
-    obs = EmaTrendStrategy({})
-    m = obs.observe(klines_1h=_mk_klines([100 + i * 0.8 for i in range(220)]),
-                    klines_4h=_mk_klines([100 + i * 3.2 for i in range(120)]))
-    assert set(m) >= {"gate_4h", "structure_1h", "range_score", "stochastic", "macd_zero"}
-    assert len(m["range_score"]["items"]) == 8
-    m2 = obs.observe(klines_1h=_mk_klines([100.0] * 20),
-                     klines_4h=_mk_klines([100.0] * 20))
-    assert m2["gate_4h"] is None and m2["structure_1h"] is None

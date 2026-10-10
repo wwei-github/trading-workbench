@@ -119,6 +119,10 @@ SIGNAL_TYPE_LABELS = {
     # 2026-10-01-3：恢复完整 12 金K（看涨 6 + 看跌 6），仅流星线单影线复合确认；
     # 2026-10-09：孕线突破/蜻蜓/墓碑移出白名单，金K清单 12→8（同 09-12 精简口径）
     "trigger_pullback_confirm": "指标同向·回踩触点后金K确认（上一根触碰触点位企稳、当根出现同向金K才入场；金K白名单 8 种：看涨锤形线/看涨吞没/启明星/刺透线，看跌流星线/看跌吞没/黄昏星/乌云盖顶；仅流星线单根不算确认，reason 会标注『双流星组合』或『前根倒锤形线（流星）+当根趋势K』；倒锤形线/上吊线/孕线突破/十字星（蜻蜓/墓碑/中性）不在白名单）",
+    # 趋势回踩（2026-10-10 融合，docs/19）：普通回踩确认 + EMA 趋势门——
+    # 4H EMA144 趋势闸门（斜率/缠绕/ADX 三重否决）+ 1H 三线排列发散度全过，
+    # 其余确认机制与 trigger_pullback_confirm 完全一致
+    "trigger_trend_pullback": "指标同向·趋势回踩金K确认（4H EMA144 趋势闸门[斜率≥0.5%/20根+缠绕≤2次+ADX≥20 三重否决]与 1H EMA21>55>144 三线排列且发散度达标全过后，回踩触点+同向金K入场；确认机制同回踩金K确认，趋势背景更强）",
     "unknown": "未分类",
     "manual_search": "手动搜索",
 }
@@ -160,7 +164,8 @@ def render_signal_gate_block(signal_type: str, stop_cap_pct: Optional[float] = N
             "- 突破K线形态: 长实体（实体 ≥70% 全长，影线合计 ≤30%）",
         ]
     else:
-        if signal_type in ("trigger_pullback", "trigger_pullback_confirm"):
+        if signal_type in ("trigger_pullback", "trigger_pullback_confirm",
+                           "trigger_trend_pullback"):
             # 2026-09-28 docs/22 触点体系：触碰对象由纯 EMA21 扩为 5 类触点，
             # 具体命中位看信号块"回踩触点"行（trigger 按优先级只标一个）
             lines += [
@@ -170,6 +175,13 @@ def render_signal_gate_block(signal_type: str, stop_cap_pct: Optional[float] = N
                 "EMA 触点=下影触及且收盘收回线上（做空对称）",
                 "- 两段式确认: 触碰后当根出现同向金K，或上根触碰+本根金K（次根确认）",
             ]
+            if signal_type == "trigger_trend_pullback":
+                # 趋势回踩（2026-10-10 融合）：普通回踩门槛 + EMA 趋势门注记
+                lines += [
+                    "- 趋势门（已程序化验证）: 4H EMA144 斜率≥0.5%/20根、近10根缠绕≤2次、"
+                    "ADX≥20 三重否决 + 1H EMA21>55>144 三线排列且发散度达标（|EMA21-EMA55|/ATR≥0.5、"
+                    "|EMA55-EMA144|/ATR≥1.0）——趋势背景强于普通回踩，评估时可对趋势延续性更积极",
+                ]
             if cap_line:
                 lines.append(cap_line)
             return ("程序入场门槛（已程序化验证，评估信号质量时以此为基准而非自行估算）:\n"

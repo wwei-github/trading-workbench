@@ -6,7 +6,6 @@ from app.api.ops import router as ops_router
 from app.api.scan import router as scan_router
 from app.api.shadow import router as shadow_router
 from app.api.spot import router as spot_router
-from app.api.strategies import router as strategies_router
 from app.api.tactics import router as tactics_router
 from app.api.trades import router as trades_router
 from app.api.watchlist import router as watchlist_router
@@ -20,7 +19,6 @@ __all__ = [
     "scan_router",
     "shadow_router",
     "spot_router",
-    "strategies_router",
     "tactics_router",
     "trades_router",
     "watchlist_router",

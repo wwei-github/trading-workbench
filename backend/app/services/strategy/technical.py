@@ -966,7 +966,8 @@ def compute_quality_score(
     """候选质量分（0-100）：方向一致性为主，修饰项只影响排序不改变方向。
 
     direction: 候选方向（1 多 / -1 空，= net 的符号）
-    trigger_type: trigger_breakout / trigger_trend_breakout / trigger_pullback_confirm
+    trigger_type: trigger_breakout / trigger_trend_breakout / trigger_pullback_confirm /
+    trigger_trend_pullback
     klines: 可选，放量加分需要（量比 ≥1.2 +5，各触发类型一致）
     修饰规则（2026-09-17 设计评审定稿；2026-09-24 4h 背景提权；2026-10-10
     趋势年龄重设计替代强/弱二级）：
@@ -1004,7 +1005,7 @@ def compute_quality_score(
     # 放量加分（三类触发统一，2026-09-29）：量比 ≥1.2 +5；缩量/平量不加不减。
     # 阈值与 BREAKOUT_VOL_RATIO 同源（1.2）
     if trigger_type in ("trigger_breakout", "trigger_trend_breakout",
-                        "trigger_pullback_confirm") and klines:
+                        "trigger_pullback_confirm", "trigger_trend_pullback") and klines:
         try:
             if volume_ratio(klines) >= 1.2:
                 score += 5

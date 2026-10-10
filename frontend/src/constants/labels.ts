@@ -18,6 +18,8 @@ export const SIGNAL_TYPE_MAP: Record<string, { label: string; color: string }> =
   trigger_pullback: { label: "同向回踩", color: "cyan" },
   // 两段式回踩确认（2026-09-25，docs/19）：回踩后等金K确认才入场
   trigger_pullback_confirm: { label: "回踩金K确认", color: "geekblue" },
+  // 趋势回踩（2026-10-10 融合，docs/19）：4H EMA144 闸门+1H 结构通过的金K确认
+  trigger_trend_pullback: { label: "趋势回踩金K确认", color: "purple" },
   // 旧值保留映射（兼容历史记录）
   downtrend_breakout: { label: "下跌突破", color: "red" },
   uptrend_pullback: { label: "上涨回调", color: "green" },

@@ -15,7 +15,6 @@ from app.api import (
     scan_router,
     shadow_router,
     spot_router,
-    strategies_router,
     tactics_router,
     trades_router,
     watchlist_router,
@@ -92,7 +91,6 @@ app.include_router(watchlist_router)
 app.include_router(trades_router)
 app.include_router(ops_router)
 app.include_router(spot_router)  # 现货屯币（docs/18，独立模块）
-app.include_router(strategies_router)  # 策略插件（docs/20，S1 影子期只读+影子信号）
 app.include_router(backtest_router)  # 合约回测（docs/16 P-06，独立模块）
 app.include_router(ledger_router)  # 虚拟账本（docs/16 P-07，独立模块）
 app.include_router(tactics_router)  # 战法（2026-10-02，仅借鉴标注不拦截）

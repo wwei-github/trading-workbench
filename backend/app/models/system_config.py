@@ -160,10 +160,6 @@ class SystemConfig(Base):
     # 筛选参数组（2026-09-28 筛选配置上页面）：JSON 列，键集见 services/scan_filters.py。
     # NULL=全部回落 env/代码默认；旧 breakout_threshold 等 3 个散列已废弃不再读
     scan_filters: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=None)
-    # 策略注册表（docs/20 S1）：JSON 数组 [{id, enabled, max_positions, risk_weight, config}]。
-    # NULL=仅内置 golden_k_ai（现状）；ema_trend 等插件开关/预算/私有参数在此。
-    # 策略级预算是全局账户预算的子集划分，不放宽任何全局风控
-    strategy_registry: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=None)
     # 现货环境开关（docs/18，2026-09-23 用户拍板：现货环境与合约完全独立）：
     # true=现货测试网（默认），false=现货正式网；现货环境与合约完全独立
     # （合约侧环境切换已于 2026-10-03 删除）

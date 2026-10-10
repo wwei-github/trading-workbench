@@ -64,15 +64,6 @@ export default function TradingConfigPanel() {
         tp2_qty_pct: aiConfig.tp2_qty_pct ?? null,
         tp1_qty_pct_no_tp2: aiConfig.tp1_qty_pct_no_tp2 ?? null,
       })
-      // 策略注册表（docs/20 S1）：ema_trend 条目展开编辑（内置 golden_k 恒启用不展示）
-      const ema = (aiConfig.strategy_registry || []).find((e) => e.id === 'ema_trend')
-      form.setFieldsValue({
-        ema_trend_enabled: ema ? ema.enabled : false,
-        ema_trend_max_positions: ema?.max_positions ?? 1,
-        ema_trend_risk_weight: ema?.risk_weight ?? 1.0,
-        ema_trend_configured: ema != null, // 是否已有显式条目（未配置时不写注册表）
-        ema_trend_config: ema?.config ?? {}, // 原私有参数快照（保存时回写防抹掉）
-      })
     }
   }, [open, aiConfig, form])
 
@@ -113,18 +104,6 @@ export default function TradingConfigPanel() {
         tp1_qty_pct_with_tp2: values.tp1_qty_pct_with_tp2 ?? null,
         tp2_qty_pct: values.tp2_qty_pct ?? null,
         tp1_qty_pct_no_tp2: values.tp1_qty_pct_no_tp2 ?? null,
-      }
-      // 策略注册表：有过显式配置（或本次勾选启用）才写条目；纯停用且从未配置 → 不写（保持 NULL 语义）
-      // ema_trend_configured / ema_trend_config 是非渲染字段，validateFields 不返回，须读 getFieldValue
-      const emaConfigured = form.getFieldValue('ema_trend_configured') || values.ema_trend_enabled
-      if (emaConfigured) {
-        data.strategy_registry = [{
-          id: 'ema_trend',
-          enabled: values.ema_trend_enabled ?? false,
-          max_positions: values.ema_trend_max_positions ?? 1,
-          risk_weight: values.ema_trend_risk_weight ?? 1.0,
-          config: form.getFieldValue('ema_trend_config') || {}, // 回写原私有参数（防保存时抹掉）
-        }]
       }
       await updateConfig(data)
       message.success('配置已保存')
@@ -454,51 +433,6 @@ export default function TradingConfigPanel() {
               </Form.Item>
             </Col>
           </Row>
-
-        <Divider plain>策略注册表（docs/20 S1 影子期）</Divider>
-        <Form.Item
-          noStyle
-          shouldUpdate={(prev, cur) =>
-            prev.ema_trend_enabled !== cur.ema_trend_enabled ||
-            prev.ema_trend_configured !== cur.ema_trend_configured}
-        >
-          {() => {
-            const configured = form.getFieldValue('ema_trend_configured') || form.getFieldValue('ema_trend_enabled')
-            return (
-              <Row gutter={12}>
-                <Col span={10}>
-                  <Form.Item
-                    name="ema_trend_enabled"
-                    valuePropName="checked"
-                    style={{ marginBottom: configured ? 8 : 0 }}
-                    tooltip="EMA 趋势跟踪插件（纯规则，docs/19）：4H EMA144 闸门 + 1H 三线结构 + 回踩/金叉入场。影子期只产信号不开单，信号见「策略插件」面板"
-                  >
-                    <Switch
-                      checkedChildren="EMA 趋势·开"
-                      unCheckedChildren="EMA 趋势·关"
-                    />
-                  </Form.Item>
-                </Col>
-                {configured && (
-                  <>
-                    <Col span={7}>
-                      <Form.Item name="ema_trend_max_positions" style={{ marginBottom: 8 }}
-                        tooltip="策略级在跑仓上限（S2 开单后生效；全局账户预算的子集划分）">
-                        <InputNumber min={1} max={5} step={1} style={{ width: '100%' }} addonAfter="仓" />
-                      </Form.Item>
-                    </Col>
-                    <Col span={7}>
-                      <Form.Item name="ema_trend_risk_weight" style={{ marginBottom: 8 }}
-                        tooltip="风险驯化：新策略 0.5 起步（单笔风险额 × 权重），数据达标升 1.0">
-                        <InputNumber min={0.1} max={1.0} step={0.1} style={{ width: '100%' }} addonAfter="×风险" />
-                      </Form.Item>
-                    </Col>
-                  </>
-                )}
-              </Row>
-            )
-          }}
-        </Form.Item>
         </Form>
         </Spin>
       </Modal>

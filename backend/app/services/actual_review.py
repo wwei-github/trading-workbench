@@ -102,6 +102,7 @@ TRIGGER_FAMILY = {
     "downtrend_breakout": "同向突破",  # 旧管线·下跌突破
     "trigger_pullback": "回踩金K确认",
     "trigger_pullback_confirm": "回踩金K确认",
+    "trigger_trend_pullback": "趋势回踩金K确认",  # 2026-10-10 融合：4H 闸门+1H 结构通过
     "uptrend_pullback": "回踩金K确认",  # 旧管线·上涨回调
     "trigger_candlestick": "同向形态",  # 2026-09-29 纯金K下线，仅历史行
 }

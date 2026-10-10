@@ -10,6 +10,7 @@ const TRIGGER_OPTIONS = [
   { value: 'trigger_breakout', label: '结构突破' },
   { value: 'trigger_trend_breakout', label: '趋势突破' },
   { value: 'trigger_pullback_confirm', label: '回踩金K确认' },
+  { value: 'trigger_trend_pullback', label: '趋势回踩金K确认（4H闸门+1H结构）' },
 ]
 const ALL_TRIGGER_VALUES = TRIGGER_OPTIONS.map((o) => o.value)
 

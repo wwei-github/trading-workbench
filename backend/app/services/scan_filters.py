@@ -20,7 +20,9 @@ from app.config import settings
 TRIGGER_BREAKOUT = "trigger_breakout"                  # 结构突破：收盘越过未破摆动前高/前低
 TRIGGER_TREND_BREAKOUT = "trigger_trend_breakout"      # 趋势突破：收盘破 N 根 Donchian 滚动轨
 TRIGGER_PULLBACK_CONFIRM = "trigger_pullback_confirm"  # 回踩触点后金K确认
-ALL_TRIGGERS = (TRIGGER_BREAKOUT, TRIGGER_TREND_BREAKOUT, TRIGGER_PULLBACK_CONFIRM)
+TRIGGER_TREND_PULLBACK = "trigger_trend_pullback"      # 趋势回踩金K确认（4H 闸门+1H 结构通过，2026-10-10 融合）
+ALL_TRIGGERS = (TRIGGER_BREAKOUT, TRIGGER_TREND_BREAKOUT, TRIGGER_PULLBACK_CONFIRM,
+                TRIGGER_TREND_PULLBACK)
 
 # 回踩触点白名单（docs/22）：横向结构语义强于均线，标注优先级即此顺序
 TOUCH_RETEST = "retest"    # 突破回测位（破位价：结构前高/前低或 Donchian 轨，回踩不破=突破有效性确认）

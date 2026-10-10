@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 
 _EPOCH = datetime(1970, 1, 1)
 LEG_BARS = 24                    # 前段腿回看根数（1h）
-PULLBACK_SIGNALS = ("trigger_pullback", "trigger_pullback_confirm")
+PULLBACK_SIGNALS = ("trigger_pullback", "trigger_pullback_confirm",
+                    "trigger_trend_pullback")
 
 RETRACE_BUCKETS = (
     (0.236, "≤23.6%（极浅·近追价）"),

@@ -51,6 +51,7 @@ from app.services.strategy.candlestick import (
     resolve_golden_evidence,
 )
 from app.services.strategy.ema import calc_ema
+from app.services.strategy.ema_gate import EmaGateConfig, gate_4h, structure_1h
 from app.services.strategy.indicators import volume_ratio
 import numpy as np
 
@@ -59,6 +60,11 @@ BREAKOUT = "trigger_breakout"                  # 结构突破：越过未破摆�
 TREND_BREAKOUT = "trigger_trend_breakout"      # 趋势突破：破 N 根 Donchian 滚动轨
 PULLBACK = "trigger_pullback"          # 历史类型：两段式上线后不再产生新记录
 PULLBACK_CONFIRM = "trigger_pullback_confirm"  # 回踩触点后金K确认（当根/次根）
+# 趋势回踩（2026-10-10 融合拍板，docs/19→docs/01）：4H EMA144 趋势闸门 +
+# 1H 三线结构通过时的回踩触点金K确认——与 PULLBACK_CONFIRM 同一套触点/
+# 金K/pending 机制，仅多两道方向门（信号质量分层标注，复盘分组对比胜率）。
+# 闸门/结构不过时回落普通回踩路径，行为与融合前一致
+TREND_PULLBACK_CONFIRM = "trigger_trend_pullback"
 
 # 回踩触点标注优先级与中文标签（docs/22 §2；与 scan_filters.ALL_TOUCH_REFS 同源顺序；
 # 2026-10-09 加入 4h EMA21——均线取最快原则按更新频率排序：1h EMA21 > 4h EMA21 > 1h EMA55）
@@ -487,6 +493,28 @@ def detect_trigger(
     patterns = detect_all_patterns(klines, idx=-2)
     golden, golden_note = resolve_golden_evidence(klines, wanted, patterns)
 
+    # EMA 趋势方向门（2026-10-10 融合拍板，docs/19 §2）：4H EMA144 三重否决
+    # （斜率走平/缠绕/ADX）+ 1H 三线排列发散度。回踩路径两道门全过 →
+    # 信号升级为 trend_pullback（质量分层标注）；任一门不过 → 保持普通
+    # pullback_confirm 行为不变。门只影响触发类型标注，不拦截。
+    # htf=None（4h 拉取失败）→ 闸门无数据 → 不升级（保守回落普通回踩）。
+    trend_gated = False
+    gate_ev = None
+    if htf:
+        try:
+            htf_closed = htf[:-1] if len(htf) >= 2 else []
+            g = gate_4h(htf_closed)
+            if g is not None:
+                g_dir, gate_ev = g
+                if (direction == 1 and g_dir == "long") or (direction == -1 and g_dir == "short"):
+                    st = structure_1h(klines[:-1], g_dir)
+                    if st is not None:
+                        _ind1, st_ev = st
+                        trend_gated = True
+                        gate_ev = {**gate_ev, "structure_1h": st_ev}
+        except Exception:
+            trend_gated = False
+
     # 并行探测启用触点（docs/22 §3）：命中收集为 {ref: 位价}，标注取最高优先
     # （横向结构语义强于均线；均线取最快——最早确认、止损最紧）
     touches: dict[str, float] = {}
@@ -517,17 +545,21 @@ def detect_trigger(
     vol_note = _pullback_volume_note(klines)
 
     # 行2：当根触碰+金K → 当根确认（比纯形态更强，pending 一律被抢先）。
+    # 趋势门通过 → 类型升级 trend_pullback（EMA 趋势回踩，docs/19 融合）
     if touch_ref is not None and golden:
         _label = PATTERN_LABEL_MAP.get(golden["pattern"], golden["pattern"])
         # 证据描述：单形态="当根X确认"；组合=note 原文+确认（如
         # "双流星组合确认"/"前根锤形线+当根趋势K确认"）
         _ev = f"当根{_label}确认" if not golden_note else f"{golden_note}确认"
+        _trend_prefix = "4H趋势闸门+1H结构通过·" if trend_gated else ""
         return {
-            "type": PULLBACK_CONFIRM, "direction": direction,
+            "type": TREND_PULLBACK_CONFIRM if trend_gated else PULLBACK_CONFIRM,
+            "direction": direction,
             "position": pos_fb, "touch_ref": touch_ref,
             "position_ref": _position_ref_of(touch_ref, direction),
             "pattern": golden["pattern"], "breakout_pct": 0.0,
-            "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且{_ev}{vol_note}",
+            "trend_gate": gate_ev if trend_gated else None,
+            "reason": f"指标同向·{_trend_prefix}回踩{touch_label}({touch_price:.6g})企稳且{_ev}{vol_note}",
         }, _close_op(pending, direction, "same_candle_confirm")
 
     # 行3/行4：未触碰但有金K → 有效 pending 则次根确认（有回踩语境）。
@@ -541,12 +573,15 @@ def detect_trigger(
             p_label = TOUCH_LABELS.get(p_ref, "触点") if p_ref else "触点"
             _label = PATTERN_LABEL_MAP.get(golden["pattern"], golden["pattern"])
             _ev = f"本根{_label}确认" if not golden_note else f"{golden_note}确认"
+            _trend_prefix = "4H趋势闸门+1H结构通过·" if trend_gated else ""
             return {
-                "type": PULLBACK_CONFIRM, "direction": direction,
+                "type": TREND_PULLBACK_CONFIRM if trend_gated else PULLBACK_CONFIRM,
+                "direction": direction,
                 "position": pos_fb, "touch_ref": p_ref,
                 "position_ref": _position_ref_of(p_ref, direction),
                 "pattern": golden["pattern"], "breakout_pct": 0.0,
-                "reason": f"指标同向·上根回踩{p_label}企稳·{_ev}{vol_note}",
+                "trend_gate": gate_ev if trend_gated else None,
+                "reason": f"指标同向·{_trend_prefix}上根回踩{p_label}企稳·{_ev}{vol_note}",
             }, {"op": "confirm"}
         if pending:
             return None, {"op": "expire",

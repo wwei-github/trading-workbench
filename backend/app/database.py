@@ -435,67 +435,10 @@ def _run_migrations(engine):
             "ADD COLUMN IF NOT EXISTS strategy_id VARCHAR(16) "
             "NOT NULL DEFAULT 'golden_k_ai'"
         ))
-        # system_config.strategy_registry 策略注册表 JSON（NULL=仅内置 golden_k_ai）
-        conn.execute(text(
-            "ALTER TABLE system_config "
-            "ADD COLUMN IF NOT EXISTS strategy_registry JSONB"
-        ))
-        # strategy_shadow_signals 影子信号表（S1 ema_trend 等插件只产信号不开单）
-        conn.execute(text(
-            "CREATE TABLE IF NOT EXISTS strategy_shadow_signals ("
-            "id UUID PRIMARY KEY, "
-            "strategy_id VARCHAR(16) NOT NULL, "
-            "symbol VARCHAR(32) NOT NULL, "
-            "direction VARCHAR(8) NOT NULL, "
-            "entry NUMERIC(20, 8) NOT NULL, "
-            "stop NUMERIC(20, 8) NOT NULL, "
-            "tp1 NUMERIC(20, 8) NOT NULL DEFAULT 0, "
-            "tp2 NUMERIC(20, 8) NOT NULL DEFAULT 0, "
-            "signal_type VARCHAR(24), "
-            "reason VARCHAR(255), "
-            "confidence NUMERIC(5, 4) NOT NULL DEFAULT 0, "
-            "raw JSONB, "
-            "created_at TIMESTAMP NOT NULL)"
-        ))
-        conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_shadow_sig_strategy_created "
-            "ON strategy_shadow_signals (strategy_id, created_at)"
-        ))
-        # 影子信号推演回填列（docs/20 影子分析：replay_exit 假想结果）
-        conn.execute(text(
-            "ALTER TABLE strategy_shadow_signals "
-            "ADD COLUMN IF NOT EXISTS outcome VARCHAR(16)"
-        ))
-        conn.execute(text(
-            "ALTER TABLE strategy_shadow_signals "
-            "ADD COLUMN IF NOT EXISTS r NUMERIC(10, 4)"
-        ))
-        conn.execute(text(
-            "ALTER TABLE strategy_shadow_signals "
-            "ADD COLUMN IF NOT EXISTS eval_bars INTEGER"
-        ))
-        conn.execute(text(
-            "ALTER TABLE strategy_shadow_signals "
-            "ADD COLUMN IF NOT EXISTS evaluated_at TIMESTAMP"
-        ))
-        conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_shadow_sig_outcome "
-            "ON strategy_shadow_signals (strategy_id, outcome)"
-        ))
-        # strategy_observations L1 观测快照表（docs/19 §3.1，纯观测不拦截）
-        conn.execute(text(
-            "CREATE TABLE IF NOT EXISTS strategy_observations ("
-            "id UUID PRIMARY KEY, "
-            "strategy_id VARCHAR(16) NOT NULL DEFAULT 'ema_trend', "
-            "symbol VARCHAR(32) NOT NULL, "
-            "metrics JSONB NOT NULL, "
-            "metrics_version VARCHAR(8) NOT NULL DEFAULT 'fobs-1', "
-            "created_at TIMESTAMP NOT NULL)"
-        ))
-        conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_obs_strategy_symbol_created "
-            "ON strategy_observations (strategy_id, symbol, created_at)"
-        ))
+        # 2026-10-10 融合拍板：影子层（strategy_shadow_signals/observations/
+        # shadow_pendings 三表与 strategy_registry 注册表）整体退役——EMA 趋势
+        # 逻辑并入原生触发层（新触发类型 trend_pullback），一套系统。
+        # 历史表按项目惯例不 DROP：存量数据保留审计，代码不再读写。
         # 现货环境与合约完全独立（docs/18，2026-09-23）：默认现货=测试网；
         # 启用账号集合空回落 live-1。共用 docs/17 的 .env 账号注册表
         conn.execute(text(
