@@ -463,3 +463,105 @@ def test_exit_reason_adapts_to_buffered_breakeven(db):
                                   stop_loss=99.0, direction="short", raw=None)
     assert _derive_exit_reason(long_trail) == "tp1_trail"
     assert _derive_exit_reason(short_trail) == "tp1_trail"
+
+
+# ── trail 纯跟踪开仓全流程（KAIAUSDT 案例，2026-10-10） ───────────────
+# 回归锁：_attempt_open trail 分支 tp1_order=None，raw 快照曾直接 .get 崩
+# 'NoneType' object has no attribute 'get' → 市价已成交后紧急平仓空转
+
+
+class _FullOpenTrader:
+    """完整下单序列替身：走通 市价开仓→挂SL→（trail 不挂TP）→落库 全链"""
+    account_key = "testnet-1"
+    testnet = True
+
+    def __init__(self):
+        self.tp_calls = []
+
+    def listed_symbols(self):
+        return set()
+
+    def price(self, symbol):
+        return 100.0
+
+    def bracket_mmr(self, symbol, notional=None):
+        return 0.005
+
+    def bracket_info(self, symbol, notional):
+        return None
+
+    def filters(self, symbol):
+        return {"step": 0.001, "tick": 0.01, "min_qty": 0.001,
+                "min_notional": 5.0, "max_qty": 1e18, "market_max_qty": 1e18}
+
+    def round_qty(self, symbol, qty):
+        return round(qty, 3)
+
+    def round_price(self, symbol, price):
+        return round(price, 2)
+
+    def market_slippage_estimate(self, symbol, side, qty):
+        return None
+
+    def book_ticker(self, symbol):
+        return 99.95, 100.05
+
+    def setup_leverage(self, symbol, leverage):
+        pass
+
+    def market_order(self, symbol, side, qty, reduce_only=False):
+        return {"orderId": 11}
+
+    def order(self, symbol, order_id):
+        return {"avgPrice": "100.0", "executedQty": "15.0"}
+
+    def stop_market_close(self, symbol, side, stop_price):
+        return {"algoId": 22}
+
+    def take_profit_reduce(self, symbol, side, qty, price):
+        self.tp_calls.append((symbol, side, qty, price))
+        return {"algoId": 33}
+
+    def cancel_all_algo(self, symbol):
+        pass
+
+
+def test_trail_open_success_without_tp_orders(db, monkeypatch):
+    """cfg.tp_mode=trail：开仓成功、不挂任何止盈档、raw.tp1_order_id=None
+
+    KAIAUSDT 案例（2026-10-10）：trail 分支 tp1_order=None 落快照时无守卫
+    .get 崩溃 → 已成交仓位被紧急平仓 → 每轮重试空转。
+    """
+    import app.services.trade_engine as te
+
+    # entry ATR 快照拉 1d K线（ExchangePool）→ 替身快速失败，退化 1R 武装线
+    monkeypatch.setattr(
+        te, "ExchangePool",
+        lambda: SimpleNamespace(get_klines=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("替身不触网"))),
+    )
+    cfg = db.get(SystemConfig, 1)
+    cfg.tp_mode = "trail"
+    db.commit()
+    a = _make_analysis(db, rec=90)
+    trader = _FullOpenTrader()
+    assert _attempt(db, trader, a) is True
+    assert trader.tp_calls == []  # trail 不挂任何止盈档
+    rec = db.query(TradeRecord).filter(TradeRecord.ai_analysis_id == a.id).one()
+    assert rec.raw["tp_mode"] == "trail"
+    assert rec.raw["tp1_order_id"] is None  # 守卫后落 None（此前此处崩溃）
+    assert rec.raw["tp2_order_id"] is None
+    assert rec.status == "OPENED"
+
+
+def test_ladder_open_still_records_tp1_order_id(db):
+    """对照组：ladder 路径 tp1 挂单正常解析（守卫不改变原有行为）"""
+    cfg = db.get(SystemConfig, 1)
+    cfg.tp_mode = "ladder"
+    db.commit()
+    a = _make_analysis(db, rec=90)
+    trader = _FullOpenTrader()
+    assert _attempt(db, trader, a) is True
+    assert len(trader.tp_calls) == 1  # TP1 挂单
+    rec = db.query(TradeRecord).filter(TradeRecord.ai_analysis_id == a.id).one()
+    assert rec.raw["tp1_order_id"] == 33
+    assert rec.raw["tp_mode"] == "ladder"

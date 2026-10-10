@@ -662,7 +662,9 @@ def _attempt_open(
                     # SL/TP 为 algo 条件单，标识是 algoId（MARKET 入场单仍是 orderId）
                     "entry_order_id": entry_order["orderId"],
                     "sl_order_id": sl_order.get("algoId") or sl_order.get("orderId"),
-                    "tp1_order_id": tp1_order.get("algoId") or tp1_order.get("orderId"),
+                    # trail 单 tp1_order=None（不挂止盈档），与 L666 tp2 同守卫
+                    # （KAIAUSDT 案例：trail 开仓崩 'NoneType'.get → 紧急平仓空转）
+                    "tp1_order_id": (tp1_order.get("algoId") or tp1_order.get("orderId")) if tp1_order else None,
                     "tp2_order_id": (tp2_order.get("algoId") or tp2_order.get("orderId")) if tp2_order else None,
                     "qty_tp1": qty_tp1,
                     "qty_tp2": qty_tp2 if tp2_order else 0,
