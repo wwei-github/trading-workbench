@@ -151,6 +151,15 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     禁止把止盈一挂到更远结构位凑盈亏比：到第一结构位的盈亏比不足 {rr_min} 说明空间不足，
     应直接 skip（程序只复算盈亏比并按铁律打回）。
     {_tp2_rule}
+12.5 止盈模式（tp_mode，suggest 必填，程序按此决定出场方式）：
+    "ladder" 分批止盈（默认）：TP1/TP2 结构位分批落袋 + 保本武装 + 剩余仓跟进。
+      适合：区间边缘反转、结构破位回踩、动能一般、上方第一结构位较近（盈亏比 1.5~2.5）。
+    "trail" 纯跟踪：不挂止盈档（tp1_ref 仍必须提交——仅作盈亏比铁律校验的参考目标价，
+      程序不会按它挂单），浮盈达 1×ATR 武装保本，其后跟进止损让利润奔跑；trail 时
+      不要提交 tp2_ref。
+      适合：强趋势顺势（4h 与 1h 同向、ADX 强）、突破后动能充足、上方无明显压力位
+      或第一结构位很远（按参考目标复算盈亏比 ≥2.5）。
+    选择标准：落袋确定性优先 ladder，趋势空间优先 trail；拿不准选 ladder。
 13. 方向纪律（不再程序强制，无 ±0.3% 贴近要求）：优先只在支撑结构做多（摆动低点/
     近期低点附近）、只在压力结构做空（摆动高点/近期高点附近）；现价已离开结构位时
     不再要求贴近，按动能与盈亏比自行判断入场（breakout 顺势追突破仍用 market 锚）。
@@ -240,6 +249,8 @@ TOOLS_SCHEMA = [
             "tp2_ref": {"type": "string", "enum": list(LEVEL_REFS),
                         "description": "止盈2锚点（可选）：做多=next_resistance_zone_low（下一档压力线），做空=next_support_zone_high（下一档支撑线）"},
             "tp2_offset_pct": {"type": "number", "description": "止盈2相对锚点偏移%，同止盈1留余地"},
+            "tp_mode": {"type": "string", "enum": ["ladder", "trail"],
+                        "description": "止盈模式（suggest 必填，见系统规则12.5）：ladder=分批止盈（TP1/TP2 结构位落袋）/ trail=纯跟踪（不挂止盈档，tp1 仅作盈亏比校验参考价，此时不要提交 tp2_ref）"},
             "recommendation": {"type": "integer", "description": "推荐程度 0-100，skip≤30，suggest≥50"},
             "tactic_name": {"type": "string",
                             "description": "战法命中名（仅借鉴标注）：用户消息出现【战法库判定】块且信号符合某战法时逐字输出该名，均不符合输出空字符串"},
@@ -397,6 +408,7 @@ def _handle_submit(
             "skip_reason": args["skip_reason"].strip(),
             "direction": None,
             "trade_type": None,
+            "tp_mode": None,
             "analysis": "",
             "tactic_name": _tname,
             "tactic_reason": _treason,
@@ -415,10 +427,13 @@ def _handle_submit(
     tp1 = _resolve_price(args.get("tp1_ref"), args.get("tp1_offset_pct"),
                          signal, purpose="tp")
     # TP2 关闭硬清零（2026-10-08）：不解析 tp2 锚点，落库 take_profit_2=0
+    _mode = args.get("tp_mode")
+    if _mode not in ("ladder", "trail"):
+        _mode = None  # 非法值归 None（validate_decision suggest 落库回退 ladder）
     tp2 = (
         _resolve_price(args.get("tp2_ref"), args.get("tp2_offset_pct"),
                        signal, purpose="tp")
-        if tp2_enabled else 0
+        if tp2_enabled and _mode != "trail" else 0
     )
     errs = []
     if entry is None:
@@ -434,6 +449,7 @@ def _handle_submit(
         trade_decision="suggest",
         direction=args.get("direction"),
         trade_type=args.get("trade_type"),
+        tp_mode=_mode,
         # 止损锚类型程序推导（docs/23）：stop_ref 用信号K线极值锚即 near，
         # 其余（含缺省）structure——比 AI 自报更难滥用
         stop_anchor="near" if args.get("stop_ref") in ("signal_low", "signal_high") else "structure",

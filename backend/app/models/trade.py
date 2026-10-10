@@ -106,6 +106,12 @@ class TradeRecord(Base):
         """开仓失败原因（仅 FAILED 记录写入 raw.fail_reason，API 经 TradeOut 透出）"""
         return (self.raw or {}).get("fail_reason")
 
+    @property
+    def tp_mode(self) -> Optional[str]:
+        """止盈模式快照（2026-10-10，docs/19 §3.4）：ladder/trail（raw.tp_mode）；
+        旧行 NULL 按 ladder 理解。API 经 TradeOut 透出供前端徽章展示"""
+        return (self.raw or {}).get("tp_mode")
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow

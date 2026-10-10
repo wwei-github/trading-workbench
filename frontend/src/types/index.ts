@@ -159,6 +159,7 @@ export interface AIAnalysis {
   // 战法命中标注（2026-10-02，仅借鉴）：AI 判定信号符合的战法名 + 判定依据
   tactic_name?: string | null;
   tactic_reason?: string | null;
+  tp_mode?: string | null; // 止盈模式（2026-10-10，docs/19 §3.4）：ladder / trail（AI 按信号选择；null=旧行按 ladder）
   created_at: string;
   review_status?: string | null; // 复盘结果：win_tp1 / win_tp2 / loss / expired（24h 后回放定论）
 }
@@ -256,6 +257,7 @@ export interface SystemConfig {
   weekly_breaker_ack_at?: string | null; // 周减速人工确认时刻（只读，2026-10-07）
   atr_trail_k?: number | null; // ATR 跟进倍数（Chandelier，默认 3；0=关闭 ATR 腿）
   tp2_enabled?: boolean; // TP2 分批止盈开关（2026-10-08 默认关：仅 TP1 80%+剩余 20% 跟进；开启后 TP1 60%/TP2 20%）
+  tp_mode?: 'ai' | 'ladder' | 'trail' | null; // 止盈模式（2026-10-10，docs/19 §3.4）：ai=AI 按信号选择（默认）/ ladder / trail
   tp1_qty_pct_with_tp2?: number | null; // 有 TP2 时 TP1 分批比例 %（NULL=默认 60）
   tp2_qty_pct?: number | null; // TP2 分批比例 %（NULL=默认 20；两档剩余自动跟进）
   tp1_qty_pct_no_tp2?: number | null; // 无 TP2 时 TP1 一次止盈比例 %（NULL=默认 80）
@@ -394,6 +396,7 @@ export interface TradeRecord {
   tp1: number | null
   tp2: number | null
   status: 'OPENED' | 'TP1_HIT' | 'TP2_HIT' | 'CLOSED' | 'FAILED'
+  tp_mode?: 'ladder' | 'trail' | null // 止盈模式（docs/19 §3.4，读自 raw）：trail=纯跟踪；null=旧行按 ladder
   opened_at: string | null
   closed_at: string | null
   realized_pnl: number | null // 正/负值 USDT（净额：含手续费/资金费；运行中=已止盈部分，结算后=全程净额）

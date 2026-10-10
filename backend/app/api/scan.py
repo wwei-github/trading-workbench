@@ -371,6 +371,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         ai_pipeline_enabled=cfg.ai_pipeline_enabled,
         dual_judge_enabled=cfg.dual_judge_enabled,
         tp2_enabled=cfg.tp2_enabled,
+        tp_mode=(cfg.tp_mode if cfg.tp_mode in ("ai", "ladder", "trail") else "ai"),
         ai_configured=bool(settings.AI_API_KEY),
         strategy_prompt_enabled=cfg.strategy_prompt_enabled,
         strategy_prompt=cfg.strategy_prompt or "",
@@ -541,6 +542,12 @@ def update_system_config(
         cfg.dual_judge_enabled = body.dual_judge_enabled
     if body.tp2_enabled is not None:
         cfg.tp2_enabled = body.tp2_enabled
+    # 止盈模式（docs/19 §3.4）：白名单外值忽略（不静默改配置语义）
+    if body.tp_mode is not None:
+        if body.tp_mode in ("ai", "ladder", "trail"):
+            cfg.tp_mode = body.tp_mode
+        else:
+            raise HTTPException(status_code=422, detail="tp_mode 仅允许 ai/ladder/trail")
 
     # 策略提示词
     if body.strategy_prompt_enabled is not None:

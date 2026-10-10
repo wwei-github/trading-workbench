@@ -124,6 +124,10 @@ class SystemConfig(Base):
     # 出场走「仅 TP1 80% + 剩余 20% 跟进」；开启后有 TP2 的单按 TP1 60% / TP2 20%
     # 两档分批。手动接管单不受此开关限制
     tp2_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 止盈模式（2026-10-10，docs/19 §3.4 两派哲学落地）：ai=AI 按信号选择（默认）/
+    # ladder=全部分批止盈 / trail=全部纯跟踪（不挂止盈档，浮盈≥1×ATR 武装保本后
+    # 跟进）。NULL/非法值按 ai 理解；trail 时 TP2 开关被旁路（无档可挂）
+    tp_mode: Mapped[Optional[str]] = mapped_column(String(8), nullable=True, default=None)
     # TP 分批比例（2026-10-09，% 值，NULL=回落 env 默认 60/20/80）：
     # 有 TP2 → TP1 tp1_qty_pct_with_tp2% / TP2 tp2_qty_pct% / 剩余跟进；
     # 无 TP2 → TP1 tp1_qty_pct_no_tp2% / 剩余跟进

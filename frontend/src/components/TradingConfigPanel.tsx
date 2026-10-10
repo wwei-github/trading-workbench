@@ -60,6 +60,7 @@ export default function TradingConfigPanel() {
         monthly_dd_stop_pct: aiConfig.monthly_dd_stop_pct ?? null,
         atr_trail_k: aiConfig.atr_trail_k ?? null,
         tp2_enabled: aiConfig.tp2_enabled ?? false,
+        tp_mode: aiConfig.tp_mode ?? 'ai',
         tp1_qty_pct_with_tp2: aiConfig.tp1_qty_pct_with_tp2 ?? null, // % 值直存（NULL=默认 60）
         tp2_qty_pct: aiConfig.tp2_qty_pct ?? null,
         tp1_qty_pct_no_tp2: aiConfig.tp1_qty_pct_no_tp2 ?? null,
@@ -101,6 +102,7 @@ export default function TradingConfigPanel() {
         monthly_dd_stop_pct: values.monthly_dd_stop_pct ?? null,
         atr_trail_k: values.atr_trail_k ?? null,
         tp2_enabled: values.tp2_enabled ?? false,
+        tp_mode: values.tp_mode ?? 'ai',
         tp1_qty_pct_with_tp2: values.tp1_qty_pct_with_tp2 ?? null,
         tp2_qty_pct: values.tp2_qty_pct ?? null,
         tp1_qty_pct_no_tp2: values.tp1_qty_pct_no_tp2 ?? null,
@@ -398,9 +400,25 @@ export default function TradingConfigPanel() {
                 name="tp2_enabled"
                 valuePropName="checked"
                 initialValue={false}
-                tooltip="默认关闭：AI 报出的 TP2 不挂档，出场走「TP1 一次止盈 80% + 剩余 20% 跟进」。开启后：有 TP2 的单按 TP1 60% / TP2 20% / 剩余 20% 跟进分批（比例可在下方三项配置）；手动接管单不受此开关限制"
+                tooltip="默认关闭：AI 报出的 TP2 不挂档，出场走「TP1 一次止盈 80% + 剩余 20% 跟进」。开启后：有 TP2 的单按 TP1 60% / TP2 20% / 剩余 20% 跟进分批（比例可在下方三项配置）；手动接管单不受此开关限制；止盈模式为「纯跟踪」的单不挂任何止盈档，此开关不适用"
               >
                 <Switch checkedChildren="启用" unCheckedChildren="关闭" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="止盈模式"
+                name="tp_mode"
+                initialValue="ai"
+                tooltip="docs/19 §3.4 两派止盈哲学的可配置化。ai=AI 按信号选择（分析时介绍两种模式，AI 输出 tp_mode 落库，强趋势顺势选纯跟踪、区间边缘/结构回踩选分批）；ladder=全部按 TP1/TP2 结构位分批止盈；trail=全部纯跟踪（不挂止盈档，浮盈达 1×ATR 武装保本后跟进止损让利润奔跑；TP1 价仅作盈亏比校验参考）"
+              >
+                <Select
+                  options={[
+                    { value: 'ai', label: 'AI 按信号选择（默认）' },
+                    { value: 'ladder', label: '全部分批止盈' },
+                    { value: 'trail', label: '全部纯跟踪' },
+                  ]}
+                />
               </Form.Item>
             </Col>
           </Row>

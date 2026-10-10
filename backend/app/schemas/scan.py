@@ -195,6 +195,8 @@ class SystemConfigOut(BaseModel):
     ai_pipeline_enabled: bool = False  # Agent 管线开关
     dual_judge_enabled: bool = True  # 双评委辩论（P2，2026-09-15 起默认开）
     tp2_enabled: bool = False  # TP2 分批止盈开关（2026-10-08 默认关：仅 TP1 80%+剩余跟进）
+    # 止盈模式（2026-10-10，docs/19 §3.4）：ai=AI 按信号选择（默认）/ ladder / trail
+    tp_mode: str = "ai"
 
     # 自定义策略提示词
     strategy_prompt_enabled: bool
@@ -289,6 +291,7 @@ class SystemConfigUpdate(BaseModel):
     ai_pipeline_enabled: Optional[bool] = None
     dual_judge_enabled: Optional[bool] = None
     tp2_enabled: Optional[bool] = None
+    tp_mode: Optional[str] = None  # ai / ladder / trail（api 层白名单校验）
 
     # 自定义策略提示词
     strategy_prompt_enabled: Optional[bool] = None

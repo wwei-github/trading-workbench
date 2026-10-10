@@ -574,6 +574,9 @@ def _upsert_ai_analysis(
         # 4h 趋势期别（2026-10-09 r2）：enforce 阶段 stash，复盘维度分组用；
         # latest-wins 重分析后 None 覆盖旧值，不残留
         "htf_phase": ai_result.get("htf_phase"),
+        # 止盈模式（2026-10-10，docs/19 §3.4）：risk_guard fixed dict 保证 suggest
+        # 有值（None→ladder）；latest-wins 重分析后覆盖旧值
+        "tp_mode": ai_result.get("tp_mode"),
         "pullback_wait": bool(ai_result.get("pullback_wait")),
         # 待回踩结论在分发前就被跳过（_dispatch_immediate_open），不会进入开仓闸门，
         # 未开单原因在此预置；其余结论的原因由开仓闸门拦截时写入

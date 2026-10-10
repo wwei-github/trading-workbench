@@ -356,7 +356,7 @@ export default function AiAnalysisCard({ ai }: Props) {
           <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
             <PriceCard label="入场价" value={ai.entry_price} color="#1677ff" />
             <PriceCard label="止损价" value={ai.stop_loss} color={SCHEME_UP_DOWN[colorScheme].down} />
-            <PriceCard label="止盈1" value={ai.take_profit_1} color={SCHEME_UP_DOWN[colorScheme].up} />
+            <PriceCard label={ai.tp_mode === 'trail' ? '止盈1·参考' : '止盈1'} value={ai.take_profit_1} color={SCHEME_UP_DOWN[colorScheme].up} />
             {/* TP2 关闭时落库 0：显示「未启用」而非 0.0000 */}
             <PriceCard label="止盈2" value={ai.take_profit_2} color={SCHEME_UP_DOWN[colorScheme].up} zeroText="未启用" />
           </div>
@@ -372,6 +372,13 @@ export default function AiAnalysisCard({ ai }: Props) {
               fontSize: 13,
             }}
           >
+            <span>
+              <span style={{ color: '#999', marginRight: 6 }}>止盈模式</span>
+              {/* docs/19 §3.4：AI 按信号选择；trail 单 TP1 价仅盈亏比参考，不挂档 */}
+              <Tag color={ai.tp_mode === 'trail' ? 'purple' : 'blue'} style={{ marginRight: 0 }}>
+                {ai.tp_mode === 'trail' ? '纯跟踪' : '分批止盈'}
+              </Tag>
+            </span>
             <span>
               <span style={{ color: '#999', marginRight: 6 }}>盈亏比</span>
               <strong>

@@ -322,6 +322,16 @@ def _run_migrations(engine):
             "ALTER TABLE system_config "
             "ADD COLUMN IF NOT EXISTS tp1_qty_pct_no_tp2 NUMERIC(5, 2)"
         ))
+        # 止盈模式（2026-10-10，docs/19 §3.4）：ai=AI 按信号选择（NULL 同）/ ladder /
+        # trail=纯跟踪；ai_analyses.tp_mode 存 AI 选择，旧行 NULL 按 ladder 理解
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS tp_mode VARCHAR(8)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS tp_mode VARCHAR(8)"
+        ))
         # 盈亏峰值列（2026-09-26）：持仓期间全程盈亏峰值，浮盈回撤 ≥0.6R 触发 AI 诊断
         conn.execute(text(
             "ALTER TABLE trade_records "

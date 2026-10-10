@@ -56,6 +56,10 @@ class TradeDecision(BaseModel):
     skip_reason: str = ""
     direction: Optional[Literal["long", "short"]] = None
     trade_type: Optional[str] = None  # 开单类型：trend_follow / structure_break / range_edge
+    # 止盈模式（2026-10-10，docs/19 §3.4）：ladder=分批止盈（缺省）/ trail=纯跟踪
+    # （TP1 仅作盈亏比校验参考价，程序不挂止盈档）；system_config.tp_mode 强制时
+    # 开仓侧覆盖 AI 的选择
+    tp_mode: Optional[Literal["ladder", "trail"]] = None
     # 止损锚类型（docs/23，仅突破类信号需要）：structure=结构锚（默认）/ near=突破K极值近锚
     stop_anchor: Optional[Literal["structure", "near"]] = None
     # 战法命中标注（2026-10-02，仅借鉴不影响结论）：tactic_name 必须逐字取自
@@ -97,6 +101,10 @@ def normalize_raw(raw: dict) -> TradeDecision:
     # 「输出格式不合法」白烧一次 Reflection 重试（2026-10-04）
     if data.get("stop_anchor") not in ("structure", "near"):
         data["stop_anchor"] = None
+    # 止盈模式（docs/19 §3.4）：非法值（含空串/prompt 教的 null）一律回退 None
+    # （suggest 落库时回退 ladder）
+    if data.get("tp_mode") not in ("ladder", "trail"):
+        data["tp_mode"] = None
     # 战法字段空串归 None（未命中）；白名单校验在 validate_decision（需注入清单）
     for _tf in ("tactic_name", "tactic_reason"):
         if not str(data.get(_tf) or "").strip():
@@ -221,6 +229,7 @@ def validate_decision(
             "skip_reason": d.skip_reason.strip(),
             "direction": None,
             "trade_type": None,
+            "tp_mode": None,
             "analysis": d.analysis or "",
             "tactic_name": tactic_name,
             "tactic_reason": tactic_reason,
@@ -335,6 +344,9 @@ def validate_decision(
         "skip_reason": "",
         "direction": d.direction,
         "trade_type": d.trade_type,
+        # 止盈模式落库（docs/19 §3.4）：None（未声明/非法值）按 ladder 理解；
+        # system_config.tp_mode 强制时开仓侧再覆盖（trade_engine）
+        "tp_mode": d.tp_mode if d.tp_mode in ("ladder", "trail") else "ladder",
         "tactic_name": tactic_name,
         "tactic_reason": tactic_reason,
         # 止损锚类型落库（docs/23）：near 仅突破类有效（AI 在回踩类误报时按

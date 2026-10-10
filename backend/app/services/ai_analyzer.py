@@ -77,9 +77,21 @@ def compose_rule_tp(tp2_enabled: bool) -> str:
 
 # 字段说明行按 TP2 开关二选一（SYSTEM_PROMPT 的 {_tp2_field} 槽位）
 _TP2_FIELD_ON = """第二档止盈价，锚定更前方一档摆动结构位（做多=更高一档摆动高点下方，
-  做空=更低一档摆动低点上方，同样留余地）且必须比止盈一更远。"""
+  做空=更低一档摆动低点上方，同样留余地）且必须比止盈一更远。tp_mode="trail" 时不要输出。"""
 
 _TP2_FIELD_OFF = """当前未启用止盈二（TP2 分批关闭）：一律输出 0。"""
+
+# 止盈模式说明（2026-10-10，docs/19 §3.4 两派哲学：分批落袋 vs 让利润奔跑）。
+# 两模式共用一套入场/止损/盈亏比铁律，差异只在出场：ladder 靠结构位分批落袋，
+# trail 靠保本武装+跟进止损
+_TP_MODE_FIELD = """- tp_mode: 止盈模式，suggest 时必填其一（程序按此决定出场方式），skip 时不输出（输出 null）：
+  "ladder" 分批止盈（默认）：TP1/TP2 结构位分批落袋 + 保本武装 + 剩余仓跟进。
+    适合：区间边缘反转、结构破位回踩、动能一般、上方第一结构位较近（盈亏比 1.5~2.5 区间）。
+  "trail" 纯跟踪：不挂止盈档（take_profit_1 仍必须给出——仅作盈亏比铁律校验的
+    参考目标价，程序不会按它挂单），浮盈达 1×ATR 武装保本，其后跟进止损让利润奔跑。
+    适合：强趋势顺势（4h 与 1h 同向、ADX 强）、突破后动能充足、上方无明显压力位
+    或第一结构位很远（按参考目标复算盈亏比 ≥2.5）。
+  选择标准：落袋确定性优先选 ladder，趋势空间优先选 trail；拿不准选 ladder。"""
 
 _RULE_STRUCT = """结构破位回踩打法（structure_break）三子形态按行情阶段择一，选择理由写进 analysis：
 1. 123法则（趋势反转）：破支撑(1) → 反弹不创新低(2) → 突破反弹高点时入场(3)；止损放转折点外侧。稳但滞后。
@@ -214,7 +226,7 @@ SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信�
 {_RULE_HTF_HARD}
 
 字段如下（skip 时为 0/空字符串的字段：direction/trade_type/entry_price/stop_loss/
-take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外，见下）：
+take_profit_1/take_profit_2/tp_mode/risk_reward_ratio/position_pct；skip_reason 除外，见下）：
 - trade_decision: 是否建议开单，"suggest"（建议开单）或 "skip"（不建议开单）
 - skip_reason: trade_decision="skip" 时必填，用"1. 2. 3."序号逐条列出不建议开单的主要原因（如：1. 信号强度不足 2. 盈亏比不佳），最多3条，每条一行，JSON内换行写\\n。suggest 时输出空字符串。
 - direction: 交易方向，"long"（做多）或 "short"（做空）。skip 时为空字符串。
@@ -236,6 +248,7 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
   RR = |TP1 − 入场| ÷ |入场 − 止损| 必须 ≥ {rr_min}，输出前先自行代入验算
   （近位争夺位不算止盈目标，细则见下方止盈锚定）。
 - take_profit_2: {_tp2_field}
+{_tp_mode_field}
 - risk_reward_ratio: take_profit_1 的盈亏比，2位小数。
 - position_pct: 建议名义仓位占账户资金百分比，2位小数。程序会按固定亏损复算覆盖
   （单笔止损预算={risk_label}：仓位=预算÷止损距离），此处报估算值即可。
@@ -293,6 +306,7 @@ def render_system_prompt(
         _RULE_EMA=_RULE_EMA.replace(chr(10), ' '),
         _RULE_VOTE=_RULE_VOTE.replace(chr(10), ' '),
         _tp2_field=_TP2_FIELD_ON if tp2_enabled else _TP2_FIELD_OFF,
+        _tp_mode_field=_TP_MODE_FIELD,
         rr_min=_rr,
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
     )  # 模板槽位均为纯名称：表达式在渲染前预处理（f-string 时代的 .format 内嵌已移除）

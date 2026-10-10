@@ -450,15 +450,16 @@ def test_breakeven_idempotent_when_already_beyond_buffer(db):
 def test_exit_reason_adapts_to_buffered_breakeven(db):
     """出场原因适配（docs/24 A1''）：缓冲保本价（成本价±费缓冲）不再被误判为
     tp1_trail，仍归 breakeven_sl；越过缓冲价才算跟踪止损出场"""
+    # raw=None（docs/19 §3.4：_derive_exit_reason 首查 raw.tp_mode 分流 trail 单）
     long_be = SimpleNamespace(status="TP1_HIT", entry_price=100.0,
-                              stop_loss=100.1, direction="long")
+                              stop_loss=100.1, direction="long", raw=None)
     short_be = SimpleNamespace(status="TP1_HIT", entry_price=100.0,
-                               stop_loss=99.9, direction="short")
+                               stop_loss=99.9, direction="short", raw=None)
     assert _derive_exit_reason(long_be) == "breakeven_sl"
     assert _derive_exit_reason(short_be) == "breakeven_sl"
     long_trail = SimpleNamespace(status="TP1_HIT", entry_price=100.0,
-                                 stop_loss=101.0, direction="long")
+                                 stop_loss=101.0, direction="long", raw=None)
     short_trail = SimpleNamespace(status="TP1_HIT", entry_price=100.0,
-                                  stop_loss=99.0, direction="short")
+                                  stop_loss=99.0, direction="short", raw=None)
     assert _derive_exit_reason(long_trail) == "tp1_trail"
     assert _derive_exit_reason(short_trail) == "tp1_trail"

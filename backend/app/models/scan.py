@@ -111,6 +111,11 @@ class AIAnalysis(Base):
     # enforce_htf_constraint stash 落库；仅 suggest 且有 4h 数据时有值，
     # 旧行/无 4h 数据 NULL=未知，复盘「4h趋势期」维度按此分组
     htf_phase: Mapped[Optional[str]] = mapped_column(String(12), nullable=True)
+    # 止盈模式（2026-10-10，docs/19 §3.4 两派哲学落地）：ladder=分批止盈 /
+    # trail=纯跟踪（TP1 仅作盈亏比校验参考价，程序不挂止盈档，浮盈≥1×ATR
+    # 武装保本后跟进）。NULL=旧行，按 ladder 理解；system_config.tp_mode
+    # 强制时开仓侧覆盖此值（AI 选择仅在该配置为 ai 时生效）
+    tp_mode: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")

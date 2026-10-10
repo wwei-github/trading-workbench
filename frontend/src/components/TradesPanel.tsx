@@ -160,6 +160,9 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   trigger: '触发原因',
   // N-17 自动收紧（2026-10-08）
   tighten_candidate: '候选止损价',
+  // 止盈模式（docs/19 §3.4，2026-10-10）：OPEN 事件快照
+  tp_mode: '止盈模式',
+  entry_atr: '入场ATR·1d',
 }
 
 function fmtNum(n: number | null | undefined): string {
@@ -226,6 +229,13 @@ function detailValue(k: string, v: unknown, scheme: ColorScheme): React.ReactNod
   if (k === 'pnl_pct' || k === 'slippage_pct') return `${v}%`
   if (k === 'thesis_valid' || k === 'trend_broken') return v ? '是' : '否'
   if (k === 'action') return ADVICE_ACTION_META[String(v)]?.label || String(v)
+  // 止盈模式快照（docs/19 §3.4）：ladder=分批止盈 / trail=纯跟踪
+  if (k === 'tp_mode') return v === 'trail' ? '纯跟踪' : v === 'ladder' ? '分批止盈' : String(v)
+  // 入场 ATR（1d/22）快照：按价格量级格式化
+  if (k === 'entry_atr' && v != null && !Number.isNaN(Number(v))) {
+    const n = Number(v)
+    return n < 1 ? n.toFixed(6) : n.toFixed(4)
+  }
   if (
     k === 'realized_pnl' || k === 'pnl' || k === 'cum_pnl'
     || k === 'insurance_clear' || k === 'total_pnl'
@@ -835,6 +845,12 @@ export default function TradesPanel() {
           <Tag color={rec.direction === 'long' ? schemeTag(colorScheme).up : schemeTag(colorScheme).down} style={{ marginInlineEnd: 0 }}>
             {rec.direction === 'long' ? '多' : '空'}
           </Tag>
+          {/* 止盈模式标识（docs/19 §3.4）：仅 trail 标注（ladder 为默认/旧行，不标） */}
+          {rec.tp_mode === 'trail' && (
+            <Tooltip title="纯跟踪止盈：不挂止盈档，浮盈达标后武装保本，随后 ATR 跟进止损">
+              <Tag color="purple" style={{ marginInlineEnd: 0 }}>跟踪</Tag>
+            </Tooltip>
+          )}
         </Space>
       ),
     },
