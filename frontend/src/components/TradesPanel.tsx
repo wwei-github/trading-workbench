@@ -77,7 +77,8 @@ const RECON_LEAKS: { key: 'entry_slip' | 'fee' | 'funding' | 'sl_breach' | 'tp1_
   { key: 'tp1_slip', label: 'TP1 滑点' },
 ]
 
-// 导入持仓弹窗：交易所持仓数据直接展示，SL/TP1/TP2 取币安现挂条件单（不可编辑）
+// 导入持仓已全自动（adopt-now）：SL/TP 取币安现挂条件单原值接管，
+// 仅 SL 无 TP1 的手动单按 trail 纯跟踪接管（2026-10-10）
 
 // 跟进止损进行中的单子（TP2后 / 无TP2的TP1后），止损价已推过末档止盈价
 // （有TP2看TP2，无TP2看TP1）→ 锁定利润已超过该档，状态改显「移动止损」

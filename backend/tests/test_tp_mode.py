@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """止盈模式 tp_mode（2026-10-10，docs/19 §3.4 两派哲学落地）——单测。
 
-锁五件事：
+锁七件事：
 1. normalize_raw：trail/ladder 保真，非法值（含空串/未声明）归 None；
 2. validate_decision：suggest 落库 trail 保真 / 缺省回退 ladder / skip 恒 None；
 3. ai_agent._handle_submit：trail 硬清零 TP2（即使 AI 报了 tp2 锚点）、
@@ -9,7 +9,11 @@
 4. _derive_exit_reason trail 三态：未武装=sl / SL 贴保本=breakeven_sl /
    越过保本=trail_sl（多空对称）；
 5. _trail_mode_patrol：未达标不武装 / 达标武装保本+落旗标+SL_MOVE /
-   entry_atr 缺失退化 1R 武装线 / 挂上即触发不落旗标下轮重试 / 已武装只跟进。
+   entry_atr 缺失退化 1R 武装线 / 挂上即触发不落旗标下轮重试 / 已武装只跟进；
+6. _ema21_half_cut：破线减半（多空镜像）/ 一次性旗标 / min_qty 跳过 /
+   双刀竞态防护（交易所已半仓不再下第二刀）；
+7. adopt_position 无止盈位 → trail 接管（不挂 TP、raw 快照、仅校验 SL），
+   有 TP1 → ladder 原行为；auto_adopt 对 SL-only 单不再跳过。
 
 sqlite 内存库夹具镜像 test_auto_tighten.py；trader/ExchangePool 全桩化。
 """
@@ -44,10 +48,13 @@ FEE = 0.0005  # 保本价 = 成本 ± 往返费缓冲：entry 100 → be = 100.1
 def db(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     from app.database import Base
+    from app.models.system_config import SystemConfig
 
-    Base.metadata.create_all(bind=engine, tables=[TradeRecord.__table__, TradeEvent.__table__])
+    Base.metadata.create_all(bind=engine, tables=[
+        TradeRecord.__table__, TradeEvent.__table__, SystemConfig.__table__])
     # ExchangePool 桩：跟进止损的 K 线腿拿不到数据 → 摆动/ATR 腿全跳过
     # （聚焦武装逻辑；已武装路径走到「无候选不动 SL」即视为跟进调用成功）
+    # adopt_position 的 entry_atr 快照同样拿空 K 线 → 异常被捕 → None（退化 1R）
     monkeypatch.setattr(te, "ExchangePool",
                         lambda: SimpleNamespace(get_klines=lambda *a, **k: []))
     return Session(bind=engine)
@@ -78,8 +85,11 @@ class StubTrader:
     def __init__(self, price=101.0, amt=1.0, min_qty=0.001):
         self.price_val = price
         self.sl_orders: list[float] = []
+        self.tp_orders: list[float] = []
         self.amt = amt
         self.min_qty = min_qty
+        self.account_key = "testnet-1"
+        self.testnet = True
         self.market_closes: list[tuple[str, float, bool]] = []  # (side, qty, reduce_only)
 
     def round_price(self, symbol, p):
@@ -96,7 +106,10 @@ class StubTrader:
         pass
 
     def positions(self):
-        return {"BTCUSDT": {"amt": self.amt}} if self.amt > 0 else {}
+        # adopt_position 另需 entry_price / initial_margin（杠杆与成本口径）
+        return ({"BTCUSDT": {"amt": self.amt, "entry_price": 100.0,
+                             "initial_margin": 50.0}}
+                if self.amt > 0 else {})
 
     def filters(self, symbol):
         return {"min_qty": self.min_qty, "min_notional": 5.0}
@@ -112,6 +125,17 @@ class StubTrader:
 
     def realized_pnl_since(self, symbol, since_ms):
         return 1.23
+
+    # adopt_position 需要的其余方法（条件单读撤/止盈挂单）
+    def open_algo_orders(self, symbol):
+        return []
+
+    def cancel_all_algo(self, symbol):
+        pass
+
+    def take_profit_reduce(self, symbol, side, qty, price):
+        self.tp_orders.append(price)
+        return {"algoId": 600 + len(self.tp_orders)}
 
 
 # ── 1. normalize_raw：tp_mode 归一化 ─────────────────────────────
@@ -393,3 +417,77 @@ def test_ema21_cut_double_cut_guard(db, monkeypatch):
     assert trader.market_closes == []
     assert rec.raw["ema21_cut"] is True
     assert float(rec.qty) == pytest.approx(0.5)
+
+
+# ── 7. 导入持仓：无止盈位 → trail 纯跟踪接管（2026-10-10）────────
+
+
+def test_adopt_without_tp1_trail(db):
+    """无止盈位（tp1=0）→ trail 接管：不挂 TP 档、tp1 落 None、
+    raw 带 tp_mode/entry_atr（K线桩空 → None 退化 1R）、OPEN 事件标注纯跟踪"""
+    trader = StubTrader(price=100.0, amt=2.0)
+    rec = te.adopt_position(db, trader, "BTCUSDT", stop_loss=98.0, tp1=0)
+    assert rec.status == "OPENED"
+    assert rec.tp1 is None and rec.tp2 == 0
+    assert rec.raw["tp_mode"] == "trail"
+    assert rec.raw["entry_atr"] is None
+    assert rec.raw["tp1_order_id"] is None
+    assert trader.tp_orders == []           # 未挂任何止盈单
+    assert trader.sl_orders == [98.0]       # SL 照挂
+    assert rec.risk_amount == pytest.approx(abs(100.0 - 98.0) * 2.0)  # 1R 武装线分母
+    ev = db.query(TradeEvent).filter_by(event_type="OPEN").first()
+    assert ev.detail["tp_mode"] == "trail"
+
+
+def test_adopt_with_tp1_ladder_unchanged(db):
+    """有止盈位 → 现行 ladder 接管不变：挂 TP1、raw.tp_mode=ladder"""
+    trader = StubTrader(price=100.0, amt=2.0, min_qty=0.001)
+    rec = te.adopt_position(db, trader, "BTCUSDT", stop_loss=98.0, tp1=104.0)
+    assert rec.tp1 == 104.0
+    assert rec.raw["tp_mode"] == "ladder"
+    assert len(trader.tp_orders) == 1       # TP1 挂上（qty_tp1 达 min_qty）
+    assert trader.tp_orders[0] == pytest.approx(104.0)
+
+
+def test_adopt_trail_rejects_wrong_sl_side(db):
+    """trail 接管仅校验 SL 方向：多头 SL ≥ 现价仍拒收"""
+    trader = StubTrader(price=100.0, amt=2.0)
+    with pytest.raises(ValueError, match="必须低于现价"):
+        te.adopt_position(db, trader, "BTCUSDT", stop_loss=100.0, tp1=0)
+
+
+def test_adopt_trail_ignores_tp2(db):
+    """tp1=0 时即使误传 tp2 也走 trail（tp2 无效，不参与校验/挂单）"""
+    trader = StubTrader(price=100.0, amt=2.0)
+    rec = te.adopt_position(db, trader, "BTCUSDT", stop_loss=98.0,
+                            tp1=0, tp2=110.0)
+    assert rec.raw["tp_mode"] == "trail"
+    assert trader.tp_orders == []
+    assert rec.tp2 == 0
+
+
+def test_auto_adopt_no_tp1_imports(db, monkeypatch):
+    """自动导入：仅 SL 无 TP1 的 App 手动单不再跳过 → 按 trail 接管"""
+    monkeypatch.setattr(te, "list_adoptable_positions", lambda db_, tr: [
+        {"symbol": "BTCUSDT", "tracked": False,
+         "prefill": {"stop_loss": 98.0, "tp1": None, "tp2": None}},
+    ])
+    trader = StubTrader(price=100.0, amt=1.0)
+    out = te.auto_adopt_positions(db, trader)
+    assert out == ["BTCUSDT"]
+    rec = db.query(TradeRecord).first()
+    assert rec is not None and rec.raw["tp_mode"] == "trail"
+
+
+def test_adopt_trail_deep_profit_arms_first_patrol(db):
+    """接管时已深浮盈（峰值 ≥ 武装线）→ 首轮巡检立即武装保本：
+    adopted 单 peak 从接管时刻起累计（含接管前涨幅的当前浮盈快照），
+    entry_atr 快照缺失（K线桩空）→ 退化 1R=risk_amount=2.0 武装线"""
+    rec = _rec(db, raw={"tp_mode": "trail", "adopted": True},
+               peak_total_pnl=3.0, stop_loss=98.0)
+    trader = StubTrader(price=103.0, amt=1.0)
+    te._trail_mode_patrol(db, trader, rec, "1h", set(), FEE, atr_k=0)
+    assert rec.raw["trail_armed"] is True          # 已落旗标
+    assert trader.sl_orders == [100.1]             # 保本价 100 + 0.1 费缓冲
+    evs = db.query(TradeEvent).filter_by(event_type="SL_MOVE").all()
+    assert len(evs) == 1 and evs[0].detail["to"] == pytest.approx(100.1)

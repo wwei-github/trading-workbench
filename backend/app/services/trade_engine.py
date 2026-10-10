@@ -2653,12 +2653,13 @@ def list_adoptable_positions(db: Session, trader: BinanceTrader) -> list[dict]:
 
 
 def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
-                   stop_loss: float, tp1: float, tp2: float = 0) -> TradeRecord:
+                   stop_loss: float, tp1: float = 0, tp2: float = 0) -> TradeRecord:
     """导入持仓：把交易所已有手动仓接管为系统在跑单（status=OPENED）。
 
     流程：持仓仍在校验 → 无同账号同币在跑记录 → 三价方向校验（按现价）→
-    撤原手动条件单 → 按系统规则重挂 SL/TP1/TP2（失败尽力恢复原 SL，绝不
-    把用户裸仓留在市场）→ 落库（opened_at=接管时刻，管理范围从此刻起）。
+    撤原手动条件单 → 按系统规则重挂 SL + 止盈（tp1<=0 无止盈位 → trail 纯跟踪
+    接管：不挂 TP 档，浮盈≥1×ATR 武装保本→跟进，2026-10-10；失败尽力恢复原
+    SL，绝不把用户裸仓留在市场）→ 落库（opened_at=接管时刻，管理范围从此刻起）。
     需在开仓锁（lock:trade_open:{account}）内调用，与结算巡检互斥。
     """
     # ① 持仓仍在（弹窗打开到提交之间可能已平仓）
@@ -2686,22 +2687,24 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
     if exists:
         raise ValueError(f"{symbol} 已有系统在跑记录，无需导入")
 
-    # ③ 三价方向校验（按现价；导入单不做盈亏比/风险预算闸门——尊重用户既定计划）
-    stop_loss, tp1, tp2 = float(stop_loss), float(tp1), float(tp2 or 0)
+    # ③ 三价方向校验（按现价；导入单不做盈亏比/风险预算闸门——尊重用户既定计划）。
+    # tp1<=0 = 用户未设置止盈位 → trail 纯跟踪接管（2026-10-10），仅校验 SL 方向
+    stop_loss, tp1, tp2 = float(stop_loss), float(tp1 or 0), float(tp2 or 0)
+    _tp_mode = "trail" if tp1 <= 0 else "ladder"
     price_now = trader.price(symbol)
-    if stop_loss <= 0 or tp1 <= 0:
-        raise ValueError("止损价与止盈一必填")
+    if stop_loss <= 0:
+        raise ValueError("止损价必填")
     if direction == "long":
         if stop_loss >= price_now:
             raise ValueError(f"多头止损价 {stop_loss} 必须低于现价 {price_now}")
-        if tp1 <= price_now:
+        if tp1 > 0 and tp1 <= price_now:
             raise ValueError(f"多头止盈一 {tp1} 必须高于现价 {price_now}")
         if tp2 and tp2 <= tp1:
             raise ValueError(f"止盈二 {tp2} 必须高于止盈一 {tp1}")
     else:
         if stop_loss <= price_now:
             raise ValueError(f"空头止损价 {stop_loss} 必须高于现价 {price_now}")
-        if tp1 >= price_now:
+        if tp1 > 0 and tp1 >= price_now:
             raise ValueError(f"空头止盈一 {tp1} 必须低于现价 {price_now}")
         if tp2 and tp2 >= tp1:
             raise ValueError(f"止盈二 {tp2} 必须低于止盈一 {tp1}")
@@ -2731,24 +2734,43 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
                 logger.error("导入 %s：新 SL 挂单失败且原价恢复也失败，仓位暂无止损保护！", symbol)
         raise
     f = trader.filters(symbol)
-    _p1, _p2, _p1s = _tp_ratio_cfg(_adopt_cfg)
-    qty_tp1, qty_tp2 = _tp_quantities(qty, tp2, _p1, _p2, _p1s)
-    tp1_order = None
-    tp2_order = None
-    if qty_tp1 >= f["min_qty"]:
+    entry_atr = None
+    if _tp_mode == "trail":
+        # 纯跟踪接管（2026-10-10）：无止盈位 → 不挂 TP 档，全仓由「浮盈≥1×ATR
+        # 武装保本 → 跟进止损」退出（巡检 _trail_mode_patrol 认 raw.tp_mode=trail）。
+        # entry_atr(22,1d) 快照与开仓管线同口径；缺失退化 1R（risk_amount）武装线
         try:
-            tp1_order = trader.take_profit_reduce(
-                symbol, close_side, trader.round_qty(symbol, qty_tp1),
-                trader.round_price(symbol, tp1))
-        except Exception as e:
-            logger.warning("导入 %s：TP1 挂单失败（SL 已就位，仅缺自动止盈）: %s", symbol, e)
-    if tp2 > 0 and tp1_order and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
-        try:
-            tp2_order = trader.take_profit_reduce(
-                symbol, close_side, trader.round_qty(symbol, qty_tp2),
-                trader.round_price(symbol, tp2))
-        except Exception as e:
-            logger.warning("导入 %s：TP2 挂单失败: %s", symbol, e)
+            from app.services.strategy.technical import atr_series
+            _d1 = ExchangePool().get_klines(symbol, "1d", 30)
+            _atr_s = atr_series(_d1, period=22)
+            if (_atr_s is not None and len(_atr_s)
+                    and math.isfinite(float(_atr_s[-1]))
+                    and float(_atr_s[-1]) > 0):
+                entry_atr = round(float(_atr_s[-1]), 8)
+        except Exception as atr_err:
+            logger.warning("导入 %s：entry ATR 快照失败（纯跟踪退化 1R 武装线）: %s",
+                           symbol, atr_err)
+        qty_tp1 = qty_tp2 = 0.0
+        tp1_order = tp2_order = None
+    else:
+        _p1, _p2, _p1s = _tp_ratio_cfg(_adopt_cfg)
+        qty_tp1, qty_tp2 = _tp_quantities(qty, tp2, _p1, _p2, _p1s)
+        tp1_order = None
+        tp2_order = None
+        if qty_tp1 >= f["min_qty"]:
+            try:
+                tp1_order = trader.take_profit_reduce(
+                    symbol, close_side, trader.round_qty(symbol, qty_tp1),
+                    trader.round_price(symbol, tp1))
+            except Exception as e:
+                logger.warning("导入 %s：TP1 挂单失败（SL 已就位，仅缺自动止盈）: %s", symbol, e)
+        if tp2 > 0 and tp1_order and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
+            try:
+                tp2_order = trader.take_profit_reduce(
+                    symbol, close_side, trader.round_qty(symbol, qty_tp2),
+                    trader.round_price(symbol, tp2))
+            except Exception as e:
+                logger.warning("导入 %s：TP2 挂单失败: %s", symbol, e)
 
     # ⑤ 落库：opened_at=接管时刻（管理范围从此刻起，接管前盈亏不回溯）
     now = datetime.utcnow()
@@ -2776,12 +2798,14 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
             if _adopt_cfg is not None else "pct"
         ),  # 接管时刻模式快照（无 AI 分析行的手动单同样记录）
         stop_loss=stop_loss,
-        tp1=tp1,
+        tp1=tp1 if tp1 > 0 else None,  # trail 接管（无止盈位）tp1 落 None
         tp2=tp2 if tp2_order else 0,
         status="OPENED",
         opened_at=now,
         raw={
             "adopted": True,
+            "tp_mode": _tp_mode,  # 巡检/出场归因认此键：trail → 武装保本+跟进（2026-10-10）
+            "entry_atr": entry_atr,  # trail 武装线分母；None=退化 1R（risk_amount）
             "sl_order_id": sl_order.get("algoId") or sl_order.get("orderId"),
             "tp1_order_id": (tp1_order.get("algoId") or tp1_order.get("orderId")) if tp1_order else None,
             "tp2_order_id": (tp2_order.get("algoId") or tp2_order.get("orderId")) if tp2_order else None,
@@ -2796,14 +2820,19 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
     db.flush()
     _add_event(db, rec, "OPEN", {
         "adopted": True, "price": price_now, "qty": qty,
-        "stop_loss": stop_loss, "tp1": tp1, "tp2": tp2 if tp2_order else 0,
+        "stop_loss": stop_loss, "tp1": tp1 if tp1 > 0 else 0, "tp2": tp2 if tp2_order else 0,
+        "tp_mode": _tp_mode, "entry_atr": entry_atr,
         "risk_amount": round(abs(entry - stop_loss) * qty, 4),
-        "entry_price": entry, "note": "手动持仓导入（管理范围自接管时点起）",
+        "entry_price": entry,
+        "note": ("手动持仓导入（管理范围自接管时点起）"
+                 if _tp_mode == "ladder" else
+                 "手动持仓导入·纯跟踪接管（无止盈位：武装保本后跟进止损）"),
     })
     db.commit()
-    logger.info("已导入持仓 %s %s qty=%s entry=%s sl=%s tp1=%s tp2=%s（风险 %s USDT）",
-                symbol, direction, qty, entry, stop_loss, tp1,
-                tp2 if tp2_order else 0, rec.risk_amount)
+    logger.info("已导入持仓 %s %s qty=%s entry=%s sl=%s tp1=%s tp2=%s（%s，风险 %s USDT）",
+                symbol, direction, qty, entry, stop_loss,
+                tp1 if tp1 > 0 else "纯跟踪", tp2 if tp2_order else 0,
+                _tp_mode, rec.risk_amount)
     return rec
 
 
@@ -2812,8 +2841,10 @@ def auto_adopt_positions(db: Session, trader: BinanceTrader) -> list[str]:
     交易所非零持仓中未被系统在跑记录接管的 = 用户在币安 App 手动开的单，
     逐一尝试 adopt_position 接管（SL/TP 取 App 现挂条件单原值）。
 
-    跳过：已在跑记录的、App 未同时设置 SL+TP1 的（裸仓不入册，只记日志）、
-    三价校验不过的。需在开仓锁内调用。返回新导入的 symbol 列表。
+    2026-10-10 起止盈位不再必需：有 TP1 按 ladder 分批接管；仅 SL 无 TP1
+    按 trail 纯跟踪接管（浮盈≥1×ATR 武装保本→跟进）。跳过：已在跑记录的、
+    无止损条件单的（裸仓不入册，只记日志）、三价校验不过的。需在开仓锁内
+    调用。返回新导入的 symbol 列表。
     """
     out: list[str] = []
     for row in list_adoptable_positions(db, trader):
@@ -2821,11 +2852,12 @@ def auto_adopt_positions(db: Session, trader: BinanceTrader) -> list[str]:
             continue
         sym = row["symbol"]
         pre = row["prefill"]
-        if not pre["stop_loss"] or not pre["tp1"]:
-            logger.info("自动导入跳过 %s：币安未同时设置止损+止盈条件单（裸仓不入册）", sym)
+        if not pre["stop_loss"]:
+            logger.info("自动导入跳过 %s：币安未设置止损条件单（裸仓不入册）", sym)
             continue
         try:
-            adopt_position(db, trader, sym, pre["stop_loss"], pre["tp1"], pre["tp2"] or 0)
+            adopt_position(db, trader, sym, pre["stop_loss"],
+                           pre["tp1"] or 0, pre["tp2"] or 0)
             out.append(sym)
         except ValueError as e:
             logger.info("自动导入跳过 %s：%s", sym, e)
