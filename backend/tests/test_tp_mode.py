@@ -72,11 +72,15 @@ def _rec(db, **kw):
 
 
 class StubTrader:
-    """最小 trader 桩：round_price / price / stop_market_close / cancel_order"""
+    """最小 trader 桩：round_price / price / stop_market_close / cancel_order；
+    EMA21 减半腿另需 positions / filters / round_qty / market_order"""
 
-    def __init__(self, price=101.0):
+    def __init__(self, price=101.0, amt=1.0, min_qty=0.001):
         self.price_val = price
         self.sl_orders: list[float] = []
+        self.amt = amt
+        self.min_qty = min_qty
+        self.market_closes: list[tuple[str, float, bool]] = []  # (side, qty, reduce_only)
 
     def round_price(self, symbol, p):
         return round(p, 2)
@@ -90,6 +94,24 @@ class StubTrader:
 
     def cancel_order(self, symbol, oid):
         pass
+
+    def positions(self):
+        return {"BTCUSDT": {"amt": self.amt}} if self.amt > 0 else {}
+
+    def filters(self, symbol):
+        return {"min_qty": self.min_qty, "min_notional": 5.0}
+
+    def round_qty(self, symbol, q):
+        return round(q, 3)
+
+    def market_order(self, symbol, side, qty, reduce_only=False):
+        self.market_closes.append((side, qty, reduce_only))
+        if reduce_only:
+            self.amt = max(0.0, self.amt - qty)  # 桩内模拟减仓
+        return {"orderId": 900 + len(self.market_closes)}
+
+    def realized_pnl_since(self, symbol, since_ms):
+        return 1.23
 
 
 # ── 1. normalize_raw：tp_mode 归一化 ─────────────────────────────
@@ -256,3 +278,118 @@ def test_patrol_already_armed_trails_only(db):
     te._trail_mode_patrol(db, trader, rec, "1h", set(), FEE, atr_k=0)
     assert trader.sl_orders == []
     assert float(rec.stop_loss) == pytest.approx(100.1)
+
+
+# ── 6. _ema21_half_cut：武装后破 EMA21 市价减半仓 ────────────────
+
+
+def _klines_1h(closes):
+    """closes → 1h K 线 6 列（ts 递增、o=前收盘、h=c+0.5、l=c-0.5；尾根为
+    未收盘桩数据，函数内部剔尾后 closed[-1] 为倒数第二根——构造时直接把
+    破线收盘放在倒数第二根即可）"""
+    base = 1_700_000_000_000
+    out = []
+    prev = float(closes[0])
+    for i, c in enumerate(closes):
+        c = float(c)
+        out.append([base + i * 3_600_000, prev, c + 0.5, c - 0.5, c, 1000.0])
+        prev = c
+    return out
+
+
+def _patch_k1(monkeypatch, closes):
+    kl = _klines_1h(closes)
+    monkeypatch.setattr(te, "ExchangePool",
+                        lambda: SimpleNamespace(get_klines=lambda *a, **k: kl))
+
+
+def test_ema21_cut_long_breach(db, monkeypatch):
+    """武装多单 + 1h 收盘跌破 EMA21 → 市价减半、qty 同步、旗标落、事件写"""
+    # 40 根横盘 105（EMA21≈105）→ 末 20 根缓跌，倒数第 2 根（已收盘最后一根）100 < EMA21
+    closes = [105.0] * 40 + [105.0 - 0.25 * i for i in range(1, 21)]
+    _patch_k1(monkeypatch, closes)
+    rec = _rec(db, raw={"tp_mode": "trail", "trail_armed": True}, stop_loss=100.1)
+    trader = StubTrader(price=100.5, amt=1.0, min_qty=0.001)
+    te._ema21_half_cut(db, trader, rec)
+    assert len(trader.market_closes) == 1
+    side, q, ro = trader.market_closes[0]
+    assert side == "SELL" and ro is True  # 多单减仓 = 卖出 reduceOnly
+    assert q == pytest.approx(0.5)
+    assert float(rec.qty) == pytest.approx(0.5)
+    assert rec.raw["ema21_cut"] is True
+    # 减半腿已实现盈亏落账（income 实录口径）
+    assert float(rec.realized_pnl) == pytest.approx(1.23)
+    evs = db.query(TradeEvent).filter_by(event_type="CUT_EMA21").all()
+    assert len(evs) == 1
+    assert evs[0].detail["cut_qty"] == pytest.approx(0.5)
+
+
+def test_ema21_cut_short_mirror(db, monkeypatch):
+    """空单镜像：1h 收盘升破 EMA21 → 买入 reduceOnly 减半"""
+    closes = [95.0] * 40 + [95.0 + 0.25 * i for i in range(1, 21)]
+    _patch_k1(monkeypatch, closes)
+    rec = _rec(db, direction="short", stop_loss=99.9,
+               raw={"tp_mode": "trail", "trail_armed": True})
+    trader = StubTrader(price=99.5, amt=1.0)
+    te._ema21_half_cut(db, trader, rec)
+    assert len(trader.market_closes) == 1
+    side, q, ro = trader.market_closes[0]
+    assert side == "BUY" and ro is True
+    assert float(rec.qty) == pytest.approx(0.5)
+
+
+def test_ema21_cut_no_breach_no_action(db, monkeypatch):
+    """收盘仍在 EMA21 上方（多单）→ 不减仓不落旗标"""
+    _patch_k1(monkeypatch, [105.0] * 60)
+    rec = _rec(db, raw={"tp_mode": "trail", "trail_armed": True}, stop_loss=100.1)
+    trader = StubTrader(price=105.5, amt=1.0)
+    te._ema21_half_cut(db, trader, rec)
+    assert trader.market_closes == []
+    assert not (rec.raw or {}).get("ema21_cut")
+
+
+def test_ema21_cut_not_armed_skipped(db, monkeypatch):
+    """未武装（未开始移动止损）→ 巡检不进减半腿，市价单零调用"""
+    closes = [105.0] * 40 + [105.0 - 0.25 * i for i in range(1, 21)]
+    _patch_k1(monkeypatch, closes)
+    rec = _rec(db, raw={"tp_mode": "trail", "entry_atr": 3.0}, peak_total_pnl=0.5)
+    trader = StubTrader(price=100.5, amt=1.0)
+    te._trail_mode_patrol(db, trader, rec, "1h", set(), FEE, atr_k=0)
+    assert trader.market_closes == []
+    assert not (rec.raw or {}).get("ema21_cut")
+
+
+def test_ema21_cut_once_only(db, monkeypatch):
+    """已减过（ema21_cut 旗标在）→ 永不再查，即使再次破线"""
+    closes = [105.0] * 40 + [105.0 - 0.25 * i for i in range(1, 21)]
+    _patch_k1(monkeypatch, closes)
+    rec = _rec(db, raw={"tp_mode": "trail", "trail_armed": True, "ema21_cut": True},
+               qty=0.5, stop_loss=100.1)
+    trader = StubTrader(price=100.5, amt=0.5)
+    te._ema21_half_cut(db, trader, rec)
+    assert trader.market_closes == []
+
+
+def test_ema21_cut_min_qty_skip(db, monkeypatch):
+    """减半量或剩余量低于交易所 min_qty → 不切不落旗标（留给 SL 全平）"""
+    closes = [105.0] * 40 + [105.0 - 0.25 * i for i in range(1, 21)]
+    _patch_k1(monkeypatch, closes)
+    rec = _rec(db, qty=0.001, raw={"tp_mode": "trail", "trail_armed": True},
+               stop_loss=100.1)
+    trader = StubTrader(price=100.5, amt=0.001, min_qty=0.001)
+    te._ema21_half_cut(db, trader, rec)
+    assert trader.market_closes == []
+    assert not (rec.raw or {}).get("ema21_cut")
+
+
+def test_ema21_cut_double_cut_guard(db, monkeypatch):
+    """双刀竞态防护：市价单已成交但旗标未落库（commit 回滚/响应超时）→
+    交易所 amt 已 ≈ 记录 qty 的一半，视为已减过——补旗标同步数量，不再下第二刀"""
+    closes = [105.0] * 40 + [105.0 - 0.25 * i for i in range(1, 21)]
+    _patch_k1(monkeypatch, closes)
+    rec = _rec(db, raw={"tp_mode": "trail", "trail_armed": True}, stop_loss=100.1)
+    trader = StubTrader(price=100.5, amt=0.5)  # 交易所已半仓，DB 仍记 1.0
+    te._ema21_half_cut(db, trader, rec)
+    assert trader.market_closes == []
+    assert rec.raw["ema21_cut"] is True
+    assert float(rec.qty) == pytest.approx(0.5)

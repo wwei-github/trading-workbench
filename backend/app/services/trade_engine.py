@@ -44,6 +44,9 @@ from app.services.risk_guard import (
 )
 from app.services.task_log import close_task, open_task
 
+import numpy as np
+from app.services.strategy.ema_gate import ema_series
+
 logger = logging.getLogger(__name__)
 
 
@@ -1548,7 +1551,8 @@ def _trail_mode_patrol(db: Session, trader: BinanceTrader, rec: TradeRecord,
     未武装：全程盈亏峰值（peak_total_pnl，USDT）≥ 1×ATR(22,1d)×数量 → 武装保本
     （SL 移至成本价±往返费缓冲，与 TP1 后保本同口径）；entry_atr 缺失（开仓时
     快照失败/旧行）退化 1×risk_amount（1R）武装线。
-    已武装：每轮跟进止损（与 TP2_HIT 同机制，摆动腿+ATR 腿只收紧不放松）。
+    已武装：先查 EMA21 减半腿（武装后 1h 收盘破 EMA21 → 市价减半仓，一次性），
+    再每轮跟进止损（与 TP2_HIT 同机制，摆动腿+ATR 腿只收紧不放松）。
     幂等：armed 旗标在 raw.trail_armed，武装动作失败（交易所异常）不落旗标下轮重试。
     """
     raw = rec.raw or {}
@@ -1578,7 +1582,91 @@ def _trail_mode_patrol(db: Session, trader: BinanceTrader, rec: TradeRecord,
         rec.raw = {**raw, "trail_armed": True}
         logger.info("纯跟踪武装保本 %s：峰值 %.4f 达武装线 %.4f，SL=%s",
                     rec.symbol, peak, threshold, sl_now)
+    if (rec.raw or {}).get("trail_armed"):
+        # 武装（=已开始移动止损）后先查减半腿：破 EMA21 落袋一半再继续跟进
+        # （重读 rec.raw：本轮刚武装时局部 raw 是旧 dict 无旗标）
+        _ema21_half_cut(db, trader, rec)
     _move_sl_trailing(db, trader, rec, interval, open_ids, atr_k=atr_k)
+
+
+def _ema21_half_cut(db: Session, trader: BinanceTrader, rec: TradeRecord) -> None:
+    """武装后 1h 收盘破 EMA21 → 市价减半仓（2026-10-10 拍板，trail 方案减仓腿）。
+
+    trail 单武装（已进入移动止损阶段）后，每小时巡检检查最近 1h 已收盘 K 线
+    （剔尾，与 structure_1h 同口径）：多单收盘 < EMA21(1h) / 空单收盘 > EMA21
+    → 市价 reduceOnly 减掉一半仓位落袋防趋势反噬；剩余仓位继续 ATR 跟进
+    （调用方后续 _move_sl_trailing，SL 为 closePosition 全平单无需调整）。
+
+    一次性：raw.ema21_cut 旗标防重复，减一次后纯靠 trailing；减半后 rec.qty
+    同步为剩余量（展示/诊断一致性；结算按交易所实际持仓 amt 判断归零、pnl 从
+    income 实录拉取，不依赖 rec.qty）。
+    数据/约束不可得（K 线不足、EMA 未成形、无持仓、减半量或剩余量低于交易所
+    最小规则）→ 跳过本轮不落旗标，下轮巡检重试；交易所下单异常仅告警不中断
+    巡检（下轮重试）。
+    双刀竞态防护：市价单已成交但事务回滚/响应超时（旗标没落库）时，交易所
+    amt 已 ≈ rec.qty 的一半——持仓已明显小于记录数量（<0.7 倍）视为上一刀
+    已实际成交（或用户外部部分平仓），只补旗标与 qty 同步、不再下第二刀。
+    """
+    raw = rec.raw or {}
+    if raw.get("ema21_cut"):
+        return
+    try:
+        pos = trader.positions().get(rec.symbol)
+        amt = abs(float((pos or {}).get("amt") or 0)) if pos else 0.0
+        rec_qty = float(rec.qty or 0)
+        if amt <= 0:
+            return
+        if rec_qty > 0 and amt < rec_qty * 0.7:
+            # 上一刀已成交但旗标未落库（commit 回滚/下单响应超时），或用户已在
+            # 交易所手动部分平仓——视为已减过，同步状态即可，绝不再下第二刀
+            rec.qty = amt
+            rec.raw = {**raw, "ema21_cut": True}
+            _add_event(db, rec, "CUT_EMA21", {
+                "close": None, "ema21": None, "cut_qty": rec_qty - amt,
+                "remain_qty": amt, "reason": "already_reduced",
+            })
+            logger.info("EMA21 减半仓 %s：交易所持仓 %s 已小于记录 %s，视为已减过（补旗标）",
+                        rec.symbol, amt, rec_qty)
+            return
+        kl = ExchangePool().get_klines(rec.symbol, "1h", 60)
+        closed = kl[:-1] if len(kl) >= 2 else kl
+        if len(closed) < 30:
+            return
+        c = np.array([float(k[4]) for k in closed], dtype=float)
+        e21 = ema_series(c, 21)
+        if e21 is None or not math.isfinite(float(e21[-1])):
+            return
+        close_now = float(c[-1])
+        ema_now = float(e21[-1])
+        breached = (close_now < ema_now if rec.direction == "long"
+                    else close_now > ema_now)
+        if not breached:
+            return
+        f = trader.filters(rec.symbol)
+        cut_qty = trader.round_qty(rec.symbol, amt / 2)
+        remain = amt - cut_qty
+        # 减半量或剩余量低于交易所最小规则 → 不切（市价单会被拒/留下不可平尾巴），
+        # 留给 SL 全平
+        if cut_qty < f["min_qty"] or remain < f["min_qty"]:
+            logger.info("EMA21 减半仓 %s 跳过：cut=%s remain=%s 低于 min_qty=%s",
+                        rec.symbol, cut_qty, remain, f["min_qty"])
+            return
+        trader.market_order(rec.symbol, _close_side(rec.direction), cut_qty,
+                            reduce_only=True)
+        rec.qty = remain
+        rec.raw = {**raw, "ema21_cut": True}
+        # 减半腿的已实现盈亏落账（与 TP1 成交同口径：income 实录，含手续费）——
+        # 不记则运行中 realized_pnl 恒 0，全程盈亏/峰值回撤（诊断触发参照）少算已落袋一半
+        _record_realized(db, trader, rec)
+        _add_event(db, rec, "CUT_EMA21", {
+            "close": close_now, "ema21": ema_now,
+            "cut_qty": cut_qty, "remain_qty": remain,
+        })
+        logger.info("EMA21 减半仓 %s：收盘 %s 破 EMA21 %s，市价减 %s 剩 %s",
+                    rec.symbol, close_now, ema_now, cut_qty, remain)
+    except Exception as e:
+        logger.warning("EMA21 减半仓 %s 本轮未成（不落旗标下轮重试）: %s",
+                       rec.symbol, e)
 
 
 def _zero_pos_exit_reason(rec: TradeRecord, tp1_gone: bool,

@@ -40,6 +40,7 @@ import {
   ReloadOutlined,
   RobotOutlined,
   RocketOutlined,
+  ScissorOutlined,
   StopOutlined,
   SwapOutlined,
   ThunderboltOutlined,
@@ -110,6 +111,7 @@ const EVENT_META: Record<string, { label: string; color: string; icon: React.Rea
   TP2_FILL: { label: 'TP2 止盈成交', color: '#52c41a', icon: <CheckCircleOutlined /> },
   SL_MOVE: { label: '止损移动', color: '#fa8c16', icon: <SwapOutlined /> },
   SL_FILL: { label: '止损成交', color: '#ff4d4f', icon: <CloseCircleOutlined /> },
+  CUT_EMA21: { label: '破EMA21减半', color: '#fa541c', icon: <ScissorOutlined /> },
   CANCEL: { label: '撤单', color: '#8c8c8c', icon: <MinusCircleOutlined /> },
   SETTLE: { label: '结算', color: '#1677ff', icon: <AccountBookOutlined /> },
   LIQUIDATION: { label: '强平', color: '#ff4d4f', icon: <WarningOutlined /> },
@@ -163,6 +165,11 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   // 止盈模式（docs/19 §3.4，2026-10-10）：OPEN 事件快照
   tp_mode: '止盈模式',
   entry_atr: '入场ATR·1d',
+  // EMA21 减半仓（trail 武装后，2026-10-10）
+  close: '收盘价',
+  ema21: 'EMA21·1h',
+  cut_qty: '减仓数量',
+  remain_qty: '剩余数量',
 }
 
 function fmtNum(n: number | null | undefined): string {
