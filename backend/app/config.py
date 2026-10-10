@@ -90,7 +90,9 @@ class Settings(BaseSettings):
     # v2026-10-09：孕线突破（两向）与蜻蜓/墓碑十字移出金K白名单（用户拍板，
     # 同 2026-09-12 精简口径）——金K清单 12→8（看涨/看跌各 4）；检测器保留
     # 仅历史展示。GOLDEN_12 更名 GOLDEN_PATTERNS（数量随拍板浮动，不再入名）
-    RULE_VERSION: str = "v2026-10-09r2"  # 4h 背景趋势年龄重设计（同日第二次口径变更，r2 后缀防与金K 8 白名单版本混桶）
+    # v2026-10-10：trail RR 铁律条件豁免（拍板 B，docs/20 §四）+ 4h 结构化行/
+    # 取舍提示行 signal_type 互斥/止损宽度纪律句/skip_reason 类别前缀
+    RULE_VERSION: str = "v2026-10-10"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

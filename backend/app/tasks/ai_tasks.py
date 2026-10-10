@@ -101,7 +101,10 @@ def _build_judge_signal(signal: dict, klines: list, htf_klines: Optional[list]) 
     klines / htf_klines / swings 均为分析现场已有变量；原 signal dict 不被污染。
     """
     judge_signal = dict(signal)
-    judge_signal["indicator_block"] = render_indicator_block(klines, htf_klines)
+    # signal_type 透传（2026-10-10 A2）：range_bound 评委事实包同样不注入取舍提示行
+    judge_signal["indicator_block"] = render_indicator_block(
+        klines, htf_klines, signal_type=signal.get("signal_type"),
+    )
     sw = signal.get("recent_swings") or {}
     if sw.get("highs") or sw.get("lows"):
         hi = f"{sw['highs'][0]['price']:.6g}" if sw.get("highs") else "—"
@@ -353,6 +356,7 @@ def run_ai_analysis_single(
                 pool=pool,
                 progress_cb=_cb,
                 htf_klines=htf_klines,
+                tp_mode_cfg=(cfg.tp_mode or "ai"),
                 risk_mode=_risk_mode,
                 risk_amount=_risk_amount,
                 risk_label=_risk_label,
@@ -369,6 +373,7 @@ def run_ai_analysis_single(
                 strategy_prompt=strategy_prompt,
                 user_input=user_input,
                 htf_klines=htf_klines,
+                tp_mode_cfg=(cfg.tp_mode or "ai"),
                 risk_mode=_risk_mode,
                 risk_amount=_risk_amount,
                 risk_label=_risk_label,

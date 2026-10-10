@@ -3,6 +3,12 @@
 - backend/skills/<name>/SKILL.md，frontmatter 手写解析（name/description/use_when/version）
 - 索引段随 Agent 系统提示词渲染，逐条标注布尔事实命中状态
 - load_skill 工具按需加载正文（超长截断），渐进式披露控制 token
+
+维护约定（2026-10-10 B6，docs/20 §六-6）：SKILL.md 仅服务 P1 Agent 管线；修改
+系统提示词纪律（ai_analyzer/ai_agent）时须同步检查全部 SKILL.md 是否冲突，
+冲突时以系统提示词为准修技能（先例：trend-pullback 盈亏比取舍、
+range-bound-fade 区间 skip 与取舍提示行互斥——后者由 render_indicator_block
+对 range_bound 信号不注入提示行解决）。
 """
 import logging
 import re

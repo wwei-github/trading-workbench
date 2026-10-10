@@ -609,18 +609,30 @@ def detect_harami_breakout(klines: list[list], idx: int = -1) -> Optional[dict]:
 # 同 2026-09-12 精简口径）——金K清单 12→8（看涨/看跌各 4）。检测器与标签保留
 # （历史扫描结果/待确认池诊断展示用），仅不再参与信号判定。常量更名
 # GOLDEN_PATTERNS：数量随拍板浮动，不再入名
-GOLDEN_PATTERNS = {
-    # 看涨 4 种
+# B4 单一来源（2026-10-10，docs/20）：白名单拆为有序二元组（渲染顺序确定），
+# GOLDEN_PATTERNS 为并集；ai_analyzer.SIGNAL_TYPE_LABELS 等展示文本一律经
+# golden_whitelist_labels() 渲染，改白名单不再需要手工同步提示词标签
+GOLDEN_BULLISH = (
     "hammer",              # 锤形线
     "bullish_engulfing",   # 看涨吞没
     "morning_star",        # 启明星
     "piercing_line",       # 刺透线
-    # 看跌 4 种
+)
+GOLDEN_BEARISH = (
     "shooting_star",       # 流星线（倒锤形出现在顶部）
     "bearish_engulfing",   # 看跌吞没
     "evening_star",        # 黄昏星
     "dark_cloud_cover",    # 乌云盖顶
-}
+)
+GOLDEN_PATTERNS = set(GOLDEN_BULLISH) | set(GOLDEN_BEARISH)
+
+
+def golden_whitelist_labels() -> str:
+    """金K白名单中文清单（看涨/看跌各一组，顺序随常量元组），供提示词/标签渲染"""
+    bull = "/".join(PATTERN_LABEL_MAP[p] for p in GOLDEN_BULLISH)
+    bear = "/".join(PATTERN_LABEL_MAP[p] for p in GOLDEN_BEARISH)
+    return f"看涨 {bull}，看跌 {bear}"
+
 
 PATTERN_LABEL_MAP = {
     "hammer": "锤形线",

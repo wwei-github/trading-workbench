@@ -154,7 +154,7 @@ _KLINES = [[0, 100.0, 101.0, 99.0, 100.5, 10.0, 0, 10000.0]] * 3
 def _stub_blocks(monkeypatch):
     """桩掉消息构造中的 K 线派生块（EMA/指标），只验证注入接线"""
     monkeypatch.setattr(ai_analyzer, "analyze_ema", lambda _k: None)
-    monkeypatch.setattr(ai_analyzer, "render_indicator_block", lambda _k, _h: "")
+    monkeypatch.setattr(ai_analyzer, "render_indicator_block", lambda _k, _h, **_kw: "")
 
 
 def test_build_messages_injects_gate():

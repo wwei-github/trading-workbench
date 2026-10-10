@@ -119,7 +119,7 @@ def test_build_judge_signal_injects_fields(monkeypatch):
     """调用方透传：指标块与最近摆动高低点摘要注入副本，原 signal 不被污染"""
     monkeypatch.setattr(
         ai_tasks, "render_indicator_block",
-        lambda k, h: "- 指标方向: 看多2项 vs 看空1项",
+        lambda k, h, **_kw: "- 指标方向: 看多2项 vs 看空1项",
     )
     signal = {
         "symbol": "BTCUSDT", "signal_type": "breakout", "current_price": 100.0,
@@ -138,7 +138,7 @@ def test_build_judge_signal_injects_fields(monkeypatch):
 
 def test_build_judge_signal_without_swings(monkeypatch):
     """无摆动数据 → 只透传指标块（不产出摆动结构行）"""
-    monkeypatch.setattr(ai_tasks, "render_indicator_block", lambda k, h: "")
+    monkeypatch.setattr(ai_tasks, "render_indicator_block", lambda k, h, **_kw: "")
     judge_signal = ai_tasks._build_judge_signal({"symbol": "BTCUSDT"}, [], None)
     assert judge_signal["indicator_block"] == ""
     assert "structure_summary" not in judge_signal

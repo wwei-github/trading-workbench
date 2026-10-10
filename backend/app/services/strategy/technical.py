@@ -919,11 +919,22 @@ def _render_atr_line(
         return ""
 
 
-def render_indicator_block(klines: list[list], htf_klines: Optional[list] = None) -> str:
+# 盈亏比取舍/trail RR 豁免的统一资格相位（docs/20 §六-3 单一来源）：
+# render_indicator_block 提示行注入与 risk_guard.validate_decision 的 trail RR
+# 豁免必须使用同一组事实判定，改动此处即同时作用于两处
+RR_TRADEOFF_PHASES = ("medium", "strong", "extreme")
+
+
+def render_indicator_block(
+    klines: list[list], htf_klines: Optional[list] = None,
+    signal_type: Optional[str] = None,
+) -> str:
     """整块注入文本（含标题、4h 背景与多数决结论行，尾带换行）；无可用指标返回空串。
 
     P0/P1 两条管线共用：插在均线形态之后、摆动结构之前。
     结论行由程序统计（方向指标多空票数），提示词按此行执行多数决规则。
+    signal_type（2026-10-10 A2，docs/20）：区间类信号（range_bound）不注入
+    盈亏比取舍提示行——区间打法按技能口径直接 skip，与取舍条款互斥。
     """
     results = _compute_all(klines, htf_klines)
     lines = [
@@ -981,17 +992,31 @@ def render_indicator_block(klines: list[list], htf_klines: Optional[list] = None
                 " —— 仅可 short，开多一律 skip（优先于指标多数决，细则见系统提示词硬约束）"
             )
 
+    # 4h 背景结构化行（2026-10-10 C7，docs/20）：phase/momentum/macro 以机器
+    # 可读键值对注入——detail 字符串会被 LLM 误读（BTWUSDT「动能衰减」丢失
+    # 「仍同向」个案），关键字段不再只依赖散文渲染
+    if htf_r:
+        lines.append(
+            f"- 4h背景: phase={htf_r['phase']} momentum={htf_r['momentum']}"
+            f" macro={'同侧' if htf_r.get('macro_aligned') else '逆侧'}"
+        )
+
     # 盈亏比取舍提示行（2026-10-10 BTWUSDT 个案）：排列中等/强/极强且柱线未翻向
     # （动能衰减仍算同向）时程序侧确定性注入 trail 取舍资格——提示词散文条款
     # 会被止损宽度/BTC 背离等风险点稀释，LLM 仍保守 skip；资格由程序判定而非
-    # LLM 自查（phase/momentum 均为程序事实，weak/衰竭期不注入、维持 skip 路径）
-    if (htf_r and htf_r.get("phase") in ("medium", "strong", "extreme")
-            and htf_r.get("momentum") == "same"):
+    # LLM 自查（phase/momentum 均为程序事实，weak/衰竭期不注入、维持 skip 路径）。
+    # A2：range_bound 信号不注入（区间打法按技能直接 skip）；trail 的 RR 铁律
+    # 在同资格下由 risk_guard 程序豁免（2026-10-10 拍板 B，docs/20 §四），
+    # 参考价如实上报趋势目标即可，无须凑 1.5R
+    if (htf_r and htf_r.get("phase") in RR_TRADEOFF_PHASES
+            and htf_r.get("momentum") == "same"
+            and signal_type != "range_bound"):
         lines.append(
             f"- 盈亏比取舍（可用）: 4h{htf_r['state_label']}且柱线同向（动能衰减"
             "仍算同向）——结构位口径盈亏比不足下限时按系统提示词「盈亏比取舍」"
             "改选 trail，把止盈一参考价上移到趋势目标位（前高/通道上沿/"
-            "1.5×ATR 延伸）复算达标，不要直接 skip"
+            "1.5×ATR 延伸）如实上报即可（trail 在该背景下豁免盈亏比铁律），"
+            "不要直接 skip"
         )
 
     return "技术指标（方向=多空票数多数决）:\n" + "\n".join(lines) + "\n"

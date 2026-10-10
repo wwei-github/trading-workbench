@@ -29,6 +29,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ValidationError
 
 from app.config import settings
+from app.services.strategy.technical import RR_TRADEOFF_PHASES
 
 logger = logging.getLogger(__name__)
 
@@ -203,8 +204,17 @@ def validate_decision(
     risk_budget: Optional[float] = None,
     rr_min: Optional[float] = None,
     risk_pct: Optional[float] = None,
+    htf_bg: Optional[dict] = None,
 ) -> tuple[bool, list[str], dict]:
     """校验并修正决策（2026-09-15 拍板收缩：仅保留 RR 铁律 + 仓位复算）。
+
+    htf_bg（2026-10-10 拍板 B，docs/20 §四）：4h 背景资格 dict（analyze_htf_background
+    返回值），用于 trail 的盈亏比铁律条件豁免——tp_mode=trail 且 4h 排列
+    medium/strong/extreme 且柱线同向时豁免（trail 哲学=不设固定目标、让利润
+    奔跑，固定目标 RR 是 ladder 语义的代理指标，强背景下语义错位；宽止损风险
+    由 max_stop_pct 硬上限 + 固定亏损法缩仓独立兜底）。资格与 render_indicator_block
+    取舍提示行共用 RR_TRADEOFF_PHASES 单一来源。None（调用方未提供 htf 数据）
+    不豁免——豁免必须凭程序事实，缺证从严。
 
     返回 (ok, violations, fixed_dict)；ok=False 时 fixed_dict 为空。
     ok=True 时 fixed_dict 中 rr / position_pct 为程序复算值，直接落库。
@@ -311,13 +321,25 @@ def validate_decision(
     stop_pct = stop_dist / d.entry_price if d.entry_price else 0
 
     # ── RR 铁律（唯一保留的价格校验）：按 AI 三价复算，声称值不信 ──
+    # trail 条件豁免（2026-10-10 拍板 B，docs/20 §四）：强背景 trail 不卡 1.5R
+    _trail_rr_exempt = (
+        d.tp_mode == "trail"
+        and htf_bg is not None
+        and htf_bg.get("phase") in RR_TRADEOFF_PHASES
+        and htf_bg.get("momentum") == "same"
+    )
     _rr_floor = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     rr = 0.0
     if stop_dist > 0:
         rr = abs(d.take_profit_1 - d.entry_price) / stop_dist
-        if rr < _rr_floor:
+        if rr < _rr_floor and not _trail_rr_exempt:
+            _trail_note = (
+                "（trail 仅在 4h 排列中等/强且柱线同向时豁免盈亏比铁律，"
+                "当前背景不满足——改 ladder 锚结构位，或如实按当前背景评估 skip）"
+                if d.tp_mode == "trail" else ""
+            )
             violations.append(
-                f"盈亏比复算 {rr:.2f} < {_rr_floor:g}（交易系统铁律）"
+                f"盈亏比复算 {rr:.2f} < {_rr_floor:g}（交易系统铁律）{_trail_note}"
             )
     if violations:
         return False, violations, {}
@@ -391,6 +413,7 @@ def parse_and_validate(
     risk_budget: Optional[float] = None,
     rr_min: Optional[float] = None,
     risk_pct: Optional[float] = None,
+    htf_bg: Optional[dict] = None,
 ) -> tuple[bool, list[str], dict]:
     """normalize + pydantic 校验 + 业务校验 的一步入口（预算参数透传 validate_decision）"""
     try:
@@ -398,4 +421,4 @@ def parse_and_validate(
     except (ValidationError, ValueError) as e:
         return False, [f"输出格式不合法: {str(e)[:200]}"], {}
     return validate_decision(d, signal, klines, risk_budget=risk_budget,
-                             rr_min=rr_min, risk_pct=risk_pct)
+                             rr_min=rr_min, risk_pct=risk_pct, htf_bg=htf_bg)

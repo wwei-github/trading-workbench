@@ -210,7 +210,7 @@ _KLINES = [[0, 100.0, 101.0, 99.0, 100.5, 10.0, 0, 10000.0]] * 3
 def test_build_messages_injects_market_context(monkeypatch):
     """开关开启 → 【市场环境】块紧跟指标块注入（含费率与 BTC 行）"""
     monkeypatch.setattr(settings, "MARKET_CONTEXT_ENABLED", True)
-    monkeypatch.setattr(ai_analyzer, "render_indicator_block", lambda _k, _h: "")
+    monkeypatch.setattr(ai_analyzer, "render_indicator_block", lambda _k, _h, **_kw: "")
     monkeypatch.setattr(ai_analyzer, "analyze_ema", lambda _k: None)
     monkeypatch.setattr(
         market_data, "get_funding", lambda s: _funding(0.0123))

@@ -10,8 +10,9 @@ from app.services import skill_library
 from app.services.llm_client import get_client, parse_llm_json, json_mode_kwargs, stream_completion
 from app.services.market_data import build_market_context, get_kline_client
 from app.services.risk_guard import build_forced_skip, parse_and_validate
+from app.services.strategy.candlestick import golden_whitelist_labels
 from app.services.strategy.ema import analyze_ema
-from app.services.strategy.technical import render_indicator_block
+from app.services.strategy.technical import analyze_htf_background, render_indicator_block
 from app.services.strategy.trigger import TOUCH_LABELS
 from app.services.strategy.types import POSITION_LABEL_MAP
 
@@ -38,7 +39,10 @@ _RULE_SL = """止损纪律（结构位优先，影线极值兜底，两锚取更
 - 优先：做多锚定入场价下方最近摆动低点外 0.3%（建议 0.3%~0.5%），做空锚定上方最近摆动高点外同幅度。
 - 两锚取更远者（防止损落进近期波动区间内被扫损）：做多取摆动低点与最近 5 根最低点中更低者外 0.3%，做空取摆动高点与最近 5 根最高点中更高者外 0.3%。
 - 兜底（入场价与极值间无摆动结构位时用极值锚）：做多严格低于最近 5 根最低点（影线极值即最低价，非收盘价）至少 0.3%，做空严格高于最高点至少 0.3%。
-- 止损宽度不设固定百分比上限；盈亏比不达标先调入场价，仍不达标按 tp_mode 字段
+- 止损宽度不设固定百分比上限；不得以「止损过宽」为由 skip——宽止损由固定亏损法
+  自动缩仓消化（止损越远仓位越小，BTWUSDT 等插针极值锚场景本就该宽），
+  pin-bar/极端影线场景按技能减半仓位即可。
+  盈亏比不达标先调入场价，仍不达标按 tp_mode 字段
   说明的「盈亏比取舍」处理（4h 排列中等/强且动能同向可改 trail，其余背景 skip）。"""
 
 _RULE_TP_BASE = """止盈锚定（多空方向不同，必须遵守；程序不再改挂止盈价）：
@@ -49,7 +53,8 @@ _RULE_TP_BASE = """止盈锚定（多空方向不同，必须遵守；程序不�
 - 禁止跳档凑盈亏比：到第一结构位不足 {rr_min}R 就是空间不足，应直接 skip
   （程序按盈亏比铁律复算打回；若 4h 排列中等/强且动能同向，可按 tp_mode 字段
   说明的「盈亏比取舍」改用 trail——该禁止针对 ladder 的真实挂单，trail 的
-  TP1 仅为校验参考价，随趋势目标上移不属跳档）。"""
+  TP1 仅为趋势目标参考价，该背景下程序豁免盈亏比铁律，如实上报参考价
+  不属跳档）。"""
 
 # TP2 分批开关（2026-10-08）：关闭时提示词整体剔除止盈二条目——AI 不再产出
 # 第二档止盈价（落库 take_profit_2=0，与出场引擎 80% 口径一致）
@@ -90,14 +95,16 @@ _TP2_FIELD_OFF = """当前未启用止盈二（TP2 分批关闭）：一律输�
 _TP_MODE_FIELD = """- tp_mode: 止盈模式，suggest 时必填其一（程序按此决定出场方式），skip 时不输出（输出 null）：
   "ladder" 分批止盈（默认）：TP1/TP2 结构位分批落袋 + 保本武装 + 剩余仓跟进。
     适合：区间边缘反转、结构破位回踩、动能一般、上方第一结构位较近（盈亏比 1.5~2.5 区间）。
-  "trail" 纯跟踪：不挂止盈档（take_profit_1 仍必须给出——仅作盈亏比铁律校验的
-    参考目标价，程序不会按它挂单），浮盈达 1×ATR 武装保本，其后跟进止损让利润奔跑。
+  "trail" 纯跟踪：不挂止盈档（take_profit_1 仍必须给出——仅作趋势目标参考价，
+    程序不会按它挂单），浮盈达 1×ATR 武装保本，其后跟进止损让利润奔跑。
     适合：强趋势顺势（4h 与 1h 同向、ADX 强）、突破后动能充足、上方无明显压力位
-    或第一结构位很远（按参考目标复算盈亏比 ≥2.5）。
+    或第一结构位很远。trail 不以固定目标盈亏比取舍——强背景（4h 排列中等/强
+    且柱线同向）下程序对 trail 豁免盈亏比铁律，参考价如实上报趋势目标即可。
   选择标准：落袋确定性优先选 ladder，趋势空间优先选 trail；拿不准选 ladder。
   盈亏比取舍（2026-10-10）：若按结构位测算的盈亏比不达下限、又已触发「禁止跳档凑盈亏比」，
   不要直接 skip——先看 4h 背景：排列中等/强（趋势已被证明）且动能同向时，改选 trail，
-  把 take_profit_1 参考价上移到趋势目标位（前高/通道上沿/1.5×ATR 延伸）复算达标即可；
+  把 take_profit_1 参考价如实上移到趋势目标位（前高/通道上沿/1.5×ATR 延伸）即可，
+  程序对该背景下的 trail 豁免盈亏比铁律（无须凑 1.5R）；
   4h 弱排列或震荡背景下，盈亏比不达标仍应 skip。
   动能同向定义：4h MACD 柱线与方向同号——「动能衰减（柱线收窄·仍同向）」注记
   仍算同向（减速≠反转），仅「柱线已翻向/动能背离」才算不同向。"""
@@ -130,16 +137,21 @@ SIGNAL_TYPE_LABELS = {
     # 括号内注明程序已验证的入场门槛（2026-09-25 三重收紧 + docs/19 两段式），AI 据此评估信号质量
     "trigger_breakout": "指标同向·突破前高触发（收盘越过未破的摆动结构前高）",
     "trigger_trend_breakout": "指标同向·趋势突破触发（收盘破 N 根 Donchian 滚动高低轨，强趋势连续新高/新低无未破结构位可越时的追势入场）",
-    "trigger_candlestick": "指标同向·K线形态触发（旧类型，2026-09-29 纯金K下线，仅历史数据）",
-    "trigger_pullback": "指标同向·回踩触发（旧类型，已被两段式金K确认取代，仅历史数据）",
+    # 旧类型（2026-09-29 纯金K下线后仅历史数据可见）：压缩标签省 token（docs/20 B5）
+    "trigger_candlestick": "指标同向·K线形态触发（旧类型·仅历史数据）",
+    "trigger_pullback": "指标同向·回踩触发（旧类型·仅历史数据）",
     # 两段式回踩确认（2026-09-25，docs/19）：回踩触碰后等金K确认才入场；
     # 2026-09-28 docs/22 触点体系：触碰对象扩为 5 类触点（信号块"回踩触点"行注明具体位）；
-    # 2026-09-29-2 复合确认 → 2026-10-01 收窄：仅流星线单根不算确认
-    # （须双流星或前根流星+当根趋势K）；锤形线恢复单根确认；
-    # 2026-10-01-2：倒锤形线退出看涨白名单（看涨回踩不认长上影）；
-    # 2026-10-01-3：恢复完整 12 金K（看涨 6 + 看跌 6），仅流星线单影线复合确认；
-    # 2026-10-09：孕线突破/蜻蜓/墓碑移出白名单，金K清单 12→8（同 09-12 精简口径）
-    "trigger_pullback_confirm": "指标同向·回踩触点后金K确认（上一根触碰触点位企稳、当根出现同向金K才入场；金K白名单 8 种：看涨锤形线/看涨吞没/启明星/刺透线，看跌流星线/看跌吞没/黄昏星/乌云盖顶；仅流星线单根不算确认，reason 会标注『双流星组合』或『前根倒锤形线（流星）+当根趋势K』；倒锤形线/上吊线/孕线突破/十字星（蜻蜓/墓碑/中性）不在白名单）",
+    # 2026-10-01 收窄：仅流星线单根不算确认（须双流星或前根流星+当根趋势K）；
+    # 锤形线恢复单根确认；倒锤形线退出看涨白名单（2026-10-01-2）；
+    # 2026-10-09：孕线突破/蜻蜓/墓碑移出白名单，金K清单 12→8；
+    # B4（docs/20）：金K清单由 candlestick.GOLDEN_* 常量渲染，单一来源防漂移
+    "trigger_pullback_confirm": (
+        "指标同向·回踩触点后金K确认（上一根触碰触点位企稳、当根出现同向金K才入场；"
+        f"金K白名单：{golden_whitelist_labels()}；"
+        "仅流星线单根不算确认，reason 会标注『双流星组合』或『前根倒锤形线（流星）+当根趋势K』；"
+        "倒锤形线/上吊线/孕线突破/十字星（蜻蜓/墓碑/中性）不在白名单）"
+    ),
     # 趋势回踩（2026-10-10 融合，docs/19）：普通回踩确认 + EMA 趋势门——
     # 4H EMA144 趋势闸门（斜率/缠绕/ADX 三重否决）+ 1H 三线排列发散度全过，
     # 其余确认机制与 trigger_pullback_confirm 完全一致
@@ -237,7 +249,7 @@ SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信�
 字段如下（skip 时为 0/空字符串的字段：direction/trade_type/entry_price/stop_loss/
 take_profit_1/take_profit_2/tp_mode/risk_reward_ratio/position_pct；skip_reason 除外，见下）：
 - trade_decision: 是否建议开单，"suggest"（建议开单）或 "skip"（不建议开单）
-- skip_reason: trade_decision="skip" 时必填，用"1. 2. 3."序号逐条列出不建议开单的主要原因（如：1. 信号强度不足 2. 盈亏比不佳），最多3条，每条一行，JSON内换行写\\n。suggest 时输出空字符串。
+- skip_reason: trade_decision="skip" 时必填，必须以类别前缀开头——[RR不足]/[止损过宽]/[环境逆风]/[形态质量]/[结构不清]/[波动极端]/[其他] 之一；前缀后用"1. 2. 3."序号逐条列出不建议开单的主要原因（如：[RR不足]1. 到第一结构位仅0.5R 2. 上方空间不足），最多3条，每条一行，JSON内换行写\\n。suggest 时输出空字符串。
 - direction: 交易方向，"long"（做多）或 "short"（做空）。skip 时为空字符串。
 - trade_type: 开单类型（结构打法归类），suggest 时必填其一：trend_follow（顺势，方向由 EMA 排列或指标共振确立，纯 EMA 排列不是硬门槛）/ structure_break（结构破位回踩，涵盖 123法则·N字结构·2B法则，见下方打法详解）/ range_edge（区间边缘反转）。skip 时为空字符串。
 - stop_anchor: 止损锚类型，仅突破类信号需输出："structure"（结构锚）或 "near"（突破K极值近锚），资格与降级链以程序入场门槛块为准；其他信号类型省略该字段或输出 null（禁止输出空字符串）。
@@ -381,6 +393,7 @@ def _build_messages(
     rr_min: Optional[float] = None,
     crash_pct: Optional[float] = None,
     tp2_enabled: bool = True,
+    tp_mode_cfg: Optional[str] = None,
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
 
@@ -390,7 +403,10 @@ def _build_messages(
     rr_min（2026-10-02 上页面）：盈亏比铁律下限，注入系统提示词（None=env 默认）。
     crash_pct（2026-10-02 上页面）：BTC 急跌阈值 %，透传市场环境块（None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关，注入系统提示词（None 不适用，
-    默认 True）。"""
+    默认 True）。
+    tp_mode_cfg（2026-10-10 C8，docs/20）：出场模式配置（system_config.tp_mode，
+    None=调用方未传不注入），渲染事实行——配置强制 ladder/trail 时 AI 知悉其
+    选择仅落库展示、开仓侧将覆盖，避免分析卡片与实际出场不符。"""
     # 取最近 40 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-41:-1]）。
     # 60→40（2026-09-28）：CSV 是 user 消息 token 大头（60 根 ≈5000+），思考型模型
     # reasoning 时长与输入量正相关；浓缩结论（指标/摆动块）已覆盖形态识别所需，
@@ -431,8 +447,22 @@ def _build_messages(
     if ema:
         ema_summary = f"均线形态: {ema['state_label']}（{ema['detail']}）\n"
 
-    # 技术指标（MACD/布林带/RSI/SuperTrend/ADX/OBV + 4h背景 + 程序化共振结论）
-    indicator_summary = render_indicator_block(klines, htf_klines)
+    # 技术指标（MACD/布林带/RSI/SuperTrend/ADX/OBV + 4h背景 + 程序化共振结论）；
+    # signal_type 透传（2026-10-10 A2）：range_bound 不注入盈亏比取舍提示行
+    indicator_summary = render_indicator_block(
+        klines, htf_klines, signal_type=signal.get("signal_type"),
+    )
+
+    # 出场模式配置行（2026-10-10 C8，docs/20）：调用方显式传入才注入
+    tp_cfg_line = ""
+    if tp_mode_cfg is not None:
+        if tp_mode_cfg in ("ladder", "trail"):
+            tp_cfg_line = (
+                f"出场模式配置: 程序强制 {tp_mode_cfg}"
+                "（开仓侧按此覆盖，tp_mode 选择仅落库展示）\n"
+            )
+        else:
+            tp_cfg_line = "出场模式配置: ai（AI 自主选择 tp_mode）\n"
 
     # 市场环境（docs/24 A4①）：本币资金费率 + BTC 状态摘要，紧跟指标块注入——
     # 系统提示词要求"勿臆测"，普跌日无环境感知 AI 只能凭本币指标判断；
@@ -486,6 +516,7 @@ def _build_messages(
         f"突破幅度: {signal['breakout_pct']:.2f}%\n"
         f"K线形态: {signal.get('pattern') or '无'}\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
+        f"{tp_cfg_line}"
         f"{touch_line}"
         f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct)}"
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
@@ -597,6 +628,7 @@ def analyze_with_guard(
     progress_id=None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
     crash_pct: Optional[float] = None, tp2_enabled: bool = True,
+    tp_mode_cfg: Optional[str] = None,
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -611,12 +643,16 @@ def analyze_with_guard(
     风险比例与 BTC 急跌阈值，注入提示词并透传 Risk Guard 校验（None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时提示词剔除止盈二条目，
     且在风控校验前硬清零 take_profit_2（AI 不产出第二档止盈价）。
-    """
+    tp_mode_cfg（2026-10-10 C8）：出场模式配置注入事实行（ai/ladder/trail）；
+    htf_bg（2026-10-10 拍板 B）：4h 背景资格随校验透传（trail RR 条件豁免）。"""
+    # 4h 背景资格（2026-10-10 拍板 B，docs/20 §四）：入场分析前算一次随校验透传；
+    # 无 htf 数据时 None → 不豁免（缺证从严）
+    htf_bg = analyze_htf_background(htf_klines) if htf_klines else None
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
         htf_klines=htf_klines, risk_label=risk_label, stop_cap_pct=stop_cap_pct,
         interval=interval, tactics_block=tactics_block, rr_min=rr_min,
-        crash_pct=crash_pct, tp2_enabled=tp2_enabled,
+        crash_pct=crash_pct, tp2_enabled=tp2_enabled, tp_mode_cfg=tp_mode_cfg,
     )
     client = _get_client()
     _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None
@@ -651,7 +687,7 @@ def analyze_with_guard(
 
         ok, violations, fixed = parse_and_validate(
             raw, signal, klines, risk_budget=_risk_budget,
-            rr_min=rr_min, risk_pct=risk_pct,
+            rr_min=rr_min, risk_pct=risk_pct, htf_bg=htf_bg,
         )
         if ok:
             logger.info(

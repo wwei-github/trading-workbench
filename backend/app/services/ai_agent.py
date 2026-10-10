@@ -25,7 +25,7 @@ from app.services.risk_guard import (
 )
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import calc_atr
-from app.services.strategy.technical import render_indicator_block
+from app.services.strategy.technical import analyze_htf_background, render_indicator_block
 from app.services.strategy.types import POSITION_LABEL_MAP
 from app.services.ai_analyzer import (
     _RULE_HTF_HARD,
@@ -129,8 +129,9 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    也不要每轮只查一个工具。
 8. 不要输出不带工具调用的纯文字回复（会浪费一轮）；文字只用于简短说明查询意图，
    决策一律通过 submit_decision 提交。
-9. 盈亏比铁律 ≥{rr_min}；止损宽度由结构位决定，不设固定价格百分比上限；仓位不要自己报，
-   程序按固定亏损法计算，单笔止损预算={risk_label}：仓位 = 预算 ÷ 止损距离
+9. 盈亏比铁律 ≥{rr_min}；止损宽度由结构位决定，不设固定价格百分比上限，不得以
+   「止损过宽」为由 skip——宽止损由固定亏损法自动缩仓消化（止损越远仓位越小）；
+   仓位不要自己报，程序按固定亏损法计算，单笔止损预算={risk_label}：仓位 = 预算 ÷ 止损距离
    （止损越远仓位越小）。
 10. 指标方向判定：{_RULE_VOTE_BRIEF}
     EMA 排列不构成方向限制（多头排列不禁止做空、空头排列不禁止做多）。
@@ -149,20 +150,24 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     做空挂在下方第一档结构位（摆动低点）上方 0.2%~0.5%
     ——不得贴死位或挂在越位一侧（价格常在位附近反弹，越位才触发的止盈大概率落空）。
     禁止把止盈一挂到更远结构位凑盈亏比：到第一结构位的盈亏比不足 {rr_min} 说明空间不足，
-    应直接 skip（程序只复算盈亏比并按铁律打回）。
+    应直接 skip（程序只复算盈亏比并按铁律打回）——该禁止针对 ladder 的真实挂单；
+    trail 的 TP1 仅为趋势目标参考价，4h 排列中等/强且柱线同向时程序豁免盈亏比铁律
+    （按 12.5 盈亏比取舍处理），如实上报参考价不属跳档。
     {_tp2_rule}
 12.5 止盈模式（tp_mode，suggest 必填，程序按此决定出场方式）：
     "ladder" 分批止盈（默认）：TP1/TP2 结构位分批落袋 + 保本武装 + 剩余仓跟进。
       适合：区间边缘反转、结构破位回踩、动能一般、上方第一结构位较近（盈亏比 1.5~2.5）。
-    "trail" 纯跟踪：不挂止盈档（tp1_ref 仍必须提交——仅作盈亏比铁律校验的参考目标价，
+    "trail" 纯跟踪：不挂止盈档（tp1_ref 仍必须提交——仅作趋势目标参考价，
       程序不会按它挂单），浮盈达 1×ATR 武装保本，其后跟进止损让利润奔跑；trail 时
       不要提交 tp2_ref。
       适合：强趋势顺势（4h 与 1h 同向、ADX 强）、突破后动能充足、上方无明显压力位
-      或第一结构位很远（按参考目标复算盈亏比 ≥2.5）。
+      或第一结构位很远。trail 不以固定目标盈亏比取舍——强背景（4h 排列中等/强
+      且柱线同向）下程序对 trail 豁免盈亏比铁律，参考价如实上报趋势目标即可。
     选择标准：落袋确定性优先 ladder，趋势空间优先 trail；拿不准选 ladder。
     盈亏比取舍：若按结构位测算的盈亏比不达 {rr_min}，不要直接 skip——先看 4h 背景：
-    排列中等/强（趋势已被证明）且动能同向时改选 trail，把止盈一参考价上移到趋势
-    目标位（前高/通道上沿/1.5×ATR 延伸）复算达标即可；4h 弱排列或震荡时仍应 skip。
+    排列中等/强（趋势已被证明）且动能同向时改选 trail，把止盈一参考价如实上移到趋势
+    目标位（前高/通道上沿/1.5×ATR 延伸）即可，程序对该背景下的 trail 豁免盈亏比
+    铁律（无须凑 1.5R）；4h 弱排列或震荡时仍应 skip。
     动能同向定义：4h MACD 柱线与方向同号——「动能衰减（柱线收窄·仍同向）」注记
     仍算同向（减速≠反转），仅「柱线已翻向/动能背离」才算不同向。
 13. 方向纪律（不再程序强制，无 ±0.3% 贴近要求）：优先只在支撑结构做多（摆动低点/
@@ -234,7 +239,7 @@ TOOLS_SCHEMA = [
         "description": "提交最终决策（唯一出口，程序风控校验）。价格全部用锚点表达。",
         "parameters": {"type": "object", "properties": {
             "trade_decision": {"type": "string", "enum": ["suggest", "skip"]},
-            "skip_reason": {"type": "string", "description": "skip 时必填，1. 2. 3. 序号列原因，最多3条"},
+            "skip_reason": {"type": "string", "description": "skip 时必填，必须以类别前缀开头（[RR不足]/[止损过宽]/[环境逆风]/[形态质量]/[结构不清]/[波动极端]/[其他] 之一），前缀后 1. 2. 3. 序号列原因，最多3条"},
             "direction": {"type": "string", "enum": ["long", "short"], "description": "suggest 时必填"},
             "trade_type": {
                 "type": "string",
@@ -255,7 +260,7 @@ TOOLS_SCHEMA = [
                         "description": "止盈2锚点（可选）：做多=next_resistance_zone_low（下一档压力线），做空=next_support_zone_high（下一档支撑线）"},
             "tp2_offset_pct": {"type": "number", "description": "止盈2相对锚点偏移%，同止盈1留余地"},
             "tp_mode": {"type": "string", "enum": ["ladder", "trail"],
-                        "description": "止盈模式（suggest 必填，见系统规则12.5）：ladder=分批止盈（TP1/TP2 结构位落袋）/ trail=纯跟踪（不挂止盈档，tp1 仅作盈亏比校验参考价，此时不要提交 tp2_ref）"},
+                        "description": "止盈模式（suggest 必填，见系统规则12.5）：ladder=分批止盈（TP1/TP2 结构位落袋）/ trail=纯跟踪（不挂止盈档，tp1 仅作趋势目标参考价，此时不要提交 tp2_ref）"},
             "recommendation": {"type": "integer", "description": "推荐程度 0-100，skip≤30，suggest≥50"},
             "tactic_name": {"type": "string",
                             "description": "战法命中名（仅借鉴标注）：用户消息出现【战法库判定】块且信号符合某战法时逐字输出该名，均不符合输出空字符串"},
@@ -390,13 +395,15 @@ def _handle_submit(
     rr_min: Optional[float] = None,
     risk_pct: Optional[float] = None,
     tp2_enabled: bool = True,
+    htf_bg: Optional[dict] = None,
 ) -> tuple[bool, str, Optional[dict]]:
     """submit_decision：锚点换算 → Risk Guard。返回 (done, tool_result, fixed)
 
     risk_budget（2026-09-27 止损金额模式）：fixed 模式预算实额，透传校验。
     战法字段（2026-10-02）：随 args 携带，白名单闸门在 validate_decision。
     tp2_enabled（2026-10-08）：关闭时 tp2 参数一律置 0（提示词与工具 schema
-    已隐藏止盈二，此处兜底防模型沿旧习惯提交）。"""
+    已隐藏止盈二，此处兜底防模型沿旧习惯提交）。
+    htf_bg（2026-10-10 拍板 B）：4h 背景资格透传（trail RR 条件豁免，docs/20 §四）。"""
     decision = args.get("trade_decision")
     if decision not in ("suggest", "skip"):
         return False, "trade_decision 必须是 suggest 或 skip", None
@@ -468,7 +475,7 @@ def _handle_submit(
     )
     ok, violations, fixed = validate_decision(
         d, signal, klines, risk_budget=risk_budget,
-        rr_min=rr_min, risk_pct=risk_pct,
+        rr_min=rr_min, risk_pct=risk_pct, htf_bg=htf_bg,
     )
     if ok:
         return True, "决策已提交并通过风控校验", fixed
@@ -506,6 +513,7 @@ def _dispatch_tool(name: str, args: dict, ctx: dict) -> tuple[bool, str, Optiona
             args, ctx["signal"], ctx["klines"], risk_budget=ctx.get("risk_budget"),
             rr_min=ctx.get("rr_min"), risk_pct=ctx.get("risk_pct"),
             tp2_enabled=ctx.get("tp2_enabled", True),
+            htf_bg=ctx.get("htf_bg"),
         )
     return False, f"unknown tool: {name}", None
 
@@ -520,6 +528,7 @@ def analyze_coin_agent(
     stop_cap_pct: Optional[float] = None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
     tp2_enabled: bool = True,
+    tp_mode_cfg: Optional[str] = None,
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -535,7 +544,8 @@ def analyze_coin_agent(
     注入提示词并透传 submit_decision 校验（None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时提示词剔除止盈二锚点语义、
     submit_decision 工具 schema 隐藏 tp2_* 参数、提交的 tp2 硬清零
-    （system_config.tp2_enabled，默认关）。"""
+    （system_config.tp2_enabled，默认关）。
+    tp_mode_cfg（2026-10-10 C8，docs/20）：出场模式配置注入系统提示词尾部。"""
     client = get_client()
 
     # 布尔事实（技能 use_when 判定）
@@ -578,6 +588,15 @@ def analyze_coin_agent(
             f"{strategy_prompt}\n"
             "===== 自定义策略结束 ====="
         )
+    # 出场模式配置行（2026-10-10 C8，docs/20）：调用方显式传入才注入
+    if tp_mode_cfg is not None:
+        if tp_mode_cfg in ("ladder", "trail"):
+            system += (
+                f"\n\n出场模式配置: 程序强制 {tp_mode_cfg}"
+                "（开仓侧按此覆盖，tp_mode 选择仅落库展示）"
+            )
+        else:
+            system += "\n\n出场模式配置: ai（AI 自主选择 tp_mode）"
 
     user_msg = _build_user_msg(signal, klines, ema, atr, user_input, htf_klines,
                                stop_cap_pct=stop_cap_pct, tactics_block=tactics_block)
@@ -588,6 +607,9 @@ def analyze_coin_agent(
 
     ctx = {
         "signal": signal, "klines": klines, "pool": pool,
+        # 4h 背景资格（2026-10-10 拍板 B，docs/20 §四）：trail RR 条件豁免；
+        # 无 htf 数据 → None 不豁免（缺证从严）
+        "htf_bg": analyze_htf_background(htf_klines) if htf_klines else None,
         # 止损金额 fixed 模式预算实额（pct 模式为 None → validate_decision 内走
         # 风险比例% 口径）；2026-09-27 统一口径
         "risk_budget": risk_amount if risk_mode == "fixed" and risk_amount > 0 else None,
@@ -737,7 +759,8 @@ def _build_user_msg(
         f"量能: {vol_desc}\n"
         f"ATR(14): {atr:.6g}\n"
         + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
-        + render_indicator_block(klines, htf_klines)
+        + render_indicator_block(klines, htf_klines,
+                                 signal_type=signal.get("signal_type"))
         + swings_section
         + tactics_block
         + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"

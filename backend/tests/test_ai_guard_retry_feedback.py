@@ -75,7 +75,7 @@ class _FakeClient:
 def _stub_build_messages(monkeypatch):
     """_build_messages 重计算桩（K线指标/技能匹配），测试只关注重试链本身"""
     monkeypatch.setattr(ai_analyzer, "analyze_ema", lambda _k: None)
-    monkeypatch.setattr(ai_analyzer, "render_indicator_block", lambda _k, _h: "")
+    monkeypatch.setattr(ai_analyzer, "render_indicator_block", lambda _k, _h, **_kw: "")
     monkeypatch.setattr(ai_analyzer.skill_library, "build_facts", lambda s, k: {})
     monkeypatch.setattr(ai_analyzer.skill_library, "render_matched", lambda _f: "")
 
