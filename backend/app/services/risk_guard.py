@@ -290,6 +290,19 @@ def validate_decision(
             f"{signal.get('touch_ref') or '无'}）：改按策略一评估，或如实 skip"
         )
         return False, violations, {}
+    # 审计交叉一致性（2026-10-10-5b）：strategy2_* 是复盘分组键，矛盾组合打回防脏
+    if d.strategy2_decision == "suggest" and (signal.get("touch_ref") or "") != "ema21":
+        violations.append(
+            f"strategy2_decision=suggest 与触点（{signal.get('touch_ref') or '无'}）矛盾"
+            f"——策略二仅触点=ema21 可用，改 skip 并注明依据，或如实修正"
+        )
+        return False, violations, {}
+    if _is_s2 and d.strategy2_decision != "suggest":
+        violations.append(
+            f"entry_strategy=s2 须以策略二建议为前提（当前 strategy2_decision="
+            f"{d.strategy2_decision or '未填'}）——s2 胜出则 strategy2_decision=suggest"
+        )
+        return False, violations, {}
     if _is_s2:
         d.tp_mode = "trail"
         d.take_profit_2 = 0.0
@@ -355,8 +368,13 @@ def validate_decision(
 
     # ── RR 铁律（唯一保留的价格校验）：按 AI 三价复算，声称值不信 ──
     # trail 条件豁免（2026-10-10 拍板 B，docs/20 §四）：强背景 trail 不卡 1.5R；
-    # 策略二豁免（2026-10-10-5）：s2 定义即无 RR 铁律（EMA21 金K跟踪，不规划止盈），
-    # 但复算 rr ≥ 下限时说明策略一也达标——按拍板优先走策略一，打回改报 s1
+    # 策略二豁免（2026-10-10-5）：s2 定义即无 RR 铁律（EMA21 金K跟踪，不规划止盈）。
+    # 优先级闸（2026-10-10-5b 拍板：打回改自动改标）——s2 的 TP1 是趋势目标参考价，
+    # 可能比 s1 的第一档结构位更远，"s2 复算达标⟹s1 达标"并不成立，打回会诱发
+    # 跳档凑 RR 或把仅 s2 满足的单误杀成 skip；同三价在 s1 全部程序闸（RR/方向
+    # 价格序/近锚）均已通过，直接改标 s1 落库即完成"优先策略一"。改标痕迹：
+    # entry_strategy=s1 + strategy2_decision=suggest，复盘可过滤。tp_mode 保留
+    # 前置强制写入的 trail（合法 s1 选择，拍板 B 豁免链照常适用）
     _trail_rr_exempt = (
         d.tp_mode == "trail"
         and htf_bg is not None
@@ -368,10 +386,9 @@ def validate_decision(
     if stop_dist > 0:
         rr = abs(d.take_profit_1 - d.entry_price) / stop_dist
         if _is_s2 and rr >= _rr_floor:
-            violations.append(
-                f"策略二复算盈亏比 {rr:.2f} 已达下限 {_rr_floor:g}——策略一同样达标，"
-                f"按拍板应优先策略一（entry_strategy 改 s1 重新提交）"
-            )
+            # 优先级闸（改标式）：同三价按 s1 规则同样合法 → 静默改标，不打回不重试
+            d.entry_strategy = "s1"
+            _is_s2 = False
         elif rr < _rr_floor and not (_is_s2 or _trail_rr_exempt):
             _trail_note = (
                 "（trail 仅在 4h 排列中等/强且柱线同向时豁免盈亏比铁律，"
