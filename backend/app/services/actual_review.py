@@ -179,12 +179,13 @@ def _touch_bucket(rec: TradeRecord) -> str:
     return _TOUCH_LABELS.get(raw) if raw in _TOUCH_LABELS else "未记录"
 
 
-# 4h 趋势期别（2026-10-09 r2，docs/17）：launch/mid/late/exhausted 四档有序桶，
-# 验证「仅前中后开单」矩阵（衰竭期双向禁开）——旧行/无 4h 数据 NULL→「未知」
+# 4h 排列强度（2026-10-10 五次拍板，docs/17）：weak/medium/strong/extreme/exhausted
+# 五档有序桶，验证锁单矩阵（衰竭期双向禁开；中/强/极强档锁逆势）——旧行/无 4h 数据 NULL→「未知」
 _HTF_PHASE_LABELS = {
-    "launch": "前期", "mid": "中期", "late": "后期", "exhausted": "衰竭期",
+    "weak": "弱排列", "medium": "中等排列", "strong": "强排列",
+    "extreme": "极强排列", "exhausted": "衰竭期",
 }
-_HTF_PHASE_BUCKETS = ("前期", "中期", "后期", "衰竭期", "未知")
+_HTF_PHASE_BUCKETS = ("弱排列", "中等排列", "强排列", "极强排列", "衰竭期", "未知")
 
 
 def _htf_phase_bucket(rec: TradeRecord) -> str:
@@ -308,8 +309,8 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         # 回踩触点（2026-10-08，docs/22）：回踩单质量分层——浅触点（突破回测位）
         # 与深回撤（EMA144）的胜率/EV 对比，验证「回踩越深越稳」假设
         ("回踩位置", _touch_bucket, _TOUCH_BUCKETS),
-        # 4h趋势期（2026-10-09 r2，docs/17）：前/中/后/衰竭期 × 胜率/EV，
-        # 验证「仅前中后开单」硬约束矩阵的分组贡献；旧行 NULL→「未知」
+        # 4h排列强度（2026-10-10 五次拍板，docs/17）：弱/中/强/极强/衰竭 × 胜率/EV，
+        # 验证排列强度锁单矩阵（衰竭期双向禁开；中/强/极强档锁逆势）的分组贡献；旧行 NULL→「未知」
         ("4h趋势期", _htf_phase_bucket, _HTF_PHASE_BUCKETS),
     ):
         buckets: dict[str, list] = {}

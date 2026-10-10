@@ -329,14 +329,14 @@ def test_funnel_scope_filters_trade_stages(db):
 
 def test_htf_constraint_veto_snapshot():
     """4h 硬约束程序否决单也带 veto_original 快照（A5a 闭环补全）：
-    逆强背景 suggest 被强制 skip 时快照原始三价，source=htf_constraint；
-    合规方向 / 非强背景 / 非 suggest 原样返回不加快照"""
+    中/强/极强排列（宏观同侧）背景 suggest 逆势被强制 skip 时快照原始三价，
+    source=htf_constraint；合规方向 / 放行档（弱排列或逆宏观）/ 非 suggest 原样返回"""
     from app.services.strategy.technical import enforce_htf_constraint
 
     def _htf_klines(state):
         # analyze_htf_background 要求 ≥155 已收盘根（EMA144 种子+余量），
-        # 线性爬升 +2/根 → EMA21/55 交叉早已发生（趋势后期）且宏观同侧
-        #（EMA55>EMA144）→ 锁逆势档；ADX≥20 → bullish
+        # 线性爬升 ±2/根 → 排列角度 ~17 ATR → extreme（宏观同侧）→ 锁逆势档；
+        # ADX≥20 → bullish/bearish
         base = 100.0
         drift = 2.0 if state == "bullish" else -2.0
         return [
@@ -345,7 +345,7 @@ def test_htf_constraint_veto_snapshot():
             for i in range(170)
         ]
 
-    # 强多头背景 + AI 开空 → 强制 skip + 快照
+    # 极强多头排列背景 + AI 开空 → 强制 skip + 快照
     d = {"trade_decision": "suggest", "direction": "short",
          "entry_price": 99.0, "stop_loss": 101.0, "take_profit_1": 95.0,
          "recommendation": 66}
@@ -356,7 +356,7 @@ def test_htf_constraint_veto_snapshot():
     assert v["direction"] == "short"
     assert v["entry_price"] == 99.0 and v["stop_loss"] == 101.0
 
-    # 方向合规（强多头开多）→ 原样返回、无快照
+    # 方向合规（极强多头排列顺势开多）→ 原样返回、无快照
     d2 = {"trade_decision": "suggest", "direction": "long",
           "entry_price": 99.0, "stop_loss": 97.0, "take_profit_1": 103.0}
     out2 = enforce_htf_constraint(d2, _htf_klines("bullish"))
@@ -432,13 +432,14 @@ def test_actual_review_tactic_dimension(db):
 
 
 def test_actual_review_htf_phase_dimension(db):
-    """4h趋势期维度（2026-10-09 r2，docs/17）：launch/mid/late/exhausted 有序
-    四桶 + 未知兜底，验证「仅前中后开单」矩阵的分组贡献；旧行 NULL→未知"""
+    """4h排列强度维度（2026-10-10 五次拍板改口径，docs/17）：weak/medium/strong/
+    extreme/exhausted 有序五桶 + 未知兜底，验证锁单矩阵各档的分组贡献；
+    旧行（launch/mid/late 旧枚举）标签缺失 → 未知"""
     from app.services.actual_review import build_actual_review
 
     db.add(_closed_rec({"recommendation": 70, "htf_phase": "exhausted"}))
-    db.add(_closed_rec({"recommendation": 65, "htf_phase": "mid"}))
-    db.add(_closed_rec({"recommendation": 60, "htf_phase": "launch"}))
+    db.add(_closed_rec({"recommendation": 65, "htf_phase": "medium"}))
+    db.add(_closed_rec({"recommendation": 60, "htf_phase": "weak"}))
     db.add(_closed_rec({"recommendation": 72}))  # 旧行/无 4h 数据 → 未知
     db.commit()
 
@@ -446,12 +447,12 @@ def test_actual_review_htf_phase_dimension(db):
     dims = {}
     for g in out["groups"]:
         dims.setdefault(g["dim"], []).append((g["key"], g["count"]))
-    # 有序输出：前期 → 中期 → 衰竭期 → 未知（后期无样本不占行）
-    assert dims["4h趋势期"] == [("前期", 1), ("中期", 1), ("衰竭期", 1), ("未知", 1)]
+    # 有序输出：弱排列 → 中等排列 → 衰竭期 → 未知（强/极强无样本不占行）
+    assert dims["4h趋势期"] == [("弱排列", 1), ("中等排列", 1), ("衰竭期", 1), ("未知", 1)]
     # 逐笔 items 带原始值
     assert sorted(
         i["htf_phase"] for i in out["items"] if i["htf_phase"]
-    ) == ["exhausted", "launch", "mid"]
+    ) == ["exhausted", "medium", "weak"]
 
 
 def test_actual_review_golden_pattern_groups(db):

@@ -40,7 +40,7 @@ export interface ScanResult {
       state: string | null; // ranging / mixed / bullish / bearish
       label: string | null; // 完整标签（r2=趋势年龄+宏观注记；旧行=价格位置与 ADX/间距）
       dir: number; // 1 多 / -1 空 / 0 中性
-      phase?: string | null; // r2 趋势年龄四档 launch/mid/late/exhausted（旧行无此键）
+      phase?: string | null; // 排列强度五档 weak/medium/strong/extreme/exhausted（旧行为 launch/mid/late 旧枚举或无此键）
     };
     stabilize?: { // 回踩企稳加分项证据（docs/19 §3.3 条件2/3，旧行/非回踩行无此键）
       mod: number; // 合计分值（缩量+3/放量-5/MACD +4~+5/-4）
@@ -416,7 +416,7 @@ export interface TradeRecord {
     state: string | null
     label: string | null
     dir: number
-    phase?: string | null // r2 趋势年龄四档 launch/mid/late/exhausted（旧行无此键）
+    phase?: string | null // 排列强度五档 weak/medium/strong/extreme/exhausted（旧行为旧枚举或无此键）
   } | null
   ai_advice: { // AI 持仓诊断（docs/16，浮亏在跑单）
     thesis_valid: boolean // 开仓逻辑是否仍成立

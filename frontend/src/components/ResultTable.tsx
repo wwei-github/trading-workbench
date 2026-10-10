@@ -567,10 +567,10 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       },
     },
     {
-      // 4h方向列：扫描时 4h 背景级别（震荡/纠缠/趋势年龄期别），来自 votes_json.htf
+      // 4h方向列：扫描时 4h 背景级别（震荡/纠缠/排列强度档），来自 votes_json.htf
       // 表头简称 4h（2026-09-30 用户拍板）；完整说明保留在悬停
       title: (
-        <Tooltip title="扫描时 4h 高周期背景（r2 趋势年龄口径）：EMA21/55 交叉后根数分前期≤10/中期≤30/后期>30，柱线翻向=衰竭期禁开新单；EMA55 vs EMA144 定宏观同侧/逆侧；悬停查看完整判定细节">
+        <Tooltip title="扫描时 4h 高周期背景（排列强度口径，2026-10-10）：EMA21/55/144 排列角度 |EMA差|/ATR(14,4h) 双线取小者分档——弱<0.5 / 中等<1.0 / 强<2.0 / 极强≥2.0，柱线翻向=衰竭期禁开新单；EMA55 vs EMA144 定宏观同侧/逆侧；悬停查看完整判定细节">
           <span>4h</span>
         </Tooltip>
       ),
@@ -581,10 +581,13 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
         if (!htf) return <span style={{ color: "#999" }}>-</span>;
         const isBull = htf.state === "bullish";
         const isBear = htf.state === "bearish";
-        // 短标签三段式：r2 新行有 phase → 期别（前期/中期/后期/衰竭 + 多/空）；
-        // 历史行无 phase → 旧强/弱口径回退（完整标签形如「强多头背景（…）」）
+        // 短标签三段式：新行有 phase → 强度（弱/中/强/极强/衰竭 + 多/空）；
+        // 历史行无 phase → 旧强/弱口径回退（完整标签形如「强多头背景（…）」）；
+        // 旧行 phase 为 launch/mid/late 旧枚举，映射兜底保展示
         const PHASE_SHORT: Record<string, string> = {
-          launch: "前期", mid: "中期", late: "后期", exhausted: "衰竭",
+          weak: "弱", medium: "中", strong: "强", extreme: "极强",
+          exhausted: "衰竭",
+          launch: "前期", mid: "中期", late: "后期",
         };
         const short = htf.state === "ranging"
           ? "震荡"

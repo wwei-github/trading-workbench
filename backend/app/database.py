@@ -588,7 +588,8 @@ def _run_migrations(engine):
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_shadow_mark "
             "ON shadow_marks (feature_key, ref_type, ref_id)"
         ))
-        # ai_analyses 加 4h 趋势期别列（2026-10-09 r2）：launch/mid/late/exhausted，
+        # ai_analyses 加 4h 排列强度列（2026-10-09 r2 建，2026-10-10 五次拍板
+        # 值域换血 weak/medium/strong/extreme/exhausted）：
         # enforce 阶段 stash 落库；旧行/无 4h 数据 NULL=未知，复盘维度分组用
         conn.execute(text(
             "ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS htf_phase VARCHAR(12)"

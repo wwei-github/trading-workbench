@@ -389,7 +389,7 @@ def run_ai_analysis_single(
             ai_result = run_dual_judge(
                 ai_result, _build_judge_signal(signal, klines, htf_klines),
             )
-        # 4h 趋势年龄方向硬约束兜底（中期/后期+宏观同侧锁逆势）：LLM 无视 prompt 时程序强制 skip
+        # 4h 排列强度方向硬约束兜底（衰竭期双向禁开；中等/强/极强+宏观同侧锁逆势）：LLM 无视 prompt 时程序强制 skip
         ai_result = enforce_htf_constraint(ai_result, htf_klines)
         # Narrator 已下线（提速）：submit_decision 的 reason 直接承载完整分点分析
         # （工具 schema 强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返
@@ -571,7 +571,7 @@ def _upsert_ai_analysis(
         # latest-wins 重分析后 None 覆盖旧值，不残留
         "tactic_name": ai_result.get("tactic_name"),
         "tactic_reason": ai_result.get("tactic_reason"),
-        # 4h 趋势期别（2026-10-09 r2）：enforce 阶段 stash，复盘维度分组用；
+        # 4h 排列强度（2026-10-10 五次拍板）：enforce 阶段 stash，复盘维度分组用；
         # latest-wins 重分析后 None 覆盖旧值，不残留
         "htf_phase": ai_result.get("htf_phase"),
         # 止盈模式（2026-10-10，docs/19 §3.4）：risk_guard fixed dict 保证 suggest
