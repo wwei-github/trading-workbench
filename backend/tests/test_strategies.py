@@ -223,8 +223,8 @@ def _pullback_klines_1h(touch: bool = True):
     if touch:
         # 下影触 EMA21、收盘收回线上（触碰判定 low ≤ ema ≤ close）。
         # low/close 各留 0.2 余量：改写信号K线收盘会挪动 klines[:-1] 重算的
-        # EMA21 末值，带内余量保证重算后触碰仍成立；实体/全长 0.4<0.7 →
-        # 非长实体，突破分支零干扰
+        # EMA21 末值，带内余量保证重算后触碰仍成立；实体/全长 0.4<0.6（趋势K）
+        # 与 <0.70（突破K）→ 非长实体，突破分支零干扰
         kl[-2] = [ts, ema, ema + 0.3, ema - 0.2, ema + 0.2, vol, qv]
     else:
         c = ema + 0.4
