@@ -2,6 +2,7 @@
  * 回踩两段式待确认池（docs/19，2026-09-25）
  * - Stage-1 回踩触碰 EMA21 但当根无金K 的币种转入 pending，等下一根K线金K确认
  * - 状态流转：pending（等待中）→ confirmed（已确认进 AI）/ expired（无金K或方向失守）/ superseded（突破或当根确认抢先）
+ * - 展示归并三态（2026-10-10）：待确认 / 已确认 / 已卡掉（expired+superseded 统计为卡掉），被哪个环节卡住看「卡住环节」列（后端 blocked_by）
  * - 数据源：GET /api/scans/pullback-pendings（一次拉全量，前端按状态过滤）
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -18,8 +19,10 @@ import type { PullbackPendingItem } from '../types'
 
 const { Text, Link } = Typography
 
-type StatusFilter = 'pending' | 'confirmed' | 'expired' | 'superseded' | 'all'
+type StatusFilter = 'pending' | 'confirmed' | 'blocked' | 'all'
 
+// 展示三态（2026-10-10）：pending=待确认、confirmed=已确认；expired/superseded 一律归并「已卡掉」，
+// 具体被哪个环节卡住由「卡住环节」列展示（后端 blocked_by 字段）
 const STATUS_META: Record<string, { color: string; label: string; hint: string }> = {
   pending: {
     color: 'processing', label: '待确认',
@@ -30,12 +33,12 @@ const STATUS_META: Record<string, { color: string; label: string; hint: string }
     hint: '下一根K线出现同向金K，以「回踩金K确认」信号落库并进入 AI 分析',
   },
   expired: {
-    color: 'default', label: '已过期',
-    hint: 'ranging=4h 趋势闸门（走平/缠绕/ADX弱）一票否决；structure_1h=1H 三线排列/发散度不符；range_score=震荡评分卡≥3；window_expired=次根无金K确认失效；direction_flip=指标方向失守作废',
+    color: 'default', label: '已卡掉',
+    hint: '被判定链某环节卡掉：ranging=4h 无明确趋势；structure_1h=1H 结构不符；range_score=震荡评分≥3；window_expired=次根无金K确认失效；direction_flip=指标方向失守作废',
   },
   superseded: {
-    color: 'warning', label: '已让位',
-    hint: 'breakout=Donchian 突破抢先触发；same_candle_confirm=当根触碰+金K直接确认',
+    color: 'default', label: '已卡掉',
+    hint: '被更优路径抢先（同样算卡掉）：breakout=Donchian 突破抢先触发；same_candle_confirm=当根触碰+金K直接确认',
   },
 }
 
@@ -90,15 +93,15 @@ export default function PendingPoolPanel() {
   const counts = useMemo(() => ({
     pending: rows.filter((r) => r.status === 'pending').length,
     confirmed: rows.filter((r) => r.status === 'confirmed').length,
-    expired: rows.filter((r) => r.status === 'expired').length,
-    superseded: rows.filter((r) => r.status === 'superseded').length,
+    blocked: rows.filter((r) => r.status === 'expired' || r.status === 'superseded').length,
     all: rows.length,
   }), [rows])
 
-  const filtered = useMemo(
-    () => (filter === 'all' ? rows : rows.filter((r) => r.status === filter)),
-    [rows, filter],
-  )
+  const filtered = useMemo(() => {
+    if (filter === 'all') return rows
+    if (filter === 'blocked') return rows.filter((r) => r.status === 'expired' || r.status === 'superseded')
+    return rows.filter((r) => r.status === filter)
+  }, [rows, filter])
 
   const columns: ColumnsType<PullbackPendingItem> = [
     {
@@ -141,11 +144,17 @@ export default function PendingPoolPanel() {
       },
     },
     {
-      title: '结果', dataIndex: 'resolve_reason', key: 'resolve_reason', width: 120,
+      title: '卡住环节', dataIndex: 'blocked_by', key: 'blocked_by', width: 120,
       render: (v: string | null, r) => {
+        // 已确认=活进 AI；待确认=还没有结论；其余（expired/superseded）都算被卡住，展示卡在哪个环节
         if (r.status === 'confirmed') return <Text type="success">已进 AI 分析</Text>
+        if (r.status === 'pending') return <Text type="secondary">等待金K确认</Text>
         if (!v) return '-'
-        return REASON_LABEL[v] || v
+        return (
+          <Tooltip title={`卡在：${REASON_LABEL[v] || v}`}>
+            <Tag color="volcano" style={{ marginInlineEnd: 0 }}>{REASON_LABEL[v] || v}</Tag>
+          </Tooltip>
+        )
       },
     },
     {
@@ -181,8 +190,7 @@ export default function PendingPoolPanel() {
   const segOptions: { label: string; value: StatusFilter }[] = [
     { label: `待确认 (${counts.pending})`, value: 'pending' },
     { label: `已确认 (${counts.confirmed})`, value: 'confirmed' },
-    { label: `已过期 (${counts.expired})`, value: 'expired' },
-    { label: `已让位 (${counts.superseded})`, value: 'superseded' },
+    { label: `已卡掉 (${counts.blocked})`, value: 'blocked' },
     { label: `全部 (${counts.all})`, value: 'all' },
   ]
 

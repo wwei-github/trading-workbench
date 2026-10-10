@@ -1292,6 +1292,9 @@ def pullback_pendings_list(
         "quality_score": r.quality_score,
         "votes_json": r.votes_json,
         "status": r.status,  # pending / confirmed / expired / superseded
+        # 卡住环节（2026-10-10）：仅 pending/confirmed 之外的终态算被卡住，值=死因
+        # （ranging/gate_4h/structure_1h/range_score/window_expired/direction_flip/breakout/same_candle_confirm）
+        "blocked_by": r.resolve_reason if r.status not in ("pending", "confirmed") else None,
         "resolve_reason": r.resolve_reason,
         "confirm_pattern": r.confirm_pattern,
         "confirmed_scan_result_id": str(r.confirmed_scan_result_id) if r.confirmed_scan_result_id else None,

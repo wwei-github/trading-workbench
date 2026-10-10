@@ -312,6 +312,8 @@ export interface PullbackPendingItem {
   quality_score: number | null;
   votes_json: Record<string, any> | null;
   status: 'pending' | 'confirmed' | 'expired' | 'superseded';
+  /** 卡住环节（后端派生）：pending/confirmed 为 null，expired/superseded = 死因（resolve_reason 同值） */
+  blocked_by: string | null;
   resolve_reason: string | null; // ranging / structure_1h / range_score / window_expired / direction_flip / breakout / same_candle_confirm
   confirm_pattern: string | null; // 确认形态（confirmed 行）
   confirmed_scan_result_id: string | null;
