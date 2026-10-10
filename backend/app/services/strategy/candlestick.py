@@ -119,10 +119,16 @@ def detect_inverted_hammer(klines: list[list], idx: int = -1) -> Optional[dict]:
 # 被吞没方（第一根）不再设实体基线——大实体吞小十字/小阴恰是教科书最强吞没
 # 变体（前根犹豫、当根决断），线上 WUSDT 2026-10-10 20:00 大阳吞小阴因 body1
 # 仅均实体 24% 被整门误拒（回踩 EMA21 企稳信号漏扫）。基线取形态两根之前的
-# ENGULF_BODY_LOOKBACK 根平均实体（排除形态自身，防大实体抬高自身门槛），
-# 样本不足 ENGULF_BODY_MIN_BARS 根视为历史不足、不判定
+# ENGULF_BODY_LOOKBACK 根实体（排除形态自身，防大实体抬高自身门槛），
+# 样本不足 ENGULF_BODY_MIN_BARS 根视为历史不足、不判定。
+# 基线统计量 2026-10-10-2 均值→中位数（用户拍板，预防性稳健化）：均值对离群
+# 大实体与 regime 混窗敏感；KAIAUSDT 2026-10-10 13:00 实测均值 0.00120 /
+# 中位 0.00117 几乎持平（前置下跌段大实体占半窗、非离群，双 regime 混窗），
+# 中位数不改变该案判定（body2 占比 85.2%→87.6% 仍拒，且该案实际成本≈0：
+# 前根锤形线已更优价触发，吞没放行也属同币重复信号）——本修订是"典型实体"
+# 统计语义修正，非个案修复；回看窗 20→10 等口径定标等 blocked_by 死因分布数据
 ENGULF_BODY_LOOKBACK = 20
-ENGULF_BODY_MIN_RATIO = 1.0   # 吞没K线（body2）实体须 ≥ 基线均值 × 该系数
+ENGULF_BODY_MIN_RATIO = 1.0   # 吞没K线（body2）实体须 ≥ 基线中位数 × 该系数
 ENGULF_BODY_MIN_BARS = 10
 
 # 决断K线影线质量门（docs/25 §4，2026-09-30 用户拍板，替代提示词降权路线）：
@@ -145,9 +151,12 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     看涨吞没：当前阳线实体完全包住前一根阴线实体
     看跌吞没：当前阴线实体完全包住前一根阳线实体
     质量门（不满足即不判吞没）：
-    1. 吞没K线（第二根）实体 ≥ 近 20 根平均实体——决断K线须有实体分量，
+    1. 吞没K线（第二根）实体 ≥ 近 20 根中位实体——决断K线须有实体分量，
        两根都短的小实体互包不算吞没；被吞没方不设基线（大实体吞小十字=
-       最强变体，2026-10-10 WUSDT 个案修订）；
+       最强变体，2026-10-10 WUSDT 个案修订）；统计量用中位数（2026-10-10-2
+       预防性稳健化）：均值对离群大实体与 regime 混窗敏感，中位数取
+       "典型实体"（KAIAUSDT 13:00 实测均值≈中位，该案判定不变——语义
+       修正非个案修复）；
     2. 看涨吞没第二根上影 ≤ 全长 15%（下影不限，2026-10-01 不对称化）；
        看跌吞没第二根总影线 ≤ 全长 40%（2026-09-30 口径维持）。
     """
@@ -173,11 +182,14 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     ]
     if len(base) < ENGULF_BODY_MIN_BARS:
         return None
-    avg_body = sum(base) / len(base)
+    # 基线统计量=中位数（2026-10-10-2 预防性稳健化）：均值对离群大实体与
+    # regime 混窗敏感，中位数取"典型实体"；注意 KAIAUSDT 13:00 实测均值≈
+    # 中位（大实体占半窗非离群），本修订不改该案判定——语义修正非个案修复
+    median_body = float(np.median(base))
     # 实体基线门（2026-10-10 修订）只约束吞没K线（body2）：决断K线须有实体分量；
     # 被吞没方（body1）不设基线——大实体吞小十字是最强变体，body1 门曾把
     # WUSDT 2026-10-10 20:00 大阳吞小阴整门误拒
-    if avg_body <= 0 or body2 < avg_body * ENGULF_BODY_MIN_RATIO:
+    if median_body <= 0 or body2 < median_body * ENGULF_BODY_MIN_RATIO:
         return None
 
     # 影线质量门（2026-10-01 看涨侧不对称化）：先算几何，按方向套不同门

@@ -253,6 +253,26 @@ def test_engulfing_tiny_mutual_bodies_still_rejected():
     assert detect_engulfing(kl, idx=-1) is None
 
 
+def test_engulfing_outlier_inflated_mean_median_passes():
+    """基线统计量稳健性（2026-10-10-2 均值→中位数拍板，预防性）：基线 20 根中
+    18 根实体 1.0 + 2 根实体 2.0（离群大实体）——均值 1.1 会拦掉 body2=1.05
+    的标准吞没（完全吞没、上影 8%），中位数 1.0 放行。
+    注意：真实 KAIAUSDT 13:00 案均值≈中位（双 regime 混窗非离群），中位数
+    不改该案判定——本用例锁的是统计量语义，非个案回归"""
+    kl = _engulf_base(24)
+    # 注入两根实体 2.0 的离群K（i=6/7 连续一对，先阳后阴回原价位，
+    # 后续K线 o=前收 的衔接不变；基线窗 kl[4:24] 覆盖两根）
+    o6 = kl[6][1]  # 100.0
+    kl[6] = [kl[6][0], o6, 102.1, 99.9, 102.0, 10.0, 10.0]   # 阳线 body 2
+    kl[7] = [kl[7][0], 102.0, 102.1, 99.9, o6, 10.0, 10.0]   # 阴线 body 2 回 100
+    kl = _append_engulf_pair(kl, prev_open=100.5, prev_close=100.0,
+                             cur_open=100.0, cur_close=101.05,
+                             cur_high=101.15, cur_low=99.95)
+    r = detect_engulfing(kl, idx=-1)
+    assert r is not None and r["pattern"] == "bullish_engulfing"
+    assert r["direction"] == "bullish"
+
+
 # ── 启明星/黄昏星决断K线影线门（2026-09-30：第三根总影线 > 全长 40% 不判金K）──
 
 def _star_first_two(k1: list, k2: list) -> list[list]:
