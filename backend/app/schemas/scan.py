@@ -115,6 +115,9 @@ class AIAnalysisOut(BaseModel):
     # 战法命中标注（2026-10-02，仅借鉴）：白名单闸门后的战法名与判定依据
     tactic_name: Optional[str] = None
     tactic_reason: Optional[str] = None
+    # 双入场策略胜出方（2026-10-10-5，docs/20）：s1=完整规则 / s2=EMA21 金K跟踪，
+    # NULL=旧行按 s1；两策略分条结论在 analysis 文本内
+    entry_strategy: Optional[str] = None
     created_at: datetime
 
     class Config:

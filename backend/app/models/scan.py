@@ -116,6 +116,10 @@ class AIAnalysis(Base):
     # 武装保本后跟进）。NULL=旧行，按 ladder 理解；system_config.tp_mode
     # 强制时开仓侧覆盖此值（AI 选择仅在该配置为 ai 时生效）
     tp_mode: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    # 双入场策略（2026-10-10-5，docs/20）：s1=完整规则（RR铁律+止盈规划）/
+    # s2=EMA21 金K跟踪（无 RR 铁律、不规划止盈、固定 trail，仅触点=ema21 可用）。
+    # NULL=旧行/未声明，按 s1 理解；开仓快照随 trade_records.ai_snapshot 自持
+    entry_strategy: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")

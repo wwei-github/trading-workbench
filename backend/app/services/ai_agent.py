@@ -129,7 +129,7 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    也不要每轮只查一个工具。
 8. 不要输出不带工具调用的纯文字回复（会浪费一轮）；文字只用于简短说明查询意图，
    决策一律通过 submit_decision 提交。
-9. 盈亏比铁律 ≥{rr_min}；止损宽度由结构位决定，不设固定价格百分比上限，不得以
+9. 盈亏比铁律 ≥{rr_min}（策略二豁免，见 12.6）；止损宽度由结构位决定，不设固定价格百分比上限，不得以
    「止损过宽」为由 skip——宽止损由固定亏损法自动缩仓消化（止损越远仓位越小）；
    仓位不要自己报，程序按固定亏损法计算，单笔止损预算={risk_label}：仓位 = 预算 ÷ 止损距离
    （止损越远仓位越小）。
@@ -170,6 +170,19 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     铁律（无须凑 1.5R）；4h 弱排列或震荡时仍应 skip。
     动能同向定义：4h MACD 柱线与方向同号——「动能衰减（柱线收窄·仍同向）」注记
     仍算同向（减速≠反转），仅「柱线已翻向/动能背离」才算不同向。
+12.6 双入场策略裁决（2026-10-10-5）：对同一信号先分别评估两套入场逻辑再合并为单一提交：
+    策略一=上方全部现行规则（盈亏比铁律+止盈规划）；策略二=EMA21 金K跟踪——
+    仅当事实包"回踩触点"= ema21（程序已验证金K上一根触碰 EMA21 企稳）时可用：
+    判断这根金K的质量（形态成色/量能/指标多数决同向/4h 硬约束同样适用），
+    不适用盈亏比铁律（9 条豁免）、不规划止盈：tp_mode 固定 "trail"（不挂止盈档，
+    浮盈 1×ATR 武装保本后跟进），tp1_ref 提交趋势目标参考价（如实，不用于挂单校验），
+    不提交 tp2_ref；止损照常按 11 条锚定。
+    合并规则（程序两道闸兜底）：两策略均不建议 → skip（skip_reason 合并两者主因）；
+    仅策略二建议 → 主字段按策略二填、entry_strategy="s2"；策略一建议（无论策略二结论）
+    → 主字段按策略一填、entry_strategy="s1"（策略一优先；s2 复算 RR 已达标时程序强制打回）。
+    strategy2_decision/strategy2_reason 必填：如实输出策略二结论与 ≤60字依据，
+    触点非 ema21 时输出 "skip" 并注明"触点非ema21"。
+    reason（落库分析）须分条给两策略各自结论：先"策略一：…"逐条、再"策略二：…"、最后合并结论。
 13. 方向纪律（不再程序强制，无 ±0.3% 贴近要求）：优先只在支撑结构做多（摆动低点/
     近期低点附近）、只在压力结构做空（摆动高点/近期高点附近）；现价已离开结构位时
     不再要求贴近，按动能与盈亏比自行判断入场（breakout 顺势追突破仍用 market 锚）。
@@ -260,7 +273,13 @@ TOOLS_SCHEMA = [
                         "description": "止盈2锚点（可选）：做多=next_resistance_zone_low（下一档压力线），做空=next_support_zone_high（下一档支撑线）"},
             "tp2_offset_pct": {"type": "number", "description": "止盈2相对锚点偏移%，同止盈1留余地"},
             "tp_mode": {"type": "string", "enum": ["ladder", "trail"],
-                        "description": "止盈模式（suggest 必填，见系统规则12.5）：ladder=分批止盈（TP1/TP2 结构位落袋）/ trail=纯跟踪（不挂止盈档，tp1 仅作趋势目标参考价，此时不要提交 tp2_ref）"},
+                        "description": "止盈模式（suggest 必填，见系统规则12.5）：ladder=分批止盈（TP1/TP2 结构位落袋）/ trail=纯跟踪（不挂止盈档，tp1 仅作趋势目标参考价，此时不要提交 tp2_ref）；策略二固定 trail"},
+            "entry_strategy": {"type": "string", "enum": ["s1", "s2"],
+                               "description": "双入场策略胜出方（suggest 必填，见系统规则12.6）：s1=策略一完整规则（盈亏比铁律+止盈规划）/ s2=策略二 EMA21 金K跟踪（仅'回踩触点'=ema21 时可用，无 RR 铁律、固定 trail）；两策略均建议时填 s1（策略一优先）"},
+            "strategy2_decision": {"type": "string", "enum": ["suggest", "skip"],
+                                   "description": "策略二结论（必填，见系统规则12.6）：触点非 ema21 时也必须输出 skip"},
+            "strategy2_reason": {"type": "string",
+                                 "description": "策略二判定依据 ≤60字；触点非 ema21 时注明'触点非ema21'"},
             "recommendation": {"type": "integer", "description": "推荐程度 0-100，skip≤30，suggest≥50"},
             "tactic_name": {"type": "string",
                             "description": "战法命中名（仅借鉴标注）：用户消息出现【战法库判定】块且信号符合某战法时逐字输出该名，均不符合输出空字符串"},
@@ -424,6 +443,13 @@ def _handle_submit(
             "analysis": "",
             "tactic_name": _tname,
             "tactic_reason": _treason,
+            # 双策略审计字段透传（2026-10-10-5）：skip=两策略均不满足
+            "entry_strategy": None,
+            "strategy2_decision": (
+                args.get("strategy2_decision")
+                if args.get("strategy2_decision") in ("suggest", "skip") else None
+            ),
+            "strategy2_reason": (str(args.get("strategy2_reason") or "").strip()[:255] or None),
             "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
             "take_profit_2": 0, "risk_reward_ratio": 0,
             "position_pct": 0,
@@ -462,6 +488,16 @@ def _handle_submit(
         direction=args.get("direction"),
         trade_type=args.get("trade_type"),
         tp_mode=_mode,
+        # 双入场策略（2026-10-10-5）：胜出方与策略二审计字段透传；
+        # 资格闸/优先级闸在 validate_decision（按 signal.touch_ref 程序事实校验）
+        entry_strategy=(
+            args.get("entry_strategy") if args.get("entry_strategy") in ("s1", "s2") else None
+        ),
+        strategy2_decision=(
+            args.get("strategy2_decision")
+            if args.get("strategy2_decision") in ("suggest", "skip") else None
+        ),
+        strategy2_reason=(str(args.get("strategy2_reason") or "").strip()[:255] or None),
         # 止损锚类型程序推导（docs/23）：stop_ref 用信号K线极值锚即 near，
         # 其余（含缺省）structure——比 AI 自报更难滥用
         stop_anchor="near" if args.get("stop_ref") in ("signal_low", "signal_high") else "structure",

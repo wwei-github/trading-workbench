@@ -67,6 +67,13 @@ class TradeDecision(BaseModel):
     # 本次注入的战法清单（validate_decision 白名单闸门，清单外清空防幻觉）
     tactic_name: Optional[str] = None
     tactic_reason: Optional[str] = None
+    # 双入场策略（2026-10-10-5，docs/20）：entry_strategy=胜出策略——s1=完整规则
+    # （RR 铁律+止盈规划，缺省按 s1）/ s2=EMA21 金K跟踪（无 RR 铁律、不规划止盈，
+    # 程序强制 tp_mode=trail）；strategy2_*=策略二判定审计字段（suggest/skip+依据），
+    # 两策略结论分条见 analysis。资格程序闸：s2 仅当 signal.touch_ref == "ema21"
+    entry_strategy: Optional[str] = None
+    strategy2_decision: Optional[str] = None
+    strategy2_reason: Optional[str] = None
     entry_price: float = 0.0
     stop_loss: float = 0.0
     take_profit_1: float = 0.0
@@ -112,6 +119,14 @@ def normalize_raw(raw: dict) -> TradeDecision:
             data[_tf] = None
         else:
             data[_tf] = str(data[_tf]).strip()[:64 if _tf == "tactic_name" else 255]
+    # 双入场策略（2026-10-10-5）：非法值归 None（按 s1 理解，安全默认=存量行为不变）；
+    # strategy2_decision 同理；strategy2_reason 仅截断
+    if data.get("entry_strategy") not in ("s1", "s2"):
+        data["entry_strategy"] = None
+    if data.get("strategy2_decision") not in ("suggest", "skip"):
+        data["strategy2_decision"] = None
+    _s2r = str(data.get("strategy2_reason") or "").strip()
+    data["strategy2_reason"] = _s2r[:255] or None
     if data.get("trade_decision") not in ("suggest", "skip"):
         raise ValueError(f"trade_decision 非法: {data.get('trade_decision')!r}")
     return TradeDecision(**data)
@@ -243,6 +258,10 @@ def validate_decision(
             "analysis": d.analysis or "",
             "tactic_name": tactic_name,
             "tactic_reason": tactic_reason,
+            # 双策略审计字段透传（2026-10-10-5）：skip=两策略均不满足
+            "entry_strategy": None,
+            "strategy2_decision": d.strategy2_decision,
+            "strategy2_reason": d.strategy2_reason,
             "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
             "take_profit_2": 0, "risk_reward_ratio": 0,
             "position_pct": 0,
@@ -260,6 +279,20 @@ def validate_decision(
         violations.append("suggest 时 entry/stop_loss/tp1 必须为正数价格")
     if violations:
         return False, violations, {}
+
+    # ── 双入场策略（2026-10-10-5，docs/20）：s2=EMA21 金K跟踪 ──
+    # 资格程序闸：s2 仅当信号触点为 ema21（程序事实，AI 谎报打回重试）；
+    # 语义强制：s2 即 trail（不挂止盈档）、无止盈二——在 RR 检查前生效
+    _is_s2 = d.entry_strategy == "s2"
+    if _is_s2 and (signal.get("touch_ref") or "") != "ema21":
+        violations.append(
+            f"策略二仅适用于回踩触点=ema21 的信号（程序校验，当前触点="
+            f"{signal.get('touch_ref') or '无'}）：改按策略一评估，或如实 skip"
+        )
+        return False, violations, {}
+    if _is_s2:
+        d.tp_mode = "trail"
+        d.take_profit_2 = 0.0
 
     # ── 方向-价格一致性硬校验（2026-09-16 恢复为程序强制；ETHUSDT 案例）──
     # 多单 SL<entry<TP1、空单 TP1<entry<SL 是交易所可挂性铁律：反向止损的
@@ -321,7 +354,9 @@ def validate_decision(
     stop_pct = stop_dist / d.entry_price if d.entry_price else 0
 
     # ── RR 铁律（唯一保留的价格校验）：按 AI 三价复算，声称值不信 ──
-    # trail 条件豁免（2026-10-10 拍板 B，docs/20 §四）：强背景 trail 不卡 1.5R
+    # trail 条件豁免（2026-10-10 拍板 B，docs/20 §四）：强背景 trail 不卡 1.5R；
+    # 策略二豁免（2026-10-10-5）：s2 定义即无 RR 铁律（EMA21 金K跟踪，不规划止盈），
+    # 但复算 rr ≥ 下限时说明策略一也达标——按拍板优先走策略一，打回改报 s1
     _trail_rr_exempt = (
         d.tp_mode == "trail"
         and htf_bg is not None
@@ -332,7 +367,12 @@ def validate_decision(
     rr = 0.0
     if stop_dist > 0:
         rr = abs(d.take_profit_1 - d.entry_price) / stop_dist
-        if rr < _rr_floor and not _trail_rr_exempt:
+        if _is_s2 and rr >= _rr_floor:
+            violations.append(
+                f"策略二复算盈亏比 {rr:.2f} 已达下限 {_rr_floor:g}——策略一同样达标，"
+                f"按拍板应优先策略一（entry_strategy 改 s1 重新提交）"
+            )
+        elif rr < _rr_floor and not (_is_s2 or _trail_rr_exempt):
             _trail_note = (
                 "（trail 仅在 4h 排列中等/强且柱线同向时豁免盈亏比铁律，"
                 "当前背景不满足——改 ladder 锚结构位，或如实按当前背景评估 skip）"
@@ -367,8 +407,14 @@ def validate_decision(
         "direction": d.direction,
         "trade_type": d.trade_type,
         # 止盈模式落库（docs/19 §3.4）：None（未声明/非法值）按 ladder 理解；
-        # system_config.tp_mode 强制时开仓侧再覆盖（trade_engine）
+        # system_config.tp_mode 强制时开仓侧再覆盖（trade_engine）；
+        # 策略二已在上方强制置 trail（s2 定义即 trail）
         "tp_mode": d.tp_mode if d.tp_mode in ("ladder", "trail") else "ladder",
+        # 双入场策略（2026-10-10-5）：胜出策略落库（None=旧行/未声明按 s1）+
+        # 策略二判定审计字段；复盘按 entry_strategy 分组对比两策略表现
+        "entry_strategy": "s2" if _is_s2 else "s1",
+        "strategy2_decision": d.strategy2_decision,
+        "strategy2_reason": d.strategy2_reason,
         "tactic_name": tactic_name,
         "tactic_reason": tactic_reason,
         # 止损锚类型落库（docs/23）：near 仅突破类有效（AI 在回踩类误报时按
@@ -402,6 +448,10 @@ def build_forced_skip(reason: str, violations: Optional[list[str]] = None) -> di
         "skip_reason": skip_reason[:500],
         "direction": None,
         "analysis": "1. 该信号未通过程序风控校验，已自动跳过，未消耗人工判断成本。",
+        # 双策略审计字段（2026-10-10-5）：强制 skip 无策略上下文，置 None
+        "entry_strategy": None,
+        "strategy2_decision": None,
+        "strategy2_reason": None,
         "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
         "take_profit_2": 0, "risk_reward_ratio": 0,
         "position_pct": 0, "recommendation": 10,

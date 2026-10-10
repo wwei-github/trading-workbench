@@ -119,6 +119,29 @@ _RULE_DIRECTION = """方向纪律（不再程序强制，无 ±0.3% 贴近要求
 只在压力结构做空；现价已离开结构位时不再要求贴近，可按动能顺势给入场价（顺势追势
 入场贴近现价即可），入场是否合理由盈亏比与止损结构把关。"""
 
+# 双入场策略（2026-10-10-5，docs/20）：同一信号两套入场逻辑分别评估、分条结论、
+# 合并裁决。策略一=上方全部现行规则（盈亏比铁律+止盈规划）；策略二=EMA21 金K跟踪
+# （无 RR 铁律、不规划止盈，出场固定 trail）。程序两道闸兜底：s2 资格闸（触点必须
+# ema21）与优先级闸（s2 复算 RR 达标强制打回走 s1）
+_RULE_DUAL_STRATEGY = """双入场策略裁决（2026-10-10-5）：对同一信号先分别评估两套入场逻辑，再合并为单一决策：
+1. 策略一：上方全部现行规则（盈亏比铁律 + 止盈规划），得出完整结论；
+2. 策略二：仅当信号块"回踩触点"= ema21 时可用（见下方策略二详解），得出结论；
+3. 合并（程序两道闸兜底，谎报会被打回）：
+   - 两策略均不建议 → trade_decision="skip"，skip_reason 合并两策略各自主因；
+   - 仅策略二建议 → 主字段（direction/entry_price/stop_loss/take_profit_1/tp_mode 等）按策略二填写，entry_strategy="s2"；
+   - 策略一建议（无论策略二结论如何）→ 主字段按策略一填写，entry_strategy="s1"（策略一优先）；
+4. strategy2_decision 如实输出策略二结论（suggest/skip），strategy2_reason ≤60字给依据；
+   策略二不可用（触点非 ema21）时 strategy2_decision 输出 "skip"，reason 注明"触点非ema21"；
+5. analysis 必须分条给出两个策略各自结论（先"策略一：…"逐条、再"策略二：…"逐条、最后合并结论）。
+
+策略二详解（EMA21 金K跟踪）：仅当"回踩触点"= ema21（程序已验证金K上一根触碰 EMA21
+企稳）时可用——判断这根 EMA21 金K的质量：形态成色、量能配合、指标多数决同向、
+4h 方向硬约束（同样适用）。策略二不适用盈亏比铁律（无需测算到结构位的 RR），
+也不做止盈位规划：出场固定为纯跟踪 tp_mode="trail"（浮盈 1×ATR 武装保本后跟进
+止损让利润奔跑）；take_profit_1 仍必须给出趋势目标参考价（如实，不用于挂单与校验），
+take_profit_2 输出 0；止损照常按止损纪律锚定（触点位+极值两锚取更远者）。
+策略二的推荐分不含盈亏比维度（85+ 锚点按趋势+位置+量能三重共振理解）。"""
+
 # 回踩触点语义注解（docs/22 触点体系，2026-09-28）：信号块"回踩触点"行的解读口径
 _RULE_TOUCH = """回踩触点语义（信号块出现"回踩触点"行时程序已验证金K上一根触碰该位企稳）：
 retest=突破回测位（破轨后横向验证，结构意义最强，止盈/止损参考被测轨位）、
@@ -270,20 +293,27 @@ take_profit_1/take_profit_2/tp_mode/risk_reward_ratio/position_pct；skip_reason
   （近位争夺位不算止盈目标，细则见下方止盈锚定）。
 - take_profit_2: {_tp2_field}
 {_tp_mode_field}
-- risk_reward_ratio: take_profit_1 的盈亏比，2位小数。
+- risk_reward_ratio: take_profit_1 的盈亏比，2位小数（策略二不适用，按参考价如实复算即可）。
+- entry_strategy: 双入场策略胜出方（2026-10-10-5），suggest 时必填："s1"（策略一=完整规则，
+  盈亏比铁律+止盈规划）或 "s2"（策略二=EMA21 金K跟踪，无 RR 铁律、不规划止盈、固定 trail，
+  仅"回踩触点"=ema21 时可用）。两策略均建议时输出 "s1"（策略一优先，程序强制）。
+  skip 时输出 null。
+- strategy2_decision: 策略二结论，必填其一："suggest"/"skip"；触点非 ema21 时输出 "skip"。
+  策略二不可用也必须如实输出（程序审计两策略判定链）。
+- strategy2_reason: 策略二判定依据，≤60字；触点非 ema21 时注明"触点非ema21"。
 - position_pct: 建议名义仓位占账户资金百分比，2位小数。程序会按固定亏损复算覆盖
   （单笔止损预算={risk_label}：仓位=预算÷止损距离），此处报估算值即可。
 - recommendation: 推荐程度，0-100的整数。skip 时≤30，suggest 时≥50。锚点（评分需可区分强度）：
   50=仅勉强达标（单一条件满足，无共振）；70=多重共振（趋势+位置/量能两项以上同向）；
-  85+=强信号（趋势+位置+盈亏比三重共振）。中间分数线性内插。
+  85+=强信号（趋势+位置+盈亏比三重共振；策略二按趋势+位置+量能理解）。中间分数线性内插。
 - tactic_name: 战法命中名（2026-10-02，仅借鉴标注不影响开单结论）。用户消息出现
   【战法库判定】块且信号符合其中某个战法时，逐字输出该战法名（禁止改写/自创）；
   均不符合或无战法清单时输出空字符串。
 - tactic_reason: 战法判定依据，≤60字（引用战法条件逐条对照结论）；未命中输出空字符串。
-- analysis: ≤300字中文推理，用"1. 2. 3."序号逐条展示，每条独占一行（JSON内换行写\\n），格式如下：
-  先逐条列出满足的条件（如：1. EMA多头排列，趋势向上 2. 回踩支撑位企稳，触及2次）；
-  再列出不满足的条件或风险点；最后一条写明确结论（如：4. 结论：建议开单，盈亏比与趋势背景共振）。
-  trade_decision="skip" 时 analysis 只写一句总括（如：信号强度不足且盈亏比不佳，不建议开单），
+- analysis: ≤350字中文推理，用"1. 2. 3."序号逐条展示，每条独占一行（JSON内换行写\\n），
+  双策略格式：先逐条列策略一满足的条件与结论，再逐条列策略二判定与结论，
+  最后一条写明合并结论（如：5. 结论：策略一达标，按策略一开单）。
+  trade_decision="skip" 时 analysis 只写一句总括（如：策略一盈亏比不佳且策略二金K质量不足，不建议开单），
   具体理由已在 skip_reason 逐条列出，勿重复。
 
 {_RULE_STRUCT}
@@ -291,6 +321,8 @@ take_profit_1/take_profit_2/tp_mode/risk_reward_ratio/position_pct；skip_reason
 {_RULE_SL}
 
 {_RULE_TP}
+
+{_RULE_DUAL_STRATEGY}
 
 {_RULE_TOUCH}
 
@@ -324,6 +356,7 @@ def render_system_prompt(
         _RULE_SL=_RULE_SL,
         # _RULE_TP 值内含 {rr_min} 字面占位（format 不递归替换值），须渲染前显式替换
         _RULE_TP=compose_rule_tp(tp2_enabled).format(rr_min=_rr),
+        _RULE_DUAL_STRATEGY=_RULE_DUAL_STRATEGY,
         _RULE_TOUCH=_RULE_TOUCH,
         _RULE_EMA=_RULE_EMA.replace(chr(10), ' '),
         _RULE_VOTE=_RULE_VOTE.replace(chr(10), ' '),

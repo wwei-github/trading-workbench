@@ -594,6 +594,13 @@ def _run_migrations(engine):
         conn.execute(text(
             "ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS htf_phase VARCHAR(12)"
         ))
+        # 双入场策略（2026-10-10-5，docs/20）：s1=完整规则（RR铁律+止盈规划）/
+        # s2=EMA21 金K跟踪（无 RR 铁律、固定 trail）；旧行 NULL 按 s1 理解，
+        # 复盘按策略分组对比表现
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS entry_strategy VARCHAR(8)"
+        ))
 
 
 def init_db():

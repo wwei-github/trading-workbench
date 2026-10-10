@@ -157,6 +157,9 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
         # 止盈模式（2026-10-10，docs/19 §3.4）：随快照自持——复盘弹窗 AI 卡
         # 按 trail 显「纯跟踪」Tag 与「止盈1·参考」标签，缺了会错显分批
         "tp_mode": a.tp_mode,
+        # 双入场策略（2026-10-10-5，docs/20）：s1=完整规则 / s2=EMA21 金K跟踪
+        # （trail+RR豁免），随快照自持，复盘按策略分组对比
+        "entry_strategy": a.entry_strategy,
         # 量比（docs/24 A5b）：信号K线量 ÷ 近20根基准量（中位量，2026-09-29 口径），
         # 实盘归因按量比门槛分组对比；旧行/无信号上下文为 None 归「未知」
         "volume_ratio": (
@@ -247,12 +250,19 @@ def _attempt_open(
         tp2 = 0
     # 止盈模式（2026-10-10，docs/19 §3.4）：system_config.tp_mode 强制（ladder/trail）
     # 优先；ai/NULL/非法 → 按 AI 分析的选择（ai_analyses.tp_mode，缺省 ladder）。
-    # trail：不挂止盈档，浮盈≥1×ATR 武装保本后跟进（巡检 _trail_mode_patrol）
+    # trail：不挂止盈档，浮盈≥1×ATR 武装保本后跟进（巡检 _trail_mode_patrol）。
+    # 策略二强制 trail（2026-10-10-5，docs/20）：s2 定义即纯跟踪（无 RR 铁律、不规划
+    # 止盈），优先于 cfg.tp_mode 强制——cfg 强制 ladder 不能把 s2 变成挂档单，
+    # 否则"趋势目标参考价"会被当成真实止盈挂出，语义错位
+    _is_s2 = (a.entry_strategy or "s1") == "s2"
     _cfg_mode = (getattr(cfg, "tp_mode", None) or "").strip()
-    tp_mode_eff = (
-        _cfg_mode if _cfg_mode in ("ladder", "trail")
-        else (a.tp_mode if a.tp_mode in ("ladder", "trail") else "ladder")
-    )
+    if _is_s2:
+        tp_mode_eff = "trail"
+    else:
+        tp_mode_eff = (
+            _cfg_mode if _cfg_mode in ("ladder", "trail")
+            else (a.tp_mode if a.tp_mode in ("ladder", "trail") else "ladder")
+        )
     try:
         price = trader.price(symbol)
         # 风控参数解析（2026-10-02 上页面）：system_config 列可页面覆盖，
@@ -329,8 +339,10 @@ def _attempt_open(
             return False
         # 盈亏比按现价复算（2026-09-18 补上，此前仅 AI 入场价口径校验）：市价成交
         # 价就是现价，待回踩单/漂移单偏离 AI 入场价后风险变宽、盈利变窄，RR 随之
-        # 退化——按现价复算仍须 ≥盈亏比铁律下限（ai_rr_min 可页面覆盖），否则市价进不划算
-        if sl != price:
+        # 退化——按现价复算仍须 ≥盈亏比铁律下限（ai_rr_min 可页面覆盖），否则市价进不划算。
+        # 策略二豁免（2026-10-10-5，docs/20）：s2 定义即无 RR 铁律（risk_guard 已豁免
+        # AI 入场价口径，此处现价口径同语义豁免），风控由止损宽度上限+固定亏损法兜底
+        if sl != price and not _is_s2:
             rr_now = abs(tp1 - price) / abs(price - sl)
             if rr_now < rr_min:
                 logger.info(
