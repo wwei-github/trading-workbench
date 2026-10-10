@@ -489,8 +489,10 @@ def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str,
         "risk_reward_ratio": float(src.risk_reward_ratio or 0),
         "position_pct": float(src.position_pct or 0),
         "recommendation": float(src.recommendation or 0),
-        # 双入场策略（2026-10-10-5）：沿用结论保留胜出方标注
+        # 双入场策略（2026-10-10-5）：沿用结论保留胜出方与策略二审计字段
         "entry_strategy": src.entry_strategy,
+        "strategy2_decision": src.strategy2_decision,
+        "strategy2_reason": src.strategy2_reason,
         "pullback_wait": bool(src.pullback_wait),
     }
     _finish(db, r, symbol, result, fp)
@@ -584,9 +586,11 @@ def _upsert_ai_analysis(
         # 止盈模式（2026-10-10，docs/19 §3.4）：risk_guard fixed dict 保证 suggest
         # 有值（None→ladder）；latest-wins 重分析后覆盖旧值
         "tp_mode": ai_result.get("tp_mode"),
-        # 双入场策略（2026-10-10-5，docs/20）：胜出方落库（None=旧行按 s1）；
-        # strategy2_* 审计字段仅随 analysis 分条文本承载，不单独建列
+        # 双入场策略（2026-10-10-5，docs/20）：胜出方与策略二审计字段落库
+        # （2026-10-11 建列——前端分区展示结论徽标取结构化字段，不依赖文本解析）
         "entry_strategy": ai_result.get("entry_strategy"),
+        "strategy2_decision": ai_result.get("strategy2_decision"),
+        "strategy2_reason": ai_result.get("strategy2_reason"),
         "pullback_wait": bool(ai_result.get("pullback_wait")),
         # 待回踩结论在分发前就被跳过（_dispatch_immediate_open），不会进入开仓闸门，
         # 未开单原因在此预置；其余结论的原因由开仓闸门拦截时写入

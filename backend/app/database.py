@@ -601,6 +601,16 @@ def _run_migrations(engine):
             "ALTER TABLE ai_analyses "
             "ADD COLUMN IF NOT EXISTS entry_strategy VARCHAR(8)"
         ))
+        # 策略二结论审计字段（2026-10-11，docs/20 §五）：前端分区展示结论徽标取
+        # 结构化字段，不再仅随 analysis 文本承载
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS strategy2_decision VARCHAR(8)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS strategy2_reason VARCHAR(255)"
+        ))
 
 
 def init_db():

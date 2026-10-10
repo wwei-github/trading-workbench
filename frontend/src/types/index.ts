@@ -160,6 +160,11 @@ export interface AIAnalysis {
   tactic_name?: string | null;
   tactic_reason?: string | null;
   tp_mode?: string | null; // 止盈模式（2026-10-10，docs/19 §3.4）：ladder / trail（AI 按信号选择；null=旧行按 ladder）
+  // 双入场策略（2026-10-10-5，docs/20）：entry_strategy=胜出方 s1/s2（null=旧行按 s1）；
+  // strategy2_*=策略二结论审计字段（2026-10-11 建列），前端分区展示结论徽标直接取用
+  entry_strategy?: string | null;
+  strategy2_decision?: string | null;
+  strategy2_reason?: string | null;
   created_at: string;
   review_status?: string | null; // 复盘结果：win_tp1 / win_tp2 / loss / expired（24h 后回放定论）
 }

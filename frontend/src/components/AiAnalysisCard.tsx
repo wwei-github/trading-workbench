@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { Button, Modal, Space, Spin, Statistic, Tag, Tooltip, Typography, message } from 'antd'
 import {
   ApiOutlined,
@@ -46,6 +46,171 @@ function NumberedText({ text }: { text?: string | null }) {
         <div key={i}>{l}</div>
       ))}
     </div>
+  )
+}
+
+// analysis 固定节标题四节格式（2026-10-11 前后端契约，docs/03 §3.1）：
+// 「公共检查：」「策略一：」「策略二：」「合并结论：」，前端按标题分区展示；
+// 解析到 <2 个节标题（旧行/格式漂移）返回 null，回退平铺气泡
+interface AnalysisSections {
+  common: string[]
+  s1: string[]
+  s2: string[]
+  merged: string[]
+}
+
+function parseAnalysisSections(text?: string | null): AnalysisSections | null {
+  if (!text || !text.trim()) return null
+  // 容错序号前缀变体（"一、公共检查：" / "1.策略一："），节标题逐字匹配
+  const re = /^\s*(?:[一二三四五六七八九十\d]{1,2}[、.．]?\s*)?(公共检查|策略一|策略二|合并结论)\s*[:：]\s*(.*)$/
+  const sections: AnalysisSections = { common: [], s1: [], s2: [], merged: [] }
+  const keyMap: Record<string, keyof AnalysisSections> = {
+    公共检查: 'common',
+    策略一: 's1',
+    策略二: 's2',
+    合并结论: 'merged',
+  }
+  let cur: keyof AnalysisSections | null = null
+  let found = 0
+  for (const raw of text.replace(/\r\n?/g, '\n').split('\n')) {
+    const m = raw.match(re)
+    if (m) {
+      cur = keyMap[m[1]]
+      found++
+      if (m[2].trim()) sections[cur].push(m[2].trim())
+      continue
+    }
+    if (cur && raw.trim()) sections[cur].push(raw.trim())
+  }
+  return found >= 2 ? sections : null
+}
+
+/** 策略结论徽标：suggest 绿 / skip 红 / null 灰（旧行或不可用） */
+function DecisionBadge({ decision }: { decision: 'suggest' | 'skip' | null }) {
+  if (decision === 'suggest') {
+    return (
+      <Tag color="success" style={{ marginInlineEnd: 0 }}>
+        <CheckCircleOutlined /> 建议开单
+      </Tag>
+    )
+  }
+  if (decision === 'skip') {
+    return (
+      <Tag color="error" style={{ marginInlineEnd: 0 }}>
+        <CloseCircleOutlined /> 不建议
+      </Tag>
+    )
+  }
+  return <Tag style={{ marginInlineEnd: 0, color: '#999' }}>—</Tag>
+}
+
+/** 策略卡配色随结论徽标联动 */
+function cardStyle(decision: 'suggest' | 'skip' | null): CSSProperties {
+  if (decision === 'suggest') {
+    return { border: '1px solid rgba(82,196,26,0.35)', background: 'rgba(82,196,26,0.05)' }
+  }
+  if (decision === 'skip') {
+    return { border: '1px solid rgba(255,77,79,0.30)', background: 'rgba(255,77,79,0.04)' }
+  }
+  return { border: '1px solid #f0f0f0', background: '#fafafa' }
+}
+
+/** 明细行渲染：序号换行拆行；"结论：…"行加粗强调 */
+function StrategyLines({ lines }: { lines: string[] }) {
+  const rows = analysisLines(lines.join('\n'))
+  if (rows.length === 0) return null
+  return (
+    <div style={{ lineHeight: 1.8, fontSize: 13 }}>
+      {rows.map((l, i) =>
+        /^结论[:：]/.test(l) ? (
+          <div key={i} style={{ fontWeight: 700 }}>{l}</div>
+        ) : (
+          <div key={i}>{l}</div>
+        ),
+      )}
+    </div>
+  )
+}
+
+/** 双策略分区（2026-10-11）：公共检查 + 策略一/策略二结论卡 + 合并结论 */
+function DualStrategySections({ ai, sections }: { ai: AIAnalysis; sections: AnalysisSections }) {
+  const s1Decision = ai.trade_decision === 'suggest' ? 'suggest' : 'skip'
+  // 策略二结论取结构化审计字段；null（旧行）回退看文本节是否有内容
+  const s2Decision: 'suggest' | 'skip' | null =
+    ai.strategy2_decision === 'suggest'
+      ? 'suggest'
+      : ai.strategy2_decision === 'skip'
+        ? 'skip'
+        : null
+  const relabeled = ai.entry_strategy === 's1' && ai.strategy2_decision === 'suggest'
+  return (
+    <>
+      {/* 公共检查区：4h方向/指标多数决/回踩触点/形态量能/风险点逐项判定 */}
+      {sections.common.length > 0 && (
+        <div
+          style={{
+            padding: '8px 12px',
+            marginBottom: 10,
+            borderRadius: 8,
+            background: '#fafafa',
+            border: '1px solid #f0f0f0',
+          }}
+        >
+          <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>公共检查</div>
+          <div style={{ lineHeight: 1.9, fontSize: 13 }}>
+            {sections.common.map((l, i) => (
+              <div key={i}>{l}</div>
+            ))}
+          </div>
+        </div>
+      )}
+      {/* 两策略结论卡：结论徽标取结构化字段（trade_decision / strategy2_decision），
+          明细取 analysis 文本节——结构化字段不依赖文本解析，文本节缺失不误标 */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
+        <div style={{ padding: '10px 12px', borderRadius: 8, ...cardStyle(s1Decision) }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+            <strong style={{ fontSize: 13 }}>策略一 · 完整规则</strong>
+            <DecisionBadge decision={s1Decision} />
+            {relabeled && (
+              <Tooltip title="两策略复算均达标，按拍板优先取策略一开单（程序自动改标）">
+                <Tag color="purple" style={{ marginInlineEnd: 0, fontSize: 11 }}>
+                  两策略均达标 · 优先策略一
+                </Tag>
+              </Tooltip>
+            )}
+          </div>
+          <StrategyLines lines={sections.s1} />
+        </div>
+        <div style={{ padding: '10px 12px', borderRadius: 8, ...cardStyle(s2Decision) }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+            <strong style={{ fontSize: 13 }}>策略二 · EMA21 金K跟踪</strong>
+            <DecisionBadge decision={s2Decision} />
+          </div>
+          <StrategyLines lines={sections.s2} />
+          {ai.strategy2_reason && (
+            <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
+              判定依据：{ai.strategy2_reason}
+            </div>
+          )}
+        </div>
+      </div>
+      {/* 合并结论：单行强调 */}
+      {sections.merged.length > 0 && (
+        <div
+          style={{
+            padding: '6px 12px',
+            marginBottom: 10,
+            borderRadius: 8,
+            fontSize: 13,
+            fontWeight: 600,
+            background: 'rgba(22,119,255,0.06)',
+            border: '1px solid rgba(22,119,255,0.30)',
+          }}
+        >
+          {sections.merged.join(' ')}
+        </div>
+      )}
+    </>
   )
 }
 
@@ -211,6 +376,8 @@ export default function AiAnalysisCard({ ai }: Props) {
   const colorScheme = useScanStore((s) => s.colorScheme)
   const eff = getEffectiveDecision(ai)
   const isSkip = eff.decision === 'skip'
+  // analysis 四节解析（公共检查/策略一/策略二/合并结论）：旧行或格式漂移返回 null 回退平铺
+  const sections = parseAnalysisSections(ai.analysis)
   // 运行轨迹弹窗开关（仅 Agent 生成的分析可查看）
   const [traceOpen, setTraceOpen] = useState(false)
 
@@ -264,6 +431,14 @@ export default function AiAnalysisCard({ ai }: Props) {
             <Tooltip title="AI 建议等回踩至入场价再入场；程序不会为此下单，仅作跟踪展示">
               <Tag color="orange" style={{ marginInlineEnd: 0, fontWeight: 700 }}>
                 ⏳ 待回踩
+              </Tag>
+            </Tooltip>
+          )}
+          {/* 双入场策略胜出方（2026-10-10-5）：s2 单按 EMA21 金K跟踪开单（免盈亏比铁律、纯跟踪出场） */}
+          {!isSkip && ai.entry_strategy === 's2' && (
+            <Tooltip title="本单按策略二（EMA21 金K跟踪）开单：免盈亏比铁律、出场为纯跟踪 trail">
+              <Tag color="purple" style={{ marginInlineEnd: 0, fontWeight: 700 }}>
+                策略二 · EMA21金K
               </Tag>
             </Tooltip>
           )}
@@ -334,22 +509,25 @@ export default function AiAnalysisCard({ ai }: Props) {
         </div>
       )}
 
-      {/* skip：理由 + AI 推理，均走推理气泡 */}
+      {/* skip：理由 + AI 推理，均走推理气泡；四节解析成功时追加分区展示 */}
       {isSkip ? (
-        <Bubble
-          variant="shadow"
-          avatar={{
-            icon: <RobotOutlined />,
-            style: { background: '#8c8c8c', color: '#fff' },
-          }}
-          content={eff.reason || ai.analysis || ''}
-          messageRender={(content) => <NumberedText text={content as string} />}
-          styles={{
-            header: { fontSize: 12, color: '#999', paddingBottom: 0 },
-            content: { maxWidth: '100%' },
-          }}
-          header="AI 跳过理由"
-        />
+        <>
+          <Bubble
+            variant="shadow"
+            avatar={{
+              icon: <RobotOutlined />,
+              style: { background: '#8c8c8c', color: '#fff' },
+            }}
+            content={eff.reason || ai.analysis || ''}
+            messageRender={(content) => <NumberedText text={content as string} />}
+            styles={{
+              header: { fontSize: 12, color: '#999', paddingBottom: 0 },
+              content: { maxWidth: '100%' },
+            }}
+            header="AI 跳过理由"
+          />
+          {sections && <DualStrategySections ai={ai} sections={sections} />}
+        </>
       ) : (
         <>
           {/* 价格卡：入场 / 止损 / 止盈1 / 止盈2 */}
@@ -404,21 +582,25 @@ export default function AiAnalysisCard({ ai }: Props) {
               </Button>
             )}
           </div>
-          {/* AI 推理气泡 */}
-          <Bubble
-            variant="shadow"
-            avatar={{
-              icon: <RobotOutlined />,
-              style: { background: '#1677ff', color: '#fff' },
-            }}
-            content={ai.analysis || ''}
-            messageRender={(content) => <NumberedText text={content as string} />}
-            styles={{
-              header: { fontSize: 12, color: '#999', paddingBottom: 0 },
-              content: { maxWidth: '100%' },
-            }}
-            header="AI 推理"
-          />
+          {/* AI 推理：四节解析成功走分区展示（公共检查/两策略卡/合并结论），失败回退平铺气泡 */}
+          {sections ? (
+            <DualStrategySections ai={ai} sections={sections} />
+          ) : (
+            <Bubble
+              variant="shadow"
+              avatar={{
+                icon: <RobotOutlined />,
+                style: { background: '#1677ff', color: '#fff' },
+              }}
+              content={ai.analysis || ''}
+              messageRender={(content) => <NumberedText text={content as string} />}
+              styles={{
+                header: { fontSize: 12, color: '#999', paddingBottom: 0 },
+                content: { maxWidth: '100%' },
+              }}
+              header="AI 推理"
+            />
+          )}
         </>
       )}
 

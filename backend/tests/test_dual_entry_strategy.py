@@ -167,6 +167,9 @@ def test_p0_prompt_contains_dual_strategy_block():
     assert "entry_strategy" in prompt
     assert "策略二" in prompt
     assert "EMA21 金K跟踪" in prompt
+    # 前端分区解析依赖的固定节标题（2026-10-11 前后端契约）
+    assert "公共检查：" in prompt
+    assert "合并结论：" in prompt
 
 
 def test_p1_prompt_contains_dual_strategy_rule():
@@ -174,6 +177,9 @@ def test_p1_prompt_contains_dual_strategy_rule():
     prompt = render_agent_prompt(risk_label="测试预算")
     assert "12.6 双入场策略裁决" in prompt
     assert "entry_strategy" in prompt
+    # P1 reason 三节格式与 P0 同契约
+    assert "公共检查：" in prompt
+    assert "合并结论：" in prompt
 
 
 def test_submit_schema_has_strategy_args():

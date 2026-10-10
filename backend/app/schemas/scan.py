@@ -118,6 +118,9 @@ class AIAnalysisOut(BaseModel):
     # 双入场策略胜出方（2026-10-10-5，docs/20）：s1=完整规则 / s2=EMA21 金K跟踪，
     # NULL=旧行按 s1；两策略分条结论在 analysis 文本内
     entry_strategy: Optional[str] = None
+    # 策略二结论审计字段（2026-10-11 建列）：前端分区展示结论徽标直接取结构化字段
+    strategy2_decision: Optional[str] = None
+    strategy2_reason: Optional[str] = None
     created_at: datetime
 
     class Config:

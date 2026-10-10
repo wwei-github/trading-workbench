@@ -120,6 +120,10 @@ class AIAnalysis(Base):
     # s2=EMA21 金K跟踪（无 RR 铁律、不规划止盈、固定 trail，仅触点=ema21 可用）。
     # NULL=旧行/未声明，按 s1 理解；开仓快照随 trade_records.ai_snapshot 自持
     entry_strategy: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    # 策略二结论审计字段（2026-10-11 建列，docs/20 §五）：前端分区展示结论徽标
+    # 直接取结构化字段，不依赖 analysis 文本解析；NULL=旧行/两策略均 skip
+    strategy2_decision: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    strategy2_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")
