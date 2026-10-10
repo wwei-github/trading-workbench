@@ -981,6 +981,19 @@ def render_indicator_block(klines: list[list], htf_klines: Optional[list] = None
                 " —— 仅可 short，开多一律 skip（优先于指标多数决，细则见系统提示词硬约束）"
             )
 
+    # 盈亏比取舍提示行（2026-10-10 BTWUSDT 个案）：排列中等/强/极强且柱线未翻向
+    # （动能衰减仍算同向）时程序侧确定性注入 trail 取舍资格——提示词散文条款
+    # 会被止损宽度/BTC 背离等风险点稀释，LLM 仍保守 skip；资格由程序判定而非
+    # LLM 自查（phase/momentum 均为程序事实，weak/衰竭期不注入、维持 skip 路径）
+    if (htf_r and htf_r.get("phase") in ("medium", "strong", "extreme")
+            and htf_r.get("momentum") == "same"):
+        lines.append(
+            f"- 盈亏比取舍（可用）: 4h{htf_r['state_label']}且柱线同向（动能衰减"
+            "仍算同向）——结构位口径盈亏比不足下限时按系统提示词「盈亏比取舍」"
+            "改选 trail，把止盈一参考价上移到趋势目标位（前高/通道上沿/"
+            "1.5×ATR 延伸）复算达标，不要直接 skip"
+        )
+
     return "技术指标（方向=多空票数多数决）:\n" + "\n".join(lines) + "\n"
 
 
