@@ -142,6 +142,19 @@ def test_exhausted_bullish():
     assert "柱线已翻向" in r["detail"]
 
 
+def test_same_direction_shrinking_note():
+    """冲高后降速不翻向：柱线仍同号但连续收窄 → 动能衰减注记带「仍同向」字样
+    （BTWUSDT 2026-10-10：AI 把裸「动能衰减」误读成动能不同向而 skip，
+    盈亏比取舍条款的「动能同向」以柱线翻向为准，减速不算不同向）"""
+    closes = _ramp(150, 0.5, 100.0) + _ramp(6, 2.5, 175.0) + _ramp(8, 1.2, 190.0)
+    r = analyze_htf_background(_kl_from_closes(closes))
+    assert r is not None
+    assert r["state"] == "bullish"
+    assert r["momentum"] == "same"  # 未翻向
+    assert r["phase"] != "exhausted"
+    assert "动能衰减" in r["detail"] and "仍同向" in r["detail"]
+
+
 def test_cross_age_helper():
     """_htf_cross_age：最后一次交叉的根数与方向"""
     f = np.array([1.0, 2.0, 3.0, 2.0, 1.0])  # 在 idx1→2 间上穿、3→4 下穿

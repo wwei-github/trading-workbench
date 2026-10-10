@@ -748,7 +748,10 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
     if momentum == "opposite":
         notes.append("动能背离（柱线已翻向）" if phase != "exhausted" else "柱线已翻向")
     elif shrinking:
-        notes.append("动能衰减")
+        # 「仍同向」字样进注记：盈亏比取舍条款的「动能同向」以柱线翻向为准，
+        # 减速不算不同向——线上 BTWUSDT 2026-10-10 AI 把裸「动能衰减」注记
+        # 误读成动能不同向而 skip，未走 trail 路径
+        notes.append("动能衰减（柱线收窄·仍同向）")
     notes.append(macro_note)
 
     label = f"{_PHASE_LABELS[phase]}{'多头' if dir_ > 0 else '空头'}背景"
