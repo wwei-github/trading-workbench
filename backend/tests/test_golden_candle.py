@@ -245,11 +245,29 @@ def test_engulfing_tiny_engulfed_body_detected():
 
 
 def test_engulfing_tiny_mutual_bodies_still_rejected():
-    """小实体互包（窄幅盘整噪声）：两根实体都远小于基线均值 →
+    """小实体互包（窄幅盘整噪声）：body2=0.09=基线中位的 9% < 60% 下限 →
     吞没K线（body2）实体基线门照常拦截"""
     kl = _append_engulf_pair(_engulf_base(), prev_open=100.03, prev_close=99.97,
                              cur_open=99.96, cur_close=100.05,
                              cur_high=100.08, cur_low=99.93)
+    assert detect_engulfing(kl, idx=-1) is None
+
+
+def test_engulfing_body_below_median_above_floor_passes():
+    """0.6×中位下限（2026-10-10-3 拍板）：body2=0.8=中位的 80%，低于中位但
+    高于 0.6 下限 → 放行（×1.0 旧口径会拒；KAIA 87.6% 案同族）"""
+    kl = _append_engulf_pair(_engulf_base(), prev_open=100.5, prev_close=100.0,
+                             cur_open=100.0, cur_close=100.8,
+                             cur_high=100.9, cur_low=99.95)
+    r = detect_engulfing(kl, idx=-1)
+    assert r is not None and r["pattern"] == "bullish_engulfing"
+
+
+def test_engulfing_body_below_sixty_pct_floor_rejected():
+    """0.6×中位下限语义锁定：body2=0.45=中位的 45% < 60% → 拒"""
+    kl = _append_engulf_pair(_engulf_base(), prev_open=100.4, prev_close=100.0,
+                             cur_open=100.0, cur_close=100.45,
+                             cur_high=100.5, cur_low=99.95)
     assert detect_engulfing(kl, idx=-1) is None
 
 
