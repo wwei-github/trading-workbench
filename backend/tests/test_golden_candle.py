@@ -232,6 +232,27 @@ def test_engulfing_bearish_long_shadow_rejected():
     assert detect_engulfing(kl, idx=-1) is None
 
 
+def test_engulfing_tiny_engulfed_body_detected():
+    """大实体吞小十字（WUSDT 2026-10-10 20:00 个案）：被吞没方实体 0.04
+    （基线均值 1.0 的 4%）→ 2026-10-10 起被吞没方不设实体基线，判吞没
+    （前根犹豫、当根决断=教科书最强吞没变体，body1 门曾整门误拒）"""
+    kl = _append_engulf_pair(_engulf_base(), prev_open=100.02, prev_close=99.98,
+                             cur_open=99.9, cur_close=101.3,
+                             cur_high=101.5, cur_low=99.7)
+    r = detect_engulfing(kl, idx=-1)
+    assert r is not None and r["pattern"] == "bullish_engulfing"
+    assert r["direction"] == "bullish"
+
+
+def test_engulfing_tiny_mutual_bodies_still_rejected():
+    """小实体互包（窄幅盘整噪声）：两根实体都远小于基线均值 →
+    吞没K线（body2）实体基线门照常拦截"""
+    kl = _append_engulf_pair(_engulf_base(), prev_open=100.03, prev_close=99.97,
+                             cur_open=99.96, cur_close=100.05,
+                             cur_high=100.08, cur_low=99.93)
+    assert detect_engulfing(kl, idx=-1) is None
+
+
 # ── 启明星/黄昏星决断K线影线门（2026-09-30：第三根总影线 > 全长 40% 不判金K）──
 
 def _star_first_two(k1: list, k2: list) -> list[list]:

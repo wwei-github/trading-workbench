@@ -114,12 +114,15 @@ def detect_inverted_hammer(klines: list[list], idx: int = -1) -> Optional[dict]:
     return None
 
 
-# 吞没实体下限：两根实体都须达到"近期典型实体"水平——实体太短（窄幅盘整里的
-# 小实体互包）不构成有意义的吞没。基线取形态两根之前的 ENGULF_BODY_LOOKBACK 根
-# 平均实体（排除形态自身，防大实体抬高自身门槛），样本不足 ENGULF_BODY_MIN_BARS
-# 根视为历史不足、不判定
+# 吞没实体下限（2026-10-10 口径修订）：仅吞没K线（第二根）须达到"近期典型实体"
+# 水平——决断K线必须有实体分量，窄幅盘整里的小实体互包（两根都小）不算吞没；
+# 被吞没方（第一根）不再设实体基线——大实体吞小十字/小阴恰是教科书最强吞没
+# 变体（前根犹豫、当根决断），线上 WUSDT 2026-10-10 20:00 大阳吞小阴因 body1
+# 仅均实体 24% 被整门误拒（回踩 EMA21 企稳信号漏扫）。基线取形态两根之前的
+# ENGULF_BODY_LOOKBACK 根平均实体（排除形态自身，防大实体抬高自身门槛），
+# 样本不足 ENGULF_BODY_MIN_BARS 根视为历史不足、不判定
 ENGULF_BODY_LOOKBACK = 20
-ENGULF_BODY_MIN_RATIO = 1.0   # 两根实体均须 ≥ 基线均值 × 该系数
+ENGULF_BODY_MIN_RATIO = 1.0   # 吞没K线（body2）实体须 ≥ 基线均值 × 该系数
 ENGULF_BODY_MIN_BARS = 10
 
 # 决断K线影线质量门（docs/25 §4，2026-09-30 用户拍板，替代提示词降权路线）：
@@ -142,8 +145,9 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     看涨吞没：当前阳线实体完全包住前一根阴线实体
     看跌吞没：当前阴线实体完全包住前一根阳线实体
     质量门（不满足即不判吞没）：
-    1. 两根 K 线实体都必须比较长（≥ 近 20 根平均实体），
-       实体太短的小实体互包不算吞没；
+    1. 吞没K线（第二根）实体 ≥ 近 20 根平均实体——决断K线须有实体分量，
+       两根都短的小实体互包不算吞没；被吞没方不设基线（大实体吞小十字=
+       最强变体，2026-10-10 WUSDT 个案修订）；
     2. 看涨吞没第二根上影 ≤ 全长 15%（下影不限，2026-10-01 不对称化）；
        看跌吞没第二根总影线 ≤ 全长 40%（2026-09-30 口径维持）。
     """
@@ -170,7 +174,10 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     if len(base) < ENGULF_BODY_MIN_BARS:
         return None
     avg_body = sum(base) / len(base)
-    if avg_body <= 0 or body1 < avg_body * ENGULF_BODY_MIN_RATIO or body2 < avg_body * ENGULF_BODY_MIN_RATIO:
+    # 实体基线门（2026-10-10 修订）只约束吞没K线（body2）：决断K线须有实体分量；
+    # 被吞没方（body1）不设基线——大实体吞小十字是最强变体，body1 门曾把
+    # WUSDT 2026-10-10 20:00 大阳吞小阴整门误拒
+    if avg_body <= 0 or body2 < avg_body * ENGULF_BODY_MIN_RATIO:
         return None
 
     # 影线质量门（2026-10-01 看涨侧不对称化）：先算几何，按方向套不同门
