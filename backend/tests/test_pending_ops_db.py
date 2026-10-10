@@ -8,7 +8,7 @@ create_all 兼容但绑定为 hex 串），建表走 ORM metadata 子集即可�
 """
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -84,3 +84,40 @@ def test_confirm_op_persists_with_scan_result_id(db):
     assert row.confirm_pattern == "hammer"
     assert row.confirmed_scan_result_id == result_ids[sym]
     assert row.resolved_at is not None
+
+
+# ── 孤儿 pending 清扫（2026-10-10）：跌出扫描宇宙的币行冻结 pending → 批量 expired ──
+
+def _fresh_pending(db, sym: str) -> None:
+    db.add(PullbackPending(symbol=sym, direction=1, stage1_candle_open=datetime.utcnow()))
+
+
+def test_sweep_expires_stale_orphan(db):
+    """超 3 根（1h=3h）未裁决的 pending → expired/window_expired（孤儿清扫主路径）"""
+    _fresh_pending(db, "ORPHAN/USDT")
+    stale = PullbackPending(symbol="STALE/USDT", direction=-1,
+                            stage1_candle_open=datetime.utcnow() - timedelta(hours=4))
+    db.add(stale)
+    db.commit()
+
+    Scanner._sweep_orphan_pendings("1h", max_bars=3)
+
+    fresh = db.execute(select(PullbackPending).where(PullbackPending.symbol == "ORPHAN/USDT")).scalars().one()
+    row = db.execute(select(PullbackPending).where(PullbackPending.symbol == "STALE/USDT")).scalars().one()
+    assert fresh.status == "pending"          # 3h 内不动
+    assert row.status == "expired"
+    assert row.resolve_reason == "window_expired"
+    assert row.resolved_at is not None
+
+
+def test_sweep_keeps_active_rows_and_is_idempotent(db):
+    """活跃行（触碰续命刚刷新 stage1_candle_open）不误伤；清扫幂等可重跑"""
+    _fresh_pending(db, "ACTIVE/USDT")
+    db.commit()
+
+    Scanner._sweep_orphan_pendings("1h", max_bars=3)
+    Scanner._sweep_orphan_pendings("1h", max_bars=3)  # 重跑无异常无副作用
+
+    row = db.execute(select(PullbackPending).where(PullbackPending.symbol == "ACTIVE/USDT")).scalars().one()
+    assert row.status == "pending"
+    assert row.resolve_reason is None

@@ -618,6 +618,13 @@ class Scanner:
             if pending_ops:
                 self._apply_pending_ops(pending_ops, result_ids)
 
+            # 5.5.1 孤儿行清扫（2026-10-10）：跌出本轮宇宙的币（缩量/黑名单/风险
+            # 档位/拉K线持续失败等）无人再评估其 pending，行冻结在 pending 永不
+            # 终态。设计等待窗 ≤2 根（触碰根建池 → 次根裁决，docs/19），超 3 根
+            # 仍未终态即为孤儿，直接 expired（window_expired）。全表一条 UPDATE，
+            # 每轮都跑（幂等，命中的轮次才写行）
+            self._sweep_orphan_pendings(kline_interval)
+
             # 5.6 破轨事件处置（docs/22 §4）：upsert/consume + 窗口过期批处理
             if event_ops:
                 self._apply_breakout_events(
@@ -1003,6 +1010,37 @@ class Scanner:
             sdb.commit()
         except Exception as e:
             logger.exception("破轨事件落库失败（忽略，下轮重评估）: %s", e)
+            sdb.rollback()
+        finally:
+            sdb.close()
+
+    @staticmethod
+    def _sweep_orphan_pendings(kline_interval: str, max_bars: int = 3) -> None:
+        """孤儿 pending 清扫（2026-10-10）：跌出扫描宇宙的币无人再评估其 pending，
+        行冻结在 pending 永不终态（_prefetch/_apply 均按本轮 universe 过滤）。
+
+        设计等待窗 ≤2 根（触碰根建池 → 次根裁决，docs/19）；给同向触碰续命的
+        upsert 也会刷新 stage1_candle_open，故超 max_bars 根仍未终态 = 既无本轮
+        处置也无续命，属孤儿。批量置 expired/window_expired（终态保留审计链，
+        前端 blocked_by 可见死因）。失败只记日志——下轮清扫幂等重跑。
+        """
+        sdb = SessionLocal()
+        try:
+            cutoff = datetime.utcnow() - timedelta(
+                hours=Scanner._interval_hours(kline_interval) * max_bars
+            )
+            result = sdb.execute(
+                update(PullbackPending)
+                .where(PullbackPending.status == "pending",
+                       PullbackPending.stage1_candle_open < cutoff)
+                .values(status="expired", resolve_reason="window_expired",
+                        resolved_at=datetime.utcnow())
+            )
+            sdb.commit()
+            if result.rowcount:
+                logger.info("孤儿 pending 清扫：%d 行超 %d 根未裁决 → expired", result.rowcount, max_bars)
+        except Exception as e:
+            logger.exception("孤儿 pending 清扫失败（忽略，下轮重跑）: %s", e)
             sdb.rollback()
         finally:
             sdb.close()
