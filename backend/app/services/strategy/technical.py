@@ -644,11 +644,11 @@ def _ema_state(
     """4h EMA 状态机（11 态，判定优先级即代码顺序，末根已收盘序列）：
 
     1. tangle 缠绕：ADX<20 ∨ 21/55 间距<0.1% ∨ 近10根21×55交叉≥2次（锯齿）
-    2. macro_cross_*：55×144 交叉后 ≤CROSS_FRESH_BARS 根——趋势级事件优先
-       定名（深 V 双叉同步时 21 回踩不误判拐头/恢复）
+    2. macro_cross_*：55×144 交叉后 <CROSS_FRESH_BARS 根（严格小于，age=10
+       已出初期）——趋势级事件优先定名（深 V 双叉同步时 21 回踩不误判拐头/恢复）
     3. turn_*：仅全排列内 EMA21 斜率连续 TURN_CONFIRM_BARS 根反向（还没
        全排列过就无「头」可拐；交叉初期回踩天然落 recover/过渡态）
-    4. *_recover：宏观同侧的 21×55 新交叉 ≤CROSS_FRESH_BARS 根（金叉+宏观
+    4. *_recover：宏观同侧的 21×55 新交叉 <CROSS_FRESH_BARS 根（金叉+宏观
        多=多头恢复 / 死叉+宏观空=空头恢复；宏观逆侧的新交叉落过渡态）
     5. aligned_*：全排列稳态（无近期交叉）
     6. bull_dip/bear_rally：宏观逆侧过渡态（21×55 关系定名，任意龄）
