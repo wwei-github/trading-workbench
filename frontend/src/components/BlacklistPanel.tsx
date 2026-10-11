@@ -19,6 +19,7 @@ const { Text } = Typography
 const ORIGIN_META: Record<string, { color: string; label: string }> = {
   manual: { color: 'purple', label: '手动' },
   auto: { color: 'orange', label: '自动（止损超预算）' },
+  stop_hard: { color: 'red', label: '止损≥1.5R（永久）' },
 }
 
 function fmtTime(s: string | null | undefined): string {
@@ -83,7 +84,8 @@ export default function BlacklistPanel() {
     { title: '原因/备注', dataIndex: 'reason', key: 'reason',
       render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{v || '-'}</Text> },
     { title: '到期时间', dataIndex: 'expires_at', key: 'expires_at', width: 130,
-      render: (v: string | null, r: BlacklistItem) => (r.origin === 'manual' ? '永久' : fmtTime(v)) },
+      render: (v: string | null, r: BlacklistItem) =>
+        r.origin === 'manual' || r.origin === 'stop_hard' ? '永久' : fmtTime(v) },
     { title: '加入时间', dataIndex: 'created_at', key: 'created_at', width: 130, render: fmtTime },
     { title: '操作', key: 'op', width: 90,
       render: (_: unknown, r: BlacklistItem) => (
@@ -99,8 +101,8 @@ export default function BlacklistPanel() {
       <Card size="small">
         <Space style={{ width: '100%', justifyContent: 'space-between' }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            黑名单币种不进扫描候选（也就不会 AI 分析/开单）；实际亏损超出计划风险预算 20% 以上
-            或被强平的币自动拉黑冷却 30 天，可随时手动移除
+            黑名单币种不进扫描候选（也就不会 AI 分析/开单）；实亏超计划风险 20%（1.2R）
+            自动拉黑冷却 30 天，实亏 ≥1.5R 或被强平永久拉黑——永久档只能手动移除
           </Text>
           <Space>
             <Button icon={<ReloadOutlined />} onClick={fetchData}>刷新</Button>

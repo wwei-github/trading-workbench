@@ -1,9 +1,11 @@
 """币种黑名单模型（2026-09-18，GRIFFAIN/4USDT 批次教训）
 
-两个来源：
+三个来源：
 - manual：用户在页面手动添加（永久，除非手动移除）
 - auto：止损金额严重超出计划风险预算（≥1.2 倍/强平）自动加入，冷却 30 天，
   可提前手动移除
+- stop_hard：止损实亏 ≥ 计划风险 1.5 倍（2026-10-11 用户拍板）自动加入，
+  永久生效，只能手动移出（expires_at 恒 NULL）
 
 过滤位置：扫描宇宙阶段（进不了指标候选）+ AI 分析/开仓兜底（扫描漏网时双保险）
 """
@@ -24,8 +26,9 @@ class SymbolBlacklist(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
 
-    # manual = 手动添加（永久）；auto = 止损严重超预算自动加入
-    origin: Mapped[str] = mapped_column(String(8), nullable=False, default="manual")
+    # manual = 手动添加（永久）；auto = 止损严重超预算自动加入（冷却期）；
+    # stop_hard = 止损实亏 ≥1.5R（永久，只能手动移出）
+    origin: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
 
     # 人工备注 / 自动理由（含计划风险与实亏金额）
     reason: Mapped[str] = mapped_column(Text, default="")

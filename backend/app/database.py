@@ -441,6 +441,11 @@ def _run_migrations(engine):
             "ALTER TABLE scan_records "
             "ADD COLUMN IF NOT EXISTS funnel_json JSONB"
         ))
+        # 黑名单永久档（2026-10-11）：origin 加 stop_hard 值（9 字符），列 8→16 扩宽
+        conn.execute(text(
+            "ALTER TABLE symbol_blacklist "
+            "ALTER COLUMN origin TYPE VARCHAR(16)"
+        ))
         # 多策略可插拔（docs/20 S0/S1）：
         # trade_records.strategy_id 策略归因列——带 DEFAULT，存量单自动归 golden_k_ai
         conn.execute(text(

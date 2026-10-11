@@ -31,7 +31,6 @@ import RobustnessPanel from '../components/RobustnessPanel'
 import SpotLogsPanel from '../components/SpotLogsPanel'
 import SpotHistoryPanel from '../components/SpotHistoryPanel'
 import SpotSettingsPanel from '../components/SpotSettingsPanel'
-import FunnelPanel from '../components/FunnelPanel'
 import { useScanStore } from '../stores/scanStore'
 
 // 业务域模式（docs/18 §9.1 方案 C）：合约 = 现有全部功能；现货 = 屯币系统（独立模块）。
@@ -59,7 +58,7 @@ export default function ScanResult({ mode }: ScanResultProps) {
   // 合约内部 tab 记忆（既有 key 不动）
   const [activeTab, switchTab] = useTabMemory(
     'tabs.scanResult',
-    ['results', 'pending-pool', 'funnel', 'watchlist', 'search', 'strategy', 'backtest', 'ledger', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs'],
+    ['results', 'pending-pool', 'watchlist', 'search', 'strategy', 'backtest', 'ledger', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs'],
   )
   // 现货内部 tab 记忆（独立 key，与合约无冲突）
   const [spotTab, switchSpotTab] = useTabMemory('tabs.spot', ['overview', 'backtest', 'history', 'settings', 'logs'])
@@ -137,11 +136,6 @@ export default function ScanResult({ mode }: ScanResultProps) {
       key: 'pending-pool',
       label: '待确认池',
       children: <div style={{ height: '100%', overflow: 'hidden' }}><PendingPoolPanel /></div>,
-    },
-    {
-      key: 'funnel',
-      label: '筛选漏斗',
-      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><FunnelPanel /></div>,
     },
     {
       key: 'watchlist',

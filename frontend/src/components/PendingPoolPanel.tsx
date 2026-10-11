@@ -6,7 +6,7 @@
  * - 数据源：GET /api/scans/pullback-pendings（一次拉全量，前端按状态过滤）
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, Empty, Modal, Segmented, Spin, Table, Tag, Tooltip, Typography, message } from 'antd'
+import { Button, Empty, Modal, Segmented, Spin, Table, Tabs, Tag, Tooltip, Typography, message } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
@@ -15,6 +15,7 @@ import { patternStyle } from '../constants/labels'
 import { schemeTag } from '../utils/scheme'
 import { useScanStore } from '../stores/scanStore'
 import KlineChart from './KlineChart'
+import FunnelPanel from './FunnelPanel'
 import type { PullbackPendingItem } from '../types'
 
 const { Text, Link } = Typography
@@ -195,48 +196,65 @@ export default function PendingPoolPanel() {
   ]
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ flexShrink: 0, marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Segmented<StatusFilter> value={filter} onChange={setFilter} options={segOptions} />
-        <Button icon={<ReloadOutlined />} onClick={() => fetchData()} loading={loading} size="small">
-          刷新
-        </Button>
-      </div>
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
-        <Spin spinning={loading}>
-          <Table<PullbackPendingItem>
-            rowKey="id"
-            columns={columns}
-            dataSource={filtered}
-            pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
-            size="small"
-            scroll={{ x: 1140 }}
-            locale={{
-              emptyText: (
-                <Empty
-                  description={filter === 'pending'
-                    ? '暂无待确认币种——回踩触碰且当根无金K时会出现在这里'
-                    : '暂无记录'}
-                />
-              ),
-            }}
-          />
-        </Spin>
-      </div>
-      <Modal
-        open={!!klineSymbol}
-        title={klineSymbol ? `${klineSymbol} 最新K线` : ''}
-        footer={null}
-        width={1200}
-        destroyOnClose
-        onCancel={() => setKlineSymbol(null)}
-      >
-        {klineSymbol && (
-          <div style={{ height: 640 }}>
-            <KlineChart symbol={klineSymbol} limit={500} />
-          </div>
-        )}
-      </Modal>
-    </div>
+    <Tabs
+      size="small"
+      style={{ height: '100%' }}
+      items={[
+        {
+          key: 'pool',
+          label: '回踩待确认',
+          children: (
+            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+              <div style={{ flexShrink: 0, marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Segmented<StatusFilter> value={filter} onChange={setFilter} options={segOptions} />
+                <Button icon={<ReloadOutlined />} onClick={() => fetchData()} loading={loading} size="small">
+                  刷新
+                </Button>
+              </div>
+              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
+                <Spin spinning={loading}>
+                  <Table<PullbackPendingItem>
+                    rowKey="id"
+                    columns={columns}
+                    dataSource={filtered}
+                    pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
+                    size="small"
+                    scroll={{ x: 1140 }}
+                    locale={{
+                      emptyText: (
+                        <Empty
+                          description={filter === 'pending'
+                            ? '暂无待确认币种——回踩触碰且当根无金K时会出现在这里'
+                            : '暂无记录'}
+                        />
+                      ),
+                    }}
+                  />
+                </Spin>
+              </div>
+              <Modal
+                open={!!klineSymbol}
+                title={klineSymbol ? `${klineSymbol} 最新K线` : ''}
+                footer={null}
+                width={1200}
+                destroyOnClose
+                onCancel={() => setKlineSymbol(null)}
+              >
+                {klineSymbol && (
+                  <div style={{ height: 640 }}>
+                    <KlineChart symbol={klineSymbol} limit={500} />
+                  </div>
+                )}
+              </Modal>
+            </div>
+          ),
+        },
+        {
+          key: 'funnel',
+          label: '筛选漏斗',
+          children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><FunnelPanel /></div>,
+        },
+      ]}
+    />
   )
 }

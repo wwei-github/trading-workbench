@@ -295,9 +295,9 @@ export interface AccountBrief {
 export interface BlacklistItem {
   id: string;
   symbol: string;
-  origin: 'manual' | 'auto'; // 手动（永久）/ 止损严重超预算自动（冷却期）
+  origin: 'manual' | 'auto' | 'stop_hard'; // 手动（永久）/ 止损超预算自动（冷却期）/ 止损≥1.5R（永久，只能手动移出）
   reason: string;
-  expires_at: string | null; // auto 冷却到期时间；manual 恒 null
+  expires_at: string | null; // auto 冷却到期时间；manual/stop_hard 恒 null
   expired: boolean; // auto 已过期（自然失效）
   active: boolean; // 当前生效（过滤扫描中）
   disabled: boolean;

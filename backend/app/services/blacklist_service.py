@@ -15,32 +15,36 @@ from app.models.blacklist import SymbolBlacklist
 
 logger = logging.getLogger(__name__)
 
-AUTO_RISK_OVERSHOOT = 1.2  # 实际亏损达计划风险预算的 1.2 倍（超 20%）视为严重超出
-AUTO_COOLDOWN_DAYS = 30    # 自动黑名单冷却天数（到期自动失效）
+AUTO_RISK_OVERSHOOT = 1.2  # 实际亏损达计划风险预算的 1.2 倍（超 20%）→ 冷却档
+AUTO_COOLDOWN_DAYS = 30    # 冷却档天数（到期自动失效）
+PERMANENT_R_OVERSHOOT = 1.5  # 实亏 ≥1.5R（2026-10-11 拍板）→ 永久档，只能手动移出
 
 
 def active_symbols(db: Session) -> set[str]:
-    """当前生效的黑名单集合：disabled=false 且（manual 永久 / auto 未过期）"""
+    """当前生效的黑名单集合：disabled=false 且（manual/stop_hard 永久 / auto 未过期）"""
     now = datetime.utcnow()
     rows = db.execute(select(SymbolBlacklist).where(SymbolBlacklist.disabled == False)).scalars().all()  # noqa: E712
     out: set[str] = set()
     for r in rows:
         if r.origin == "auto" and r.expires_at is not None and r.expires_at <= now:
-            continue  # 自动冷却到期，自然失效（行保留供历史查看）
+            continue  # 冷却档到期，自然失效（行保留供历史查看）
         out.add(r.symbol)
     return out
 
 
 def register_settle(db: Session, symbol: str, planned_risk, realized_pnl, exit_reason: str) -> None:
     """结算后登记（2026-09-18 用户拍板口径）：实际止损金额严重超出计划风险预算
-    就自动加入黑名单，冷却 AUTO_COOLDOWN_DAYS 天。
+    就自动加入黑名单。
 
     触发条件（满足其一）：
     - 净亏损 ≥ 计划风险 × 1.2：滑点撑爆止损距离（GRIFFAIN 实例 -121.7% R）、
-      资金费/费用侵蚀、强平（-126.4% R）等「止损没兜住」的情形
-    - exit_reason == liquidation：强平=止损彻底失效，无条件拉黑
+      资金费/费用侵蚀等「止损没兜住」的情形 → 冷却 AUTO_COOLDOWN_DAYS 天
+    - 净亏损 ≥ 计划风险 × 1.5（2026-10-11 拍板）：止损严重失控 → 永久档
+      （origin=stop_hard，expires_at 恒 NULL），只能手动移出
+    - exit_reason == liquidation：强平=止损彻底失效，无条件触发（倍数决定档位）
 
-    已在黑名单则刷新理由与到期时间（不重复建行）
+    已在黑名单：冷却档刷新理由与到期；manual 行不动（本就永久，不降级覆盖）；
+    升级到永久档则清 expires_at
     """
     try:
         planned = float(planned_risk or 0)
@@ -52,26 +56,36 @@ def register_settle(db: Session, symbol: str, planned_risk, realized_pnl, exit_r
     overshoot = -pnl / planned
     if exit_reason != "liquidation" and overshoot < AUTO_RISK_OVERSHOOT:
         return
+    permanent = overshoot >= PERMANENT_R_OVERSHOOT
     kind = "强平（止损失效）" if exit_reason == "liquidation" else f"止损超预算 {overshoot * 100:.0f}%"
-    reason = f"自动：{kind}，计划风险 {planned:.2f} → 实亏 {pnl:.2f}，冷却 {AUTO_COOLDOWN_DAYS} 天"
+    reason = (
+        f"自动：{kind}，计划风险 {planned:.2f} → 实亏 {pnl:.2f}，"
+        + ("永久拉黑（≥1.5R），只能手动移出" if permanent
+           else f"冷却 {AUTO_COOLDOWN_DAYS} 天")
+    )
 
     existing = db.execute(
         select(SymbolBlacklist).where(SymbolBlacklist.symbol == symbol)
     ).scalar_one_or_none()
     if existing is not None:
-        existing.origin = "auto"
+        if existing.origin == "manual" and not existing.disabled:
+            logger.warning("黑名单已存在 %s（手动永久），保持不变：%s", symbol, kind)
+            return
+        existing.origin = "stop_hard" if permanent else "auto"
         existing.disabled = False
         existing.reason = reason
-        existing.expires_at = datetime.utcnow() + timedelta(days=AUTO_COOLDOWN_DAYS)
+        existing.expires_at = None if permanent else datetime.utcnow() + timedelta(days=AUTO_COOLDOWN_DAYS)
         logger.warning("黑名单已存在 %s，刷新：%s", symbol, kind)
         return
     db.add(SymbolBlacklist(
         symbol=symbol,
-        origin="auto",
+        origin="stop_hard" if permanent else "auto",
         reason=reason,
-        expires_at=datetime.utcnow() + timedelta(days=AUTO_COOLDOWN_DAYS),
+        expires_at=None if permanent else datetime.utcnow() + timedelta(days=AUTO_COOLDOWN_DAYS),
     ))
-    logger.warning("黑名单自动添加 %s：%s，冷却 %d 天", symbol, kind, AUTO_COOLDOWN_DAYS)
+    logger.warning(
+        "黑名单自动添加 %s：%s（%s）", symbol, kind,
+        "永久档，只能手动移出" if permanent else f"冷却档 {AUTO_COOLDOWN_DAYS} 天")
 
 
 def add_manual(db: Session, symbol: str, reason: str = "") -> SymbolBlacklist:
