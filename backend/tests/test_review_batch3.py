@@ -432,9 +432,10 @@ def test_actual_review_tactic_dimension(db):
 
 
 def test_actual_review_htf_phase_dimension(db):
-    """4h排列强度维度（2026-10-10 五次拍板改口径，docs/17）：weak/medium/strong/
-    extreme/exhausted 有序五桶 + 未知兜底，验证锁单矩阵各档的分组贡献；
-    旧行（launch/mid/late 旧枚举）标签缺失 → 未知"""
+    """4h排列强度维度（2026-10-10 五次拍板改口径，docs/17；2026-10-11 衰竭期
+    退役收 4 档）：weak/medium/strong/extreme 有序四桶 + 未知兜底，验证锁单
+    矩阵各档的分组贡献；旧行（launch/mid/late 旧枚举/exhausted 退役档）
+    标签缺失 → 未知"""
     from app.services.actual_review import build_actual_review
 
     db.add(_closed_rec({"recommendation": 70, "htf_phase": "exhausted"}))
@@ -447,8 +448,9 @@ def test_actual_review_htf_phase_dimension(db):
     dims = {}
     for g in out["groups"]:
         dims.setdefault(g["dim"], []).append((g["key"], g["count"]))
-    # 有序输出：弱排列 → 中等排列 → 衰竭期 → 未知（强/极强无样本不占行）
-    assert dims["4h趋势期"] == [("弱排列", 1), ("中等排列", 1), ("衰竭期", 1), ("未知", 1)]
+    # 有序输出：弱排列 → 中等排列 → 未知（强/极强无样本不占行；
+    # exhausted 退役旧行归未知）
+    assert dims["4h趋势期"] == [("弱排列", 1), ("中等排列", 1), ("未知", 2)]
     # 逐笔 items 带原始值
     assert sorted(
         i["htf_phase"] for i in out["items"] if i["htf_phase"]

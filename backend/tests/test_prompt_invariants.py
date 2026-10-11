@@ -11,7 +11,7 @@ from app.services.strategy import technical
 from app.services.strategy.candlestick import (
     GOLDEN_PATTERNS, PATTERN_LABEL_MAP, golden_whitelist_labels,
 )
-from app.services.strategy.technical import analyze_htf_background, render_indicator_block
+from app.services.strategy.technical import render_indicator_block
 
 
 # ── fixtures（与 test_htf_trend_age 同构造）──────────────────────
@@ -74,21 +74,8 @@ def test_tradeoff_hint_retired():
     assert "盈亏比取舍" not in block
 
 
-# ── 不变量 2：「动能同向」定义三处同步 ───────────────────────────
-
-
-def test_momentum_same_definition_synced_p0_p1():
-    """P0/P1 共享 _RULE_HTF_HARD（P1 经 render_system_prompt 渲染注入）"""
-    for txt in (_p0_system(), ai_agent.render_system_prompt()):
-        assert "仍算同向" in txt
-        assert "柱线已翻向" in txt  # 反例边界一致
-
-
-def test_momentum_same_definition_matches_technical_note():
-    """注记措辞与提示词定义互相咬合：技术层产出「仍同向」，提示词引用「仍算同向」"""
-    r = analyze_htf_background(_htf_strong_same())
-    assert r["momentum"] == "same"
-    assert "动能衰减" in r["detail"] and "仍同向" in r["detail"]
+# ── 不变量 2（2026-10-11 退役）：「动能同向」定义随衰竭期/MACD 动能判定
+# 整链删除，_RULE_HTF_HARD 不再含该段，技术层不再产出「仍同向」注记 ──
 
 
 # ── 不变量 3：金K白名单单一来源（B4）────────────────────────────
@@ -142,7 +129,8 @@ def test_legacy_signal_labels_compressed():
 
 def test_htf_structured_line_injected():
     block = render_indicator_block(_kl_1h_stub(), htf_klines=_htf_strong_same())
-    assert "- 4h背景: phase=" in block and "momentum=" in block
+    assert "- 4h背景: phase=" in block
+    assert "momentum=" not in block  # momentum 键已随衰竭期退役删除（2026-10-11）
 
 
 def test_htf_structured_line_absent_without_htf():

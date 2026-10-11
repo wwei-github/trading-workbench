@@ -572,16 +572,16 @@ def analyze_obv(klines: list[list], lookback: int = 20) -> Optional[dict]:
 # 换回「EMA 排列角度（发散度）」——与 gate_4h/structure_1h 同一计算逻辑
 # （|EMA差|/ATR(14,4h)），双线取小者：快线张而慢线未张不成强趋势。
 # 分档：weak <0.5（gate 硬门线以下=排列未证明）/ medium <1.0 / strong <2.0 /
-# extreme ≥2.0（过度张开，过热警惕均值回归）；衰竭期=MACD 柱线翻向
-# （动能先死，凌驾于强度分档；交叉 ≤10 根的太新背离不判衰竭，防 V 型反弹误杀）。
+# extreme ≥2.0（过度张开，过热警惕均值回归）。
+# （2026-10-11 衰竭期退役：原第五档 exhausted=MACD 柱线翻向凌驾于强度分档，
+# 因单根翻向噪声大 + 与结构档混装丢失排列强度信息而整链删除，见 docs/17）
 PHASE_MEDIUM_MIN = 0.5
 PHASE_STRONG_MIN = 1.0
 PHASE_EXTREME_MIN = 2.0
-TREND_LAUNCH_MAX_BARS = 10  # 交叉太新保护：柱线翻向但交叉未满此数不判衰竭（沿用年龄口径）
 
 _PHASE_LABELS = {
     "weak": "排列弱", "medium": "排列中等", "strong": "排列强",
-    "extreme": "排列极强", "exhausted": "衰竭期",
+    "extreme": "排列极强",
 }
 
 
@@ -618,22 +618,21 @@ def _htf_cross_age(f: np.ndarray, m: np.ndarray) -> tuple[Optional[int], int]:
 
 
 def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 55) -> Optional[dict]:
-    """4h 高周期背景：ADX 门控 + EMA 排列强度五档（1h 分析的大方向参照）。
+    """4h 高周期背景：ADX 门控 + EMA 排列强度 4 档（1h 分析的大方向参照）。
 
     htf_klines 为 4h 周期 K 线（最后一根未收盘，内部剔除）。
     状态优先级：
     - ADX<20：4h 震荡，EMA 排列不投方向票（治震荡市 EMA 反复交叉的误标）
     - EMA21/55 间距<0.1%：均线纠缠
-    - 排列强度五档（2026-10-10 五次拍板，按排列角度=发散度分档，与 gate_4h
+    - 排列强度 4 档（2026-10-10 五次拍板，按排列角度=发散度分档，与 gate_4h
       同一计算逻辑 |EMA差|/ATR(14,4h)，双线取小者）：weak <0.5 / medium <1.0 /
-      strong <2.0 / extreme ≥2.0；衰竭期=MACD 柱线已翻向（凌驾于强度分档，
-      但交叉 ≤TREND_LAUNCH_MAX_BARS 根的太新背离不判衰竭——V 型反弹动能背离
-      是常见态，不是趋势死亡）
+      strong <2.0 / extreme ≥2.0。（2026-10-11 衰竭期退役：原第五档
+      exhausted=MACD 柱线翻向凌驾分档，因单根翻向噪声大而整链删除）
     - age_bars（交叉后根数）仅作 detail 注记保留，不再参与分档
     - ADX 计算失败静默降级（单指标失败不阻塞背景注入）
 
     返回 {state(bullish/bearish/ranging/mixed), state_label, dir, phase,
-          age_bars, macro_aligned(EMA55 在 EMA144 顺势侧?), momentum, detail}
+          age_bars, macro_aligned(EMA55 在 EMA144 顺势侧?), detail}
     """
     if not htf_klines or len(htf_klines) < 2:
         return None
@@ -657,7 +656,7 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
     if adx_v is not None and adx_v < 20:
         return {
             "state": "ranging", "state_label": "震荡（无趋势，不作方向参考）", "dir": 0,
-            "phase": None, "age_bars": None, "macro_aligned": None, "momentum": None,
+            "phase": None, "age_bars": None, "macro_aligned": None,
             "detail": f"ADX={adx_v:.1f}(<20), EMA{fast}/{slow}排列仅记录不投票",
         }
 
@@ -665,7 +664,7 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
     if dist_pct < 0.1:
         return {
             "state": "mixed", "state_label": "均线纠缠", "dir": 0,
-            "phase": None, "age_bars": None, "macro_aligned": None, "momentum": None,
+            "phase": None, "age_bars": None, "macro_aligned": None,
             "detail": f"EMA{fast}={fn:.6g}, EMA{slow}={mn:.6g}, 间距{dist_pct:.2f}%",
         }
 
@@ -678,19 +677,6 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
     elif age is None:
         age_note = "窗口内无交叉（极老趋势，按当前排列强度处理）"
     state = "bullish" if dir_ > 0 else "bearish"
-
-    # MACD 柱线动能（12/26/9，尾部与已收盘根对齐）：柱线翻向 = 动能先于均线死亡。
-    # 单边匀速行情柱线渐近收敛到 0，浮点尾数 ±1e-15 不是真翻向——数值零保护
-    momentum, shrinking = "same", False
-    macd = _macd_series(htf_klines)
-    if macd is not None:
-        hist = macd[2]
-        h_now = float(hist[-1])
-        if abs(h_now) > 1e-12 and (h_now > 0) != (dir_ > 0):
-            momentum = "opposite"
-        elif len(hist) >= 4:
-            seg = [abs(float(v)) for v in hist[-4:]]
-            shrinking = seg[3] < seg[2] < seg[1] < seg[0] and seg[0] > 1e-12
 
     # 排列角度（2026-10-10 五次拍板）：|EMA差|/ATR(14,4h) 双线取小者分强度档，
     # 与 gate_4h/structure_1h 同一计算逻辑。ATR 与 ema_gate 同口径（TR14 均值，
@@ -705,14 +691,7 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
     div_fm = abs(fn - mn) / atr4h if atr4h > 0 else None
     div_ms = abs(mn - sn) / atr4h if atr4h > 0 else None
     div_min = min(div_fm, div_ms) if div_fm is not None and div_ms is not None else None
-
-    # 衰竭判定：柱线翻向凌驾于强度分档，但交叉太新（≤10根）的背离不判衰竭
-    # （V 型反弹动能背离是常见态，不是趋势死亡；此时按强度分档 + 动能背离注记）
-    if momentum == "opposite" and not (
-            age is not None and age <= TREND_LAUNCH_MAX_BARS):
-        phase = "exhausted"
-    else:
-        phase = _strength_phase(div_min)
+    phase = _strength_phase(div_min)
 
     # 宏观守卫：EMA55 是否在 EMA144 顺势侧（= 三线是否按方向完整排列）。
     # 逆宏观按 EMA21 相对 EMA144 的位置分两档注记 + EMA144 斜率（宏观劲度）：
@@ -745,14 +724,8 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
     ]
     if div_min is not None:
         notes.append(f"排列角度{div_min:.2f}ATR")  # 强度分档证据（定标审计用）
-    if momentum == "opposite":
-        notes.append("动能背离（柱线已翻向）" if phase != "exhausted" else "柱线已翻向")
-    elif shrinking:
-        # 「仍同向」字样进注记：盈亏比取舍条款的「动能同向」以柱线翻向为准，
-        # 减速不算不同向——线上 BTWUSDT 2026-10-10 AI 把裸「动能衰减」注记
-        # 误读成动能不同向而 skip，未走 trail 路径
-        notes.append("动能衰减（柱线收窄·仍同向）")
     notes.append(macro_note)
+    # （动能背离/动能衰减注记已随 2026-10-11 衰竭期退役删除）
 
     label = f"{_PHASE_LABELS[phase]}{'多头' if dir_ > 0 else '空头'}背景"
     detail = (
@@ -763,7 +736,7 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
         detail += f" · ADX={adx_v:.1f}"
     return {
         "state": state, "state_label": label, "dir": dir_, "phase": phase,
-        "age_bars": age, "macro_aligned": macro_aligned, "momentum": momentum,
+        "age_bars": age, "macro_aligned": macro_aligned,
         "detail": detail,
     }
 
@@ -771,8 +744,8 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
 def enforce_htf_constraint(ai_result: dict, htf_klines: Optional[list]) -> dict:
     """4h 排列强度硬约束的程序化兜底（原地修改并返回 ai_result）。
 
-    锁单矩阵（2026-10-10 五次拍板改排列强度口径）：
-    - 衰竭期（动能已翻向）→ 双向禁开任何新单，最先判；
+    锁单矩阵（2026-10-10 五次拍板改排列强度口径；2026-10-11 衰竭期双向禁开
+    规则随衰竭概念退役而删除）：
     - 中等/强/极强排列（发散 ≥0.5 ATR=趋势已被证明）∧ 宏观同侧 → 锁逆势；
     - 弱排列（排列未证明）与逆宏观（熊内反弹/牛内回调）任何档 → 放行，
       放行侧均由质量分惩罚兜底排序。
@@ -803,16 +776,6 @@ def enforce_htf_constraint(ai_result: dict, htf_klines: Optional[list]) -> dict:
                 "recommendation": ai_result.get("recommendation"),
                 "reason": reason,
             }
-
-        # 衰竭期最先判：动能已翻向，顺势/逆势都不给开
-        if htf.get("phase") == "exhausted":
-            ai_result["trade_decision"] = "skip"
-            ai_result["skip_reason"] = (
-                f"方向约束：4h衰竭期{'多头' if htf['state'] == 'bullish' else '空头'}"
-                "背景禁止开新单（程序强制 skip）"
-            )
-            ai_result["veto_original"] = _veto("4h 趋势衰竭期禁止开新单")
-            return ai_result
 
         # 中等/强/极强排列 ∧ 宏观同侧 → 锁逆势（发散 ≥0.5 = 排列已被证明）
         if htf.get("phase") not in ("medium", "strong", "extreme") \
@@ -960,17 +923,12 @@ def render_indicator_block(
             f"- 指标方向: 多空平衡（看多{nb}项 vs 看空{ns}项）→ 结合K线结构与量能判断"
         )
 
-    # 4h 排列强度方向硬约束（2026-10-10 五次拍板改排列强度口径）：
-    # 衰竭期双向禁开新单；中等/强/极强排列（宏观同侧）只可顺势；
-    # 弱排列（排列未证明）与逆宏观不锁，程序侧另有 enforce_htf_constraint 兜底
+    # 4h 排列强度方向硬约束（2026-10-10 五次拍板改排列强度口径；2026-10-11
+    # 衰竭期双向禁开行随衰竭概念退役删除）：中等/强/极强排列（宏观同侧）只可
+    # 顺势；弱排列（排列未证明）与逆宏观不锁，程序侧另有 enforce_htf_constraint
+    # 兜底
     htf_r = next((r for _, s, r in results if s == HTF_SHORT and r), None)
-    if htf_r and htf_r.get("phase") == "exhausted":
-        lines.append(
-            f"- 方向约束（硬性）: 4h{htf_r['state_label']}"
-            " —— 衰竭期禁止开任何新单，顺势/逆势一律 skip"
-            "（优先于指标多数决，细则见系统提示词硬约束）"
-        )
-    elif (htf_r and htf_r.get("phase") in ("medium", "strong", "extreme")
+    if (htf_r and htf_r.get("phase") in ("medium", "strong", "extreme")
             and htf_r.get("macro_aligned")):
         if htf_r["state"] == "bullish":
             lines.append(
@@ -983,12 +941,13 @@ def render_indicator_block(
                 " —— 仅可 short，开多一律 skip（优先于指标多数决，细则见系统提示词硬约束）"
             )
 
-    # 4h 背景结构化行（2026-10-10 C7，docs/20）：phase/momentum/macro 以机器
+    # 4h 背景结构化行（2026-10-10 C7，docs/20）：phase/macro 以机器
     # 可读键值对注入——detail 字符串会被 LLM 误读（BTWUSDT「动能衰减」丢失
-    # 「仍同向」个案），关键字段不再只依赖散文渲染
+    # 「仍同向」个案），关键字段不再只依赖散文渲染（momentum 键已随
+    # 2026-10-11 衰竭期退役删除）
     if htf_r:
         lines.append(
-            f"- 4h背景: phase={htf_r['phase']} momentum={htf_r['momentum']}"
+            f"- 4h背景: phase={htf_r['phase']}"
             f" macro={'同侧' if htf_r.get('macro_aligned') else '逆侧'}"
         )
 
@@ -1114,11 +1073,11 @@ def compute_quality_score(
     §3.3 条件2/3：缩量回踩 +3 / 放量回踩 -5 / MACD 零轴同向 +4~+5 / 动量
     不确认 -4；仅回踩类触发传入，加分不拦截）
     修饰规则（2026-09-17 设计评审定稿；2026-09-24 4h 背景提权；2026-10-10
-    五次拍板改排列强度口径）：
+    五次拍板改排列强度口径；2026-10-11 衰竭期退役删其分值）：
     - 4h背景按排列强度：同向 弱+5 / 中等+8 / 强+10 / 极强+6（过热降档，
-      均值回归风险）/ 衰竭-6（追老化趋势）；逆向 弱-6 / 中等-10 / 强-12 /
-      极强-8（强趋势逆势更险）/ 衰竭-4（反转空间）——中等/强/极强才进
-      硬约束，此处逆向重罚主要压弱排列/衰竭期的逆势单排序
+      均值回归风险）；逆向 弱-6 / 中等-10 / 强-12 /
+      极强-8（强趋势逆势更险）——中等/强/极强才进
+      硬约束，此处逆向重罚主要压弱排列的逆势单排序
     - 逆宏观（熊内反弹/牛内回调）额外 -4（硬约束不锁，分数兜底）
     - 突破触发且 ADX≥25 +5（强趋势中的突破可信）
     - 放量加分：量比 ≥1.2 +5（2026-09-25 金K类；2026-09-29 起突破放量不再
@@ -1133,10 +1092,11 @@ def compute_quality_score(
     htf = by_short.get(HTF_SHORT)
     if htf and int(htf.get("dir") or 0):
         same = int(htf["dir"]) == direction
-        # 同向 / 逆向 按排列强度分档（phase 缺失时退回中性 ±5/−8）
+        # 同向 / 逆向 按排列强度分档（phase 缺失时退回中性 ±5/−8）；
+        # exhausted 档已退役（2026-10-11），旧行值走默认中性分支
         phase_mod = {
             "weak": (5, -6), "medium": (8, -10), "strong": (10, -12),
-            "extreme": (6, -8), "exhausted": (-6, -4),
+            "extreme": (6, -8),
         }
         score += phase_mod.get(htf.get("phase"), (5, -8))[0 if same else 1]
         if htf.get("macro_aligned") is False:

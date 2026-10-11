@@ -358,7 +358,8 @@ def _votes_snapshot(votes: dict, stabilize: Optional[dict] = None) -> dict:
             "state": htf_res.get("state"),
             "label": htf_res.get("state_label"),
             "dir": int(htf_res.get("dir") or 0),
-            # 排列强度五档（2026-10-10 五次拍板）：weak/medium/strong/extreme/exhausted，
+            # 排列强度 4 档（2026-10-10 五次拍板；2026-10-11 衰竭期退役）：
+            # weak/medium/strong/extreme，
             # 前端「4h方向」列短标签用；旧行无此键回退强/弱 label 解析
             "phase": htf_res.get("phase"),
         }

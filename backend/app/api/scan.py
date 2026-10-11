@@ -1480,7 +1480,7 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
             interval=cfg.kline_interval, tactics_block=tactics_block,
             tp2_enabled=bool(cfg.tp2_enabled),
         )
-        # 4h 排列强度方向硬约束兜底（2026-10-10 五次拍板：衰竭期双向禁开；中等/强/极强+宏观同侧锁逆势）
+        # 4h 排列强度方向硬约束兜底（2026-10-10 五次拍板；2026-10-11 衰竭期双向禁开退役：中等/强/极强+宏观同侧锁逆势）
         ai_result = enforce_htf_constraint(ai_result, htf_klines)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI 分析失败: {e}")

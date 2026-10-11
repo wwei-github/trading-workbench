@@ -107,7 +107,8 @@ class AIAnalysis(Base):
     # 表白名单，防幻觉闸门外值清空）+ 判定依据；战法仅借鉴不拦截，旧行 NULL
     tactic_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     tactic_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    # 4h 排列强度（2026-10-10 五次拍板）：weak/medium/strong/extreme/exhausted，
+    # 4h 排列强度（2026-10-10 五次拍板；2026-10-11 衰竭期退役收 4 档）：
+    # weak/medium/strong/extreme，旧行 exhausted=退役旧档（复盘归「未知」）
     # 分析时由 enforce_htf_constraint stash 落库；仅 suggest 且有 4h 数据时有值，
     # 旧行（launch/mid/late 旧枚举）/无 4h 数据 NULL=未知，复盘「4h趋势期」维度按此分组
     htf_phase: Mapped[Optional[str]] = mapped_column(String(12), nullable=True)

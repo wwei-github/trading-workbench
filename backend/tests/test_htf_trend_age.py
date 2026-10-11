@@ -1,12 +1,14 @@
-"""4h 背景排列强度分类测试（2026-10-10 五次拍板改口径）
+"""4h 背景排列强度分类测试（2026-10-10 五次拍板改口径；2026-10-11 衰竭期退役）
 
-分类主轴从「EMA21/55 交叉后根数四档」换成「EMA 排列角度（发散度）五档」：
+分类主轴从「EMA21/55 交叉后根数四档」换成「EMA 排列角度（发散度）四档」：
 |EMA21-55|/ATR 与 |EMA55-144|/ATR 双线取小者——weak <0.5 / medium <1.0 /
-strong <2.0 / extreme ≥2.0；衰竭期=MACD 柱线翻向（凌驾于强度档，但交叉
-≤10 根的太新背离不判衰竭）；age_bars 仅作 detail 注记。
+strong <2.0 / extreme ≥2.0。（2026-10-11 衰竭期退役：原第五档 exhausted=
+MACD 柱线翻向凌驾强度档，因单根翻向噪声大 + 与结构档混装丢失排列强度信息
+而整链删除——动能翻向不再改变 phase，双向禁开规则退役；age_bars 仅作
+detail 注记。）
 宏观守卫 EMA55 vs EMA144（逆宏观=熊内反弹/牛内回调）不变。
-硬约束锁单矩阵：衰竭期最先判双向禁开新单；中等/强/极强 ∧ 宏观同侧 →
-锁逆势；弱排列/逆宏观 → 放行。
+硬约束锁单矩阵（退役后）：中等/强/极强 ∧ 宏观同侧 → 锁逆势；
+弱排列/逆宏观 → 放行。
 """
 import numpy as np
 
@@ -33,7 +35,7 @@ def _ramp(n: int, drift: float, base: float) -> list[float]:
     return [base + drift * i for i in range(n)]
 
 
-# ── 分类：排列强度五档 ──
+# ── 分类：排列强度四档（2026-10-11 衰竭期退役，phase 恒为结构档）──
 
 
 def test_extreme_bullish_classification():
@@ -73,16 +75,18 @@ def test_strong_bullish_bear_rally_longer():
     assert r["macro_aligned"] is False
 
 
-def test_bear_exhausted_before_recross():
-    """跌 150 根后反弹 12 根：EMA 尚未金叉（仍空头排列）但柱线已翻多 → 衰竭期空头
-    （动能先于均线死亡；MACD 数值零保护不误判）"""
+def test_bear_histogram_flip_keeps_structural_phase():
+    """跌 150 根后反弹 12 根：EMA 尚未金叉（仍空头排列）但柱线已翻多——
+    衰竭期退役后（2026-10-11）动能翻向不再改变 phase，按排列角度分结构档，
+    detail 无动能注记、label 无「衰竭期」"""
     closes = _ramp(150, -0.5, 100.0) + _ramp(12, 3.0, 25.0)
     r = analyze_htf_background(_kl_from_closes(closes))
     assert r is not None
-    assert r["state"] == "bearish" and r["phase"] == "exhausted"
-    assert r["momentum"] == "opposite"
+    assert r["state"] == "bearish"
+    assert r["phase"] in ("weak", "medium", "strong", "extreme")
     assert r["macro_aligned"] is True  # 空头顺势侧 = EMA55<EMA144，长期下跌后成立
-    assert "衰竭期空头背景" in r["state_label"]
+    assert "衰竭期" not in r["state_label"]
+    assert "动能背离" not in r["detail"] and "柱线已翻向" not in r["detail"]
 
 
 # ── 三线堆叠位置注记（6 种排列全枚举；行为只读 macro_aligned 二值，注记细化）──
@@ -90,7 +94,7 @@ def test_bear_exhausted_before_recross():
 
 def test_v_recovery_strong_annotation():
     """长跌后急弹：EMA21 已上穿 144、EMA55 未跟上 → V型反转注记（逆宏观，不锁单）。
-    排列角度 ~1.18 ATR → strong（1.0≤div<2.0）；金叉 8 根柱线未翻 → 不判衰竭"""
+    排列角度 ~1.18 ATR → strong（1.0≤div<2.0）"""
     closes = _ramp(150, -0.5, 100.0) + _ramp(18, 6.0, 25.0)
     r = analyze_htf_background(_kl_from_closes(closes))
     assert r is not None
@@ -130,29 +134,28 @@ def test_constraint_unlocks_v_recovery_counter_short():
     assert out["trade_decision"] == "suggest"
 
 
-def test_exhausted_bullish():
-    """长涨后急跌 10 根：EMA 排列仍多头但 MACD 柱线翻负 → 衰竭期（动能先死）"""
+def test_bull_histogram_flip_no_exhausted():
+    """长涨后急跌 10 根：EMA 排列仍多头——衰竭期退役后（2026-10-11）柱线翻负
+    不再判衰竭/不改 label，phase 按排列角度落结构档，detail 无动能注记"""
     closes = _ramp(165, 1.5, 100.0) + _ramp(10, -8.0, 347.5)
     r = analyze_htf_background(_kl_from_closes(closes))
     assert r is not None
     assert r["state"] == "bullish"
-    assert r["phase"] == "exhausted"
-    assert r["momentum"] == "opposite"
+    assert r["phase"] in ("weak", "medium", "strong", "extreme")
     assert r["macro_aligned"] is True
-    assert "柱线已翻向" in r["detail"]
+    assert "衰竭期" not in r["state_label"]
+    assert "动能背离" not in r["detail"] and "柱线已翻向" not in r["detail"]
 
 
-def test_same_direction_shrinking_note():
-    """冲高后降速不翻向：柱线仍同号但连续收窄 → 动能衰减注记带「仍同向」字样
-    （BTWUSDT 2026-10-10：AI 把裸「动能衰减」误读成动能不同向而 skip，
-    盈亏比取舍条款的「动能同向」以柱线翻向为准，减速不算不同向）"""
+def test_no_momentum_annotation():
+    """冲高后降速不翻向：动能衰减注记已随衰竭期退役删除（2026-10-11），
+    detail 不再出现任何动能措辞，phase 恒为结构档"""
     closes = _ramp(150, 0.5, 100.0) + _ramp(6, 2.5, 175.0) + _ramp(8, 1.2, 190.0)
     r = analyze_htf_background(_kl_from_closes(closes))
     assert r is not None
     assert r["state"] == "bullish"
-    assert r["momentum"] == "same"  # 未翻向
-    assert r["phase"] != "exhausted"
-    assert "动能衰减" in r["detail"] and "仍同向" in r["detail"]
+    assert r["phase"] in ("weak", "medium", "strong", "extreme")
+    assert "动能衰减" not in r["detail"] and "仍同向" not in r["detail"]
 
 
 def test_cross_age_helper():
@@ -222,32 +225,21 @@ def test_constraint_locks_extreme_aligned():
     assert out["htf_phase"] == "extreme"  # stash 落 AIAnalysis.htf_phase 供复盘分组
 
 
-def test_constraint_blocks_exhausted_counter():
-    """衰竭期多头（柱线已翻）+ AI 开空 → 双向禁开新矩阵（2026-10-09 r2）：
-    强制 skip + veto 快照 + htf_phase stash（顺势侧放行被本矩阵反转）"""
-    closes = _ramp(165, 1.5, 100.0) + _ramp(10, -8.0, 347.5)
+def test_constraint_allows_histogram_flip_with_trend():
+    """原衰竭期构造（空头排列宏观同侧 + 柱线已翻多）+ AI 顺势开空 → 放行：
+    衰竭期双向禁开规则退役（2026-10-11），矩阵只剩锁逆势——顺势侧不受
+    动能翻向影响（htf_phase stash 为结构档，无「衰竭期」措辞）"""
+    closes = _ramp(150, -0.5, 100.0) + _ramp(12, 3.0, 25.0)
     d = {"trade_decision": "suggest", "direction": "short"}
     out = enforce_htf_constraint(d, _kl_from_closes(closes))
-    assert out["trade_decision"] == "skip"
-    assert "衰竭期" in out["skip_reason"] and "禁止开新单" in out["skip_reason"]
-    assert out["veto_original"]["source"] == "htf_constraint"
-    assert out["htf_phase"] == "exhausted"
-
-
-def test_constraint_blocks_exhausted_aligned():
-    """衰竭期空头（柱线已翻多）+ AI 顺势开多 → 同样禁开（双向，非仅锁逆势）"""
-    closes = _ramp(150, -0.5, 100.0) + _ramp(12, 3.0, 25.0)
-    d = {"trade_decision": "suggest", "direction": "long"}
-    out = enforce_htf_constraint(d, _kl_from_closes(closes))
-    assert out["trade_decision"] == "skip"
-    assert "衰竭期" in out["skip_reason"]
-    assert out["htf_phase"] == "exhausted"
+    assert out["trade_decision"] == "suggest"
+    assert "veto_original" not in out
+    assert out["htf_phase"] in ("weak", "medium", "strong", "extreme")
 
 
 def test_constraint_unlocks_strong_bear_rally():
     """强排列多头熊内反弹（逆宏观）+ AI 开空 → 放行（逆宏观任何强度不锁）。
-    夹具=18 根反弹（角度 ~1.94 ATR → strong）；12 根版本实为衰竭期空头，
-    r2 起衰竭期双向禁开，勿混用"""
+    夹具=18 根反弹（角度 ~1.94 ATR → strong）"""
     closes = _ramp(150, -0.5, 100.0) + _ramp(18, 3.0, 25.0)
     d = {"trade_decision": "suggest", "direction": "short"}
     out = enforce_htf_constraint(d, _kl_from_closes(closes))
@@ -268,21 +260,29 @@ def _votes(phase: str, macro=True, htf_dir=1) -> dict:
 
 
 def test_quality_score_same_direction_by_phase():
-    """同向：弱+5 / 中+8 / 强+10 / 极强+6（过热降档）/ 衰竭-6（基础 71）"""
+    """同向：弱+5 / 中+8 / 强+10 / 极强+6（过热降档）（基础 71）"""
     base = 50 + 1 * 3 * 7
-    cases = {"weak": 5, "medium": 8, "strong": 10, "extreme": 6, "exhausted": -6}
+    cases = {"weak": 5, "medium": 8, "strong": 10, "extreme": 6}
     for phase, mod in cases.items():
         s = compute_quality_score(1, _votes(phase), "trigger_pullback_confirm")
         assert s == base + mod, f"{phase}: {s} != {base + mod}"
 
 
 def test_quality_score_counter_direction_by_phase():
-    """逆向：弱-6 / 中-10 / 强-12 / 极强-8 / 衰竭-4"""
+    """逆向：弱-6 / 中-10 / 强-12 / 极强-8（exhausted 档退役，旧行值走中性兜底）"""
     base = 50 + (-1) * 3 * 7
-    cases = {"weak": -6, "medium": -10, "strong": -12, "extreme": -8, "exhausted": -4}
+    cases = {"weak": -6, "medium": -10, "strong": -12, "extreme": -8}
     for phase, mod in cases.items():
         s = compute_quality_score(-1, _votes(phase), "trigger_pullback_confirm")
         assert s == base + mod, f"{phase}: {s} != {base + mod}"
+
+
+def test_quality_score_legacy_exhausted_neutral_fallback():
+    """存量旧行 htf_phase="exhausted"（退役旧档）不再有专属分值，
+    走默认中性兜底（同向 +5 / 逆向 -8）"""
+    base = 50 + 1 * 3 * 7
+    s = compute_quality_score(1, _votes("exhausted"), "trigger_pullback_confirm")
+    assert s == base + 5
 
 
 def test_quality_score_macro_misaligned_penalty():
