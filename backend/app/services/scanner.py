@@ -317,12 +317,15 @@ def detect_indicator_candidate(
     # 2026-10-11 拍板中慢线发散度退役）：三线排列（EMA21>55>144 多头镜像）+
     # 快中线 ATR 归一发散度（|21-55|/ATR 分离史≥0.5）+ EMA144 方向（做多走平
     # 或向上、做空镜像）必须成立——仅有排列还不够，快中线挤在一起即使顺序对
-    # 也是震荡；ATR 归一化让同一套阈值跨品种可用。1h 历史 <200 根（新币）一并否决
-    st = structure_1h(klines[:-1] if len(klines) >= 2 else klines,
-                      "long" if direction == 1 else "short")
-    if st is None:
-        _reject("structure_1h")
-        return None, ({"op": "expire", "reason": "structure_1h"} if pending else None)
+    # 也是震荡；ATR 归一化让同一套阈值跨品种可用。1h 历史 <200 根（新币）一并否决。
+    # 2026-10-11 二次拍板：门开关化（flt.structure_1h_gate，DB JSONB > env > 默认开）
+    # ——False=整体跳过判定（信号量换质量的应急开关），漏斗不记 structure_1h
+    if flt is None or flt.structure_1h_gate:
+        st = structure_1h(klines[:-1] if len(klines) >= 2 else klines,
+                          "long" if direction == 1 else "short")
+        if st is None:
+            _reject("structure_1h")
+            return None, ({"op": "expire", "reason": "structure_1h"} if pending else None)
 
     # 第三步：震荡评分卡（2026-10-10 二次拍板，calc_range_score 语义硬门化）：
     # 8 项独立评分 ≥3 不入场——单一指标可能失效，多指标共振才可靠。闸门与结构

@@ -58,6 +58,7 @@ SCAN_FILTER_KEYS = (
     "retest_window_bars",         # ③ 触发层：突破回测有效窗口（根，0=关闭 retest）
     "structure_touch_band_pct",   # ③ 触发层：retest/swing 横向位触碰带宽（%）
     "ema_touch_min_bars",         # ③ 触发层：EMA 触碰最小已收盘根数（数据门）
+    "structure_1h_gate",          # ② 结构层：1h 结构门开关（2026-10-11，false=跳过判定）
 )
 
 
@@ -76,6 +77,9 @@ class ScanFilters:
     structure_touch_band_pct: float = 0.3
     ema_touch_min_bars: int = 200
     new_coin_cooldown_days: int = 14
+    # 1h 结构门开关（2026-10-11 用户拍板配置化）：默认 True=硬门；False=跳过
+    # 三线排列/快中线发散/EMA144 方向判定（信号量换质量的应急开关，复盘定标用）
+    structure_1h_gate: bool = True
 
 
 def resolve_scan_filters(cfg=None) -> ScanFilters:
@@ -122,6 +126,12 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
                         if t in ALL_TOUCH_REFS and t not in RETIRED_TOUCH_REFS)
         return allowed or DEFAULT_TOUCH_REFS
 
+    def _bool(key: str, default: bool) -> bool:
+        """布尔开关：仅接受真布尔（DB JSONB 天然存布尔）；字符串/数字等
+        非法类型按缺失回落默认——不让一条坏配置静默改变门行为。"""
+        v = raw.get(key)
+        return v if isinstance(v, bool) else default
+
     return ScanFilters(
         min_volume_24h=_num("min_volume_24h", float(settings.MIN_VOLUME_24H)),
         new_coin_cooldown_days=_int("new_coin_cooldown_days", settings.NEW_COIN_COOLDOWN_DAYS),
@@ -136,4 +146,5 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
         retest_window_bars=_int("retest_window_bars", settings.RETEST_WINDOW_BARS),
         structure_touch_band_pct=_num("structure_touch_band_pct", settings.STRUCTURE_TOUCH_BAND_PCT),
         ema_touch_min_bars=_int("ema_touch_min_bars", settings.EMA_TOUCH_MIN_BARS),
+        structure_1h_gate=_bool("structure_1h_gate", settings.STRUCTURE_1H_GATE),
     )

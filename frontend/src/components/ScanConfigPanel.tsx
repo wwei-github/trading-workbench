@@ -80,6 +80,7 @@ export default function ScanConfigPanel() {
         ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
         allowed_triggers: eff.allowed_triggers ?? ALL_TRIGGER_VALUES,
         pullback_touch_refs: eff.pullback_touch_refs ?? DEFAULT_TOUCH_VALUES,
+        structure_1h_gate: eff.structure_1h_gate ?? true,
         ai_analysis_enabled: aiConfig.ai_analysis_enabled ?? false,
         strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
         ai_pipeline_enabled: aiConfig.ai_pipeline_enabled ?? true,
@@ -128,6 +129,11 @@ export default function ScanConfigPanel() {
         || curRefs.some((t) => !snapRefs.includes(t))) {
         scanFilters.pullback_touch_refs = curRefs
       }
+      // 1h 结构门开关（2026-10-11）：布尔逐键比对提交（后端缺键回落 env）
+      if (typeof values.structure_1h_gate === 'boolean'
+        && values.structure_1h_gate !== filtersSnapshot.structure_1h_gate) {
+        scanFilters.structure_1h_gate = values.structure_1h_gate
+      }
       if (Object.keys(scanFilters).length > 0) data.scan_filters = scanFilters
       await updateConfig(data)
       message.success('配置已保存')
@@ -150,6 +156,7 @@ export default function ScanConfigPanel() {
         ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
         allowed_triggers: eff.allowed_triggers ?? ALL_TRIGGER_VALUES,
         pullback_touch_refs: eff.pullback_touch_refs ?? DEFAULT_TOUCH_VALUES,
+        structure_1h_gate: eff.structure_1h_gate ?? true,
       })
       message.success('筛选参数已恢复默认')
     } catch (e: any) {
@@ -268,6 +275,14 @@ export default function ScanConfigPanel() {
             tooltip="回踩金K确认触发只认勾选的触点：触碰后当根/次根出现同向金K才触发。默认仅三条均线（EMA21/EMA21(4h)/EMA55；ema144 已退役；EMA55 另受排列+分离史结构门自筛）；横向结构触点（突破回测位/摆动结构位）语义强但依赖破轨/摆动质量，按需勾选。全部不勾回落默认三条均线"
           >
             <Checkbox.Group options={TOUCH_REF_OPTIONS} />
+          </Form.Item>
+          <Form.Item
+            label="1h 结构门（三线排列 + 快中线发散史 + EMA144 方向）"
+            name="structure_1h_gate"
+            valuePropName="checked"
+            tooltip="开启：排列/发散/144 方向任一不成立即否决（默认硬门）。关闭：整体跳过该判定，信号量换质量的应急开关——仅 4h 闸门+指标多数决+震荡评分+触发确认仍生效；关闭期间产生的信号在复盘按 RULE_VERSION/配置时段分组对比"
+          >
+            <Switch />
           </Form.Item>
           <Button size="small" icon={<UndoOutlined />} onClick={handleResetFilters} loading={saving}>
             恢复默认

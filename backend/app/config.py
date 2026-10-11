@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     RETEST_WINDOW_BARS: int = 24  # 突破回测触点有效窗口（已收盘根数，0=关闭 retest 触点）
     STRUCTURE_TOUCH_BAND_PCT: float = 0.3  # retest/swing 横向位触碰带宽（%，影线可入带收盘须守住）
     EMA_TOUCH_MIN_BARS: int = 200  # EMA 触碰最小已收盘根数（数据门，EMA144 收敛兜底）
+    # 1h 结构门开关（2026-10-11 用户拍板配置化，scan_filters.structure_1h_gate 可覆盖）：
+    # True=三线排列+快中线发散史+EMA144 方向硬门；False=跳过判定（信号量换质量的
+    # 应急开关——排列/发散/144 方向证据不再否决，复盘分组对比定标用）
+    STRUCTURE_1H_GATE: bool = True
     DAILY_LOSS_STOP_PCT: float = 9.0  # 当日亏损熔断：UTC 日已平仓净亏 ≤ -风险基数×9%（≈3笔满损）停开仓（0=关闭）
     # 当日亏损熔断总开关（2026-09-30 用户拍板开关化）：True=启用（默认，保持现行为），
     # False=关闭；阈值仍由 DAILY_LOSS_STOP_PCT 控制（9% ≈ 3 笔满损，随账户金额缩放）。

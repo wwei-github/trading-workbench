@@ -464,6 +464,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
             "retest_window_bars": flt.retest_window_bars,
             "structure_touch_band_pct": flt.structure_touch_band_pct,
             "ema_touch_min_bars": flt.ema_touch_min_bars,
+            "structure_1h_gate": flt.structure_1h_gate,
         },
     )
 
@@ -488,12 +489,18 @@ _SCAN_FILTER_RANGES: dict[str, tuple[float, float, str]] = {
 def _validate_scan_filters(raw: dict) -> dict:
     """筛选参数组校验：未知键拒绝（防拼错静默失效）、范围越界 400、数值化清洗。
     合法但缺省的键不补齐——缺键回落 env（逐键覆盖语义）。
-    非数值键：allowed_triggers / pullback_touch_refs（非空合法类型列表）。"""
+    非数值键：allowed_triggers / pullback_touch_refs（非空合法类型列表）、
+    structure_1h_gate（布尔开关，2026-10-11）。"""
     from app.services.scan_filters import ALL_TRIGGERS, ALL_TOUCH_REFS
 
     out: dict = {}
     for k, v in raw.items():
-        if k == "allowed_triggers":
+        if k == "structure_1h_gate":
+            if not isinstance(v, bool):
+                raise HTTPException(status_code=400,
+                                    detail="scan_filters.structure_1h_gate 需为布尔值")
+            out[k] = v
+        elif k == "allowed_triggers":
             if (not isinstance(v, list) or not v
                     or not all(t in ALL_TRIGGERS for t in v)):
                 raise HTTPException(

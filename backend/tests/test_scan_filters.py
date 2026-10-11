@@ -262,6 +262,84 @@ def test_validate_scan_filters_new_coin_cooldown():
         _validate_scan_filters({"new_coin_cooldown_days": -1})
 
 
+# ── 1h 结构门开关（2026-10-11 配置化：DB 布尔 > env > 默认 True）────────────
+
+
+def test_resolve_structure_1h_gate():
+    """布尔键：真布尔生效；字符串/数字等非法类型按缺失回落默认开"""
+    assert resolve_scan_filters(None).structure_1h_gate is True
+    assert resolve_scan_filters(
+        SimpleNamespace(scan_filters={"structure_1h_gate": False})
+    ).structure_1h_gate is False
+    for bad in ("false", 0, None, [False]):
+        flt = resolve_scan_filters(SimpleNamespace(scan_filters={"structure_1h_gate": bad}))
+        assert flt.structure_1h_gate is True, f"非法值 {bad!r} 应回落默认"
+
+
+def test_validate_scan_filters_structure_1h_gate():
+    """PUT 校验：布尔合法；字符串/数字 400"""
+    from fastapi import HTTPException
+
+    from app.api.scan import _validate_scan_filters
+    assert _validate_scan_filters({"structure_1h_gate": False}) == {"structure_1h_gate": False}
+    assert _validate_scan_filters({"structure_1h_gate": True}) == {"structure_1h_gate": True}
+    for bad in ("false", 0, 1, None):
+        with pytest.raises(HTTPException):
+            _validate_scan_filters({"structure_1h_gate": bad})
+
+
+def test_candidate_structure_gate_disabled_skips(monkeypatch):
+    """scanner 消费开关：structure_1h_gate=False 时结构判定整体跳过——
+    排列/发散/144 方向不再否决，流程直达触发层（结构桩不设也须产生候选）"""
+    import app.services.scanner as scanner_mod
+
+    votes = {"bull": 5, "bear": 0, "bull_n": 6, "bear_n": 6,
+             "net": 5, "voted": 6, "results": {}}
+    monkeypatch.setattr(scanner_mod, "analyze_ema", lambda k: None)
+    monkeypatch.setattr(scanner_mod, "classify_volume", lambda k: (1.0, "平量"))
+    monkeypatch.setattr(scanner_mod, "compute_indicator_votes",
+                        lambda k, h=None, htf_bg=None: votes)
+    monkeypatch.setattr(scanner_mod, "gate_4h",
+                        lambda k, cfg=None: ("long", {"slope_pct": 0.01, "wraps": 0, "adx": 25.0}))
+    monkeypatch.setattr(scanner_mod, "range_score", lambda k, gate_ev=None: (0, []))
+
+    # 结构桩被调用即 fail（开关关时不应触达）
+    def _boom(*a, **k):
+        raise AssertionError("structure_1h 不应被调用（开关已关）")
+    monkeypatch.setattr(scanner_mod, "structure_1h", _boom)
+
+    class FakePool:
+        def get_klines(self, *a, **k):
+            return []
+
+    breakout = {"type": BREAKOUT, "direction": 1, "position": "resistance",
+                "pattern": None, "breakout_pct": 0.5, "reason": "r"}
+    monkeypatch.setattr(scanner_mod, "detect_trigger",
+                        lambda *a, **k: (dict(breakout), None))
+
+    flt = ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=20,
+        breakout_threshold=0.002, breakout_vol_ratio=1.2,
+        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
+        ai_max_per_scan=10, structure_1h_gate=False,
+    )
+    cand, op = scanner_mod.detect_indicator_candidate(
+        FakePool(), "XUSDT", _flat_bars(), flt=flt)
+    assert cand is not None and cand["signal_type"] == BREAKOUT
+
+    # 对照：开关开（显式 structure_1h_gate=True）→ 结构门照常否决（st=None 拒绝）
+    monkeypatch.setattr(scanner_mod, "structure_1h", lambda k, d, cfg=None: None)
+    flt_on = ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=20,
+        breakout_threshold=0.002, breakout_vol_ratio=1.2,
+        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
+        ai_max_per_scan=10, structure_1h_gate=True,
+    )
+    cand2, _ = scanner_mod.detect_indicator_candidate(
+        FakePool(), "XUSDT", _flat_bars(), flt=flt_on)
+    assert cand2 is None
+
+
 def test_config_effective_contains_all_filter_fields():
     """/config 的 scan_filters_effective 须覆盖 FILTER_FIELDS 全部数值键——
     前端表单初值按此渲染，漏键即「配置里不显示默认值」（2026-10-04
