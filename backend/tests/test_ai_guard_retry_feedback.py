@@ -220,14 +220,15 @@ def test_dual_judge_json_mode_only_on_judge_call(monkeypatch):
 
 
 # ── 程序止损参考价 calc_stop_reference（2026-10-11，0.5×ATR 展示对比）────────
-# 构造横盘序列：h=101/l=99/c=100 → TR 恒 2 → ATR14=2，0.5×ATR=1
+# 构造横盘序列：h=101/l=99/c=100 → TR 恒 2 → ATR14=2，0.5×ATR=1；
+# 金K锚 = 最后一根已收盘K线极值（横盘序列恒为 99/101）
 
 def _flat_klines(n=40, base=100.0):
     return [[i * 3600000, base, base + 1, base - 1, base, 1000.0] for i in range(n)]
 
 
 def test_calc_stop_long_swing_anchor_farther():
-    """多头：现价下方最近摆动低点比近5根影线极值更远 → 锚取摆动低点"""
+    """多头：现价下方最近摆动低点比金K最低点更远 → 锚取前一个低点"""
     signal = {
         "current_price": 100.0,
         "recent_swings": {"lows": [{"label": "HL", "price": 97.0, "bars_ago": 8}], "highs": []},
@@ -236,21 +237,34 @@ def test_calc_stop_long_swing_anchor_farther():
     assert ref == pytest.approx(97.0 - 1.0)  # 锚 97 − 0.5×ATR(=2)
 
 
+def test_calc_stop_long_goldenk_farther():
+    """多头：金K最低点（最后一根已收盘K线）比前一个低点更远 → 锚取金K极值"""
+    signal = {
+        "current_price": 100.0,
+        "recent_swings": {"lows": [{"label": "HL", "price": 99.5, "bars_ago": 6}], "highs": []},
+    }
+    klines = _flat_klines()
+    # 金K低 98.2；高点收 100.2 保持 TR=2（h−l 恰 2.0），不污染 ATR14=2 基准
+    klines[-2] = [38 * 3600000, 100.0, 100.2, 98.2, 100.0, 1000.0]
+    ref = ai_analyzer.calc_stop_reference(signal, klines, "long")
+    assert ref == pytest.approx(98.2 - 1.0)
+
+
 def test_calc_stop_long_extreme_anchor_farther():
     """多头：首个摆动低点在现价上方（错误侧）被跳过、循环继续；次个摆动低点
-    比极值近 → 两锚取更远用影线极值"""
+    比金K最低点近 → 两锚取更远用金K极值"""
     signal = {
         "current_price": 100.0,
         "recent_swings": {
             "lows": [
                 {"label": "HL", "price": 105.0, "bars_ago": 2},   # 现价上方，跳过
-                {"label": "HL", "price": 99.5, "bars_ago": 6},    # 比极值 99 近
+                {"label": "HL", "price": 99.5, "bars_ago": 6},    # 比金K低 99 近
             ],
             "highs": [],
         },
     }
     ref = ai_analyzer.calc_stop_reference(signal, _flat_klines(), "long")
-    assert ref == pytest.approx(99.0 - 1.0)  # 锚 = 近5根 low 99
+    assert ref == pytest.approx(99.0 - 1.0)  # 锚 = 金K最低 99
 
 
 def test_calc_stop_short_mirror():

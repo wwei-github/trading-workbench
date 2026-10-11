@@ -378,11 +378,12 @@ def _get_client() -> OpenAI:
     return get_client()
 
 
-# 程序止损参考缓冲（×ATR14，1h 口径）：锚与提示词止损纪律同语义（摆动结构位
-# 与近 5 根影线极值取更远者），缓冲由 AI 执行的 0.3% 换成 0.5×ATR——AI 拿不到
-# 可靠 ATR 做跨品种归一的算术，由程序侧计算
+# 程序止损参考缓冲（×ATR14，1h 口径）：锚与提示词止损纪律同语义——候选 =
+# 前一同侧摆动点（多头「前一个低点」/空头「前一个高点」）与金K极值（确认
+# 扫描时的金K当根/次根确认K线/突破K线，即最后一根已收盘K线），取更远者
+# （更保守），缓冲由 AI 执行的 0.3% 换成 0.5×ATR——AI 拿不到可靠 ATR 做
+# 跨品种归一的算术，由程序侧计算
 STOP_REF_ATR_MULT = 0.5
-STOP_REF_EXT_BARS = 5
 
 
 def calc_stop_reference(
@@ -390,30 +391,32 @@ def calc_stop_reference(
 ) -> Optional[float]:
     """程序止损参考价（2026-10-11）：仅前端对比展示，不改写 AI 报价、不参与下单。
 
-    与 _RULE_SL 锚纪律同语义：锚 = 摆动结构位与近 STOP_REF_EXT_BARS 根影线
-    极值中更远者（摆动点用现价同侧过滤近似 AI 的「入场价下方/上方」——
-    程序不知道 AI 将定的入场价），外扩 STOP_REF_ATR_MULT×ATR14（Wilder，
-    自剔尾）。方向缺失 / ATR 不可算 / K线不足返回 None（旧行与 skip 行为
-    NULL，前端不显示参考卡）。"""
+    与 _RULE_SL 锚纪律同语义：锚 = 前一同侧摆动点与金K极值（2026-10-11
+    二次拍板：由「近 5 根影线极值」收窄为金K的最低/最高点——金K即确认扫描
+    时的最后一根已收盘K线，其极值就是本笔信号的直接失效位；延后重分析时
+    近似为最新已收盘K线）中更远者（摆动点用现价同侧过滤近似 AI 的
+    「入场价下方/上方」——程序不知道 AI 将定的入场价），外扩
+    STOP_REF_ATR_MULT×ATR14（Wilder，自剔尾）。方向缺失 / ATR 不可算 /
+    K线不足返回 None（旧行与 skip 行为 NULL，前端不显示参考卡）。"""
     if direction not in ("long", "short"):
         return None
     atr_arr = atr_series(klines, period=14)
     if atr_arr is None or not np.isfinite(atr_arr[-1]):
         return None
     closed = klines[:-1] if len(klines) >= 2 else klines
-    if len(closed) < STOP_REF_EXT_BARS:
+    if not closed:
         return None
     price = float(signal.get("current_price") or closed[-1][4])
     sw = signal.get("recent_swings") or {}
     if direction == "long":
-        anchor = min(float(k[3]) for k in closed[-STOP_REF_EXT_BARS:])
+        anchor = float(closed[-1][3])  # 金K最低点（最后一根已收盘K线）
         for s in sw.get("lows", []):
             p = float(s["price"])
             if p < price:
                 anchor = min(anchor, p)
-                break  # 新→旧，第一个现价下方摆动低点即「最近」
+                break  # 新→旧，第一个现价下方摆动低点即「前一个低点」
         return anchor - STOP_REF_ATR_MULT * float(atr_arr[-1])
-    anchor = max(float(k[2]) for k in closed[-STOP_REF_EXT_BARS:])
+    anchor = float(closed[-1][2])  # 金K最高点
     for s in sw.get("highs", []):
         p = float(s["price"])
         if p > price:

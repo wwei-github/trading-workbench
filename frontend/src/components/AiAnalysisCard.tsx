@@ -585,7 +585,7 @@ export default function AiAnalysisCard({ ai }: Props) {
                 />
               )
               return calc != null ? (
-                <Tooltip title={`副行为程序止损参考（0.5×ATR 外扩：摆动结构位与近5根影线极值取更远者）——箭头指向程序价相对 AI 报价的方向（↓更低/↑更高/＝一致），${wider ? '橙色=程序比 AI 更远离入场（更保守）' : '灰色=程序不比 AI 更远'}。实际下单仍用主值（AI 报价）`}>
+                <Tooltip title={`副行为程序止损参考（0.5×ATR 外扩：前一同侧摆动点与金K极值取更远者）——箭头指向程序价相对 AI 报价的方向（↓更低/↑更高/＝一致），${wider ? '橙色=程序比 AI 更远离入场（更保守）' : '灰色=程序不比 AI 更远'}。实际下单仍用主值（AI 报价）`}>
                   <div style={{ flex: 1, minWidth: 0 }}>{card}</div>
                 </Tooltip>
               ) : card
