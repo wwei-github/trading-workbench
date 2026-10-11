@@ -62,6 +62,38 @@ def test_agent_prompt_tp2_off_excludes():
     assert "ref 取值:" in p
 
 
+# ── 1.5 止盈一兜底拆情形（2026-10-12-3）：结构位过远时 TP2 保留远端锚 ──
+
+
+def test_p0_prompt_tp2_fallback_keeps_far_level():
+    """开启：兜底拆 (a) 无结构位仅一档 / (b) 结构位过远时止盈二保留远端锚"""
+    p = render_p0_prompt()
+    assert "(a) 前方无任何结构位可锚" in p
+    assert "止盈二设 0（仅设一档）" in p          # (a) 情形维持原行为
+    assert "止盈二保留" in p and "趋势跑手档" in p  # (b) 情形保留远端锚
+
+
+def test_p0_prompt_tp2_off_no_retention_clause():
+    """关闭：无 (b) 保留分支（TP2 整体关闭）"""
+    p = render_p0_prompt(tp2_enabled=False)
+    assert "止盈二保留" not in p
+    assert "趋势跑手档" not in p
+
+
+def test_agent_prompt_tp2_fallback_keeps_far_level():
+    """开启：兜底拆情形，(b) 明示 tp2_ref 复用止盈一弃用的远端锚"""
+    p = render_agent_prompt(tp2_enabled=True)
+    assert "止盈二保留锚定该远端" in p
+    assert "tp2_ref=resistance_zone_low" in p  # (b) 的锚点消歧
+    assert "止盈二不设（仅一档）" in p          # (a) 情形维持原行为
+
+
+def test_agent_prompt_tp2_off_no_retention_clause():
+    """关闭：无 (b) 保留分支"""
+    p = render_agent_prompt(tp2_enabled=False)
+    assert "止盈二保留" not in p
+
+
 # ── 2. Agent 工具 schema 过滤 ────────────────────────────────────────
 
 

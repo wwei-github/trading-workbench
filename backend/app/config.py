@@ -123,7 +123,10 @@ class Settings(BaseSettings):
     # ≥ SL_MIN_ATR×ATR14（默认 0.3），防"止损过近"被噪音扫掉、抑制 R 放大；
     # 近锚（突破类 stop_anchor=near）豁免（其止损刻意贴突破K极值）。部分回退
     # 2026-09-15 移除的"止损宽度 [0.3×ATR, 3×ATR]"，仅恢复下限
-    RULE_VERSION: str = "v2026-10-12-2"
+    # v2026-10-12-3：止盈一兜底拆两种情形（用户拍板）——(a) 前方无任何结构位
+    # （创新高突破）仍仅设一档；(b) 结构位存在但越过距离上限时，止盈一走兜底价、
+    # 止盈二保留锚定该远端结构位作趋势跑手档（原行为是一并置 0）
+    RULE_VERSION: str = "v2026-10-12-3"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

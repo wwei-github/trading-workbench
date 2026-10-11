@@ -13,6 +13,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+import numpy as np
+
 from app.config import settings
 from app.services import market_data
 from app.services import skill_library
@@ -25,7 +27,7 @@ from app.services.risk_guard import (
 )
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import calc_atr
-from app.services.strategy.technical import render_indicator_block
+from app.services.strategy.technical import atr_series, render_indicator_block
 from app.services.strategy.types import POSITION_LABEL_MAP
 from app.services.ai_analyzer import (
     _RULE_HTF_HARD,
@@ -164,7 +166,8 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     应直接 skip（程序只复算盈亏比并按铁律打回）。
     另：第一档止盈须"够近"——距入场 ≤{tp1_max_atr}×ATR 且 ≤{tp1_max_r}×止损距离；
     更远的第一档结构位越过此上限时（强趋势/点位稀疏常见，会落到 3~4R）不要跳档硬挂，
-    改用"入场 ± {rr_min}×止损距离"兜底（程序按距离上限复算打回）。
+    改用"入场 ± {rr_min}×止损距离"兜底（程序按距离上限复算打回；启用止盈二时
+    该远端结构位保留为止盈二锚，见下条）。
     {_tp2_rule}
 12.5 止盈模式（tp_mode，suggest 必填）：由 entry_strategy 程序推导（2026-10-11
     策略一重定义，trail 归策略二独有），按胜出策略如实填写即可：
@@ -221,9 +224,12 @@ _TP_ANCHOR_DESC_OFF = """止盈用线外锚点：做多止盈一 tp1_ref=resista
    做多 -0.2~-0.5（位下方），做空 0.2~0.5（位上方）。"""
 
 _TP2_RULE_ON = """止盈二取止盈一锚定档的下一档同类结构位（做多=更高一档摆动高点下方，做空=更低一档
-    摆动低点上方）且必须比止盈一更远。价格创新高/新低、前方无摆动结构位时，
-    或第一档结构位距入场超过 {tp1_max_atr}×ATR / {tp1_max_r}×止损距离时（如创新高突破），
-    止盈一 = 入场 ± {rr_min}×止损距离、止盈二不设（仅一档）。
+    摆动低点上方）且必须比止盈一更远。价格创新高/新低、前方无摆动结构位时
+    （如创新高突破），止盈一 = 入场 ± {rr_min}×止损距离、止盈二不设（仅一档）；
+    若近端无合适结构位、第一档结构位距入场超过 {tp1_max_atr}×ATR / {tp1_max_r}×止损距离
+    （结构位存在但过远），止盈一 = 入场 ± {rr_min}×止损距离，止盈二保留锚定该远端
+    结构位（做多 tp2_ref=resistance_zone_low，做空 tp2_ref=support_zone_high，
+    即"止盈一因过远弃用的那一档"），作为趋势跑手档。
     盈亏比 ≥{rr_min} 是开单硬性要求（程序复算，不足即打回）。"""
 
 _TP2_RULE_OFF = """当前未启用止盈二（TP2 分批止盈已关闭）：不要提交 tp2_ref/tp2_offset_pct
@@ -403,11 +409,15 @@ def _resolve_price(ref: Optional[str], offset_pct, signal: dict,
         return base * (1 + _safe_off(offset_pct) / 100.0)
 
     cur = float(signal.get("current_price") or 0)
-    # zone 系止盈锚：有 K 线时算 1×ATR 并剔除近端争夺位（2026-10-12）
+    # zone 系止盈锚：有 K 线时算 1×ATR 并剔除近端争夺位（2026-10-12）。
+    # 2026-10-12-3 统一口径：改用 atr_series（Wilder 平滑）而非 calc_atr
+    # （简单均值），与 risk_guard 的"止损宽度下限 / 止盈一距离上限"同源，
+    # 避免模型与校验器对"1×ATR"边界判断不一致
     _atr = None
     if ref in _ZONE_REF_MAP and klines:
         try:
-            _atr = calc_atr(klines)
+            arr = atr_series(klines)
+            _atr = float(arr[-1]) if arr is not None and np.isfinite(arr[-1]) else None
         except Exception:
             _atr = None
     base = _resolve_from_swings(ref, signal, cur, atr=_atr)
