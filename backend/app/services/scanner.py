@@ -33,6 +33,7 @@ from app.models.trade import TradeRecord
 from app.services.scan_filters import ScanFilters, resolve_scan_filters
 from app.services.exchange_pool import ExchangePool
 from app.services.binance_trader import BinanceTrader
+from app.services import market_data as md
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import volume_ratio
 from app.services.strategy.technical import (
@@ -379,7 +380,8 @@ def detect_indicator_candidate(
     return {
         "signal_type": trig["type"],
         # 现价 = 未收盘K线最新价（仅作入场价差参考）：信号判定（投票/触发/形态/量能）
-        # 全部基于已收盘K线（klines[-2]），与扫描时刻在小时内的位置无关，同根K线同结果
+        # 全部基于已收盘K线（klines[-2]），与扫描时刻在小时内的位置无关，同根K线同结果。
+        # 尾窗幽灵视图下 [-1]=幽灵尾根（复制近收盘根快照），其 close=现价，语义不变
         "current_price": float(klines[-1][4]),
         "breakout_pct": trig["breakout_pct"],
         "trend_slope": 0.0,
@@ -451,6 +453,11 @@ class Scanner:
             kline_interval = cfg.kline_interval
             kline_window = cfg.kline_window
             repeat_window_hours = cfg.repeat_window_hours
+            # 扫描尾窗（2026-10-11-4）：beat 定在每小时第 55 分，此时本周期
+            # K线已走完 55/60 分钟——把未收盘根视作已收盘参与筛选（信号根
+            # 前移一根，信号提前 ~7 分钟捕捉）。尾窗内 K线缓存可能是小时内
+            # 早期快照（图表浏览/大盘预取写入），必须强刷保数据新鲜
+            tail_window = md.in_forming_tail(kline_interval)
             # 筛选参数组（scan_filters JSONB > env > 代码默认）
             flt = resolve_scan_filters(cfg)
 
@@ -561,12 +568,19 @@ class Scanner:
             def scan_one(symbol: str) -> tuple[str, list[dict], bool]:
                 """指标多数决定向 → 两段式触发确认 → 质量分。返回 (symbol, [候选...], is_error)"""
                 try:
-                    # EMA144/指标暖机需要足够历史，至少拉 300 根
+                    # EMA144/指标暖机需要足够历史，至少拉 300 根；
+                    # 尾窗内强刷（缓存可能是小时内早期快照，信号根必须新鲜）
                     klines = self.pool.get_klines(
                         symbol,
                         interval=kline_interval,
                         limit=max(kline_window, 300),
+                        force_refresh=tail_window,
                     )
+                    # 尾窗内把未收盘根视作已收盘：幽灵尾根维持 [-1] 未收盘/
+                    # [-2] 信号根的全管线约定，信号根=近收盘根（2026-10-11-4）。
+                    # 非尾窗原样返回（等价旧行为：信号根=上一根已收盘）
+                    if tail_window:
+                        klines = md.screen_klines(klines, kline_interval)
                     ev_out: dict = {}
                     rv_out: dict = {}   # 漏斗旁路：单币拒绝关卡（cand=None 时读）
                     cand, pop = detect_indicator_candidate(

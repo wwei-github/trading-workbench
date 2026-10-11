@@ -50,7 +50,10 @@ celery_app.conf.update(
     beat_schedule={
         "hourly-scan": {
             "task": "app.tasks.scan_tasks.run_scan_task",
-            "schedule": crontab(minute=2),  # 每小时第2分钟执行，等待K线收盘
+            # 每小时第55分（2026-10-11-4）：本周期K线已走完55/60分钟，把未收盘根
+            # 视作已收盘参与筛选（market_data.FORMING_TAIL_MINUTES 与此耦合），
+            # 信号提前 ~7 分钟捕捉；原 :02 等收盘后看上一根
+            "schedule": crontab(minute=55),
             "kwargs": {"scan_type": "scheduled"},
         },
         "trade-review": {
@@ -66,7 +69,7 @@ celery_app.conf.update(
         "ledger-advance": {
             "task": "app.tasks.ledger_tasks.run_ledger_advance_task",
             # 每小时第18分（docs/16 P-07）：虚拟账本 OPEN 行推进到终局——
-            # 错开 :02 扫描与 :14 归因；K线收盘后 18 分钟内必回放
+            # 错开 :55 扫描与 :14 归因；K线收盘后 18 分钟内必回放
             "schedule": crontab(minute=18),
         },
         "patch-trigger": {

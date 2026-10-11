@@ -27,6 +27,7 @@ from app.models.scan import ScanRecord, ScanResult, AIAnalysis, TradeReview
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services import ai_progress
+from app.services import market_data as md
 from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard, calc_stop_reference
 from app.services.scan_filters import resolve_scan_filters
@@ -281,6 +282,13 @@ def run_ai_analysis_single(
             # 仍不足则为新上市合约的全部历史，用可用K线继续
             klines = pool.get_klines(r.symbol, cfg.kline_interval, 500, force_refresh=True)
             logger.info("AI 分析 %s K线不足500根，强刷重取后 %d 根", r.symbol, len(klines))
+
+        # 扫描尾窗同口径（2026-10-11-4）：分析紧随 :55 扫描，事实包必须与扫描
+        # 看到同一根信号K线——尾窗内幽灵尾根视图（K线摘要/指标块/摆动结构/
+        # current_price 全部对齐扫描口径）；跨点后（如分析拖到 :01+）自动退回
+        # 「上一根已收盘根」口径，与扫描尾窗的信号根是同一根，结果仍一致
+        if md.in_forming_tail(cfg.kline_interval):
+            klines = md.screen_klines(klines, cfg.kline_interval)
 
         # 分析时刻最新价（未收盘K线的现价）：信号里的 current_price 是扫描时价格，
         # 扫描到分析之间可能已明显移动——所有锚点换算、入场价校验都以最新价为基准

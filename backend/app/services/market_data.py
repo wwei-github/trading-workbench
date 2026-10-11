@@ -5,6 +5,7 @@
 """
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -29,6 +30,41 @@ def _cache_get(key: str) -> Optional[object]:
 
 def _cache_set(key: str, data: object, ttl: float) -> None:
     _cache[key] = (time.time() + ttl, data)
+
+
+# ── 扫描尾窗（2026-10-11-4）：近收盘未收盘根视作已收盘 ──
+# 定时扫描 beat 定在每小时第 55 分（celery_app.hourly-scan），此时本周期
+# K线已走完 55/60 分钟、形态基本定型——把它当作已收盘根参与筛选，信号
+# 提前 ~7 分钟捕捉（原 :02 等收盘后看上一根）。窗口宽度与 beat 分钟数
+# 耦合（55 → 剩余 5 分钟），改 beat 时须同步调整 FORMING_TAIL_MINUTES。
+FORMING_TAIL_MINUTES = 5
+
+
+def in_forming_tail(interval: str, now: Optional[datetime] = None) -> bool:
+    """当前时刻是否处于未收盘K线的尾部窗口（距收盘 ≤ FORMING_TAIL_MINUTES 分钟）
+
+    interval 周期内剩余时间 ≤ 阈值即 True：1h 在每小时的 :55~:00、4h 在每个
+    4h 周期的最后 5 分钟。now 可注入（测试/回放）。
+    """
+    from app.services.binance_client import _INTERVAL_MINUTES
+    minutes = _INTERVAL_MINUTES.get(interval, 60)
+    now = now or datetime.now(timezone.utc)
+    total = now.hour * 60 + now.minute + now.second / 60.0
+    into = total % minutes
+    return (minutes - into) <= FORMING_TAIL_MINUTES
+
+
+def screen_klines(klines: list, interval: str, now: Optional[datetime] = None) -> list:
+    """扫描筛选口径视图：尾窗内把未收盘根视作已收盘（成为信号根）。
+
+    全管线既有约定为「[-1] 未收盘剔除、[-2] 信号已收盘根」（technical/
+    ema/trigger 各模块统一 [:-1] 剔尾）。为不改任何下游逻辑，此处复制一
+    份幽灵尾根追加到末尾：[-1]=幽灵（被管线剔除），[-2]=原未收盘根（视作
+    信号根，OHLCV 为扫描时刻快照）。非尾窗原样返回。
+    """
+    if not klines or not in_forming_tail(interval, now):
+        return klines
+    return klines + [list(klines[-1])]
 
 
 def _futures_client() -> httpx.Client:

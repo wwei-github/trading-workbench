@@ -34,6 +34,7 @@ from app.schemas.scan import (
     PatchOut,
 )
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
+from app.services import market_data as md
 from app.services.scanner import classify_volume
 from app.services.trade_engine import breaker_status_by_net
 from app.services.ai_analyzer import analyze_coin
@@ -1451,8 +1452,15 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
 
     symbol = normalize_symbol(body.symbol)
     pool = ExchangePool()
+    # 扫描尾窗同口径（2026-10-11-4）：手动分析的事实包与定时扫描一致——
+    # 尾窗内强刷（缓存可能是小时内早期快照）+ 幽灵尾根（近收盘根视作信号根）
+    _tail = md.in_forming_tail(cfg.kline_interval)
     try:
-        klines = pool.get_klines(symbol, cfg.kline_interval, 500)
+        klines = pool.get_klines(
+            symbol, cfg.kline_interval, 500, force_refresh=_tail,
+        )
+        if _tail:
+            klines = md.screen_klines(klines, cfg.kline_interval)
     except AllExchangesFailed as e:
         raise HTTPException(
             status_code=503,
