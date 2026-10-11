@@ -20,6 +20,7 @@ from app.services.strategy.technical import (
     analyze_htf_background,
     compute_quality_score,
     enforce_htf_constraint,
+    render_indicator_block,
 )
 
 
@@ -156,6 +157,22 @@ def test_no_momentum_annotation():
     assert r["state"] == "bullish"
     assert r["phase"] in ("weak", "medium", "strong", "extreme")
     assert "动能衰减" not in r["detail"] and "仍同向" not in r["detail"]
+
+
+def test_structured_line_ranging_no_false_macro():
+    """4h 震荡（ADX<20）结构化行不得渲染 phase=None / macro=逆侧——
+    宏观守卫未评估，None 渲染成「逆侧」会向 LLM 注入错误事实
+    （bug 修复 2026-10-11）；改输出 state 标记"""
+    closes = [100.0 + 0.05 * ((-1) ** i) + 0.002 * i for i in range(200)]  # 横盘低 ADX
+    block = render_indicator_block(_kl_1h_flat(), htf_klines=_kl_from_closes(closes))
+    assert "phase=None" not in block
+    assert "macro=逆侧" not in block
+    assert "- 4h背景: state=ranging" in block
+
+
+def _kl_1h_flat() -> list[list]:
+    """1h 侧最小序列（结构化行渲染仅要求非空指标结果）"""
+    return _kl_from_closes(_ramp(60, 0.5, 100.0))
 
 
 def test_cross_age_helper():

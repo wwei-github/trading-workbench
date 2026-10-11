@@ -944,12 +944,18 @@ def render_indicator_block(
     # 4h 背景结构化行（2026-10-10 C7，docs/20）：phase/macro 以机器
     # 可读键值对注入——detail 字符串会被 LLM 误读（BTWUSDT「动能衰减」丢失
     # 「仍同向」个案），关键字段不再只依赖散文渲染（momentum 键已随
-    # 2026-10-11 衰竭期退役删除）
+    # 2026-10-11 衰竭期退役删除）。
+    # ranging/mixed 无排列强度、宏观守卫未评估——不输出 phase/macro 键
+    # （None 渲染成「phase=None macro=逆侧」会向 LLM 注入错误事实，bug 修复
+    # 2026-10-11），state 语义已在上方散文行（state_label）呈现
     if htf_r:
-        lines.append(
-            f"- 4h背景: phase={htf_r['phase']}"
-            f" macro={'同侧' if htf_r.get('macro_aligned') else '逆侧'}"
-        )
+        if htf_r.get("phase"):
+            lines.append(
+                f"- 4h背景: phase={htf_r['phase']}"
+                f" macro={'同侧' if htf_r.get('macro_aligned') else '逆侧'}"
+            )
+        else:
+            lines.append(f"- 4h背景: state={htf_r['state']}（无排列强度，不构成方向约束）")
 
     # 盈亏比取舍提示行已随 trail RR 豁免一并退役（2026-10-11 策略一 ladder-only）：
     # trail 归策略二独有，盈亏比不足走双入场策略裁决（策略一如实 skip / 策略二跟踪），
