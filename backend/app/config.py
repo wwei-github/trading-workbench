@@ -108,7 +108,13 @@ class Settings(BaseSettings):
     # v2026-10-11-3：开仓现价 RR 复算加容差带 ai_rr_tol（默认 0.02），rr_now ≥
     # rr_min-tol 放行——CYBERUSDT 案例：AI 三价 RR 1.57 达标，3 分钟漂移后现价
     # 复算 1.4998 被 1.5 拦，0.0002 级漂移误杀信号
-    RULE_VERSION: str = "v2026-10-11-3"
+    # v2026-10-11-4：定时扫描 :02→:55，尾窗（距收盘≤5min）内未收盘根视作已收盘
+    # 参与筛选（market_data.screen_klines 幽灵尾根视图，信号根前移一根）——信号
+    # 提前 ~7 分钟捕捉；AI 分析/手动分析同口径对齐
+    # v2026-10-11-5：止损锚纪律改版（P0/P1 提示词+程序参考+回测推导三面同源）——
+    # 极值锚由「最近 5 根影线极值」收窄为「信号K线（金K/突破K线=最后一根已收盘
+    # K线）最低/最高点」，两锚取更远者与摆动锚结构不变
+    RULE_VERSION: str = "v2026-10-11-5"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

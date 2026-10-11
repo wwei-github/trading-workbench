@@ -486,16 +486,18 @@ def derive_signal_prices(
 
     direction: +1 long / -1 short；entry: 信号K收盘价；
     recent5: 含信号K在内的最近 5 根**已收盘** [[ts,o,h,l,c,v]]（信号K为末根）。
-    stop=近5根极值∓stop_buf（long 取最低×(1-buf)，short 对称）；
+    stop=信号K极值∓stop_buf（2026-10-11 拍板：与 AI 提示词止损纪律同语义——
+    锚从「近5根极值」收窄为信号K（金K/突破K线）最低/最高点，long 取
+    末根 low×(1-buf)，short 对称；摆动锚程序侧无摆动数据不 replicate）；
     tp1=entry±rr_tp1·r_unit；tp2=tp2_rr>0 时 entry±tp2_rr·r_unit 否则 0（不设）。
     返回 {entry, stop, tp1, tp2, r_unit}；entry<=0 或 r_unit<=0 为 None。
     """
     if entry is None or entry <= 0 or not recent5:
         return None
     if direction > 0:
-        stop = min(float(k[3]) for k in recent5) * (1 - stop_buf)
+        stop = float(recent5[-1][3]) * (1 - stop_buf)  # 信号K（末根）最低点
     else:
-        stop = max(float(k[2]) for k in recent5) * (1 + stop_buf)
+        stop = float(recent5[-1][2]) * (1 + stop_buf)  # 信号K最高点
     r_unit = direction * (entry - stop)
     if r_unit <= 0:
         return None

@@ -71,12 +71,13 @@ def test_none_on_bad_inputs():
     assert derive_signal_prices(-1, 100.0, bad_s) is None
 
 
-def test_recent5_extreme_not_only_signal_bar():
-    """近5根极值（不只信号K）决定 stop：前 4 根更深的低点要被取到。"""
+def test_stop_uses_signal_bar_extreme_only():
+    """stop 只取信号K（末根=金K）极值（2026-10-11 拍板，与 AI 提示词止损
+    纪律同语义）：前 4 根更深的低点不参与——信号K极值才是本笔信号失效位。"""
     bars = kb5(low=99.5)
-    bars[0][3] = 97.0  # 首根深低点
+    bars[0][3] = 97.0  # 首根深低点，新规则下不取
     p = derive_signal_prices(1, 100.0, bars)
-    assert p["stop"] == pytest.approx(97.0 * 0.997)
+    assert p["stop"] == pytest.approx(99.5 * 0.997)
 
 
 # ── 2. 账本口径 wrapper ──
