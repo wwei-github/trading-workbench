@@ -3,10 +3,11 @@
  * - Stage-1 回踩触碰 EMA21 但当根无金K 的币种转入 pending，等下一根K线金K确认
  * - 状态流转：pending（等待中）→ confirmed（已确认进 AI）/ expired（无金K或方向失守）/ superseded（突破或当根确认抢先）
  * - 展示归并三态（2026-10-10）：待确认 / 已确认 / 已卡掉（expired+superseded 统计为卡掉），被哪个环节卡住看「卡住环节」列（后端 blocked_by）
+ * - 筛选漏斗（2026-10-11）：Segmented 第五项排在「全部」后面，展示每轮被拒币种卡在哪一关（FunnelPanel）
  * - 数据源：GET /api/scans/pullback-pendings（一次拉全量，前端按状态过滤）
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, Empty, Modal, Segmented, Spin, Table, Tabs, Tag, Tooltip, Typography, message } from 'antd'
+import { Button, Empty, Modal, Segmented, Spin, Table, Tag, Tooltip, Typography, message } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
@@ -20,7 +21,7 @@ import type { PullbackPendingItem } from '../types'
 
 const { Text, Link } = Typography
 
-type StatusFilter = 'pending' | 'confirmed' | 'blocked' | 'all'
+type StatusFilter = 'pending' | 'confirmed' | 'blocked' | 'all' | 'funnel'
 
 // 展示三态（2026-10-10）：pending=待确认、confirmed=已确认；expired/superseded 一律归并「已卡掉」，
 // 具体被哪个环节卡住由「卡住环节」列展示（后端 blocked_by 字段）
@@ -193,68 +194,64 @@ export default function PendingPoolPanel() {
     { label: `已确认 (${counts.confirmed})`, value: 'confirmed' },
     { label: `已卡掉 (${counts.blocked})`, value: 'blocked' },
     { label: `全部 (${counts.all})`, value: 'all' },
+    { label: '筛选漏斗', value: 'funnel' },
   ]
 
   return (
-    <Tabs
-      size="small"
-      style={{ height: '100%' }}
-      items={[
-        {
-          key: 'pool',
-          label: '回踩待确认',
-          children: (
-            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-              <div style={{ flexShrink: 0, marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Segmented<StatusFilter> value={filter} onChange={setFilter} options={segOptions} />
-                <Button icon={<ReloadOutlined />} onClick={() => fetchData()} loading={loading} size="small">
-                  刷新
-                </Button>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div style={{ flexShrink: 0, marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Segmented<StatusFilter> value={filter} onChange={setFilter} options={segOptions} />
+        {filter !== 'funnel' && (
+          <Button icon={<ReloadOutlined />} onClick={() => fetchData()} loading={loading} size="small">
+            刷新
+          </Button>
+        )}
+      </div>
+      {filter === 'funnel' ? (
+        // 筛选漏斗（2026-10-11 拍板：作为 Segmented 第五项排在「全部」后面）：
+        // 每轮被拒币种列表 + 卡住关卡筛选 + 币种搜索 + 点击看K线
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
+          <FunnelPanel />
+        </div>
+      ) : (
+        <>
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
+            <Spin spinning={loading}>
+              <Table<PullbackPendingItem>
+                rowKey="id"
+                columns={columns}
+                dataSource={filtered}
+                pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
+                size="small"
+                scroll={{ x: 1140 }}
+                locale={{
+                  emptyText: (
+                    <Empty
+                      description={filter === 'pending'
+                        ? '暂无待确认币种——回踩触碰且当根无金K时会出现在这里'
+                        : '暂无记录'}
+                    />
+                  ),
+                }}
+              />
+            </Spin>
+          </div>
+          <Modal
+            open={!!klineSymbol}
+            title={klineSymbol ? `${klineSymbol} 最新K线` : ''}
+            footer={null}
+            width={1200}
+            destroyOnClose
+            onCancel={() => setKlineSymbol(null)}
+          >
+            {klineSymbol && (
+              <div style={{ height: 640 }}>
+                <KlineChart symbol={klineSymbol} limit={500} />
               </div>
-              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
-                <Spin spinning={loading}>
-                  <Table<PullbackPendingItem>
-                    rowKey="id"
-                    columns={columns}
-                    dataSource={filtered}
-                    pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
-                    size="small"
-                    scroll={{ x: 1140 }}
-                    locale={{
-                      emptyText: (
-                        <Empty
-                          description={filter === 'pending'
-                            ? '暂无待确认币种——回踩触碰且当根无金K时会出现在这里'
-                            : '暂无记录'}
-                        />
-                      ),
-                    }}
-                  />
-                </Spin>
-              </div>
-              <Modal
-                open={!!klineSymbol}
-                title={klineSymbol ? `${klineSymbol} 最新K线` : ''}
-                footer={null}
-                width={1200}
-                destroyOnClose
-                onCancel={() => setKlineSymbol(null)}
-              >
-                {klineSymbol && (
-                  <div style={{ height: 640 }}>
-                    <KlineChart symbol={klineSymbol} limit={500} />
-                  </div>
-                )}
-              </Modal>
-            </div>
-          ),
-        },
-        {
-          key: 'funnel',
-          label: '筛选漏斗',
-          children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><FunnelPanel /></div>,
-        },
-      ]}
-    />
+            )}
+          </Modal>
+        </>
+      )}
+    </div>
   )
 }

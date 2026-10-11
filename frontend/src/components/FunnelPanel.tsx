@@ -6,7 +6,7 @@
  * - 进待确认池的币不算被拒（见同面板「待确认池」页签）；旧版本扫描/异常轮次无数据
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Empty, Modal, Spin, Table, Tag, Tooltip, Typography, message } from 'antd'
+import { Button, Empty, Input, Modal, Select, Spin, Table, Tag, Tooltip, Typography, message } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
@@ -92,13 +92,23 @@ export default function FunnelPanel() {
         || a.symbol.localeCompare(b.symbol))
   }, [data])
 
-  // 各关卡计数（概览行下方的关卡汇总标签）
+  // 各关卡计数（概览统计块 + 关卡筛选下拉共用）
   const stageCounts = useMemo(() => {
     if (!data) return []
     return FUNNEL_STAGES
       .map((st) => ({ ...st, count: data.stages[st.key] ?? 0 }))
       .filter((g) => g.count > 0)
   }, [data])
+
+  // 关卡筛选 + 币种搜索（大小写不敏感的包含匹配）
+  const [stageFilter, setStageFilter] = useState<string>('all')
+  const [search, setSearch] = useState<string>('')
+  const filteredRows = useMemo(() => {
+    const kw = search.trim().toUpperCase()
+    return rows.filter((r) =>
+      (stageFilter === 'all' || r.stage === stageFilter)
+      && (!kw || r.symbol.includes(kw)))
+  }, [rows, stageFilter, search])
 
   const columns: ColumnsType<FunnelRow> = [
     { title: '币种', dataIndex: 'symbol', key: 'symbol', width: 140,
@@ -118,60 +128,71 @@ export default function FunnelPanel() {
   }
 
   return (
-    <div style={{ padding: '0 4px' }}>
-      <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <Button
-          size="small"
-          icon={<ReloadOutlined />}
-          loading={loading}
-          onClick={() => fetchData(currentScanId)}
-        >
-          刷新
-        </Button>
-        {isScanning && <Text type="secondary">扫描进行中，完成后自动刷新…</Text>}
-      </div>
-
+    <div style={{ padding: '0 4px', display: 'flex', flexDirection: 'column', gap: 12 }}>
       {loading && !data ? (
         <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div>
       ) : !data ? (
         <Empty description="该轮无漏斗数据（旧版本扫描或异常轮次）" style={{ marginTop: 60 }} />
       ) : (
         <>
-          {/* 漏斗概览 */}
-          <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-            <Tooltip title="全市场 USDT 永续合约数"><Tag color="blue">全市场 {data.universe}</Tag></Tooltip>
-            <Text type="secondary">→</Text>
-            <Tooltip title="预过滤（流动性/可交易/新币/风险档位/黑名单）后进指标管线数">
-              <Tag color="blue">进管线 {data.scanned}</Tag>
-            </Tooltip>
-            <Text type="secondary">→</Text>
-            <Tooltip title="通过全部筛选关卡、产生信号候选并进入 AI 分析">
-              <Tag color="green">候选进AI {data.candidates}</Tag>
-            </Tooltip>
-            <Tooltip title="回踩触碰但当根无金K，转入待确认池等确认（不算被拒）">
-              <Tag color="cyan">待确认池 {data.pending_pool}</Tag>
-            </Tooltip>
-            {data.errors > 0 && (
-              <Tooltip title="拉K线/指标计算异常数"><Tag color="red">异常 {data.errors}</Tag></Tooltip>
-            )}
-          </div>
-          {/* 各关卡被拒计数 */}
-          <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-            {stageCounts.map((g) => (
-              <Tooltip key={g.key} title={g.hint}>
-                <Tag style={{ marginInlineEnd: 0 }}>{g.label} {g.count}</Tag>
-              </Tooltip>
+          {/* 漏斗概览：统计块 + 漏斗箭头 */}
+          <div style={{
+            display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center',
+            padding: '10px 16px', background: '#fafafa', borderRadius: 8, border: '1px solid #f0f0f0',
+          }}>
+            {([
+              { label: '全市场', value: data.universe, color: '#1677ff', hint: '全市场 USDT 永续合约数' },
+              { label: '进管线', value: data.scanned, color: '#1677ff', hint: '预过滤（流动性/可交易/新币/风险档位/黑名单）后进指标管线数' },
+              { label: '候选进AI', value: data.candidates, color: '#52c41a', hint: '通过全部筛选关卡、产生信号候选并进入 AI 分析' },
+              { label: '待确认池', value: data.pending_pool, color: '#13c2c2', hint: '回踩触碰但当根无金K，转入待确认池等确认（不算被拒）' },
+              ...(data.errors > 0
+                ? [{ label: '异常', value: data.errors, color: '#ff4d4f', hint: '拉K线/指标计算异常数' }]
+                : []),
+            ] as { label: string; value: number; color: string; hint: string }[]).flatMap((s, i) => (
+              i === 0
+                ? [<StatBlock key={s.label} {...s} />]
+                : [<Text key={`a-${s.label}`} type="secondary">→</Text>, <StatBlock key={s.label} {...s} />]
             ))}
+          </div>
+
+          {/* 工具栏：关卡筛选 + 币种搜索 + 刷新 */}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Select
+              value={stageFilter}
+              onChange={setStageFilter}
+              size="small"
+              style={{ minWidth: 170 }}
+              options={[
+                { value: 'all', label: `全部关卡 (${rows.length})` },
+                ...stageCounts.map((g) => ({ value: g.key, label: `${g.label} (${g.count})` })),
+              ]}
+            />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜索币种，如 BTC"
+              size="small"
+              allowClear
+              style={{ width: 200 }}
+            />
+            <span style={{ flex: 1 }} />
+            {isScanning && <Text type="secondary" style={{ fontSize: 12 }}>扫描进行中，完成后自动刷新…</Text>}
+            <Button size="small" icon={<ReloadOutlined />} loading={loading}
+                    onClick={() => fetchData(currentScanId)}>
+              刷新
+            </Button>
           </div>
 
           <Table<FunnelRow>
             rowKey="symbol"
             size="small"
             columns={columns}
-            dataSource={rows}
+            dataSource={filteredRows}
             loading={loading}
             pagination={{ pageSize: 50, showSizeChanger: false, showTotal: (n) => `共 ${n} 个` }}
-            locale={{ emptyText: <Empty description="本轮没有被拒币种" style={{ marginTop: 40 }} /> }}
+            locale={{ emptyText: <Empty
+              description={rows.length === 0 ? '本轮没有被拒币种' : '无匹配币种（调整关卡筛选或搜索词）'}
+              style={{ marginTop: 40 }} /> }}
           />
         </>
       )}
@@ -191,5 +212,17 @@ export default function FunnelPanel() {
         )}
       </Modal>
     </div>
+  )
+}
+
+// 漏斗概览统计块：大数字 + 小标签，悬停显示口径说明
+function StatBlock({ label, value, color, hint }: { label: string; value: number; color: string; hint: string }) {
+  return (
+    <Tooltip title={hint}>
+      <div style={{ textAlign: 'center', minWidth: 72, cursor: 'default' }}>
+        <div style={{ fontSize: 20, fontWeight: 600, lineHeight: '24px', color }}>{value}</div>
+        <div style={{ fontSize: 12, color: '#8c8c8c' }}>{label}</div>
+      </div>
+    </Tooltip>
   )
 }
