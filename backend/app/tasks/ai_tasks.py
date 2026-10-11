@@ -28,7 +28,7 @@ from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services import ai_progress
 from app.services.ai_agent import analyze_coin_agent
-from app.services.ai_analyzer import analyze_with_guard
+from app.services.ai_analyzer import analyze_with_guard, calc_stop_reference
 from app.services.scan_filters import resolve_scan_filters
 from app.services.dual_judge import run_dual_judge
 from app.services.strategy.technical import enforce_htf_constraint, render_indicator_block
@@ -392,6 +392,13 @@ def run_ai_analysis_single(
             )
         # 4h 状态机硬约束兜底（2026-10-11 再重构 EMA 状态机 11 态：缠绕/拐头双向禁开，宏观交叉/恢复/排列锁逆势，过渡放行）：LLM 无视 prompt 时程序强制 skip
         ai_result = enforce_htf_constraint(ai_result, htf_klines)
+        # 程序止损参考价（2026-10-11）：两管线（P0 单次/Agent）编排层统一注入，
+        # 仅 suggest 落值（veto/强制 skip 的 direction=None 自然 NULL）——前端与
+        # AI 报价对比展示（0.5×ATR 外扩锚），不改写 stop_loss 不参与下单
+        if ai_result.get("trade_decision") == "suggest":
+            ai_result["calc_stop_loss"] = calc_stop_reference(
+                signal, klines, ai_result.get("direction")
+            )
         # Narrator 已下线（提速）：submit_decision 的 reason 直接承载完整分点分析
         # （工具 schema 强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返
         # 待回踩判定（2026-09-15）：入场在现价回踩侧的建议仅展示标识、不下单
@@ -480,6 +487,10 @@ def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str,
         "analysis": (note + "\n" + (src.analysis or "")).strip(),
         "entry_price": float(src.entry_price or 0),
         "stop_loss": float(src.stop_loss or 0),
+        # 程序止损参考价（2026-10-11）：沿用结论同步带出（源行 skip/旧行 NULL 照抄）
+        "calc_stop_loss": (
+            float(src.calc_stop_loss) if src.calc_stop_loss is not None else None
+        ),
         "take_profit_1": float(src.take_profit_1 or 0),
         "take_profit_2": float(src.take_profit_2 or 0) if tp2_enabled else 0,
         "risk_reward_ratio": float(src.risk_reward_ratio or 0),

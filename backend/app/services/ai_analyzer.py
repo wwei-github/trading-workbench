@@ -462,8 +462,10 @@ def analyze_coin(
     if not tp2_enabled:
         # TP2 关闭兜底清零（提示词已要求输出 0；防止模型违规输出污染落库记录）
         result["take_profit_2"] = 0
-    # 程序止损参考价（0.5×ATR 外扩）：仅展示对比用，不改写 AI 报价
-    result["calc_stop_loss"] = calc_stop_reference(signal, klines, result.get("direction"))
+    # 程序止损参考价（0.5×ATR 外扩）：仅 suggest 落值，前端对比展示用，
+    # 不改写 AI 报价；批量管线的注入在编排层统一做（ai_tasks，覆盖双管线）
+    if result.get("trade_decision") == "suggest":
+        result["calc_stop_loss"] = calc_stop_reference(signal, klines, result.get("direction"))
     return result
 
 
@@ -755,8 +757,6 @@ def analyze_with_guard(
                 signal.get("symbol"), fixed.get("trade_decision"),
                 fixed.get("risk_reward_ratio"),
             )
-            # 程序止损参考价（0.5×ATR 外扩）：仅展示对比用，不改写 fixed 内任何字段
-            fixed["calc_stop_loss"] = calc_stop_reference(signal, klines, fixed.get("direction"))
             return fixed
         last_violations = violations
         logger.warning(
