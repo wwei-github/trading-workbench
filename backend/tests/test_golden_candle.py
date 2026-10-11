@@ -190,24 +190,34 @@ def test_engulfing_clean_shadow_detected():
 
 
 def test_engulfing_long_shadow_rejected():
-    """看涨吞没长上影（upper 1.0/rng 2.6 ≈38% > 15% 上影门）→ 不判金K
-    （冲高遭抛压打回=犹豫非决断；2026-10-01 起看涨侧按上影门拦截）"""
+    """看涨吞没长上影（upper 1.0/rng 2.6 ≈38% > 25% 上影门）→ 不判金K
+    （冲高遭抛压打回=犹豫非决断；2026-10-01 起看涨侧按上影门拦截、
+    2026-10-11 由 15% 放宽至 25%）"""
     kl = _append_engulf_pair(_engulf_base(), cur_open=99.9, cur_close=101.3,
                              cur_high=102.3, cur_low=99.7)
     assert detect_engulfing(kl, idx=-1) is None
 
 
-def test_engulfing_bullish_upper_shadow_boundary_15pct_allowed():
-    """看涨吞没上影恰 15%（upper 0.3/rng 2.0）→ 边界放行（门只拦 >15%）"""
+def test_engulfing_bullish_upper_shadow_boundary_25pct_allowed():
+    """看涨吞没上影恰 25%（upper 0.5/rng 2.0）→ 边界放行（门只拦 >25%；
+    2026-10-11 边界由 15% 移至 25%）"""
     kl = _append_engulf_pair(_engulf_base(), cur_open=99.9, cur_close=101.3,
-                             cur_high=101.6, cur_low=99.6)
+                             cur_high=101.8, cur_low=99.8)
     r = detect_engulfing(kl, idx=-1)
     assert r is not None and r["pattern"] == "bullish_engulfing"
 
 
+def test_engulfing_bullish_upper_shadow_between_old_new_rejected():
+    """看涨吞没上影 30%（upper 0.6/rng 2.0）：>25% 拒绝、<旧 40% 总影线门
+    ——确认放宽后新边界生效（15% 时代该值必拒）"""
+    kl = _append_engulf_pair(_engulf_base(), cur_open=99.9, cur_close=101.3,
+                             cur_high=101.9, cur_low=99.9)
+    assert detect_engulfing(kl, idx=-1) is None
+
+
 def test_engulfing_bullish_long_lower_shadow_allowed():
     """看涨吞没长下影：下影 0.9、总影线 1.0/2.4≈42%（旧 40% 总影线门会拦）
-    但上影 0.1/2.4≈4% ≤15% → 放行（2026-10-01 不对称化：探底回升=承接强）"""
+    但上影 0.1/2.4≈4% ≤25% → 放行（2026-10-01 不对称化：探底回升=承接强）"""
     kl = _append_engulf_pair(_engulf_base(), cur_open=99.9, cur_close=101.3,
                              cur_high=101.4, cur_low=99.0)
     r = detect_engulfing(kl, idx=-1)

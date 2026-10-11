@@ -98,7 +98,10 @@ class Settings(BaseSettings):
     # v2026-10-11：4h 分级再重构为 EMA 状态机 11 态（用户三轮拍板，docs/17）——
     # 锁单矩阵（缠绕/拐头双向禁开、宏观同侧态锁逆势、过渡放行）+ 质量分
     # STATE_QUALITY 全变；REC70 前向窗口同日重置（见 shadow.REC70_START）
-    RULE_VERSION: str = "v2026-10-11"
+    # v2026-10-11-2：看涨吞没上影门 15%→25%（用户拍板）——EDUUSDT 11:00 吞没
+    # 上影 17.3% 被 15% 门拒、边缘拒绝个案出现；门语义（冲高遭抛压打回=犹豫）
+    # 保留，容忍度放宽。看跌吞没总影线 40% 门不变
+    RULE_VERSION: str = "v2026-10-11-2"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]
