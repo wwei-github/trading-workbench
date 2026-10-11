@@ -1,8 +1,15 @@
 """Risk Guard：AI 决策的确定性校验器（docs/04 §4 Stage 4 / §5.6）
 
-校验链已收缩（2026-09-15 拍板：② AI 分析校验链仅保留两条——RR 铁律 + 双评委辩论复核）：
+校验链（2026-09-15 收缩为 RR 铁律 + 双评委辩论复核；2026-10-12 增止损宽度下限与
+止盈一距离上限）：
 - Schema 强约束（Pydantic）+ suggest 基本项（方向/开单类型/三价为正）
 - **RR 铁律**：按 AI 给的三价复算盈亏比 ≥ AI_RR_MIN(1.5)，声称值不信
+- **止损宽度下限**（2026-10-12-2）：止损距入场 ≥ SL_MIN_ATR×ATR14（默认 0.3），
+  防"止损过近"被噪音扫掉并抑制 R 放大；近锚（突破类 stop_anchor=near）豁免
+  （其止损刻意贴突破K极值，另有敞口折价与 ±0.5% 一致性校验兜底）
+- **止盈一距离上限**（2026-10-12）：第一档止盈距入场 ≤
+  min(TP1_MAX_ATR×ATR14, TP1_MAX_R×止损距离)、且不低于 rr_min×止损距离
+  （防"第一档"落到 3~4R 的远位；超限打回让 AI 改近档或走兜底，程序不改价）
 - 仓位公式化（固定亏损法）：仓位 = 风险预算 ÷ 止损距离。风险预算两种口径
   （2026-09-27 止损金额模式，resolve 见 risk_budget.py）：pct=触止损恰好亏
   RISK_BUDGET_PCT（3%，默认）；fixed=亏固定 USDT 实额（position_pct 不折算），
@@ -13,6 +20,8 @@
 - 方向铁律入场贴近结构位 ±0.3%（2026-09-15 早些时候移除）
 - 止损锚定（结构锚 vs 影线极值取更远者 + 0.3% 缓冲）、止损宽度 [0.3×ATR, 3×ATR]、
   强平安全上限前置、止盈最近优先强制（docs/09 的锚定设计保留为提示词方法论）
+  ——2026-10-12-2 部分回退：恢复止损宽度**下限**（0.3×ATR，近锚豁免），上限仍
+  走 signal_gate.max_stop_pct + 动态杠杆
 
 方向-价格一致性（2026-09-16 恢复为硬校验，不属于方法论）：多单 SL<entry<TP1、
 空单 TP1<entry<SL（TP2>0 时同侧递延）。2026-09-15 随校验链收缩移除后，
@@ -26,9 +35,11 @@ ETHUSDT 空单反向止损（SL=2373 < 入场 2391.89）靠 abs() 口径的 RR �
 import logging
 from typing import Literal, Optional
 
+import numpy as np
 from pydantic import BaseModel, ValidationError
 
 from app.config import settings
+from app.services.strategy.technical import atr_series
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +245,8 @@ def validate_decision(
 
     返回 (ok, violations, fixed_dict)；ok=False 时 fixed_dict 为空。
     ok=True 时 fixed_dict 中 rr / position_pct 为程序复算值，直接落库。
-    signal / klines 保留入参以稳定调用方接口（当前校验不再使用）。
+    signal / klines 保留入参以稳定调用方接口；klines 自 2026-10-12 起用于
+    止盈一距离上限（据 ATR14 算 ATR 腿）。
     risk_budget（2026-09-27 止损金额模式）：fixed 模式下为单笔固定亏损 USDT
     实额（调用方从 system_config.risk_fixed_amount 传入），此时 position_pct
     置 None（仓位%依赖钱包，分析期不可得）；None 时按 risk_pct 百分比口径
@@ -370,6 +382,36 @@ def validate_decision(
     stop_dist = abs(d.entry_price - d.stop_loss)
     stop_pct = stop_dist / d.entry_price if d.entry_price else 0
 
+    # ATR14：止损宽度下限（ATR 腿）与止盈一距离上限（ATR 腿）共用，只算一次
+    _atr14 = None
+    try:
+        _arr = atr_series(klines, period=14) if klines else None
+        if _arr is not None and len(_arr) and np.isfinite(_arr[-1]):
+            _atr14 = float(_arr[-1])
+    except Exception:
+        _atr14 = None
+
+    # ── 止损宽度下限（2026-10-12-2 拍板）：防"止损过近"被噪音扫掉、并抑制 R 放大 ──
+    # 止损宽度须 ≥ SL_MIN_ATR×ATR14（默认 0.3）。近锚（突破类 stop_anchor=near）
+    # 豁免——其止损刻意贴突破K极值，另有 NEAR_ANCHOR_RISK_FACTOR 敞口折价与
+    # ±0.5% 一致性校验兜底，套全局下限会误杀整个近锚特性。ATR 不可算（K线不足）
+    # 放行；SL_MIN_ATR=0 关闭。超限 → 打回让 AI 外扩锚点或直接 skip（程序不改价）。
+    _near_anchor = (
+        d.stop_anchor == "near"
+        and (signal.get("signal_type") or "") in BREAKOUT_SIGNAL_TYPES
+    )
+    if (
+        not _near_anchor and stop_dist > 0 and _atr14 and _atr14 > 0
+        and float(settings.SL_MIN_ATR) > 0
+    ):
+        _sl_floor = float(settings.SL_MIN_ATR) * _atr14
+        if stop_dist < _sl_floor * (1 - 1e-9):
+            violations.append(
+                f"止损宽度过近：距入场 {stop_dist:.6g}（≈{stop_dist / _atr14:.2f}×ATR），"
+                f"低于下限 {_sl_floor:.6g}（{settings.SL_MIN_ATR:g}×ATR）——"
+                f"把锚点外扩到至少该宽度再报，或直接 skip（过近必被噪音扫）"
+            )
+
     # ── RR 铁律（唯一保留的价格校验）：按 AI 三价复算，声称值不信 ──
     # 策略二豁免（2026-10-10-5）：s2 定义即无 RR 铁律（EMA21 金K跟踪，不规划止盈）。
     # 优先级闸（2026-10-10-5b 拍板：打回改自动改标）——s2 的 TP1 是趋势目标参考价，
@@ -389,6 +431,29 @@ def validate_decision(
             _is_s2 = False
         elif rr < _rr_floor and not _is_s2:
             violations.append(f"盈亏比复算 {rr:.2f} < {_rr_floor:g}（交易系统铁律）")
+
+    # ── 止盈一距离上限（2026-10-12 拍板）：第一档止盈须"够近"──
+    # 摆动点位稀疏/强趋势下"最近结构位"常落到 3~4R，第一档命中率被拉低。上限
+    # cap = max(rr_min×止损距离, min(TP1_MAX_ATR×ATR14, TP1_MAX_R×止损距离))——
+    # 取 max 与 rr_min×止损距离 保证"入场±rr_min×止损距离"兜底永远可用、不会
+    # 打回死循环；无 K 线（ATR 不可算）时只用 R 腿；某腿配置 0 即关闭该腿。
+    # 超限 → 打回让 AI 改挂更近结构位或用兜底价（程序不改价，同止损锚定哲学）。
+    # trail 模式（s2，TP1 仅趋势参考价、不挂单）豁免；数据异常不锁死开单。
+    if not _is_s2 and stop_dist > 0 and d.take_profit_1 > 0:
+        _caps = []
+        if float(settings.TP1_MAX_R) > 0:
+            _caps.append(float(settings.TP1_MAX_R) * stop_dist)
+        if _atr14 and _atr14 > 0 and float(settings.TP1_MAX_ATR) > 0:
+            _caps.append(float(settings.TP1_MAX_ATR) * _atr14)
+        if _caps:
+            _cap = max(min(_caps), _rr_floor * stop_dist)
+            _tp1_dist = abs(d.take_profit_1 - d.entry_price)
+            if _tp1_dist > _cap * (1 + 1e-9):
+                violations.append(
+                    f"止盈一距离过远：距入场 {_tp1_dist:.6g}（≈{_tp1_dist / stop_dist:.2f}R），"
+                    f"超过上限 {_cap:.6g}——请改挂更近的结构位，"
+                    f"或改用 入场±{_rr_floor:g}×止损距离 作为止盈一（程序只复算不改价）"
+                )
     if violations:
         return False, violations, {}
 

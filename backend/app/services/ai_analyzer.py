@@ -45,6 +45,8 @@ _RULE_SL = """止损纪律（结构位优先，金K极值兜底，两锚取更�
 - 止损宽度不设固定百分比上限；不得以「止损过宽」为由 skip——宽止损由固定亏损法
   自动缩仓消化（止损越远仓位越小，BTWUSDT 等插针极值锚场景本就该宽），
   pin-bar/极端影线场景按技能减半仓位即可。
+- 但止损**不得过近**：宽度须 ≥ 0.3×ATR（低于噪音级必被扫），也不得低于 0.3%；
+  锚点落在 0.3×ATR 内时把锚外扩到该宽度再报，否则直接 skip（程序按此下限复算打回）。
   盈亏比不达标先调入场价，仍不达标如实 skip（触点=ema21 时策略二可用，
   按双入场策略裁决处理，勿整体跳过）。"""
 
@@ -53,6 +55,10 @@ _RULE_TP_BASE = """止盈锚定（多空方向不同，必须遵守；程序不�
   测试的争夺位、不算止盈目标，止盈一必须挂更远的第一档结构位外侧：
   做多 = 上方摆动高点下方 0.2%~0.5%（不得越到位上方或贴死位）；
   做空 = 下方摆动低点上方 0.2%~0.5%（不得越到位下方或贴死位）。
+- 第一档止盈须"够近"：距入场价不得超过 {tp1_max_atr}×ATR，也不得超过
+  {tp1_max_r}×止损距离。若更远的第一档结构位已越过此上限（强趋势/点位稀疏时
+  常见，会落到 3~4R），说明近端无合适目标——不要跳档硬挂远位凑盈亏比，改用
+  "入场价 ± {rr_min}×止损距离"作止盈一（程序按此上限复算打回）。
 - 禁止跳档凑盈亏比：到第一结构位不足 {rr_min}R 就是空间不足，应直接 skip
   （程序按盈亏比铁律复算打回）。"""
 
@@ -64,10 +70,12 @@ _RULE_TP2_BULLET_ON = """- 止盈二：止盈一锚定档的下一档结构位�
 _RULE_TP2_BULLET_OFF = """- 当前未启用止盈二（TP2 分批止盈已关闭）：只规划止盈一，
   take_profit_2 一律输出 0，即使前方有更远结构位也不要给出第二档止盈价。"""
 
-_RULE_TP_TAIL_ON = """- 前方无任何结构位可锚（如创新高突破）：止盈一 = 入场价 ± {rr_min}×止损距离
+_RULE_TP_TAIL_ON = """- 前方无任何结构位可锚（如创新高突破）、或更远的第一档结构位已越过距离上限
+  （{tp1_max_atr}×ATR 或 {tp1_max_r}×止损距离）：止盈一 = 入场价 ± {rr_min}×止损距离
   （盈亏比恰达标），止盈二设 0（仅设一档）。"""
 
-_RULE_TP_TAIL_OFF = """- 前方无任何结构位可锚（如创新高突破）：止盈一 = 入场价 ± {rr_min}×止损距离
+_RULE_TP_TAIL_OFF = """- 前方无任何结构位可锚（如创新高突破）、或更远的第一档结构位已越过距离上限
+  （{tp1_max_atr}×ATR 或 {tp1_max_r}×止损距离）：止盈一 = 入场价 ± {rr_min}×止损距离
   （盈亏比恰达标）。"""
 
 # 兼容名（默认开启版）：外部仅 SYSTEM_PROMPT 槽位引用，经 compose_rule_tp 组装
@@ -292,7 +300,9 @@ take_profit_1/take_profit_2/tp_mode/risk_reward_ratio/position_pct；skip_reason
 - take_profit_1: 第一档止盈价，做多=上方摆动高点下方留 0.2%~0.5% 余地，
   做空=下方摆动低点上方留 0.2%~0.5%。盈亏比铁律（程序按三价复算打回，声称值无效）：
   RR = |TP1 − 入场| ÷ |入场 − 止损| 必须 ≥ {rr_min}，输出前先自行代入验算
-  （近位争夺位不算止盈目标，细则见下方止盈锚定）。
+  （近位争夺位不算止盈目标，细则见下方止盈锚定）。距离上限（程序复算打回）：
+  距入场 ≤ {tp1_max_atr}×ATR 且 ≤ {tp1_max_r}×止损距离，超限请改挂更近结构位或
+  用"入场 ± {rr_min}×止损距离"兜底。
 - take_profit_2: {_tp2_field}
 {_tp_mode_field}
 - risk_reward_ratio: take_profit_1 的盈亏比，2位小数（策略二不适用，按参考价如实复算即可）。
@@ -360,8 +370,13 @@ def render_system_prompt(
         _RULE_DIRECTION=_RULE_DIRECTION.replace(chr(10), ' '),
         _RULE_STRUCT=_RULE_STRUCT,
         _RULE_SL=_RULE_SL,
-        # _RULE_TP 值内含 {rr_min} 字面占位（format 不递归替换值），须渲染前显式替换
-        _RULE_TP=compose_rule_tp(tp2_enabled).format(rr_min=_rr),
+        # _RULE_TP 值内含 {rr_min}/{tp1_max_atr}/{tp1_max_r} 字面占位
+        # （format 不递归替换值），须渲染前显式替换
+        _RULE_TP=compose_rule_tp(tp2_enabled).format(
+            rr_min=_rr,
+            tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
+            tp1_max_r=f"{settings.TP1_MAX_R:g}",
+        ),
         _RULE_DUAL_STRATEGY=_RULE_DUAL_STRATEGY,
         _RULE_TOUCH=_RULE_TOUCH,
         _RULE_EMA=_RULE_EMA.replace(chr(10), ' '),
@@ -369,6 +384,8 @@ def render_system_prompt(
         _tp2_field=_TP2_FIELD_ON if tp2_enabled else _TP2_FIELD_OFF,
         _tp_mode_field=_TP_MODE_FIELD,
         rr_min=_rr,
+        tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
+        tp1_max_r=f"{settings.TP1_MAX_R:g}",
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
     )  # 模板槽位均为纯名称：表达式在渲染前预处理（f-string 时代的 .format 内嵌已移除）
 

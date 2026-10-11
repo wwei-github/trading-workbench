@@ -73,9 +73,14 @@ def render_system_prompt(
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时剔除止盈二锚点语义
     （system_config.tp2_enabled，默认关），与实际调用（analyze_coin_agent）同源。"""
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
+    _tp1_atr = f"{settings.TP1_MAX_ATR:g}"
+    _tp1_r = f"{settings.TP1_MAX_R:g}"
     return AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
         rr_min=_rr,
+        sl_min_atr=f"{settings.SL_MIN_ATR:g}",
+        tp1_max_atr=_tp1_atr,
+        tp1_max_r=_tp1_r,
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
@@ -86,7 +91,9 @@ def render_system_prompt(
         ),
         _price_anchor_desc=_PRICE_ANCHOR_ON if tp2_enabled else _PRICE_ANCHOR_OFF,
         _tp_anchor_desc=_TP_ANCHOR_DESC_ON if tp2_enabled else _TP_ANCHOR_DESC_OFF,
-        _tp2_rule=(_TP2_RULE_ON if tp2_enabled else _TP2_RULE_OFF).format(rr_min=_rr),
+        _tp2_rule=(_TP2_RULE_ON if tp2_enabled else _TP2_RULE_OFF).format(
+            rr_min=_rr, tp1_max_atr=_tp1_atr, tp1_max_r=_tp1_r,
+        ),
         skill_index="",
     )
 
@@ -131,12 +138,14 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    决策一律通过 submit_decision 提交。
 9. 盈亏比铁律 ≥{rr_min}（策略二豁免，见 12.6）；止损宽度由结构位决定，不设固定价格百分比上限，不得以
    「止损过宽」为由 skip——宽止损由固定亏损法自动缩仓消化（止损越远仓位越小）；
+   但止损**不得过近**：宽度须 ≥{sl_min_atr}×ATR（低于噪音级必被扫），也不得低于 0.3%；
+   锚点落在该宽度内时把锚外扩到至少该宽度再报，否则直接 skip（程序按此下限复算打回）；
    仓位不要自己报，程序按固定亏损法计算，单笔止损预算={risk_label}：仓位 = 预算 ÷ 止损距离
    （止损越远仓位越小）。
 10. 指标方向判定：{_RULE_VOTE_BRIEF}
     EMA 排列不构成方向限制（多头排列不禁止做空、空头排列不禁止做多）。
 11. 止损锚定（提示词纪律，程序不再改写 stop 值——止损是否合理由你自己把关，
-    程序只复算盈亏比）：结构位优先、金K极值兜底、两锚取更远者。做多优先锚定入场价下方
+    程序只复算盈亏比与止损宽度下限）：结构位优先、金K极值兜底、两锚取更远者。做多优先锚定入场价下方
     最近摆动低点外 0.3%~0.5%，做空锚定上方最近摆动高点外同幅度；入场贴着结构位时
     止损还须越过信号K线极值——做多取摆动低点与信号K线最低点中更低者、
     做空取摆动高点与信号K线最高点中更高者外 0.3%
@@ -153,6 +162,9 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     ——不得贴死位或挂在越位一侧（价格常在位附近反弹，越位才触发的止盈大概率落空）。
     禁止把止盈一挂到更远结构位凑盈亏比：到第一结构位的盈亏比不足 {rr_min} 说明空间不足，
     应直接 skip（程序只复算盈亏比并按铁律打回）。
+    另：第一档止盈须"够近"——距入场 ≤{tp1_max_atr}×ATR 且 ≤{tp1_max_r}×止损距离；
+    更远的第一档结构位越过此上限时（强趋势/点位稀疏常见，会落到 3~4R）不要跳档硬挂，
+    改用"入场 ± {rr_min}×止损距离"兜底（程序按距离上限复算打回）。
     {_tp2_rule}
 12.5 止盈模式（tp_mode，suggest 必填）：由 entry_strategy 程序推导（2026-10-11
     策略一重定义，trail 归策略二独有），按胜出策略如实填写即可：
@@ -193,27 +205,31 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 
 # TP2 分批开关（2026-10-08）槽位变体：关闭时提示词整体剔除止盈二锚点语义，
 # 与 P0 管线（ai_analyzer.compose_rule_tp）同目的——AI 不产出第二档止盈价。
-# 含 {rr_min} 的变体在渲染前须先 .format(rr_min=_rr) 再传入 AGENT_SYSTEM.format。
+# 含 {rr_min}/{tp1_max_atr}/{tp1_max_r} 的变体在渲染前须先显式 .format 再传入 AGENT_SYSTEM.format。
 _PRICE_ANCHOR_ON = "（entry_ref/stop_ref/tp1_ref/tp2_ref + offset_pct）"
 _PRICE_ANCHOR_OFF = "（entry_ref/stop_ref/tp1_ref + offset_pct）"
 
-_TP_ANCHOR_DESC_ON = """止盈用线外锚点：做多止盈一 tp1_ref=resistance_zone_low（现价上方最近的摆动高点，历史命名）、
-   止盈二 tp2_ref=next_resistance_zone_low（更远一档的摆动高点）；做空用 support_zone_high /
-   next_support_zone_high（现价下方的摆动低点及其更远一档）。止盈 offset 留余地：
+_TP_ANCHOR_DESC_ON = """止盈用线外锚点：做多止盈一 tp1_ref=resistance_zone_low（现价上方第一个距现价 >1×ATR
+   的摆动高点，≤1×ATR 的争夺位不算；历史命名）、止盈二 tp2_ref=next_resistance_zone_low
+   （其更远一档的摆动高点）；做空用 support_zone_high / next_support_zone_high
+   （现价下方满足同条件的摆动低点及其更远一档）。止盈 offset 留余地：
    做多 -0.2~-0.5（位下方），做空 0.2~0.5（位上方）。"""
 
-_TP_ANCHOR_DESC_OFF = """止盈用线外锚点：做多止盈一 tp1_ref=resistance_zone_low（现价上方最近的摆动高点，历史命名）；
-   做空用 support_zone_high（现价下方的摆动低点）。止盈 offset 留余地：
+_TP_ANCHOR_DESC_OFF = """止盈用线外锚点：做多止盈一 tp1_ref=resistance_zone_low（现价上方第一个距现价 >1×ATR
+   的摆动高点，≤1×ATR 的争夺位不算；历史命名）；做空用 support_zone_high
+   （现价下方满足同条件的摆动低点）。止盈 offset 留余地：
    做多 -0.2~-0.5（位下方），做空 0.2~0.5（位上方）。"""
 
 _TP2_RULE_ON = """止盈二取止盈一锚定档的下一档同类结构位（做多=更高一档摆动高点下方，做空=更低一档
-    摆动低点上方）且必须比止盈一更远。价格创新高/新低、前方无摆动结构位时
-    （如创新高突破），止盈一 = 入场 ± {rr_min}×止损距离、止盈二不设（仅一档）。
+    摆动低点上方）且必须比止盈一更远。价格创新高/新低、前方无摆动结构位时，
+    或第一档结构位距入场超过 {tp1_max_atr}×ATR / {tp1_max_r}×止损距离时（如创新高突破），
+    止盈一 = 入场 ± {rr_min}×止损距离、止盈二不设（仅一档）。
     盈亏比 ≥{rr_min} 是开单硬性要求（程序复算，不足即打回）。"""
 
 _TP2_RULE_OFF = """当前未启用止盈二（TP2 分批止盈已关闭）：不要提交 tp2_ref/tp2_offset_pct
     （提交也会被程序置 0），止盈一只挂第一档结构位。价格创新高/新低、前方无摆动
-    结构位时，止盈一 = 入场 ± {rr_min}×止损距离。
+    结构位时，或第一档结构位距入场超过 {tp1_max_atr}×ATR / {tp1_max_r}×止损距离时，
+    止盈一 = 入场 ± {rr_min}×止损距离。
     盈亏比 ≥{rr_min} 是开单硬性要求（程序复算，不足即打回）。"""
 
 TOOLS_SCHEMA = [
@@ -315,8 +331,10 @@ def _tools_schema(tp2_enabled: bool = True) -> list:
     return tools
 
 
-# 线外锚点：ref -> (swings 侧, 第几档)；第几档 0=现价侧最近、1=下一档（止盈二用）。
+# 线外锚点：ref -> (swings 侧, 第几档)；第几档 0=现价侧第一档、1=下一档（止盈二用）。
 # 锚点解析到摆动结构位价格本身（docs/09），枚举名沿用 zone/关键位时期历史命名。
+# 2026-10-12：第几档在给定 ATR 时先剔除距现价 ≤1×ATR 的"争夺位"（见 _nth_swing），
+# 与工具 schema 描述"更远的第一条压力/支撑线"对齐
 _ZONE_REF_MAP = {
     "resistance_zone_low": ("highs", 0),
     "support_zone_high": ("lows", 0),
@@ -325,9 +343,14 @@ _ZONE_REF_MAP = {
 }
 
 
-def _nth_swing(signal: dict, side: str, nth: int) -> Optional[float]:
+def _nth_swing(signal: dict, side: str, nth: int,
+               atr: Optional[float] = None) -> Optional[float]:
     """现价侧第 nth 近的摆动结构位价格：highs 取现价上方升序（最近为 0），
-    lows 取现价下方降序（最近为 0）。数据缺失返回 None。"""
+    lows 取现价下方降序（最近为 0）。数据缺失返回 None。
+
+    atr（2026-10-12）：给定时先剔除距现价 ≤atr（即 ≤1×ATR）的"争夺位"——它们只
+    回答是否被测试/突破，不作止盈目标（与工具 schema/提示词同口径）；剔除后取第
+    nth 档。atr 缺失（无 K 线）时不剔除，回落原"最近位"语义（旧行为不变）。"""
     sw = signal.get("recent_swings") or {}
     try:
         cur = float(signal.get("current_price") or 0)
@@ -340,6 +363,8 @@ def _nth_swing(signal: dict, side: str, nth: int) -> Optional[float]:
         reverse=(side == "lows"),
     )
     prices = [p for p in prices if (p > cur if side == "highs" else p < cur)]
+    if atr and atr > 0:
+        prices = [p for p in prices if abs(p - cur) > atr]
     if len(prices) <= nth:
         return None
     return prices[nth]
@@ -354,6 +379,8 @@ def _resolve_price(ref: Optional[str], offset_pct, signal: dict,
     锚点打回（走 _handle_submit 的 errs 重试路径），而非静默落到错误侧。
     signal_low/signal_high（docs/23）解析到突破K线（信号K线，klines[-2]；
     klines[-1] 未收盘）的最低/最高价，仅止损近锚降级链使用。
+    klines（2026-10-12）：zone 系止盈锚据此算 1×ATR，剔除距离 ≤1×ATR 的争夺位
+    （见 _nth_swing）；未传 K 线时不做该剔除（旧行为）。
     purpose 保留参数以维持调用方签名稳定。"""
     if not ref:
         return None
@@ -376,7 +403,14 @@ def _resolve_price(ref: Optional[str], offset_pct, signal: dict,
         return base * (1 + _safe_off(offset_pct) / 100.0)
 
     cur = float(signal.get("current_price") or 0)
-    base = _resolve_from_swings(ref, signal, cur)
+    # zone 系止盈锚：有 K 线时算 1×ATR 并剔除近端争夺位（2026-10-12）
+    _atr = None
+    if ref in _ZONE_REF_MAP and klines:
+        try:
+            _atr = calc_atr(klines)
+        except Exception:
+            _atr = None
+    base = _resolve_from_swings(ref, signal, cur, atr=_atr)
     if base is None:
         return None
     return base * (1 + _safe_off(offset_pct) / 100.0)
@@ -389,11 +423,15 @@ def _safe_off(offset_pct) -> float:
         return 0.0
 
 
-def _resolve_from_swings(ref: str, signal: dict, cur: float) -> Optional[float]:
-    """摆动点路径：结构锚点解析到现价同侧最近的摆动点。"""
+def _resolve_from_swings(ref: str, signal: dict, cur: float,
+                         atr: Optional[float] = None) -> Optional[float]:
+    """摆动点路径：结构锚点解析到现价同侧最近的摆动点。
+
+    zone 系（止盈锚）在给定 atr 时先剔除 ≤1×ATR 争夺位（见 _nth_swing）；
+    support/resistance（止损结构锚）不受该剔除影响，保持"最近摆动点"语义。"""
     if ref in _ZONE_REF_MAP:
         side, nth = _ZONE_REF_MAP[ref]
-        return _nth_swing(signal, side, nth)
+        return _nth_swing(signal, side, nth, atr=atr)
     sw = signal.get("recent_swings") or {}
     side = "lows" if ref == "support" else "highs"
     prices = [
@@ -462,7 +500,7 @@ def _handle_submit(
     stop = _resolve_price(args.get("stop_ref"), args.get("stop_offset_pct"),
                           signal, purpose="stop", klines=klines)
     tp1 = _resolve_price(args.get("tp1_ref"), args.get("tp1_offset_pct"),
-                         signal, purpose="tp")
+                         signal, purpose="tp", klines=klines)
     # TP2 关闭硬清零（2026-10-08）：不解析 tp2 锚点，落库 take_profit_2=0。
     # tp2 解析随策略二跳过（2026-10-11）：tp_mode 由 entry_strategy 程序推导，
     # s2 不规划止盈（tp2_ref 提交也无意义），AI 谎报 tp_mode=trail 不会误伤 s1 的 tp2
@@ -471,7 +509,7 @@ def _handle_submit(
         _mode = None  # 非法值归 None（validate_decision 按 entry_strategy 覆盖）
     tp2 = (
         _resolve_price(args.get("tp2_ref"), args.get("tp2_offset_pct"),
-                       signal, purpose="tp")
+                       signal, purpose="tp", klines=klines)
         if tp2_enabled and args.get("entry_strategy") != "s2" else 0
     )
     errs = []

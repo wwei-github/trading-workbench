@@ -101,3 +101,38 @@ def test_signal_extreme_without_klines_is_none():
     assert _resolve_price("signal_low", 0, sig, klines=None) is None
     assert _resolve_price("signal_low", 0, sig, klines=[_klines_with_signal_candle()[0]]) is None
     assert _resolve_price("signal_high", 0, sig, klines=[]) is None
+
+
+# ── zone 系止盈锚：剔除 ≤1×ATR 争夺位（2026-10-12）─────────────────────
+
+
+def _flat_klines(n=40, rng=2.0, base=100.0):
+    """n 根 1h K 线，每根 high-low=rng → TR 恒为 rng → ATR(14)=rng"""
+    return [
+        [i, base, base + rng / 2, base - rng / 2, base, 10.0, 0, 0.0]
+        for i in range(n)
+    ]
+
+
+def test_zone_refs_exclude_contention_zone_with_atr():
+    """有 K 线：ATR=2 → 距现价 0.5 的 100.5 属争夺位剔除，第一档落到 103"""
+    kl = _flat_klines()
+    sig = _signal(cur=100.0, highs=(100.5, 103.0, 110.0), lows=(99.0,))
+    assert _resolve_price("resistance_zone_low", 0, sig, klines=kl) == 103.0
+    assert _resolve_price("next_resistance_zone_low", 0, sig, klines=kl) == 110.0
+    # 止损结构锚（support/resistance）不受该剔除影响，仍取最近位
+    assert _resolve_price("resistance", 0, sig, klines=kl) == 100.5
+
+
+def test_zone_refs_without_klines_keeps_nearest():
+    """无 K 线（ATR 不可算）→ 不剔除，回落"最近位"语义（旧行为不变）"""
+    sig = _signal(cur=100.0, highs=(100.5, 103.0), lows=(99.0,))
+    assert _resolve_price("resistance_zone_low", 0, sig) == 100.5
+
+
+def test_zone_refs_all_within_contention_returns_none():
+    """全部摆动位都在 1×ATR 内 → 无可锚档位返回 None（走打回/兜底路径）"""
+    kl = _flat_klines()
+    sig = _signal(cur=100.0, highs=(100.5, 101.0), lows=(99.0,))
+    assert _resolve_price("resistance_zone_low", 0, sig, klines=kl) is None
+
