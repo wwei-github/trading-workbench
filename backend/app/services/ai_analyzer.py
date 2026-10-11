@@ -12,7 +12,7 @@ from app.services.market_data import build_market_context, get_kline_client
 from app.services.risk_guard import build_forced_skip, parse_and_validate
 from app.services.strategy.candlestick import golden_whitelist_labels
 from app.services.strategy.ema import analyze_ema
-from app.services.strategy.technical import analyze_htf_background, render_indicator_block
+from app.services.strategy.technical import render_indicator_block
 from app.services.strategy.trigger import TOUCH_LABELS
 from app.services.strategy.types import POSITION_LABEL_MAP
 
@@ -24,7 +24,9 @@ _RULE_HTF_HARD = """0. **方向硬约束（最高优先级，先于一切规则�
 4h衰竭期背景（动能已翻向）禁止开任何新单，顺势/逆势一律 skip（程序会强制改判）；
 4h排列中等/强/极强背景（宏观同侧）仅可顺势（逆势一律 skip，程序会强制改判）；
 弱排列（排列未证明）与逆宏观（熊内反弹/牛内回调）无此约束，但仍应结合质量分与打法合理性自评；
-即使 1h 指标多数决指向反方向也以约束为准（1h 逆中等/强排列背景信号视为回调噪音）。"""
+即使 1h 指标多数决指向反方向也以约束为准（1h 逆中等/强排列背景信号视为回调噪音）。
+动能同向定义：4h MACD 柱线与方向同号——「动能衰减（柱线收窄·仍同向）」注记
+仍算同向（减速≠反转），仅「柱线已翻向/动能背离」才算不同向。"""
 
 _RULE_VOTE = """指标多数决规则：用户消息"技术指标"块末尾的"指标方向"行为程序化统计
 （MACD/布林带/RSI/SuperTrend/ADX/OBV/4h背景 各投多/空/中性票）。
@@ -42,8 +44,8 @@ _RULE_SL = """止损纪律（结构位优先，影线极值兜底，两锚取更
 - 止损宽度不设固定百分比上限；不得以「止损过宽」为由 skip——宽止损由固定亏损法
   自动缩仓消化（止损越远仓位越小，BTWUSDT 等插针极值锚场景本就该宽），
   pin-bar/极端影线场景按技能减半仓位即可。
-  盈亏比不达标先调入场价，仍不达标按 tp_mode 字段
-  说明的「盈亏比取舍」处理（4h 排列中等/强且动能同向可改 trail，其余背景 skip）。"""
+  盈亏比不达标先调入场价，仍不达标如实 skip（触点=ema21 时策略二可用，
+  按双入场策略裁决处理，勿整体跳过）。"""
 
 _RULE_TP_BASE = """止盈锚定（多空方向不同，必须遵守；程序不再改挂止盈价）：
 - 结构位=摆动高低点（用户消息中"近期摆动结构"）。距现价 ≤1×ATR 的位是正在
@@ -51,10 +53,7 @@ _RULE_TP_BASE = """止盈锚定（多空方向不同，必须遵守；程序不�
   做多 = 上方摆动高点下方 0.2%~0.5%（不得越到位上方或贴死位）；
   做空 = 下方摆动低点上方 0.2%~0.5%（不得越到位下方或贴死位）。
 - 禁止跳档凑盈亏比：到第一结构位不足 {rr_min}R 就是空间不足，应直接 skip
-  （程序按盈亏比铁律复算打回；若 4h 排列中等/强且动能同向，可按 tp_mode 字段
-  说明的「盈亏比取舍」改用 trail——该禁止针对 ladder 的真实挂单，trail 的
-  TP1 仅为趋势目标参考价，该背景下程序豁免盈亏比铁律，如实上报参考价
-  不属跳档）。"""
+  （程序按盈亏比铁律复算打回）。"""
 
 # TP2 分批开关（2026-10-08）：关闭时提示词整体剔除止盈二条目——AI 不再产出
 # 第二档止盈价（落库 take_profit_2=0，与出场引擎 80% 口径一致）
@@ -85,29 +84,21 @@ def compose_rule_tp(tp2_enabled: bool) -> str:
 
 # 字段说明行按 TP2 开关二选一（SYSTEM_PROMPT 的 {_tp2_field} 槽位）
 _TP2_FIELD_ON = """第二档止盈价，锚定更前方一档摆动结构位（做多=更高一档摆动高点下方，
-  做空=更低一档摆动低点上方，同样留余地）且必须比止盈一更远。tp_mode="trail" 时不要输出。"""
+  做空=更低一档摆动低点上方，同样留余地）且必须比止盈一更远。策略二（entry_strategy="s2"）时输出 0。"""
 
 _TP2_FIELD_OFF = """当前未启用止盈二（TP2 分批关闭）：一律输出 0。"""
 
-# 止盈模式说明（2026-10-10，docs/19 §3.4 两派哲学：分批落袋 vs 让利润奔跑）。
-# 两模式共用一套入场/止损/盈亏比铁律，差异只在出场：ladder 靠结构位分批落袋，
-# trail 靠保本武装+跟进止损
-_TP_MODE_FIELD = """- tp_mode: 止盈模式，suggest 时必填其一（程序按此决定出场方式），skip 时不输出（输出 null）：
-  "ladder" 分批止盈（默认）：TP1/TP2 结构位分批落袋 + 保本武装 + 剩余仓跟进。
-    适合：区间边缘反转、结构破位回踩、动能一般、上方第一结构位较近（盈亏比 1.5~2.5 区间）。
-  "trail" 纯跟踪：不挂止盈档（take_profit_1 仍必须给出——仅作趋势目标参考价，
-    程序不会按它挂单），浮盈达 1×ATR 武装保本，其后跟进止损让利润奔跑。
-    适合：强趋势顺势（4h 与 1h 同向、ADX 强）、突破后动能充足、上方无明显压力位
-    或第一结构位很远。trail 不以固定目标盈亏比取舍——强背景（4h 排列中等/强
-    且柱线同向）下程序对 trail 豁免盈亏比铁律，参考价如实上报趋势目标即可。
-  选择标准：落袋确定性优先选 ladder，趋势空间优先选 trail；拿不准选 ladder。
-  盈亏比取舍（2026-10-10）：若按结构位测算的盈亏比不达下限、又已触发「禁止跳档凑盈亏比」，
-  不要直接 skip——先看 4h 背景：排列中等/强（趋势已被证明）且动能同向时，改选 trail，
-  把 take_profit_1 参考价如实上移到趋势目标位（前高/通道上沿/1.5×ATR 延伸）即可，
-  程序对该背景下的 trail 豁免盈亏比铁律（无须凑 1.5R）；
-  4h 弱排列或震荡背景下，盈亏比不达标仍应 skip。
-  动能同向定义：4h MACD 柱线与方向同号——「动能衰减（柱线收窄·仍同向）」注记
-  仍算同向（减速≠反转），仅「柱线已翻向/动能背离」才算不同向。"""
+# 止盈模式说明（2026-10-11 策略一重定义）：tp_mode 不再由 AI 自由选择——由
+# entry_strategy 程序推导（s1→ladder、s2→trail），AI 输出值被覆盖不信任。
+# 原 ladder/trail 两派哲学选择标准与「盈亏比取舍」条款随 AI 自选 trail 一并退役
+# （docs/19 §3.4 退役注记；trail 归策略二独有）
+_TP_MODE_FIELD = """- tp_mode: 止盈模式，suggest 时必填其一，skip 时输出 null：
+  策略一（entry_strategy="s1"）→ "ladder" 分批止盈（TP1/TP2 结构位分批落袋 +
+    保本武装 + 剩余仓跟进）——即 trail 加入前的原版出场方式；
+  策略二（entry_strategy="s2"）→ "trail" 纯跟踪（不挂止盈档，浮盈 1×ATR 武装
+    保本，其后跟进止损让利润奔跑）。
+  程序按 entry_strategy 推导并覆盖本字段（trail 归策略二独有，策略一无 trail），
+  按胜出策略如实填写即可。"""
 
 _RULE_STRUCT = """结构破位回踩打法（structure_break）三子形态按行情阶段择一，选择理由写进 analysis：
 1. 123法则（趋势反转）：破支撑(1) → 反弹不创新低(2) → 突破反弹高点时入场(3)；止损放转折点外侧。稳但滞后。
@@ -119,12 +110,14 @@ _RULE_DIRECTION = """方向纪律（不再程序强制，无 ±0.3% 贴近要求
 只在压力结构做空；现价已离开结构位时不再要求贴近，可按动能顺势给入场价（顺势追势
 入场贴近现价即可），入场是否合理由盈亏比与止损结构把关。"""
 
-# 双入场策略（2026-10-10-5，docs/20）：同一信号两套入场逻辑分别评估、分条结论、
-# 合并裁决。策略一=上方全部现行规则（盈亏比铁律+止盈规划）；策略二=EMA21 金K跟踪
-# （无 RR 铁律、不规划止盈，出场固定 trail）。程序两道闸兜底：s2 资格闸（触点必须
-# ema21）与优先级闸（s2 复算 RR 达标强制打回走 s1）
+# 双入场策略（2026-10-10-5，docs/20；2026-10-11 策略一重定义）：同一信号两套入场
+# 逻辑分别评估、分条结论、合并裁决。策略一=trail 加入前的原版（ladder 分批止盈 +
+# 盈亏比铁律 + 结构位止盈规划）；策略二=EMA21 金K跟踪（无 RR 铁律、不规划止盈，
+# 出场固定 trail——trail 归策略二独有）。tp_mode 由 entry_strategy 程序推导。
+# 程序闸兜底：s2 资格闸（触点必须 ema21）与优先级闸（s2 复算 RR 达标自动改标 s1）
 _RULE_DUAL_STRATEGY = """双入场策略裁决（2026-10-10-5）：对同一信号先分别评估两套入场逻辑，再合并为单一决策：
-1. 策略一：上方全部现行规则（盈亏比铁律 + 止盈规划），得出完整结论；
+1. 策略一：trail 加入前的原版完整规则——ladder 分批止盈（TP1/TP2 结构位落袋）+
+   盈亏比铁律（RR≥{rr_min}R）+ 结构位止盈规划，无 trail，得出完整结论；
 2. 策略二：仅当信号块"回踩触点"= ema21 时可用（见下方策略二详解），得出结论；
 3. 合并（程序两道闸兜底，谎报会被打回）：
    - 两策略均不建议 → trade_decision="skip"，skip_reason 合并两策略各自主因；
@@ -300,10 +293,10 @@ take_profit_1/take_profit_2/tp_mode/risk_reward_ratio/position_pct；skip_reason
 - take_profit_2: {_tp2_field}
 {_tp_mode_field}
 - risk_reward_ratio: take_profit_1 的盈亏比，2位小数（策略二不适用，按参考价如实复算即可）。
-- entry_strategy: 双入场策略胜出方（2026-10-10-5），suggest 时必填："s1"（策略一=完整规则，
-  盈亏比铁律+止盈规划）或 "s2"（策略二=EMA21 金K跟踪，无 RR 铁律、不规划止盈、固定 trail，
-  仅"回踩触点"=ema21 时可用）。两策略均建议时输出 "s1"（策略一优先，程序强制）。
-  skip 时输出 null。
+- entry_strategy: 双入场策略胜出方（2026-10-10-5），suggest 时必填："s1"（策略一=
+  trail 加入前原版：ladder 分批止盈+盈亏比铁律+结构位止盈规划，无 trail）或 "s2"
+  （策略二=EMA21 金K跟踪，无 RR 铁律、不规划止盈、固定 trail，仅"回踩触点"=ema21
+  时可用）。两策略均建议时输出 "s1"（策略一优先，程序强制）。skip 时输出 null。
 - strategy2_decision: 策略二结论，必填其一："suggest"/"skip"；触点非 ema21 时输出 "skip"。
   策略二不可用也必须如实输出（程序审计两策略判定链）。
 - strategy2_reason: 策略二判定依据，≤60字；触点非 ema21 时注明"触点非ema21"。
@@ -436,7 +429,6 @@ def _build_messages(
     rr_min: Optional[float] = None,
     crash_pct: Optional[float] = None,
     tp2_enabled: bool = True,
-    tp_mode_cfg: Optional[str] = None,
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
 
@@ -446,10 +438,7 @@ def _build_messages(
     rr_min（2026-10-02 上页面）：盈亏比铁律下限，注入系统提示词（None=env 默认）。
     crash_pct（2026-10-02 上页面）：BTC 急跌阈值 %，透传市场环境块（None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关，注入系统提示词（None 不适用，
-    默认 True）。
-    tp_mode_cfg（2026-10-10 C8，docs/20）：出场模式配置（system_config.tp_mode，
-    None=调用方未传不注入），渲染事实行——配置强制 ladder/trail 时 AI 知悉其
-    选择仅落库展示、开仓侧将覆盖，避免分析卡片与实际出场不符。"""
+    默认 True）。"""
     # 取最近 40 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-41:-1]）。
     # 60→40（2026-09-28）：CSV 是 user 消息 token 大头（60 根 ≈5000+），思考型模型
     # reasoning 时长与输入量正相关；浓缩结论（指标/摆动块）已覆盖形态识别所需，
@@ -490,22 +479,8 @@ def _build_messages(
     if ema:
         ema_summary = f"均线形态: {ema['state_label']}（{ema['detail']}）\n"
 
-    # 技术指标（MACD/布林带/RSI/SuperTrend/ADX/OBV + 4h背景 + 程序化共振结论）；
-    # signal_type 透传（2026-10-10 A2）：range_bound 不注入盈亏比取舍提示行
-    indicator_summary = render_indicator_block(
-        klines, htf_klines, signal_type=signal.get("signal_type"),
-    )
-
-    # 出场模式配置行（2026-10-10 C8，docs/20）：调用方显式传入才注入
-    tp_cfg_line = ""
-    if tp_mode_cfg is not None:
-        if tp_mode_cfg in ("ladder", "trail"):
-            tp_cfg_line = (
-                f"出场模式配置: 程序强制 {tp_mode_cfg}"
-                "（开仓侧按此覆盖，tp_mode 选择仅落库展示）\n"
-            )
-        else:
-            tp_cfg_line = "出场模式配置: ai（AI 自主选择 tp_mode）\n"
+    # 技术指标（MACD/布林带/RSI/SuperTrend/ADX/OBV + 4h背景 + 程序化共振结论）
+    indicator_summary = render_indicator_block(klines, htf_klines)
 
     # 市场环境（docs/24 A4①）：本币资金费率 + BTC 状态摘要，紧跟指标块注入——
     # 系统提示词要求"勿臆测"，普跌日无环境感知 AI 只能凭本币指标判断；
@@ -559,7 +534,6 @@ def _build_messages(
         f"突破幅度: {signal['breakout_pct']:.2f}%\n"
         f"K线形态: {signal.get('pattern') or '无'}\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
-        f"{tp_cfg_line}"
         f"{touch_line}"
         f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct)}"
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
@@ -671,7 +645,6 @@ def analyze_with_guard(
     progress_id=None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
     crash_pct: Optional[float] = None, tp2_enabled: bool = True,
-    tp_mode_cfg: Optional[str] = None,
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -685,17 +658,12 @@ def analyze_with_guard(
     rr_min / risk_pct / crash_pct（2026-10-02 上页面）：盈亏比铁律下限、单笔
     风险比例与 BTC 急跌阈值，注入提示词并透传 Risk Guard 校验（None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时提示词剔除止盈二条目，
-    且在风控校验前硬清零 take_profit_2（AI 不产出第二档止盈价）。
-    tp_mode_cfg（2026-10-10 C8）：出场模式配置注入事实行（ai/ladder/trail）；
-    htf_bg（2026-10-10 拍板 B）：4h 背景资格随校验透传（trail RR 条件豁免）。"""
-    # 4h 背景资格（2026-10-10 拍板 B，docs/20 §四）：入场分析前算一次随校验透传；
-    # 无 htf 数据时 None → 不豁免（缺证从严）
-    htf_bg = analyze_htf_background(htf_klines) if htf_klines else None
+    且在风控校验前硬清零 take_profit_2（AI 不产出第二档止盈价）。"""
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
         htf_klines=htf_klines, risk_label=risk_label, stop_cap_pct=stop_cap_pct,
         interval=interval, tactics_block=tactics_block, rr_min=rr_min,
-        crash_pct=crash_pct, tp2_enabled=tp2_enabled, tp_mode_cfg=tp_mode_cfg,
+        crash_pct=crash_pct, tp2_enabled=tp2_enabled,
     )
     client = _get_client()
     _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None
@@ -730,7 +698,7 @@ def analyze_with_guard(
 
         ok, violations, fixed = parse_and_validate(
             raw, signal, klines, risk_budget=_risk_budget,
-            rr_min=rr_min, risk_pct=risk_pct, htf_bg=htf_bg,
+            rr_min=rr_min, risk_pct=risk_pct,
         )
         if ok:
             logger.info(

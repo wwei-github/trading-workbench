@@ -18,7 +18,6 @@ from app.services.strategy.technical import (
     analyze_htf_background,
     compute_quality_score,
     enforce_htf_constraint,
-    render_indicator_block,
 )
 
 
@@ -154,47 +153,6 @@ def test_same_direction_shrinking_note():
     assert r["momentum"] == "same"  # 未翻向
     assert r["phase"] != "exhausted"
     assert "动能衰减" in r["detail"] and "仍同向" in r["detail"]
-
-
-# ── 盈亏比取舍提示行注入（BTWUSDT 个案回归）──
-
-
-def _kl_1h_stub(n: int = 60) -> list[list]:
-    """render_indicator_block 的 1h K线替身（平坦，指标全部弃权不影响注入行）"""
-    return [
-        [i * 3_600_000, 100.0, 101.0, 99.0, 100.0, 10.0, i * 3_600_000 + 3_599_000, 1000.0]
-        for i in range(n)
-    ]
-
-
-def test_rr_tradeoff_hint_injected_for_strong_trend():
-    """排列极强 + 柱线同向（含动能衰减）→ 程序侧注入「盈亏比取舍（可用）」行，
-    不再依赖 LLM 自查散文条款（2026-10-10 21:36 分析仍保守 skip 的修复）"""
-    closes = _ramp(150, 0.5, 100.0) + _ramp(6, 2.5, 175.0) + _ramp(8, 1.2, 190.0)
-    htf = _kl_from_closes(closes)
-    r = analyze_htf_background(htf)
-    assert r["phase"] in ("medium", "strong", "extreme") and r["momentum"] == "same"
-    block = render_indicator_block(_kl_1h_stub(), htf_klines=htf)
-    assert "盈亏比取舍（可用）" in block
-    assert "不要直接 skip" in block
-
-
-def test_rr_tradeoff_hint_not_injected_for_exhausted():
-    """柱线已翻向（衰竭期）→ 不注入（维持 skip 路径，且方向约束已禁开单）"""
-    closes = _ramp(165, 1.5, 100.0) + _ramp(10, -8.0, 347.5)
-    htf = _kl_from_closes(closes)
-    assert analyze_htf_background(htf)["momentum"] == "opposite"
-    block = render_indicator_block(_kl_1h_stub(), htf_klines=htf)
-    assert "盈亏比取舍" not in block
-
-
-def test_rr_tradeoff_hint_not_injected_for_weak():
-    """弱排列（牛内回调）→ 不注入（盈亏比不达标仍应 skip）"""
-    closes = _ramp(150, 0.5, 100.0) + _ramp(14, -3.0, 175.0)
-    htf = _kl_from_closes(closes)
-    assert analyze_htf_background(htf)["phase"] == "weak"
-    block = render_indicator_block(_kl_1h_stub(), htf_klines=htf)
-    assert "盈亏比取舍" not in block
 
 
 def test_cross_age_helper():

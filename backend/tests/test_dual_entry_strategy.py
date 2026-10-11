@@ -86,18 +86,28 @@ def test_s2_gate_rejects_missing_touch():
     assert any("策略二仅适用" in v for v in violations)
 
 
+def test_s1_ai_trail_claim_forced_ladder():
+    """tp_mode 由 entry_strategy 程序推导（2026-10-11 策略一 ladder-only）：
+    s1（含缺省）即使 AI 报 tp_mode=trail 也被程序覆盖为 ladder（trail 归策略二独有）"""
+    d = _d(tp_mode="trail", tp1=108.0)  # RR = 8/4 = 2.0 达标
+    assert d.entry_strategy is None  # 缺省按 s1
+    ok, violations, fixed = validate_decision(d, {}, [], rr_min=1.5)
+    assert ok, violations
+    assert fixed["tp_mode"] == "ladder"
+
+
 def test_s2_priority_relabels_to_s1_when_rr_already_passes():
     """优先级闸（2026-10-10-5b 拍板改标式）：s2 复算 RR=2.0 ≥ 1.5 → 同三价按 s1
     规则同样合法，程序直接改标 s1 落库（不打回——打回会诱发跳档凑 RR 或把仅 s2
-    满足的单误杀成 skip）；trail 保留（合法 s1 选择）、strategy2_decision=suggest
-    为改标痕迹，复盘可过滤"""
+    满足的单误杀成 skip）；改标后 tp_mode 同步翻 ladder（trail 归策略二独有，
+    策略一无 trail），strategy2_decision=suggest 为改标痕迹，复盘可过滤"""
     ok, violations, fixed = validate_decision(
         _d(entry_strategy="s2", tp1=108.0), _SIG_EMA21, [], rr_min=1.5,
     )
     assert ok, violations
     assert fixed["entry_strategy"] == "s1"
     assert fixed["strategy2_decision"] == "suggest"
-    assert fixed["tp_mode"] == "trail"
+    assert fixed["tp_mode"] == "ladder"
 
 
 def test_strategy2_suggest_requires_ema21_touch():
@@ -177,7 +187,7 @@ def test_p1_prompt_contains_dual_strategy_rule():
     prompt = render_agent_prompt(risk_label="测试预算")
     assert "12.6 双入场策略裁决" in prompt
     assert "entry_strategy" in prompt
-    # P1 reason 三节格式与 P0 同契约
+    # P1 reason 四节格式与 P0 同契约
     assert "公共检查：" in prompt
     assert "合并结论：" in prompt
 

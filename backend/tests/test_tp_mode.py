@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
-"""止盈模式 tp_mode（2026-10-10，docs/19 §3.4 两派哲学落地）——单测。
+"""止盈模式 tp_mode（2026-10-10，docs/19 §3.4；2026-10-11 策略一 ladder-only 重定义）
+——单测。
 
 锁七件事：
 1. normalize_raw：trail/ladder 保真，非法值（含空串/未声明）归 None；
-2. validate_decision：suggest 落库 trail 保真 / 缺省回退 ladder / skip 恒 None；
-3. ai_agent._handle_submit：trail 硬清零 TP2（即使 AI 报了 tp2 锚点）、
-   非法 tp_mode 归 None 后落库回退 ladder；
+2. validate_decision：tp_mode 由 entry_strategy 程序推导（s1→ladder、s2→trail，
+   AI 输出值被覆盖不信任）/ skip 恒 None；
+3. ai_agent._handle_submit：s2 提交 tp2 锚点被无视（硬清零）、s1 谎报 trail
+   被覆盖为 ladder 且 tp2 正常解析；
 4. _derive_exit_reason trail 三态：未武装=sl / SL 贴保本=breakeven_sl /
    越过保本=trail_sl（多空对称）；
 5. _trail_mode_patrol：未达标不武装 / 达标武装保本+落旗标+SL_MOVE /
@@ -153,7 +155,7 @@ def test_normalize_tp_mode_illegal_to_none():
     assert normalize_raw({"trade_decision": "suggest"}).tp_mode is None
 
 
-# ── 2. validate_decision：落库 tp_mode 三态 ──────────────────────
+# ── 2. validate_decision：tp_mode 由 entry_strategy 程序推导 ─────
 
 
 def _suggest_d(tp_mode=None):
@@ -164,8 +166,20 @@ def _suggest_d(tp_mode=None):
     )
 
 
-def test_validate_keeps_trail():
+def test_validate_s1_trail_claim_forced_ladder():
+    """策略一（含缺省）无 trail：AI 报 trail 也被程序覆盖为 ladder"""
     ok, _, fixed = validate_decision(_suggest_d("trail"), {}, [])
+    assert ok and fixed["tp_mode"] == "ladder"
+
+
+def test_validate_s2_forces_trail():
+    """s2（触点=ema21）→ trail（策略二定义即纯跟踪）；RR<下限才留在 s2
+    （RR 达标会触发优先级闸改标 s1，见 test_dual_entry_strategy）"""
+    d = _suggest_d("ladder")
+    d.take_profit_1 = 102.0  # RR = 2/2 = 1.0 < 1.5，不触发改标
+    d.entry_strategy = "s2"
+    d.strategy2_decision = "suggest"
+    ok, _, fixed = validate_decision(d, {"touch_ref": "ema21"}, [])
     assert ok and fixed["tp_mode"] == "trail"
 
 
@@ -180,7 +194,7 @@ def test_validate_skip_tp_mode_none():
     assert ok and fixed["tp_mode"] is None
 
 
-# ── 3. _handle_submit：trail 清零 TP2 ────────────────────────────
+# ── 3. _handle_submit：s2 清零 TP2 / s1 谎报 trail 被覆盖 ─────────
 
 
 def _submit_args(tp_mode):
@@ -190,16 +204,31 @@ def _submit_args(tp_mode):
         "entry_ref": "market", "entry_offset_pct": 0,
         "stop_ref": "market", "stop_offset_pct": -2,
         "tp1_ref": "market", "tp1_offset_pct": 4,
-        "tp2_ref": "market", "tp2_offset_pct": 8,  # trail 时应被无视
+        "tp2_ref": "market", "tp2_offset_pct": 8,  # s2 时应被无视
         "recommendation": 80,
     }
 
 
-def test_submit_trail_zeroes_tp2():
-    done, _, fixed = _handle_submit(_submit_args("trail"), {"current_price": 100.0}, [])
+def test_submit_s2_zeroes_tp2():
+    """s2 不规划止盈：即使误报 trail + tp2 锚点也硬清零，tp_mode 落 trail
+    （RR<下限才留在 s2——达标会触发优先级闸改标 s1）"""
+    args = _submit_args("trail")
+    args["tp1_offset_pct"] = 1.5  # tp1=101.5 → RR=0.75，不触发改标
+    args["entry_strategy"] = "s2"
+    args["strategy2_decision"] = "suggest"
+    done, _, fixed = _handle_submit(
+        args, {"current_price": 100.0, "touch_ref": "ema21"}, [])
     assert done
     assert fixed["tp_mode"] == "trail"
-    assert fixed["take_profit_2"] == 0  # trail 硬清零，tp2_ref 被无视
+    assert fixed["take_profit_2"] == 0  # s2 硬清零，tp2_ref 被无视
+
+
+def test_submit_s1_trail_claim_overridden_to_ladder():
+    """s1（含缺省）谎报 trail：tp_mode 被覆盖为 ladder，tp2 正常解析（不误伤）"""
+    done, _, fixed = _handle_submit(_submit_args("trail"), {"current_price": 100.0}, [])
+    assert done
+    assert fixed["tp_mode"] == "ladder"
+    assert fixed["take_profit_2"] == pytest.approx(108.0)  # market +8%
 
 
 def test_submit_ladder_keeps_tp2():

@@ -29,7 +29,6 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ValidationError
 
 from app.config import settings
-from app.services.strategy.technical import RR_TRADEOFF_PHASES
 
 logger = logging.getLogger(__name__)
 
@@ -219,17 +218,13 @@ def validate_decision(
     risk_budget: Optional[float] = None,
     rr_min: Optional[float] = None,
     risk_pct: Optional[float] = None,
-    htf_bg: Optional[dict] = None,
 ) -> tuple[bool, list[str], dict]:
     """校验并修正决策（2026-09-15 拍板收缩：仅保留 RR 铁律 + 仓位复算）。
 
-    htf_bg（2026-10-10 拍板 B，docs/20 §四）：4h 背景资格 dict（analyze_htf_background
-    返回值），用于 trail 的盈亏比铁律条件豁免——tp_mode=trail 且 4h 排列
-    medium/strong/extreme 且柱线同向时豁免（trail 哲学=不设固定目标、让利润
-    奔跑，固定目标 RR 是 ladder 语义的代理指标，强背景下语义错位；宽止损风险
-    由 max_stop_pct 硬上限 + 固定亏损法缩仓独立兜底）。资格与 render_indicator_block
-    取舍提示行共用 RR_TRADEOFF_PHASES 单一来源。None（调用方未提供 htf 数据）
-    不豁免——豁免必须凭程序事实，缺证从严。
+    tp_mode 由程序按 entry_strategy 推导（2026-10-11 策略一重定义，docs/20 §五）：
+    s1→ladder、s2→trail，AI 输出值被覆盖不信任。原拍板 B 的 trail 条件豁免
+    （htf_bg/_trail_rr_exempt）随策略一 ladder-only 退役——trail 归策略二独有，
+    RR 铁律仅策略二豁免。
 
     返回 (ok, violations, fixed_dict)；ok=False 时 fixed_dict 为空。
     ok=True 时 fixed_dict 中 rr / position_pct 为程序复算值，直接落库。
@@ -282,7 +277,8 @@ def validate_decision(
 
     # ── 双入场策略（2026-10-10-5，docs/20）：s2=EMA21 金K跟踪 ──
     # 资格程序闸：s2 仅当信号触点为 ema21（程序事实，AI 谎报打回重试）；
-    # 语义强制：s2 即 trail（不挂止盈档）、无止盈二——在 RR 检查前生效
+    # 语义强制：tp_mode 由策略推导（2026-10-11 策略一重定义）——s2 即 trail
+    # （不挂止盈档）、s1 即 ladder（trail 加入前原版），AI 输出值被程序覆盖
     _is_s2 = d.entry_strategy == "s2"
     if _is_s2 and (signal.get("touch_ref") or "") != "ema21":
         violations.append(
@@ -306,6 +302,8 @@ def validate_decision(
     if _is_s2:
         d.tp_mode = "trail"
         d.take_profit_2 = 0.0
+    else:
+        d.tp_mode = "ladder"
 
     # ── 方向-价格一致性硬校验（2026-09-16 恢复为程序强制；ETHUSDT 案例）──
     # 多单 SL<entry<TP1、空单 TP1<entry<SL 是交易所可挂性铁律：反向止损的
@@ -367,20 +365,13 @@ def validate_decision(
     stop_pct = stop_dist / d.entry_price if d.entry_price else 0
 
     # ── RR 铁律（唯一保留的价格校验）：按 AI 三价复算，声称值不信 ──
-    # trail 条件豁免（2026-10-10 拍板 B，docs/20 §四）：强背景 trail 不卡 1.5R；
     # 策略二豁免（2026-10-10-5）：s2 定义即无 RR 铁律（EMA21 金K跟踪，不规划止盈）。
     # 优先级闸（2026-10-10-5b 拍板：打回改自动改标）——s2 的 TP1 是趋势目标参考价，
     # 可能比 s1 的第一档结构位更远，"s2 复算达标⟹s1 达标"并不成立，打回会诱发
     # 跳档凑 RR 或把仅 s2 满足的单误杀成 skip；同三价在 s1 全部程序闸（RR/方向
     # 价格序/近锚）均已通过，直接改标 s1 落库即完成"优先策略一"。改标痕迹：
-    # entry_strategy=s1 + strategy2_decision=suggest，复盘可过滤。tp_mode 保留
-    # 前置强制写入的 trail（合法 s1 选择，拍板 B 豁免链照常适用）
-    _trail_rr_exempt = (
-        d.tp_mode == "trail"
-        and htf_bg is not None
-        and htf_bg.get("phase") in RR_TRADEOFF_PHASES
-        and htf_bg.get("momentum") == "same"
-    )
+    # entry_strategy=s1 + strategy2_decision=suggest，复盘可过滤。tp_mode 同步
+    # 翻 ladder（2026-10-11：trail 归策略二独有，s1=ladder-only）
     _rr_floor = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     rr = 0.0
     if stop_dist > 0:
@@ -388,16 +379,10 @@ def validate_decision(
         if _is_s2 and rr >= _rr_floor:
             # 优先级闸（改标式）：同三价按 s1 规则同样合法 → 静默改标，不打回不重试
             d.entry_strategy = "s1"
+            d.tp_mode = "ladder"
             _is_s2 = False
-        elif rr < _rr_floor and not (_is_s2 or _trail_rr_exempt):
-            _trail_note = (
-                "（trail 仅在 4h 排列中等/强且柱线同向时豁免盈亏比铁律，"
-                "当前背景不满足——改 ladder 锚结构位，或如实按当前背景评估 skip）"
-                if d.tp_mode == "trail" else ""
-            )
-            violations.append(
-                f"盈亏比复算 {rr:.2f} < {_rr_floor:g}（交易系统铁律）{_trail_note}"
-            )
+        elif rr < _rr_floor and not _is_s2:
+            violations.append(f"盈亏比复算 {rr:.2f} < {_rr_floor:g}（交易系统铁律）")
     if violations:
         return False, violations, {}
 
@@ -423,9 +408,9 @@ def validate_decision(
         "skip_reason": "",
         "direction": d.direction,
         "trade_type": d.trade_type,
-        # 止盈模式落库（docs/19 §3.4）：None（未声明/非法值）按 ladder 理解；
-        # system_config.tp_mode 强制时开仓侧再覆盖（trade_engine）；
-        # 策略二已在上方强制置 trail（s2 定义即 trail）
+        # 止盈模式落库（2026-10-11 策略一重定义）：由 entry_strategy 推导——
+        # s1→ladder、s2→trail，已在上方程序强制写入（AI 输出值不信任）；
+        # 原 system_config.tp_mode 强制覆盖随 AI 自选 trail 一并退役
         "tp_mode": d.tp_mode if d.tp_mode in ("ladder", "trail") else "ladder",
         # 双入场策略（2026-10-10-5）：胜出策略落库（None=旧行/未声明按 s1）+
         # 策略二判定审计字段；复盘按 entry_strategy 分组对比两策略表现
@@ -480,7 +465,6 @@ def parse_and_validate(
     risk_budget: Optional[float] = None,
     rr_min: Optional[float] = None,
     risk_pct: Optional[float] = None,
-    htf_bg: Optional[dict] = None,
 ) -> tuple[bool, list[str], dict]:
     """normalize + pydantic 校验 + 业务校验 的一步入口（预算参数透传 validate_decision）"""
     try:
@@ -488,4 +472,4 @@ def parse_and_validate(
     except (ValidationError, ValueError) as e:
         return False, [f"输出格式不合法: {str(e)[:200]}"], {}
     return validate_decision(d, signal, klines, risk_budget=risk_budget,
-                             rr_min=rr_min, risk_pct=risk_pct, htf_bg=htf_bg)
+                             rr_min=rr_min, risk_pct=risk_pct)

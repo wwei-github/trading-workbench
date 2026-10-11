@@ -1,11 +1,12 @@
 """提示词不变量（docs/20 §六）回归：改提示词前逐条过，防条款分叉复发
 
-今天（2026-10-10）三次修复的模式是「个案→补条款→发现新漏」——P0 补了括注
-P1 漏、注记改了定义没同步。本文件把条款间的**并存关系**固化为断言：
+个案修复的模式是「个案→补条款→发现新漏」——P0 补了括注 P1 漏、注记改了
+定义没同步。本文件把条款间的**并存关系**固化为断言：
 任何一处改动导致不变量破裂，测试即刻红。
 """
+import json as _json
+
 from app.services import ai_agent, ai_analyzer
-from app.services.risk_guard import RR_TRADEOFF_PHASES as _RG_PHASES
 from app.services.strategy import technical
 from app.services.strategy.candlestick import (
     GOLDEN_PATTERNS, PATTERN_LABEL_MAP, golden_whitelist_labels,
@@ -43,27 +44,42 @@ def _p0_system() -> str:
     return ai_analyzer.render_system_prompt()
 
 
-# ── 不变量 1：跳档禁令必须带 trail 例外括注（P0/P1 成对）─────────
+# ── 不变量 1：跳档禁令恢复纯净（2026-10-11 trail RR 豁免退役）────
 
 
-def test_p0_ladder_ban_has_trail_exception():
-    txt = _p0_system()
-    assert "该禁止针对 ladder" in txt
-    assert "不属跳档" in txt
+def test_ladder_ban_pure_no_trail_exception():
+    """策略一 ladder-only：跳档禁令不得再带「trail 例外」括注（防括注复活）"""
+    for txt in (_p0_system(), ai_agent.AGENT_SYSTEM):
+        for line in txt.splitlines():
+            if "凑盈亏比" in line:
+                assert "trail" not in line, line
 
 
-def test_p1_ladder_ban_has_trail_exception():
-    """A1 回归：P0 补括注 P1 漏——两处必须同句式"""
-    txt = ai_agent.AGENT_SYSTEM
-    assert "该禁止针对 ladder" in txt
-    assert "不属跳档" in txt
+# ── 不变量 1.5：tp_mode 由 entry_strategy 程序推导（AI 不自选）──
+
+
+def test_tp_mode_derivation_clause_present_p0_p1():
+    """P0 字段说明与 P1 规则 12.5 同句式：程序按 entry_strategy 推导并覆盖"""
+    for txt in (_p0_system(), ai_agent.AGENT_SYSTEM):
+        assert "程序按 entry_strategy 推导并覆盖本字段" in txt
+        assert "trail 加入前的原版" in txt  # 策略一重定义（ladder-only）
+
+
+# ── 不变量 1.6：取舍提示行退役（technical 不再注入第三条路）────
+
+
+def test_tradeoff_hint_retired():
+    """盈亏比取舍提示行随 trail RR 豁免一并退役：任何盘面都不再注入"""
+    block = render_indicator_block(_kl_1h_stub(), htf_klines=_htf_strong_same())
+    assert "盈亏比取舍" not in block
 
 
 # ── 不变量 2：「动能同向」定义三处同步 ───────────────────────────
 
 
 def test_momentum_same_definition_synced_p0_p1():
-    for txt in (_p0_system(), ai_agent.AGENT_SYSTEM):
+    """P0/P1 共享 _RULE_HTF_HARD（P1 经 render_system_prompt 渲染注入）"""
+    for txt in (_p0_system(), ai_agent.render_system_prompt()):
         assert "仍算同向" in txt
         assert "柱线已翻向" in txt  # 反例边界一致
 
@@ -75,42 +91,7 @@ def test_momentum_same_definition_matches_technical_note():
     assert "动能衰减" in r["detail"] and "仍同向" in r["detail"]
 
 
-# ── 不变量 3：取舍资格单一来源（提示行注入 ↔ risk_guard 豁免）────
-
-
-def test_tradeoff_phases_single_source():
-    assert technical.RR_TRADEOFF_PHASES == ("medium", "strong", "extreme")
-    # risk_guard 必须 import 同一对象（is 判断防复制粘贴分叉）
-    assert _RG_PHASES is technical.RR_TRADEOFF_PHASES
-
-
-def test_tradeoff_hint_and_exemption_use_same_phases():
-    """提示行注入的相位集合 == 豁免的相位集合（同为 RR_TRADEOFF_PHASES）"""
-    for phase in technical.RR_TRADEOFF_PHASES:
-        htf = _kl_from_closes(_ramp(160, 1.0, 100.0))  # 匀速涨，phase 视角度
-        r = analyze_htf_background(htf)
-        # 仅作集合自洽性校验：常量本身被两处引用已由上例保证
-        assert r["phase"] in technical.RR_TRADEOFF_PHASES + ("weak", "exhausted")
-
-
-def test_tradeoff_hint_excluded_for_range_bound():
-    """A2 回归：区间信号不注入取舍提示行（与 range-bound-fade 技能互斥）"""
-    htf = _htf_strong_same()
-    assert analyze_htf_background(htf)["phase"] in technical.RR_TRADEOFF_PHASES
-    block = render_indicator_block(
-        _kl_1h_stub(), htf_klines=htf, signal_type="range_bound",
-    )
-    assert "盈亏比取舍" not in block
-
-
-def test_tradeoff_hint_included_for_trend_signals():
-    htf = _htf_strong_same()
-    for st in ("trigger_trend_pullback", "trigger_pullback_confirm", None):
-        block = render_indicator_block(_kl_1h_stub(), htf_klines=htf, signal_type=st)
-        assert "盈亏比取舍（可用）" in block, st
-
-
-# ── 不变量 4：金K白名单单一来源（B4）────────────────────────────
+# ── 不变量 3：金K白名单单一来源（B4）────────────────────────────
 
 
 def test_golden_whitelist_labels_cover_all_patterns():

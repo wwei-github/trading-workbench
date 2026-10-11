@@ -262,7 +262,6 @@ export interface SystemConfig {
   weekly_breaker_ack_at?: string | null; // 周减速人工确认时刻（只读，2026-10-07）
   atr_trail_k?: number | null; // ATR 跟进倍数（Chandelier，默认 3；0=关闭 ATR 腿）
   tp2_enabled?: boolean; // TP2 分批止盈开关（2026-10-08 默认关：仅 TP1 80%+剩余 20% 跟进；开启后 TP1 60%/TP2 20%）
-  tp_mode?: 'ai' | 'ladder' | 'trail' | null; // 止盈模式（2026-10-10，docs/19 §3.4）：ai=AI 按信号选择（默认）/ ladder / trail
   tp1_qty_pct_with_tp2?: number | null; // 有 TP2 时 TP1 分批比例 %（NULL=默认 60）
   tp2_qty_pct?: number | null; // TP2 分批比例 %（NULL=默认 20；两档剩余自动跟进）
   tp1_qty_pct_no_tp2?: number | null; // 无 TP2 时 TP1 一次止盈比例 %（NULL=默认 80）

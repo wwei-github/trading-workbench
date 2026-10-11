@@ -25,7 +25,7 @@ from app.services.risk_guard import (
 )
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import calc_atr
-from app.services.strategy.technical import analyze_htf_background, render_indicator_block
+from app.services.strategy.technical import render_indicator_block
 from app.services.strategy.types import POSITION_LABEL_MAP
 from app.services.ai_analyzer import (
     _RULE_HTF_HARD,
@@ -150,28 +150,20 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     做空挂在下方第一档结构位（摆动低点）上方 0.2%~0.5%
     ——不得贴死位或挂在越位一侧（价格常在位附近反弹，越位才触发的止盈大概率落空）。
     禁止把止盈一挂到更远结构位凑盈亏比：到第一结构位的盈亏比不足 {rr_min} 说明空间不足，
-    应直接 skip（程序只复算盈亏比并按铁律打回）——该禁止针对 ladder 的真实挂单；
-    trail 的 TP1 仅为趋势目标参考价，4h 排列中等/强且柱线同向时程序豁免盈亏比铁律
-    （按 12.5 盈亏比取舍处理），如实上报参考价不属跳档。
+    应直接 skip（程序只复算盈亏比并按铁律打回）。
     {_tp2_rule}
-12.5 止盈模式（tp_mode，suggest 必填，程序按此决定出场方式）：
-    "ladder" 分批止盈（默认）：TP1/TP2 结构位分批落袋 + 保本武装 + 剩余仓跟进。
-      适合：区间边缘反转、结构破位回踩、动能一般、上方第一结构位较近（盈亏比 1.5~2.5）。
-    "trail" 纯跟踪：不挂止盈档（tp1_ref 仍必须提交——仅作趋势目标参考价，
-      程序不会按它挂单），浮盈达 1×ATR 武装保本，其后跟进止损让利润奔跑；trail 时
-      不要提交 tp2_ref。
-      适合：强趋势顺势（4h 与 1h 同向、ADX 强）、突破后动能充足、上方无明显压力位
-      或第一结构位很远。trail 不以固定目标盈亏比取舍——强背景（4h 排列中等/强
-      且柱线同向）下程序对 trail 豁免盈亏比铁律，参考价如实上报趋势目标即可。
-    选择标准：落袋确定性优先 ladder，趋势空间优先 trail；拿不准选 ladder。
-    盈亏比取舍：若按结构位测算的盈亏比不达 {rr_min}，不要直接 skip——先看 4h 背景：
-    排列中等/强（趋势已被证明）且动能同向时改选 trail，把止盈一参考价如实上移到趋势
-    目标位（前高/通道上沿/1.5×ATR 延伸）即可，程序对该背景下的 trail 豁免盈亏比
-    铁律（无须凑 1.5R）；4h 弱排列或震荡时仍应 skip。
-    动能同向定义：4h MACD 柱线与方向同号——「动能衰减（柱线收窄·仍同向）」注记
-    仍算同向（减速≠反转），仅「柱线已翻向/动能背离」才算不同向。
-12.6 双入场策略裁决（2026-10-10-5）：对同一信号先分别评估两套入场逻辑再合并为单一提交：
-    策略一=上方全部现行规则（盈亏比铁律+止盈规划）；策略二=EMA21 金K跟踪——
+12.5 止盈模式（tp_mode，suggest 必填）：由 entry_strategy 程序推导（2026-10-11
+    策略一重定义，trail 归策略二独有），按胜出策略如实填写即可：
+    策略一（entry_strategy="s1"）→ "ladder" 分批止盈（TP1/TP2 结构位分批落袋 +
+      保本武装 + 剩余仓跟进）——即 trail 加入前的原版出场方式；
+    策略二（entry_strategy="s2"）→ "trail" 纯跟踪（不挂止盈档，tp1_ref 仍必须
+      提交——仅作趋势目标参考价，程序不会按它挂单，浮盈 1×ATR 武装保本后跟进
+      止损让利润奔跑；trail 时不提交 tp2_ref）。
+    程序按 entry_strategy 推导并覆盖本字段（策略一无 trail）；盈亏比不达 {rr_min}
+    时策略一无豁免（如实 skip 或按 12.6 交策略二），勿以止损过宽为由 skip。
+12.6 双入场策略裁决（2026-10-10-5；2026-10-11 策略一重定义）：对同一信号先分别评估两套入场逻辑再合并为单一提交：
+    策略一=trail 加入前的原版完整规则（ladder 分批止盈+盈亏比铁律+结构位止盈规划，
+    无 trail）；策略二=EMA21 金K跟踪——
     仅当事实包"回踩触点"= ema21（程序已验证金K上一根触碰 EMA21 企稳）时可用：
     判断这根金K的质量（形态成色/量能/指标多数决同向/4h 硬约束同样适用），
     不适用盈亏比铁律（9 条豁免）、不规划止盈：tp_mode 固定 "trail"（不挂止盈档，
@@ -278,7 +270,7 @@ TOOLS_SCHEMA = [
                         "description": "止盈2锚点（可选）：做多=next_resistance_zone_low（下一档压力线），做空=next_support_zone_high（下一档支撑线）"},
             "tp2_offset_pct": {"type": "number", "description": "止盈2相对锚点偏移%，同止盈1留余地"},
             "tp_mode": {"type": "string", "enum": ["ladder", "trail"],
-                        "description": "止盈模式（suggest 必填，见系统规则12.5）：ladder=分批止盈（TP1/TP2 结构位落袋）/ trail=纯跟踪（不挂止盈档，tp1 仅作趋势目标参考价，此时不要提交 tp2_ref）；策略二固定 trail"},
+                        "description": "止盈模式（suggest 必填，见系统规则12.5）：由 entry_strategy 程序推导——s1→ladder 分批止盈（TP1/TP2 结构位落袋）/ s2→trail 纯跟踪（不挂止盈档，tp1 仅作趋势目标参考价，s2 时不要提交 tp2_ref）；按胜出策略如实填写，程序按 entry_strategy 覆盖"},
             "entry_strategy": {"type": "string", "enum": ["s1", "s2"],
                                "description": "双入场策略胜出方（suggest 必填，见系统规则12.6）：s1=策略一完整规则（盈亏比铁律+止盈规划）/ s2=策略二 EMA21 金K跟踪（仅'回踩触点'=ema21 时可用，无 RR 铁律、固定 trail）；两策略均建议时填 s1（策略一优先）"},
             "strategy2_decision": {"type": "string", "enum": ["suggest", "skip"],
@@ -292,9 +284,11 @@ TOOLS_SCHEMA = [
             "reason": {
                 "type": "string",
                 "description": (
-                    "决策分析，≤300字中文，直接作为分析结果落库展示。必须用\"1. 2. 3.\"序号分点、"
-                    "每条一行（JSON 字符串内换行写\\n）：先逐条列满足的条件，再列风险点，"
-                    "最后一条写明确结论。"
+                    "决策分析，≤300字中文，直接作为分析结果落库展示。按固定节标题四节输出、"
+                    "每条一行（JSON 字符串内换行写\\n，节标题逐字含冒号）："
+                    "公共检查：（1. 4h方向 2. 指标多数决 3. 回踩触点 4. 形态与量能 5. 风险点）→"
+                    "策略一：（满足/不满足什么，以\"结论：建议开单/不建议开单\"收尾）→"
+                    "策略二：（同；触点非ema21 写\"不可用（触点非ema21）\"）→合并结论：…（见系统规则12.6）"
                 ),
             },
         }, "required": ["trade_decision"]},
@@ -419,15 +413,13 @@ def _handle_submit(
     rr_min: Optional[float] = None,
     risk_pct: Optional[float] = None,
     tp2_enabled: bool = True,
-    htf_bg: Optional[dict] = None,
 ) -> tuple[bool, str, Optional[dict]]:
     """submit_decision：锚点换算 → Risk Guard。返回 (done, tool_result, fixed)
 
     risk_budget（2026-09-27 止损金额模式）：fixed 模式预算实额，透传校验。
     战法字段（2026-10-02）：随 args 携带，白名单闸门在 validate_decision。
     tp2_enabled（2026-10-08）：关闭时 tp2 参数一律置 0（提示词与工具 schema
-    已隐藏止盈二，此处兜底防模型沿旧习惯提交）。
-    htf_bg（2026-10-10 拍板 B）：4h 背景资格透传（trail RR 条件豁免，docs/20 §四）。"""
+    已隐藏止盈二，此处兜底防模型沿旧习惯提交）。"""
     decision = args.get("trade_decision")
     if decision not in ("suggest", "skip"):
         return False, "trade_decision 必须是 suggest 或 skip", None
@@ -469,14 +461,16 @@ def _handle_submit(
                           signal, purpose="stop", klines=klines)
     tp1 = _resolve_price(args.get("tp1_ref"), args.get("tp1_offset_pct"),
                          signal, purpose="tp")
-    # TP2 关闭硬清零（2026-10-08）：不解析 tp2 锚点，落库 take_profit_2=0
+    # TP2 关闭硬清零（2026-10-08）：不解析 tp2 锚点，落库 take_profit_2=0。
+    # tp2 解析随策略二跳过（2026-10-11）：tp_mode 由 entry_strategy 程序推导，
+    # s2 不规划止盈（tp2_ref 提交也无意义），AI 谎报 tp_mode=trail 不会误伤 s1 的 tp2
     _mode = args.get("tp_mode")
     if _mode not in ("ladder", "trail"):
-        _mode = None  # 非法值归 None（validate_decision suggest 落库回退 ladder）
+        _mode = None  # 非法值归 None（validate_decision 按 entry_strategy 覆盖）
     tp2 = (
         _resolve_price(args.get("tp2_ref"), args.get("tp2_offset_pct"),
                        signal, purpose="tp")
-        if tp2_enabled and _mode != "trail" else 0
+        if tp2_enabled and args.get("entry_strategy") != "s2" else 0
     )
     errs = []
     if entry is None:
@@ -516,7 +510,7 @@ def _handle_submit(
     )
     ok, violations, fixed = validate_decision(
         d, signal, klines, risk_budget=risk_budget,
-        rr_min=rr_min, risk_pct=risk_pct, htf_bg=htf_bg,
+        rr_min=rr_min, risk_pct=risk_pct,
     )
     if ok:
         return True, "决策已提交并通过风控校验", fixed
@@ -554,7 +548,6 @@ def _dispatch_tool(name: str, args: dict, ctx: dict) -> tuple[bool, str, Optiona
             args, ctx["signal"], ctx["klines"], risk_budget=ctx.get("risk_budget"),
             rr_min=ctx.get("rr_min"), risk_pct=ctx.get("risk_pct"),
             tp2_enabled=ctx.get("tp2_enabled", True),
-            htf_bg=ctx.get("htf_bg"),
         )
     return False, f"unknown tool: {name}", None
 
@@ -569,7 +562,6 @@ def analyze_coin_agent(
     stop_cap_pct: Optional[float] = None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
     tp2_enabled: bool = True,
-    tp_mode_cfg: Optional[str] = None,
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -585,8 +577,7 @@ def analyze_coin_agent(
     注入提示词并透传 submit_decision 校验（None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时提示词剔除止盈二锚点语义、
     submit_decision 工具 schema 隐藏 tp2_* 参数、提交的 tp2 硬清零
-    （system_config.tp2_enabled，默认关）。
-    tp_mode_cfg（2026-10-10 C8，docs/20）：出场模式配置注入系统提示词尾部。"""
+    （system_config.tp2_enabled，默认关）。"""
     client = get_client()
 
     # 布尔事实（技能 use_when 判定）
@@ -629,15 +620,6 @@ def analyze_coin_agent(
             f"{strategy_prompt}\n"
             "===== 自定义策略结束 ====="
         )
-    # 出场模式配置行（2026-10-10 C8，docs/20）：调用方显式传入才注入
-    if tp_mode_cfg is not None:
-        if tp_mode_cfg in ("ladder", "trail"):
-            system += (
-                f"\n\n出场模式配置: 程序强制 {tp_mode_cfg}"
-                "（开仓侧按此覆盖，tp_mode 选择仅落库展示）"
-            )
-        else:
-            system += "\n\n出场模式配置: ai（AI 自主选择 tp_mode）"
 
     user_msg = _build_user_msg(signal, klines, ema, atr, user_input, htf_klines,
                                stop_cap_pct=stop_cap_pct, tactics_block=tactics_block)
@@ -648,9 +630,6 @@ def analyze_coin_agent(
 
     ctx = {
         "signal": signal, "klines": klines, "pool": pool,
-        # 4h 背景资格（2026-10-10 拍板 B，docs/20 §四）：trail RR 条件豁免；
-        # 无 htf 数据 → None 不豁免（缺证从严）
-        "htf_bg": analyze_htf_background(htf_klines) if htf_klines else None,
         # 止损金额 fixed 模式预算实额（pct 模式为 None → validate_decision 内走
         # 风险比例% 口径）；2026-09-27 统一口径
         "risk_budget": risk_amount if risk_mode == "fixed" and risk_amount > 0 else None,
@@ -800,8 +779,7 @@ def _build_user_msg(
         f"量能: {vol_desc}\n"
         f"ATR(14): {atr:.6g}\n"
         + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
-        + render_indicator_block(klines, htf_klines,
-                                 signal_type=signal.get("signal_type"))
+        + render_indicator_block(klines, htf_klines)
         + swings_section
         + tactics_block
         + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"

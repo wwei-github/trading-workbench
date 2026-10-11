@@ -248,21 +248,13 @@ def _attempt_open(
     # 出场走「仅 TP1 80% + 剩余 20% 跟进」；手动接管单不受此开关限制（显式输入）
     if not cfg.tp2_enabled:
         tp2 = 0
-    # 止盈模式（2026-10-10，docs/19 §3.4）：system_config.tp_mode 强制（ladder/trail）
-    # 优先；ai/NULL/非法 → 按 AI 分析的选择（ai_analyses.tp_mode，缺省 ladder）。
-    # trail：不挂止盈档，浮盈≥1×ATR 武装保本后跟进（巡检 _trail_mode_patrol）。
-    # 策略二强制 trail（2026-10-10-5，docs/20）：s2 定义即纯跟踪（无 RR 铁律、不规划
-    # 止盈），优先于 cfg.tp_mode 强制——cfg 强制 ladder 不能把 s2 变成挂档单，
-    # 否则"趋势目标参考价"会被当成真实止盈挂出，语义错位
+    # 止盈模式（2026-10-11 策略一 ladder-only 重定义，docs/19 §3.4 / docs/20）：
+    # 由入场策略推导——策略二（EMA21 金K跟踪）= trail 纯跟踪（不挂止盈档，浮盈
+    # ≥1×ATR 武装保本后跟进，巡检 _trail_mode_patrol）；策略一 = ladder 分批止盈。
+    # 落库侧 risk_guard.validate_decision 已按 entry_strategy 覆盖 tp_mode，
+    # 此处同口径推导（不读 AI 原始输出，cfg.tp_mode 强制配置已退役）
     _is_s2 = (a.entry_strategy or "s1") == "s2"
-    _cfg_mode = (getattr(cfg, "tp_mode", None) or "").strip()
-    if _is_s2:
-        tp_mode_eff = "trail"
-    else:
-        tp_mode_eff = (
-            _cfg_mode if _cfg_mode in ("ladder", "trail")
-            else (a.tp_mode if a.tp_mode in ("ladder", "trail") else "ladder")
-        )
+    tp_mode_eff = "trail" if _is_s2 else "ladder"
     try:
         price = trader.price(symbol)
         # 风控参数解析（2026-10-02 上页面）：system_config 列可页面覆盖，
