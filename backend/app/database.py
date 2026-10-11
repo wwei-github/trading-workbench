@@ -586,8 +586,8 @@ def _run_migrations(engine):
             "ON shadow_marks (feature_key, ref_type, ref_id)"
         ))
         # ai_analyses 加 4h 排列强度列（2026-10-09 r2 建，2026-10-10 五次拍板
-        # 值域换血，2026-10-11 衰竭期退役收 4 档 weak/medium/strong/extreme）：
-        # enforce 阶段 stash 落库；旧行（旧枚举/exhausted 退役档）/
+        # 值域换血，2026-10-11 分级重构收 5 档 weak/medium/strong/overheat/cooling）：
+        # enforce 阶段 stash 落库；旧行（旧枚举/extreme/exhausted 退役档）/
         # 无 4h 数据 NULL=未知，复盘维度分组用
         conn.execute(text(
             "ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS htf_phase VARCHAR(12)"
