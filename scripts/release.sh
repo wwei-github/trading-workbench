@@ -92,12 +92,23 @@ cmd_deploy() {
 
     step "git 同步（Deploy Key，硬对齐）..."
     # 部署机仓库不允许本地改动，硬对齐远端——防 force push 改写历史后
-    # git pull --ff-only 因分叉 abort 卡死部署（2026-09-30 实测）
-    git fetch origin && git reset --hard origin/main
+    # git pull --ff-only 因分叉 abort 卡死部署（2026-09-30 实测）。
+    # 注意必须分开两条写：写在 && 列表里的 fetch 失败会被 set -e 的
+    # 「列表内非末位命令豁免」吞掉（2026-10-11 实测：.git/objects 权限
+    # 污染致 fetch 失败，脚本静默拿旧 HEAD 构建，CI 却报部署成功）
+    git fetch origin
+    git reset --hard origin/main
     local sha
     sha=$(git rev-parse --short HEAD)
     if [ -n "$expected_sha" ] && [ "$sha" != "$expected_sha" ]; then
-        warn "期望部署 $expected_sha，但远端 HEAD 已是 $sha（可能被后续 push 追平），以实际 HEAD 为准"
+        # 服务器 HEAD 必须包含期望提交：HEAD 比期望新（后续 push 追平）可接受；
+        # 落后或分叉（fetch 失败的典型症状）一律中止，绝不拿旧代码冒充部署成功
+        if ! git merge-base --is-ancestor "$expected_sha" "$sha" 2>/dev/null; then
+            error "服务器仓库不含期望提交 $expected_sha（HEAD=$sha），git 同步未生效，中止部署"
+            echo "DEPLOY_FAILED stage=sync sha=$sha expected=$expected_sha"
+            exit 1
+        fi
+        warn "期望部署 $expected_sha，远端 HEAD 已追平至 $sha（后续 push），以实际 HEAD 为准"
     fi
     info "本次部署版本: $sha（scope=$scope，服务: $services）"
 
