@@ -88,6 +88,34 @@ def test_reject_votes():
     assert cand is None and rv == {"stage": "votes"}
 
 
+def test_reject_votes_detail_attached():
+    """votes 拒绝且有票 → reject_out 附 detail（2026-10-11 拍板：判定说明展示全部票）"""
+    rv: dict = {}
+    votes = {"bull": ["MACD"], "bear": ["KDJ"], "bull_n": 1, "bear_n": 1,
+             "net": 0, "voted": 3,
+             "results": [
+                 ("MACD", {"dir": 1, "state_label": "多头", "detail": "金叉"}),
+                 ("KDJ", {"dir": -1, "state_label": "空头", "detail": "死叉"}),
+                 ("4h背景", {"dir": 0, "state_label": "缠绕"}),
+                 ("BBW", {"dir": None}),
+             ]}
+    cand, _ = _detect(rv, votes=votes, htf_nonempty=False)
+    assert cand is None and rv["stage"] == "votes"
+    assert rv["detail"] == ("MACD ▲ 多头（金叉）；KDJ ▼ 空头（死叉）；"
+                            "4h背景 — 缠绕；BBW —")
+
+
+def test_votes_detail_render():
+    """_votes_detail 渲染：dir 缺失/异常降级箭头 —，无 label/detail 只出短名"""
+    from app.services.scanner import _votes_detail
+    votes = {"results": [
+        ("EMA排列", {"dir": 1, "state_label": "多头排列", "detail": "21>55>144"}),
+        ("RSI", {"dir": "bad"}),
+        ("X", {}),
+    ]}
+    assert _votes_detail(votes) == "EMA排列 ▲ 多头排列（21>55>144）；RSI —；X —"
+
+
 def test_reject_direction_flip():
     """指标多数决空头 + 闸门多头 → stage=direction_flip（4h 方向硬门）"""
     rv: dict = {}

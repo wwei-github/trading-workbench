@@ -179,6 +179,28 @@ def _get_scan_config(db) -> SystemConfig:
     return cfg
 
 
+def _votes_detail(votes: dict) -> str:
+    """漏斗 votes 关票明细渲染（2026-10-11 用户拍板）：全部票逐张展示
+    「短名 方向箭头 状态（细节）」，分号连接——前端判定说明列按分号拆行。
+
+    方向箭头：▲=多票 / ▼=空票 / —=弃权或方向 0；state_label/detail 缺失的
+    指标降级只出短名+箭头（不因明细渲染再抛异常拒绝流程）"""
+    parts: list[str] = []
+    for short, r in votes.get("results", []):
+        try:
+            d = int(r.get("dir") or 0)
+        except (TypeError, ValueError):
+            d = 0
+        arrow = "▲" if d > 0 else ("▼" if d < 0 else "—")
+        seg = f"{short} {arrow}"
+        if r.get("state_label"):
+            seg += f" {r['state_label']}"
+        if r.get("detail"):
+            seg += f"（{r['detail']}）"
+        parts.append(seg)
+    return "；".join(parts)
+
+
 def detect_indicator_candidate(
     pool: ExchangePool, symbol: str, klines: list[list],
     pending: Optional[dict] = None,
@@ -272,6 +294,13 @@ def detect_indicator_candidate(
     if not votes or votes["voted"] < 5 or abs(votes["net"]) < 3:
         # 中性/票数不足 → 活跃 pending 方向失守（docs/19 §4.1 前置过期路径）
         _reject("votes")
+        # 漏斗明细（2026-10-11 用户拍板）：votes 关的判定说明展示全部票
+        # （方向箭头+状态+细节），前端判定说明列优先于静态 hint 渲染；
+        # results 空（无可用指标降级）渲染为空串不写
+        if reject_out is not None and votes:
+            detail = _votes_detail(votes)
+            if detail:
+                reject_out["detail"] = detail
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
     direction = 1 if votes["net"] > 0 else -1
@@ -429,8 +458,10 @@ class Scanner:
             logger.info("共 %d 个合约交易对待扫描（按24h成交额降序）", len(symbols_data))
 
             # 筛选漏斗明细（2026-10-11）：symbol → 卡住的关卡代码。预过滤 5 关 +
-            # 指标管线各关（reject_out 旁路）统一收口，扫描结束组装 funnel_json
+            # 指标管线各关（reject_out 旁路）统一收口，扫描结束组装 funnel_json。
+            # funnel_details：votes 关附加票明细（symbol → 渲染文本，其余关卡无）
             funnel_rejects: dict[str, str] = {}
+            funnel_details: dict[str, str] = {}
 
             def _drop(rows: list[dict], keep, stage: str) -> list[dict]:
                 """预过滤关卡拆分：保留侧照常流转，剔除侧记入漏斗"""
@@ -568,6 +599,8 @@ class Scanner:
                         # 进待确认池（upsert）不算被拒，漏斗只记真拒绝关卡
                         if rv_out.get("stage"):
                             funnel_rejects[symbol] = rv_out["stage"]
+                            if rv_out.get("detail"):
+                                funnel_details[symbol] = rv_out["detail"]
                         return symbol, [], False
                     cand["symbol"] = symbol
                     # 影子打标（docs/14）：特征计算挂在此处（klines 在手），
@@ -720,6 +753,7 @@ class Scanner:
                 "pending_pool": pending_pool_n,
                 "stages": stages,              # 关卡代码 → 被拒数
                 "rejects": funnel_rejects,     # symbol → 关卡代码（全量明细）
+                "details": funnel_details,     # symbol → votes 关票明细文本（其余关卡不在）
             }
 
             logger.info(

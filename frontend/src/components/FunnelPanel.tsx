@@ -40,6 +40,7 @@ interface FunnelRow {
   label: string
   color: string
   hint: string
+  detail?: string // votes 关票明细（分号分隔；其余关卡无）
 }
 
 export default function FunnelPanel() {
@@ -85,6 +86,7 @@ export default function FunnelPanel() {
           label: m?.label ?? stage,
           color: m?.color ?? 'default',
           hint: m?.hint ?? '',
+          detail: data.details?.[symbol],
         }
       })
       .sort((a, b) =>
@@ -118,7 +120,17 @@ export default function FunnelPanel() {
         <Tooltip title={r.hint}><Tag color={r.color}>{r.label}</Tag></Tooltip>
       ) },
     { title: '判定说明', key: 'hint',
-      render: (_: unknown, r: FunnelRow) => (
+      render: (_: unknown, r: FunnelRow) => r.detail ? (
+        // votes 关（2026-10-11 拍板）：展示全部票明细（后端渲染，分号分隔拆行）；
+        // ▲多 / ▼空 / —弃权。静态 hint（为何被拒）放悬停
+        <Tooltip title={r.hint}>
+          <div>
+            {r.detail.split('；').map((seg, i) => (
+              <div key={i} style={{ fontSize: 12, lineHeight: '18px', whiteSpace: 'nowrap' }}>{seg}</div>
+            ))}
+          </div>
+        </Tooltip>
+      ) : (
         <Text type="secondary" style={{ fontSize: 12 }}>{r.hint}</Text>
       ) },
   ]
