@@ -5,7 +5,7 @@
  * - 主体按关卡分组展示被拒币种 Tag（预过滤 5 关 + 指标管线 7 关），关卡顺序即漏斗逻辑序
  * - 进待确认池的币不算被拒（见「待确认池」Tab）；旧版本扫描/异常轮次无数据（funnel=null）
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Empty, Spin, Tag, Tooltip, Typography, message } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import { scanApi } from '../api/scan'
@@ -52,9 +52,11 @@ export default function FunnelPanel() {
     fetchData(currentScanId)
   }, [currentScanId, fetchData])
 
-  // 扫描完成（进行中→结束）自动刷新到最新一轮漏斗
+  // 扫描完成（进行中→结束翻转）自动刷新；ref 记前值防挂载时双请求
+  const prevScanning = useRef(false)
   useEffect(() => {
-    if (!isScanning && currentScanId) fetchData(currentScanId)
+    if (prevScanning.current && !isScanning && currentScanId) fetchData(currentScanId)
+    prevScanning.current = isScanning
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isScanning])
 
