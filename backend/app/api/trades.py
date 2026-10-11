@@ -725,8 +725,9 @@ def trade_klines(
     except AllExchangesFailed as e:
         raise HTTPException(status_code=503, detail=f"K线获取失败（{e.summary}）")
 
-    # 摆动结构标注（与扫描图同源同参，界面一致性 2026-10-10）
-    swings = swing_annotations(klines, order=cfg.swing_order if cfg else 3, n=5)
+    # 摆动结构标注（与扫描图/AI 事实包同源同参 n=20，界面一致性 2026-10-10、
+    # 2026-10-11 与 AI 对齐由 5 放宽 20）
+    swings = swing_annotations(klines, order=cfg.swing_order if cfg else 3, n=20)
 
     evts = db.execute(
         select(TradeEvent)

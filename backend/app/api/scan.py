@@ -1422,8 +1422,9 @@ def get_klines(
             "close": float(k[4]),
             "volume": float(k[5]),
         })
-    # 近期摆动点（图表标注用，各 5 个）——与复盘接口同源 helper
-    swings = swing_annotations(klines, order=cfg.swing_order, n=5)
+    # 近期摆动点（图表标注，高低各 20）——与 AI 事实包同参对齐（2026-10-11
+    # 拍板由 5 放宽 20：看图可核对 AI 报的结构位；同源 helper 单一事实源）
+    swings = swing_annotations(klines, order=cfg.swing_order, n=20)
     return {
         "symbol": symbol,
         "interval": eff_interval,
