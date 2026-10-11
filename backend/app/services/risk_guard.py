@@ -56,9 +56,10 @@ class TradeDecision(BaseModel):
     skip_reason: str = ""
     direction: Optional[Literal["long", "short"]] = None
     trade_type: Optional[str] = None  # 开单类型：trend_follow / structure_break / range_edge
-    # 止盈模式（2026-10-10，docs/19 §3.4）：ladder=分批止盈（缺省）/ trail=纯跟踪
-    # （TP1 仅作盈亏比校验参考价，程序不挂止盈档）；system_config.tp_mode 强制时
-    # 开仓侧覆盖 AI 的选择
+    # 止盈模式（2026-10-11 策略一重定义，docs/19 §3.4）：由 entry_strategy 程序
+    # 推导——ladder=分批止盈（s1，缺省）/ trail=纯跟踪（s2，TP1 仅作盈亏比校验
+    # 参考价，程序不挂止盈档）；AI 输出值无条件被覆盖（原 system_config.tp_mode
+    # 强制配置已退役）
     tp_mode: Optional[Literal["ladder", "trail"]] = None
     # 止损锚类型（docs/23，仅突破类信号需要）：structure=结构锚（默认）/ near=突破K极值近锚
     stop_anchor: Optional[Literal["structure", "near"]] = None

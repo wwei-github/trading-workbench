@@ -322,12 +322,9 @@ def _run_migrations(engine):
             "ALTER TABLE system_config "
             "ADD COLUMN IF NOT EXISTS tp1_qty_pct_no_tp2 NUMERIC(5, 2)"
         ))
-        # 止盈模式（2026-10-10，docs/19 §3.4）：ai=AI 按信号选择（NULL 同）/ ladder /
-        # trail=纯跟踪；ai_analyses.tp_mode 存 AI 选择，旧行 NULL 按 ladder 理解
-        conn.execute(text(
-            "ALTER TABLE system_config "
-            "ADD COLUMN IF NOT EXISTS tp_mode VARCHAR(8)"
-        ))
+        # 止盈模式（2026-10-10，docs/19 §3.4；2026-10-11 起由 entry_strategy 程序
+        # 推导落库，不再有 system_config.tp_mode 配置列）：ai_analyses.tp_mode 存
+        # 推导值，旧行 NULL 按 ladder 理解
         conn.execute(text(
             "ALTER TABLE ai_analyses "
             "ADD COLUMN IF NOT EXISTS tp_mode VARCHAR(8)"
