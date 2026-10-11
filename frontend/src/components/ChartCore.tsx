@@ -245,21 +245,25 @@ function drawAiPosition(
     svg.appendChild(r)
   }
   if (ai.stop_loss != null) zone(ai.entry_price, ai.stop_loss, 'rgba(239, 83, 80, 0.15)')
-  if (ai.take_profit_1 != null) zone(ai.entry_price, ai.take_profit_1, 'rgba(38, 166, 154, 0.15)')
+  // 止盈区域仅 ladder 单绘制；trail 纯跟踪不挂止盈档，TP1 仅 RR 参考价（2026-10-11）
+  const isTrail = ai.tp_mode === 'trail'
+  if (ai.take_profit_1 != null && !isTrail) zone(ai.entry_price, ai.take_profit_1, 'rgba(38, 166, 154, 0.15)')
   // 止盈2区：tp2 为 0/null（未设止盈二）时不绘制
   const tp2 = ai.take_profit_2
   const hasTP2 = tp2 != null && tp2 > 0
   if (ai.take_profit_1 != null && hasTP2) zone(ai.take_profit_1, tp2!, 'rgba(38, 166, 154, 0.08)')
 
   // 画水平线 + 右侧标签（text 已含价格与百分比对价，如「止损 99.1234 -3.1%」）
-  const drawLine = (y: number, color: string, text: string) => {
+  // dashed=true 时画虚线（trail 单 TP1 参考线：非实际挂单，与实线挂单级视觉区分）
+  const drawLine = (y: number, color: string, text: string, dashed = false) => {
     const line = el('line')
     line.setAttribute('x1', String(x0))
     line.setAttribute('y1', String(y))
     line.setAttribute('x2', String(x1))
     line.setAttribute('y2', String(y))
     line.setAttribute('stroke', color)
-    line.setAttribute('stroke-width', '1.5')
+    line.setAttribute('stroke-width', dashed ? '1' : '1.5')
+    if (dashed) line.setAttribute('stroke-dasharray', '4 3')
     line.setAttribute('shape-rendering', 'crispEdges')
     svg.appendChild(line)
 
@@ -301,7 +305,14 @@ function drawAiPosition(
   }
   if (ai.take_profit_1 != null) {
     const yTP1 = series.priceToCoordinate(ai.take_profit_1)
-    if (yTP1 != null) drawLine(yTP1, colorTP1, `止盈1 ${fmtPrice(ai.take_profit_1)} ${pctDelta(ep, ai.take_profit_1)}`)
+    if (yTP1 != null) {
+      if (isTrail) {
+        // trail 纯跟踪：无止盈挂单，TP1 虚线参考（对齐 AI 卡「止盈1·参考」口径）
+        drawLine(yTP1, colorTP1, `TP1·参考 ${fmtPrice(ai.take_profit_1)} ${pctDelta(ep, ai.take_profit_1)}`, true)
+      } else {
+        drawLine(yTP1, colorTP1, `止盈1 ${fmtPrice(ai.take_profit_1)} ${pctDelta(ep, ai.take_profit_1)}`)
+      }
+    }
   }
   // 止盈2线（实线；tp2 为 0/null 时不绘制）
   if (hasTP2) {
