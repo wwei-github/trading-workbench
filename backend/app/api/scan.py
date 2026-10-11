@@ -156,6 +156,20 @@ def scan_results(
     )
 
 
+@router.get("/{scan_id}/funnel")
+def scan_funnel(scan_id: UUID, db: Session = Depends(get_db)):
+    """筛选漏斗明细（2026-10-11）：该轮各关卡被拒计数 + symbol→关卡全量映射。
+
+    前端「筛选漏斗」Tab 展示每轮币种卡在哪一步；funnel_json 为 NULL
+    （旧行/异常轮次）返回 404 语义由前端空态处理，这里返回 {funnel: None}。
+    关卡代码→中文文案映射在前端（FUNNEL_STAGES），后端只回结构化数据。
+    """
+    record = db.get(ScanRecord, scan_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="扫描记录不存在")
+    return {"scan_id": str(scan_id), "funnel": record.funnel_json}
+
+
 @router.get("/status", response_model=ScanStatusResponse)
 def scan_status(db: Session = Depends(get_db)):
     last_scan = db.execute(

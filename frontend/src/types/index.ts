@@ -326,6 +326,18 @@ export interface PullbackPendingItem {
   resolved_at: string | null;
 }
 
+// ===== 筛选漏斗（2026-10-11，ScanRecord.funnel_json）=====
+
+export interface FunnelData {
+  universe: number; // 全市场 USDT 合约数（预过滤前）
+  scanned: number; // 预过滤后进指标管线数
+  errors: number; // 拉K线/计算异常数
+  candidates: number; // 产生候选（进 AI 分析）数
+  pending_pool: number; // 进待确认池数（不算被拒）
+  stages: Record<string, number>; // 关卡代码 → 被拒数
+  rejects: Record<string, string>; // symbol → 关卡代码（全量明细）
+}
+
 // ===== 规则补丁（docs/12 §10）=====
 
 export type PatchStatus = 'draft' | 'active' | 'valid' | 'invalid' | 'rolled_back'

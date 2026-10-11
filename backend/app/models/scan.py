@@ -20,6 +20,10 @@ class ScanRecord(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     finished_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # 筛选漏斗（2026-10-11）：{universe, scanned, errors, candidates, pending_pool,
+    # stages: {关卡代码→被拒数}, rejects: {symbol→关卡代码}}——前端「筛选漏斗」
+    # Tab 展示每轮各币卡在哪一步；旧行/异常轮次 NULL
+    funnel_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     results: Mapped[list["ScanResult"]] = relationship(back_populates="scan_record", cascade="all, delete-orphan")
 

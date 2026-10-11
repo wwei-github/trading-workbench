@@ -185,6 +185,7 @@ def detect_indicator_candidate(
     flt: Optional[ScanFilters] = None,
     retest: Optional[dict] = None,
     event_out: Optional[dict] = None,
+    reject_out: Optional[dict] = None,
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """指标驱动单币检测（Scanner 与 watchlist.refresh 共用同一套逻辑与阈值）。
 
@@ -202,6 +203,11 @@ def detect_indicator_candidate(
       {"op": "upsert", direction, level_price, candle_open}（scanner 落库
       breakout_events，回测触点事实源）；触发类型白名单过滤不影响事件记录
       （破轨是市场事实，与是否产生突破信号无关）。
+    reject_out: 可选出参 dict（与 event_out 同旁路模式，2026-10-11 筛选漏斗）——
+      币种被关卡拒绝时写入 {"stage": <关卡代码>}，供主扫描漏斗落库展示
+      「卡在哪一步」；候选产生/进待确认池（pending upsert）时不写。关卡代码：
+      gate_4h / votes / direction_flip / structure_1h / range_score /
+      no_trigger / trigger_whitelist。
     返回 (候选 dict, pending_op) 二元组：
     - 候选 dict（signal_type/touch_ref/quality_score/votes 及展示字段），每币至多 1 个；
       无候选（中性/票数不足/无触发）为 None
@@ -210,6 +216,13 @@ def detect_indicator_candidate(
 
     异常向上抛由调用方处理。
     """
+
+    def _reject(stage: str) -> None:
+        # 漏斗旁路（单币一个新 dict，clear 仅为防御性安全）
+        if reject_out is not None:
+            reject_out.clear()
+            reject_out["stage"] = stage
+
     ema = analyze_ema(klines)  # 背景展示用（方向判定不依赖 EMA）
     vol, vol_type = classify_volume(klines)
 
@@ -246,6 +259,7 @@ def detect_indicator_candidate(
             # 仅"正常返回 None"= 主动否决；异常路径 gate=None 走下方降级放行，
             # 不死因归类 ranging（异常=数据/实现问题，与市场状态无关）
             if gate is None:
+                _reject("gate_4h")
                 return None, ({"op": "expire", "reason": "ranging"} if pending else None)
 
     # 投票单趟计算（2026-10-10 精简）：6 票预筛层撤销——4h 前置拉取后预筛失去
@@ -257,6 +271,7 @@ def detect_indicator_candidate(
     votes = compute_indicator_votes(klines, htf_bg=htf_res)
     if not votes or votes["voted"] < 5 or abs(votes["net"]) < 3:
         # 中性/票数不足 → 活跃 pending 方向失守（docs/19 §4.1 前置过期路径）
+        _reject("votes")
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
     direction = 1 if votes["net"] > 0 else -1
@@ -265,6 +280,7 @@ def detect_indicator_candidate(
     # 已保证非 None（htf 拉取失败降级时 gate=None，跳过检查与原降级口径一致）。
     # 与 4h 冲突的活跃 pending 不可能被确认（金K 方向跟着多数决走），按方向失守过期
     if gate is not None and gate[0] != ("long" if direction == 1 else "short"):
+        _reject("direction_flip")
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
     # 第二步：1H 结构校验（2026-10-10 二次拍板，check_1h_structure 语义硬门化）：
@@ -274,6 +290,7 @@ def detect_indicator_candidate(
     st = structure_1h(klines[:-1] if len(klines) >= 2 else klines,
                       "long" if direction == 1 else "short")
     if st is None:
+        _reject("structure_1h")
         return None, ({"op": "expire", "reason": "structure_1h"} if pending else None)
 
     # 第三步：震荡评分卡（2026-10-10 二次拍板，calc_range_score 语义硬门化）：
@@ -282,10 +299,12 @@ def detect_indicator_candidate(
     # 成交量低迷四项（项 1-4 恒 0），≥3 即强震荡共识
     rs, _rs_reasons = range_score(klines, gate_ev=gate[1] if gate else None)
     if rs >= RANGE_SCORE_REJECT:
+        _reject("range_score")
         return None, ({"op": "expire", "reason": "range_score"} if pending else None)
 
     # htf 直传触点体系（2026-10-09）：ema21_4h 跨周期触点与第 7 票/闸门共用
     # 同一份 4h 快照，单轮单币不重复拉取
+    whitelist_reject = False   # 白名单外触发标记（漏斗区分 trigger_whitelist/no_trigger）
     trig, pending_op = detect_trigger(
         klines, direction, pending, flt=flt, retest=retest, htf=htf,
     )
@@ -304,6 +323,7 @@ def detect_indicator_candidate(
             # 分析都不进）；pending 处置照常执行——如突破抢先 supersede、pending
             # 窗口过期 expire，让回踩池状态机保持自洽
             trig = None
+            whitelist_reject = True
     if trig is None:
         # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩口径计，
         # 触碰根即当前信号根 klines[-2]，企稳加分项量能语义照常评估）
@@ -313,6 +333,9 @@ def detect_indicator_candidate(
                 direction, votes, PULLBACK, klines=klines, stabilize=_stab,
             )
             pending_op["votes_json"] = _votes_snapshot(votes, stabilize=_stab)
+        elif reject_out is not None:
+            # 无触发且未进待确认池 → 漏斗记录（upsert 进池不算被拒）
+            _reject("trigger_whitelist" if whitelist_reject else "no_trigger")
         return None, pending_op
 
     # 企稳加分项证据（docs/19 §3.3，trigger 回踩路径产出）：进质量分 + votes 快照
@@ -382,6 +405,7 @@ class Scanner:
         error_count = 0
         coin_count = 0
         ai_skip_note: Optional[str] = None
+        funnel: Optional[dict] = None   # 筛选漏斗（正常完成才组装落库）
         try:
             record = db.get(ScanRecord, scan_record_id)
             if not record:
@@ -404,13 +428,24 @@ class Scanner:
             coin_count = len(symbols_data)
             logger.info("共 %d 个合约交易对待扫描（按24h成交额降序）", len(symbols_data))
 
+            # 筛选漏斗明细（2026-10-11）：symbol → 卡住的关卡代码。预过滤 5 关 +
+            # 指标管线各关（reject_out 旁路）统一收口，扫描结束组装 funnel_json
+            funnel_rejects: dict[str, str] = {}
+
+            def _drop(rows: list[dict], keep, stage: str) -> list[dict]:
+                """预过滤关卡拆分：保留侧照常流转，剔除侧记入漏斗"""
+                kept = [s for s in rows if keep(s)]
+                for s in rows:
+                    if not keep(s):
+                        funnel_rejects[s["symbol"]] = stage
+                return kept
+
             # 24h 成交额过滤：流动性差的合约不进扫描（省K线请求，剔除不可交易标的）
             min_vol = flt.min_volume_24h
             before = len(symbols_data)
-            symbols_data = [
-                s for s in symbols_data
-                if float(s.get("volume_24h") or 0) >= min_vol
-            ]
+            symbols_data = _drop(
+                symbols_data, lambda s: float(s.get("volume_24h") or 0) >= min_vol,
+                "liquidity")
             logger.info(
                 "24h成交额 ≥ %s USDT 过滤：%d → %d",
                 f"{min_vol:,.0f}", before, len(symbols_data),
@@ -430,7 +465,8 @@ class Scanner:
                 listed |= set(BinanceTrader(net).listed_symbols())
             if listed:
                 before = len(symbols_data)
-                symbols_data = [s for s in symbols_data if s["symbol"] in listed]
+                symbols_data = _drop(
+                    symbols_data, lambda s: s["symbol"] in listed, "untradable")
                 logger.info("下单环境可交易过滤（%d 个合约）：%d → %d", len(listed), before, len(symbols_data))
 
             # C0' 新币冷静期（2026-10-04 NIGHT 案例，用户拍板默认 14 天可配）：
@@ -446,10 +482,11 @@ class Scanner:
                 if onboard:
                     cutoff_ms = (time.time() - cooldown_days * 86400) * 1000
                     before = len(symbols_data)
-                    symbols_data = [
-                        s for s in symbols_data
-                        if (od := onboard.get(s["symbol"])) is None or od <= cutoff_ms
-                    ]
+                    symbols_data = _drop(
+                        symbols_data,
+                        lambda s: (od := onboard.get(s["symbol"])) is None or od <= cutoff_ms,
+                        "new_coin",
+                    )
                     logger.info(
                         "新币冷静期过滤（上市 <%d 天）：%d → %d",
                         cooldown_days, before, len(symbols_data),
@@ -465,10 +502,11 @@ class Scanner:
             risk_tiers = BinanceTrader(False).risk_tier_all()
             if risk_tiers:
                 before = len(symbols_data)
-                symbols_data = [
-                    s for s in symbols_data
-                    if (rt := risk_tiers.get(s["symbol"])) is None or rt[1] >= 10
-                ]
+                symbols_data = _drop(
+                    symbols_data,
+                    lambda s: (rt := risk_tiers.get(s["symbol"])) is None or rt[1] >= 10,
+                    "risk_tier",
+                )
                 logger.info("风险档位过滤（最大杠杆 <10×）：%d → %d", before, len(symbols_data))
 
             # D 黑名单过滤（2026-09-18）：手动添加（永久）/ 连续止损自动加入（冷却期），
@@ -477,7 +515,8 @@ class Scanner:
             blacklisted = active_symbols(db)
             if blacklisted:
                 before = len(symbols_data)
-                symbols_data = [s for s in symbols_data if s["symbol"] not in blacklisted]
+                symbols_data = _drop(
+                    symbols_data, lambda s: s["symbol"] not in blacklisted, "blacklist")
                 logger.info("黑名单过滤（%d 个生效）：%d → %d", len(blacklisted), before, len(symbols_data))
 
             # 构建 symbol -> volume 映射
@@ -504,9 +543,11 @@ class Scanner:
                         limit=max(kline_window, 300),
                     )
                     ev_out: dict = {}
+                    rv_out: dict = {}   # 漏斗旁路：单币拒绝关卡（cand=None 时读）
                     cand, pop = detect_indicator_candidate(
                         self.pool, symbol, klines, pending=pendings.get(symbol),
                         flt=flt, retest=retests.get(symbol), event_out=ev_out,
+                        reject_out=rv_out,
                     )
                     # 破轨事件动作（T1 触发记录 / 回测触点确认消费）
                     if ev_out.get("op"):
@@ -524,6 +565,9 @@ class Scanner:
                             and cand.get("touch_ref") == TOUCH_RETEST):
                         event_ops[symbol] = {"op": "consume"}
                     if cand is None:
+                        # 进待确认池（upsert）不算被拒，漏斗只记真拒绝关卡
+                        if rv_out.get("stage"):
+                            funnel_rejects[symbol] = rv_out["stage"]
                         return symbol, [], False
                     cand["symbol"] = symbol
                     # 影子打标（docs/14）：特征计算挂在此处（klines 在手），
@@ -660,6 +704,24 @@ class Scanner:
             hit_count = len(new_hits)
             status = "completed"
 
+            # 筛选漏斗组装（2026-10-11）：各关卡计数 + 被拒明细，随
+            # ScanRecord.funnel_json 落库（前端「筛选漏斗」Tab 展示卡在哪一步）。
+            # 进待确认池的币不算被拒（pending_pool 单列）；异常轮次不组装（数据不完整）
+            pending_pool_n = sum(
+                1 for op in pending_ops.values() if op.get("op") == "upsert")
+            stages: dict[str, int] = {}
+            for st in funnel_rejects.values():
+                stages[st] = stages.get(st, 0) + 1
+            funnel = {
+                "universe": coin_count,        # 全市场合约数（预过滤前）
+                "scanned": len(symbols),       # 预过滤后实际进指标管线的币数
+                "errors": error_count,
+                "candidates": len(new_hits),   # 产生候选（进 AI 分析）数
+                "pending_pool": pending_pool_n,
+                "stages": stages,              # 关卡代码 → 被拒数
+                "rejects": funnel_rejects,     # symbol → 关卡代码（全量明细）
+            }
+
             logger.info(
                 "扫描完成 #%s: 扫描%d个, 命中%d个（抑制重复%d个）",
                 scan_record_id,
@@ -675,7 +737,9 @@ class Scanner:
                 db.rollback()
             except Exception:
                 pass
-            self._update_scan_status(scan_record_id, status, hit_count, error_count, coin_count)
+            self._update_scan_status(
+                scan_record_id, status, hit_count, error_count, coin_count,
+                funnel=funnel)
             db.close()
         return ai_skip_note
 
@@ -780,6 +844,7 @@ class Scanner:
         hit_count: int,
         error_count: int,
         coin_count: int,
+        funnel: Optional[dict] = None,
     ) -> None:
         """独立 session 更新扫描状态，确保即使主事务失败也能写入"""
         sdb = SessionLocal()
@@ -791,6 +856,8 @@ class Scanner:
                 record.error_count = error_count
                 if coin_count:
                     record.coin_count = coin_count
+                if funnel is not None:
+                    record.funnel_json = funnel   # 筛选漏斗（2026-10-11）
                 record.finished_at = datetime.utcnow()
                 sdb.commit()
         except Exception as e:

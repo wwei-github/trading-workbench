@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, PullbackPendingItem, PurgeStats, ReviewFunnel, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, TradeReconciliation, TransferStats, WatchlistItem } from '../types'
+import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, FunnelData, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, PullbackPendingItem, PurgeStats, ReviewFunnel, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, TradeReconciliation, TransferStats, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -12,7 +12,9 @@ export interface ResultFilters {
 
 export const scanApi = {
   trigger: () => api.post<{ scan_id: string; status: string }>('/scans').then((r) => r.data),
-
+  // 筛选漏斗明细（2026-10-11）：该轮各关卡被拒计数 + symbol→关卡映射；funnel=null（旧行/异常轮次）
+  funnel: (scanId: string) =>
+    api.get<{ scan_id: string; funnel: FunnelData | null }>(`/scans/${scanId}/funnel`).then((r) => r.data),
   list: (page = 1, pageSize = 20) =>
     api
       .get<ListResponse<ScanRecord>>('/scans', { params: { page, page_size: pageSize } })

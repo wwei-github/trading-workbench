@@ -435,6 +435,12 @@ def _run_migrations(engine):
             "ALTER TABLE system_config "
             "ADD COLUMN IF NOT EXISTS scan_filters JSONB"
         ))
+        # 筛选漏斗（2026-10-11）：每轮扫描的关卡计数+被拒币种明细（symbol→关卡），
+        # 前端「筛选漏斗」Tab 展示卡在哪一步；旧行/异常轮次 NULL
+        conn.execute(text(
+            "ALTER TABLE scan_records "
+            "ADD COLUMN IF NOT EXISTS funnel_json JSONB"
+        ))
         # 多策略可插拔（docs/20 S0/S1）：
         # trade_records.strategy_id 策略归因列——带 DEFAULT，存量单自动归 golden_k_ai
         conn.execute(text(
