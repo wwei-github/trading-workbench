@@ -64,6 +64,10 @@ export default function FunnelPanel() {
 
   useEffect(() => {
     fetchData(currentScanId)
+    // 换轮次重置筛选/搜索：旧轮选中的关卡可能在新轮无被拒币，残留值会让
+    // Select 显示裸关卡代码（options 无该项）且列表恒空
+    setStageFilter('all')
+    setSearch('')
   }, [currentScanId, fetchData])
 
   // 扫描完成（进行中→结束翻转）自动刷新；ref 记前值防挂载时双请求
