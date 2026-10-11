@@ -575,27 +575,64 @@ def analyze_obv(klines: list[list], lookback: int = 20) -> Optional[dict]:
 # extreme ≥2.0（过度张开，过热警惕均值回归）。
 # （2026-10-11 衰竭期退役：原第五档 exhausted=MACD 柱线翻向凌驾于强度分档，
 # 因单根翻向噪声大 + 与结构档混装丢失排列强度信息而整链删除，见 docs/17）
+# （2026-10-11 分级重构：extreme ≥2.0 档退役——「过度张开」语义由过热期
+# 三条件接管（EMA144 口径更直接），div≥2.0 的 strong 在质量分内保留降档
+# （PHASE_EXTREME_MIN 降档阈值保留），枚举不再混装，见 docs/17）
 PHASE_MEDIUM_MIN = 0.5
 PHASE_STRONG_MIN = 1.0
-PHASE_EXTREME_MIN = 2.0
+PHASE_EXTREME_MIN = 2.0  # 仅作 strong 档质量分降档阈值，不再是枚举档
+
+# 过热期/冷却期（2026-10-11 分级重构，外部 4H 闸门方案第 2/3 层采纳，
+# docs/17 对照表）：三条件任一命中=过热期；近 20 根命中过 ∧ 当前未命中=冷却期。
+# 无状态实现——每轮从 K 线历史全量重算，冷却=回看命中史，非状态机。
+# 阈值预注册取外部默认（先观测后约束纪律的显式覆盖，同 docs/19 硬门化先例）
+OVERHEAT_SLOPE_PCT = 0.05    # EMA144 20 根变化 >5%（斜率过热）
+OVERHEAT_DIST_ATR = 4.0      # |close−EMA144| > 4×ATR（距离过热）
+OVERHEAT_ACCEL_RATIO = 2.0   # 近5根斜率段/前15根斜率段 >2（加速过热）
+COOLING_LOOKBACK = 20        # 冷却期回看窗口（外部默认 20 根 4h≈3.3 天）
 
 _PHASE_LABELS = {
     "weak": "排列弱", "medium": "排列中等", "strong": "排列强",
-    "extreme": "排列极强",
+    "overheat": "过热期", "cooling": "冷却期",
 }
 
 
 def _strength_phase(div_min: Optional[float]) -> str:
-    """排列角度 → 强度档（div_min=None/异常归 medium：有方向但角度不可测）。"""
+    """排列角度 → 强度档（div_min=None/异常归 medium：有方向但角度不可测）。
+
+    2026-10-11 分级重构：extreme 档退役，≥1.0 一律 strong。"""
     if div_min is None:
         return "medium"
     if div_min < PHASE_MEDIUM_MIN:
         return "weak"
-    if div_min < PHASE_STRONG_MIN:
-        return "medium"
-    if div_min < PHASE_EXTREME_MIN:
-        return "strong"
-    return "extreme"
+    return "medium" if div_min < PHASE_STRONG_MIN else "strong"
+
+
+def _overheat_reason(
+    closes: np.ndarray, s144: np.ndarray, tr_list: list[float], i: int,
+) -> Optional[str]:
+    """过热三条件判定（外部 4H 闸门第 2 层，任一命中返回条件名）。
+
+    i 为 closed 序列下标；tr_list[j] 对应 closed[j+1] 的 TR，
+    ATR_i = 末尾止于 i 的 14 根 TR 均值（与 atr4h 现值口径一致）。
+    EMA144 有限区（SMA 种子 143 根）之外返回 None（NaN 比较恒 False 天然兜底）。"""
+    if i < 20 or i - 20 < 143:  # s144[i-20] 须落在有限区
+        return None
+    price = float(closes[i])
+    if price <= 0:
+        return None
+    atr_i = float(np.mean(tr_list[i - 14:i])) if i >= 14 else 0.0
+    s_now, s_5, s_20 = float(s144[i]), float(s144[i - 5]), float(s144[i - 20])
+    if any(np.isnan(v) for v in (s_now, s_5, s_20)):
+        return None
+    if abs(s_now - s_20) / price > OVERHEAT_SLOPE_PCT:
+        return "斜率过热"
+    if atr_i > 0 and abs(price - s_now) > OVERHEAT_DIST_ATR * atr_i:
+        return "距离过热"
+    seg_past = abs(s_5 - s_20)
+    if seg_past > 1e-12 and abs(s_now - s_5) / seg_past > OVERHEAT_ACCEL_RATIO:
+        return "加速过热"
+    return None
 
 
 def _htf_cross_age(f: np.ndarray, m: np.ndarray) -> tuple[Optional[int], int]:
@@ -618,21 +655,27 @@ def _htf_cross_age(f: np.ndarray, m: np.ndarray) -> tuple[Optional[int], int]:
 
 
 def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 55) -> Optional[dict]:
-    """4h 高周期背景：ADX 门控 + EMA 排列强度 4 档（1h 分析的大方向参照）。
+    """4h 高周期背景：ADX 门控 + 过热/冷却 + EMA 排列强度 3 档（1h 分析的大方向参照）。
 
     htf_klines 为 4h 周期 K 线（最后一根未收盘，内部剔除）。
     状态优先级：
     - ADX<20：4h 震荡，EMA 排列不投方向票（治震荡市 EMA 反复交叉的误标）
     - EMA21/55 间距<0.1%：均线纠缠
-    - 排列强度 4 档（2026-10-10 五次拍板，按排列角度=发散度分档，与 gate_4h
-      同一计算逻辑 |EMA差|/ATR(14,4h)，双线取小者）：weak <0.5 / medium <1.0 /
-      strong <2.0 / extreme ≥2.0。（2026-10-11 衰竭期退役：原第五档
-      exhausted=MACD 柱线翻向凌驾分档，因单根翻向噪声大而整链删除）
+    - 过热期 overheat：外部三条件任一命中当前根（EMA144 斜率 20 根>5% /
+      |close−EMA144|>4×ATR / 加速比>2）——抛物线加速=暴跌前兆，凌驾结构档
+      （2026-10-11 分级重构，外部 4H 闸门第 2 层采纳，docs/17）
+    - 冷却期 cooling：近 20 根内过热命中过 ∧ 当前未命中——获利盘消化期，
+      无状态回看实现，非状态机（外部第 3 层采纳）
+    - 排列强度 3 档（按排列角度=发散度分档，与 gate_4h 同一计算逻辑
+      |EMA差|/ATR(14,4h)，双线取小者）：weak <0.5 / medium <1.0 / strong ≥1.0。
+      （extreme 档 2026-10-11 分级重构退役：过度张开语义由过热三条件接管，
+      div 原始值随返回 dict["div"] 保留供质量分降档；原 exhausted 档同日早前退役）
     - age_bars（交叉后根数）仅作 detail 注记保留，不再参与分档
     - ADX 计算失败静默降级（单指标失败不阻塞背景注入）
 
     返回 {state(bullish/bearish/ranging/mixed), state_label, dir, phase,
-          age_bars, macro_aligned(EMA55 在 EMA144 顺势侧?), detail}
+          age_bars, macro_aligned(EMA55 在 EMA144 顺势侧?), div(排列角度ATR),
+          detail}
     """
     if not htf_klines or len(htf_klines) < 2:
         return None
@@ -691,7 +734,24 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
     div_fm = abs(fn - mn) / atr4h if atr4h > 0 else None
     div_ms = abs(mn - sn) / atr4h if atr4h > 0 else None
     div_min = min(div_fm, div_ms) if div_fm is not None and div_ms is not None else None
-    phase = _strength_phase(div_min)
+
+    # 过热/冷却判定（2026-10-11 分级重构，凌驾结构档）：无状态回看近 20 根
+    # 命中史——外部是增量状态机（逐根存 overheated_ts/cooldown_bars），我们
+    # 每轮全量重算，回看等价且零状态存储。EMA144 有限区自 index 143，
+    # 斜率 20 根回看 → len(closed) ≥ 164 才可判（不足直接落结构档）
+    overheat_hits: list[tuple[int, str]] = []  # (距当前已收盘根数, 条件名)
+    if len(closed) >= 164:
+        for i in range(len(closed) - COOLING_LOOKBACK, len(closed)):
+            reason = _overheat_reason(closes, s144, tr_list, i)
+            if reason:
+                overheat_hits.append((len(closed) - 1 - i, reason))
+    cur_hits = [r for back, r in overheat_hits if back == 0]
+    if cur_hits:
+        phase = "overheat"
+    elif overheat_hits:
+        phase = "cooling"
+    else:
+        phase = _strength_phase(div_min)
 
     # 宏观守卫：EMA55 是否在 EMA144 顺势侧（= 三线是否按方向完整排列）。
     # 逆宏观按 EMA21 相对 EMA144 的位置分两档注记 + EMA144 斜率（宏观劲度）：
@@ -725,6 +785,14 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
     if div_min is not None:
         notes.append(f"排列角度{div_min:.2f}ATR")  # 强度分档证据（定标审计用）
     notes.append(macro_note)
+    if phase == "overheat":
+        # 过热证据：命中条件名供 AI/复盘归因（哪个口径判的过热）
+        notes.append(f"过热命中：{'/'.join(sorted(set(cur_hits)))}")
+    elif phase == "cooling":
+        first_hit = min(overheat_hits, key=lambda t: t[0])
+        notes.append(
+            f"冷却中（{first_hit[1]}命中于{first_hit[0]}根前，消化窗口内）"
+        )
     # （动能背离/动能衰减注记已随 2026-10-11 衰竭期退役删除）
 
     label = f"{_PHASE_LABELS[phase]}{'多头' if dir_ > 0 else '空头'}背景"
@@ -736,22 +804,25 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
         detail += f" · ADX={adx_v:.1f}"
     return {
         "state": state, "state_label": label, "dir": dir_, "phase": phase,
-        "age_bars": age, "macro_aligned": macro_aligned,
+        "age_bars": age, "macro_aligned": macro_aligned, "div": div_min,
         "detail": detail,
     }
 
 
 def enforce_htf_constraint(ai_result: dict, htf_klines: Optional[list]) -> dict:
-    """4h 排列强度硬约束的程序化兜底（原地修改并返回 ai_result）。
+    """4h 分级硬约束的程序化兜底（原地修改并返回 ai_result）。
 
-    锁单矩阵（2026-10-10 五次拍板改排列强度口径；2026-10-11 衰竭期双向禁开
-    规则随衰竭概念退役而删除）：
-    - 中等/强/极强排列（发散 ≥0.5 ATR=趋势已被证明）∧ 宏观同侧 → 锁逆势；
+    锁单矩阵（2026-10-11 分级重构，docs/17 外部 4H 闸门第 2/3 层采纳）：
+    - 过热期/冷却期 → 双向禁开（抛物线加速=暴跌前兆 / 获利盘消化中，
+      外部「过热不进、冷却必等」语义；只管开仓，持仓出场不受影响——
+      出场引擎独立运行，「闸门管进、持仓管出」）；
+    - 中等/强排列（发散 ≥0.5 ATR=趋势已被证明）∧ 宏观同侧 → 锁逆势
+      （extreme 档退役，div≥2.0 的 strong 归入本档）；
     - 弱排列（排列未证明）与逆宏观（熊内反弹/牛内回调）任何档 → 放行，
       放行侧均由质量分惩罚兜底排序。
     LLM 可能无视 prompt 注入的约束行，开单前程序把关。无 4h 数据或非
     suggest 时原样返回；suggest 且有 4h 数据时顺带 stash htf_phase，
-    供 AIAnalysis / 复盘「4h排列强度」维度落库。
+    供 AIAnalysis / 复盘「4h趋势期」维度落库。
     """
     try:
         if not htf_klines or ai_result.get("trade_decision") != "suggest":
@@ -777,8 +848,25 @@ def enforce_htf_constraint(ai_result: dict, htf_klines: Optional[list]) -> dict:
                 "reason": reason,
             }
 
-        # 中等/强/极强排列 ∧ 宏观同侧 → 锁逆势（发散 ≥0.5 = 排列已被证明）
-        if htf.get("phase") not in ("medium", "strong", "extreme") \
+        # 过热期/冷却期 → 双向禁开（2026-10-11 分级重构；冷却=无状态回看，
+        # 非状态机——每轮全量重算等价外部 20 根冷却计数器）
+        if htf.get("phase") in ("overheat", "cooling"):
+            _label = _PHASE_LABELS[htf["phase"]]
+            _why = (
+                "抛物线加速，暴跌前兆" if htf["phase"] == "overheat"
+                else "过热后获利盘消化中"
+            )
+            ai_result["trade_decision"] = "skip"
+            ai_result["skip_reason"] = (
+                f"过热约束：4h{_label}（{_why}）双向禁开新仓（程序强制 skip）"
+            )
+            ai_result["veto_original"] = _veto(
+                f"4h{_label}双向禁开闸（{_why}）"
+            )
+            return ai_result
+
+        # 中等/强排列 ∧ 宏观同侧 → 锁逆势（发散 ≥0.5 = 排列已被证明）
+        if htf.get("phase") not in ("medium", "strong") \
                 or not htf.get("macro_aligned"):
             return ai_result
         if htf["state"] == "bullish" and direction == "short":
@@ -923,12 +1011,21 @@ def render_indicator_block(
             f"- 指标方向: 多空平衡（看多{nb}项 vs 看空{ns}项）→ 结合K线结构与量能判断"
         )
 
-    # 4h 排列强度方向硬约束（2026-10-10 五次拍板改排列强度口径；2026-10-11
-    # 衰竭期双向禁开行随衰竭概念退役删除）：中等/强/极强排列（宏观同侧）只可
-    # 顺势；弱排列（排列未证明）与逆宏观不锁，程序侧另有 enforce_htf_constraint
-    # 兜底
+    # 4h 分级硬约束行（2026-10-10 五次拍板改排列强度口径；2026-10-11 分级
+    # 重构：过热期/冷却期双向禁开 + 锁逆势收 medium/strong 两档，extreme
+    # 档退役）：过热/冷却禁开行在前（凌驾锁逆势），弱排列与逆宏观不锁，
+    # 程序侧另有 enforce_htf_constraint 兜底
     htf_r = next((r for _, s, r in results if s == HTF_SHORT and r), None)
-    if (htf_r and htf_r.get("phase") in ("medium", "strong", "extreme")
+    if htf_r and htf_r.get("phase") in ("overheat", "cooling"):
+        _why = (
+            "抛物线加速=暴跌前兆" if htf_r["phase"] == "overheat"
+            else "过热后获利盘消化中"
+        )
+        lines.append(
+            f"- 过热约束（硬性）: 4h{htf_r['state_label']}（{_why}）"
+            " —— 双向禁开新仓，long/short 一律 skip（优先于一切信号）"
+        )
+    elif (htf_r and htf_r.get("phase") in ("medium", "strong")
             and htf_r.get("macro_aligned")):
         if htf_r["state"] == "bullish":
             lines.append(
@@ -1079,11 +1176,13 @@ def compute_quality_score(
     §3.3 条件2/3：缩量回踩 +3 / 放量回踩 -5 / MACD 零轴同向 +4~+5 / 动量
     不确认 -4；仅回踩类触发传入，加分不拦截）
     修饰规则（2026-09-17 设计评审定稿；2026-09-24 4h 背景提权；2026-10-10
-    五次拍板改排列强度口径；2026-10-11 衰竭期退役删其分值）：
-    - 4h背景按排列强度：同向 弱+5 / 中等+8 / 强+10 / 极强+6（过热降档，
-      均值回归风险）；逆向 弱-6 / 中等-10 / 强-12 /
-      极强-8（强趋势逆势更险）——中等/强/极强才进
-      硬约束，此处逆向重罚主要压弱排列的逆势单排序
+    五次拍板改排列强度口径；2026-10-11 分级重构：extreme 枚举退役改 div
+    原始值降档，新增过热/冷却期分值，衰竭期分值先前已删）：
+    - 4h背景按排列强度：同向 弱+5 / 中等+8 / 强+10（div≥2.0 降为 +6，
+      极端张开仍警惕均值回归）；逆向 弱-6 / 中等-10 / 强-12（强趋势逆势
+      更险）——中等/强才进硬约束，此处逆向重罚主要压弱排列的逆势单排序
+    - 过热期/冷却期（凌驾结构档）：同向 -8/-4（追抛物线/消化期追多）、
+      逆向 -4/-2（接飞刀同样险但程序已双向禁开，此处仅扫描侧排序兜底）
     - 逆宏观（熊内反弹/牛内回调）额外 -4（硬约束不锁，分数兜底）
     - 突破触发且 ADX≥25 +5（强趋势中的突破可信）
     - 放量加分：量比 ≥1.2 +5（2026-09-25 金K类；2026-09-29 起突破放量不再
@@ -1099,12 +1198,18 @@ def compute_quality_score(
     if htf and int(htf.get("dir") or 0):
         same = int(htf["dir"]) == direction
         # 同向 / 逆向 按排列强度分档（phase 缺失时退回中性 ±5/−8）；
-        # exhausted 档已退役（2026-10-11），旧行值走默认中性分支
+        # exhausted/extreme 档均已退役（2026-10-11），旧行值走默认中性分支；
+        # 过热/冷却期同逆向都压分（程序侧另有双向禁开，此处管扫描侧排序）
         phase_mod = {
             "weak": (5, -6), "medium": (8, -10), "strong": (10, -12),
-            "extreme": (6, -8),
+            "overheat": (-8, -4), "cooling": (-4, -2),
         }
         score += phase_mod.get(htf.get("phase"), (5, -8))[0 if same else 1]
+        # strong ∧ div≥2.0（原 extreme 档语义，2026-10-11 枚举退役后由
+        # div 原始值承载）：同向降档 +10→+6（极端张开警惕均值回归）
+        if (htf.get("phase") == "strong" and same
+                and (htf.get("div") or 0) >= PHASE_EXTREME_MIN):
+            score -= 4
         if htf.get("macro_aligned") is False:
             score -= 4  # 逆宏观：熊内反弹做多/牛内回调做空一律压分
 

@@ -179,14 +179,15 @@ def _touch_bucket(rec: TradeRecord) -> str:
     return _TOUCH_LABELS.get(raw) if raw in _TOUCH_LABELS else "未记录"
 
 
-# 4h 排列强度（2026-10-10 五次拍板，docs/17；2026-10-11 衰竭期退役收 4 档）
-# 有序桶，验证锁单矩阵（中/强/极强档锁逆势）——旧行（含 exhausted 退役档）/
+# 4h 分级（2026-10-10 五次拍板建，docs/17；2026-10-11 分级重构：3 结构档 +
+# 过热期/冷却期，extreme/exhausted 退役）有序桶，验证锁单矩阵（过热/冷却
+# 双向禁开 + 中/强档锁逆势）——旧行（含 exhausted/extreme 退役档）/
 # 无 4h 数据 NULL→「未知」
 _HTF_PHASE_LABELS = {
     "weak": "弱排列", "medium": "中等排列", "strong": "强排列",
-    "extreme": "极强排列",
+    "overheat": "过热期", "cooling": "冷却期",
 }
-_HTF_PHASE_BUCKETS = ("弱排列", "中等排列", "强排列", "极强排列", "未知")
+_HTF_PHASE_BUCKETS = ("过热期", "冷却期", "弱排列", "中等排列", "强排列", "未知")
 
 
 def _htf_phase_bucket(rec: TradeRecord) -> str:
@@ -310,9 +311,10 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         # 回踩触点（2026-10-08，docs/22）：回踩单质量分层——浅触点（突破回测位）
         # 与深回撤（EMA144）的胜率/EV 对比，验证「回踩越深越稳」假设
         ("回踩位置", _touch_bucket, _TOUCH_BUCKETS),
-        # 4h排列强度（2026-10-10 五次拍板，docs/17；2026-10-11 衰竭期退役收 4 档）：
-        # 弱/中/强/极强 × 胜率/EV，验证排列强度锁单矩阵（中/强/极强档锁逆势）
-        # 的分组贡献；旧行（含 exhausted 退役档）NULL→「未知」
+        # 4h分级（2026-10-10 五次拍板，docs/17；2026-10-11 分级重构 3 结构档 +
+        # 过热期/冷却期）：弱/中/强排列 × 过热/冷却 × 胜率/EV，验证分级锁单
+        # 矩阵（过热/冷却双向禁开 + 中/强档锁逆势）的分组贡献；
+        # 旧行（含 exhausted/extreme 退役档）NULL→「未知」
         ("4h趋势期", _htf_phase_bucket, _HTF_PHASE_BUCKETS),
     ):
         buckets: dict[str, list] = {}

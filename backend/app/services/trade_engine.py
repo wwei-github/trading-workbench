@@ -151,8 +151,8 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
         # 战法命中标注（2026-10-02，仅借鉴）：随快照自持，删战法不断链，复盘分组用
         "tactic_name": a.tactic_name,
         "tactic_reason": a.tactic_reason,
-        # 4h 排列强度（2026-10-10 五次拍板；2026-10-11 衰竭期退役收 4 档）：
-        # weak/medium/strong/extreme，
+        # 4h 分级（2026-10-10 五次拍板；2026-10-11 分级重构）：
+        # weak/medium/strong/overheat/cooling（extreme/exhausted 退役），
         # 随快照自持，复盘「4h趋势期」维度分组用；旧行（旧枚举）/无 4h 数据 None→「未知」
         "htf_phase": a.htf_phase,
         # 止盈模式（2026-10-10，docs/19 §3.4）：随快照自持——复盘弹窗 AI 卡

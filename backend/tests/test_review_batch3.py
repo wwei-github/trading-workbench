@@ -329,23 +329,27 @@ def test_funnel_scope_filters_trade_stages(db):
 
 def test_htf_constraint_veto_snapshot():
     """4h 硬约束程序否决单也带 veto_original 快照（A5a 闭环补全）：
-    中/强/极强排列（宏观同侧）背景 suggest 逆势被强制 skip 时快照原始三价，
+    中/强排列（宏观同侧）背景 suggest 逆势被强制 skip 时快照原始三价，
     source=htf_constraint；合规方向 / 放行档（弱排列或逆宏观）/ 非 suggest 原样返回"""
     from app.services.strategy.technical import enforce_htf_constraint
 
     def _htf_klines(state):
-        # analyze_htf_background 要求 ≥155 已收盘根（EMA144 种子+余量），
-        # 线性爬升 ±2/根 → 排列角度 ~17 ATR → extreme（宏观同侧）→ 锁逆势档；
-        # ADX≥20 → bullish/bearish
-        base = 100.0
-        drift = 2.0 if state == "bullish" else -2.0
+        # analyze_htf_background 要求 ≥155 已收盘根（EMA144 种子+余量）。
+        # 盘整基座后缓涨的 healthy 形态（2026-10-11 分级重构：稳态线性趋势
+        # 会触发距离过热走双向禁开分支，锁逆势断言需不过热的 strong 排列）：
+        # 140 根横盘 + 60 根缓涨/缓跌 → strong（宏观同侧）→ 锁逆势档
+        out, p = [], 100.0
+        drift = 0.5 if state == "bullish" else -0.5
+        for n, d in ((140, 0.0), (60, drift)):
+            out += [p + d * i for i in range(n)]
+            p += d * n
         return [
-            [i * 3600_000, base + drift * i, base + drift * i,
-             base + drift * i, base + drift * i, 1000.0]
-            for i in range(170)
+            [i * 4 * 3600_000, c, c + 2.5 * (1 + 0.1 * (i % 3)),
+             c - 2.5 * (1 + 0.1 * (i % 3)), float(c), 1000.0]
+            for i, c in enumerate(out)
         ]
 
-    # 极强多头排列背景 + AI 开空 → 强制 skip + 快照
+    # 强多头排列背景 + AI 开空 → 强制 skip + 快照
     d = {"trade_decision": "suggest", "direction": "short",
          "entry_price": 99.0, "stop_loss": 101.0, "take_profit_1": 95.0,
          "recommendation": 66}

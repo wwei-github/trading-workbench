@@ -136,3 +136,57 @@ def test_htf_structured_line_injected():
 def test_htf_structured_line_absent_without_htf():
     block = render_indicator_block(_kl_1h_stub())
     assert "- 4h背景: phase=" not in block
+
+
+# ── 不变量 9：4h 分级硬约束文案三要素（2026-10-11 分级重构）──────
+
+
+def _htf_kl(closes, wick):
+    return [
+        [i * 4 * 3600_000, c, c + wick * (1 + 0.1 * (i % 3)),
+         c - wick * (1 + 0.1 * (i % 3)), float(c), 1000.0]
+        for i, c in enumerate(closes)
+    ]
+
+
+def _htf_shape(seg):
+    out, p = [], 100.0
+    for n, d in seg:
+        out += [p + d * i for i in range(n)]
+        p += d * n
+    return (out + [out[-1]] * 300)[:200]
+
+
+def test_htf_hard_rule_covers_overheat_and_direction():
+    """_RULE_HTF_HARD 必须同时覆盖：过热期/冷却期双向禁开（外部 4H 闸门
+    第 2/3 层语义）与排列中/强锁逆势，且声明程序会强制改判（LLM 无视
+    注入行时程序侧兜底语义不缺失）。P0 系统提示词为填充后实文；
+    P1 AGENT_SYSTEM 为模板（常量经 render 填充），查常量文本+注入占位符"""
+    rule = ai_agent._RULE_HTF_HARD
+    assert "「过热约束（硬性）」" in rule
+    assert "「方向约束（硬性）」" in rule
+    assert "双向禁开新仓" in rule
+    assert "程序会强制改判" in rule
+    assert "{_RULE_HTF_HARD}" in ai_agent.AGENT_SYSTEM  # P1 注入点不缺失
+    for txt in (_p0_system(),):
+        assert "「过热约束（硬性）」" in txt
+        assert "双向禁开新仓" in txt
+
+
+def test_overheat_constraint_line_rendered():
+    """渲染层：过热期 4h 背景必须注入「过热约束（硬性）」行（双向禁开、
+    优先于一切信号），且不再渲染锁逆势「方向约束」行（过热凌驾锁逆势）"""
+    closes = _htf_shape([(140, 0.3), (20, 2.0)])  # 斜率过热
+    block = render_indicator_block(_kl_1h_stub(), htf_klines=_htf_kl(closes, 3.0))
+    assert "过热约束（硬性）" in block
+    assert "双向禁开新仓" in block
+    assert "方向约束（硬性）" not in block
+
+
+def test_direction_constraint_line_rendered_for_strong_aligned():
+    """渲染层：健康 strong 排列（宏观同侧）注入「方向约束（硬性）」锁逆势行——
+    夹具用盘整基座起势形态（稳态线性趋势会触发距离过热改渲染过热约束行）"""
+    closes = _htf_shape([(140, 0.0), (60, 0.5)])
+    block = render_indicator_block(_kl_1h_stub(), htf_klines=_htf_kl(closes, 2.5))
+    assert "方向约束（硬性）" in block
+    assert "过热约束（硬性）" not in block

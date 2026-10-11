@@ -930,9 +930,9 @@ export default function TradesPanel() {
         v != null ? <strong style={{ color: v >= 80 ? '#ff4d4f' : '#fa8c16' }}>{v}</strong> : '-',
     },
     {
-      // 4h方向列：开单时 4h 背景级别（震荡/纠缠/排列强度档），与扫描结果「4h」同源
+      // 4h方向列：开单时 4h 背景级别（震荡/纠缠/排列强度/过热冷却档），与扫描结果「4h」同源
       title: (
-        <Tooltip title="开单时 4h 高周期背景（排列强度口径，2026-10-10）：EMA21/55/144 排列角度 |EMA差|/ATR(14,4h) 双线取小者分档——弱<0.5 / 中等<1.0 / 强<2.0 / 极强≥2.0，柱线翻向=衰竭期禁开新单；EMA55 vs EMA144 定宏观同侧/逆侧；悬停查看完整判定细节">
+        <Tooltip title="开单时 4h 高周期背景（2026-10-11 分级重构）：EMA144 口径三条件任一=过热期（斜率20根>5% / 距离>4×ATR / 加速比>2），近20根命中过=冷却期；否则 EMA21/55/144 排列角度 |EMA差|/ATR(14,4h) 双线取小者分档——弱<0.5 / 中等<1.0 / 强≥1.0（极强档退役）；EMA55 vs EMA144 定宏观同侧/逆侧；悬停查看完整判定细节">
           <span>4h方向</span>
         </Tooltip>
       ),
@@ -944,10 +944,11 @@ export default function TradesPanel() {
         const isBull = htf.state === 'bullish'
         const isBear = htf.state === 'bearish'
         // 三段式：新行有 phase → 强度短标签；历史行无 phase → 旧强/弱回退
-        // （旧行 phase 为 launch/mid/late 旧枚举，映射兜底保展示）
+        // （旧行 phase 为 launch/mid/late/exhausted/extreme 旧枚举，映射兜底保展示）
         const PHASE_SHORT: Record<string, string> = {
-          weak: '弱', medium: '中', strong: '强', extreme: '极强',
-          exhausted: '衰竭',
+          weak: '弱', medium: '中', strong: '强',
+          overheat: '过热', cooling: '冷却',
+          extreme: '极强', exhausted: '衰竭',
           launch: '前期', mid: '中期', late: '后期', // 旧枚举行兜底
         }
         const short = htf.state === 'ranging'
