@@ -153,6 +153,11 @@ LIQ_GATE_BUFFER = 0.005
 # 超容差才维持「待回踩不下单」。回踩不远时市价进也能满足盈亏比，不必干等
 PULLBACK_MARKET_PCT = 0.01
 
+# 盈亏比现价复算容差（system_config.ai_rr_tol 可页面覆盖，NULL=默认 0.02）：
+# 开仓闸按现价复算 RR ≥ ai_rr_min - tol 即放行（AI 三价铁律不加容差）。
+# 0.0002 级价格漂移误杀案例：CYBERUSDT RR 1.4998 被 1.5 拦
+AI_RR_TOL = 0.02
+
 # 近锚一致性校验（docs/23，2026-09-29）：突破类信号 AI 声明 stop_anchor=near 时，
 # 止损必须贴近突破K线极值（信号K线，klines[-2]；klines[-1] 未收盘）——提示词要求
 # 突破K极值外 0.3% 缓冲，容差 0.5% 覆盖合理偏移；AI 挂近锚名义报远离止损（把

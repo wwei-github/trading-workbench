@@ -271,7 +271,8 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS near_anchor_factor NUMERIC(10, 6),
               ADD COLUMN IF NOT EXISTS portfolio_heat_cap NUMERIC(10, 6),
               ADD COLUMN IF NOT EXISTS same_direction_cap INTEGER,
-              ADD COLUMN IF NOT EXISTS btc_crash_pause_pct NUMERIC(10, 6)
+              ADD COLUMN IF NOT EXISTS btc_crash_pause_pct NUMERIC(10, 6),
+              ADD COLUMN IF NOT EXISTS ai_rr_tol NUMERIC(10, 6)
         """))
         # 多账号支持（docs/17 P0，2026-09-23）：账号配置走 .env 注册表，存量表
         # 补 account_key 归属列并按 testnet 布尔回填（testnet→testnet-1，正式→live-1）

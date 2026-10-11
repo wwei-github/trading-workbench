@@ -188,12 +188,34 @@ def test_tp_qty_ratio_config(client):
     assert http.get("/api/scans/config").json()["tp1_qty_pct_with_tp2"] is None
 
 
+def test_ai_rr_tol_config(client):
+    """现价 RR 复算容差（2026-10-11 配置化）：默认 None → PUT 回读一致；
+    越界拒绝（0~0.2）；传 null 恢复 env 默认 0.02"""
+    http, _db = client
+    body = http.get("/api/scans/config").json()
+    assert body["ai_rr_tol"] is None
+
+    assert http.put("/api/scans/config", json={"ai_rr_tol": 0.05}).status_code == 200
+    assert http.get("/api/scans/config").json()["ai_rr_tol"] == 0.05
+
+    # 0=严格、0.2=上限均合法
+    assert http.put("/api/scans/config", json={"ai_rr_tol": 0}).status_code == 200
+    assert http.get("/api/scans/config").json()["ai_rr_tol"] == 0
+    assert http.put("/api/scans/config", json={"ai_rr_tol": 0.2}).status_code == 200
+
+    # 传 null 恢复 env 默认
+    assert http.put("/api/scans/config", json={"ai_rr_tol": None}).status_code == 200
+    assert http.get("/api/scans/config").json()["ai_rr_tol"] is None
+
+
 @pytest.mark.parametrize("field,value", [
     ("min_recommendation", 101),
     ("min_recommendation", -1),
     ("daily_loss_stop_pct", 51),
     ("ai_rr_min", 0.4),
     ("ai_rr_min", 10.1),
+    ("ai_rr_tol", -0.01),
+    ("ai_rr_tol", 0.21),
     ("risk_pct", 0.05),
     ("risk_pct", 20.1),
     ("leverage_max", 0),

@@ -36,6 +36,7 @@ from app.services.binance_trader import BinanceTrader, BinanceTradeError
 from app.services.exchange_pool import ExchangePool
 from app.services.position_advisor import advice_due
 from app.services.risk_guard import (
+    AI_RR_TOL,
     liquidation_gate_pct,
     LIQ_GATE_BUFFER,
     LIQ_GATE_MMR_FALLBACK,
@@ -265,6 +266,10 @@ def _attempt_open(
             float(cfg.ai_rr_min) if cfg.ai_rr_min is not None
             else float(settings.AI_RR_MIN)
         )
+        rr_tol = (
+            float(cfg.ai_rr_tol) if cfg.ai_rr_tol is not None
+            else float(settings.AI_RR_TOL)
+        )
         lev_cap = (
             int(cfg.leverage_max) if cfg.leverage_max is not None
             else int(settings.TRADING_LEVERAGE)
@@ -334,21 +339,30 @@ def _attempt_open(
         # 盈亏比按现价复算（2026-09-18 补上，此前仅 AI 入场价口径校验）：市价成交
         # 价就是现价，待回踩单/漂移单偏离 AI 入场价后风险变宽、盈利变窄，RR 随之
         # 退化——按现价复算仍须 ≥盈亏比铁律下限（ai_rr_min 可页面覆盖），否则市价进不划算。
+        # 容差带（2026-10-11-3，v2026-10-11-3）：rr_now ≥ rr_min - ai_rr_tol 即放行——
+        # CYBERUSDT 案例：AI 三价 RR 1.57 达标，3 分钟漂移后现价复算 1.4998 被 1.5 拦，
+        # 0.0002 级漂移误杀信号。容差仅容忍 AI 报价到开仓间的执行漂移，AI 入场价口径
+        # 铁律（risk_guard.validate_decision）不加容差。放行时落 task log 审计。
         # 策略二豁免（2026-10-10-5，docs/20）：s2 定义即无 RR 铁律（risk_guard 已豁免
         # AI 入场价口径，此处现价口径同语义豁免），风控由止损宽度上限+固定亏损法兜底
         if sl != price and not _is_s2:
             rr_now = abs(tp1 - price) / abs(price - sl)
-            if rr_now < rr_min:
+            if rr_now < rr_min - rr_tol:
                 logger.info(
-                    "开仓跳过 %s：盈亏比按现价复算 %.2f < %s（入场 %s，现价 %s）",
-                    symbol, rr_now, rr_min, entry_ai, price,
+                    "开仓跳过 %s：盈亏比按现价复算 %.2f < %s-容差%s=%.2f（入场 %s，现价 %s）",
+                    symbol, rr_now, rr_min, rr_tol, rr_min - rr_tol, entry_ai, price,
                 )
                 _mark_open_block(
                     db, a,
-                    f"盈亏比按现价复算 {rr_now:.2f} < {rr_min}"
-                    f"（入场 {entry_ai}，现价 {price}），市价进不满足盈亏计划",
+                    f"盈亏比按现价复算 {rr_now:.2f} < {rr_min:g}-容差{rr_tol:.2f}"
+                    f"={rr_min - rr_tol:.2f}（入场 {entry_ai}，现价 {price}），市价进不满足盈亏计划",
                 )
                 return False
+            if rr_now < rr_min:
+                logger.info(
+                    "开仓 %s：盈亏比按现价复算 %.2f 落在容差带 [%.2f, %.2f)，容差放行",
+                    symbol, rr_now, rr_min - rr_tol, rr_min,
+                )
         # 固定亏损仓位：基数分档 × 3% ÷ 止损距离
         stop_pct = abs(price - sl) / price
         if stop_pct <= 0:

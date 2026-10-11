@@ -43,6 +43,7 @@ export default function TradingConfigPanel() {
         // 熔断开关两态化（2026-10-04 去「默认」档）：null（未定制旧行）按开启展示，保存即写布尔
         daily_loss_stop_enabled: aiConfig.daily_loss_stop_enabled === false ? 'off' : 'on',
         ai_rr_min: aiConfig.ai_rr_min ?? null,
+        ai_rr_tol: aiConfig.ai_rr_tol ?? null,
         risk_pct: aiConfig.risk_pct ?? null, // % 值（3=3%）直存
         leverage_max: aiConfig.leverage_max ?? null,
         taker_fee_rate: aiConfig.taker_fee_rate != null
@@ -89,6 +90,7 @@ export default function TradingConfigPanel() {
         daily_loss_stop_pct: values.daily_loss_stop_pct ?? null,
         daily_loss_stop_enabled: values.daily_loss_stop_enabled === 'on',
         ai_rr_min: values.ai_rr_min ?? null,
+        ai_rr_tol: values.ai_rr_tol ?? null,
         risk_pct: values.risk_pct ?? null,
         leverage_max: values.leverage_max ?? null,
         taker_fee_rate: values.taker_fee_rate != null ? values.taker_fee_rate / 100 : null,
@@ -262,6 +264,15 @@ export default function TradingConfigPanel() {
                 tooltip="按 AI 给的三价复算 RR 必须 ≥ 该值，不足直接打回（AI 提示词同源更新）"
               >
                 <InputNumber min={0.5} max={10} step={0.1} style={{ width: '100%' }} placeholder="1.5" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="现价复算容差（留空=默认 0.02，0=严格）"
+                name="ai_rr_tol"
+                tooltip="开仓时盈亏比按现价复算的放行容差：RR ≥ 铁律下限-容差 即开单（AI 入场价口径铁律不受影响）。容忍 AI 报价到开仓间的价格漂移，0=恢复严格铁律"
+              >
+                <InputNumber min={0} max={0.2} step={0.01} style={{ width: '100%' }} placeholder="0.02" />
               </Form.Item>
             </Col>
             <Col span={6}>

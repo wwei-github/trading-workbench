@@ -420,6 +420,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
                              if cfg.daily_loss_stop_pct is not None else None),
         daily_loss_stop_enabled=cfg.daily_loss_stop_enabled,
         ai_rr_min=(float(cfg.ai_rr_min) if cfg.ai_rr_min is not None else None),
+        ai_rr_tol=(float(cfg.ai_rr_tol) if cfg.ai_rr_tol is not None else None),
         risk_pct=(float(cfg.risk_pct) if cfg.risk_pct is not None else None),
         leverage_max=cfg.leverage_max,
         taker_fee_rate=(float(cfg.taker_fee_rate)
@@ -691,6 +692,11 @@ def update_system_config(
         if v is not None and not (0.5 <= v <= 10):
             raise HTTPException(status_code=400, detail="ai_rr_min 需在 0.5~10 之间（盈亏比下限）")
         cfg.ai_rr_min = v
+    if "ai_rr_tol" in body.model_fields_set:
+        v = body.ai_rr_tol
+        if v is not None and not (0 <= v <= 0.2):
+            raise HTTPException(status_code=400, detail="ai_rr_tol 需在 0~0.2 之间（现价复算 RR 容差，0=严格）")
+        cfg.ai_rr_tol = v
     if "risk_pct" in body.model_fields_set:
         v = body.risk_pct
         if v is not None and not (0.1 <= v <= 20):

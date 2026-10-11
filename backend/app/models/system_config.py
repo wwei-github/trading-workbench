@@ -132,6 +132,9 @@ class SystemConfig(Base):
     tp1_qty_pct_no_tp2: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True, default=None)
     # 盈亏比铁律下限（NULL=默认 1.5）：risk_guard 校验 + 开仓现价复算 + AI 提示词共用
     ai_rr_min: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+    # 盈亏比现价复算容差（NULL=默认 0.02，0=严格 ≥rr_min）：仅开仓闸现价复算层，
+    # AI 入场价口径铁律不受此参数影响
+    ai_rr_tol: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
     # 单笔风险比例 %（NULL=默认 3，pct 模式：风险基数 × 该比例）
     risk_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
     # 杠杆上限（NULL=默认 20，逐仓；动态杠杆上边界）

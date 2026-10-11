@@ -105,7 +105,10 @@ class Settings(BaseSettings):
     # v2026-10-11-2：看涨吞没上影门 15%→25%（用户拍板）——EDUUSDT 11:00 吞没
     # 上影 17.3% 被 15% 门拒、边缘拒绝个案出现；门语义（冲高遭抛压打回=犹豫）
     # 保留，容忍度放宽。看跌吞没总影线 40% 门不变
-    RULE_VERSION: str = "v2026-10-11-2"
+    # v2026-10-11-3：开仓现价 RR 复算加容差带 ai_rr_tol（默认 0.02），rr_now ≥
+    # rr_min-tol 放行——CYBERUSDT 案例：AI 三价 RR 1.57 达标，3 分钟漂移后现价
+    # 复算 1.4998 被 1.5 拦，0.0002 级漂移误杀信号
+    RULE_VERSION: str = "v2026-10-11-3"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]
@@ -139,6 +142,8 @@ class Settings(BaseSettings):
     # 合法 JSON、降低解析失败重试率；默认关——部分兼容网关不支持该参数（会 400）
     LLM_JSON_MODE: bool = False
     AI_RR_MIN: float = 1.5            # 盈亏比复算下限（交易系统铁律）
+    AI_RR_TOL: float = 0.02           # 开仓现价 RR 复算容差（rr_now ≥ rr_min - tol 放行；
+                                      # AI 三价铁律不加容差，容忍 AI 报价到开仓间漂移）
     RISK_BUDGET_PCT: float = 3.0      # 单笔固定亏损预算（%账户资金）：仓位 = 预算÷止损距离%，触止损恰好亏3%
     FINGERPRINT_TTL_MIN: int = 60     # 指纹缓存复用窗口（分钟，0.3% 价格分桶）
     AI_MAX_PER_SCAN: int = 10         # 单次扫描批量 AI 分析上限（按24h成交额取前N）

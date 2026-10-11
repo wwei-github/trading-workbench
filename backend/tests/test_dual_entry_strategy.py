@@ -253,10 +253,13 @@ def _analysis(db, entry_strategy=None):
 class _S2PenetrationTrader:
     """闸门穿透替身：前置闸门数据齐备，RR 复算之后第一个 trader 调用即哨兵报错。
     __getattr__ 兜底——RR 闸后（bracket_mmr）及以后任何方法调用均抛「替身终点」，
-    断言该异常即证明现价 RR 复算闸已放行。"""
+    断言该异常即证明现价 RR 复算闸已放行。price 可参数化（RR 容差带用例）。"""
 
     account_key = "testnet-1"
     testnet = True
+
+    def __init__(self, price=100.5):
+        self._price = price
 
     def listed_symbols(self):
         return {"TESTUSDT"}
@@ -268,8 +271,8 @@ class _S2PenetrationTrader:
         return {"wallet": 1000.0, "available": 900.0}
 
     def price(self, symbol):
-        # entry=100 / sl=98 / tp1=104：现价 100.5 → rr_now = 3.5/2.5 = 1.4 < 1.5
-        return 100.5
+        # 默认 entry=100 / sl=98 / tp1=104：现价 100.5 → rr_now = 3.5/2.5 = 1.4
+        return self._price
 
     def __getattr__(self, name):
         raise RuntimeError("替身终点")
@@ -294,6 +297,52 @@ def test_s2_skips_current_price_rr_check(db):
     a = _analysis(db, entry_strategy="s2")
     from app.services.trade_engine import try_open_for_analysis
     assert try_open_for_analysis(db, _S2PenetrationTrader(), a.id) is False
+    assert "替身终点" in (a.open_block_reason or "")
+
+
+def _set_rr_tol(db, value):
+    """页面覆盖路径：写 system_config.ai_rr_tol（NULL 回落 env 默认 0.02）"""
+    from app.models.system_config import SystemConfig
+    cfg = db.get(SystemConfig, 1)
+    cfg.ai_rr_tol = value
+    db.commit()
+
+
+def test_s1_rr_tol_passes(db):
+    """容差带放行：默认 tol=0.02，现价 100.41 → rr=3.59/2.41≈1.49 落在
+    [1.48, 1.5) → 放行穿透（CYBERUSDT 1.4998 被误杀案例的回归用例）"""
+    a = _analysis(db)
+    from app.services.trade_engine import try_open_for_analysis
+    assert try_open_for_analysis(db, _S2PenetrationTrader(price=100.41), a.id) is False
+    assert "替身终点" in (a.open_block_reason or "")
+
+
+def test_s1_rr_tol_exceeded_blocks(db):
+    """容差带外仍拦：现价 100.5 → rr=1.4 < 1.48 → 拦截，文案含容差口径"""
+    a = _analysis(db)
+    from app.services.trade_engine import try_open_for_analysis
+    assert try_open_for_analysis(db, _S2PenetrationTrader(price=100.5), a.id) is False
+    reason = a.open_block_reason or ""
+    assert "盈亏比按现价复算" in reason
+    assert "容差" in reason
+
+
+def test_s1_rr_tol_zero_strict(db):
+    """tol=0（页面显式严格）：退化为旧铁律，rr≈1.49 < 1.5 仍拦截"""
+    _set_rr_tol(db, 0)
+    a = _analysis(db)
+    from app.services.trade_engine import try_open_for_analysis
+    assert try_open_for_analysis(db, _S2PenetrationTrader(price=100.41), a.id) is False
+    assert "盈亏比按现价复算" in (a.open_block_reason or "")
+    assert "替身终点" not in (a.open_block_reason or "")
+
+
+def test_s1_rr_tol_db_override(db):
+    """页面覆盖生效：tol=0.11 → 门槛 1.39，rr=1.4 ≥ 1.39 放行穿透"""
+    _set_rr_tol(db, 0.11)
+    a = _analysis(db)
+    from app.services.trade_engine import try_open_for_analysis
+    assert try_open_for_analysis(db, _S2PenetrationTrader(price=100.5), a.id) is False
     assert "替身终点" in (a.open_block_reason or "")
 
 

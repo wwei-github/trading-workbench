@@ -251,6 +251,7 @@ export interface SystemConfig {
   daily_loss_stop_pct?: number | null; // 当日亏损熔断阈值（% 值，9=风险基数 9%；null=默认）
   daily_loss_stop_enabled?: boolean | null; // 当日亏损熔断开关（null=未定制按 env 默认开；页面两态化后保存即写布尔）
   ai_rr_min?: number | null; // 盈亏比铁律下限（0.5~10，env 默认 1.5）
+  ai_rr_tol?: number | null; // 现价复算容差（0~0.2，env 默认 0.02，0=严格）
   risk_pct?: number | null; // 单笔风险比例（% 值，0.1~20；pct 模式风险基数分档 × 此比例）
   leverage_max?: number | null; // 杠杆上限（1~125，env 默认 20）
   taker_fee_rate?: number | null; // taker 手续费率（比例 0.0005=0.05%；保本止损复算）
