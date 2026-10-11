@@ -358,13 +358,10 @@ def _votes_snapshot(votes: dict, stabilize: Optional[dict] = None) -> dict:
             "state": htf_res.get("state"),
             "label": htf_res.get("state_label"),
             "dir": int(htf_res.get("dir") or 0),
-            # 排列强度 3 档 + 过热/冷却期（2026-10-11 分级重构，docs/17）：
-            # weak/medium/strong/overheat/cooling（extreme/exhausted 退役），
-            # 前端「4h方向」列短标签用；旧行无此键回退强/弱 label 解析
-            "phase": htf_res.get("phase"),
-            # 排列角度原始值（ATR 倍数）：strong∧div≥2.0 质量分降档证据 +
-            # 复盘离线重分桶用
-            "div": htf_res.get("div"),
+            "macro_aligned": htf_res.get("macro_aligned"),
+            # EMA 状态机 11 态（2026-10-11 再重构，docs/17）：tangle/turn_*/
+            # macro_cross_*/*_recover/aligned_*/bull_dip/bear_rally，
+            # 前端「4h方向」列短标签用；旧行无此键回退 label 解析
         }
     return snap
 

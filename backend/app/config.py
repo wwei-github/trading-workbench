@@ -95,7 +95,10 @@ class Settings(BaseSettings):
     # v2026-10-10-4：趋势K线实体门 0.70→0.60（用户拍板，复合确认证据层）——回踩
     # 反转根常带探底下影（KAIAUSDT 13:00 复合路径 61.8% 被 70% 门拒）；突破K线
     # 维持 0.70，"两常量同步"约定解除，此后各自独立改版
-    RULE_VERSION: str = "v2026-10-10"
+    # v2026-10-11：4h 分级再重构为 EMA 状态机 11 态（用户三轮拍板，docs/17）——
+    # 锁单矩阵（缠绕/拐头双向禁开、宏观同侧态锁逆势、过渡放行）+ 质量分
+    # STATE_QUALITY 全变；REC70 前向窗口同日重置（见 shadow.REC70_START）
+    RULE_VERSION: str = "v2026-10-11"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

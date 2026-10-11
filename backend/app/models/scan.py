@@ -107,12 +107,14 @@ class AIAnalysis(Base):
     # 表白名单，防幻觉闸门外值清空）+ 判定依据；战法仅借鉴不拦截，旧行 NULL
     tactic_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     tactic_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    # 4h 分级（2026-10-10 五次拍板建列；2026-10-11 分级重构收 3 结构档 +
-    # 过热期/冷却期）：weak/medium/strong/overheat/cooling，旧行
-    # exhausted/extreme=退役旧档（复盘归「未知」）。分析时由
-    # enforce_htf_constraint stash 落库；仅 suggest 且有 4h 数据时有值，
-    # 旧行（launch/mid/late 旧枚举）/无 4h 数据 NULL=未知，复盘「4h趋势期」维度按此分组
-    htf_phase: Mapped[Optional[str]] = mapped_column(String(12), nullable=True)
+    # 4h 状态（2026-10-10 五次拍板建列；值域三次换血，2026-10-11 再重构为
+    # EMA 状态机 11 态）：tangle/turn_bull/turn_bear/macro_cross_bull/
+    # macro_cross_bear/bull_recover/bear_recover/aligned_bull/aligned_bear/
+    # bull_dip/bear_rally（weak/medium/strong/extreme/exhausted/overheat/
+    # cooling=退役旧档，复盘归「未知」）。分析时由 enforce_htf_constraint
+    # stash 落库；仅 suggest 且有 4h 数据时有值，无 4h 数据 NULL=未知，
+    # 复盘「4h趋势期」维度按此分组
+    htf_phase: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     # 止盈模式（2026-10-10，docs/19 §3.4 两派哲学落地；2026-10-11 起由
     # entry_strategy 程序推导）：ladder=分批止盈 / trail=纯跟踪（TP1 仅作盈亏比
     # 校验参考价，程序不挂止盈档，浮盈≥1×ATR 武装保本后跟进）。

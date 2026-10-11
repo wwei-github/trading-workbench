@@ -389,7 +389,7 @@ def run_ai_analysis_single(
             ai_result = run_dual_judge(
                 ai_result, _build_judge_signal(signal, klines, htf_klines),
             )
-        # 4h 分级硬约束兜底（2026-10-11 分级重构：过热/冷却双向禁开，中等/强+宏观同侧锁逆势）：LLM 无视 prompt 时程序强制 skip
+        # 4h 状态机硬约束兜底（2026-10-11 再重构 EMA 状态机 11 态：缠绕/拐头双向禁开，宏观交叉/恢复/排列锁逆势，过渡放行）：LLM 无视 prompt 时程序强制 skip
         ai_result = enforce_htf_constraint(ai_result, htf_klines)
         # Narrator 已下线（提速）：submit_decision 的 reason 直接承载完整分点分析
         # （工具 schema 强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返

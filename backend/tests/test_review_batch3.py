@@ -329,15 +329,15 @@ def test_funnel_scope_filters_trade_stages(db):
 
 def test_htf_constraint_veto_snapshot():
     """4h 硬约束程序否决单也带 veto_original 快照（A5a 闭环补全）：
-    中/强排列（宏观同侧）背景 suggest 逆势被强制 skip 时快照原始三价，
-    source=htf_constraint；合规方向 / 放行档（弱排列或逆宏观）/ 非 suggest 原样返回"""
+    宏观同侧排列态背景 suggest 逆势被强制 skip 时快照原始三价，
+    source=htf_constraint；合规方向 / 非 suggest 原样返回"""
     from app.services.strategy.technical import enforce_htf_constraint
 
     def _htf_klines(state):
         # analyze_htf_background 要求 ≥155 已收盘根（EMA144 种子+余量）。
-        # 盘整基座后缓涨的 healthy 形态（2026-10-11 分级重构：稳态线性趋势
-        # 会触发距离过热走双向禁开分支，锁逆势断言需不过热的 strong 排列）：
-        # 140 根横盘 + 60 根缓涨/缓跌 → strong（宏观同侧）→ 锁逆势档
+        # 盘整基座后缓涨的形态（140 根横盘 + 60 根缓涨/缓跌）落多头/空头
+        # 排列稳态（宏观同侧锁逆势档）——稳态线性趋势或 fresh 交叉会落
+        # 双向禁开/宏观交叉分支，锁逆势断言需稳态排列
         out, p = [], 100.0
         drift = 0.5 if state == "bullish" else -0.5
         for n, d in ((140, 0.0), (60, drift)):
@@ -349,22 +349,24 @@ def test_htf_constraint_veto_snapshot():
             for i, c in enumerate(out)
         ]
 
-    # 强多头排列背景 + AI 开空 → 强制 skip + 快照
+    # 多头排列背景 + AI 开空 → 强制 skip + 快照 + htf_phase stash
     d = {"trade_decision": "suggest", "direction": "short",
          "entry_price": 99.0, "stop_loss": 101.0, "take_profit_1": 95.0,
          "recommendation": 66}
     out = enforce_htf_constraint(d, _htf_klines("bullish"))
     assert out["trade_decision"] == "skip"
+    assert out["htf_phase"] == "aligned_bull"
     v = out["veto_original"]
     assert v["source"] == "htf_constraint"
     assert v["direction"] == "short"
     assert v["entry_price"] == 99.0 and v["stop_loss"] == 101.0
 
-    # 方向合规（极强多头排列顺势开多）→ 原样返回、无快照
+    # 方向合规（多头排列顺势开多）→ 原样放行、无快照，htf_phase 照常 stash
     d2 = {"trade_decision": "suggest", "direction": "long",
           "entry_price": 99.0, "stop_loss": 97.0, "take_profit_1": 103.0}
     out2 = enforce_htf_constraint(d2, _htf_klines("bullish"))
     assert out2["trade_decision"] == "suggest"
+    assert out2["htf_phase"] == "aligned_bull"
     assert "veto_original" not in out2
 
 
@@ -436,29 +438,31 @@ def test_actual_review_tactic_dimension(db):
 
 
 def test_actual_review_htf_phase_dimension(db):
-    """4h排列强度维度（2026-10-10 五次拍板改口径，docs/17；2026-10-11 衰竭期
-    退役收 4 档）：weak/medium/strong/extreme 有序四桶 + 未知兜底，验证锁单
-    矩阵各档的分组贡献；旧行（launch/mid/late 旧枚举/exhausted 退役档）
+    """4h状态维度（2026-10-10 五次拍板建，docs/17；2026-10-11 再重构 EMA
+    状态机 11 态聚合 6 行为桶）：缠绕/拐头/宏观交叉/恢复初期/排列/过渡
+    有序桶（空桶不占行）+ 未知兜底，验证锁单矩阵各态的分组贡献；
+    旧行（weak/medium/strong/extreme/exhausted/overheat/cooling 退役档）
     标签缺失 → 未知"""
     from app.services.actual_review import build_actual_review
 
-    db.add(_closed_rec({"recommendation": 70, "htf_phase": "exhausted"}))
-    db.add(_closed_rec({"recommendation": 65, "htf_phase": "medium"}))
-    db.add(_closed_rec({"recommendation": 60, "htf_phase": "weak"}))
-    db.add(_closed_rec({"recommendation": 72}))  # 旧行/无 4h 数据 → 未知
+    db.add(_closed_rec({"recommendation": 70, "htf_phase": "aligned_bull"}))
+    db.add(_closed_rec({"recommendation": 65, "htf_phase": "turn_bear"}))
+    db.add(_closed_rec({"recommendation": 60, "htf_phase": "bull_dip"}))
+    db.add(_closed_rec({"recommendation": 72, "htf_phase": "overheat"}))  # 退役旧档
+    db.add(_closed_rec({"recommendation": 58}))  # 旧行/无 4h 数据 → 未知
     db.commit()
 
     out = build_actual_review(db, days=30)
     dims = {}
     for g in out["groups"]:
         dims.setdefault(g["dim"], []).append((g["key"], g["count"]))
-    # 有序输出：弱排列 → 中等排列 → 未知（强/极强无样本不占行；
-    # exhausted 退役旧行归未知）
-    assert dims["4h趋势期"] == [("弱排列", 1), ("中等排列", 1), ("未知", 2)]
-    # 逐笔 items 带原始值
+    # 有序输出（按 缠绕→拐头→宏观交叉→恢复初期→排列→过渡→未知，空桶不占行；
+    # overheat 退役旧行归未知）
+    assert dims["4h趋势期"] == [("拐头", 1), ("排列", 1), ("过渡", 1), ("未知", 2)]
+    # 逐笔 items 带原始状态 key
     assert sorted(
         i["htf_phase"] for i in out["items"] if i["htf_phase"]
-    ) == ["exhausted", "medium", "weak"]
+    ) == ["aligned_bull", "bull_dip", "overheat", "turn_bear"]
 
 
 def test_actual_review_golden_pattern_groups(db):

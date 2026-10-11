@@ -168,7 +168,7 @@ def test_build_report_rec70(shadow_db):
     # 正式网 rec70plus：1 赢
     _mark(s, uuid.uuid4(), "A3USDT", False, 75, 130.0, "2026-10-11")
     # 测试网对照：窗口内 1 笔 + 窗口前 1 笔
-    _mark(s, uuid.uuid4(), "T1USDT", True, 63, -20.0, "2026-10-10")
+    _mark(s, uuid.uuid4(), "T1USDT", True, 63, -20.0, "2026-10-12")
     _mark(s, uuid.uuid4(), "T0USDT", True, 72, 50.0, "2026-10-02")     # 窗口前
     s.commit()
     s.close()
@@ -206,9 +206,9 @@ def test_build_report_rec70(shadow_db):
 
 
 def test_build_report_rec70_empty_start():
-    """REC70_START 常量即预注册前向窗口起点（锁定不可回调；2026-10-10 因
-    RULE_VERSION r2 评分函数变更重置，dated 修订见 docs/14 §七）"""
-    assert REC70_START == "2026-10-10"
+    """REC70_START 常量即预注册前向窗口起点（锁定不可回调；2026-10-11 因
+    4h EMA 状态机重构评分函数变更重置，dated 修订见 docs/14 §七）"""
+    assert REC70_START == "2026-10-11"
 
 
 # ── 4. registry ──────────────────────────────────────────────────────

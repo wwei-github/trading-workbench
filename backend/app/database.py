@@ -585,12 +585,17 @@ def _run_migrations(engine):
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_shadow_mark "
             "ON shadow_marks (feature_key, ref_type, ref_id)"
         ))
-        # ai_analyses 加 4h 排列强度列（2026-10-09 r2 建，2026-10-10 五次拍板
-        # 值域换血，2026-10-11 分级重构收 5 档 weak/medium/strong/overheat/cooling）：
-        # enforce 阶段 stash 落库；旧行（旧枚举/extreme/exhausted 退役档）/
-        # 无 4h 数据 NULL=未知，复盘维度分组用
+        # ai_analyses 加 4h 状态列（2026-10-09 r2 建，值域三次换血：五次拍板 →
+        # 过热/冷却 → 2026-10-11 再重构 EMA 状态机 11 态 tangle/turn_*/
+        # macro_cross_*/*_recover/aligned_*/bull_dip/bear_rally）：
+        # enforce 阶段 stash 落库；旧行（退役旧枚举）/无 4h 数据 NULL=未知，
+        # 复盘维度分组用。列宽 12→20（macro_cross_bull 16 字符超旧宽，
+        # 2026-10-11 用户拍板扩列存全名；ALTER TYPE 幂等，已是 20 时无害）
         conn.execute(text(
-            "ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS htf_phase VARCHAR(12)"
+            "ALTER TABLE ai_analyses ADD COLUMN IF NOT EXISTS htf_phase VARCHAR(20)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE ai_analyses ALTER COLUMN htf_phase TYPE VARCHAR(20)"
         ))
         # 双入场策略（2026-10-10-5，docs/20）：s1=完整规则（RR铁律+止盈规划）/
         # s2=EMA21 金K跟踪（无 RR 铁律、固定 trail）；旧行 NULL 按 s1 理解，

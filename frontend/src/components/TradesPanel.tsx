@@ -930,9 +930,9 @@ export default function TradesPanel() {
         v != null ? <strong style={{ color: v >= 80 ? '#ff4d4f' : '#fa8c16' }}>{v}</strong> : '-',
     },
     {
-      // 4h方向列：开单时 4h 背景级别（震荡/纠缠/排列强度/过热冷却档），与扫描结果「4h」同源
+      // 4h方向列：开单时 4h EMA 状态机状态（缠绕/拐头/宏观交叉/恢复/排列/过渡），与扫描结果「4h」同源
       title: (
-        <Tooltip title="开单时 4h 高周期背景（2026-10-11 分级重构）：EMA144 口径三条件任一=过热期（斜率20根>5% / 距离>4×ATR / 加速比>2），近20根命中过=冷却期；否则 EMA21/55/144 排列角度 |EMA差|/ATR(14,4h) 双线取小者分档——弱<0.5 / 中等<1.0 / 强≥1.0（极强档退役）；EMA55 vs EMA144 定宏观同侧/逆侧；悬停查看完整判定细节">
+        <Tooltip title="开单时 4h 高周期背景（2026-10-11 EMA 状态机 11 态，docs/17）：缠绕（ADX<20/间距<0.1%/锯齿）与多头/空头拐头（排列内 EMA21 连续2根反向）双向禁开；宏观金叉/死叉初期（55×144 交叉≤10根）、多头/空头恢复初期、多头/空头排列（宏观同侧）锁逆势；牛内回调/熊内反弹（宏观逆侧过渡）放行；悬停查看完整判定细节">
           <span>4h方向</span>
         </Tooltip>
       ),
@@ -941,23 +941,27 @@ export default function TradesPanel() {
       render: (_: unknown, rec) => {
         const htf = rec.htf
         if (!htf) return <span style={{ color: '#999' }}>-</span>
-        const isBull = htf.state === 'bullish'
-        const isBear = htf.state === 'bearish'
-        // 三段式：新行有 phase → 强度短标签；历史行无 phase → 旧强/弱回退
-        // （旧行 phase 为 launch/mid/late/exhausted/extreme 旧枚举，映射兜底保展示）
-        const PHASE_SHORT: Record<string, string> = {
+        // EMA 状态机 11 态短标签（2026-10-11 再重构，docs/17）；多空着色按
+        // 状态方向 dir（tangle 不着色）；退役旧档映射兜底保历史行展示
+        const STATE_SHORT: Record<string, string> = {
+          tangle: '缠绕',
+          turn_bull: '多拐', turn_bear: '空拐',
+          macro_cross_bull: '宏金叉', macro_cross_bear: '宏死叉',
+          bull_recover: '多恢复', bear_recover: '空恢复',
+          aligned_bull: '多排', aligned_bear: '空排',
+          bull_dip: '牛回调', bear_rally: '熊反弹',
+          // 退役旧档兜底（bullish/bearish/ranging/mixed 与 phase 枚举）
+          bullish: '多排', bearish: '空排', ranging: '震荡', mixed: '纠缠',
           weak: '弱', medium: '中', strong: '强',
           overheat: '过热', cooling: '冷却',
           extreme: '极强', exhausted: '衰竭',
-          launch: '前期', mid: '中期', late: '后期', // 旧枚举行兜底
+          launch: '前期', mid: '中期', late: '后期',
         }
-        const short = htf.state === 'ranging'
-          ? '震荡'
-          : htf.state === 'mixed'
-            ? '纠缠'
-            : htf.phase
-              ? `${PHASE_SHORT[htf.phase] ?? ''}${isBull ? '多' : '空'}`
-              : `${htf.label?.startsWith('强') ? '强' : '弱'}${isBull ? '多' : '空'}`
+        const isBull = (htf.dir ?? 0) > 0 || htf.state === 'bullish'
+        const isBear = (htf.dir ?? 0) < 0 || htf.state === 'bearish'
+        const short =
+          STATE_SHORT[htf.state ?? ''] ??
+          (htf.label?.startsWith('强') ? '强多' : '弱多')
         const color = isBull
           ? schemeTag(colorScheme).up
           : isBear

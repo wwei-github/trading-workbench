@@ -1480,7 +1480,7 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
             interval=cfg.kline_interval, tactics_block=tactics_block,
             tp2_enabled=bool(cfg.tp2_enabled),
         )
-        # 4h 分级硬约束兜底（2026-10-10 五次拍板；2026-10-11 分级重构：过热/冷却双向禁开，中等/强+宏观同侧锁逆势）
+        # 4h 状态机硬约束兜底（2026-10-11 再重构 EMA 状态机 11 态：缠绕/拐头双向禁开，宏观交叉/恢复/排列锁逆势，过渡放行）
         ai_result = enforce_htf_constraint(ai_result, htf_klines)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI 分析失败: {e}")

@@ -568,71 +568,147 @@ def analyze_obv(klines: list[list], lookback: int = 20) -> Optional[dict]:
     }
 
 
-# 排列强度分档常量（2026-10-10 五次拍板）：分类主轴从「交叉后根数（时间量）」
-# 换回「EMA 排列角度（发散度）」——与 gate_4h/structure_1h 同一计算逻辑
-# （|EMA差|/ATR(14,4h)），双线取小者：快线张而慢线未张不成强趋势。
-# 分档：weak <0.5（gate 硬门线以下=排列未证明）/ medium <1.0 / strong <2.0 /
-# extreme ≥2.0（过度张开，过热警惕均值回归）。
-# （2026-10-11 衰竭期退役：原第五档 exhausted=MACD 柱线翻向凌驾于强度分档，
-# 因单根翻向噪声大 + 与结构档混装丢失排列强度信息而整链删除，见 docs/17）
-# （2026-10-11 分级重构：extreme ≥2.0 档退役——「过度张开」语义由过热期
-# 三条件接管（EMA144 口径更直接），div≥2.0 的 strong 在质量分内保留降档
-# （PHASE_EXTREME_MIN 降档阈值保留），枚举不再混装，见 docs/17）
-PHASE_MEDIUM_MIN = 0.5
-PHASE_STRONG_MIN = 1.0
-PHASE_EXTREME_MIN = 2.0  # 仅作 strong 档质量分降档阈值，不再是枚举档
+# ── 4h EMA 状态机（2026-10-11 再重构，docs/17）─────────────────────────────
+# 4h 背景从「div 排列强度分档（+早前的过热/冷却期）」重构为 EMA 状态机 11 态：
+# 三线（EMA21/55/144）的金叉/死叉/拐头/排列直接定名状态，状态→行为纯函数
+# （锁单矩阵查表）。退役说明：
+# - div 强度档 weak/medium/strong/extreme：角度阈值分档语义模糊（稳态下
+#   strong 与「不过热」近乎互斥），div 原始值保留作 detail 注记证据
+# - 过热期/冷却期（2026-10-11 早前引入）：过热是预警（抛物线可能继续走很久，
+#   禁开误杀面大），拐头是事实发生——警戒职责统一收敛到 turn 态
+# - 宏观守卫（EMA55 vs EMA144）被状态机自然吸收：排列/交叉态恒宏观同侧、
+#   过渡态恒逆侧，不再是独立分支
+# 判定优先级：tangle → macro_cross → turn → recover → aligned → transition
+CROSS_FRESH_BARS = 10       # 交叉「初期」窗口（55×144 与 21×55 共用）
+TURN_CONFIRM_BARS = 2       # 拐头确认：EMA21 斜率连续反向根数（幅度确认，
+                            # 吸收同日衰竭期退役的单根翻向噪声教训）
+TANGLE_CROSS_LOOKBACK = 10  # 缠绕第三道：近 10 根 21×55 交叉 ≥2 次（锯齿）
 
-# 过热期/冷却期（2026-10-11 分级重构，外部 4H 闸门方案第 2/3 层采纳，
-# docs/17 对照表）：三条件任一命中=过热期；近 20 根命中过 ∧ 当前未命中=冷却期。
-# 无状态实现——每轮从 K 线历史全量重算，冷却=回看命中史，非状态机。
-# 阈值预注册取外部默认（先观测后约束纪律的显式覆盖，同 docs/19 硬门化先例）
-OVERHEAT_SLOPE_PCT = 0.05    # EMA144 20 根变化 >5%（斜率过热）
-OVERHEAT_DIST_ATR = 4.0      # |close−EMA144| > 4×ATR（距离过热）
-OVERHEAT_ACCEL_RATIO = 2.0   # 近5根斜率段/前15根斜率段 >2（加速过热）
-COOLING_LOOKBACK = 20        # 冷却期回看窗口（外部默认 20 根 4h≈3.3 天）
-
-_PHASE_LABELS = {
-    "weak": "排列弱", "medium": "排列中等", "strong": "排列强",
-    "overheat": "过热期", "cooling": "冷却期",
+STATE_LABELS = {
+    "tangle": "缠绕",
+    "turn_bull": "多头拐头", "turn_bear": "空头拐头",
+    "macro_cross_bull": "宏观金叉初期", "macro_cross_bear": "宏观死叉初期",
+    "bull_recover": "多头恢复初期", "bear_recover": "空头恢复初期",
+    "aligned_bull": "多头排列", "aligned_bear": "空头排列",
+    "bull_dip": "牛内回调", "bear_rally": "熊内反弹",
+}
+STATE_BLOCK_BOTH = ("tangle", "turn_bull", "turn_bear")   # 双向禁开
+STATE_LOCK_CONTRA = (                                     # 锁逆势（宏观同侧）
+    "macro_cross_bull", "macro_cross_bear",
+    "bull_recover", "bear_recover",
+    "aligned_bull", "aligned_bear",
+)
+# 质量分（同向加分, 逆向减分）：tangle/turn 双向禁开后仅扫描侧排序兜底；
+# macro_cross 趋势级事件独享最高档（原 extreme 语义被吸收）
+STATE_QUALITY = {
+    "tangle": (0, 0),
+    "turn_bull": (-8, -4), "turn_bear": (-8, -4),
+    "macro_cross_bull": (12, -14), "macro_cross_bear": (12, -14),
+    "bull_recover": (8, -10), "bear_recover": (8, -10),
+    "aligned_bull": (10, -12), "aligned_bear": (10, -12),
+    "bull_dip": (5, -6), "bear_rally": (5, -6),
+}
+_STATE_LEGACY_NEUTRAL = (5, -8)  # 退役旧档（weak/medium/strong/extreme/
+                                 # exhausted/overheat/cooling）存量行兜底
+_STATE_DIR = {   # 状态方向（多数决第 7 票 & 质量分同逆判定；tangle 不投票）
+    "tangle": 0,
+    "turn_bull": 1, "turn_bear": -1,
+    "macro_cross_bull": 1, "macro_cross_bear": -1,
+    "bull_recover": 1, "bear_recover": -1,
+    "aligned_bull": 1, "aligned_bear": -1,
+    "bull_dip": -1, "bear_rally": 1,
+}
+_STATE_MACRO = {  # 宏观对齐：True 同侧 / False 逆侧 / None 未评估（禁开态）
+    "tangle": None,
+    "turn_bull": None, "turn_bear": None,
+    "macro_cross_bull": True, "macro_cross_bear": True,
+    "bull_recover": True, "bear_recover": True,
+    "aligned_bull": True, "aligned_bear": True,
+    "bull_dip": False, "bear_rally": False,
 }
 
 
-def _strength_phase(div_min: Optional[float]) -> str:
-    """排列角度 → 强度档（div_min=None/异常归 medium：有方向但角度不可测）。
-
-    2026-10-11 分级重构：extreme 档退役，≥1.0 一律 strong。"""
-    if div_min is None:
-        return "medium"
-    if div_min < PHASE_MEDIUM_MIN:
-        return "weak"
-    return "medium" if div_min < PHASE_STRONG_MIN else "strong"
+def _sign_changes(f: np.ndarray, m: np.ndarray, n: int) -> int:
+    """近 n 根内 f−m 的符号变号次数（交叉计数；NaN 种子区自动剔除）"""
+    d = (f - m)[-n:]
+    d = d[np.isfinite(d)]
+    if len(d) < 2:
+        return 0
+    return int(np.sum(d[1:] * d[:-1] < 0))
 
 
-def _overheat_reason(
-    closes: np.ndarray, s144: np.ndarray, tr_list: list[float], i: int,
-) -> Optional[str]:
-    """过热三条件判定（外部 4H 闸门第 2 层，任一命中返回条件名）。
+def _ema_state(
+    closes: np.ndarray, s21: np.ndarray, s55: np.ndarray, s144: np.ndarray,
+    adx_v: Optional[float], atr4h: float,
+) -> tuple[str, list[str], dict]:
+    """4h EMA 状态机（11 态，判定优先级即代码顺序，末根已收盘序列）：
 
-    i 为 closed 序列下标；tr_list[j] 对应 closed[j+1] 的 TR，
-    ATR_i = 末尾止于 i 的 14 根 TR 均值（与 atr4h 现值口径一致）。
-    EMA144 有限区（SMA 种子 143 根）之外返回 None（NaN 比较恒 False 天然兜底）。"""
-    if i < 20 or i - 20 < 143:  # s144[i-20] 须落在有限区
-        return None
-    price = float(closes[i])
-    if price <= 0:
-        return None
-    atr_i = float(np.mean(tr_list[i - 14:i])) if i >= 14 else 0.0
-    s_now, s_5, s_20 = float(s144[i]), float(s144[i - 5]), float(s144[i - 20])
-    if any(np.isnan(v) for v in (s_now, s_5, s_20)):
-        return None
-    if abs(s_now - s_20) / price > OVERHEAT_SLOPE_PCT:
-        return "斜率过热"
-    if atr_i > 0 and abs(price - s_now) > OVERHEAT_DIST_ATR * atr_i:
-        return "距离过热"
-    seg_past = abs(s_5 - s_20)
-    if seg_past > 1e-12 and abs(s_now - s_5) / seg_past > OVERHEAT_ACCEL_RATIO:
-        return "加速过热"
-    return None
+    1. tangle 缠绕：ADX<20 ∨ 21/55 间距<0.1% ∨ 近10根21×55交叉≥2次（锯齿）
+    2. macro_cross_*：55×144 交叉后 ≤CROSS_FRESH_BARS 根——趋势级事件优先
+       定名（深 V 双叉同步时 21 回踩不误判拐头/恢复）
+    3. turn_*：仅全排列内 EMA21 斜率连续 TURN_CONFIRM_BARS 根反向（还没
+       全排列过就无「头」可拐；交叉初期回踩天然落 recover/过渡态）
+    4. *_recover：宏观同侧的 21×55 新交叉 ≤CROSS_FRESH_BARS 根（金叉+宏观
+       多=多头恢复 / 死叉+宏观空=空头恢复；宏观逆侧的新交叉落过渡态）
+    5. aligned_*：全排列稳态（无近期交叉）
+    6. bull_dip/bear_rally：宏观逆侧过渡态（21×55 关系定名，任意龄）
+
+    返回 (state, notes, meta)；notes=状态判据证据（含年龄），meta 携带两个
+    交叉对的 (_htf_cross_age 口径) 年龄与方向供上层补注记。"""
+    price = float(closes[-1])
+    age_m, dir_m = _htf_cross_age(s55, s144)  # 宏观 55×144
+    age_c, dir_c = _htf_cross_age(s21, s55)   # 中周期 21×55
+    meta = {"age_c": age_c, "dir_c": dir_c, "age_m": age_m, "dir_m": dir_m}
+
+    # 1. 缠绕（三道合一）
+    if adx_v is not None and adx_v < 20:
+        return "tangle", [f"ADX{adx_v:.0f}<20 无趋势"], meta
+    if price > 0 and abs(float(s21[-1]) - float(s55[-1])) / price < 0.001:
+        return "tangle", ["21/55间距<0.1% 纠缠"], meta
+    sc = _sign_changes(s21, s55, TANGLE_CROSS_LOOKBACK)
+    if sc >= 2:
+        return "tangle", [f"近{TANGLE_CROSS_LOOKBACK}根21×55交叉{sc}次（锯齿）"], meta
+
+    full_bull = s21[-1] > s55[-1] > s144[-1]
+    full_bear = s21[-1] < s55[-1] < s144[-1]
+    slope_now = float(s21[-1]) - float(s21[-2])
+    slope_prev = float(s21[-2]) - float(s21[-3])
+
+    # 2. 宏观交叉初期（趋势级事件，金叉/死叉位置定方向）
+    if age_m is not None and age_m < CROSS_FRESH_BARS:
+        pos = (
+            f"，价距144约{abs(price - float(s144[-1])) / atr4h:.1f}×ATR"
+            if atr4h > 0 else ""
+        )
+        if dir_m == 1:
+            return "macro_cross_bull", [f"55×144金叉后{age_m}根{pos}"], meta
+        return "macro_cross_bear", [f"55×144死叉后{age_m}根{pos}"], meta
+
+    # 3. 拐头（仅全排列内：EMA21 斜率连续 TURN_CONFIRM_BARS 根反向）
+    if full_bull and slope_now < 0 and slope_prev < 0:
+        return "turn_bull", [f"EMA21斜率连续{TURN_CONFIRM_BARS}根下行（排列内拐头）"], meta
+    if full_bear and slope_now > 0 and slope_prev > 0:
+        return "turn_bear", [f"EMA21斜率连续{TURN_CONFIRM_BARS}根上行（排列内拐头）"], meta
+
+    # 4. 恢复初期（宏观同侧的 21×55 新交叉；价格位置注记同宏观交叉）
+    if age_c is not None and age_c < CROSS_FRESH_BARS:
+        pos = (
+            f"，价距144约{abs(price - float(s144[-1])) / atr4h:.1f}×ATR"
+            if atr4h > 0 else ""
+        )
+        if dir_c == 1 and s55[-1] > s144[-1]:
+            return "bull_recover", [f"21×55金叉后{age_c}根（宏观多头侧恢复）{pos}"], meta
+        if dir_c == -1 and s55[-1] < s144[-1]:
+            return "bear_recover", [f"21×55死叉后{age_c}根（宏观空头侧恢复）{pos}"], meta
+
+    # 5/6. 排列稳态 / 过渡态（全排列与过渡完备分割，无第五种落点）
+    if full_bull:
+        return "aligned_bull", [], meta
+    if full_bear:
+        return "aligned_bear", [], meta
+    if s21[-1] > s55[-1]:  # 55<144：宏观空头内的反弹
+        return "bear_rally", [], meta
+    return "bull_dip", [], meta  # 21<55 且 55>144：宏观多头内的回调
 
 
 def _htf_cross_age(f: np.ndarray, m: np.ndarray) -> tuple[Optional[int], int]:
@@ -655,27 +731,21 @@ def _htf_cross_age(f: np.ndarray, m: np.ndarray) -> tuple[Optional[int], int]:
 
 
 def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 55) -> Optional[dict]:
-    """4h 高周期背景：ADX 门控 + 过热/冷却 + EMA 排列强度 3 档（1h 分析的大方向参照）。
+    """4h 高周期背景：EMA 状态机 11 态（1h 分析的大方向参照）。
 
     htf_klines 为 4h 周期 K 线（最后一根未收盘，内部剔除）。
-    状态优先级：
-    - ADX<20：4h 震荡，EMA 排列不投方向票（治震荡市 EMA 反复交叉的误标）
-    - EMA21/55 间距<0.1%：均线纠缠
-    - 过热期 overheat：外部三条件任一命中当前根（EMA144 斜率 20 根>5% /
-      |close−EMA144|>4×ATR / 加速比>2）——抛物线加速=暴跌前兆，凌驾结构档
-      （2026-10-11 分级重构，外部 4H 闸门第 2 层采纳，docs/17）
-    - 冷却期 cooling：近 20 根内过热命中过 ∧ 当前未命中——获利盘消化期，
-      无状态回看实现，非状态机（外部第 3 层采纳）
-    - 排列强度 3 档（按排列角度=发散度分档，与 gate_4h 同一计算逻辑
-      |EMA差|/ATR(14,4h)，双线取小者）：weak <0.5 / medium <1.0 / strong ≥1.0。
-      （extreme 档 2026-10-11 分级重构退役：过度张开语义由过热三条件接管，
-      div 原始值随返回 dict["div"] 保留供质量分降档；原 exhausted 档同日早前退役）
-    - age_bars（交叉后根数）仅作 detail 注记保留，不再参与分档
-    - ADX 计算失败静默降级（单指标失败不阻塞背景注入）
+    状态判定见 _ema_state（缠绕 → 宏观交叉 → 拐头 → 恢复 → 排列 → 过渡，
+    优先级即其代码顺序）；行为矩阵（锁单/质量分查表）：
+    - tangle / turn_*：双向禁开（缠绕无趋势 / 排列内拐头警戒）
+    - macro_cross_* / *_recover / aligned_*：宏观同侧锁逆势
+    - bull_dip / bear_rally：宏观逆侧过渡态恒放行（质量分兜底）
+    dir=状态方向（tangle=0 不投票；过渡态按 21×55 关系定）；
+    macro_aligned 被状态机自然吸收（锁逆势态恒 True / 过渡态恒 False /
+    tangle·turn None 未评估）；div（排列角度 ATR）退役为纯注记证据；
+    age_bars=21×55 交叉年龄注记，macro_cross_age=55×144 交叉年龄。
 
-    返回 {state(bullish/bearish/ranging/mixed), state_label, dir, phase,
-          age_bars, macro_aligned(EMA55 在 EMA144 顺势侧?), div(排列角度ATR),
-          detail}
+    返回 {state(11态key), state_label, dir, macro_aligned,
+          age_bars, macro_cross_age, div, detail}
     """
     if not htf_klines or len(htf_klines) < 2:
         return None
@@ -693,38 +763,13 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
     if sn <= 0 or not np.isfinite(fn):
         return None
 
-    # ADX 门控：analyze_adx 内部同样剔除未收盘根，口径一致；失败降级不门控
+    # ADX（状态机缠绕第一道判据）；analyze_adx 内部同样剔除未收盘根，口径一致；
+    # 计算失败静默降级 None（仅跳过该道判据，不阻塞背景注入）
     adx_res = analyze_adx(htf_klines)
     adx_v = float(adx_res["adx"]) if adx_res else None
-    if adx_v is not None and adx_v < 20:
-        return {
-            "state": "ranging", "state_label": "震荡（无趋势，不作方向参考）", "dir": 0,
-            "phase": None, "age_bars": None, "macro_aligned": None,
-            "detail": f"ADX={adx_v:.1f}(<20), EMA{fast}/{slow}排列仅记录不投票",
-        }
 
-    dist_pct = abs(fn - mn) / mn * 100
-    if dist_pct < 0.1:
-        return {
-            "state": "mixed", "state_label": "均线纠缠", "dir": 0,
-            "phase": None, "age_bars": None, "macro_aligned": None,
-            "detail": f"EMA{fast}={fn:.6g}, EMA{slow}={mn:.6g}, 间距{dist_pct:.2f}%",
-        }
-
-    dir_ = 1 if fn > mn else -1
-    age, cross_dir = _htf_cross_age(f, m)
-    age_note = None
-    if cross_dir != dir_:  # 交叉方向与排列不一致（刚交叉即回穿的罕见态）按排列为准
-        age = None
-        age_note = "交叉方向与排列不一致（按当前排列为准）"
-    elif age is None:
-        age_note = "窗口内无交叉（极老趋势，按当前排列强度处理）"
-    state = "bullish" if dir_ > 0 else "bearish"
-
-    # 排列角度（2026-10-10 五次拍板）：|EMA差|/ATR(14,4h) 双线取小者分强度档，
-    # 与 gate_4h/structure_1h 同一计算逻辑。ATR 与 ema_gate 同口径（TR14 均值，
-    # K 线格式 [ts,o,h,l,c,vol]）；ATR 异常归 medium（排列有向但角度不可测，
-    # 不给极端档也不误杀）
+    # ATR(14,4h) 与排列角度 div（退役为注记证据；与 gate_4h/structure_1h 同一
+    # 计算逻辑：TR14 均值，K 线格式 [ts,o,h,l,c,vol]）
     tr_list = []
     for i in range(1, len(closed)):
         h_i, l_i = float(closed[i][2]), float(closed[i][3])
@@ -735,67 +780,27 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
     div_ms = abs(mn - sn) / atr4h if atr4h > 0 else None
     div_min = min(div_fm, div_ms) if div_fm is not None and div_ms is not None else None
 
-    # 过热/冷却判定（2026-10-11 分级重构，凌驾结构档）：无状态回看近 20 根
-    # 命中史——外部是增量状态机（逐根存 overheated_ts/cooldown_bars），我们
-    # 每轮全量重算，回看等价且零状态存储。EMA144 有限区自 index 143，
-    # 斜率 20 根回看 → len(closed) ≥ 164 才可判（不足直接落结构档）
-    overheat_hits: list[tuple[int, str]] = []  # (距当前已收盘根数, 条件名)
-    if len(closed) >= 164:
-        for i in range(len(closed) - COOLING_LOOKBACK, len(closed)):
-            reason = _overheat_reason(closes, s144, tr_list, i)
-            if reason:
-                overheat_hits.append((len(closed) - 1 - i, reason))
-    cur_hits = [r for back, r in overheat_hits if back == 0]
-    if cur_hits:
-        phase = "overheat"
-    elif overheat_hits:
-        phase = "cooling"
-    else:
-        phase = _strength_phase(div_min)
+    # 状态机判定（tangle → macro_cross → turn → recover → aligned → transition）
+    state, st_notes, meta = _ema_state(closes, f, m, s144, adx_v, atr4h)
+    dir_ = _STATE_DIR[state]
+    macro_aligned = _STATE_MACRO[state]
 
-    # 宏观守卫：EMA55 是否在 EMA144 顺势侧（= 三线是否按方向完整排列）。
-    # 逆宏观按 EMA21 相对 EMA144 的位置分两档注记 + EMA144 斜率（宏观劲度）：
-    # - EMA21 已收复/跌破 144 而EMA55 未跟上（V型反转中期）：反弹/回調已走深，
-    #   距全排列只差 EMA55 一步
-    # - 144 仍压制/托底（教科书熊内反弹/牛内回调）：144 斜率区分宏观趋势劲度
-    macro_aligned = (mn > sn) == (dir_ > 0)
-    if macro_aligned:
-        macro_note = f"三线{'多头' if dir_ > 0 else '空头'}排列"
-    else:
-        s_slope = (
-            "上行" if sn > float(s144[-3])
-            else ("下行" if sn < float(s144[-3]) else "走平")
-        )
-        if dir_ > 0:
-            macro_note = (
-                "V型反转中期（EMA21已上穿144，EMA55未跟上）"
-                if fn > sn else f"熊内反弹（144压制中·{s_slope}）"
-            )
+    # 注记组装：状态判据证据优先；未作为判据的交叉年龄补注
+    # （macro_cross/recover 的对应年龄已在 st_notes 内，不重复）
+    notes = list(st_notes)
+    if state not in ("macro_cross_bull", "macro_cross_bear") \
+            and meta["age_m"] is not None:
+        w = "金叉" if meta["dir_m"] == 1 else "死叉"
+        notes.append(f"55×144{w}后{meta['age_m']}根")
+    if state not in ("bull_recover", "bear_recover"):
+        if meta["age_c"] is not None:
+            w = "金叉" if meta["dir_c"] == 1 else "死叉"
+            notes.append(f"21×55{w}后{meta['age_c']}根")
         else:
-            macro_note = (
-                "V型反转中期（EMA21已下穿144，EMA55未跟上）"
-                if fn < sn else f"牛内回调（144托底中·{s_slope}）"
-            )
-
-    word = "金叉" if dir_ > 0 else "死叉"
-    notes = [
-        f"{word}{'刚发生·' if age is not None and age <= 3 else ''}{age}根"
-        if age is not None else age_note  # 双成因分注：回穿 vs 极老趋势
-    ]
+            notes.append("21×55窗口内无交叉（极老趋势）")
     if div_min is not None:
-        notes.append(f"排列角度{div_min:.2f}ATR")  # 强度分档证据（定标审计用）
-    notes.append(macro_note)
-    if phase == "overheat":
-        # 过热证据：命中条件名供 AI/复盘归因（哪个口径判的过热）
-        notes.append(f"过热命中：{'/'.join(sorted(set(cur_hits)))}")
-    elif phase == "cooling":
-        first_hit = min(overheat_hits, key=lambda t: t[0])
-        notes.append(
-            f"冷却中（{first_hit[1]}命中于{first_hit[0]}根前，消化窗口内）"
-        )
-    # （动能背离/动能衰减注记已随 2026-10-11 衰竭期退役删除）
+        notes.append(f"排列角度{div_min:.2f}ATR（仅注记）")
 
-    label = f"{_PHASE_LABELS[phase]}{'多头' if dir_ > 0 else '空头'}背景"
     detail = (
         f"EMA{fast}={fn:.6g}, EMA{slow}={mn:.6g}, EMA144={sn:.6g} · "
         + " · ".join(notes)
@@ -803,26 +808,26 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
     if adx_v is not None:
         detail += f" · ADX={adx_v:.1f}"
     return {
-        "state": state, "state_label": label, "dir": dir_, "phase": phase,
-        "age_bars": age, "macro_aligned": macro_aligned, "div": div_min,
-        "detail": detail,
+        "state": state, "state_label": STATE_LABELS[state], "dir": dir_,
+        "macro_aligned": macro_aligned,
+        "age_bars": meta["age_c"], "macro_cross_age": meta["age_m"],
+        "div": div_min, "detail": detail,
     }
 
 
 def enforce_htf_constraint(ai_result: dict, htf_klines: Optional[list]) -> dict:
-    """4h 分级硬约束的程序化兜底（原地修改并返回 ai_result）。
+    """4h 状态机硬约束的程序化兜底（原地修改并返回 ai_result）。
 
-    锁单矩阵（2026-10-11 分级重构，docs/17 外部 4H 闸门第 2/3 层采纳）：
-    - 过热期/冷却期 → 双向禁开（抛物线加速=暴跌前兆 / 获利盘消化中，
-      外部「过热不进、冷却必等」语义；只管开仓，持仓出场不受影响——
-      出场引擎独立运行，「闸门管进、持仓管出」）；
-    - 中等/强排列（发散 ≥0.5 ATR=趋势已被证明）∧ 宏观同侧 → 锁逆势
-      （extreme 档退役，div≥2.0 的 strong 归入本档）；
-    - 弱排列（排列未证明）与逆宏观（熊内反弹/牛内回调）任何档 → 放行，
-      放行侧均由质量分惩罚兜底排序。
+    锁单矩阵（2026-10-11 再重构为 EMA 状态机 11 态，docs/17）：
+    - tangle 缠绕 / turn_* 拐头 → 双向禁开（缠绕无趋势 / 排列内 EMA21 连续
+      反向=趋势衰竭警戒；只管开仓，持仓出场不受影响——出场引擎独立运行，
+      「闸门管进、持仓管出」）；
+    - macro_cross_* / *_recover / aligned_*（宏观同侧态）→ 锁逆势
+      （宏观对齐由状态机自然吸收，无需另查 EMA55 vs 144）；
+    - bull_dip / bear_rally（宏观逆侧过渡态）→ 放行，质量分兜底。
     LLM 可能无视 prompt 注入的约束行，开单前程序把关。无 4h 数据或非
-    suggest 时原样返回；suggest 且有 4h 数据时顺带 stash htf_phase，
-    供 AIAnalysis / 复盘「4h趋势期」维度落库。
+    suggest 时原样返回；suggest 且有 4h 数据时顺带 stash htf_phase（=状态
+    key），供 AIAnalysis / 复盘「4h趋势期」维度落库。
     """
     try:
         if not htf_klines or ai_result.get("trade_decision") != "suggest":
@@ -830,7 +835,8 @@ def enforce_htf_constraint(ai_result: dict, htf_klines: Optional[list]) -> dict:
         htf = analyze_htf_background(htf_klines)
         if not htf:
             return ai_result
-        ai_result["htf_phase"] = htf.get("phase")
+        st = htf["state"]
+        ai_result["htf_phase"] = st
         direction = (ai_result.get("direction") or "").lower()
 
         def _veto(reason: str) -> dict:
@@ -848,39 +854,35 @@ def enforce_htf_constraint(ai_result: dict, htf_klines: Optional[list]) -> dict:
                 "reason": reason,
             }
 
-        # 过热期/冷却期 → 双向禁开（2026-10-11 分级重构；冷却=无状态回看，
-        # 非状态机——每轮全量重算等价外部 20 根冷却计数器）
-        if htf.get("phase") in ("overheat", "cooling"):
-            _label = _PHASE_LABELS[htf["phase"]]
-            _why = (
-                "抛物线加速，暴跌前兆" if htf["phase"] == "overheat"
-                else "过热后获利盘消化中"
-            )
+        _label = STATE_LABELS[st]
+
+        # 缠绕/拐头 → 双向禁开（拐头=趋势衰竭警戒，事实发生才禁，替代过热预警）
+        if st in STATE_BLOCK_BOTH:
+            _why = "缠绕无趋势" if st == "tangle" else "排列内拐头，趋势衰竭警戒"
             ai_result["trade_decision"] = "skip"
             ai_result["skip_reason"] = (
-                f"过热约束：4h{_label}（{_why}）双向禁开新仓（程序强制 skip）"
+                f"状态约束：4h{_label}（{_why}）双向禁开新仓（程序强制 skip）"
             )
-            ai_result["veto_original"] = _veto(
-                f"4h{_label}双向禁开闸（{_why}）"
-            )
+            ai_result["veto_original"] = _veto(f"4h{_label}双向禁开闸（{_why}）")
             return ai_result
 
-        # 中等/强排列 ∧ 宏观同侧 → 锁逆势（发散 ≥0.5 = 排列已被证明）
-        if htf.get("phase") not in ("medium", "strong") \
-                or not htf.get("macro_aligned"):
-            return ai_result
-        if htf["state"] == "bullish" and direction == "short":
-            ai_result["trade_decision"] = "skip"
-            ai_result["skip_reason"] = (
-                f"方向约束：4h{_PHASE_LABELS[htf['phase']]}多头背景禁止开空（程序强制 skip）"
-            )
-            ai_result["veto_original"] = _veto("4h 排列中强档方向硬约束（宏观同侧）")
-        elif htf["state"] == "bearish" and direction == "long":
-            ai_result["trade_decision"] = "skip"
-            ai_result["skip_reason"] = (
-                f"方向约束：4h{_PHASE_LABELS[htf['phase']]}空头背景禁止开多（程序强制 skip）"
-            )
-            ai_result["veto_original"] = _veto("4h 排列中强档方向硬约束（宏观同侧）")
+        # 宏观同侧态 → 锁逆势（排列/交叉方向即 4h 方向）
+        if st in STATE_LOCK_CONTRA:
+            htf_dir = int(htf["dir"])
+            if direction == "short" and htf_dir == 1:
+                ai_result["trade_decision"] = "skip"
+                ai_result["skip_reason"] = (
+                    f"方向约束：4h{_label}背景禁止开空（程序强制 skip）"
+                )
+                ai_result["veto_original"] = _veto("4h 状态机方向硬约束（宏观同侧）")
+            elif direction == "long" and htf_dir == -1:
+                ai_result["trade_decision"] = "skip"
+                ai_result["skip_reason"] = (
+                    f"方向约束：4h{_label}背景禁止开多（程序强制 skip）"
+                )
+                ai_result["veto_original"] = _veto("4h 状态机方向硬约束（宏观同侧）")
+            # 同向 → 放行
+        # 过渡态（bull_dip/bear_rally）→ 放行，质量分逆宏观罚兜底
     except Exception as e:
         logger.warning("4h方向约束兜底检查失败（放行）: %s", e)
     return ai_result
@@ -895,7 +897,7 @@ _INDICATORS = (
     ("ADX(14)", "ADX", analyze_adx),
     ("OBV(20)", "OBV", analyze_obv),
 )
-HTF_DISPLAY, HTF_SHORT = "4h背景(排列强度)", "4h背景"
+HTF_DISPLAY, HTF_SHORT = "4h背景(EMA状态)", "4h背景"
 
 
 def _compute_all(
@@ -1011,23 +1013,19 @@ def render_indicator_block(
             f"- 指标方向: 多空平衡（看多{nb}项 vs 看空{ns}项）→ 结合K线结构与量能判断"
         )
 
-    # 4h 分级硬约束行（2026-10-10 五次拍板改排列强度口径；2026-10-11 分级
-    # 重构：过热期/冷却期双向禁开 + 锁逆势收 medium/strong 两档，extreme
-    # 档退役）：过热/冷却禁开行在前（凌驾锁逆势），弱排列与逆宏观不锁，
-    # 程序侧另有 enforce_htf_constraint 兜底
+    # 4h 状态机硬约束行（2026-10-11 再重构 EMA 状态机 11 态）：缠绕/拐头
+    # 双向禁开行在前（凌驾锁逆势），宏观同侧态（宏观交叉/恢复/排列）锁逆势，
+    # 过渡态（牛内回调/熊内反弹）不锁；程序侧另有 enforce_htf_constraint 兜底
     htf_r = next((r for _, s, r in results if s == HTF_SHORT and r), None)
-    if htf_r and htf_r.get("phase") in ("overheat", "cooling"):
-        _why = (
-            "抛物线加速=暴跌前兆" if htf_r["phase"] == "overheat"
-            else "过热后获利盘消化中"
-        )
+    if htf_r and htf_r.get("state") in STATE_BLOCK_BOTH:
+        _st = htf_r["state"]
+        _why = "缠绕无趋势" if _st == "tangle" else "排列内拐头，趋势衰竭警戒"
         lines.append(
-            f"- 过热约束（硬性）: 4h{htf_r['state_label']}（{_why}）"
+            f"- 状态约束（硬性）: 4h{htf_r['state_label']}（{_why}）"
             " —— 双向禁开新仓，long/short 一律 skip（优先于一切信号）"
         )
-    elif (htf_r and htf_r.get("phase") in ("medium", "strong")
-            and htf_r.get("macro_aligned")):
-        if htf_r["state"] == "bullish":
+    elif htf_r and htf_r.get("state") in STATE_LOCK_CONTRA:
+        if htf_r.get("dir") == 1:
             lines.append(
                 f"- 方向约束（硬性）: 4h{htf_r['state_label']}（宏观同侧）"
                 " —— 仅可 long，开空一律 skip（优先于指标多数决，细则见系统提示词硬约束）"
@@ -1038,21 +1036,21 @@ def render_indicator_block(
                 " —— 仅可 short，开多一律 skip（优先于指标多数决，细则见系统提示词硬约束）"
             )
 
-    # 4h 背景结构化行（2026-10-10 C7，docs/20）：phase/macro 以机器
-    # 可读键值对注入——detail 字符串会被 LLM 误读（BTWUSDT「动能衰减」丢失
-    # 「仍同向」个案），关键字段不再只依赖散文渲染（momentum 键已随
-    # 2026-10-11 衰竭期退役删除）。
-    # ranging/mixed 无排列强度、宏观守卫未评估——不输出 phase/macro 键
-    # （None 渲染成「phase=None macro=逆侧」会向 LLM 注入错误事实，bug 修复
-    # 2026-10-11），state 语义已在上方散文行（state_label）呈现
+    # 4h 背景结构化行（2026-10-10 C7，docs/20）：state/macro 以机器
+    # 可读键值对注入——detail 字符串会被 LLM 误读，关键字段不再只依赖散文
+    # 渲染。tangle/turn 宏观对齐未评估（None），不输出 macro 键（None 渲染成
+    # 「macro=逆侧」会向 LLM 注入错误事实，同 2026-10-11 ranging 修复口径）
     if htf_r:
-        if htf_r.get("phase"):
+        ma = htf_r.get("macro_aligned")
+        if ma is None:
             lines.append(
-                f"- 4h背景: phase={htf_r['phase']}"
-                f" macro={'同侧' if htf_r.get('macro_aligned') else '逆侧'}"
+                f"- 4h背景: state={htf_r['state']}（双向禁开，宏观对齐未评估）"
             )
         else:
-            lines.append(f"- 4h背景: state={htf_r['state']}（无排列强度，不构成方向约束）")
+            lines.append(
+                f"- 4h背景: state={htf_r['state']}"
+                f" macro={'同侧' if ma else '逆侧'}"
+            )
 
     # 盈亏比取舍提示行已随 trail RR 豁免一并退役（2026-10-11 策略一 ladder-only）：
     # trail 归策略二独有，盈亏比不足走双入场策略裁决（策略一如实 skip / 策略二跟踪），
@@ -1175,15 +1173,16 @@ def compute_quality_score(
     stabilize: 可选，回踩企稳加分项（pullback_stabilize_bonus 产物，docs/19
     §3.3 条件2/3：缩量回踩 +3 / 放量回踩 -5 / MACD 零轴同向 +4~+5 / 动量
     不确认 -4；仅回踩类触发传入，加分不拦截）
-    修饰规则（2026-09-17 设计评审定稿；2026-09-24 4h 背景提权；2026-10-10
-    五次拍板改排列强度口径；2026-10-11 分级重构：extreme 枚举退役改 div
-    原始值降档，新增过热/冷却期分值，衰竭期分值先前已删）：
-    - 4h背景按排列强度：同向 弱+5 / 中等+8 / 强+10（div≥2.0 降为 +6，
-      极端张开仍警惕均值回归）；逆向 弱-6 / 中等-10 / 强-12（强趋势逆势
-      更险）——中等/强才进硬约束，此处逆向重罚主要压弱排列的逆势单排序
-    - 过热期/冷却期（凌驾结构档）：同向 -8/-4（追抛物线/消化期追多）、
-      逆向 -4/-2（接飞刀同样险但程序已双向禁开，此处仅扫描侧排序兜底）
-    - 逆宏观（熊内反弹/牛内回调）额外 -4（硬约束不锁，分数兜底）
+    修饰规则（2026-09-17 设计评审定稿；2026-09-24 4h 背景提权；2026-10-11
+    再重构 EMA 状态机 11 态：div 强度档与过热/冷却分值矩阵退役，改
+    STATE_QUALITY 状态分矩阵；衰竭期分值同日早前已删）：
+    - 4h背景按状态机状态：同向 排列+10 / 宏观交叉+12（趋势级事件独享最高档，
+      原 extreme 语义被吸收）/ 恢复初期+8 / 过渡态+5；逆向 同态 -12/-14/-10/-6
+    - 拐头 turn_* 同向 -8 / 逆向 -4（双向禁开后仅扫描侧排序兜底）；
+      tangle dir=0 不进此分支
+    - 逆宏观（bull_dip/bear_rally 过渡态，macro_aligned=False）额外 -4
+      （硬约束不锁，分数兜底）；排列/交叉态恒同侧、tangle/turn 未评估，
+      本罚天然只作用于过渡态
     - 突破触发且 ADX≥25 +5（强趋势中的突破可信）
     - 放量加分：量比 ≥1.2 +5（2026-09-25 金K类；2026-09-29 起突破放量不再
       是触发硬门，三类触发统一为加分项；缩量不加不减，仅排序自然落后）
@@ -1197,21 +1196,14 @@ def compute_quality_score(
     htf = by_short.get(HTF_SHORT)
     if htf and int(htf.get("dir") or 0):
         same = int(htf["dir"]) == direction
-        # 同向 / 逆向 按排列强度分档（phase 缺失时退回中性 ±5/−8）；
-        # exhausted/extreme 档均已退役（2026-10-11），旧行值走默认中性分支；
-        # 过热/冷却期同逆向都压分（程序侧另有双向禁开，此处管扫描侧排序）
-        phase_mod = {
-            "weak": (5, -6), "medium": (8, -10), "strong": (10, -12),
-            "overheat": (-8, -4), "cooling": (-4, -2),
-        }
-        score += phase_mod.get(htf.get("phase"), (5, -8))[0 if same else 1]
-        # strong ∧ div≥2.0（原 extreme 档语义，2026-10-11 枚举退役后由
-        # div 原始值承载）：同向降档 +10→+6（极端张开警惕均值回归）
-        if (htf.get("phase") == "strong" and same
-                and (htf.get("div") or 0) >= PHASE_EXTREME_MIN):
-            score -= 4
+        # 状态分矩阵（2026-10-11 再重构）：查 STATE_QUALITY（同向加分, 逆向减分）；
+        # 退役旧档（weak/medium/strong/extreme/exhausted/overheat/cooling 的
+        # 存量行）与未知状态走中性兜底 ±5/−8；tangle dir=0 不进此分支
+        st = htf.get("state") or htf.get("phase")
+        same_mod, counter_mod = STATE_QUALITY.get(st, _STATE_LEGACY_NEUTRAL)
+        score += same_mod if same else counter_mod
         if htf.get("macro_aligned") is False:
-            score -= 4  # 逆宏观：熊内反弹做多/牛内回调做空一律压分
+            score -= 4  # 逆宏观：牛内回调做空/熊内反弹做多一律压分
 
     adx = by_short.get("ADX")
     if (trigger_type in ("trigger_breakout", "trigger_trend_breakout")

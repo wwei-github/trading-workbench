@@ -151,9 +151,9 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
         # 战法命中标注（2026-10-02，仅借鉴）：随快照自持，删战法不断链，复盘分组用
         "tactic_name": a.tactic_name,
         "tactic_reason": a.tactic_reason,
-        # 4h 分级（2026-10-10 五次拍板；2026-10-11 分级重构）：
-        # weak/medium/strong/overheat/cooling（extreme/exhausted 退役），
-        # 随快照自持，复盘「4h趋势期」维度分组用；旧行（旧枚举）/无 4h 数据 None→「未知」
+        # 4h 状态（2026-10-10 五次拍板；2026-10-11 再重构 EMA 状态机 11 态）：
+        # tangle/turn_*/macro_cross_*/*_recover/aligned_*/bull_dip/bear_rally，
+        # 随快照自持，复盘「4h趋势期」维度分组用；旧行（退役旧枚举）/无 4h 数据 None→「未知」
         "htf_phase": a.htf_phase,
         # 止盈模式（2026-10-10，docs/19 §3.4）：随快照自持——复盘弹窗 AI 卡
         # 按 trail 显「纯跟踪」Tag 与「止盈1·参考」标签，缺了会错显分批

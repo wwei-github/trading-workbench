@@ -129,16 +129,16 @@ def test_legacy_signal_labels_compressed():
 
 def test_htf_structured_line_injected():
     block = render_indicator_block(_kl_1h_stub(), htf_klines=_htf_strong_same())
-    assert "- 4h背景: phase=" in block
+    assert "- 4h背景: state=" in block   # 2026-10-11 再重构：phase 键退役改 state
     assert "momentum=" not in block  # momentum 键已随衰竭期退役删除（2026-10-11）
 
 
 def test_htf_structured_line_absent_without_htf():
     block = render_indicator_block(_kl_1h_stub())
-    assert "- 4h背景: phase=" not in block
+    assert "- 4h背景: state=" not in block
 
 
-# ── 不变量 9：4h 分级硬约束文案三要素（2026-10-11 分级重构）──────
+# ── 不变量 9：4h 状态机硬约束文案三要素（2026-10-11 再重构）──────
 
 
 def _htf_kl(closes, wick):
@@ -157,36 +157,40 @@ def _htf_shape(seg):
     return (out + [out[-1]] * 300)[:200]
 
 
-def test_htf_hard_rule_covers_overheat_and_direction():
-    """_RULE_HTF_HARD 必须同时覆盖：过热期/冷却期双向禁开（外部 4H 闸门
-    第 2/3 层语义）与排列中/强锁逆势，且声明程序会强制改判（LLM 无视
-    注入行时程序侧兜底语义不缺失）。P0 系统提示词为填充后实文；
+def test_htf_hard_rule_covers_state_and_direction():
+    """_RULE_HTF_HARD 必须同时覆盖：缠绕/拐头双向禁开（状态约束）与宏观同侧
+    态锁逆势（方向约束），且声明程序会强制改判（LLM 无视注入行时程序侧
+    兜底语义不缺失）。P0 系统提示词为填充后实文；
     P1 AGENT_SYSTEM 为模板（常量经 render 填充），查常量文本+注入占位符"""
     rule = ai_agent._RULE_HTF_HARD
-    assert "「过热约束（硬性）」" in rule
+    assert "「状态约束（硬性）」" in rule
     assert "「方向约束（硬性）」" in rule
     assert "双向禁开新仓" in rule
     assert "程序会强制改判" in rule
     assert "{_RULE_HTF_HARD}" in ai_agent.AGENT_SYSTEM  # P1 注入点不缺失
     for txt in (_p0_system(),):
-        assert "「过热约束（硬性）」" in txt
+        assert "「状态约束（硬性）」" in txt
         assert "双向禁开新仓" in txt
 
 
-def test_overheat_constraint_line_rendered():
-    """渲染层：过热期 4h 背景必须注入「过热约束（硬性）」行（双向禁开、
-    优先于一切信号），且不再渲染锁逆势「方向约束」行（过热凌驾锁逆势）"""
-    closes = _htf_shape([(140, 0.3), (20, 2.0)])  # 斜率过热
-    block = render_indicator_block(_kl_1h_stub(), htf_klines=_htf_kl(closes, 3.0))
-    assert "过热约束（硬性）" in block
+def test_state_constraint_line_rendered():
+    """渲染层：禁开态（缠绕/拐头）4h 背景必须注入「状态约束（硬性）」行
+    （双向禁开、优先于一切信号），且不再渲染「方向约束」行"""
+    out, p = [], 100.0
+    for n, d in ((140, 0.0), (40, 0.5), (10, -1.5)):  # 多头排列内拐头
+        out += [p + d * i for i in range(n)]
+        p += d * n
+    block = render_indicator_block(_kl_1h_stub(), htf_klines=_htf_kl(out, 2.0))
+    assert "状态约束（硬性）" in block
     assert "双向禁开新仓" in block
     assert "方向约束（硬性）" not in block
 
 
 def test_direction_constraint_line_rendered_for_strong_aligned():
-    """渲染层：健康 strong 排列（宏观同侧）注入「方向约束（硬性）」锁逆势行——
-    夹具用盘整基座起势形态（稳态线性趋势会触发距离过热改渲染过热约束行）"""
+    """渲染层：宏观同侧排列（多头排列锁逆势态）注入「方向约束（硬性）」
+    锁逆势行——夹具用盘整基座起势形态（趋势老到无 fresh 交叉，落排列
+    稳态而非宏观交叉/拐头）"""
     closes = _htf_shape([(140, 0.0), (60, 0.5)])
     block = render_indicator_block(_kl_1h_stub(), htf_klines=_htf_kl(closes, 2.5))
     assert "方向约束（硬性）" in block
-    assert "过热约束（硬性）" not in block
+    assert "状态约束（硬性）" not in block

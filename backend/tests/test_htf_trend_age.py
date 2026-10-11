@@ -1,29 +1,40 @@
-"""4h 背景分级测试（2026-10-10 五次拍板建排列强度口径；2026-10-11 分级重构）
+"""4h EMA 状态机测试（2026-10-11 再重构 11 态，docs/17）
 
-分级体系（判定优先级，docs/17 外部 4H 闸门方案第 2/3 层采纳）：
-ranging(ADX<20) → mixed(EMA21/55 间距<0.1%) → overheat 过热期（三条件任一命中
-当前根：EMA144 斜率 20 根>5% / |close−EMA144|>4×ATR / 加速比>2）→ cooling
-冷却期（近 20 根命中过 ∧ 当前未命中，无状态回看实现非状态机）→ 结构 3 档
-weak <0.5 / medium <1.0 / strong ≥1.0（extreme 档退役：过度张开语义由过热
-三条件接管，div 原始值随 dict["div"] 保留供质量分降档；原 exhausted 档同日
-早前退役）。宏观守卫 EMA55 vs EMA144（逆宏观=熊内反弹/牛内回调）不变。
+状态机（判定优先级即 _ema_state 代码顺序）：
+tangle 缠绕（ADX<20 ∨ 21/55间距<0.1% ∨ 近10根21×55交叉≥2次锯齿）→
+macro_cross_* 宏观交叉初期（55×144 交叉后 age<CROSS_FRESH_BARS，趋势级事件
+优先定名，深V双叉不误判恢复）→ turn_* 拐头（仅全排列内 EMA21 斜率连续
+TURN_CONFIRM_BARS 根反向）→ *_recover 恢复初期（宏观同侧的 21×55 新交叉）
+→ aligned_* 排列稳态 → bull_dip/bear_rally 过渡态（宏观逆侧，21×55 关系
+定名）。完备分割，无第五种落点。
 
-硬约束锁单矩阵：过热/冷却 → 双向禁开（只管开仓，持仓出场不受影响）；
-中等/强 ∧ 宏观同侧 → 锁逆势；弱排列/逆宏观 → 放行。
+锁单矩阵：tangle/turn_* 双向禁开；macro_cross_*/recover/aligned_* 锁逆势
+（宏观对齐被状态机自然吸收，不再独立分支）；过渡态放行（质量分逆宏观
+-4 兜底）。质量分查 STATE_QUALITY（同向加分, 逆向减分）；退役旧档
+（weak/medium/strong/extreme/exhausted/overheat/cooling 存量行）走中性兜底。
 
-夹具构造说明：稳态线性趋势下「strong 且不过热」数学上近乎互斥
-（div≥1 ⟺ ATR≤17d，距离过热豁免 ⟺ ATR≥dist/4≈17.9d）——平底线夹具任何
-持续趋势都会落过热期。健康 strong 夹具用「盘整基座后起势」形态（A：
-140 根横盘 + 60 根缓涨），逆宏观健康反弹用深跌后的温和反弹（B）。
+夹具均经参数扫描定标（11/11 命中后固化为常量）：
+- 缠绕：横盘（间距道）/ 正弦锯齿（ADX 道）
+- 排列：140 根盘整基座 + 60 根缓涨/缓跌（趋势老到无 fresh 交叉）
+- 拐头：排列后 10 根反向（EMA21 斜率连续 2 根反向）
+- 宏观交叉：深V/倒V（154 根单边 + 46 根急返，55×144 交叉后 6 根）
+- 恢复：160 根慢涨/跌 + 18 根回踩/反抽 + 22 根回升/回落（21×55 fresh 交叉）
+- 过渡：170 根单边 + 30 根急回（21×55 fresh 交叉但宏观逆侧 → 位置定语义）
 """
 import numpy as np
 
 from app.services.strategy.ema import calc_ema
 from app.services.strategy.technical import (
+    CROSS_FRESH_BARS,
     HTF_SHORT,
+    STATE_BLOCK_BOTH,
+    STATE_LABELS,
+    STATE_LOCK_CONTRA,
+    STATE_QUALITY,
+    _STATE_DIR,
+    _STATE_MACRO,
+    _ema_state,
     _htf_cross_age,
-    _overheat_reason,
-    _strength_phase,
     analyze_htf_background,
     compute_quality_score,
     enforce_htf_constraint,
@@ -40,7 +51,7 @@ def _kl_from_closes(closes) -> list[list]:
 
 
 def _kl(closes, wick: float) -> list[list]:
-    """带影线 4h K线（TR=影线范围，供 ATR 计算与距离过热口径用）"""
+    """带影线 4h K线（TR=影线范围，供 ATR 计算与价距 ATR 注记用）"""
     return [
         [i * 4 * 3600_000, c, c + wick * (1 + 0.1 * (i % 3)),
          c - wick * (1 + 0.1 * (i % 3)), float(c), 1000.0]
@@ -61,206 +72,232 @@ def _shape(seg) -> list[float]:
     return (out + [out[-1]] * 300)[:200]
 
 
-# 健康夹具（2026-10-11 分级重构定标，均不过热）：
-# A：strong·宏观同侧（140 根盘整基座 + 60 根缓涨，排列角度 1.25 ATR）
-_STRONG_ALIGNED = _kl(_shape([(140, 0.0), (60, 0.5)]), 2.5)
-# B：strong·逆宏观（深跌 140 根后温和反弹 36 根，熊内反弹·144 压制中）
-_STRONG_BEAR_RALLY = _kl(_shape([(140, -0.5), (36, 0.7)]), 1.5)
-# C：medium·宏观同侧（慢涨后更缓，排列角度 0.59 ATR）
-_MEDIUM_ALIGNED = _kl(_shape([(150, 0.25), (30, 0.2)]), 2.0)
-# D：斜率过热（先缓后急 20 根 @2.0，EMA144 20 根变化 >5%）
-_OVERHEAT_SLOPE = _kl(_shape([(140, 0.3), (20, 2.0)]), 3.0)
-# 冷却：过热命中后小步回落消化（距离过热命中于 2 根前）
-_COOLING = _kl(_shape([(140, 0.3), (20, 2.0), (8, -1.0)]), 3.0)
+# ── 夹具（参数扫描定标，11/11 命中）──────────────────────────────
+_TANGLE_FLAT = _kl(_shape([(200, 0.002)]), 2.0)
+_TANGLE_WHIPSAW = _kl([100 + 4 * np.sin(i / 2.5) for i in range(200)], 2.0)
+_ALIGNED_BULL = _kl(_shape([(140, 0.0), (60, 0.5)]), 2.5)
+_ALIGNED_BEAR = _kl(_shape([(140, 0.0), (60, -0.5)]), 2.5)
+_TURN_BULL = _kl(_shape([(140, 0.3), (40, 0.5), (10, -1.5)]), 2.0)
+_TURN_BEAR = _kl(_shape([(140, -0.3), (40, -0.5), (10, 1.5)]), 2.0)
+_MACRO_CROSS_BULL = _kl(_shape([(154, -0.5), (46, 2.0)]), 2.0)
+_MACRO_CROSS_BEAR = _kl(_shape([(154, 0.5), (46, -2.0)]), 2.0)
+_BULL_RECOVER = _kl(_shape([(160, 0.4), (18, -2.0), (22, 2.5)]), 2.0)
+_BEAR_RECOVER = _kl(_shape([(160, -0.4), (18, 2.0), (22, -2.5)]), 2.0)
+_BULL_DIP = _kl(_shape([(170, 0.8), (30, -2.0)]), 2.0)
+_BEAR_RALLY = _kl(_shape([(170, -0.8), (30, 2.0)]), 2.0)
 
-
-# ── 分类：过热期/冷却期（2026-10-11 分级重构，凌驾结构档）──────────
-
-
-def test_overheat_slope_classification():
-    """跌 40 根后涨 160 根 @2.0：EMA144 斜率 20 根变化 >5% → 过热期（斜率过热）。
-    原判 extreme（排列角度 16.9 ATR）——extreme 档退役后由过热三条件接管"""
-    closes = _ramp(40, -1.0, 100.0) + _ramp(160, 2.0, 60.0)
-    r = analyze_htf_background(_kl_from_closes(closes))
-    assert r is not None
-    assert r["state"] == "bullish" and r["dir"] == 1
-    assert r["phase"] == "overheat"
-    assert r["age_bars"] is not None and r["age_bars"] > 30  # age 仅作注记
-    assert r["macro_aligned"] is True
-    assert "过热期多头背景" in r["state_label"]
-    assert "金叉" in r["detail"] and "EMA144" in r["detail"]
-    assert "排列角度" in r["detail"]  # 结构档证据注记仍在（过热凌驾其上）
-    assert "过热命中：斜率过热" in r["detail"]
-
-
-def test_overheat_distance_classification():
-    """300 根平底 ramp @0.5：div=17 ATR 但命中距离过热（|close−EMA144|>4×ATR）
-    → 过热期。原判 extreme——价格脱离趋势结构（距离过热）取代过度张开分档"""
-    r = analyze_htf_background(_kl_from_closes(_ramp(300, 0.5, 100.0)))
-    assert r is not None
-    assert r["state"] == "bullish" and r["phase"] == "overheat"
-    assert r["age_bars"] is None
-    assert "窗口内无交叉（极老趋势，按当前排列强度处理）" in r["detail"]
-    assert "过热命中：距离过热" in r["detail"]
-
-
-def test_overheat_accel_reason_pure_function():
-    """加速过热（第三条件）纯函数单测：EMA144 口径下管线级构造几乎总被
-    斜率/距离先命中（极慢均线的加速必伴随 20 根斜率扩张），合成序列直验。
-    i=199：s_20=100.1 → s_5=100.475 爬 0.375（15 根），s_5 → s_now=104.2 爬
-    3.725（5 根）→ accel≈9.9>2；斜率 3.94%<5%、价格贴合 EMA 距离 0 均不命中"""
-    closes = np.full(200, 104.0)
-    s144 = np.full(200, 100.0)
-    s144[175:196] = np.linspace(100.0, 100.5, 21)   # 前 15+5 根缓爬
-    s144[196:] = [101.1, 101.9, 102.9, 104.2]        # 末 5 根加速
-    tr = [0.5] * 199
-    assert _overheat_reason(closes, s144, tr, 199) == "加速过热"
-    # 条件优先级：斜率命中时先返回斜率（同组数据抬尾至 20 根变化 6.7%>5%）
-    s144_slope = s144.copy()
-    s144_slope[199] = 107.0
-    assert _overheat_reason(closes, s144_slope, tr, 199) == "斜率过热"
-    # EMA144 有限区（SMA 种子 143 根）：i-20<143 不可判 → None
-    assert _overheat_reason(closes, s144, tr, 150) is None
-
-
-def test_cooling_state_lookback():
-    """冷却期（外部 4H 闸门第 3 层，无状态回看实现）：过热命中后小步回落消化，
-    当前根未命中 ∧ 窗口内（近 20 根）命中过 → cooling，证据注记带命中条件与
-    距今根数；冷却期双向禁开：开多/开空一律 skip（持仓出场不受影响）"""
-    r = analyze_htf_background(_COOLING)
-    assert r is not None
-    assert r["phase"] == "cooling"
-    assert "冷却中（距离过热命中于2根前，消化窗口内）" in r["detail"]
-    for direction in ("long", "short"):
-        d = {"trade_decision": "suggest", "direction": direction}
-        out = enforce_htf_constraint(d, _COOLING)
-        assert out["trade_decision"] == "skip"
-        assert "过热约束：4h冷却期（过热后获利盘消化中）双向禁开新仓" in out["skip_reason"]
-        assert out["veto_original"]["source"] == "htf_constraint"
-
-
-def test_overheat_gate_boundary_164_165():
-    """EMA144 有限区（SMA 种子 143）+ 斜率 20 根回看 → len(closed)≥164 才可判
-    过热：164 根输入（163 已收盘）不评估 → div=17 仍落 strong（extreme 退役的
-    显式佐证：div≥2 未过热 = strong，降档语义只在质量分）；165 根起评估 →
-    匀速陡涨命中斜率过热"""
-    r164 = analyze_htf_background(_kl_from_closes(_ramp(164, 2.0, 100.0)))
-    assert r164["phase"] == "strong" and (r164["div"] or 0) > 2.0
-    r165 = analyze_htf_background(_kl_from_closes(_ramp(165, 2.0, 100.0)))
-    assert r165["phase"] == "overheat" and "斜率过热" in r165["detail"]
-
-
-# ── 分类：排列强度 3 档 ──────────────────────────────────────────
-
-
-def test_strong_bullish_bear_rally():
-    """深跌 140 根后温和反弹 36 根：排列角度 1.07 ATR → strong；EMA55 仍 < EMA144
-    → 逆宏观熊内反弹（不过热：反弹温和，斜率/距离/加速三条件均未命中）。
-    （原 18 根 @3.0 夹具触发斜率过热，healthy 形态改用 B 夹具；「更长反弹仍
-    strong」的档位带宽由 _strength_phase 纯函数边界用例覆盖）"""
-    r = analyze_htf_background(_STRONG_BEAR_RALLY)
-    assert r is not None
-    assert r["state"] == "bullish"
-    assert r["phase"] == "strong"
-    assert r["age_bars"] == 32
-    assert r["macro_aligned"] is False
-    assert "熊内反弹" in r["detail"]
-
-
-def test_bear_histogram_flip_keeps_structural_phase():
-    """跌 150 根后反弹 12 根：EMA 尚未金叉（仍空头排列）但柱线已翻多——
-    衰竭期退役后（2026-10-11）动能翻向不再改变 phase，按排列角度分结构档，
-    detail 无动能注记、label 无「衰竭期」"""
-    closes = _ramp(150, -0.5, 100.0) + _ramp(12, 3.0, 25.0)
-    r = analyze_htf_background(_kl_from_closes(closes))
-    assert r is not None
-    assert r["state"] == "bearish"
-    assert r["phase"] in ("weak", "medium", "strong")
-    assert r["macro_aligned"] is True  # 空头顺势侧 = EMA55<EMA144，长期下跌后成立
-    assert "衰竭期" not in r["state_label"]
-    assert "动能背离" not in r["detail"] and "柱线已翻向" not in r["detail"]
-
-
-# ── 三线堆叠位置注记（6 种排列全枚举；行为只读 macro_aligned 二值，注记细化）──
-
-
-def test_v_recovery_overheat_annotation():
-    """长跌后急弹（18 根 @6.0）：EMA21 已上穿 144、EMA55 未跟上 → V型反转中期
-    注记保留；急弹命中距离过热 → 过热期（原判 strong/排列角度 1.18 ATR 注记
-    仍在 detail，但 phase 被过热凌驾）"""
-    closes = _ramp(150, -0.5, 100.0) + _ramp(18, 6.0, 25.0)
-    r = analyze_htf_background(_kl_from_closes(closes))
-    assert r is not None
-    assert r["state"] == "bullish" and r["phase"] == "overheat"
-    assert r["macro_aligned"] is False
-    assert "V型反转中期（EMA21已上穿144，EMA55未跟上）" in r["detail"]
-    assert "排列角度" in r["detail"]
-    assert "过热命中：距离过热" in r["detail"]
-
-
-def test_full_stack_annotation():
-    """长涨后急杀 10 根内死叉前：三线多头排列（宏观顺势）注记"""
-    closes = _ramp(165, 0.5, 100.0) + _ramp(4, -2.0, 182.5)
-    r = analyze_htf_background(_kl_from_closes(closes))
-    assert r is not None
-    assert r["state"] == "bullish"
-    assert r["macro_aligned"] is True
-    assert "三线多头排列" in r["detail"]
-
-
-def test_bull_correction_weak_annotation():
-    """长涨后急杀：EMA21 下穿 EMA55 但未破 144（144 最下方托底）→ 牛内回调注记。
-    排列角度 ~0.41 ATR < 0.5 → weak（排列未证明，锁单矩阵放行侧，质量分兜底）"""
-    closes = _ramp(150, 0.5, 100.0) + _ramp(14, -3.0, 175.0)
-    r = analyze_htf_background(_kl_from_closes(closes))
-    assert r is not None
-    assert r["state"] == "bearish" and r["phase"] == "weak"
-    assert r["macro_aligned"] is False
-    assert "牛内回调（144托底中·下行）" in r["detail"]
-
-
-def test_bull_histogram_flip_no_exhausted():
-    """盘整基座起势后急杀 10 根 @-3.0：EMA 排列仍多头（落 weak 结构档）——
-    衰竭期退役后（2026-10-11）柱线翻负不再判衰竭/不改 label，phase 按排列
-    角度落结构档（夹具构造避免触发过热，与「翻向不改档」语义解耦），detail
-    无动能注记"""
-    closes = _shape([(140, 0.0), (50, 0.5), (10, -3.0)])
-    r = analyze_htf_background(_kl(closes, 2.5))
-    assert r is not None
-    assert r["state"] == "bullish"
-    assert r["phase"] == "weak"
-    assert r["macro_aligned"] is True
-    assert "衰竭期" not in r["state_label"]
-    assert "动能背离" not in r["detail"] and "柱线已翻向" not in r["detail"]
-
-
-def test_no_momentum_annotation():
-    """冲高后降速不翻向：动能衰减注记已随衰竭期退役删除（2026-10-11），
-    detail 不再出现任何动能措辞，phase 恒为结构档。
-    （夹具 164 根 → len(closed)=163<164 不评过热——落在可判边界内恰为
-    纯结构档判定样本，边界行为另见 test_overheat_gate_boundary_164_165）"""
-    closes = _ramp(150, 0.5, 100.0) + _ramp(6, 2.5, 175.0) + _ramp(8, 1.2, 190.0)
-    r = analyze_htf_background(_kl_from_closes(closes))
-    assert r is not None
-    assert r["state"] == "bullish"
-    assert r["phase"] in ("weak", "medium", "strong")
-    assert "动能衰减" not in r["detail"] and "仍同向" not in r["detail"]
-
-
-def test_structured_line_ranging_no_false_macro():
-    """4h 震荡（ADX<20）结构化行不得渲染 phase=None / macro=逆侧——
-    宏观守卫未评估，None 渲染成「逆侧」会向 LLM 注入错误事实
-    （bug 修复 2026-10-11）；改输出 state 标记"""
-    closes = [100.0 + 0.05 * ((-1) ** i) + 0.002 * i for i in range(200)]  # 横盘低 ADX
-    block = render_indicator_block(_kl_1h_flat(), htf_klines=_kl_from_closes(closes))
-    assert "phase=None" not in block
-    assert "macro=逆侧" not in block
-    assert "- 4h背景: state=ranging" in block
+_STATE_FIXTURES = {
+    "tangle": _TANGLE_FLAT,
+    "turn_bull": _TURN_BULL, "turn_bear": _TURN_BEAR,
+    "macro_cross_bull": _MACRO_CROSS_BULL, "macro_cross_bear": _MACRO_CROSS_BEAR,
+    "bull_recover": _BULL_RECOVER, "bear_recover": _BEAR_RECOVER,
+    "aligned_bull": _ALIGNED_BULL, "aligned_bear": _ALIGNED_BEAR,
+    "bull_dip": _BULL_DIP, "bear_rally": _BEAR_RALLY,
+}
 
 
 def _kl_1h_flat() -> list[list]:
     """1h 侧最小序列（结构化行渲染仅要求非空指标结果）"""
     return _kl_from_closes(_ramp(60, 0.5, 100.0))
+
+
+# ── 分类：缠绕 tangle（三道判据）────────────────────────────────
+
+
+def test_tangle_by_spread():
+    """横盘微涨：21/55 间距 <0.1% → 缠绕（第二道）；dir=0 不投票、
+    macro_aligned=None 未评估（禁开态不评宏观）"""
+    r = analyze_htf_background(_TANGLE_FLAT)
+    assert r is not None
+    assert r["state"] == "tangle"
+    assert r["state_label"] == STATE_LABELS["tangle"]
+    assert r["dir"] == 0 and r["macro_aligned"] is None
+    assert "21/55间距<0.1% 纠缠" in r["detail"]
+
+
+def test_tangle_by_adx():
+    """正弦锯齿：ADX<20 → 缠绕（第一道），交叉年龄照常作注记"""
+    r = analyze_htf_background(_TANGLE_WHIPSAW)
+    assert r is not None
+    assert r["state"] == "tangle"
+    assert "无趋势" in r["detail"]           # ADX 道
+    assert "55×144金叉后" in r["detail"]     # 注记仍补交叉年龄
+
+
+def test_tangle_whipsaw_third_gate():
+    """锯齿道（第三道）纯函数直测：ADX≥30 绕过第一道、间距 4% 绕过第二道，
+    近 10 根 21×55 交叉 9 次 ≥2 → tangle"""
+    n = 40
+    s21 = np.where(np.arange(n) % 2 == 0, 104.0, 96.0)   # 隔根穿越
+    state, notes, _ = _ema_state(
+        np.full(n, 100.0), s21, np.full(n, 100.0), np.full(n, 60.0), 30.0, 2.0)
+    assert state == "tangle"
+    assert "近10根21×55交叉9次（锯齿）" in notes[0]
+
+
+# ── 分类：排列稳态 aligned_* ────────────────────────────────────
+
+
+def test_aligned_bull():
+    """140 根盘整基座 + 60 根缓涨：全多头排列稳态；21×55 金叉已老（57 根）
+    → 非 recover；div（排列角度）退役为纯注记证据"""
+    r = analyze_htf_background(_ALIGNED_BULL)
+    assert r is not None
+    assert r["state"] == "aligned_bull"
+    assert r["state_label"] == "多头排列"
+    assert r["dir"] == 1 and r["macro_aligned"] is True
+    assert r["age_bars"] == 57
+    assert "21×55金叉后57根" in r["detail"]
+    assert "排列角度" in r["detail"] and "仅注记" in r["detail"]
+
+
+def test_aligned_bear():
+    """镜像空头排列：21×55 全程无交叉（极老趋势）"""
+    r = analyze_htf_background(_ALIGNED_BEAR)
+    assert r is not None
+    assert r["state"] == "aligned_bear" and r["dir"] == -1
+    assert r["macro_aligned"] is True
+    assert "21×55窗口内无交叉（极老趋势）" in r["detail"]
+
+
+# ── 分类：拐头 turn_*（连续 2 根斜率反向确认）────────────────────
+
+
+def test_turn_bull():
+    """多头排列内 EMA21 斜率连续 2 根下行 → turn_bull（警戒禁开）；
+    macro_aligned=None（拐头态不评宏观）"""
+    r = analyze_htf_background(_TURN_BULL)
+    assert r is not None
+    assert r["state"] == "turn_bull"
+    assert r["dir"] == 1 and r["macro_aligned"] is None
+    assert "EMA21斜率连续2根下行（排列内拐头）" in r["detail"]
+
+
+def test_turn_bear():
+    """镜像：空头排列内连续 2 根上行 → turn_bear"""
+    r = analyze_htf_background(_TURN_BEAR)
+    assert r is not None
+    assert r["state"] == "turn_bear" and r["dir"] == -1
+    assert "EMA21斜率连续2根上行（排列内拐头）" in r["detail"]
+
+
+def test_turn_needs_2_consecutive_slope_bars():
+    """拐头确认边界（纯函数直测）：全多头排列内 EMA21 仅末 1 根斜率反向
+    → 未达 TURN_CONFIRM_BARS，仍落 aligned_bull（单根翻向是噪声，同日
+    衰竭期退役教训）；补足第 2 根反向 → turn_bull"""
+    n = 200
+    s144 = np.full(n, 100.0)
+    s55 = np.full(n, 110.0)
+    s21 = np.concatenate([np.linspace(120, 122, n - 3), [124.0, 125.0, 124.5]])
+    # 末三根 124→125→124.5（倒V）：slope_now=-0.5<0、slope_prev=+1.0>0，仅 1 根反向
+    state, _, _ = _ema_state(np.full(n, 130.0), s21, s55, s144, 30.0, 2.0)
+    assert state == "aligned_bull"
+    s21[-2:] = [123.5, 123.0]   # 末三根 124→123.5→123 递减：连续 2 根下行
+    state2, notes2, _ = _ema_state(np.full(n, 130.0), s21, s55, s144, 30.0, 2.0)
+    assert state2 == "turn_bull"
+    assert "连续2根下行" in notes2[0]
+
+
+# ── 分类：宏观交叉初期 macro_cross_* ────────────────────────────
+
+
+def test_macro_cross_bull():
+    """深V：154 根缓跌 + 46 根急拉 → 55×144 金叉初期（6 根）；
+    趋势级事件独占判据位（detail 不重复补 55×144 年龄），21×55 年龄照常补注"""
+    r = analyze_htf_background(_MACRO_CROSS_BULL)
+    assert r is not None
+    assert r["state"] == "macro_cross_bull"
+    assert r["state_label"] == "宏观金叉初期"
+    assert r["dir"] == 1 and r["macro_aligned"] is True
+    assert r["macro_cross_age"] == 6
+    assert "55×144金叉后6根，价距144约" in r["detail"]
+    assert "21×55金叉后30根" in r["detail"]
+    assert r["detail"].count("55×144") == 1   # 判据年龄不重复
+
+
+def test_macro_cross_bear():
+    """倒V镜像：55×144 死叉初期 → macro_cross_bear"""
+    r = analyze_htf_background(_MACRO_CROSS_BEAR)
+    assert r is not None
+    assert r["state"] == "macro_cross_bear" and r["dir"] == -1
+    assert r["macro_aligned"] is True
+    assert "55×144死叉后6根" in r["detail"]
+
+
+def test_macro_cross_fresh_boundary_age10():
+    """初期窗口严格小于边界：55×144 金叉后恰好 CROSS_FRESH_BARS 根
+    → 不再算初期，落排列稳态（年龄降级为注记）"""
+    r = analyze_htf_background(_kl(_shape([(150, -0.5), (50, 2.0)]), 2.0))
+    assert r is not None
+    assert r["state"] == "aligned_bull"
+    assert r["macro_cross_age"] == CROSS_FRESH_BARS
+    assert "55×144金叉后10根" in r["detail"]
+
+
+def test_macro_cross_priority_over_recover():
+    """深V双叉同步（纯函数直测）：21×55 与 55×144 同时 fresh 金叉
+    → 55×144 趋势级事件优先，不误判 bull_recover"""
+    n = 200
+    s144 = np.full(n, 100.0)
+    s55 = np.array([98.0] * 195 + [98.5, 99.0, 99.8, 100.2, 101.0])
+    s21 = np.array([96.0] * 195 + [98.0, 100.0, 101.5, 102.5, 103.0])
+    # 55×144 金叉龄 1、21×55 金叉龄 3，均在初期窗口内
+    state, notes, meta = _ema_state(np.full(n, 105.0), s21, s55, s144, 30.0, 2.0)
+    assert state == "macro_cross_bull"
+    assert "55×144金叉后1根" in notes[0]
+    assert meta["age_m"] == 1 and meta["age_c"] == 3
+
+
+# ── 分类：恢复初期 *_recover（位置语义：宏观同侧的新交叉）────────
+
+
+def test_bull_recover():
+    """160 根慢涨 + 18 根回踩 + 22 根回升：21×55 金叉 fresh（6 根）∧
+    宏观多头（55>144）→ bull_recover（锁逆势档）"""
+    r = analyze_htf_background(_BULL_RECOVER)
+    assert r is not None
+    assert r["state"] == "bull_recover"
+    assert r["state_label"] == "多头恢复初期"
+    assert r["dir"] == 1 and r["macro_aligned"] is True
+    assert r["age_bars"] == 6
+    assert "21×55金叉后6根（宏观多头侧恢复），价距144约" in r["detail"]
+    assert r["detail"].count("21×55") == 1   # 判据年龄不重复
+
+
+def test_bear_recover():
+    """镜像：21×55 死叉 fresh ∧ 宏观空头 → bear_recover"""
+    r = analyze_htf_background(_BEAR_RECOVER)
+    assert r is not None
+    assert r["state"] == "bear_recover" and r["dir"] == -1
+    assert r["macro_aligned"] is True
+    assert "21×55死叉后6根（宏观空头侧恢复）" in r["detail"]
+
+
+# ── 分类：过渡态 bull_dip / bear_rally（位置语义：宏观逆侧）──────
+
+
+def test_bull_dip():
+    """170 根急涨 + 30 根急跌：21×55 死叉 fresh（9 根）但宏观多头
+    （55>144）→ 同一 fresh 死叉在宏观多头侧=牛内回调（过渡态放行），
+    不是 bear_recover——状态名必须编码位置"""
+    r = analyze_htf_background(_BULL_DIP)
+    assert r is not None
+    assert r["state"] == "bull_dip"
+    assert r["state_label"] == "牛内回调"
+    assert r["dir"] == -1 and r["macro_aligned"] is False
+    assert "21×55死叉后9根" in r["detail"]
+
+
+def test_bear_rally():
+    """镜像：21×55 金叉 fresh ∧ 宏观空头 → 熊内反弹（过渡态放行）"""
+    r = analyze_htf_background(_BEAR_RALLY)
+    assert r is not None
+    assert r["state"] == "bear_rally" and r["dir"] == 1
+    assert r["macro_aligned"] is False
+    assert "21×55金叉后9根" in r["detail"]
+
+
+# ── _htf_cross_age 纯函数 ───────────────────────────────────────
 
 
 def test_cross_age_helper():
@@ -291,156 +328,159 @@ def test_cross_age_ignores_nan_seed_boundary():
     assert age is None and d == 1
 
 
-# ── _strength_phase 纯函数边界 ──
+# ── 硬约束锁单矩阵（常量驱动全枚举）─────────────────────────────
 
 
-def test_strength_phase_boundaries():
-    """排列角度 → 强度档边界（2026-10-11 分级重构：3 档，extreme 退役——
-    ≥1.0 一律 strong，div≥2 的过度张开由过热三条件/质量分降档接管）：
-    None 归 medium（角度不可测兜底）；阈值左开右闭"""
-    assert _strength_phase(None) == "medium"
-    assert _strength_phase(0.0) == "weak"
-    assert _strength_phase(0.49) == "weak"
-    assert _strength_phase(0.5) == "medium"
-    assert _strength_phase(0.99) == "medium"
-    assert _strength_phase(1.0) == "strong"
-    assert _strength_phase(1.99) == "strong"
-    assert _strength_phase(2.0) == "strong"  # extreme 退役：2.0 不再独立成档
-    assert _strength_phase(17.0) == "strong"
+def test_enforce_block_both_matrix():
+    """缠绕/拐头（STATE_BLOCK_BOTH 3 态）× 开多/开空 → 一律 skip：
+    skip_reason 带状态约束语义与原因、htf_phase stash 状态 key、veto 快照"""
+    for st in STATE_BLOCK_BOTH:
+        _why = "缠绕无趋势" if st == "tangle" else "排列内拐头，趋势衰竭警戒"
+        for direction in ("long", "short"):
+            d = {"trade_decision": "suggest", "direction": direction}
+            out = enforce_htf_constraint(d, _STATE_FIXTURES[st])
+            assert out["trade_decision"] == "skip", (st, direction)
+            assert "状态约束：4h" in out["skip_reason"], (st, direction)
+            assert _why in out["skip_reason"], (st, direction)
+            assert "双向禁开新仓" in out["skip_reason"]
+            assert out["htf_phase"] == st
+            assert out["veto_original"]["source"] == "htf_constraint"
 
 
-# ── 硬约束锁单矩阵 ──
-
-
-def test_constraint_locks_strong_aligned():
-    """强多头排列（宏观同侧·健康形态不过热）+ AI 开空 → 强制 skip。
-    extreme 退役后锁逆势档为 medium/strong；健康夹具用 A（盘整基座起势）——
-    稳态线性趋势会触发距离过热走双向禁开分支而非锁逆势"""
-    d = {"trade_decision": "suggest", "direction": "short"}
-    out = enforce_htf_constraint(d, _STRONG_ALIGNED)
-    assert out["trade_decision"] == "skip"
-    assert "排列强多头背景禁止开空" in out["skip_reason"]
-    assert out["veto_original"]["source"] == "htf_constraint"
-    assert out["htf_phase"] == "strong"  # stash 落 AIAnalysis.htf_phase 供复盘分组
-
-
-def test_constraint_locks_medium_aligned():
-    """中等多头排列（宏观同侧）+ AI 开空 → 强制 skip（medium 档同样锁逆势）"""
-    d = {"trade_decision": "suggest", "direction": "short"}
-    out = enforce_htf_constraint(d, _MEDIUM_ALIGNED)
-    assert out["trade_decision"] == "skip"
-    assert "排列中等多头背景禁止开空" in out["skip_reason"]
-    assert out["htf_phase"] == "medium"
-
-
-def test_constraint_overheat_blocks_both_directions():
-    """斜率过热（D 夹具）双向禁开：开多（追抛物线）与开空（接飞刀）一律 skip，
-    skip_reason/veto reason 带过热语义（凌驾锁逆势分支）"""
-    for direction in ("long", "short"):
-        d = {"trade_decision": "suggest", "direction": direction}
-        out = enforce_htf_constraint(d, _OVERHEAT_SLOPE)
-        assert out["trade_decision"] == "skip"
-        assert "过热约束：4h过热期（抛物线加速，暴跌前兆）双向禁开新仓" in out["skip_reason"]
+def test_enforce_lock_contra_matrix():
+    """宏观同侧态（STATE_LOCK_CONTRA 6 态）：逆势 skip（方向约束）、
+    顺势放行；两种结果都 stash htf_phase 供复盘分组"""
+    for st in STATE_LOCK_CONTRA:
+        htf_dir = _STATE_DIR[st]
+        contra = "short" if htf_dir == 1 else "long"
+        along = "long" if htf_dir == 1 else "short"
+        out = enforce_htf_constraint(
+            {"trade_decision": "suggest", "direction": contra},
+            _STATE_FIXTURES[st])
+        assert out["trade_decision"] == "skip", st
+        assert "方向约束：4h" in out["skip_reason"], st
+        assert f"禁止开{'空' if contra == 'short' else '多'}" in out["skip_reason"]
+        assert out["htf_phase"] == st
         assert out["veto_original"]["source"] == "htf_constraint"
-        assert "4h过热期双向禁开闸" in out["veto_original"]["reason"]
-        assert out["htf_phase"] == "overheat"
+        out2 = enforce_htf_constraint(
+            {"trade_decision": "suggest", "direction": along},
+            _STATE_FIXTURES[st])
+        assert out2["trade_decision"] == "suggest", st
+        assert "veto_original" not in out2
+        assert out2["htf_phase"] == st   # 放行同样 stash
 
 
-def test_constraint_blocks_v_recovery_overheat():
-    """V型反转中期（逆宏观）急弹命中距离过热 → 双向禁开（原逆宏观放行语义
-    被过热凌驾：外部方案「过热不进」优先于宏观守卫）"""
-    closes = _ramp(150, -0.5, 100.0) + _ramp(18, 6.0, 25.0)
-    d = {"trade_decision": "suggest", "direction": "short"}
-    out = enforce_htf_constraint(d, _kl_from_closes(closes))
-    assert out["trade_decision"] == "skip"
-    assert "过热约束：4h过热期" in out["skip_reason"]
-    assert out["htf_phase"] == "overheat"
+def test_enforce_transition_always_allows():
+    """过渡态（bull_dip/bear_rally）双向放行：宏观逆侧不锁，质量分兜底"""
+    for st in ("bull_dip", "bear_rally"):
+        for direction in ("long", "short"):
+            out = enforce_htf_constraint(
+                {"trade_decision": "suggest", "direction": direction},
+                _STATE_FIXTURES[st])
+            assert out["trade_decision"] == "suggest", (st, direction)
+            assert "veto_original" not in out
+            assert out["htf_phase"] == st
 
 
-def test_constraint_allows_histogram_flip_with_trend():
-    """原衰竭期构造（空头排列宏观同侧 + 柱线已翻多）+ AI 顺势开空 → 放行：
-    衰竭期双向禁开规则退役（2026-10-11），矩阵只剩锁逆势——顺势侧不受
-    动能翻向影响（htf_phase stash 为结构档，无「衰竭期」措辞）"""
-    closes = _ramp(150, -0.5, 100.0) + _ramp(12, 3.0, 25.0)
-    d = {"trade_decision": "suggest", "direction": "short"}
-    out = enforce_htf_constraint(d, _kl_from_closes(closes))
-    assert out["trade_decision"] == "suggest"
-    assert out["htf_phase"] in ("weak", "medium", "strong")
+def test_enforce_passthrough_no_htf_or_not_suggest():
+    """非 suggest / 无 4h 数据原样返回，不 stash htf_phase"""
+    d = {"trade_decision": "skip", "direction": "long"}
+    assert enforce_htf_constraint(d, _ALIGNED_BULL) is d
+    assert "htf_phase" not in d
+    d2 = {"trade_decision": "suggest", "direction": "long"}
+    assert enforce_htf_constraint(d2, None) is d2
+    assert enforce_htf_constraint(d2, []) is d2
+    assert "htf_phase" not in d2
 
 
-def test_constraint_unlocks_strong_bear_rally():
-    """强排列多头熊内反弹（逆宏观·健康形态不过热）+ AI 开空 → 放行：
-    逆宏观任何强度不锁（质量分惩罚兜底）"""
-    d = {"trade_decision": "suggest", "direction": "short"}
-    out = enforce_htf_constraint(d, _STRONG_BEAR_RALLY)
-    assert out["trade_decision"] == "suggest"
-    assert out["htf_phase"] == "strong"
+# ── 质量分：STATE_QUALITY 矩阵 ──────────────────────────────────
 
 
-# ── 质量分按强度档映射 ──
-
-
-def _votes(phase: str, macro=True, htf_dir=1, div=None) -> dict:
+def _votes(state=None, phase=None, htf_dir=None, macro=None) -> dict:
+    """构造 votes 快照（与 scanner._votes_snapshot 的 4h 票同构）；
+    phase 非 None 时模拟退役旧档存量行（无 state 键）"""
+    if phase is not None:
+        htf = {"phase": phase, "dir": htf_dir if htf_dir is not None else 1,
+               "macro_aligned": macro if macro is not None else True}
+    else:
+        htf = {"state": state, "dir": _STATE_DIR[state],
+               "macro_aligned": _STATE_MACRO[state]}
     return {
         "net": 3,
-        "results": {
-            HTF_SHORT: {
-                "dir": htf_dir, "phase": phase,
-                "macro_aligned": macro, "div": div,
-            },
-            "ADX": None, "RSI": None, "OBV": None,
-        },
+        "results": {HTF_SHORT: htf, "ADX": None, "RSI": None, "OBV": None},
     }
 
 
-def test_quality_score_same_direction_by_phase():
-    """同向（2026-10-11 分级重构矩阵）：弱+5 / 中+8 / 强+10；过热期-8 /
-    冷却期-4（追抛物线/消化期追多压分）；强∧div≥2.0 降为 +6（extreme 退役后
-    降档语义由 div 原始值承载）（基础 71）"""
-    base = 50 + 1 * 3 * 7
-    cases = {"weak": 5, "medium": 8, "strong": 10, "overheat": -8, "cooling": -4}
-    for phase, mod in cases.items():
-        s = compute_quality_score(1, _votes(phase), "trigger_pullback_confirm")
-        assert s == base + mod, f"{phase}: {s} != {base + mod}"
+def test_quality_matrix_all_states():
+    """11 态质量分矩阵全枚举：同向加 same_mod / 逆向加 counter_mod；
+    tangle dir=0 不进方向分支（无状态分、无宏观罚）"""
+    for st, (same_mod, counter_mod) in STATE_QUALITY.items():
+        d = _STATE_DIR[st]
+        if d == 0:
+            s = compute_quality_score(1, _votes(st), "trigger_pullback_confirm")
+            assert s == 50 + 1 * 3 * 7, st
+            continue
+        base = 50 + d * 3 * 7
+        # 过渡态 macro_aligned=False：同/逆都带逆宏观 -4（排列/交叉态恒 True 不触发）
+        extra = -4 if _STATE_MACRO[st] is False else 0
+        s_same = compute_quality_score(d, _votes(st), "trigger_pullback_confirm")
+        assert s_same == base + same_mod + extra, st
+        # 逆向：direction=-d，基础分按逆向重算（同 -d 方向的票数乘积）
+        s_counter = compute_quality_score(-d, _votes(st), "trigger_pullback_confirm")
+        assert s_counter == 50 - d * 3 * 7 + counter_mod + extra, st
 
 
-def test_quality_score_strong_div2_downgrade():
-    """strong ∧ div≥2.0 同向降档 +10→+6（原 extreme 档语义）；div<2.0 不降档；
-    div 键缺省按 0 处理（不降档）；降档只作用于同向（逆向不叠加）"""
-    base = 50 + 1 * 3 * 7
-    s_ge = compute_quality_score(1, _votes("strong", div=2.0), "trigger_pullback_confirm")
-    assert s_ge == base + 6
-    s_lt = compute_quality_score(1, _votes("strong", div=1.99), "trigger_pullback_confirm")
-    assert s_lt == base + 10
-    s_nokey = compute_quality_score(1, _votes("strong"), "trigger_pullback_confirm")
-    assert s_nokey == base + 10
-    s_counter = compute_quality_score(-1, _votes("strong", div=3.0), "trigger_pullback_confirm")
-    assert s_counter == 50 + (-1) * 3 * 7 - 12  # 逆向走 -12，不触发降档
+def test_quality_transition_macro_penalty():
+    """逆宏观 -4 天然只作用过渡态（macro_aligned=False）：牛内回调做空 /
+    熊内反弹做多压分；排列态恒同侧不触发"""
+    s_dip = compute_quality_score(-1, _votes("bull_dip"), "trigger_pullback_confirm")
+    assert s_dip == 50 - 1 * 3 * 7 + 5 - 4
+    s_rally = compute_quality_score(1, _votes("bear_rally"), "trigger_pullback_confirm")
+    assert s_rally == 50 + 1 * 3 * 7 + 5 - 4
+    s_aligned = compute_quality_score(1, _votes("aligned_bull"), "trigger_pullback_confirm")
+    assert s_aligned == 50 + 1 * 3 * 7 + 10
 
 
-def test_quality_score_counter_direction_by_phase():
-    """逆向（2026-10-11 分级重构矩阵）：弱-6 / 中-10 / 强-12；过热期-4 /
-    冷却期-2（接飞刀同样险但程序已双向禁开，此处仅扫描侧排序兜底）；
-    exhausted/extreme 旧行值走默认中性兜底（另用例覆盖）"""
-    base = 50 + (-1) * 3 * 7
-    cases = {"weak": -6, "medium": -10, "strong": -12, "overheat": -4, "cooling": -2}
-    for phase, mod in cases.items():
-        s = compute_quality_score(-1, _votes(phase), "trigger_pullback_confirm")
-        assert s == base + mod, f"{phase}: {s} != {base + mod}"
+def test_quality_legacy_phase_fallback():
+    """存量旧行 votes 快照无 state 键（phase=退役旧档）：走中性兜底
+    （同向 +5 / 逆向 -8）；旧 phase 键兼容读取（state or phase）"""
+    s = compute_quality_score(1, _votes(phase="strong"), "trigger_pullback_confirm")
+    assert s == 50 + 1 * 3 * 7 + 5
+    s2 = compute_quality_score(-1, _votes(phase="strong"), "trigger_pullback_confirm")
+    assert s2 == 50 - 1 * 3 * 7 - 8
+    s3 = compute_quality_score(
+        1, _votes(phase="overheat", macro=False), "trigger_pullback_confirm")
+    assert s3 == 50 + 1 * 3 * 7 + 5 - 4   # 旧逆宏观行罚分照旧
 
 
-def test_quality_score_legacy_exhausted_neutral_fallback():
-    """存量旧行 htf_phase="exhausted"/"extreme"（退役旧档）不再有专属分值，
-    走默认中性兜底（同向 +5 / 逆向 -8）"""
-    base = 50 + 1 * 3 * 7
-    for legacy in ("exhausted", "extreme"):
-        s = compute_quality_score(1, _votes(legacy), "trigger_pullback_confirm")
-        assert s == base + 5, legacy
+# ── 渲染行（状态约束 / 方向约束 / 结构化行）──────────────────────
 
 
-def test_quality_score_macro_misaligned_penalty():
-    """逆宏观额外 -4（硬约束不锁，分数兜底）"""
-    s_aligned = compute_quality_score(1, _votes("strong"), "trigger_pullback_confirm")
-    s_mis = compute_quality_score(
-        1, _votes("strong", macro=False), "trigger_pullback_confirm")
-    assert s_mis == s_aligned - 4
+def test_render_state_constraint_line():
+    """禁开态（tangle/turn_*）渲染「状态约束（硬性）」双向禁开行 +
+    结构化行标注宏观未评估；不渲染方向约束行"""
+    for st in ("tangle", "turn_bull"):
+        block = render_indicator_block(
+            _kl_1h_flat(), htf_klines=_STATE_FIXTURES[st])
+        assert "状态约束（硬性）" in block, st
+        assert "双向禁开新仓" in block, st
+        assert "方向约束（硬性）" not in block, st
+        assert f"- 4h背景: state={st}（双向禁开，宏观对齐未评估）" in block, st
+        assert "phase=" not in block   # phase 键已退役
+
+
+def test_render_direction_constraint_line():
+    """宏观同侧态（aligned_bull）渲染「方向约束（硬性）」仅可 long 行 +
+    结构化行 macro=同侧；不渲染状态约束行"""
+    block = render_indicator_block(_kl_1h_flat(), htf_klines=_ALIGNED_BULL)
+    assert "方向约束（硬性）" in block
+    assert "仅可 long，开空一律 skip" in block
+    assert "状态约束（硬性）" not in block
+    assert "- 4h背景: state=aligned_bull macro=同侧" in block
+
+
+def test_render_transition_no_constraint_line():
+    """过渡态（bull_dip）无任何硬约束行，结构化行 macro=逆侧"""
+    block = render_indicator_block(_kl_1h_flat(), htf_klines=_BULL_DIP)
+    assert "约束（硬性）" not in block
+    assert "- 4h背景: state=bull_dip macro=逆侧" in block
