@@ -179,7 +179,7 @@ def test_closed_trade_requests_5_bars_after_close(monkeypatch):
     # 端点内部：end_ms = closed_at 按 UTC 的毫秒 − 1ms + 5×interval
     expected_end = int(closed.replace(tzinfo=timezone.utc).timestamp() * 1000) - 1 + 5 * interval_ms
     assert captured[0]["end_ms"] == expected_end
-    assert captured[0]["bars"] == 100 + math.ceil((130 * 60 * 1000) / interval_ms) + 5  # held=3
+    assert captured[0]["bars"] == 200 + math.ceil((130 * 60 * 1000) / interval_ms) + 5  # held=3（2026-10-11 前置 200：EMA144 热身）
 
 
 def test_running_trade_no_after_window(monkeypatch):
@@ -196,7 +196,7 @@ def test_running_trade_no_after_window(monkeypatch):
     # DB 存 UTC naive——期望值必须按 UTC 解释（replace(tzinfo=None) 会按本地时区，差 8h）
     opened_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000)
     held = math.ceil((now_ms - opened_ms) / interval_ms)
-    assert captured[0]["bars"] == 100 + held
+    assert captured[0]["bars"] == 200 + held
     # end_ms = 端点执行时刻的 UTC epoch − 1ms，必然落在真实当前时间附近（±1h 内）
     assert abs(captured[0]["end_ms"] - datetime.now(timezone.utc).timestamp() * 1000) < 3_600_000
 
@@ -216,8 +216,8 @@ def test_klines_interval_param_4h(monkeypatch):
     assert r.json()["interval"] == "4h"
     assert len(captured) == 1
     assert captured[0]["interval"] == "4h"
-    # 10h 持仓按 4h 一根 = 3 根（ceil），bars = 100 + 3（无平仓后窗）
-    assert captured[0]["bars"] == 103
+    # 10h 持仓按 4h 一根 = 3 根（ceil），bars = 200 + 3（无平仓后窗）
+    assert captured[0]["bars"] == 203
 
 
 def test_klines_interval_param_default_config(monkeypatch):

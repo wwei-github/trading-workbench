@@ -678,12 +678,14 @@ def trade_klines(
     interval: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """交易复盘K线：开单前 100 根 + 持仓期间直到止损/平仓 + 平仓后至多 5 根，附初始止损止盈与关键事件
+    """交易复盘K线：开单前 200 根 + 持仓期间直到止损/平仓 + 平仓后至多 5 根，附初始止损止盈与关键事件
 
     - 初始 SL/TP 取自 OPEN 事件 detail（记录上的 stop_loss 是现值，跟踪止损后已被更新）
     - 已平仓记录平仓后再多显示至多 5 根 K 线（观察出场后走势，验证出场是否过早；
       平仓后不足 5 根时交易所有多少给多少，endTime 超前于最新K线不会报错）
-    - 总根数 = 100 + 持仓根数 + 平仓后根数，上限 500（超长持仓自动压缩开仓前根数，持仓段始终完整）
+    - 总根数 = 200 + 持仓根数 + 平仓后根数，上限 500（超长持仓自动压缩开仓前根数，持仓段始终完整）
+    - 开单前 200 根（2026-10-11，原 100）：主图默认显示 EMA21/55/144 三线，EMA144
+      需约 143 根热身才有值，100 根前置不够
     - 历史区间直接请求交易所（多所故障转移），不读不写缓存
     - interval（2026-10-08）：可选查询参数（1h/4h 等），缺省回落 cfg.kline_interval
       ——弹窗内切换周期复盘，事件箭头按事件时刻映射到所在K线，与周期无关
@@ -710,7 +712,7 @@ def trade_klines(
     end_dt: datetime = rec.closed_at or datetime.utcnow()
     held_bars = math.ceil(max(0, (end_dt - opened_dt).total_seconds() * 1000) / interval_ms)
     after_bars = 5 if rec.closed_at else 0  # 平仓后走势观察窗（进行中单子无）
-    bars = min(500, 100 + held_bars + after_bars)
+    bars = min(500, 200 + held_bars + after_bars)  # 前置 200：EMA144 热身需 ~143 根
     # 减 1ms：边界恰在整点时不含下一根K线（平仓在K线中间时仍含所在K线）；
     # 已平仓再延 after_bars 根——平仓后第 5 根收盘边界为截止点
     end_ms = int(end_dt.replace(tzinfo=timezone.utc).timestamp() * 1000) - 1

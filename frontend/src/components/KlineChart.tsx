@@ -4,8 +4,8 @@
  * 本组件只负责数据拉取与两种数据源模式的差异注入：
  * - 扫描模式（symbol）：实时K线（扫描表/待确认池/搜索/关注列表共用），
  *   AI 仓位标注；拉取根数 limit 可配
- * - 复盘模式（tradeId）：/trades/{id}/klines 一次返回——开单前 100 根 +
- *   持仓期间直到止损/平仓；事件箭头（extraMarkers）+ 复盘区域覆盖层
+ * - 复盘模式（tradeId）：/trades/{id}/klines 一次返回——开单前 200 根（EMA144
+ *   热身需 ~143 根）+ 持仓期间直到止损/平仓；事件箭头（extraMarkers）+ 复盘区域覆盖层
  *   （止损区/止盈区/现止损琥珀线）；界面件（水印/图例/工具栏/摆动标注/
  *   可视范围）与扫描模式完全一致，交易信息由图上价签与区域承载
  * 交互统一（同 2026-10-08 复盘图口径）：切周期不清旧数据不整块 loading，
@@ -239,7 +239,7 @@ function drawReplayZones(data: TradeKlineData, colorScheme: ColorScheme, ctx: Ov
 interface Props {
   // 数据源二选一（同实例固定一种模式）
   symbol?: string // 扫描模式：实时K线 + AI 仓位标注
-  tradeId?: string // 复盘模式：开单前100根 + 持仓全程 + 事件/区域标注
+  tradeId?: string // 复盘模式：开单前200根 + 持仓全程 + 事件/区域标注
   limit?: number // 扫描模式拉取根数（默认 500）
   ai?: AIAnalysis // 扫描模式 AI 仓位标注
   // 变化时强制重新拉取 K 线（关注列表手动刷新用）
