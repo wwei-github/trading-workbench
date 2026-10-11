@@ -17,7 +17,7 @@
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from uuid import UUID
 
@@ -380,8 +380,10 @@ def detect_indicator_candidate(
     return {
         "signal_type": trig["type"],
         # 现价 = 未收盘K线最新价（仅作入场价差参考）：信号判定（投票/触发/形态/量能）
-        # 全部基于已收盘K线（klines[-2]），与扫描时刻在小时内的位置无关，同根K线同结果。
-        # 尾窗幽灵视图下 [-1]=幽灵尾根（复制近收盘根快照），其 close=现价，语义不变
+        # 全部基于「信号K线」= klines[-2]。非尾窗下它是最后一根已收盘K线（与扫描
+        # 时刻在小时内的位置无关，同根K线同结果）；尾窗幽灵视图下它是近收盘未走完
+        # 根的快照（OHLCV 为扫描时刻值，收盘后可能继续变化）——见 screen_klines 与
+        # risk_guard 的 signal_bar_provisional 处理（2026-10-12）
         "current_price": float(klines[-1][4]),
         "breakout_pct": trig["breakout_pct"],
         "trend_slope": 0.0,
@@ -457,11 +459,23 @@ class Scanner:
             # K线已走完 55/60 分钟——把未收盘根视作已收盘参与筛选（信号根
             # 前移一根，信号提前 ~7 分钟捕捉）。尾窗内 K线缓存可能是小时内
             # 早期快照（图表浏览/大盘预取写入），必须强刷保数据新鲜
-            tail_window = md.in_forming_tail(kline_interval)
+            #
+            # 基准时刻整轮取一次（2026-10-12）：scan_one 内若各自重新读时钟，
+            # 跨整点的长轮次会前半批用幽灵快照、后半批用最终收盘根——同一轮
+            # 内同一根K线两种基准、结果不可复现。scan_now 透传给 screen_klines
+            scan_now = datetime.now(timezone.utc)
+            tail_window = md.in_forming_tail(kline_interval, scan_now)
             # 筛选参数组（scan_filters JSONB > env > 代码默认）
             flt = resolve_scan_filters(cfg)
 
-            logger.info("开始扫描 #%s (interval=%s, window=%d)", scan_record_id, kline_interval, kline_window)
+            # 尾窗状态落日志（2026-10-12）：beat 分钟数与 FORMING_TAIL_MINUTES
+            # 漂移、或扫描落在非预期分钟时，只看这行即可判定筛选口径是否生效
+            logger.info(
+                "开始扫描 #%s (interval=%s, window=%d, 尾窗=%s, 基准=%s)",
+                scan_record_id, kline_interval, kline_window,
+                "是" if tail_window else "否",
+                (scan_now + timedelta(hours=8)).strftime("%H:%M:%S"),  # 北京时间
+            )
 
             # 1. 获取合约交易对列表（按 24h 成交额降序）
             symbols_data = self.pool.get_usdt_swap_symbols_with_volume()
@@ -578,9 +592,11 @@ class Scanner:
                     )
                     # 尾窗内把未收盘根视作已收盘：幽灵尾根维持 [-1] 未收盘/
                     # [-2] 信号根的全管线约定，信号根=近收盘根（2026-10-11-4）。
-                    # 非尾窗原样返回（等价旧行为：信号根=上一根已收盘）
+                    # 非尾窗原样返回（等价旧行为：信号根=上一根已收盘）。
+                    # now 用轮次基准 scan_now（2026-10-12）：不重读时钟，避免
+                    # 跨整点时同一轮内两种数据基准；判定也与 tail_window 一致
                     if tail_window:
-                        klines = md.screen_klines(klines, kline_interval)
+                        klines = md.screen_klines(klines, kline_interval, scan_now)
                     ev_out: dict = {}
                     rv_out: dict = {}   # 漏斗旁路：单币拒绝关卡（cand=None 时读）
                     cand, pop = detect_indicator_candidate(
@@ -633,8 +649,10 @@ class Scanner:
                     except Exception as e:
                         logger.debug("影子特征计算异常（忽略）%s: %s", symbol, e)
                     # P-07 虚拟账本三价推导（docs/16）：与源B同源公式+账本口径
-                    # TP2=3R，随候选透传给 _save_results 开单。entry=信号K收盘
-                    # （klines[-2][4]，current_price 是未收盘价不能用）；失败吞掉
+                    # TP2=3R，随候选透传给 _save_results 开单。entry=信号K线收盘
+                    # （klines[-2][4]）。注：尾窗幽灵视图下该根未走完，entry 实为
+                    # 扫描时刻快照价、与最终收盘存在残差（2026-10-12 已知偏差，
+                    # 账本回放用该根最终 OHLC，故尾窗行的记账价非最终价）；失败吞掉
                     try:
                         from app.services import ledger as ledger_mod
                         votes = cand.get("votes") or {}

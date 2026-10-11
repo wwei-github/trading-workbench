@@ -26,6 +26,11 @@ class Settings(BaseSettings):
 
     # 扫描策略
     SCAN_INTERVAL_HOURS: int = 1
+    # 定时扫描调度分钟数（single source of truth，2026-10-12）：celery beat
+    # hourly-scan 的 crontab 分钟数与 market_data 尾窗宽度（60-该值）均由此派生。
+    # 二者曾仅靠注释耦合：改 beat 忘改尾窗时 in_forming_tail 静默返回 False，
+    # 筛选悄悄退化为「看上一根已收盘根」（不报错、不告警，只表现为信号变旧）
+    SCAN_BEAT_MINUTE: int = 55
     KLINE_INTERVAL: str = "1h"
     KLINE_WINDOW: int = 240
     BREAKOUT_THRESHOLD: float = 0.002  # 最小突破幅度：收盘须越过 Donchian 轨 0.2%（毛边突破不算）
@@ -126,7 +131,11 @@ class Settings(BaseSettings):
     # v2026-10-12-3：止盈一兜底拆两种情形（用户拍板）——(a) 前方无任何结构位
     # （创新高突破）仍仅设一档；(b) 结构位存在但越过距离上限时，止盈一走兜底价、
     # 止盈二保留锚定该远端结构位作趋势跑手档（原行为是一并置 0）
-    RULE_VERSION: str = "v2026-10-12-3"
+    # v2026-10-12-4：尾窗内近锚口径修正（用户拍板）——信号根为扫描尾窗未走完根
+    # （signal_bar_provisional，极值未定型）时：① 近锚一致性校验跳过（仅告警，
+    # 拿未定型极值硬比对会误伤）；② 同步取消近锚对止损宽度下限的豁免——兜底
+    # 没了，改由「止损不许过近」补上，宁宽勿紧
+    RULE_VERSION: str = "v2026-10-12-4"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

@@ -50,10 +50,11 @@ celery_app.conf.update(
     beat_schedule={
         "hourly-scan": {
             "task": "app.tasks.scan_tasks.run_scan_task",
-            # 每小时第55分（2026-10-11-4）：本周期K线已走完55/60分钟，把未收盘根
-            # 视作已收盘参与筛选（market_data.FORMING_TAIL_MINUTES 与此耦合），
-            # 信号提前 ~7 分钟捕捉；原 :02 等收盘后看上一根
-            "schedule": crontab(minute=55),
+            # 每小时第 SCAN_BEAT_MINUTE 分（2026-10-11-4）：本周期K线已走完
+            # 55/60 分钟，把未收盘根视作已收盘参与筛选，信号提前 ~7 分钟捕捉；
+            # 原 :02 等收盘后看上一根。分钟数走单一来源 settings.SCAN_BEAT_MINUTE，
+            # market_data.FORMING_TAIL_MINUTES 由同一常量派生（2026-10-12 解耦注释）
+            "schedule": crontab(minute=settings.SCAN_BEAT_MINUTE),
             "kwargs": {"scan_type": "scheduled"},
         },
         "trade-review": {

@@ -12,7 +12,7 @@ import hashlib
 import logging
 import math
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -286,9 +286,15 @@ def run_ai_analysis_single(
         # 扫描尾窗同口径（2026-10-11-4）：分析紧随 :55 扫描，事实包必须与扫描
         # 看到同一根信号K线——尾窗内幽灵尾根视图（K线摘要/指标块/摆动结构/
         # current_price 全部对齐扫描口径）；跨点后（如分析拖到 :01+）自动退回
-        # 「上一根已收盘根」口径，与扫描尾窗的信号根是同一根，结果仍一致
-        if md.in_forming_tail(cfg.kline_interval):
-            klines = md.screen_klines(klines, cfg.kline_interval)
+        # 「上一根已收盘根」口径，与扫描尾窗的信号根是同一根，结果仍一致。
+        # 基准时刻取一次（2026-10-12）：判定与 screen_klines 同一 now，避免重读
+        # 时钟造成「判定为尾窗、screen 时已跨点」的错配
+        tail_now = datetime.now(timezone.utc)
+        if md.in_forming_tail(cfg.kline_interval, tail_now):
+            klines = md.screen_klines(klines, cfg.kline_interval, tail_now)
+            # 信号根 = 未走完的近收盘根（H1，2026-10-12）：其收盘/极值未定型，
+            # 下游「信号K极值已定型」前提不成立——打标供 risk_guard 放宽近锚硬校验
+            signal["signal_bar_provisional"] = True
 
         # 分析时刻最新价（未收盘K线的现价）：信号里的 current_price 是扫描时价格，
         # 扫描到分析之间可能已明显移动——所有锚点换算、入场价校验都以最新价为基准

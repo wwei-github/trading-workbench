@@ -33,11 +33,18 @@ def _cache_set(key: str, data: object, ttl: float) -> None:
 
 
 # ── 扫描尾窗（2026-10-11-4）：近收盘未收盘根视作已收盘 ──
-# 定时扫描 beat 定在每小时第 55 分（celery_app.hourly-scan），此时本周期
-# K线已走完 55/60 分钟、形态基本定型——把它当作已收盘根参与筛选，信号
-# 提前 ~7 分钟捕捉（原 :02 等收盘后看上一根）。窗口宽度与 beat 分钟数
-# 耦合（55 → 剩余 5 分钟），改 beat 时须同步调整 FORMING_TAIL_MINUTES。
-FORMING_TAIL_MINUTES = 5
+# 定时扫描 beat 定在每小时第 SCAN_BEAT_MINUTE 分（celery_app.hourly-scan），此时
+# 本周期K线已走完 55/60 分钟、形态基本定型——把它当作已收盘根参与筛选，信号
+# 提前 ~7 分钟捕捉（原 :02 等收盘后看上一根）。
+# 尾窗宽度与该分钟数单一来源派生（2026-10-12）：二者仅靠注释耦合时，改 beat
+# 忘改此处会让 in_forming_tail 静默返回 False（筛选悄悄退回「看上一根已收盘
+# 根」，不报错）——派生 + 启动校验让配置漂移在结构上不可能发生。
+FORMING_TAIL_MINUTES = 60 - settings.SCAN_BEAT_MINUTE
+if not 0 < FORMING_TAIL_MINUTES < 60:
+    raise ValueError(
+        f"SCAN_BEAT_MINUTE={settings.SCAN_BEAT_MINUTE} 非法："
+        f"尾窗宽度须落在 (0,60) 分钟（当前 {FORMING_TAIL_MINUTES} 分钟）"
+    )
 
 
 def in_forming_tail(interval: str, now: Optional[datetime] = None) -> bool:

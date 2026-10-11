@@ -174,6 +174,10 @@ AI_RR_TOL = 0.02
 # 突破K极值外 0.3% 缓冲，容差 0.5% 覆盖合理偏移；AI 挂近锚名义报远离止损（把
 # 结构锚止损伪装成近锚）时程序打回。数据不足时放行（防数据异常锁死开单，
 # 同 MAX_SLIPPAGE 接口抖动不阻断的哲学），仅记 warning
+# 尾窗豁免（2026-10-12）：扫描尾窗（:55 起）信号根是未走完的近收盘根快照，其极值
+# 未定型、最后数分钟仍可能扩展——此时「贴近已定型极值」无从校验，按未定型极值
+# 打回会误杀且会把止损压在会被影线扫掉的价位，故 signal_bar_provisional 时跳过，
+# 仅记 warning（signal 上的标记由扫描/AI 事实包侧在尾窗内打上）
 NEAR_ANCHOR_BUFFER = 0.003  # 与提示词口径一致：极值外 0.3%
 NEAR_ANCHOR_TOLERANCE = 0.005  # 止损对锚价的最大相对偏离
 BREAKOUT_SIGNAL_TYPES = ("trigger_breakout", "trigger_trend_breakout")
@@ -353,13 +357,20 @@ def validate_decision(
 
     # ── 近锚一致性校验（docs/23）：突破类 AI 声明 stop_anchor=near 时，
     # 止损必须贴近突破K线极值 ±0.5%——防 AI 挂近锚名义用远止损绕过
-    # "仅 RR 不达标才降级" 的降级链前提 ──
-    if (
+    # "仅 RR 不达标才降级" 的降级链前提。
+    # 尾窗内信号根未走完（signal_bar_provisional）→ 极值未定型，该校验无基准，
+    # 跳过并记 warning（详见 NEAR_ANCHOR_* 常量处的豁免说明，2026-10-12）──
+    if signal.get("signal_bar_provisional"):
+        logger.warning(
+            "近锚校验跳过：信号根为扫描尾窗未走完根（极值未定型）%s",
+            signal.get("symbol"),
+        )
+    elif (
         d.stop_anchor == "near"
         and (signal.get("signal_type") or "") in BREAKOUT_SIGNAL_TYPES
         and len(klines) >= 2
     ):
-        sig_candle = klines[-2]  # klines[-1] 未收盘，突破K = 最后一根已收盘
+        sig_candle = klines[-2]  # 非尾窗下 = 最后一根已收盘K线；klines[-1] 未收盘
         try:
             sig_high, sig_low = float(sig_candle[2]), float(sig_candle[3])
         except (IndexError, TypeError, ValueError):
@@ -396,9 +407,13 @@ def validate_decision(
     # 豁免——其止损刻意贴突破K极值，另有 NEAR_ANCHOR_RISK_FACTOR 敞口折价与
     # ±0.5% 一致性校验兜底，套全局下限会误杀整个近锚特性。ATR 不可算（K线不足）
     # 放行；SL_MIN_ATR=0 关闭。超限 → 打回让 AI 外扩锚点或直接 skip（程序不改价）。
+    # 尾窗例外（2026-10-12）：信号根未走完时近锚的两个兜底都失效——极值未定型
+    # （一致性校验已跳过）、且最后数分钟的影线扩展正是"过近被扫"的高发场景，
+    # 故此时取消豁免、照套下限（宁宽勿紧），换取向上的安全偏移
     _near_anchor = (
         d.stop_anchor == "near"
         and (signal.get("signal_type") or "") in BREAKOUT_SIGNAL_TYPES
+        and not signal.get("signal_bar_provisional")
     )
     if (
         not _near_anchor and stop_dist > 0 and _atr14 and _atr14 > 0

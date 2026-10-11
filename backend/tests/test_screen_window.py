@@ -40,6 +40,20 @@ def test_default_now_no_crash():
     assert isinstance(in_forming_tail("1h"), bool)
 
 
+# ── 调度分钟数 ↔ 尾窗宽度单一来源（2026-10-12）──
+
+def test_beat_minute_drives_tail_width():
+    """beat 的 crontab 分钟数与尾窗宽度必须同源：二者漂移会让尾窗静默失效
+    （in_forming_tail 恒 False → 筛选悄悄退回「看上一根已收盘根」）"""
+    from app.celery_app import celery_app
+    from app.config import settings
+
+    sched = celery_app.conf.beat_schedule["hourly-scan"]["schedule"]
+    assert int(sched._orig_minute) == settings.SCAN_BEAT_MINUTE
+    assert FORMING_TAIL_MINUTES == 60 - settings.SCAN_BEAT_MINUTE
+    assert 0 < FORMING_TAIL_MINUTES < 60
+
+
 # ── screen_klines 幽灵尾根 ──
 
 def _klines(n=40):

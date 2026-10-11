@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -1454,13 +1454,16 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
     pool = ExchangePool()
     # 扫描尾窗同口径（2026-10-11-4）：手动分析的事实包与定时扫描一致——
     # 尾窗内强刷（缓存可能是小时内早期快照）+ 幽灵尾根（近收盘根视作信号根）
-    _tail = md.in_forming_tail(cfg.kline_interval)
+    # 基准时刻取一次（2026-10-12）：判定与 screen_klines 同一 now——强刷是网络
+    # 请求（秒级），重读时钟会让 :59:5x 的判定在跨点后失效、基准不一致
+    _tail_now = datetime.now(timezone.utc)
+    _tail = md.in_forming_tail(cfg.kline_interval, _tail_now)
     try:
         klines = pool.get_klines(
             symbol, cfg.kline_interval, 500, force_refresh=_tail,
         )
         if _tail:
-            klines = md.screen_klines(klines, cfg.kline_interval)
+            klines = md.screen_klines(klines, cfg.kline_interval, _tail_now)
     except AllExchangesFailed as e:
         raise HTTPException(
             status_code=503,

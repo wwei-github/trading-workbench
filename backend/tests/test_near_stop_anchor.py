@@ -147,6 +147,48 @@ def test_missing_stop_anchor_lands_structure():
     assert fixed["stop_anchor"] == "structure"
 
 
+# ── 扫描尾窗（2026-10-12）：信号根未走完 → 近锚校验跳过 ─────────────
+
+
+def test_near_anchor_skipped_in_tail_window():
+    """尾窗标记：信号根是未走完的近收盘根快照、极值未定型 → 近锚一致性校验
+    跳过（同一"远离极值"止损在非尾窗下被 test_near_anchor_far_stop_rejected 打回）"""
+    d, sig, kl = _decision(97.0)
+    sig["signal_bar_provisional"] = True
+    ok, violations, fixed = validate_decision(d, sig, kl)
+    assert ok, violations
+    assert fixed["stop_anchor"] == "near"
+
+
+def test_provisional_false_keeps_near_check():
+    """显式 False（非尾窗）不回退校验：远离突破K极值仍被打回"""
+    d, sig, kl = _decision(97.0)
+    sig["signal_bar_provisional"] = False
+    ok, violations, _ = validate_decision(d, sig, kl)
+    assert not ok
+    assert any("近锚" in v for v in violations)
+
+
+def test_tail_window_loses_sl_floor_exemption(monkeypatch):
+    """尾窗内近锚不再豁免止损宽度下限：极值未定型 + 无一致性校验，宁宽勿紧"""
+    monkeypatch.setattr(settings, "SL_MIN_ATR", 0.3)
+    kl = [  # 每根 high-low=2 → ATR(14)≈2 → 下限 0.6
+        [i, 100.0, 101.0, 99.0, 100.0, 10.0, 0, 0.0] for i in range(40)
+    ]
+    d = TradeDecision(
+        trade_decision="suggest", direction="long", trade_type="trend_follow",
+        stop_anchor="near",
+        entry_price=100.0, stop_loss=99.5,       # 距入场 0.5 < 0.6
+        take_profit_1=100.8, take_profit_2=0.0,  # RR 1.6 够线，不引入其他违规
+        recommendation=60.0, analysis="r",
+    )
+    sig = _signal()
+    sig["signal_bar_provisional"] = True
+    ok, violations, _ = validate_decision(d, sig, kl)
+    assert not ok
+    assert any("止损宽度过近" in v for v in violations)
+
+
 def test_normalize_raw_rejects_bogus_anchor():
     """非法 stop_anchor 值（AI 幻觉）→ normalize 阶段回退 None"""
     d = normalize_raw({
