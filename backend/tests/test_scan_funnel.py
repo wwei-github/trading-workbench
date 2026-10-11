@@ -125,7 +125,7 @@ def test_reject_direction_flip():
 
 
 def test_reject_structure_1h():
-    """1h 三线排列+发散度不成立 → stage=structure_1h"""
+    """1h 结构门不成立（排列/快中线发散度/144 方向）→ stage=structure_1h"""
     rv: dict = {}
     cand, _ = _detect(rv, structure=None, htf_nonempty=False)
     assert cand is None and rv == {"stage": "structure_1h"}

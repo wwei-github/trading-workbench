@@ -213,7 +213,8 @@ def detect_indicator_candidate(
 
     流程（2026-10-10 二次拍板：EMA 三件套硬门化）：4h 趋势闸门 gate_4h 一票否决
     （走平/缠绕/ADX<20 任一命中直接不看，取代原 ranging 过滤+htf_res 方向门）
-    → 单趟 7 票投票 → 闸门方向一致 → 1H 结构门 structure_1h（三线排列+发散度）
+    → 单趟 7 票投票 → 闸门方向一致 → 1H 结构门 structure_1h（三线排列+
+    快中线发散度+EMA144 方向）
     → 震荡评分卡 range_score（≥3 不入场）→ 两段式触发确认（trigger.py）
     → 质量分。原 6 票预筛已于同日撤销（4h 前置后失去省请求价值，|net6|<2 被
     终判 |net|<3 完全蕴含），4h 背景复用第一步结果、6 项指标不再双算。
@@ -312,10 +313,11 @@ def detect_indicator_candidate(
         _reject("direction_flip")
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
-    # 第二步：1H 结构校验（2026-10-10 二次拍板，check_1h_structure 语义硬门化）：
-    # 三线排列（EMA21>55>144 多头镜像）+ ATR 归一发散度（|21-55|/ATR≥0.5、
-    # |55-144|/ATR≥1.0）必须成立——仅有排列还不够，三线挤在一起即使顺序对也是
-    # 震荡；ATR 归一化让同一套阈值跨品种可用。1h 历史 <200 根（新币）一并否决
+    # 第二步：1H 结构校验（2026-10-10 二次拍板，check_1h_structure 语义硬门化；
+    # 2026-10-11 拍板中慢线发散度退役）：三线排列（EMA21>55>144 多头镜像）+
+    # 快中线 ATR 归一发散度（|21-55|/ATR 分离史≥0.5）+ EMA144 方向（做多走平
+    # 或向上、做空镜像）必须成立——仅有排列还不够，快中线挤在一起即使顺序对
+    # 也是震荡；ATR 归一化让同一套阈值跨品种可用。1h 历史 <200 根（新币）一并否决
     st = structure_1h(klines[:-1] if len(klines) >= 2 else klines,
                       "long" if direction == 1 else "short")
     if st is None:

@@ -2,7 +2,8 @@
 """EMA 趋势门单测（docs/19 §2，2026-10-10 融合拍板：影子层退役并入原生触发层）。
 
 - ema_gate：gate_4h 三重否决（斜率走平/缠绕/ADX）与方向判定、structure_1h
-  三线排列 + ATR 归一发散度；K 线格式 [ts, o, h, l, c, v]（与 ExchangePool 一致）；
+  三线排列 + 快中线发散度 + EMA144 方向（2026-10-11 拍板中慢线发散度退役）；
+  K 线格式 [ts, o, h, l, c, v]（与 ExchangePool 一致）；
 - trigger 趋势升级：闸门+结构全过 → trigger_trend_pullback（质量分层标注），
   任一门不过/无 htf → 普通回踩金K确认（升级不拦截，行为零回归）；
 - P2 出场变体（docs/19 §3.4）：backtest_engine 的 sig_exit/tp_qty_override 回测能力；
@@ -87,7 +88,11 @@ def test_gate_4h_insufficient_bars_rejected():
 # test_gate_4h_flat_market_rejected 的"否决并集"行为覆盖，不设专测
 
 
-# ── structure_1h：三线排列 + ATR 归一发散度 ────────────────────────────────
+# ── structure_1h：三线排列 + 快中线发散度 + EMA144 方向 ────────────────────
+# 「EMA144 反向否决」不设专测（与 gate_4h 缠绕否决同理）：做多要求排列
+# 21>55>144 成立而 EMA144 近 20 根严格下行，连价路径下是准矛盾态（价格中枢
+# 须压在 144 下方而 EMA21 均值又在 144 上方，共存窗口 ≤ 数根，合成序列无法
+# 构造且真实市场几乎不出现），方向判定由上涨/下跌两测的 slope144 断言覆盖
 
 
 def test_structure_1h_bullish_aligned_passes():
@@ -97,13 +102,15 @@ def test_structure_1h_bullish_aligned_passes():
     _ind, ev = r
     assert ev["aligned"] is True
     assert ev["div_fast_mid"] >= 0.5
-    assert ev["div_mid_slow"] >= 1.0
+    assert ev["slope144_pct"] > 0  # 上涨序列 EMA144 向上，144 方向条件放行
+    assert "div_mid_slow" in ev    # ms 降级为观测注记，仍在证据中
 
 
 def test_structure_1h_bearish_aligned_passes():
     k1 = _bars([400.0 - 0.5 * i for i in range(300)], H1)
     r = structure_1h(k1, "short")
     assert r is not None and r[1]["aligned"] is True
+    assert r[1]["slope144_pct"] < 0  # 镜像：下跌序列 144 向下，空头放行
 
 
 def test_structure_1h_direction_mismatch_rejected():
@@ -124,9 +131,10 @@ def test_structure_1h_insufficient_bars_rejected():
 
 
 def test_structure_1h_divergence_history_pullback_passes():
-    """分离史口径（2026-10-10 三次拍板）：前期趋势段充分分离（div_fm/div_ms
-    超阈值），末段深度回踩把 EMA21 拖贴 EMA55（现值不达标）——按近 12 根
-    max 判定 → 放行。触点时刻现值口径下此场景必被误杀（EMA55 回踩核心场景）"""
+    """分离史口径（2026-10-10 三次拍板）：前期趋势段充分分离（div_fm 超阈值），
+    末段深度回踩把 EMA21 拖贴 EMA55（现值不达标）——按近 12 根
+    max 判定 → 放行。触点时刻现值口径下此场景必被误杀（EMA55 回踩核心场景）
+    2026-10-11 拍板后中慢线发散度不再判定，早期趋势不再被 ms 腿拦截"""
     # 上升段 260 根（间距拉开），末 40 根深回踩（缓跌，EMA21/55 间距压缩）
     closes = [100.0 + 0.5 * i for i in range(260)]
     closes += [closes[-1] - 0.12 * i for i in range(1, 41)]
@@ -134,21 +142,22 @@ def test_structure_1h_divergence_history_pullback_passes():
     r = structure_1h(k1, "long")
     assert r is not None
     _ind, ev = r
-    # 分离史（max）达标，现值被回踩压缩——审计字段可见压缩量
-    assert ev["div_fast_mid"] >= 0.5 and ev["div_mid_slow"] >= 1.0
+    # 快中腿分离史（max）达标，现值被回踩压缩——审计字段可见压缩量
+    assert ev["div_fast_mid"] >= 0.5
     assert ev["div_fast_mid_now"] < ev["div_fast_mid"]
+    assert ev["slope144_pct"] >= 0  # 缓跌 40 根不足以翻转 EMA144，方向放行
 
 
 def test_structure_1h_no_divergence_history_rejected():
-    """分离史口径反震荡不丢：排列对但整段黏着（12 根内无分离史）→ None。
+    """分离史口径反震荡不丢：排列对但整段黏着（12 根内无快中线分离史）→ None。
     现值口径下若末根恰好拉开会被放行，分离史口径堵住这个假趋势漏洞"""
     closes = [100.0] * 290
     closes += [100.0 + 0.06 * i for i in range(1, 11)]  # 仅末 10 根缓拉开
     k1 = _bars(closes, H1)
     r = structure_1h(k1, "long")
-    if r is not None:  # 排列成立且 max 达标才可能过；黏着构造下 max 必不达标
+    if r is not None:  # 排列成立且快中腿 max 达标才可能过；黏着构造下 max 必不达标
         _ind, ev = r
-        assert ev["div_fast_mid"] < 0.5 or ev["div_mid_slow"] < 1.0
+        assert ev["div_fast_mid"] < 0.5
         assert r is None  # 恒等：该场景必须被拒
 
 
@@ -158,16 +167,16 @@ def test_structure_1h_history_window_expires():
     窗口过期后 max 反映的是回踩压缩值；本例构造 max 恰好不达标（紧贴+排列破
     边缘），验证窗口语义而非机械断言 None"""
     # 上升 288 根拉开间距 → 末 60 根快速深跌回踩（EMA21 被 price 拖向 EMA55，
-    # 12 根窗口内 fm/ms 全程压缩）
+    # 12 根窗口内 fm 全程压缩）
     closes = [100.0 + 0.5 * i for i in range(288)]
     closes += [closes[-1] - 0.55 * i for i in range(1, 61)]
     k1 = _bars(closes, H1)
     r = structure_1h(k1, "long")
     # 快速深跌下排列大概率已破（EMA21 下穿 EMA55）→ None；排列侥幸成立时
-    # 窗口内 max 也被压缩 → 证据两腿至少一腿不达标
+    # 窗口内 max 也被压缩 → 快中腿不达标
     if r is not None:
         _ind, ev = r
-        assert ev["div_fast_mid"] < 0.5 or ev["div_mid_slow"] < 1.0
+        assert ev["div_fast_mid"] < 0.5
 
 
 def test_structure_1h_evidence_carries_now_snapshot():
@@ -177,6 +186,7 @@ def test_structure_1h_evidence_carries_now_snapshot():
     assert r is not None
     _ind, ev = r
     assert "div_fast_mid_now" in ev and "div_mid_slow_now" in ev
+    assert "slope144_pct" in ev
     assert ev["div_lookback"] == 12
 
 

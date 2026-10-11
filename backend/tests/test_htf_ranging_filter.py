@@ -3,8 +3,9 @@
 
 detect_indicator_candidate 判定链（docs/01 §3.2）：
 gate_4h（4h 趋势闸门一票否决：走平/缠绕/ADX<20 → 不跑票数不触发，pending
-expire(ranging)）→ 7 票多数决 → 闸门方向一致 → structure_1h（1H 三线排列+发散度，
-不过 → expire(structure_1h)）→ range_score（震荡评分 ≥3 → expire(range_score)）
+expire(ranging)）→ 7 票多数决 → 闸门方向一致 → structure_1h（1H 三线排列+
+快中线发散度+EMA144 方向，不过 → expire(structure_1h)）→ range_score
+（震荡评分 ≥3 → expire(range_score)）
 → 触发。4h 拉取失败（htf=None）降级放行与第 7 票口径一致；1h 结构门/评分卡
 不依赖 4h，htf 缺失时照常生效。
 

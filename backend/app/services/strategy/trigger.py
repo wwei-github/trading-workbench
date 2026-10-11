@@ -497,7 +497,8 @@ def detect_trigger(
     golden, golden_note = resolve_golden_evidence(klines, wanted, patterns)
 
     # EMA 趋势方向门（2026-10-10 融合拍板，docs/19 §2）：4H EMA144 三重否决
-    # （斜率走平/缠绕/ADX）+ 1H 三线排列发散度。回踩路径两道门全过 →
+    # （斜率走平/缠绕/ADX）+ 1H 三线排列/快中线发散度/EMA144 方向。回踩路径
+    # 两道门全过 →
     # 信号升级为 trend_pullback（质量分层标注）；任一门不过 → 保持普通
     # pullback_confirm 行为不变。门只影响触发类型标注，不拦截。
     # htf=None（4h 拉取失败）→ 闸门无数据 → 不升级（保守回落普通回踩）。

@@ -5,7 +5,9 @@
 一票否决语义，借鉴外部设计 check_4h_gate / check_1h_structure / calc_range_score）：
 - gate_4h：4H EMA144 趋势闸门（三重否决——斜率走平 / 缠绕震荡 / ADX 弱），
   输出方向 long/short 或 None；
-- structure_1h：1H 三线排列 + ATR 归一发散度结构门，输出结构证据或 None；
+- structure_1h：1H 三线排列 + 快中线发散度 + EMA144 方向结构门（2026-10-11
+  拍板：中慢线发散度退役为观测注记，长期趋势健康度改由「144 走平或反向
+  拒绝」判定），输出结构证据或 None；
 - range_score：震荡评分卡 8 项独立评分，≥3 判震荡不入场。
 
 K 线口径：gate_4h 收原始 4h 序列（尾根未收盘，内部剔除，analyze_adx 同口径）；
@@ -19,7 +21,8 @@ import numpy as np
 
 from app.services.strategy.technical import analyze_adx
 
-# EMA144 斜率回看根数（4h）与走平阈值（20 根变化幅度/价格 < 0.5% → 走平）
+# EMA144 斜率回看根数（4h 闸门与 1h 结构门 144 方向共用窗口）与走平阈值
+# （20 根变化幅度/价格 < 0.5% → 走平）
 SLOPE_BARS = 20
 SLOPE_FLAT_PCT = 0.005
 # 缠绕判定：近 10 根收盘价穿越 EMA144 次数 ≥3 → 震荡拒绝
@@ -52,10 +55,12 @@ def ema_series(closes: np.ndarray, period: int) -> Optional[np.ndarray]:
 @dataclass
 class EmaGateConfig:
     """方向门参数（触发层固定口径，与 docs/19 出厂值一致）。"""
-    div_fast_mid: float = 0.5       # 1h |EMA21-EMA55|/ATR 下限
-    div_mid_slow: float = 1.0       # 1h |EMA55-EMA144|/ATR 下限
+    div_fast_mid: float = 0.5       # 1h |EMA21-EMA55|/ATR 下限（分离史口径）
+    # div_mid_slow 已退役（2026-10-11 拍板）：|EMA55-EMA144|/ATR≥1.0 硬门撤销，
+    # 长期趋势健康度改判「排列内 EMA144 走平或沿信号方向」，ms 分离度降级为
+    # 证据观测注记（复盘定标留档）；55/144 距离过近仍以 +1 分参与震荡评分卡
     adx_min: float = 20.0           # 4h ADX 趋势闸门下限
-    # 分离史回看根数（2026-10-10 三次拍板）：发散度两腿按近 N 根已收盘的最大值
+    # 分离史回看根数（2026-10-10 三次拍板）：快中腿按近 N 根已收盘的最大值
     # 判定——深回踩（触 EMA55/144）会把 EMA21/55 间距压缩到不达标，触点时刻
     # 现值误杀深回踩；「这波趋势曾分离过」即可，三线黏着的假趋势整段无分离
     # 史照样被杀（反震荡能力不丢）。半窗口出厂默认，参数定标待实盘证据（docs/19 #15）
@@ -114,13 +119,21 @@ def gate_4h(k4: list[list], cfg: Optional[EmaGateConfig] = None) -> Optional[tup
 
 def structure_1h(k1: list[list], direction: str,
                  cfg: Optional[EmaGateConfig] = None) -> Optional[tuple[dict, dict]]:
-    """1H 三线排列 + ATR 归一发散度结构门（direction="long"/"short"）。
+    """1H 结构门：三线排列 + 快中线发散度 + EMA144 方向（direction="long"/"short"）。
 
     2026-10-10 三次拍板（分离史口径）：排列 aligned 仍在最后一根硬查（「趋势
-    没坏」的结构声明，与回踩深度无关）；发散度两腿改按近 div_lookback 根已
+    没坏」的结构声明，与回踩深度无关）；快中腿发散度按近 div_lookback 根已
     收盘的**带方向**最大值判定——深回踩把 EMA21/55 间距压缩是回踩的定义而非
-    缺陷，触点时刻现值会误杀 EMA55/144 深回踩；「沿信号方向曾分离过」即可
+    缺陷，触点时刻现值会误杀 EMA55 深回踩；「沿信号方向曾分离过」即可
     （与旧现值口径同号，反方向残差不计数），假趋势整段无分离史照样否决。
+
+    2026-10-11 拍板：中慢线发散度（|EMA55-EMA144|/ATR≥1.0）硬门退役——早期
+    趋势（55/144 刚拉开途中）被误杀面过大；长期趋势健康度改判「做多要求
+    EMA144 走平或向上（近 SLOPE_BARS 根变化 ≥0），做空镜像」。「21/55 在 144
+    同侧」由排列蕴含（21>55>144 ⇒ 双双在 144 上方）不重复判定；连价路径下
+    排列完好而 144 严格反向是准矛盾态（价格中枢须压在 144 下方而 EMA21 均值
+    又在 144 上方，共存窗口 ≤ 数根），该条件为语义声明 + 排列放松时的安全网。
+    ms 分离度保留在证据中作观测注记（复盘定标留档，不再判定）。
 
     返回 ({d21,d55,d144,atr}, 结构证据 dict) 或 None（结构不过）。
     """
@@ -151,11 +164,21 @@ def structure_1h(k1: list[list], direction: str,
     if not aligned:
         return None
 
-    # 分离史：两腿各取近 div_lookback 根已收盘的带方向最大分离度（正语义 =
+    # EMA144 方向（2026-10-11 拍板）：做多要求走平或向上（近 SLOPE_BARS 根
+    # 变化 ≥0，含走平），做空镜像。e144 有限区自 index 143 起，len≥200 时
+    # -SLOPE_BARS 落点必有限
+    slope144 = float(e144[-1]) - float(e144[-SLOPE_BARS])
+    if direction == "long" and slope144 < 0:
+        return None
+    if direction == "short" and slope144 > 0:
+        return None
+
+    # 分离史：快中腿取近 div_lookback 根已收盘的带方向最大分离度（正语义 =
     # 沿信号方向曾分离，与旧现值口径同号；反方向残差如 e55×e144 刚翻多的空头
     # 排列历史不计数）。窗口须整体落在 EMA 有限区——ema_series 前 period-1 根
     # 为 NaN，e144 有限区自 index 143 起，lb 截断到 len-143；NaN 兜底
-    # fail-closed（np.max 传 NaN 会让 <阈值 判 False 静默放行，必须挡住）
+    # fail-closed（np.max 传 NaN 会让 <阈值 判 False 静默放行，必须挡住）。
+    # ms 腿同窗口计算仅作观测注记（2026-10-11 退役判定，复盘对比留档）
     lb = max(int(cfg.div_lookback), 1)
     lb = min(lb, len(c) - 143)
     if lb < 1:
@@ -177,8 +200,9 @@ def structure_1h(k1: list[list], direction: str,
           # 现值快照（审计口径）：复盘「深回踩压间距」占比与 lookback 定标用
           "div_fast_mid_now": round(float(fm_now / atr), 3),
           "div_mid_slow_now": round(float(ms_now / atr), 3),
+          "slope144_pct": round(slope144 / float(c[-1]), 5),
           "div_lookback": lb, "atr": round(atr, 8)}
-    if div_fm < cfg.div_fast_mid or div_ms < cfg.div_mid_slow:
+    if div_fm < cfg.div_fast_mid:
         return None
     return {"d21": d21, "d55": d55, "d144": d144, "atr": atr}, ev
 

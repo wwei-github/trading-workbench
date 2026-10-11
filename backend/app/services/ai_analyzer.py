@@ -175,9 +175,9 @@ SIGNAL_TYPE_LABELS = {
         "倒锤形线/上吊线/孕线突破/十字星（蜻蜓/墓碑/中性）不在白名单）"
     ),
     # 趋势回踩（2026-10-10 融合，docs/19）：普通回踩确认 + EMA 趋势门——
-    # 4H EMA144 趋势闸门（斜率/缠绕/ADX 三重否决）+ 1H 三线排列发散度全过，
-    # 其余确认机制与 trigger_pullback_confirm 完全一致
-    "trigger_trend_pullback": "指标同向·趋势回踩金K确认（4H EMA144 趋势闸门[斜率≥0.5%/20根+缠绕≤2次+ADX≥20 三重否决]与 1H EMA21>55>144 三线排列且发散度达标全过后，回踩触点+同向金K入场；确认机制同回踩金K确认，趋势背景更强）",
+    # 4H EMA144 趋势闸门（斜率/缠绕/ADX 三重否决）+ 1H 三线排列/快中线发散度/
+    # EMA144 方向全过，其余确认机制与 trigger_pullback_confirm 完全一致
+    "trigger_trend_pullback": "指标同向·趋势回踩金K确认（4H EMA144 趋势闸门[斜率≥0.5%/20根+缠绕≤2次+ADX≥20 三重否决]与 1H EMA21>55>144 三线排列、快中线发散度达标、EMA144 方向顺信号方向全过后，回踩触点+同向金K入场；确认机制同回踩金K确认，趋势背景更强）",
     "unknown": "未分类",
     "manual_search": "手动搜索",
 }
@@ -232,10 +232,12 @@ def render_signal_gate_block(signal_type: str, stop_cap_pct: Optional[float] = N
             ]
             if signal_type == "trigger_trend_pullback":
                 # 趋势回踩（2026-10-10 融合）：普通回踩门槛 + EMA 趋势门注记
+                # （2026-10-11 拍板：中慢线发散度退役，144 方向=走平或沿信号方向）
                 lines += [
                     "- 趋势门（已程序化验证）: 4H EMA144 斜率≥0.5%/20根、近10根缠绕≤2次、"
-                    "ADX≥20 三重否决 + 1H EMA21>55>144 三线排列且发散度达标（|EMA21-EMA55|/ATR≥0.5、"
-                    "|EMA55-EMA144|/ATR≥1.0）——趋势背景强于普通回踩，评估时可对趋势延续性更积极",
+                    "ADX≥20 三重否决 + 1H EMA21>55>144 三线排列、快中线发散度达标"
+                    "（|EMA21-EMA55|/ATR 分离史≥0.5）、EMA144 走平或沿信号方向"
+                    "——趋势背景强于普通回踩，评估时可对趋势延续性更积极",
                 ]
             if cap_line:
                 lines.append(cap_line)
