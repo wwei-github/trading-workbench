@@ -6,6 +6,8 @@
 """
 from datetime import datetime
 
+import pytest
+
 from app.services.market_data import (
     FORMING_TAIL_MINUTES,
     in_forming_tail,
@@ -94,3 +96,89 @@ def test_screen_klines_passthrough_outside_window():
 def test_screen_klines_empty_safe():
     """空数组安全：原样返回不崩"""
     assert screen_klines([], "1h", _dt(14, 56)) == []
+
+
+# ── 图表K线尾窗强刷（H5，2026-10-12）─────────────────────────────────
+# K线缓存按小时桶且桶内不刷新：尾窗内未收盘根随时在变，图表端必须强刷，
+# 否则最后一根停在小时内首次取数的快照上（最坏差近 1h），与扫描/AI 不一致。
+
+
+@pytest.fixture()
+def chart_client(monkeypatch):
+    """/api/scans/klines 测试客户端：内存 sqlite + K线源打桩记录 force_refresh"""
+    import app.models  # noqa: F401
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import StaticPool
+    from sqlalchemy.orm import sessionmaker
+
+    import app.api.scan as scan_api
+    from app.database import Base, get_db
+    from app.main import app
+    from app.models.system_config import SystemConfig
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    session.add(SystemConfig(id=1))
+    session.commit()
+
+    calls: list[dict] = []
+
+    def _fake(self, symbol, interval="1h", limit=240, allow_stale=False, force_refresh=False):
+        calls.append({"symbol": symbol, "interval": interval, "force_refresh": force_refresh})
+        base = 1700000000000
+        return [
+            [base + i * 3_600_000, 100.0, 101.0, 99.0, 100.5, 10.0]
+            for i in range(40)
+        ]
+
+    monkeypatch.setattr(scan_api.ExchangePool, "get_klines", _fake)
+
+    def _override():
+        yield session
+
+    app.dependency_overrides[get_db] = _override
+    yield TestClient(app), calls
+    app.dependency_overrides.pop(get_db, None)
+    session.close()
+
+
+def _force_flag(monkeypatch, tail: bool):
+    """把 market_data.in_forming_tail 固定为 tail（scan.py 经模块引用调用）"""
+    import app.services.market_data as md
+
+    monkeypatch.setattr(md, "in_forming_tail", lambda interval, now=None: tail)
+
+
+def test_chart_klines_force_refresh_in_tail(chart_client, monkeypatch):
+    """尾窗内强制强刷：最后一根不能停在小时内旧快照上"""
+    client, calls = chart_client
+    _force_flag(monkeypatch, True)
+    resp = client.get("/api/scans/klines/BTCUSDT", params={"limit": 40})
+    assert resp.status_code == 200
+    assert calls and calls[-1]["force_refresh"] is True
+
+
+def test_chart_klines_uses_cache_outside_tail(chart_client, monkeypatch):
+    """非尾窗沿用缓存（不强刷，省请求，等价旧行为）"""
+    client, calls = chart_client
+    _force_flag(monkeypatch, False)
+    resp = client.get("/api/scans/klines/BTCUSDT", params={"limit": 40})
+    assert resp.status_code == 200
+    assert calls and calls[-1]["force_refresh"] is False
+
+
+def test_chart_klines_client_force_overrides_outside_tail(chart_client, monkeypatch):
+    """客户端显式 force_refresh=true（图表「更新」按钮）：非尾窗也强刷"""
+    client, calls = chart_client
+    _force_flag(monkeypatch, False)
+    resp = client.get(
+        "/api/scans/klines/BTCUSDT", params={"limit": 40, "force_refresh": True}
+    )
+    assert resp.status_code == 200
+    assert calls[-1]["force_refresh"] is True

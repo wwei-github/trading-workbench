@@ -276,21 +276,26 @@ def run_ai_analysis_single(
         # ── 程序侧 skip 闸门已全部移除（2026-09-15 拍板）：强度/陈旧/振幅熔断不再拦截，
         #    选中的币种一律交真实 AI 分析，跳过与否由 AI 自己决定 ──
         pool = ExchangePool()
-        klines = pool.get_klines(r.symbol, cfg.kline_interval, 500)
-        if len(klines) < 500:
+        # 基准时刻取一次（H4，2026-10-12）：强刷判定与幽灵尾根判定共用同一 now，
+        # 避免重读时钟造成「判定为尾窗、screen 时已跨点」的错配
+        tail_now = datetime.now(timezone.utc)
+        in_tail = md.in_forming_tail(cfg.kline_interval, tail_now)
+        # 扫描尾窗同口径 + 强刷（H5，2026-10-12）：K线缓存按小时桶且桶内不刷新，
+        # 尾窗内未收盘根随时在变——不强刷会读到小时内早期快照（依赖扫描侧是否刚
+        # 刷过桶的时序），与扫描看到的分属两根不同口径的「信号根」。尾窗内强刷，
+        # 非尾窗沿用缓存（省请求）
+        klines = pool.get_klines(r.symbol, cfg.kline_interval, 500, force_refresh=in_tail)
+        if len(klines) < 500 and not in_tail:
             # K线不足500根（止盈锚定/回退的前提是查满500根窗口）：强刷重取一次；
-            # 仍不足则为新上市合约的全部历史，用可用K线继续
+            # 仍不足则为新上市合约的全部历史，用可用K线继续（尾窗内已强刷，不重复）
             klines = pool.get_klines(r.symbol, cfg.kline_interval, 500, force_refresh=True)
             logger.info("AI 分析 %s K线不足500根，强刷重取后 %d 根", r.symbol, len(klines))
 
         # 扫描尾窗同口径（2026-10-11-4）：分析紧随 :55 扫描，事实包必须与扫描
         # 看到同一根信号K线——尾窗内幽灵尾根视图（K线摘要/指标块/摆动结构/
         # current_price 全部对齐扫描口径）；跨点后（如分析拖到 :01+）自动退回
-        # 「上一根已收盘根」口径，与扫描尾窗的信号根是同一根，结果仍一致。
-        # 基准时刻取一次（2026-10-12）：判定与 screen_klines 同一 now，避免重读
-        # 时钟造成「判定为尾窗、screen 时已跨点」的错配
-        tail_now = datetime.now(timezone.utc)
-        if md.in_forming_tail(cfg.kline_interval, tail_now):
+        # 「上一根已收盘根」口径，与扫描尾窗的信号根是同一根，结果仍一致
+        if in_tail:
             klines = md.screen_klines(klines, cfg.kline_interval, tail_now)
             # 信号根 = 未走完的近收盘根（H1，2026-10-12）：其收盘/极值未定型，
             # 下游「信号K极值已定型」前提不成立——打标供 risk_guard 放宽近锚硬校验

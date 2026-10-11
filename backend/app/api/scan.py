@@ -1412,9 +1412,16 @@ def get_klines(
     cfg = _get_system_config(db)
     eff_interval = interval or cfg.kline_interval
     pool = ExchangePool()
+    # 扫描尾窗同口径 + 强刷（H5，2026-10-12）：K线缓存按小时桶且桶内不刷新，
+    # 尾窗内未收盘根随时在变——不刷会停在小时内首次取数的快照上（最坏差近 1h），
+    # 与扫描/AI 看到的最新快照不一致。尾窗内强制强刷（客户端「更新」按钮参数同级），
+    # 非尾窗沿用缓存（省请求）
+    eff_force = force_refresh or md.in_forming_tail(
+        eff_interval, datetime.now(timezone.utc)
+    )
     try:
         klines = pool.get_klines(
-            symbol, eff_interval, limit, allow_stale=True, force_refresh=force_refresh
+            symbol, eff_interval, limit, allow_stale=True, force_refresh=eff_force
         )
     except AllExchangesFailed as e:
         raise HTTPException(status_code=503, detail=f"K线获取失败（{e.summary}）")
