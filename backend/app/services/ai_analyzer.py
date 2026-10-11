@@ -3,6 +3,7 @@ import json
 import logging
 from typing import Optional
 
+import numpy as np
 from openai import OpenAI
 
 from app.config import settings
@@ -12,7 +13,7 @@ from app.services.market_data import build_market_context, get_kline_client
 from app.services.risk_guard import build_forced_skip, parse_and_validate
 from app.services.strategy.candlestick import golden_whitelist_labels
 from app.services.strategy.ema import analyze_ema
-from app.services.strategy.technical import render_indicator_block
+from app.services.strategy.technical import atr_series, render_indicator_block
 from app.services.strategy.trigger import TOUCH_LABELS
 from app.services.strategy.types import POSITION_LABEL_MAP
 
@@ -377,6 +378,50 @@ def _get_client() -> OpenAI:
     return get_client()
 
 
+# 程序止损参考缓冲（×ATR14，1h 口径）：锚与提示词止损纪律同语义（摆动结构位
+# 与近 5 根影线极值取更远者），缓冲由 AI 执行的 0.3% 换成 0.5×ATR——AI 拿不到
+# 可靠 ATR 做跨品种归一的算术，由程序侧计算
+STOP_REF_ATR_MULT = 0.5
+STOP_REF_EXT_BARS = 5
+
+
+def calc_stop_reference(
+    signal: dict, klines: list, direction: Optional[str],
+) -> Optional[float]:
+    """程序止损参考价（2026-10-11）：仅前端对比展示，不改写 AI 报价、不参与下单。
+
+    与 _RULE_SL 锚纪律同语义：锚 = 摆动结构位与近 STOP_REF_EXT_BARS 根影线
+    极值中更远者（摆动点用现价同侧过滤近似 AI 的「入场价下方/上方」——
+    程序不知道 AI 将定的入场价），外扩 STOP_REF_ATR_MULT×ATR14（Wilder，
+    自剔尾）。方向缺失 / ATR 不可算 / K线不足返回 None（旧行与 skip 行为
+    NULL，前端不显示参考卡）。"""
+    if direction not in ("long", "short"):
+        return None
+    atr_arr = atr_series(klines, period=14)
+    if atr_arr is None or not np.isfinite(atr_arr[-1]):
+        return None
+    closed = klines[:-1] if len(klines) >= 2 else klines
+    if len(closed) < STOP_REF_EXT_BARS:
+        return None
+    price = float(signal.get("current_price") or closed[-1][4])
+    sw = signal.get("recent_swings") or {}
+    if direction == "long":
+        anchor = min(float(k[3]) for k in closed[-STOP_REF_EXT_BARS:])
+        for s in sw.get("lows", []):
+            p = float(s["price"])
+            if p < price:
+                anchor = min(anchor, p)
+                break  # 新→旧，第一个现价下方摆动低点即「最近」
+        return anchor - STOP_REF_ATR_MULT * float(atr_arr[-1])
+    anchor = max(float(k[2]) for k in closed[-STOP_REF_EXT_BARS:])
+    for s in sw.get("highs", []):
+        p = float(s["price"])
+        if p > price:
+            anchor = max(anchor, p)
+            break
+    return anchor + STOP_REF_ATR_MULT * float(atr_arr[-1])
+
+
 def analyze_coin(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
@@ -417,6 +462,8 @@ def analyze_coin(
     if not tp2_enabled:
         # TP2 关闭兜底清零（提示词已要求输出 0；防止模型违规输出污染落库记录）
         result["take_profit_2"] = 0
+    # 程序止损参考价（0.5×ATR 外扩）：仅展示对比用，不改写 AI 报价
+    result["calc_stop_loss"] = calc_stop_reference(signal, klines, result.get("direction"))
     return result
 
 
@@ -708,6 +755,8 @@ def analyze_with_guard(
                 signal.get("symbol"), fixed.get("trade_decision"),
                 fixed.get("risk_reward_ratio"),
             )
+            # 程序止损参考价（0.5×ATR 外扩）：仅展示对比用，不改写 fixed 内任何字段
+            fixed["calc_stop_loss"] = calc_stop_reference(signal, klines, fixed.get("direction"))
             return fixed
         last_violations = violations
         logger.warning(

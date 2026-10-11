@@ -565,6 +565,8 @@ def _upsert_ai_analysis(
         "analysis": ai_result.get("analysis"),
         "entry_price": ai_result.get("entry_price"),
         "stop_loss": ai_result.get("stop_loss"),
+        # 程序止损参考价（2026-10-11）：0.5×ATR 外扩，仅前端对比展示不下单
+        "calc_stop_loss": ai_result.get("calc_stop_loss"),
         "take_profit_1": ai_result.get("take_profit_1"),
         "take_profit_2": ai_result.get("take_profit_2"),
         "risk_reward_ratio": ai_result.get("risk_reward_ratio"),

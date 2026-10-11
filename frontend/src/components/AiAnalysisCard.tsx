@@ -548,10 +548,19 @@ export default function AiAnalysisCard({ ai }: Props) {
         </>
       ) : (
         <>
-          {/* 价格卡：入场 / 止损 / 止盈1 / 止盈2 */}
+          {/* 价格卡：入场 / 止损（AI 报价）/ 程序止损参考 / 止盈1 / 止盈2 */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
             <PriceCard label="入场价" value={ai.entry_price} color="#1677ff" />
             <PriceCard label="止损价" value={ai.stop_loss} color={SCHEME_UP_DOWN[colorScheme].down} />
+            {/* 程序止损参考（2026-10-11）：0.5×ATR 外扩锚价，仅对比展示不下单；
+                skip 行/旧数据/ATR 不可算为 null 不显示 */}
+            {ai.calc_stop_loss != null && (
+              <Tooltip title="程序止损参考：摆动结构位与近5根影线极值取更远者，外扩 0.5×ATR(1h)。仅用于与 AI 报价对比，实际下单仍用「止损价」">
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <PriceCard label="程序止损·0.5ATR" value={ai.calc_stop_loss} color={SCHEME_UP_DOWN[colorScheme].down} />
+                </div>
+              </Tooltip>
+            )}
             <PriceCard label={ai.tp_mode === 'trail' ? '止盈1·参考' : '止盈1'} value={ai.take_profit_1} color={SCHEME_UP_DOWN[colorScheme].up} />
             {/* TP2 关闭时落库 0：显示「未启用」而非 0.0000 */}
             <PriceCard label="止盈2" value={ai.take_profit_2} color={SCHEME_UP_DOWN[colorScheme].up} zeroText="未启用" />

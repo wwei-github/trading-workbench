@@ -149,6 +149,9 @@ export interface AIAnalysis {
   analysis: string | null;
   entry_price: number | null;
   stop_loss: number | null;
+  // 程序止损参考价（2026-10-11）：锚=摆动结构位/近5根影线极值取更远者外扩 0.5×ATR，
+  // 仅与 AI 报价对比展示，实际下单仍用 stop_loss；skip/旧行 null
+  calc_stop_loss?: number | null;
   take_profit_1: number | null;
   take_profit_2: number | null;
   risk_reward_ratio: number | null;

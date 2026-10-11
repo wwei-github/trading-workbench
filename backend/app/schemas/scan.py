@@ -105,6 +105,9 @@ class AIAnalysisOut(BaseModel):
     analysis: Optional[str] = None
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
+    # 程序止损参考价（2026-10-11）：0.5×ATR 外扩（calc_stop_reference），
+    # 仅前端与 AI 报价对比展示；skip/旧行 NULL
+    calc_stop_loss: Optional[float] = None
     take_profit_1: Optional[float] = None
     take_profit_2: Optional[float] = None
     risk_reward_ratio: Optional[float] = None
@@ -154,6 +157,7 @@ class ManualAnalysisOut(BaseModel):
     analysis: Optional[str] = None
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
+    calc_stop_loss: Optional[float] = None  # 程序止损参考价（0.5×ATR 外扩，仅对比展示）
     take_profit_1: Optional[float] = None
     take_profit_2: Optional[float] = None
     risk_reward_ratio: Optional[float] = None

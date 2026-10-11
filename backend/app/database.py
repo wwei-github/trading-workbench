@@ -625,6 +625,12 @@ def _run_migrations(engine):
             "ALTER TABLE ai_analyses "
             "ADD COLUMN IF NOT EXISTS strategy2_reason VARCHAR(255)"
         ))
+        # 程序止损参考价（2026-10-11）：锚=摆动结构位/近5根影线极值取更远者外扩
+        # 0.5×ATR14(1h)，仅前端与 AI 报价对比展示；skip/旧行/ATR 不可算 NULL
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS calc_stop_loss NUMERIC(20, 8)"
+        ))
 
 
 def init_db():

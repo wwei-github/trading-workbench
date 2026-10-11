@@ -82,6 +82,10 @@ class AIAnalysis(Base):
     analysis: Mapped[Optional[str]] = mapped_column(String(4000), nullable=True)
     entry_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
     stop_loss: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+    # 程序止损参考价（2026-10-11）：锚=摆动结构位/近5根影线极值取更远者外扩
+    # 0.5×ATR14(1h)（calc_stop_reference），仅前端与 AI 报价对比展示——不改写
+    # stop_loss、不参与下单；skip/旧行/ATR 不可算为 NULL
+    calc_stop_loss: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
     take_profit_1: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
     take_profit_2: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
     risk_reward_ratio: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)

@@ -217,3 +217,53 @@ def test_dual_judge_json_mode_only_on_judge_call(monkeypatch):
     assert "response_format" not in client.calls[0]["kwargs"]
     assert "response_format" not in client.calls[1]["kwargs"]
     assert client.calls[2]["kwargs"].get("response_format") == {"type": "json_object"}
+
+
+# ── 程序止损参考价 calc_stop_reference（2026-10-11，0.5×ATR 展示对比）────────
+# 构造横盘序列：h=101/l=99/c=100 → TR 恒 2 → ATR14=2，0.5×ATR=1
+
+def _flat_klines(n=40, base=100.0):
+    return [[i * 3600000, base, base + 1, base - 1, base, 1000.0] for i in range(n)]
+
+
+def test_calc_stop_long_swing_anchor_farther():
+    """多头：现价下方最近摆动低点比近5根影线极值更远 → 锚取摆动低点"""
+    signal = {
+        "current_price": 100.0,
+        "recent_swings": {"lows": [{"label": "HL", "price": 97.0, "bars_ago": 8}], "highs": []},
+    }
+    ref = ai_analyzer.calc_stop_reference(signal, _flat_klines(), "long")
+    assert ref == pytest.approx(97.0 - 1.0)  # 锚 97 − 0.5×ATR(=2)
+
+
+def test_calc_stop_long_extreme_anchor_farther():
+    """多头：首个摆动低点在现价上方（错误侧）被跳过、循环继续；次个摆动低点
+    比极值近 → 两锚取更远用影线极值"""
+    signal = {
+        "current_price": 100.0,
+        "recent_swings": {
+            "lows": [
+                {"label": "HL", "price": 105.0, "bars_ago": 2},   # 现价上方，跳过
+                {"label": "HL", "price": 99.5, "bars_ago": 6},    # 比极值 99 近
+            ],
+            "highs": [],
+        },
+    }
+    ref = ai_analyzer.calc_stop_reference(signal, _flat_klines(), "long")
+    assert ref == pytest.approx(99.0 - 1.0)  # 锚 = 近5根 low 99
+
+
+def test_calc_stop_short_mirror():
+    """空头镜像：现价上方摆动高点更远 → 锚取摆动高点，外扩反号"""
+    signal = {
+        "current_price": 100.0,
+        "recent_swings": {"highs": [{"label": "LH", "price": 103.0, "bars_ago": 8}], "lows": []},
+    }
+    ref = ai_analyzer.calc_stop_reference(signal, _flat_klines(), "short")
+    assert ref == pytest.approx(103.0 + 1.0)
+
+
+def test_calc_stop_none_cases():
+    """方向缺失 / K线不足（ATR 不可算）→ None（前端不显示参考卡）"""
+    assert ai_analyzer.calc_stop_reference({"current_price": 100.0}, _flat_klines(), None) is None
+    assert ai_analyzer.calc_stop_reference({"current_price": 100.0}, _flat_klines(10), "long") is None
