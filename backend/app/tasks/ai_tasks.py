@@ -23,8 +23,9 @@ from sqlalchemy import select
 from app.celery_app import celery_app
 from app.config import settings
 from app.database import SessionLocal
-from app.models.scan import ScanRecord, ScanResult, AIAnalysis
+from app.models.scan import ScanRecord, ScanResult, AIAnalysis, TradeReview
 from app.models.system_config import SystemConfig
+from app.models.trade import TradeRecord
 from app.services import ai_progress
 from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
@@ -549,7 +550,13 @@ def _upsert_ai_analysis(
     db, scan_result_id: UUID, symbol: str, ai_result: dict,
     fingerprint: Optional[str] = None,
 ):
-    """latest-wins：有则更新，无则新建；返回落库行（供即时开仓分发取 id）"""
+    """latest-wins：有则更新，无则新建；返回落库行（供即时开仓分发取 id）。
+
+    保护性摘钩（2026-10-11，ALTUSDT 案例）：命中已存在且被 trade_records/
+    trade_reviews 引用的行时不再原地覆盖（会把「已开单」的结论静默改写——
+    交易记录 ai_snapshot 冻住开单时三价，AI 卡片却显示新结论，看卡片的人
+    被误导），旧行摘钩（scan_result_id=None，与手动单币重分析同语义），
+    新结论另起新行照常走开仓闸门。"""
     fields = {
         "trade_decision": ai_result.get("trade_decision"),
         "skip_reason": ai_result.get("skip_reason"),
@@ -601,6 +608,24 @@ def _upsert_ai_analysis(
     ).scalars().first()
 
     if existing:
+        # 引用检查（轻查询各 limit 1）：开单/复盘引用任一存在即视为已消费
+        referenced = (
+            db.execute(
+                select(TradeRecord.id)
+                .where(TradeRecord.ai_analysis_id == existing.id).limit(1)
+            ).scalar() is not None
+            or db.execute(
+                select(TradeReview.id)
+                .where(TradeReview.ai_analysis_id == existing.id).limit(1)
+            ).scalar() is not None
+        )
+        if referenced:
+            # 摘钩保留（先 flush 保证 UPDATE 先于 INSERT 发出），新结论另起新行
+            existing.scan_result_id = None
+            db.flush()
+            row = AIAnalysis(scan_result_id=scan_result_id, symbol=symbol, **fields)
+            db.add(row)
+            return row
         for k, v in fields.items():
             setattr(existing, k, v)
         return existing
