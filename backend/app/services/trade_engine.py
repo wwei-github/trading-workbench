@@ -227,14 +227,15 @@ def _attempt_open(
         logger.info("开仓跳过 %s：币种在黑名单（手动/连续止损自动）", symbol)
         _mark_open_block(db, a, "币种在黑名单（手动添加或连续止损自动冷却中）")
         return False
-    # 下单环境可交易兜底（2026-09-19，ARX 案例）：扫描宇宙已过滤，这里防
-    # 缓存到期瞬间/扫描并发窗口内的新候选。用本单账号 trader（账号属性
-    # testnet 决定基地址）——2026-10-03 双网同开后各网独立校验。空集合
-    # （拉取失败）放行不阻断
+    # 下单环境可交易校验（2026-09-19，ARX 案例；2026-10-11 升级为唯一校验点）：
+    # 扫描期 C0 过滤已撤（用户拍板——未上架币照常分析，AI 配额换取全市场可见性），
+    # 开单时按本单账号网络逐网校验：未上架 → 拒开 + 落原因（BLOCK_UNTRADABLE），
+    # 任务层扇出后锁外发飞书提示（正式网有该合约的账号正常开单走常规卡片）。
+    # 空集合（拉取失败）放行不阻断
     listed = trader.listed_symbols()
     if listed and symbol not in listed:
         logger.info("开仓跳过 %s：下单环境未上架该合约（exchangeInfo 校验）", symbol)
-        _mark_open_block(db, a, "下单环境未上架该合约（无法交易）")
+        _mark_open_block(db, a, BLOCK_UNTRADABLE)
         return False
     # 开单类型仅作记录（2026-09-15 拍板）：策略开关不再拦截开仓（未知类型也不拦）
     # EMA 排列前提随指标多数决重设计移除（2026-09-17）：方向判定权已移交指标多数决
@@ -742,6 +743,11 @@ def _attempt_open(
             # PUMPUSDT 案例）：同样不留"既没开单也没原因"的悬案，落拒开原因
             _mark_open_block(db, a, f"开仓失败：{str(e)[:200]}")
         return False
+
+
+# 下单环境未上架拒开原因（2026-10-11 常量化）：_attempt_open 落库用文本，
+# trade_tasks 扇出后按此匹配收集、锁外发飞书提示——两处必须同步修改
+BLOCK_UNTRADABLE = "下单环境未上架该合约（无法交易）"
 
 
 def _mark_open_block(db: Session, a: AIAnalysis, reason: str) -> None:

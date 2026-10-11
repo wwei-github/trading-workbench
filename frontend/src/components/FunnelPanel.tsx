@@ -19,7 +19,7 @@ const { Text } = Typography
 // 关卡元数据（顺序即漏斗逻辑序；代码与 scanner.py reject_out 语义一一对应）
 const FUNNEL_STAGES: { key: string; label: string; color: string; hint: string }[] = [
   { key: 'liquidity', label: '流动性', color: 'default', hint: '24h 成交额低于门槛，不进扫描' },
-  { key: 'untradable', label: '不可交易', color: 'default', hint: '下单环境未上架该合约（开单会 -1121）' },
+  { key: 'untradable', label: '不可交易', color: 'default', hint: '（2026-10-11 退役）原下单环境未上架预过滤，已撤——未上架币照常分析，开单时逐网校验并飞书提示；仅旧轮次数据可见' },
   { key: 'new_coin', label: '新币冷静期', color: 'default', hint: '上市未满 N 天（默认 14 天）不进扫描' },
   { key: 'risk_tier', label: '风险档位', color: 'default', hint: '交易所最大允许杠杆 <10×' },
   { key: 'blacklist', label: '黑名单', color: 'default', hint: '手动添加（永久）或止损超预算自动加入（1.2R 冷却 30 天 / ≥1.5R 永久）' },
@@ -154,7 +154,7 @@ export default function FunnelPanel() {
           }}>
             {([
               { label: '全市场', value: data.universe, color: '#1677ff', hint: '全市场 USDT 永续合约数' },
-              { label: '进管线', value: data.scanned, color: '#1677ff', hint: '预过滤（流动性/可交易/新币/风险档位/黑名单）后进指标管线数' },
+              { label: '进管线', value: data.scanned, color: '#1677ff', hint: '预过滤（流动性/新币/风险档位/黑名单）后进指标管线数；未上架币不再过滤，开单时逐网校验' },
               { label: '候选进AI', value: data.candidates, color: '#52c41a', hint: '通过全部筛选关卡、产生信号候选并进入 AI 分析' },
               { label: '待确认池', value: data.pending_pool, color: '#13c2c2', hint: '回踩触碰但当根无金K，转入待确认池等确认（不算被拒）' },
               ...(data.errors > 0

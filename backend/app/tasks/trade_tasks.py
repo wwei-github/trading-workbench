@@ -321,6 +321,9 @@ def open_trade_for_analysis(analysis_id: str):
     r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     opened = 0
     opened_trade_ids: list[str] = []
+    # 未上架受阻收集（2026-10-11）：扫描期不再过滤不可交易币，开单时逐网校验，
+    # 未上架的（symbol, 网络名）收集后锁外统一飞书提示（HTTP 不进开仓锁）
+    untradable_blocked: list[tuple[str, str]] = []
     for acc in accs:
         trader = BinanceTrader(acc.key)
         if not trader.configured:
@@ -354,6 +357,16 @@ def open_trade_for_analysis(analysis_id: str):
                         ).scalar()
                         if _rid:
                             opened_trade_ids.append(str(_rid))
+                    else:
+                        # 未上架拒开（open_block_reason 刚由本账号写入，会话内
+                        # 直读可靠）：收集后锁外飞书。正式网有该合约的账号在上
+                        # 述分支正常开单走常规开仓卡片，不在此列
+                        from app.services.trade_engine import BLOCK_UNTRADABLE
+                        a_row = db.get(AIAnalysis, UUID(str(analysis_id)))
+                        if (a_row is not None
+                                and BLOCK_UNTRADABLE in (a_row.open_block_reason or "")):
+                            untradable_blocked.append(
+                                (a_row.symbol, "测试网" if acc.testnet else "正式网"))
                 finally:
                     db.close()
             except Exception as e:
@@ -363,6 +376,19 @@ def open_trade_for_analysis(analysis_id: str):
                 _mark_analysis_block(analysis_id, f"[{acc.key}] 开仓任务异常：{e}")
         finally:
             _release_open_lock(r, ident, account=acc.key)
+
+    # 未上架飞书提示（2026-10-11，锁外）：仅列出受阻的网络；正式网有该合约的
+    # 账号已正常开单（常规开仓卡片），互不干扰。失败仅记日志
+    if untradable_blocked:
+        try:
+            from app.services.feishu_bot import send_app_text
+            send_app_text(
+                "⚠️ 开单受阻：" + "；".join(
+                    f"{s}（{net}未上架该合约）" for s, net in untradable_blocked)
+                + "，该网络无法开单；有上架的网络已正常走开单流程"
+            )
+        except Exception:
+            logger.exception("未上架飞书通知异常 analysis=%s", analysis_id)
 
     if opened:
         logger.info("即时开仓完成：%d/%d 账号成交（analysis=%s）", opened, len(accs), analysis_id)

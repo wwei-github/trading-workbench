@@ -482,23 +482,12 @@ class Scanner:
                 f"{min_vol:,.0f}", before, len(symbols_data),
             )
 
-            # C0 下单环境可交易过滤（2026-09-19，ARX 案例）：数据源永远走正式网
-            # （ARXUSDT 有 K线、AI 照常分析），下单环境未上架 → 开单 -1121
-            # Invalid symbol 白白烧 AI 配额 + FAILED 记录。2026-10-03 双网同开
-            # +删环境切换：按「启用了自动交易的网」（auto_trade_accounts 账号的
-            # testnet 属性并集）各自拉 exchangeInfo，任一启用网可交易即保留；
-            # 双开关全关（无启用网）放行——不开单无浪费，不阻断。空表放行不阻断
-            # （_bt 实例化必须在 C0 之前——此前放在 C 段导致 UnboundLocalError，
-            #   04:02/05:02 两轮扫描全崩的根因）
-            from app.services.account_registry import auto_trade_accounts
-            listed: set = set()
-            for net in sorted({a.testnet for a in auto_trade_accounts(db)}):
-                listed |= set(BinanceTrader(net).listed_symbols())
-            if listed:
-                before = len(symbols_data)
-                symbols_data = _drop(
-                    symbols_data, lambda s: s["symbol"] in listed, "untradable")
-                logger.info("下单环境可交易过滤（%d 个合约）：%d → %d", len(listed), before, len(symbols_data))
+            # C0 下单环境可交易过滤已撤（2026-10-11 用户拍板）：未上架币照常
+            # 进扫描/AI 分析（数据源走正式网，K 线齐全），AI 配额换取全市场
+            # 可见性；可交易校验收敛到开单时逐网进行（trade_engine._attempt_open
+            # listed 兜底 + 未上架飞书提示，正式网有则正常开单）。原实现按
+            # 「启用自动交易的网」拉 exchangeInfo 并集预过滤（2026-09-19 ARX
+            # 案例：开单 -1121 白烧配额——该防线保留在开单层）
 
             # C0' 新币冷静期（2026-10-04 NIGHT 案例，用户拍板默认 14 天可配）：
             # 上市未满 N 天的合约不进扫描。新币盘口深度极不稳定——开仓时刻滑点

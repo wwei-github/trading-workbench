@@ -5,9 +5,10 @@ detect_indicator_candidate 各关卡经 reject_out 旁路写 {"stage": <关卡�
 （与 event_out 同模式，零破坏旧调用点）；主扫描 run 收口组装 funnel_json
 随 ScanRecord 落库，前端「筛选漏斗」Tab 展示。关卡代码表：
 gate_4h / votes / direction_flip / structure_1h / range_score /
-no_trigger / trigger_whitelist + 预过滤 liquidity/untradable/new_coin/
+no_trigger / trigger_whitelist + 预过滤 liquidity/new_coin/
 risk_tier/blacklist（预过滤在 run_scan 内联，逻辑为谓词平移，由落库与
-detect 层测试间接覆盖）。
+detect 层测试间接覆盖；untradable 预过滤 2026-10-11 退役——不再扫描期
+过滤，开单时逐网校验 + 飞书提示，旧轮次漏斗数据仍可见该关卡）。
 
 判定链测试打法：monkeypatch 打桩各闸门/票数/触发（test_scan_filters 白名单
 测试同款），使命中点唯一落在被测关卡；另用真实夹具（ranging 4h）抽查
