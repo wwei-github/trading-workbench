@@ -24,3 +24,9 @@ export function schemeValueColor(v: number, scheme: ColorScheme): string {
   if (v < 0) return SCHEME_UP_DOWN[scheme].down
   return '#595959'
 }
+
+// hex → rgba 字符串（卡片软底/描边等衍生色用，随方案同源翻转）
+export function hexToRgba(hex: string, alpha: number): string {
+  const n = parseInt(hex.slice(1), 16)
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`
+}

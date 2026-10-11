@@ -9,7 +9,8 @@ import {
 import { Bubble, ThoughtChain } from '@ant-design/x'
 import { bj } from '../utils/dayjs'
 import { useScanStore } from '../stores/scanStore'
-import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
+import type { ColorScheme } from '../stores/scanStore'
+import { SCHEME_UP_DOWN, hexToRgba, schemeTag } from '../utils/scheme'
 import { scanApi } from '../api/scan'
 import { TRADE_TYPE_MAP } from '../constants/labels'
 import type { AIAnalysis, StageTrace } from '../types'
@@ -85,18 +86,24 @@ function parseAnalysisSections(text?: string | null): AnalysisSections | null {
   return found >= 2 ? sections : null
 }
 
-/** 策略结论徽标：suggest 绿 / skip 红 / null 灰（旧行或不可用） */
-function DecisionBadge({ decision }: { decision: 'suggest' | 'skip' | null }) {
+/** 策略结论徽标：suggest=涨色 / skip=跌色（随系统红绿方案翻转）/ null=灰（旧行不可用） */
+function DecisionBadge({
+  decision,
+  scheme,
+}: {
+  decision: 'suggest' | 'skip' | null
+  scheme: ColorScheme
+}) {
   if (decision === 'suggest') {
     return (
-      <Tag color="success" style={{ marginInlineEnd: 0 }}>
+      <Tag color={schemeTag(scheme).up} style={{ marginInlineEnd: 0 }}>
         <CheckCircleOutlined /> 建议开单
       </Tag>
     )
   }
   if (decision === 'skip') {
     return (
-      <Tag color="error" style={{ marginInlineEnd: 0 }}>
+      <Tag color={schemeTag(scheme).down} style={{ marginInlineEnd: 0 }}>
         <CloseCircleOutlined /> 不建议
       </Tag>
     )
@@ -104,13 +111,19 @@ function DecisionBadge({ decision }: { decision: 'suggest' | 'skip' | null }) {
   return <Tag style={{ marginInlineEnd: 0, color: '#999' }}>—</Tag>
 }
 
-/** 策略卡配色随结论徽标联动 */
-function cardStyle(decision: 'suggest' | 'skip' | null): CSSProperties {
+/** 策略卡配色随结论徽标联动（涨/跌色随系统红绿方案同源翻转） */
+function cardStyle(decision: 'suggest' | 'skip' | null, scheme: ColorScheme): CSSProperties {
   if (decision === 'suggest') {
-    return { border: '1px solid rgba(82,196,26,0.35)', background: 'rgba(82,196,26,0.05)' }
+    return {
+      border: `1px solid ${hexToRgba(SCHEME_UP_DOWN[scheme].up, 0.35)}`,
+      background: hexToRgba(SCHEME_UP_DOWN[scheme].up, 0.05),
+    }
   }
   if (decision === 'skip') {
-    return { border: '1px solid rgba(255,77,79,0.30)', background: 'rgba(255,77,79,0.04)' }
+    return {
+      border: `1px solid ${hexToRgba(SCHEME_UP_DOWN[scheme].down, 0.3)}`,
+      background: hexToRgba(SCHEME_UP_DOWN[scheme].down, 0.04),
+    }
   }
   return { border: '1px solid #f0f0f0', background: '#fafafa' }
 }
@@ -134,8 +147,13 @@ function StrategyLines({ lines }: { lines: string[] }) {
 
 /** 双策略分区（2026-10-11）：公共检查 + 策略一/策略二结论卡 + 合并结论 */
 function DualStrategySections({ ai, sections }: { ai: AIAnalysis; sections: AnalysisSections }) {
-  const s1Decision = ai.trade_decision === 'suggest' ? 'suggest' : 'skip'
-  // 策略二结论取结构化审计字段；null（旧行）回退看文本节是否有内容
+  // 系统红绿方案（页面顶部全局切换，localStorage 持久化）
+  const colorScheme = useScanStore((s) => s.colorScheme)
+  // 策略一结论：整体 suggest 且胜出方非 s2 才算策略一胜出——entry_strategy=s2 时
+  // 策略一必然未胜出（若胜出优先级闸会落 s1），不得随整体结论误标「建议开单」
+  const s1Decision: 'suggest' | 'skip' =
+    ai.trade_decision === 'suggest' && ai.entry_strategy !== 's2' ? 'suggest' : 'skip'
+  // 策略二结论取结构化审计字段；null（旧行无此列）徽标显示「—」不误标
   const s2Decision: 'suggest' | 'skip' | null =
     ai.strategy2_decision === 'suggest'
       ? 'suggest'
@@ -167,10 +185,10 @@ function DualStrategySections({ ai, sections }: { ai: AIAnalysis; sections: Anal
       {/* 两策略结论卡：结论徽标取结构化字段（trade_decision / strategy2_decision），
           明细取 analysis 文本节——结构化字段不依赖文本解析，文本节缺失不误标 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
-        <div style={{ padding: '10px 12px', borderRadius: 8, ...cardStyle(s1Decision) }}>
+        <div style={{ padding: '10px 12px', borderRadius: 8, ...cardStyle(s1Decision, colorScheme) }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
             <strong style={{ fontSize: 13 }}>策略一 · 完整规则</strong>
-            <DecisionBadge decision={s1Decision} />
+            <DecisionBadge decision={s1Decision} scheme={colorScheme} />
             {relabeled && (
               <Tooltip title="两策略复算均达标，按拍板优先取策略一开单（程序自动改标）">
                 <Tag color="purple" style={{ marginInlineEnd: 0, fontSize: 11 }}>
@@ -181,10 +199,10 @@ function DualStrategySections({ ai, sections }: { ai: AIAnalysis; sections: Anal
           </div>
           <StrategyLines lines={sections.s1} />
         </div>
-        <div style={{ padding: '10px 12px', borderRadius: 8, ...cardStyle(s2Decision) }}>
+        <div style={{ padding: '10px 12px', borderRadius: 8, ...cardStyle(s2Decision, colorScheme) }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
             <strong style={{ fontSize: 13 }}>策略二 · EMA21 金K跟踪</strong>
-            <DecisionBadge decision={s2Decision} />
+            <DecisionBadge decision={s2Decision} scheme={colorScheme} />
           </div>
           <StrategyLines lines={sections.s2} />
           {ai.strategy2_reason && (

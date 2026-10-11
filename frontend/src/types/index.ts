@@ -159,7 +159,7 @@ export interface AIAnalysis {
   // 战法命中标注（2026-10-02，仅借鉴）：AI 判定信号符合的战法名 + 判定依据
   tactic_name?: string | null;
   tactic_reason?: string | null;
-  tp_mode?: string | null; // 止盈模式（2026-10-10，docs/19 §3.4）：ladder / trail（AI 按信号选择；null=旧行按 ladder）
+  tp_mode?: string | null; // 止盈模式（2026-10-11 起由 entry_strategy 程序推导）：s1→ladder / s2→trail；null=旧行按 ladder 展示
   // 双入场策略（2026-10-10-5，docs/20）：entry_strategy=胜出方 s1/s2（null=旧行按 s1）；
   // strategy2_*=策略二结论审计字段（2026-10-11 建列），前端分区展示结论徽标直接取用
   entry_strategy?: string | null;
