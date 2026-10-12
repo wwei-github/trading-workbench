@@ -114,6 +114,7 @@ const EVENT_META: Record<string, { label: string; color: string; icon: React.Rea
   SL_MOVE: { label: '止损移动', color: '#fa8c16', icon: <SwapOutlined /> },
   SL_FILL: { label: '止损成交', color: '#ff4d4f', icon: <CloseCircleOutlined /> },
   CUT_EMA21: { label: '破EMA21减半', color: '#fa541c', icon: <ScissorOutlined /> },
+  TP_TRAIL: { label: '浮盈落袋·减1/3', color: '#52c41a', icon: <ScissorOutlined /> },
   EXIT_HTF_STATE: { label: '4H趋势反转全平', color: '#cf1322', icon: <CloseCircleOutlined /> },
   CANCEL: { label: '撤单', color: '#8c8c8c', icon: <MinusCircleOutlined /> },
   SETTLE: { label: '结算', color: '#1677ff', icon: <AccountBookOutlined /> },
@@ -173,6 +174,10 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   ema21: 'EMA21·1h',
   cut_qty: '减仓数量',
   remain_qty: '剩余数量',
+  // 浮盈落袋（trail 武装后，2026-10-12 docs/21 O8）
+  target: '落袋线',
+  atr_mult: '落袋线倍数',
+  fallback: '退化口径',
 }
 
 function fmtNum(n: number | null | undefined): string {

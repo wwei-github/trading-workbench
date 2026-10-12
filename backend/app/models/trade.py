@@ -135,6 +135,7 @@ class TradeEvent(Base):
     # OPEN / TP1_FILL / TP2_FILL / SL_MOVE / SL_FILL / CANCEL / ERROR / SETTLE / SKIP
     # / LIQUIDATION / AI_ADVICE / MANUAL_CLOSE / EXTERNAL_CLOSE（2026-10-02 外部平仓）
     # / EXIT_HTF_STATE（2026-10-12 docs/21 O1：4h 状态机下车态全平，trail 专属）
+    # / TP_TRAIL（2026-10-12 docs/21 O8：trail 浮盈目标落袋减 1/3）
     detail: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 

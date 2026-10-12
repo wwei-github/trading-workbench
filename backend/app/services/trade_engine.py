@@ -1673,8 +1673,10 @@ def _trail_mode_patrol(db: Session, trader: BinanceTrader, rec: TradeRecord,
     未武装：全程盈亏峰值（peak_total_pnl，USDT）≥ 1×ATR(22,1d)×数量 → 武装保本
     （SL 移至成本价±往返费缓冲，与 TP1 后保本同口径）；entry_atr 缺失（开仓时
     快照失败/旧行）退化 1×risk_amount（1R）武装线。
-    已武装：先查 EMA21 减半腿（武装后 1h 收盘破 EMA21 → 市价减半仓，一次性），
-    再每轮跟进止损（与 TP2_HIT 同机制，摆动腿+ATR 腿只收紧不放松）。
+    已武装：先查两条落袋腿（独立叠加，2026-10-12 拍板，docs/21 O8）：浮盈目标腿
+    （1h 收盘浮盈 ≥2×ATR(22,1d)×持仓 → 市价减 1/3 落袋）与 EMA21 减半腿（1h 双
+    确认破 EMA21 → 市价减半仓），再每轮跟进止损（与 TP2_HIT 同机制，摆动腿+ATR
+    腿只收紧不放松）。
     幂等：armed 旗标在 raw.trail_armed，武装动作失败（交易所异常）不落旗标下轮重试。
     """
     raw = rec.raw or {}
@@ -1709,10 +1711,105 @@ def _trail_mode_patrol(db: Session, trader: BinanceTrader, rec: TradeRecord,
         logger.info("纯跟踪武装保本 %s：峰值 %.4f 达武装线 %.4f，SL=%s",
                     rec.symbol, peak, threshold, sl_now)
     if (rec.raw or {}).get("trail_armed"):
-        # 武装（=已开始移动止损）后先查减半腿：破 EMA21 落袋一半再继续跟进
+        # 武装（=已开始移动止损）后两条落袋腿独立叠加（2026-10-12 拍板，docs/21 O8）：
+        # 先浮盈目标腿（1h 收盘 2×ATR 达标 → 减 1/3 落袋），再减半腿（破 EMA21 减半）
+        # ——两腿各自一次性旗标、互不设门槛
         # （重读 rec.raw：本轮刚武装时局部 raw 是旧 dict 无旗标）
+        _trail_profit_take(db, trader, rec)
         _ema21_half_cut(db, trader, rec)
     _move_sl_trailing(db, trader, rec, interval, open_ids, atr_k=atr_k)
+
+
+# 中途止盈腿参数（2026-10-12 拍板 B5/B6，docs/21 O8）：落袋线 = 2×ATR(22,1d)×
+# 当前持仓量（entry_atr 快照口径；缺失退化 2×risk_amount=2R），达标减 1/3
+_TRAIL_TP_ATR_MULT = 2.0
+_TRAIL_TP_QTY_FRAC = 1 / 3
+
+
+def _trail_profit_take(db: Session, trader: BinanceTrader, rec: TradeRecord) -> None:
+    """武装后 1h 收盘浮盈达标 → 市价减 1/3 落袋（2026-10-12 拍板，docs/21 O8）。
+
+    与 _ema21_half_cut（破 EMA21 减半腿）独立叠加、各自一次性旗标：前者落袋
+    利润，后者应对趋势转弱，语义不同、互不设门槛。
+    达标口径（拍板 B5=A）：1h 已收盘 K 收盘价（剔尾，与减半腿/structure_1h 同
+    纪律）对应的全程浮盈（已实现+收盘价浮动）≥ 落袋线；收盘价天然剔影线，
+    插针（长影线）不误触发。
+    落袋线 = _TRAIL_TP_ATR_MULT × entry_atr × 当前持仓 amt；entry_atr 缺失
+    （开仓快照失败/旧行）退化 _TRAIL_TP_ATR_MULT × risk_amount（2R）。
+    仅 _trail_mode_patrol 的已武装分支调用（武装前无保本兜底，先落袋会暴露风险）。
+    数据/约束不可得（K 线不足、无持仓、减仓量或剩余量低于交易所最小规则）→
+    跳过本轮不落旗标，下轮巡检重试；交易所下单异常仅告警不中断巡检（下轮重试）。
+    一次性：raw.trail_tp_done 旗标；减仓后 rec.qty 同步剩余量（与减半腿同口径）。
+    竞态防护：市价单已成交但旗标未落库（事务回滚/响应超时）时，交易所 amt 已
+    ≈ rec.qty×(1−1/3)——持仓已明显小于记录数量（<0.7 倍）视为已落袋过（或用户
+    外部部分平仓），只补旗标与 qty 同步、不再下第二刀。
+    """
+    raw = rec.raw or {}
+    if raw.get("trail_tp_done"):
+        return
+    try:
+        pos = trader.positions().get(rec.symbol)
+        amt = abs(float((pos or {}).get("amt") or 0)) if pos else 0.0
+        rec_qty = float(rec.qty or 0)
+        if amt <= 0:
+            return
+        if rec_qty > 0 and amt < rec_qty * 0.7:
+            # 与减半腿同款竞态防护：持仓已明显小于记录 → 视为已落袋/外部部分平仓
+            rec.qty = amt
+            rec.raw = {**raw, "trail_tp_done": True}
+            _add_event(db, rec, "TP_TRAIL", {
+                "close": None, "target": None, "cut_qty": rec_qty - amt,
+                "remain_qty": amt, "reason": "already_reduced",
+            })
+            logger.info("浮盈落袋 %s：交易所持仓 %s 已小于记录 %s，视为已减过（补旗标）",
+                        rec.symbol, amt, rec_qty)
+            return
+        kl = ExchangePool().get_klines(rec.symbol, "1h", 60)
+        closed = kl[:-1] if len(kl) >= 2 else kl
+        if len(closed) < 2:
+            return
+        close_now = float(closed[-1][4])
+        entry = float(rec.entry_price or 0)
+        if entry <= 0:
+            return
+        atr = float(raw.get("entry_atr") or 0)
+        if atr > 0:
+            target = atr * _TRAIL_TP_ATR_MULT * amt
+            extra = {"atr_mult": _TRAIL_TP_ATR_MULT}
+        else:
+            target = float(rec.risk_amount or 0) * _TRAIL_TP_ATR_MULT
+            extra = {"fallback": "2R"}
+        if target <= 0:
+            return
+        unreal = ((close_now - entry) if rec.direction == "long"
+                  else (entry - close_now)) * amt
+        total = float(rec.realized_pnl or 0) + unreal
+        if total < target:
+            return
+        f = trader.filters(rec.symbol)
+        cut_qty = trader.round_qty(rec.symbol, amt * _TRAIL_TP_QTY_FRAC)
+        remain = amt - cut_qty
+        # 减仓量或剩余量低于交易所最小规则 → 不切（市价单会被拒/留下不可平尾巴），
+        # 留给 SL 全平
+        if cut_qty < f["min_qty"] or remain < f["min_qty"]:
+            logger.info("浮盈落袋 %s 跳过：cut=%s remain=%s 低于 min_qty=%s",
+                        rec.symbol, cut_qty, remain, f["min_qty"])
+            return
+        trader.market_order(rec.symbol, _close_side(rec.direction), cut_qty,
+                            reduce_only=True)
+        rec.qty = remain
+        rec.raw = {**raw, "trail_tp_done": True}
+        # 已实现盈亏落账（与 TP1 成交/减半腿同口径：income 实录，含手续费）
+        _record_realized(db, trader, rec)
+        _add_event(db, rec, "TP_TRAIL", {
+            "close": close_now, "target": target,
+            "cut_qty": cut_qty, "remain_qty": remain, **extra,
+        })
+        logger.info("浮盈落袋 %s：收盘 %s 全程浮盈 %.4f 达落袋线 %.4f，市价减 %s 剩 %s",
+                    rec.symbol, close_now, total, target, cut_qty, remain)
+    except Exception as e:
+        logger.warning("浮盈落袋 %s 本轮未成（不落旗标下轮重试）: %s",
+                       rec.symbol, e)
 
 
 def _ema21_half_cut(db: Session, trader: BinanceTrader, rec: TradeRecord) -> None:

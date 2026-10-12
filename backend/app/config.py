@@ -153,7 +153,12 @@ class Settings(BaseSettings):
     # 前一根低点时，止损落在近期波动区间内部必被扫损）。三面同源：P0/P1 提示词 +
     # 程序参考 calc_stop_reference + 回测/虚拟账本 derive_signal_prices；
     # risk_guard 近锚一致性校验锚点同步改窗口极值（±0.5% 容差口径不变）
-    RULE_VERSION: str = "v2026-10-12-8"
+    # v2026-10-12-9（用户拍板，docs/21 O8）：策略二 trail 新增中途止盈腿——
+    # 武装后 1h 已收盘 K 收盘价全程浮盈（已实现+浮动）≥2×ATR(22,1d)×当前持仓
+    # → 市价 reduceOnly 减 1/3 落袋（一次性旗标 trail_tp_done；收盘口径剔尾
+    # 抗插针；仅武装后启用；entry_atr 缺失退化 2R；与 EMA21 减半腿独立叠加，
+    # 事件 TP_TRAIL）
+    RULE_VERSION: str = "v2026-10-12-9"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]
