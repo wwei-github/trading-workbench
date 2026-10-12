@@ -135,7 +135,11 @@ class Settings(BaseSettings):
     # （signal_bar_provisional，极值未定型）时：① 近锚一致性校验跳过（仅告警，
     # 拿未定型极值硬比对会误伤）；② 同步取消近锚对止损宽度下限的豁免——兜底
     # 没了，改由「止损不许过近」补上，宁宽勿紧
-    RULE_VERSION: str = "v2026-10-12-4"
+    # v2026-10-12-5：止损锚定距离分档（用户拍板）——最近摆动结构位距入场超过
+    # TP1_MAX_ATR÷rr_min（≈1.33×ATR，超过此线 RR 数学上不可能达标）时降级
+    # 金K极值锚（stop_anchor=near 放开全信号类型，一致性校验同步扩展）；
+    # 突破类近锚降级链保留，处理"锚不远但 RR 仍不达标"场景
+    RULE_VERSION: str = "v2026-10-12-5"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

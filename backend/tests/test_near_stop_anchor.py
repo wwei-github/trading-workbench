@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
-"""近锚降级链回归（docs/23，2026-09-29）。
+"""近锚回归（docs/23，2026-09-29；2026-10-12-5 距离分档扩展）。
 
 覆盖：
-1. risk_guard.validate_decision：stop_anchor=near 时止损必须贴近突破K线
-   （klines[-2]）极值 ±0.5%——偏离过远打回；structure/非突破类不校验
-2. fixed dict 落库：near 仅突破类有效，回踩类误报按 structure 落库防分组污染；
+1. risk_guard.validate_decision：stop_anchor=near 时止损必须贴近信号K线
+   （klines[-2]）极值 ±0.5%——偏离过远打回；structure 不校验；
+   2026-10-12-5 起校验与落库均扩展至全信号类型（距离分档降级金K锚）
+2. fixed dict 落库：near 全信号类型有效（须通过一致性校验）；
    缺省/非法值回退 structure
 3. ai_agent._handle_submit：stop_ref=signal_low/signal_high → 程序推导
    stop_anchor=near（不依赖 AI 自报）
+4. 止损宽度下限豁免仍限突破类 near（非突破类金K锚不豁免）
 """
 import sys
 from pathlib import Path
@@ -123,12 +125,13 @@ def test_near_anchor_missing_klines_passes():
 # ── 落库口径 ──────────────────────────────────────────────────────────
 
 
-def test_near_on_pullback_type_lands_structure():
-    """回踩类 AI 误报 near → 校验跳过（非突破类），落库强制 structure 防分组污染"""
+def test_near_on_pullback_type_lands_near():
+    """回踩类 near（2026-10-12-5 距离分档后合法）：止损贴信号K极值 → 通过且落库 near"""
+    anchor = round(99.0 * 0.997, 8)  # 信号K线最低价外 0.3%
     d = TradeDecision(
         trade_decision="suggest", direction="long", trade_type="trend_follow",
         stop_anchor="near",
-        entry_price=100.0, stop_loss=98.5,
+        entry_price=100.0, stop_loss=anchor,
         take_profit_1=105.0, take_profit_2=0.0,
         recommendation=60.0, analysis="r",
     )
@@ -136,7 +139,48 @@ def test_near_on_pullback_type_lands_structure():
         d, _signal("trigger_pullback_confirm"), _klines(),
     )
     assert ok, violations
-    assert fixed["stop_anchor"] == "structure"
+    assert fixed["stop_anchor"] == "near"
+
+
+def test_near_on_pullback_type_far_stop_rejected():
+    """回踩类 near 但止损远离信号K极值（挂到摆动低点）→ 一致性校验打回
+    （2026-10-12-5 前：非突破类不校验、落库强制 structure；现校验与落库同步放开）"""
+    d = TradeDecision(
+        trade_decision="suggest", direction="long", trade_type="trend_follow",
+        stop_anchor="near",
+        entry_price=100.0, stop_loss=97.0,
+        take_profit_1=105.0, take_profit_2=0.0,
+        recommendation=60.0, analysis="r",
+    )
+    ok, violations, fixed = validate_decision(
+        d, _signal("trigger_pullback_confirm"), _klines(),
+    )
+    assert not ok
+    assert fixed == {}
+    assert any("近锚" in v for v in violations)
+
+
+def test_non_breakout_near_not_exempt_from_sl_floor(monkeypatch):
+    """非突破类金K锚不豁免止损宽度下限（豁免仍限突破类近锚）：
+    止损贴信号K极值但距入场 <0.3×ATR → 打回"""
+    monkeypatch.setattr(settings, "SL_MIN_ATR", 0.3)
+    kl = [  # 常规根 high-low=2 → ATR(14)≈1.97 → 下限 ≈0.59
+        [i, 100.0, 101.0, 99.0, 100.0, 10.0, 0, 0.0] for i in range(40)
+    ]
+    kl[38] = [38, 100.0, 100.4, 99.8, 100.0, 10.0, 0, 0.0]  # 信号K线：极值贴近现价
+    anchor = round(99.8 * 0.997, 8)   # 99.5006，距入场 ≈0.4994 < 0.59
+    d = TradeDecision(
+        trade_decision="suggest", direction="long", trade_type="trend_follow",
+        stop_anchor="near",
+        entry_price=100.0, stop_loss=anchor,
+        take_profit_1=100.8, take_profit_2=0.0,  # RR ≈1.6 够线，不引入其他违规
+        recommendation=60.0, analysis="r",
+    )
+    ok, violations, _ = validate_decision(
+        d, _signal("trigger_pullback_confirm"), kl,
+    )
+    assert not ok
+    assert any("止损宽度过近" in v for v in violations)
 
 
 def test_missing_stop_anchor_lands_structure():

@@ -169,11 +169,12 @@ PULLBACK_MARKET_PCT = 0.01
 # 0.0002 级价格漂移误杀案例：CYBERUSDT RR 1.4998 被 1.5 拦
 AI_RR_TOL = 0.02
 
-# 近锚一致性校验（docs/23，2026-09-29）：突破类信号 AI 声明 stop_anchor=near 时，
-# 止损必须贴近突破K线极值（信号K线，klines[-2]；klines[-1] 未收盘）——提示词要求
-# 突破K极值外 0.3% 缓冲，容差 0.5% 覆盖合理偏移；AI 挂近锚名义报远离止损（把
-# 结构锚止损伪装成近锚）时程序打回。数据不足时放行（防数据异常锁死开单，
-# 同 MAX_SLIPPAGE 接口抖动不阻断的哲学），仅记 warning
+# 近锚一致性校验（docs/23，2026-09-29；2026-10-12-5 起扩展至全信号类型——距离分档
+# 降级金K锚后非突破类也可合法落 near，见止损纪律距离分档条款）：AI 声明
+# stop_anchor=near 时，止损必须贴近信号K线极值（klines[-2]；klines[-1] 未收盘）——
+# 提示词要求极值外 0.3% 缓冲，容差 0.5% 覆盖合理偏移；AI 挂近锚名义报远离止损
+# （把结构锚止损伪装成近锚、骗取 ×0.7 风险折价并污染复盘分组）时程序打回。
+# 数据不足时放行（防数据异常锁死开单，同 MAX_SLIPPAGE 接口抖动不阻断的哲学），仅记 warning
 # 尾窗豁免（2026-10-12）：扫描尾窗（:55 起）信号根是未走完的近收盘根快照，其极值
 # 未定型、最后数分钟仍可能扩展——此时「贴近已定型极值」无从校验，按未定型极值
 # 打回会误杀且会把止损压在会被影线扫掉的价位，故 signal_bar_provisional 时跳过，
@@ -299,13 +300,24 @@ def validate_decision(
 
     # ── 双入场策略（2026-10-10-5，docs/20）：s2=EMA21 金K跟踪 ──
     # 资格程序闸：s2 仅当信号触点为 ema21（程序事实，AI 谎报打回重试）；
+    # 2026-10-12 拍板（docs/21 O7）收紧为「触点=ema21 ∧ trend_gated」——
+    # trend_pullback 升级标注 = 4H 闸门+1H 结构门全过（trigger 层判定），
+    # 结构门未过的 ema21 信号 s2 不可用（s1 照常评估，信号池不再被整体杀）；
     # 语义强制：tp_mode 由策略推导（2026-10-11 策略一重定义）——s2 即 trail
     # （不挂止盈档）、s1 即 ladder（trail 加入前原版），AI 输出值被程序覆盖
     _is_s2 = d.entry_strategy == "s2"
+    _trend_gated = (signal.get("signal_type") or "") == "trigger_trend_pullback"
     if _is_s2 and (signal.get("touch_ref") or "") != "ema21":
         violations.append(
             f"策略二仅适用于回踩触点=ema21 的信号（程序校验，当前触点="
             f"{signal.get('touch_ref') or '无'}）：改按策略一评估，或如实 skip"
+        )
+        return False, violations, {}
+    if _is_s2 and not _trend_gated:
+        violations.append(
+            "策略二仅适用于 1H 结构门通过的信号（trigger_trend_pullback 标注，"
+            f"当前 signal_type={signal.get('signal_type') or '未知'}）："
+            "改按策略一评估，或如实 skip"
         )
         return False, violations, {}
     # 审计交叉一致性（2026-10-10-5b）：strategy2_* 是复盘分组键，矛盾组合打回防脏
@@ -313,6 +325,13 @@ def validate_decision(
         violations.append(
             f"strategy2_decision=suggest 与触点（{signal.get('touch_ref') or '无'}）矛盾"
             f"——策略二仅触点=ema21 可用，改 skip 并注明依据，或如实修正"
+        )
+        return False, violations, {}
+    if d.strategy2_decision == "suggest" and not _trend_gated:
+        violations.append(
+            f"strategy2_decision=suggest 与 signal_type（{signal.get('signal_type') or '未知'}）"
+            "矛盾——策略二仅 1H 结构门通过（trigger_trend_pullback）可用，"
+            "改 skip 并注明「1H结构门未过」，或如实修正"
         )
         return False, violations, {}
     if _is_s2 and d.strategy2_decision != "suggest":
@@ -355,9 +374,9 @@ def validate_decision(
     if violations:
         return False, violations, {}
 
-    # ── 近锚一致性校验（docs/23）：突破类 AI 声明 stop_anchor=near 时，
-    # 止损必须贴近突破K线极值 ±0.5%——防 AI 挂近锚名义用远止损绕过
-    # "仅 RR 不达标才降级" 的降级链前提。
+    # ── 近锚一致性校验（docs/23；2026-10-12-5 扩展至全信号类型）：AI 声明
+    # stop_anchor=near 时，止损必须贴近信号K线极值 ±0.5%——防 AI 挂近锚名义用
+    # 远止损（骗 ×0.7 风险折价、污染复盘 structure/near 分组）。
     # 尾窗内信号根未走完（signal_bar_provisional）→ 极值未定型，该校验无基准，
     # 跳过并记 warning（详见 NEAR_ANCHOR_* 常量处的豁免说明，2026-10-12）──
     if signal.get("signal_bar_provisional"):
@@ -365,11 +384,7 @@ def validate_decision(
             "近锚校验跳过：信号根为扫描尾窗未走完根（极值未定型）%s",
             signal.get("symbol"),
         )
-    elif (
-        d.stop_anchor == "near"
-        and (signal.get("signal_type") or "") in BREAKOUT_SIGNAL_TYPES
-        and len(klines) >= 2
-    ):
+    elif d.stop_anchor == "near" and len(klines) >= 2:
         sig_candle = klines[-2]  # 非尾窗下 = 最后一根已收盘K线；klines[-1] 未收盘
         try:
             sig_high, sig_low = float(sig_candle[2]), float(sig_candle[3])
@@ -382,13 +397,13 @@ def validate_decision(
                 anchor = sig_high * (1 + NEAR_ANCHOR_BUFFER)
             if abs(d.stop_loss - anchor) / anchor > NEAR_ANCHOR_TOLERANCE:
                 violations.append(
-                    f"stop_anchor=near 但止损偏离突破K极值锚过远"
-                    f"（锚={anchor:.8g}，SL={d.stop_loss}）：近锚仅允许突破K线"
+                    f"stop_anchor=near 但止损偏离信号K线极值锚过远"
+                    f"（锚={anchor:.8g}，SL={d.stop_loss}）：近锚仅允许信号K线"
                     f"{'最低' if d.direction == 'long' else '最高'}价外 {NEAR_ANCHOR_BUFFER:.1%} 缓冲"
                 )
                 return False, violations, {}
         else:
-            logger.warning("near 校验跳过：突破K线数据异常 %s", signal.get("symbol"))
+            logger.warning("near 校验跳过：信号K线数据异常 %s", signal.get("symbol"))
 
     stop_dist = abs(d.entry_price - d.stop_loss)
     stop_pct = stop_dist / d.entry_price if d.entry_price else 0
@@ -505,14 +520,10 @@ def validate_decision(
         "strategy2_reason": d.strategy2_reason,
         "tactic_name": tactic_name,
         "tactic_reason": tactic_reason,
-        # 止损锚类型落库（docs/23）：near 仅突破类有效（AI 在回踩类误报时按
-        # structure 落库防分组污染）；None（未声明/非法值）同样按 structure 理解
-        "stop_anchor": (
-            "near"
-            if d.stop_anchor == "near"
-            and (signal.get("signal_type") or "") in BREAKOUT_SIGNAL_TYPES
-            else "structure"
-        ),
+        # 止损锚类型落库（docs/23；2026-10-12-5 起 near 全信号类型有效——
+        # 距离分档降级金K锚后非突破类也可合法声明 near，一致性校验已在上方
+        # 把关贴极值）；None（未声明/非法值）按 structure 理解
+        "stop_anchor": "near" if d.stop_anchor == "near" else "structure",
         "analysis": d.analysis or "",
         "entry_price": round(d.entry_price, 8),
         "stop_loss": round(d.stop_loss, 8),

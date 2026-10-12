@@ -59,7 +59,10 @@ NEAR_STOP_RULE_AGENT = """11.5 突破类止损近锚降级链：结构锚（摆�
     必须全部满足）才允许用近锚；量比 <1 的缩量突破无近锚资格；近锚后盈亏比 >4
     时重新评估或 skip；近锚止损宽度仍须 ≥0.3×ATR。{stop_cap_clause}结构锚止损宽度
     已超程序硬上限（见信号门槛块）时无近锚资格，直接 skip。程序会校验近锚止损必须
-    贴近突破K线极值 ±0.5%，偏离过远会被打回。"""
+    贴近突破K线极值 ±0.5%，偏离过远会被打回。距离分档衔接（2026-10-12-5）：
+    结构锚距入场超过 11 条距离分档线时按 11 条直接降级金K锚，不受本条
+    "RR 唯一不达标"前提约束（量比 <1 无资格同样适用）；本条仅处理结构锚
+    不远但盈亏比仍不达标的场景。"""
 
 def render_system_prompt(
     risk_label: str = "", rr_min: Optional[float] = None,
@@ -77,12 +80,14 @@ def render_system_prompt(
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     _tp1_atr = f"{settings.TP1_MAX_ATR:g}"
     _tp1_r = f"{settings.TP1_MAX_R:g}"
+    _far_atr = round(settings.TP1_MAX_ATR / _rr, 2)
     return AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
         rr_min=_rr,
         sl_min_atr=f"{settings.SL_MIN_ATR:g}",
         tp1_max_atr=_tp1_atr,
         tp1_max_r=_tp1_r,
+        far_atr=_far_atr,
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
@@ -102,8 +107,9 @@ def render_system_prompt(
 # 锚点枚举：结构位两类（support/resistance，解析到现价下/上方最近的摆动点）
 # + 线外锚点（做多止盈锚摆动高点下方、做空锚摆动低点上方，枚举名沿用 zone
 # 时期历史命名）+ market（市价锚）。next_ 前缀取更前一档（止盈二用）。
-# signal_low/signal_high（docs/23，2026-09-29）：突破K线（信号K线）极值，
-# 仅止损近锚降级链用（解析见 _resolve_price；stop_ref 命中即推导 stop_anchor=near）
+# signal_low/signal_high（docs/23，2026-09-29；2026-10-12-5 起兼作距离分档
+# 降级金K锚，全信号类型可用）：信号K线（最后一根已收盘K线）极值，仅止损锚用
+# （解析见 _resolve_price；stop_ref 命中即推导 stop_anchor=near）
 LEVEL_REFS = (
     "support", "resistance", "market",
     "resistance_zone_low", "support_zone_high",
@@ -155,6 +161,12 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     其极值就是本笔信号的直接失效位；止损在近期波动区间内部必被扫损）；
     入场价与金K极值间无摆动结构时用金K锚——
     做多严格低于信号K线最低点（影线极值非收盘价）至少 0.3%，做空相反。
+    距离分档（2026-10-12-5）：最近摆动结构位距入场超过 {far_atr}×ATR
+    （=止盈一距离上限÷盈亏比铁律，超过此线 RR 数学上不可能达标）时，
+    该位是更大级别趋势的失效位而非本笔信号失效位，不作为止损锚——
+    直接降级金K锚：做多 stop_ref=signal_low、做空 stop_ref=signal_high
+    （信号K线极值外 0.3%）；降级后仍须满足盈亏比铁律与
+    ≥{sl_min_atr}×ATR 宽度下限，不达标 → skip。
 {near_stop_rule}
 12. 止盈锚定（提示词纪律，程序不再改挂）：结构位=摆动高低点（事实包"近期摆动结构"）。
     距现价特别近（≤1×ATR）的位是价格正在
@@ -284,7 +296,7 @@ TOOLS_SCHEMA = [
             "entry_ref": {"type": "string", "enum": list(LEVEL_REFS), "description": "入场锚点"},
             "entry_offset_pct": {"type": "number", "description": "入场相对锚点偏移%，默认0"},
             "stop_ref": {"type": "string", "enum": list(LEVEL_REFS),
-                         "description": "止损锚点。signal_low/signal_high=突破K线（本信号K线）最低/最高价，仅限突破类近锚降级链使用（见系统规则11.5），其余情况用结构锚点"},
+                         "description": "止损锚点。signal_low/signal_high=信号K线（本信号金K/突破K线，最后一根已收盘K线）最低/最高价，仅用于金K极值锚——距离分档降级（规则11，远结构锚超距离分档线时）或突破类近锚降级链（11.5），其余情况用结构锚点"},
             "stop_offset_pct": {"type": "number", "description": "止损相对锚点偏移%（通常负/反向）"},
             "tp1_ref": {"type": "string", "enum": list(LEVEL_REFS),
                         "description": "止盈1锚点：做多=resistance_zone_low（更远的第一条压力位价格线，距现价≤1×ATR的争夺位线不算），做空=support_zone_high（更远的第一条支撑位价格线）；signal_low/signal_high 仅限止损近锚，不用于止盈"},
@@ -653,6 +665,10 @@ def analyze_coin_agent(
     system = AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
         rr_min=_rr,
+        sl_min_atr=f"{settings.SL_MIN_ATR:g}",
+        tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
+        tp1_max_r=f"{settings.TP1_MAX_R:g}",
+        far_atr=round(settings.TP1_MAX_ATR / _rr, 2),
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
