@@ -62,6 +62,9 @@ SCAN_FILTER_KEYS = (
     "ema_touch_min_bars",         # ③ 触发层：EMA 触碰最小已收盘根数（数据门）
     "structure_1h_gate",          # ② 结构层：1h 结构门开关（2026-10-11，false=跳过判定）
 )
+# swing_order（摆动点阶数）不在上表：它是 SystemConfig 顶层列（前端「摆动点阶数」
+# 独立提交），resolve 时单独读取并注入 ScanFilters.swing_order（2026-10-12 触发层
+# 跟随配置），与 scan_filters JSONB 键集无关
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,9 @@ class ScanFilters:
     structure_touch_band_pct: float = 0.3
     ema_touch_min_bars: int = 200
     new_coin_cooldown_days: int = 14
+    # 摆动点阶数（2026-10-12 触发层跟随配置）：swing 触点 / 结构突破 pivot 取材
+    # 与 AI 事实包、K线标注共用 SystemConfig.swing_order，检测层不再硬编码 3
+    swing_order: int = 3
     # 1h 结构门开关：已于 2026-10-12 退役（docs/21 O7——结构门降格为 s2 资格闸，
     # scanner 不再消费）。字段保留仅为向后兼容（DB JSONB 旧值可解析），同
     # candle_max_ema21_dist_pct 退役先例
@@ -135,6 +141,16 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
         v = raw.get(key)
         return v if isinstance(v, bool) else default
 
+    def _swing_order(default: int) -> int:
+        """摆动点阶数：读 SystemConfig 顶层列（非 scan_filters JSONB，前端
+        「摆动点阶数」独立提交，2026-10-12 触发层跟随配置）；None（无 DB 行）/
+        非法类型 / <1 按缺失回落 env（settings.SWING_ORDER）。"""
+        try:
+            v = int(getattr(cfg, "swing_order", None))
+        except (TypeError, ValueError, OverflowError):
+            return default
+        return v if v >= 1 else default
+
     return ScanFilters(
         min_volume_24h=_num("min_volume_24h", float(settings.MIN_VOLUME_24H)),
         new_coin_cooldown_days=_int("new_coin_cooldown_days", settings.NEW_COIN_COOLDOWN_DAYS),
@@ -150,4 +166,5 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
         structure_touch_band_pct=_num("structure_touch_band_pct", settings.STRUCTURE_TOUCH_BAND_PCT),
         ema_touch_min_bars=_int("ema_touch_min_bars", settings.EMA_TOUCH_MIN_BARS),
         structure_1h_gate=_bool("structure_1h_gate", settings.STRUCTURE_1H_GATE),
+        swing_order=_swing_order(settings.SWING_ORDER),
     )

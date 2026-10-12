@@ -175,7 +175,11 @@ class Settings(BaseSettings):
     # （FORMING_TAIL_MINUTES 派生为 0，in_forming_tail 恒 False）——回退
     # v2026-10-11-4 的「未收盘根视作已收盘」提前捕捉；信号根仍是刚走完的那根，
     # 但取最终收盘价而非扫描时刻快照，时点晚 5 分钟
-    RULE_VERSION: str = "v2026-10-12-12"
+    # v2026-10-12-13（用户拍板）：摆动点阶数纳入触发层——swing 触点与结构突破
+    # pivot 取材不再硬编码 3 阶，改为跟随「摆动点阶数」配置（flt.swing_order，
+    # 读 SystemConfig 顶层列，默认 3 与 AI 事实包/K线标注同源）；默认值下信号
+    # 结果不变
+    RULE_VERSION: str = "v2026-10-12-13"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

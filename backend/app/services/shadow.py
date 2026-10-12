@@ -1323,7 +1323,7 @@ def build_report(db, window_days: int = 30) -> list[dict]:
 # 流动性猎取确认档：回踩确认候选触点位的插针×收回形态。docs/26 模式预注册
 # 回放两轮判「转影子」后实施（口径与门槛见 docs/14 §七 CARD-08，锁定不可
 # 回调）。参考位 = 生产原生触点位（零漂移，这是回放两轮的核心教训）：
-# - swing 当根确认：trigger._detect_swing_touch 同输入复算（同 klines 同 band）
+# - swing 当根确认：trigger._detect_swing_touch 同输入复算（同 klines 同 band 同阶数）
 # - swing 次根确认：PullbackPending.ema21（Stage-1 触碰锚点，upsert 时存）
 # - retest：破轨事件 price（当根）/ pending 锚点（次根）
 # EMA 触点族不打标：回放证明该族插针收回是常态（~91%），无选择性。
@@ -1401,7 +1401,10 @@ def compute_sweep_reclaim_scan(klines: list, cand: dict, pending: Optional[dict]
         path = None
         if touch_ref == "swing":
             band = float(getattr(flt, "structure_touch_band_pct", 0.0) or 0.0)
-            lvl = trigger_mod._detect_swing_touch(klines, direction, band)  # 当根
+            # 阶数跟随配置（2026-10-12）；flt 缺省（直接调用）回落 env，与 trigger 同源
+            from app.config import settings
+            order = int(getattr(flt, "swing_order", 0) or settings.SWING_ORDER)
+            lvl = trigger_mod._detect_swing_touch(klines, direction, band, order)  # 当根
             if lvl is not None:
                 path = "same_candle"
         elif (touch_ref == "retest" and retest

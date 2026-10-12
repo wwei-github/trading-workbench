@@ -165,7 +165,7 @@ def test_compute_swing_same_candle_via_detect(monkeypatch):
     sig_open = _sig_open_ms()
     monkeypatch.setattr(
         "app.services.strategy.trigger._detect_swing_touch",
-        lambda kl, direction, band: 100.0)
+        lambda kl, direction, band, order: 100.0)
     pool = _FakePool(_sweep_bars())
     r = shadow_mod.compute_sweep_reclaim_scan(
         _klines(sig_open), _cand(), pool=pool)  # 无 pending → 当根路径

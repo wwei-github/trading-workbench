@@ -108,6 +108,20 @@ def test_resolve_null_column_and_none_cfg():
     assert resolve_scan_filters(SimpleNamespace(scan_filters=None)) == resolve_scan_filters(None)
 
 
+def test_resolve_swing_order_from_top_level_column():
+    """摆动点阶数读 SystemConfig 顶层列（非 scan_filters JSONB）：
+    2026-10-12 触发层跟随配置，DB > env(settings.SWING_ORDER) > 代码默认"""
+    flt = resolve_scan_filters(SimpleNamespace(scan_filters={}, swing_order=5))
+    assert flt.swing_order == 5
+    assert resolve_scan_filters(None).swing_order == settings.SWING_ORDER
+    # 无 DB 行（None cfg 无该属性）与非法值（0/垃圾串）回落 env
+    assert resolve_scan_filters(SimpleNamespace(scan_filters={})).swing_order == settings.SWING_ORDER
+    assert resolve_scan_filters(
+        SimpleNamespace(scan_filters={}, swing_order=0)).swing_order == settings.SWING_ORDER
+    assert resolve_scan_filters(
+        SimpleNamespace(scan_filters={}, swing_order="abc")).swing_order == settings.SWING_ORDER
+
+
 def test_resolve_inf_nan_fall_back():
     """inf/nan（直改 DB 可注入）：isfinite 防护回落默认，int(inf) 的
     OverflowError 也须被吞掉而非烧掉调用方"""

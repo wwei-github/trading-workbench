@@ -234,7 +234,7 @@ export default function ScanConfigPanel() {
                 label="摆动点阶数"
                 name="swing_order"
                 rules={[{ required: true }]}
-                tooltip="AI 事实包中摆动点确认的左右比较根数"
+                tooltip="摆动点确认的左右比较根数（触发层结构位/突破、AI 事实包、K线标注共用）"
               >
                 <InputNumber min={1} max={10} style={{ width: '100%' }} />
               </Form.Item>

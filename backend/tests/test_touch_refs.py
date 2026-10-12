@@ -192,11 +192,40 @@ def _swing_downtrend_kl() -> list[list]:
 
 
 def test_swing_touch_long_hits_hl():
-    assert trig._detect_swing_touch(_swing_uptrend_kl(), 1, 0.3) == pytest.approx(103.0)
+    assert trig._detect_swing_touch(_swing_uptrend_kl(), 1, 0.3, 3) == pytest.approx(103.0)
 
 
 def test_swing_touch_short_hits_lh():
-    assert trig._detect_swing_touch(_swing_downtrend_kl(), -1, 0.3) == pytest.approx(97.0)
+    assert trig._detect_swing_touch(_swing_downtrend_kl(), -1, 0.3, 3) == pytest.approx(97.0)
+
+
+def _swing_shallow_dip_kl() -> list[list]:
+    """深谷 99.6@17（bars_ago=42 超时效门）+ 浅坑 104.0/104.5@48-50 序列（n=60）：
+    阶数 1 认 104.5@50（两侧各 1 根确认的浅摆动，HL）；阶数 3 下 104.5 左窗含
+    更低点 104.0 不算 pivot，最近摆动点是 104.0@48——信号K线（idx58）下探 104.5、
+    收盘 104.5：前者被触碰命中，后者未触碰（低点高于位价）→ None"""
+    closes = [100.0 + 0.1 * i for i in range(15)]                  # 100.0→101.4
+    closes += [100.8, 100.2, 99.6, 100.2, 100.8, 101.4, 102.0]     # 深谷99.6@17
+    closes += [102.8 + 0.1 * i for i in range(26)]                 # idx22→47: 102.8→105.3
+    closes += [104.0]                                              # idx48 浅坑 A
+    closes += [104.6]                                              # idx49
+    closes += [104.5]                                              # idx50 浅坑 B（阶数1才认）
+    closes += [104.7, 104.9]                                       # idx51→52
+    closes += [105.1 + 0.1 * i for i in range(5)]                  # idx53→57: 105.1→105.5
+    closes += [104.5]                                              # idx58 信号K线（下探 104.5）
+    closes += [105.0]                                              # idx59
+    kl = _klines(closes, list(closes), list(closes))
+    ts, _, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, 105.5, 105.6, 104.5, 104.5, vol, qv]
+    return kl
+
+
+def test_swing_touch_order_follows_config():
+    """摆动点阶数跟随配置（2026-10-12）：阶数 1 认更近的浅摆动位 104.5（触碰命中），
+    阶数 3 只认 104.0（信号K线未触碰）→ None——检测层不再硬编码 3"""
+    kl = _swing_shallow_dip_kl()
+    assert trig._detect_swing_touch(kl, 1, 0.3, 1) == pytest.approx(104.5)
+    assert trig._detect_swing_touch(kl, 1, 0.3, 3) is None
 
 
 def test_swing_touch_ignores_ll_for_long():
@@ -210,7 +239,7 @@ def test_swing_touch_ignores_ll_for_long():
     kl = _klines(closes, list(closes), list(closes))
     ts, _, _, _, _, vol, qv = kl[-2]
     kl[-2] = [ts, 109.0, 108.8, 104.0, 108.6, vol, qv]
-    assert trig._detect_swing_touch(kl, 1, 0.3) is None
+    assert trig._detect_swing_touch(kl, 1, 0.3, 3) is None
 
 
 def test_swing_touch_stale_hl_ignored():
@@ -224,7 +253,7 @@ def test_swing_touch_stale_hl_ignored():
     kl = _klines(closes, list(closes), list(closes))
     ts, _, _, _, _, vol, qv = kl[-2]
     kl[-2] = [ts, 105.7, 105.5, 99.1, 105.3, vol, qv]
-    assert trig._detect_swing_touch(kl, 1, 0.3) is None
+    assert trig._detect_swing_touch(kl, 1, 0.3, 3) is None
 
 
 # ── ema55：数据门 / 排列门 / 斜率门（docs/22 §3.3） ───────────────────────

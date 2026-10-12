@@ -285,16 +285,17 @@ def _detect_retest(
 
 
 def _detect_swing_touch(
-    klines: list[list], direction: int, band_pct: float,
+    klines: list[list], direction: int, band_pct: float, order: int,
 ) -> Optional[float]:
     """摆动结构位触碰（docs/22 §3.2）。
 
-    复用 recent_swings（收盘价摆动点，两侧各 3 根确认，无前视）：
+    复用 recent_swings（收盘价摆动点，两侧各 order 根确认、无前视；order 跟随
+    配置 flt.swing_order，2026-10-12 起与 AI 事实包/K线标注同源）：
     多头只认最近的 HL（更高低点，结构延续防守位），空头只认最近的 LH——
     LL/HH 不构成回踩结构（是接刀/追高）。时效门 bars_ago ≤ 40。
     带宽触碰与 retest 同口径（影线入带、收盘守住）。命中返回位价。
     """
-    sw = recent_swings(klines, order=3, n=3)
+    sw = recent_swings(klines, order=order, n=3)
     seq = sw["lows"] if direction == 1 else sw["highs"]
     want = "HL" if direction == 1 else "LH"
     lvl = next(
@@ -317,7 +318,8 @@ def _unbroken_pivot_level(swings: list[dict], klines: list[list], high: bool) ->
     """最近一个自形成以来未被收盘价突破的摆动极值位（新→旧扫描，2026-09-28）。
 
     swings 为 recent_swings(klines[:-1]) 的 highs/lows（按 bars_ago 新→旧，相对
-    最后一根已收盘根）；摆动点为收盘价口径、两侧各 3 根确认。判定区间 =
+    最后一根已收盘根）；摆动点为收盘价口径、两侧各 flt.swing_order 根确认
+    （2026-10-12 起跟随配置）。判定区间 =
     摆动K线后一根 ~ 信号K线前一根（klines[idx+1:-2]）：做高向任一收盘 > 该位
     即前高已破，做空向任一收盘 < 该位即前低已破（收盘恰等于该位是触碰不是破位），
     继续向更旧一个找。全部已破（强趋势连续新高）返回 None——
@@ -409,8 +411,9 @@ def detect_trigger(
     # scanner 据此维护 breakout_events（回测触点=破位价回测的事实源，docs/22 §4）。
     if n >= 30:
         # 摆动结构取信号K线之前的已收盘K线（klines[:-1]）——信号K线是潜在破位者，
-        # 不参与结构检测，否则其极值收盘会杀死邻近 pivot（如破位阴线压掉前低）
-        swings = recent_swings(klines[:-1], order=3, n=10)
+        # 不参与结构检测，否则其极值收盘会杀死邻近 pivot（如破位阴线压掉前低）。
+        # 阶数跟随配置 flt.swing_order（2026-10-12，与 AI 事实包/K线标注同源）
+        swings = recent_swings(klines[:-1], order=flt.swing_order, n=10)
         vr = volume_ratio(klines)
         max_brk = flt.breakout_max_pct
         thr = flt.breakout_threshold
@@ -510,7 +513,8 @@ def detect_trigger(
         if p is not None:
             touches[TOUCH_RETEST] = p
     if TOUCH_SWING in refs:
-        p = _detect_swing_touch(klines, direction, flt.structure_touch_band_pct)
+        p = _detect_swing_touch(
+            klines, direction, flt.structure_touch_band_pct, flt.swing_order)
         if p is not None:
             touches[TOUCH_SWING] = p
     for ref, period in ((TOUCH_EMA21, 21), (TOUCH_EMA55, 55), (TOUCH_EMA144, 144)):
