@@ -252,6 +252,10 @@ def _print_row(row: dict) -> None:
         bits.append(f"mode={row['mode']}")
     if row.get("entry") is not None:
         bits.append(f"entry={row['entry']}")
+    if row.get("sl0") is not None:
+        bits.append(f"原始SL={row['sl0']}")
+    if row.get("r_dist") is not None:
+        bits.append(f"R={row['r_dist']}")
     if row.get("level") is not None:
         bits.append(f"1.5R档={row['level']}")
     if row.get("last") is not None:
