@@ -21,7 +21,7 @@ import type { PullbackPendingItem } from '../types'
 
 const { Text, Link } = Typography
 
-type StatusFilter = 'pending' | 'confirmed' | 'blocked' | 'all' | 'funnel'
+type StatusFilter = 'pending' | 'confirmed' | 'blocked' | 'all' | 'funnel' | 'no-trigger'
 
 // 展示三态（2026-10-10）：pending=待确认、confirmed=已确认；expired/superseded 一律归并「已卡掉」，
 // 具体被哪个环节卡住由「卡住环节」列展示（后端 blocked_by 字段）
@@ -195,23 +195,30 @@ export default function PendingPoolPanel() {
     { label: `已卡掉 (${counts.blocked})`, value: 'blocked' },
     { label: `全部 (${counts.all})`, value: 'all' },
     { label: '筛选漏斗', value: 'funnel' },
+    { label: '无触发', value: 'no-trigger' },
   ]
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ flexShrink: 0, marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Segmented<StatusFilter> value={filter} onChange={setFilter} options={segOptions} />
-        {filter !== 'funnel' && (
+        {filter !== 'funnel' && filter !== 'no-trigger' && (
           <Button icon={<ReloadOutlined />} onClick={() => fetchData()} loading={loading} size="small">
             刷新
           </Button>
         )}
       </div>
-      {filter === 'funnel' ? (
+      {filter === 'funnel' || filter === 'no-trigger' ? (
         // 筛选漏斗（2026-10-11 拍板：作为 Segmented 第五项排在「全部」后面）：
-        // 每轮被拒币种列表 + 卡住关卡筛选 + 币种搜索 + 点击看K线
+        // 每轮被拒币种列表 + 卡住关卡筛选 + 币种搜索 + 点击看K线。
+        // 「无触发」页签复用同一面板、预置关卡筛选为 no_trigger（2026-10-12）：
+        // 「通过全部门但无触发、也未进待确认池」的币种单独成页，免去下拉切换；
+        // key 按 filter 区分，避免两个页签间切换时 React 复用实例导致预设不生效
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
-          <FunnelPanel />
+          <FunnelPanel
+            key={filter}
+            initialStage={filter === 'no-trigger' ? 'no_trigger' : undefined}
+          />
         </div>
       ) : (
         <>

@@ -4,6 +4,7 @@
  * - 顶部漏斗概览：全市场 → 进管线 → 候选（进 AI），旁路待确认池/异常
  * - 主体被拒币种列表（Table，按漏斗逻辑序排列）：币种列点击弹K线复盘
  * - 进待确认池的币不算被拒（见同面板「待确认池」页签）；旧版本扫描/异常轮次无数据
+ * - initialStage（2026-10-12）：预置关卡筛选，供「无触发」页签直接落在 no_trigger 上
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Empty, Input, Modal, Select, Spin, Table, Tag, Tooltip, Typography, message } from 'antd'
@@ -43,7 +44,7 @@ interface FunnelRow {
   detail?: string // votes 关票明细（分号分隔；其余关卡无）
 }
 
-export default function FunnelPanel() {
+export default function FunnelPanel({ initialStage }: { initialStage?: string } = {}) {
   const [data, setData] = useState<FunnelData | null>(null)
   const [loading, setLoading] = useState(false)
   const [klineSymbol, setKlineSymbol] = useState<string | null>(null)
@@ -65,10 +66,11 @@ export default function FunnelPanel() {
   useEffect(() => {
     fetchData(currentScanId)
     // 换轮次重置筛选/搜索：旧轮选中的关卡可能在新轮无被拒币，残留值会让
-    // Select 显示裸关卡代码（options 无该项）且列表恒空
-    setStageFilter('all')
+    // Select 显示裸关卡代码（options 无该项）且列表恒空。initialStage（无触发
+    // 页签）作为重置基准，不写死 'all'
+    setStageFilter(initialStage ?? 'all')
     setSearch('')
-  }, [currentScanId, fetchData])
+  }, [currentScanId, fetchData, initialStage])
 
   // 扫描完成（进行中→结束翻转）自动刷新；ref 记前值防挂载时双请求
   const prevScanning = useRef(false)
