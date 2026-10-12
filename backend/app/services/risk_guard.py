@@ -6,7 +6,7 @@
 - **RR 铁律**：按 AI 给的三价复算盈亏比 ≥ AI_RR_MIN(1.5)，声称值不信
 - **止损宽度下限**（2026-10-12-2）：止损距入场 ≥ SL_MIN_ATR×ATR14（默认 0.3），
   防"止损过近"被噪音扫掉并抑制 R 放大；近锚（突破类 stop_anchor=near）豁免
-  （其止损刻意贴突破K极值，另有敞口折价与 ±0.5% 一致性校验兜底）
+  （其止损刻意贴金K窗口极值，另有敞口折价与 ±0.5% 一致性校验兜底）
 - **止盈一距离上限**（2026-10-12）：第一档止盈距入场 ≤
   min(TP1_MAX_ATR×ATR14, TP1_MAX_R×止损距离)、且不低于 rr_min×止损距离
   （防"第一档"落到 3~4R 的远位；超限打回让 AI 改近档或走兜底，程序不改价）
@@ -72,7 +72,7 @@ class TradeDecision(BaseModel):
     # 参考价，程序不挂止盈档）；AI 输出值无条件被覆盖（原 system_config.tp_mode
     # 强制配置已退役）
     tp_mode: Optional[Literal["ladder", "trail"]] = None
-    # 止损锚类型（docs/23，仅突破类信号需要）：structure=结构锚（默认）/ near=突破K极值近锚
+    # 止损锚类型（docs/23，仅突破类信号需要）：structure=结构锚（默认）/ near=金K窗口极值近锚
     stop_anchor: Optional[Literal["structure", "near"]] = None
     # 战法命中标注（2026-10-02，仅借鉴不影响结论）：tactic_name 必须逐字取自
     # 本次注入的战法清单（validate_decision 白名单闸门，清单外清空防幻觉）
@@ -170,8 +170,9 @@ PULLBACK_MARKET_PCT = 0.01
 AI_RR_TOL = 0.02
 
 # 近锚一致性校验（docs/23，2026-09-29；2026-10-12-5 起扩展至全信号类型——距离分档
-# 降级金K锚后非突破类也可合法落 near，见止损纪律距离分档条款）：AI 声明
-# stop_anchor=near 时，止损必须贴近信号K线极值（klines[-2]；klines[-1] 未收盘）——
+# 降级金K锚后非突破类也可合法落 near，见止损纪律距离分档条款；2026-10-12-8 恢复
+# 窗口口径）：AI 声明 stop_anchor=near 时，止损必须贴近金K窗口极值（最近 5 根
+# 已收盘K线共同最低/最高价，klines[-6:-1]；klines[-1] 未收盘不参与）——
 # 提示词要求极值外 0.3% 缓冲，容差 0.5% 覆盖合理偏移；AI 挂近锚名义报远离止损
 # （把结构锚止损伪装成近锚、骗取 ×0.7 风险折价并污染复盘分组）时程序打回。
 # 数据不足时放行（防数据异常锁死开单，同 MAX_SLIPPAGE 接口抖动不阻断的哲学），仅记 warning
@@ -375,7 +376,7 @@ def validate_decision(
         return False, violations, {}
 
     # ── 近锚一致性校验（docs/23；2026-10-12-5 扩展至全信号类型）：AI 声明
-    # stop_anchor=near 时，止损必须贴近信号K线极值 ±0.5%——防 AI 挂近锚名义用
+    # stop_anchor=near 时，止损必须贴近金K窗口极值 ±0.5%——防 AI 挂近锚名义用
     # 远止损（骗 ×0.7 风险折价、污染复盘 structure/near 分组）。
     # 尾窗内信号根未走完（signal_bar_provisional）→ 极值未定型，该校验无基准，
     # 跳过并记 warning（详见 NEAR_ANCHOR_* 常量处的豁免说明，2026-10-12）──
@@ -385,25 +386,36 @@ def validate_decision(
             signal.get("symbol"),
         )
     elif d.stop_anchor == "near" and len(klines) >= 2:
-        sig_candle = klines[-2]  # 非尾窗下 = 最后一根已收盘K线；klines[-1] 未收盘
-        try:
-            sig_high, sig_low = float(sig_candle[2]), float(sig_candle[3])
-        except (IndexError, TypeError, ValueError):
-            sig_high = sig_low = 0.0
-        if sig_high > 0 and sig_low > 0:
+        # 金K窗口（2026-10-12-8 恢复窗口口径）：最近 5 根已收盘K线的共同极值——
+        # 做多=5 根最低点、做空=5 根最高点（klines[-6:-1]，含信号K线 klines[-2]；
+        # klines[-1] 未收盘不参与），与 ai_agent._resolve_price 的
+        # signal_low/signal_high 解析同口径
+        window = klines[max(0, len(klines) - 6):len(klines) - 1]
+        lows: list = []
+        highs: list = []
+        for c in window:
+            try:
+                c_high, c_low = float(c[2]), float(c[3])
+            except (IndexError, TypeError, ValueError):
+                continue
+            if c_high > 0 and c_low > 0:
+                highs.append(c_high)
+                lows.append(c_low)
+        if lows and highs:
             if d.direction == "long":
-                anchor = sig_low * (1 - NEAR_ANCHOR_BUFFER)
+                anchor = min(lows) * (1 - NEAR_ANCHOR_BUFFER)
             else:
-                anchor = sig_high * (1 + NEAR_ANCHOR_BUFFER)
+                anchor = max(highs) * (1 + NEAR_ANCHOR_BUFFER)
             if abs(d.stop_loss - anchor) / anchor > NEAR_ANCHOR_TOLERANCE:
                 violations.append(
-                    f"stop_anchor=near 但止损偏离信号K线极值锚过远"
-                    f"（锚={anchor:.8g}，SL={d.stop_loss}）：近锚仅允许信号K线"
-                    f"{'最低' if d.direction == 'long' else '最高'}价外 {NEAR_ANCHOR_BUFFER:.1%} 缓冲"
+                    f"stop_anchor=near 但止损偏离金K窗口极值锚过远"
+                    f"（锚={anchor:.8g}，SL={d.stop_loss}）：近锚仅允许最近5根已收盘"
+                    f"K线{'最低' if d.direction == 'long' else '最高'}价外 "
+                    f"{NEAR_ANCHOR_BUFFER:.1%} 缓冲"
                 )
                 return False, violations, {}
         else:
-            logger.warning("near 校验跳过：信号K线数据异常 %s", signal.get("symbol"))
+            logger.warning("near 校验跳过：金K窗口数据异常 %s", signal.get("symbol"))
 
     stop_dist = abs(d.entry_price - d.stop_loss)
     stop_pct = stop_dist / d.entry_price if d.entry_price else 0
@@ -419,7 +431,7 @@ def validate_decision(
 
     # ── 止损宽度下限（2026-10-12-2 拍板）：防"止损过近"被噪音扫掉、并抑制 R 放大 ──
     # 止损宽度须 ≥ SL_MIN_ATR×ATR14（默认 0.3）。近锚（突破类 stop_anchor=near）
-    # 豁免——其止损刻意贴突破K极值，另有 NEAR_ANCHOR_RISK_FACTOR 敞口折价与
+    # 豁免——其止损刻意贴金K窗口极值，另有 NEAR_ANCHOR_RISK_FACTOR 敞口折价与
     # ±0.5% 一致性校验兜底，套全局下限会误杀整个近锚特性。ATR 不可算（K线不足）
     # 放行；SL_MIN_ATR=0 关闭。超限 → 打回让 AI 外扩锚点或直接 skip（程序不改价）。
     # 尾窗例外（2026-10-12）：信号根未走完时近锚的两个兜底都失效——极值未定型

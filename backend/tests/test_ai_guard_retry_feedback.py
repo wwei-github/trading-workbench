@@ -221,7 +221,8 @@ def test_dual_judge_json_mode_only_on_judge_call(monkeypatch):
 
 # ── 程序止损参考价 calc_stop_reference（2026-10-11，0.5×ATR 展示对比）────────
 # 构造横盘序列：h=101/l=99/c=100 → TR 恒 2 → ATR14=2，0.5×ATR=1；
-# 金K锚 = 最后一根已收盘K线极值（横盘序列恒为 99/101）
+# 金K锚 = 金K窗口极值（2026-10-12-8 恢复窗口口径：最近5根已收盘K线的共同
+# 最低/最高点，横盘序列恒为 99/101）
 
 def _flat_klines(n=40, base=100.0):
     return [[i * 3600000, base, base + 1, base - 1, base, 1000.0] for i in range(n)]
@@ -238,21 +239,33 @@ def test_calc_stop_long_swing_anchor_farther():
 
 
 def test_calc_stop_long_goldenk_farther():
-    """多头：金K最低点（最后一根已收盘K线）比前一个低点更远 → 锚取金K极值"""
+    """多头：金K窗口最低点（最近5根已收盘K线共同最低）比前一个低点更远 →
+    锚取金K窗口极值"""
     signal = {
         "current_price": 100.0,
         "recent_swings": {"lows": [{"label": "HL", "price": 99.5, "bars_ago": 6}], "highs": []},
     }
     klines = _flat_klines()
-    # 金K低 98.2；高点收 100.2 保持 TR=2（h−l 恰 2.0），不污染 ATR14=2 基准
+    # 信号K低 98.2（金K窗口最低）；高点收 100.2 保持 TR=2（h−l 恰 2.0），不污染 ATR14=2 基准
     klines[-2] = [38 * 3600000, 100.0, 100.2, 98.2, 100.0, 1000.0]
     ref = ai_analyzer.calc_stop_reference(signal, klines, "long")
     assert ref == pytest.approx(98.2 - 1.0)
 
 
+def test_calc_stop_long_window_lowest():
+    """多头：金K窗口（最近5根已收盘K线）内非信号K的更深低点同样参与共同
+    极值（2026-10-12-8 窗口口径，C98USDT.P 案例：只取信号K单根会漏掉它）"""
+    signal = {"current_price": 100.0, "recent_swings": {"lows": [], "highs": []}}
+    klines = _flat_klines()
+    # 窗口第 4 根（[-3]，非信号K）低 98.4；高点收 100.4 保持 TR=2，不污染 ATR14=2 基准
+    klines[-3] = [37 * 3600000, 100.0, 100.4, 98.4, 100.0, 1000.0]
+    ref = ai_analyzer.calc_stop_reference(signal, klines, "long")
+    assert ref == pytest.approx(98.4 - 1.0)
+
+
 def test_calc_stop_long_extreme_anchor_farther():
     """多头：首个摆动低点在现价上方（错误侧）被跳过、循环继续；次个摆动低点
-    比金K最低点近 → 两锚取更远用金K极值"""
+    比金K窗口最低点近 → 两锚取更远用金K窗口极值"""
     signal = {
         "current_price": 100.0,
         "recent_swings": {

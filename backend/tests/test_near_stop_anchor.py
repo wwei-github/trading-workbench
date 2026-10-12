@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""近锚回归（docs/23，2026-09-29；2026-10-12-5 距离分档扩展）。
+"""近锚回归（docs/23，2026-09-29；2026-10-12-5 距离分档扩展；2026-10-12-8 窗口口径）。
 
 覆盖：
-1. risk_guard.validate_decision：stop_anchor=near 时止损必须贴近信号K线
-   （klines[-2]）极值 ±0.5%——偏离过远打回；structure 不校验；
-   2026-10-12-5 起校验与落库均扩展至全信号类型（距离分档降级金K锚）
+1. risk_guard.validate_decision：stop_anchor=near 时止损必须贴近金K窗口
+   （最近5根已收盘K线共同极值，2026-10-12-8 恢复窗口口径）±0.5%——偏离过远
+   打回；structure 不校验；2026-10-12-5 起校验与落库均扩展至全信号类型
 2. fixed dict 落库：near 全信号类型有效（须通过一致性校验）；
    缺省/非法值回退 structure
 3. ai_agent._handle_submit：stop_ref=signal_low/signal_high → 程序推导
@@ -45,10 +45,11 @@ def _signal(signal_type="trigger_breakout", cur=100.0):
 
 
 def _klines(sig_low=99.0, sig_high=99.8):
-    """[-2] = 突破K（low/high 可控），[-1] 未收盘"""
+    """[-2] = 突破K（low/high 可控），[-1] 未收盘；[0] 极值不越出突破K极值 →
+    窗口（最近5根已收盘，3 根序列即 [0]/[1]）共同极值 = 突破K极值"""
     return [
-        [0, 98.0, 98.5, 97.5, 98.2, 10.0, 0, 10000.0],
-        [1, 99.0, sig_high, sig_low, 99.7, 20.0, 0, 20000.0],
+        [0, 99.2, 99.5, 99.2, 99.3, 10.0, 0, 10000.0],
+        [1, 99.3, sig_high, sig_low, 99.7, 20.0, 0, 20000.0],
         [2, 99.8, 100.2, 99.6, 100.0, 5.0, 0, 5000.0],
     ]
 
@@ -83,6 +84,37 @@ def test_near_anchor_far_stop_rejected():
     assert not ok
     assert fixed == {}
     assert any("近锚" in v for v in violations)
+
+
+def test_near_anchor_window_lowest_wins():
+    """C98USDT.P 回归（2026-10-12-8 恢复窗口口径）：窗口内前一根低点低于信号K →
+    金K锚取 5 根共同极值，止损须越过它才算贴近；只越过信号K单根低点的旧口径
+    被打回（旧口径止损落在近期波动区间内部，必被扫损）"""
+    kl = _klines()
+    kl[0][3] = 98.0  # 前一根低点低于信号K低点 99.0 → 窗口最低 = 98.0
+    anchor = round(98.0 * 0.997, 8)
+    d = TradeDecision(
+        trade_decision="suggest", direction="long", trade_type="trend_follow",
+        stop_anchor="near",
+        entry_price=100.0, stop_loss=anchor,
+        take_profit_1=105.0, take_profit_2=0.0,
+        recommendation=60.0, analysis="r",
+    )
+    ok, violations, fixed = validate_decision(d, _signal(), kl)
+    assert ok, violations
+    assert fixed["stop_anchor"] == "near"
+
+    # 旧单根口径止损（99.0×0.997≈98.703）距窗口锚（98.0×0.997≈97.706）≈1.0% → 打回
+    d_old = TradeDecision(
+        trade_decision="suggest", direction="long", trade_type="trend_follow",
+        stop_anchor="near",
+        entry_price=100.0, stop_loss=round(99.0 * 0.997, 8),
+        take_profit_1=105.0, take_profit_2=0.0,
+        recommendation=60.0, analysis="r",
+    )
+    ok2, violations2, _ = validate_decision(d_old, _signal(), kl)
+    assert not ok2
+    assert any("近锚" in v for v in violations2)
 
 
 def test_structure_anchor_not_checked():
@@ -162,13 +194,16 @@ def test_near_on_pullback_type_far_stop_rejected():
 
 def test_non_breakout_near_not_exempt_from_sl_floor(monkeypatch):
     """非突破类金K锚不豁免止损宽度下限（豁免仍限突破类近锚）：
-    止损贴信号K极值但距入场 <0.3×ATR → 打回"""
+    止损贴金K窗口极值但距入场 <0.3×ATR → 打回"""
     monkeypatch.setattr(settings, "SL_MIN_ATR", 0.3)
-    kl = [  # 常规根 high-low=2 → ATR(14)≈1.97 → 下限 ≈0.59
+    kl = [  # 常规根 high-low=2 → ATR(14)=2 → 下限 0.6
         [i, 100.0, 101.0, 99.0, 100.0, 10.0, 0, 0.0] for i in range(40)
     ]
-    kl[38] = [38, 100.0, 100.4, 99.8, 100.0, 10.0, 0, 0.0]  # 信号K线：极值贴近现价
-    anchor = round(99.8 * 0.997, 8)   # 99.5006，距入场 ≈0.4994 < 0.59
+    # 窗口（最近 5 根已收盘 [34..38]）低点抬到 99.8：贴极值止损不触发近锚一致性
+    # 违规，聚焦止损宽度下限（high-low=2 保持 TR=2、ATR 不变）
+    for i in range(34, 39):
+        kl[i] = [i, 100.0, 101.8, 99.8, 100.0, 10.0, 0, 0.0]
+    anchor = round(99.8 * 0.997, 8)   # 99.5006，距入场 ≈0.4994 < 0.6
     d = TradeDecision(
         trade_decision="suggest", direction="long", trade_type="trend_follow",
         stop_anchor="near",

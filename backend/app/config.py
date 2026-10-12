@@ -148,7 +148,12 @@ class Settings(BaseSettings):
     # 「先平仓后撤单」，预撤会致平仓失败时无 SL 裸奔；③ 全平失败清理
     # exit_override（仓位仍开放时）防后续真实 SL 被 settle 误标 htf_state，
     # 仓位已归零则保留待下轮落账；EXIT_HTF_STATE 事件幂等（重试轮不重复落）
-    RULE_VERSION: str = "v2026-10-12-7"
+    # v2026-10-12-8（用户拍板）：金K极值锚口径恢复为「最近5根已收盘K线共同极值」
+    # （v2026-10-11-5 单根口径的定点回退，C98USDT.P 案例：信号K单根低点高于
+    # 前一根低点时，止损落在近期波动区间内部必被扫损）。三面同源：P0/P1 提示词 +
+    # 程序参考 calc_stop_reference + 回测/虚拟账本 derive_signal_prices；
+    # risk_guard 近锚一致性校验锚点同步改窗口极值（±0.5% 容差口径不变）
+    RULE_VERSION: str = "v2026-10-12-8"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

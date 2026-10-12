@@ -66,7 +66,8 @@ def test_gate_block_breakout_near_anchor_chain():
         assert "近锚适用前提" in block          # 仅 RR 不达标才降级
         assert "近锚资格附加线" in block        # 量比<1 无资格 / RR>4 重估 / 0.3×ATR
         assert 'stop_anchor="near"' in block
-        assert "突破K线（本信号K线）" in block  # 近锚=突破K极值口径
+        assert "金K窗口" in block
+        assert "最近 5 根已收盘K线共同极值" in block  # 近锚=金K窗口极值口径（2026-10-12-8）
 
 
 def test_gate_block_pullback_no_near_anchor():

@@ -77,26 +77,40 @@ def test_legacy_key_ref_rejected():
 
 
 def _klines_with_signal_candle(low=99.0, high=99.8):
-    """3 根K线：[-2] 为突破K（low/high 可控），[-1] 未收盘"""
+    """3 根K线：[-2] 为突破K（low/high 可控），[-1] 未收盘；[0] 极值不越出
+    突破K极值 → 窗口（最近5根已收盘，3 根序列即 [0]/[1]）共同极值 = 突破K极值"""
     return [
-        [0, 98.0, 98.5, 97.5, 98.2, 10.0, 0, 10000.0],
-        [1, 99.0, high, low, 99.7, 20.0, 0, 20000.0],  # 突破K
+        [0, 99.2, 99.5, 99.2, 99.3, 10.0, 0, 10000.0],
+        [1, 99.3, high, low, 99.7, 20.0, 0, 20000.0],  # 突破K
         [2, 99.8, 100.2, 99.6, 100.0, 5.0, 0, 5000.0],  # 未收盘
     ]
 
 
-def test_signal_extreme_refs_resolve_to_klines_minus2():
-    """signal_low/signal_high 解析到突破K（klines[-2]，[-1] 未收盘）极值"""
+def test_signal_extreme_refs_resolve_to_window_extremes():
+    """signal_low/signal_high 解析到金K窗口（最近5根已收盘K线）共同极值
+    （2026-10-12-8 恢复窗口口径；[-1] 未收盘不参与）"""
     sig = _signal()
     kl = _klines_with_signal_candle(low=99.0, high=99.8)
     assert _resolve_price("signal_low", 0, sig, klines=kl) == 99.0
     assert _resolve_price("signal_high", 0, sig, klines=kl) == 99.8
-    # offset：做多近锚 = 突破K最低 × (1 - 0.3%)
+    # offset：做多金K锚 = 窗口最低 × (1 - 0.3%)
     assert _resolve_price("signal_low", -0.3, sig, klines=kl) == 99.0 * 0.997
 
 
+def test_signal_extreme_window_takes_prior_extremes():
+    """C98USDT.P 回归（2026-10-12-8）：窗口内前一根低点更低/高点更高时，
+    金K锚取窗口共同极值（单根口径止损落在近期波动区间内部、必被扫损）"""
+    sig = _signal()
+    kl = _klines_with_signal_candle(low=99.0, high=99.8)
+    kl[0][3] = 98.8    # 前一根低点更低 → 做多锚取 98.8
+    kl[0][2] = 100.1   # 前一根高点更高 → 做空锚取 100.1
+    assert _resolve_price("signal_low", 0, sig, klines=kl) == 98.8
+    assert _resolve_price("signal_high", 0, sig, klines=kl) == 100.1
+
+
 def test_signal_extreme_without_klines_is_none():
-    """klines 缺失时极值锚返回 None（走 _handle_submit 打回重试），不静默落 0"""
+    """klines 缺失/金K窗口为空时极值锚返回 None（走 _handle_submit 打回重试），
+    不静默落 0"""
     sig = _signal()
     assert _resolve_price("signal_low", 0, sig, klines=None) is None
     assert _resolve_price("signal_low", 0, sig, klines=[_klines_with_signal_candle()[0]]) is None

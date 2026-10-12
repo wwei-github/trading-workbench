@@ -18,13 +18,17 @@ from app.services.risk_guard import (  # noqa: E402
 
 
 def _klines(n=40, rng=2.0, base=100.0, sig_low=None):
-    """n 根 1h K 线，每根 high-low=rng → ATR(14)≈rng；sig_low 覆盖信号K（[-2]）最低价"""
+    """n 根 1h K 线，每根 high-low=rng → ATR(14)≈rng；sig_low 覆盖金K窗口
+    （2026-10-12-8 窗口口径：最近5根已收盘K线 klines[-6:-1]，含信号K [-2]）
+    的共同最低价——high 取 sig_low+rng 保持 TR=rng 不污染 ATR 基准"""
     ks = [
         [i, base, base + rng / 2, base - rng / 2, base, 10.0, 0, 0.0]
         for i in range(n)
     ]
     if sig_low is not None:
-        ks[-2][3] = sig_low  # klines[-2] = 信号K（最后一根已收盘）
+        for c in ks[max(0, n - 6):n - 1]:
+            c[3] = sig_low
+            c[2] = sig_low + rng
     return ks
 
 
@@ -64,8 +68,8 @@ def test_stop_at_floor_passes():
 
 
 def test_near_anchor_exempt():
-    """近锚（突破类 stop_anchor=near）：止损刻意贴突破K极值、低于下限也放行"""
-    sig_low = 99.85
+    """近锚（突破类 stop_anchor=near）：止损刻意贴金K窗口极值、低于下限也放行"""
+    sig_low = 99.85  # 金K窗口（近5根）共同最低价
     anchor = sig_low * (1 - NEAR_ANCHOR_BUFFER)
     d = _dec(stop=round(anchor, 6), tp1=100.8, anchor="near")
     ok, v, _ = validate_decision(
@@ -77,7 +81,7 @@ def test_near_anchor_exempt():
 
 def test_same_tight_stop_not_exempt_without_near():
     """同一过近止损但非近锚 → 下限照常生效"""
-    sig_low = 99.85
+    sig_low = 99.85  # 金K窗口（近5根）共同最低价
     anchor = sig_low * (1 - NEAR_ANCHOR_BUFFER)
     ok, v, _ = validate_decision(
         _dec(stop=round(anchor, 6), tp1=100.8), _signal(), _klines(sig_low=sig_low),

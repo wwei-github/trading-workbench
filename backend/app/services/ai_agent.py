@@ -53,13 +53,13 @@ _RULE_STRUCT_BRIEF = _RULE_STRUCT_BRIEF.replace("{", "{{").replace("}", "}}")
 # 的突破单，其余条件任一不满足时无近锚资格
 NEAR_STOP_RULE_AGENT = """11.5 突破类止损近锚降级链：结构锚（摆动前低/前低）优先；按结构锚复算盈亏比 <{rr_min}
     且调整入场价仍无法达标（本应 skip）时，才降级近锚——stop_ref=signal_low
-    （做多，突破K线最低价）或 signal_high（做空，最高价）+ offset_pct=-0.3，
+    （做多，金K窗口最低价）或 signal_high（做空，金K窗口最高价）+ offset_pct=-0.3，
     止盈与盈亏比按新锚复算；近锚仍不达标 → skip。硬约束：仅当 skip 的唯一原因是
     盈亏比不达标（信号方向、4h 背景、趋势状态、量能特征、质量分等其余开单条件
     必须全部满足）才允许用近锚；量比 <1 的缩量突破无近锚资格；近锚后盈亏比 >4
     时重新评估或 skip；近锚止损宽度仍须 ≥0.3×ATR。{stop_cap_clause}结构锚止损宽度
     已超程序硬上限（见信号门槛块）时无近锚资格，直接 skip。程序会校验近锚止损必须
-    贴近突破K线极值 ±0.5%，偏离过远会被打回。距离分档衔接（2026-10-12-5）：
+    贴近金K窗口极值 ±0.5%，偏离过远会被打回。距离分档衔接（2026-10-12-5）：
     结构锚距入场超过 11 条距离分档线时按 11 条直接降级金K锚，不受本条
     "RR 唯一不达标"前提约束（量比 <1 无资格同样适用）；本条仅处理结构锚
     不远但盈亏比仍不达标的场景。"""
@@ -108,8 +108,9 @@ def render_system_prompt(
 # + 线外锚点（做多止盈锚摆动高点下方、做空锚摆动低点上方，枚举名沿用 zone
 # 时期历史命名）+ market（市价锚）。next_ 前缀取更前一档（止盈二用）。
 # signal_low/signal_high（docs/23，2026-09-29；2026-10-12-5 起兼作距离分档
-# 降级金K锚，全信号类型可用）：信号K线（最后一根已收盘K线）极值，仅止损锚用
-# （解析见 _resolve_price；stop_ref 命中即推导 stop_anchor=near）
+# 降级金K锚，全信号类型可用；2026-10-12-8 恢复「最近5根已收盘K线共同极值」
+# 窗口口径，见 _resolve_price）：金K窗口极值，仅止损锚用
+# （stop_ref 命中即推导 stop_anchor=near）
 LEVEL_REFS = (
     "support", "resistance", "market",
     "resistance_zone_low", "support_zone_high",
@@ -155,17 +156,18 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 11. 止损锚定（提示词纪律，程序不再改写 stop 值——止损是否合理由你自己把关，
     程序只复算盈亏比与止损宽度下限）：结构位优先、金K极值兜底、两锚取更远者。做多优先锚定入场价下方
     最近摆动低点外 0.3%~0.5%，做空锚定上方最近摆动高点外同幅度；入场贴着结构位时
-    止损还须越过信号K线极值——做多取摆动低点与信号K线最低点中更低者、
-    做空取摆动高点与信号K线最高点中更高者外 0.3%
-    （信号K线=触发本信号的金K/突破K线，即事实包 K 线序列最后一根已收盘K线，
-    其极值就是本笔信号的直接失效位；止损在近期波动区间内部必被扫损）；
+    止损还须越过金K极值——金K极值 = 金K窗口（最近 5 根已收盘K线，含信号K/突破K线，
+    即事实包 K 线序列最后一根已收盘K线；最后一根未收盘K线不参与）的共同极值：
+    做多取 5 根最低点、做空取 5 根最高点，
+    做多取摆动低点与 5 根最低点中更低者、做空取摆动高点与 5 根最高点中更高者外 0.3%
+    （该极值就是本笔信号的直接失效位；止损在近期波动区间内部必被扫损）；
     入场价与金K极值间无摆动结构时用金K锚——
-    做多严格低于信号K线最低点（影线极值非收盘价）至少 0.3%，做空相反。
+    做多严格低于 5 根最低点（影线极值非收盘价）至少 0.3%，做空相反。
     距离分档（2026-10-12-5）：最近摆动结构位距入场超过 {far_atr}×ATR
     （=止盈一距离上限÷盈亏比铁律，超过此线 RR 数学上不可能达标）时，
     该位是更大级别趋势的失效位而非本笔信号失效位，不作为止损锚——
     直接降级金K锚：做多 stop_ref=signal_low、做空 stop_ref=signal_high
-    （信号K线极值外 0.3%）；降级后仍须满足盈亏比铁律与
+    （金K窗口极值外 0.3%）；降级后仍须满足盈亏比铁律与
     ≥{sl_min_atr}×ATR 宽度下限，不达标 → skip。
 {near_stop_rule}
 12. 止盈锚定（提示词纪律，程序不再改挂）：结构位=摆动高低点（事实包"近期摆动结构"）。
@@ -299,7 +301,7 @@ TOOLS_SCHEMA = [
             "entry_ref": {"type": "string", "enum": list(LEVEL_REFS), "description": "入场锚点"},
             "entry_offset_pct": {"type": "number", "description": "入场相对锚点偏移%，默认0"},
             "stop_ref": {"type": "string", "enum": list(LEVEL_REFS),
-                         "description": "止损锚点。signal_low/signal_high=信号K线（本信号金K/突破K线，最后一根已收盘K线）最低/最高价，仅用于金K极值锚——距离分档降级（规则11，远结构锚超距离分档线时）或突破类近锚降级链（11.5），其余情况用结构锚点"},
+                         "description": "止损锚点。signal_low/signal_high=金K窗口（最近5根已收盘K线，含本信号金K/突破K线）共同最低/最高价，仅用于金K极值锚——距离分档降级（规则11，远结构锚超距离分档线时）或突破类近锚降级链（11.5），其余情况用结构锚点"},
             "stop_offset_pct": {"type": "number", "description": "止损相对锚点偏移%（通常负/反向）"},
             "tp1_ref": {"type": "string", "enum": list(LEVEL_REFS),
                         "description": "止盈1锚点：做多=resistance_zone_low（更远的第一条压力位价格线，距现价≤1×ATR的争夺位线不算），做空=support_zone_high（更远的第一条支撑位价格线）；signal_low/signal_high 仅限止损近锚，不用于止盈"},
@@ -398,8 +400,9 @@ def _resolve_price(ref: Optional[str], offset_pct, signal: dict,
     结构锚点一律解析到摆动结构位（docs/09 口径）。ref 必须在 LEVEL_REFS
     枚举内——关键位时代的 key_ 前缀锚点已移除，模型沿旧习惯报出时按非法
     锚点打回（走 _handle_submit 的 errs 重试路径），而非静默落到错误侧。
-    signal_low/signal_high（docs/23）解析到突破K线（信号K线，klines[-2]；
-    klines[-1] 未收盘）的最低/最高价，仅止损近锚降级链使用。
+    signal_low/signal_high（docs/23；2026-10-12-8 恢复窗口口径）解析到「金K窗口」
+    =最近 5 根已收盘K线（klines[-6:-1]，含信号K线 klines[-2]；klines[-1] 未收盘
+    不参与）的共同极值——做多取 5 根最低点、做空取 5 根最高点，仅止损金K锚使用。
     klines（2026-10-12）：zone 系止盈锚据此算 1×ATR，剔除距离 ≤1×ATR 的争夺位
     （见 _nth_swing）；未传 K 线时不做该剔除（旧行为）。
     purpose 保留参数以维持调用方签名稳定。"""
@@ -412,15 +415,24 @@ def _resolve_price(ref: Optional[str], offset_pct, signal: dict,
         return None
 
     if ref in ("signal_low", "signal_high"):
-        # 突破K极值锚：数据不足视为非法（走 errs 重试路径），不静默落 0
-        try:
-            sig_candle = (klines or [])[len(klines) - 2] if klines and len(klines) >= 2 else None
-            idx = 3 if ref == "signal_low" else 2
-            base = float(sig_candle[idx]) if sig_candle else 0.0
-        except (IndexError, TypeError, ValueError):
-            base = 0.0
-        if base <= 0:
+        # 金K窗口极值锚（2026-10-12-8）：取最近 5 根已收盘K线（klines[-6:-1]，
+        # 含信号K线 klines[-2]；klines[-1] 未收盘不参与）的共同极值——只取信号K
+        # 单根时，前一根更低/更高会把止损压进近期波动区间内部、必被扫损
+        # （C98USDT.P 案例）。数据不足/极值非法视为非法（走 errs 重试路径），不静默落 0
+        ks = klines or []
+        window = ks[max(0, len(ks) - 6):len(ks) - 1]
+        idx = 3 if ref == "signal_low" else 2  # low / high
+        vals = []
+        for c in window:
+            try:
+                v = float(c[idx])
+            except (IndexError, TypeError, ValueError):
+                continue
+            if v > 0:
+                vals.append(v)
+        if not vals:
             return None
+        base = min(vals) if ref == "signal_low" else max(vals)
         return base * (1 + _safe_off(offset_pct) / 100.0)
 
     cur = float(signal.get("current_price") or 0)
