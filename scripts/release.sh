@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================
 # 服务器端发布脚本（CICD 2026-09-19）
-# 用法: scripts/release.sh deploy  <backend|frontend|all>   # 拉代码→SHA 构建→up→健康检查→失败自动回滚
+# 用法: scripts/release.sh deploy  <backend|frontend|all> [expected_sha] [bundle_tar]
+#                                    # 拉代码→前端产物解压（构建外移）→SHA 构建→up→健康检查→失败自动回滚
 #       scripts/release.sh rollback [<sha>]               # 回滚到指定 SHA（默认上一个成功版本）
 #       scripts/release.sh status                          # 当前部署版本与镜像列表
 #
@@ -85,8 +86,9 @@ health_check() {
 }
 
 cmd_deploy() {
-    local scope="${1:?用法: release.sh deploy <backend|frontend|all> [expected_sha]}"
+    local scope="${1:?用法: release.sh deploy <backend|frontend|all> [expected_sha] [bundle_tar]}"
     local expected_sha="${2:-}"
+    local bundle_tar="${3:-}"   # CI 构建的前端 dist 产物（tar.gz，顶层 dist/；构建外移见下）
     local services
     services=$(services_for_scope "$scope")
 
@@ -114,6 +116,29 @@ cmd_deploy() {
 
     local prev_sha=""
     [ -f "$STATE_FILE" ] && prev_sha=$(grep '^LAST_SHA=' "$STATE_FILE" | cut -d= -f2 || true)
+
+    # 前端产物就位（2026-10-12 构建外移）：1.6G 内存服务器无法完成含 mermaid
+    # 的 vite build（峰值 ~2.3GB，连续两次部署卡死 2h+ 后 SSH 断连失败）。
+    # 改由 GitHub Actions runner 构建 dist，经部署通道传入 tar.gz，本机只解压
+    # 打包（frontend/Dockerfile 仅 COPY dist，秒级）。backend-only 不需要产物。
+    # 放在 git reset 之后：reset 不动未跟踪的 frontend/dist。
+    if [ "$scope" != "backend" ]; then
+        step "前端产物就位（CI 构建产物解压）..."
+        if [ -z "$bundle_tar" ] || [ ! -f "$bundle_tar" ]; then
+            error "缺前端构建产物（bundle_tar=${bundle_tar:-<未传>}）：前端构建已外移至 GitHub Actions，请经 workflow 部署"
+            echo "DEPLOY_FAILED stage=bundle sha=$sha"
+            exit 1
+        fi
+        rm -rf frontend/dist
+        tar -xzf "$bundle_tar" -C frontend
+        if [ ! -f frontend/dist/index.html ]; then
+            error "产物解压异常：frontend/dist/index.html 不存在（bundle 内容非预期）"
+            echo "DEPLOY_FAILED stage=bundle sha=$sha"
+            exit 1
+        fi
+        info "前端产物就位: frontend/dist（$(du -sh frontend/dist | cut -f1)）"
+        rm -f "$bundle_tar"   # 已解压落位，临时包不留在服务器 /tmp
+    fi
 
     # 构建（失败时旧容器未动，直接退出由 workflow 通知，无需回滚）
     step "构建镜像（IMAGE_TAG=$sha）..."

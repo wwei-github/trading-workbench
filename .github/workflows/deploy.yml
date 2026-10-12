@@ -100,6 +100,8 @@ jobs:
     outputs:
       scope: ${{ steps.prep.outputs.scope }}
     steps:
+      - uses: actions/checkout@v4
+
       - id: prep
         name: 确定部署 scope
         run: |
@@ -112,22 +114,49 @@ jobs:
           echo "scope=$s" >> "$GITHUB_OUTPUT"
           echo "部署 scope: $s"
 
+      # 前端构建外移（2026-10-12）：1.6G 内存服务器无法完成含 mermaid 的
+      # vite build（峰值 ~2.3GB，连续两次部署卡死 2h+ 后 SSH 断连失败）。
+      # 改在 runner 构建 dist → tar.gz，经部署通道以 stdin 传入服务器，
+      # 服务器解压后仅做镜像打包（frontend/Dockerfile 只 COPY dist，秒级）。
+      - uses: actions/setup-node@v4
+        if: steps.prep.outputs.scope != 'backend'
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 构建前端产物（dist.tar.gz）
+        if: steps.prep.outputs.scope != 'backend'
+        run: |
+          cd frontend
+          npm ci --no-audit --no-fund
+          npm run build
+          tar -czf "$RUNNER_TEMP/frontend_dist.tar.gz" -C . dist
+          ls -lh "$RUNNER_TEMP/frontend_dist.tar.gz"
+
       - name: 写入部署私钥
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-      - name: SSH 发布（受限通道 deploy@：包装脚本只接受 deploy <scope> <sha>，见服务器 /usr/local/bin/deploy-run.sh）
+      - name: SSH 发布（受限通道 deploy@：包装脚本只接受 deploy <scope> <sha> [bundle]，见服务器 /usr/local/bin/deploy-run.sh）
         id: ssh_deploy
+        env:
+          SCOPE: ${{ steps.prep.outputs.scope }}
+          BUNDLE: ${{ runner.temp }}/frontend_dist.tar.gz
         run: |
           set -o pipefail
-          ssh -i ~/.ssh/deploy_key \
-              -o StrictHostKeyChecking=accept-new \
-              -o ConnectTimeout=15 \
-              deploy@${{ secrets.DEPLOY_HOST }} \
-              "deploy ${{ steps.prep.outputs.scope }} ${{ github.sha }}" \
-          2>&1 | tee deploy_output.log
+          SSH_CMD=(ssh -i ~/.ssh/deploy_key
+                   -o StrictHostKeyChecking=accept-new
+                   -o ConnectTimeout=15
+                   deploy@${{ secrets.DEPLOY_HOST }})
+          if [ "$SCOPE" != "backend" ]; then
+            # bundle 模式：stdin 传前端 dist 产物，服务器解压后仅打包镜像
+            "${SSH_CMD[@]}" "deploy $SCOPE ${{ github.sha }} bundle" < "$BUNDLE" 2>&1 | tee deploy_output.log
+          else
+            "${SSH_CMD[@]}" "deploy $SCOPE ${{ github.sha }}" 2>&1 | tee deploy_output.log
+          fi
           # release.sh 失败会非零退出，pipefail 让本步骤失败
 
       # 飞书通知（消息卡片）：成功/失败都发。要点：
