@@ -32,6 +32,19 @@ def _pin_breakout_settings(monkeypatch):
     monkeypatch.setattr(settings, "BREAKOUT_MAX_PCT", 1.5)
 
 
+@pytest.fixture(autouse=True)
+def _stub_1h_structure_gate(monkeypatch):
+    """1H 结构门（2026-10-12 起为 ema21 触点硬门）打桩为「通过」。
+
+    本文件矩阵用例聚焦两段式决策逻辑（触碰/金K/pending 处置），而 _base 夹具仅
+    60 根（< structure_1h 要求的 200 根）无法自然过门——注入通过态隔离；结构门的
+    判定逻辑与「不过则否决」行为在 test_strategies.py / test_touch_refs.py 专测。
+    返回非 None 即视为通过（detect_trigger 只判 None）。
+    """
+    monkeypatch.setattr(trig, "structure_1h",
+                        lambda k1, direction, cfg=None: ({"d21": 1.0}, {"aligned": True}))
+
+
 def _klines(closes: list[float], highs: list[float], lows: list[float]) -> list[list]:
     """7 列 K 线：[ts, open, high, low, close, vol, quote_vol]；open=前收，末根未收盘"""
     out = []

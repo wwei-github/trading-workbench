@@ -163,7 +163,11 @@ class Settings(BaseSettings):
     # entry_strategy/strategy2_* 四字段（DB 列与 API schema 保留历史透出，
     # 新行 NULL）；-6~-9 的 trail 专属出场（O1 4h 状态机全平/O2 EMA21 减半/
     # O8 浮盈落袋/开仓 RR 现价豁免）随之下线；手动接管必须填止盈位
-    RULE_VERSION: str = "v2026-10-12-10"
+    # v2026-10-12-11（用户拍板）：移除 trigger_trend_pullback（它并非独立信号，而是
+    # 同一回踩路径的质量分层标注，已并入 trigger_pullback_confirm）；1H 结构门
+    # （三线排列+快中线发散史+EMA144方向）恢复为 ema21 回踩触点的硬门（不过则否决，
+    # 不再升级标注）；全局 4H 闸门（scanner gate_4h 三重否决）不变
+    RULE_VERSION: str = "v2026-10-12-11"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

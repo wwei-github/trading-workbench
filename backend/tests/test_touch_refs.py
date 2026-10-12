@@ -45,6 +45,18 @@ def _pin_settings(monkeypatch):
     monkeypatch.setattr(settings, "EMA_TOUCH_MIN_BARS", 200)
 
 
+@pytest.fixture(autouse=True)
+def _stub_1h_structure_gate(monkeypatch):
+    """1H 结构门（2026-10-12 起为 ema21 触点硬门）打桩为「通过」。
+
+    本文件聚焦触点探测/优先级/白名单，_base 夹具仅 60 根（< structure_1h 要求的
+    200 根）无法自然过门——注入通过态隔离；结构门否决与非 ema21 触点豁免在
+    test_strategies.py / test_structure_gate_exempts_non_ema21_touch 专测。
+    """
+    monkeypatch.setattr(trig, "structure_1h",
+                        lambda k1, direction, cfg=None: ({"d21": 1.0}, {"aligned": True}))
+
+
 def _klines(closes: list[float], highs: list[float], lows: list[float]) -> list[list]:
     out = []
     prev = closes[0]
@@ -517,3 +529,15 @@ def test_htf_ema21_skipped_without_htf():
         t, _ = trig.detect_trigger(
             kl, 1, flt=_flt(refs=("ema21", "ema21_4h")), htf=None)
     assert t is not None and t["touch_ref"] == "ema21"
+
+
+def test_structure_gate_exempts_non_ema21_touch():
+    """1H 结构门只约束 ema21 触点：4h EMA21 触点即使结构门不过仍正常触发"""
+    kl = _kl(*_base())
+    ts, o, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, o, o + 0.4, 99.8, 100.1, vol, qv]
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG), \
+         patch.object(trig, "structure_1h", return_value=None):
+        t, _ = trig.detect_trigger(
+            kl, 1, flt=_flt(refs=("ema21_4h",)), htf=_htf_flat(99.9))
+    assert t is not None and t["touch_ref"] == "ema21_4h"

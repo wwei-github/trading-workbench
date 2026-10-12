@@ -10,7 +10,6 @@ const TRIGGER_OPTIONS = [
   { value: 'trigger_breakout', label: '结构突破' },
   { value: 'trigger_trend_breakout', label: '趋势突破' },
   { value: 'trigger_pullback_confirm', label: '回踩金K确认' },
-  { value: 'trigger_trend_pullback', label: '趋势回踩金K确认（4H闸门+1H结构）' },
 ]
 const ALL_TRIGGER_VALUES = TRIGGER_OPTIONS.map((o) => o.value)
 
@@ -26,6 +25,10 @@ const TOUCH_REF_OPTIONS = [
 ]
 /** 默认均线族（2026-10-08，2026-10-09 加入 4h EMA21，2026-10-10 ema144 退役）：横向结构触点（retest/swing）默认关 */
 const DEFAULT_TOUCH_VALUES = ['ema21', 'ema21_4h', 'ema55']
+
+/** 回踩类触发类型（2026-10-12 trend_pullback 并入）：仅此类会消费
+ *  pullback_touch_refs，用于联动置灰触点白名单 */
+const PULLBACK_TRIGGER_VALUES = ['trigger_pullback_confirm']
 
 /** 筛选参数组（2026-09-28 筛选配置上页面）：字段元数据驱动渲染 */
 const FILTER_FIELDS: { name: string; label: string; min: number; max: number; step?: number; tooltip: string }[] = [
@@ -58,6 +61,11 @@ export default function ScanConfigPanel() {
   const [filtersSnapshot, setFiltersSnapshot] = useState<Record<string, unknown>>({})
   const { aiConfig, updateConfig, fetchConfig } = useScanStore()
 
+  // 触发类型白名单实时值 → 驱动回踩触点白名单的置灰（未勾选任何回踩类时该白名单不生效）
+  const watchedTriggers: string[] | undefined = Form.useWatch('allowed_triggers', form)
+  const pullbackEnabled = (watchedTriggers ?? ALL_TRIGGER_VALUES)
+    .some((t) => PULLBACK_TRIGGER_VALUES.includes(t))
+
   // 每次打开 Modal 时，从后端拉取最新配置数据
   useEffect(() => {
     if (!open) return
@@ -80,7 +88,6 @@ export default function ScanConfigPanel() {
         ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
         allowed_triggers: eff.allowed_triggers ?? ALL_TRIGGER_VALUES,
         pullback_touch_refs: eff.pullback_touch_refs ?? DEFAULT_TOUCH_VALUES,
-        structure_1h_gate: eff.structure_1h_gate ?? true,
         ai_analysis_enabled: aiConfig.ai_analysis_enabled ?? false,
         strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
         ai_pipeline_enabled: aiConfig.ai_pipeline_enabled ?? true,
@@ -129,11 +136,8 @@ export default function ScanConfigPanel() {
         || curRefs.some((t) => !snapRefs.includes(t))) {
         scanFilters.pullback_touch_refs = curRefs
       }
-      // 1h 结构门开关（2026-10-11）：布尔逐键比对提交（后端缺键回落 env）
-      if (typeof values.structure_1h_gate === 'boolean'
-        && values.structure_1h_gate !== filtersSnapshot.structure_1h_gate) {
-        scanFilters.structure_1h_gate = values.structure_1h_gate
-      }
+      // 1h 结构门开关（2026-10-11，2026-10-12 退役）：已从配置弹窗移除，
+      // 不再提交该键（后端 scan_filters 保留兼容键位，仅读旧值不做消费）
       if (Object.keys(scanFilters).length > 0) data.scan_filters = scanFilters
       await updateConfig(data)
       message.success('配置已保存')
@@ -156,7 +160,6 @@ export default function ScanConfigPanel() {
         ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
         allowed_triggers: eff.allowed_triggers ?? ALL_TRIGGER_VALUES,
         pullback_touch_refs: eff.pullback_touch_refs ?? DEFAULT_TOUCH_VALUES,
-        structure_1h_gate: eff.structure_1h_gate ?? true,
       })
       message.success('筛选参数已恢复默认')
     } catch (e: any) {
@@ -270,19 +273,20 @@ export default function ScanConfigPanel() {
             <Checkbox.Group options={TRIGGER_OPTIONS} />
           </Form.Item>
           <Form.Item
-            label="回踩触点白名单（金K允许出现的位置）"
+            label={
+              <span style={pullbackEnabled ? undefined : { color: '#999' }}>
+                回踩触点白名单（金K允许出现的位置）
+              </span>
+            }
             name="pullback_touch_refs"
-            tooltip="回踩金K确认触发只认勾选的触点：触碰后当根/次根出现同向金K才触发。默认仅三条均线（EMA21/EMA21(4h)/EMA55；ema144 已退役；EMA55 另受排列+分离史结构门自筛）；横向结构触点（突破回测位/摆动结构位）语义强但依赖破轨/摆动质量，按需勾选。全部不勾回落默认三条均线"
+            extra={!pullbackEnabled && (
+              <span style={{ color: '#999' }}>
+                当前「触发类型白名单」未勾选「回踩金K确认」，触点白名单不生效
+              </span>
+            )}
+            tooltip="回踩金K确认触发只认勾选的触点：触碰后当根/次根出现同向金K才触发。回踩 EMA21 须先通过 1H 结构门（三线排列 + 快中线发散史 + EMA144 方向），不过则本次回踩不成立；其余触点不受结构门约束。默认仅三条均线（EMA21/EMA21(4h)/EMA55；ema144 已退役；EMA55 另受排列+分离史结构门自筛）；横向结构触点（突破回测位/摆动结构位）语义强但依赖破轨/摆动质量，按需勾选。全部不勾回落默认三条均线"
           >
-            <Checkbox.Group options={TOUCH_REF_OPTIONS} />
-          </Form.Item>
-          <Form.Item
-            label="1h 结构门（三线排列 + 快中线发散史 + EMA144 方向）"
-            name="structure_1h_gate"
-            valuePropName="checked"
-            tooltip="开启：排列/发散/144 方向任一不成立即否决（默认硬门）。关闭：整体跳过该判定，信号量换质量的应急开关——仅 4h 闸门+指标多数决+震荡评分+触发确认仍生效；关闭期间产生的信号在复盘按 RULE_VERSION/配置时段分组对比"
-          >
-            <Switch />
+            <Checkbox.Group options={TOUCH_REF_OPTIONS} disabled={!pullbackEnabled} />
           </Form.Item>
           <Button size="small" icon={<UndoOutlined />} onClick={handleResetFilters} loading={saving}>
             恢复默认

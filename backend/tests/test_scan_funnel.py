@@ -5,9 +5,9 @@ detect_indicator_candidate 各关卡经 reject_out 旁路写 {"stage": <关卡�
 （与 event_out 同模式，零破坏旧调用点）；主扫描 run 收口组装 funnel_json
 随 ScanRecord 落库，前端「筛选漏斗」Tab 展示。关卡代码表：
 gate_4h / votes / direction_flip / range_score / no_trigger /
-trigger_whitelist + 预过滤 liquidity/new_coin/risk_tier/blacklist（预过滤在
-run_scan 内联）。structure_1h 关卡 2026-10-12 退役（docs/21 O7：1H 结构门
-降格为 s2 资格闸，不再整体否决信号，漏斗不再记该关卡）。
+trigger_whitelist / structure_1h（ema21 触点未过 1H 结构门，2026-10-12 由
+trigger 层硬门返回）+ 预过滤 liquidity/new_coin/risk_tier/blacklist（预过滤在
+run_scan 内联）。
 
 判定链测试打法：monkeypatch 打桩各闸门/票数/触发（test_scan_filters 白名单
 测试同款），使命中点唯一落在被测关卡；另用真实夹具（ranging 4h）抽查
@@ -123,8 +123,10 @@ def test_reject_direction_flip():
 
 
 def test_structure_1h_gate_retired_signal_survives():
-    """O7（2026-10-12 拍板，docs/21）：1H 结构门筛选链硬门退役——不再 _reject
-    不再 expire pending（s2 资格闸移到 risk_guard）；信号照常走完触发链"""
+    """筛选链 1H 结构门退役（2026-10-12 O7）：scanner 不再整体否决信号——
+    触发链照常返回候选；pending 处置仅由 trigger 返回的动作驱动，scanner 自身
+    不再因结构门 expire（结构门现为 trigger 层 ema21 触点硬门，由 trigger 返回
+    expire/structure_1h 触发，见 test_reject_structure_1h_ema21_veto）"""
     from app.services.strategy.trigger import PULLBACK_CONFIRM
 
     kl = [[1_700_000_000_000 + i * 3_600_000, 100.0, 101.0, 99.0, 100.0, 10.0, 10.0]
@@ -149,6 +151,15 @@ def test_reject_range_score():
     rv: dict = {}
     cand, _ = _detect(rv, rs=3, htf_nonempty=False)
     assert cand is None and rv == {"stage": "range_score"}
+
+
+def test_reject_structure_1h_ema21_veto():
+    """ema21 触点未过 1H 结构门 → trigger 返回 expire/structure_1h →
+    stage=structure_1h（2026-10-12 硬门否决归因，含无活跃 pending 的主路径）"""
+    rv: dict = {}
+    cand, _ = _detect(rv, trigger=(None, {"op": "expire", "reason": "structure_1h"}),
+                      htf_nonempty=False)
+    assert cand is None and rv == {"stage": "structure_1h"}
 
 
 def test_reject_no_trigger():

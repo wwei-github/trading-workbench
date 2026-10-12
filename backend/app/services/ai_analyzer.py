@@ -190,8 +190,7 @@ def render_signal_gate_block(signal_type: str, stop_cap_pct: Optional[float] = N
             "- 突破K线形态: 长实体（实体 ≥70% 全长，影线合计 ≤30%）",
         ]
     else:
-        if signal_type in ("trigger_pullback", "trigger_pullback_confirm",
-                           "trigger_trend_pullback"):
+        if signal_type in ("trigger_pullback", "trigger_pullback_confirm"):
             # 2026-09-28 docs/22 触点体系：触碰对象由纯 EMA21 扩为 5 类触点，
             # 具体命中位看信号块"回踩触点"行（trigger 按优先级只标一个）
             lines += [
@@ -201,15 +200,6 @@ def render_signal_gate_block(signal_type: str, stop_cap_pct: Optional[float] = N
                 "EMA 触点=下影触及且收盘收回线上（做空对称）",
                 "- 两段式确认: 触碰后当根出现同向金K，或上根触碰+本根金K（次根确认）",
             ]
-            if signal_type == "trigger_trend_pullback":
-                # 趋势回踩（2026-10-10 融合）：普通回踩门槛 + EMA 趋势门注记
-                # （2026-10-11 拍板：中慢线发散度退役，144 方向=走平或沿信号方向）
-                lines += [
-                    "- 趋势门（已程序化验证）: 4H EMA144 斜率≥0.5%/20根、近10根缠绕≤2次、"
-                    "ADX≥20 三重否决 + 1H EMA21>55>144 三线排列、快中线发散度达标"
-                    "（|EMA21-EMA55|/ATR 分离史≥0.5）、EMA144 走平或沿信号方向"
-                    "——趋势背景强于普通回踩，评估时可对趋势延续性更积极",
-                ]
             if cap_line:
                 lines.append(cap_line)
             return ("程序入场门槛（已程序化验证，评估信号质量时以此为基准而非自行估算）:\n"

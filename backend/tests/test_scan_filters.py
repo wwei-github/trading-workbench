@@ -353,12 +353,10 @@ def test_resolve_trigger_whitelist():
 
 
 def test_resolve_trigger_whitelist_trend_breakout():
-    """趋势突破（2026-09-29 新类型）与趋势回踩（2026-10-10 融合新类型）合法可勾选；
-    纯金K已从 ALL_TRIGGERS 移除，存量配置含它时被过滤、其余合法项保留"""
-    from app.services.scan_filters import (
-        TRIGGER_TREND_BREAKOUT,
-        TRIGGER_TREND_PULLBACK,
-    )
+    """趋势突破（2026-09-29 新类型）合法可勾选；纯金K（2026-09-29 下线）与
+    趋势回踩（2026-10-12 并入回踩金K确认）已从 ALL_TRIGGERS 移除，存量配置含
+    它们时被过滤、其余合法项保留"""
+    from app.services.scan_filters import TRIGGER_TREND_BREAKOUT
     cfg = SimpleNamespace(scan_filters={"allowed_triggers": [
         "trigger_breakout", "trigger_trend_breakout",
         "trigger_pullback_confirm", "trigger_trend_pullback"]})
@@ -367,7 +365,7 @@ def test_resolve_trigger_whitelist_trend_breakout():
         "trigger_candlestick", "trigger_breakout"]})
     assert resolve_scan_filters(legacy).allowed_triggers == ("trigger_breakout",)
     assert TRIGGER_TREND_BREAKOUT in ALL_TRIGGERS
-    assert TRIGGER_TREND_PULLBACK in ALL_TRIGGERS
+    assert "trigger_trend_pullback" not in ALL_TRIGGERS
 
 
 def test_resolve_trigger_whitelist_invalid_falls_back():

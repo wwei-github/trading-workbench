@@ -51,7 +51,7 @@ from app.services.strategy.candlestick import (
     resolve_golden_evidence,
 )
 from app.services.strategy.ema import calc_ema
-from app.services.strategy.ema_gate import EmaGateConfig, gate_4h, structure_1h
+from app.services.strategy.ema_gate import structure_1h
 from app.services.strategy.indicators import volume_ratio
 from app.services.strategy.technical import pullback_stabilize_bonus
 import numpy as np
@@ -61,11 +61,6 @@ BREAKOUT = "trigger_breakout"                  # 结构突破：越过未破摆�
 TREND_BREAKOUT = "trigger_trend_breakout"      # 趋势突破：破 N 根 Donchian 滚动轨
 PULLBACK = "trigger_pullback"          # 历史类型：两段式上线后不再产生新记录
 PULLBACK_CONFIRM = "trigger_pullback_confirm"  # 回踩触点后金K确认（当根/次根）
-# 趋势回踩（2026-10-10 融合拍板，docs/19→docs/01）：4H EMA144 趋势闸门 +
-# 1H 三线结构通过时的回踩触点金K确认——与 PULLBACK_CONFIRM 同一套触点/
-# 金K/pending 机制，仅多两道方向门（信号质量分层标注，复盘分组对比胜率）。
-# 闸门/结构不过时回落普通回踩路径，行为与融合前一致
-TREND_PULLBACK_CONFIRM = "trigger_trend_pullback"
 
 # 回踩触点标注优先级与中文标签（docs/22 §2；与 scan_filters.ALL_TOUCH_REFS 同源顺序；
 # 2026-10-09 加入 4h EMA21——均线取最快原则按更新频率排序：1h EMA21 > 4h EMA21 > 1h EMA55）
@@ -496,27 +491,14 @@ def detect_trigger(
     patterns = detect_all_patterns(klines, idx=-2)
     golden, golden_note = resolve_golden_evidence(klines, wanted, patterns)
 
-    # EMA 趋势方向门（2026-10-10 融合拍板，docs/19 §2）：4H EMA144 三重否决
-    # （斜率走平/缠绕/ADX）+ 1H 三线排列/快中线发散度/EMA144 方向。回踩路径
-    # 两道门全过 →
-    # 信号升级为 trend_pullback（质量分层标注）；任一门不过 → 保持普通
-    # pullback_confirm 行为不变。门只影响触发类型标注，不拦截。
-    # htf=None（4h 拉取失败）→ 闸门无数据 → 不升级（保守回落普通回踩）。
-    trend_gated = False
-    gate_ev = None
-    if htf:
-        try:
-            g = gate_4h(htf)  # 原始 4h 序列，gate_4h 内部自剔尾
-            if g is not None:
-                g_dir, gate_ev = g
-                if (direction == 1 and g_dir == "long") or (direction == -1 and g_dir == "short"):
-                    st = structure_1h(klines[:-1], g_dir)
-                    if st is not None:
-                        _ind1, st_ev = st
-                        trend_gated = True
-                        gate_ev = {**gate_ev, "structure_1h": st_ev}
-        except Exception:
-            trend_gated = False
+    # 1H 结构门（2026-10-12 拍板）：三线排列 + 快中线发散史 + EMA144 方向。
+    # 仅当回踩触点为 1h EMA21 时作为硬门校验（见下方 touch_blocked），不过则
+    # 否决该次回踩；其余触点（retest/swing/4h EMA21/EMA55）不受此门约束。
+    # 4H 全局闸门由 scanner 前置强制（gate_4h 三重否决 + 方向一致性），此处不重复。
+    try:
+        struct = structure_1h(klines[:-1], "long" if direction == 1 else "short")
+    except Exception:
+        struct = None  # fail-closed：结构门计算异常按不过处理
 
     # 并行探测启用触点（docs/22 §3）：命中收集为 {ref: 位价}，标注取最高优先
     # （横向结构语义强于均线；均线取最快——最早确认、止损最紧）
@@ -543,30 +525,30 @@ def detect_trigger(
     touch_ref = next((r for r in TOUCH_ORDER if r in touches), None)
     touch_price = touches.get(touch_ref) if touch_ref else None
     touch_label = TOUCH_LABELS.get(touch_ref, "") if touch_ref else None
+    # 1H 结构门硬否决标记：ema21 触点命中但结构门不过 → 本次回踩不成立
+    touch_blocked = (touch_ref == TOUCH_EMA21 and struct is None)
 
     # 量能注记（docs/25 §3.1）：回踩金K路径补「大量」要素，双口径见 helper
     vol_note = _pullback_volume_note(klines)
 
     # 行2：当根触碰+金K → 当根确认（比纯形态更强，pending 一律被抢先）。
-    # 趋势门通过 → 类型升级 trend_pullback（EMA 趋势回踩，docs/19 融合）
-    if touch_ref is not None and golden:
+    # ema21 触点须先过 1H 结构门；touch_blocked 时落到行6/7 否决
+    if touch_ref is not None and golden and not touch_blocked:
         _label = PATTERN_LABEL_MAP.get(golden["pattern"], golden["pattern"])
         # 证据描述：单形态="当根X确认"；组合=note 原文+确认（如
         # "双流星组合确认"/"前根锤形线+当根趋势K确认"）
         _ev = f"当根{_label}确认" if not golden_note else f"{golden_note}确认"
-        _trend_prefix = "4H趋势闸门+1H结构通过·" if trend_gated else ""
         # 企稳加分项（docs/19 §3.3 条件2/3，2026-10-10 拍板：加分不拦截）：
         # 当根确认时触碰根即金K根，量能已由放量加分评估，volume_semantics=False
         _stab = pullback_stabilize_bonus(klines, direction, -2, volume_semantics=False)
         return {
-            "type": TREND_PULLBACK_CONFIRM if trend_gated else PULLBACK_CONFIRM,
+            "type": PULLBACK_CONFIRM,
             "direction": direction,
             "position": pos_fb, "touch_ref": touch_ref,
             "position_ref": _position_ref_of(touch_ref, direction),
             "pattern": golden["pattern"], "breakout_pct": 0.0,
-            "trend_gate": gate_ev if trend_gated else None,
             "stabilize": _stab,
-            "reason": f"指标同向·{_trend_prefix}回踩{touch_label}({touch_price:.6g})企稳且{_ev}{vol_note}",
+            "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且{_ev}{vol_note}",
         }, _close_op(pending, direction, "same_candle_confirm")
 
     # 行3/行4：未触碰但有金K → 有效 pending 则次根确认（有回踩语境）。
@@ -577,22 +559,23 @@ def detect_trigger(
     if touch_ref is None and golden:
         if pending_valid and pending and pending.get("direction") == direction:
             p_ref = pending.get("touch_ref")
+            # ema21 触点同样受 1H 结构门约束（次根确认时刻复校，不过则 pending 失效）
+            if p_ref == TOUCH_EMA21 and struct is None:
+                return None, {"op": "expire", "reason": "structure_1h"}
             p_label = TOUCH_LABELS.get(p_ref, "触点") if p_ref else "触点"
             _label = PATTERN_LABEL_MAP.get(golden["pattern"], golden["pattern"])
             _ev = f"本根{_label}确认" if not golden_note else f"{golden_note}确认"
-            _trend_prefix = "4H趋势闸门+1H结构通过·" if trend_gated else ""
             # 企稳加分项：次根确认时触碰根 = 金K 的前一根（klines[-3]，即
             # pending 的 Stage-1 根），量能语义照常评估
             _stab = pullback_stabilize_bonus(klines, direction, -3)
             return {
-                "type": TREND_PULLBACK_CONFIRM if trend_gated else PULLBACK_CONFIRM,
+                "type": PULLBACK_CONFIRM,
                 "direction": direction,
                 "position": pos_fb, "touch_ref": p_ref,
                 "position_ref": _position_ref_of(p_ref, direction),
                 "pattern": golden["pattern"], "breakout_pct": 0.0,
-                "trend_gate": gate_ev if trend_gated else None,
                 "stabilize": _stab,
-                "reason": f"指标同向·{_trend_prefix}上根回踩{p_label}企稳·{_ev}{vol_note}",
+                "reason": f"指标同向·上根回踩{p_label}企稳·{_ev}{vol_note}",
             }, {"op": "confirm"}
         if pending:
             return None, {"op": "expire",
@@ -601,8 +584,9 @@ def detect_trigger(
         return None, None
 
     # 行5：触碰但无金K → 不触发，转 pending 待确认（scanner 侧 upsert）。
-    # ema21 键存 Stage-1 触碰锚点价（命中触点的位价），touch_ref 记触点类型
-    if touch_ref is not None:
+    # ema21 键存 Stage-1 触碰锚点价（命中触点的位价），touch_ref 记触点类型。
+    # ema21 触点未过 1H 结构门（touch_blocked）不落 pending，落到行6/7 否决
+    if touch_ref is not None and not touch_blocked:
         return None, {
             "op": "upsert", "direction": direction, "touch_ref": touch_ref,
             "stage1_candle_open": datetime.utcfromtimestamp(float(klines[-2][0]) / 1000),
@@ -610,6 +594,11 @@ def detect_trigger(
         }
 
     # 行6/行7：未触碰无金K → 有效 pending 窗口到期；无效 pending 也顺手终态（错过即过期）
+    if touch_blocked:
+        # ema21 触点未过 1H 结构门 → 该次回踩否决，活跃 pending 一并失效。
+        # 无活跃 pending 时也返回 expire 动作：仅供 scanner 漏斗归因
+        # （_reject("structure_1h")），scanner 对无 pending 币种不落该处置动作。
+        return None, {"op": "expire", "reason": "structure_1h"}
     if pending:
         reason = "direction_flip" if pending.get("direction") != direction else "window_expired"
         return None, {"op": "expire", "reason": reason}

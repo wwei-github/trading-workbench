@@ -4,8 +4,10 @@
 - ema_gate：gate_4h 三重否决（斜率走平/缠绕/ADX）与方向判定、structure_1h
   三线排列 + 快中线发散度 + EMA144 方向（2026-10-11 拍板中慢线发散度退役）；
   K 线格式 [ts, o, h, l, c, v]（与 ExchangePool 一致）；
-- trigger 趋势升级：闸门+结构全过 → trigger_trend_pullback（质量分层标注），
-  任一门不过/无 htf → 普通回踩金K确认（升级不拦截，行为零回归）；
+- trigger 1H 结构门硬门（2026-10-12 拍板）：回踩 1h EMA21 触点须过 structure_1h
+  （三线排列 + 快中线发散史 + EMA144 方向），不过则本次回踩不产生信号（硬门否决）；
+  其余触点（retest/swing/4h EMA21/EMA55）不受此门约束。趋势升级标注
+  trigger_trend_pullback 已下线（并入 trigger_pullback_confirm）；
 - P2 出场变体（docs/19 §3.4）：backtest_engine 的 sig_exit/tp_qty_override 回测能力；
 - technical：KDJ / MACD 零轴状态（融合保留资产）+ 回踩企稳加分项（§3.3 条件2/3）。
 """
@@ -243,64 +245,49 @@ def _pullback_klines_1h(touch: bool = True):
     return kl
 
 
-def _htf_up() -> list[list]:
-    """4h 强上涨（240 根，detect_trigger 内取前 239 根已收盘判定）"""
-    return _bars([100.0 + 2.0 * i for i in range(240)], H4)
-
-
-def test_trend_pullback_upgrade_on_gate_pass():
-    """闸门+结构全过 → 升级 trend_pullback：type/trend_gate/reason 三处标注"""
-    kl = _pullback_klines_1h()
-    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
-        t, op = trig.detect_trigger(kl, 1, htf=_htf_up())
-    assert t is not None and t["type"] == trig.TREND_PULLBACK_CONFIRM
-    assert t["trend_gate"] is not None
-    assert t["trend_gate"]["direction"] == "up"
-    assert t["trend_gate"]["structure_1h"]["aligned"] is True
-    assert "4H趋势闸门+1H结构通过" in t["reason"]
-    assert op is None          # 无 pending：当根确认无处置动作
-
-
-def test_next_candle_confirm_upgrade_with_pending():
-    """行3 次根确认同样升级：闸门全过 + 有效 pending → trend_pullback + confirm"""
-    kl = _pullback_klines_1h(touch=False)
-    pending = {"id": "x", "direction": 1,
-               "stage1_candle_open": datetime.utcfromtimestamp(kl[-3][0] / 1000)}
-    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
-        t, op = trig.detect_trigger(kl, 1, pending=pending, htf=_htf_up())
-    assert t is not None and t["type"] == trig.TREND_PULLBACK_CONFIRM
-    assert t["trend_gate"] is not None
-    assert op == {"op": "confirm"}
-
-
-def test_pullback_without_htf_stays_plain():
-    """htf=None（4h 拉取失败）→ 不升级，普通回踩金K确认（行为零回归）"""
+def test_ema21_touch_structure_pass_triggers_plain_signal():
+    """回踩 1h EMA21 触点 + 1H 结构门通过 → 普通回踩金K确认（已无趋势升级标注）"""
     kl = _pullback_klines_1h()
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
         t, op = trig.detect_trigger(kl, 1)
     assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
-    assert t["trend_gate"] is None
-    assert "4H趋势闸门" not in t["reason"]
+    assert t["touch_ref"] == "ema21"
+    assert "trend_gate" not in t          # 趋势升级标注已下线
+    assert op is None                     # 当根确认无处置动作
 
 
-def test_trend_gate_direction_mismatch_stays_plain():
-    """4h 闸门方向与信号方向相反（多头信号遇空头闸门）→ 不升级"""
+def test_ema21_touch_structure_fail_vetoes_signal():
+    """回踩 1h EMA21 触点命中但 1H 结构门不过 → 硬门否决：不产生信号，
+    并返回 expire/structure_1h 动作（无 pending 时仅供 scanner 漏斗归因）"""
     kl = _pullback_klines_1h()
-    htf = _bars([500.0 - 2.0 * i for i in range(240)], H4)   # 4h 下跌 → short
-    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
-        t, _ = trig.detect_trigger(kl, 1, htf=htf)
-    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
-    assert t["trend_gate"] is None
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG), \
+         patch.object(trig, "structure_1h", return_value=None):
+        t, op = trig.detect_trigger(kl, 1)
+    assert t is None
+    assert op == {"op": "expire", "reason": "structure_1h"}
 
 
-def test_trend_gate_flat_4h_stays_plain():
-    """4h 走平（闸门三重否决）→ 不升级，回落普通回踩"""
-    kl = _pullback_klines_1h()
-    htf = _bars([100.0 + 0.01 * (i % 5) for i in range(240)], H4)
+def test_next_candle_confirm_with_pending():
+    """行3 次根确认：悬空金K + 有效 pending → 普通回踩金K确认 + confirm"""
+    kl = _pullback_klines_1h(touch=False)
+    pending = {"id": "x", "direction": 1,
+               "stage1_candle_open": datetime.utcfromtimestamp(kl[-3][0] / 1000)}
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
-        t, _ = trig.detect_trigger(kl, 1, htf=htf)
+        t, op = trig.detect_trigger(kl, 1, pending=pending)
     assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
-    assert t["trend_gate"] is None
+    assert op == {"op": "confirm"}
+
+
+def test_pending_ema21_touch_structure_fail_expires():
+    """次根确认时刻结构门复校：pending 命中 ema21 触点但结构门不过 → pending 失效"""
+    kl = _pullback_klines_1h(touch=False)
+    pending = {"id": "x", "direction": 1, "touch_ref": "ema21",
+               "stage1_candle_open": datetime.utcfromtimestamp(kl[-3][0] / 1000)}
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG), \
+         patch.object(trig, "structure_1h", return_value=None):
+        t, op = trig.detect_trigger(kl, 1, pending=pending)
+    assert t is None
+    assert op == {"op": "expire", "reason": "structure_1h"}
 
 
 # ── P2 出场变体（docs/19 §3.4）：backtest_engine overrides 回测能力 ────────

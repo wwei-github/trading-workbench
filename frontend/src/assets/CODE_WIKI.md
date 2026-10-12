@@ -280,17 +280,17 @@ FastAPI 应用入口：
   8. 满仓判定 → 分发 AI 分析（或跳过）
   9. 组装筛选漏斗 `funnel_json`
 
-**`detect_indicator_candidate(...)`** — 单币六步判定链（核心）：
+**`detect_indicator_candidate(...)`** — 单币五步判定链（核心）：
 1. **4h 趋势闸门** `gate_4h` — 一票否决（EMA144 斜率/缠绕/ADX 三重）
 2. **7 指标多数决** `compute_indicator_votes` — |net|≥3 才出方向
 3. **闸门方向一致性** — 4h 方向须与多数决一致
-4. **1H 结构门** `structure_1h` — 三线排列 + EMA144 方向
-5. **震荡评分卡** `range_score` — ≥3 不入场
-6. **两段式触发确认** `detect_trigger` — 突破/回踩+金K/回踩两段式
+4. **震荡评分卡** `range_score` — ≥3 不入场
+5. **两段式触发确认** `detect_trigger` — 突破/回踩+金K/回踩两段式
+（1H 结构门 `structure_1h` 已从筛选链退役（2026-10-12），现为 trigger 层 **1h EMA21 触点硬门**——仅当回踩触点为 ema21 时校验，其余触点豁免）
 
 #### [scan_filters.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/scan_filters.py)
 
-`ScanFilters` — 筛选参数组（DB JSONB > env > 代码默认），`resolve_scan_filters(cfg)` 解析生效值。含 `allowed_triggers`（触发类型白名单）、`new_coin_cooldown_days`、`structure_1h_gate` 等。
+`ScanFilters` — 筛选参数组（DB JSONB > env > 代码默认），`resolve_scan_filters(cfg)` 解析生效值。含 `allowed_triggers`（触发类型白名单）、`new_coin_cooldown_days` 等（`structure_1h_gate` 为已退役的兼容键，无消费方）。
 
 #### [exchange_pool.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/exchange_pool.py)
 
@@ -665,7 +665,7 @@ sequenceDiagram
     loop 每个候选币（线程池并发）
         SC->>EX: get_klines(symbol, 1h, 240)
         SC->>ST: detect_indicator_candidate()
-        ST->>ST: gate_4h 一票否决 → 7 指标多数决 → 1H 结构门 → 震荡卡 → detect_trigger
+        ST->>ST: gate_4h 一票否决 → 7 指标多数决 → 闸门方向一致 → 震荡卡 → detect_trigger
         ST-->>SC: 候选（方向 / 触发 / 质量分 / 票数）
     end
     SC->>SC: 质量分降序 + 重复命中抑制
