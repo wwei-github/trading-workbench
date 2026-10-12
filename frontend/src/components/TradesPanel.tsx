@@ -123,6 +123,7 @@ const EVENT_META: Record<string, { label: string; color: string; icon: React.Rea
   AI_ADVICE: { label: 'AI 持仓诊断', color: '#722ed1', icon: <RobotOutlined /> },
   MANUAL_CLOSE: { label: '市价平仓', color: '#fa541c', icon: <CloseCircleOutlined /> },
   EXTERNAL_CLOSE: { label: '外部平仓', color: '#722ed1', icon: <LogoutOutlined /> },
+  CONVERT: { label: '策略转换', color: '#13c2c2', icon: <SwapOutlined /> },
 }
 
 // 事件详情按键的中文名
