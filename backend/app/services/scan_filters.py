@@ -77,8 +77,9 @@ class ScanFilters:
     structure_touch_band_pct: float = 0.3
     ema_touch_min_bars: int = 200
     new_coin_cooldown_days: int = 14
-    # 1h 结构门开关（2026-10-11 用户拍板配置化）：默认 True=硬门；False=跳过
-    # 三线排列/快中线发散/EMA144 方向判定（信号量换质量的应急开关，复盘定标用）
+    # 1h 结构门开关：已于 2026-10-12 退役（docs/21 O7——结构门降格为 s2 资格闸，
+    # scanner 不再消费）。字段保留仅为向后兼容（DB JSONB 旧值可解析），同
+    # candle_max_ema21_dist_pct 退役先例
     structure_1h_gate: bool = True
 
 

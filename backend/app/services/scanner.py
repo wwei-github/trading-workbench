@@ -3,8 +3,9 @@
 筛选漏斗（指标为主、信号为触发器，EMA 三件套硬门 2026-10-10 二次拍板）：
 1. 宇宙：USDT 永续，24h 成交额 ≥ MIN_VOLUME_24H（流动性门槛）
 2. 4h 趋势闸门 gate_4h 一票否决：EMA144 斜率/缠绕/ADX 三重条件必须同时成立，
-   否决直接不看（不跑票数不触发不进 AI）；1H 结构门 + 震荡评分卡 ≥3 同为硬门
-   （ema_gate.py，docs/19 §2/§3）
+   否决直接不看（不跑票数不触发不进 AI）；震荡评分卡 ≥3 同为硬门
+   （ema_gate.py，docs/19 §2/§3）。1H 结构门已于 2026-10-12 降格为策略二
+   资格闸（docs/21 O7），不再整体否决信号
 3. 分组：单趟 7 票净票 |net|≥3 → 多头/空头候选；-2~+2 中性跳过（震荡市不开单）
 4. 触发确认：两段式决策矩阵（docs/19）——结构突破/趋势突破 / 回踩+金K确认；
    回踩触碰无金K 转入 pending 待确认池（pullback_pendings，次根金K才确认）；
@@ -55,7 +56,6 @@ from app.services.strategy.ema_gate import (
     RANGE_SCORE_REJECT,
     gate_4h,
     range_score,
-    structure_1h,
 )
 
 logger = logging.getLogger(__name__)
@@ -212,13 +212,16 @@ def detect_indicator_candidate(
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """指标驱动单币检测（Scanner 与 watchlist.refresh 共用同一套逻辑与阈值）。
 
-    流程（2026-10-10 二次拍板：EMA 三件套硬门化）：4h 趋势闸门 gate_4h 一票否决
-    （走平/缠绕/ADX<20 任一命中直接不看，取代原 ranging 过滤+htf_res 方向门）
-    → 单趟 7 票投票 → 闸门方向一致 → 1H 结构门 structure_1h（三线排列+
-    快中线发散度+EMA144 方向）
+    流程（2026-10-12 拍板：1H 结构门降格为 s2 资格闸，docs/21 O7）：4h 趋势闸门
+    gate_4h 一票否决（走平/缠绕/ADX<20 任一命中直接不看，取代原 ranging 过滤
+    +htf_res 方向门）→ 单趟 7 票投票 → 闸门方向一致
     → 震荡评分卡 range_score（≥3 不入场）→ 两段式触发确认（trigger.py）
-    → 质量分。原 6 票预筛已于同日撤销（4h 前置后失去省请求价值，|net6|<2 被
+    → 质量分。原 6 票预筛已于 10-10 撤销（4h 前置后失去省请求价值，|net6|<2 被
     终判 |net|<3 完全蕴含），4h 背景复用第一步结果、6 项指标不再双算。
+    2026-10-10 二次拍板的 structure_1h 筛选链硬门已于 2026-10-12 退役（O7）：
+    结构判定收敛到 trigger 层 trend_pullback 升级标注（gate_4h+structure_1h
+    全过才升级，不拦截），s2 资格闸在 risk_guard 按「触点=ema21 ∧ trend_gated」
+    程序校验。
 
     pending: 该币活跃回踩 pending 快照（{id, direction, stage1_candle_open, touch_ref}）或 None。
     flt: 筛选参数组（2026-09-28 筛选配置上页面）；None=按 settings 解析。
@@ -230,8 +233,8 @@ def detect_indicator_candidate(
     reject_out: 可选出参 dict（与 event_out 同旁路模式，2026-10-11 筛选漏斗）——
       币种被关卡拒绝时写入 {"stage": <关卡代码>}，供主扫描漏斗落库展示
       「卡在哪一步」；候选产生/进待确认池（pending upsert）时不写。关卡代码：
-      gate_4h / votes / direction_flip / structure_1h / range_score /
-      no_trigger / trigger_whitelist。
+      gate_4h / votes / direction_flip / range_score / no_trigger /
+      trigger_whitelist（structure_1h 已于 2026-10-12 随 O7 降格退役）。
     返回 (候选 dict, pending_op) 二元组：
     - 候选 dict（signal_type/touch_ref/quality_score/votes 及展示字段），每币至多 1 个；
       无候选（中性/票数不足/无触发）为 None
@@ -246,6 +249,12 @@ def detect_indicator_candidate(
         if reject_out is not None:
             reject_out.clear()
             reject_out["stage"] = stage
+
+    # flt=None 按 settings 解析（docstring 约定）：结构门退役前 flt=None 路径
+    # 到不了白名单行（多数夹具被结构门拦下），O7 后触发信号直达白名单检查，
+    # 必须在此解析兜底
+    if flt is None:
+        flt = resolve_scan_filters(None)
 
     ema = analyze_ema(klines)  # 背景展示用（方向判定不依赖 EMA）
     vol, vol_type = classify_volume(klines)
@@ -314,19 +323,11 @@ def detect_indicator_candidate(
         _reject("direction_flip")
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
-    # 第二步：1H 结构校验（2026-10-10 二次拍板，check_1h_structure 语义硬门化；
-    # 2026-10-11 拍板中慢线发散度退役）：三线排列（EMA21>55>144 多头镜像）+
-    # 快中线 ATR 归一发散度（|21-55|/ATR 分离史≥0.5）+ EMA144 方向（做多走平
-    # 或向上、做空镜像）必须成立——仅有排列还不够，快中线挤在一起即使顺序对
-    # 也是震荡；ATR 归一化让同一套阈值跨品种可用。1h 历史 <200 根（新币）一并否决。
-    # 2026-10-11 二次拍板：门开关化（flt.structure_1h_gate，DB JSONB > env > 默认开）
-    # ——False=整体跳过判定（信号量换质量的应急开关），漏斗不记 structure_1h
-    if flt is None or flt.structure_1h_gate:
-        st = structure_1h(klines[:-1] if len(klines) >= 2 else klines,
-                          "long" if direction == 1 else "short")
-        if st is None:
-            _reject("structure_1h")
-            return None, ({"op": "expire", "reason": "structure_1h"} if pending else None)
+    # 第二步：1H 结构门——已退役为筛选链硬门（2026-10-12 拍板，docs/21 O7）：
+    # 不再整体否决信号（s1 可见信号池恢复），结构判定收敛到 trigger 层
+    # trend_pullback 升级标注；s2 资格闸（触点=ema21 ∧ trend_gated）在
+    # risk_guard.validate_decision 程序校验。flt.structure_1h_gate 开关随之退役
+    # （scan_filters 字段保留向后兼容，scanner 不再消费）。
 
     # 第三步：震荡评分卡（2026-10-10 二次拍板，calc_range_score 语义硬门化）：
     # 8 项独立评分 ≥3 不入场——单一指标可能失效，多指标共振才可靠。闸门与结构

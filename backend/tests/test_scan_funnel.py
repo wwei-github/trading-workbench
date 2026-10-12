@@ -4,11 +4,10 @@
 detect_indicator_candidate 各关卡经 reject_out 旁路写 {"stage": <关卡代码>}
 （与 event_out 同模式，零破坏旧调用点）；主扫描 run 收口组装 funnel_json
 随 ScanRecord 落库，前端「筛选漏斗」Tab 展示。关卡代码表：
-gate_4h / votes / direction_flip / structure_1h / range_score /
-no_trigger / trigger_whitelist + 预过滤 liquidity/new_coin/
-risk_tier/blacklist（预过滤在 run_scan 内联，逻辑为谓词平移，由落库与
-detect 层测试间接覆盖；untradable 预过滤 2026-10-11 退役——不再扫描期
-过滤，开单时逐网校验 + 飞书提示，旧轮次漏斗数据仍可见该关卡）。
+gate_4h / votes / direction_flip / range_score / no_trigger /
+trigger_whitelist + 预过滤 liquidity/new_coin/risk_tier/blacklist（预过滤在
+run_scan 内联）。structure_1h 关卡 2026-10-12 退役（docs/21 O7：1H 结构门
+降格为 s2 资格闸，不再整体否决信号，漏斗不再记该关卡）。
 
 判定链测试打法：monkeypatch 打桩各闸门/票数/触发（test_scan_filters 白名单
 测试同款），使命中点唯一落在被测关卡；另用真实夹具（ranging 4h）抽查
@@ -49,21 +48,20 @@ class FakePool:
 
 
 def _detect(reject_out, klines=None, *, votes=_PASS_VOTES, gate=("long", {}), htf_nonempty=True,
-            structure=({}, {}), rs=0, trigger=None, flt=None, pending=None):
+            rs=0, trigger=None, flt=None, pending=None):
     """打桩装配一次 detect：各桩默认全放行，命中点由参数控制"""
     import app.services.scanner as sm
 
     orig = {
         "analyze_ema": sm.analyze_ema, "classify_volume": sm.classify_volume,
         "compute_indicator_votes": sm.compute_indicator_votes,
-        "gate_4h": sm.gate_4h, "structure_1h": sm.structure_1h,
+        "gate_4h": sm.gate_4h,
         "range_score": sm.range_score, "detect_trigger": sm.detect_trigger,
     }
     sm.analyze_ema = lambda k: None
     sm.classify_volume = lambda k: (1.0, "平量")
     sm.compute_indicator_votes = lambda k, h=None, htf_bg=None: votes
     sm.gate_4h = lambda k, cfg=None: gate
-    sm.structure_1h = lambda k, d, cfg=None: structure
     sm.range_score = lambda k, gate_ev=None: (rs, [])
     sm.detect_trigger = lambda *a, **k: trigger
     try:
@@ -124,11 +122,26 @@ def test_reject_direction_flip():
     assert cand is None and rv == {"stage": "direction_flip"}
 
 
-def test_reject_structure_1h():
-    """1h 结构门不成立（排列/快中线发散度/144 方向）→ stage=structure_1h"""
+def test_structure_1h_gate_retired_signal_survives():
+    """O7（2026-10-12 拍板，docs/21）：1H 结构门筛选链硬门退役——不再 _reject
+    不再 expire pending（s2 资格闸移到 risk_guard）；信号照常走完触发链"""
+    from app.services.strategy.trigger import PULLBACK_CONFIRM
+
+    kl = [[1_700_000_000_000 + i * 3_600_000, 100.0, 101.0, 99.0, 100.0, 10.0, 10.0]
+          for i in range(12)]
+    trig = {"type": PULLBACK_CONFIRM, "direction": 1, "position": "support",
+            "pattern": "hammer", "breakout_pct": 0.5, "reason": "r",
+            "touch_ref": "ema21"}
     rv: dict = {}
-    cand, _ = _detect(rv, structure=None, htf_nonempty=False)
-    assert cand is None and rv == {"stage": "structure_1h"}
+    cand, _ = _detect(rv, kl, trigger=(trig, None), htf_nonempty=False)
+    assert cand is not None and rv == {}
+    # pending 也不再因结构门 expire（此前结构门否决会顺带过期活跃 pending）
+    rv2: dict = {}
+    pend = {"id": 1, "direction": 1, "stage1_candle_open": 1_700_000_000_000,
+            "touch_ref": "ema21"}
+    cand2, op2 = _detect(rv2, kl, trigger=(None, None), pending=pend,
+                         htf_nonempty=False)
+    assert cand2 is None and op2 is None and rv2 == {"stage": "no_trigger"}
 
 
 def test_reject_range_score():

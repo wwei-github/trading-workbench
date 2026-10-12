@@ -3,11 +3,11 @@
 
 detect_indicator_candidate 判定链（docs/01 §3.2）：
 gate_4h（4h 趋势闸门一票否决：走平/缠绕/ADX<20 → 不跑票数不触发，pending
-expire(ranging)）→ 7 票多数决 → 闸门方向一致 → structure_1h（1H 三线排列+
-快中线发散度+EMA144 方向，不过 → expire(structure_1h)）→ range_score
-（震荡评分 ≥3 → expire(range_score)）
-→ 触发。4h 拉取失败（htf=None）降级放行与第 7 票口径一致；1h 结构门/评分卡
-不依赖 4h，htf 缺失时照常生效。
+expire(ranging)）→ 7 票多数决 → 闸门方向一致 → range_score
+（震荡评分 ≥3 → expire(range_score)）→ 触发。4h 拉取失败（htf=None）
+降级放行与第 7 票口径一致；评分卡不依赖 4h，htf 缺失时照常生效。
+structure_1h 硬门 2026-10-12 退役（docs/21 O7：降格为 s2 资格闸，
+结构判定收敛到 trigger 层 trend_pullback 升级标注）。
 
 用假 pool 注入 1h/4h K 线，不触网。K 线构造保证 7 票多数决通过（|net|≥3、
 voted≥5），使过滤命中点唯一落在被测闸门处；票崩夹具（1h 横盘）用于证明
@@ -151,21 +151,18 @@ def test_gate_direction_mismatch_expires_pending():
     assert op is not None and op["op"] == "expire" and op["reason"] == "direction_flip"
 
 
-# ── structure_1h / range_score：筛选链硬门（monkeypatch 强制命中）────────
+# ── range_score：筛选链硬门（monkeypatch 强制命中）；structure_1h 硬门已退役 ──
 
 
-def test_structure_gate_veto_expires_pending(monkeypatch):
-    """1H 结构门不过（桩强制 None）→ 不产生候选，pending expire(structure_1h)"""
-    import app.services.scanner as scanner_mod
-
-    monkeypatch.setattr(scanner_mod, "structure_1h", lambda k, d, cfg=None: None)
+def test_structure_gate_no_longer_vetoes():
+    """O7（2026-10-12 拍板，docs/21）：1H 结构门筛选链硬门退役——真实管线下
+    不再以 structure_1h 否决信号/过期 pending（s2 资格闸移到 risk_guard）"""
     kl = _trend_1h()
     pending = {"id": "x", "direction": 1, "stage1_candle_open": 1_700_000_000_000}
     cand, op = detect_indicator_candidate(
         _FakePool(kl, _trending_4h_up()), "TEST/USDT", kl, pending=pending
     )
-    assert cand is None
-    assert op is not None and op["op"] == "expire" and op["reason"] == "structure_1h"
+    assert not (op and op.get("op") == "expire" and op.get("reason") == "structure_1h")
 
 
 def test_range_score_gate_veto_expires_pending(monkeypatch):

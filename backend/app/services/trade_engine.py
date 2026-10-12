@@ -1570,6 +1570,80 @@ def _derive_exit_reason(rec: TradeRecord, fee_rate: Optional[float] = None) -> s
     return "sl"
 
 
+# 4h 状态机下车态集合（2026-10-12 拍板 B1=B，docs/21 O1）：逆侧趋势级反转
+# （macro_cross/aligned/recover 逆侧）+ turn 同侧（排列内拐头=动能反转确认，
+# 同 docs/13 #4 V3 立场）；缠绕与过渡态（bull_dip/bear_rally）不动——缠绕全平
+# 会被盘整洗下车（拍板否决）。状态名为 technical.py 11 态口径
+_HTF_EXIT_STATES = {
+    "long": {"macro_cross_bear", "aligned_bear", "bear_recover", "turn_bull"},
+    "short": {"macro_cross_bull", "aligned_bull", "bull_recover", "turn_bear"},
+}
+
+
+def _htf_state_exit(db: Session, trader: BinanceTrader, rec: TradeRecord) -> bool:
+    """4h 状态机接入 trail 出场（2026-10-12 拍板，docs/21 O1）：下车态 → 市价全平。
+
+    修「入场看 4h+1h、出场只看 1h」的级别不对称——趋势级反转（4h 状态）不再等
+    1h 摆动止损慢慢跟上。仅 _trail_mode_patrol（tp_mode=trail）调用，ladder 单
+    不经过（s1 隔离约束）。
+
+    判定频率（拍板 B3=B）：仅 4h 换根后首轮巡检重算并缓存（raw.htf_state=
+    {bar, state, age}），桶内命中缓存零计算；4h K 线走 ExchangePool 桶对齐缓存，
+    每小时池级仅数个新请求。
+    数据口径：analyze_htf_background 返回 None（K 线 <156 已收盘根等）→ 不动作；
+    拉取异常 → 本轮不动作，但 fail-closed：连续 2 个 4h 桶拉取失败 → 保守全平
+    （4h 盲飞不可接受）。交易所全平失败仅告警（不落事件幂等——下轮重试）。
+    """
+    from app.services.strategy.technical import analyze_htf_background
+
+    raw = rec.raw or {}
+    bucket = int(datetime.utcnow().timestamp() // (4 * 3600))
+    try:
+        kl = ExchangePool().get_klines(rec.symbol, "4h", 220)
+    except Exception as e:
+        kl = None
+        logger.warning("4h 状态机判定 %s 拉取异常：%s", rec.symbol, e)
+    if not kl:
+        fail = raw.get("htf_state_fail") or {}
+        streak = fail.get("streak", 0) + (0 if fail.get("bucket") == bucket else 1)
+        rec.raw = {**raw, "htf_state_fail": {"bucket": bucket, "streak": streak}}
+        if streak >= 2:
+            _add_event(db, rec, "EXIT_HTF_STATE", {"state": None, "fail_closed": True})
+            logger.warning("4h 状态机 %s 连续 %d 个 4h 桶数据缺失，fail-closed 全平",
+                           rec.symbol, streak)
+            try:
+                rec.raw = {**(rec.raw or {}), "exit_override": "htf_state"}
+                trader.cancel_all_algo(rec.symbol)
+                close_market_now(db, trader, rec)
+                return True
+            except Exception as e:
+                logger.warning("4h 状态机全平失败 %s（%s）：%s", rec.symbol, rec.id, e)
+        return False
+    bar = int(kl[-1][0])  # 未收盘 4h 根的开盘时刻（换根检测键）
+    cached = raw.get("htf_state") or {}
+    if cached.get("bar") == bar:
+        st, age = cached.get("state"), cached.get("age")
+    else:
+        bg = analyze_htf_background(kl)
+        if not bg:
+            return False  # EMA144 未成形不动作（不计 fail——新币常态）
+        st, age = bg["state"], bg.get("age_bars")
+        rec.raw = {**raw, "htf_state": {"bar": bar, "state": st, "age": age},
+                   "htf_state_fail": None}
+        raw = rec.raw
+    if st in _HTF_EXIT_STATES.get(rec.direction, ()):
+        _add_event(db, rec, "EXIT_HTF_STATE", {"state": st, "age": age})
+        logger.info("4h 状态机下车 %s（%s）：状态 %s，市价全平", rec.symbol, rec.id, st)
+        try:
+            rec.raw = {**(rec.raw or {}), "exit_override": "htf_state"}
+            trader.cancel_all_algo(rec.symbol)
+            close_market_now(db, trader, rec)
+            return True
+        except Exception as e:
+            logger.warning("4h 状态机全平失败 %s（%s）：%s", rec.symbol, rec.id, e)
+    return False
+
+
 def _trail_mode_patrol(db: Session, trader: BinanceTrader, rec: TradeRecord,
                        interval: str, open_ids: set[int], fee_rate: Optional[float],
                        atr_k: Optional[float]) -> None:
@@ -1585,6 +1659,10 @@ def _trail_mode_patrol(db: Session, trader: BinanceTrader, rec: TradeRecord,
     raw = rec.raw or {}
     qty = float(rec.qty or 0)
     if qty <= 0:
+        return
+    # 4h 状态机下车判定（2026-10-12 拍板，docs/21 O1）：先于武装/减半/跟进——
+    # 下车态命中即全平，本轮不再做后续动作
+    if _htf_state_exit(db, trader, rec):
         return
     if not raw.get("trail_armed"):
         peak = float(rec.peak_total_pnl or 0)
@@ -1617,12 +1695,14 @@ def _trail_mode_patrol(db: Session, trader: BinanceTrader, rec: TradeRecord,
 
 
 def _ema21_half_cut(db: Session, trader: BinanceTrader, rec: TradeRecord) -> None:
-    """武装后 1h 收盘破 EMA21 → 市价减半仓（2026-10-10 拍板，trail 方案减仓腿）。
+    """武装后 1h 双确认破 EMA21 → 市价减半仓（2026-10-10 拍板，trail 方案减仓腿；
+    2026-10-12 拍板 B2 双确认降噪，docs/21 O2）。
 
     trail 单武装（已进入移动止损阶段）后，每小时巡检检查最近 1h 已收盘 K 线
-    （剔尾，与 structure_1h 同口径）：多单收盘 < EMA21(1h) / 空单收盘 > EMA21
-    → 市价 reduceOnly 减掉一半仓位落袋防趋势反噬；剩余仓位继续 ATR 跟进
-    （调用方后续 _move_sl_trailing，SL 为 closePosition 全平单无需调整）。
+    （剔尾，与 structure_1h 同口径）：连续 2 根收盘均在 EMA21 逆侧且末根破线
+    幅度 > 0.1×ATR(14,1h)（多单跌破/空单突破）→ 市价 reduceOnly 减掉一半仓位
+    落袋防趋势反噬；剩余仓位继续 ATR 跟进（调用方后续 _move_sl_trailing，
+    SL 为 closePosition 全平单无需调整）。单根毛刺不减半。
 
     一次性：raw.ema21_cut 旗标防重复，减一次后纯靠 trailing；减半后 rec.qty
     同步为剩余量（展示/诊断一致性；结算按交易所实际持仓 amt 判断归零、pnl 从
@@ -1661,13 +1741,25 @@ def _ema21_half_cut(db: Session, trader: BinanceTrader, rec: TradeRecord) -> Non
             return
         c = np.array([float(k[4]) for k in closed], dtype=float)
         e21 = ema_series(c, 21)
-        if e21 is None or not math.isfinite(float(e21[-1])):
+        if e21 is None or not math.isfinite(float(e21[-1])) \
+                or not math.isfinite(float(e21[-2])):
+            return
+        # 双确认（2026-10-12 拍板 B2，docs/21 O2）：单根收盘破线噪音大（回踩单入场
+        # 在 ema21 附近、减仓腿却对单根毛刺敏感——同线矛盾），改为连续 2 根已收盘
+        # 1h K 收盘均在 EMA21 逆侧，且末根破线幅度 > 0.1×ATR(14,1h) 才认定趋势转弱
+        def _beyond(i: int) -> bool:
+            return (c[i] < e21[i] if rec.direction == "long"
+                    else c[i] > e21[i])
+        if not (_beyond(-1) and _beyond(-2)):
+            return
+        from app.services.strategy.technical import atr_series
+        atr14 = atr_series(kl, period=14)  # 内部剔尾，对齐 closed
+        if atr14 is None or not math.isfinite(float(atr14[-1])) or float(atr14[-1]) <= 0:
             return
         close_now = float(c[-1])
         ema_now = float(e21[-1])
-        breached = (close_now < ema_now if rec.direction == "long"
-                    else close_now > ema_now)
-        if not breached:
+        margin = abs(close_now - ema_now)
+        if margin <= 0.1 * float(atr14[-1]):
             return
         f = trader.filters(rec.symbol)
         cut_qty = trader.round_qty(rec.symbol, amt / 2)
@@ -1688,6 +1780,8 @@ def _ema21_half_cut(db: Session, trader: BinanceTrader, rec: TradeRecord) -> Non
         _add_event(db, rec, "CUT_EMA21", {
             "close": close_now, "ema21": ema_now,
             "cut_qty": cut_qty, "remain_qty": remain,
+            "confirm": "2bars+0.1atr",  # 2026-10-12 双确认口径（docs/21 O2）
+            "margin_atr": round(margin / float(atr14[-1]), 3),
         })
         logger.info("EMA21 减半仓 %s：收盘 %s 破 EMA21 %s，市价减 %s 剩 %s",
                     rec.symbol, close_now, ema_now, cut_qty, remain)
@@ -2190,14 +2284,20 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                         # TP1 与 SL 在同一巡检间隔内先后成交（如 75% TP1 后回踩触发 SL）：补记 TP1_FILL
                         _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
                                                          "realized_pnl": round(pnl, 6)})
-                    exit_reason = _zero_pos_exit_reason(rec, tp1_gone, fee_rate)
-                    # 外部平仓识别（2026-10-02 GTCUSDT 案例）：最后一批平仓侧成交
-                    # 不在系统单链内 → 交易所网页/App 手动平仓，按 manual 记，
-                    # 不再让 bookkeeping 推断误标为止损类出场
-                    ext = _detect_external_close(rt, rec)
-                    if ext:
-                        exit_reason = "manual"
-                        _add_event(db, rec, "EXTERNAL_CLOSE", ext)
+                    # 程序主动全平（2026-10-12 拍板 docs/21 O1：4h 状态机下车态/
+                    # fail-closed 触发的 trail 全平）→ exit_reason=htf_state，
+                    # 不让 bookkeeping 推断误标为止损类出场
+                    if raw.get("exit_override"):
+                        exit_reason = raw["exit_override"]
+                    else:
+                        exit_reason = _zero_pos_exit_reason(rec, tp1_gone, fee_rate)
+                        # 外部平仓识别（2026-10-02 GTCUSDT 案例）：最后一批平仓侧成交
+                        # 不在系统单链内 → 交易所网页/App 手动平仓，按 manual 记，
+                        # 不再让 bookkeeping 推断误标为止损类出场
+                        ext = _detect_external_close(rt, rec)
+                        if ext:
+                            exit_reason = "manual"
+                            _add_event(db, rec, "EXTERNAL_CLOSE", ext)
                 rec.status = "CLOSED"
                 rec.closed_at = datetime.utcnow()
                 rec.exit_reason = exit_reason

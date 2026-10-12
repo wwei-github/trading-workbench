@@ -288,9 +288,10 @@ def test_validate_scan_filters_structure_1h_gate():
             _validate_scan_filters({"structure_1h_gate": bad})
 
 
-def test_candidate_structure_gate_disabled_skips(monkeypatch):
-    """scanner 消费开关：structure_1h_gate=False 时结构判定整体跳过——
-    排列/发散/144 方向不再否决，流程直达触发层（结构桩不设也须产生候选）"""
+def test_candidate_structure_gate_retired(monkeypatch):
+    """O7（2026-10-12 拍板，docs/21）：structure_1h 筛选链硬门退役——scanner
+    不再消费 structure_1h_gate 开关，True/False 行为一致（候选照常产生，
+    s2 资格闸移到 risk_guard 按 trend_pullback 标注判定）"""
     import app.services.scanner as scanner_mod
 
     votes = {"bull": 5, "bear": 0, "bull_n": 6, "bear_n": 6,
@@ -303,11 +304,6 @@ def test_candidate_structure_gate_disabled_skips(monkeypatch):
                         lambda k, cfg=None: ("long", {"slope_pct": 0.01, "wraps": 0, "adx": 25.0}))
     monkeypatch.setattr(scanner_mod, "range_score", lambda k, gate_ev=None: (0, []))
 
-    # 结构桩被调用即 fail（开关关时不应触达）
-    def _boom(*a, **k):
-        raise AssertionError("structure_1h 不应被调用（开关已关）")
-    monkeypatch.setattr(scanner_mod, "structure_1h", _boom)
-
     class FakePool:
         def get_klines(self, *a, **k):
             return []
@@ -317,27 +313,17 @@ def test_candidate_structure_gate_disabled_skips(monkeypatch):
     monkeypatch.setattr(scanner_mod, "detect_trigger",
                         lambda *a, **k: (dict(breakout), None))
 
-    flt = ScanFilters(
-        min_volume_24h=3_000_000, breakout_channel_bars=20,
-        breakout_threshold=0.002, breakout_vol_ratio=1.2,
-        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
-        ai_max_per_scan=10, structure_1h_gate=False,
-    )
-    cand, op = scanner_mod.detect_indicator_candidate(
-        FakePool(), "XUSDT", _flat_bars(), flt=flt)
-    assert cand is not None and cand["signal_type"] == BREAKOUT
-
-    # 对照：开关开（显式 structure_1h_gate=True）→ 结构门照常否决（st=None 拒绝）
-    monkeypatch.setattr(scanner_mod, "structure_1h", lambda k, d, cfg=None: None)
-    flt_on = ScanFilters(
-        min_volume_24h=3_000_000, breakout_channel_bars=20,
-        breakout_threshold=0.002, breakout_vol_ratio=1.2,
-        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
-        ai_max_per_scan=10, structure_1h_gate=True,
-    )
-    cand2, _ = scanner_mod.detect_indicator_candidate(
-        FakePool(), "XUSDT", _flat_bars(), flt=flt_on)
-    assert cand2 is None
+    # 开关两个取值下行为一致（开关退役：scanner 不再做结构判定，直抵触发层）
+    for gate_flag in (False, True):
+        flt = ScanFilters(
+            min_volume_24h=3_000_000, breakout_channel_bars=20,
+            breakout_threshold=0.002, breakout_vol_ratio=1.2,
+            breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
+            ai_max_per_scan=10, structure_1h_gate=gate_flag,
+        )
+        cand, op = scanner_mod.detect_indicator_candidate(
+            FakePool(), "XUSDT", _flat_bars(), flt=flt)
+        assert cand is not None and cand["signal_type"] == BREAKOUT
 
 
 def test_config_effective_contains_all_filter_fields():
@@ -421,12 +407,12 @@ def test_candidate_whitelist_drops_disallowed_triggers(monkeypatch):
     monkeypatch.setattr(scanner_mod, "compute_indicator_votes",
                         lambda k, h=None, htf_bg=None: votes)
     # EMA 三件套硬门（2026-10-10 二次拍板）打桩放行——本测试只验证白名单语义；
-    # 闸门/结构/评分的行为回归见 test_htf_ranging_filter.py。
+    # 闸门/评分的行为回归见 test_htf_ranging_filter.py（structure_1h 硬门
+    # 2026-10-12 退役，docs/21 O7——不再打桩）。
     # 注意 FakePool 对 4h 返回 []，gate_4h 桩实际不会被调用（htf 空跳过闸门块）；
     # 桩仍给"通过"返回值，防将来池子补 4h 数据时误否决
     monkeypatch.setattr(scanner_mod, "gate_4h",
                         lambda k, cfg=None: ("long", {"slope_pct": 0.01, "wraps": 0, "adx": 25.0}))
-    monkeypatch.setattr(scanner_mod, "structure_1h", lambda k, d, cfg=None: ({}, {}))
     monkeypatch.setattr(scanner_mod, "range_score", lambda k, gate_ev=None: (0, []))
 
     class FakePool:

@@ -37,7 +37,10 @@ def _d(entry_strategy=None, tp_mode=None, entry=100.0, stop=96.0, tp1=103.0, tp2
     )
 
 
-_SIG_EMA21 = {"touch_ref": "ema21"}
+_SIG_EMA21 = {"touch_ref": "ema21", "signal_type": "trigger_trend_pullback"}
+# 2026-10-12 拍板（docs/21 O7）：s2 资格收紧为「触点=ema21 ∧ 1H 结构门通过
+# （trigger_trend_pullback 标注）」——ema21 触点但结构门未过的信号 s2 不可用
+_SIG_EMA21_NO_GATE = {"touch_ref": "ema21", "signal_type": "trigger_pullback_confirm"}
 
 
 # ── 1. risk_guard：s2 主路径 ──────────────────────────────────────
@@ -84,6 +87,25 @@ def test_s2_gate_rejects_missing_touch():
     ok, violations, _ = validate_decision(_d(entry_strategy="s2"), {}, [], rr_min=1.5)
     assert not ok
     assert any("策略二仅适用" in v for v in violations)
+
+
+def test_s2_gate_rejects_structure_gate_fail():
+    """资格闸（docs/21 O7）：触点=ema21 但 1H 结构门未过（非 trend_pullback）
+    → s2 不可用；s1 照常评估不受影响"""
+    ok, violations, _ = validate_decision(
+        _d(entry_strategy="s2"), _SIG_EMA21_NO_GATE, [], rr_min=1.5,
+    )
+    assert not ok
+    assert any("1H 结构门通过" in v for v in violations)
+
+
+def test_strategy2_suggest_rejects_structure_gate_fail():
+    """一致性闸（docs/21 O7）：strategy2_decision=suggest 但结构门未过 → 打回"""
+    ok, violations, _ = validate_decision(
+        _d(tp1=108.0, s2_decision="suggest"), _SIG_EMA21_NO_GATE, [], rr_min=1.5,
+    )
+    assert not ok
+    assert any("1H 结构门通过" in v for v in violations)
 
 
 def test_s1_ai_trail_claim_forced_ladder():

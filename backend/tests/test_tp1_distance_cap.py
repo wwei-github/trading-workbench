@@ -39,8 +39,9 @@ def _dec(entry=100.0, stop=98.0, tp1=105.0, strategy=None, strat2=None):
     )
 
 
-def _signal(touch_ref=None):
-    return {"symbol": "TESTUSDT", "current_price": 100.0, "touch_ref": touch_ref}
+def _signal(touch_ref=None, signal_type=None):
+    return {"symbol": "TESTUSDT", "current_price": 100.0, "touch_ref": touch_ref,
+            "signal_type": signal_type}
 
 
 @pytest.fixture(autouse=True)
@@ -85,7 +86,7 @@ def test_s2_trail_exempt():
     """trail（s2，TP1 仅趋势参考价、不挂单）：RR<1.5 保持 s2 → 距离上限豁免"""
     ok, v, fixed = validate_decision(
         _dec(tp1=102.0, strategy="s2", strat2="suggest"),
-        _signal(touch_ref="ema21"), _klines(),
+        _signal(touch_ref="ema21", signal_type="trigger_trend_pullback"), _klines(),
     )
     assert ok, v
     assert fixed["tp_mode"] == "trail"

@@ -179,7 +179,8 @@ def test_validate_s2_forces_trail():
     d.take_profit_1 = 102.0  # RR = 2/2 = 1.0 < 1.5，不触发改标
     d.entry_strategy = "s2"
     d.strategy2_decision = "suggest"
-    ok, _, fixed = validate_decision(d, {"touch_ref": "ema21"}, [])
+    ok, _, fixed = validate_decision(
+        d, {"touch_ref": "ema21", "signal_type": "trigger_trend_pullback"}, [])
     assert ok and fixed["tp_mode"] == "trail"
 
 
@@ -217,7 +218,8 @@ def test_submit_s2_zeroes_tp2():
     args["entry_strategy"] = "s2"
     args["strategy2_decision"] = "suggest"
     done, _, fixed = _handle_submit(
-        args, {"current_price": 100.0, "touch_ref": "ema21"}, [])
+        args, {"current_price": 100.0, "touch_ref": "ema21",
+               "signal_type": "trigger_trend_pullback"}, [])
     assert done
     assert fixed["tp_mode"] == "trail"
     assert fixed["take_profit_2"] == 0  # s2 硬清零，tp2_ref 被无视
@@ -375,6 +377,9 @@ def test_ema21_cut_long_breach(db, monkeypatch):
     evs = db.query(TradeEvent).filter_by(event_type="CUT_EMA21").all()
     assert len(evs) == 1
     assert evs[0].detail["cut_qty"] == pytest.approx(0.5)
+    # 双确认口径证据（2026-10-12 拍板 B2，docs/21 O2）
+    assert evs[0].detail["confirm"] == "2bars+0.1atr"
+    assert evs[0].detail["margin_atr"] > 0.1
 
 
 def test_ema21_cut_short_mirror(db, monkeypatch):
@@ -446,6 +451,48 @@ def test_ema21_cut_double_cut_guard(db, monkeypatch):
     assert trader.market_closes == []
     assert rec.raw["ema21_cut"] is True
     assert float(rec.qty) == pytest.approx(0.5)
+
+
+# ── 6b. _ema21_half_cut 双确认（2026-10-12 拍板 B2，docs/21 O2）────────
+
+
+def test_ema21_cut_single_bar_breach_no_cut(db, monkeypatch):
+    """双确认之连续 2 根：仅末根跌破、前根仍在 EMA21 上方 → 单根毛刺不减半"""
+    # 40 根横盘 105（EMA21=105）→ 104.0（跌破，e21≈104.91）→ 105.5（收回线上，
+    # e21≈104.96）；剔尾后 closed[-2]=104.0 破线、closed[-1]=105.5 未破
+    closes = [105.0] * 40 + [104.0, 105.5, 105.5]
+    _patch_k1(monkeypatch, closes)
+    rec = _rec(db, raw={"tp_mode": "trail", "trail_armed": True}, stop_loss=100.1)
+    trader = StubTrader(price=105.0, amt=1.0)
+    te._ema21_half_cut(db, trader, rec)
+    assert trader.market_closes == []
+    assert not (rec.raw or {}).get("ema21_cut")
+
+
+def test_ema21_cut_single_bar_breach_short_mirror(db, monkeypatch):
+    """空单镜像：仅末根升破、前根收回 → 不减半"""
+    closes = [95.0] * 40 + [96.0, 94.5, 94.5]
+    _patch_k1(monkeypatch, closes)
+    rec = _rec(db, direction="short", stop_loss=99.9,
+               raw={"tp_mode": "trail", "trail_armed": True})
+    trader = StubTrader(price=95.0, amt=1.0)
+    te._ema21_half_cut(db, trader, rec)
+    assert trader.market_closes == []
+    assert not (rec.raw or {}).get("ema21_cut")
+
+
+def test_ema21_cut_margin_too_small_no_cut(db, monkeypatch):
+    """双确认之破线幅度：连续 2 根跌破但末根破线幅度 ≤ 0.1×ATR(14,1h) → 贴线
+    摩擦不减半（夹具每根 TR=1.0 → 0.1×ATR=0.1 > margin≈0.05）"""
+    # closed[-2]=104.95（e21≈104.9955，破 0.045）、closed[-1]=104.94
+    # （e21≈104.9905，margin≈0.0505 < 0.1）
+    closes = [105.0] * 40 + [104.95, 104.94, 104.94]
+    _patch_k1(monkeypatch, closes)
+    rec = _rec(db, raw={"tp_mode": "trail", "trail_armed": True}, stop_loss=100.1)
+    trader = StubTrader(price=104.9, amt=1.0)
+    te._ema21_half_cut(db, trader, rec)
+    assert trader.market_closes == []
+    assert not (rec.raw or {}).get("ema21_cut")
 
 
 # ── 7. 导入持仓：无止盈位 → trail 纯跟踪接管（2026-10-10）────────

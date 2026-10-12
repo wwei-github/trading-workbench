@@ -322,10 +322,11 @@ take_profit_1/take_profit_2/tp_mode/risk_reward_ratio/position_pct；skip_reason
 - entry_strategy: 双入场策略胜出方（2026-10-10-5），suggest 时必填："s1"（策略一=
   trail 加入前原版：ladder 分批止盈+盈亏比铁律+结构位止盈规划，无 trail）或 "s2"
   （策略二=EMA21 金K跟踪，无 RR 铁律、不规划止盈、固定 trail，仅"回踩触点"=ema21
-  时可用）。两策略均建议时输出 "s1"（策略一优先，程序强制）。skip 时输出 null。
-- strategy2_decision: 策略二结论，必填其一："suggest"/"skip"；触点非 ema21 时输出 "skip"。
-  策略二不可用也必须如实输出（程序审计两策略判定链）。
-- strategy2_reason: 策略二判定依据，≤60字；触点非 ema21 时注明"触点非ema21"。
+  且 1H 结构门通过时可用）。两策略均建议时输出 "s1"（策略一优先，程序强制）。skip 时输出 null。
+- strategy2_decision: 策略二结论，必填其一："suggest"/"skip"；触点非 ema21 或
+  结构门未过时输出 "skip"。策略二不可用也必须如实输出（程序审计两策略判定链）。
+- strategy2_reason: 策略二判定依据，≤60字；触点非 ema21 时注明"触点非ema21"；
+  结构门未过时注明"1H结构门未过"。
 - position_pct: 建议名义仓位占账户资金百分比，2位小数。程序会按固定亏损复算覆盖
   （单笔止损预算={risk_label}：仓位=预算÷止损距离），此处报估算值即可。
 - recommendation: 推荐程度，0-100的整数。skip 时≤30，suggest 时≥50。锚点（评分需可区分强度）：
@@ -340,7 +341,8 @@ take_profit_1/take_profit_2/tp_mode/risk_reward_ratio/position_pct；skip_reason
   4. 形态与量能 5. 风险点——含资金费率拥挤/BTC 大盘急跌等环境风险，无则写"无"），
   随后「策略一：」「策略二：」两节
   （各自写满足/不满足什么，节内以"结论：建议开单/不建议开单"收尾；策略二触点
-  非 ema21 时本节写"不可用（触点非ema21）"），最后「合并结论：」一行。
+  非 ema21 时本节写"不可用（触点非ema21）"，触点=ema21 但结构门未过时写
+  "不可用（1H结构门未过）"），最后「合并结论：」一行。
   每条独占一行（JSON内换行写\\n）。
   trade_decision="skip" 时 analysis 仍按上述四节完整输出（两策略节写各自不满足的
   主因），skip_reason 不必重复 analysis 已有内容。
@@ -608,6 +610,11 @@ def _build_messages(
     touch_line = ""
     if touch_ref:
         touch_line = f"回踩触点: {TOUCH_LABELS.get(touch_ref, touch_ref)}（{touch_ref}）\n"
+        # 2026-10-12 拍板（docs/21 O7）：s2 资格=触点ema21 ∧ 1H结构门通过
+        # （trigger_trend_pullback 标注）；ema21 触点但结构门未过 → 事实注记
+        # 防 AI 误判 s2 资格（程序闸在 risk_guard 兜底）
+        if touch_ref == "ema21" and signal.get("signal_type") != "trigger_trend_pullback":
+            touch_line += "s2资格: 结构门未过·策略二不可用（s1 照常评估）\n"
 
     # 市场环境块（market_summary，docs/24 A4①）已拼在指标块与摆动结构之间；
     # 单次调用管线无工具循环，模型仅凭给定数据分析，环境数据缺失时按无环境处理
