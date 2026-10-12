@@ -98,7 +98,7 @@ export function createTradeChart(
       borderColor: '#252b3b',
       timeVisible: false,
       secondsVisible: false,
-      rightOffset: 4,
+      rightOffset: 12,
       lockVisibleTimeRangeOnResize: true,
     },
     crosshair: {
@@ -149,8 +149,9 @@ export function applyCandleScheme(series: ISeriesApi<'Candlestick'>, scheme: Col
   })
 }
 
-// 可视范围 + 右侧「价签走廊」（2026-09-23 用户反馈）：右缘价签宽约 110px，
-// 按 barSpacing 换算成空K线根数，避免标签压住最新K线。
+// 可视范围 + 右侧「价签走廊」（2026-09-23 用户反馈；2026-10-12 用户拍板加宽）：
+// 右缘价签宽约 110px，按 barSpacing 换算成空K线根数避免标签压住最新K线，
+// 目标走廊 180px（下限 12 根）给最新K线与右缘留出更宽的呼吸空间。
 // from：可视起点逻辑下标（扫描图=最新130根起点；复盘图=-2 左侧留白）
 export function applyCorridorView(
   chart: IChartApi,
@@ -159,9 +160,9 @@ export function applyCorridorView(
   from: number,
 ) {
   const plotW = Math.max(200, (containerWidth || 520) - 64)
-  let corridor = 8
+  let corridor = 12
   for (let i = 0; i < 2; i++) {
-    corridor = Math.max(6, Math.ceil(110 / (plotW / (count - from + 2 + corridor))))
+    corridor = Math.max(12, Math.ceil(180 / (plotW / (count - from + 2 + corridor))))
   }
   chart.timeScale().applyOptions({ rightOffset: corridor })
   chart.timeScale().setVisibleLogicalRange({ from, to: count + corridor })
