@@ -204,9 +204,9 @@ function drawReplayZones(data: TradeKlineData, colorScheme: ColorScheme, ctx: Ov
   }
 
   // RR 徽标（TV 仓位框 riskRewardRatio，与 ChartCore AI 标注同款）：
-  // 区域水平居中、入场↔止盈1（缺则入场↔止损）垂直居中
-  // （trail 单 tp1 是参考价，RR 徽标按参考值展示，与线/区口径一致地沿用数据）
-  const rr = rrRatio(ep, data.stop_loss, data.tp1)
+  // 区域水平居中、入场↔止盈1（缺则入场↔止损）垂直居中；
+  // trail 单不画——tp1 是参考价不是实际止盈位，RR 数值无意义（2026-10-12 用户拍板）
+  const rr = isTrail ? null : rrRatio(ep, data.stop_loss, data.tp1)
   if (rr != null) {
     const anchor = data.tp1 ?? data.stop_loss
     const yA = series.priceToCoordinate(anchor!)
