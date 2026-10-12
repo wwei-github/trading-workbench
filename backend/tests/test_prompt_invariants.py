@@ -44,25 +44,32 @@ def _p0_system() -> str:
     return ai_analyzer.render_system_prompt()
 
 
-# ── 不变量 1：跳档禁令恢复纯净（2026-10-11 trail RR 豁免退役）────
+# ── 不变量 1：跳档禁令纯净（2026-10-11 trail RR 豁免退役；2026-10-12
+# 策略二整体退役后口径固化）────────────────────────────────────
 
 
-def test_ladder_ban_pure_no_trail_exception():
-    """策略一 ladder-only：跳档禁令不得再带「trail 例外」括注（防括注复活）"""
+def test_ladder_ban_pure_no_deprecated_exception():
+    """跳档禁令不得再带已退役口径的括注（trail RR 豁免/策略二，防复活）"""
     for txt in (_p0_system(), ai_agent.AGENT_SYSTEM):
         for line in txt.splitlines():
             if "凑盈亏比" in line:
                 assert "trail" not in line, line
+                assert "策略二" not in line, line
 
 
-# ── 不变量 1.5：tp_mode 由 entry_strategy 程序推导（AI 不自选）──
+# ── 不变量 1.5：策略二退役（2026-10-12 删除策略二/trail，出场恒
+# ladder；AI 不自选出场模式）────────────────────────────────
 
 
-def test_tp_mode_derivation_clause_present_p0_p1():
-    """P0 字段说明与 P1 规则 12.5 同句式：程序按 entry_strategy 推导并覆盖"""
-    for txt in (_p0_system(), ai_agent.AGENT_SYSTEM):
-        assert "程序按 entry_strategy 推导并覆盖本字段" in txt
-        assert "trail 加入前的原版" in txt  # 策略一重定义（ladder-only）
+def test_strategy2_retired_invariants():
+    """P0/P1 渲染提示词与 submit_decision 工具 schema 均不含
+    「策略二」/entry_strategy/strategy2/tp_mode（防条款分叉复发）"""
+    schema_txt = _json.dumps(
+        ai_agent._tools_schema(tp2_enabled=True), ensure_ascii=False,
+    )
+    for txt in (_p0_system(), ai_agent.AGENT_SYSTEM, schema_txt):
+        for kw in ("策略二", "entry_strategy", "strategy2", "tp_mode"):
+            assert kw not in txt, f"{kw} 残留"
 
 
 # ── 不变量 1.6：取舍提示行退役（technical 不再注入第三条路）────

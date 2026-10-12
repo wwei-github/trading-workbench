@@ -70,20 +70,12 @@ def _fmt_facts(signal: dict) -> str:
 def _fmt_decision(d: dict) -> str:
     if d.get("trade_decision") == "skip":
         return f"决策: skip（{d.get('skip_reason', '')}）"
-    # s2 语义注记（2026-10-10-5b）：EMA21 金K跟踪无盈亏比铁律，防止评委按常规
-    # RR 逻辑误 veto 合法的 s2 低盈亏比单
-    s2_note = (
-        "\n（entry_strategy=s2：EMA21 金K跟踪策略——程序无盈亏比铁律，"
-        "低盈亏比属策略预期，勿以盈亏比不足为由 veto；出场为纯跟踪）"
-        if d.get("entry_strategy") == "s2" else ""
-    )
     return (
         f"决策: suggest {d.get('direction')} {d.get('symbol', '')}\n"
         f"入场 {d.get('entry_price')} 止损 {d.get('stop_loss')} "
         f"止盈1 {d.get('take_profit_1')} 止盈2 {d.get('take_profit_2')}\n"
         f"盈亏比 {d.get('risk_reward_ratio')} 仓位 {d.get('position_pct')}% "
-        f"推荐度 {d.get('recommendation')}"
-        f"{s2_note}\n"
+        f"推荐度 {d.get('recommendation')}\n"
         f"依据: {d.get('analysis', '')}"
     )
 

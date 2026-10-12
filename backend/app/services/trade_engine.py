@@ -156,12 +156,6 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
         # tangle/turn_*/macro_cross_*/*_recover/aligned_*/bull_dip/bear_rally，
         # 随快照自持，复盘「4h趋势期」维度分组用；旧行（退役旧枚举）/无 4h 数据 None→「未知」
         "htf_phase": a.htf_phase,
-        # 止盈模式（2026-10-10，docs/19 §3.4）：随快照自持——复盘弹窗 AI 卡
-        # 按 trail 显「纯跟踪」Tag 与「止盈1·参考」标签，缺了会错显分批
-        "tp_mode": a.tp_mode,
-        # 双入场策略（2026-10-10-5，docs/20）：s1=完整规则 / s2=EMA21 金K跟踪
-        # （trail+RR豁免），随快照自持，复盘按策略分组对比
-        "entry_strategy": a.entry_strategy,
         # 量比（docs/24 A5b）：信号K线量 ÷ 近20根基准量（中位量，2026-09-29 口径），
         # 实盘归因按量比门槛分组对比；旧行/无信号上下文为 None 归「未知」
         "volume_ratio": (
@@ -251,13 +245,6 @@ def _attempt_open(
     # 出场走「仅 TP1 80% + 剩余 20% 跟进」；手动接管单不受此开关限制（显式输入）
     if not cfg.tp2_enabled:
         tp2 = 0
-    # 止盈模式（2026-10-11 策略一 ladder-only 重定义，docs/19 §3.4 / docs/20）：
-    # 由入场策略推导——策略二（EMA21 金K跟踪）= trail 纯跟踪（不挂止盈档，浮盈
-    # ≥1×ATR 武装保本后跟进，巡检 _trail_mode_patrol）；策略一 = ladder 分批止盈。
-    # 落库侧 risk_guard.validate_decision 已按 entry_strategy 覆盖 tp_mode，
-    # 此处同口径推导（不读 AI 原始输出，cfg.tp_mode 强制配置已退役）
-    _is_s2 = (a.entry_strategy or "s1") == "s2"
-    tp_mode_eff = "trail" if _is_s2 else "ladder"
     try:
         price = trader.price(symbol)
         # 风控参数解析（2026-10-02 上页面）：system_config 列可页面覆盖，
@@ -343,9 +330,7 @@ def _attempt_open(
         # CYBERUSDT 案例：AI 三价 RR 1.57 达标，3 分钟漂移后现价复算 1.4998 被 1.5 拦，
         # 0.0002 级漂移误杀信号。容差仅容忍 AI 报价到开仓间的执行漂移，AI 入场价口径
         # 铁律（risk_guard.validate_decision）不加容差。放行时落 task log 审计。
-        # 策略二豁免（2026-10-10-5，docs/20）：s2 定义即无 RR 铁律（risk_guard 已豁免
-        # AI 入场价口径，此处现价口径同语义豁免），风控由止损宽度上限+固定亏损法兜底
-        if sl != price and not _is_s2:
+        if sl != price:
             rr_now = abs(tp1 - price) / abs(price - sl)
             if rr_now < rr_min - rr_tol:
                 logger.info(
@@ -573,11 +558,10 @@ def _attempt_open(
         # 开完仓才挂 TP1 被交易所拒单，会走紧急撤单+平仓，且该失败不落记录，
         # 候选每小时重试"开仓→拒单→平仓"空转（docs/07 §8-A1）。TP2 本就有
         # min_qty 检查（不足时静默跳过该档），TP1 是主止盈档、缺它无意义。
-        # 纯跟踪单不挂 TP，跳过本预检
         p1, p2, p1s = _tp_ratio_cfg(cfg)
         q1_pre, _ = _tp_quantities(qty, tp2, p1, p2, p1s)
         qty_tp1_pre = trader.round_qty(symbol, q1_pre)
-        if tp_mode_eff != "trail" and qty_tp1_pre < f["min_qty"]:
+        if qty_tp1_pre < f["min_qty"]:
             logger.info(
                 "开仓放弃 %s：止盈一数量 %s 低于交易所最小数量 %s，分批止盈无法挂单",
                 symbol, qty_tp1_pre, f["min_qty"],
@@ -621,36 +605,15 @@ def _attempt_open(
             sl_order = trader.stop_market_close(
                 symbol, close_side, trader.round_price(symbol, sl))
             rec_tp1 = tp1
-            entry_atr = None
-            if tp_mode_eff == "trail":
-                # 纯跟踪（docs/19 §3.4 V1）：不挂止盈档，tp1 仅 RR 校验参考价；
-                # 全仓由「浮盈≥1×ATR 武装保本 → 跟进止损」退出（巡检负责）。
-                # 开仓时算好入场 ATR(22,1d) 快照存 raw（巡检武装线的分母，与
-                # _chandelier_sl 同口径）；缺失时巡检退化 1R 武装线
-                qty_tp1 = qty_tp2 = 0.0
-                tp1_order = tp2_order = None
-                rec_tp1 = None
-                try:
-                    from app.services.strategy.technical import atr_series
-                    _d1 = ExchangePool().get_klines(symbol, "1d", 30)
-                    _atr_s = atr_series(_d1, period=22)
-                    if (_atr_s is not None and len(_atr_s)
-                            and math.isfinite(float(_atr_s[-1]))
-                            and float(_atr_s[-1]) > 0):
-                        entry_atr = round(float(_atr_s[-1]), 8)
-                except Exception as atr_err:
-                    logger.warning("开仓 %s：entry ATR 快照失败（纯跟踪退化 1R 武装线）: %s",
-                                   symbol, atr_err)
-            else:
-                q1, q2 = _tp_quantities(qty, tp2, p1, p2, p1s)
-                qty_tp1 = trader.round_qty(symbol, q1)
-                qty_tp2 = trader.round_qty(symbol, q2)
-                tp1_order = trader.take_profit_reduce(
-                    symbol, close_side, qty_tp1, trader.round_price(symbol, tp1))
-                tp2_order = None
-                if tp2 > 0 and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
-                    tp2_order = trader.take_profit_reduce(
-                        symbol, close_side, qty_tp2, trader.round_price(symbol, tp2))
+            q1, q2 = _tp_quantities(qty, tp2, p1, p2, p1s)
+            qty_tp1 = trader.round_qty(symbol, q1)
+            qty_tp2 = trader.round_qty(symbol, q2)
+            tp1_order = trader.take_profit_reduce(
+                symbol, close_side, qty_tp1, trader.round_price(symbol, tp1))
+            tp2_order = None
+            if tp2 > 0 and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
+                tp2_order = trader.take_profit_reduce(
+                    symbol, close_side, qty_tp2, trader.round_price(symbol, tp2))
             now = datetime.utcnow()
             rec = TradeRecord(
                 symbol=symbol,
@@ -674,7 +637,7 @@ def _attempt_open(
                 risk_budget_mode=(cfg.risk_budget_mode or "pct"),  # 开仓时刻模式快照（追溯口径）
                 beta=(round(beta, 4) if beta is not None else None),  # 开仓时 β 快照（docs/13 #1 热度加权；None=不可得按 1.0 计）
                 stop_loss=sl,
-                tp1=rec_tp1,  # 纯跟踪单 None（tp1 仅 RR 参考价，不挂档不落现值）
+                tp1=rec_tp1,  # tp1 恒为挂档止盈价（2026-10-12 起无纯跟踪单）
                 tp2=tp2 if tp2_order else 0,
                 status="OPENED",
                 opened_at=now,
@@ -682,15 +645,10 @@ def _attempt_open(
                     # SL/TP 为 algo 条件单，标识是 algoId（MARKET 入场单仍是 orderId）
                     "entry_order_id": entry_order["orderId"],
                     "sl_order_id": sl_order.get("algoId") or sl_order.get("orderId"),
-                    # trail 单 tp1_order=None（不挂止盈档），与 L666 tp2 同守卫
-                    # （KAIAUSDT 案例：trail 开仓崩 'NoneType'.get → 紧急平仓空转）
                     "tp1_order_id": (tp1_order.get("algoId") or tp1_order.get("orderId")) if tp1_order else None,
                     "tp2_order_id": (tp2_order.get("algoId") or tp2_order.get("orderId")) if tp2_order else None,
                     "qty_tp1": qty_tp1,
                     "qty_tp2": qty_tp2 if tp2_order else 0,
-                    # 止盈模式快照（docs/19 §3.4）：ladder/trail + 纯跟踪的武装线分母
-                    "tp_mode": tp_mode_eff,
-                    "entry_atr": entry_atr,
                     "capital_base": _capital_base(wallet),
                     "wallet": wallet,
                     # 价差盈亏书签（REALIZED_PNL 累计，仅价差不含费用）：
@@ -702,7 +660,6 @@ def _attempt_open(
             db.flush()
             _add_event(db, rec, "OPEN", {
                 "price": price, "qty": qty, "stop_loss": sl, "tp1": tp1, "tp2": tp2,
-                "tp_mode": tp_mode_eff, "entry_atr": entry_atr,
                 "risk_amount": round(risk_amount, 4), "entry_order_id": entry_order["orderId"],
                 "fill_price": fill_price, "slippage_pct": round(slippage_pct, 3),
                 "actual_risk": round(actual_risk, 4),
@@ -1224,7 +1181,7 @@ def try_open_for_analysis(
                 return False
     # 当日亏损熔断（2026-09-27 正式网复盘）：UTC 日本账号已平仓净亏 ≤ -阈值
     # （风险基数 × DAILY_LOSS_STOP_PCT，默认 9% ≈ 3 笔满损，随账户金额缩放）
-    # 停开仓——09-26 全天 13 笔全灭仍持续开单，趋势日的 trail 赢单无法覆盖
+    # 停开仓——09-26 全天 13 笔全灭仍持续开单，趋势日的赢单无法覆盖
     # 震荡日的连损。只停开仓，AI 分析/巡检照常。
     # 2026-09-30 用户拍板开关化：DAILY_LOSS_STOP_ENABLED 默认 True=保持现行为，
     # False=关闭；PCT 置 0 亦关闭（阈值语义）
@@ -1425,7 +1382,7 @@ def _chandelier_sl(rec: TradeRecord, trader: BinanceTrader, k: float) -> Optiona
         opened_ms = opened.replace(tzinfo=timezone.utc).timestamp() * 1000
         now_utc = datetime.utcnow()
         hours = max(1, int((now_utc - opened).total_seconds() // 3600) + 1)
-        # 持仓期 1h K（上限 60 天，trail 单实际持仓通常 1-3 天）
+        # 持仓期 1h K（上限 60 天，趋势单持仓可跨多日）
         kl = ExchangePool().get_klines(rec.symbol, "1h", min(hours + 1, 24 * 60))
         closed = [b for b in (kl[:-1] if len(kl) >= 2 else kl)
                   if float(b[0]) >= opened_ms]
@@ -1526,26 +1483,6 @@ def _move_sl_breakeven(db: Session, trader: BinanceTrader, rec: TradeRecord,
 
 
 def _derive_exit_reason(rec: TradeRecord, fee_rate: Optional[float] = None) -> str:
-    # 纯跟踪单（docs/19 §3.4）：状态恒 OPENED（无 TP 档），按武装旗标推断——
-    # SL 已收紧越过保本价 → trail_sl；仍贴着保本价 → breakeven_sl；未武装 → sl
-    if (rec.raw or {}).get("tp_mode") == "trail" and rec.status == "OPENED":
-        if not (rec.raw or {}).get("trail_armed"):
-            return "sl"
-        entry, sl = float(rec.entry_price or 0), float(rec.stop_loss or 0)
-        if entry > 0 and sl > 0:
-            eps = entry * 1e-6
-            be = _breakeven_stop_price(rec, fee_rate)
-            if rec.direction == "long":
-                if sl > be + eps:
-                    return "trail_sl"
-                if sl >= entry - eps:
-                    return "breakeven_sl"
-            else:
-                if sl < be - eps:
-                    return "trail_sl"
-                if sl <= entry + eps:
-                    return "breakeven_sl"
-        return "breakeven_sl"
     if rec.status == "TP2_HIT":
         return "trail_sl"
     if rec.status == "TP1_HIT":
@@ -1568,344 +1505,6 @@ def _derive_exit_reason(rec: TradeRecord, fee_rate: Optional[float] = None) -> s
                     return "breakeven_sl"
         return "tp1_then_sl"
     return "sl"
-
-
-# 4h 状态机下车态集合（2026-10-12 拍板 B1=B，docs/21 O1）：逆侧趋势级反转
-# （macro_cross/aligned/recover 逆侧）+ turn 同侧（排列内拐头=动能反转确认，
-# 同 docs/13 #4 V3 立场）；缠绕与过渡态（bull_dip/bear_rally）不动——缠绕全平
-# 会被盘整洗下车（拍板否决）。状态名为 technical.py 11 态口径
-_HTF_EXIT_STATES = {
-    "long": {"macro_cross_bear", "aligned_bear", "bear_recover", "turn_bull"},
-    "short": {"macro_cross_bull", "aligned_bull", "bull_recover", "turn_bear"},
-}
-
-
-def _htf_close_out(db: Session, trader: BinanceTrader, rec: TradeRecord,
-                   detail: dict) -> bool:
-    """4h 状态机全平执行（docs/21 O1；2026-10-12-7 修复三处）。
-
-    - **事件幂等**：EXIT_HTF_STATE 只落一次（raw.htf_exit_notified 旗标），
-      平仓失败重试轮不再重复落事件；
-    - **不预撤挂单**：撤单交由 close_market_now 内部「先平仓后撤单」
-      （2026-09-25 约定）——预撤会在平仓失败时留下无 SL 保护的裸奔仓位；
-    - **失败清理**：平仓失败且仓位确认仍开放（或交易所不可达、下单大概率
-      未派发）→ 清除 raw.exit_override，防后续真实 SL/手动平仓被 settle
-      零仓分支误标 htf_state；仓位已归零（平仓单已成交、结算段抛异常）→
-      保留 override，下轮 settle 按 htf_state 落账。
-    exit_reason 经 close_market_now(exit_reason="htf_state") 落库。
-    成功返回 True（调用方停止本轮后续动作）。
-    """
-    raw = rec.raw or {}
-    if not raw.get("htf_exit_notified"):
-        _add_event(db, rec, "EXIT_HTF_STATE", detail)
-    try:
-        rec.raw = {**raw, "exit_override": "htf_state", "htf_exit_notified": True}
-        close_market_now(db, trader, rec, exit_reason="htf_state")
-        return True
-    except Exception as e:
-        logger.warning("4h 状态机全平失败 %s（%s）：%s", rec.symbol, rec.id, e)
-        try:
-            pos = trader.positions().get(rec.symbol)
-            amt = abs(float((pos or {}).get("amt") or 0)) if pos else 0.0
-        except Exception:
-            amt = None  # 交易所不可达（下单大概率未派发）→ 同「仍开放」处理
-        if amt is None or amt > 0:
-            rec.raw = {**(rec.raw or {}), "exit_override": None}
-        return False
-
-
-def _htf_state_exit(db: Session, trader: BinanceTrader, rec: TradeRecord) -> bool:
-    """4h 状态机接入 trail 出场（2026-10-12 拍板，docs/21 O1）：下车态 → 市价全平。
-
-    修「入场看 4h+1h、出场只看 1h」的级别不对称——趋势级反转（4h 状态）不再等
-    1h 摆动止损慢慢跟上。仅 _trail_mode_patrol（tp_mode=trail）调用，ladder 单
-    不经过（s1 隔离约束）。
-
-    判定频率（拍板 B3=B）：仅 4h 换根后首轮巡检重算并缓存（raw.htf_state=
-    {bar, state, age}），桶内命中缓存零计算；4h K 线走 ExchangePool 桶对齐缓存，
-    每小时池级仅数个新请求。
-    数据口径：analyze_htf_background 返回 None（K 线 <156 已收盘根等）→ 不动作；
-    拉取异常 → 本轮不动作，但 fail-closed：连续 2 个 4h 桶拉取失败 → 保守全平
-    （4h 盲飞不可接受）。全平执行/失败重试/事件幂等见 _htf_close_out。
-    """
-    from app.services.strategy.technical import analyze_htf_background
-
-    raw = rec.raw or {}
-    bucket = int(datetime.utcnow().timestamp() // (4 * 3600))
-    try:
-        kl = ExchangePool().get_klines(rec.symbol, "4h", 220)
-    except Exception as e:
-        kl = None
-        logger.warning("4h 状态机判定 %s 拉取异常：%s", rec.symbol, e)
-    if not kl:
-        fail = raw.get("htf_state_fail") or {}
-        streak = fail.get("streak", 0) + (0 if fail.get("bucket") == bucket else 1)
-        rec.raw = {**raw, "htf_state_fail": {"bucket": bucket, "streak": streak}}
-        if streak >= 2:
-            logger.warning("4h 状态机 %s 连续 %d 个 4h 桶数据缺失，fail-closed 全平",
-                           rec.symbol, streak)
-            return _htf_close_out(db, trader, rec,
-                                  {"state": None, "fail_closed": True})
-        return False
-    bar = int(kl[-1][0])  # 未收盘 4h 根的开盘时刻（换根检测键）
-    cached = raw.get("htf_state") or {}
-    if cached.get("bar") == bar:
-        st, age = cached.get("state"), cached.get("age")
-    else:
-        bg = analyze_htf_background(kl)
-        if not bg:
-            return False  # EMA144 未成形不动作（不计 fail——新币常态）
-        st, age = bg["state"], bg.get("age_bars")
-        rec.raw = {**raw, "htf_state": {"bar": bar, "state": st, "age": age},
-                   "htf_state_fail": None}
-        raw = rec.raw
-    if st in _HTF_EXIT_STATES.get(rec.direction, ()):
-        logger.info("4h 状态机下车 %s（%s）：状态 %s，市价全平", rec.symbol, rec.id, st)
-        return _htf_close_out(db, trader, rec, {"state": st, "age": age})
-    return False
-
-
-def _trail_mode_patrol(db: Session, trader: BinanceTrader, rec: TradeRecord,
-                       interval: str, open_ids: set[int], fee_rate: Optional[float],
-                       atr_k: Optional[float]) -> None:
-    """纯跟踪模式巡检（docs/19 §3.4 V1，tp_mode=trail 的单不挂止盈档）：
-
-    未武装：全程盈亏峰值（peak_total_pnl，USDT）≥ 1×ATR(22,1d)×数量 → 武装保本
-    （SL 移至成本价±往返费缓冲，与 TP1 后保本同口径）；entry_atr 缺失（开仓时
-    快照失败/旧行）退化 1×risk_amount（1R）武装线。
-    已武装：先查两条落袋腿（独立叠加，2026-10-12 拍板，docs/21 O8）：浮盈目标腿
-    （1h 收盘浮盈 ≥2×ATR(22,1d)×持仓 → 市价减 1/3 落袋）与 EMA21 减半腿（1h 双
-    确认破 EMA21 → 市价减半仓），再每轮跟进止损（与 TP2_HIT 同机制，摆动腿+ATR
-    腿只收紧不放松）。
-    幂等：armed 旗标在 raw.trail_armed，武装动作失败（交易所异常）不落旗标下轮重试。
-    """
-    raw = rec.raw or {}
-    qty = float(rec.qty or 0)
-    if qty <= 0:
-        return
-    # 4h 状态机下车判定（2026-10-12 拍板，docs/21 O1）：先于武装/减半/跟进——
-    # 下车态命中即全平，本轮不再做后续动作
-    if _htf_state_exit(db, trader, rec):
-        return
-    if not raw.get("trail_armed"):
-        peak = float(rec.peak_total_pnl or 0)
-        atr = float(raw.get("entry_atr") or 0)
-        threshold = atr * qty if atr > 0 else float(rec.risk_amount or 0)
-        if threshold <= 0 or peak < threshold:
-            return
-        _move_sl_breakeven(db, trader, rec, open_ids, fee_rate)
-        # 武装判定以 SL 现值为准：已不差于保本价（本轮移成/此前已到位）才落旗标；
-        # 仍差（挂上即立即触发等，_move_sl_breakeven 保留原 SL）→ 本轮不跟进，
-        # 旗标不落，下轮巡检重试
-        entry = float(rec.entry_price or 0)
-        be = _breakeven_stop_price(rec, fee_rate)
-        sl_now = float(rec.stop_loss or 0)
-        eps = entry * 1e-6
-        armed = (sl_now >= be - eps if rec.direction == "long"
-                 else sl_now <= be + eps)
-        if not armed:
-            logger.info("纯跟踪武装 %s 暂缓：SL %s 未达保本价 %s（下轮重试）",
-                        rec.symbol, sl_now, be)
-            return
-        rec.raw = {**raw, "trail_armed": True}
-        logger.info("纯跟踪武装保本 %s：峰值 %.4f 达武装线 %.4f，SL=%s",
-                    rec.symbol, peak, threshold, sl_now)
-    if (rec.raw or {}).get("trail_armed"):
-        # 武装（=已开始移动止损）后两条落袋腿独立叠加（2026-10-12 拍板，docs/21 O8）：
-        # 先浮盈目标腿（1h 收盘 2×ATR 达标 → 减 1/3 落袋），再减半腿（破 EMA21 减半）
-        # ——两腿各自一次性旗标、互不设门槛
-        # （重读 rec.raw：本轮刚武装时局部 raw 是旧 dict 无旗标）
-        _trail_profit_take(db, trader, rec)
-        _ema21_half_cut(db, trader, rec)
-    _move_sl_trailing(db, trader, rec, interval, open_ids, atr_k=atr_k)
-
-
-# 中途止盈腿参数（2026-10-12 拍板 B5/B6，docs/21 O8）：落袋线 = 2×ATR(22,1d)×
-# 当前持仓量（entry_atr 快照口径；缺失退化 2×risk_amount=2R），达标减 1/3
-_TRAIL_TP_ATR_MULT = 2.0
-_TRAIL_TP_QTY_FRAC = 1 / 3
-
-
-def _trail_profit_take(db: Session, trader: BinanceTrader, rec: TradeRecord) -> None:
-    """武装后 1h 收盘浮盈达标 → 市价减 1/3 落袋（2026-10-12 拍板，docs/21 O8）。
-
-    与 _ema21_half_cut（破 EMA21 减半腿）独立叠加、各自一次性旗标：前者落袋
-    利润，后者应对趋势转弱，语义不同、互不设门槛。
-    达标口径（拍板 B5=A）：1h 已收盘 K 收盘价（剔尾，与减半腿/structure_1h 同
-    纪律）对应的全程浮盈（已实现+收盘价浮动）≥ 落袋线；收盘价天然剔影线，
-    插针（长影线）不误触发。
-    落袋线 = _TRAIL_TP_ATR_MULT × entry_atr × 当前持仓 amt；entry_atr 缺失
-    （开仓快照失败/旧行）退化 _TRAIL_TP_ATR_MULT × risk_amount（2R）。
-    仅 _trail_mode_patrol 的已武装分支调用（武装前无保本兜底，先落袋会暴露风险）。
-    数据/约束不可得（K 线不足、无持仓、减仓量或剩余量低于交易所最小规则）→
-    跳过本轮不落旗标，下轮巡检重试；交易所下单异常仅告警不中断巡检（下轮重试）。
-    一次性：raw.trail_tp_done 旗标；减仓后 rec.qty 同步剩余量（与减半腿同口径）。
-    竞态防护：市价单已成交但旗标未落库（事务回滚/响应超时）时，交易所 amt 已
-    ≈ rec.qty×(1−1/3)——持仓已明显小于记录数量（<0.7 倍）视为已落袋过（或用户
-    外部部分平仓），只补旗标与 qty 同步、不再下第二刀。
-    """
-    raw = rec.raw or {}
-    if raw.get("trail_tp_done"):
-        return
-    try:
-        pos = trader.positions().get(rec.symbol)
-        amt = abs(float((pos or {}).get("amt") or 0)) if pos else 0.0
-        rec_qty = float(rec.qty or 0)
-        if amt <= 0:
-            return
-        if rec_qty > 0 and amt < rec_qty * 0.7:
-            # 与减半腿同款竞态防护：持仓已明显小于记录 → 视为已落袋/外部部分平仓
-            rec.qty = amt
-            rec.raw = {**raw, "trail_tp_done": True}
-            _add_event(db, rec, "TP_TRAIL", {
-                "close": None, "target": None, "cut_qty": rec_qty - amt,
-                "remain_qty": amt, "reason": "already_reduced",
-            })
-            logger.info("浮盈落袋 %s：交易所持仓 %s 已小于记录 %s，视为已减过（补旗标）",
-                        rec.symbol, amt, rec_qty)
-            return
-        kl = ExchangePool().get_klines(rec.symbol, "1h", 60)
-        closed = kl[:-1] if len(kl) >= 2 else kl
-        if len(closed) < 2:
-            return
-        close_now = float(closed[-1][4])
-        entry = float(rec.entry_price or 0)
-        if entry <= 0:
-            return
-        atr = float(raw.get("entry_atr") or 0)
-        if atr > 0:
-            target = atr * _TRAIL_TP_ATR_MULT * amt
-            extra = {"atr_mult": _TRAIL_TP_ATR_MULT}
-        else:
-            target = float(rec.risk_amount or 0) * _TRAIL_TP_ATR_MULT
-            extra = {"fallback": "2R"}
-        if target <= 0:
-            return
-        unreal = ((close_now - entry) if rec.direction == "long"
-                  else (entry - close_now)) * amt
-        total = float(rec.realized_pnl or 0) + unreal
-        if total < target:
-            return
-        f = trader.filters(rec.symbol)
-        cut_qty = trader.round_qty(rec.symbol, amt * _TRAIL_TP_QTY_FRAC)
-        remain = amt - cut_qty
-        # 减仓量或剩余量低于交易所最小规则 → 不切（市价单会被拒/留下不可平尾巴），
-        # 留给 SL 全平
-        if cut_qty < f["min_qty"] or remain < f["min_qty"]:
-            logger.info("浮盈落袋 %s 跳过：cut=%s remain=%s 低于 min_qty=%s",
-                        rec.symbol, cut_qty, remain, f["min_qty"])
-            return
-        trader.market_order(rec.symbol, _close_side(rec.direction), cut_qty,
-                            reduce_only=True)
-        rec.qty = remain
-        rec.raw = {**raw, "trail_tp_done": True}
-        # 已实现盈亏落账（与 TP1 成交/减半腿同口径：income 实录，含手续费）
-        _record_realized(db, trader, rec)
-        _add_event(db, rec, "TP_TRAIL", {
-            "close": close_now, "target": target,
-            "cut_qty": cut_qty, "remain_qty": remain, **extra,
-        })
-        logger.info("浮盈落袋 %s：收盘 %s 全程浮盈 %.4f 达落袋线 %.4f，市价减 %s 剩 %s",
-                    rec.symbol, close_now, total, target, cut_qty, remain)
-    except Exception as e:
-        logger.warning("浮盈落袋 %s 本轮未成（不落旗标下轮重试）: %s",
-                       rec.symbol, e)
-
-
-def _ema21_half_cut(db: Session, trader: BinanceTrader, rec: TradeRecord) -> None:
-    """武装后 1h 双确认破 EMA21 → 市价减半仓（2026-10-10 拍板，trail 方案减仓腿；
-    2026-10-12 拍板 B2 双确认降噪，docs/21 O2）。
-
-    trail 单武装（已进入移动止损阶段）后，每小时巡检检查最近 1h 已收盘 K 线
-    （剔尾，与 structure_1h 同口径）：连续 2 根收盘均在 EMA21 逆侧且末根破线
-    幅度 > 0.1×ATR(14,1h)（多单跌破/空单突破）→ 市价 reduceOnly 减掉一半仓位
-    落袋防趋势反噬；剩余仓位继续 ATR 跟进（调用方后续 _move_sl_trailing，
-    SL 为 closePosition 全平单无需调整）。单根毛刺不减半。
-
-    一次性：raw.ema21_cut 旗标防重复，减一次后纯靠 trailing；减半后 rec.qty
-    同步为剩余量（展示/诊断一致性；结算按交易所实际持仓 amt 判断归零、pnl 从
-    income 实录拉取，不依赖 rec.qty）。
-    数据/约束不可得（K 线不足、EMA 未成形、无持仓、减半量或剩余量低于交易所
-    最小规则）→ 跳过本轮不落旗标，下轮巡检重试；交易所下单异常仅告警不中断
-    巡检（下轮重试）。
-    双刀竞态防护：市价单已成交但事务回滚/响应超时（旗标没落库）时，交易所
-    amt 已 ≈ rec.qty 的一半——持仓已明显小于记录数量（<0.7 倍）视为上一刀
-    已实际成交（或用户外部部分平仓），只补旗标与 qty 同步、不再下第二刀。
-    """
-    raw = rec.raw or {}
-    if raw.get("ema21_cut"):
-        return
-    try:
-        pos = trader.positions().get(rec.symbol)
-        amt = abs(float((pos or {}).get("amt") or 0)) if pos else 0.0
-        rec_qty = float(rec.qty or 0)
-        if amt <= 0:
-            return
-        if rec_qty > 0 and amt < rec_qty * 0.7:
-            # 上一刀已成交但旗标未落库（commit 回滚/下单响应超时），或用户已在
-            # 交易所手动部分平仓——视为已减过，同步状态即可，绝不再下第二刀
-            rec.qty = amt
-            rec.raw = {**raw, "ema21_cut": True}
-            _add_event(db, rec, "CUT_EMA21", {
-                "close": None, "ema21": None, "cut_qty": rec_qty - amt,
-                "remain_qty": amt, "reason": "already_reduced",
-            })
-            logger.info("EMA21 减半仓 %s：交易所持仓 %s 已小于记录 %s，视为已减过（补旗标）",
-                        rec.symbol, amt, rec_qty)
-            return
-        kl = ExchangePool().get_klines(rec.symbol, "1h", 60)
-        closed = kl[:-1] if len(kl) >= 2 else kl
-        if len(closed) < 30:
-            return
-        c = np.array([float(k[4]) for k in closed], dtype=float)
-        e21 = ema_series(c, 21)
-        if e21 is None or not math.isfinite(float(e21[-1])) \
-                or not math.isfinite(float(e21[-2])):
-            return
-        # 双确认（2026-10-12 拍板 B2，docs/21 O2）：单根收盘破线噪音大（回踩单入场
-        # 在 ema21 附近、减仓腿却对单根毛刺敏感——同线矛盾），改为连续 2 根已收盘
-        # 1h K 收盘均在 EMA21 逆侧，且末根破线幅度 > 0.1×ATR(14,1h) 才认定趋势转弱
-        def _beyond(i: int) -> bool:
-            return (c[i] < e21[i] if rec.direction == "long"
-                    else c[i] > e21[i])
-        if not (_beyond(-1) and _beyond(-2)):
-            return
-        from app.services.strategy.technical import atr_series
-        atr14 = atr_series(kl, period=14)  # 内部剔尾，对齐 closed
-        if atr14 is None or not math.isfinite(float(atr14[-1])) or float(atr14[-1]) <= 0:
-            return
-        close_now = float(c[-1])
-        ema_now = float(e21[-1])
-        margin = abs(close_now - ema_now)
-        if margin <= 0.1 * float(atr14[-1]):
-            return
-        f = trader.filters(rec.symbol)
-        cut_qty = trader.round_qty(rec.symbol, amt / 2)
-        remain = amt - cut_qty
-        # 减半量或剩余量低于交易所最小规则 → 不切（市价单会被拒/留下不可平尾巴），
-        # 留给 SL 全平
-        if cut_qty < f["min_qty"] or remain < f["min_qty"]:
-            logger.info("EMA21 减半仓 %s 跳过：cut=%s remain=%s 低于 min_qty=%s",
-                        rec.symbol, cut_qty, remain, f["min_qty"])
-            return
-        trader.market_order(rec.symbol, _close_side(rec.direction), cut_qty,
-                            reduce_only=True)
-        rec.qty = remain
-        rec.raw = {**raw, "ema21_cut": True}
-        # 减半腿的已实现盈亏落账（与 TP1 成交同口径：income 实录，含手续费）——
-        # 不记则运行中 realized_pnl 恒 0，全程盈亏/峰值回撤（诊断触发参照）少算已落袋一半
-        _record_realized(db, trader, rec)
-        _add_event(db, rec, "CUT_EMA21", {
-            "close": close_now, "ema21": ema_now,
-            "cut_qty": cut_qty, "remain_qty": remain,
-            "confirm": "2bars+0.1atr",  # 2026-10-12 双确认口径（docs/21 O2）
-            "margin_atr": round(margin / float(atr14[-1]), 3),
-        })
-        logger.info("EMA21 减半仓 %s：收盘 %s 破 EMA21 %s，市价减 %s 剩 %s",
-                    rec.symbol, close_now, ema_now, cut_qty, remain)
-    except Exception as e:
-        logger.warning("EMA21 减半仓 %s 本轮未成（不落旗标下轮重试）: %s",
-                       rec.symbol, e)
 
 
 def _zero_pos_exit_reason(rec: TradeRecord, tp1_gone: bool,
@@ -2406,9 +2005,9 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                         # TP1 与 SL 在同一巡检间隔内先后成交（如 75% TP1 后回踩触发 SL）：补记 TP1_FILL
                         _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
                                                          "realized_pnl": round(pnl, 6)})
-                    # 程序主动全平（2026-10-12 拍板 docs/21 O1：4h 状态机下车态/
-                    # fail-closed 触发的 trail 全平）→ exit_reason=htf_state，
-                    # 不让 bookkeeping 推断误标为止损类出场
+                    # 程序主动全平（2026-10-12 策略二删除后不再产生新 override；
+                    # 存量在跑 trail 单/历史 htf_state 仍按此消费，防误标止损类出场）→
+                    # exit_reason=htf_state 之类，不让 bookkeeping 推断误标
                     if raw.get("exit_override"):
                         exit_reason = raw["exit_override"]
                     else:
@@ -2513,12 +2112,6 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                     if not rec.tp2:
                         # 无 TP2：TP1 止盈 80% 后剩余仓即启用跟进止损（与 TP2 后同机制）
                         _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
-                    db.commit()
-                    handled += 1
-                elif (raw.get("tp_mode") or "") == "trail":
-                    # 纯跟踪单（docs/19 §3.4）：无 TP 挂单（tp*_gone 恒 False 落到这里），
-                    # 浮盈达武装线保本 → 每轮跟进。peak_total_pnl 已在本轮上方快照更新
-                    _trail_mode_patrol(db, rt, rec, interval, open_ids, fee_rate, atr_k)
                     db.commit()
                     handled += 1
             elif rec.status == "TP1_HIT":
@@ -2905,10 +2498,10 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
                    stop_loss: float, tp1: float = 0, tp2: float = 0) -> TradeRecord:
     """导入持仓：把交易所已有手动仓接管为系统在跑单（status=OPENED）。
 
-    流程：持仓仍在校验 → 无同账号同币在跑记录 → 三价方向校验（按现价）→
-    撤原手动条件单 → 按系统规则重挂 SL + 止盈（tp1<=0 无止盈位 → trail 纯跟踪
-    接管：不挂 TP 档，浮盈≥1×ATR 武装保本→跟进，2026-10-10；失败尽力恢复原
-    SL，绝不把用户裸仓留在市场）→ 落库（opened_at=接管时刻，管理范围从此刻起）。
+    流程：持仓仍在校验 → 无同账号同币在跑记录 → 三价方向校验（按现价；止盈位
+    必填，2026-10-12 起无止盈位的纯跟踪接管随策略二退役）→ 撤原手动条件单 →
+    按系统规则重挂 SL + TP1/TP2（失败尽力恢复原 SL，绝不把用户裸仓留在市场）
+    → 落库（opened_at=接管时刻，管理范围从此刻起）。
     需在开仓锁（lock:trade_open:{account}）内调用，与结算巡检互斥。
     """
     # ① 持仓仍在（弹窗打开到提交之间可能已平仓）
@@ -2937,23 +2530,24 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
         raise ValueError(f"{symbol} 已有系统在跑记录，无需导入")
 
     # ③ 三价方向校验（按现价；导入单不做盈亏比/风险预算闸门——尊重用户既定计划）。
-    # tp1<=0 = 用户未设置止盈位 → trail 纯跟踪接管（2026-10-10），仅校验 SL 方向
+    # 止盈位必填（2026-10-12）：无止盈位的纯跟踪（trail）接管随策略二退役
     stop_loss, tp1, tp2 = float(stop_loss), float(tp1 or 0), float(tp2 or 0)
-    _tp_mode = "trail" if tp1 <= 0 else "ladder"
     price_now = trader.price(symbol)
     if stop_loss <= 0:
         raise ValueError("止损价必填")
+    if tp1 <= 0:
+        raise ValueError("止盈价必填：无止盈位的纯跟踪（trail）接管已随策略二退役（2026-10-12）")
     if direction == "long":
         if stop_loss >= price_now:
             raise ValueError(f"多头止损价 {stop_loss} 必须低于现价 {price_now}")
-        if tp1 > 0 and tp1 <= price_now:
+        if tp1 <= price_now:
             raise ValueError(f"多头止盈一 {tp1} 必须高于现价 {price_now}")
         if tp2 and tp2 <= tp1:
             raise ValueError(f"止盈二 {tp2} 必须高于止盈一 {tp1}")
     else:
         if stop_loss <= price_now:
             raise ValueError(f"空头止损价 {stop_loss} 必须高于现价 {price_now}")
-        if tp1 > 0 and tp1 >= price_now:
+        if tp1 >= price_now:
             raise ValueError(f"空头止盈一 {tp1} 必须低于现价 {price_now}")
         if tp2 and tp2 >= tp1:
             raise ValueError(f"止盈二 {tp2} 必须低于止盈一 {tp1}")
@@ -2983,43 +2577,24 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
                 logger.error("导入 %s：新 SL 挂单失败且原价恢复也失败，仓位暂无止损保护！", symbol)
         raise
     f = trader.filters(symbol)
-    entry_atr = None
-    if _tp_mode == "trail":
-        # 纯跟踪接管（2026-10-10）：无止盈位 → 不挂 TP 档，全仓由「浮盈≥1×ATR
-        # 武装保本 → 跟进止损」退出（巡检 _trail_mode_patrol 认 raw.tp_mode=trail）。
-        # entry_atr(22,1d) 快照与开仓管线同口径；缺失退化 1R（risk_amount）武装线
+    _p1, _p2, _p1s = _tp_ratio_cfg(_adopt_cfg)
+    qty_tp1, qty_tp2 = _tp_quantities(qty, tp2, _p1, _p2, _p1s)
+    tp1_order = None
+    tp2_order = None
+    if qty_tp1 >= f["min_qty"]:
         try:
-            from app.services.strategy.technical import atr_series
-            _d1 = ExchangePool().get_klines(symbol, "1d", 30)
-            _atr_s = atr_series(_d1, period=22)
-            if (_atr_s is not None and len(_atr_s)
-                    and math.isfinite(float(_atr_s[-1]))
-                    and float(_atr_s[-1]) > 0):
-                entry_atr = round(float(_atr_s[-1]), 8)
-        except Exception as atr_err:
-            logger.warning("导入 %s：entry ATR 快照失败（纯跟踪退化 1R 武装线）: %s",
-                           symbol, atr_err)
-        qty_tp1 = qty_tp2 = 0.0
-        tp1_order = tp2_order = None
-    else:
-        _p1, _p2, _p1s = _tp_ratio_cfg(_adopt_cfg)
-        qty_tp1, qty_tp2 = _tp_quantities(qty, tp2, _p1, _p2, _p1s)
-        tp1_order = None
-        tp2_order = None
-        if qty_tp1 >= f["min_qty"]:
-            try:
-                tp1_order = trader.take_profit_reduce(
-                    symbol, close_side, trader.round_qty(symbol, qty_tp1),
-                    trader.round_price(symbol, tp1))
-            except Exception as e:
-                logger.warning("导入 %s：TP1 挂单失败（SL 已就位，仅缺自动止盈）: %s", symbol, e)
-        if tp2 > 0 and tp1_order and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
-            try:
-                tp2_order = trader.take_profit_reduce(
-                    symbol, close_side, trader.round_qty(symbol, qty_tp2),
-                    trader.round_price(symbol, tp2))
-            except Exception as e:
-                logger.warning("导入 %s：TP2 挂单失败: %s", symbol, e)
+            tp1_order = trader.take_profit_reduce(
+                symbol, close_side, trader.round_qty(symbol, qty_tp1),
+                trader.round_price(symbol, tp1))
+        except Exception as e:
+            logger.warning("导入 %s：TP1 挂单失败（SL 已就位，仅缺自动止盈）: %s", symbol, e)
+    if tp2 > 0 and tp1_order and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
+        try:
+            tp2_order = trader.take_profit_reduce(
+                symbol, close_side, trader.round_qty(symbol, qty_tp2),
+                trader.round_price(symbol, tp2))
+        except Exception as e:
+            logger.warning("导入 %s：TP2 挂单失败: %s", symbol, e)
 
     # ⑤ 落库：opened_at=接管时刻（管理范围从此刻起，接管前盈亏不回溯）
     now = datetime.utcnow()
@@ -3047,14 +2622,12 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
             if _adopt_cfg is not None else "pct"
         ),  # 接管时刻模式快照（无 AI 分析行的手动单同样记录）
         stop_loss=stop_loss,
-        tp1=tp1 if tp1 > 0 else None,  # trail 接管（无止盈位）tp1 落 None
+        tp1=tp1,
         tp2=tp2 if tp2_order else 0,
         status="OPENED",
         opened_at=now,
         raw={
             "adopted": True,
-            "tp_mode": _tp_mode,  # 巡检/出场归因认此键：trail → 武装保本+跟进（2026-10-10）
-            "entry_atr": entry_atr,  # trail 武装线分母；None=退化 1R（risk_amount）
             "sl_order_id": sl_order.get("algoId") or sl_order.get("orderId"),
             "tp1_order_id": (tp1_order.get("algoId") or tp1_order.get("orderId")) if tp1_order else None,
             "tp2_order_id": (tp2_order.get("algoId") or tp2_order.get("orderId")) if tp2_order else None,
@@ -3069,19 +2642,15 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
     db.flush()
     _add_event(db, rec, "OPEN", {
         "adopted": True, "price": price_now, "qty": qty,
-        "stop_loss": stop_loss, "tp1": tp1 if tp1 > 0 else 0, "tp2": tp2 if tp2_order else 0,
-        "tp_mode": _tp_mode, "entry_atr": entry_atr,
+        "stop_loss": stop_loss, "tp1": tp1, "tp2": tp2 if tp2_order else 0,
         "risk_amount": round(abs(entry - stop_loss) * qty, 4),
         "entry_price": entry,
-        "note": ("手动持仓导入（管理范围自接管时点起）"
-                 if _tp_mode == "ladder" else
-                 "手动持仓导入·纯跟踪接管（无止盈位：武装保本后跟进止损）"),
+        "note": "手动持仓导入（管理范围自接管时点起）",
     })
     db.commit()
-    logger.info("已导入持仓 %s %s qty=%s entry=%s sl=%s tp1=%s tp2=%s（%s，风险 %s USDT）",
+    logger.info("已导入持仓 %s %s qty=%s entry=%s sl=%s tp1=%s tp2=%s（风险 %s USDT）",
                 symbol, direction, qty, entry, stop_loss,
-                tp1 if tp1 > 0 else "纯跟踪", tp2 if tp2_order else 0,
-                _tp_mode, rec.risk_amount)
+                tp1, tp2 if tp2_order else 0, rec.risk_amount)
     return rec
 
 
@@ -3090,9 +2659,9 @@ def auto_adopt_positions(db: Session, trader: BinanceTrader) -> list[str]:
     交易所非零持仓中未被系统在跑记录接管的 = 用户在币安 App 手动开的单，
     逐一尝试 adopt_position 接管（SL/TP 取 App 现挂条件单原值）。
 
-    2026-10-10 起止盈位不再必需：有 TP1 按 ladder 分批接管；仅 SL 无 TP1
-    按 trail 纯跟踪接管（浮盈≥1×ATR 武装保本→跟进）。跳过：已在跑记录的、
-    无止损条件单的（裸仓不入册，只记日志）、三价校验不过的。需在开仓锁内
+    止盈位必填（2026-10-12）：无止盈位的手动仓不再自动接管（adopt_position
+    抛 ValueError → 本函数记日志跳过）。跳过：已在跑记录的、无止损条件单的
+    （裸仓不入册，只记日志）、无止盈条件单的、三价校验不过的。需在开仓锁内
     调用。返回新导入的 symbol 列表。
     """
     out: list[str] = []

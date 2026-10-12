@@ -107,13 +107,11 @@ def _running(db, direction="long", risk=40.0, status="OPENED", symbol=None):
     return rec
 
 
-def _make_analysis(db, rec=65, direction="long", entry_strategy=None):
+def _make_analysis(db, rec=65, direction="long"):
     a = AIAnalysis(
         symbol="TESTUSDT", trade_decision="suggest", direction=direction,
         entry_price=100.0, stop_loss=98.0, take_profit_1=104.0,
         recommendation=rec, created_at=datetime.utcnow(),
-        entry_strategy=entry_strategy,
-        tp_mode="trail" if entry_strategy == "s2" else "ladder",
     )
     db.add(a)
     db.commit()
@@ -452,7 +450,7 @@ def test_breakeven_idempotent_when_already_beyond_buffer(db):
 def test_exit_reason_adapts_to_buffered_breakeven(db):
     """出场原因适配（docs/24 A1''）：缓冲保本价（成本价±费缓冲）不再被误判为
     tp1_trail，仍归 breakeven_sl；越过缓冲价才算跟踪止损出场"""
-    # raw=None（docs/19 §3.4：_derive_exit_reason 首查 raw.tp_mode 分流 trail 单）
+    # raw=None（2026-10-12 起 _derive_exit_reason 不再分流 trail 单）
     long_be = SimpleNamespace(status="TP1_HIT", entry_price=100.0,
                               stop_loss=100.1, direction="long", raw=None)
     short_be = SimpleNamespace(status="TP1_HIT", entry_price=100.0,
@@ -467,13 +465,13 @@ def test_exit_reason_adapts_to_buffered_breakeven(db):
     assert _derive_exit_reason(short_trail) == "tp1_trail"
 
 
-# ── trail 纯跟踪开仓全流程（KAIAUSDT 案例，2026-10-10） ───────────────
-# 回归锁：_attempt_open trail 分支 tp1_order=None，raw 快照曾直接 .get 崩
-# 'NoneType' object has no attribute 'get' → 市价已成交后紧急平仓空转
+# ── ladder 开仓全流程（KAIAUSDT 案例回归 + 对照） ─────────────────────
+# 回归锁：_attempt_open 的 tp1_order=None 守卫——raw 快照落 .get 时不得崩
+# 'NoneType' object has no attribute 'get'
 
 
 class _FullOpenTrader:
-    """完整下单序列替身：走通 市价开仓→挂SL→（trail 不挂TP）→落库 全链"""
+    """完整下单序列替身：走通 市价开仓→挂SL→挂TP→落库 全链"""
     account_key = "testnet-1"
     testnet = True
 
@@ -528,37 +526,11 @@ class _FullOpenTrader:
         pass
 
 
-def test_trail_open_success_without_tp_orders(db, monkeypatch):
-    """entry_strategy=s2（trail 纯跟踪）：开仓成功、不挂任何止盈档、raw.tp1_order_id=None
-
-    KAIAUSDT 案例（2026-10-10）：trail 分支 tp1_order=None 落快照时无守卫
-    .get 崩溃 → 已成交仓位被紧急平仓 → 每轮重试空转。
-    2026-10-11 起出场模式由 entry_strategy 推导（cfg.tp_mode 退役）：s2→trail。
-    """
-    import app.services.trade_engine as te
-
-    # entry ATR 快照拉 1d K线（ExchangePool）→ 替身快速失败，退化 1R 武装线
-    monkeypatch.setattr(
-        te, "ExchangePool",
-        lambda: SimpleNamespace(get_klines=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("替身不触网"))),
-    )
-    a = _make_analysis(db, rec=90, entry_strategy="s2")
-    trader = _FullOpenTrader()
-    assert _attempt(db, trader, a) is True
-    assert trader.tp_calls == []  # trail 不挂任何止盈档
-    rec = db.query(TradeRecord).filter(TradeRecord.ai_analysis_id == a.id).one()
-    assert rec.raw["tp_mode"] == "trail"
-    assert rec.raw["tp1_order_id"] is None  # 守卫后落 None（此前此处崩溃）
-    assert rec.raw["tp2_order_id"] is None
-    assert rec.status == "OPENED"
-
-
-def test_ladder_open_still_records_tp1_order_id(db):
-    """对照组：ladder（s1 缺省）路径 tp1 挂单正常解析（守卫不改变原有行为）"""
+def test_ladder_open_records_tp_orders(db):
+    """ladder 路径：开仓成功、挂 TP1 单、raw 记挂单 id（tp1_order=None 守卫不改变原有行为）"""
     a = _make_analysis(db, rec=90)
     trader = _FullOpenTrader()
     assert _attempt(db, trader, a) is True
     assert len(trader.tp_calls) == 1  # TP1 挂单
     rec = db.query(TradeRecord).filter(TradeRecord.ai_analysis_id == a.id).one()
     assert rec.raw["tp1_order_id"] == 33
-    assert rec.raw["tp_mode"] == "ladder"

@@ -158,7 +158,12 @@ class Settings(BaseSettings):
     # → 市价 reduceOnly 减 1/3 落袋（一次性旗标 trail_tp_done；收盘口径剔尾
     # 抗插针；仅武装后启用；entry_atr 缺失退化 2R；与 EMA21 减半腿独立叠加，
     # 事件 TP_TRAIL）
-    RULE_VERSION: str = "v2026-10-12-9"
+    # v2026-10-12-10（用户拍板）：删除策略二（EMA21 金K跟踪）与 trail 纯跟踪
+    # 出场链——出场恒为 ladder（TP1/TP2 分批挂单）；AI 输出退役 tp_mode/
+    # entry_strategy/strategy2_* 四字段（DB 列与 API schema 保留历史透出，
+    # 新行 NULL）；-6~-9 的 trail 专属出场（O1 4h 状态机全平/O2 EMA21 减半/
+    # O8 浮盈落袋/开仓 RR 现价豁免）随之下线；手动接管必须填止盈位
+    RULE_VERSION: str = "v2026-10-12-10"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]
@@ -202,7 +207,8 @@ class Settings(BaseSettings):
     # min(TP1_MAX_ATR×ATR14, TP1_MAX_R×止损距离)，且不低于 rr_min×止损距离
     # （下限保证"入场±rr_min×止损距离"兜底永远可用、不会打回死循环）。
     # 超限判违规、走 Reflection 打回让 AI 改挂更近结构位或用兜底价（程序不改价）。
-    # trail 模式（s2，TP1 仅趋势参考价不挂单）豁免；ATR 不可算时只用 R 腿。
+    # 策略二 trail 豁免已随退役移除（2026-10-12，出场恒 ladder）；ATR 不可算
+    # 时只用 R 腿。
     # 0 = 关闭该腿（两腿都为 0 则整条上限失效）
     TP1_MAX_ATR: float = 2.0          # ATR 腿上限倍数（价格波动口径：约 2 根 1h K 线全幅）
     # R 腿默认关（0）：现有测试/既有单允许到 ~4R，硬性 3R 上限是更宽的策略变更，

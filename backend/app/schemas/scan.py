@@ -118,10 +118,10 @@ class AIAnalysisOut(BaseModel):
     # 战法命中标注（2026-10-02，仅借鉴）：白名单闸门后的战法名与判定依据
     tactic_name: Optional[str] = None
     tactic_reason: Optional[str] = None
-    # 双入场策略胜出方（2026-10-10-5，docs/20）：s1=完整规则 / s2=EMA21 金K跟踪，
-    # NULL=旧行按 s1；两策略分条结论在 analysis 文本内
+    # 双入场策略胜出方（历史字段：2026-10-12 策略二删除后停写，新行 NULL）：
+    # s1=完整规则 / s2=EMA21 金K跟踪（已退役）；历史行 NULL 按 s1 理解
     entry_strategy: Optional[str] = None
-    # 策略二结论审计字段（2026-10-11 建列）：前端分区展示结论徽标直接取结构化字段
+    # 策略二结论审计字段（历史字段：2026-10-12 策略二删除后停写，新行 NULL）
     strategy2_decision: Optional[str] = None
     strategy2_reason: Optional[str] = None
     created_at: datetime

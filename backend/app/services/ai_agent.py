@@ -145,7 +145,7 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    也不要每轮只查一个工具。
 8. 不要输出不带工具调用的纯文字回复（会浪费一轮）；文字只用于简短说明查询意图，
    决策一律通过 submit_decision 提交。
-9. 盈亏比铁律 ≥{rr_min}（策略二豁免，见 12.6）；止损宽度由结构位决定，不设固定价格百分比上限，不得以
+9. 盈亏比铁律 ≥{rr_min}（无豁免）；止损宽度由结构位决定，不设固定价格百分比上限，不得以
    「止损过宽」为由 skip——宽止损由固定亏损法自动缩仓消化（止损越远仓位越小）；
    但止损**不得过近**：宽度须 ≥{sl_min_atr}×ATR（低于噪音级必被扫），也不得低于 0.3%；
    锚点落在该宽度内时把锚外扩到至少该宽度再报，否则直接 skip（程序按此下限复算打回）；
@@ -183,37 +183,12 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     改用"入场 ± {rr_min}×止损距离"兜底（程序按距离上限复算打回；启用止盈二时
     该远端结构位保留为止盈二锚，见下条）。
     {_tp2_rule}
-12.5 止盈模式（tp_mode，suggest 必填）：由 entry_strategy 程序推导（2026-10-11
-    策略一重定义，trail 归策略二独有），按胜出策略如实填写即可：
-    策略一（entry_strategy="s1"）→ "ladder" 分批止盈（TP1/TP2 结构位分批落袋 +
-      保本武装 + 剩余仓跟进）——即 trail 加入前的原版出场方式；
-    策略二（entry_strategy="s2"）→ "trail" 纯跟踪（不挂止盈档，tp1_ref 仍必须
-      提交——仅作趋势目标参考价，程序不会按它挂单，浮盈 1×ATR 武装保本后跟进
-      止损让利润奔跑；trail 时不提交 tp2_ref）。
-    程序按 entry_strategy 推导并覆盖本字段（策略一无 trail）；盈亏比不达 {rr_min}
-    时策略一无豁免（如实 skip 或按 12.6 交策略二），勿以止损过宽为由 skip。
-12.6 双入场策略裁决（2026-10-10-5；2026-10-11 策略一重定义）：对同一信号先分别评估两套入场逻辑再合并为单一提交：
-    策略一=trail 加入前的原版完整规则（ladder 分批止盈+盈亏比铁律+结构位止盈规划，
-    无 trail）；策略二=EMA21 金K跟踪——
-    仅当事实包"回踩触点"= ema21 且信号类型=trigger_trend_pullback（1H 结构门通过，
-    2026-10-12 拍板 docs/21 O7）时可用：
-    判断这根金K的质量（形态成色/量能/指标多数决同向/4h 硬约束同样适用），
-    不适用盈亏比铁律（9 条豁免）、不规划止盈：tp_mode 固定 "trail"（不挂止盈档，
-    浮盈 1×ATR 武装保本后跟进），tp1_ref 提交趋势目标参考价（如实，不用于盈亏比
-    校验与挂单，仍须满足方向价格序），不提交 tp2_ref；止损照常按 11 条锚定。
-    合并规则（程序两道闸兜底）：两策略均不建议 → skip（skip_reason 合并两者主因）；
-    仅策略二建议 → 主字段按策略二填、entry_strategy="s2"；策略一建议（无论策略二结论）
-    → 主字段按策略一填、entry_strategy="s1"（策略一优先；s2 复算 RR 已达标时
-    程序自动改标 s1 落库，不打回）。
-    strategy2_decision/strategy2_reason 必填：如实输出策略二结论与 ≤60字依据，
-    触点非 ema21 时输出 "skip" 并注明"触点非ema21"；触点=ema21 但结构门未过时
-    输出 "skip" 并注明"1H结构门未过"。
-    reason（落库分析）按固定节标题四节输出（节标题逐字含冒号，前端按标题分区展示）：
+12.5 分析格式（reason 落库展示，前端按固定节标题分区）：按固定节标题两节输出
+    （节标题逐字含冒号），每条独占一行（JSON 字符串内换行写 \n）：
     「公共检查：」（1. 4h方向 2. 指标多数决 3. 回踩触点 4. 形态与量能
     5. 风险点——含资金费率拥挤/BTC 大盘急跌等环境风险，无则写"无"）
-    →「策略一：」「策略二：」（各自满足/不满足什么，以"结论：建议开单/不建议开单"
-    收尾；策略二触点非ema21 写"不可用（触点非ema21）"，触点=ema21 但结构门未过写
-    "不可用（1H结构门未过）"）→「合并结论：」。
+    →「决策结论：」（写满足/不满足什么，以"结论：建议开单/不建议开单"收尾）。
+    skip 时同样两节完整输出（决策结论节写不满足的主因）。
 13. 方向纪律（不再程序强制，无 ±0.3% 贴近要求）：优先只在支撑结构做多（摆动低点/
     近期低点附近）、只在压力结构做空（摆动高点/近期高点附近）；现价已离开结构位时
     不再要求贴近，按动能与盈亏比自行判断入场（breakout 顺势追突破仍用 market 锚）。
@@ -310,14 +285,6 @@ TOOLS_SCHEMA = [
             "tp2_ref": {"type": "string", "enum": list(LEVEL_REFS),
                         "description": "止盈2锚点（可选）：做多=next_resistance_zone_low（下一档压力线），做空=next_support_zone_high（下一档支撑线）"},
             "tp2_offset_pct": {"type": "number", "description": "止盈2相对锚点偏移%，同止盈1留余地"},
-            "tp_mode": {"type": "string", "enum": ["ladder", "trail"],
-                        "description": "止盈模式（suggest 必填，见系统规则12.5）：由 entry_strategy 程序推导——s1→ladder 分批止盈（TP1/TP2 结构位落袋）/ s2→trail 纯跟踪（不挂止盈档，tp1 仅作趋势目标参考价，s2 时不要提交 tp2_ref）；按胜出策略如实填写，程序按 entry_strategy 覆盖"},
-            "entry_strategy": {"type": "string", "enum": ["s1", "s2"],
-                               "description": "双入场策略胜出方（suggest 必填，见系统规则12.6）：s1=策略一完整规则（盈亏比铁律+止盈规划）/ s2=策略二 EMA21 金K跟踪（仅'回踩触点'=ema21 且 1H 结构门通过时可用，无 RR 铁律、固定 trail）；两策略均建议时填 s1（策略一优先）"},
-            "strategy2_decision": {"type": "string", "enum": ["suggest", "skip"],
-                                   "description": "策略二结论（必填，见系统规则12.6）：触点非 ema21 或结构门未过时也必须输出 skip"},
-            "strategy2_reason": {"type": "string",
-                                 "description": "策略二判定依据 ≤60字；触点非 ema21 时注明'触点非ema21'，结构门未过时注明'1H结构门未过'"},
             "recommendation": {"type": "integer", "description": "推荐程度 0-100，skip≤30，suggest≥50"},
             "tactic_name": {"type": "string",
                             "description": "战法命中名（仅借鉴标注）：用户消息出现【战法库判定】块且信号符合某战法时逐字输出该名，均不符合输出空字符串"},
@@ -325,11 +292,11 @@ TOOLS_SCHEMA = [
             "reason": {
                 "type": "string",
                 "description": (
-                    "决策分析，≤300字中文，直接作为分析结果落库展示。按固定节标题四节输出、"
+                    "决策分析，≤300字中文，直接作为分析结果落库展示。按固定节标题两节输出、"
                     "每条一行（JSON 字符串内换行写\\n，节标题逐字含冒号）："
                     "公共检查：（1. 4h方向 2. 指标多数决 3. 回踩触点 4. 形态与量能 5. 风险点）→"
-                    "策略一：（满足/不满足什么，以\"结论：建议开单/不建议开单\"收尾）→"
-                    "策略二：（同；触点非ema21 写\"不可用（触点非ema21）\"）→合并结论：…（见系统规则12.6）"
+                    "决策结论：（满足/不满足什么，以\"结论：建议开单/不建议开单\"收尾，"
+                    "见系统规则12.5）"
                 ),
             },
         }, "required": ["trade_decision"]},
@@ -513,17 +480,9 @@ def _handle_submit(
             "skip_reason": args["skip_reason"].strip(),
             "direction": None,
             "trade_type": None,
-            "tp_mode": None,
             "analysis": "",
             "tactic_name": _tname,
             "tactic_reason": _treason,
-            # 双策略审计字段透传（2026-10-10-5）：skip=两策略均不满足
-            "entry_strategy": None,
-            "strategy2_decision": (
-                args.get("strategy2_decision")
-                if args.get("strategy2_decision") in ("suggest", "skip") else None
-            ),
-            "strategy2_reason": (str(args.get("strategy2_reason") or "").strip()[:255] or None),
             "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
             "take_profit_2": 0, "risk_reward_ratio": 0,
             "position_pct": 0,
@@ -538,16 +497,11 @@ def _handle_submit(
                           signal, purpose="stop", klines=klines)
     tp1 = _resolve_price(args.get("tp1_ref"), args.get("tp1_offset_pct"),
                          signal, purpose="tp", klines=klines)
-    # TP2 关闭硬清零（2026-10-08）：不解析 tp2 锚点，落库 take_profit_2=0。
-    # tp2 解析随策略二跳过（2026-10-11）：tp_mode 由 entry_strategy 程序推导，
-    # s2 不规划止盈（tp2_ref 提交也无意义），AI 谎报 tp_mode=trail 不会误伤 s1 的 tp2
-    _mode = args.get("tp_mode")
-    if _mode not in ("ladder", "trail"):
-        _mode = None  # 非法值归 None（validate_decision 按 entry_strategy 覆盖）
+    # TP2 关闭硬清零（2026-10-08）：不解析 tp2 锚点，落库 take_profit_2=0
     tp2 = (
         _resolve_price(args.get("tp2_ref"), args.get("tp2_offset_pct"),
                        signal, purpose="tp", klines=klines)
-        if tp2_enabled and args.get("entry_strategy") != "s2" else 0
+        if tp2_enabled else 0
     )
     errs = []
     if entry is None:
@@ -563,17 +517,6 @@ def _handle_submit(
         trade_decision="suggest",
         direction=args.get("direction"),
         trade_type=args.get("trade_type"),
-        tp_mode=_mode,
-        # 双入场策略（2026-10-10-5）：胜出方与策略二审计字段透传；
-        # 资格闸/优先级闸在 validate_decision（按 signal.touch_ref 程序事实校验）
-        entry_strategy=(
-            args.get("entry_strategy") if args.get("entry_strategy") in ("s1", "s2") else None
-        ),
-        strategy2_decision=(
-            args.get("strategy2_decision")
-            if args.get("strategy2_decision") in ("suggest", "skip") else None
-        ),
-        strategy2_reason=(str(args.get("strategy2_reason") or "").strip()[:255] or None),
         # 止损锚类型程序推导（docs/23）：stop_ref 用信号K线极值锚即 near，
         # 其余（含缺省）structure——比 AI 自报更难滥用
         stop_anchor="near" if args.get("stop_ref") in ("signal_low", "signal_high") else "structure",

@@ -609,15 +609,12 @@ def _run_migrations(engine):
         conn.execute(text(
             "ALTER TABLE ai_analyses ALTER COLUMN htf_phase TYPE VARCHAR(20)"
         ))
-        # 双入场策略（2026-10-10-5，docs/20）：s1=完整规则（RR铁律+止盈规划）/
-        # s2=EMA21 金K跟踪（无 RR 铁律、固定 trail）；旧行 NULL 按 s1 理解，
-        # 复盘按策略分组对比表现
+        # 双入场策略列（历史列：2026-10-12 策略二删除后停写，新行 NULL，仅历史行透出）
         conn.execute(text(
             "ALTER TABLE ai_analyses "
             "ADD COLUMN IF NOT EXISTS entry_strategy VARCHAR(8)"
         ))
-        # 策略二结论审计字段（2026-10-11，docs/20 §五）：前端分区展示结论徽标取
-        # 结构化字段，不再仅随 analysis 文本承载
+        # 策略二结论审计列（历史列：2026-10-12 策略二删除后停写，新行 NULL）
         conn.execute(text(
             "ALTER TABLE ai_analyses "
             "ADD COLUMN IF NOT EXISTS strategy2_decision VARCHAR(8)"

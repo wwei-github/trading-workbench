@@ -48,8 +48,7 @@ _RULE_SL = """止损纪律（结构位优先，金K极值兜底，两锚取更�
   pin-bar/极端影线场景按技能减半仓位即可。
 - 但止损**不得过近**：宽度须 ≥ 0.3×ATR（低于噪音级必被扫），也不得低于 0.3%；
   锚点落在 0.3×ATR 内时把锚外扩到该宽度再报，否则直接 skip（程序按此下限复算打回）。
-  盈亏比不达标先调入场价，仍不达标如实 skip（触点=ema21 时策略二可用，
-  按双入场策略裁决处理，勿整体跳过）。"""
+  盈亏比不达标先调入场价，仍不达标如实 skip。"""
 
 _RULE_TP_BASE = """止盈锚定（多空方向不同，必须遵守；程序不再改挂止盈价）：
 - 结构位=摆动高低点（用户消息中"近期摆动结构"）。距现价 ≤1×ATR 的位是正在
@@ -99,21 +98,9 @@ def compose_rule_tp(tp2_enabled: bool) -> str:
 # 字段说明行按 TP2 开关二选一（SYSTEM_PROMPT 的 {_tp2_field} 槽位）
 _TP2_FIELD_ON = """第二档止盈价，锚定更前方一档摆动结构位（做多=更高一档摆动高点下方，
   做空=更低一档摆动低点上方，同样留余地）且必须比止盈一更远；止盈一走兜底价
-  （入场±rr_min×止损距离）时，直接锚定远端第一档结构位。策略二（entry_strategy="s2"）时输出 0。"""
+  （入场±rr_min×止损距离）时，直接锚定远端第一档结构位。"""
 
 _TP2_FIELD_OFF = """当前未启用止盈二（TP2 分批关闭）：一律输出 0。"""
-
-# 止盈模式说明（2026-10-11 策略一重定义）：tp_mode 不再由 AI 自由选择——由
-# entry_strategy 程序推导（s1→ladder、s2→trail），AI 输出值被覆盖不信任。
-# 原 ladder/trail 两派哲学选择标准与「盈亏比取舍」条款随 AI 自选 trail 一并退役
-# （docs/19 §3.4 退役注记；trail 归策略二独有）
-_TP_MODE_FIELD = """- tp_mode: 止盈模式，suggest 时必填其一，skip 时输出 null：
-  策略一（entry_strategy="s1"）→ "ladder" 分批止盈（TP1/TP2 结构位分批落袋 +
-    保本武装 + 剩余仓跟进）——即 trail 加入前的原版出场方式；
-  策略二（entry_strategy="s2"）→ "trail" 纯跟踪（不挂止盈档，浮盈 1×ATR 武装
-    保本，其后跟进止损让利润奔跑）。
-  程序按 entry_strategy 推导并覆盖本字段（trail 归策略二独有，策略一无 trail），
-  按胜出策略如实填写即可。"""
 
 _RULE_STRUCT = """结构破位回踩打法（structure_break）三子形态按行情阶段择一，选择理由写进 analysis：
 1. 123法则（趋势反转）：破支撑(1) → 反弹不创新低(2) → 突破反弹高点时入场(3)；止损放转折点外侧。稳但滞后。
@@ -124,41 +111,6 @@ _RULE_STRUCT = """结构破位回踩打法（structure_break）三子形态按�
 _RULE_DIRECTION = """方向纪律（不再程序强制，无 ±0.3% 贴近要求）：优先只在支撑结构做多、
 只在压力结构做空；现价已离开结构位时不再要求贴近，可按动能顺势给入场价（顺势追势
 入场贴近现价即可），入场是否合理由盈亏比与止损结构把关。"""
-
-# 双入场策略（2026-10-10-5，docs/20；2026-10-11 策略一重定义）：同一信号两套入场
-# 逻辑分别评估、分条结论、合并裁决。策略一=trail 加入前的原版（ladder 分批止盈 +
-# 盈亏比铁律 + 结构位止盈规划）；策略二=EMA21 金K跟踪（无 RR 铁律、不规划止盈，
-# 出场固定 trail——trail 归策略二独有）。tp_mode 由 entry_strategy 程序推导。
-# 程序闸兜底：s2 资格闸（触点必须 ema21）与优先级闸（s2 复算 RR 达标自动改标 s1）
-_RULE_DUAL_STRATEGY = """双入场策略裁决（2026-10-10-5）：对同一信号先分别评估两套入场逻辑，再合并为单一决策：
-1. 策略一：trail 加入前的原版完整规则——ladder 分批止盈（TP1/TP2 结构位落袋）+
-   盈亏比铁律（RR≥{rr_min}R）+ 结构位止盈规划，无 trail，得出完整结论；
-2. 策略二：仅当信号块"回踩触点"= ema21 且信号类型=trigger_trend_pullback
-   （1H 结构门通过，2026-10-12 拍板 docs/21 O7）时可用（见下方策略二详解），得出结论；
-3. 合并（程序两道闸兜底，谎报会被打回）：
-   - 两策略均不建议 → trade_decision="skip"，skip_reason 合并两策略各自主因；
-   - 仅策略二建议 → 主字段（direction/entry_price/stop_loss/take_profit_1/tp_mode 等）按策略二填写，entry_strategy="s2"；
-   - 策略一建议（无论策略二结论如何）→ 主字段按策略一填写，entry_strategy="s1"（策略一优先；
-     s2 提交后复算 RR 已达标时程序自动改标 s1 落库，不打回）；
-4. strategy2_decision 如实输出策略二结论（suggest/skip），strategy2_reason ≤60字给依据；
-   策略二不可用（触点非 ema21，或触点=ema21 但结构门未过）时 strategy2_decision 输出
-   "skip"，reason 注明"触点非ema21"或"1H结构门未过"；
-5. analysis 按**固定节标题**四节输出（节标题逐字含冒号，前端按标题分区展示，skip 同样适用）：
-   公共检查：\n1. 4h方向：…（满足/逆风）\n2. 指标多数决：…（同向/反向/平衡）\n3. 回踩触点：…（无触点写"无触点"）\n4. 形态与量能：…\n5. 风险点：…（含资金费率拥挤/BTC 大盘急跌等环境风险，无则写"无"）
-   策略一：满足/不满足什么…\n结论：建议开单（或"结论：不建议开单"）
-   策略二：满足/不满足什么…\n结论：…（触点非ema21 时整节写"不可用（触点非ema21）"；
-   触点=ema21 但结构门未过时整节写"不可用（1H结构门未过）"）
-   合并结论：…
-
-策略二详解（EMA21 金K跟踪）：仅当"回踩触点"= ema21 且信号类型=trigger_trend_pullback
-（程序已验证金K上一根触碰 EMA21 企稳，且 4H 闸门+1H 结构门全过）时可用——
-判断这根 EMA21 金K的质量：形态成色、量能配合、指标多数决同向、
-4h 方向硬约束（同样适用）。策略二不适用盈亏比铁律（无需测算到结构位的 RR），
-也不做止盈位规划：出场固定为纯跟踪 tp_mode="trail"（浮盈 1×ATR 武装保本后跟进
-止损让利润奔跑）；take_profit_1 仍必须给出趋势目标参考价（如实，不用于盈亏比
-校验与挂单，仍须满足方向价格序）；take_profit_2 输出 0；止损照常按止损纪律锚定
-（触点位+极值两锚取更远者）。
-策略二的推荐分不含盈亏比维度（85+ 锚点按趋势+位置+量能三重共振理解）。"""
 
 # 回踩触点语义注解（docs/22 触点体系，2026-09-28）：信号块"回踩触点"行的解读口径
 _RULE_TOUCH = """回踩触点语义（信号块出现"回踩触点"行时程序已验证金K上一根触碰该位企稳）：
@@ -294,7 +246,7 @@ SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信�
 {_RULE_HTF_HARD}
 
 字段如下（skip 时为 0/空字符串的字段：direction/trade_type/entry_price/stop_loss/
-take_profit_1/take_profit_2/tp_mode/risk_reward_ratio/position_pct；skip_reason 除外，见下）：
+take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外，见下）：
 - trade_decision: 是否建议开单，"suggest"（建议开单）或 "skip"（不建议开单）
 - skip_reason: trade_decision="skip" 时必填，必须以类别前缀开头——[RR不足]/[止损过宽]/[环境逆风]/[形态质量]/[结构不清]/[波动极端]/[其他] 之一；前缀后用"1. 2. 3."序号逐条列出不建议开单的主要原因（如：[RR不足]1. 到第一结构位仅0.5R 2. 上方空间不足），最多3条，每条一行，JSON内换行写\\n。suggest 时输出空字符串。
 - direction: 交易方向，"long"（做多）或 "short"（做空）。skip 时为空字符串。
@@ -318,21 +270,12 @@ take_profit_1/take_profit_2/tp_mode/risk_reward_ratio/position_pct；skip_reason
   距入场 ≤ {tp1_max_atr}×ATR 且 ≤ {tp1_max_r}×止损距离，超限请改挂更近结构位或
   用"入场 ± {rr_min}×止损距离"兜底。
 - take_profit_2: {_tp2_field}
-{_tp_mode_field}
-- risk_reward_ratio: take_profit_1 的盈亏比，2位小数（策略二不适用，按参考价如实复算即可）。
-- entry_strategy: 双入场策略胜出方（2026-10-10-5），suggest 时必填："s1"（策略一=
-  trail 加入前原版：ladder 分批止盈+盈亏比铁律+结构位止盈规划，无 trail）或 "s2"
-  （策略二=EMA21 金K跟踪，无 RR 铁律、不规划止盈、固定 trail，仅"回踩触点"=ema21
-  且 1H 结构门通过时可用）。两策略均建议时输出 "s1"（策略一优先，程序强制）。skip 时输出 null。
-- strategy2_decision: 策略二结论，必填其一："suggest"/"skip"；触点非 ema21 或
-  结构门未过时输出 "skip"。策略二不可用也必须如实输出（程序审计两策略判定链）。
-- strategy2_reason: 策略二判定依据，≤60字；触点非 ema21 时注明"触点非ema21"；
-  结构门未过时注明"1H结构门未过"。
+- risk_reward_ratio: take_profit_1 的盈亏比，2位小数（按报价如实复算）。
 - position_pct: 建议名义仓位占账户资金百分比，2位小数。程序会按固定亏损复算覆盖
   （单笔止损预算={risk_label}：仓位=预算÷止损距离），此处报估算值即可。
 - recommendation: 推荐程度，0-100的整数。skip 时≤30，suggest 时≥50。锚点（评分需可区分强度）：
   50=仅勉强达标（单一条件满足，无共振）；70=多重共振（趋势+位置/量能两项以上同向）；
-  85+=强信号（趋势+位置+盈亏比三重共振；策略二按趋势+位置+量能理解）。中间分数线性内插。
+  85+=强信号（趋势+位置+盈亏比三重共振）。中间分数线性内插。
 - tactic_name: 战法命中名（2026-10-02，仅借鉴标注不影响开单结论）。用户消息出现
   【战法库判定】块且信号符合其中某个战法时，逐字输出该战法名（禁止改写/自创）；
   均不符合或无战法清单时输出空字符串。
@@ -340,12 +283,9 @@ take_profit_1/take_profit_2/tp_mode/risk_reward_ratio/position_pct；skip_reason
 - analysis: ≤500字中文推理。**节标题逐字固定**（前端按标题分区展示，改标题即破坏契约）：
   以「公共检查：」开头逐条列公共项判定（1. 4h方向 2. 指标多数决 3. 回踩触点
   4. 形态与量能 5. 风险点——含资金费率拥挤/BTC 大盘急跌等环境风险，无则写"无"），
-  随后「策略一：」「策略二：」两节
-  （各自写满足/不满足什么，节内以"结论：建议开单/不建议开单"收尾；策略二触点
-  非 ema21 时本节写"不可用（触点非ema21）"，触点=ema21 但结构门未过时写
-  "不可用（1H结构门未过）"），最后「合并结论：」一行。
+  随后「决策结论：」节写满足/不满足什么，节内以"结论：建议开单/不建议开单"收尾。
   每条独占一行（JSON内换行写\\n）。
-  trade_decision="skip" 时 analysis 仍按上述四节完整输出（两策略节写各自不满足的
+  trade_decision="skip" 时 analysis 仍按上述两节完整输出（决策结论节写不满足的
   主因），skip_reason 不必重复 analysis 已有内容。
 
 {_RULE_STRUCT}
@@ -353,8 +293,6 @@ take_profit_1/take_profit_2/tp_mode/risk_reward_ratio/position_pct；skip_reason
 {_RULE_SL}
 
 {_RULE_TP}
-
-{_RULE_DUAL_STRATEGY}
 
 {_RULE_TOUCH}
 
@@ -393,12 +331,10 @@ def render_system_prompt(
             tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
             tp1_max_r=f"{settings.TP1_MAX_R:g}",
         ),
-        _RULE_DUAL_STRATEGY=_RULE_DUAL_STRATEGY,
         _RULE_TOUCH=_RULE_TOUCH,
         _RULE_EMA=_RULE_EMA.replace(chr(10), ' '),
         _RULE_VOTE=_RULE_VOTE.replace(chr(10), ' '),
         _tp2_field=_TP2_FIELD_ON if tp2_enabled else _TP2_FIELD_OFF,
-        _tp_mode_field=_TP_MODE_FIELD,
         rr_min=_rr,
         tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
         tp1_max_r=f"{settings.TP1_MAX_R:g}",
@@ -615,11 +551,6 @@ def _build_messages(
     touch_line = ""
     if touch_ref:
         touch_line = f"回踩触点: {TOUCH_LABELS.get(touch_ref, touch_ref)}（{touch_ref}）\n"
-        # 2026-10-12 拍板（docs/21 O7）：s2 资格=触点ema21 ∧ 1H结构门通过
-        # （trigger_trend_pullback 标注）；ema21 触点但结构门未过 → 事实注记
-        # 防 AI 误判 s2 资格（程序闸在 risk_guard 兜底）
-        if touch_ref == "ema21" and signal.get("signal_type") != "trigger_trend_pullback":
-            touch_line += "s2资格: 结构门未过·策略二不可用（s1 照常评估）\n"
 
     # 市场环境块（market_summary，docs/24 A4①）已拼在指标块与摆动结构之间；
     # 单次调用管线无工具循环，模型仅凭给定数据分析，环境数据缺失时按无环境处理

@@ -4,8 +4,9 @@
 1. 宇宙：USDT 永续，24h 成交额 ≥ MIN_VOLUME_24H（流动性门槛）
 2. 4h 趋势闸门 gate_4h 一票否决：EMA144 斜率/缠绕/ADX 三重条件必须同时成立，
    否决直接不看（不跑票数不触发不进 AI）；震荡评分卡 ≥3 同为硬门
-   （ema_gate.py，docs/19 §2/§3）。1H 结构门已于 2026-10-12 降格为策略二
-   资格闸（docs/21 O7），不再整体否决信号
+   （ema_gate.py，docs/19 §2/§3）。1H 结构门已于 2026-10-12 退役（docs/21
+   O7；策略二资格闸随策略二删除），不再整体否决信号，结构判定收敛到
+   trigger 层升级标注
 3. 分组：单趟 7 票净票 |net|≥3 → 多头/空头候选；-2~+2 中性跳过（震荡市不开单）
 4. 触发确认：两段式决策矩阵（docs/19）——结构突破/趋势突破 / 回踩+金K确认；
    回踩触碰无金K 转入 pending 待确认池（pullback_pendings，次根金K才确认）；
@@ -220,8 +221,7 @@ def detect_indicator_candidate(
     终判 |net|<3 完全蕴含），4h 背景复用第一步结果、6 项指标不再双算。
     2026-10-10 二次拍板的 structure_1h 筛选链硬门已于 2026-10-12 退役（O7）：
     结构判定收敛到 trigger 层 trend_pullback 升级标注（gate_4h+structure_1h
-    全过才升级，不拦截），s2 资格闸在 risk_guard 按「触点=ema21 ∧ trend_gated」
-    程序校验。
+    全过才升级，不拦截；原 s2 资格闸已随策略二删除，2026-10-12）。
 
     pending: 该币活跃回踩 pending 快照（{id, direction, stage1_candle_open, touch_ref}）或 None。
     flt: 筛选参数组（2026-09-28 筛选配置上页面）；None=按 settings 解析。
@@ -325,8 +325,8 @@ def detect_indicator_candidate(
 
     # 第二步：1H 结构门——已退役为筛选链硬门（2026-10-12 拍板，docs/21 O7）：
     # 不再整体否决信号（s1 可见信号池恢复），结构判定收敛到 trigger 层
-    # trend_pullback 升级标注；s2 资格闸（触点=ema21 ∧ trend_gated）在
-    # risk_guard.validate_decision 程序校验。flt.structure_1h_gate 开关随之退役
+    # trend_pullback 升级标注（原 s2 资格闸已随策略二删除，2026-10-12）。
+    # flt.structure_1h_gate 开关随之退役
     # （scan_filters 字段保留向后兼容，scanner 不再消费）。
 
     # 第三步：震荡评分卡（2026-10-10 二次拍板，calc_range_score 语义硬门化）：

@@ -1052,9 +1052,8 @@ def render_indicator_block(
                 f" macro={'同侧' if ma else '逆侧'}"
             )
 
-    # 盈亏比取舍提示行已随 trail RR 豁免一并退役（2026-10-11 策略一 ladder-only）：
-    # trail 归策略二独有，盈亏比不足走双入场策略裁决（策略一如实 skip / 策略二跟踪），
-    # 不再有「改选 trail 上移参考价」的第三条路
+    # 盈亏比取舍提示行已随 trail RR 豁免一并退役（2026-10-11 策略一 ladder-only）；
+    # 2026-10-12 策略二/trail 整体删除后：盈亏比不足一律如实 skip，无第三条路
 
     return "技术指标（方向=多空票数多数决）:\n" + "\n".join(lines) + "\n"
 

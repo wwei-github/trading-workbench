@@ -8,7 +8,6 @@
 - 上限内 → 通过
 - 宽止损 + 兜底价（1.5R）→ 不被误杀（max 下限钳制生效）
 - 无 K 线（ATR 不可算）→ 放行（旧行为）
-- trail（s2）→ 豁免
 - 两腿都关（TP1_MAX_ATR=TP1_MAX_R=0）→ 整条上限失效
 """
 import sys
@@ -30,12 +29,11 @@ def _klines(n=40, rng=2.0, base=100.0):
     ]
 
 
-def _dec(entry=100.0, stop=98.0, tp1=105.0, strategy=None, strat2=None):
+def _dec(entry=100.0, stop=98.0, tp1=105.0):
     return TradeDecision(
         trade_decision="suggest", direction="long", trade_type="trend_follow",
         entry_price=entry, stop_loss=stop, take_profit_1=tp1,
         take_profit_2=0.0, recommendation=60.0, analysis="r",
-        entry_strategy=strategy, strategy2_decision=strat2,
     )
 
 
@@ -80,16 +78,6 @@ def test_no_klines_skips_gate():
     ok, _, fixed = validate_decision(_dec(tp1=105.0), _signal(), [])
     assert ok
     assert fixed["take_profit_1"] == pytest.approx(105.0)
-
-
-def test_s2_trail_exempt():
-    """trail（s2，TP1 仅趋势参考价、不挂单）：RR<1.5 保持 s2 → 距离上限豁免"""
-    ok, v, fixed = validate_decision(
-        _dec(tp1=102.0, strategy="s2", strat2="suggest"),
-        _signal(touch_ref="ema21", signal_type="trigger_trend_pullback"), _klines(),
-    )
-    assert ok, v
-    assert fixed["tp_mode"] == "trail"
 
 
 def test_both_legs_off_disables_gate(monkeypatch):

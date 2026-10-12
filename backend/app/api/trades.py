@@ -768,8 +768,8 @@ def trade_klines(
         "current_stop_loss": _nz(rec.stop_loss),  # 跟踪止损现值（SL_MOVE 后更新）；与初始快照不同时前端加画现止损线
         "tp1": tp1,
         "tp2": tp2,
-        # 止盈模式快照（docs/19 §3.4）：trail=策略二纯跟踪（tp1 仅趋势目标参考价，
-        # 前端不画止盈区）；旧行 null 按 ladder 理解
+        # 止盈模式快照（历史字段：2026-10-12 策略二/trail 删除后停写，
+        # 新行 null；旧行 null 按 ladder 理解）
         "tp_mode": rec.tp_mode,
         "opened_at": opened_dt.isoformat() if opened_dt else None,
         "closed_at": rec.closed_at.isoformat() if rec.closed_at else None,

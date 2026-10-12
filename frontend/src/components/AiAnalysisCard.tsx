@@ -50,25 +50,24 @@ function NumberedText({ text }: { text?: string | null }) {
   )
 }
 
-// analysis 固定节标题四节格式（2026-10-11 前后端契约，docs/03 §3.1）：
-// 「公共检查：」「策略一：」「策略二：」「合并结论：」，前端按标题分区展示；
+// analysis 固定节标题（2026-10-12 前后端契约，docs/03 §3.1）：新格式两节
+// 「公共检查：」「决策结论：」（skip 同样两节）；「合并结论：」保留解析兼容旧行。
+// 旧行「策略一：/策略二：」标题行不再识别，落入正文平铺，不崩溃；
 // 解析到 <2 个节标题（旧行/格式漂移）返回 null，回退平铺气泡
 interface AnalysisSections {
   common: string[]
-  s1: string[]
-  s2: string[]
+  decision: string[]
   merged: string[]
 }
 
 function parseAnalysisSections(text?: string | null): AnalysisSections | null {
   if (!text || !text.trim()) return null
-  // 容错序号前缀变体（"一、公共检查：" / "1.策略一："），节标题逐字匹配
-  const re = /^\s*(?:[一二三四五六七八九十\d]{1,2}[、.．]?\s*)?(公共检查|策略一|策略二|合并结论)\s*[:：]\s*(.*)$/
-  const sections: AnalysisSections = { common: [], s1: [], s2: [], merged: [] }
+  // 容错序号前缀变体（"一、公共检查：" / "1.决策结论："），节标题逐字匹配
+  const re = /^\s*(?:[一二三四五六七八九十\d]{1,2}[、.．]?\s*)?(公共检查|决策结论|合并结论)\s*[:：]\s*(.*)$/
+  const sections: AnalysisSections = { common: [], decision: [], merged: [] }
   const keyMap: Record<string, keyof AnalysisSections> = {
     公共检查: 'common',
-    策略一: 's1',
-    策略二: 's2',
+    决策结论: 'decision',
     合并结论: 'merged',
   }
   let cur: keyof AnalysisSections | null = null
@@ -145,22 +144,15 @@ function StrategyLines({ lines }: { lines: string[] }) {
   )
 }
 
-/** 双策略分区（2026-10-11）：公共检查 + 策略一/策略二结论卡 + 合并结论 */
-function DualStrategySections({ ai, sections }: { ai: AIAnalysis; sections: AnalysisSections }) {
+/** 分析分区（2026-10-12 两节格式）：公共检查 + 决策结论卡；
+ * 旧行无「决策结论」节（四节格式遗留）时回退展示「合并结论」节文本 */
+function AnalysisSectionsView({ ai, sections }: { ai: AIAnalysis; sections: AnalysisSections }) {
   // 系统红绿方案（页面顶部全局切换，localStorage 持久化）
   const colorScheme = useScanStore((s) => s.colorScheme)
-  // 策略一结论：整体 suggest 且胜出方非 s2 才算策略一胜出——entry_strategy=s2 时
-  // 策略一必然未胜出（若胜出优先级闸会落 s1），不得随整体结论误标「建议开单」
-  const s1Decision: 'suggest' | 'skip' =
-    ai.trade_decision === 'suggest' && ai.entry_strategy !== 's2' ? 'suggest' : 'skip'
-  // 策略二结论取结构化审计字段；null（旧行无此列）徽标显示「—」不误标
-  const s2Decision: 'suggest' | 'skip' | null =
-    ai.strategy2_decision === 'suggest'
-      ? 'suggest'
-      : ai.strategy2_decision === 'skip'
-        ? 'skip'
-        : null
-  const relabeled = ai.entry_strategy === 's1' && ai.strategy2_decision === 'suggest'
+  // 决策结论徽标取结构化字段（trade_decision 不依赖文本解析，文本节缺失不误标）
+  const decision: 'suggest' | 'skip' | null =
+    ai.trade_decision === 'suggest' ? 'suggest' : ai.trade_decision === 'skip' ? 'skip' : null
+  const decisionLines = sections.decision.length > 0 ? sections.decision : sections.merged
   return (
     <>
       {/* 公共检查区：4h方向/指标多数决/回踩触点/形态量能/风险点逐项判定 */}
@@ -182,50 +174,14 @@ function DualStrategySections({ ai, sections }: { ai: AIAnalysis; sections: Anal
           </div>
         </div>
       )}
-      {/* 两策略结论卡：结论徽标取结构化字段（trade_decision / strategy2_decision），
-          明细取 analysis 文本节——结构化字段不依赖文本解析，文本节缺失不误标 */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
-        <div style={{ padding: '10px 12px', borderRadius: 8, ...cardStyle(s1Decision, colorScheme) }}>
+      {/* 决策结论卡：结论徽标取结构化字段，明细取 analysis 文本节（结论行加粗强调） */}
+      {decisionLines.length > 0 && (
+        <div style={{ padding: '10px 12px', borderRadius: 8, ...cardStyle(decision, colorScheme) }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
-            <strong style={{ fontSize: 13 }}>策略一 · 完整规则</strong>
-            <DecisionBadge decision={s1Decision} scheme={colorScheme} />
-            {relabeled && (
-              <Tooltip title="两策略复算均达标，按拍板优先取策略一开单（程序自动改标）">
-                <Tag color="purple" style={{ marginInlineEnd: 0, fontSize: 11 }}>
-                  两策略均达标 · 优先策略一
-                </Tag>
-              </Tooltip>
-            )}
+            <strong style={{ fontSize: 13 }}>决策结论</strong>
+            <DecisionBadge decision={decision} scheme={colorScheme} />
           </div>
-          <StrategyLines lines={sections.s1} />
-        </div>
-        <div style={{ padding: '10px 12px', borderRadius: 8, ...cardStyle(s2Decision, colorScheme) }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
-            <strong style={{ fontSize: 13 }}>策略二 · EMA21 金K跟踪</strong>
-            <DecisionBadge decision={s2Decision} scheme={colorScheme} />
-          </div>
-          <StrategyLines lines={sections.s2} />
-          {ai.strategy2_reason && (
-            <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
-              判定依据：{ai.strategy2_reason}
-            </div>
-          )}
-        </div>
-      </div>
-      {/* 合并结论：单行强调 */}
-      {sections.merged.length > 0 && (
-        <div
-          style={{
-            padding: '6px 12px',
-            marginBottom: 10,
-            borderRadius: 8,
-            fontSize: 13,
-            fontWeight: 600,
-            background: 'rgba(22,119,255,0.06)',
-            border: '1px solid rgba(22,119,255,0.30)',
-          }}
-        >
-          {sections.merged.join(' ')}
+          <StrategyLines lines={decisionLines} />
         </div>
       )}
     </>
@@ -406,7 +362,7 @@ export default function AiAnalysisCard({ ai }: Props) {
   const colorScheme = useScanStore((s) => s.colorScheme)
   const eff = getEffectiveDecision(ai)
   const isSkip = eff.decision === 'skip'
-  // analysis 四节解析（公共检查/策略一/策略二/合并结论）：旧行或格式漂移返回 null 回退平铺
+  // analysis 两节解析（公共检查/决策结论；旧行「合并结论」兼容）：格式漂移返回 null 回退平铺
   const sections = parseAnalysisSections(ai.analysis)
   // 运行轨迹弹窗开关（仅 Agent 生成的分析可查看）
   const [traceOpen, setTraceOpen] = useState(false)
@@ -461,14 +417,6 @@ export default function AiAnalysisCard({ ai }: Props) {
             <Tooltip title="AI 建议等回踩至入场价再入场；程序不会为此下单，仅作跟踪展示">
               <Tag color="orange" style={{ marginInlineEnd: 0, fontWeight: 700 }}>
                 ⏳ 待回踩
-              </Tag>
-            </Tooltip>
-          )}
-          {/* 双入场策略胜出方（2026-10-10-5）：s2 单按 EMA21 金K跟踪开单（免盈亏比铁律、纯跟踪出场） */}
-          {!isSkip && ai.entry_strategy === 's2' && (
-            <Tooltip title="本单按策略二（EMA21 金K跟踪）开单：免盈亏比铁律、出场为纯跟踪 trail">
-              <Tag color="purple" style={{ marginInlineEnd: 0, fontWeight: 700 }}>
-                策略二 · EMA21金K
               </Tag>
             </Tooltip>
           )}
@@ -539,7 +487,7 @@ export default function AiAnalysisCard({ ai }: Props) {
         </div>
       )}
 
-      {/* skip：理由 + AI 推理，均走推理气泡；四节解析成功时追加分区展示 */}
+      {/* skip：理由 + AI 推理，均走推理气泡；两节解析成功时追加分区展示 */}
       {isSkip ? (
         <>
           <Bubble
@@ -556,7 +504,7 @@ export default function AiAnalysisCard({ ai }: Props) {
             }}
             header="AI 跳过理由"
           />
-          {sections && <DualStrategySections ai={ai} sections={sections} />}
+          {sections && <AnalysisSectionsView ai={ai} sections={sections} />}
         </>
       ) : (
         <>
@@ -590,7 +538,7 @@ export default function AiAnalysisCard({ ai }: Props) {
                 </Tooltip>
               ) : card
             })()}
-            <PriceCard label={ai.tp_mode === 'trail' ? '止盈1·参考' : '止盈1'} value={ai.take_profit_1} color={SCHEME_UP_DOWN[colorScheme].up} />
+            <PriceCard label="止盈1" value={ai.take_profit_1} color={SCHEME_UP_DOWN[colorScheme].up} />
             {/* TP2 关闭时落库 0：显示「未启用」而非 0.0000 */}
             <PriceCard label="止盈2" value={ai.take_profit_2} color={SCHEME_UP_DOWN[colorScheme].up} zeroText="未启用" />
           </div>
@@ -606,13 +554,6 @@ export default function AiAnalysisCard({ ai }: Props) {
               fontSize: 13,
             }}
           >
-            <span>
-              <span style={{ color: '#999', marginRight: 6 }}>止盈模式</span>
-              {/* docs/19 §3.4：AI 按信号选择；trail 单 TP1 价仅盈亏比参考，不挂档 */}
-              <Tag color={ai.tp_mode === 'trail' ? 'purple' : 'blue'} style={{ marginRight: 0 }}>
-                {ai.tp_mode === 'trail' ? '纯跟踪' : '分批止盈'}
-              </Tag>
-            </span>
             <span>
               <span style={{ color: '#999', marginRight: 6 }}>盈亏比</span>
               <strong>
@@ -638,9 +579,9 @@ export default function AiAnalysisCard({ ai }: Props) {
               </Button>
             )}
           </div>
-          {/* AI 推理：四节解析成功走分区展示（公共检查/两策略卡/合并结论），失败回退平铺气泡 */}
+          {/* AI 推理：两节解析成功走分区展示（公共检查/决策结论卡），失败回退平铺气泡 */}
           {sections ? (
-            <DualStrategySections ai={ai} sections={sections} />
+            <AnalysisSectionsView ai={ai} sections={sections} />
           ) : (
             <Bubble
               variant="shadow"

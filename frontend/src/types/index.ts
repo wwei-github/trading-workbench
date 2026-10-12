@@ -162,12 +162,7 @@ export interface AIAnalysis {
   // 战法命中标注（2026-10-02，仅借鉴）：AI 判定信号符合的战法名 + 判定依据
   tactic_name?: string | null;
   tactic_reason?: string | null;
-  tp_mode?: string | null; // 止盈模式（2026-10-11 起由 entry_strategy 程序推导）：s1→ladder / s2→trail；null=旧行按 ladder 展示
-  // 双入场策略（2026-10-10-5，docs/20）：entry_strategy=胜出方 s1/s2（null=旧行按 s1）；
-  // strategy2_*=策略二结论审计字段（2026-10-11 建列），前端分区展示结论徽标直接取用
-  entry_strategy?: string | null;
-  strategy2_decision?: string | null;
-  strategy2_reason?: string | null;
+  tp_mode?: string | null; // 止盈模式（历史字段：2026-10-12 策略二退役后停写；新行 null，旧行按 ladder 展示）
   created_at: string;
   review_status?: string | null; // 复盘结果：win_tp1 / win_tp2 / loss / expired（24h 后回放定论）
 }
@@ -419,7 +414,7 @@ export interface TradeRecord {
   tp1: number | null
   tp2: number | null
   status: 'OPENED' | 'TP1_HIT' | 'TP2_HIT' | 'CLOSED' | 'FAILED'
-  tp_mode?: 'ladder' | 'trail' | null // 止盈模式（docs/19 §3.4，读自 raw）：trail=纯跟踪；null=旧行按 ladder
+  tp_mode?: 'ladder' | 'trail' | null // 止盈模式（历史字段：2026-10-12 策略二退役后停写，仍读自 raw 供历史单展示；null=旧行按 ladder）
   opened_at: string | null
   closed_at: string | null
   realized_pnl: number | null // 正/负值 USDT（净额：含手续费/资金费；运行中=已止盈部分，结算后=全程净额）
@@ -513,7 +508,7 @@ export interface TradeKlineData {
   current_stop_loss: number | null // 跟踪止损现值（SL_MOVE 后更新；与初始止损不同时弹窗加画现止损线）
   tp1: number | null
   tp2: number | null
-  tp_mode?: 'ladder' | 'trail' | null // 止盈模式快照（docs/19 §3.4）：trail=策略二纯跟踪，tp1 仅参考价不画止盈区
+  tp_mode?: 'ladder' | 'trail' | null // 止盈模式快照（历史字段：2026-10-12 策略二退役后停写；trail=纯跟踪为历史单，新行 null）
   opened_at: string | null
   closed_at: string | null
   klines: Kline[]

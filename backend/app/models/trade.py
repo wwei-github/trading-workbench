@@ -108,8 +108,8 @@ class TradeRecord(Base):
 
     @property
     def tp_mode(self) -> Optional[str]:
-        """止盈模式快照（2026-10-10，docs/19 §3.4）：ladder/trail（raw.tp_mode）；
-        旧行 NULL 按 ladder 理解。API 经 TradeOut 透出供前端徽章展示"""
+        """止盈模式快照（历史字段：2026-10-12 策略二/trail 删除后停写，
+        新行 None；旧行按 ladder 理解）。API 经 TradeOut 透出供历史展示"""
         return (self.raw or {}).get("tp_mode")
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -134,8 +134,8 @@ class TradeEvent(Base):
     event_type: Mapped[str] = mapped_column(String(16), nullable=False)
     # OPEN / TP1_FILL / TP2_FILL / SL_MOVE / SL_FILL / CANCEL / ERROR / SETTLE / SKIP
     # / LIQUIDATION / AI_ADVICE / MANUAL_CLOSE / EXTERNAL_CLOSE（2026-10-02 外部平仓）
-    # / EXIT_HTF_STATE（2026-10-12 docs/21 O1：4h 状态机下车态全平，trail 专属）
-    # / TP_TRAIL（2026-10-12 docs/21 O8：trail 浮盈目标落袋减 1/3）
+    # / EXIT_HTF_STATE、TP_TRAIL（策略二已退役，历史事件类型：2026-10-12 前
+    # trail 专属的 4h 状态机全平 / 浮盈落袋，现不再产生）
     detail: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 

@@ -43,7 +43,7 @@ class TradeOut(BaseModel):
     tp1: Optional[float] = None
     tp2: Optional[float] = None
     status: str
-    tp_mode: Optional[str] = None  # 止盈模式（docs/19 §3.4）：ladder/trail；旧行 None 按 ladder 理解
+    tp_mode: Optional[str] = None  # 止盈模式（历史字段：2026-10-12 策略二退役后停写；旧行 None 按 ladder 理解）
     opened_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
     realized_pnl: Optional[float] = None

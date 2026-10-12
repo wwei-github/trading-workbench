@@ -77,8 +77,8 @@ const RECON_LEAKS: { key: 'entry_slip' | 'fee' | 'funding' | 'sl_breach' | 'tp1_
   { key: 'tp1_slip', label: 'TP1 滑点' },
 ]
 
-// 导入持仓已全自动（adopt-now）：SL/TP 取币安现挂条件单原值接管，
-// 仅 SL 无 TP1 的手动单按 trail 纯跟踪接管（2026-10-10）
+// 导入持仓已全自动（adopt-now）：SL/TP 取币安现挂条件单原值接管；
+// 无止盈位（TP1）的持仓自动跳过（trail 纯跟踪接管已随策略二退役，2026-10-12）
 
 // 跟进止损进行中的单子（TP2后 / 无TP2的TP1后），止损价已推过末档止盈价
 // （有TP2看TP2，无TP2看TP1）→ 锁定利润已超过该档，状态改显「移动止损」
@@ -860,12 +860,6 @@ export default function TradesPanel() {
           <Tag color={rec.direction === 'long' ? schemeTag(colorScheme).up : schemeTag(colorScheme).down} style={{ marginInlineEnd: 0 }}>
             {rec.direction === 'long' ? '多' : '空'}
           </Tag>
-          {/* 止盈模式标识（docs/19 §3.4）：仅 trail 标注（ladder 为默认/旧行，不标） */}
-          {rec.tp_mode === 'trail' && (
-            <Tooltip title="纯跟踪止盈：不挂止盈档，浮盈达标后武装保本，随后 ATR 跟进止损">
-              <Tag color="purple" style={{ marginInlineEnd: 0 }}>跟踪</Tag>
-            </Tooltip>
-          )}
         </Space>
       ),
     },

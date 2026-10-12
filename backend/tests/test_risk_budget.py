@@ -20,10 +20,7 @@ def _decision(**kw):
         take_profit_1=104.0, take_profit_2=0.0, risk_reward_ratio=2.0,
         position_pct=50.0, recommendation=70, analysis="1. ok",
         stop_anchor=None,  # docs/23：决策契约新增，缺省=结构锚
-        tp_mode=None,  # docs/19 §3.4：决策契约新增，缺省=未声明（落库回退 ladder）
         tactic_name=None, tactic_reason=None,  # 2026-10-02 战法标注，缺省未命中
-        # 2026-10-10-5 双入场策略：缺省 None 按 s1（完整规则）理解
-        entry_strategy=None, strategy2_decision=None, strategy2_reason=None,
     )
     base.update(kw)
     return SimpleNamespace(**base)

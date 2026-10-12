@@ -123,17 +123,15 @@ class AIAnalysis(Base):
     # stash 落库；仅 suggest 且有 4h 数据时有值，无 4h 数据 NULL=未知，
     # 复盘「4h趋势期」维度按此分组
     htf_phase: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    # 止盈模式（2026-10-10，docs/19 §3.4 两派哲学落地；2026-10-11 起由
-    # entry_strategy 程序推导）：ladder=分批止盈 / trail=纯跟踪（TP1 仅作盈亏比
-    # 校验参考价，程序不挂止盈档，浮盈≥1×ATR 武装保本后跟进）。
-    # NULL=旧行，按 ladder 理解
+    # 止盈模式（历史字段：2026-10-12 策略二/trail 删除后停写，新行 NULL）：
+    # 2026-10-10 docs/19 §3.4 两派哲学落地，2026-10-11 起由 entry_strategy 程序
+    # 推导；ladder=分批止盈 / trail=纯跟踪。历史行 NULL 按 ladder 理解
     tp_mode: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
-    # 双入场策略（2026-10-10-5，docs/20）：s1=完整规则（RR铁律+止盈规划）/
-    # s2=EMA21 金K跟踪（无 RR 铁律、不规划止盈、固定 trail，仅触点=ema21 可用）。
-    # NULL=旧行/未声明，按 s1 理解；开仓快照随 trade_records.ai_snapshot 自持
+    # 双入场策略（历史字段：2026-10-12 策略二删除后停写，新行 NULL）：
+    # s1=完整规则 / s2=EMA21 金K跟踪（已退役）；历史行 NULL 按 s1 理解
     entry_strategy: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
-    # 策略二结论审计字段（2026-10-11 建列，docs/20 §五）：前端分区展示结论徽标
-    # 直接取结构化字段，不依赖 analysis 文本解析；NULL=旧行/两策略均 skip
+    # 策略二结论审计字段（历史字段：2026-10-12 策略二删除后停写，新行 NULL）：
+    # 前端分区展示结论徽标曾取结构化字段
     strategy2_decision: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     strategy2_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
