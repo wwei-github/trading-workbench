@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Card, Spin, Typography } from 'antd'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Button, Card, Modal, Spin, Tooltip, Typography } from 'antd'
+import { CloseOutlined, FullscreenOutlined, ZoomInOutlined, ZoomOutOutlined } from '@ant-design/icons'
 import { marked } from 'marked'
 // 权威源在仓库根 docs/CODE_WIKI.md；此处为经 scripts/sync-wiki.mjs 同步的前端副本
 // （docker 构建上下文不含 docs/，故必须随源码提交一份）
@@ -57,9 +58,161 @@ function enqueueMermaidRender(task: () => Promise<void>): Promise<void> {
 
 let mermaidSeq = 0
 
+// ── 全屏缩放查看：克隆已渲染的 SVG（脱离页面的 max-width 限制），按 viewBox 取原始尺寸 ──
+interface ZoomImage {
+  html: string
+  width: number
+  height: number
+}
+
+function prepareSvg(svg: SVGSVGElement): ZoomImage {
+  const vb = svg.viewBox?.baseVal
+  const rect = svg.getBoundingClientRect()
+  const width = vb && vb.width > 0 ? vb.width : Math.max(1, rect.width)
+  const height = vb && vb.height > 0 ? vb.height : Math.max(1, rect.height)
+  const clone = svg.cloneNode(true) as SVGSVGElement
+  clone.removeAttribute('style') // mermaid 会写 max-width/width:100%，全屏视图要按原始尺寸渲染
+  clone.setAttribute('width', String(width))
+  clone.setAttribute('height', String(height))
+  return { html: clone.outerHTML, width, height }
+}
+
+const ZOOM_MIN = 0.1
+const ZOOM_MAX = 20
+const clampScale = (s: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s))
+
+function ZoomModal({ image, onClose }: { image: ZoomImage; onClose: () => void }) {
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const [view, setView] = useState({ scale: 1, x: 0, y: 0 })
+  const [dragging, setDragging] = useState(false)
+  const dragRef = useRef<{ px: number; py: number; bx: number; by: number } | null>(null)
+
+  // 适屏：铺满整页可用空间（初始即“放大到整个页面”）
+  const fit = useCallback(() => {
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    const scale = clampScale(Math.min(vw / image.width, vh / image.height) * 0.94)
+    setView({ scale, x: (vw - image.width * scale) / 2, y: (vh - image.height * scale) / 2 })
+  }, [image])
+
+  useEffect(() => {
+    fit()
+  }, [fit])
+
+  // 以屏幕点 (clientX, clientY) 为锚点缩放，光标下的内容保持不动
+  const zoomAt = useCallback((clientX: number, clientY: number, factor: number) => {
+    const rect = viewportRef.current?.getBoundingClientRect()
+    const ox = clientX - (rect?.left ?? 0)
+    const oy = clientY - (rect?.top ?? 0)
+    setView((v) => {
+      const scale = clampScale(v.scale * factor)
+      const k = scale / v.scale
+      return { scale, x: ox - k * (ox - v.x), y: oy - k * (oy - v.y) }
+    })
+  }, [])
+
+  // React 合成 wheel 事件是 passive 的，无法 preventDefault，需手动以 non-passive 绑定
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [zoomAt])
+
+  const centerZoom = (factor: number) => zoomAt(window.innerWidth / 2, window.innerHeight / 2, factor)
+
+  const actualSize = () => {
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    setView((v) => {
+      const k = 1 / v.scale
+      return { scale: 1, x: vw / 2 - k * (vw / 2 - v.x), y: vh / 2 - k * (vh / 2 - v.y) }
+    })
+  }
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = { px: e.clientX, py: e.clientY, bx: view.x, by: view.y }
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      /* 指针已释放等场景 setPointerCapture 会抛错，忽略（拖拽期间仍可经由冒泡的 move 事件更新） */
+    }
+    setDragging(true)
+  }
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current
+    if (!d) return
+    setView((v) => ({ ...v, x: d.bx + e.clientX - d.px, y: d.by + e.clientY - d.py }))
+  }
+  const handlePointerUp = () => {
+    dragRef.current = null
+    setDragging(false)
+  }
+
+  return (
+    <Modal
+      open
+      onCancel={onClose}
+      footer={null}
+      closable={false}
+      width="100vw"
+      style={{ top: 0, maxWidth: '100vw', margin: 0, paddingBottom: 0 }}
+      styles={{
+        content: { height: '100vh', padding: 0, borderRadius: 0 },
+        body: { height: '100%', padding: 0, overflow: 'hidden' },
+      }}
+    >
+      <div
+        ref={viewportRef}
+        className={`wiki-zoom-viewport${dragging ? ' dragging' : ''}`}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+      >
+        <div
+          className="wiki-zoom-stage"
+          style={{
+            width: image.width,
+            height: image.height,
+            transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
+          }}
+          dangerouslySetInnerHTML={{ __html: image.html }}
+        />
+        {/* 工具条/关闭按钮：阻止 pointerdown 冒泡，避免误触拖拽 */}
+        <div className="wiki-zoom-toolbar" onPointerDown={(e) => e.stopPropagation()}>
+          <Tooltip title="缩小">
+            <Button type="text" size="small" icon={<ZoomOutOutlined />} onClick={() => centerZoom(1 / 1.25)} />
+          </Tooltip>
+          <span className="wiki-zoom-percent">{Math.round(view.scale * 100)}%</span>
+          <Tooltip title="放大">
+            <Button type="text" size="small" icon={<ZoomInOutlined />} onClick={() => centerZoom(1.25)} />
+          </Tooltip>
+          <Button type="text" size="small" onClick={fit}>适应屏幕</Button>
+          <Button type="text" size="small" onClick={actualSize}>1:1</Button>
+        </div>
+        <Tooltip title="关闭（Esc）">
+          <Button
+            className="wiki-zoom-close"
+            type="text"
+            icon={<CloseOutlined />}
+            onClick={onClose}
+            onPointerDown={(e) => e.stopPropagation()}
+          />
+        </Tooltip>
+      </div>
+    </Modal>
+  )
+}
+
 function MermaidBlock({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null)
   const [error, setError] = useState('')
+  const [zoom, setZoom] = useState<ZoomImage | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -76,6 +229,11 @@ function MermaidBlock({ code }: { code: string }) {
     }
   }, [code])
 
+  const openZoom = () => {
+    const svg = ref.current?.querySelector('svg')
+    if (svg) setZoom(prepareSvg(svg))
+  }
+
   if (error) {
     return (
       <div className="code-wiki-mermaid">
@@ -85,11 +243,17 @@ function MermaidBlock({ code }: { code: string }) {
     )
   }
   return (
-    <div className="code-wiki-mermaid">
-      <div ref={ref}>
-        <Spin size="small" />
+    <>
+      <div className="code-wiki-mermaid" onClick={openZoom} title="点击放大查看（全屏 · 滚轮缩放 · 拖拽平移）">
+        <div ref={ref}>
+          <Spin size="small" />
+        </div>
+        <span className="code-wiki-mermaid-hint">
+          <FullscreenOutlined /> 点击放大
+        </span>
       </div>
-    </div>
+      {zoom && <ZoomModal image={zoom} onClose={() => setZoom(null)} />}
+    </>
   )
 }
 

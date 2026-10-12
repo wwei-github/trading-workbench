@@ -185,6 +185,7 @@ html, body, #root {
   white-space: nowrap;
 }
 .code-wiki-mermaid {
+  position: relative;
   margin: 14px 0 20px;
   padding: 12px;
   border: 1px solid #f0f0f0;
@@ -192,8 +193,77 @@ html, body, #root {
   background: #fcfcfc;
   overflow-x: auto;
   text-align: center;
+  cursor: zoom-in;
 }
 .code-wiki-mermaid svg {
   max-width: 100%;
   height: auto;
+}
+.code-wiki-mermaid-hint {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  display: none;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: rgba(22, 119, 255, 0.08);
+  color: #1677ff;
+  font-size: 12px;
+}
+.code-wiki-mermaid:hover .code-wiki-mermaid-hint {
+  display: inline-flex;
+}
+
+/* ── 图表全屏缩放查看（模态内）──────────────────────────────
+   滚轮/按钮缩放（以光标或视口中心为锚点）、拖拽平移、适应屏幕 / 1:1 */
+.wiki-zoom-viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #fff;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.wiki-zoom-viewport.dragging {
+  cursor: grabbing;
+}
+.wiki-zoom-stage {
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.wiki-zoom-stage svg {
+  display: block;
+}
+.wiki-zoom-toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 10px;
+  border: 1px solid #f0f0f0;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+}
+.wiki-zoom-percent {
+  min-width: 48px;
+  text-align: center;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.65);
+  font-variant-numeric: tabular-nums;
+}
+.wiki-zoom-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 2;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
 }
