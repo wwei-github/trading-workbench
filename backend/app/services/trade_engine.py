@@ -1580,6 +1580,40 @@ _HTF_EXIT_STATES = {
 }
 
 
+def _htf_close_out(db: Session, trader: BinanceTrader, rec: TradeRecord,
+                   detail: dict) -> bool:
+    """4h 状态机全平执行（docs/21 O1；2026-10-12-7 修复三处）。
+
+    - **事件幂等**：EXIT_HTF_STATE 只落一次（raw.htf_exit_notified 旗标），
+      平仓失败重试轮不再重复落事件；
+    - **不预撤挂单**：撤单交由 close_market_now 内部「先平仓后撤单」
+      （2026-09-25 约定）——预撤会在平仓失败时留下无 SL 保护的裸奔仓位；
+    - **失败清理**：平仓失败且仓位确认仍开放（或交易所不可达、下单大概率
+      未派发）→ 清除 raw.exit_override，防后续真实 SL/手动平仓被 settle
+      零仓分支误标 htf_state；仓位已归零（平仓单已成交、结算段抛异常）→
+      保留 override，下轮 settle 按 htf_state 落账。
+    exit_reason 经 close_market_now(exit_reason="htf_state") 落库。
+    成功返回 True（调用方停止本轮后续动作）。
+    """
+    raw = rec.raw or {}
+    if not raw.get("htf_exit_notified"):
+        _add_event(db, rec, "EXIT_HTF_STATE", detail)
+    try:
+        rec.raw = {**raw, "exit_override": "htf_state", "htf_exit_notified": True}
+        close_market_now(db, trader, rec, exit_reason="htf_state")
+        return True
+    except Exception as e:
+        logger.warning("4h 状态机全平失败 %s（%s）：%s", rec.symbol, rec.id, e)
+        try:
+            pos = trader.positions().get(rec.symbol)
+            amt = abs(float((pos or {}).get("amt") or 0)) if pos else 0.0
+        except Exception:
+            amt = None  # 交易所不可达（下单大概率未派发）→ 同「仍开放」处理
+        if amt is None or amt > 0:
+            rec.raw = {**(rec.raw or {}), "exit_override": None}
+        return False
+
+
 def _htf_state_exit(db: Session, trader: BinanceTrader, rec: TradeRecord) -> bool:
     """4h 状态机接入 trail 出场（2026-10-12 拍板，docs/21 O1）：下车态 → 市价全平。
 
@@ -1592,7 +1626,7 @@ def _htf_state_exit(db: Session, trader: BinanceTrader, rec: TradeRecord) -> boo
     每小时池级仅数个新请求。
     数据口径：analyze_htf_background 返回 None（K 线 <156 已收盘根等）→ 不动作；
     拉取异常 → 本轮不动作，但 fail-closed：连续 2 个 4h 桶拉取失败 → 保守全平
-    （4h 盲飞不可接受）。交易所全平失败仅告警（不落事件幂等——下轮重试）。
+    （4h 盲飞不可接受）。全平执行/失败重试/事件幂等见 _htf_close_out。
     """
     from app.services.strategy.technical import analyze_htf_background
 
@@ -1608,16 +1642,10 @@ def _htf_state_exit(db: Session, trader: BinanceTrader, rec: TradeRecord) -> boo
         streak = fail.get("streak", 0) + (0 if fail.get("bucket") == bucket else 1)
         rec.raw = {**raw, "htf_state_fail": {"bucket": bucket, "streak": streak}}
         if streak >= 2:
-            _add_event(db, rec, "EXIT_HTF_STATE", {"state": None, "fail_closed": True})
             logger.warning("4h 状态机 %s 连续 %d 个 4h 桶数据缺失，fail-closed 全平",
                            rec.symbol, streak)
-            try:
-                rec.raw = {**(rec.raw or {}), "exit_override": "htf_state"}
-                trader.cancel_all_algo(rec.symbol)
-                close_market_now(db, trader, rec)
-                return True
-            except Exception as e:
-                logger.warning("4h 状态机全平失败 %s（%s）：%s", rec.symbol, rec.id, e)
+            return _htf_close_out(db, trader, rec,
+                                  {"state": None, "fail_closed": True})
         return False
     bar = int(kl[-1][0])  # 未收盘 4h 根的开盘时刻（换根检测键）
     cached = raw.get("htf_state") or {}
@@ -1632,15 +1660,8 @@ def _htf_state_exit(db: Session, trader: BinanceTrader, rec: TradeRecord) -> boo
                    "htf_state_fail": None}
         raw = rec.raw
     if st in _HTF_EXIT_STATES.get(rec.direction, ()):
-        _add_event(db, rec, "EXIT_HTF_STATE", {"state": st, "age": age})
         logger.info("4h 状态机下车 %s（%s）：状态 %s，市价全平", rec.symbol, rec.id, st)
-        try:
-            rec.raw = {**(rec.raw or {}), "exit_override": "htf_state"}
-            trader.cancel_all_algo(rec.symbol)
-            close_market_now(db, trader, rec)
-            return True
-        except Exception as e:
-            logger.warning("4h 状态机全平失败 %s（%s）：%s", rec.symbol, rec.id, e)
+        return _htf_close_out(db, trader, rec, {"state": st, "age": age})
     return False
 
 
@@ -1892,9 +1913,13 @@ def _record_realized(db: Session, trader: BinanceTrader, rec: TradeRecord) -> fl
     return pnl
 
 
-def close_market_now(db: Session, trader: BinanceTrader, rec: TradeRecord) -> dict:
+def close_market_now(db: Session, trader: BinanceTrader, rec: TradeRecord,
+                     exit_reason: str = "manual") -> dict:
     """市价平仓（飞书卡片按钮，2026-09-21）：reduceOnly 市价全平 → 清理挂单 →
     立即按 income 口径结算落终态（复用巡检零仓位的费用拆分/事件口径）。
+
+    exit_reason: 落库出场原因（默认 "manual"=飞书按钮手动平仓；4h 状态机
+    下车传 "htf_state"，docs/21 O1——不传则程序性全平会被误标手动平仓）。
 
     执行顺序（2026-09-25 调整为先平仓后撤单）：SL/TP 挂单在市价单执行期间
     始终在场——下单失败时止损保护原封未动（无裸奔窗口）；reduceOnly 互斥
@@ -1957,10 +1982,10 @@ def close_market_now(db: Session, trader: BinanceTrader, rec: TradeRecord) -> di
     rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
     rec.status = "CLOSED"
     rec.closed_at = datetime.utcnow()
-    rec.exit_reason = "manual"
+    rec.exit_reason = exit_reason
     _add_event(db, rec, "MANUAL_CLOSE", {
         "qty": float(close_qty), "realized_pnl": pnl, "pnl_pct": rec.pnl_pct,
-        "exit_reason": "manual", "fee_total": rec.fee_total,
+        "exit_reason": exit_reason, "fee_total": rec.fee_total,
         "funding_total": rec.funding_total,
     })
     db.commit()

@@ -1,19 +1,25 @@
 # -*- coding: utf-8 -*-
 """4h 状态机接入 trail 出场（2026-10-12 拍板，docs/21 O1）——单测。
 
-锁五件事：
+锁六件事：
 1. 下车态矩阵（多空 × 11 态）：逆侧趋势级反转（macro_cross/aligned/recover 逆侧）
-   + turn 同侧 → EXIT_HTF_STATE 事件 + 撤 algo + 市价全平 + exit_override；
+   + turn 同侧 → EXIT_HTF_STATE 事件 + 市价全平 + exit_override；
    缠绕与过渡态（bull_dip/bear_rally）等其余 7 态不动作；
+   判定路径不预撤单（撤单交 close_market_now 内部先平后撤，trader.cancelled 恒空）；
 2. analyze_htf_background 返回 None（4h <156 已收盘根）→ 不动作且不计 fail；
 3. 拉取异常 fail-closed：首桶 streak=1 不动作；连续第 2 个 4h 桶仍失败 →
    保守全平（fail_closed=True）；同桶重复巡检不重复计数；
 4. 4h 换根缓存：raw.htf_state.bar == 未收盘根开盘时刻 → 桶内命中零重算
    （analyze_htf_background 被调即 AssertionError）；缓存态为下车态照样全平；
-5. 成功判定后 fail 计数清零（htf_state_fail 复位 None）。
+5. 成功判定后 fail 计数清零（htf_state_fail 复位 None）；
+6. 全平执行修复回归（2026-10-12-7）：真实 close_market_now 集成落
+   exit_reason=htf_state（飞书按钮默认 manual 标签不变）；EXIT_HTF_STATE
+   事件幂等（失败重试不重复落）；失败清理 override——仓位仍开放清除
+   （防后续真实 SL 被 settle 误标）、已归零保留（等下轮落账）。
 
-sqlite 内存库夹具镜像 test_tp_mode.py；ExchangePool / analyze_htf_background /
-close_market_now 全桩化（被测单元是 _htf_state_exit 判定逻辑，不是平仓执行）。
+sqlite 内存库夹具镜像 test_tp_mode.py；ExchangePool / analyze_htf_background
+/ close_market_now 桩化（1~5 组判定矩阵）；第 6 组走真实 close_market_now
+（只桩 ExchangePool/analyze 与 time.sleep）。
 """
 import sys
 import uuid
@@ -70,20 +76,56 @@ def _rec(db, direction="long", raw=None):
 
 
 class StubTrader:
-    """最小 trader 桩：_htf_state_exit 只调 cancel_all_algo（平仓执行被桩掉）"""
+    """最小 trader 桩。
 
-    def __init__(self):
+    判定矩阵（1~5 组）：close_market_now 被桩掉——本桩只需 positions
+    （全平失败时的清理二分）与 cancel_all_algo（验「不预撤单」恒空）。
+    真实 close_market_now 集成（第 6 组）：另需 round_qty / market_order /
+    income_rows / sum_income / INCOME_KEEP；calls 记录执行序（先平仓后撤单断言）。
+    """
+
+    INCOME_KEEP = {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE", "INSURANCE_CLEAR"}
+
+    def __init__(self, amt=1.0):
         self.cancelled: list[str] = []
+        self.market_closes: list[tuple] = []
+        self.calls: list[str] = []
+        self.amt = amt
+
+    def positions(self):
+        return {"BTCUSDT": {"amt": self.amt}} if self.amt > 0 else {}
+
+    def round_qty(self, symbol, qty):
+        return round(qty, 3)
+
+    def market_order(self, symbol, side, qty, reduce_only=False):
+        self.calls.append("order")
+        self.market_closes.append((side, qty, reduce_only))
+        if reduce_only:
+            self.amt = max(0.0, self.amt - qty)  # 桩内模拟减仓
+        return {"orderId": 900 + len(self.market_closes)}
 
     def cancel_all_algo(self, symbol):
+        self.calls.append("cancel")
         self.cancelled.append(symbol)
+
+    def income_rows(self, symbol, since_ms):
+        return [
+            {"incomeType": "REALIZED_PNL", "income": "2.0"},
+            {"incomeType": "COMMISSION", "income": "-0.1"},
+        ]
+
+    def sum_income(self, rows, keep):
+        return sum(float(r.get("income") or 0) for r in rows
+                   if r.get("incomeType") in keep)
 
 
 def _patch(monkeypatch, *, kl=None, bg=None, raise_on_fetch=False,
-           bg_raises=False):
+           bg_raises=False, close_impl="stub"):
     """装配一轮判定：ExchangePool 返回 kl（或抛异常），analyze_htf_background
-    返回 bg（或抛 AssertionError 证明未被调）；close_market_now 换成记录桩。
-    返回 close 调用记录列表。"""
+    返回 bg（或抛 AssertionError 证明未被调）；close_market_now 默认换记录桩
+    （close_impl="stub"），close_impl=None 保留真实实现（第 6 组集成用例），
+    可调用对象则直接替换（失败/重试用例）。返回 close 桩调用记录列表。"""
     closes: list = []
 
     def _get_klines(symbol, interval, limit, **kw):
@@ -100,8 +142,13 @@ def _patch(monkeypatch, *, kl=None, bg=None, raise_on_fetch=False,
         return bg
 
     monkeypatch.setattr(tech, "analyze_htf_background", _bg)
-    monkeypatch.setattr(te, "close_market_now",
-                        lambda db_, trader_, rec_: closes.append(rec_.id) or {})
+    if close_impl == "stub":
+        monkeypatch.setattr(
+            te, "close_market_now",
+            lambda db_, trader_, rec_, **kw: closes.append(rec_.id) or {})
+    elif callable(close_impl):
+        monkeypatch.setattr(te, "close_market_now", close_impl)
+    # close_impl=None → 保留真实 close_market_now（集成用例）
     return closes
 
 
@@ -129,7 +176,7 @@ def test_exit_matrix_long(db, monkeypatch, state):
     if state in LONG_EXIT:
         assert exited is True
         assert closes == [rec.id]
-        assert trader.cancelled == ["BTCUSDT"]
+        assert trader.cancelled == []  # 不预撤单（撤单交 close_market_now 先平后撤）
         assert rec.raw["exit_override"] == "htf_state"
         evs = db.query(TradeEvent).filter_by(event_type="EXIT_HTF_STATE").all()
         assert len(evs) == 1 and evs[0].detail["state"] == state
@@ -184,14 +231,14 @@ def test_fetch_fail_first_bucket_no_action(db, monkeypatch):
 
 def test_fetch_fail_second_bucket_fail_closed(db, monkeypatch):
     """连续第 2 个 4h 桶仍拉取失败 → 保守全平（4h 盲飞不可接受）：
-    EXIT_HTF_STATE(fail_closed=True) + exit_override + 撤单 + 平仓"""
+    EXIT_HTF_STATE(fail_closed=True) + exit_override + 市价全平（不预撤单）"""
     closes = _patch(monkeypatch, raise_on_fetch=True)
     rec = _rec(db, raw={"tp_mode": "trail",
                         "htf_state_fail": {"bucket": _bucket() - 1, "streak": 1}})
     trader = StubTrader()
     assert te._htf_state_exit(db, trader, rec) is True
     assert closes == [rec.id]
-    assert trader.cancelled == ["BTCUSDT"]
+    assert trader.cancelled == []
     assert rec.raw["exit_override"] == "htf_state"
     assert rec.raw["htf_state_fail"]["streak"] == 2
     evs = db.query(TradeEvent).filter_by(event_type="EXIT_HTF_STATE").all()
@@ -249,3 +296,72 @@ def test_success_clears_fail_streak(db, monkeypatch):
     assert closes == []
     assert rec.raw["htf_state_fail"] is None
     assert rec.raw["htf_state"] == {"bar": BAR, "state": "aligned_bull", "age": 12}
+
+
+# ── 6. 全平执行修复回归（2026-10-12-7）──────────────────────────────
+
+
+def test_manual_close_default_label_unchanged(db, monkeypatch):
+    """飞书按钮口径回归：close_market_now 不带 exit_reason → manual 标签不变"""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    rec = _rec(db)
+    te.close_market_now(db, StubTrader(), rec)
+    assert rec.status == "CLOSED" and rec.exit_reason == "manual"
+    evs = db.query(TradeEvent).filter_by(event_type="MANUAL_CLOSE").all()
+    assert len(evs) == 1 and evs[0].detail["exit_reason"] == "manual"
+    assert rec.pnl_pct == 95.0  # (2.0 − 0.1) / 2.0 × 100
+
+
+def test_real_close_labels_htf_state(db, monkeypatch):
+    """真实 close_market_now 集成：4h 下车态全平落 exit_reason=htf_state
+    （不再被硬编码误标手动平仓）；执行序为先市价平仓后撤挂单（不预撤）"""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    _patch(monkeypatch, kl=_kl(), bg={"state": "aligned_bear", "age_bars": 4},
+           close_impl=None)
+    rec = _rec(db, direction="long")
+    trader = StubTrader()
+    assert te._htf_state_exit(db, trader, rec) is True
+    assert rec.status == "CLOSED" and rec.exit_reason == "htf_state"
+    assert trader.calls.index("order") < trader.calls.index("cancel")
+    evs = db.query(TradeEvent).filter_by(event_type="MANUAL_CLOSE").all()
+    assert len(evs) == 1 and evs[0].detail["exit_reason"] == "htf_state"
+    assert db.query(TradeEvent).filter_by(event_type="EXIT_HTF_STATE").count() == 1
+
+
+def test_close_failure_clears_override_no_dup_event(db, monkeypatch):
+    """平仓失败 + 仓位确认仍开放 → 清除 exit_override（否则后续真实 SL
+    平仓会被 settle 误标 htf_state）；重试轮事件幂等、二次执行成功"""
+    calls: list = []
+
+    def _close_once(db_, trader_, rec_, **kw):
+        calls.append(kw.get("exit_reason"))
+        if len(calls) == 1:
+            raise RuntimeError("exchange down")
+        return {}
+
+    _patch(monkeypatch, kl=_kl(), bg_raises=True, close_impl=_close_once)
+    rec = _rec(db, raw={"tp_mode": "trail",
+                        "htf_state": {"bar": BAR, "state": "aligned_bear", "age": 9}})
+    trader = StubTrader(amt=1.0)
+    assert te._htf_state_exit(db, trader, rec) is False
+    assert rec.raw["exit_override"] is None
+    assert rec.raw["htf_exit_notified"] is True
+    assert db.query(TradeEvent).filter_by(event_type="EXIT_HTF_STATE").count() == 1
+    # 下轮重试（缓存态仍下车）：事件不重复落，平仓成功
+    assert te._htf_state_exit(db, trader, rec) is True
+    assert calls == ["htf_state", "htf_state"]
+    assert rec.raw["exit_override"] == "htf_state"
+    assert db.query(TradeEvent).filter_by(event_type="EXIT_HTF_STATE").count() == 1
+
+
+def test_close_failure_position_gone_keeps_override(db, monkeypatch):
+    """平仓失败但仓位已归零（平仓单已成交、结算段抛异常）→ 保留 override，
+    下轮 settle 零仓分支按 htf_state 落账（不误标 sl）"""
+    def _boom(db_, trader_, rec_, **kw):
+        raise RuntimeError("settle crashed")
+
+    _patch(monkeypatch, kl=_kl(), bg_raises=True, close_impl=_boom)
+    rec = _rec(db, raw={"tp_mode": "trail",
+                        "htf_state": {"bar": BAR, "state": "aligned_bear", "age": 9}})
+    assert te._htf_state_exit(db, StubTrader(amt=0.0), rec) is False
+    assert rec.raw["exit_override"] == "htf_state"

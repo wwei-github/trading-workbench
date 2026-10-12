@@ -142,7 +142,13 @@ class Settings(BaseSettings):
     # s2 资格闸（触点=ema21 ∧ trend_gated，scanner 不再整体否决）；O1 4h 状态机
     # 下车态接入 trail 出场（fail-closed：连续 2 个 4h 桶数据缺失保守全平）；
     # O2 EMA21 减半腿双确认（连续 2 根逆侧收盘 + 末根破线 >0.1×ATR(14,1h)）
-    RULE_VERSION: str = "v2026-10-12-6"
+    # v2026-10-12-7（批次1 缺陷修复三处）：① close_market_now 增 exit_reason
+    # 参数——4h 状态机全平落 htf_state，不再被硬编码误标 manual（飞书按钮
+    # 默认 manual 不变）；② 4h 全平不预撤挂单——撤单交 close_market_now 内部
+    # 「先平仓后撤单」，预撤会致平仓失败时无 SL 裸奔；③ 全平失败清理
+    # exit_override（仓位仍开放时）防后续真实 SL 被 settle 误标 htf_state，
+    # 仓位已归零则保留待下轮落账；EXIT_HTF_STATE 事件幂等（重试轮不重复落）
+    RULE_VERSION: str = "v2026-10-12-7"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]
