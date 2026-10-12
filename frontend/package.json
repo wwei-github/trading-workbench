@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "sync-wiki": "node scripts/sync-wiki.mjs",
+    "predev": "npm run sync-wiki",
+    "prebuild": "npm run sync-wiki"
   },
   "dependencies": {
     "@ant-design/icons": "^5.3.5",
@@ -19,6 +22,8 @@
     "lightweight-charts": "^5.2.1",
     "lightweight-charts-drawing": "0.2.4",
     "lightweight-charts-indicators": "0.10.0",
+    "marked": "^18.1.0",
+    "mermaid": "^12.1.0",
     "oakscriptjs": "0.10.1",
     "react": "^18.2.0",
     "react-chrono": "^2.6.1",

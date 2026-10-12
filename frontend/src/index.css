@@ -75,3 +75,125 @@ html, body, #root {
   overflow-y: auto;
   overflow-x: hidden;
 }
+
+/* ── CODE WIKI 面板（docs/CODE_WIKI.md 渲染，2026-10-12）────────────
+   自带文档排版：标题锚点 scroll-margin 兼容 TOC 跳转；表格/代码块横向滚动 */
+.code-wiki {
+  max-width: 1100px;
+  font-size: 14px;
+  line-height: 1.75;
+  color: rgba(0, 0, 0, 0.88);
+}
+.code-wiki h1,
+.code-wiki h2,
+.code-wiki h3,
+.code-wiki h4,
+.code-wiki h5 {
+  scroll-margin-top: 8px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.code-wiki h1 {
+  font-size: 22px;
+  margin: 8px 0 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f0f0f0;
+}
+.code-wiki h2 {
+  font-size: 19px;
+  margin: 28px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #f0f0f0;
+}
+.code-wiki h3 {
+  font-size: 16px;
+  margin: 20px 0 8px;
+}
+.code-wiki h4,
+.code-wiki h5 {
+  font-size: 14px;
+  margin: 16px 0 6px;
+}
+.code-wiki p {
+  margin: 8px 0;
+}
+.code-wiki ul,
+.code-wiki ol {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+.code-wiki li {
+  margin: 2px 0;
+}
+.code-wiki a {
+  color: #1677ff;
+}
+.code-wiki hr {
+  margin: 20px 0;
+  border: none;
+  border-top: 1px solid #f0f0f0;
+}
+.code-wiki blockquote {
+  margin: 10px 0;
+  padding: 6px 14px;
+  border-left: 4px solid #1677ff;
+  background: #f0f7ff;
+  color: rgba(0, 0, 0, 0.7);
+}
+.code-wiki blockquote p {
+  margin: 4px 0;
+}
+.code-wiki code {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #f6f8fa;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+.code-wiki pre {
+  margin: 10px 0;
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: #f6f8fa;
+  overflow-x: auto;
+}
+.code-wiki pre code {
+  padding: 0;
+  background: none;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.code-wiki table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  margin: 10px 0 16px;
+  border-collapse: collapse;
+  overflow-x: auto;
+}
+.code-wiki th,
+.code-wiki td {
+  padding: 6px 12px;
+  border: 1px solid #e5e7eb;
+  font-size: 13px;
+  text-align: left;
+  vertical-align: top;
+}
+.code-wiki th {
+  background: #fafafa;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.code-wiki-mermaid {
+  margin: 14px 0 20px;
+  padding: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fcfcfc;
+  overflow-x: auto;
+  text-align: center;
+}
+.code-wiki-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}

@@ -7,6 +7,7 @@ import ResultTable from '../components/ResultTable'
 import PendingPoolPanel from '../components/PendingPoolPanel'
 import TaskList from '../components/TaskList'
 import LogsPanel from '../components/LogsPanel'
+import CodeWikiPanel from '../components/CodeWikiPanel'
 import ScanConfigPanel from '../components/ScanConfigPanel'
 import TradingConfigPanel from '../components/TradingConfigPanel'
 import SystemConfigPanel from '../components/SystemConfigPanel'
@@ -58,7 +59,7 @@ export default function ScanResult({ mode }: ScanResultProps) {
   // 合约内部 tab 记忆（既有 key 不动）
   const [activeTab, switchTab] = useTabMemory(
     'tabs.scanResult',
-    ['results', 'pending-pool', 'watchlist', 'search', 'strategy', 'backtest', 'ledger', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs'],
+    ['results', 'pending-pool', 'watchlist', 'search', 'strategy', 'backtest', 'ledger', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs', 'wiki'],
   )
   // 现货内部 tab 记忆（独立 key，与合约无冲突）
   const [spotTab, switchSpotTab] = useTabMemory('tabs.spot', ['overview', 'backtest', 'history', 'settings', 'logs'])
@@ -244,6 +245,11 @@ export default function ScanResult({ mode }: ScanResultProps) {
       key: 'logs',
       label: '系统日志',
       children: <div style={{ height: '100%', overflow: 'hidden' }}><LogsPanel /></div>,
+    },
+    {
+      key: 'wiki',
+      label: 'CODE WIKI',
+      children: <div style={{ height: '100%', overflow: 'hidden' }}><CodeWikiPanel /></div>,
     },
   ]
 
