@@ -470,7 +470,7 @@ AI 持仓诊断：浮亏在跑单 → `advice_due` 触发 AI 建议（hold/tight
 
 | 任务模块 | 关键任务 | 调度 |
 |---|---|---|
-| [scan_tasks.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/tasks/scan_tasks.py) | `run_scan_task` | 每小时 :55 |
+| [scan_tasks.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/tasks/scan_tasks.py) | `run_scan_task` | 每小时 :00（整点） |
 | [ai_tasks.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/tasks/ai_tasks.py) | `run_ai_analysis_task` | 扫描后即时分发 |
 | [trade_tasks.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/tasks/trade_tasks.py) | `run_auto_trade_task` | 每半小时 :00/:30 |
 | [review_tasks.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/tasks/review_tasks.py) | `run_trade_review_task`, `run_ai_attribution_task`, `run_patch_trigger_task`, `run_patch_evaluate_task` | 每小时整点/:14 / 每日 11:40/11:45 |
@@ -614,7 +614,7 @@ Celery Beat 调度表（timezone=Asia/Shanghai）：
 
 | 任务 | 调度 | 说明 |
 |---|---|---|
-| `run_scan_task` | 每小时 :55 | 全量合约扫描（尾窗幽灵根视图） |
+| `run_scan_task` | 每小时 :00（整点） | 全量合约扫描 |
 | `run_trade_review_task` | 每小时 :00 | 超 24h AI 建议逐 K 回放 |
 | `run_ai_attribution_task` | 每小时 :14 | 已平仓交易 AI 错误归因 |
 | `run_auto_trade_task` | 每半小时 :00/:30 | 结算巡检 + 持仓诊断 |
@@ -633,7 +633,7 @@ Celery Beat 调度表（timezone=Asia/Shanghai）：
 
 以下时序图描述系统核心运行时链路：主链路四条（扫描 → 分析 → 开仓 → 结算）、辅助链路两条（现货、飞书），以及复盘归因、影子模式、手动 API 与行情容灾四条补充链路（10.7 ~ 10.10）。
 
-### 10.1 定时扫描与候选判定（每小时 :55）
+### 10.1 定时扫描与候选判定（每小时 :00 整点）
 
 ```mermaid
 sequenceDiagram
@@ -646,7 +646,7 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant SH as shadow
 
-    Beat->>Task: 每小时 :55 触发
+    Beat->>Task: 每小时 :00 触发
     Task->>SC: Scanner.run(scan_record_id)
     SC->>DB: 读取扫描配置 + 筛选参数组
     SC->>EX: 拉取全量合约 24h ticker

@@ -30,7 +30,11 @@ class Settings(BaseSettings):
     # hourly-scan 的 crontab 分钟数与 market_data 尾窗宽度（60-该值）均由此派生。
     # 二者曾仅靠注释耦合：改 beat 忘改尾窗时 in_forming_tail 静默返回 False，
     # 筛选悄悄退化为「看上一根已收盘根」（不报错、不告警，只表现为信号变旧）
-    SCAN_BEAT_MINUTE: int = 55
+    # 0 = 每小时整点触发（2026-10-12 拍板，回退 v2026-10-11-4 的 :55 提前捕捉）：
+    # 整点新周期刚开、没有「近收盘未收盘根」可言，故尾窗同步关闭（派生宽度 0），
+    # 筛选回到「看上一根已收盘根」。信号根与 :55 口径是同一根（都是刚走完的那根），
+    # 但取到的是最终收盘价而非扫描时刻快照，且时点晚 5 分钟
+    SCAN_BEAT_MINUTE: int = 0
     KLINE_INTERVAL: str = "1h"
     KLINE_WINDOW: int = 240
     BREAKOUT_THRESHOLD: float = 0.002  # 最小突破幅度：收盘须越过 Donchian 轨 0.2%（毛边突破不算）
@@ -167,7 +171,11 @@ class Settings(BaseSettings):
     # 同一回踩路径的质量分层标注，已并入 trigger_pullback_confirm）；1H 结构门
     # （三线排列+快中线发散史+EMA144方向）恢复为 ema21 回踩触点的硬门（不过则否决，
     # 不再升级标注）；全局 4H 闸门（scanner gate_4h 三重否决）不变
-    RULE_VERSION: str = "v2026-10-12-11"
+    # v2026-10-12-12（用户拍板）：定时扫描 :55 → 整点 :00，尾窗随之关闭
+    # （FORMING_TAIL_MINUTES 派生为 0，in_forming_tail 恒 False）——回退
+    # v2026-10-11-4 的「未收盘根视作已收盘」提前捕捉；信号根仍是刚走完的那根，
+    # 但取最终收盘价而非扫描时刻快照，时点晚 5 分钟
+    RULE_VERSION: str = "v2026-10-12-12"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

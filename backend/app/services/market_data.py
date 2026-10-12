@@ -34,16 +34,24 @@ def _cache_set(key: str, data: object, ttl: float) -> None:
 
 # ── 扫描尾窗（2026-10-11-4）：近收盘未收盘根视作已收盘 ──
 # 定时扫描 beat 定在每小时第 SCAN_BEAT_MINUTE 分（celery_app.hourly-scan），此时
-# 本周期K线已走完 55/60 分钟、形态基本定型——把它当作已收盘根参与筛选，信号
-# 提前 ~7 分钟捕捉（原 :02 等收盘后看上一根）。
+# 本周期K线已走完 (60-宽度)/60 分钟、形态基本定型——把它当作已收盘根参与筛选，
+# 信号提前数分钟捕捉。
 # 尾窗宽度与该分钟数单一来源派生（2026-10-12）：二者仅靠注释耦合时，改 beat
-# 忘改此处会让 in_forming_tail 静默返回 False（筛选悄悄退回「看上一根已收盘
-# 根」，不报错）——派生 + 启动校验让配置漂移在结构上不可能发生。
-FORMING_TAIL_MINUTES = 60 - settings.SCAN_BEAT_MINUTE
-if not 0 < FORMING_TAIL_MINUTES < 60:
+# 忘改此处会让 in_forming_tail 静默返回 False（筛选退回「看上一根已收盘根」，
+# 不报错）——派生 + 启动校验让配置漂移在结构上不可能发生。
+# 宽度 0 = 尾窗关闭（2026-10-12 拍板：beat 改整点 :00，新周期刚开，无「近收盘
+# 未收盘根」可言）：in_forming_tail 恒 False，全管线的 screen_klines 原样透传，
+# 信号根 = 上一根已收盘根。机制与派生校验保留，改回分钟数即自动恢复
+# 宽度 = beat 时刻距收盘的剩余分钟数 = 60 - SCAN_BEAT_MINUTE；beat 整点（0）
+# 是唯一例外：新周期刚开，「近收盘」无从定义，而派生式会误得 60（=恒在尾窗），
+# 故显式归零 = 尾窗关闭
+FORMING_TAIL_MINUTES = (
+    0 if settings.SCAN_BEAT_MINUTE == 0 else 60 - settings.SCAN_BEAT_MINUTE
+)
+if not 0 <= FORMING_TAIL_MINUTES < 60:
     raise ValueError(
         f"SCAN_BEAT_MINUTE={settings.SCAN_BEAT_MINUTE} 非法："
-        f"尾窗宽度须落在 (0,60) 分钟（当前 {FORMING_TAIL_MINUTES} 分钟）"
+        f"尾窗宽度须落在 [0,60) 分钟（当前 {FORMING_TAIL_MINUTES} 分钟）"
     )
 
 

@@ -1,8 +1,9 @@
-"""扫描尾窗（2026-10-11-4）：:55 定时扫描把近收盘未收盘根视作已收盘筛选。
+"""扫描尾窗机制：把近收盘未收盘根视作已收盘参与筛选（2026-10-11-4）。
 
-覆盖 market_data.in_forming_tail 边界与 screen_klines 幽灵尾根视图——
-幽灵复制使 [-1] 仍为「未收盘」（被管线剔除）、[-2] 变为近收盘根（信号根），
-全管线 [:-1] 剔尾约定零改动即完成信号根前移。
+2026-10-12 定时扫描改整点 :00 后尾窗关闭（派生宽度 0，生产全时点原样透传 =
+「看上一根已收盘根」），但机制保留：本文件既锁「关闭时恒透传」，也覆盖打开时
+的幽灵尾根视图——幽灵复制使 [-1] 仍为「未收盘」（被管线剔除）、[-2] 变为
+近收盘根（信号根），全管线 [:-1] 剔尾约定零改动即完成信号根前移。
 """
 from datetime import datetime
 
@@ -19,22 +20,16 @@ def _dt(h, m, s=0):
     return datetime(2026, 10, 11, h, m, s)
 
 
-# ── in_forming_tail 边界 ──
+# ── in_forming_tail 边界（2026-10-12：beat 改整点 :00，尾窗关闭）──
 
-def test_1h_tail_window_boundaries():
-    """1h：:55:00 起进入尾窗（含），:00:00 整点退出（新周期刚开始）"""
-    assert in_forming_tail("1h", _dt(14, 54, 59)) is False   # 剩余 5:01
-    assert in_forming_tail("1h", _dt(14, 55, 0)) is True     # 剩余 5:00（含）
-    assert in_forming_tail("1h", _dt(14, 59, 59)) is True    # 剩余 0:01
-    assert in_forming_tail("1h", _dt(15, 0, 0)) is False     # 新周期，剩余 60:00
-    assert in_forming_tail("1h", _dt(15, 30, 0)) is False    # 周期中段
-
-
-def test_4h_tail_window_boundaries():
-    """4h：仅每个 4h 周期最后 5 分钟进入尾窗（14:55 处于 12:00-16:00 周期中段）"""
-    assert in_forming_tail("4h", _dt(14, 55, 0)) is False    # 剩余 65min
-    assert in_forming_tail("4h", _dt(15, 55, 0)) is True     # 剩余 5min
-    assert in_forming_tail("4h", _dt(16, 0, 0)) is False     # 新周期
+def test_tail_disabled_at_hourly_beat():
+    """SCAN_BEAT_MINUTE=0（整点触发）→ 派生宽度 0 → 1h/4h 恒不在尾窗：
+    筛选口径回「看上一根已收盘根」，screen_klines 全时点原样透传"""
+    assert FORMING_TAIL_MINUTES == 0
+    for h, m in [(14, 54), (14, 55), (14, 59), (15, 0), (15, 30)]:
+        assert in_forming_tail("1h", _dt(h, m)) is False
+    for h, m in [(14, 55), (15, 55), (16, 0)]:
+        assert in_forming_tail("4h", _dt(h, m)) is False
 
 
 def test_default_now_no_crash():
@@ -52,11 +47,21 @@ def test_beat_minute_drives_tail_width():
 
     sched = celery_app.conf.beat_schedule["hourly-scan"]["schedule"]
     assert int(sched._orig_minute) == settings.SCAN_BEAT_MINUTE
-    assert FORMING_TAIL_MINUTES == 60 - settings.SCAN_BEAT_MINUTE
-    assert 0 < FORMING_TAIL_MINUTES < 60
+    # 整点触发（0）时尾窗关闭（0），其余为「距收盘剩余分钟数」
+    expect = 0 if settings.SCAN_BEAT_MINUTE == 0 else 60 - settings.SCAN_BEAT_MINUTE
+    assert FORMING_TAIL_MINUTES == expect
+    assert 0 <= FORMING_TAIL_MINUTES < 60
 
 
 # ── screen_klines 幽灵尾根 ──
+
+def _tail_on(monkeypatch, minutes=5):
+    """临时打开尾窗（覆盖派生宽度）：机制本身仍受测，与当前 beat 分钟数解耦
+    （2026-10-12 整点触发后宽度为 0，生产恒透传，故须显式打开才走幽灵分支）"""
+    import app.services.market_data as md
+
+    monkeypatch.setattr(md, "FORMING_TAIL_MINUTES", minutes)
+
 
 def _klines(n=40):
     """构造 n 根 1h K线：最后一根为「未收盘根」（与交易所返回同构）"""
@@ -66,8 +71,9 @@ def _klines(n=40):
     ]
 
 
-def test_screen_klines_ghost_in_window():
+def test_screen_klines_ghost_in_window(monkeypatch):
     """尾窗内：追加幽灵尾根（复制未收盘根）——[-2] 成为视作已收盘的信号根"""
+    _tail_on(monkeypatch)
     kl = _klines()
     forming = kl[-1]
     out = screen_klines(kl, "1h", _dt(14, 56))
@@ -78,8 +84,9 @@ def test_screen_klines_ghost_in_window():
     assert out[:-1] == kl              # 前段原样
 
 
-def test_screen_klines_ghost_copy_isolation():
+def test_screen_klines_ghost_copy_isolation(monkeypatch):
     """幽灵为浅拷贝：改幽灵元素不影响原数组（缓存数据不被污染）"""
+    _tail_on(monkeypatch)
     kl = _klines()
     out = screen_klines(kl, "1h", _dt(14, 56))
     out[-1][4] = 999.0
@@ -91,6 +98,12 @@ def test_screen_klines_passthrough_outside_window():
     kl = _klines()
     assert screen_klines(kl, "1h", _dt(15, 30)) is kl
     assert screen_klines(kl, "1h", _dt(10, 0)) is kl
+
+
+def test_screen_klines_passthrough_when_tail_disabled():
+    """尾窗关闭（当前生产口径，宽度 0）：:56 这类原尾窗时点也原样返回"""
+    kl = _klines()
+    assert screen_klines(kl, "1h", _dt(14, 56)) is kl
 
 
 def test_screen_klines_empty_safe():
