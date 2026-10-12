@@ -80,6 +80,7 @@ html, body, #root {
    自带文档排版：标题锚点 scroll-margin 兼容 TOC 跳转；表格/代码块横向滚动 */
 .code-wiki {
   max-width: 1100px;
+  margin: 0 auto;   /* 内容居中展示（限宽容器在 Card body 内水平居中） */
   font-size: 14px;
   line-height: 1.75;
   color: rgba(0, 0, 0, 0.88);
