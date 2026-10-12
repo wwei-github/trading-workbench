@@ -12,11 +12,10 @@
   overrides 键白名单（引擎 OVERRIDE_KEYS），未知键 400
 """
 import uuid as _uuid
-from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -141,163 +140,6 @@ def create_backtest(body: BacktestIn, db: Session = Depends(get_db)):
     db.refresh(row)
     run_futures_backtest_task.delay(str(row.id))
     return {"id": str(row.id), "status": "RUNNING"}
-
-
-# ── P-12 参数稳健性扫描（注册在 /{bt_id} 之前，防路径吞并）──────────────
-
-
-class RobustnessIn(BaseModel):
-    source: str = "scan"                # history / scan
-    symbols: List[str] = []
-    days: int = 30                      # start/end 缺省时的回看天数
-    start: Optional[str] = None         # YYYY-MM-DD（UTC）；与 end 成对，优先于 days
-    end: Optional[str] = None           # YYYY-MM-DD（UTC，含当日）
-    n_blocks: int = 8                   # CSCV 块数（4~16 偶数）
-    grid: Optional[dict] = None         # None=默认出厂网格（12 变体）
-
-    @field_validator("source")
-    @classmethod
-    def _src(cls, v: str) -> str:
-        if v not in ("history", "scan"):
-            raise ValueError("source 须为 history 或 scan")
-        return v
-
-    @field_validator("days")
-    @classmethod
-    def _days(cls, v: int) -> int:
-        if not 1 <= v <= settings.BACKTEST_MAX_DAYS:
-            raise ValueError(f"days 须在 1~{settings.BACKTEST_MAX_DAYS}")
-        return v
-
-    @field_validator("symbols")
-    @classmethod
-    def _syms(cls, v: List[str]) -> List[str]:
-        out = []
-        for s in v:
-            s = (s or "").strip().upper()
-            if s and s not in out:
-                out.append(s)
-        if len(out) > settings.BACKTEST_MAX_SYMBOLS:
-            raise ValueError(f"币种数上限 {settings.BACKTEST_MAX_SYMBOLS}")
-        return out
-
-    @field_validator("n_blocks")
-    @classmethod
-    def _blocks(cls, v: int) -> int:
-        if v % 2 != 0 or not 4 <= v <= 16:
-            raise ValueError("n_blocks 须为 4~16 的偶数")
-        return v
-
-    @field_validator("start", "end")
-    @classmethod
-    def _date_fmt(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return v
-        try:
-            datetime.strptime(v, "%Y-%m-%d")
-        except ValueError:
-            raise ValueError("start/end 须为 YYYY-MM-DD")
-        return v
-
-    @model_validator(mode="after")
-    def _window_pair(self) -> "RobustnessIn":
-        if (self.start is None) != (self.end is None):
-            raise ValueError("start/end 须成对提供（或都缺省走 days）")
-        if self.start and self.end:
-            s = datetime.strptime(self.start, "%Y-%m-%d")
-            e = datetime.strptime(self.end, "%Y-%m-%d")
-            if e <= s:
-                raise ValueError("end 须晚于 start")
-            if (e - s).days > settings.BACKTEST_MAX_DAYS:
-                raise ValueError(f"窗口跨度上限 {settings.BACKTEST_MAX_DAYS} 天")
-            # 允许到 UTC 明天（东八区当天早上尚未到 UTC 当日）
-            if e.date() > datetime.utcnow().date() + timedelta(days=1):
-                raise ValueError("end 不能是未来日期")
-        return self
-
-
-@router.post("/robustness")
-def create_robustness_scan(body: RobustnessIn, db: Session = Depends(get_db)):
-    """提交稳健性扫描（异步）。409=2h 内已有在跑的扫描（防连点）。"""
-    from datetime import datetime, timedelta
-
-    from app.models.backtest import RobustnessScan
-    from app.services import robustness as rb
-    from app.tasks.backtest_tasks import run_robustness_scan_task
-
-    if body.source == "scan" and not body.symbols:
-        raise HTTPException(status_code=400, detail="scan 源必须指定 symbols")
-    try:
-        rb.expand_grid(body.grid)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    running = (
-        db.query(RobustnessScan)
-        .filter(RobustnessScan.status == "RUNNING",
-                RobustnessScan.created_at >= datetime.utcnow() - timedelta(hours=2))
-        .first()
-    )
-    if running is not None:
-        raise HTTPException(status_code=409, detail=f"已有稳健性扫描在跑（{running.id}），请稍候")
-    row = RobustnessScan(params={
-        "source": body.source, "symbols": body.symbols, "days": body.days,
-        "start": body.start, "end": body.end,
-        "n_blocks": body.n_blocks, "grid": body.grid,
-    })
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    run_robustness_scan_task.delay(str(row.id))
-    return {"id": str(row.id), "status": "RUNNING"}
-
-
-@router.get("/robustness")
-def list_robustness_scans(limit: int = 20, db: Session = Depends(get_db)):
-    """稳健性扫描历史列表（不含大 JSON）。"""
-    from app.models.backtest import RobustnessScan
-
-    rows = (
-        db.query(RobustnessScan)
-        .order_by(RobustnessScan.created_at.desc())
-        .limit(min(limit, 100))
-        .all()
-    )
-    return [
-        {
-            "id": str(r.id),
-            "params": r.params,
-            "status": r.status,
-            "verdict": ((r.summary or {}).get("conclusion") or {}).get("verdict") if r.summary else None,
-            "pbo": ((r.summary or {}).get("pbo") or {}).get("pbo") if r.summary else None,
-            "n_signals": (r.summary or {}).get("n_signals") if r.summary else None,
-            "error": r.error,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-            "finished_at": r.finished_at.isoformat() if r.finished_at else None,
-        }
-        for r in rows
-    ]
-
-
-@router.get("/robustness/{scan_id}")
-def get_robustness_scan(scan_id: str, db: Session = Depends(get_db)):
-    """稳健性扫描结果：RUNNING 时前端轮询；DONE 返回 summary 全量。"""
-    from app.models.backtest import RobustnessScan
-
-    try:
-        row = db.get(RobustnessScan, _uuid.UUID(scan_id))
-    except ValueError:
-        raise HTTPException(status_code=400, detail="非法 id")
-    if row is None:
-        raise HTTPException(status_code=404, detail="扫描不存在")
-    return {
-        "id": str(row.id),
-        "status": row.status,
-        "params": row.params,
-        "summary": row.summary,
-        "error": row.error,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "finished_at": row.finished_at.isoformat() if row.finished_at else None,
-    }
 
 
 @router.get("/{bt_id}")

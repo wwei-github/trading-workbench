@@ -460,7 +460,6 @@ AI 持仓诊断：浮亏在跑单 → `advice_due` 触发 AI 建议（hold/tight
 | [event_executor.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/event_executor.py) | 事件驱动结算执行 |
 | [notify.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/notify.py) | 通知封装 |
 | [narrator.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/narrator.py) | 自然语言叙述生成 |
-| [robustness.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/robustness.py) | 鲁棒性统计 |
 | [shadow.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/shadow.py) | 影子模式：特征注册表 + 打标 + 每日评估 + 预注册标准卡（CARD-01~09） |
 | [tactics_match.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/tactics_match.py) | 战法匹配 + 白名单闸门防幻觉 |
 | [backtest_engine.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/backtest_engine.py) | 合约回测引擎 |
@@ -501,9 +500,9 @@ React 18 + TypeScript + Vite 5 + Ant Design 5 + Zustand + lightweight-charts + E
 | 文件 | 职责 |
 |---|---|
 | [App.tsx](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/App.tsx) | 顶层布局：Header（Logo + 标题 + 大盘条 + 合约/现货切换）+ Content |
-| [pages/ScanResult.tsx](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/pages/ScanResult.tsx) | 主页面：合约 11 Tab + 现货 5 Tab |
+| [pages/ScanResult.tsx](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/pages/ScanResult.tsx) | 主页面：合约 10 Tab + 现货 5 Tab |
 | [stores/scanStore.ts](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/stores/scanStore.ts) | Zustand 状态管理 |
-| [api/](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/api) | 9 个 axios 模块（scan/trades/market/spot/backtest/shadow/tactics/ledger/robustness） |
+| [api/](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/api) | 8 个 axios 模块（scan/trades/market/spot/backtest/shadow/tactics/ledger） |
 | [types/index.ts](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/types/index.ts) | 全部 TypeScript 类型定义 |
 | [components/](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/components) | 40+ 组件 |
 

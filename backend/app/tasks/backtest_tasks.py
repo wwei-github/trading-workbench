@@ -9,7 +9,7 @@ pool.get_klines_range 分页回拉（每页 1000 根、0.15s 限速），整段�
 """
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlalchemy import select, or_, and_
 
@@ -93,29 +93,12 @@ def _slice_fwd(kl_1h: list, entry_ms: int, n: int) -> list:
     return [k for k in kl_1h if int(k[0]) >= entry_ms][:n]
 
 
-def _parse_window(p: dict) -> tuple[int, int] | None:
-    """params 的 start/end（YYYY-MM-DD，UTC 语义）→ [start_ms, end_ms)。
-
-    end 含当日（取次日 0 点为开区间上界）；缺一或都缺省返回 None（走 days）。
-    """
-    s, e = p.get("start"), p.get("end")
-    if not s or not e:
-        return None
-    start_ms = int(datetime.strptime(s, "%Y-%m-%d")
-                   .replace(tzinfo=timezone.utc).timestamp() * 1000)
-    end_ms = int((datetime.strptime(e, "%Y-%m-%d") + timedelta(days=1))
-                 .replace(tzinfo=timezone.utc).timestamp() * 1000)
-    return start_ms, end_ms
-
-
 def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
-                    days: int, fwd_slice: int,
-                    window: tuple[int, int] | None = None) -> tuple[list, dict]:
-    """信号采样公共分支（P-06 回测与 P-12 稳健性扫描共用；等价重构自原任务体）。
+                    days: int, fwd_slice: int) -> tuple[list, dict]:
+    """信号采样公共分支（等价重构自原任务体）。
 
-    window=(start_ms, end_ms) 提供时按任意起止窗口采样（优先于 days）：
-    信号按 entry_time_ms 落在 [start, end) 内过滤，K 线按窗口 + 预热/前向
-    缓冲装载。缺省走「最近 days 天」（原行为，P-06 不受影响）。
+    走「最近 days 天」：源A 按 created_at/opened_at 过滤，源B 装载
+    days×24 + 预热 + 前向缓冲 根 1h K 线。
     返回 (signals, need)——need 为每币 1h K 线需求区间 [start_ms, end_ms]
     （D1 预热由装载层统一加 _D1_BUFFER_DAYS）。
     """
@@ -126,11 +109,7 @@ def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
         build_signals_from_history,
     )
 
-    if window is not None:
-        lo_dt = datetime.utcfromtimestamp(window[0] / 1000)
-        hi_dt = datetime.utcfromtimestamp(window[1] / 1000)
-    else:
-        cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.utcnow() - timedelta(days=days)
 
     if source == "history":
         ai_conds = [
@@ -139,10 +118,8 @@ def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
                 and_(AIAnalysis.trade_decision == "skip",
                      AIAnalysis.veto_original.isnot(None)),
             ),
-            AIAnalysis.created_at >= (lo_dt if window is not None else cutoff),
+            AIAnalysis.created_at >= cutoff,
         ]
-        if window is not None:
-            ai_conds.append(AIAnalysis.created_at < hi_dt)
         if symbols:
             ai_conds.append(AIAnalysis.symbol.in_(symbols))
         ai_rows = db.execute(
@@ -150,10 +127,8 @@ def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
             .outerjoin(ScanResult, AIAnalysis.scan_result_id == ScanResult.id)
             .where(*ai_conds)
         ).all()
-        opened_lo = lo_dt if window is not None else cutoff
+        opened_lo = cutoff
         tr_conds = [TradeRecord.opened_at >= opened_lo]
-        if window is not None:
-            tr_conds.append(TradeRecord.opened_at < hi_dt)
         if symbols:
             tr_conds.append(TradeRecord.symbol.in_(symbols))
         trade_rows = db.execute(
@@ -183,21 +158,16 @@ def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
                 max(hi, s["entry_time_ms"] + (fwd_slice + 1) * 3_600_000),
             )
     else:
-        # 源B：滚动扫描重放。预热 warmup=240 根 + 窗口根数；4h 背景 200 根
+        # 源B：滚动扫描重放。预热 warmup=240 根 + days×24 根；4h 背景 200 根
         from app.models.system_config import SystemConfig
         from app.services.scan_filters import resolve_scan_filters
 
         flt = resolve_scan_filters(db.get(SystemConfig, 1))
         warmup = 240
         now_ms = int(datetime.utcnow().timestamp() * 1000)
-        if window is not None:
-            start_1h = window[0] - (warmup + fwd_slice + 1) * 3_600_000
-            # 窗口尾信号的前向 K 线（越过大窗尾但有前向缓冲；不超当下）
-            end_1h = min(now_ms, window[1] + (fwd_slice + 1) * 3_600_000)
-        else:
-            n_1h = days * 24 + warmup + fwd_slice + 1
-            end_1h = now_ms
-            start_1h = end_1h - n_1h * 3_600_000
+        n_1h = days * 24 + warmup + fwd_slice + 1
+        end_1h = now_ms
+        start_1h = end_1h - n_1h * 3_600_000
         signals = []
         for sym in symbols:
             try:
@@ -205,7 +175,7 @@ def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
                 htf = _load_klines(
                     db, pool, sym, "4h",
                     end_1h - 200 * 4 * 3_600_000, end_1h)
-                if len(kl) < window + 5:
+                if len(kl) < warmup + 5:
                     logger.warning("采样 %s: %s 1h 仅 %d 根（预热不足）跳过",
                                    sym, source, len(kl))
                     continue
@@ -218,10 +188,6 @@ def _sample_signals(db, pool: ExchangePool, source: str, symbols: list,
             sym: (start_1h - _D1_BUFFER_DAYS * 86_400_000, end_1h)
             for sym in symbols
         }
-    if window is not None:
-        # 窗口外信号剔除（含源B 预热区/前向缓冲区产生的信号）
-        signals = [s for s in signals
-                   if window[0] <= int(s["entry_time_ms"]) < window[1]]
     return signals, need
 
 
@@ -271,7 +237,7 @@ def run_futures_backtest_task(bt_id: str) -> dict:
         cutoff = now - timedelta(days=days)
         cutoff_ms = int(cutoff.timestamp() * 1000)
 
-        # ── 采样（公共分支，P-12 稳健性扫描同款）──────────────────────
+        # ── 采样（公共分支）──────────────────────────────────────────
         signals, need = _sample_signals(db, pool, source, symbols, days,
                                         fwd_slice)
 
@@ -372,193 +338,6 @@ def run_futures_backtest_task(bt_id: str) -> dict:
             logger.exception("回测失败状态写入失败")
         close_task(task_id, "failed", error=err)
         logger.exception("合约回测失败 id=%s", bt_id[:8])
-        raise
-    finally:
-        db.close()
-
-
-@celery_app.task(name="app.tasks.backtest_tasks.run_robustness_scan_task",
-                 soft_time_limit=1800, max_retries=0)
-def run_robustness_scan_task(scan_id: str) -> dict:
-    """P-12 参数稳健性扫描：网格变体 × 同一信号集重放 → PBO/DSR 折扣判据。
-
-    采样复用 _sample_signals（与 P-06 同源）；逐变体 replay_exit 后：
-    - 每变体用自己的 decided R 序列出统计（decided/exp_r/win_rate/SR/偏度/峰度）
-      + deflated_sharpe（n_trials=网格变体数，SR 方差=跨变体样本方差）；
-    - R 矩阵只留「全部变体均 decided」的行（保守配对，P-04 口径）→ CSCV PBO。
-    纯离线报告：不改任何生产参数，拍板走 docs/16 §0 流程。
-    """
-    from uuid import UUID as _UUID
-
-    from app.database import SessionLocal
-    from app.models.backtest import RobustnessScan
-    from app.services import robustness as rb
-    from app.services.backtest_engine import BACKTEST_ENGINE_VERSION, replay_exit
-
-    task_id = open_task("robustness", f"稳健性扫描 {scan_id[:8]}")
-    db = SessionLocal()
-    pool = ExchangePool()
-    row = None
-    try:
-        row = db.get(RobustnessScan, _UUID(str(scan_id)))
-        if row is None:
-            raise ValueError(f"稳健性扫描 {scan_id} 不存在")
-        p = row.params
-        source = p.get("source", "scan")
-        symbols = list(p.get("symbols") or [])
-        days = int(p.get("days") or 30)
-        n_blocks = int(p.get("n_blocks") or rb.DEFAULT_N_BLOCKS)
-        variants = rb.expand_grid(p.get("grid"))
-        n_variants = len(variants)
-        window = _parse_window(p)
-        fwd_slice = max(
-            [DEFAULT_FWD_BARS]
-            + [int(v["overrides"].get("fwd_bars") or 0) for v in variants]
-        )
-        logger.info(
-            "稳健性 %s 开始: source=%s symbols=%s window=%s days=%d 网格=%d 变体",
-            scan_id[:8], source, symbols or "(全部)",
-            f"{p.get('start')}~{p.get('end')}" if window else f"近{days}天",
-            days, n_variants,
-        )
-
-        signals, need = _sample_signals(db, pool, source, symbols, days,
-                                        fwd_slice, window=window)
-        n_signals = len(signals)
-        if n_signals == 0:
-            raise ValueError("采样结果为空：区间内无可用信号（扩窗口/放宽币种后重试）")
-
-        # ── K 线装载（P-06 主任务同款）────────────────────────────────
-        now = datetime.utcnow()
-        cutoff_ms = int(now.timestamp() * 1000) - days * 86_400_000
-        kl_1h: dict[str, list] = {}
-        kl_d1: dict[str, list] = {}
-        syms_needed = sorted({s["symbol"] for s in signals} | set(need))
-        for sym in syms_needed:
-            lo, hi = need.get(sym, (cutoff_ms, int(now.timestamp() * 1000)))
-            try:
-                kl_1h[sym] = _load_klines(db, pool, sym, "1h", lo, hi)
-                kl_d1[sym] = _load_klines(
-                    db, pool, sym, "1d", lo - _D1_BUFFER_DAYS * 86_400_000, hi)
-            except Exception as e:
-                logger.warning("稳健性 %s: %s K线拉取失败 %s", scan_id[:8], sym, e)
-
-        # ── 逐变体重放 ────────────────────────────────────────────────
-        def _replay(overrides: dict) -> list[dict]:
-            out = []
-            for s in signals:
-                bars = _slice_fwd(kl_1h.get(s["symbol"], []),
-                                  s["entry_time_ms"], fwd_slice)
-                out.append(replay_exit(
-                    s["direction"], s["entry"], s["stop"], s["tp1"],
-                    s["tp2"], bars, overrides or None,
-                    kl_d1.get(s["symbol"])))
-            return out
-
-        all_results = [_replay(v["overrides"]) for v in variants]
-
-        def _decided(r: dict) -> bool:
-            return r["outcome"] not in ("open", "invalid")
-
-        # 每变体自身 decided R 序列（统计与 DSR 用）
-        per_series: list[list[float]] = []
-        for j in range(n_variants):
-            per_series.append(
-                [all_results[j][i]["r"] for i in range(n_signals)
-                 if _decided(all_results[j][i])])
-        sr_list = [rb.probabilistic_sharpe(s) for s in per_series]
-        mean_sr = sum(sr_list) / n_variants
-        sr_var = (sum((x - mean_sr) ** 2 for x in sr_list) / (n_variants - 1)
-                  if n_variants > 1 else 0.0)
-
-        # R 矩阵（全变体均 decided 的行）→ CSCV PBO
-        matrix: list[list[float]] = []
-        excluded = 0
-        for i in range(n_signals):
-            if all(_decided(all_results[j][i]) for j in range(n_variants)):
-                matrix.append([all_results[j][i]["r"] for j in range(n_variants)])
-            else:
-                excluded += 1
-
-        pbo_out = None
-        if len(matrix) >= n_blocks * 5 and n_variants >= 2:
-            pbo_out = rb.pbo_cscv(matrix, n_blocks=n_blocks)
-            oos_median = pbo_out["oos_sr_median"]
-        else:
-            oos_median = None
-            logger.warning(
-                "稳健性 %s: PBO 样本不足（矩阵 %d 行 < %d×5），跳过 CSCV",
-                scan_id[:8], len(matrix), n_blocks)
-
-        # 逐变体统计 + DSR；best_is=全样本 SR 最优，best_oos=OOS 中位 SR 最优
-        # （PBO 未实算时 OOS 无读数——回退成 best_is 会被前端误标「=OOS最优」）
-        best_is_i = max(range(n_variants), key=lambda c: (sr_list[c], -c))
-        best_oos_i = (max(range(n_variants), key=lambda c: oos_median[c])
-                      if oos_median else None)
-        variant_rows = []
-        for j, v in enumerate(variants):
-            st = rb.per_variant_stats(per_series[j], sr_var, n_variants)
-            variant_rows.append({"name": v["name"], "overrides": v["overrides"],
-                                 **st})
-        best_is_name = variants[best_is_i]["name"]
-        best_oos_name = variants[best_oos_i]["name"] if best_oos_i is not None else None
-        dsr_best_is = variant_rows[best_is_i]["dsr"]
-
-        conclusion = (
-            rb.conclude(pbo_out["pbo"], dsr_best_is, best_is_name,
-                        best_oos_name)
-            if pbo_out
-            else {"verdict": "insufficient",
-                  "text": f"decided 共同样本不足（矩阵 {len(matrix)} 行），"
-                          "扩窗口/放宽币种后重扫；本轮仅出逐变体统计。",
-                  "best_is": best_is_name, "best_oos": None,
-                  "best_is_is_best_oos": False}
-        )
-
-        summary = {
-            "n_trials": n_variants,
-            "n_signals": n_signals,
-            "matrix_rows": len(matrix),
-            "excluded_n": excluded,
-            "pbo": pbo_out,
-            "variants": variant_rows,
-            "best_is": best_is_name,
-            "best_oos": best_oos_name,
-            "conclusion": conclusion,
-            "engine_version": BACKTEST_ENGINE_VERSION,
-            "data_range": {"days": days,
-                           "symbols": sorted({s["symbol"] for s in signals}),
-                           **({"start": p.get("start"), "end": p.get("end")}
-                              if window else {})},
-        }
-        row.summary = summary
-        row.status = "DONE"
-        row.finished_at = datetime.utcnow()
-        db.commit()
-        logger.info(
-            "稳健性 %s 完成: %d 信号 矩阵 %d 行 PBO=%s verdict=%s",
-            scan_id[:8], n_signals, len(matrix),
-            round(pbo_out["pbo"], 3) if pbo_out else "—", conclusion["verdict"],
-        )
-        close_task(task_id, "completed",
-                   summary=f"{source} 源 {n_signals} 信号 × {n_variants} 变体 "
-                           f"→ {conclusion['verdict']}",
-                   detail={"scan_id": str(row.id)})
-        return {"ok": True, "signals": n_signals}
-    except Exception as e:
-        db.rollback()
-        err = f"{type(e).__name__}: {e}"[:2000]
-        try:
-            row = db.get(RobustnessScan, _UUID(str(scan_id)))
-            if row is not None:
-                row.status = "FAILED"
-                row.error = err
-                row.finished_at = datetime.utcnow()
-                db.commit()
-        except Exception:
-            logger.exception("稳健性扫描失败状态写入失败")
-        close_task(task_id, "failed", error=err)
-        logger.exception("稳健性扫描失败 id=%s", scan_id[:8])
         raise
     finally:
         db.close()

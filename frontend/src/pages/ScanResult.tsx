@@ -28,7 +28,6 @@ import SpotOverviewPanel from '../components/SpotOverviewPanel'
 import SpotBacktestPanel from '../components/SpotBacktestPanel'
 import FuturesBacktestPanel from '../components/FuturesBacktestPanel'
 import LedgerPanel from '../components/LedgerPanel'
-import RobustnessPanel from '../components/RobustnessPanel'
 import SpotLogsPanel from '../components/SpotLogsPanel'
 import SpotHistoryPanel from '../components/SpotHistoryPanel'
 import SpotSettingsPanel from '../components/SpotSettingsPanel'
@@ -175,11 +174,6 @@ export default function ScanResult({ mode }: ScanResultProps) {
       key: 'ledger',
       label: '虚拟账本',
       children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><LedgerPanel /></div>,
-    },
-    {
-      key: 'robustness',
-      label: '稳健性',
-      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><RobustnessPanel /></div>,
     },
     {
       key: 'fund-analysis',
