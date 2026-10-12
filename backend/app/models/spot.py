@@ -2,7 +2,6 @@
 
 - SpotOrder：现货订单（P0 只落手动测试单/表结构就绪；P1 信号/定投执行写入）
 - SpotWeeklyReview：AI 周度研判留档（P1 生成；表先建）
-- SpotBacktest：回测任务与结果（P1；表先建）
 - SpotKlineCache：现货日/周/月K 本地缓存（P0 日检任务写入，评分实时算）
 """
 import uuid
@@ -66,28 +65,6 @@ class SpotWeeklyReview(Base):
     indicator_snapshot: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
-
-class SpotBacktest(Base):
-    __tablename__ = "spot_backtests"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    # 参数快照（可复现）：{symbols, start, end, budget, per_order_usdt, dca...}
-    params: Mapped[dict] = mapped_column(JSON, nullable=False)
-
-    # RUNNING / DONE / FAILED
-    status: Mapped[str] = mapped_column(String(8), nullable=False, default="RUNNING", index=True)
-    # 汇总：净增币/超额/笔数/最大回撤/期末市值/评分分布
-    summary: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    # 每日评分与持仓序列（曲线用）
-    daily_series: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    # 模拟订单明细（32KB 截断惯例）
-    orders_detail: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-
-    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class SpotKlineCache(Base):

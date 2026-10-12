@@ -424,7 +424,7 @@ def _run_migrations(engine):
             "ADD COLUMN IF NOT EXISTS tactic_reason VARCHAR(255)"
         ))
         # 现货屯币（docs/18）：spot_settings 配置 JSON 列（新增独立列，不改既有列语义）。
-        # 全新表（spot_orders/spot_weekly_reviews/spot_backtests/spot_kline_cache）
+        # 全新表（spot_orders/spot_weekly_reviews/spot_kline_cache）
         # 由 create_all 建表（init_db 已导入 app.models.spot）
         conn.execute(text(
             "ALTER TABLE system_config "
@@ -634,10 +634,20 @@ def _run_migrations(engine):
         # robustness_scans（幂等，表不存在时无害）。本仓库惯例是「列保留不删」，
         # 此处为显式拍板的整表清理
         conn.execute(text("DROP TABLE IF EXISTS robustness_scans"))
+        # 回测与虚拟账本整体退役（2026-10-12）：合约回测（backtest_engine /
+        # backtest_tasks / api/backtest）、现货回测（spot_backtest /
+        # run_backtest_task / api/spot 回测端点）与虚拟账本（ledger 全链路，
+        # 含 N-16 度量）功能与模型一并删除，create_all 不再建表；存量库 DROP
+        # 孤儿表（幂等，表不存在时无害）。spot_kline_cache 被现货屯币回填复用，
+        # 严禁 DROP
+        conn.execute(text("DROP TABLE IF EXISTS virtual_ledger"))
+        conn.execute(text("DROP TABLE IF EXISTS futures_backtests"))
+        conn.execute(text("DROP TABLE IF EXISTS backtest_kline_cache"))
+        conn.execute(text("DROP TABLE IF EXISTS spot_backtests"))
 
 
 def init_db():
     """创建所有表 + 幂等迁移"""
-    from app.models import ops, patch, scan, trade, blacklist, spot, tactic, shadow, backtest, ledger  # noqa: F401
+    from app.models import ops, patch, scan, trade, blacklist, spot, tactic, shadow  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _run_migrations(engine)

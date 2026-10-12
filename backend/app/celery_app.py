@@ -36,8 +36,6 @@ celery_app = Celery(
         "app.tasks.daily_report",
         "app.tasks.spot_tasks",
         "app.tasks.shadow_tasks",
-        "app.tasks.backtest_tasks",
-        "app.tasks.ledger_tasks",
     ],
 )
 
@@ -66,12 +64,6 @@ celery_app.conf.update(
         "ai-attribution": {
             "task": "app.tasks.review_tasks.run_ai_attribution_task",
             "schedule": crontab(minute=14),  # 每小时第14分：结算/建议复盘之后，对已平仓交易做 AI 错误归因
-        },
-        "ledger-advance": {
-            "task": "app.tasks.ledger_tasks.run_ledger_advance_task",
-            # 每小时第18分（docs/16 P-07）：虚拟账本 OPEN 行推进到终局——
-            # 错开 :55 扫描与 :14 归因；K线收盘后 18 分钟内必回放
-            "schedule": crontab(minute=18),
         },
         "patch-trigger": {
             "task": "app.tasks.review_tasks.run_patch_trigger_task",

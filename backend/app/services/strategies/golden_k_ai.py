@@ -20,7 +20,7 @@ class GoldenKAIStrategy:
         raise NotImplementedError("golden_k_ai 信号生产走原生管线（scanner），不走插件协议")
 
     def exit_spec(self) -> dict:
-        """现行生产出场（声明式快照，与 trade_engine/backtest_engine 基线一致）：
+        """现行生产出场（声明式快照，与 trade_engine 基线一致）：
         TP 分批比例页面可配（默认 60/20/80）+ TP1 成交武装保本 + 摆动3/ATR_k 跟进。"""
         return {
             "tp_ladder": "configurable",   # tp1_qty_pct_with_tp2 / tp2_qty_pct / tp1_qty_pct_no_tp2

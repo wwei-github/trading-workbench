@@ -48,7 +48,7 @@
      └── 观察池（仅方向无触发）/ 待确认池（回踩无金K）                                          └── 止损/分批止盈/跟踪止损/保本
 ```
 
-系统同时包含一个与合约零侵入隔离的**现货屯币子系统**（日检评分、周度定投、AI 周度研判、回测），以及一套**影子模式**（只打标不决策，事后评估特征表现以决定是否升格为规则）。
+系统同时包含一个与合约零侵入隔离的**现货屯币子系统**（日检评分、周度定投、AI 周度研判），以及一套**影子模式**（只打标不决策，事后评估特征表现以决定是否升格为规则）。
 
 ---
 
@@ -73,13 +73,13 @@
 ```mermaid
 flowchart TB
     subgraph FE["前端 · React 18 + Ant Design 5"]
-        FE1["合约 11 Tab / 现货 5 Tab"]
+        FE1["合约 12 Tab / 现货 4 Tab"]
         FE2["扫描结果表 · K线图 · 复盘面板 · 配置"]
     end
 
     subgraph BE["FastAPI 后端 (uvicorn :8000)"]
         direction TB
-        API["API 路由层（11 组路由器）"]
+        API["API 路由层（9 组路由器）"]
         SCHEMA["Pydantic Schemas"]
         SVC["服务层 Services<br/>scanner · strategy/* · ai_analyzer · ai_agent · risk_guard<br/>trade_engine · binance_trader · actual_review · ai_attribution<br/>spot_* · shadow · feishu_bot · exchange_pool"]
         API --> SCHEMA --> SVC
@@ -125,7 +125,7 @@ flowchart TB
 trading-workbench/
 ├── backend/
 │   ├── app/
-│   │   ├── api/                  # FastAPI 路由（11 组路由器）
+│   │   ├── api/                  # FastAPI 路由（9 组路由器）
 │   │   ├── models/               # SQLAlchemy ORM 模型
 │   │   ├── schemas/              # Pydantic 请求/响应 schema
 │   │   ├── services/             # 业务服务层
@@ -139,7 +139,7 @@ trading-workbench/
 │   │   │   ├── binance_trader.py # 币安合约交易客户端
 │   │   │   ├── actual_review.py  # 实盘归因统计
 │   │   │   ├── ai_attribution.py # 亏损单 AI 错误归因
-│   │   │   ├── spot_*.py         # 现货子系统（6 个文件）
+│   │   │   ├── spot_*.py         # 现货子系统（5 个文件）
 │   │   │   ├── shadow.py         # 影子模式打标与评估
 │   │   │   ├── feishu_bot.py     # 飞书通知
 │   │   │   └── exchange_pool.py  # 多交易所 K 线故障转移
@@ -211,7 +211,7 @@ FastAPI 应用入口：
 - `lifespan` 上下文：`init_db()` → 飞书卡片长连接监听 → 事件流启动
 - 中间件：CORS（全开放）、请求级访问日志（慢请求 ≥2s / ≥400 落库）
 - 全局异常处理器：未处理异常落「系统日志」并返回 500
-- 挂载 11 组路由器
+- 挂载 9 组路由器
 
 ---
 
@@ -237,14 +237,14 @@ FastAPI 应用入口：
 | `PromptPatch` | `prompt_patches` | 规则补丁（提示词覆盖/闸门参数） |
 | `Tactic` | `tactics` | 用户自建战法 |
 | `ShadowMark` | `shadow_marks` | 影子模式打标 |
-| `SpotOrder` / `SpotWeeklyReview` / `SpotBacktest` / `SpotKlineCache` | `spot_*` | 现货子系统 |
+| `SpotOrder` / `SpotWeeklyReview` / `SpotKlineCache` | `spot_*` | 现货子系统 |
 | `AppLog` / `TaskRecord` | `app_logs` / `task_records` | 系统日志与任务记录 |
 
 ---
 
 ### 5.3 API 路由层
 
-[api/__init__.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/api/__init__.py) 聚合 11 组路由器：
+[api/__init__.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/api/__init__.py) 聚合 9 组路由器：
 
 | 路由 | 前缀 | 职责 |
 |---|---|---|
@@ -254,9 +254,7 @@ FastAPI 应用入口：
 | `watchlist_router` | `/api/watchlist` | 关注列表 CRUD + 刷新 |
 | `trades_router` | `/api/trades` | 交易记录/事件/复盘K线/划转/黑名单/开仓/平仓 |
 | `ops_router` | `/api/ops` | 系统配置/账号/任务记录/日志/系统操作 |
-| `spot_router` | `/api/spot` | 现货屯币（设置/订单/周研判/回测） |
-| `backtest_router` | `/api/backtest` | 合约回测 |
-| `ledger_router` | `/api/ledger` | 虚拟账本（全候选三价推导与回放） |
+| `spot_router` | `/api/spot` | 现货屯币（设置/订单/周研判） |
 | `tactics_router` | `/api/tactics` | 战法管理 |
 | `shadow_router` | `/api/shadow` | 影子模式评估报告 |
 
@@ -275,7 +273,7 @@ FastAPI 应用入口：
   3. 线程池并发 `scan_one(symbol)` → `detect_indicator_candidate`
   4. 质量分降序排序
   5. 重复命中抑制（仅定时扫描）
-  6. 写入结果 + 影子打标 + 虚拟账本开单
+  6. 写入结果 + 影子打标
   7. pending/破轨事件处置
   8. 满仓判定 → 分发 AI 分析（或跳过）
   9. 组装筛选漏斗 `funnel_json`
@@ -443,7 +441,6 @@ AI 持仓诊断：浮亏在跑单 → `advice_due` 触发 AI 建议（hold/tight
 | [spot_client.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/spot_client.py) | 币安现货 API 客户端 |
 | [spot_indicators.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/spot_indicators.py) | 现货指标 |
 | [spot_settings.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/spot_settings.py) | 现货配置解析 |
-| [spot_backtest.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/spot_backtest.py) | 现货回测 |
 
 底仓 ≥70% 不卖，日检评分推送不下单，周度定投需 `dca_enabled`。
 
@@ -462,8 +459,6 @@ AI 持仓诊断：浮亏在跑单 → `advice_due` 触发 AI 建议（hold/tight
 | [narrator.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/narrator.py) | 自然语言叙述生成 |
 | [shadow.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/shadow.py) | 影子模式：特征注册表 + 打标 + 每日评估 + 预注册标准卡（CARD-01~09） |
 | [tactics_match.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/tactics_match.py) | 战法匹配 + 白名单闸门防幻觉 |
-| [backtest_engine.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/backtest_engine.py) | 合约回测引擎 |
-| [ledger.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ledger.py) | 虚拟账本：全候选三价推导 + 逐 K 回放 |
 | [sequential.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/sequential.py) | 序贯判读（SPRT 早停，影子模式用） |
 | [ai_progress.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_progress.py) | AI 分析进度事件流（Redis 发布） |
 
@@ -481,8 +476,6 @@ AI 持仓诊断：浮亏在跑单 → `advice_due` 触发 AI 建议（hold/tight
 | [review_tasks.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/tasks/review_tasks.py) | `run_trade_review_task`, `run_ai_attribution_task`, `run_patch_trigger_task`, `run_patch_evaluate_task` | 每小时整点/:14 / 每日 11:40/11:45 |
 | [spot_tasks.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/tasks/spot_tasks.py) | `run_spot_daily_task`, `run_spot_dca_task`, `run_spot_weekly_review_task` | 每日 08:08 / 周一 08:15 / 周一 08:30 |
 | [shadow_tasks.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/tasks/shadow_tasks.py) | `run_shadow_evaluate_task`, `run_reentry_backfill_task` | 每日 08:00 / 08:25 |
-| [ledger_tasks.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/tasks/ledger_tasks.py) | `run_ledger_advance_task` | 每小时 :18 |
-| [backtest_tasks.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/tasks/backtest_tasks.py) | 回测任务 | 手动触发 |
 | [daily_report.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/tasks/daily_report.py) | `notify_daily_report` | 每日 08:05 |
 
 `worker_process_init` 信号：fork 后重启日志写库线程 + 丢弃父进程数据库连接池（`engine.dispose(close=False)`）。
@@ -500,9 +493,9 @@ React 18 + TypeScript + Vite 5 + Ant Design 5 + Zustand + lightweight-charts + E
 | 文件 | 职责 |
 |---|---|
 | [App.tsx](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/App.tsx) | 顶层布局：Header（Logo + 标题 + 大盘条 + 合约/现货切换）+ Content |
-| [pages/ScanResult.tsx](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/pages/ScanResult.tsx) | 主页面：合约 10 Tab + 现货 5 Tab |
+| [pages/ScanResult.tsx](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/pages/ScanResult.tsx) | 主页面：合约 12 Tab + 现货 4 Tab |
 | [stores/scanStore.ts](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/stores/scanStore.ts) | Zustand 状态管理 |
-| [api/](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/api) | 8 个 axios 模块（scan/trades/market/spot/backtest/shadow/tactics/ledger） |
+| [api/](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/api) | 6 个 axios 模块（scan/trades/market/spot/shadow/tactics） |
 | [types/index.ts](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/types/index.ts) | 全部 TypeScript 类型定义 |
 | [components/](file:///Users/wangwei/Documents/github/trading-workbench/frontend/src/components) | 40+ 组件 |
 
@@ -550,7 +543,7 @@ erDiagram
 - 运行时配置：`SystemConfig`（单行 id=1）
 - 过滤与关注：`SymbolBlacklist`、`Watchlist`
 - 运维：`AppLog`、`TaskRecord`
-- 现货子系统：`SpotOrder`、`SpotWeeklyReview`、`SpotBacktest`、`SpotKlineCache`
+- 现货子系统：`SpotOrder`、`SpotWeeklyReview`、`SpotKlineCache`
 
 关键表索引：
 - `scan_results`：`symbol+created_at`、`scan_record_id`、`ema_state`、`touch_ref`、`volume_type`
@@ -610,8 +603,6 @@ erDiagram
 - `GET /api/health` — 健康检查
 - `GET /api/market/overview` — 大盘环境
 - `/api/spot/*` — 现货子系统
-- `/api/backtest/*` — 合约回测
-- `/api/ledger/*` — 虚拟账本
 - `/api/tactics/*` — 战法管理
 - `/api/shadow/*` — 影子模式
 
@@ -626,7 +617,6 @@ Celery Beat 调度表（timezone=Asia/Shanghai）：
 | `run_scan_task` | 每小时 :55 | 全量合约扫描（尾窗幽灵根视图） |
 | `run_trade_review_task` | 每小时 :00 | 超 24h AI 建议逐 K 回放 |
 | `run_ai_attribution_task` | 每小时 :14 | 已平仓交易 AI 错误归因 |
-| `run_ledger_advance_task` | 每小时 :18 | 虚拟账本 OPEN 行推进 |
 | `run_auto_trade_task` | 每半小时 :00/:30 | 结算巡检 + 持仓诊断 |
 | `run_patch_trigger_task` | 每日 11:40 | 标签热度 → 补丁草稿 |
 | `run_patch_evaluate_task` | 每日 11:45 | active 补丁三态评估 |
@@ -641,7 +631,7 @@ Celery Beat 调度表（timezone=Asia/Shanghai）：
 
 ## 10. 核心时序图
 
-以下时序图描述系统核心运行时链路：主链路四条（扫描 → 分析 → 开仓 → 结算）、辅助链路两条（现货、飞书），以及复盘归因、影子模式、虚拟账本、手动 API 与行情容灾五条补充链路（10.7 ~ 10.11）。
+以下时序图描述系统核心运行时链路：主链路四条（扫描 → 分析 → 开仓 → 结算）、辅助链路两条（现货、飞书），以及复盘归因、影子模式、手动 API 与行情容灾四条补充链路（10.7 ~ 10.10）。
 
 ### 10.1 定时扫描与候选判定（每小时 :55）
 
@@ -884,27 +874,7 @@ sequenceDiagram
     ST->>DB: 止损单 48h 观察窗补打标
 ```
 
-### 10.9 虚拟账本推进（每小时 :18）
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Beat as Celery Beat
-    participant LT as ledger_tasks.run_ledger_advance_task
-    participant LG as ledger
-    participant EX as exchange_pool (币安)
-    participant DB as PostgreSQL
-
-    Beat->>LT: 每小时 :18 触发
-    LT->>DB: 拉取 ledger OPEN 行
-    LT->>EX: 获取最新 K 线
-    LT->>LG: 全候选三价推导 + 逐 K 回放
-    LG->>LG: 判定是否触及止损 / 止盈
-    LG-->>LT: 推进结果（含多空双向假定）
-    LT->>DB: 更新 ledger 行状态
-```
-
-### 10.10 手动触发扫描与即时 AI 分析（API 链路）
+### 10.9 手动触发扫描与即时 AI 分析（API 链路）
 
 ```mermaid
 sequenceDiagram
@@ -929,7 +899,7 @@ sequenceDiagram
     API-->>U: 返回分析结论
 ```
 
-### 10.11 K 线多交易所故障转移
+### 10.10 K 线多交易所故障转移
 
 ```mermaid
 sequenceDiagram
@@ -970,7 +940,6 @@ flowchart LR
     EP["exchange_pool"]
     BC["binance_client"]
     SH["shadow（打标）"]
-    LG["ledger（虚拟账本）"]
     AIT["ai_tasks"]
     AA["ai_analyzer (P0)"]
     AG["ai_agent (P1)"]
@@ -990,7 +959,6 @@ flowchart LR
     MD --> EP
     EP --> BC
     SC --> SH
-    SC --> LG
     SC --> AIT
     AIT --> AA
     AIT --> AG

@@ -9,7 +9,7 @@
 3. remaining_qty：分批结构推导（raw 档量优先，缺档按状态回退）；
 4. liquidation_warning：距离阈值与缺数据弃权。
 
-sqlite 内存库夹具镜像 test_ledger_hook.py；锁/结算/trader 全部桩化，
+sqlite 内存库夹具（同仓库既有做法）；锁/结算/trader 全部桩化，
 不开真实 Redis/HTTP。
 """
 import sys

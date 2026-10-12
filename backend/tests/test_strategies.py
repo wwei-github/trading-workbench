@@ -8,7 +8,6 @@
   （三线排列 + 快中线发散史 + EMA144 方向），不过则本次回踩不产生信号（硬门否决）；
   其余触点（retest/swing/4h EMA21/EMA55）不受此门约束。趋势升级标注
   trigger_trend_pullback 已下线（并入 trigger_pullback_confirm）；
-- P2 出场变体（docs/19 §3.4）：backtest_engine 的 sig_exit/tp_qty_override 回测能力；
 - technical：KDJ / MACD 零轴状态（融合保留资产）+ 回踩企稳加分项（§3.3 条件2/3）。
 """
 import sys
@@ -21,10 +20,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import settings  # noqa: E402
-from app.services.backtest_engine import (  # noqa: E402
-    _sig_exit_flags,
-    replay_exit,
-)
 from app.services.strategy import technical as tech  # noqa: E402
 from app.services.strategy import trigger as trig  # noqa: E402
 from app.services.strategy.ema import calc_ema  # noqa: E402
@@ -288,81 +283,6 @@ def test_pending_ema21_touch_structure_fail_expires():
         t, op = trig.detect_trigger(kl, 1, pending=pending)
     assert t is None
     assert op == {"op": "expire", "reason": "structure_1h"}
-
-
-# ── P2 出场变体（docs/19 §3.4）：backtest_engine overrides 回测能力 ────────
-
-
-def _trend_bars(n_up=60, n_dn=20, up_step=0.5, dn_step=1.2, peak=130.0):
-    """涨后跌的 1h 合成K线（[ts,o,h,l,c,v]），低点全程 > 95 不触初始止损。"""
-    out = []
-    for i in range(n_up + n_dn):
-        c = 100 + i * up_step if i < n_up else peak - (i - n_up + 1) * dn_step
-        out.append([1791000000000 + i * 3600000, c, c + 0.5, c - 0.5, c, 100.0])
-    return out
-
-
-def test_sig_exit_ema55_break_fires_at_close():
-    """V2 菜单 ema55_break：收盘破 EMA55 当根以收盘价清剩余仓"""
-    bars = _trend_bars()
-    r = replay_exit("long", 100.0, 95.0, 190.0, 0.0, bars,  # tp1 挂天外不可达
-                    overrides={"sig_exit": "ema55_break"})
-    assert r["legs"][-1]["name"] == "sig_exit"
-    assert r["legs"][-1]["qty_pct"] == pytest.approx(1.0)
-    # 破位段收盘价显著低于峰值
-    assert r["legs"][-1]["price"] < 130.0
-
-
-def test_sig_exit_ma20_break_2bar_requires_two_closes():
-    """「无法快速收回」量化：单根收盘破 MA20 不出场，连续两根才出"""
-    bars = _trend_bars(n_up=60, n_dn=0)  # 60 根缓涨（100→129.5）
-    bars += [
-        [1791000000000 + 60 * 3600000, 110.0, 110.5, 109.5, 110.0, 100.0],
-        [1791000000000 + 61 * 3600000, 108.0, 108.5, 107.5, 108.0, 100.0],
-    ]  # 跳水破 MA20（≈125），低点全程不触初始止损 95
-    one = replay_exit("long", 100.0, 95.0, 190.0, 0.0, bars[:61],
-                      overrides={"sig_exit": "ma20_break_2bar"})
-    flags = _sig_exit_flags(bars[:61], "ma20_break_2bar", 1)
-    # 第 60 根（跌第 1 根）单独破 MA20 → beyond 但不足两根，不触发
-    assert flags[60] is False
-    assert one["outcome"] == "open"  # 无任何出场 → 窗口耗尽
-    two = replay_exit("long", 100.0, 95.0, 190.0, 0.0, bars[:62],
-                      overrides={"sig_exit": "ma20_break_2bar"})
-    assert two["legs"][-1]["name"] == "sig_exit"
-
-
-def test_sig_exit_macd_death_cross_flags():
-    """零上死叉旗标：急涨后缓跌（dif 穿 dea 时仍双正）→ 多头触发"""
-    bars = _trend_bars(n_up=60, n_dn=40, up_step=1.0, dn_step=0.8)
-    flags = _sig_exit_flags(bars, "macd_death_cross", 1)
-    assert any(flags[60:])       # 跌段内触发
-    assert not any(flags[:20])   # 上涨段无死叉
-
-
-def test_pure_trail_tp_qty_override():
-    """V1 纯跟踪：(0,0) 覆盖 → 无 TP 腿，全部仓位走跟进/信号出场"""
-    bars = _trend_bars()
-    r = replay_exit("long", 100.0, 95.0, 107.5, 112.5, bars,
-                    overrides={"tp_qty_override": (0.0, 0.0),
-                               "sig_exit": "ema55_break"})
-    assert all(l["name"] not in ("tp1", "tp2") for l in r["legs"])
-    assert sum(l["qty_pct"] for l in r["legs"]) == pytest.approx(1.0)
-
-
-def test_tp1_zero_guard_no_phantom_leg():
-    """tp1=0（纯跟踪信号语义）：不挂目标腿——多头 high>=0 恒真防废腿"""
-    r = replay_exit("long", 100.0, 95.0, 0.0, 0.0, _trend_bars()[:20],
-                    overrides={"fwd_bars": 20})
-    assert r["outcome"] == "open" and r["legs"] == []
-
-
-def test_baseline_unaffected_by_new_keys():
-    """新键缺省 None 时基线分批与既有口径完全一致（硬门不漂移）"""
-    bars = _trend_bars()
-    r = replay_exit("long", 100.0, 95.0, 107.5, 112.5, bars)
-    assert [l["name"] for l in r["legs"][:2]] == ["tp1", "tp2"]
-    assert r["legs"][0]["qty_pct"] == pytest.approx(0.60)
-    assert r["legs"][1]["qty_pct"] == pytest.approx(0.20)
 
 
 # ── 技术指标（融合保留资产）：KDJ / MACD 零轴 ─────────────────────────────

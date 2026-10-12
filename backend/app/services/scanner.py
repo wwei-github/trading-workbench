@@ -656,26 +656,6 @@ class Scanner:
                         cand["shadow"] = shadow_vals
                     except Exception as e:
                         logger.debug("影子特征计算异常（忽略）%s: %s", symbol, e)
-                    # P-07 虚拟账本三价推导（docs/16）：与源B同源公式+账本口径
-                    # TP2=3R，随候选透传给 _save_results 开单。entry=信号K线收盘
-                    # （klines[-2][4]）。注：尾窗幽灵视图下该根未走完，entry 实为
-                    # 扫描时刻快照价、与最终收盘存在残差（2026-10-12 已知偏差，
-                    # 账本回放用该根最终 OHLC，故尾窗行的记账价非最终价）；失败吞掉
-                    try:
-                        from app.services import ledger as ledger_mod
-                        votes = cand.get("votes") or {}
-                        d = 1 if votes.get("net", 0) > 0 else -1
-                        if len(klines) >= 6:
-                            prices = ledger_mod.derive_prices_for_scan(
-                                d, float(klines[-2][4]), klines[-6:-1])
-                            if prices:
-                                cand["ledger"] = {
-                                    **prices,
-                                    "direction": "long" if d > 0 else "short",
-                                    "entry_bar_open_ms": int(klines[-2][0]),
-                                }
-                    except Exception as e:
-                        logger.debug("虚拟账本三价计算异常（忽略）%s: %s", symbol, e)
                     return symbol, [cand], False
                 except Exception as e:
                     logger.warning("扫描 %s 失败: %s", symbol, e)
@@ -877,25 +857,6 @@ class Scanner:
                     except Exception as e:
                         sdb.rollback()
                         logger.debug("影子打标落库失败 %s: %s", r.symbol, e)
-            # P-07 虚拟账本开单（docs/16）：每条新 ScanResult 一行（手动+定时都
-            # 记，同根K线靠 uq_ledger_candle 唯一约束天然去重）。独立 try：账本
-            # 失败只回滚账本插入，绝不拖累扫描结果本身（同影子铁律）
-            try:
-                from app.services import ledger as ledger_mod
-                opened = 0
-                for r in rows:
-                    snap = next(
-                        (h.get("ledger") for h in hits if h["symbol"] == r.symbol),
-                        None)
-                    if not snap:
-                        continue
-                    if ledger_mod.open_entry(sdb, r, snap, scan_type=scan_type):
-                        opened += 1
-                if opened:
-                    sdb.commit()
-            except Exception as e:
-                sdb.rollback()
-                logger.warning("虚拟账本开单失败（忽略）#%s: %s", scan_record_id, e)
             logger.info("写入 %d 条扫描结果 #%s", len(hits), scan_record_id)
         except Exception as e:
             logger.exception("写入扫描结果失败 #%s: %s", scan_record_id, e)

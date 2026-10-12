@@ -25,9 +25,6 @@ import TransfersPanel from '../components/TransfersPanel'
 import FundAnalysisPanel from '../components/FundAnalysisPanel'
 import ColorSchemeToggle from '../components/ColorSchemeToggle'
 import SpotOverviewPanel from '../components/SpotOverviewPanel'
-import SpotBacktestPanel from '../components/SpotBacktestPanel'
-import FuturesBacktestPanel from '../components/FuturesBacktestPanel'
-import LedgerPanel from '../components/LedgerPanel'
 import SpotLogsPanel from '../components/SpotLogsPanel'
 import SpotHistoryPanel from '../components/SpotHistoryPanel'
 import SpotSettingsPanel from '../components/SpotSettingsPanel'
@@ -58,10 +55,10 @@ export default function ScanResult({ mode }: ScanResultProps) {
   // 合约内部 tab 记忆（既有 key 不动）
   const [activeTab, switchTab] = useTabMemory(
     'tabs.scanResult',
-    ['results', 'pending-pool', 'watchlist', 'search', 'strategy', 'backtest', 'ledger', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs', 'wiki'],
+    ['results', 'pending-pool', 'watchlist', 'search', 'strategy', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs', 'wiki'],
   )
   // 现货内部 tab 记忆（独立 key，与合约无冲突）
-  const [spotTab, switchSpotTab] = useTabMemory('tabs.spot', ['overview', 'backtest', 'history', 'settings', 'logs'])
+  const [spotTab, switchSpotTab] = useTabMemory('tabs.spot', ['overview', 'history', 'settings', 'logs'])
 
   useEffect(() => {
     // 初始加载：状态、配置、结果、任务记录
@@ -166,16 +163,6 @@ export default function ScanResult({ mode }: ScanResultProps) {
       ),
     },
     {
-      key: 'backtest',
-      label: '回测',
-      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><FuturesBacktestPanel /></div>,
-    },
-    {
-      key: 'ledger',
-      label: '虚拟账本',
-      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><LedgerPanel /></div>,
-    },
-    {
       key: 'fund-analysis',
       label: '资金分析',
       children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><FundAnalysisPanel /></div>,
@@ -247,17 +234,12 @@ export default function ScanResult({ mode }: ScanResultProps) {
     },
   ]
 
-  // ── 现货 Tabs（docs/18：持仓总览 / 回测 / 历史记录 / 策略配置）──
+  // ── 现货 Tabs（docs/18：持仓总览 / 历史记录 / 策略配置）──
   const spotItems = [
     {
       key: 'overview',
       label: '持仓总览',
       children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><SpotOverviewPanel /></div>,
-    },
-    {
-      key: 'backtest',
-      label: '回测',
-      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><SpotBacktestPanel /></div>,
     },
     {
       key: 'history',
