@@ -86,7 +86,8 @@ class FundSummary(BaseModel):
     net_pnl: float = 0.0
     fee_total: float = 0.0
     funding_total: float = 0.0
-    avg_win_r: Optional[float] = None     # 仅 risk_amount>0 的盈利单均值
+    avg_win_r: Optional[float] = None     # 仅 risk_amount>0 的盈利单均值（资金分析「盈亏比R（止盈单）」）
+    avg_r: Optional[float] = None         # 全部已结算单的 R 均值，含止盈止损（2026-10-12，交易记录「平均盈亏比」）
     transfer_in: float = 0.0
     transfer_out: float = 0.0
     transfer_net: float = 0.0

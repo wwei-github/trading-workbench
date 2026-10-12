@@ -381,7 +381,7 @@ export default function TradesPanel() {
   useEffect(() => {
     if (!aiConfig) fetchConfig()
   }, [aiConfig, fetchConfig])
-  // 概览汇总（与资金分析同源）：closed/wins/win_rate/net_pnl/avg_win_r 来自 analytics 接口
+  // 概览汇总（与资金分析同源）：closed/wins/win_rate/net_pnl/avg_r 来自 analytics 接口
   const [summary, setSummary] = useState<FundAnalytics['summary'] | null>(null)
   // 账户资金概览（当前账号）：总资金/未实现收益/收益率，与列表/统计并发拉
   const [acct, setAcct] = useState<AccountSummary | null>(null)
@@ -546,8 +546,8 @@ export default function TradesPanel() {
   }, [scopeRows, statusFilter])
 
   // 概览统计：在跑（三态，从当前范围列表算，按网拆分显示 2026-10-04）；
-  // 其余与资金分析页同源（closed/wins/win_rate/net_pnl/avg_win_r 全部取自
-  // analytics 接口，口径见 docs/14）
+  // 其余取自 analytics 接口（closed/wins/win_rate/net_pnl 与资金分析页同源）；
+  // avg_r = 全部已结算单 R 均值（含止盈止损，2026-10-12 取代仅计盈利单的 avg_win_r）
   const stats = useMemo(() => {
     const runningRows = scopeRows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status))
     const running = runningRows.length
@@ -556,7 +556,7 @@ export default function TradesPanel() {
     const runningTn = runningRows.filter((r) => r.testnet).length
     const runningLive = running - runningTn
     if (!summary) {
-      return { running, runningTn, runningLive, closed: 0, wins: 0, loses: 0, winRate: null as number | null, totalPnl: 0, avgWinR: null as number | null }
+      return { running, runningTn, runningLive, closed: 0, wins: 0, loses: 0, winRate: null as number | null, totalPnl: 0, avgR: null as number | null }
     }
     const wins = summary.wins
     const closed = summary.closed
@@ -569,7 +569,7 @@ export default function TradesPanel() {
       loses: closed - wins,
       winRate: summary.win_rate,
       totalPnl: summary.net_pnl,
-      avgWinR: summary.avg_win_r,
+      avgR: summary.avg_r,
     }
   }, [scopeRows, summary])
 
@@ -1430,9 +1430,10 @@ export default function TradesPanel() {
                 color: stats.winRate === null ? undefined : stats.winRate >= 50 ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down,
               },
               {
+                // 全部已结算单 R 均值（含止盈止损，2026-10-12）：口径同列表「盈亏比」列
                 label: '平均盈亏比',
-                value: stats.avgWinR === null ? '-' : `${stats.avgWinR > 0 ? '+' : ''}${stats.avgWinR.toFixed(2)}R`,
-                color: stats.avgWinR === null ? undefined : schemeValueColor(stats.avgWinR, colorScheme),
+                value: stats.avgR === null ? '-' : `${stats.avgR > 0 ? '+' : ''}${stats.avgR.toFixed(2)}R`,
+                color: stats.avgR === null ? undefined : schemeValueColor(stats.avgR, colorScheme),
               },
             ],
           },
@@ -1483,7 +1484,7 @@ export default function TradesPanel() {
       <div style={{ fontSize: 12, color: '#999', marginTop: -4 }}>
         保证金余额 = 钱包余额 + 未实现盈亏；今日口径按北京时间自然日（闭单时刻归属当日）；
         今日盈亏 = （今日已实现 + 全部未实现）÷ 期初钱包（当前钱包 − 今日已实现，忽略日内划转）；
-        胜率 = 净盈利笔数占比；平均盈亏比仅计止盈单
+        胜率 = 净盈利笔数占比；平均盈亏比 = 全部已结算单的 R 均值（净盈亏÷计划风险额，含止盈止损）
       </div>
 
       <Spin spinning={loading}>

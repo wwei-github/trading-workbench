@@ -519,6 +519,15 @@ def fund_analytics(
         if (r.realized_pnl or 0) > 0 and r.risk_amount and float(r.risk_amount) > 0
     ]
     avg_win_r = round(sum(win_rs) / len(win_rs), 2) if win_rs else None
+    # 全部已结算单的 R 均值（2026-10-12，交易记录页「平均盈亏比」用）：口径同
+    # 列表「盈亏比」列（净盈亏 ÷ 计划风险额），含止盈/止损全部出场——avg_win_r
+    # 仅计盈利单偏乐观；净盈亏未知或 risk_amount 缺失的行算不出 R，剔除
+    all_rs = [
+        float(r.realized_pnl) / float(r.risk_amount)
+        for r in rows
+        if r.realized_pnl is not None and r.risk_amount and float(r.risk_amount) > 0
+    ]
+    avg_r = round(sum(all_rs) / len(all_rs), 2) if all_rs else None
 
     daily: dict[str, float] = {}
     for r in rows:
@@ -579,6 +588,7 @@ def fund_analytics(
             fee_total=fee_total,
             funding_total=funding_total,
             avg_win_r=avg_win_r,
+            avg_r=avg_r,
             transfer_in=t_in,
             transfer_out=t_out,
             transfer_net=round(t_in - t_out, 2),

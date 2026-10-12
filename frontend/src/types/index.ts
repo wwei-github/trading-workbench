@@ -762,6 +762,7 @@ export interface FundSummary {
   closed: number; wins: number; win_rate: number | null
   net_pnl: number; fee_total: number; funding_total: number
   avg_win_r: number | null
+  avg_r: number | null
   transfer_in: number; transfer_out: number; transfer_net: number
 }
 export interface DailyPoint { date: string; pnl: number }
