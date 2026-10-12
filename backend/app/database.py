@@ -629,6 +629,11 @@ def _run_migrations(engine):
             "ALTER TABLE ai_analyses "
             "ADD COLUMN IF NOT EXISTS calc_stop_loss NUMERIC(20, 8)"
         ))
+        # 退役表清理（2026-10-12）：P-12 参数稳健性扫描功能已删除，
+        # 模型 RobustnessScan 下线后 create_all 不再建表；存量库用 DROP 摘除孤儿表
+        # robustness_scans（幂等，表不存在时无害）。本仓库惯例是「列保留不删」，
+        # 此处为显式拍板的整表清理
+        conn.execute(text("DROP TABLE IF EXISTS robustness_scans"))
 
 
 def init_db():
