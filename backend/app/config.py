@@ -179,7 +179,13 @@ class Settings(BaseSettings):
     # pivot 取材不再硬编码 3 阶，改为跟随「摆动点阶数」配置（flt.swing_order，
     # 读 SystemConfig 顶层列，默认 3 与 AI 事实包/K线标注同源）；默认值下信号
     # 结果不变
-    RULE_VERSION: str = "v2026-10-12-13"
+    # v2026-10-12-14：AI 提示词门槛块接线真实筛选配置——render_signal_gate_block
+    # 不再固定 resolve(None)（只读 env 默认），由调用方（ai_tasks 双管线 /
+    # api 手动分析）透传 resolve_scan_filters(cfg)，突破幅度/量比/通道根数/
+    # 触碰带宽与页面筛选配置同源（此前页面改配置后 AI 口径与程序闸门分叉）；
+    # 触点语义行补 ema21_4h（2026-10-09 上线）、移除 ema144 退役引用，并新增
+    # 「当前启用触点」行渲染页面白名单生效值；默认配置下提示词数字不变
+    RULE_VERSION: str = "v2026-10-12-14"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

@@ -1518,6 +1518,7 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
     signal["tactic_names"] = tactics_match.allowed_names(_tactics)
     try:
         from app.services.risk_budget import resolve_risk_budget
+        from app.services.scan_filters import resolve_scan_filters
         _rm, _ra, _rl = resolve_risk_budget(cfg)
         _stop_cap = float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None
         ai_result = analyze_coin(
@@ -1525,6 +1526,8 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
             risk_mode=_rm, risk_amount=_ra, risk_label=_rl, stop_cap_pct=_stop_cap,
             interval=cfg.kline_interval, tactics_block=tactics_block,
             tp2_enabled=bool(cfg.tp2_enabled),
+            # 筛选参数组（2026-10-12）：门槛块阈值/触点启用列表读页面配置生效值
+            flt=resolve_scan_filters(cfg),
         )
         # 4h 状态机硬约束兜底（2026-10-11 再重构 EMA 状态机 11 态：缠绕/拐头双向禁开，宏观交叉/恢复/排列锁逆势，过渡放行）
         ai_result = enforce_htf_constraint(ai_result, htf_klines)

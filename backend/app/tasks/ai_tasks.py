@@ -360,6 +360,9 @@ def run_ai_analysis_single(
             float(cfg.btc_crash_pause_pct) if cfg.btc_crash_pause_pct is not None
             else None
         )
+        # 筛选参数组（2026-10-12）：门槛块阈值/触点启用列表读页面配置生效值，
+        # 与扫描侧 resolve 同源——页面改筛选配置后 AI 提示词口径同步跟上
+        _flt = resolve_scan_filters(cfg)
         # 管线选择：批量（每小时扫描自动触发/手动全量）固定走 P0 单次调用管线，
         # 不受「AI 管线」开关影响；仅手动单币重分析（force）跟随开关走 Agent 管线
         if cfg.ai_pipeline_enabled and force:
@@ -381,6 +384,7 @@ def run_ai_analysis_single(
                 risk_pct=_risk_pct,
                 tactics_block=tactics_block,
                 tp2_enabled=_tp2_on,
+                flt=_flt,
             )
         else:
             ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
@@ -400,6 +404,7 @@ def run_ai_analysis_single(
                 progress_id=r.id,  # 方案 B 轻量进度：流式增量计数推 "llm" 事件（≥2s 节流）
                 tactics_block=tactics_block,
                 tp2_enabled=_tp2_on,
+                flt=_flt,
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto；
         # 事实包增厚（docs/24 D3）——指标块 + 摆动结构摘要随 signal 传入（_build_judge_signal）

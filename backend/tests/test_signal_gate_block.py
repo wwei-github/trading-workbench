@@ -8,11 +8,13 @@
 1. render_signal_gate_block：触发器类型输出动态阈值（读 scan_filters 生效值，
    消除页面配置分叉）；非触发器类型空串；0=关闭项不输出
 2. _build_messages 接线：门槛块/触点行进 user 消息
+3. flt 透传（2026-10-12）：门槛数字/触点启用列表跟随 cfg（页面配置）生效值
 
 autouse monkeypatch 固定 settings 基线，免疫本地 .env 覆盖。
 """
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -24,6 +26,7 @@ from app.services.ai_analyzer import (  # noqa: E402
     _build_messages,
     render_signal_gate_block,
 )
+from app.services.scan_filters import resolve_scan_filters  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -89,14 +92,45 @@ def test_gate_block_non_trigger_empty():
 
 
 def test_gate_block_pullback_touch_object():
-    """回踩类门槛块（docs/22 触点体系）：触点 5 类说明 + 带宽口径（读生效值）；
-    突破专属行（Donchian/量比）不出现在回踩块里"""
+    """回踩类门槛块（docs/22 触点体系；2026-10-12 补 ema21_4h/去 ema144）：
+    触点全线说明 + 启用列表（读生效白名单）；突破专属行（Donchian/量比）不进回踩块"""
     block = render_signal_gate_block("trigger_pullback_confirm")
     assert "回踩触点" in block
     assert "retest=突破回测位" in block
+    assert "ema21_4h=4h 大周期价值区" in block  # 2026-10-09 上线触点补进语义行
+    assert "ema144 触点已退役" in block          # 退役触点不再作可选语义暗示
     assert "两段式确认" in block
     assert "0.3%" in block  # structure_touch_band_pct 生效值
+    # 未配置 pullback_touch_refs → 启用列表回落 DEFAULT_TOUCH_REFS（均线族三触点）
+    assert (
+        "当前启用触点: EMA21（ema21）、EMA21(4h)（ema21_4h）、EMA55（ema55）"
+        in block
+    )
     assert "Donchian" not in block  # 突破专属行不进回踩块
+
+
+def test_gate_block_follows_scan_filters_cfg():
+    """页面筛选配置（cfg）→ 门槛块数字/触点启用列表读生效值（2026-10-12 接线）：
+    修复前 render 固定 resolve(None)（env 默认），页面改配置后 AI 口径与程序闸门分叉"""
+    cfg = SimpleNamespace(
+        scan_filters={
+            "breakout_threshold": 0.005,
+            "pullback_touch_refs": ["swing", "ema21"],
+        },
+        swing_order=3,
+    )
+    flt = resolve_scan_filters(cfg)
+    # 突破类：幅度阈值跟随 cfg（非 env 基线 0.2%）
+    block = render_signal_gate_block("trigger_breakout", flt=flt)
+    assert "≥0.5%" in block
+    # 回踩类：启用列表读页面白名单（未勾选的 ema21_4h/ema55 不进启用行；
+    # 全线语义说明行照常完整，供 AI 理解触点体系）
+    pullback = render_signal_gate_block("trigger_pullback_confirm", flt=flt)
+    assert "当前启用触点: 摆动结构位（swing）、EMA21（ema21）" in pullback
+    assert "（ema21_4h）" not in pullback
+    assert "（ema55）" not in pullback
+    # 未透传 flt → 回落 env/代码默认（0.2% 基线）
+    assert "≥0.2%" in render_signal_gate_block("trigger_breakout")
 
 
 # ── 止损宽度硬上限透传（2026-09-29 max_stop_pct 注入）──────────────────
@@ -134,6 +168,20 @@ def test_build_messages_injects_stop_cap():
     # 不传 → 不出现
     user2 = _build_messages(_minimal_signal("trigger_breakout"), _KLINES)
     assert "止损宽度硬上限" not in user2[-1]["content"]
+
+
+def test_build_messages_injects_flt_gate():
+    """_build_messages 接线：flt 透传到门槛块（数字跟随页面配置生效值，2026-10-12）"""
+    flt = resolve_scan_filters(
+        SimpleNamespace(scan_filters={"breakout_threshold": 0.005}),
+    )
+    user = _build_messages(
+        _minimal_signal("trigger_breakout"), _KLINES, flt=flt,
+    )[-1]["content"]
+    assert "≥0.5%" in user
+    # 不传 → 回落 env 基线 0.2%
+    user2 = _build_messages(_minimal_signal("trigger_breakout"), _KLINES)[-1]["content"]
+    assert "≥0.2%" in user2
 
 
 # ── _build_messages 接线 ──────────────────────────────────────────────

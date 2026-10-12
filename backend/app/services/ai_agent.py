@@ -581,7 +581,7 @@ def analyze_coin_agent(
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
     stop_cap_pct: Optional[float] = None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
-    tp2_enabled: bool = True,
+    tp2_enabled: bool = True, flt=None,
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -597,7 +597,9 @@ def analyze_coin_agent(
     注入提示词并透传 submit_decision 校验（None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时提示词剔除止盈二锚点语义、
     submit_decision 工具 schema 隐藏 tp2_* 参数、提交的 tp2 硬清零
-    （system_config.tp2_enabled，默认关）。"""
+    （system_config.tp2_enabled，默认关）。
+    flt（2026-10-12）：筛选参数组（resolve_scan_filters(cfg)），透传门槛块
+    渲染与页面配置同源；None=env/代码默认。"""
     client = get_client()
 
     # 布尔事实（技能 use_when 判定）
@@ -646,7 +648,8 @@ def analyze_coin_agent(
         )
 
     user_msg = _build_user_msg(signal, klines, ema, atr, user_input, htf_klines,
-                               stop_cap_pct=stop_cap_pct, tactics_block=tactics_block)
+                               stop_cap_pct=stop_cap_pct, tactics_block=tactics_block,
+                               flt=flt)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
@@ -760,7 +763,7 @@ def _build_facts(signal: dict, klines: list, atr: float) -> dict:
 def _build_user_msg(
     signal: dict, klines: list, ema: Optional[dict], atr: float,
     user_input: Optional[str], htf_klines: Optional[list] = None,
-    stop_cap_pct: Optional[float] = None, tactics_block: str = "",
+    stop_cap_pct: Optional[float] = None, tactics_block: str = "", flt=None,
 ) -> str:
     closed = klines[:-1] if len(klines) >= 2 else klines
     # 40 根与 P0 管线同口径（60→40，2026-09-28 缩 token 提速，见 ai_analyzer._build_messages）
@@ -798,7 +801,7 @@ def _build_user_msg(
         f"K线形态: {signal.get('pattern') or '无'}（位置: "
         f"{POSITION_LABEL_MAP.get(signal.get('position') or '', signal.get('position') or '未知')}）\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
-        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct)}"
+        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt)}"
         f"信号强度: {signal.get('strength', '—')}\n"
         f"量能: {vol_desc}\n"
         f"ATR(14): {atr:.6g}\n"

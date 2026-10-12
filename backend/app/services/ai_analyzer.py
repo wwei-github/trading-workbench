@@ -112,11 +112,13 @@ _RULE_DIRECTION = """方向纪律（不再程序强制，无 ±0.3% 贴近要求
 只在压力结构做空；现价已离开结构位时不再要求贴近，可按动能顺势给入场价（顺势追势
 入场贴近现价即可），入场是否合理由盈亏比与止损结构把关。"""
 
-# 回踩触点语义注解（docs/22 触点体系，2026-09-28）：信号块"回踩触点"行的解读口径
+# 回踩触点语义注解（docs/22 触点体系，2026-09-28；2026-10-12 补 ema21_4h/去 ema144）
 _RULE_TOUCH = """回踩触点语义（信号块出现"回踩触点"行时程序已验证金K上一根触碰该位企稳）：
 retest=突破回测位（破轨后横向验证，结构意义最强，止盈/止损参考被测轨位）、
-swing=摆动结构位（HL/LH 防守位）、ema21=趋势动态价值区、ema55/ema144=大周期深回撤
-价值区（三道门已程序验证）。有触点时止损优先锚定触点位：做多放触点位
+swing=摆动结构位（HL/LH 防守位）、ema21=1h 趋势动态价值区、ema21_4h=4h 大周期
+动态价值区（1h 信号K线影线触及，放大版价值区）、ema55=中深度回撤价值区
+（排列+斜率三道门已程序验证；ema144 触点已退役不再产生）。触点启用类型由页面
+「回踩触点」白名单控制；有触点时止损优先锚定触点位：做多放触点位
 下外侧、做空放上外侧（仍按止损纪律两锚取更远者结合金K极值）。"""
 
 # 信号类型中文对照（结构分类）
@@ -154,16 +156,20 @@ SIGNAL_TYPE_LABELS = {
 }
 
 
-def render_signal_gate_block(signal_type: str, stop_cap_pct: Optional[float] = None) -> str:
-    """触发器入场门槛说明（2026-09-28 动态化）：阈值读 scan_filters 生效值，
-    消除与页面筛选配置的文本分叉（此前 0.2%/1.2× 硬编码，页面改配置后
-    AI 看到的口径与程序实际闸门不一致）。按触发类型渲染对应门槛，
+def render_signal_gate_block(
+    signal_type: str, stop_cap_pct: Optional[float] = None, flt=None,
+) -> str:
+    """触发器入场门槛说明（2026-09-28 动态化；2026-10-12 接线真实配置）：
+    阈值读 scan_filters 生效值，消除与页面筛选配置的文本分叉（此前 0.2%/1.2×
+    硬编码，页面改配置后 AI 看到的口径与程序实际闸门不一致）。flt 由调用方
+    （ai_tasks / api 手动分析）透传 resolve_scan_filters(cfg) 结果；None 时
+    回落 env/代码默认（无 cfg 上下文的直接调用）。按触发类型渲染对应门槛，
     非触发器类型输出空串。"""
     if signal_type not in ("trigger_breakout", "trigger_trend_breakout",
                            "trigger_pullback", "trigger_pullback_confirm"):
         return ""
     from app.services.scan_filters import resolve_scan_filters
-    flt = resolve_scan_filters(None)  # 任务侧无 cfg 行时按 env/代码默认
+    flt = flt or resolve_scan_filters(None)  # 未透传时按 env/代码默认
     # 止损宽度硬上限（2026-09-29 透传 max_stop_pct 补丁参数）：AI 定止损前先自验
     # 不超限，避免"AI 建议开单→程序宽度闸弃单"的无效调用；None/0=未配置不注入
     cap_line = (
@@ -191,11 +197,17 @@ def render_signal_gate_block(signal_type: str, stop_cap_pct: Optional[float] = N
         ]
     else:
         if signal_type in ("trigger_pullback", "trigger_pullback_confirm"):
-            # 2026-09-28 docs/22 触点体系：触碰对象由纯 EMA21 扩为 5 类触点，
-            # 具体命中位看信号块"回踩触点"行（trigger 按优先级只标一个）
+            # 2026-09-28 docs/22 触点体系：具体命中位看信号块"回踩触点"行
+            # （trigger 按优先级只标一个）；2026-10-12：语义补 ema21_4h
+            # （2026-10-09 上线的 4h 大周期价值区）、移除 ema144 退役引用，
+            # 启用类型读页面白名单生效值（pullback_touch_refs）
+            enabled = "、".join(
+                f"{TOUCH_LABELS.get(r, r)}（{r}）" for r in flt.pullback_touch_refs)
             lines += [
-                "- 回踩触点: retest=突破回测位 / swing=摆动结构位 / ema21 / ema55 / ema144"
-                "（优先级 retest>swing>ema21>ema55>ema144，命中位见信号块「回踩触点」行）",
+                "- 回踩触点: retest=突破回测位 / swing=摆动结构位 / ema21=1h 趋势动态"
+                "价值区 / ema21_4h=4h 大周期价值区 / ema55=中深度回撤（ema144 触点已退役）",
+                f"- 当前启用触点: {enabled}"
+                "（优先级 retest>swing>ema21>ema21_4h>ema55，命中位见信号块「回踩触点」行）",
                 f"- 横向位触碰带宽: 影线可入带（{flt.structure_touch_band_pct:.1f}% 内）且收盘守住位；"
                 "EMA 触点=下影触及且收盘收回线上（做空对称）",
                 "- 两段式确认: 触碰后当根出现同向金K，或上根触碰+本根金K（次根确认）",
@@ -395,7 +407,7 @@ def analyze_coin(
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
     stop_cap_pct: Optional[float] = None, interval: str = "1h",
     tactics_block: str = "", rr_min: Optional[float] = None,
-    crash_pct: Optional[float] = None, tp2_enabled: bool = True,
+    crash_pct: Optional[float] = None, tp2_enabled: bool = True, flt=None,
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -415,6 +427,8 @@ def analyze_coin(
     crash_pct: BTC 急跌阈值 %（2026-10-02 上页面覆盖；None=env 默认）
     tp2_enabled: TP2 分批止盈开关（2026-10-08，system_config.tp2_enabled）——
     关闭时提示词剔除止盈二条目且输出硬清零（AI 不产出第二档止盈价）
+    flt: 筛选参数组（resolve_scan_filters(cfg)，2026-10-12）——门槛块阈值/
+    触点启用列表读它渲染，None=env/代码默认
     """
     client = _get_client()
     result = _call_llm(
@@ -423,7 +437,7 @@ def analyze_coin(
                         risk_label=risk_label, stop_cap_pct=stop_cap_pct,
                         interval=interval, tactics_block=tactics_block,
                         rr_min=rr_min, crash_pct=crash_pct,
-                        tp2_enabled=tp2_enabled),
+                        tp2_enabled=tp2_enabled, flt=flt),
     )
     if not tp2_enabled:
         # TP2 关闭兜底清零（提示词已要求输出 0；防止模型违规输出污染落库记录）
@@ -446,6 +460,7 @@ def _build_messages(
     rr_min: Optional[float] = None,
     crash_pct: Optional[float] = None,
     tp2_enabled: bool = True,
+    flt=None,
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
 
@@ -455,7 +470,8 @@ def _build_messages(
     rr_min（2026-10-02 上页面）：盈亏比铁律下限，注入系统提示词（None=env 默认）。
     crash_pct（2026-10-02 上页面）：BTC 急跌阈值 %，透传市场环境块（None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关，注入系统提示词（None 不适用，
-    默认 True）。"""
+    默认 True）。
+    flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。"""
     # 取最近 40 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-41:-1]）。
     # 60→40（2026-09-28）：CSV 是 user 消息 token 大头（60 根 ≈5000+），思考型模型
     # reasoning 时长与输入量正相关；浓缩结论（指标/摆动块）已覆盖形态识别所需，
@@ -552,7 +568,7 @@ def _build_messages(
         f"K线形态: {signal.get('pattern') or '无'}\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
         f"{touch_line}"
-        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct)}"
+        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt)}"
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
         f"量能: {vol_desc}\n"
         f"{ema_summary}"
@@ -661,7 +677,7 @@ def analyze_with_guard(
     stop_cap_pct: Optional[float] = None, interval: str = "1h",
     progress_id=None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
-    crash_pct: Optional[float] = None, tp2_enabled: bool = True,
+    crash_pct: Optional[float] = None, tp2_enabled: bool = True, flt=None,
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -675,12 +691,13 @@ def analyze_with_guard(
     rr_min / risk_pct / crash_pct（2026-10-02 上页面）：盈亏比铁律下限、单笔
     风险比例与 BTC 急跌阈值，注入提示词并透传 Risk Guard 校验（None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时提示词剔除止盈二条目，
-    且在风控校验前硬清零 take_profit_2（AI 不产出第二档止盈价）。"""
+    且在风控校验前硬清零 take_profit_2（AI 不产出第二档止盈价）。
+    flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。"""
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
         htf_klines=htf_klines, risk_label=risk_label, stop_cap_pct=stop_cap_pct,
         interval=interval, tactics_block=tactics_block, rr_min=rr_min,
-        crash_pct=crash_pct, tp2_enabled=tp2_enabled,
+        crash_pct=crash_pct, tp2_enabled=tp2_enabled, flt=flt,
     )
     client = _get_client()
     _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None
