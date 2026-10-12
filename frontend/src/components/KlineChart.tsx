@@ -125,8 +125,9 @@ function drawReplayZones(data: TradeKlineData, colorScheme: ColorScheme, ctx: Ov
     svg.appendChild(r)
   }
   drawZone(data.entry_price, data.stop_loss, 'rgba(239, 83, 80, 0.15)')
-  // 策略二 trail（docs/20）：tp1 仅趋势目标参考价、不挂止盈单 → 不画止盈区，
-  // 保留参考线；旧行 tp_mode 缺省按 ladder 正常画
+  // 策略二 trail（docs/20）：tp1 仅趋势目标参考价、不挂止盈单 → 不画止盈区与线
+  // （2026-10-12 用户拍板，连参考线也不画，避免误读为实际止盈位）；
+  // 旧行 tp_mode 缺省按 ladder 正常画
   const isTrail = data.tp_mode === 'trail'
   if (!isTrail) drawZone(data.entry_price, data.tp1, 'rgba(38, 166, 154, 0.15)')
   // tp2 为 0/null（未设止盈二）时不绘制 TP2 区域与线（trail 单不设 TP2，同样跳过）
@@ -183,8 +184,12 @@ function drawReplayZones(data: TradeKlineData, colorScheme: ColorScheme, ctx: Ov
   drawLine(data.entry_price, colorEntry, isL ? '开多' : '开空', false)
   const ep = data.entry_price
   drawLine(data.stop_loss, colorSL, data.stop_loss != null ? `止损 ${pctDelta(ep, data.stop_loss)}` : '止损', false)
-  drawLine(data.tp1, colorTP, data.tp1 != null ? `止盈1 ${pctDelta(ep, data.tp1)}` : '止盈1', false)
-  if (hasTP2) drawLine(data.tp2, colorTP, `止盈2 ${pctDelta(ep, data.tp2!)}`, false)
+  // 策略二 trail（docs/20）：tp1/tp2 均不挂止盈单（tp1 仅趋势目标参考价），
+  // 不画止盈线——画了会误读为实际止盈位（2026-10-12 用户拍板，原保留参考线方案作废）
+  if (!isTrail) {
+    drawLine(data.tp1, colorTP, data.tp1 != null ? `止盈1 ${pctDelta(ep, data.tp1)}` : '止盈1', false)
+    if (hasTP2) drawLine(data.tp2, colorTP, `止盈2 ${pctDelta(ep, data.tp2!)}`, false)
+  }
 
   // 现止损（跟踪移动后的最新位置）：与初始止损不同才加画（琥珀色区分）；
   // 价签与已有标签同高时上下错位（保本止损=开仓价的场景）
@@ -200,6 +205,7 @@ function drawReplayZones(data: TradeKlineData, colorScheme: ColorScheme, ctx: Ov
 
   // RR 徽标（TV 仓位框 riskRewardRatio，与 ChartCore AI 标注同款）：
   // 区域水平居中、入场↔止盈1（缺则入场↔止损）垂直居中
+  // （trail 单 tp1 是参考价，RR 徽标按参考值展示，与线/区口径一致地沿用数据）
   const rr = rrRatio(ep, data.stop_loss, data.tp1)
   if (rr != null) {
     const anchor = data.tp1 ?? data.stop_loss
