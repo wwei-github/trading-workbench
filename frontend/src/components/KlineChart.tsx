@@ -125,9 +125,12 @@ function drawReplayZones(data: TradeKlineData, colorScheme: ColorScheme, ctx: Ov
     svg.appendChild(r)
   }
   drawZone(data.entry_price, data.stop_loss, 'rgba(239, 83, 80, 0.15)')
-  drawZone(data.entry_price, data.tp1, 'rgba(38, 166, 154, 0.15)')
-  // tp2 为 0/null（未设止盈二）时不绘制 TP2 区域与线
-  const hasTP2 = data.tp2 != null && data.tp2 > 0
+  // 策略二 trail（docs/20）：tp1 仅趋势目标参考价、不挂止盈单 → 不画止盈区，
+  // 保留参考线；旧行 tp_mode 缺省按 ladder 正常画
+  const isTrail = data.tp_mode === 'trail'
+  if (!isTrail) drawZone(data.entry_price, data.tp1, 'rgba(38, 166, 154, 0.15)')
+  // tp2 为 0/null（未设止盈二）时不绘制 TP2 区域与线（trail 单不设 TP2，同样跳过）
+  const hasTP2 = !isTrail && data.tp2 != null && data.tp2 > 0
   if (hasTP2) drawZone(data.tp1, data.tp2, 'rgba(38, 166, 154, 0.08)')
 
   // 水平线 + 右侧价签（tagDy：价签垂直偏移，防同价位标签重叠；返回价签中心 y 供后续防撞）

@@ -513,6 +513,7 @@ export interface TradeKlineData {
   current_stop_loss: number | null // 跟踪止损现值（SL_MOVE 后更新；与初始止损不同时弹窗加画现止损线）
   tp1: number | null
   tp2: number | null
+  tp_mode?: 'ladder' | 'trail' | null // 止盈模式快照（docs/19 §3.4）：trail=策略二纯跟踪，tp1 仅参考价不画止盈区
   opened_at: string | null
   closed_at: string | null
   klines: Kline[]
