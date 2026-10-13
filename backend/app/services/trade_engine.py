@@ -901,7 +901,7 @@ def analysis_open_eligible(a: AIAnalysis, min_rec: float) -> bool:
     """开仓资格快速过滤（suggest / 方向合法 / 三价齐 / 评分达门槛）。
 
     与 try_open_for_analysis 顶部闸门同源（单一事实源，防两处漂移）；不含
-    账号维度闸门（去重/在跑/熔断/降速/环境闸门，按账号实时判定）与 1h 时效。
+    账号维度闸门（去重/在跑/熔断/降速，按账号实时判定）与 1h 时效。
     正式网自动开单关闭提醒（notify_live_auto_open_off）复用本判定回答
     「这条信号达标可开单吗」。
     """
@@ -972,51 +972,6 @@ def try_open_for_analysis(
                 f"（当前评分 {float(a.recommendation or 0):.0f}）",
             )
             return False
-    # BTC 急跌普跌防护（docs/24 A4② 最低成本版）：BTC 1h 近3根已收盘累计跌幅
-    # 超 BTC_CRASH_PAUSE_PCT 时暂停山寨开单（BTCUSDT 本身照常，AI 分析照常跑）。
-    # 判定带 60s 进程内缓存，查询失败降级放行（不因环境查询失败阻断开仓）
-    if a.symbol != "BTCUSDT":
-        try:
-            from app.services.market_data import btc_crash_active, get_kline_client
-            # 急跌阈值（2026-10-02 上页面）：cfg.btc_crash_pause_pct 覆盖时优先
-            crash_pct = (
-                float(cfg.btc_crash_pause_pct) if cfg.btc_crash_pause_pct is not None
-                else None
-            )
-            if btc_crash_active(get_kline_client(), crash_pct=crash_pct):
-                logger.info("即时开仓跳过 %s：BTC 1h 短线急跌，暂停山寨开单", a.symbol)
-                _mark_open_block(db, a, "BTC 1h 短线急跌，暂停山寨开单（普跌防护）")
-                return False
-        except Exception as e:
-            logger.debug("BTC 急跌闸门查询失败（放行）: %s", e)
-    # 大盘单边环境闸门（N-15，docs/16 §8.3②，双向）：BTC+ETH 24h 涨跌幅同时
-    # 超阈值视为单边行情——普跌拦山寨**开多**（10-07 普跌日 11 笔多单全灭）、
-    # 普涨拦山寨**开空**（逼空日逆势空单与普跌日逆势多单同构）；顺势方向照常
-    # （10-07 归因盈利路径均为普跌日空单）。与上方 1h 急跌闸门（突崩形态、
-    # 全方向）互补：急跌抓「1 小时内突崩」，本闸门抓「单边走一整天」。
-    # 判定带 60s 进程内缓存，查询失败降级放行
-    if a.symbol != "BTCUSDT":
-        try:
-            from app.services.market_data import market_wide_regime, get_kline_client
-            # 单边阈值：cfg.market_wide_pause_pct 覆盖时优先（NULL 回落 env）
-            pause_pct = (
-                float(cfg.market_wide_pause_pct)
-                if cfg.market_wide_pause_pct is not None
-                else None
-            )
-            regime = market_wide_regime(get_kline_client(), pause_pct=pause_pct)
-            blocked_side = {"down": "long", "up": "short"}.get(regime)
-            if blocked_side is not None and a.direction == blocked_side:
-                env_label = (
-                    "大盘普跌（BTC/ETH 24h 双跌）" if regime == "down"
-                    else "大盘普涨（BTC/ETH 24h 双涨）"
-                )
-                side_label = "开多" if blocked_side == "long" else "开空"
-                logger.info("即时开仓跳过 %s：%s，暂停山寨%s", a.symbol, env_label, side_label)
-                _mark_open_block(db, a, f"{env_label}，暂停山寨{side_label}（环境闸门）")
-                return False
-        except Exception as e:
-            logger.debug("大盘单边闸门查询失败（放行）: %s", e)
     # 待回踩单不再在此跳过（2026-09-18）：回踩距离 ≤ pullback_market_pct 容差
     # 时市价入场、超容差维持不下单——判定移入 _attempt_open 偏离闸门
     positions = trader.positions()

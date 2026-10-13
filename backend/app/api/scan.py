@@ -433,8 +433,6 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         same_direction_cap=cfg.same_direction_cap,
         btc_crash_pause_pct=(float(cfg.btc_crash_pause_pct)
                              if cfg.btc_crash_pause_pct is not None else None),
-        market_wide_pause_pct=(float(cfg.market_wide_pause_pct)
-                               if cfg.market_wide_pause_pct is not None else None),
         weekly_dd_stop_pct=(float(cfg.weekly_dd_stop_pct)
                             if cfg.weekly_dd_stop_pct is not None else None),
         monthly_dd_stop_pct=(float(cfg.monthly_dd_stop_pct)
@@ -731,13 +729,8 @@ def update_system_config(
     if "btc_crash_pause_pct" in body.model_fields_set:
         v = body.btc_crash_pause_pct
         if v is not None and not (0 <= v <= 20):
-            raise HTTPException(status_code=400, detail="btc_crash_pause_pct 需在 0~20 % 之间（BTC 急跌暂停，0=关闭）")
+            raise HTTPException(status_code=400, detail="btc_crash_pause_pct 需在 0~20 % 之间（BTC 急跌警示，0=关闭）")
         cfg.btc_crash_pause_pct = v
-    if "market_wide_pause_pct" in body.model_fields_set:
-        v = body.market_wide_pause_pct
-        if v is not None and not (0 <= v <= 20):
-            raise HTTPException(status_code=400, detail="market_wide_pause_pct 需在 0~20 % 之间（大盘单边暂停，0=关闭）")
-        cfg.market_wide_pause_pct = v
     # 周/月回撤分层熔断 + ATR 跟进（2026-10-04，docs/13 #2/#5；传 null 恢复 env 默认）
     if "weekly_dd_stop_pct" in body.model_fields_set:
         v = body.weekly_dd_stop_pct

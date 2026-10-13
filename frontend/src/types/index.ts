@@ -253,8 +253,7 @@ export interface SystemConfig {
   near_anchor_factor?: number | null; // 近锚降级风险折价系数（0~1，env 默认 0.7）
   portfolio_heat_cap?: number | null; // 组合热度上限（比例 0.2=钱包 20%；0=关闭）
   same_direction_cap?: number | null; // 同向持仓上限（单数，0=不限）
-  btc_crash_pause_pct?: number | null; // BTC 急跌暂停阈值（% 值，1h 3根累计跌幅；0=关闭）
-  market_wide_pause_pct?: number | null; // 大盘单边暂停阈值（N-15，% 值，BTC+ETH 24h 双跌拦开多/双涨拦开空；0=关闭）
+  btc_crash_pause_pct?: number | null; // BTC 急跌警示阈值（% 值，1h 3根累计跌幅；仅供 AI 提示词警示，不拦开单；0=关闭）
   weekly_dd_stop_pct?: number | null; // 周回撤减速阈值（% 值，UTC 周起净亏 ≥ 基数×此值 → 单笔预算减半；0=关闭）
   monthly_dd_stop_pct?: number | null; // 月回撤熔断阈值（% 值，UTC 月起净亏 ≥ 基数×此值 → 停开新仓；0=关闭）
   monthly_breaker_ack_at?: string | null; // 月熔断人工确认时刻（只读，熔断卡片「确认复盘」写）
@@ -789,6 +788,7 @@ export interface BreadthItem {
   ema_state: string | null // bullish_align / bearish_cross / mixed 等
   ema_label: string | null // 中文标签（多头排列/纠缠…）
   change_24h_pct: number // 24h 涨跌幅（%）
+  price: number | null // 现价（末根未收盘K线收盘，≈实时价）
 }
 // 技术结构快照（每小时 structure-watch 任务写入的最新一轮结果）
 export interface StructureItem {

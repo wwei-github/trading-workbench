@@ -167,10 +167,10 @@ def get_fear_greed() -> Optional[dict]:
 
 
 def get_market_breadth(pool) -> Optional[dict]:
-    """大盘广度：BTC/ETH 的 EMA 形态 + 24h 涨跌幅。
+    """大盘广度：BTC/ETH 的 EMA 形态 + 24h 涨跌幅 + 现价。
 
     K 线走 ExchangePool（同周期内命中缓存，零交易所 IO）。
-    返回 {"BTCUSDT": {"ema_state", "ema_label", "change_24h_pct"}, ...} 或 None
+    返回 {"BTCUSDT": {"ema_state", "ema_label", "change_24h_pct", "price"}, ...} 或 None
     """
     cached = _cache_get("breadth")
     if cached is not None:
@@ -193,6 +193,9 @@ def get_market_breadth(pool) -> Optional[dict]:
             "ema_state": ema["state"] if ema else None,
             "ema_label": ema["state_label"] if ema else None,
             "change_24h_pct": round(change, 2),
+            # 现价（2026-10-13 顶部条展示）：末根未收盘K线收盘≈现价，
+            # 与 24h 口径共用同一批 K 线，零额外交易所请求
+            "price": float(klines[-1][4]) if klines else None,
         }
     if not out:
         return None
@@ -316,7 +319,7 @@ def _btc_market_line(client, crash_pct: Optional[float] = None) -> Optional[str]
     4h 取 60 根（EMA55 需 ≥55 根已收盘数据，50 根不够成形）；
     1h 近3根累计跌幅超过急跌阈值时追加急跌警示（0=关闭）。
     crash_pct（2026-10-02 上页面）：阈值 %，system_config.btc_crash_pause_pct
-    覆盖时由调用方传入；None 回落 env 默认（与 btc_crash_active 同一口径）。
+    覆盖时由调用方传入；None 回落 env 默认。
     两段数据任一失败只降级该段，全失败返回 None。
     """
     # 4h 趋势（EMA 排列）
@@ -351,89 +354,6 @@ def _btc_market_line(client, crash_pct: Optional[float] = None) -> Optional[str]
     if _crash_pct > 0 and chg is not None and chg < -_crash_pct:
         line += "（BTC 短线急跌，山寨开单需谨慎）"
     return line
-
-
-def btc_crash_active(client, crash_pct: Optional[float] = None) -> bool:
-    """BTC 1h 近3根已收盘累计急跌判定（docs/24 A4② 程序级普跌防护闸门用）。
-
-    跌幅阈值 = BTC 急跌暂停 %（system_config.btc_crash_pause_pct 可页面覆盖，
-    None 回落 env；0=关闭恒 False，与提示词警示共用同一开关）；
-    K 线查询失败降级为 False（不因环境查询失败阻断开仓）。60s 进程内缓存，
-    开仓闸门逐笔调用不重拉 K 线。
-    """
-    _crash_pct = float(settings.BTC_CRASH_PAUSE_PCT) if crash_pct is None else float(crash_pct)
-    if _crash_pct <= 0:
-        return False
-    cached = _cache_get("btc_crash_active")
-    if cached is not None:
-        return bool(cached)
-    active = False
-    try:
-        k1 = client.get_futures_klines("BTCUSDT", "1h", 24)
-        if k1 and len(k1) >= 5:
-            closed = k1[:-1]  # 已收盘口径，与 _btc_market_line 一致
-            base = float(closed[-4][4])
-            if base > 0:
-                chg = (float(closed[-1][4]) / base - 1) * 100
-                active = chg < -_crash_pct
-    except Exception as e:
-        logger.debug("BTC 急跌判定查询失败（按无急跌处理）: %s", e)
-        return False  # 查询失败不缓存、不拦截
-    _cache_set("btc_crash_active", active, ttl=60.0)
-    return active
-
-
-def _sym_change_24h(client, symbol: str) -> Optional[float]:
-    """单币 24h 涨跌幅（%）：1h K 26 根 → 25 根已收盘首尾比（24 根间隔）。
-
-    与 get_market_breadth 的 24h 口径同款算法（closed[-1]/closed[-25]-1），
-    数据不足 / 首价非正 → None。
-    """
-    try:
-        k = client.get_futures_klines(symbol, "1h", 26)
-    except Exception as e:
-        logger.debug("24h 涨跌 %s K线获取失败: %s", symbol, e)
-        return None
-    if not k or len(k) < 26:
-        return None
-    closed = k[:-1]  # 已收盘口径
-    base = float(closed[0][4])
-    if base <= 0:
-        return None
-    return (float(closed[-1][4]) / base - 1) * 100
-
-
-def market_wide_regime(client, pause_pct: Optional[float] = None) -> Optional[str]:
-    """大盘单边行情判定（N-15，docs/16 §8.3②）：BTC 与 ETH 24h 涨跌幅**同时**
-    超阈值 → 单边环境：双跌破阈值返回 "down"（普跌）、双涨破阈值返回 "up"
-    （普涨），其余（含任一币数据缺失）返回 None。
-
-    双币确认：单 BTC 下跌可能是资金切换的 BTC 专属行情，双跌才是普跌（普涨
-    同理——逼空日逆势空单与普跌日逆势多单同构）。阈值 = 大盘单边暂停 %
-    （system_config.market_wide_pause_pct 页面覆盖，None 回落 env
-    MARKET_WIDE_PAUSE_PCT；0=关闭恒 None）；交易限制的方向映射在开仓闸门侧
-    （普跌拦山寨开多、普涨拦山寨开空，顺势方向照常）。任一币查询失败返回
-    None（降级放行，不因环境查询失败阻断开仓）。60s 进程内缓存（含 None——
-    直接查 _cache 区分「未缓存」与「缓存了 None」），开仓闸门逐笔调用不重拉
-    K 线。
-    """
-    _pct = float(settings.MARKET_WIDE_PAUSE_PCT) if pause_pct is None else float(pause_pct)
-    if _pct <= 0:
-        return None
-    hit = _cache.get("market_wide_regime")
-    if hit and hit[0] > time.time():
-        return hit[1]
-    btc = _sym_change_24h(client, "BTCUSDT")
-    eth = _sym_change_24h(client, "ETHUSDT")
-    if btc is None or eth is None:
-        return None  # 任一缺失不缓存、不拦截（降级放行）
-    regime: Optional[str] = None
-    if btc < -_pct and eth < -_pct:
-        regime = "down"
-    elif btc > _pct and eth > _pct:
-        regime = "up"
-    _cache_set("market_wide_regime", regime, ttl=60.0)
-    return regime
 
 
 # ── BTC-beta（docs/13 #1：组合热度 β 加权）────────────────────────────────

@@ -347,7 +347,7 @@ def run_ai_analysis_single(
         # 风控参数上页面（2026-10-02）：RR 铁律 / BTC 急跌阈值按 cfg 覆盖优先、
         # NULL 回落 env，透传进两管线（提示词 + Risk Guard 同源）；
         # crash_pct 仅 P0 单次调用管线消费（Agent 管线不预注入市场环境，
-        # 由模型按需调工具，急跌硬闸在开仓引擎侧按 cfg 生效）
+        # 由模型按需调工具；2026-10-13 起急跌仅作提示词警示，开仓引擎侧硬闸已移除）
         # 风险比例单一来源（2026-10-02 复查）：pct 模式下 resolver 的 amount 即
         # 生效比例（cfg.risk_pct ?? RISK_BUDGET_PCT），直接派生保证提示词 label
         # 与 Risk Guard 仓位复算同口径（TRADING_RISK_PCT 仅开仓引擎 est_risk 用，

@@ -369,7 +369,7 @@ AI 决策确定性校验：
 
 #### 组合风控参数（SystemConfig）
 
-`portfolio_heat_cap`（组合热度上限）、`same_direction_cap`（同向持仓上限）、`daily_loss_stop_pct`（当日亏损熔断）、`weekly_dd_stop_pct` / `monthly_dd_stop_pct`（周/月回撤分层熔断）、`btc_crash_pause_pct` / `market_wide_pause_pct`（大盘单边闸门）。
+`portfolio_heat_cap`（组合热度上限）、`same_direction_cap`（同向持仓上限）、`daily_loss_stop_pct`（当日亏损熔断）、`weekly_dd_stop_pct` / `monthly_dd_stop_pct`（周/月回撤分层熔断）、`btc_crash_pause_pct`（BTC 急跌 AI 提示词警示阈值；原普跌闸门与大盘单边闸门 `market_wide_pause_pct` 均于 2026-10-13 移除）。
 
 ---
 
@@ -517,7 +517,7 @@ React 18 + TypeScript + Vite 5 + Ant Design 5 + Zustand + lightweight-charts + E
 | `TacticsPanel` | 战法管理 |
 | `BlacklistPanel` | 黑名单管理 |
 | `TaskList` / `LogsPanel` | 任务记录与系统日志 |
-| `MarketOverviewBar` | 大盘环境条（恐惧贪婪 + BTC/ETH 涨跌） |
+| `MarketOverviewBar` | 大盘环境条（恐惧贪婪 + BTC/ETH 涨跌与现价） |
 
 ---
 
@@ -1071,7 +1071,7 @@ npm run dev          # http://localhost:5173
 
 ### 运行时配置（system_config 表，页面可改）
 
-大部分开关运行时化：AI 开关、P0/P1 管线、双评委、TP2 开关、分批比例、双网自动交易开关、扫描参数组、风控参数（熔断/盈亏比/杠杆/费率/近锚折价/组合热度/同向上限/BTC 急跌）、周/月回撤阈值、ATR 跟进倍数、筛选参数组等。DB 值为 NULL 时回落 env 默认。
+大部分开关运行时化：AI 开关、P0/P1 管线、双评委、TP2 开关、分批比例、双网自动交易开关、扫描参数组、风控参数（熔断/盈亏比/杠杆/费率/近锚折价/组合热度/同向上限）、周/月回撤阈值、ATR 跟进倍数、筛选参数组等。DB 值为 NULL 时回落 env 默认。
 
 ---
 

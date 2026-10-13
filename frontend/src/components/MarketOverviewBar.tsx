@@ -3,11 +3,14 @@
  * - 数据源 GET /api/market/overview（后端聚合，TTL 缓存 5/30min）；60s 轮询
  * - 2026-10-13：chip 主 token 改为每小时结构检测结果（上涨结构/破位⚠…）——
  *   快照缺失或 >2h 过期（任务停摆保护）回落 EMA 形态；EMA/24h/恐贪保留在 tooltip
+ * - 2026-10-13-2：chip 增加 BTC/ETH 现价；tooltip 重构为逐行分块（价格/24h、
+ *   结构、支撑、阻力、EMA/4h、异常、检测时间），替代原「·」拼接长行
  * - 结构/EMA 形态与涨跌色跟随全局配色方案（红涨绿跌/绿涨红跌自动翻转）；
  *   破位警示固定红（告警语义，不随方案翻转）；恐贪为固定语义色
  * - 全部数据不可用 → 灰色「大盘 --」，绝不阻塞/撑破 Header 布局
  */
 import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import { Tooltip } from 'antd'
 import { marketApi } from '../api/market'
 import type { BreadthItem, MarketOverview, StructureItem } from '../types'
@@ -42,6 +45,10 @@ function emaStateColor(state: string | null, scheme: ColorScheme): string {
   return 'rgba(255,255,255,0.85)'
 }
 
+// tooltip/chip 共用格式化（2026-10-13-2：从组件内上移，chip 价格复用）
+const pct = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}%`
+const price = (v: number) => v.toLocaleString('en-US', { maximumFractionDigits: 0 })
+
 // 结构快照有效期：每 2 小时未更新视为过期（任务停摆保护，回落 EMA token）
 const STRUCTURE_MAX_AGE_MS = 2 * 3600 * 1000
 
@@ -70,6 +77,9 @@ function SymbolChip({ sym, b, s }: { sym: string; b: BreadthItem; s: StructureIt
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
       <span style={{ color: 'rgba(255,255,255,0.65)', fontSize: 13 }}>{sym}</span>
+      <span style={{ color: '#fff', fontSize: 13, fontWeight: 700 }}>
+        {b.price != null ? price(b.price) : '--'}
+      </span>
       {token ? (
         <span style={{ color: token.color, fontSize: 13 }}>{token.text}</span>
       ) : b.ema_label ? (
@@ -136,31 +146,58 @@ export default function MarketOverviewBar() {
     )
   }
 
-  const pct = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}%`
-  const price = (v: number) => v.toLocaleString('en-US', { maximumFractionDigits: 0 })
-
-  // 结构行：结构类型 · 支撑/阻力（距现价%）· 信号有效性 · 4h 背景 · 异常 · 检测时间
-  const structureLines = (['BTCUSDT', 'ETHUSDT'] as const)
-    .filter((sym) => structureFresh(structure?.[sym]))
+  // tooltip 逐行分块（2026-10-13-2 重构）：每币独立块——价格/24h、结构、支撑、
+  // 阻力、EMA/4h 背景、异常、检测时间；无结构快照时回落 EMA 形态行
+  const symbolBlocks = (['BTCUSDT', 'ETHUSDT'] as const)
     .map((sym) => {
-      const s = structure![sym]
-      const parts = [`结构 ${s.trend_label}`]
-      if (s.support != null) parts.push(`支撑 ${price(s.support)}（${pct(s.support_dist_pct ?? 0)}）`)
-      if (s.resistance != null) parts.push(`阻力 ${price(s.resistance)}（${pct(s.resistance_dist_pct ?? 0)}）`)
-      if (s.broken) parts.push('破位未收回')
-      else if (s.valid === true) parts.push('信号有效')
-      if (s.htf_label) parts.push(`4h ${s.htf_label}`)
-      if (s.anomaly_labels.length) parts.push(`异常：${s.anomaly_labels.join('/')}`)
-      if (s.updated_at) parts.push(`检测 ${bj(s.updated_at).format('MM-DD HH:mm')}`)
-      return <div key={sym}>{sym.replace('USDT', '')}：{parts.join(' · ')}</div>
+      const b = breadth?.[sym]
+      const sf = structureFresh(structure?.[sym]) ? structure![sym] : null
+      if (!b && !sf) return null
+      const rows: ReactNode[] = []
+      if (b) {
+        rows.push(
+          <div key="px">
+            价格 {b.price != null ? price(b.price) : '--'}
+            <span style={{ marginLeft: 10 }}>24h {pct(b.change_24h_pct)}</span>
+          </div>,
+        )
+      }
+      if (sf) {
+        rows.push(
+          <div key="trend">
+            结构 {sf.trend_label}
+            {sf.broken ? ' · 破位未收回' : sf.valid === true ? ' · 信号有效' : ''}
+          </div>,
+        )
+        if (sf.support != null) {
+          rows.push(<div key="sup">支撑 {price(sf.support)}（{pct(sf.support_dist_pct ?? 0)}）</div>)
+        }
+        if (sf.resistance != null) {
+          rows.push(<div key="res">阻力 {price(sf.resistance)}（{pct(sf.resistance_dist_pct ?? 0)}）</div>)
+        }
+        const emaParts = [
+          b?.ema_label ? `1h EMA ${b.ema_label}` : null,
+          sf.htf_label ? `4h ${sf.htf_label}` : null,
+        ].filter(Boolean)
+        if (emaParts.length) rows.push(<div key="ema">{emaParts.join(' · ')}</div>)
+        if (sf.anomaly_labels.length) rows.push(<div key="ano">异常 {sf.anomaly_labels.join(' / ')}</div>)
+        if (sf.updated_at) rows.push(<div key="ts">检测 {bj(sf.updated_at).format('MM-DD HH:mm')}</div>)
+      } else if (b?.ema_label) {
+        rows.push(<div key="ema">EMA {b.ema_label}</div>)
+      }
+      return (
+        <div key={sym} style={{ marginTop: 4 }}>
+          <div style={{ fontWeight: 700 }}>{sym.replace('USDT', '')}</div>
+          {rows}
+        </div>
+      )
     })
+    .filter(Boolean)
 
   const tooltip = (
-    <div>
-      {structureLines}
-      {breadth?.BTCUSDT && <div>BTC：EMA {breadth.BTCUSDT.ema_label ?? '--'}，24h {pct(breadth.BTCUSDT.change_24h_pct)}</div>}
-      {breadth?.ETHUSDT && <div>ETH：EMA {breadth.ETHUSDT.ema_label ?? '--'}，24h {pct(breadth.ETHUSDT.change_24h_pct)}</div>}
-      {fg && <div>恐惧贪婪指数：{fg.value}（{FG_LABELS[fg.label] ?? fg.label}）—— 0 极度恐惧 / 100 极度贪婪</div>}
+    <div style={{ whiteSpace: 'nowrap' }}>
+      {symbolBlocks}
+      {fg && <div style={{ marginTop: 4 }}>恐惧贪婪指数 {fg.value}（{FG_LABELS[fg.label] ?? fg.label}）</div>}
     </div>
   )
 

@@ -225,11 +225,10 @@ def _analysis(db, rec=90):
 
 @pytest.fixture()
 def gate_env(monkeypatch, db):
-    """β/急跌替身：get_beta 返回可配值；btc_crash_active 恒 False"""
+    """β替身：get_beta 返回可配值"""
     holder = {"beta": 1.0}
     monkeypatch.setattr(market_data, "get_beta", lambda client, symbol: holder["beta"])
     monkeypatch.setattr(market_data, "get_kline_client", lambda: None)
-    monkeypatch.setattr(market_data, "btc_crash_active", lambda client, crash_pct=None: False)
     return holder
 
 

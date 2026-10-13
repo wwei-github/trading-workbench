@@ -14,26 +14,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import settings  # noqa: E402
-from app.services import market_data as md  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _fixed_settings(monkeypatch):
     monkeypatch.setattr(settings, "TRADING_MIN_RECOMMENDATION", 60.0)
     monkeypatch.setattr(settings, "CONSECUTIVE_LOSS_DERATE", False)
-    monkeypatch.setattr(settings, "BTC_CRASH_PAUSE_PCT", 0)   # 隔离急跌闸门
     monkeypatch.setattr(settings, "PORTFOLIO_HEAT_CAP", 0)
     monkeypatch.setattr(settings, "SAME_DIRECTION_CAP", 0)
     monkeypatch.setattr(settings, "MARKET_CONTEXT_ENABLED", False)
-
-
-@pytest.fixture(autouse=True)
-def _clear_cache():
-    md._cache.pop("market_wide_regime", None)
-    md._cache.pop("btc_crash_active", None)
-    yield
-    md._cache.pop("market_wide_regime", None)
-    md._cache.pop("btc_crash_active", None)
 
 
 @pytest.fixture()
@@ -88,11 +77,6 @@ class _PenetrationTrader:
 
     def __getattr__(self, name):
         raise RuntimeError("替身终点")
-
-
-@pytest.fixture(autouse=True)
-def _no_market_regime(monkeypatch):
-    monkeypatch.setattr(md, "market_wide_regime", lambda client, pause_pct=None: None)
 
 
 def test_s1_still_blocked_by_current_price_rr(db):

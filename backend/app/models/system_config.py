@@ -147,11 +147,9 @@ class SystemConfig(Base):
     portfolio_heat_cap: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
     # 同向持仓上限（NULL=默认 0=不限）：同方向在跑单数上限
     same_direction_cap: Mapped[int] = mapped_column(nullable=True, default=None)
-    # BTC 急跌暂停阈值 %（NULL=默认 1.0；0=关闭普跌防护）
+    # BTC 急跌警示阈值 %（NULL=默认 1.0；0=关闭急跌警示；2026-10-13 起仅供
+    # AI 提示词警示，不再拦截开单）
     btc_crash_pause_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
-    # 大盘单边暂停阈值 %（N-15，NULL=默认 3.0；0=关闭）：BTC+ETH 24h 双跌超值
-    # 暂停山寨开多、双涨超值暂停山寨开空（双向逆势拦截）
-    market_wide_pause_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
 
     # 现货屯币配置（docs/18）：JSON 列（三币开关/单份金额/投入上限/定投 + 全局预算）。
     # 零侵入约束：新增独立列，不改既有列语义；NULL=全部默认值。

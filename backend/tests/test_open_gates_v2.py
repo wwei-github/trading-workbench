@@ -53,11 +53,6 @@ def _fixed_settings(monkeypatch):
     monkeypatch.setattr(settings, "DAILY_LOSS_STOP_PCT", 9.0)
     monkeypatch.setattr(settings, "DAILY_LOSS_STOP_ENABLED", True)
     monkeypatch.setattr(settings, "NEAR_ANCHOR_RISK_FACTOR", 0.7)
-    # 普跌防护 stub（2026-10-07）：不 stub 会真实请求币安，当天 BTC 恰逢
-    # 3 根 1h 累计急跌时该闸抢在所有被测闸门前拦截（13 例随机全挂）——
-    # 与 test_shadow_and_beta.gate_env 同款先例
-    from app.services import market_data as md
-    monkeypatch.setattr(md, "btc_crash_active", lambda client, crash_pct=None: False)
 
 
 @pytest.fixture()
