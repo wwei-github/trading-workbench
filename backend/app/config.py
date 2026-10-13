@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     BREAKOUT_MAX_PCT: float = 1.5  # 突破幅度上限：越过轨 >1.5% 视为追高，不产生突破触发（0=关闭）
     CANDLE_MAX_EMA21_DIST_PCT: float = 1.5  # 悬空金K门槛（已随纯金K下线失效，键保留向后兼容）
     RETEST_WINDOW_BARS: int = 24  # 突破回测触点有效窗口（已收盘根数，0=关闭 retest 触点）
+    # 回踩待确认窗口（2026-10-13-10）：触碰根治不落金K后进入 pending 待确认池，
+    # 同向金K允许出现在触碰根之后 1..N 根已收盘K线内（支持启明星/黄昏星等三根形态；
+    # N=1 等价旧「恰好下一根」行为）。≥1，由 trigger 层消费。
+    PENDING_CONFIRM_WINDOW_BARS: int = 3
     STRUCTURE_TOUCH_BAND_PCT: float = 0.3  # retest/swing 横向位触碰带宽（%，影线可入带收盘须守住）
     EMA_TOUCH_MIN_BARS: int = 200  # EMA 触碰最小已收盘根数（数据门，EMA144 收敛兜底）
     # 1h 结构门开关：已于 2026-10-12 退役（docs/21 O7）。字段保留向后兼容，
@@ -230,7 +234,12 @@ class Settings(BaseSettings):
     # 静默撤档（take_profit_2=0，不进 violations、不触发 Reflection），间距下限见
     # TP2_MIN_GAP_* 常量；原「TP2<TP1 打回」硬校验同步移除。P0/P1 提示词补间距纪律
     # （不足则主动输出 take_profit_2=0）
-    RULE_VERSION: str = "v2026-10-13-9"
+    # v2026-10-13-10（用户拍板）：回踩待确认窗口由「恰好下一根」放宽为 N 根——
+    # 触碰根进 pending 后，同向金K出现在其后 1..N 根已收盘K线内即确认（支持三根
+    # 形态等待：INJUSDT 触碰根→十字星→启明星决断根个案）；窗口未满且无金K时保持
+    # 等待不再当轮 expire；窗口耗尽才 window_expired。N 默认 3，见
+    # PENDING_CONFIRM_WINDOW_BARS；N=1 与旧行为完全等价。
+    RULE_VERSION: str = "v2026-10-13-10"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

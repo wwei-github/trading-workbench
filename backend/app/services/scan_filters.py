@@ -58,6 +58,7 @@ SCAN_FILTER_KEYS = (
     "allowed_triggers",           # ③ 触发层：触发类型白名单（2026-09-28）
     "pullback_touch_refs",        # ③ 触发层：回踩触点白名单（2026-09-28 docs/22）
     "retest_window_bars",         # ③ 触发层：突破回测有效窗口（根，0=关闭 retest）
+    "pending_confirm_window_bars",  # ③ 触发层：回踩待确认窗口（根，金K须出现在触碰根后 1..N 根内）
     "structure_touch_band_pct",   # ③ 触发层：retest/swing 横向位触碰带宽（%）
     "ema_touch_min_bars",         # ③ 触发层：EMA 触碰最小已收盘根数（数据门）
     "structure_1h_gate",          # ② 结构层：1h 结构门开关（2026-10-11，false=跳过判定）
@@ -79,6 +80,8 @@ class ScanFilters:
     allowed_triggers: tuple = ALL_TRIGGERS
     pullback_touch_refs: tuple = DEFAULT_TOUCH_REFS
     retest_window_bars: int = 24
+    # 回踩待确认窗口（2026-10-13-10）：触碰根后 1..N 根已收盘K线内出现同向金K即确认
+    pending_confirm_window_bars: int = 3
     structure_touch_band_pct: float = 0.3
     ema_touch_min_bars: int = 200
     new_coin_cooldown_days: int = 14
@@ -163,6 +166,8 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
         allowed_triggers=_triggers("allowed_triggers"),
         pullback_touch_refs=_touch_refs("pullback_touch_refs"),
         retest_window_bars=_int("retest_window_bars", settings.RETEST_WINDOW_BARS),
+        pending_confirm_window_bars=_int(
+            "pending_confirm_window_bars", settings.PENDING_CONFIRM_WINDOW_BARS, minimum=1),
         structure_touch_band_pct=_num("structure_touch_band_pct", settings.STRUCTURE_TOUCH_BAND_PCT),
         ema_touch_min_bars=_int("ema_touch_min_bars", settings.EMA_TOUCH_MIN_BARS),
         structure_1h_gate=_bool("structure_1h_gate", settings.STRUCTURE_1H_GATE),

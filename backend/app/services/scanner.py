@@ -772,10 +772,12 @@ class Scanner:
 
             # 5.5.1 孤儿行清扫（2026-10-10）：跌出本轮宇宙的币（缩量/黑名单/风险
             # 档位/拉K线持续失败等）无人再评估其 pending，行冻结在 pending 永不
-            # 终态。设计等待窗 ≤2 根（触碰根建池 → 次根裁决，docs/19），超 3 根
-            # 仍未终态即为孤儿，直接 expired（window_expired）。全表一条 UPDATE，
+            # 终态。设计等待窗 ≤N 根（N=pending_confirm_window_bars，默认 3），
+            # 阈值取 N+1 根给「窗口最后一根仍未裁决」留一轮余量，超 N+1 根仍未
+            # 终态即为孤儿，直接 expired（window_expired）。全表一条 UPDATE，
             # 每轮都跑（幂等，命中的轮次才写行）
-            self._sweep_orphan_pendings(kline_interval)
+            self._sweep_orphan_pendings(
+                kline_interval, flt.pending_confirm_window_bars + 1)
 
             # 5.6 破轨事件处置（docs/22 §4）：upsert/consume + 窗口过期批处理
             if event_ops:
@@ -1176,10 +1178,11 @@ class Scanner:
         """孤儿 pending 清扫（2026-10-10）：跌出扫描宇宙的币无人再评估其 pending，
         行冻结在 pending 永不终态（_prefetch/_apply 均按本轮 universe 过滤）。
 
-        设计等待窗 ≤2 根（触碰根建池 → 次根裁决，docs/19）；给同向触碰续命的
-        upsert 也会刷新 stage1_candle_open，故超 max_bars 根仍未终态 = 既无本轮
-        处置也无续命，属孤儿。批量置 expired/window_expired（终态保留审计链，
-        前端 blocked_by 可见死因）。失败只记日志——下轮清扫幂等重跑。
+        设计等待窗 ≤N 根（N=pending_confirm_window_bars）；调用方取 N+1 根作阈值，
+        给「窗口最后一根仍未裁决」留一轮余量；给同向触碰续命的 upsert 也会刷新
+        stage1_candle_open，故超 max_bars 根仍未终态 = 既无本轮处置也无续命，属孤儿。
+        批量置 expired/window_expired（终态保留审计链，前端 blocked_by 可见死因）。
+        失败只记日志——下轮清扫幂等重跑。默认 3 供旧调用方兼容（N=2 口径）。
         """
         sdb = SessionLocal()
         try:

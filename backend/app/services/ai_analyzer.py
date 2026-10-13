@@ -212,7 +212,7 @@ def render_signal_gate_block(
                 "（优先级 retest>swing>ema21>ema21_4h>ema55，命中位见信号块「回踩触点」行）",
                 f"- 横向位触碰带宽: 影线可入带（{flt.structure_touch_band_pct:.1f}% 内）且收盘守住位；"
                 "EMA 触点=下影触及且收盘收回线上（做空对称）",
-                "- 两段式确认: 触碰后当根出现同向金K，或上根触碰+本根金K（次根确认）",
+                "- 两段式确认: 当根触碰+金K 直接确认，或触碰后 N 根内出现同向金K（窗口内确认）",
             ]
             if cap_line:
                 lines.append(cap_line)

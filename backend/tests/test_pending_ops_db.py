@@ -93,18 +93,24 @@ def _fresh_pending(db, sym: str) -> None:
 
 
 def test_sweep_expires_stale_orphan(db):
-    """超 3 根（1h=3h）未裁决的 pending → expired/window_expired（孤儿清扫主路径）"""
+    """超 N+1=4 根（1h=4h）未裁决的 pending → expired/window_expired（孤儿清扫主路径；
+    窗口放宽为 N=3 后清扫阈值取 N+1，窗口内 3h 不清）"""
     _fresh_pending(db, "ORPHAN/USDT")
+    in_window = PullbackPending(symbol="INWINDOW/USDT", direction=1,
+                                stage1_candle_open=datetime.utcnow() - timedelta(hours=3))
     stale = PullbackPending(symbol="STALE/USDT", direction=-1,
-                            stage1_candle_open=datetime.utcnow() - timedelta(hours=4))
+                            stage1_candle_open=datetime.utcnow() - timedelta(hours=5))
+    db.add(in_window)
     db.add(stale)
     db.commit()
 
-    Scanner._sweep_orphan_pendings("1h", max_bars=3)
+    Scanner._sweep_orphan_pendings("1h", max_bars=4)
 
     fresh = db.execute(select(PullbackPending).where(PullbackPending.symbol == "ORPHAN/USDT")).scalars().one()
+    win = db.execute(select(PullbackPending).where(PullbackPending.symbol == "INWINDOW/USDT")).scalars().one()
     row = db.execute(select(PullbackPending).where(PullbackPending.symbol == "STALE/USDT")).scalars().one()
-    assert fresh.status == "pending"          # 3h 内不动
+    assert fresh.status == "pending"          # 刚触碰，不动
+    assert win.status == "pending"            # 窗口内（3h ≤ 4h 阈值）不误伤
     assert row.status == "expired"
     assert row.resolve_reason == "window_expired"
     assert row.resolved_at is not None
@@ -115,8 +121,8 @@ def test_sweep_keeps_active_rows_and_is_idempotent(db):
     _fresh_pending(db, "ACTIVE/USDT")
     db.commit()
 
-    Scanner._sweep_orphan_pendings("1h", max_bars=3)
-    Scanner._sweep_orphan_pendings("1h", max_bars=3)  # 重跑无异常无副作用
+    Scanner._sweep_orphan_pendings("1h", max_bars=4)
+    Scanner._sweep_orphan_pendings("1h", max_bars=4)  # 重跑无异常无副作用
 
     row = db.execute(select(PullbackPending).where(PullbackPending.symbol == "ACTIVE/USDT")).scalars().one()
     assert row.status == "pending"

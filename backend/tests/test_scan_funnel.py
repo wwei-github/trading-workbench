@@ -224,13 +224,13 @@ def test_no_trigger_detail_real_trigger():
 
 
 def test_no_trigger_detail_pending_expired():
-    """活跃 pending（Stage-1=上一根已收盘K线）+ 本根无金K无触点 → expire/
-    window_expired，detail 附待确认失效原因（2026-10-13）"""
+    """活跃 pending（Stage-1 已到确认窗口最后一根 elapsed=N）+ 本根无金K无触点
+    → expire/window_expired，detail 附待确认失效原因（2026-10-13；窗口放宽为 N 根）"""
     from datetime import datetime as dt
     kl = _rising_klines()
     pending = {
         "id": 1, "direction": 1, "touch_ref": "swing",
-        "stage1_candle_open": dt.utcfromtimestamp(kl[-3][0] / 1000),
+        "stage1_candle_open": dt.utcfromtimestamp(kl[-5][0] / 1000),  # elapsed=N=3
     }
     rv: dict = {}
     cand, op = _detect(rv, kl, flt=_diag_flt(), pending=pending,
@@ -238,7 +238,7 @@ def test_no_trigger_detail_pending_expired():
     assert cand is None
     assert op == {"op": "expire", "reason": "window_expired"}
     assert rv["stage"] == "no_trigger"
-    assert "待确认失效：回踩摆动低点后次根未出现同向金K" in rv["detail"]
+    assert "待确认失效：回踩摆动低点后确认窗口内未出现同向金K" in rv["detail"]
 
 
 def test_reject_trigger_whitelist():

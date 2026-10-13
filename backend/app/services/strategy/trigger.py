@@ -10,7 +10,8 @@
   无未破结构位可越时的追势入场；与 T1a 同轮互斥（结构优先，单币单候选），
   两类共享三重收紧：最小幅度 + 放量 + 长实体短影线 + 追高上限（各自按突破位衡量）
 - T3 trigger_pullback_confirm：回踩触点企稳 + 同向金K 两段式确认——
-  当根同时触碰+金K（当根确认），或上根触碰（pending）+ 本根金K（次根确认）；
+  当根同时触碰+金K（当根确认），或触碰根后 1..N 根已收盘K线内出现同向金K
+  （次根/N 根内确认，N=pending_confirm_window_bars 默认 3）；
   仅触碰无金K 不再当根触发，转入 pending 待确认池（scanner 持久化）
 - 纯金K触发（trigger_candlestick）2026-09-29 下线：金K必须与触点配合，无触碰
   无有效 pending 的金K 一律不触发（正式网复盘 28 笔 6 胜负期望）
@@ -25,8 +26,9 @@
 同根多触点命中按优先级标注（横向结构 > 均线；均线取最快）：
 retest > swing > ema21 > ema55 > ema144
 
-优先级（决策矩阵，docs/19 §4.1）：T1a/T1b 突破 > 当根确认 > 次根确认 >
-触碰转 pending；pending 仅在"恰好下一根K线"有效（开盘时间精确比对）。
+优先级（决策矩阵，docs/19 §4.1）：T1a/T1b 突破 > 当根确认 > 次根/N 根内确认 >
+触碰转 pending；pending 在触碰根后 N 根窗口内有效（N = ScanFilters.
+pending_confirm_window_bars，默认 3；N=1 即旧「恰好下一根」口径）。
 
 position 语义（docs/09 方向派生口径，2026-09-28 关键位移除后回归）：
 看涨形态/回踩企稳=support、向上突破/反抽受阻=resistance。
@@ -149,11 +151,11 @@ def _pending_touch_label(pending: dict, direction: int) -> str:
 
 
 def _expire_note(pending: dict, direction: int, flip: bool) -> str:
-    """待确认失效原因文本（direction_flip=方向失守 / window_expired=次根无金K）"""
+    """待确认失效原因文本（direction_flip=方向失守 / window_expired=确认窗口内无金K）"""
     if flip:
         return "待确认失效：待确认方向与当前多数决相反（方向失守）"
     return (f"待确认失效：回踩{_pending_touch_label(pending, direction)}后"
-            "次根未出现同向金K（确认窗口关闭）")
+            "确认窗口内未出现同向金K（窗口关闭）")
 
 
 def _breakout_fail_notes(
@@ -467,7 +469,8 @@ def detect_trigger(
       quality/votes 快照由 scanner 填充），trigger.py 保持无 DB 依赖。
 
     信号判定全部基于已收盘K线（klines[-2]）；pending 有效期 = 其 stage1_candle_open
-    恰为 klines[-3] 的开盘时间（上一根已收盘K线），免疫扫描时刻漂移与轮次缺失。
+    落在信号K线之前 1..N 根已收盘K线内（N=pending_confirm_window_bars），免疫扫描
+    时刻漂移与轮次缺失；窗口未满且无同向金K 时保持等待（不下 pending 处置）。
     """
     # 筛选参数组（None=按 settings 解析，env/代码默认兜底）
     flt = flt or resolve_scan_filters(None)
@@ -481,14 +484,23 @@ def detect_trigger(
     pos_fb = "support" if direction == 1 else "resistance"
     wanted = "bullish" if direction == 1 else "bearish"
 
-    # pending 有效期判定：Stage-1 锚点必须是上一根已收盘K线（klines[-3]）
-    pending_valid = False
+    # pending 有效期判定：Stage-1 触碰根的已收盘K线须落在信号K线之前 1..N 根内
+    # （N=ScanFilters.pending_confirm_window_bars；N=1 即旧「恰好下一根」口径）
+    win = max(1, int(flt.pending_confirm_window_bars))
+    pending_elapsed = None  # 触碰根距信号K线的已收盘根数（1..N）；None=不在窗口内
     if pending:
-        try:
-            anchor = datetime.utcfromtimestamp(float(klines[-3][0]) / 1000)
-            pending_valid = pending.get("stage1_candle_open") == anchor
-        except (IndexError, TypeError, ValueError, OSError):
-            pending_valid = False
+        anchor = pending.get("stage1_candle_open")
+        for k in range(1, win + 1):
+            idx = -2 - k
+            if -idx > n:
+                break
+            try:
+                if anchor == datetime.utcfromtimestamp(float(klines[idx][0]) / 1000):
+                    pending_elapsed = k
+                    break
+            except (IndexError, TypeError, ValueError, OSError):
+                break
+    pending_valid = pending_elapsed is not None
 
     # T1 双突破分类（2026-09-29）：同一根信号K线按突破位口径互斥归类，结构优先——
     # ① T1a 结构突破：突破位 = 最近一个自形成以来未被收盘价突破的摆动结构前高
@@ -675,9 +687,9 @@ def detect_trigger(
             p_label = TOUCH_LABELS.get(p_ref, "触点") if p_ref else "触点"
             _label = PATTERN_LABEL_MAP.get(golden["pattern"], golden["pattern"])
             _ev = f"本根{_label}确认" if not golden_note else f"{golden_note}确认"
-            # 企稳加分项：次根确认时触碰根 = 金K 的前一根（klines[-3]，即
-            # pending 的 Stage-1 根），量能语义照常评估
-            _stab = pullback_stabilize_bonus(klines, direction, -3)
+            # 企稳加分项：触碰根 = 金K 之前 pending_elapsed 根（klines[-2-elapsed]，
+            # 即 pending 的 Stage-1 根），量能语义照常评估
+            _stab = pullback_stabilize_bonus(klines, direction, -2 - pending_elapsed)
             return {
                 "type": PULLBACK_CONFIRM,
                 "direction": direction,
@@ -687,7 +699,7 @@ def detect_trigger(
                 "stabilize": _stab,
                 # 组合金K标志（2026-10-13-6）：质量分算金K组合价格带结构点密度用
                 "golden_combo": bool(golden_note),
-                "reason": f"指标同向·上根回踩{p_label}企稳·{_ev}{vol_note}",
+                "reason": f"指标同向·回踩{p_label}企稳·{_ev}{vol_note}",
             }, {"op": "confirm"}
         if pending:
             flip = pending.get("direction") != direction
@@ -708,16 +720,21 @@ def detect_trigger(
             "ema21": touch_price,
         }
 
-    # 行6/行7：未触碰无金K → 有效 pending 窗口到期；无效 pending 也顺手终态（错过即过期）
+    # 行6/行7：未触碰无金K → 窗口未满保持等待；窗口耗尽/无效 pending 才终态（错过即过期）
     if touch_blocked:
         # ema21 触点未过 1H 结构门 → 该次回踩否决，活跃 pending 一并失效。
         # 无活跃 pending 时也返回 expire 动作：仅供 scanner 漏斗归因
         # （_reject("structure_1h")），scanner 对无 pending 币种不落该处置动作。
         return None, {"op": "expire", "reason": "structure_1h"}
     if pending:
-        flip = pending.get("direction") != direction
-        _diag_note(diag, _expire_note(pending, direction, flip))
-        reason = "direction_flip" if flip else "window_expired"
-        return None, {"op": "expire", "reason": reason}
+        if pending.get("direction") != direction:
+            _diag_note(diag, _expire_note(pending, direction, True))
+            return None, {"op": "expire", "reason": "direction_flip"}
+        if pending_valid and pending_elapsed < win:
+            # 窗口未满：保持等待，本轮不对 pending 下任何处置（待确认池继续显示）
+            _diag_note(diag, f"待确认等待中：本根无同向金K，确认窗口还剩 {win - pending_elapsed} 根")
+            return None, None
+        _diag_note(diag, _expire_note(pending, direction, False))
+        return None, {"op": "expire", "reason": "window_expired"}
     _diag_note(diag, "本根无同向金K")
     return None, None

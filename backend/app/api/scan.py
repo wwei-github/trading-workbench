@@ -462,6 +462,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
             # 回踩触点体系（docs/22）：启用触点白名单 + 触点参数
             "pullback_touch_refs": list(flt.pullback_touch_refs),
             "retest_window_bars": flt.retest_window_bars,
+            "pending_confirm_window_bars": flt.pending_confirm_window_bars,
             "structure_touch_band_pct": flt.structure_touch_band_pct,
             "ema_touch_min_bars": flt.ema_touch_min_bars,
             "structure_1h_gate": flt.structure_1h_gate,
@@ -481,6 +482,7 @@ _SCAN_FILTER_RANGES: dict[str, tuple[float, float, str]] = {
     "ai_max_per_scan": (1, 50, "单轮扫描 AI 分析上限（个）"),
     # 回踩触点体系（docs/22）
     "retest_window_bars": (0, 500, "突破回测触点有效窗口（已收盘根数，0=关闭 retest 触点）"),
+    "pending_confirm_window_bars": (1, 10, "回踩待确认窗口（已收盘根数，金K须出现在触碰根后 1~N 根内）"),
     "structure_touch_band_pct": (0, 5, "retest/swing 触碰带宽（%，影线可入带收盘须守住）"),
     "ema_touch_min_bars": (50, 1000, "EMA 触点最小已收盘根数（数据门）"),
 }

@@ -30,6 +30,8 @@ def _pin_breakout_settings(monkeypatch):
     monkeypatch.setattr(settings, "BREAKOUT_THRESHOLD", 0.002)
     monkeypatch.setattr(settings, "BREAKOUT_VOL_RATIO", 1.2)
     monkeypatch.setattr(settings, "BREAKOUT_MAX_PCT", 1.5)
+    # 回踩待确认窗口固定为 3（2026-10-13-10）：矩阵用例按 N 语义断言 elapsed 边界
+    monkeypatch.setattr(settings, "PENDING_CONFIRM_WINDOW_BARS", 3)
 
 
 @pytest.fixture(autouse=True)
@@ -141,12 +143,38 @@ def test_row7_no_trigger_no_pending():
     assert t is None and op is None
 
 
-# ── 行6：有效 pending + 无触碰无金K → 窗口到期 ─────────────────────────────
+# ── 行6：有效 pending + 无触碰无金K → 窗口未满等待 / 窗口耗尽到期 ──────────
 
-def test_row6_valid_pending_expires():
+def test_row6_valid_pending_mid_window_waits():
+    """锚点 elapsed=1 < N（默认 3）→ 窗口未满且无金K：保持等待（不下任何处置）"""
     kl = _kl(*_base())
     _no_touch_long(kl)
     t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-3))
+    assert t is None and op is None
+
+
+def test_row6_valid_pending_waits_at_elapsed_two():
+    """锚点 elapsed=2 < N → 同样保持等待（三根形态等待核心场景：触碰根→十字星）"""
+    kl = _kl(*_base())
+    _no_touch_long(kl)
+    t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-4))
+    assert t is None and op is None
+
+
+def test_row6_window_last_bar_expires():
+    """锚点 elapsed=N（窗口最后一根）仍无金K → 窗口耗尽 window_expired"""
+    kl = _kl(*_base())
+    _no_touch_long(kl)
+    t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-5))
+    assert t is None
+    assert op == {"op": "expire", "reason": "window_expired"}
+
+
+def test_row6_beyond_window_expires():
+    """锚点 elapsed=N+1（超窗，锚点找不到）→ 无效 pending，window_expired"""
+    kl = _kl(*_base())
+    _no_touch_long(kl)
+    t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-6))
     assert t is None
     assert op == {"op": "expire", "reason": "window_expired"}
 
@@ -312,11 +340,71 @@ def test_row3_next_candle_confirm():
 
 
 def test_row3_pending_stale_no_trigger_expires():
-    """pending 锚点不是上一根（隔轮）→ 失效：纯金K已下线不触发，pending 过期"""
+    """pending 锚点超出确认窗口（elapsed=N+1）→ 失效：纯金K已下线不触发，pending 过期"""
     kl = _kl(*_base())
     _no_touch_long(kl)
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-6))
+    assert t is None
+    assert op == {"op": "expire", "reason": "window_expired"}
+
+
+# ── 行3：窗口内确认（N 根放宽核心场景，2026-10-13-10）──────────────────────
+
+def test_row3_morning_star_at_third_candle_confirms():
+    """三根形态等待：触碰根(elapsed 0)→十字星(elapsed 1)→启明星决断根(elapsed 2)
+    → 阈值内同向金K确认（旧「恰好下一根」口径会在 elapsed 1 即 window_expired）"""
+    kl = _kl(*_base())
+    _no_touch_long(kl)
+    with patch.object(trig, "detect_all_patterns",
+                      return_value=[{"pattern": "morning_star", "direction": "bullish"}]):
         t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-4))
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["pattern"] == "morning_star"
+    assert op == {"op": "confirm"}
+
+
+def test_row3_confirm_at_elapsed_one_still_works():
+    """回归：elapsed=1（紧邻前一根触碰）在 N=3 下同样确认（旧行为不减损）"""
+    kl = _kl(*_base())
+    _no_touch_long(kl)
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-3))
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert op == {"op": "confirm"}
+
+
+def test_row3_short_symmetric_window_confirm():
+    """空头对称：elapsed=2 出现看跌吞没 → 窗口内确认（position=resistance）"""
+    base = 100.0
+    closes = [base - 0.01 * (i % 5) for i in range(60)]
+    highs = [c + 0.3 for c in closes]
+    lows = [c - 0.3 for c in closes]
+    kl = _klines(closes, highs, lows)
+    ema = _ema21_of(kl)
+    # 信号K整体悬于 EMA21 下方（high < ema）→ 无触碰；收盘不低于前低门槛
+    # （close > 前低*(1-thr)，不构成跌破突破）→ 走行3 窗口内确认
+    c = ema - 0.02
+    _set_signal_candle(kl, c, ema - 0.01, c - 0.05)
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_SHORT):
+        t, op = trig.detect_trigger(kl, -1, pending=_pending(kl, direction=-1, anchor_idx=-4))
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["position"] == "resistance"
+    assert op == {"op": "confirm"}
+
+
+def test_window_configurable_n1_restores_old_behavior():
+    """N=1 回退：锚点 elapsed=2（超窗）→ expire window_expired（与旧行为等价）"""
+    kl = _kl(*_base())
+    _no_touch_long(kl)
+    flt = trig.ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=20,
+        breakout_threshold=0.002, breakout_vol_ratio=1.2,
+        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
+        ai_max_per_scan=10, pending_confirm_window_bars=1,
+    )
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-4), flt=flt)
     assert t is None
     assert op == {"op": "expire", "reason": "window_expired"}
 
@@ -370,16 +458,26 @@ def test_row5_touch_refresh_keeps_pending_flow():
     assert t is None and op["op"] == "upsert"
 
 
-# ── 有效期边界：锚点恰为 klines[-3] 才有效 ─────────────────────────────────
+# ── 有效期边界：锚点须落在信号K线前 1..N 根内 ──────────────────────────────
 
-def test_validity_boundary_exactly_previous_candle():
+def test_validity_window_boundary():
+    """锚点须落在信号K线前 1..N 根内：elapsed=0（锚点即本根）不在窗口、
+    区间内(1..N)有金K可确认、超窗(N+1 起)失效"""
     kl = _kl(*_base())
     _no_touch_long(kl)
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
-        for idx in (-2, -4):
-            t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=idx))
-            assert t is None, f"anchor_idx={idx} 应失效且纯金K不触发"
-            assert op == {"op": "expire", "reason": "window_expired"}
+        # elapsed=0（锚点=信号K线自身，非既往触碰根）→ 不在窗口、无回踩语境 → expire
+        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-2))
+        assert t is None
+        assert op == {"op": "expire", "reason": "window_expired"}
+        # elapsed=2（窗口内，N=3）→ 窗口内确认
+        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-4))
+        assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+        assert op == {"op": "confirm"}
+        # elapsed=4（超窗 N+1）→ 失效
+        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-6))
+        assert t is None
+        assert op == {"op": "expire", "reason": "window_expired"}
 
 
 # ── 空头对称：反抽受阻 + 当根金K → 当根确认；无 pending 无 op ─────────────
@@ -444,11 +542,11 @@ def test_row3_far_golden_with_valid_pending_still_confirms():
 
 
 def test_row4_far_golden_with_stale_pending_expires():
-    """悬空金K + 隔轮 pending → 不触发，pending 按窗口过期处置"""
+    """悬空金K + 超窗 pending（elapsed=N+1）→ 不触发，pending 按窗口过期处置"""
     kl = _kl(*_base())
     _far_golden_long(kl)
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
-        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-4))
+        t, op = trig.detect_trigger(kl, 1, pending=_pending(kl, anchor_idx=-6))
     assert t is None
     assert op == {"op": "expire", "reason": "window_expired"}
 

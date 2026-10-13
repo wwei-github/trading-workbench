@@ -1,6 +1,6 @@
 /**
  * 回踩两段式待确认池（docs/19，2026-09-25）
- * - Stage-1 回踩触碰 EMA21 但当根无金K 的币种转入 pending，等下一根K线金K确认
+ * - Stage-1 回踩触碰但当根无金K 的币种转入 pending，等 N 根确认窗口内金K确认（默认 3 根）
  * - 状态流转：pending（等待中）→ confirmed（已确认进 AI）/ expired（无金K或方向失守）/ superseded（突破或当根确认抢先）
  * - 展示分段（2026-10-13 收敛）：待确认 / 后续结果 / 无触发 / 筛选漏斗。
  *   「后续结果」由原「已确认/已卡掉/全部」三 tab 合并而来——展示待确认币种的结论
@@ -34,15 +34,15 @@ type StatusFilter = 'pending' | 'outcome' | 'funnel' | 'no-trigger'
 const STATUS_META: Record<string, { color: string; label: string; hint: string }> = {
   pending: {
     color: 'processing', label: '待确认',
-    hint: '回踩 EMA21 企稳，等下一根K线出现同向金K即确认入场；无金K则过期',
+    hint: '回踩触碰进入确认窗口（默认 3 根），窗口内出现同向金K即确认入场；窗口耗尽无金K则过期',
   },
   confirmed: {
     color: 'success', label: '已确认',
-    hint: '下一根K线出现同向金K，以「回踩金K确认」信号落库并进入 AI 分析',
+    hint: '确认窗口内出现同向金K，以「回踩金K确认」信号落库并进入 AI 分析',
   },
   expired: {
     color: 'default', label: '已卡掉',
-    hint: '被判定链某环节卡掉：ranging=4h 无明确趋势；structure_1h=1H 结构不符；range_score=震荡评分≥3；window_expired=次根无金K确认失效；direction_flip=指标方向失守作废；htf_state_lock=4h状态机双向禁开（缠绕/拐头），候选一票否决、待确认同轮失效',
+    hint: '被判定链某环节卡掉：ranging=4h 无明确趋势；structure_1h=1H 结构不符；range_score=震荡评分≥3；window_expired=确认窗口内无金K确认失效；direction_flip=指标方向失守作废；htf_state_lock=4h状态机双向禁开（缠绕/拐头），候选一票否决、待确认同轮失效',
   },
   superseded: {
     color: 'default', label: '已卡掉',
@@ -54,7 +54,7 @@ const REASON_LABEL: Record<string, string> = {
   ranging: '4h无明确趋势',
   structure_1h: '1H结构不符',
   range_score: '震荡评分≥3',
-  window_expired: '次根无金K',
+  window_expired: '窗口内无金K',
   direction_flip: '方向失守',
   htf_state_lock: '4h状态禁开',
   breakout: '突破抢先',
@@ -62,7 +62,7 @@ const REASON_LABEL: Record<string, string> = {
 }
 
 // 触点方向化措辞（与后端 trigger._touch_ref_label 同口径）：
-// 「等待确认」列拼接「次根看涨金K·触点摆动低点」这类待确认内容
+// 「等待确认」列拼接「窗口内看涨金K·触点摆动低点」这类待确认内容
 function touchWaitLabel(touch_ref: string | null, direction: 1 | -1): string {
   if (!touch_ref) return ''
   if (touch_ref === 'retest') return direction === 1 ? '前高' : '前低'
@@ -161,8 +161,8 @@ export default function PendingPoolPanel() {
         const side = r.direction === 1 ? '看涨' : '看跌'
         const t = touchWaitLabel(r.touch_ref, r.direction)
         return (
-          <Tooltip title="确认窗口仅限触碰K线的下一根已收盘K线：出现同向金K即确认入场；无金K过期，突破/当根确认则让位">
-            <Text>{`次根${side}金K${t ? `·触点${t}` : ''}`}</Text>
+          <Tooltip title="确认窗口为触碰K线之后的 N 根已收盘K线（默认 3 根）：窗口内出现同向金K即确认入场；窗口耗尽无金K则过期，突破/当根确认则让位">
+            <Text>{`窗口内${side}金K${t ? `·触点${t}` : ''}`}</Text>
           </Tooltip>
         )
       },
@@ -200,7 +200,7 @@ export default function PendingPoolPanel() {
     {
       title: '触碰K线', dataIndex: 'stage1_candle_open', key: 'stage1_candle_open', width: 110,
       render: (v: string | null) => (
-        <Tooltip title="Stage-1 回踩触碰 K 线的开盘时间；确认窗口仅限其下一根已收盘K线">
+        <Tooltip title="Stage-1 回踩触碰 K 线的开盘时间；确认窗口为其后 N 根已收盘K线（默认 3 根）">
           {fmtTime(v)}
         </Tooltip>
       ),
