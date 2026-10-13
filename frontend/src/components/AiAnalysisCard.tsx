@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Button, Modal, Space, Spin, Statistic, Tag, Tooltip, Typography, message } from 'antd'
 import {
   ApiOutlined,
@@ -23,6 +23,23 @@ function fmtPrice(v: number | null | undefined): string {
   if (v < 1) return v.toFixed(6)
   if (v < 100) return v.toFixed(4)
   return v.toFixed(2)
+}
+
+/** 容器宽度实测（ResizeObserver）：宽度 ≥ threshold 时返回 true。
+ * 公共检查条目在宽容器（结果表展开行）双列、窄容器（交易记录卡片）保持单列 */
+function useContainerAtLeast(threshold: number) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [wide, setWide] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      setWide((entries[0]?.contentRect.width ?? 0) >= threshold)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [threshold])
+  return [ref, wide] as const
 }
 
 // 把 AI 文本按序号/换行拆成条目逐行展示：
@@ -81,61 +98,71 @@ function parseItem(raw: string): AnalysisItem {
   return { num, tag, label, text: s }
 }
 
-/** AI 推理逐条展示：序号圆徽 + 标签/短标题强调 + 正文，条目间虚线分隔 */
-function AnalysisItemList({ text }: { text?: string | null }) {
+/** AI 推理逐条展示：序号圆徽 + 标签/短标题强调 + 正文，条目间虚线分隔；
+ * columns=2 时按条目对半拆两列（宽容器下更紧凑，虚线分隔在各列内独立） */
+function AnalysisItemList({ text, columns = 1 }: { text?: string | null; columns?: 1 | 2 }) {
   const rows = analysisLines(text).map(parseItem)
   if (rows.length === 0) return <span style={{ color: '#999' }}>-</span>
-  return (
-    <div style={{ fontSize: 13 }}>
-      {rows.map((it, i) => (
-        <div
-          key={i}
+  const renderItem = (it: AnalysisItem, i: number) => (
+    <div
+      key={i}
+      style={{
+        display: 'flex',
+        gap: 8,
+        padding: '4px 0',
+        borderTop: i > 0 ? '1px dashed #f0f0f0' : undefined,
+      }}
+    >
+      {it.num != null && (
+        <span
           style={{
-            display: 'flex',
-            gap: 8,
-            padding: '6px 0',
-            borderTop: i > 0 ? '1px dashed #f0f0f0' : undefined,
+            flex: '0 0 auto',
+            width: 18,
+            height: 18,
+            marginTop: 3,
+            borderRadius: 9,
+            background: '#e6f4ff',
+            color: '#1677ff',
+            fontSize: 11,
+            fontWeight: 700,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
           }}
         >
-          {it.num != null && (
-            <span
-              style={{
-                flex: '0 0 auto',
-                width: 18,
-                height: 18,
-                marginTop: 3,
-                borderRadius: 9,
-                background: '#e6f4ff',
-                color: '#1677ff',
-                fontSize: 11,
-                fontWeight: 700,
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              {it.num}
-            </span>
-          )}
-          <div style={{ flex: 1, minWidth: 0, lineHeight: 1.8, color: '#434343' }}>
-            {it.tag && (
-              <Tag
-                color="orange"
-                bordered={false}
-                style={{ marginInlineEnd: 6, fontSize: 11, lineHeight: '16px', paddingInline: 5 }}
-              >
-                {it.tag}
-              </Tag>
-            )}
-            {it.label && (
-              <span style={{ fontWeight: 600, color: '#262626', marginRight: 6 }}>{it.label}</span>
-            )}
-            {it.text}
-          </div>
-        </div>
-      ))}
+          {it.num}
+        </span>
+      )}
+      <div style={{ flex: 1, minWidth: 0, lineHeight: 1.8, color: '#434343' }}>
+        {it.tag && (
+          <Tag
+            color="orange"
+            bordered={false}
+            style={{ marginInlineEnd: 6, fontSize: 11, lineHeight: '16px', paddingInline: 5 }}
+          >
+            {it.tag}
+          </Tag>
+        )}
+        {it.label && (
+          <span style={{ fontWeight: 600, color: '#262626', marginRight: 6 }}>{it.label}</span>
+        )}
+        {it.text}
+      </div>
     </div>
   )
+  if (columns === 2 && rows.length > 1) {
+    const half = Math.ceil(rows.length / 2)
+    return (
+      <div style={{ display: 'flex', gap: 16, fontSize: 13 }}>
+        {[rows.slice(0, half), rows.slice(half)].map((col, ci) => (
+          <div key={ci} style={{ flex: 1, minWidth: 0 }}>
+            {col.map(renderItem)}
+          </div>
+        ))}
+      </div>
+    )
+  }
+  return <div style={{ fontSize: 13 }}>{rows.map(renderItem)}</div>
 }
 
 // analysis 固定节标题（2026-10-12 前后端契约，docs/03 §3.1）：新格式两节
@@ -250,6 +277,8 @@ function StrategyLines({ lines, accent }: { lines: string[]; accent: string }) {
 function AnalysisSectionsView({ ai, sections }: { ai: AIAnalysis; sections: AnalysisSections }) {
   // 系统红绿方案（页面顶部全局切换，localStorage 持久化）
   const colorScheme = useScanStore((s) => s.colorScheme)
+  // 公共检查条目宽容器双列（880 阈值：结果表展开行双列、交易记录窄卡片单列）
+  const [checkRef, checksWide] = useContainerAtLeast(880)
   // 决策结论徽标取结构化字段（trade_decision 不依赖文本解析，文本节缺失不误标）
   const decision: 'suggest' | 'skip' | null =
     ai.trade_decision === 'suggest' ? 'suggest' : ai.trade_decision === 'skip' ? 'skip' : null
@@ -266,9 +295,10 @@ function AnalysisSectionsView({ ai, sections }: { ai: AIAnalysis; sections: Anal
       {/* 公共检查区：4h方向/指标多数决/回踩触点/形态量能/风险点逐项判定 */}
       {sections.common.length > 0 && (
         <div
+          ref={checkRef}
           style={{
-            padding: '8px 12px 10px',
-            marginBottom: 10,
+            padding: '8px 10px',
+            marginBottom: 8,
             borderRadius: 8,
             background: '#fafafa',
             border: '1px solid #f0f0f0',
@@ -289,12 +319,12 @@ function AnalysisSectionsView({ ai, sections }: { ai: AIAnalysis; sections: Anal
             <SafetyCertificateOutlined />
             公共检查
           </div>
-          <AnalysisItemList text={sections.common.join('\n')} />
+          <AnalysisItemList text={sections.common.join('\n')} columns={checksWide ? 2 : 1} />
         </div>
       )}
       {/* 决策结论卡：结论徽标取结构化字段，明细取 analysis 文本节（结论行以底色条强调） */}
       {decisionLines.length > 0 && (
-        <div style={{ padding: '10px 12px', borderRadius: 8, ...cardStyle(decision, colorScheme) }}>
+        <div style={{ padding: '8px 10px', borderRadius: 8, ...cardStyle(decision, colorScheme) }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
             <strong style={{ fontSize: 13 }}>决策结论</strong>
             <DecisionBadge decision={decision} scheme={colorScheme} />
@@ -352,14 +382,14 @@ function PriceCard({
       style={{
         flex: 1,
         minWidth: 0,
-        padding: '8px 12px',
+        padding: '6px 10px',
         borderRadius: 8,
         background: '#fafafa',
         borderLeft: `3px solid ${color}`,
       }}
     >
-      <div style={{ fontSize: 12, color: '#999', marginBottom: 2 }}>{label}</div>
-      <div style={{ fontSize: 16, fontWeight: 700, color, lineHeight: 1.3 }}>
+      <div style={{ fontSize: 12, color: '#999', marginBottom: 1 }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 700, color, lineHeight: 1.3 }}>
         {value === 0 && zeroText ? zeroText : fmtPrice(value)}
       </div>
       {sub && (
@@ -499,18 +529,18 @@ export default function AiAnalysisCard({ ai }: Props) {
           justifyContent: 'space-between',
           gap: 8,
           flexWrap: 'wrap',
-          padding: '10px 14px',
+          padding: '8px 12px',
           borderRadius: 8,
-          marginBottom: 10,
+          marginBottom: 8,
           background: `linear-gradient(90deg, ${hexToRgba(bannerColor, isSkip ? 0.1 : 0.14)}, ${hexToRgba(bannerColor, 0.02)})`,
           border: `1px solid ${hexToRgba(bannerColor, 0.3)}`,
         }}
       >
         <Space size={8} wrap>
           {isSkip ? (
-            <CloseCircleOutlined style={{ color: bannerColor, fontSize: 18 }} />
+            <CloseCircleOutlined style={{ color: bannerColor, fontSize: 16 }} />
           ) : (
-            <CheckCircleOutlined style={{ color: bannerColor, fontSize: 18 }} />
+            <CheckCircleOutlined style={{ color: bannerColor, fontSize: 16 }} />
           )}
           <strong style={{ fontSize: 15 }}>
             {isSkip ? '不建议开单' : '建议开单'}
@@ -567,7 +597,7 @@ export default function AiAnalysisCard({ ai }: Props) {
         <div
           style={{
             padding: '6px 12px',
-            marginBottom: 10,
+            marginBottom: 8,
             borderRadius: 8,
             fontSize: 12,
             lineHeight: '20px',
@@ -589,7 +619,7 @@ export default function AiAnalysisCard({ ai }: Props) {
             gap: 8,
             flexWrap: 'wrap',
             padding: '6px 12px',
-            marginBottom: 10,
+            marginBottom: 8,
             borderRadius: 8,
             fontSize: 12,
             lineHeight: '20px',
@@ -627,7 +657,7 @@ export default function AiAnalysisCard({ ai }: Props) {
       ) : (
         <>
           {/* 价格卡：入场 / 止损（主值 AI 报价，副行箭头+程序参考价合并展示）/ 止盈1 / 止盈2 */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
             <PriceCard label="入场价" value={ai.entry_price} color="#1677ff" />
             {/* 止损合并卡（2026-10-11）：主值=AI 报价（实际下单用）；程序止损参考
                 （0.5×ATR 外扩锚价，仅对比不下单）以副行箭头并入——箭头=程序价相对
@@ -665,10 +695,10 @@ export default function AiAnalysisCard({ ai }: Props) {
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: 20,
+              gap: 14,
               flexWrap: 'wrap',
               padding: '0 4px',
-              marginBottom: 10,
+              marginBottom: 8,
               fontSize: 13,
             }}
           >
