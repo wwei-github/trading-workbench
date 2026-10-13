@@ -3,6 +3,8 @@
 关键位修饰项已随关键位子系统整体移除（2026-09-28），compute_quality_score
 回归纯指标口径：50 + net×7 + 修饰，不再接收 key_levels/atr/dual_touch。
 放量加分（2026-09-29）：三类触发统一为加分项（≥量比门槛 +5），突破不再卡死。
+看涨吞没上影短加分（2026-10-13）：上影硬门改加分项（≤全长 25% +3），
+不再因上影长拒判形态。
 """
 import sys
 from pathlib import Path
@@ -82,3 +84,42 @@ def test_low_volume_no_bonus():
                                  klines=_vol_klines(90.0)) == 71
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
                                  klines=_vol_klines(90.0)) == 71
+
+
+def _engulf_klines(high: float, low: float,
+                   o: float = 99.9, c: float = 101.3) -> list[list]:
+    """[-2] 为看涨吞没信号根（检测层几何：前根阴 101.2→100.0、当根阳 99.9→101.3
+    完整包住），[-1] 未收盘根；high/low 控制上影比（上影 = high − c）"""
+    return [
+        [0, 101.2, 101.3, 99.9, 100.0, 10.0, 10.0],
+        [1, o, high, low, c, 10.0, 10.0],
+        [2, c, c, c, c, 10.0, 10.0],
+    ]
+
+
+def test_bullish_engulfing_short_upper_shadow_bonus():
+    """看涨吞没上影短 +3（2026-10-13 硬门改加分项）：上影 0.2/全长 2.0=10%
+    ≤25% → 71+3=74；不传 pattern / 其他形态名不加（仅看涨吞没专属）"""
+    kl = _engulf_klines(101.5, 99.5)
+    assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                 klines=kl, pattern="bullish_engulfing") == 74
+    assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                 klines=kl) == 71
+    assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                 klines=kl, pattern="hammer") == 71
+
+
+def test_bullish_engulfing_upper_shadow_boundary_25pct_bonus():
+    """上影恰 25%（0.5/2.0）→ 边界计加分（加分线口径 ≤25%；检测层 2026-10-13
+    起该值不再拦截、照判形态）"""
+    kl = _engulf_klines(101.8, 99.8)
+    assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                 klines=kl, pattern="bullish_engulfing") == 74
+
+
+def test_bullish_engulfing_long_upper_shadow_no_bonus():
+    """上影长（1.0/2.6≈38% >25%）只失加分：71 不加分也不拦截（旧 25% 硬门
+    时代此形态连候选都不产生）"""
+    kl = _engulf_klines(102.3, 99.7)
+    assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                 klines=kl, pattern="bullish_engulfing") == 71

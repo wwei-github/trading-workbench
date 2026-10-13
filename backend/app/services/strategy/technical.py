@@ -1162,15 +1162,18 @@ def compute_quality_score(
     direction: int, votes: dict, trigger_type: str,
     klines: Optional[list] = None,
     stabilize: Optional[dict] = None,
+    pattern: Optional[str] = None,
 ) -> int:
     """候选质量分（0-100）：方向一致性为主，修饰项只影响排序不改变方向。
 
     direction: 候选方向（1 多 / -1 空，= net 的符号）
     trigger_type: trigger_breakout / trigger_trend_breakout / trigger_pullback_confirm
-    klines: 可选，放量加分需要（量比 ≥1.2 +5，各触发类型一致）
+    klines: 可选，放量加分与看涨吞没上影加分需要
     stabilize: 可选，回踩企稳加分项（pullback_stabilize_bonus 产物，docs/19
     §3.3 条件2/3：缩量回踩 +3 / 放量回踩 -5 / MACD 零轴同向 +4~+5 / 动量
     不确认 -4；仅回踩类触发传入，加分不拦截）
+    pattern: 可选，金K形态名（trigger 输出的 pattern 字段，回踩金K确认路径）；
+    看涨吞没上影短加分项据此生效（上影长已不拦形态）
     修饰规则（2026-09-17 设计评审定稿；2026-09-24 4h 背景提权；2026-10-11
     再重构 EMA 状态机 11 态：div 强度档与过热/冷却分值矩阵退役，改
     STATE_QUALITY 状态分矩阵；衰竭期分值同日早前已删）：
@@ -1184,6 +1187,9 @@ def compute_quality_score(
     - 突破触发且 ADX≥25 +5（强趋势中的突破可信）
     - 放量加分：量比 ≥1.2 +5（2026-09-25 金K类；2026-09-29 起突破放量不再
       是触发硬门，三类触发统一为加分项；缩量不加不减，仅排序自然落后）
+    - 看涨吞没上影短 +3（2026-10-13 硬门改加分项，candlestick.
+      ENGULF_UPPER_SHADOW_SHORT_PCT=0.25）：决断K线冲高遭抛压打回=犹豫的
+      语义降为排序信号，上影长只失加分、不再拒判形态
     - RSI>75 做多 / RSI<25 做空 -8（追高杀低）
     - OBV 顶背离做多 / 底背离做空 -6（量价背离）
     - 突破触发且布林带宽分位 ≤10 -5（带宽收窄的突破易假）
@@ -1217,6 +1223,20 @@ def compute_quality_score(
                 score += 5
         except (ValueError, TypeError, IndexError, ZeroDivisionError):
             pass  # 量能数据异常只降级该修饰项，不影响基础分
+
+    # 看涨吞没上影短加分（2026-10-13：硬门改加分项，不再卡死）：上影 ≤ 全长
+    # 25% +3（与缩量回踩同档）。阈值与 candlestick.ENGULF_UPPER_SHADOW_SHORT_PCT
+    # 同源（0.25）；信号K线 = klines[-2]（形态检测同位置），按检测器同口径
+    # 重算上影比（上影 = high − max(open, close)），上影长只失加分
+    if pattern == "bullish_engulfing" and klines:
+        try:
+            k2 = klines[-2]
+            o2, c2 = float(k2[1]), float(k2[4])
+            rng2 = float(k2[2]) - float(k2[3])
+            if rng2 > 0 and (float(k2[2]) - max(o2, c2)) / rng2 <= 0.25:
+                score += 3
+        except (ValueError, TypeError, IndexError, ZeroDivisionError):
+            pass  # K线数据异常只降级该修饰项，不影响基础分
 
     rsi = by_short.get("RSI")
     if rsi:

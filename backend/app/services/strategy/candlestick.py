@@ -139,12 +139,14 @@ ENGULF_BODY_MIN_BARS = 10
 # - 启明星/黄昏星：第三根（确认阳/阴线）
 DECISION_SHADOW_MAX_PCT = 0.40   # 决断K线总影线 / K线全长 上限
 
-# 看涨吞没上影上限（2026-10-01 用户拍板，替代对称总影线门）：第二根上影/K线全长
-# ≤25%（2026-10-11 拍板由 15% 放宽：EDUUSDT 11:00 吞没上影 17.3% 被拒、临门
-# 差 2.3 个百分点的边缘拒绝反复出现，门语义保留但容忍度放宽）——冲高遭上方
-# 抛压打回=犹豫非决断；下影不限（探底回升=下方承接强，长下影不扣分）。
-# 看跌吞没维持 DECISION_SHADOW_MAX_PCT。
-ENGULF_UPPER_SHADOW_MAX_PCT = 0.25
+# 看涨吞没上影短加分阈值（2026-10-13 用户拍板：硬门改加分项，不再卡死）：
+# 第二根上影/K线全长 ≤25% → 质量分 +3（technical.compute_quality_score），
+# 上影长只失加分、不再拒判形态。语义（冲高遭上方抛压打回=犹豫非决断）降级
+# 为排序信号；下影不限（探底回升=下方承接强，长下影不扣分）。阈值沿革：
+# 2026-10-01 定 15%（不对称化，替代对称总影线门）→ 2026-10-11 放宽 25%
+# （EDUUSDT 17.3% 边缘拒绝个案）→ 2026-10-13 硬门（upper2/rng2 > 阈值
+# return None）删除改加分。看跌吞没维持 DECISION_SHADOW_MAX_PCT 硬门。
+ENGULF_UPPER_SHADOW_SHORT_PCT = 0.25
 
 
 def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
@@ -157,8 +159,10 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
        须有基本实体分量，微实体互包不算吞没；被吞没方不设基线（大实体吞
        小十字=最强变体，2026-10-10 WUSDT 个案修订）；统计量中位数（10-10-2
        均值→中位数稳健化）、比例 0.6（10-10-3 拍板，KAIA 87.6% 案由拒转过）；
-    2. 看涨吞没第二根上影 ≤ 全长 25%（下影不限，2026-10-01 不对称化、
-       10-11 由 15% 放宽）；看跌吞没第二根总影线 ≤ 全长 40%（2026-09-30 口径维持）。
+    2. 看跌吞没第二根总影线 ≤ 全长 40%（2026-09-30 口径维持）。
+    看涨吞没第二根上影不做硬门（2026-10-13 拍板硬门改加分项，不因上影长
+    拒判）：上影 ≤ 全长 25%（ENGULF_UPPER_SHADOW_SHORT_PCT）时质量分 +3，
+    见 technical.compute_quality_score；下影不限（2026-10-01 不对称化）。
     """
     # idx 与其他检测器同语义（负数=倒数，正数=绝对位置），统一换算成绝对位置
     pos = idx if idx >= 0 else len(klines) + idx
@@ -191,11 +195,11 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     if median_body <= 0 or body2 < median_body * ENGULF_BODY_MIN_RATIO:
         return None
 
-    # 影线质量门（2026-10-01 看涨侧不对称化）：先算几何，按方向套不同门
+    # 影线几何（2026-10-13 起仅看跌侧套硬门）：看涨吞没上影已改质量分加分项
+    # （ENGULF_UPPER_SHADOW_SHORT_PCT，见上方常量注释），不再在此拦截
     rng2 = float(k_cur[2]) - float(k_cur[3])
     if rng2 <= 0:
         return None
-    upper2 = _upper_shadow(o2, float(k_cur[2]), c2)
 
     # 看涨吞没：前阴后阳，阳实体包住阴实体
     if _is_bearish(o1, c1) and _is_bullish(o2, c2):
@@ -203,10 +207,9 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
         # 薄盘口打印噪声 ≤0.1% 视同平开（2026-10-08 微跳空容差，同刺透线）；
         # c2 ≥ o1（收盘收复前实体上沿）属真语义临界，不加容差
         if o2 <= c1 * (1 + MICRO_GAP_TOLERANCE) and c2 >= o1:
-            # 上影必须短（≤ 全长 25%，2026-10-11 由 15% 放宽）：冲高遭抛压打回=
-            # 犹豫非决断；下影不限（探底回升=下方承接强）
-            if upper2 / rng2 > ENGULF_UPPER_SHADOW_MAX_PCT:
-                return None
+            # 上影短只加分、不拦形态（2026-10-13 拍板）：加分由
+            # technical.compute_quality_score 按 pattern 重算上影比判定；
+            # 下影不限（探底回升=下方承接强）
             strength = 0.7
             if body2 > body1 * 2:
                 strength = 0.9

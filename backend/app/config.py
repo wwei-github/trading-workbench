@@ -185,7 +185,11 @@ class Settings(BaseSettings):
     # 触碰带宽与页面筛选配置同源（此前页面改配置后 AI 口径与程序闸门分叉）；
     # 触点语义行补 ema21_4h（2026-10-09 上线）、移除 ema144 退役引用，并新增
     # 「当前启用触点」行渲染页面白名单生效值；默认配置下提示词数字不变
-    RULE_VERSION: str = "v2026-10-12-14"
+    # v2026-10-13（用户拍板）：看涨吞没上影门改加分项（不再卡死）——上影 ≤ 全长
+    # 25% 时质量分 +3（candlestick.ENGULF_UPPER_SHADOW_SHORT_PCT +
+    # technical.compute_quality_score），上影长只失加分、不再拒判形态
+    # （冲高遭抛压打回=犹豫的语义降为排序信号）；看跌吞没总影线 40% 门不变
+    RULE_VERSION: str = "v2026-10-13"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

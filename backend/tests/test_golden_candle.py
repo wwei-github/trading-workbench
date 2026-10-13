@@ -152,7 +152,9 @@ def test_directional_doji_semantics_unchanged():
     assert r is not None and r["pattern"] == "gravestone_doji" and r["direction"] == "bearish"
 
 
-# ── 吞没影线质量门（2026-09-30 docs/25 §4：吞没K线总影线 > 全长 40% 不判金K）──
+# ── 吞没影线质量门（2026-09-30 docs/25 §4：吞没K线总影线 > 全长 40% 不判金K。
+#    2026-10-13 看涨侧上影门改质量分加分项——上影长不再拒判，加分测试见
+#    test_quality_score.py）──
 
 def _engulf_base(n: int = 24) -> list[list]:
     """横盘序列：每根实体 1.0（开=前收，阴阳交替），作为吞没实体基线
@@ -189,30 +191,31 @@ def test_engulfing_clean_shadow_detected():
     assert r["direction"] == "bullish"
 
 
-def test_engulfing_long_shadow_rejected():
-    """看涨吞没长上影（upper 1.0/rng 2.6 ≈38% > 25% 上影门）→ 不判金K
-    （冲高遭抛压打回=犹豫非决断；2026-10-01 起看涨侧按上影门拦截、
-    2026-10-11 由 15% 放宽至 25%）"""
+def test_engulfing_long_upper_shadow_still_detected():
+    """看涨吞没长上影（upper 1.0/rng 2.6 ≈38%）：2026-10-13 上影门改加分项后
+    不再拒判——照常判吞没（上影长只失质量分加分；旧 25% 硬门时代会拒）"""
     kl = _append_engulf_pair(_engulf_base(), cur_open=99.9, cur_close=101.3,
                              cur_high=102.3, cur_low=99.7)
-    assert detect_engulfing(kl, idx=-1) is None
+    r = detect_engulfing(kl, idx=-1)
+    assert r is not None and r["pattern"] == "bullish_engulfing"
 
 
-def test_engulfing_bullish_upper_shadow_boundary_25pct_allowed():
-    """看涨吞没上影恰 25%（upper 0.5/rng 2.0）→ 边界放行（门只拦 >25%；
-    2026-10-11 边界由 15% 移至 25%）"""
+def test_engulfing_bullish_upper_shadow_boundary_25pct_detected():
+    """看涨吞没上影恰 25%（upper 0.5/rng 2.0）→ 照常判吞没：2026-10-13 起
+    25% 为质量分加分线（≤25% +3）而非拦截线，检测层不因上影拒绝"""
     kl = _append_engulf_pair(_engulf_base(), cur_open=99.9, cur_close=101.3,
                              cur_high=101.8, cur_low=99.8)
     r = detect_engulfing(kl, idx=-1)
     assert r is not None and r["pattern"] == "bullish_engulfing"
 
 
-def test_engulfing_bullish_upper_shadow_between_old_new_rejected():
-    """看涨吞没上影 30%（upper 0.6/rng 2.0）：>25% 拒绝、<旧 40% 总影线门
-    ——确认放宽后新边界生效（15% 时代该值必拒）"""
+def test_engulfing_bullish_upper_shadow_30pct_still_detected():
+    """看涨吞没上影 30%（upper 0.6/rng 2.0）：2026-10-13 起 >25% 只失加分、
+    不再拒判（15%/25% 硬门时代该值被拒；加分侧测试见 test_quality_score.py）"""
     kl = _append_engulf_pair(_engulf_base(), cur_open=99.9, cur_close=101.3,
                              cur_high=101.9, cur_low=99.9)
-    assert detect_engulfing(kl, idx=-1) is None
+    r = detect_engulfing(kl, idx=-1)
+    assert r is not None and r["pattern"] == "bullish_engulfing"
 
 
 def test_engulfing_bullish_long_lower_shadow_allowed():

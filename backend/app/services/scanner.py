@@ -391,10 +391,11 @@ def detect_indicator_candidate(
                     reject_out["detail"] = "；".join(reasons)
         return None, pending_op
 
-    # 企稳加分项证据（docs/19 §3.3，trigger 回踩路径产出）：进质量分 + votes 快照
+    # 企稳加分项证据（docs/19 §3.3，trigger 回踩路径产出）：进质量分 + votes 快照；
+    # pattern 透传供看涨吞没上影短加分（2026-10-13 硬门改加分项）
     stabilize = trig.get("stabilize")
     quality = compute_quality_score(direction, votes, trig["type"], klines=klines,
-                                    stabilize=stabilize)
+                                    stabilize=stabilize, pattern=trig.get("pattern"))
     return {
         "signal_type": trig["type"],
         # 现价 = 未收盘K线最新价（仅作入场价差参考）：信号判定（投票/触发/形态/量能）
