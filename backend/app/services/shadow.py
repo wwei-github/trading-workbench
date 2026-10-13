@@ -1084,6 +1084,21 @@ def _early_stop_verdict(db, card: str, compute: Callable[[], dict]) -> dict:
     return out
 
 
+def _rule_version_key(v: Optional[str]) -> tuple:
+    """版本序键（2026-10-13）：把 v2026-10-13-10 这类版本号按 `-` 分段转整数元组，
+    修正字符串字典序在双位后缀下的错排（`-10` 字典序 < `-8`，语义却更大）。空/NULL
+    视作最小（历史行出窗）；非法段按 -1 兜底，不因脏数据抛错。"""
+    if not v:
+        return (-1,)
+    parts = []
+    for seg in v.lstrip("v").split("-"):
+        try:
+            parts.append(int(seg))
+        except ValueError:
+            parts.append(-1)
+    return tuple(parts)
+
+
 def build_report(db, window_days: int = 30) -> list[dict]:
     """影子评估报告（docs/14 §六）：按特征分桶 join 复盘结果统计。
 
@@ -1113,10 +1128,12 @@ def build_report(db, window_days: int = 30) -> list[dict]:
         ).scalars().all()
         # 跨版本不混算过滤（docs/14 §六.1，2026-10-13）：卡声明起点后自动只计
         # rule_version ≥ 起点的标记——规则重构改变候选池，旧版本与历史 NULL 行
-        # 出窗（免手工改窗口常量）；未声明起点的卡不受影响
+        # 出窗（免手工改窗口常量）；未声明起点的卡不受影响。版本序按数值段比较
+        # （_rule_version_key），修正 -10/-8 双位后缀的字典序错排
         if feat.since_rule_version:
+            since_key = _rule_version_key(feat.since_rule_version)
             marks = [m for m in marks
-                     if (m.rule_version or "") >= feat.since_rule_version]
+                     if _rule_version_key(m.rule_version) >= since_key]
         if not marks:
             out.append({"feature": key, "name": feat.name, "card": feat.card,
                         "min_sample": feat.min_sample,
