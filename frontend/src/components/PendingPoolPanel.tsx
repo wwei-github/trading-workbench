@@ -2,10 +2,13 @@
  * 回踩两段式待确认池（docs/19，2026-09-25）
  * - Stage-1 回踩触碰 EMA21 但当根无金K 的币种转入 pending，等下一根K线金K确认
  * - 状态流转：pending（等待中）→ confirmed（已确认进 AI）/ expired（无金K或方向失守）/ superseded（突破或当根确认抢先）
- * - 展示归并三态（2026-10-10）：待确认 / 已确认 / 已卡掉（expired+superseded 统计为卡掉），被哪个环节卡住看「卡住环节」列（后端 blocked_by）
+ * - 展示分段（2026-10-13 收敛）：待确认 / 后续结果 / 无触发 / 筛选漏斗。
+ *   「后续结果」由原「已确认/已卡掉/全部」三 tab 合并而来——展示待确认币种的结论
+ *   （confirmed=已进 AI / expired·superseded=卡掉，行内「状态」列区分），仅保留
+ *   最近三天（按 resolved_at，缺失回落 updated_at）；被哪个环节卡住看「卡住环节」列（后端 blocked_by）
  * - 筛选漏斗（2026-10-11）：Segmented 项，展示每轮被拒币种卡在哪一关（FunnelPanel）
- * - 无触发（2026-10-13）：Segmented 项紧随「待确认」，复用 FunnelPanel 预置
- *   no_trigger 关、隐藏漏斗概览与关卡筛选（仅保留搜索）——单独查看未触发币种及其未过条件
+ * - 无触发（2026-10-13）：Segmented 项复用 FunnelPanel 预置 no_trigger 关、
+ *   隐藏漏斗概览与关卡筛选（仅保留搜索）——单独查看未触发币种及其未过条件
  * - 数据源：GET /api/scans/pullback-pendings（一次拉全量，前端按状态过滤）
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -23,9 +26,10 @@ import type { PullbackPendingItem } from '../types'
 
 const { Text, Link } = Typography
 
-type StatusFilter = 'pending' | 'confirmed' | 'blocked' | 'all' | 'funnel' | 'no-trigger'
+type StatusFilter = 'pending' | 'outcome' | 'funnel' | 'no-trigger'
 
-// 展示三态（2026-10-10）：pending=待确认、confirmed=已确认；expired/superseded 一律归并「已卡掉」，
+// 行内「状态」列口径（2026-10-10 归并，2026-10-13 分段收敛后沿用）：pending=待确认、
+// confirmed=已确认（已进 AI）；expired/superseded 一律归并「已卡掉」，
 // 具体被哪个环节卡住由「卡住环节」列展示（后端 blocked_by 字段）
 const STATUS_META: Record<string, { color: string; label: string; hint: string }> = {
   pending: {
@@ -72,6 +76,18 @@ function fmtTime(s: string | null | undefined): string {
   return bj(s).format('MM-DD HH:mm')
 }
 
+// 「后续结果」仅保留最近三天（2026-10-13）：待确认币种的终态结论随时间累积，
+// 太久远的无复盘价值，故按结论时间窗口收敛
+const OUTCOME_DAYS = 3
+
+/** 终态行（confirmed/expired/superseded）结论时间在最近 OUTCOME_DAYS 天内；
+ * 结论时间以 resolved_at 为准，缺失回落 updated_at；仍 pending 的行不算结果 */
+function withinOutcomeWindow(r: PullbackPendingItem, cutoffMs: number): boolean {
+  if (r.status === 'pending') return false
+  const t = r.resolved_at || r.updated_at
+  return !!t && bj(t).valueOf() >= cutoffMs
+}
+
 export default function PendingPoolPanel() {
   const [rows, setRows] = useState<PullbackPendingItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -83,7 +99,7 @@ export default function PendingPoolPanel() {
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
-      setRows(await scanApi.pullbackPendings.list('all', 200))
+      setRows(await scanApi.pullbackPendings.list('all', 500))
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '获取待确认池失败')
     } finally {
@@ -95,16 +111,19 @@ export default function PendingPoolPanel() {
     fetchData()
   }, [fetchData])
 
-  const counts = useMemo(() => ({
-    pending: rows.filter((r) => r.status === 'pending').length,
-    confirmed: rows.filter((r) => r.status === 'confirmed').length,
-    blocked: rows.filter((r) => r.status === 'expired' || r.status === 'superseded').length,
-    all: rows.length,
-  }), [rows])
+  const counts = useMemo(() => {
+    const cutoff = bj().subtract(OUTCOME_DAYS, 'day').valueOf()
+    return {
+      pending: rows.filter((r) => r.status === 'pending').length,
+      outcome: rows.filter((r) => withinOutcomeWindow(r, cutoff)).length,
+    }
+  }, [rows])
 
   const filtered = useMemo(() => {
-    if (filter === 'all') return rows
-    if (filter === 'blocked') return rows.filter((r) => r.status === 'expired' || r.status === 'superseded')
+    if (filter === 'outcome') {
+      const cutoff = bj().subtract(OUTCOME_DAYS, 'day').valueOf()
+      return rows.filter((r) => withinOutcomeWindow(r, cutoff))
+    }
     return rows.filter((r) => r.status === filter)
   }, [rows, filter])
 
@@ -194,10 +213,8 @@ export default function PendingPoolPanel() {
 
   const segOptions: { label: string; value: StatusFilter }[] = [
     { label: `待确认 (${counts.pending})`, value: 'pending' },
+    { label: `后续结果 (${counts.outcome})`, value: 'outcome' },
     { label: '无触发', value: 'no-trigger' },
-    { label: `已确认 (${counts.confirmed})`, value: 'confirmed' },
-    { label: `已卡掉 (${counts.blocked})`, value: 'blocked' },
-    { label: `全部 (${counts.all})`, value: 'all' },
     { label: '筛选漏斗', value: 'funnel' },
   ]
 
@@ -238,9 +255,13 @@ export default function PendingPoolPanel() {
                 locale={{
                   emptyText: (
                     <Empty
-                      description={filter === 'pending'
-                        ? '暂无待确认币种——回踩触碰且当根无金K时会出现在这里'
-                        : '暂无记录'}
+                      description={
+                        filter === 'pending'
+                          ? '暂无待确认币种——回踩触碰且当根无金K时会出现在这里'
+                          : filter === 'outcome'
+                            ? '近三天暂无后续结果——待确认币种确认/卡掉后出现在这里'
+                            : '暂无记录'
+                      }
                     />
                   ),
                 }}
