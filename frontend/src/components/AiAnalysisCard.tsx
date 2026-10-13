@@ -5,6 +5,7 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   RobotOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons'
 import { Bubble, ThoughtChain } from '@ant-design/x'
 import { bj } from '../utils/dayjs'
@@ -37,14 +38,101 @@ function analysisLines(text?: string | null): string[] {
     .filter(Boolean)
 }
 
-/** AI 推理逐条展示（序号换行，整齐排版） */
-function NumberedText({ text }: { text?: string | null }) {
-  const lines = analysisLines(text)
-  if (lines.length === 0) return <span style={{ color: '#999' }}>-</span>
+/** 条目结构化：序号（1./2、）+ 前置方括号标签（【波动极端】）+ 冒号短标题（4h方向：） */
+interface AnalysisItem {
+  num?: string
+  tag?: string
+  label?: string
+  text: string
+}
+
+function parseItem(raw: string): AnalysisItem {
+  let s = raw.trim()
+  let num: string | undefined
+  let tag: string | undefined
+  // 序号与方括号标签先后不定（"[波动极端]1. …" / "1. 【波动极端】…"），两轮解析
+  for (let pass = 0; pass < 2; pass++) {
+    if (!num) {
+      // (?!\d) 防误吃小数开头（如 "9.2%处…"）
+      const m = s.match(/^([一二三四五六七八九十\d]{1,2})[.、．](?!\d)\s*(.+)$/)
+      if (m) {
+        num = m[1]
+        s = m[2]
+        continue
+      }
+    }
+    if (!tag) {
+      const m = s.match(/^[【\[]([^】\]]{1,12})[】\]]\s*(.+)$/)
+      if (m) {
+        tag = m[1]
+        s = m[2]
+        continue
+      }
+    }
+    break
+  }
+  // 短标题只认首个冒号前 ≤12 字且不含标点空格（"4h方向：…"/"指标多数决：…"），长句不误拆
+  let label: string | undefined
+  const mL = s.match(/^([^：:，。；、,.()（）\[\]【】\s]{1,12})[：:]\s*(.+)$/)
+  if (mL) {
+    label = mL[1]
+    s = mL[2]
+  }
+  return { num, tag, label, text: s }
+}
+
+/** AI 推理逐条展示：序号圆徽 + 标签/短标题强调 + 正文，条目间虚线分隔 */
+function AnalysisItemList({ text }: { text?: string | null }) {
+  const rows = analysisLines(text).map(parseItem)
+  if (rows.length === 0) return <span style={{ color: '#999' }}>-</span>
   return (
-    <div style={{ lineHeight: 1.8, fontSize: 13 }}>
-      {lines.map((l, i) => (
-        <div key={i}>{l}</div>
+    <div style={{ fontSize: 13 }}>
+      {rows.map((it, i) => (
+        <div
+          key={i}
+          style={{
+            display: 'flex',
+            gap: 8,
+            padding: '6px 0',
+            borderTop: i > 0 ? '1px dashed #f0f0f0' : undefined,
+          }}
+        >
+          {it.num != null && (
+            <span
+              style={{
+                flex: '0 0 auto',
+                width: 18,
+                height: 18,
+                marginTop: 3,
+                borderRadius: 9,
+                background: '#e6f4ff',
+                color: '#1677ff',
+                fontSize: 11,
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              {it.num}
+            </span>
+          )}
+          <div style={{ flex: 1, minWidth: 0, lineHeight: 1.8, color: '#434343' }}>
+            {it.tag && (
+              <Tag
+                color="orange"
+                bordered={false}
+                style={{ marginInlineEnd: 6, fontSize: 11, lineHeight: '16px', paddingInline: 5 }}
+              >
+                {it.tag}
+              </Tag>
+            )}
+            {it.label && (
+              <span style={{ fontWeight: 600, color: '#262626', marginRight: 6 }}>{it.label}</span>
+            )}
+            {it.text}
+          </div>
+        </div>
       ))}
     </div>
   )
@@ -110,32 +198,45 @@ function DecisionBadge({
   return <Tag style={{ marginInlineEnd: 0, color: '#999' }}>—</Tag>
 }
 
-/** 策略卡配色随结论徽标联动（涨/跌色随系统红绿方案同源翻转） */
+/** 策略卡配色随结论徽标联动（涨/跌色随系统红绿方案同源翻转），左侧色条强调结论属性 */
 function cardStyle(decision: 'suggest' | 'skip' | null, scheme: ColorScheme): CSSProperties {
   if (decision === 'suggest') {
     return {
       border: `1px solid ${hexToRgba(SCHEME_UP_DOWN[scheme].up, 0.35)}`,
+      borderLeft: `3px solid ${SCHEME_UP_DOWN[scheme].up}`,
       background: hexToRgba(SCHEME_UP_DOWN[scheme].up, 0.05),
     }
   }
   if (decision === 'skip') {
     return {
       border: `1px solid ${hexToRgba(SCHEME_UP_DOWN[scheme].down, 0.3)}`,
+      borderLeft: `3px solid ${SCHEME_UP_DOWN[scheme].down}`,
       background: hexToRgba(SCHEME_UP_DOWN[scheme].down, 0.04),
     }
   }
-  return { border: '1px solid #f0f0f0', background: '#fafafa' }
+  return { border: '1px solid #f0f0f0', borderLeft: '3px solid #d9d9d9', background: '#fafafa' }
 }
 
-/** 明细行渲染：序号换行拆行；"结论：…"行加粗强调 */
-function StrategyLines({ lines }: { lines: string[] }) {
+/** 明细行渲染：序号换行拆行；"结论：…"行以结论底色条强调 */
+function StrategyLines({ lines, accent }: { lines: string[]; accent: string }) {
   const rows = analysisLines(lines.join('\n'))
   if (rows.length === 0) return null
   return (
-    <div style={{ lineHeight: 1.8, fontSize: 13 }}>
+    <div style={{ lineHeight: 1.8, fontSize: 13, color: '#434343' }}>
       {rows.map((l, i) =>
         /^结论[:：]/.test(l) ? (
-          <div key={i} style={{ fontWeight: 700 }}>{l}</div>
+          <div
+            key={i}
+            style={{
+              marginTop: 6,
+              padding: '6px 10px',
+              borderRadius: 6,
+              background: hexToRgba(accent, 0.08),
+              fontWeight: 600,
+            }}
+          >
+            {l}
+          </div>
         ) : (
           <div key={i}>{l}</div>
         ),
@@ -153,35 +254,52 @@ function AnalysisSectionsView({ ai, sections }: { ai: AIAnalysis; sections: Anal
   const decision: 'suggest' | 'skip' | null =
     ai.trade_decision === 'suggest' ? 'suggest' : ai.trade_decision === 'skip' ? 'skip' : null
   const decisionLines = sections.decision.length > 0 ? sections.decision : sections.merged
+  // 决策结论配色：suggest=涨色 / skip=跌色 / null=灰（结论条与左色条同源）
+  const decisionColor =
+    decision === 'suggest'
+      ? SCHEME_UP_DOWN[colorScheme].up
+      : decision === 'skip'
+        ? SCHEME_UP_DOWN[colorScheme].down
+        : '#8c8c8c'
   return (
     <>
       {/* 公共检查区：4h方向/指标多数决/回踩触点/形态量能/风险点逐项判定 */}
       {sections.common.length > 0 && (
         <div
           style={{
-            padding: '8px 12px',
+            padding: '8px 12px 10px',
             marginBottom: 10,
             borderRadius: 8,
             background: '#fafafa',
             border: '1px solid #f0f0f0',
           }}
         >
-          <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>公共检查</div>
-          <div style={{ lineHeight: 1.9, fontSize: 13 }}>
-            {sections.common.map((l, i) => (
-              <div key={i}>{l}</div>
-            ))}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 12,
+              fontWeight: 600,
+              color: '#8c8c8c',
+              paddingBottom: 6,
+              borderBottom: '1px solid #f0f0f0',
+            }}
+          >
+            <SafetyCertificateOutlined />
+            公共检查
           </div>
+          <AnalysisItemList text={sections.common.join('\n')} />
         </div>
       )}
-      {/* 决策结论卡：结论徽标取结构化字段，明细取 analysis 文本节（结论行加粗强调） */}
+      {/* 决策结论卡：结论徽标取结构化字段，明细取 analysis 文本节（结论行以底色条强调） */}
       {decisionLines.length > 0 && (
         <div style={{ padding: '10px 12px', borderRadius: 8, ...cardStyle(decision, colorScheme) }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
             <strong style={{ fontSize: 13 }}>决策结论</strong>
             <DecisionBadge decision={decision} scheme={colorScheme} />
           </div>
-          <StrategyLines lines={decisionLines} />
+          <StrategyLines lines={decisionLines} accent={decisionColor} />
         </div>
       )}
     </>
@@ -362,6 +480,8 @@ export default function AiAnalysisCard({ ai }: Props) {
   const colorScheme = useScanStore((s) => s.colorScheme)
   const eff = getEffectiveDecision(ai)
   const isSkip = eff.decision === 'skip'
+  // 决策横幅配色：建议=涨色 / 不建议=跌色（随系统红绿方案翻转，与结论徽标/结论卡同源）
+  const bannerColor = SCHEME_UP_DOWN[colorScheme][isSkip ? 'down' : 'up']
   // analysis 两节解析（公共检查/决策结论；旧行「合并结论」兼容）：格式漂移返回 null 回退平铺
   const sections = parseAnalysisSections(ai.analysis)
   // 运行轨迹弹窗开关（仅 Agent 生成的分析可查看）
@@ -382,17 +502,15 @@ export default function AiAnalysisCard({ ai }: Props) {
           padding: '10px 14px',
           borderRadius: 8,
           marginBottom: 10,
-          background: isSkip
-            ? 'linear-gradient(90deg, rgba(255,77,79,0.10), rgba(255,77,79,0.02))'
-            : 'linear-gradient(90deg, rgba(82,196,26,0.14), rgba(82,196,26,0.02))',
-          border: `1px solid ${isSkip ? 'rgba(255,77,79,0.30)' : 'rgba(82,196,26,0.30)'}`,
+          background: `linear-gradient(90deg, ${hexToRgba(bannerColor, isSkip ? 0.1 : 0.14)}, ${hexToRgba(bannerColor, 0.02)})`,
+          border: `1px solid ${hexToRgba(bannerColor, 0.3)}`,
         }}
       >
         <Space size={8} wrap>
           {isSkip ? (
-            <CloseCircleOutlined style={{ color: '#ff4d4f', fontSize: 18 }} />
+            <CloseCircleOutlined style={{ color: bannerColor, fontSize: 18 }} />
           ) : (
-            <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 18 }} />
+            <CheckCircleOutlined style={{ color: bannerColor, fontSize: 18 }} />
           )}
           <strong style={{ fontSize: 15 }}>
             {isSkip ? '不建议开单' : '建议开单'}
@@ -497,10 +615,10 @@ export default function AiAnalysisCard({ ai }: Props) {
               style: { background: '#8c8c8c', color: '#fff' },
             }}
             content={eff.reason || ai.analysis || ''}
-            messageRender={(content) => <NumberedText text={content as string} />}
+            messageRender={(content) => <AnalysisItemList text={content as string} />}
             styles={{
-              header: { fontSize: 12, color: '#999', paddingBottom: 0 },
-              content: { maxWidth: '100%' },
+              header: { fontSize: 12, color: '#8c8c8c', fontWeight: 600, paddingBottom: 2 },
+              content: { maxWidth: '100%', paddingTop: 0 },
             }}
             header="AI 跳过理由"
           />
@@ -590,10 +708,10 @@ export default function AiAnalysisCard({ ai }: Props) {
                 style: { background: '#1677ff', color: '#fff' },
               }}
               content={ai.analysis || ''}
-              messageRender={(content) => <NumberedText text={content as string} />}
+              messageRender={(content) => <AnalysisItemList text={content as string} />}
               styles={{
-                header: { fontSize: 12, color: '#999', paddingBottom: 0 },
-                content: { maxWidth: '100%' },
+                header: { fontSize: 12, color: '#8c8c8c', fontWeight: 600, paddingBottom: 2 },
+                content: { maxWidth: '100%', paddingTop: 0 },
               }}
               header="AI 推理"
             />
