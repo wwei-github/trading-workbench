@@ -51,23 +51,28 @@ def _detect(reject_out, klines=None, *, votes=_PASS_VOTES, gate=("long", {}), ht
             rs=0, trigger=None, flt=None, pending=None, real_trigger=False, htf_state=None):
     """打桩装配一次 detect：各桩默认全放行，命中点由参数控制。
     real_trigger=True 时不打桩 detect_trigger（跑真实触发链，测 no_trigger 明细）；
-    htf_state 非 None 时打桩 analyze_htf_background 返回该 4h 状态机态（进池准入闸用）"""
+    htf_state 非 None 时打桩 analyze_htf_background 返回该 4h 状态机态（4h 状态机
+    前置门用：tangle/turn_* 一票否决全部 1h 候选）"""
     import app.services.scanner as sm
 
     orig = {
         "analyze_ema": sm.analyze_ema, "classify_volume": sm.classify_volume,
         "compute_indicator_votes": sm.compute_indicator_votes,
         "gate_4h": sm.gate_4h, "analyze_htf_background": sm.analyze_htf_background,
+        "htf_core": sm.htf_core,
         "range_score": sm.range_score, "detect_trigger": sm.detect_trigger,
     }
     sm.analyze_ema = lambda k: None
     sm.classify_volume = lambda k: (1.0, "平量")
     sm.compute_indicator_votes = lambda k, h=None, htf_bg=None: votes
-    sm.gate_4h = lambda k, cfg=None: gate
+    # 4h 共享计算核心（2026-10-13）：scanner 先调 htf_core 再透传 core；此处打桩返回
+    # None（等价样本不足），各桩忽略 core 参数即可
+    sm.htf_core = lambda k, fast=21, slow=55: None
+    sm.gate_4h = lambda k, cfg=None, core=None: gate
     if htf_state is not None:
         _labels = {"tangle": "缠绕", "turn_bull": "多头拐头", "turn_bear": "空头拐头",
                    "aligned_bull": "多头排列", "macro_cross_bull": "55×144金叉"}
-        sm.analyze_htf_background = lambda k, fast=21, slow=55: {
+        sm.analyze_htf_background = lambda k, fast=21, slow=55, core=None: {
             "state": htf_state, "state_label": _labels.get(htf_state, htf_state)}
     sm.range_score = lambda k, gate_ev=None: (rs, [])
     if not real_trigger:
@@ -273,7 +278,10 @@ def test_pending_upsert_not_rejected():
     assert cand is None and op["op"] == "upsert" and rv == {}
 
 
-# ── 进待确认池准入闸（2026-10-13 用户拍板）：触发类型白名单 + 4h状态机禁开 ──
+# ── 4h 状态机前置门 + 进待确认池白名单准入闸（2026-10-13）────────────────────
+# 前置门：4h 状态机双向禁开（tangle/turn_*）→ 对全部 1h 候选（回踩·突破）一票
+# 否决，活跃 pending 同轮 expire(htf_state_lock)；准入闸：仅「回踩确认不在触发
+# 类型白名单」时挡新进池（状态机分支已由前置门接管）
 
 
 def _adm_flt(allowed_triggers):
@@ -298,9 +306,9 @@ def test_pending_upsert_blocked_by_trigger_whitelist():
     assert "未在触发类型白名单内" in rv["detail"]
 
 
-def test_pending_upsert_blocked_by_htf_state_lock():
-    """4h 状态机双向禁开（tangle/turn_*）→ 不进待确认池：stage=htf_state_lock、
-    pending_op 丢弃、附判定说明（确认也必被 AI 层强制 skip，进池是噪音）"""
+def test_htf_state_front_gate_blocks_upsert():
+    """4h 状态机双向禁开（tangle/turn_*）→ 前置门一票否决：stage=htf_state_lock、
+    无候选、不产生 pending upsert、附判定说明（回踩/突破候选均不做）"""
     from app.services.scan_filters import ALL_TRIGGERS
     for st, label in (("tangle", "缠绕"), ("turn_bear", "空头拐头")):
         rv: dict = {}
@@ -308,7 +316,31 @@ def test_pending_upsert_blocked_by_htf_state_lock():
                            flt=_adm_flt(ALL_TRIGGERS), htf_state=st)
         assert cand is None and op is None
         assert rv["stage"] == "htf_state_lock"
-        assert label in rv["detail"] and "不进待确认池" in rv["detail"]
+        assert label in rv["detail"] and "回踩/突破候选均不做" in rv["detail"]
+
+
+def test_htf_state_front_gate_blocks_breakout_candidate():
+    """前置门对突破候选同样一票否决（1h 命中照拦）：即便触发链会给出突破候选，
+    也在 4h 状态机层被挡下——stage=htf_state_lock、无候选"""
+    from app.services.scan_filters import ALL_TRIGGERS
+    breakout = {"type": "trigger_breakout", "direction": 1, "position": "resistance",
+                "pattern": None, "breakout_pct": 0.5, "reason": "r"}
+    rv: dict = {}
+    cand, op = _detect(rv, _confirm_kl(), trigger=(breakout, None),
+                       flt=_adm_flt(ALL_TRIGGERS), htf_state="turn_bull")
+    assert cand is None and op is None
+    assert rv["stage"] == "htf_state_lock"
+    assert "多头拐头" in rv["detail"]
+
+
+def test_htf_state_front_gate_expires_active_pending():
+    """前置门命中时活跃 pending 同轮失效（expire/htf_state_lock）"""
+    rv: dict = {}
+    pend = {"id": 1, "direction": 1, "touch_ref": "ema21",
+            "stage1_candle_open": 1_700_000_000_000}
+    cand, op = _detect(rv, trigger=(None, None), pending=pend, htf_state="tangle")
+    assert cand is None and op == {"op": "expire", "reason": "htf_state_lock"}
+    assert rv["stage"] == "htf_state_lock"
 
 
 def test_pending_upsert_allowed_when_gates_pass():
@@ -351,9 +383,9 @@ def _active_pending():
             "stage1_candle_open": 1_700_000_000_000}
 
 
-def test_pending_confirm_blocked_by_htf_state_lock():
-    """次根确认成候选时 4h 状态机双向禁开 → 不产生候选、pending 失效
-    （expire/htf_state_lock）、漏斗记 htf_state_lock + 判定说明"""
+def test_pending_confirm_blocked_by_htf_state_front_gate():
+    """次根确认路径被 4h 状态机前置门挡下：双向禁开 → 不产生候选、活跃 pending
+    同轮失效（expire/htf_state_lock）、漏斗记 htf_state_lock + 判定说明"""
     from app.services.scan_filters import ALL_TRIGGERS
     rv: dict = {}
     cand, op = _detect(rv, _confirm_kl(), trigger=(_confirm_trig(), {"op": "confirm"}),
@@ -362,7 +394,7 @@ def test_pending_confirm_blocked_by_htf_state_lock():
     assert cand is None
     assert op == {"op": "expire", "reason": "htf_state_lock"}
     assert rv["stage"] == "htf_state_lock"
-    assert "缠绕" in rv["detail"] and "次根确认失效" in rv["detail"]
+    assert "缠绕" in rv["detail"] and "回踩/突破候选均不做" in rv["detail"]
 
 
 def test_pending_confirm_allowed_when_state_pass():

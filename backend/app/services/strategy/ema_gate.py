@@ -19,7 +19,7 @@ from typing import Optional
 
 import numpy as np
 
-from app.services.strategy.technical import analyze_adx
+from app.services.strategy.technical import analyze_adx, htf_core
 
 # EMA144 斜率回看根数（4h 闸门与 1h 结构门 144 方向共用窗口）与走平阈值
 # （20 根变化幅度/价格 < 0.5% → 走平）
@@ -67,23 +67,31 @@ class EmaGateConfig:
     div_lookback: int = 12
 
 
-def gate_4h(k4: list[list], cfg: Optional[EmaGateConfig] = None) -> Optional[tuple[str, dict]]:
+def gate_4h(k4: list[list], cfg: Optional[EmaGateConfig] = None,
+            core: Optional[dict] = None) -> Optional[tuple[str, dict]]:
     """4H EMA144 趋势闸门：三重否决（走平/缠绕/ADX）全过才给方向。
 
     k4：原始 4h K线（尾根未收盘，内部统一剔除——与 analyze_adx 的自剔尾
-    口径一致，避免对已剔除序列再剔一次导致 ADX 慢一拍）。
+    口径一致，避免对已剔除序列再剔一次导致 ADX 慢一拍）。core 为可选的 4h
+    共享计算核心（technical.htf_core）——传入则复用其 EMA144/ADX/收盘价，
+    免去本函数与 analyze_htf_background 双算，缺省时内部自算（向后兼容）。
     返回 (direction "long"/"short", 证据 dict) 或 None（闸门不过）。
     证据 direction 语义为 "up"/"down"（4h K 线趋势方向，观测/前端展示口径）。
     """
     cfg = cfg or EmaGateConfig()
-    closed = k4[:-1] if len(k4) >= 2 else k4
+    core = core or htf_core(k4)
+    if core is None:
+        return None
+    closed = core["closed"]
+    # 闸门额外数据门：EMA144 斜率回看（-SLOPE_BARS）需更长历史，htf_core 的
+    # 155 根下限不够；各调用方固定拉 200 根=199 已收盘，此处保留 200 根口径
     if len(closed) < 200:
         return None
-    c = np.array([float(k[4]) for k in closed], dtype=float)
-    e144 = ema_series(c, 144)
-    if e144 is None or not np.isfinite(e144[-1]) or not np.isfinite(e144[-SLOPE_BARS]):
+    c = core["closes"]
+    e144 = core["e144"]
+    if not np.isfinite(e144[-1]) or not np.isfinite(e144[-SLOPE_BARS]):
         return None
-    price = float(c[-1])
+    price = core["price"]
     slope_pct = abs(float(e144[-1]) - float(e144[-SLOPE_BARS])) / price
 
     # 缠绕：近 WRAP_WINDOW 根收盘价在 EMA144 两侧的穿越次数
@@ -94,8 +102,7 @@ def gate_4h(k4: list[list], cfg: Optional[EmaGateConfig] = None) -> Optional[tup
         if side_now * side_prev < 0:
             wraps += 1
 
-    adx_info = analyze_adx(k4, period=14)  # 原始序列，函数内部自剔尾
-    adx_val = float(adx_info["adx"]) if adx_info else None
+    adx_val = core["adx"]  # htf_core 内已按原始序列自剔尾算 ADX，口径一致
 
     ev = {"slope_pct": round(slope_pct, 5), "wraps": wraps,
           "adx": round(adx_val, 1) if adx_val is not None else None,

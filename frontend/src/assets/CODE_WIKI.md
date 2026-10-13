@@ -278,13 +278,14 @@ FastAPI 应用入口：
   8. 满仓判定 → 分发 AI 分析（或跳过）
   9. 组装筛选漏斗 `funnel_json`
 
-**`detect_indicator_candidate(...)`** — 单币六步判定链（核心）：
+**`detect_indicator_candidate(...)`** — 单币判定链（核心）：
 1. **4h 趋势闸门** `gate_4h` — 一票否决（EMA144 斜率/缠绕/ADX 三重）
-2. **7 指标多数决** `compute_indicator_votes` — |net|≥3 才出方向
-3. **闸门方向一致性** — 4h 方向须与多数决一致
-4. **震荡评分卡** `range_score` — ≥3 不入场
-5. **两段式触发确认** `detect_trigger` — 突破/回踩+金K/回踩两段式
-6. **进池/确认准入闸**（2026-10-13）— 回踩确认须在触发类型白名单内；且 4h 状态机非双向禁开（tangle/turn_*）——**进池（upsert）**与**次根确认（confirm）**两条路径同口径：禁开时既不进池也不产生候选（pending `expire(htf_state_lock)`），漏斗记 `trigger_whitelist`/`htf_state_lock`
+2. **4h 状态机前置门**（2026-10-13-5）— `htf_state_lock`：状态机双向禁开（`tangle`/`turn_*`，`STATE_BLOCK_BOTH`）对**全部 1h 候选（回踩·突破）一票否决**，活跃 pending 同轮 `expire(htf_state_lock)`（第 1/2 步共用 `technical.htf_core` 一次算好的 EMA21/55/144+ADX+ATR，去重不改行为）
+3. **7 指标多数决** `compute_indicator_votes` — |net|≥3 才出方向
+4. **闸门方向一致性** — 4h 方向须与多数决一致
+5. **震荡评分卡** `range_score` — ≥3 不入场
+6. **两段式触发确认** `detect_trigger` — 突破/回踩+金K/回踩两段式
+7. **进池准入闸**（2026-10-13-5）— 回踩确认须在触发类型白名单内，否则不进待确认池（漏斗记 `trigger_whitelist`；原状态机子闸已由第 2 步前置门接管）
 （1H 结构门 `structure_1h` 已从筛选链退役（2026-10-12），现为 trigger 层 **1h EMA21 触点硬门**——仅当回踩触点为 ema21 时校验，其余触点豁免）
 
 #### [scan_filters.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/scan_filters.py)
@@ -307,11 +308,11 @@ FastAPI 应用入口：
 
 | 模块 | 职责 |
 |---|---|
-| [technical.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/technical.py) | `compute_indicator_votes`（7 指标投票）、`compute_quality_score`（质量分）、`analyze_htf_background`（4h EMA 状态机 11 态）、`enforce_htf_constraint`（4h 锁单矩阵） |
+| [technical.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/technical.py) | `compute_indicator_votes`（7 指标投票）、`compute_quality_score`（质量分）、`htf_core`（4h 共享计算核心：EMA21/55/144+ADX+ATR 一次算）、`analyze_htf_background`（4h EMA 状态机 11 态，`core` 透传可选）、`enforce_htf_constraint`（4h 锁单矩阵） |
 | [trigger.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/trigger.py) | `detect_trigger` — 两段式决策矩阵：T1 突破/趋势突破、T3 回踩+金K确认、回踩两段式 pending 状态机 |
 | [candlestick.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/candlestick.py) | 8 种金K形态判定（看涨 4 + 看跌 4）、`GOLDEN_PATTERNS` 白名单、影线质量门 |
 | [ema.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/ema.py) | `analyze_ema` — EMA21/55/144 排列形态分析 |
-| [ema_gate.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/ema_gate.py) | `gate_4h`（4h 趋势闸门）、`structure_1h`（1H 结构门）、`range_score`（震荡评分卡） |
+| [ema_gate.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/ema_gate.py) | `gate_4h`（4h 趋势闸门，`core` 透传可选）、`structure_1h`（1H 结构门）、`range_score`（震荡评分卡） |
 | [swing.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/swing.py) | `find_swing_points`、`merge_swings` — 摆动点检测与 HH/LH/HL/LL 分类 |
 | [indicators.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/indicators.py) | `volume_ratio` 等量能指标 |
 
@@ -655,7 +656,7 @@ sequenceDiagram
     loop 每个候选币（线程池并发）
         SC->>EX: get_klines(symbol, 1h, 240)
         SC->>ST: detect_indicator_candidate()
-        ST->>ST: gate_4h 一票否决 → 7 指标多数决 → 闸门方向一致 → 震荡卡 → detect_trigger
+        ST->>ST: gate_4h 一票否决 → 4h状态机前置门 → 7 指标多数决 → 闸门方向一致 → 震荡卡 → detect_trigger
         ST-->>SC: 候选（方向 / 触发 / 质量分 / 票数）
     end
     SC->>SC: 质量分降序 + 重复命中抑制

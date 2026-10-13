@@ -206,7 +206,13 @@ class Settings(BaseSettings):
     # 被确认成候选时若 4h 状态机双向禁开（tangle/turn_*），候选必被 AI 层强制
     # skip，故不产生候选、pending 直接失效（expire/htf_state_lock；漏斗同上关）；
     # 新增/进池与确认两条路径口径一致：禁开态下回踩既不进池也不确认
-    RULE_VERSION: str = "v2026-10-13-4"
+    # v2026-10-13-5（用户拍板）：① 合并 4h 计算——gate_4h 与 analyze_htf_background
+    # 双算的 EMA21/55/144+ADX+ATR 收敛为 technical.htf_core 一次算、core 透传
+    # （去重不改行为）；② 4h 状态机双向禁开从「散落的临时子闸」提为筛选链前置门
+    # （gate_4h 之后、票数之前），对全部 1h 候选（回踩·突破）一票否决、活跃 pending
+    # 同轮 expire(htf_state_lock)；③ 移除上一版 upsert/confirm 的状态机子闸（仅保留
+    # 正交的触发类型白名单子闸）
+    RULE_VERSION: str = "v2026-10-13-5"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

@@ -730,10 +730,57 @@ def _htf_cross_age(f: np.ndarray, m: np.ndarray) -> tuple[Optional[int], int]:
     return None, side_now
 
 
-def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 55) -> Optional[dict]:
+def htf_core(htf_klines: list[list], fast: int = 21, slow: int = 55) -> Optional[dict]:
+    """4h 共享计算核心（2026-10-13 合并）：一次算好 EMA21/55/144 + ADX(14) +
+    ATR(14,4h)，供 gate_4h 与 analyze_htf_background 共用——同一份 4h 序列不再
+    双算。EMA 用 ema.calc_ema（SMA 种子 + 2/(N+1) 递推，与 gate_4h 旧用的
+    ema_gate.ema_series 同源，合并后数值不变）。
+
+    输入原始 4h K 线（尾根未收盘，内部统一剔除）。返回
+    {closed, closes, e21, e55, e144, adx, atr, price}；样本不足（已收盘 <155，
+    EMA144 需 SMA 种子 + 收敛余量）返回 None。adx 计算失败降级 None（调用方
+    按各自口径处理：gate_4h 视作无趋势否决、状态机跳过该道判据）。
+    """
+    if not htf_klines or len(htf_klines) < 2:
+        return None
+    closed = htf_klines[:-1]
+    closes = np.array([float(k[4]) for k in closed], dtype=float)
+    if len(closes) < 155:
+        return None
+    e21 = calc_ema(closes, fast)
+    e55 = calc_ema(closes, slow)
+    e144 = calc_ema(closes, 144)
+    if e21 is None or e55 is None or e144 is None:
+        return None
+    if not np.isfinite(e21[-1]) or float(e144[-1]) <= 0:
+        return None
+    # ADX（状态机缠绕第一道判据；analyze_adx 内部同样剔除未收盘根，口径一致；
+    # 计算失败静默降级 None）
+    adx_res = analyze_adx(htf_klines)
+    adx_v = float(adx_res["adx"]) if adx_res else None
+    # ATR(14,4h)：TR14 均值（K 线格式 [ts,o,h,l,c,vol]）
+    tr_list = []
+    for i in range(1, len(closed)):
+        h_i, l_i = float(closed[i][2]), float(closed[i][3])
+        c_prev = float(closed[i - 1][4])
+        tr_list.append(max(h_i - l_i, abs(h_i - c_prev), abs(l_i - c_prev)))
+    atr = float(np.mean(tr_list[-14:])) if len(tr_list) >= 14 else 0.0
+    return {
+        "closed": closed, "closes": closes,
+        "e21": e21, "e55": e55, "e144": e144,
+        "adx": adx_v, "atr": atr, "price": float(closes[-1]),
+    }
+
+
+def analyze_htf_background(
+    htf_klines: list[list], fast: int = 21, slow: int = 55,
+    core: Optional[dict] = None,
+) -> Optional[dict]:
     """4h 高周期背景：EMA 状态机 11 态（1h 分析的大方向参照）。
 
-    htf_klines 为 4h 周期 K 线（最后一根未收盘，内部剔除）。
+    htf_klines 为 4h 周期 K 线（最后一根未收盘，内部剔除）；core 为可选的 4h
+    共享计算核心（htf_core）——传入则复用其 EMA/ADX/ATR，免去本函数再算一遍，
+    缺省时内部自算（向后兼容）。
     状态判定见 _ema_state（缠绕 → 宏观交叉 → 拐头 → 恢复 → 排列 → 过渡，
     优先级即其代码顺序）；行为矩阵（锁单/质量分查表）：
     - tangle / turn_*：双向禁开（缠绕无趋势 / 排列内拐头警戒）
@@ -747,35 +794,16 @@ def analyze_htf_background(htf_klines: list[list], fast: int = 21, slow: int = 5
     返回 {state(11态key), state_label, dir, macro_aligned,
           age_bars, macro_cross_age, div, detail}
     """
-    if not htf_klines or len(htf_klines) < 2:
+    core = core or htf_core(htf_klines, fast, slow)
+    if core is None:
         return None
-    closed = htf_klines[:-1]
-    closes = np.array([float(k[4]) for k in closed], dtype=float)
-    # EMA144 需要 144 根 SMA 种子 + 收敛余量（各调用方固定拉 200 根=199 已收盘）
-    if len(closes) < 155:
-        return None
-    f = calc_ema(closes, fast)
-    m = calc_ema(closes, slow)
-    s144 = calc_ema(closes, 144)
-    if f is None or m is None or s144 is None:
-        return None
+    closes = core["closes"]
+    f, m, s144 = core["e21"], core["e55"], core["e144"]
     fn, mn, sn = float(f[-1]), float(m[-1]), float(s144[-1])
     if sn <= 0 or not np.isfinite(fn):
         return None
-
-    # ADX（状态机缠绕第一道判据）；analyze_adx 内部同样剔除未收盘根，口径一致；
-    # 计算失败静默降级 None（仅跳过该道判据，不阻塞背景注入）
-    adx_res = analyze_adx(htf_klines)
-    adx_v = float(adx_res["adx"]) if adx_res else None
-
-    # ATR(14,4h) 与排列角度 div（退役为注记证据；与 gate_4h/structure_1h 同一
-    # 计算逻辑：TR14 均值，K 线格式 [ts,o,h,l,c,vol]）
-    tr_list = []
-    for i in range(1, len(closed)):
-        h_i, l_i = float(closed[i][2]), float(closed[i][3])
-        c_prev = float(closed[i - 1][4])
-        tr_list.append(max(h_i - l_i, abs(h_i - c_prev), abs(l_i - c_prev)))
-    atr4h = float(np.mean(tr_list[-14:])) if len(tr_list) >= 14 else 0.0
+    adx_v = core["adx"]
+    atr4h = core["atr"]
     div_fm = abs(fn - mn) / atr4h if atr4h > 0 else None
     div_ms = abs(mn - sn) / atr4h if atr4h > 0 else None
     div_min = min(div_fm, div_ms) if div_fm is not None and div_ms is not None else None

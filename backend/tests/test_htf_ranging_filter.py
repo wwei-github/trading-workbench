@@ -195,3 +195,20 @@ def test_range_score_trending_low():
     """稳步趋势 1h：评分卡不误伤（唯一命中是恒量成交的 cv 项，<3）"""
     score, reasons = range_score(_trend_1h())
     assert score < 3
+
+
+# ── 4h 计算合并（2026-10-13）：htf_core 透传 vs 各自自算 数值等价 ──────────
+
+
+def test_htf_core_merge_equivalent():
+    """合并 4h 计算（2026-10-13，用户拍板）：gate_4h / analyze_htf_background
+    传入共享 core 与不传（各自内部自算 htf_core）结果完全一致——去重只省算力、
+    不改行为（EMA 由 ema_series 换成同公式的 calc_ema，ADX 两处本就同源）"""
+    from app.services.strategy.ema_gate import gate_4h
+    from app.services.strategy.technical import analyze_htf_background, htf_core
+
+    for k4 in (_trending_4h_up(), _ranging_4h()):
+        core = htf_core(k4)
+        assert core is not None
+        assert gate_4h(k4, core=core) == gate_4h(k4)
+        assert analyze_htf_background(k4, core=core) == analyze_htf_background(k4)

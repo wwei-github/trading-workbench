@@ -44,6 +44,7 @@ from app.services.strategy.technical import (
     compute_quality_score,
     pullback_stabilize_bonus,
     analyze_htf_background,
+    htf_core,
     HTF_SHORT,
 )
 from app.services.strategy.trigger import (
@@ -234,10 +235,11 @@ def detect_indicator_candidate(
     reject_out: 可选出参 dict（与 event_out 同旁路模式，2026-10-11 筛选漏斗）——
       币种被关卡拒绝时写入 {"stage": <关卡代码>}，供主扫描漏斗落库展示
       「卡在哪一步」；候选产生/进待确认池（pending upsert）时不写。关卡代码：
-      gate_4h / votes / direction_flip / range_score / no_trigger /
-      trigger_whitelist / htf_state_lock / structure_1h（ema21 触点未过 1H 结构门，2026-10-12）。
-      votes 关附 "detail"（全票明细）、no_trigger / trigger_whitelist /
-      htf_state_lock 关附 "detail"（2026-10-13）——前端判定说明列渲染，
+      gate_4h / htf_state_lock（4h 状态机双向禁开前置门，2026-10-13）/
+      votes / direction_flip / range_score / structure_1h（ema21 触点未过 1H
+      结构门，2026-10-12）/ no_trigger / trigger_whitelist。
+      votes 关附 "detail"（全票明细）、htf_state_lock / no_trigger /
+      trigger_whitelist 关附 "detail"（2026-10-13）——前端判定说明列渲染，
       其余关卡不写。
     返回 (候选 dict, pending_op) 二元组：
     - 候选 dict（signal_type/touch_ref/quality_score/votes 及展示字段），每币至多 1 个；
@@ -282,13 +284,21 @@ def detect_indicator_candidate(
     htf_res = None
     gate = None
     if htf:
+        # 4h 共享计算核心（2026-10-13 合并）：gate_4h 与 analyze_htf_background 各需
+        # EMA21/55/144 + ADX + ATR，此前同一份 4h 序列被双算；此处只算一次并透传。
+        # core 为 None（样本不足或异常）时二者退回自算，与原行为一致。
         try:
-            htf_res = analyze_htf_background(htf)
+            htf_core_res = htf_core(htf)
+        except Exception as e:
+            htf_core_res = None
+            logger.warning("%s 4h共享计算失败（降级自算）: %s", symbol, e)
+        try:
+            htf_res = analyze_htf_background(htf, core=htf_core_res)
         except Exception as e:
             htf_res = None
             logger.warning("%s 4h背景复算失败（过滤降级放行）: %s", symbol, e)
         try:
-            gate = gate_4h(htf)
+            gate = gate_4h(htf, core=htf_core_res)
         except Exception as e:
             gate = None
             logger.warning("%s 4h闸门计算异常（降级放行）: %s", symbol, e)
@@ -298,6 +308,18 @@ def detect_indicator_candidate(
             if gate is None:
                 _reject("gate_4h")
                 return None, ({"op": "expire", "reason": "ranging"} if pending else None)
+        # 4h 状态机前置门（2026-10-13 用户拍板）：4h 状态机双向禁开（tangle 缠绕 /
+        # turn_* 拐头）时，回踩·突破候选均一票否决——与 gate_4h 同属「前置筛选」层
+        # （4h 决定做不做，1h 负责命中与待确认）。命中即直接不看：不跑票数、不触发、
+        # 不进候选，活跃 pending 同轮 expire(htf_state_lock)。异常降级（htf_res=None）
+        # 放行，与 gate_4h 同口径。
+        if htf_res is not None and htf_res.get("state") in STATE_BLOCK_BOTH:
+            _reject("htf_state_lock")
+            if reject_out is not None:
+                reject_out["detail"] = (
+                    f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
+                    "双向禁开——回踩/突破候选均不做")
+            return None, ({"op": "expire", "reason": "htf_state_lock"} if pending else None)
 
     # 投票单趟计算（2026-10-10 精简）：6 票预筛层撤销——4h 前置拉取后预筛失去
     # 「省 4h 请求」的存在理由，|net6|<2 被终判 |net|<3 完全蕴含（第 7 票至多
@@ -367,35 +389,19 @@ def detect_indicator_candidate(
             # 窗口过期 expire，让回踩池状态机保持自洽
             trig = None
             whitelist_reject = True
-        # 确认准入闸（2026-10-13 用户拍板，与上行 upsert 进池准入同口径）：待确认被
-        # 次根确认成候选（op=confirm）时，若 4h 状态机双向禁开（tangle/turn_*），该
-        # 候选必被 AI 层 enforce_htf_constraint 强制 skip → 不产生候选，pending 直接
-        # 失效（htf_state_lock），避免占 AI 配额、误展示与无谓确认
-        if (trig is not None and pending_op and pending_op.get("op") == "confirm"
-                and htf_res is not None and htf_res.get("state") in STATE_BLOCK_BOTH):
-            pending_op = {"op": "expire", "reason": "htf_state_lock"}
-            trig = None
     if trig is None:
         # 进待确认池准入闸（2026-10-13 用户拍板）：待确认池的产物类型恒为回踩确认
         # （trigger_pullback_confirm），故该类型须在触发类型白名单内——否则次根确认
-        # 成立也产生不了候选，进池只是挂空账；且 4h 状态机双向禁开（tangle 缠绕 /
-        # turn_* 拐头）时，即便金K确认也会被 AI 层 enforce_htf_constraint 强制 skip
-        # （technical.STATE_BLOCK_BOTH），进池纯属噪音。二者命中即挡在池外：漏斗记
-        # 关卡 + 判定说明、丢弃 upsert；仅挡新进池，已有 pending 的
-        # confirm/expire/supersede 生命周期不受影响。
+        # 成立也产生不了候选，进池只是挂空账。命中即挡在池外：漏斗记关卡 + 判定
+        # 说明、丢弃 upsert；仅挡新进池，已有 pending 的 confirm/expire/supersede
+        # 生命周期不受影响。（4h 状态机双向禁开已由上方前置门对全部候选一票否决，
+        # 无需在此单列。）
         if pending_op and pending_op.get("op") == "upsert":
             if PULLBACK_CONFIRM not in flt.allowed_triggers:
                 _reject("trigger_whitelist")
                 if reject_out is not None:
                     reject_out["detail"] = (
                         "回踩确认类型未在触发类型白名单内（筛选配置）——不进待确认池")
-                return None, None
-            if htf_res is not None and htf_res.get("state") in STATE_BLOCK_BOTH:
-                _reject("htf_state_lock")
-                if reject_out is not None:
-                    reject_out["detail"] = (
-                        f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
-                        "双向禁开——不进待确认池")
                 return None, None
         # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩口径计，
         # 触碰根即当前信号根 klines[-2]，企稳加分项量能语义照常评估）
@@ -407,18 +413,10 @@ def detect_indicator_candidate(
             pending_op["votes_json"] = _votes_snapshot(votes, stabilize=_stab)
         elif reject_out is not None:
             # 无触发且未进待确认池 → 漏斗记录（upsert 进池不算被拒）。
-            # structure_1h：ema21 触点未过 1H 结构门（硬门否决，2026-10-12）；
-            # htf_state_lock：次根确认被 4h 状态机双向禁开挡下（2026-10-13）
+            # structure_1h：ema21 触点未过 1H 结构门（硬门否决，2026-10-12）
             if (pending_op and pending_op.get("op") == "expire"
                     and pending_op.get("reason") == "structure_1h"):
                 _reject("structure_1h")
-            elif (pending_op and pending_op.get("op") == "expire"
-                    and pending_op.get("reason") == "htf_state_lock"):
-                _reject("htf_state_lock")
-                if htf_res is not None:
-                    reject_out["detail"] = (
-                        f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
-                        "双向禁开——次根确认失效")
             elif whitelist_reject:
                 _reject("trigger_whitelist")
             else:

@@ -28,13 +28,13 @@ const FUNNEL_STAGES: { key: string; label: string; color: string; hint: string }
   { key: 'risk_tier', label: '风险档位', color: 'default', hint: '交易所最大允许杠杆 <10×' },
   { key: 'blacklist', label: '黑名单', color: 'default', hint: '手动添加（永久）或止损超预算自动加入（1.2R 冷却 30 天 / ≥1.5R 永久）' },
   { key: 'gate_4h', label: '4h趋势闸门', color: 'orange', hint: '4h 无明确趋势（EMA144 斜率不足/缠绕/ADX<20）一票否决' },
+  { key: 'htf_state_lock', label: '4h状态禁开', color: 'orange', hint: '4h EMA 状态机双向禁开（缠绕/拐头）——回踩·突破均一票否决' },
   { key: 'votes', label: '指标多数决', color: 'orange', hint: '票数不足（voted<5）或方向中性（|net|<3）' },
   { key: 'direction_flip', label: '方向冲突', color: 'orange', hint: '指标多数决方向与 4h 闸门方向相反' },
   { key: 'structure_1h', label: '1h结构', color: 'orange', hint: '1h 三线排列 / 快中线发散度 / EMA144 方向不成立' },
   { key: 'range_score', label: '震荡评分', color: 'orange', hint: '震荡评分卡 ≥3（强震荡共识）' },
   { key: 'no_trigger', label: '无触发', color: 'purple', hint: '通过全部门但无触发信号，也未进待确认池；判定说明列为具体未过条件（新轮次）' },
   { key: 'trigger_whitelist', label: '触发白名单外', color: 'purple', hint: '触发类型不在白名单（筛选配置）' },
-  { key: 'htf_state_lock', label: '4h状态禁开', color: 'purple', hint: '4h EMA 状态机双向禁开（缠绕/拐头）——不进待确认池' },
 ]
 const STAGE_ORDER = Object.fromEntries(FUNNEL_STAGES.map((s, i) => [s.key, i]))
 const STAGE_META = Object.fromEntries(FUNNEL_STAGES.map((s) => [s.key, s]))
