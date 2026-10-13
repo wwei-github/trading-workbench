@@ -367,6 +367,14 @@ def detect_indicator_candidate(
             # 窗口过期 expire，让回踩池状态机保持自洽
             trig = None
             whitelist_reject = True
+        # 确认准入闸（2026-10-13 用户拍板，与上行 upsert 进池准入同口径）：待确认被
+        # 次根确认成候选（op=confirm）时，若 4h 状态机双向禁开（tangle/turn_*），该
+        # 候选必被 AI 层 enforce_htf_constraint 强制 skip → 不产生候选，pending 直接
+        # 失效（htf_state_lock），避免占 AI 配额、误展示与无谓确认
+        if (trig is not None and pending_op and pending_op.get("op") == "confirm"
+                and htf_res is not None and htf_res.get("state") in STATE_BLOCK_BOTH):
+            pending_op = {"op": "expire", "reason": "htf_state_lock"}
+            trig = None
     if trig is None:
         # 进待确认池准入闸（2026-10-13 用户拍板）：待确认池的产物类型恒为回踩确认
         # （trigger_pullback_confirm），故该类型须在触发类型白名单内——否则次根确认
@@ -399,10 +407,18 @@ def detect_indicator_candidate(
             pending_op["votes_json"] = _votes_snapshot(votes, stabilize=_stab)
         elif reject_out is not None:
             # 无触发且未进待确认池 → 漏斗记录（upsert 进池不算被拒）。
-            # structure_1h：ema21 触点未过 1H 结构门（硬门否决，2026-10-12）
+            # structure_1h：ema21 触点未过 1H 结构门（硬门否决，2026-10-12）；
+            # htf_state_lock：次根确认被 4h 状态机双向禁开挡下（2026-10-13）
             if (pending_op and pending_op.get("op") == "expire"
                     and pending_op.get("reason") == "structure_1h"):
                 _reject("structure_1h")
+            elif (pending_op and pending_op.get("op") == "expire"
+                    and pending_op.get("reason") == "htf_state_lock"):
+                _reject("htf_state_lock")
+                if htf_res is not None:
+                    reject_out["detail"] = (
+                        f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
+                        "双向禁开——次根确认失效")
             elif whitelist_reject:
                 _reject("trigger_whitelist")
             else:

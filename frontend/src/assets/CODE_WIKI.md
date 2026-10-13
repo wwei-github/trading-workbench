@@ -278,12 +278,13 @@ FastAPI 应用入口：
   8. 满仓判定 → 分发 AI 分析（或跳过）
   9. 组装筛选漏斗 `funnel_json`
 
-**`detect_indicator_candidate(...)`** — 单币五步判定链（核心）：
+**`detect_indicator_candidate(...)`** — 单币六步判定链（核心）：
 1. **4h 趋势闸门** `gate_4h` — 一票否决（EMA144 斜率/缠绕/ADX 三重）
 2. **7 指标多数决** `compute_indicator_votes` — |net|≥3 才出方向
 3. **闸门方向一致性** — 4h 方向须与多数决一致
 4. **震荡评分卡** `range_score` — ≥3 不入场
 5. **两段式触发确认** `detect_trigger` — 突破/回踩+金K/回踩两段式
+6. **进池/确认准入闸**（2026-10-13）— 回踩确认须在触发类型白名单内；且 4h 状态机非双向禁开（tangle/turn_*）——**进池（upsert）**与**次根确认（confirm）**两条路径同口径：禁开时既不进池也不产生候选（pending `expire(htf_state_lock)`），漏斗记 `trigger_whitelist`/`htf_state_lock`
 （1H 结构门 `structure_1h` 已从筛选链退役（2026-10-12），现为 trigger 层 **1h EMA21 触点硬门**——仅当回踩触点为 ema21 时校验，其余触点豁免）
 
 #### [scan_filters.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/scan_filters.py)
@@ -296,7 +297,7 @@ FastAPI 应用入口：
 
 #### [market_data.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/market_data.py)
 
-行情数据工具：`build_market_context`（AI 事实包注入 BTC 状态/资金费率）、`screen_klines`（尾窗幽灵根视图）、`in_forming_tail`、`classify_volume`（量能分档）。
+行情数据工具：`build_market_context`（AI 事实包注入 BTC 状态/资金费率）、`screen_klines`（尾窗/整点竞态幽灵根视图）、`in_forming_tail`、`classify_volume`（量能分档）。
 
 ---
 

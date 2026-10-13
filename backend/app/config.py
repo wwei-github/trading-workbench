@@ -202,7 +202,11 @@ class Settings(BaseSettings):
     # （tangle/turn_*，technical.STATE_BLOCK_BOTH）时确认也必被 AI 层强制 skip，
     # 二者命中即挡在池外（scanner 漏斗新增 htf_state_lock 关卡；仅挡新进池，
     # 已有 pending 生命周期不变）
-    RULE_VERSION: str = "v2026-10-13-3"
+    # v2026-10-13-4（用户拍板）：状态机禁开约束延伸到「次根确认」——已有 pending
+    # 被确认成候选时若 4h 状态机双向禁开（tangle/turn_*），候选必被 AI 层强制
+    # skip，故不产生候选、pending 直接失效（expire/htf_state_lock；漏斗同上关）；
+    # 新增/进池与确认两条路径口径一致：禁开态下回踩既不进池也不确认
+    RULE_VERSION: str = "v2026-10-13-4"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

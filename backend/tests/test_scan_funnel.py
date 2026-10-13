@@ -334,6 +334,49 @@ def test_existing_pending_expire_unaffected_by_admission_gate():
     assert rv["stage"] == "no_trigger"
 
 
+def _confirm_trig():
+    from app.services.strategy.trigger import PULLBACK_CONFIRM
+    return {"type": PULLBACK_CONFIRM, "direction": 1, "position": "support",
+            "pattern": "hammer", "breakout_pct": 0.5, "reason": "r",
+            "touch_ref": "ema21"}
+
+
+def _confirm_kl():
+    return [[1_700_000_000_000 + i * 3_600_000, 100.0, 101.0, 99.0, 100.0, 10.0, 10.0]
+            for i in range(12)]
+
+
+def _active_pending():
+    return {"id": 1, "direction": 1, "touch_ref": "ema21",
+            "stage1_candle_open": 1_700_000_000_000}
+
+
+def test_pending_confirm_blocked_by_htf_state_lock():
+    """次根确认成候选时 4h 状态机双向禁开 → 不产生候选、pending 失效
+    （expire/htf_state_lock）、漏斗记 htf_state_lock + 判定说明"""
+    from app.services.scan_filters import ALL_TRIGGERS
+    rv: dict = {}
+    cand, op = _detect(rv, _confirm_kl(), trigger=(_confirm_trig(), {"op": "confirm"}),
+                       pending=_active_pending(), flt=_adm_flt(ALL_TRIGGERS),
+                       htf_state="tangle")
+    assert cand is None
+    assert op == {"op": "expire", "reason": "htf_state_lock"}
+    assert rv["stage"] == "htf_state_lock"
+    assert "缠绕" in rv["detail"] and "次根确认失效" in rv["detail"]
+
+
+def test_pending_confirm_allowed_when_state_pass():
+    """次根确认 + 4h 状态放行 → 候选照常产生、pending confirm（不写 reject_out）"""
+    from app.services.scan_filters import ALL_TRIGGERS
+    from app.services.strategy.trigger import PULLBACK_CONFIRM
+    rv: dict = {}
+    cand, op = _detect(rv, _confirm_kl(), trigger=(_confirm_trig(), {"op": "confirm"}),
+                       pending=_active_pending(), flt=_adm_flt(ALL_TRIGGERS),
+                       htf_state="aligned_bull")
+    assert cand is not None and cand["signal_type"] == PULLBACK_CONFIRM
+    assert op == {"op": "confirm"} and rv == {}
+
+
 def test_reject_real_pipeline_gate_4h():
     """真实管线抽查（非打桩）：4h 走平 → gate_4h 否决 + reject 旁路一致
     （test_htf_ranging_filter 同款夹具形态：220 根窄幅 4h + 300 根上行 1h）"""

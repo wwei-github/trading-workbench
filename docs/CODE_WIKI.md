@@ -284,7 +284,7 @@ FastAPI 应用入口：
 3. **闸门方向一致性** — 4h 方向须与多数决一致
 4. **震荡评分卡** `range_score` — ≥3 不入场
 5. **两段式触发确认** `detect_trigger` — 突破/回踩+金K/回踩两段式
-6. **进待确认池准入闸**（2026-10-13）— 回踩确认须在触发类型白名单内，且 4h 状态机非双向禁开（tangle/turn_*），否则不入池（漏斗记 `trigger_whitelist`/`htf_state_lock`）
+6. **进池/确认准入闸**（2026-10-13）— 回踩确认须在触发类型白名单内；且 4h 状态机非双向禁开（tangle/turn_*）——**进池（upsert）**与**次根确认（confirm）**两条路径同口径：禁开时既不进池也不产生候选（pending `expire(htf_state_lock)`），漏斗记 `trigger_whitelist`/`htf_state_lock`
 （1H 结构门 `structure_1h` 已从筛选链退役（2026-10-12），现为 trigger 层 **1h EMA21 触点硬门**——仅当回踩触点为 ema21 时校验，其余触点豁免）
 
 #### [scan_filters.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/scan_filters.py)
