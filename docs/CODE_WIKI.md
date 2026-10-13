@@ -296,7 +296,7 @@ FastAPI 应用入口：
 
 #### [market_data.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/market_data.py)
 
-行情数据工具：`build_market_context`（AI 事实包注入 BTC 状态/资金费率）、`screen_klines`（尾窗幽灵根视图）、`in_forming_tail`、`classify_volume`（量能分档）。
+行情数据工具：`build_market_context`（AI 事实包注入 BTC 状态/资金费率）、`screen_klines`（尾窗/整点竞态幽灵根视图）、`in_forming_tail`、`classify_volume`（量能分档）。
 
 ---
 

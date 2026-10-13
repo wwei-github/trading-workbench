@@ -1,11 +1,15 @@
 """扫描尾窗机制：把近收盘未收盘根视作已收盘参与筛选（2026-10-11-4）。
 
-2026-10-12 定时扫描改整点 :00 后尾窗关闭（派生宽度 0，生产全时点原样透传 =
-「看上一根已收盘根」），但机制保留：本文件既锁「关闭时恒透传」，也覆盖打开时
-的幽灵尾根视图——幽灵复制使 [-1] 仍为「未收盘」（被管线剔除）、[-2] 变为
-近收盘根（信号根），全管线 [:-1] 剔尾约定零改动即完成信号根前移。
+2026-10-12 定时扫描改整点 :00 后尾窗关闭（派生宽度 0），机制保留；2026-10-13
+新增第二触发条件「末根已收盘」（整点取数竞态：新周期根尚未出现在响应里、末根
+实为刚收盘根——该根就是应评的信号根，不补幽灵会被当未收盘剔除而错位漏评）。
+幽灵复制使 [-1] 仍为「未收盘」（被管线剔除）、[-2] 变为信号根，全管线 [:-1]
+剔尾约定零改动即完成信号根对齐。
+
+夹具时间口径（2026-10-13 重做）：末根开盘须对齐注入的 now（旧夹具时间戳取
+2023 常量，与 now 脱节，新判定下会被误判「末根已收盘」）。
 """
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -17,7 +21,7 @@ from app.services.market_data import (
 
 
 def _dt(h, m, s=0):
-    return datetime(2026, 10, 11, h, m, s)
+    return datetime(2026, 10, 11, h, m, s, tzinfo=timezone.utc)
 
 
 # ── in_forming_tail 边界（2026-10-12：beat 改整点 :00，尾窗关闭）──
@@ -53,20 +57,23 @@ def test_beat_minute_drives_tail_width():
     assert 0 <= FORMING_TAIL_MINUTES < 60
 
 
-# ── screen_klines 幽灵尾根 ──
+# ── screen_klines 幽灵尾根（尾窗 ∨ 末根已收盘）──
 
 def _tail_on(monkeypatch, minutes=5):
     """临时打开尾窗（覆盖派生宽度）：机制本身仍受测，与当前 beat 分钟数解耦
-    （2026-10-12 整点触发后宽度为 0，生产恒透传，故须显式打开才走幽灵分支）"""
+    （2026-10-12 整点触发后宽度为 0，故须显式打开才走尾窗分支）"""
     import app.services.market_data as md
 
     monkeypatch.setattr(md, "FORMING_TAIL_MINUTES", minutes)
 
 
-def _klines(n=40):
-    """构造 n 根 1h K线：最后一根为「未收盘根」（与交易所返回同构）"""
+def _klines(n=40, last_open=None, step_min=60):
+    """构造 n 根 K线：末根开盘于 last_open（默认 2026-10-11 14:00 UTC），
+    前推 step_min 分钟/根。末根开盘时刻是对齐 now 的唯一时间锚"""
+    last_ms = int((last_open or _dt(14, 0)).timestamp() * 1000)
+    step = step_min * 60_000
     return [
-        [1700000000000 + i * 3600000, 100 + i, 101 + i, 99 + i, 100.5 + i, 10 + i]
+        [last_ms - (n - 1 - i) * step, 100 + i, 101 + i, 99 + i, 100.5 + i, 10 + i]
         for i in range(n)
     ]
 
@@ -93,17 +100,57 @@ def test_screen_klines_ghost_copy_isolation(monkeypatch):
     assert kl[-1][4] != 999.0
 
 
-def test_screen_klines_passthrough_outside_window():
-    """非尾窗：原样返回（等价旧行为，信号根=上一根已收盘）"""
-    kl = _klines()
+def test_screen_klines_passthrough_when_last_forming():
+    """末根未走完且非尾窗：原样返回（正常取数口径，信号根=上一根已收盘）"""
+    kl = _klines(last_open=_dt(15, 0))
     assert screen_klines(kl, "1h", _dt(15, 30)) is kl
-    assert screen_klines(kl, "1h", _dt(10, 0)) is kl
+    kl = _klines(last_open=_dt(14, 0))
+    assert screen_klines(kl, "1h", _dt(14, 30)) is kl
 
 
 def test_screen_klines_passthrough_when_tail_disabled():
-    """尾窗关闭（当前生产口径，宽度 0）：:56 这类原尾窗时点也原样返回"""
+    """尾窗关闭（当前生产口径，宽度 0）：:56 时点、末根未收盘 → 原样返回"""
     kl = _klines()
     assert screen_klines(kl, "1h", _dt(14, 56)) is kl
+
+
+def test_screen_klines_ghost_when_last_closed():
+    """整点取数竞态（2026-10-13）：末根已收盘（开盘+1h ≤ now）即视作信号根——
+    新周期根尚未出现在响应里，不补幽灵会把它当未收盘剔除、信号根错位到前一根"""
+    kl = _klines(last_open=_dt(14, 0))              # 末根 = 14:00 根（15:00 收盘）
+    out = screen_klines(kl, "1h", _dt(15, 0, 30))   # 15:00 扫描拿到竞态快照
+    assert len(out) == len(kl) + 1
+    assert out[-1] == kl[-1] and out[-1] is not kl[-1]
+    assert out[-2] == kl[-1]                        # 信号根 = 刚收盘根（不再错位）
+    assert out[:-1] == kl
+
+
+def test_screen_klines_closed_boundary_exact_hour():
+    """边界：now 恰等于开盘+周期（<= 取等）→ 判已收盘，补幽灵"""
+    kl = _klines(last_open=_dt(14, 0))
+    out = screen_klines(kl, "1h", _dt(15, 0, 0))
+    assert len(out) == len(kl) + 1 and out[-2] == kl[-1]
+
+
+def test_screen_klines_last_forming_one_sec_before_close():
+    """距收盘 1 秒（末根=当前周期根，数据新鲜）→ 透传（信号根=上一根）"""
+    kl = _klines(last_open=_dt(14, 0))
+    assert screen_klines(kl, "1h", _dt(14, 59, 59)) is kl
+
+
+def test_screen_klines_closed_4h_interval():
+    """周期非 1h：按 interval 分钟数判定（4h 根 12:00 开盘 → 16:00 收盘）"""
+    kl = _klines(last_open=_dt(12, 0), step_min=240)
+    assert screen_klines(kl, "4h", _dt(15, 59, 59)) is kl       # 未收盘
+    out = screen_klines(kl, "4h", _dt(16, 0, 1))                # 竞态：4h 根已收盘
+    assert len(out) == len(kl) + 1 and out[-2] == kl[-1]
+
+
+def test_screen_klines_naive_now_as_utc():
+    """naive now 按 UTC 理解（生产恒传 aware；不得落到本机时区致判定漂移）"""
+    kl = _klines(last_open=_dt(14, 0))
+    out = screen_klines(kl, "1h", datetime(2026, 10, 11, 15, 0, 30))
+    assert len(out) == len(kl) + 1 and out[-2] == kl[-1]
 
 
 def test_screen_klines_empty_safe():

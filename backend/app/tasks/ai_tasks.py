@@ -291,14 +291,15 @@ def run_ai_analysis_single(
             klines = pool.get_klines(r.symbol, cfg.kline_interval, 500, force_refresh=True)
             logger.info("AI 分析 %s K线不足500根，强刷重取后 %d 根", r.symbol, len(klines))
 
-        # 扫描尾窗同口径（2026-10-11-4）：分析紧随 :55 扫描，事实包必须与扫描
-        # 看到同一根信号K线——尾窗内幽灵尾根视图（K线摘要/指标块/摆动结构/
-        # current_price 全部对齐扫描口径）；跨点后（如分析拖到 :01+）自动退回
-        # 「上一根已收盘根」口径，与扫描尾窗的信号根是同一根，结果仍一致
+        # 扫描同口径（2026-10-11-4；2026-10-13 扩整点竞态）：分析紧随扫描，事实包
+        # 必须与扫描看到同一根信号K线——尾窗内近收盘根、或整点取数竞态下末根实为
+        # 刚收盘根（新周期根尚未出现在响应里）→ 幽灵尾根视图（K线摘要/指标块/摆动
+        # 结构/current_price 全部对齐扫描口径）；否则原样返回（信号根=上一根已收盘）
+        klines = md.screen_klines(klines, cfg.kline_interval, tail_now)
         if in_tail:
-            klines = md.screen_klines(klines, cfg.kline_interval, tail_now)
             # 信号根 = 未走完的近收盘根（H1，2026-10-12）：其收盘/极值未定型，
-            # 下游「信号K极值已定型」前提不成立——打标供 risk_guard 放宽近锚硬校验
+            # 下游「信号K极值已定型」前提不成立——打标供 risk_guard 放宽近锚硬校验。
+            # 整点竞态场景末根已收盘（走完），不打标
             signal["signal_bar_provisional"] = True
 
         # 分析时刻最新价（未收盘K线的现价）：信号里的 current_price 是扫描时价格，

@@ -43,8 +43,11 @@ def _cache_set(key: str, data: object, ttl: float) -> None:
 # 忘改此处会让 in_forming_tail 静默返回 False（筛选退回「看上一根已收盘根」，
 # 不报错）——派生 + 启动校验让配置漂移在结构上不可能发生。
 # 宽度 0 = 尾窗关闭（2026-10-12 拍板：beat 改整点 :00，新周期刚开，无「近收盘
-# 未收盘根」可言）：in_forming_tail 恒 False，全管线的 screen_klines 原样透传，
-# 信号根 = 上一根已收盘根。机制与派生校验保留，改回分钟数即自动恢复
+# 未收盘根」可言）：in_forming_tail 恒 False，screen_klines 的尾窗分支不再触发。
+# 整点取数竞态（新周期根尚未出现在响应里、末根实为刚收盘根）由「末根已收盘
+# 即视作信号根」兜底（2026-10-13，screen_klines 第二触发条件）：该情形末根
+# 正是应评的信号根，不再被当未收盘剔除、错位到前一根且该根被漏评（STXUSDT
+# 09:00 吞没漏评个案）。机制与派生校验保留，改回分钟数即自动恢复
 # 宽度 = beat 时刻距收盘的剩余分钟数 = 60 - SCAN_BEAT_MINUTE；beat 整点（0）
 # 是唯一例外：新周期刚开，「近收盘」无从定义，而派生式会误得 60（=恒在尾窗），
 # 故显式归零 = 尾窗关闭
@@ -72,17 +75,44 @@ def in_forming_tail(interval: str, now: Optional[datetime] = None) -> bool:
     return (minutes - into) <= FORMING_TAIL_MINUTES
 
 
+def _last_candle_closed(klines: list, interval: str, now: datetime) -> bool:
+    """末根是否已走完（开盘时刻 + 周期 ≤ now）
+
+    正常取数末根 = 当前周期未走完根（False）；整点取数竞态下新周期根尚未
+    出现在响应里、末根实为上一根已收盘根（True——须视作信号根）。now 无
+    时区信息按 UTC 理解（生产恒传 aware 的 datetime.now(timezone.utc)；
+    统一口径避免裸 datetime 落到本机时区、判定随部署机漂移）。
+    """
+    from app.services.binance_client import _INTERVAL_MINUTES
+    minutes = _INTERVAL_MINUTES.get(interval, 60)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return float(klines[-1][0]) + minutes * 60_000 <= now.timestamp() * 1000
+
+
 def screen_klines(klines: list, interval: str, now: Optional[datetime] = None) -> list:
-    """扫描筛选口径视图：尾窗内把未收盘根视作已收盘（成为信号根）。
+    """扫描筛选口径视图：末根已是已收盘根（或尾窗内近收盘根）时视作信号根。
 
     全管线既有约定为「[-1] 未收盘剔除、[-2] 信号已收盘根」（technical/
     ema/trigger 各模块统一 [:-1] 剔尾）。为不改任何下游逻辑，此处复制一
-    份幽灵尾根追加到末尾：[-1]=幽灵（被管线剔除），[-2]=原未收盘根（视作
-    信号根，OHLCV 为扫描时刻快照）。非尾窗原样返回。
+    份幽灵尾根追加到末尾：[-1]=幽灵（被管线剔除），[-2]=原末根（视作
+    信号根，OHLCV 为扫描时刻快照）。两者皆不满足则原样返回。
+
+    触发幽灵尾根的情形（或）：
+    1. 尾窗内（in_forming_tail，2026-10-11-4）：近收盘未收盘根提前视作
+       信号根（beat 回退整点后派生宽度 0，此路恒不触发，机制保留）；
+    2. 末根已收盘（2026-10-13 整点竞态修复）：整点扫描取数竞态下新周期
+       根尚未出现在响应里、末根实为刚收盘根——不补幽灵会把它当未收盘
+       剔除，信号根错位到前一根且该根被漏评（STXUSDT 09:00 吞没漏评个
+       案）；已收盘末根视作信号根与新鲜取数口径一致（新鲜数据末根=新周
+       期根，剔尾后信号根是同一根）。
     """
-    if not klines or not in_forming_tail(interval, now):
+    if not klines:
         return klines
-    return klines + [list(klines[-1])]
+    now = now or datetime.now(timezone.utc)
+    if in_forming_tail(interval, now) or _last_candle_closed(klines, interval, now):
+        return klines + [list(klines[-1])]
+    return klines
 
 
 def _futures_client() -> httpx.Client:

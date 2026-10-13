@@ -478,8 +478,10 @@ class Scanner:
             # 尾窗内把未收盘根视作已收盘参与筛选（信号根前移一根，提前数分钟
             # 捕捉）；尾窗内 K线缓存可能是小时内早期快照（图表浏览/大盘预取
             # 写入），必须强刷保数据新鲜。2026-10-12 beat 改整点 :00 后尾窗
-            # 关闭（FORMING_TAIL_MINUTES=0，恒 False）——此处与下游全走非尾窗
-            # 分支：信号根 = 上一根已收盘根，不清缓存快照
+            # 关闭（FORMING_TAIL_MINUTES=0，恒 False）——信号根 = 上一根已收盘
+            # 根，不清缓存快照；整点取数竞态（新周期根尚未出现在响应里、末根
+            # 实为刚收盘根）由 screen_klines「末根已收盘」检查兜底（2026-10-13），
+            # 不清缓存也能判对信号根
             #
             # 基准时刻整轮取一次（2026-10-12）：scan_one 内若各自重新读时钟，
             # 跨整点的长轮次会前半批用幽灵快照、后半批用最终收盘根——同一轮
@@ -612,13 +614,12 @@ class Scanner:
                         limit=max(kline_window, 300),
                         force_refresh=tail_window,
                     )
-                    # 尾窗内把未收盘根视作已收盘：幽灵尾根维持 [-1] 未收盘/
-                    # [-2] 信号根的全管线约定，信号根=近收盘根（2026-10-11-4）。
-                    # 非尾窗原样返回（等价旧行为：信号根=上一根已收盘）。
-                    # now 用轮次基准 scan_now（2026-10-12）：不重读时钟，避免
-                    # 跨整点时同一轮内两种数据基准；判定也与 tail_window 一致
-                    if tail_window:
-                        klines = md.screen_klines(klines, kline_interval, scan_now)
+                    # 幽灵尾根视图（2026-10-11-4；2026-10-13 扩整点竞态）：尾窗内
+                    # 近收盘根，或整点取数竞态下末根实为刚收盘根（新周期根尚未出
+                    # 现在响应里）→ 末根视作信号根；均不满足原样返回（信号根=上
+                    # 一根已收盘）。now 用轮次基准 scan_now（2026-10-12）：不重读
+                    # 时钟，避免跨整点时同一轮内两种数据基准
+                    klines = md.screen_klines(klines, kline_interval, scan_now)
                     ev_out: dict = {}
                     rv_out: dict = {}   # 漏斗旁路：单币拒绝关卡（cand=None 时读）
                     cand, pop = detect_indicator_candidate(

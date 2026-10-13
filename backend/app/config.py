@@ -33,7 +33,10 @@ class Settings(BaseSettings):
     # 0 = 每小时整点触发（2026-10-12 拍板，回退 v2026-10-11-4 的 :55 提前捕捉）：
     # 整点新周期刚开、没有「近收盘未收盘根」可言，故尾窗同步关闭（派生宽度 0），
     # 筛选回到「看上一根已收盘根」。信号根与 :55 口径是同一根（都是刚走完的那根），
-    # 但取到的是最终收盘价而非扫描时刻快照，且时点晚 5 分钟
+    # 但取到的是最终收盘价而非扫描时刻快照，且时点晚 5 分钟。
+    # 整点取数竞态（2026-10-13）：整点触发时新周期根可能尚未出现在取数响应里、
+    # 末根实为刚收盘根——由 screen_klines「末根已收盘即视作信号根」兜底，不再当
+    # 未收盘剔除致信号根错位到前一根且该根漏评（STXUSDT 09:00 吞没漏评个案）
     SCAN_BEAT_MINUTE: int = 0
     KLINE_INTERVAL: str = "1h"
     KLINE_WINDOW: int = 240
@@ -189,7 +192,12 @@ class Settings(BaseSettings):
     # 25% 时质量分 +3（candlestick.ENGULF_UPPER_SHADOW_SHORT_PCT +
     # technical.compute_quality_score），上影长只失加分、不再拒判形态
     # （冲高遭抛压打回=犹豫的语义降为排序信号）；看跌吞没总影线 40% 门不变
-    RULE_VERSION: str = "v2026-10-13"
+    # v2026-10-13-2（用户拍板）：整点取数竞态修复——扫描取数末根已是已收盘根
+    # （开盘时刻+周期 ≤ 扫描时刻）时视作信号根（market_data.screen_klines 幽灵
+    # 尾根条件由「尾窗」扩为「尾窗 ∨ 末根已收盘」；scanner/api analyze/ai_tasks
+    # 三处调用点统一恒过 screen_klines），不再当未收盘剔除、信号根错位到前一根
+    # 且该根被漏评（STXUSDT 09:00 吞没漏评个案）；非竞态时行为不变
+    RULE_VERSION: str = "v2026-10-13-2"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]
