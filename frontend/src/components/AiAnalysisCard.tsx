@@ -99,57 +99,82 @@ function parseItem(raw: string): AnalysisItem {
 }
 
 /** AI 推理逐条展示：序号圆徽 + 标签/短标题强调 + 正文，条目间虚线分隔；
- * columns=2 时按条目对半拆两列（宽容器下更紧凑，虚线分隔在各列内独立） */
-function AnalysisItemList({ text, columns = 1 }: { text?: string | null; columns?: 1 | 2 }) {
+ * columns=2 时按条目对半拆两列（宽容器下更紧凑，虚线分隔在各列内独立）；
+ * highlightLabels 命中的条行（如决策结论文本节的「结论：」行）以 accent 色软底强调 */
+function AnalysisItemList({
+  text,
+  columns = 1,
+  accent,
+  highlightLabels,
+}: {
+  text?: string | null
+  columns?: 1 | 2
+  accent?: string
+  highlightLabels?: string[]
+}) {
   const rows = analysisLines(text).map(parseItem)
   if (rows.length === 0) return <span style={{ color: '#999' }}>-</span>
-  const renderItem = (it: AnalysisItem, i: number) => (
-    <div
-      key={i}
-      style={{
-        display: 'flex',
-        gap: 8,
-        padding: '4px 0',
-        borderTop: i > 0 ? '1px dashed #f0f0f0' : undefined,
-      }}
-    >
-      {it.num != null && (
-        <span
+  const renderItem = (it: AnalysisItem, i: number) => {
+    // 命中 highlightLabels 的条行（如「结论：不建议开单」）：accent 软底 + 整行加粗
+    const hit = it.label != null && (highlightLabels?.includes(it.label) ?? false)
+    return (
+      <div
+        key={i}
+        style={{
+          display: 'flex',
+          gap: 8,
+          padding: hit ? '4px 8px' : '4px 0',
+          borderRadius: hit ? 6 : undefined,
+          background: hit ? hexToRgba(accent ?? '#8c8c8c', 0.08) : undefined,
+          borderTop: i > 0 ? '1px dashed #f0f0f0' : undefined,
+        }}
+      >
+        {it.num != null && (
+          <span
+            style={{
+              flex: '0 0 auto',
+              width: 18,
+              height: 18,
+              marginTop: 3,
+              borderRadius: 9,
+              background: '#e6f4ff',
+              color: '#1677ff',
+              fontSize: 11,
+              fontWeight: 700,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            {it.num}
+          </span>
+        )}
+        <div
           style={{
-            flex: '0 0 auto',
-            width: 18,
-            height: 18,
-            marginTop: 3,
-            borderRadius: 9,
-            background: '#e6f4ff',
-            color: '#1677ff',
-            fontSize: 11,
-            fontWeight: 700,
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
+            flex: 1,
+            minWidth: 0,
+            lineHeight: 1.8,
+            color: '#434343',
+            fontWeight: hit ? 600 : undefined,
           }}
         >
-          {it.num}
-        </span>
-      )}
-      <div style={{ flex: 1, minWidth: 0, lineHeight: 1.8, color: '#434343' }}>
-        {it.tag && (
-          <Tag
-            color="orange"
-            bordered={false}
-            style={{ marginInlineEnd: 6, fontSize: 11, lineHeight: '16px', paddingInline: 5 }}
-          >
-            {it.tag}
-          </Tag>
-        )}
-        {it.label && (
-          <span style={{ fontWeight: 600, color: '#262626', marginRight: 6 }}>{it.label}</span>
-        )}
-        {it.text}
+          {it.tag && (
+            <Tag
+              color="orange"
+              bordered={false}
+              style={{ marginInlineEnd: 6, fontSize: 11, lineHeight: '16px', paddingInline: 5 }}
+            >
+              {it.tag}
+            </Tag>
+          )}
+          {it.label && (
+            <span style={{ fontWeight: 600, color: '#262626', marginRight: 6 }}>{it.label}</span>
+          )}
+          {it.text}
+        </div>
       </div>
-    </div>
-  )
+    )
+  }
   if (columns === 2 && rows.length > 1) {
     const half = Math.ceil(rows.length / 2)
     return (
@@ -244,37 +269,22 @@ function cardStyle(decision: 'suggest' | 'skip' | null, scheme: ColorScheme): CS
   return { border: '1px solid #f0f0f0', borderLeft: '3px solid #d9d9d9', background: '#fafafa' }
 }
 
-/** 明细行渲染：序号换行拆行；"结论：…"行以结论底色条强调 */
-function StrategyLines({ lines, accent }: { lines: string[]; accent: string }) {
-  const rows = analysisLines(lines.join('\n'))
-  if (rows.length === 0) return null
-  return (
-    <div style={{ lineHeight: 1.8, fontSize: 13, color: '#434343' }}>
-      {rows.map((l, i) =>
-        /^结论[:：]/.test(l) ? (
-          <div
-            key={i}
-            style={{
-              marginTop: 6,
-              padding: '6px 10px',
-              borderRadius: 6,
-              background: hexToRgba(accent, 0.08),
-              fontWeight: 600,
-            }}
-          >
-            {l}
-          </div>
-        ) : (
-          <div key={i}>{l}</div>
-        ),
-      )}
-    </div>
-  )
-}
+/** 「AI 跳过理由」气泡内容卡相对容器左缘的偏移：Avatar(32px) + columnGap(paddingSM=12px)。
+ * skip 分支下方「公共检查/决策结论」卡缩进此值，与气泡卡左对齐（suggest 分支无气泡、不缩进） */
+const BUBBLE_CONTENT_OFFSET = 44
 
 /** 分析分区（2026-10-12 两节格式）：公共检查 + 决策结论卡；
  * 旧行无「决策结论」节（四节格式遗留）时回退展示「合并结论」节文本 */
-function AnalysisSectionsView({ ai, sections }: { ai: AIAnalysis; sections: AnalysisSections }) {
+function AnalysisSectionsView({
+  ai,
+  sections,
+  indentLeft,
+}: {
+  ai: AIAnalysis
+  sections: AnalysisSections
+  /** 左缘缩进：skip 分支传气泡卡偏移，与「AI 跳过理由」卡左侧对齐 */
+  indentLeft?: number
+}) {
   // 系统红绿方案（页面顶部全局切换，localStorage 持久化）
   const colorScheme = useScanStore((s) => s.colorScheme)
   // 公共检查条目宽容器双列（880 阈值：结果表展开行双列、交易记录窄卡片单列）
@@ -299,6 +309,7 @@ function AnalysisSectionsView({ ai, sections }: { ai: AIAnalysis; sections: Anal
           style={{
             padding: '8px 10px',
             marginBottom: 8,
+            marginLeft: indentLeft,
             borderRadius: 8,
             background: '#fafafa',
             border: '1px solid #f0f0f0',
@@ -322,14 +333,26 @@ function AnalysisSectionsView({ ai, sections }: { ai: AIAnalysis; sections: Anal
           <AnalysisItemList text={sections.common.join('\n')} columns={checksWide ? 2 : 1} />
         </div>
       )}
-      {/* 决策结论卡：结论徽标取结构化字段，明细取 analysis 文本节（结论行以底色条强调） */}
+      {/* 决策结论卡：结论徽标取结构化字段，明细取 analysis 文本节；逐条单列展示，
+          「结论：…」条行以涨跌色软底强调（accent 随系统红绿方案） */}
       {decisionLines.length > 0 && (
-        <div style={{ padding: '8px 10px', borderRadius: 8, ...cardStyle(decision, colorScheme) }}>
+        <div
+          style={{
+            padding: '8px 10px',
+            marginLeft: indentLeft,
+            borderRadius: 8,
+            ...cardStyle(decision, colorScheme),
+          }}
+        >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
             <strong style={{ fontSize: 13 }}>决策结论</strong>
             <DecisionBadge decision={decision} scheme={colorScheme} />
           </div>
-          <StrategyLines lines={decisionLines} accent={decisionColor} />
+          <AnalysisItemList
+            text={decisionLines.join('\n')}
+            accent={decisionColor}
+            highlightLabels={['结论']}
+          />
         </div>
       )}
     </>
@@ -652,7 +675,14 @@ export default function AiAnalysisCard({ ai }: Props) {
             }}
             header="AI 跳过理由"
           />
-          {sections && <AnalysisSectionsView ai={ai} sections={sections} />}
+          {/* 分区卡缩进气泡卡偏移量，与上方「AI 跳过理由」卡左侧对齐 */}
+          {sections && (
+            <AnalysisSectionsView
+              ai={ai}
+              sections={sections}
+              indentLeft={BUBBLE_CONTENT_OFFSET}
+            />
+          )}
         </>
       ) : (
         <>
