@@ -61,7 +61,7 @@ const BULLISH_PATTERNS: Record<string, string> = {
 };
 
 const BEARISH_PATTERNS: Record<string, string> = {
-  shooting_star: "倒锤形线（流星）",
+  shooting_star: "倒锤形线",
   hanging_man: "上吊线",
   bearish_engulfing: "看跌吞没",
   evening_star: "黄昏星",

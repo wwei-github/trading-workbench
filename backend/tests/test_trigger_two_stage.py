@@ -759,7 +759,7 @@ def test_shooting_star_plus_trend_candle_confirms_short():
     t, op = trig.detect_trigger(kl, -1)
     assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
     assert t["pattern"] == "shooting_star"
-    assert "前根倒锤形线（流星）+当根趋势K" in t["reason"]
+    assert "前根倒锤形线+当根趋势K" in t["reason"]
 
 
 # ── resolve_golden_evidence 裁决函数直测（规则1/2/3 与否决路径）────────────

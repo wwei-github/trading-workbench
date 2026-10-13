@@ -487,7 +487,7 @@ def test_actual_review_golden_pattern_groups(db):
     assert pats[0] == ("锤形线", 1)                       # 固定顺序：看涨 6 打头
     assert ("看涨吞没", 0) in pats and ("墓碑十字", 0) in pats  # 0 笔也占行
     d = dict(pats)
-    assert d["倒锤形线（流星）"] == 1 and d["未记录"] == 1
+    assert d["倒锤形线"] == 1 and d["未记录"] == 1
     hammer = next(g for g in out["groups"]
                   if g["dim"] == "金K形态" and g["key"] == "锤形线")
     assert hammer["wins"] == 1 and hammer["pnl"] == 20.0
