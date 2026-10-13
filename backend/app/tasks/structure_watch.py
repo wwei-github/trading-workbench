@@ -222,7 +222,10 @@ def _analyze_symbol(symbol: str, order: int, now_ts: float) -> dict:
             hi, lo = find_swing_points(closes, closes, order)
             swings = merge_swings(hi, lo, closes, closes)
             cls = classify_structure(swings)
-            sw = recent_swings(k1, order=order, n=3)
+            # 标注与上方 find_swing_points/classify_structure 同口径：只用已收盘
+            # K 线（未收盘根的 close 会参与摆动确认，可能产出与 cls 不一致的
+            # 标签；对齐 trigger 破位扫描的 klines[:-1] 惯例）
+            sw = recent_swings(closed1, order=order, n=3)
             close_last = float(closed1[-1][4])
             structure = {
                 "trend": cls["trend"],
@@ -381,6 +384,8 @@ def _stale(klines: list[list], now_ts: float, step_ms: int) -> int:
     滞后 1 根内视为新鲜：整点刚过 / 服务器时钟略超前时，交易所可能尚未开出
     新桶（末根仍是上一桶），滞后超过一整根才判数据陈旧（避免边界误报）。
     """
+    if not klines:
+        return 0  # 空数组由根数门（data_1h_short/data_4h_short）单独标记，不在此处炸
     bucket = int(now_ts * 1000) // step_ms * step_ms
     bars = max(0, (bucket - int(klines[-1][0])) // step_ms)
     return int(bars) if bars >= 2 else 0

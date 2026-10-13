@@ -2,7 +2,8 @@
 """每小时技术结构检测任务（structure-watch）回归（2026-10-13）。
 
 覆盖：beat 注册（整点）/ 正常静默 / 破位告警 / 同签名去重 / 异常恢复通知 /
-周期冲突 + 数据异常 / 触发延迟标记；并验证任务 detail 与顶部大盘条快照
+周期冲突 + 数据异常 / 触发延迟标记 / 摆动标注已收盘口径 / _stale·_gaps 边界；
+并验证任务 detail 与顶部大盘条快照
 （market_data.get_structure_snapshot）消费字段对齐（防两模块漂移）。
 
 task_log / 任务模块 / market_data 的 SessionLocal 全部 monkeypatch 到同一
@@ -324,3 +325,43 @@ def test_execution_lag_marked(wire_sessions, monkeypatch, sent, now_ts):
     assert rec.detail["lag_seconds"] >= 30
     assert any("触发延迟" in m for m in rec.detail["anomalies"])
     assert out["notify_mode"] == "alert"
+
+
+# ── 8. 摆动标注只用已收盘口径 ─────────────────────────────────────────
+
+
+def test_swing_labels_closed_only(wire_sessions, monkeypatch, sent, now_ts):
+    """标注必须与 classify_structure 同口径（只用已收盘 K 线）：本数据尾根
+    （未收盘）可确认 bar-3 处假摆动高点 145——含尾根口径得 HH（145 vs 120），
+    已收盘口径为 LH（120 vs 前高 140）；低点两口径同为 HL（112 vs 110）。"""
+    closes = _up_closes(broken=False)[:247] + [
+        112, 116, 118, 120, 118, 116, 113, 112, 112, 145, 130, 120, 112,
+    ]
+    k1 = _mk_klines(closes, _H1, now_ts)
+    _wire_market(monkeypatch, now_ts, k1, k1)
+
+    sw.run_structure_watch_task()
+
+    st = _latest(wire_sessions).detail["symbols"]["BTCUSDT"]["structure"]
+    assert st["label_high"] == "LH"
+    assert st["label_low"] == "HL"
+
+
+# ── 9. _stale / _gaps 边界 ────────────────────────────────────────────
+
+
+def test_stale_and_gaps_edges(now_ts):
+    """_stale：空数组返回 0 不炸（旧实现 IndexError）；滞后 1 根内视为新鲜、
+    ≥2 根报落后数；_gaps：空/单根为 0，非整桶间隔计 1 处。"""
+    bucket = int(now_ts * 1000) // _H1 * _H1
+
+    def bar(off: int) -> list:
+        return [float(bucket - off * _H1), 0, 0, 0, 100, 0]
+
+    assert sw._stale([], now_ts, _H1) == 0
+    assert sw._gaps([], _H1) == 0
+    assert sw._stale([bar(0)], now_ts, _H1) == 0
+    assert sw._stale([bar(1)], now_ts, _H1) == 0  # 整点刚过：新桶可能尚未开出
+    assert sw._stale([bar(2)], now_ts, _H1) == 2
+    assert sw._gaps([bar(2), bar(1), bar(0)], _H1) == 0
+    assert sw._gaps([bar(2), bar(0)], _H1) == 1
