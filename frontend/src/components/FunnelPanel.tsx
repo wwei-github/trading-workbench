@@ -127,9 +127,12 @@ export default function FunnelPanel({ initialStage }: { initialStage?: string } 
     { title: '币种', dataIndex: 'symbol', key: 'symbol', width: 140,
       render: (v: string) => <a onClick={() => setKlineSymbol(v)}>{v}</a> },
     { title: '卡住关卡', dataIndex: 'stage', key: 'stage', width: 150,
-      render: (_: string, r: FunnelRow) => (
-        <Tooltip title={r.hint}><Tag color={r.color}>{r.label}</Tag></Tooltip>
-      ) },
+      render: (_: string, r: FunnelRow) => {
+        const tag = <Tag color={r.color}>{r.label}</Tag>
+        // 「无触发」页去掉浮动提示（2026-10-13）：未过条件已在「判定说明」列展示，
+        // Tag 悬停 tooltip 冗余；漏斗页保留（无明细关的 hint 悬停速览）
+        return initialStage === 'no_trigger' ? tag : <Tooltip title={r.hint}>{tag}</Tooltip>
+      } },
     { title: '判定说明', key: 'hint',
       render: (_: unknown, r: FunnelRow) => r.detail ? (
         // 明细行（后端渲染，分号分隔拆行）：votes 关=全部票明细（▲多/▼空/
