@@ -630,11 +630,12 @@ def _run_migrations(engine):
             "ALTER TABLE ai_analyses "
             "ADD COLUMN IF NOT EXISTS strategy2_reason VARCHAR(255)"
         ))
-        # 程序止损参考价（2026-10-11 上线，2026-10-13 功能删除后停写）：历史列
-        # 保留不删，新行 NULL；旧行存量值仅历史透出
+        # 程序止损参考价（2026-10-11 上线，2026-10-13 功能整体删除）：仅前端对比
+        # 展示的历史列，随功能一并物理删除（存量库摘除；本仓库「列保留不删」惯例的
+        # 显式例外，用户拍板）
         conn.execute(text(
             "ALTER TABLE ai_analyses "
-            "ADD COLUMN IF NOT EXISTS calc_stop_loss NUMERIC(20, 8)"
+            "DROP COLUMN IF EXISTS calc_stop_loss"
         ))
         # 退役表清理（2026-10-12）：P-12 参数稳健性扫描功能已删除，
         # 模型 RobustnessScan 下线后 create_all 不再建表；存量库用 DROP 摘除孤儿表
