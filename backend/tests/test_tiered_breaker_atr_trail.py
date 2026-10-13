@@ -348,7 +348,7 @@ def test_breaker_status_week_month_fields(db, monkeypatch):
     accounts = [SimpleNamespace(key="testnet-1", testnet=True)]
     import app.services.account_registry as reg
     import app.services.binance_trader as bt
-    monkeypatch.setattr(reg, "auto_trade_accounts", lambda db: accounts)
+    monkeypatch.setattr(reg, "managed_accounts", lambda db: accounts)
     monkeypatch.setattr(bt, "BinanceTrader", _FakeTrader)
     te._wallet_cache.clear()
 
@@ -383,9 +383,9 @@ def test_breaker_status_week_month_fields(db, monkeypatch):
 
 
 def test_breaker_status_layers_null_when_no_accounts(db, monkeypatch):
-    """该网无自动交易账号 → week/month 均为 None（不误报）"""
+    """该网无管理账号 → week/month 均为 None（不误报）"""
     import app.services.account_registry as reg
-    monkeypatch.setattr(reg, "auto_trade_accounts", lambda db: [])
+    monkeypatch.setattr(reg, "managed_accounts", lambda db: [])
     cfg = SimpleNamespace(
         daily_loss_stop_enabled=True, daily_loss_stop_pct=9,
         weekly_dd_stop_pct=15.0, monthly_dd_stop_pct=25.0,

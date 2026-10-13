@@ -127,7 +127,7 @@ def _setup_breaker(monkeypatch, accounts):
         weekly_dd_stop_pct=None, monthly_dd_stop_pct=None,  # 分层默认关（本文件只测日层）
         monthly_breaker_ack_at=None, weekly_breaker_ack_at=None,
     )
-    monkeypatch.setattr(reg, "auto_trade_accounts", lambda db: accounts)
+    monkeypatch.setattr(reg, "managed_accounts", lambda db: accounts)
     monkeypatch.setattr(bt, "BinanceTrader", _FakeTrader)
     te._wallet_cache.clear()
     return cfg
@@ -194,7 +194,7 @@ def test_breaker_status_disabled_and_wallet_fail(db, monkeypatch):
 
 def test_breaker_status_multi_account_min_cap(db, monkeypatch):
     """同网多账号：day_pnl 合计、cap 取最小（最保守）、任一口径触发即熔断；
-    该网无自动交易账号 → enabled=False"""
+    该网无管理账号 → enabled=False"""
     from types import SimpleNamespace
     from app.services.trade_engine import breaker_status_by_net
 

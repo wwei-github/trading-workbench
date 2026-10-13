@@ -123,7 +123,7 @@ def test_status_reflects_breaker_switch_toggle(client, monkeypatch):
     from app.services.trade_engine import _wallet_cache
 
     accounts = [SimpleNamespace(key="testnet-1", testnet=True)]
-    monkeypatch.setattr(reg, "auto_trade_accounts", lambda db: accounts)
+    monkeypatch.setattr(reg, "managed_accounts", lambda db: accounts)
 
     class _FakeTrader:
         def __init__(self, key):

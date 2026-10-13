@@ -27,6 +27,7 @@ import {
   EMA_STATE_FILTERS,
   emaStateTag,
   patternStyle,
+  breakerReasonTag,
 } from "../constants/labels";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import KlineChart from "./KlineChart";
@@ -300,7 +301,15 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
             )}
           </div>
           {ai.open_block_reason && (
-            <div style={{ color: "#fa8c16" }}>上次拦截：{ai.open_block_reason}</div>
+            <div style={{ color: "#fa8c16" }}>
+              {(() => {
+                const bt = breakerReasonTag(ai.open_block_reason);
+                return bt ? (
+                  <Tag color={bt.color} style={{ marginInlineEnd: 4 }}>{bt.text}</Tag>
+                ) : null;
+              })()}
+              上次拦截：{ai.open_block_reason}
+            </div>
           )}
         </div>
       ),

@@ -13,7 +13,7 @@ import { useScanStore } from '../stores/scanStore'
 import type { ColorScheme } from '../stores/scanStore'
 import { SCHEME_UP_DOWN, hexToRgba, schemeTag } from '../utils/scheme'
 import { scanApi } from '../api/scan'
-import { TRADE_TYPE_MAP } from '../constants/labels'
+import { TRADE_TYPE_MAP, breakerReasonTag } from '../constants/labels'
 import type { AIAnalysis, StageTrace } from '../types'
 
 const { Text } = Typography
@@ -570,7 +570,10 @@ export default function AiAnalysisCard({ ai }: Props) {
       </div>
 
       {/* 未开单原因：suggest 被开仓闸门拦下时后端落库（强平闸门/在跑上限/余额不足/待回踩等）；
-          进入下单序列后的成败由交易记录 Tab 呈现，不走此提示 */}
+          进入下单序列后的成败由交易记录 Tab 呈现，不走此提示。
+          风控层级标注（2026-10-13）：原因文本含周减速/月熔断/日熔断时补一个层级 Tag，
+          让「当前处于哪一层风控」在拦截现场一眼可见（此前正式网关自动开单时顶部
+          状态列整网丢失周减速，只能从原因文本里读到）。 */}
       {!isSkip && ai.open_block_reason && (
         <div
           style={{
@@ -583,7 +586,12 @@ export default function AiAnalysisCard({ ai }: Props) {
             background: 'rgba(250,173,20,0.08)',
             border: '1px solid rgba(250,173,20,0.30)',
           }}>
-          ⚠ 未开单原因：{ai.open_block_reason}
+          ⚠ 未开单原因：
+          {(() => {
+            const bt = breakerReasonTag(ai.open_block_reason)
+            return bt ? <Tag color={bt.color} style={{ marginInlineEnd: 4 }}>{bt.text}</Tag> : null
+          })()}
+          {ai.open_block_reason}
         </div>
       )}
 

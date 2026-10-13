@@ -141,3 +141,20 @@ export const TRADE_TYPE_MAP: Record<string, { label: string; color: string }> = 
   n_structure: { label: "N字结构(已并入)", color: "cyan" },
   rule_2b: { label: "2B法则(已并入)", color: "geekblue" },
 };
+
+// 开仓闸门拦截原因 → 当前风控层级标注（「未开单原因」旁展示，2026-10-13）：
+// 按序命中首个关键词返回标签，未识别返回 null（不标注）。分层与顶部「熔断状态」
+// 同源：月熔断（红）> 周减速（橙，软减速不拦开仓、仅上限减半）> 日熔断（红）。
+const BREAKER_REASON_TAGS: Array<{ key: string; text: string; color: string }> = [
+  { key: "月度回撤熔断", text: "月熔断", color: "red" },
+  { key: "周减速", text: "周减速", color: "orange" },
+  { key: "当日亏损熔断", text: "日熔断", color: "red" },
+];
+
+export function breakerReasonTag(
+  reason?: string | null,
+): { text: string; color: string } | null {
+  if (!reason) return null;
+  const hit = BREAKER_REASON_TAGS.find((t) => reason.includes(t.key));
+  return hit ? { text: hit.text, color: hit.color } : null;
+}

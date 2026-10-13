@@ -770,19 +770,23 @@ _wallet_cache: dict[str, tuple[float, float]] = {}
 
 
 def breaker_status_by_net(db: Session, cfg) -> dict:
-    """各网当日熔断状态（顶部卡片「熔断状态」列，2026-10-04）：
+    """各网熔断状态（顶部卡片「熔断状态」列，2026-10-04）：
     {"testnet": {...}, "live": {...}}，每网：
-    - enabled：熔断生效前提（开关开 && 阈值>0 && 该网有自动交易账号）
+    - enabled：熔断生效前提（开关开 && 阈值>0 && 该网有可开单账号）
     - active：True=已熔断 / False=未熔断 / None=无法判定（钱包查询失败或未启用）
-    - day_pnl：该网自动交易账号 UTC 当日已平仓净亏合计
+    - day_pnl：该网账号 UTC 当日已平仓净亏合计
     - cap：熔断阈值（多账号取最小=最保守）
     - week/month（docs/13 #2 分层，2026-10-04）：周/月回撤状态
       week: {active, hit, acked, pnl, cap}；month: {active, hit, acked, pnl, cap}
       month.active = 触发且未人工确认（ack 在当前 UTC 月内 = 已确认放行）
       week.active = 触发且未人工确认（ack 在当前 UTC 周内 = 已确认放行，
       2026-10-07 对称月熔断补人工通道）
+    账号口径（2026-10-13）：按 managed_accounts（双网管理清单，不随自动开单开关
+    变化）统计——熔断/减速对手动开单同样生效，故展示口径须覆盖手动可开账号；
+    此前用 auto_trade_accounts 时「正式网自动开单关闭」会让正式网整网丢失周减速
+    状态（手动开单提示「（周减速减半）」而顶部卡片不显示）。
     钱包余额 5 分钟进程内缓存；这是展示口径，开仓拦截仍以 open gate 实时判定为准。"""
-    from app.services.account_registry import auto_trade_accounts
+    from app.services.account_registry import managed_accounts
 
     enabled_cfg = (
         bool(cfg.daily_loss_stop_enabled) if cfg.daily_loss_stop_enabled is not None
@@ -803,7 +807,7 @@ def breaker_status_by_net(db: Session, cfg) -> dict:
     )
 
     by_net: dict[bool, list] = {True: [], False: []}
-    for acc in auto_trade_accounts(db):
+    for acc in managed_accounts(db):
         by_net[acc.testnet].append(acc)
 
     now = time.time()
