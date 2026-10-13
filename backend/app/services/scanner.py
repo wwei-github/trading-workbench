@@ -235,6 +235,8 @@ def detect_indicator_candidate(
       「卡在哪一步」；候选产生/进待确认池（pending upsert）时不写。关卡代码：
       gate_4h / votes / direction_flip / range_score / no_trigger /
       trigger_whitelist / structure_1h（ema21 触点未过 1H 结构门，2026-10-12）。
+      votes 关附 "detail"（全票明细）、no_trigger 关附 "detail"（未触发原因，
+      2026-10-13）——前端判定说明列渲染，其余关卡不写。
     返回 (候选 dict, pending_op) 二元组：
     - 候选 dict（signal_type/touch_ref/quality_score/votes 及展示字段），每币至多 1 个；
       无候选（中性/票数不足/无触发）为 None
@@ -340,8 +342,12 @@ def detect_indicator_candidate(
     # htf 直传触点体系（2026-10-09）：ema21_4h 跨周期触点与第 7 票/闸门共用
     # 同一份 4h 快照，单轮单币不重复拉取
     whitelist_reject = False   # 白名单外触发标记（漏斗区分 trigger_whitelist/no_trigger）
+    # 未触发原因采集（2026-10-13，漏斗「无触发」判定说明）：reject_out 在场才开，
+    # trigger 侧向 diag["reasons"] 追加卡点文本（watchlist 等无漏斗调用零开销）
+    trig_diag: Optional[dict] = {} if reject_out is not None else None
     trig, pending_op = detect_trigger(
         klines, direction, pending, flt=flt, retest=retest, htf=htf,
+        diag=trig_diag,
     )
     if trig is not None:
         # T1 突破 → 破轨事件动作（docs/22 §4）：白名单过滤前记录——破轨是市场
@@ -374,8 +380,15 @@ def detect_indicator_candidate(
             if (pending_op and pending_op.get("op") == "expire"
                     and pending_op.get("reason") == "structure_1h"):
                 _reject("structure_1h")
+            elif whitelist_reject:
+                _reject("trigger_whitelist")
             else:
-                _reject("trigger_whitelist" if whitelist_reject else "no_trigger")
+                # 无触发明细（2026-10-13）：trigger 侧采集的卡点文本段，分号连接
+                # 供前端判定说明列拆行；无采集内容（旧路径）不写 detail
+                _reject("no_trigger")
+                reasons = trig_diag.get("reasons") if trig_diag else None
+                if reasons:
+                    reject_out["detail"] = "；".join(reasons)
         return None, pending_op
 
     # 企稳加分项证据（docs/19 §3.3，trigger 回踩路径产出）：进质量分 + votes 快照
@@ -492,7 +505,8 @@ class Scanner:
 
             # 筛选漏斗明细（2026-10-11）：symbol → 卡住的关卡代码。预过滤 5 关 +
             # 指标管线各关（reject_out 旁路）统一收口，扫描结束组装 funnel_json。
-            # funnel_details：votes 关附加票明细（symbol → 渲染文本，其余关卡无）
+            # funnel_details：判定说明文本（votes 全票明细 / no_trigger 未触发
+            # 原因，2026-10-13；其余关卡无）
             funnel_rejects: dict[str, str] = {}
             funnel_details: dict[str, str] = {}
 
@@ -769,7 +783,7 @@ class Scanner:
                 "pending_pool": pending_pool_n,
                 "stages": stages,              # 关卡代码 → 被拒数
                 "rejects": funnel_rejects,     # symbol → 关卡代码（全量明细）
-                "details": funnel_details,     # symbol → votes 关票明细文本（其余关卡不在）
+                "details": funnel_details,     # symbol → 判定说明（votes 票明细/no_trigger 未触发原因）
             }
 
             logger.info(

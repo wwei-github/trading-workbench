@@ -335,7 +335,7 @@ export interface FunnelData {
   pending_pool: number; // 进待确认池数（不算被拒）
   stages: Record<string, number>; // 关卡代码 → 被拒数
   rejects: Record<string, string>; // symbol → 关卡代码（全量明细）
-  details?: Record<string, string>; // symbol → votes 关票明细文本（分号分隔；其余关卡无）
+  details?: Record<string, string>; // symbol → 判定说明文本（votes 票明细 / no_trigger 未触发原因，2026-10-13；分号分隔）
 }
 
 // ===== 规则补丁（docs/12 §10）=====

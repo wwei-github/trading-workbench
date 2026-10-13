@@ -48,8 +48,9 @@ class FakePool:
 
 
 def _detect(reject_out, klines=None, *, votes=_PASS_VOTES, gate=("long", {}), htf_nonempty=True,
-            rs=0, trigger=None, flt=None, pending=None):
-    """打桩装配一次 detect：各桩默认全放行，命中点由参数控制"""
+            rs=0, trigger=None, flt=None, pending=None, real_trigger=False):
+    """打桩装配一次 detect：各桩默认全放行，命中点由参数控制。
+    real_trigger=True 时不打桩 detect_trigger（跑真实触发链，测 no_trigger 明细）"""
     import app.services.scanner as sm
 
     orig = {
@@ -63,7 +64,8 @@ def _detect(reject_out, klines=None, *, votes=_PASS_VOTES, gate=("long", {}), ht
     sm.compute_indicator_votes = lambda k, h=None, htf_bg=None: votes
     sm.gate_4h = lambda k, cfg=None: gate
     sm.range_score = lambda k, gate_ev=None: (rs, [])
-    sm.detect_trigger = lambda *a, **k: trigger
+    if not real_trigger:
+        sm.detect_trigger = lambda *a, **k: trigger
     try:
         return detect_indicator_candidate(
             FakePool(htf_nonempty), "XUSDT", klines if klines is not None else [],
@@ -167,6 +169,65 @@ def test_reject_no_trigger():
     rv: dict = {}
     cand, _ = _detect(rv, trigger=(None, None), htf_nonempty=False)
     assert cand is None and rv == {"stage": "no_trigger"}
+
+
+# ── 无触发原因明细（2026-10-13 漏斗「无触发」判定说明）──────────────────
+
+
+def _diag_flt(**over):
+    """诊断测试用筛选参数组：显式口径 + 仅 1h EMA21 触点"""
+    from app.services.scan_filters import ScanFilters as SF
+    kw = dict(
+        min_volume_24h=1, breakout_channel_bars=20, breakout_threshold=0.002,
+        breakout_vol_ratio=1.2, breakout_max_pct=1.5, candle_max_ema21_dist_pct=0,
+        ai_max_per_scan=10, pullback_touch_refs=("ema21",),
+    )
+    kw.update(over)
+    return SF(**kw)
+
+
+def _rising_klines(n=60):
+    """缓涨小实体序列：实体 0.1 / 全长 1.1 ≈ 9.1% 不过长实体门、低点始终高于
+    EMA21（无触点）、无金K——用于真实 detect_trigger 的「无触发」路径"""
+    out = []
+    ts = 1_700_000_000_000
+    px = 100.0
+    for i in range(n):
+        c = px + 0.1
+        out.append([ts + i * 3_600_000, px, c + 0.9, px - 0.1, c, 10.0, 10.0])
+        px = c
+    return out
+
+
+def test_no_trigger_detail_real_trigger():
+    """真实触发链无触发（2026-10-13）：no_trigger 关 reject_out 附 detail——
+    突破实体门 / 回踩未命中触点 / 本根无金K，分号连接（前端判定说明列拆行）"""
+    rv: dict = {}
+    cand, op = _detect(rv, _rising_klines(), flt=_diag_flt(), htf_nonempty=False,
+                       real_trigger=True)
+    assert cand is None and op is None
+    assert rv["stage"] == "no_trigger"
+    assert "实体占比9.1%<70%" in rv["detail"]
+    assert "未命中任何启用触点（EMA21）" in rv["detail"]
+    assert rv["detail"].endswith("本根无同向金K")
+
+
+def test_no_trigger_detail_pending_expired():
+    """活跃 pending（Stage-1=上一根已收盘K线）+ 本根无金K无触点 → expire/
+    window_expired，detail 附待确认失效原因（2026-10-13）"""
+    from datetime import datetime as dt
+    kl = _rising_klines()
+    pending = {
+        "id": 1, "direction": 1, "touch_ref": "swing",
+        "stage1_candle_open": dt.utcfromtimestamp(kl[-3][0] / 1000),
+    }
+    rv: dict = {}
+    cand, op = _detect(rv, kl, flt=_diag_flt(), pending=pending,
+                       htf_nonempty=False, real_trigger=True)
+    assert cand is None
+    assert op == {"op": "expire", "reason": "window_expired"}
+    assert rv["stage"] == "no_trigger"
+    assert "待确认失效：回踩摆动低点后次根未出现同向金K" in rv["detail"]
 
 
 def test_reject_trigger_whitelist():

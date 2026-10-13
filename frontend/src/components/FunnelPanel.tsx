@@ -4,7 +4,10 @@
  * - 顶部漏斗概览：全市场 → 进管线 → 候选（进 AI），旁路待确认池/异常
  * - 主体被拒币种列表（Table，按漏斗逻辑序排列）：币种列点击弹K线复盘
  * - 进待确认池的币不算被拒（见同面板「待确认池」页签）；旧版本扫描/异常轮次无数据
- * - initialStage（2026-10-12）：预置关卡筛选，供「无触发」页签直接落在 no_trigger 上
+ * - initialStage（2026-10-12）：预置关卡筛选，供「无触发」页签直接落在 no_trigger 上；
+ *   该页签（2026-10-13）隐藏顶部漏斗概览（全市场/进管线等整体计数与单币未过条件无关）
+ * - 无触发原因（2026-10-13）：no_trigger 关判定说明列展示后端采集的未过条件明细
+ *   （突破卡点/触点缺失/待确认失效等，分号分隔拆行），替代静态 hint
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Empty, Input, Modal, Select, Spin, Table, Tag, Tooltip, Typography, message } from 'antd'
@@ -29,7 +32,7 @@ const FUNNEL_STAGES: { key: string; label: string; color: string; hint: string }
   { key: 'direction_flip', label: '方向冲突', color: 'orange', hint: '指标多数决方向与 4h 闸门方向相反' },
   { key: 'structure_1h', label: '1h结构', color: 'orange', hint: '1h 三线排列 / 快中线发散度 / EMA144 方向不成立' },
   { key: 'range_score', label: '震荡评分', color: 'orange', hint: '震荡评分卡 ≥3（强震荡共识）' },
-  { key: 'no_trigger', label: '无触发', color: 'purple', hint: '通过全部门但无触发信号，也未进待确认池' },
+  { key: 'no_trigger', label: '无触发', color: 'purple', hint: '通过全部门但无触发信号，也未进待确认池；判定说明列为具体未过条件（新轮次）' },
   { key: 'trigger_whitelist', label: '触发白名单外', color: 'purple', hint: '触发类型不在白名单（筛选配置）' },
 ]
 const STAGE_ORDER = Object.fromEntries(FUNNEL_STAGES.map((s, i) => [s.key, i]))
@@ -41,7 +44,7 @@ interface FunnelRow {
   label: string
   color: string
   hint: string
-  detail?: string // votes 关票明细（分号分隔；其余关卡无）
+  detail?: string // 判定说明明细（votes 票明细 / no_trigger 未触发原因，2026-10-13；分号分隔）
 }
 
 export default function FunnelPanel({ initialStage }: { initialStage?: string } = {}) {
@@ -127,12 +130,16 @@ export default function FunnelPanel({ initialStage }: { initialStage?: string } 
       ) },
     { title: '判定说明', key: 'hint',
       render: (_: unknown, r: FunnelRow) => r.detail ? (
-        // votes 关（2026-10-11 拍板）：展示全部票明细（后端渲染，分号分隔拆行）；
-        // ▲多 / ▼空 / —弃权。静态 hint（为何被拒）放悬停
+        // 明细行（后端渲染，分号分隔拆行）：votes 关=全部票明细（▲多/▼空/
+        // —弃权，单行不折）；no_trigger 关=未过条件（2026-10-13，长文本折行）。
+        // 静态 hint（为何被拒）放悬停
         <Tooltip title={r.hint}>
           <div>
             {r.detail.split('；').map((seg, i) => (
-              <div key={i} style={{ fontSize: 12, lineHeight: '18px', whiteSpace: 'nowrap' }}>{seg}</div>
+              <div key={i} style={{
+                fontSize: 12, lineHeight: '18px',
+                whiteSpace: r.stage === 'no_trigger' ? 'normal' : 'nowrap',
+              }}>{seg}</div>
             ))}
           </div>
         </Tooltip>
@@ -153,25 +160,28 @@ export default function FunnelPanel({ initialStage }: { initialStage?: string } 
         <Empty description="该轮无漏斗数据（旧版本扫描或异常轮次）" style={{ marginTop: 60 }} />
       ) : (
         <>
-          {/* 漏斗概览：统计块 + 漏斗箭头 */}
-          <div style={{
-            display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center',
-            padding: '10px 16px', background: '#fafafa', borderRadius: 8, border: '1px solid #f0f0f0',
-          }}>
-            {([
-              { label: '全市场', value: data.universe, color: '#1677ff', hint: '全市场 USDT 永续合约数' },
-              { label: '进管线', value: data.scanned, color: '#1677ff', hint: '预过滤（流动性/新币/风险档位/黑名单）后进指标管线数；未上架币不再过滤，开单时逐网校验' },
-              { label: '候选进AI', value: data.candidates, color: '#52c41a', hint: '通过全部筛选关卡、产生信号候选并进入 AI 分析' },
-              { label: '待确认池', value: data.pending_pool, color: '#13c2c2', hint: '回踩触碰但当根无金K，转入待确认池等确认（不算被拒）' },
-              ...(data.errors > 0
-                ? [{ label: '异常', value: data.errors, color: '#ff4d4f', hint: '拉K线/指标计算异常数' }]
-                : []),
-            ] as { label: string; value: number; color: string; hint: string }[]).flatMap((s, i) => (
-              i === 0
-                ? [<StatBlock key={s.label} {...s} />]
-                : [<Text key={`a-${s.label}`} type="secondary">→</Text>, <StatBlock key={s.label} {...s} />]
-            ))}
-          </div>
+          {/* 漏斗概览：统计块 + 漏斗箭头（「无触发」页签隐藏，2026-10-13：
+              全市场/进管线等整体漏斗信息与单币未过条件无关） */}
+          {initialStage !== 'no_trigger' && (
+            <div style={{
+              display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center',
+              padding: '10px 16px', background: '#fafafa', borderRadius: 8, border: '1px solid #f0f0f0',
+            }}>
+              {([
+                { label: '全市场', value: data.universe, color: '#1677ff', hint: '全市场 USDT 永续合约数' },
+                { label: '进管线', value: data.scanned, color: '#1677ff', hint: '预过滤（流动性/新币/风险档位/黑名单）后进指标管线数；未上架币不再过滤，开单时逐网校验' },
+                { label: '候选进AI', value: data.candidates, color: '#52c41a', hint: '通过全部筛选关卡、产生信号候选并进入 AI 分析' },
+                { label: '待确认池', value: data.pending_pool, color: '#13c2c2', hint: '回踩触碰但当根无金K，转入待确认池等确认（不算被拒）' },
+                ...(data.errors > 0
+                  ? [{ label: '异常', value: data.errors, color: '#ff4d4f', hint: '拉K线/指标计算异常数' }]
+                  : []),
+              ] as { label: string; value: number; color: string; hint: string }[]).flatMap((s, i) => (
+                i === 0
+                  ? [<StatBlock key={s.label} {...s} />]
+                  : [<Text key={`a-${s.label}`} type="secondary">→</Text>, <StatBlock key={s.label} {...s} />]
+              ))}
+            </div>
+          )}
 
           {/* 工具栏：关卡筛选 + 币种搜索 + 刷新 */}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>

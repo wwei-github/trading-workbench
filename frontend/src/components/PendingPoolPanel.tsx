@@ -3,7 +3,9 @@
  * - Stage-1 回踩触碰 EMA21 但当根无金K 的币种转入 pending，等下一根K线金K确认
  * - 状态流转：pending（等待中）→ confirmed（已确认进 AI）/ expired（无金K或方向失守）/ superseded（突破或当根确认抢先）
  * - 展示归并三态（2026-10-10）：待确认 / 已确认 / 已卡掉（expired+superseded 统计为卡掉），被哪个环节卡住看「卡住环节」列（后端 blocked_by）
- * - 筛选漏斗（2026-10-11）：Segmented 第五项排在「全部」后面，展示每轮被拒币种卡在哪一关（FunnelPanel）
+ * - 筛选漏斗（2026-10-11）：Segmented 项，展示每轮被拒币种卡在哪一关（FunnelPanel）
+ * - 无触发（2026-10-13）：Segmented 项紧随「待确认」，复用 FunnelPanel 预置
+ *   no_trigger 关并隐藏漏斗概览——单独查看未触发币种及其未过条件
  * - 数据源：GET /api/scans/pullback-pendings（一次拉全量，前端按状态过滤）
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -191,11 +193,11 @@ export default function PendingPoolPanel() {
 
   const segOptions: { label: string; value: StatusFilter }[] = [
     { label: `待确认 (${counts.pending})`, value: 'pending' },
+    { label: '无触发', value: 'no-trigger' },
     { label: `已确认 (${counts.confirmed})`, value: 'confirmed' },
     { label: `已卡掉 (${counts.blocked})`, value: 'blocked' },
     { label: `全部 (${counts.all})`, value: 'all' },
     { label: '筛选漏斗', value: 'funnel' },
-    { label: '无触发', value: 'no-trigger' },
   ]
 
   return (
@@ -209,11 +211,12 @@ export default function PendingPoolPanel() {
         )}
       </div>
       {filter === 'funnel' || filter === 'no-trigger' ? (
-        // 筛选漏斗（2026-10-11 拍板：作为 Segmented 第五项排在「全部」后面）：
-        // 每轮被拒币种列表 + 卡住关卡筛选 + 币种搜索 + 点击看K线。
-        // 「无触发」页签复用同一面板、预置关卡筛选为 no_trigger（2026-10-12）：
-        // 「通过全部门但无触发、也未进待确认池」的币种单独成页，免去下拉切换；
-        // key 按 filter 区分，避免两个页签间切换时 React 复用实例导致预设不生效
+        // 筛选漏斗（2026-10-11 拍板：作为 Segmented 项）：每轮被拒币种列表 +
+        // 卡住关卡筛选 + 币种搜索 + 点击看K线。
+        // 「无触发」页签复用同一面板、预置关卡筛选为 no_trigger（2026-10-12；
+        // 2026-10-13 移至「待确认」之后并隐藏漏斗概览）：展示未触发币种及其
+        // 未过条件（判定说明列），免去下拉切换；key 按 filter 区分，避免两个
+        // 页签间切换时 React 复用实例导致预设不生效
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
           <FunnelPanel
             key={filter}

@@ -128,6 +128,93 @@ def _is_solid_breakout_candle(klines: list[list], direction: int) -> bool:
     return body / rng >= BREAKOUT_BODY_RANGE_MIN
 
 
+def _diag_note(diag: Optional[dict], text: str) -> None:
+    """未触发原因采集（2026-10-13 漏斗「无触发」判定说明）：向 diag["reasons"]
+    追加原因文本段，scanner 收口落 funnel_json.details、前端判定说明列按分号
+    拆行展示；diag=None 静默（watchlist 等不开采集的调用方零开销）。"""
+    if diag is not None:
+        diag.setdefault("reasons", []).append(text)
+
+
+def _pending_touch_label(pending: dict, direction: int) -> str:
+    """pending 触点方向化标签（失效原因文案用；缺省「触点」）"""
+    ref = pending.get("touch_ref")
+    if not ref:
+        return "触点"
+    try:
+        d = int(pending.get("direction") or direction)
+    except (TypeError, ValueError):
+        d = direction
+    return _touch_ref_label(ref, d)
+
+
+def _expire_note(pending: dict, direction: int, flip: bool) -> str:
+    """待确认失效原因文本（direction_flip=方向失守 / window_expired=次根无金K）"""
+    if flip:
+        return "待确认失效：待确认方向与当前多数决相反（方向失守）"
+    return (f"待确认失效：回踩{_pending_touch_label(pending, direction)}后"
+            "次根未出现同向金K（确认窗口关闭）")
+
+
+def _breakout_fail_notes(
+    klines: list[list], direction: int, solid: bool, ref: Optional[float],
+    flt: ScanFilters,
+) -> list[str]:
+    """突破路径未命中原因（诊断文本，2026-10-13）：镜像上方 T1a/T1b 闸门顺序
+    （实体门 → 结构位 → 追高上限 → 最小幅度 → Donchian 回落口径），逐项给出
+    具体卡点；仅在两类突破均未命中时调用，纯诊断、不参与判定。"""
+    o = float(klines[-2][1])
+    h = float(klines[-2][2])
+    low = float(klines[-2][3])
+    c = float(klines[-2][4])
+    body, rng = abs(c - o), h - low
+    up = direction == 1
+    thr_pct = flt.breakout_threshold * 100
+    max_brk = flt.breakout_max_pct
+    notes: list[str] = []
+    if not solid:
+        if (up and c <= o) or (not up and c >= o):
+            notes.append("突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）")
+        elif rng <= 0 or body <= 0:
+            notes.append("突破路径未过：信号K无实体或零振幅")
+        else:
+            notes.append(
+                f"突破路径未过：信号K实体占比{body / rng * 100:.1f}%"
+                f"<{BREAKOUT_BODY_RANGE_MIN:.0%}（长实体门）")
+        return notes
+    side = "前高" if up else "前低"
+    if ref is None:
+        notes.append("突破路径未过：无未破结构位（前高/前低已被连续破位）")
+    else:
+        over = (c - ref) / ref * 100 if up else (ref - c) / ref * 100
+        if max_brk > 0 and over > max_brk:
+            notes.append(f"突破路径未过：越{side}{ref:.6g}达{over:.2f}%，"
+                         f"超追高上限{max_brk:g}%")
+        elif over < 0:
+            notes.append(f"突破路径未过：收盘距{side}{ref:.6g}还差{abs(over):.2f}%")
+        else:
+            notes.append(f"突破路径未过：收盘仅越{side}{ref:.6g}的{over:.2f}%"
+                         f"<最小幅度{thr_pct:.2f}%")
+    chan_n = flt.breakout_channel_bars
+    if len(klines) < chan_n + 2:
+        notes.append(f"趋势突破未过：K线不足{chan_n + 2}根")
+        return notes
+    window = klines[-2 - chan_n:-2]
+    chan = max(float(k[2]) for k in window) if up else min(float(k[3]) for k in window)
+    rail = "上轨" if up else "下轨"
+    over = (c - chan) / chan * 100 if up else (chan - c) / chan * 100
+    if max_brk > 0 and over > max_brk:
+        notes.append(f"趋势突破未过：越{chan_n}根Donchian{rail}{chan:.6g}"
+                     f"达{over:.2f}%，超追高上限{max_brk:g}%")
+    elif over < 0:
+        notes.append(f"趋势突破未过：收盘距{chan_n}根Donchian{rail}{chan:.6g}"
+                     f"还差{abs(over):.2f}%")
+    else:
+        notes.append(f"趋势突破未过：仅越{chan_n}根Donchian{rail}{chan:.6g}的"
+                     f"{over:.2f}%<最小幅度{thr_pct:.2f}%")
+    return notes
+
+
 def _pullback_volume_note(klines: list[list]) -> str:
     """回踩金K量能注记（docs/25 §3.1）：补齐「大量」要素，双口径——
 
@@ -354,6 +441,7 @@ def detect_trigger(
     flt: Optional[ScanFilters] = None,
     retest: Optional[dict] = None,
     htf: Optional[list] = None,
+    diag: Optional[dict] = None,
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """检测与候选方向一致的入场触发（两段式决策矩阵，docs/19 §4.1 + docs/22 触点）。
 
@@ -365,6 +453,10 @@ def detect_trigger(
     （docs/22 §3.1；T1 突破触发时由 scanner 记录 breakout_events）。
     htf（可选）：4h 原始K线（尾根未收盘，与 analyze_htf_background 同源序列）；
     None/过短 → ema21_4h 触点静默跳过（4h 数据缺失不阻断 1h 触点体系）。
+    diag（可选，2026-10-13 漏斗「无触发」判定说明）：未触发路径的可选出参——
+    向 diag["reasons"] 追加原因文本段（突破卡点/触点缺失/待确认失效/无金K），
+    scanner 收口落 funnel_json.details 前端展示；触发命中时内容不保证完整，
+    调用方仅在无触发拒绝时读取。diag=None 全程静默（旧调用方零改动）。
     返回 (trigger, pending_op) 二元组：
     - trigger: 命中的触发 dict（type/direction/position/touch_ref/pattern/
       breakout_pct/reason）或 None（无触发 → 观察池）；touch_ref 仅回踩确认
@@ -381,6 +473,7 @@ def detect_trigger(
     flt = flt or resolve_scan_filters(None)
     n = len(klines)
     if n < 30 or direction not in (1, -1):
+        _diag_note(diag, "触发判定未跑：K线不足30根")
         return None, None
     close_last = float(klines[-2][4])
     # position 按方向派生（2026-09-28 关键位移除后回到 docs/09 原始口径）：
@@ -487,6 +580,11 @@ def detect_trigger(
                         "reason": f"指标同向·{vol_desc}长实体收盘跌破{chan_n}根"
                                   f"Donchian下轨({chan_low:.6g})",
                     }, _close_op(pending, direction, "breakout")
+        # 两类突破均未命中才会执行至此 → 采集卡点明细（2026-10-13 诊断用，
+        # 不参与判定；diag=None 时整块跳过）
+        if diag is not None:
+            diag.setdefault("reasons", []).extend(
+                _breakout_fail_notes(klines, direction, solid, ref, flt))
 
     # 当根金K证据统一裁决（2026-09-29 复合确认；2026-10-01 收窄：仅流星线维持
     # 复合确认（双流星/流星+趋势K），锤形线恢复单根直接确认；2026-10-01-2 倒锤
@@ -529,6 +627,11 @@ def detect_trigger(
     touch_ref = next((r for r in TOUCH_ORDER if r in touches), None)
     touch_price = touches.get(touch_ref) if touch_ref else None
     touch_label = TOUCH_LABELS.get(touch_ref, "") if touch_ref else None
+    # 未触发原因：本根未命中任何启用触点（诊断采集，见 diag 参数说明）
+    if diag is not None and touch_ref is None:
+        enabled = "、".join(TOUCH_LABELS.get(r, r) for r in flt.pullback_touch_refs)
+        _diag_note(diag, "回踩路径未过：未命中任何启用触点"
+                   + (f"（{enabled}）" if enabled else ""))
     # 1H 结构门硬否决标记：ema21 触点命中但结构门不过 → 本次回踩不成立
     touch_blocked = (touch_ref == TOUCH_EMA21 and struct is None)
 
@@ -582,9 +685,12 @@ def detect_trigger(
                 "reason": f"指标同向·上根回踩{p_label}企稳·{_ev}{vol_note}",
             }, {"op": "confirm"}
         if pending:
+            flip = pending.get("direction") != direction
+            _diag_note(diag, _expire_note(pending, direction, flip))
             return None, {"op": "expire",
-                          "reason": "direction_flip" if pending.get("direction") != direction
-                          else "window_expired"}
+                          "reason": "direction_flip" if flip else "window_expired"}
+        _diag_note(diag, "金K未触发：本根出现同向金K但无回踩触点/待确认语境"
+                   "（纯金K不触发）")
         return None, None
 
     # 行5：触碰但无金K → 不触发，转 pending 待确认（scanner 侧 upsert）。
@@ -604,6 +710,9 @@ def detect_trigger(
         # （_reject("structure_1h")），scanner 对无 pending 币种不落该处置动作。
         return None, {"op": "expire", "reason": "structure_1h"}
     if pending:
-        reason = "direction_flip" if pending.get("direction") != direction else "window_expired"
+        flip = pending.get("direction") != direction
+        _diag_note(diag, _expire_note(pending, direction, flip))
+        reason = "direction_flip" if flip else "window_expired"
         return None, {"op": "expire", "reason": reason}
+    _diag_note(diag, "本根无同向金K")
     return None, None
