@@ -1191,12 +1191,14 @@ def golden_zone_swing_count(
     klines: list, golden_combo: bool = False,
     swing_order: int = 3, lookback: int = 200,
 ) -> int:
-    """金K组合价格带内落入的摆动高低点数（2026-10-13-6 拍板）。
+    """实体与金K价格带重叠的摆动高低点数（2026-10-13-6 拍板，-7 改实体重叠口径）。
 
     价格带 = 金K组合自身的 [min低, max高]——单个金K取信号根 klines[-2]，
     组合金K（golden_combo=True）再并入前根 klines[-3] 的包络。回看近 lookback
-    根 1h 已收盘，统计落在带内的结构摆动高点 + 低点（find_swing_points）个数。
-    带内点越多 = 金K一口吞掉越多结构转折点、决断力越强。样本不足返回 0。
+    根 1h 已收盘，统计「实体（open~close 区间）与该带重叠」的结构摆动高点 + 低点
+    （find_swing_points）个数——不再要求极值点本身落带内，而是该摆动K线的实体
+    与带相交即计（长影线探带、极值在外但实体压带内均算）。带内点越多 = 金K一口
+    吞掉越多结构转折点、决断力越强。样本不足返回 0。
     """
     closed = klines[:-1] if len(klines) >= 2 else klines
     if len(closed) < 2 * swing_order + 1:
@@ -1210,9 +1212,11 @@ def golden_zone_swing_count(
     window = closed[-lookback:]
     highs = np.array([float(k[2]) for k in window], dtype=float)
     lows = np.array([float(k[3]) for k in window], dtype=float)
+    body_lo = np.array([min(float(k[1]), float(k[4])) for k in window], dtype=float)
+    body_hi = np.array([max(float(k[1]), float(k[4])) for k in window], dtype=float)
     hi_idx, lo_idx = find_swing_points(highs, lows, swing_order)
-    cnt = sum(1 for i in hi_idx if lo <= float(highs[i]) <= hi)
-    cnt += sum(1 for i in lo_idx if lo <= float(lows[i]) <= hi)
+    cnt = sum(1 for i in hi_idx if body_lo[i] <= hi and body_hi[i] >= lo)
+    cnt += sum(1 for i in lo_idx if body_lo[i] <= hi and body_hi[i] >= lo)
     return cnt
 
 
@@ -1250,9 +1254,10 @@ def compute_quality_score(
     - 看涨吞没上影短 +3（2026-10-13 硬门改加分项，candlestick.
       ENGULF_UPPER_SHADOW_SHORT_PCT=0.25）：决断K线冲高遭抛压打回=犹豫的
       语义降为排序信号，上影长只失加分、不再拒判形态
-    - 金K组合价格带结构点密度 +3×n、封顶 +12（2026-10-13-6 拍板）：金K确认
-      （单根/组合）的 [min低, max高] 价格带内、近 200 根 1h 落入的摆动高低点
-      数越多加分越高（band 内点越多=金K一口吞掉越多结构转折点、决断力越强）；
+    - 金K组合价格带结构点密度 +3×n、封顶 +12（2026-10-13-6 拍板，-7 改实体重叠
+      口径）：金K确认（单根/组合）的 [min低, max高] 价格带与近 200 根 1h 摆动
+      高低点K线的实体重叠个数越多加分越高——实体（open~close）与带相交即计，
+      不再要求极值点本身落带内（点越多=金K一口吞掉越多结构转折点、决断力越强）；
       仅回踩金K确认候选（pattern 存在）适用，突破/无金K upsert 不加分
     - RSI>75 做多 / RSI<25 做空 -8（追高杀低）
     - OBV 顶背离做多 / 底背离做空 -6（量价背离）
@@ -1320,10 +1325,11 @@ def compute_quality_score(
         if rank is not None and float(rank) <= 10:
             score -= 5
 
-    # 金K组合价格带结构点密度加分（2026-10-13-6 拍板）：金K确认（单根/组合）的
-    # [min低, max高] 价格带内、近 200 根已收盘 1h 落入的摆动高低点数越多 → 金K
-    # 一口吞掉越多结构转折点、决断力越强。每点 +3、封顶 +12（只加分不拦截）。
-    # 仅回踩金K确认候选（pattern 存在）；突破触发 / 无金K 的 upsert 不适用。
+    # 金K组合价格带结构点密度加分（2026-10-13-6 拍板，-7 改实体重叠口径）：金K确认
+    # （单根/组合）的 [min低, max高] 价格带与近 200 根已收盘 1h 摆动高低点K线的
+    # 实体（open~close）重叠的个数越多 → 金K一口吞掉越多结构转折点、决断力越强。
+    # 每点 +3、封顶 +12（只加分不拦截）。仅回踩金K确认候选（pattern 存在）；
+    # 突破触发 / 无金K 的 upsert 不适用。
     if trigger_type == "trigger_pullback_confirm" and pattern and klines:
         try:
             n_pts = golden_zone_swing_count(klines, golden_combo,

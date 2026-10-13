@@ -125,14 +125,18 @@ def test_bullish_engulfing_long_upper_shadow_no_bonus():
                                  klines=kl, pattern="bullish_engulfing") == 71
 
 
-# ── 金K组合价格带结构点密度加分（2026-10-13-6）──────────────────────────────
+# ── 金K组合价格带结构点密度加分（2026-10-13-6；-7 改实体重叠口径）────────────
 
 
 def _band_klines(sig_high: float, sig_low: float,
-                 prev_high: float = 99.0, prev_low: float = 97.0) -> list[list]:
-    """20 根已收盘 + 1 未收盘；带内固定 2 个摆动点（idx7 低=95、idx12 高=103）。
+                 prev_high: float = 99.0, prev_low: float = 97.0,
+                 sw_low_body: tuple = (95.0, 95.0),
+                 sw_high_body: tuple = (103.0, 103.0)) -> list[list]:
+    """20 根已收盘 + 1 未收盘；固定 2 个摆动点（idx7 低=95、idx12 高=103）。
     信号根 = closed[-1] = idx19（high/low 由入参给，决定单根价格带）；prev = idx18
-    供组合金K带（golden_combo）。成交恒等量 → 量比 1.0；已收盘 20 根 <22 →
+    供组合金K带（golden_combo）。sw_low_body/sw_high_body = 两个摆动K线的 (open,
+    close)，控制其实体（默认实体落在各自极值点，即实体重叠≈极值点落带内）；
+    其余K线实体恒 [100,100]。成交恒等量 → 量比 1.0；已收盘 20 根 <22 →
     volume_ratio 返回 0（两类放量加分均不干扰，基线恒 71）"""
     highs = [101, 101, 101, 101, 101, 99, 99, 98, 99, 99,
              99, 99, 103, 99, 99, 99, 99, 99, prev_high, sig_high]
@@ -140,15 +144,32 @@ def _band_klines(sig_high: float, sig_low: float,
             97, 97, 97, 97, 97, 97, 97, 97, prev_low, sig_low]
     kl = [[i, 100.0, float(highs[i]), float(lows[i]), 100.0, 10.0, 10.0]
           for i in range(20)]
+    kl[7][1], kl[7][4] = float(sw_low_body[0]), float(sw_low_body[1])
+    kl[12][1], kl[12][4] = float(sw_high_body[0]), float(sw_high_body[1])
     kl.append([20, 100.0, sig_high, sig_low, 100.0, 10.0, 10.0])  # 未收盘根
     return kl
 
 
 def test_golden_zone_swing_count_band():
-    """价格带内摆动点计数：窄带 [97,99] 不含 103/95 → 0；宽带 [94,104] 含两点 → 2"""
+    """价格带内摆动K线实体重叠计数：窄带 [97,99] 与 idx7 实体[95,95]/idx12
+    实体[103,103] 均不相交 → 0；宽带 [94,104] 两点实体均落带内 → 2"""
     from app.services.strategy.technical import golden_zone_swing_count
     assert golden_zone_swing_count(_band_klines(99.0, 97.0)) == 0
     assert golden_zone_swing_count(_band_klines(104.0, 94.0)) == 2
+
+
+def test_golden_zone_swing_count_body_overlap_not_point():
+    """口径 = 摆动K线实体与价格带重叠（2026-10-13-7），不再要求极值点本身落带内：
+    ① 摆动高点极值 103 落带内、其实体 [98,99] 在带外 → 不计（旧「极值点落带内」
+    口径会误计）；② 极值 103 在带外、实体 [100,101] 与带 [100.5,102] 重叠 → 计入
+    （旧口径不计）"""
+    from app.services.strategy.technical import golden_zone_swing_count
+    # ① 带 [102,104]：含极值 103，但 idx12 实体 [98,99]、idx7 实体 [95,95] 均不相交 → 0
+    assert golden_zone_swing_count(
+        _band_klines(104.0, 102.0, sw_high_body=(98.0, 99.0))) == 0
+    # ② 带 [100.5,102]：不含极值 103，但 idx12 实体 [100,101] 与带相交 → 1
+    assert golden_zone_swing_count(
+        _band_klines(102.0, 100.5, sw_high_body=(100.0, 101.0))) == 1
 
 
 def test_golden_zone_swing_count_combo_widens_band():
