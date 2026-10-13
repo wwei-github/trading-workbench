@@ -39,6 +39,7 @@ from app.services import market_data as md
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import volume_ratio
 from app.services.strategy.technical import (
+    STATE_BLOCK_BOTH,
     compute_indicator_votes,
     compute_quality_score,
     pullback_stabilize_bonus,
@@ -234,9 +235,10 @@ def detect_indicator_candidate(
       币种被关卡拒绝时写入 {"stage": <关卡代码>}，供主扫描漏斗落库展示
       「卡在哪一步」；候选产生/进待确认池（pending upsert）时不写。关卡代码：
       gate_4h / votes / direction_flip / range_score / no_trigger /
-      trigger_whitelist / structure_1h（ema21 触点未过 1H 结构门，2026-10-12）。
-      votes 关附 "detail"（全票明细）、no_trigger 关附 "detail"（未触发原因，
-      2026-10-13）——前端判定说明列渲染，其余关卡不写。
+      trigger_whitelist / htf_state_lock / structure_1h（ema21 触点未过 1H 结构门，2026-10-12）。
+      votes 关附 "detail"（全票明细）、no_trigger / trigger_whitelist /
+      htf_state_lock 关附 "detail"（2026-10-13）——前端判定说明列渲染，
+      其余关卡不写。
     返回 (候选 dict, pending_op) 二元组：
     - 候选 dict（signal_type/touch_ref/quality_score/votes 及展示字段），每币至多 1 个；
       无候选（中性/票数不足/无触发）为 None
@@ -366,6 +368,27 @@ def detect_indicator_candidate(
             trig = None
             whitelist_reject = True
     if trig is None:
+        # 进待确认池准入闸（2026-10-13 用户拍板）：待确认池的产物类型恒为回踩确认
+        # （trigger_pullback_confirm），故该类型须在触发类型白名单内——否则次根确认
+        # 成立也产生不了候选，进池只是挂空账；且 4h 状态机双向禁开（tangle 缠绕 /
+        # turn_* 拐头）时，即便金K确认也会被 AI 层 enforce_htf_constraint 强制 skip
+        # （technical.STATE_BLOCK_BOTH），进池纯属噪音。二者命中即挡在池外：漏斗记
+        # 关卡 + 判定说明、丢弃 upsert；仅挡新进池，已有 pending 的
+        # confirm/expire/supersede 生命周期不受影响。
+        if pending_op and pending_op.get("op") == "upsert":
+            if PULLBACK_CONFIRM not in flt.allowed_triggers:
+                _reject("trigger_whitelist")
+                if reject_out is not None:
+                    reject_out["detail"] = (
+                        "回踩确认类型未在触发类型白名单内（筛选配置）——不进待确认池")
+                return None, None
+            if htf_res is not None and htf_res.get("state") in STATE_BLOCK_BOTH:
+                _reject("htf_state_lock")
+                if reject_out is not None:
+                    reject_out["detail"] = (
+                        f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
+                        "双向禁开——不进待确认池")
+                return None, None
         # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩口径计，
         # 触碰根即当前信号根 klines[-2]，企稳加分项量能语义照常评估）
         if pending_op and pending_op.get("op") == "upsert":

@@ -197,7 +197,12 @@ class Settings(BaseSettings):
     # 尾根条件由「尾窗」扩为「尾窗 ∨ 末根已收盘」；scanner/api analyze/ai_tasks
     # 三处调用点统一恒过 screen_klines），不再当未收盘剔除、信号根错位到前一根
     # 且该根被漏评（STXUSDT 09:00 吞没漏评个案）；非竞态时行为不变
-    RULE_VERSION: str = "v2026-10-13-2"
+    # v2026-10-13-3（用户拍板）：进待确认池准入收紧——待确认池产物恒为回踩确认
+    # （trigger_pullback_confirm），故须在触发类型白名单内；且 4h 状态机双向禁开
+    # （tangle/turn_*，technical.STATE_BLOCK_BOTH）时确认也必被 AI 层强制 skip，
+    # 二者命中即挡在池外（scanner 漏斗新增 htf_state_lock 关卡；仅挡新进池，
+    # 已有 pending 生命周期不变）
+    RULE_VERSION: str = "v2026-10-13-3"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

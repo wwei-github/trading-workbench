@@ -34,6 +34,7 @@ const FUNNEL_STAGES: { key: string; label: string; color: string; hint: string }
   { key: 'range_score', label: '震荡评分', color: 'orange', hint: '震荡评分卡 ≥3（强震荡共识）' },
   { key: 'no_trigger', label: '无触发', color: 'purple', hint: '通过全部门但无触发信号，也未进待确认池；判定说明列为具体未过条件（新轮次）' },
   { key: 'trigger_whitelist', label: '触发白名单外', color: 'purple', hint: '触发类型不在白名单（筛选配置）' },
+  { key: 'htf_state_lock', label: '4h状态禁开', color: 'purple', hint: '4h EMA 状态机双向禁开（缠绕/拐头）——不进待确认池' },
 ]
 const STAGE_ORDER = Object.fromEntries(FUNNEL_STAGES.map((s, i) => [s.key, i]))
 const STAGE_META = Object.fromEntries(FUNNEL_STAGES.map((s) => [s.key, s]))

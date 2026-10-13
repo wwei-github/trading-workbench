@@ -5,9 +5,9 @@ detect_indicator_candidate 各关卡经 reject_out 旁路写 {"stage": <关卡�
 （与 event_out 同模式，零破坏旧调用点）；主扫描 run 收口组装 funnel_json
 随 ScanRecord 落库，前端「筛选漏斗」Tab 展示。关卡代码表：
 gate_4h / votes / direction_flip / range_score / no_trigger /
-trigger_whitelist / structure_1h（ema21 触点未过 1H 结构门，2026-10-12 由
-trigger 层硬门返回）+ 预过滤 liquidity/new_coin/risk_tier/blacklist（预过滤在
-run_scan 内联）。
+trigger_whitelist / htf_state_lock（进池准入闸，2026-10-13）/ structure_1h
+（ema21 触点未过 1H 结构门，2026-10-12 由 trigger 层硬门返回）+
+预过滤 liquidity/new_coin/risk_tier/blacklist（预过滤在 run_scan 内联）。
 
 判定链测试打法：monkeypatch 打桩各闸门/票数/触发（test_scan_filters 白名单
 测试同款），使命中点唯一落在被测关卡；另用真实夹具（ranging 4h）抽查
@@ -48,21 +48,27 @@ class FakePool:
 
 
 def _detect(reject_out, klines=None, *, votes=_PASS_VOTES, gate=("long", {}), htf_nonempty=True,
-            rs=0, trigger=None, flt=None, pending=None, real_trigger=False):
+            rs=0, trigger=None, flt=None, pending=None, real_trigger=False, htf_state=None):
     """打桩装配一次 detect：各桩默认全放行，命中点由参数控制。
-    real_trigger=True 时不打桩 detect_trigger（跑真实触发链，测 no_trigger 明细）"""
+    real_trigger=True 时不打桩 detect_trigger（跑真实触发链，测 no_trigger 明细）；
+    htf_state 非 None 时打桩 analyze_htf_background 返回该 4h 状态机态（进池准入闸用）"""
     import app.services.scanner as sm
 
     orig = {
         "analyze_ema": sm.analyze_ema, "classify_volume": sm.classify_volume,
         "compute_indicator_votes": sm.compute_indicator_votes,
-        "gate_4h": sm.gate_4h,
+        "gate_4h": sm.gate_4h, "analyze_htf_background": sm.analyze_htf_background,
         "range_score": sm.range_score, "detect_trigger": sm.detect_trigger,
     }
     sm.analyze_ema = lambda k: None
     sm.classify_volume = lambda k: (1.0, "平量")
     sm.compute_indicator_votes = lambda k, h=None, htf_bg=None: votes
     sm.gate_4h = lambda k, cfg=None: gate
+    if htf_state is not None:
+        _labels = {"tangle": "缠绕", "turn_bull": "多头拐头", "turn_bear": "空头拐头",
+                   "aligned_bull": "多头排列", "macro_cross_bull": "55×144金叉"}
+        sm.analyze_htf_background = lambda k, fast=21, slow=55: {
+            "state": htf_state, "state_label": _labels.get(htf_state, htf_state)}
     sm.range_score = lambda k, gate_ev=None: (rs, [])
     if not real_trigger:
         sm.detect_trigger = lambda *a, **k: trigger
@@ -265,6 +271,67 @@ def test_pending_upsert_not_rejected():
     cand, op = _detect(rv, trigger=(None, {"op": "upsert", "direction": 1}),
                        htf_nonempty=False)
     assert cand is None and op["op"] == "upsert" and rv == {}
+
+
+# ── 进待确认池准入闸（2026-10-13 用户拍板）：触发类型白名单 + 4h状态机禁开 ──
+
+
+def _adm_flt(allowed_triggers):
+    """准入测试用筛选参数组：显式触发类型白名单"""
+    from app.services.scan_filters import ScanFilters as SF
+    return SF(
+        min_volume_24h=1, breakout_channel_bars=20, breakout_threshold=0.002,
+        breakout_vol_ratio=1.2, breakout_max_pct=1.5, candle_max_ema21_dist_pct=0,
+        ai_max_per_scan=10, allowed_triggers=allowed_triggers,
+    )
+
+
+def test_pending_upsert_blocked_by_trigger_whitelist():
+    """回踩确认不在触发类型白名单 → 不进待确认池：stage=trigger_whitelist、
+    pending_op 丢弃（不落库）、附判定说明"""
+    from app.services.scan_filters import TRIGGER_BREAKOUT
+    rv: dict = {}
+    cand, op = _detect(rv, trigger=(None, {"op": "upsert", "direction": 1}),
+                       flt=_adm_flt((TRIGGER_BREAKOUT,)), htf_nonempty=False)
+    assert cand is None and op is None
+    assert rv["stage"] == "trigger_whitelist"
+    assert "未在触发类型白名单内" in rv["detail"]
+
+
+def test_pending_upsert_blocked_by_htf_state_lock():
+    """4h 状态机双向禁开（tangle/turn_*）→ 不进待确认池：stage=htf_state_lock、
+    pending_op 丢弃、附判定说明（确认也必被 AI 层强制 skip，进池是噪音）"""
+    from app.services.scan_filters import ALL_TRIGGERS
+    for st, label in (("tangle", "缠绕"), ("turn_bear", "空头拐头")):
+        rv: dict = {}
+        cand, op = _detect(rv, trigger=(None, {"op": "upsert", "direction": 1}),
+                           flt=_adm_flt(ALL_TRIGGERS), htf_state=st)
+        assert cand is None and op is None
+        assert rv["stage"] == "htf_state_lock"
+        assert label in rv["detail"] and "不进待确认池" in rv["detail"]
+
+
+def test_pending_upsert_allowed_when_gates_pass():
+    """触发类型白名单含回踩确认 + 4h 状态非禁开 → 正常 upsert（reject_out 不写）"""
+    from app.services.scan_filters import ALL_TRIGGERS
+    rv: dict = {}
+    cand, op = _detect(rv, trigger=(None, {"op": "upsert", "direction": 1}),
+                       flt=_adm_flt(ALL_TRIGGERS), htf_state="aligned_bull")
+    assert cand is None and op["op"] == "upsert" and "quality_score" in op
+    assert rv == {}
+
+
+def test_existing_pending_expire_unaffected_by_admission_gate():
+    """准入闸只挡新进池：已有 pending 的 expire 生命周期不受白名单/状态机影响"""
+    from app.services.scan_filters import TRIGGER_BREAKOUT
+    rv: dict = {}
+    pend = {"id": 1, "direction": 1, "touch_ref": "ema21",
+            "stage1_candle_open": 1_700_000_000_000}
+    cand, op = _detect(rv, trigger=(None, {"op": "expire", "reason": "window_expired"}),
+                       flt=_adm_flt((TRIGGER_BREAKOUT,)), pending=pend,
+                       htf_state="tangle", htf_nonempty=False)
+    assert cand is None and op == {"op": "expire", "reason": "window_expired"}
+    assert rv["stage"] == "no_trigger"
 
 
 def test_reject_real_pipeline_gate_4h():
