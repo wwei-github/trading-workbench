@@ -655,7 +655,7 @@ PATTERN_LABEL_MAP = {
     "bearish_engulfing": "看跌吞没",
     "morning_star": "启明星",
     "evening_star": "黄昏星",
-    "shooting_star": "倒锤形线",
+    "shooting_star": "流星线",
     "piercing_line": "刺透线",
     "dark_cloud_cover": "乌云盖顶",
     "bullish_harami": "看涨孕线突破",
