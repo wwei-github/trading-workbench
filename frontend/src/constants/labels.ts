@@ -99,11 +99,25 @@ export const POSITION_FILTERS = (["support", "resistance"] as const).map((value)
   value,
 }));
 
-export const PATTERN_FILTERS = Object.keys({
-  ...BULLISH_PATTERNS,
-  ...BEARISH_PATTERNS,
-  ...OTHER_PATTERNS,
-}).map((v) => ({ text: patternStyle(v).label, value: v }));
+// 形态过滤选项：按展示标签去重（同标签多 key 只保留先出现的首个选项）。
+// 例：shooting_star（看跌·现役）与 inverted_hammer（看涨·已退出白名单，仅历史行展示）
+// 同形双报、标签同为「倒锤形线」，去重后下拉仅一项（值为先出现的 shooting_star）；
+// inverted_hammer 历史行照常渲染标签，其余形态标签唯一、去重无副作用
+export const PATTERN_FILTERS = (() => {
+  const seen = new Set<string>();
+  const out: { text: string; value: string }[] = [];
+  for (const v of Object.keys({
+    ...BULLISH_PATTERNS,
+    ...BEARISH_PATTERNS,
+    ...OTHER_PATTERNS,
+  })) {
+    const text = patternStyle(v).label;
+    if (seen.has(text)) continue;
+    seen.add(text);
+    out.push({ text, value: v });
+  }
+  return out;
+})();
 
 // ===== EMA 均线形态状态 =====
 export const EMA_STATE_MAP: Record<string, { label: string }> = {
