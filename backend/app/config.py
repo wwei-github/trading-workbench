@@ -160,6 +160,8 @@ class Settings(BaseSettings):
     # 前一根低点时，止损落在近期波动区间内部必被扫损）。三面同源：P0/P1 提示词 +
     # 程序参考 calc_stop_reference + 回测/虚拟账本 derive_signal_prices；
     # risk_guard 近锚一致性校验锚点同步改窗口极值（±0.5% 容差口径不变）
+    # 注：上述 calc_stop_reference（程序止损参考价，2026-10-13 删除）与回测/账本
+    # derive_signal_prices（2026-10-12 退役）后续均已移除，本行仅存历史语境
     # v2026-10-12-9（用户拍板，docs/21 O8）：策略二 trail 新增中途止盈腿——
     # 武装后 1h 已收盘 K 收盘价全程浮盈（已实现+浮动）≥2×ATR(22,1d)×当前持仓
     # → 市价 reduceOnly 减 1/3 落袋（一次性旗标 trail_tp_done；收盘口径剔尾

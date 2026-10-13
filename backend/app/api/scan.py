@@ -1550,7 +1550,6 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         analysis=ai_result.get("analysis"),
         entry_price=ai_result.get("entry_price"),
         stop_loss=ai_result.get("stop_loss"),
-        calc_stop_loss=ai_result.get("calc_stop_loss"),
         take_profit_1=ai_result.get("take_profit_1"),
         take_profit_2=ai_result.get("take_profit_2"),
         risk_reward_ratio=ai_result.get("risk_reward_ratio"),

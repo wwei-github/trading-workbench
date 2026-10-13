@@ -338,22 +338,18 @@ export function getEffectiveDecision(
   return { decision: "suggest", reason: "" };
 }
 
-/** 价格小卡片：标签 + 大号价格，左侧色条区分用途；sub 为可选副行
- *（如止损卡合并展示程序参考价：箭头指向程序价相对 AI 价的数值方向） */
+/** 价格小卡片：标签 + 大号价格，左侧色条区分用途 */
 function PriceCard({
   label,
   value,
   color,
   zeroText,
-  sub,
 }: {
   label: string
   value: number | null | undefined
   color: string
   /** 值为 0 时的占位文案（如止盈2 关闭时显示「未启用」），不传走原数字格式化 */
   zeroText?: string
-  /** 副行：箭头符号 + 参考价文本 + 箭头/文本配色（不传不渲染） */
-  sub?: { arrow: string; text: string; color?: string }
 }) {
   return (
     <div
@@ -370,14 +366,6 @@ function PriceCard({
       <div style={{ fontSize: 15, fontWeight: 700, color, lineHeight: 1.3 }}>
         {value === 0 && zeroText ? zeroText : fmtPrice(value)}
       </div>
-      {sub && (
-        <div style={{ fontSize: 12, lineHeight: 1.4, marginTop: 1 }}>
-          <span style={{ color: sub.color ?? '#999', fontWeight: 700, marginRight: 4 }}>
-            {sub.arrow}
-          </span>
-          <span style={{ color: sub.color ?? '#999' }}>{sub.text}</span>
-        </div>
-      )}
     </div>
   )
 }
@@ -646,36 +634,10 @@ export default function AiAnalysisCard({ ai }: Props) {
         </>
       ) : (
         <>
-          {/* 价格卡：入场 / 止损（主值 AI 报价，副行箭头+程序参考价合并展示）/ 止盈1 / 止盈2 */}
+          {/* 价格卡：入场 / 止损 / 止盈1 / 止盈2 */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
             <PriceCard label="入场价" value={ai.entry_price} color="#1677ff" />
-            {/* 止损合并卡（2026-10-11）：主值=AI 报价（实际下单用）；程序止损参考
-                （0.5×ATR 外扩锚价，仅对比不下单）以副行箭头并入——箭头=程序价相对
-                AI 价的数值方向（↓更低/↑更高/＝一致），橙色=程序比 AI 更远离入场
-                （多头更低/空头更高，更保守）；skip 行/旧数据/ATR 不可算为 null 只显主值 */}
-            {(() => {
-              const calc = ai.calc_stop_loss
-              const sl = ai.stop_loss
-              const wider =
-                (ai.direction === 'long' && calc != null && (sl == null || calc < sl)) ||
-                (ai.direction === 'short' && calc != null && (sl == null || calc > sl))
-              const arrow = calc == null || sl == null ? '' : calc > sl ? '↑' : calc < sl ? '↓' : '＝'
-              const card = (
-                <PriceCard
-                  label="止损价"
-                  value={sl}
-                  color={SCHEME_UP_DOWN[colorScheme].down}
-                  sub={calc != null
-                    ? { arrow: arrow || '＝', text: fmtPrice(calc), color: wider ? '#fa8c16' : undefined }
-                    : undefined}
-                />
-              )
-              return calc != null ? (
-                <Tooltip title={`副行为程序止损参考（0.5×ATR 外扩：前一同侧摆动点与金K极值取更远者）——箭头指向程序价相对 AI 报价的方向（↓更低/↑更高/＝一致），${wider ? '橙色=程序比 AI 更远离入场（更保守）' : '灰色=程序不比 AI 更远'}。实际下单仍用主值（AI 报价）`}>
-                  <div style={{ flex: 1, minWidth: 0 }}>{card}</div>
-                </Tooltip>
-              ) : card
-            })()}
+            <PriceCard label="止损价" value={ai.stop_loss} color={SCHEME_UP_DOWN[colorScheme].down} />
             <PriceCard label="止盈1" value={ai.take_profit_1} color={SCHEME_UP_DOWN[colorScheme].up} />
             {/* TP2 关闭时落库 0：显示「未启用」而非 0.0000 */}
             <PriceCard label="止盈2" value={ai.take_profit_2} color={SCHEME_UP_DOWN[colorScheme].up} zeroText="未启用" />
