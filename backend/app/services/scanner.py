@@ -699,6 +699,9 @@ class Scanner:
                         from app.services import shadow as shadow_mod
                         shadow_vals: dict = {}
                         for f in shadow_mod.SHADOW_FEATURES.values():
+                            # 关闭的卡不再打标（docs/14 §四 enabled，2026-10-13）
+                            if not f.enabled:
+                                continue
                             if f.key == "sweep_reclaim":
                                 # CARD-08 特例：需生产原生触点位（pending 锚点/
                                 # retest 事件）与 15m 拉取，非 compute(klines) 签名

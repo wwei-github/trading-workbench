@@ -461,8 +461,8 @@ def test_build_report_attribution_join(db):
     assert buckets["confirm"].get("insufficient") is True
     assert cvd["sufficient"] is False  # counted 2 < min_sample 80
 
-    vr = rep["vol_regime"]
-    assert vr["baseline"]["n"] == 1  # 特征间互不干扰
+    # CARD-03 于 2026-10-13 裁决关闭（docs/14 §十一）→ 不出报告（marks 仍在库）
+    assert "vol_regime" not in rep
 
 
 def test_build_report_sufficient_threshold(db, monkeypatch):
@@ -496,7 +496,7 @@ def test_build_report_window_and_empty(db):
     assert rep["cvd_div"]["baseline"]["n"] == 0       # 60 天前 → 30 天窗口外
     assert rep["cvd_div"]["buckets"] == []
     assert rep["cvd_div"]["sufficient"] is False
-    assert rep["vol_regime"]["baseline"]["n"] == 0    # 从未打标 → 空态
+    assert "vol_regime" not in rep  # CARD-03 已关闭 → 不出报告
 
 
 # ── 6. 日报附录（shadow_report_lines）异常隔离与格式 ──────────────────

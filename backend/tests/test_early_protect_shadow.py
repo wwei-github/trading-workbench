@@ -278,7 +278,8 @@ class _FakePool:
 
 
 def test_tag_trade_close_two_rows_and_idempotent(shadow_db, monkeypatch):
-    """每笔交易打 2 行（be_retrace + tp0_retrace）；重跑幂等覆盖不重复"""
+    """每笔交易打标 be_retrace 一行（CARD-06 于 2026-10-13 关闭，不再打 tp0_retrace）；
+    重跑幂等覆盖不重复"""
     from app.services import exchange_pool as ep_mod
 
     monkeypatch.setattr(ep_mod, "ExchangePool", lambda: _FakePool(
@@ -299,22 +300,22 @@ def test_tag_trade_close_two_rows_and_idempotent(shadow_db, monkeypatch):
     s.close()
 
     n = tag_trade_close([rec])
-    assert n == 2
+    assert n == 1
 
     db = maker()
     marks = db.execute(select(ShadowMark).order_by(ShadowMark.feature_key)).scalars().all()
-    assert {m.feature_key for m in marks} == {"be_retrace", "tp0_retrace"}
+    assert {m.feature_key for m in marks} == {"be_retrace"}
     assert all(m.ref_type == "trade_record" and str(m.ref_id) == str(tid) for m in marks)
     be = next(m for m in marks if m.feature_key == "be_retrace")
     assert be.value_json["bucket"] in ("saved", "no_arm", "carry")
     assert be.decision_json["stage"] == "trade_close"
     assert be.decision_json["testnet"] is True
 
-    # 幂等：再打一次，仍 2 行不重复
+    # 幂等：再打一次，仍 1 行不重复
     n2 = tag_trade_close([rec])
-    assert n2 == 2
+    assert n2 == 1
     marks2 = db.execute(select(ShadowMark)).scalars().all()
-    assert len(marks2) == 2
+    assert len(marks2) == 1
     db.close()
 
 
@@ -342,7 +343,8 @@ def test_tag_trade_close_swallows_errors(shadow_db, monkeypatch):
     recs = [s.get(TradeRecord, t) for t in (t1, t2, t3)]
     s.close()
     n = tag_trade_close(recs)
-    assert n == 2  # 仅 OKUSDT 两行（BOOM 拉K线炸被吞；NOSNAP 无快照跳过）
+    assert n == 1  # 仅 OKUSDT 一行（BOOM 拉K线炸被吞；NOSNAP 无快照跳过；
+    # CARD-06 已于 2026-10-13 关闭 → 不再打 tp0_retrace 行）
 
 
 # ── 5. build_report 早期保护分支 ──────────────────────────────────────
@@ -366,6 +368,7 @@ def test_build_report_early_protect(shadow_db, monkeypatch):
         value = {
             "real_r": -0.55, "a_r": 0.0, "a_delta_r": 0.55, "bucket": "saved",
             "b_r": 0.125, "b_delta_r": 0.675, "bucket_tp0": "protected",
+            "closed_at": "2026-10-12T04:00:00",
         }
         for fk in ("be_retrace", "tp0_retrace"):
             s.add(ShadowMark(
@@ -386,6 +389,7 @@ def test_build_report_early_protect(shadow_db, monkeypatch):
         value = {
             "real_r": 0.6, "a_r": 0.0, "a_delta_r": -0.6, "bucket": "injured",
             "b_r": 0.125, "b_delta_r": -0.475, "bucket_tp0": "protected",
+            "closed_at": "2026-10-12T04:00:00",
         }
         for fk in ("be_retrace", "tp0_retrace"):
             s.add(ShadowMark(
@@ -413,10 +417,39 @@ def test_build_report_early_protect(shadow_db, monkeypatch):
     assert buckets["saved"]["n"] == 4 and buckets["saved"]["sum_delta_r"] > 0
     assert "injured" not in buckets  # 测试网桶不混进主分组
 
-    tp0 = by["tp0_retrace"]
-    assert tp0["card"] == "CARD-06"
-    assert tp0["baseline"]["sum_delta_r"] == pytest.approx(2.7, abs=0.01)
-    assert tp0["testnet_baseline"]["buckets"] == {"protected": 2}
+    tp0 = by.get("tp0_retrace")
+    assert tp0 is None  # CARD-06 于 2026-10-13 裁决关闭 → 不进报告（docs/14 §十一）
+    assert "vol_regime" not in by  # CARD-03 同日关闭，同证
+    # 关闭卡的 marks 仍在库，但不参与评估（enabled=False 即不出报告）
+
+
+def test_build_report_early_protect_forward_window(shadow_db):
+    """前向窗口重置（2026-10-13，docs/14 §十一）：仅计 closed_at ≥ EARLY_PROTECT_START
+    的存量——出场链 2026-10-12 起改恒 ladder，之前平仓的存量与新股同源不同口径，
+    不可比 → 只打标不计入评估（同 CARD-09 的 closed_at 口径）"""
+    maker = shadow_db
+    s = maker()
+    for sym, cd in (("OLDUSDT", "2026-10-11T04:00:00"), ("NEWUSDT", "2026-10-12T04:00:00")):
+        tid = uuid.uuid4()
+        s.add(TradeRecord(
+            id=tid, symbol=sym, direction="long", entry_price=100.0,
+            qty=10.0, risk_amount=100.0, stop_loss=95.0,
+            status="CLOSED", exit_reason="sl", realized_pnl=-55.0,
+            opened_at=datetime(2026, 10, 1, 0, 0), closed_at=datetime(2026, 10, 1, 4, 0),
+            testnet=False,
+        ))
+        s.add(ShadowMark(
+            feature_key="be_retrace", ref_type="trade_record", ref_id=tid,
+            symbol=sym, value_json={"real_r": -0.55, "a_r": 0.0, "a_delta_r": 0.55,
+                                    "bucket": "saved", "closed_at": cd},
+            decision_json={"stage": "trade_close", "testnet": False},
+        ))
+    s.commit()
+    s.close()
+
+    rep = {r["feature"]: r for r in shadow_mod.build_report(maker(), window_days=30)}
+    be = rep["be_retrace"]
+    assert be["baseline"]["n"] == 1  # OLDUSDT（10-11 平仓）被窗口过滤剔除
 
 
 def test_build_report_excludes_non_mechanical_and_phantom(shadow_db):
@@ -435,21 +468,25 @@ def test_build_report_excludes_non_mechanical_and_phantom(shadow_db):
         ("M0USDT", "sl", {
             "exit_reason": "sl", "real_r": -0.55,
             "a_r": 0.0, "a_delta_r": 0.55, "bucket": "saved",
-            "b_r": 0.125, "b_delta_r": 0.675, "bucket_tp0": "protected"}),
+            "b_r": 0.125, "b_delta_r": 0.675, "bucket_tp0": "protected",
+            "closed_at": "2026-10-12T04:00:00"}),
         ("M1USDT", "sl", {
             "exit_reason": "sl", "real_r": -0.55,
             "a_r": 0.0, "a_delta_r": 0.55, "bucket": "saved",
-            "b_r": 0.125, "b_delta_r": 0.675, "bucket_tp0": "protected"}),
+            "b_r": 0.125, "b_delta_r": 0.675, "bucket_tp0": "protected",
+            "closed_at": "2026-10-12T04:00:00"}),
         # 手动出场污染源（真实赢单，survived cf>real / injured cf=0）
         ("M2USDT", "manual", {
             "exit_reason": "manual", "real_r": 3.5747,
             "a_r": 0.0, "a_delta_r": -3.5747, "bucket": "injured",
-            "b_r": 4.8828, "b_delta_r": 1.3081, "bucket_tp0": "survived"}),
+            "b_r": 4.8828, "b_delta_r": 1.3081, "bucket_tp0": "survived",
+            "closed_at": "2026-10-12T04:00:00"}),
         # no_arm phantom：未武装单记账残差 |Δ|=0.2643>0.05，不得计入 decided
         ("M3USDT", "sl", {
             "exit_reason": "sl", "real_r": -1.2643,
             "a_r": -1.0, "a_delta_r": 0.2643, "bucket": "no_arm",
-            "b_r": -1.0, "b_delta_r": 0.2643, "bucket_tp0": "untouched"}),
+            "b_r": -1.0, "b_delta_r": 0.2643, "bucket_tp0": "untouched",
+            "closed_at": "2026-10-12T04:00:00"}),
     ]
     for sym, er, value in rows:
         tid = uuid.uuid4()
@@ -486,13 +523,8 @@ def test_build_report_excludes_non_mechanical_and_phantom(shadow_db):
     assert buckets["no_arm"]["decided"] == 0  # phantom 不进 decided
     assert buckets["no_arm"]["decided_sum_delta_r"] == 0.0
 
-    tp0 = by["tp0_retrace"]
-    assert tp0["excluded_n"] == 1
-    assert tp0["baseline"]["decided"] == 2  # 2×protected；survived/untouched 不计
-    assert tp0["baseline"]["decided_sum_delta_r"] == pytest.approx(1.35, abs=0.01)
-    tp0_buckets = {b["bucket"]: b for b in tp0["buckets"]}
-    assert "survived" not in tp0_buckets
-    assert tp0_buckets["untouched"]["decided"] == 0
+    # CARD-06 于 2026-10-13 裁决关闭 → tp0_retrace 不再进报告（marks 仍在库）
+    assert "tp0_retrace" not in by
 
 
 # ── 6. 主线隔离 ───────────────────────────────────────────────────────

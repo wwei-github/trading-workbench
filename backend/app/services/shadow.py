@@ -149,12 +149,19 @@ class ShadowFeature:
     card: str                      # 预注册标准卡（docs/14 §七）
     compute: Callable[[list], Optional[dict]]
     min_sample: int                # 卡的最小样本（有效归因计数），达标前 sufficient=False
+    enabled: bool = True           # 关闭的卡不再打标、不进评估报告（docs/14 §六.1：
+                                   # 「对每个 enabled 特征取窗口标记」）；裁决关闭
+                                   # 记录见 docs/14 §十一 归档表
 
 
 SHADOW_FEATURES: dict[str, ShadowFeature] = {
     f.key: f for f in (
         ShadowFeature("cvd_div", "CVD 背离（订单流免费子集）", "CARD-01", compute_cvd_div, 80),
-        ShadowFeature("vol_regime", "波动率状态（ATR14/ATR100）", "CARD-03", compute_vol_regime, 100),
+        # CARD-03 于 2026-10-13 裁决关闭（docs/14 §十一）：假设「压缩期假突破率高
+        # → 折价」的动作已由 range_score 布林带收口项落地进主线，且影子读数反向
+        # （compress 胜率高于 expand）——卡已无独立信息量，停打标、出报告
+        ShadowFeature("vol_regime", "波动率状态（ATR14/ATR100）", "CARD-03", compute_vol_regime, 100,
+                      enabled=False),
         ShadowFeature("macd_div", "MACD 背离（缠论背驰子集）", "CARD-04", compute_macd_div, 60),
         ShadowFeature("oi_conf", "OI 确认度（24h ΔOI）", "CARD-02", compute_oi_conf_scan_stub, 60),
         # 趋势质量（docs/16 S-10，CARD-10，2026-10-08 立卡）：r²/slope 影子侧
@@ -166,7 +173,11 @@ SHADOW_FEATURES: dict[str, ShadowFeature] = {
         # compute 循环（由 tag_trade_close 在归因任务打标），注册仅为让
         # build_report 输出元数据与反事实统计。min_sample = 预注册 decided 门槛
         ShadowFeature("be_retrace", "BE@0.8R 保本反事实（A 腿）", "CARD-05", lambda k: None, 30),
-        ShadowFeature("tp0_retrace", "TP0 微止盈反事实（B 腿）", "CARD-06", lambda k: None, 60),
+        # CARD-06 于 2026-10-13 裁决关闭（docs/14 §十一）：TP0 微止盈已被
+        # docs/15 v1/v2 两轮预注册回放参数稳健地证伪（期望 -0.107R / -0.096R），
+        # 终局方案 B 腿归档——保留打标只是重复已知结论，停打标、出报告
+        ShadowFeature("tp0_retrace", "TP0 微止盈反事实（B 腿）", "CARD-06", lambda k: None, 60,
+                      enabled=False),
         # 再入场前置（docs/13 #12，CARD-07）：止损后结构×续走条件概率，
         # trade_record 宿主——出场后 48h 路径在平仓时刻不存在，打标由每日
         # 回填（tag_reentry_backfill）执行，compute 占位仅为 build_report 元数据
@@ -359,6 +370,12 @@ TP0_QTY = 0.25
 TP0_GATE_R = 1.2
 _PATH_MAX_POINTS = 60      # 路径数组上限（长持仓降采样）
 
+# 前向窗口起点（2026-10-13 重置，同 CARD-09 的 closed_at 口径）：评估仅计
+# closed_at ≥ 本值。2026-10-12 出场链改「恒 ladder」（1.5R 止盈/保本+跟进，
+# 删策略二与 trail 纯跟踪），反事实对比的「真实 R」出处随之改变——
+# 之前平仓的存量与新口径不同源，不可比 → 只打标不计入评估。
+EARLY_PROTECT_START = "2026-10-12"
+
 
 def compute_early_protect(klines: list[list], rec) -> Optional[dict]:
     """CARD-05/06 共享路径基元：对一笔已平仓交易做持仓期逐根反事实重放。
@@ -484,6 +501,7 @@ def compute_early_protect(klines: list[list], rec) -> Optional[dict]:
     else:
         tp0_bucket = "untouched"  # tp0_only / tp0_miss / carry（无反事实变化）
 
+    _closed_at = getattr(rec, "closed_at", None)
     return {
         # 共享路径基元
         "r_unit": round(r_unit, 8), "stop_initial": stop0,
@@ -491,6 +509,8 @@ def compute_early_protect(klines: list[list], rec) -> Optional[dict]:
         "tp1_r": round(tp1_r, 4) if tp1_r is not None else None,
         "duration_h": duration_h, "direction": rec.direction,
         "exit_reason": rec.exit_reason, "real_r": round(real_r, 4),
+        "closed_at": (_closed_at.replace(tzinfo=None).isoformat()
+                      if _closed_at else None),
         "path": path,
         # A 腿（be_retrace）
         "a_r": round(a_r, 4), "a_out": a_out, "armed": armed,
@@ -599,7 +619,8 @@ def _rec70_stats(rows: list) -> dict:
 def tag_trade_close(trades: list) -> int:
     """trade_close 宿主打标（docs/15 §五）：对已平仓交易逐笔做早期保护反事实。
 
-    每笔交易产生两行影子标记：be_retrace（CARD-05）+ tp0_retrace（CARD-06），
+    每笔交易产生两行影子标记：be_retrace（CARD-05）+ tp0_retrace（CARD-06）；
+    CARD-06 于 2026-10-13 裁决关闭后仅打 be_retrace 一行（docs/14 §十一）。
     value_json 同为 compute_early_protect 输出（path 基元共用，≈2KB/笔）。
     K 线由调用方（归因任务）按持仓区间拉取传入；无 K 线/缺快照的交易静默跳过。
     幂等：uq_shadow_mark 同 (feature_key, trade_record, ref_id) 覆盖更新。
@@ -672,6 +693,9 @@ def tag_trade_close(trades: list) -> int:
                     "status": rec.status,
                 }
                 for feat_key in ("be_retrace", "tp0_retrace"):
+                    # 关闭的卡不再打标（2026-10-13：CARD-06 已裁决关闭）
+                    if not SHADOW_FEATURES[feat_key].enabled:
+                        continue
                     existing = db.execute(
                         select(ShadowMark).where(
                             ShadowMark.feature_key == feat_key,
@@ -1065,6 +1089,10 @@ def build_report(db, window_days: int = 30) -> list[dict]:
     since = datetime.utcnow() - timedelta(days=window_days)
     out: list[dict] = []
     for key, feat in SHADOW_FEATURES.items():
+        # 关闭的卡不进报告（docs/14 §六.1「对每个 enabled 特征」，2026-10-13）：
+        # CARD-03/CARD-06 已裁决关闭，面板不再列出；裁决记录见 docs/14 §十一
+        if not feat.enabled:
+            continue
         marks = db.execute(
             select(ShadowMark).where(
                 ShadowMark.feature_key == key,
@@ -1087,6 +1115,11 @@ def build_report(db, window_days: int = 30) -> list[dict]:
             testnet_values: list = []
             for m in marks:
                 v = m.value_json or {}
+                # 前向窗口过滤（2026-10-13 重置，同 CARD-09 的 closed_at 口径）：
+                # 出场链 2026-10-12 起改恒 ladder，反事实的「真实 R」出处随之改变，
+                # 之前平仓的存量只打标不计入评估（docs/14 §十一）
+                if ((v.get("closed_at") or "")[:10]) < EARLY_PROTECT_START:
+                    continue
                 if (m.decision_json or {}).get("testnet"):
                     testnet_values.append(v)
                 else:
