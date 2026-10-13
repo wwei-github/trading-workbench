@@ -10,6 +10,9 @@
 - **止盈一距离上限**（2026-10-12）：第一档止盈距入场 ≤
   min(TP1_MAX_ATR×ATR14, TP1_MAX_R×止损距离)、且不低于 rr_min×止损距离
   （防"第一档"落到 3~4R 的远位；超限打回让 AI 改近档或走兜底，程序不改价）
+- **止盈二贴档保护**（2026-10-13-9）：TP2 与 TP1 间距 d < gap_min
+  （=max(TP2_MIN_GAP_ATR×ATR14, TP2_MIN_GAP_R×止损距离, 2×TAKER_FEE_RATE×入场价)）
+  或反向/重合时**静默撤档**（take_profit_2=0，不进 violations、不触发 Reflection）
 - 仓位公式化（固定亏损法）：仓位 = 风险预算 ÷ 止损距离。风险预算两种口径
   （2026-09-27 止损金额模式，resolve 见 risk_budget.py）：pct=触止损恰好亏
   RISK_BUDGET_PCT（3%，默认）；fixed=亏固定 USDT 实额（position_pct 不折算），
@@ -22,9 +25,11 @@
   强平安全上限前置、止盈最近优先强制（docs/09 的锚定设计保留为提示词方法论）
   ——2026-10-12-2 部分回退：恢复止损宽度**下限**（0.3×ATR，近锚豁免），上限仍
   走 signal_gate.max_stop_pct + 动态杠杆
+- TP2 须比 TP1 更远（2026-10-13-9 移除硬校验：改由「止盈二贴档保护」静默撤档，
+  不再打回浪费 Reflection 重试）
 
 方向-价格一致性（2026-09-16 恢复为硬校验，不属于方法论）：多单 SL<entry<TP1、
-空单 TP1<entry<SL（TP2>0 时同侧递延）。2026-09-15 随校验链收缩移除后，
+空单 TP1<entry<SL（TP2 的方向序不再硬校验，见止盈二贴档保护）。2026-09-15 随校验链收缩移除后，
 ETHUSDT 空单反向止损（SL=2373 < 入场 2391.89）靠 abs() 口径的 RR 铁律
 畅通落库，到挂 SL 才会被交易所拒单——这是可行性铁律而非结构偏好，不可省。
 
@@ -272,7 +277,8 @@ def validate_decision(
     # 条件单会被拒单（-2021 would immediately trigger），走到开仓→挂SL失败→
     # 紧急平仓空转。RR 铁律全程 abs() 对方向盲，反向止损照样达标
     # （ETHUSDT 空单 SL=2373 低于入场 2391.89，RR 复算 1.58 畅通通过）。
-    # TP2>0 时须与方向同侧且比 TP1 更远
+    # TP2 的方向序/贴近问题不再打回（2026-10-13-9）：改由下方「止盈二贴档保护」
+    # 静默撤档（tp2<=tp1 或间距过近一律 take_profit_2=0），不浪费 Reflection 重试
     if d.direction == "long" and not d.stop_loss < d.entry_price < d.take_profit_1:
         violations.append(
             f"多单价格序矛盾：须 SL < 入场 < TP1"
@@ -283,15 +289,6 @@ def validate_decision(
             f"空单价格序矛盾：须 TP1 < 入场 < SL"
             f"（实得 TP1={d.take_profit_1}，入场={d.entry_price}，SL={d.stop_loss}）"
         )
-    if d.take_profit_2 > 0:
-        if d.direction == "long" and d.take_profit_2 <= d.take_profit_1:
-            violations.append(
-                f"多单 TP2 须比 TP1 更远（TP2={d.take_profit_2} ≤ TP1={d.take_profit_1}）"
-            )
-        if d.direction == "short" and d.take_profit_2 >= d.take_profit_1:
-            violations.append(
-                f"空单 TP2 须比 TP1 更远（TP2={d.take_profit_2} ≥ TP1={d.take_profit_1}）"
-            )
     if violations:
         return False, violations, {}
 
@@ -407,6 +404,37 @@ def validate_decision(
     if violations:
         return False, violations, {}
 
+    # ── 止盈二贴档保护（2026-10-13-9，程序侧静默撤档）──
+    # AI 常把第二档挂到第一档近旁：两档几乎同时触发，分批意义消失（留半仓吃不到
+    # 额外空间、还多付一份手续费），甚至反向/重合（TP2 ≤ TP1 多、TP2 ≥ TP1 空）。
+    # 旧口径对这类决策打回（violations）走 Reflection 重试，但 AI 自纠成本高且不稳定
+    # → 改为程序侧静默把 take_profit_2 置 0（不进 violations、不消耗重试），出场引擎
+    # 按 80%/20% 分批（trade_engine._tp_quantities 已有逻辑）自动退化为单档全平。
+    # 间距下限 gap_min = max(TP2_MIN_GAP_ATR×ATR14, TP2_MIN_GAP_R×止损距离,
+    # 2×TAKER_FEE_RATE×入场价)；方向距离 d =（多）TP2−TP1 /（空）TP1−TP2，
+    # d ≤ 0（反向/重合）或 d < gap_min 都撤档。ATR 不可算时 ATR 腿置 0；
+    # TP2_MIN_GAP_ATR/R 都为 0 时整条保护失效（含手续费地板——开关口径）。
+    _tp2 = float(d.take_profit_2) if d.take_profit_2 > 0 else 0.0
+    _gap_cfg_on = float(settings.TP2_MIN_GAP_ATR) > 0 or float(settings.TP2_MIN_GAP_R) > 0
+    if _tp2 > 0 and _gap_cfg_on:
+        _gaps = [2 * float(settings.TAKER_FEE_RATE) * d.entry_price]
+        if float(settings.TP2_MIN_GAP_R) > 0:
+            _gaps.append(float(settings.TP2_MIN_GAP_R) * stop_dist)
+        if _atr14 and _atr14 > 0 and float(settings.TP2_MIN_GAP_ATR) > 0:
+            _gaps.append(float(settings.TP2_MIN_GAP_ATR) * _atr14)
+        _gap_min = max(_gaps)
+        _tp2_gap = (
+            _tp2 - d.take_profit_1 if d.direction == "long"
+            else d.take_profit_1 - _tp2
+        )
+        if _tp2_gap < _gap_min * (1 - 1e-9):
+            logger.info(
+                "止盈二贴档撤档 %s：TP1=%s TP2=%s（方向=%s，间距 %s < 下限 %s）",
+                signal.get("symbol"), round(d.take_profit_1, 8), round(_tp2, 8),
+                d.direction, round(_tp2_gap, 8), round(_gap_min, 8),
+            )
+            _tp2 = 0.0
+
     # ── 修正：程序复算值落库，AI 声称值不信 ──
     # 固定亏损仓位法：仓位（名义价值占账户%）= 风险预算 ÷ 止损距离。
     # 风险预算两种口径（2026-09-27 止损金额模式，与开仓引擎 trade_engine 同源）：
@@ -439,7 +467,7 @@ def validate_decision(
         "entry_price": round(d.entry_price, 8),
         "stop_loss": round(d.stop_loss, 8),
         "take_profit_1": round(d.take_profit_1, 8),
-        "take_profit_2": round(d.take_profit_2, 8),
+        "take_profit_2": round(_tp2, 8),
         "risk_reward_ratio": round(rr, 2),
         "position_pct": position_pct,
         "recommendation": float(min(max(d.recommendation, 50), 100)),

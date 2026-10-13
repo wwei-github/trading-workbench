@@ -66,7 +66,10 @@ _RULE_TP_BASE = """止盈锚定（多空方向不同，必须遵守；程序不�
 # TP2 分批开关（2026-10-08）：关闭时提示词整体剔除止盈二条目——AI 不再产出
 # 第二档止盈价（落库 take_profit_2=0，与出场引擎 80% 口径一致）
 _RULE_TP2_BULLET_ON = """- 止盈二：止盈一锚定档的下一档结构位外侧（做多=更高一档摆动高点下方，
-  做空=更低一档摆动低点上方），留同幅余地，且必须比止盈一更远。"""
+  做空=更低一档摆动低点上方），留同幅余地，且必须比止盈一更远。
+  止盈二还须与止盈一拉开间距：间距 ≥ max({tp2_gap_atr}×ATR, {tp2_gap_r}×止损距离)
+  ——两档贴得太近会几乎同时触发，分批意义消失（多付一次手续费）。间距不足时
+  直接输出 take_profit_2=0（只留一档），不要硬塞第二档；程序亦会对贴档/反向静默撤档。"""
 
 _RULE_TP2_BULLET_OFF = """- 当前未启用止盈二（TP2 分批止盈已关闭）：只规划止盈一，
   take_profit_2 一律输出 0，即使前方有更远结构位也不要给出第二档止盈价。"""
@@ -328,12 +331,14 @@ def render_system_prompt(
         _RULE_DIRECTION=_RULE_DIRECTION.replace(chr(10), ' '),
         _RULE_STRUCT=_RULE_STRUCT,
         _RULE_SL=_RULE_SL.format(far_atr=round(settings.TP1_MAX_ATR / _rr, 2)),
-        # _RULE_TP 值内含 {rr_min}/{tp1_max_atr}/{tp1_max_r} 字面占位
-        # （format 不递归替换值），须渲染前显式替换
+        # _RULE_TP 值内含 {rr_min}/{tp1_max_atr}/{tp1_max_r}/{tp2_gap_atr}/{tp2_gap_r}
+        # 字面占位（format 不递归替换值），须渲染前显式替换
         _RULE_TP=compose_rule_tp(tp2_enabled).format(
             rr_min=_rr,
             tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
             tp1_max_r=f"{settings.TP1_MAX_R:g}",
+            tp2_gap_atr=f"{settings.TP2_MIN_GAP_ATR:g}",
+            tp2_gap_r=f"{settings.TP2_MIN_GAP_R:g}",
         ),
         _RULE_TOUCH=_RULE_TOUCH,
         _RULE_EMA=_RULE_EMA.replace(chr(10), ' '),

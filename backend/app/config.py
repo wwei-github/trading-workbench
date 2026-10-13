@@ -224,7 +224,11 @@ class Settings(BaseSettings):
     # 单独一行"结论：建议开单/不建议开单"收尾，禁止写成一行长句）；P0/P1 提示词
     # 同步（ai_analyzer.SYSTEM_PROMPT 字段说明 / ai_agent 规则 12.5 与 reason schema）。
     # 前端展示配套：公共检查由双列改单列（纯展示，非规则）
-    RULE_VERSION: str = "v2026-10-13-8"
+    # v2026-10-13-9（用户拍板）：止盈二贴档保护——TP2 与 TP1 间距过近时程序侧
+    # 静默撤档（take_profit_2=0，不进 violations、不触发 Reflection），间距下限见
+    # TP2_MIN_GAP_* 常量；原「TP2<TP1 打回」硬校验同步移除。P0/P1 提示词补间距纪律
+    # （不足则主动输出 take_profit_2=0）
+    RULE_VERSION: str = "v2026-10-13-9"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]
@@ -275,6 +279,15 @@ class Settings(BaseSettings):
     # R 腿默认关（0）：现有测试/既有单允许到 ~4R，硬性 3R 上限是更宽的策略变更，
     # 需用户显式拍板再开（置 3.0 即"距入场 ≤3 倍止损距离"，窄止损单会被强制走兜底）
     TP1_MAX_R: float = 0.0            # R 腿上限倍数（风险口径），0=关闭
+    # 止盈二贴档保护（2026-10-13）：TP2 与 TP1 间距过近时程序侧静默撤档
+    # （take_profit_2 置 0，不进 violations、不触发 Reflection 重试）——两档几乎
+    # 同时触发则分批意义消失（留半仓吃不到额外空间、还多一份手续费）。间距下限
+    # gap_min = max(TP2_MIN_GAP_ATR×ATR14, TP2_MIN_GAP_R×止损距离,
+    # 2×TAKER_FEE_RATE×入场价)；方向距离 d=（多）TP2−TP1 /（空）TP1−TP2，
+    # d≤0 或 d<gap_min 即撤档。ATR 不可算时 ATR 腿置 0。
+    # 两腿都为 0 则整条保护失效（含手续费地板）；默认 0.5/0.5（待 TUTUSDT 实测校准）
+    TP2_MIN_GAP_ATR: float = 0.5      # 间距下限 ATR 腿倍数（0=关闭该腿）
+    TP2_MIN_GAP_R: float = 0.5        # 间距下限 R 腿倍数（0=关闭该腿）
     RISK_BUDGET_PCT: float = 3.0      # 单笔固定亏损预算（%账户资金）：仓位 = 预算÷止损距离%，触止损恰好亏3%
     FINGERPRINT_TTL_MIN: int = 60     # 指纹缓存复用窗口（分钟，0.3% 价格分桶）
     AI_MAX_PER_SCAN: int = 10         # 单次扫描批量 AI 分析上限（按24h成交额取前N）

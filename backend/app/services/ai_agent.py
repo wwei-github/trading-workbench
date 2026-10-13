@@ -100,6 +100,8 @@ def render_system_prompt(
         _tp_anchor_desc=_TP_ANCHOR_DESC_ON if tp2_enabled else _TP_ANCHOR_DESC_OFF,
         _tp2_rule=(_TP2_RULE_ON if tp2_enabled else _TP2_RULE_OFF).format(
             rr_min=_rr, tp1_max_atr=_tp1_atr, tp1_max_r=_tp1_r,
+            tp2_gap_atr=f"{settings.TP2_MIN_GAP_ATR:g}",
+            tp2_gap_r=f"{settings.TP2_MIN_GAP_R:g}",
         ),
         skill_index="",
     )
@@ -224,6 +226,9 @@ _TP2_RULE_ON = """止盈二取止盈一锚定档的下一档同类结构位（�
     （结构位存在但过远），止盈一 = 入场 ± {rr_min}×止损距离，止盈二保留锚定该远端
     结构位（做多 tp2_ref=resistance_zone_low，做空 tp2_ref=support_zone_high，
     即"止盈一因过远弃用的那一档"），作为趋势跑手档。
+    止盈二还须与止盈一拉开间距：间距 ≥ max({tp2_gap_atr}×ATR, {tp2_gap_r}×止损距离)
+    ——两档贴得太近会几乎同时触发，分批意义消失（多付一次手续费）；间距不足时
+    止盈二不设（仅一档），不要硬塞第二档（程序亦会对贴档/反向的止盈二静默撤档）。
     盈亏比 ≥{rr_min} 是开单硬性要求（程序复算，不足即打回）。"""
 
 _TP2_RULE_OFF = """当前未启用止盈二（TP2 分批止盈已关闭）：不要提交 tp2_ref/tp2_offset_pct
@@ -639,7 +644,13 @@ def analyze_coin_agent(
         near_stop_rule=near_stop_rule,
         _price_anchor_desc=_PRICE_ANCHOR_ON if _tp2_on else _PRICE_ANCHOR_OFF,
         _tp_anchor_desc=_TP_ANCHOR_DESC_ON if _tp2_on else _TP_ANCHOR_DESC_OFF,
-        _tp2_rule=(_TP2_RULE_ON if _tp2_on else _TP2_RULE_OFF).format(rr_min=_rr),
+        _tp2_rule=(_TP2_RULE_ON if _tp2_on else _TP2_RULE_OFF).format(
+            rr_min=_rr,
+            tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
+            tp1_max_r=f"{settings.TP1_MAX_R:g}",
+            tp2_gap_atr=f"{settings.TP2_MIN_GAP_ATR:g}",
+            tp2_gap_r=f"{settings.TP2_MIN_GAP_R:g}",
+        ),
         skill_index=skill_index,
     )
     if strategy_prompt:
