@@ -18,6 +18,7 @@ import numpy as np
 
 from app.services.strategy.ema import calc_ema
 from app.services.strategy.indicators import volume_ratio
+from app.services.strategy.swing import find_swing_points
 
 logger = logging.getLogger(__name__)
 
@@ -1186,11 +1187,42 @@ def pullback_stabilize_bonus(
     return ev
 
 
+def golden_zone_swing_count(
+    klines: list, golden_combo: bool = False,
+    swing_order: int = 3, lookback: int = 200,
+) -> int:
+    """金K组合价格带内落入的摆动高低点数（2026-10-13-6 拍板）。
+
+    价格带 = 金K组合自身的 [min低, max高]——单个金K取信号根 klines[-2]，
+    组合金K（golden_combo=True）再并入前根 klines[-3] 的包络。回看近 lookback
+    根 1h 已收盘，统计落在带内的结构摆动高点 + 低点（find_swing_points）个数。
+    带内点越多 = 金K一口吞掉越多结构转折点、决断力越强。样本不足返回 0。
+    """
+    closed = klines[:-1] if len(klines) >= 2 else klines
+    if len(closed) < 2 * swing_order + 1:
+        return 0
+    band = closed[-1]
+    hi, lo = float(band[2]), float(band[3])
+    if golden_combo and len(closed) >= 2:
+        prev = closed[-2]
+        hi = max(hi, float(prev[2]))
+        lo = min(lo, float(prev[3]))
+    window = closed[-lookback:]
+    highs = np.array([float(k[2]) for k in window], dtype=float)
+    lows = np.array([float(k[3]) for k in window], dtype=float)
+    hi_idx, lo_idx = find_swing_points(highs, lows, swing_order)
+    cnt = sum(1 for i in hi_idx if lo <= float(highs[i]) <= hi)
+    cnt += sum(1 for i in lo_idx if lo <= float(lows[i]) <= hi)
+    return cnt
+
+
 def compute_quality_score(
     direction: int, votes: dict, trigger_type: str,
     klines: Optional[list] = None,
     stabilize: Optional[dict] = None,
     pattern: Optional[str] = None,
+    golden_combo: bool = False,
+    swing_order: int = 3,
 ) -> int:
     """候选质量分（0-100）：方向一致性为主，修饰项只影响排序不改变方向。
 
@@ -1218,6 +1250,10 @@ def compute_quality_score(
     - 看涨吞没上影短 +3（2026-10-13 硬门改加分项，candlestick.
       ENGULF_UPPER_SHADOW_SHORT_PCT=0.25）：决断K线冲高遭抛压打回=犹豫的
       语义降为排序信号，上影长只失加分、不再拒判形态
+    - 金K组合价格带结构点密度 +3×n、封顶 +12（2026-10-13-6 拍板）：金K确认
+      （单根/组合）的 [min低, max高] 价格带内、近 200 根 1h 落入的摆动高低点
+      数越多加分越高（band 内点越多=金K一口吞掉越多结构转折点、决断力越强）；
+      仅回踩金K确认候选（pattern 存在）适用，突破/无金K upsert 不加分
     - RSI>75 做多 / RSI<25 做空 -8（追高杀低）
     - OBV 顶背离做多 / 底背离做空 -6（量价背离）
     - 突破触发且布林带宽分位 ≤10 -5（带宽收窄的突破易假）
@@ -1283,6 +1319,19 @@ def compute_quality_score(
         rank = boll.get("bw_rank")
         if rank is not None and float(rank) <= 10:
             score -= 5
+
+    # 金K组合价格带结构点密度加分（2026-10-13-6 拍板）：金K确认（单根/组合）的
+    # [min低, max高] 价格带内、近 200 根已收盘 1h 落入的摆动高低点数越多 → 金K
+    # 一口吞掉越多结构转折点、决断力越强。每点 +3、封顶 +12（只加分不拦截）。
+    # 仅回踩金K确认候选（pattern 存在）；突破触发 / 无金K 的 upsert 不适用。
+    if trigger_type == "trigger_pullback_confirm" and pattern and klines:
+        try:
+            n_pts = golden_zone_swing_count(klines, golden_combo,
+                                            swing_order=swing_order)
+            if n_pts > 0:
+                score += min(n_pts * 3, 12)
+        except (ValueError, TypeError, IndexError, ZeroDivisionError):
+            pass  # 摆动点计算异常只降级该修饰项，不影响基础分
 
     # 回踩企稳加分项（docs/19 §3.3 条件2/3，2026-10-10 拍板）：缩量/放量回踩
     # 与 MACD 零轴动量证据，加分不拦截，仅回踩类触发由调用方传入

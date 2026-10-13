@@ -123,3 +123,83 @@ def test_bullish_engulfing_long_upper_shadow_no_bonus():
     kl = _engulf_klines(102.3, 99.7)
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
                                  klines=kl, pattern="bullish_engulfing") == 71
+
+
+# ── 金K组合价格带结构点密度加分（2026-10-13-6）──────────────────────────────
+
+
+def _band_klines(sig_high: float, sig_low: float,
+                 prev_high: float = 99.0, prev_low: float = 97.0) -> list[list]:
+    """20 根已收盘 + 1 未收盘；带内固定 2 个摆动点（idx7 低=95、idx12 高=103）。
+    信号根 = closed[-1] = idx19（high/low 由入参给，决定单根价格带）；prev = idx18
+    供组合金K带（golden_combo）。成交恒等量 → 量比 1.0；已收盘 20 根 <22 →
+    volume_ratio 返回 0（两类放量加分均不干扰，基线恒 71）"""
+    highs = [101, 101, 101, 101, 101, 99, 99, 98, 99, 99,
+             99, 99, 103, 99, 99, 99, 99, 99, prev_high, sig_high]
+    lows = [100, 100, 100, 100, 100, 97, 96, 95, 96, 97,
+            97, 97, 97, 97, 97, 97, 97, 97, prev_low, sig_low]
+    kl = [[i, 100.0, float(highs[i]), float(lows[i]), 100.0, 10.0, 10.0]
+          for i in range(20)]
+    kl.append([20, 100.0, sig_high, sig_low, 100.0, 10.0, 10.0])  # 未收盘根
+    return kl
+
+
+def test_golden_zone_swing_count_band():
+    """价格带内摆动点计数：窄带 [97,99] 不含 103/95 → 0；宽带 [94,104] 含两点 → 2"""
+    from app.services.strategy.technical import golden_zone_swing_count
+    assert golden_zone_swing_count(_band_klines(99.0, 97.0)) == 0
+    assert golden_zone_swing_count(_band_klines(104.0, 94.0)) == 2
+
+
+def test_golden_zone_swing_count_combo_widens_band():
+    """组合金K（golden_combo=True）价格带并入前根 idx18 → 单根窄带 0 变组合 2"""
+    from app.services.strategy.technical import golden_zone_swing_count
+    kl = _band_klines(99.0, 97.0, prev_high=104.0, prev_low=94.0)
+    assert golden_zone_swing_count(kl, golden_combo=False) == 0
+    assert golden_zone_swing_count(kl, golden_combo=True) == 2
+
+
+def test_quality_score_golden_zone_bonus_single():
+    """回踩金K确认 + 单根价格带含 2 点 → 71 + 2×3 = 77；窄带不含点 → 71"""
+    assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                 klines=_band_klines(104.0, 94.0),
+                                 pattern="hammer") == 77
+    assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                 klines=_band_klines(99.0, 97.0),
+                                 pattern="hammer") == 71
+
+
+def test_quality_score_golden_zone_bonus_combo():
+    """组合金K（golden_combo=True）用两根包络 → 2 点 +6=77；不带标志按单根 0 点=71"""
+    kl = _band_klines(99.0, 97.0, prev_high=104.0, prev_low=94.0)
+    assert compute_quality_score(1, _votes(), "trigger_pullback_confirm", klines=kl,
+                                 pattern="hammer", golden_combo=True) == 77
+    assert compute_quality_score(1, _votes(), "trigger_pullback_confirm", klines=kl,
+                                 pattern="hammer", golden_combo=False) == 71
+
+
+def test_quality_score_golden_zone_only_for_pullback_confirm():
+    """仅回踩金K确认适用：突破触发 / 无 pattern（金K缺失的 upsert 快照）均不加分"""
+    kl = _band_klines(104.0, 94.0)
+    assert compute_quality_score(1, _votes(), "trigger_breakout",
+                                 klines=kl, pattern="hammer") == 71
+    assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                 klines=kl) == 71
+
+
+def test_quality_score_golden_zone_cap_12():
+    """带内点多时封顶 +12：正弦锯齿全峰谷落入宽带 → 71 + 12 = 83"""
+    import math
+    n = 40
+    kl = []
+    for i in range(n):
+        h = 100.0 + 3.0 * math.cos(2 * math.pi * i / 8)
+        kl.append([i, 100.0, h, h - 1.0, 100.0, 10.0, 10.0])
+    kl.append([n, 100.0, 103.0, 96.0, 100.0, 10.0, 10.0])  # 未收盘
+    # 信号根取全窗包络 → 所有峰谷必落带内（含 ≥4 个点，触发封顶）
+    kl[-2] = [n - 1, 100.0,
+              max(k[2] for k in kl[:-1]), min(k[3] for k in kl[:-1]), 100.0, 10.0, 10.0]
+    from app.services.strategy.technical import golden_zone_swing_count
+    assert golden_zone_swing_count(kl) >= 4
+    assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                 klines=kl, pattern="hammer") == 83

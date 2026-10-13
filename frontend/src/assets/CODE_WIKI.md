@@ -308,7 +308,7 @@ FastAPI 应用入口：
 
 | 模块 | 职责 |
 |---|---|
-| [technical.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/technical.py) | `compute_indicator_votes`（7 指标投票）、`compute_quality_score`（质量分）、`htf_core`（4h 共享计算核心：EMA21/55/144+ADX+ATR 一次算）、`analyze_htf_background`（4h EMA 状态机 11 态，`core` 透传可选）、`enforce_htf_constraint`（4h 锁单矩阵） |
+| [technical.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/technical.py) | `compute_indicator_votes`（7 指标投票）、`compute_quality_score`（质量分，含金K组合价格带结构点密度加分）、`golden_zone_swing_count`（金K价格带内摆动高低点计数）、`htf_core`（4h 共享计算核心：EMA21/55/144+ADX+ATR 一次算）、`analyze_htf_background`（4h EMA 状态机 11 态，`core` 透传可选）、`enforce_htf_constraint`（4h 锁单矩阵） |
 | [trigger.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/trigger.py) | `detect_trigger` — 两段式决策矩阵：T1 突破/趋势突破、T3 回踩+金K确认、回踩两段式 pending 状态机 |
 | [candlestick.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/candlestick.py) | 8 种金K形态判定（看涨 4 + 看跌 4）、`GOLDEN_PATTERNS` 白名单、影线质量门 |
 | [ema.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/ema.py) | `analyze_ema` — EMA21/55/144 排列形态分析 |

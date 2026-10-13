@@ -655,6 +655,9 @@ def detect_trigger(
             "position_ref": _position_ref_of(touch_ref, direction),
             "pattern": golden["pattern"], "breakout_pct": 0.0,
             "stabilize": _stab,
+            # 组合金K标志（2026-10-13-6）：供质量分算「金K组合价格带结构点密度」
+            # 时决定价格带是否并入前根（True=组合两根包络，False=单根）
+            "golden_combo": bool(golden_note),
             "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且{_ev}{vol_note}",
         }, _close_op(pending, direction, "same_candle_confirm")
 
@@ -682,6 +685,8 @@ def detect_trigger(
                 "position_ref": _position_ref_of(p_ref, direction),
                 "pattern": golden["pattern"], "breakout_pct": 0.0,
                 "stabilize": _stab,
+                # 组合金K标志（2026-10-13-6）：质量分算金K组合价格带结构点密度用
+                "golden_combo": bool(golden_note),
                 "reason": f"指标同向·上根回踩{p_label}企稳·{_ev}{vol_note}",
             }, {"op": "confirm"}
         if pending:

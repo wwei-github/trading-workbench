@@ -212,7 +212,11 @@ class Settings(BaseSettings):
     # （gate_4h 之后、票数之前），对全部 1h 候选（回踩·突破）一票否决、活跃 pending
     # 同轮 expire(htf_state_lock)；③ 移除上一版 upsert/confirm 的状态机子闸（仅保留
     # 正交的触发类型白名单子闸）
-    RULE_VERSION: str = "v2026-10-13-5"
+    # v2026-10-13-6（用户拍板）：金K确认（单个/组合）后，按金K组合自身 [min低, max高]
+    # 价格带内、近 200 根 1h 落入的结构摆动高低点数加分——每点 +3、封顶 +12，计入
+    # 候选质量分（只影响 AI 排序，不改方向/不拦截）。带内点越多 = 金K一口吞掉越多
+    # 结构转折点、决断力越强。仅回踩金K确认候选适用（突破/无金K upsert 不加分）
+    RULE_VERSION: str = "v2026-10-13-6"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

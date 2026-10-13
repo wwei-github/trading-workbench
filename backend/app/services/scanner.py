@@ -432,7 +432,9 @@ def detect_indicator_candidate(
     # pattern 透传供看涨吞没上影短加分（2026-10-13 硬门改加分项）
     stabilize = trig.get("stabilize")
     quality = compute_quality_score(direction, votes, trig["type"], klines=klines,
-                                    stabilize=stabilize, pattern=trig.get("pattern"))
+                                    stabilize=stabilize, pattern=trig.get("pattern"),
+                                    golden_combo=bool(trig.get("golden_combo")),
+                                    swing_order=flt.swing_order)
     return {
         "signal_type": trig["type"],
         # 现价 = 未收盘K线最新价（仅作入场价差参考）：信号判定（投票/触发/形态/量能）
