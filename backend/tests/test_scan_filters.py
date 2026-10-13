@@ -408,6 +408,30 @@ def test_validate_scan_filters_trigger_whitelist():
         _validate_scan_filters({"unknown_key": 1})
 
 
+def test_merge_scan_filters_keeps_unsubmitted_keys():
+    """键级合并（2026-10-13 修复）：改 B 键不丢先前定制的 A 键
+    （24h 成交额门槛 100万被无关保存抹回 300万 的回归）"""
+    from app.api.scan import _merge_scan_filters
+    existing = {"min_volume_24h": 1_000_000.0}
+    merged = _merge_scan_filters(existing, {"ai_max_per_scan": 5})
+    assert merged == {"min_volume_24h": 1_000_000.0, "ai_max_per_scan": 5.0}
+    assert existing == {"min_volume_24h": 1_000_000.0}  # 不改原字典
+
+
+def test_merge_scan_filters_overrides_and_handles_dirty_existing():
+    """提交键覆盖库内同键值；existing 非 dict（None/脏值）按空处理"""
+    from app.api.scan import _merge_scan_filters
+    assert _merge_scan_filters(
+        {"min_volume_24h": 1_000_000.0}, {"min_volume_24h": 3_000_000.0}
+    ) == {"min_volume_24h": 3_000_000.0}
+    assert _merge_scan_filters(None, {"min_volume_24h": 1_000_000.0}) == {
+        "min_volume_24h": 1_000_000.0
+    }
+    assert _merge_scan_filters("dirty", {"ai_max_per_scan": 5}) == {
+        "ai_max_per_scan": 5.0
+    }
+
+
 def test_candidate_whitelist_drops_disallowed_triggers(monkeypatch):
     """scanner 白名单：白名单外触发类型不产生候选；pending 处置照常透传"""
     import app.services.scanner as scanner_mod

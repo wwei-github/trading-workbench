@@ -488,9 +488,9 @@ _SCAN_FILTER_RANGES: dict[str, tuple[float, float, str]] = {
 
 def _validate_scan_filters(raw: dict) -> dict:
     """筛选参数组校验：未知键拒绝（防拼错静默失效）、范围越界 400、数值化清洗。
-    合法但缺省的键不补齐——缺键回落 env（逐键覆盖语义）。
-    非数值键：allowed_triggers / pullback_touch_refs（非空合法类型列表）、
-    structure_1h_gate（布尔开关，2026-10-11）。"""
+    合法但缺省的键不补齐——由调用方 `_merge_scan_filters` 与库内旧值做键级合并
+    （合并后仍缺的键回落 env）。非数值键：allowed_triggers / pullback_touch_refs
+    （非空合法类型列表）、structure_1h_gate（布尔开关，2026-10-11）。"""
     from app.services.scan_filters import ALL_TRIGGERS, ALL_TOUCH_REFS
 
     out: dict = {}
@@ -531,6 +531,17 @@ def _validate_scan_filters(raw: dict) -> dict:
         else:
             raise HTTPException(status_code=400, detail=f"scan_filters 未知参数: {k}")
     return out
+
+
+def _merge_scan_filters(existing, submitted: dict) -> dict:
+    """键级合并（2026-10-13 修复）：提交键校验后覆盖，未提交键保留库内旧值。
+
+    修复「前端只提交改动键 + PUT 整组覆盖」的静默回退——此前保过 A 键定制后，
+    再改 B 键保存会整组替换、丢掉 A 键，A 回落 env（24h 成交额门槛 100万→300万
+    个案）。existing 非 dict（None/脏值）按空处理。"""
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    merged.update(_validate_scan_filters(submitted))
+    return merged
 
 
 @router.get("/config", response_model=SystemConfigOut)
@@ -791,10 +802,12 @@ def update_system_config(
             raise HTTPException(status_code=400, detail="live_initial_capital 需 ≥ 0")
         cfg.live_initial_capital = v if v is not None else 0
 
-    # 筛选参数组（2026-09-28）：整组覆盖；显式传 null=清除定制恢复 env/代码默认
+    # 筛选参数组（2026-09-28，2026-10-13 改键级合并）：提交键校验后覆盖库内旧值、
+    # 未提交键保留（前端只提交改动键，整组覆盖会静默抹掉先前定制键、回落 env）；
+    # 显式传 null=清除全部定制恢复 env/代码默认
     if "scan_filters" in body.model_fields_set:
         cfg.scan_filters = (
-            _validate_scan_filters(body.scan_filters)
+            _merge_scan_filters(cfg.scan_filters, body.scan_filters)
             if body.scan_filters is not None else None
         )
 

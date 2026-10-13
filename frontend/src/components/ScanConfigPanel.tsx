@@ -57,7 +57,8 @@ export default function ScanConfigPanel() {
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
   // 打开弹窗时的筛选参数生效值快照：保存时逐键比对，仅提交有改动的键
-  // （后端缺键回落 env，避免把 env 派生值固化进 DB）
+  // （后端 PUT 对 scan_filters 做键级合并——提交键覆盖、未提交键保留库内旧值，
+  //  故不会把 env 派生值固化进 DB，也不会丢掉先前定制的键）
   const [filtersSnapshot, setFiltersSnapshot] = useState<Record<string, unknown>>({})
   const { aiConfig, updateConfig, fetchConfig } = useScanStore()
 
@@ -113,7 +114,8 @@ export default function ScanConfigPanel() {
         ai_pipeline_enabled: values.ai_pipeline_enabled,
         dual_judge_enabled: values.dual_judge_enabled,
       }
-      // 筛选参数组：逐键比对快照，仅提交有改动的键（后端缺键回落 env）；
+      // 筛选参数组：逐键比对快照，仅提交有改动的键（后端键级合并：未提交键保留
+      // 库内旧值，故不会把 env 派生值固化进 DB、也不会丢先前定制键）；
       // 未动则完全不提交 scan_filters
       const scanFilters: Record<string, number | boolean | string[]> = {}
       for (const f of FILTER_FIELDS) {
