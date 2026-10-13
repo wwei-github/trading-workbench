@@ -581,7 +581,8 @@ def _run_migrations(engine):
                 symbol VARCHAR(32) NOT NULL,
                 testnet BOOLEAN NOT NULL DEFAULT TRUE,
                 value_json JSON,
-                decision_json JSON
+                decision_json JSON,
+                rule_version VARCHAR(32)
             )
         """))
         conn.execute(text(
@@ -595,6 +596,13 @@ def _run_migrations(engine):
         conn.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_shadow_mark "
             "ON shadow_marks (feature_key, ref_type, ref_id)"
+        ))
+        # 影子标记规则版本列（2026-10-13，docs/14 §六.1）：规则集变更改变候选池/
+        # 出场链，评估按卡声明的 since_rule_version 过滤以防「跨版本不混算」；
+        # 仅新行有值（ORM 默认取 settings.RULE_VERSION），历史行 NULL 自动出窗
+        conn.execute(text(
+            "ALTER TABLE shadow_marks "
+            "ADD COLUMN IF NOT EXISTS rule_version VARCHAR(32)"
         ))
         # ai_analyses 加 4h 状态列（2026-10-09 r2 建，值域三次换血：五次拍板 →
         # 过热/冷却 → 2026-10-11 再重构 EMA 状态机 11 态 tangle/turn_*/

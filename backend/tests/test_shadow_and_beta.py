@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, insert, select
 from sqlalchemy.orm import Session, sessionmaker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -497,6 +497,27 @@ def test_build_report_window_and_empty(db):
     assert rep["cvd_div"]["buckets"] == []
     assert rep["cvd_div"]["sufficient"] is False
     assert "vol_regime" not in rep  # CARD-03 已关闭 → 不出报告
+
+
+def test_build_report_rule_version_window(db):
+    """跨版本不混算（docs/14 §六.1，2026-10-13）：卡声明 since_rule_version 后，
+    历史 NULL 与旧版本标记出窗，仅当前版本（ORM 默认 settings.RULE_VERSION）计入
+    ——CARD-01/04 候选池依赖规则集，规则重构后前向窗口据此自动重置"""
+    sr_null, sr_old, sr_cur = (_scan_result(db) for _ in range(3))
+    # 历史 NULL 行（旧部署存量，列未回填）与旧版本行：均应出窗。
+    # 用 Core insert 显式 rule_version=None 绕过 ORM 列默认（ORM 会给 None 补当前版本）
+    db.execute(insert(ShadowMark).values(
+        feature_key="cvd_div", ref_type="scan_result", ref_id=sr_null.id,
+        symbol="SUSDT", value_json={"bucket": "confirm"}, rule_version=None))
+    db.execute(insert(ShadowMark).values(
+        feature_key="cvd_div", ref_type="scan_result", ref_id=sr_old.id,
+        symbol="SUSDT", value_json={"bucket": "confirm"}, rule_version="v2026-10-12-1"))
+    db.commit()
+    _mark(db, "cvd_div", sr_cur.id, "diverge_bear")  # 当前版本 → 计入
+
+    rep = {r["feature"]: r for r in build_report(db, window_days=30)}
+    assert rep["cvd_div"]["baseline"]["n"] == 1
+    assert [b["bucket"] for b in rep["cvd_div"]["buckets"]] == ["diverge_bear"]
 
 
 # ── 6. 日报附录（shadow_report_lines）异常隔离与格式 ──────────────────

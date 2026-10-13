@@ -19,6 +19,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
 
+def _current_rule_version() -> str:
+    """打标规则版本默认值（惰性导入避循环）：评估按卡声明的 since_rule_version
+    过滤，令「跨版本不混算」纪律可自动执行（docs/14 §六.1，2026-10-13）。"""
+    from app.config import settings
+    return settings.RULE_VERSION
+
+
 class ShadowMark(Base):
     __tablename__ = "shadow_marks"
     __table_args__ = (
@@ -41,6 +48,11 @@ class ShadowMark(Base):
     value_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # 打标时刻真实系统行为快照：{"scan_type": "scheduled", "stage": "scan_hit"}
     decision_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # 打标时刻的规则版本（settings.RULE_VERSION，2026-10-13 补列）：规则集变更
+    # 改变候选池/出场链，「跨版本不混算」纪律——评估按卡声明的 since_rule_version
+    # 过滤（docs/14 §六.1）；历史行 NULL，视为最早版本、自动出窗
+    rule_version: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, default=_current_rule_version)
 
 
 class ShadowEarlyStop(Base):

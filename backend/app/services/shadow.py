@@ -152,17 +152,29 @@ class ShadowFeature:
     enabled: bool = True           # 关闭的卡不再打标、不进评估报告（docs/14 §六.1：
                                    # 「对每个 enabled 特征取窗口标记」）；裁决关闭
                                    # 记录见 docs/14 §十一 归档表
+    since_rule_version: Optional[str] = None
+                                   # 跨版本不混算起点（docs/14 §六.1，2026-10-13）：
+                                   # 候选池依赖规则集的卡（scan_result 宿主）在规则
+                                   # 重构后置本值即可自动重置窗口——评估只计
+                                   # rule_version ≥ 本值的标记，旧版本与历史 NULL
+                                   # 行出窗，免手工改窗口常量
 
 
 SHADOW_FEATURES: dict[str, ShadowFeature] = {
     f.key: f for f in (
-        ShadowFeature("cvd_div", "CVD 背离（订单流免费子集）", "CARD-01", compute_cvd_div, 80),
+        # 跨版本不混算（docs/14 §六.1，2026-10-13）：10-09 4h 计算合并 / 10-10
+        # gate_4h 硬门 / 10-13 4h 状态机前置门连续重构候选池，存量与新版不同源
+        # → 前向窗口重置为 v2026-10-13-8（旧版本/历史 NULL 行出窗）
+        ShadowFeature("cvd_div", "CVD 背离（订单流免费子集）", "CARD-01", compute_cvd_div, 80,
+                      since_rule_version="v2026-10-13-8"),
         # CARD-03 于 2026-10-13 裁决关闭（docs/14 §十一）：假设「压缩期假突破率高
         # → 折价」的动作已由 range_score 布林带收口项落地进主线，且影子读数反向
         # （compress 胜率高于 expand）——卡已无独立信息量，停打标、出报告
         ShadowFeature("vol_regime", "波动率状态（ATR14/ATR100）", "CARD-03", compute_vol_regime, 100,
                       enabled=False),
-        ShadowFeature("macd_div", "MACD 背离（缠论背驰子集）", "CARD-04", compute_macd_div, 60),
+        # 跨版本不混算（同上，2026-10-13）：候选池重构后前向窗口重置为当前版本
+        ShadowFeature("macd_div", "MACD 背离（缠论背驰子集）", "CARD-04", compute_macd_div, 60,
+                      since_rule_version="v2026-10-13-8"),
         ShadowFeature("oi_conf", "OI 确认度（24h ΔOI）", "CARD-02", compute_oi_conf_scan_stub, 60),
         # 趋势质量（docs/16 S-10，CARD-10，2026-10-08 立卡）：r²/slope 影子侧
         # 自算（ScanResult.r_squared 历史门槛废弃时置 0 恒空）。min_sample=120
@@ -1099,6 +1111,12 @@ def build_report(db, window_days: int = 30) -> list[dict]:
                 ShadowMark.created_at >= since,
             ).order_by(ShadowMark.created_at)
         ).scalars().all()
+        # 跨版本不混算过滤（docs/14 §六.1，2026-10-13）：卡声明起点后自动只计
+        # rule_version ≥ 起点的标记——规则重构改变候选池，旧版本与历史 NULL 行
+        # 出窗（免手工改窗口常量）；未声明起点的卡不受影响
+        if feat.since_rule_version:
+            marks = [m for m in marks
+                     if (m.rule_version or "") >= feat.since_rule_version]
         if not marks:
             out.append({"feature": key, "name": feat.name, "card": feat.card,
                         "min_sample": feat.min_sample,
