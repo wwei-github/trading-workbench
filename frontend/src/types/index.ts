@@ -790,9 +790,24 @@ export interface BreadthItem {
   ema_label: string | null // 中文标签（多头排列/纠缠…）
   change_24h_pct: number // 24h 涨跌幅（%）
 }
+// 技术结构快照（每小时 structure-watch 任务写入的最新一轮结果）
+export interface StructureItem {
+  trend: string // up / down / range / unknown
+  trend_label: string // 上涨结构/下降结构/区间震荡/结构未定
+  valid: boolean | null // 信号有效性（null=range/unknown 不判）
+  broken: boolean // 结构破位（valid === false）
+  support: number | null // 最近摆动低点
+  support_dist_pct: number | null // 支撑距现价（%）
+  resistance: number | null // 最近摆动高点
+  resistance_dist_pct: number | null // 阻力距现价（%）
+  htf_label: string | null // 4h 背景态中文标签（多头排列…）
+  anomaly_labels: string[] // 异常短标签（结构破位/周期冲突/取数失败…）
+  updated_at: string | null // 检测时间（UTC ISO，前端 bj() 转北京）
+}
 export interface MarketOverview {
   fear_greed: FearGreed | null
   breadth: Record<string, BreadthItem> | null // key: BTCUSDT / ETHUSDT
+  structure: Record<string, StructureItem> | null // key: BTCUSDT / ETHUSDT
 }
 
 // ===== 影子模式（docs/14，2026-10-04：只计算+打标+记录，不参与决策）=====

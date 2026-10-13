@@ -63,7 +63,12 @@ services:
     image: trading-workbench-backend:${IMAGE_TAG:-latest}
     env_file:
       - ./backend/.env
-    command: celery -A celery_worker.celery_app beat --loglevel=info
+    command: celery -A celery_worker.celery_app beat --loglevel=info -s /var/lib/celery/beat-schedule
+    # schedule 文件持久化（2026-10-13）：默认容器内路径随容器重建丢失 last_run_at，
+    # 结构盯盘等周期任务会漏跑；挂到 named volume 后重建保留，错过的整点按
+    # crontab 语义补发一次
+    volumes:
+      - beatstate:/var/lib/celery
     depends_on:
       db:
         condition: service_healthy
@@ -82,3 +87,4 @@ services:
 
 volumes:
   pgdata:
+  beatstate:

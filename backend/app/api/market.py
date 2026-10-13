@@ -35,4 +35,11 @@ def market_overview():
     except Exception as e:
         logger.debug("market_overview-大盘广度失败: %s", e)
 
-    return {"fear_greed": fear_greed, "breadth": breadth}
+    # 结构快照（2026-10-13）：每小时技术结构检测任务写入的最新一轮结果
+    structure = None
+    try:
+        structure = market_data.get_structure_snapshot()
+    except Exception as e:
+        logger.debug("market_overview-结构快照失败: %s", e)
+
+    return {"fear_greed": fear_greed, "breadth": breadth, "structure": structure}

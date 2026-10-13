@@ -34,6 +34,7 @@ celery_app = Celery(
         "app.tasks.review_tasks",
         "app.tasks.trade_tasks",
         "app.tasks.daily_report",
+        "app.tasks.structure_watch",
         "app.tasks.spot_tasks",
         "app.tasks.shadow_tasks",
     ],
@@ -54,6 +55,13 @@ celery_app.conf.update(
             # market_data.FORMING_TAIL_MINUTES 由同一常量派生（2026-10-12 解耦注释）
             "schedule": crontab(minute=settings.SCAN_BEAT_MINUTE),
             "kwargs": {"scan_type": "scheduled"},
+        },
+        "structure-watch": {
+            "task": "app.tasks.structure_watch.run_structure_watch_task",
+            # 每小时整点（北京，2026-10-13）：BTC/ETH 1h 结构形态 + 4h 完整性检测；
+            # 误差 ≤30s 由任务自监控（lag 落 detail，超限告警），与 hourly-scan /
+            # trade-review 同刻 :00（只读轻量、worker 并发 10，K线小时桶缓存共享）
+            "schedule": crontab(minute=0),
         },
         "trade-review": {
             "task": "app.tasks.review_tasks.run_trade_review_task",

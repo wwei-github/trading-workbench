@@ -10,8 +10,11 @@ from typing import Optional
 
 import httpx
 import numpy as np
+from sqlalchemy import select
 
 from app.config import settings
+from app.database import SessionLocal
+from app.models.ops import TaskRecord
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +168,77 @@ def get_market_breadth(pool) -> Optional[dict]:
         return None
     _cache_set("breadth", out, 300)
     return out
+
+
+# ── 技术结构快照（Header 大盘条，2026-10-13）────────────────────────────
+
+# 结构检测任务写库任务的展示名（与 app.tasks.structure_watch._TASK_NAME 对齐；
+# 两模块各自持有字面量，防跨模块 import 私有常量造成耦合）
+_STRUCTURE_TASK_NAME = "技术结构检测"
+
+_TREND_LABELS = {"up": "上涨结构", "down": "下降结构", "range": "区间震荡", "unknown": "结构未定"}
+
+# 异常码 → 中文短标签（仅展示用；未知码原样透出便于排查）
+_ANOMALY_LABELS = {
+    "break_down": "结构破位", "break_up": "结构破位",
+    "conflict": "周期冲突", "fetch": "取数失败",
+    "data_1h_short": "1h数据不足", "data_4h_short": "4h数据不足",
+    "stale_1h": "1h数据陈旧", "stale_4h": "4h数据陈旧",
+    "gap_1h": "1h缺口", "gap_4h": "4h缺口",
+}
+
+
+def get_structure_snapshot() -> Optional[dict]:
+    """最新一轮「技术结构检测」的结构快照（Header 大盘条结构 token 数据源）。
+
+    读 structure_watch 任务写入的 TaskRecord.detail.symbols，映射为前端展示字段；
+    无记录 / 解析失败 / 查询异常 → None（接口静默降级，不阻塞 Header）。
+    返回 {"BTCUSDT": {"trend","trend_label","valid","broken","support",
+    "support_dist_pct","resistance","resistance_dist_pct","htf_label",
+    "anomaly_labels","updated_at"}, ...}
+    """
+    try:
+        db = SessionLocal()
+        try:
+            rec = db.execute(
+                select(TaskRecord)
+                .where(TaskRecord.task_name == _STRUCTURE_TASK_NAME,
+                       TaskRecord.status == "completed")
+                .order_by(TaskRecord.started_at.desc())
+                .limit(1)
+            ).scalars().first()
+        finally:
+            db.close()
+        if rec is None:
+            return None
+        syms = (rec.detail or {}).get("symbols") or {}
+        ts = rec.finished_at or rec.started_at
+        updated_at = ts.strftime("%Y-%m-%dT%H:%M:%SZ") if ts else None
+
+        out: dict = {}
+        for sym, d in syms.items():
+            st = d.get("structure") or {}
+            kl = d.get("key_levels") or {}
+            htf = d.get("htf") or {}
+            trend = st.get("trend") or "unknown"
+            valid = st.get("valid")
+            out[sym] = {
+                "trend": trend,
+                "trend_label": _TREND_LABELS.get(trend, "结构未定"),
+                "valid": valid,
+                "broken": valid is False,
+                "support": kl.get("support"),
+                "support_dist_pct": kl.get("support_dist_pct"),
+                "resistance": kl.get("resistance"),
+                "resistance_dist_pct": kl.get("resistance_dist_pct"),
+                "htf_label": htf.get("state_label"),
+                "anomaly_labels": [_ANOMALY_LABELS.get(c, c) for c in (d.get("anomalies") or [])],
+                "updated_at": updated_at,
+            }
+        return out or None
+    except Exception as e:
+        logger.debug("get_structure_snapshot 失败: %s", e)
+        return None
 
 
 # ── AI 事实包市场环境块（docs/24 A4①）──────────────────────────────────
