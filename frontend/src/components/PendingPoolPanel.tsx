@@ -5,7 +5,7 @@
  * - 展示归并三态（2026-10-10）：待确认 / 已确认 / 已卡掉（expired+superseded 统计为卡掉），被哪个环节卡住看「卡住环节」列（后端 blocked_by）
  * - 筛选漏斗（2026-10-11）：Segmented 项，展示每轮被拒币种卡在哪一关（FunnelPanel）
  * - 无触发（2026-10-13）：Segmented 项紧随「待确认」，复用 FunnelPanel 预置
- *   no_trigger 关并隐藏漏斗概览——单独查看未触发币种及其未过条件
+ *   no_trigger 关、隐藏漏斗概览与关卡筛选（仅保留搜索）——单独查看未触发币种及其未过条件
  * - 数据源：GET /api/scans/pullback-pendings（一次拉全量，前端按状态过滤）
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'

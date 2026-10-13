@@ -1,5 +1,5 @@
-import { useState, type CSSProperties } from 'react'
-import { Button, Modal, Space, Spin, Statistic, Tag, Tooltip, Typography, message } from 'antd'
+import { useState, type CSSProperties, type ReactNode } from 'react'
+import { Button, Divider, Modal, Space, Spin, Statistic, Tag, Tooltip, Typography, message } from 'antd'
 import {
   ApiOutlined,
   CheckCircleOutlined,
@@ -237,21 +237,28 @@ function cardStyle(decision: 'suggest' | 'skip' | null, scheme: ColorScheme): CS
   return { border: '1px solid #f0f0f0', borderLeft: '3px solid #d9d9d9', background: '#fafafa' }
 }
 
-/** 「AI 跳过理由」气泡内容卡相对容器左缘的偏移：Avatar(32px) + columnGap(paddingSM=12px)。
- * skip 分支下方「公共检查/决策结论」卡缩进此值，与气泡卡左对齐（suggest 分支无气泡、不缩进） */
-const BUBBLE_CONTENT_OFFSET = 44
+/** 分区小节标题：图标 + 灰色小标题（「AI 跳过理由」「公共检查」共用样式） */
+function SectionHead({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: '#8c8c8c', marginBottom: 4 }}>
+      {icon}
+      {children}
+    </div>
+  )
+}
 
-/** 分析分区（2026-10-12 两节格式）：公共检查 + 决策结论卡；
- * 旧行无「决策结论」节（四节格式遗留）时回退展示「合并结论」节文本 */
+/** 分析单卡（2026-10-13 合并）：AI 跳过理由 / 公共检查 / 决策结论并入同一张卡，
+ * 各节之间以横线（Divider）区分；旧行无「决策结论」节（四节格式遗留）时回退
+ * 「合并结论」节文本。卡片配色随决策（suggest=涨色 / skip=跌色 / null=灰） */
 function AnalysisSectionsView({
   ai,
   sections,
-  indentLeft,
+  skipReason,
 }: {
   ai: AIAnalysis
   sections: AnalysisSections
-  /** 左缘缩进：skip 分支传气泡卡偏移，与「AI 跳过理由」卡左侧对齐 */
-  indentLeft?: number
+  /** skip 分支的「AI 跳过理由」正文（有则作为首节渲染） */
+  skipReason?: string
 }) {
   // 系统红绿方案（页面顶部全局切换，localStorage 持久化）
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -259,56 +266,39 @@ function AnalysisSectionsView({
   const decision: 'suggest' | 'skip' | null =
     ai.trade_decision === 'suggest' ? 'suggest' : ai.trade_decision === 'skip' ? 'skip' : null
   const decisionLines = sections.decision.length > 0 ? sections.decision : sections.merged
-  // 决策结论配色：suggest=涨色 / skip=跌色 / null=灰（结论条与左色条同源）
+  // 决策结论配色：suggest=涨色 / skip=跌色 / null=灰（结论条与卡左色条同源）
   const decisionColor =
     decision === 'suggest'
       ? SCHEME_UP_DOWN[colorScheme].up
       : decision === 'skip'
         ? SCHEME_UP_DOWN[colorScheme].down
         : '#8c8c8c'
+  const hasSkip = !!(skipReason && skipReason.trim())
+  const hasCommon = sections.common.length > 0
+  const hasDecision = decisionLines.length > 0
+  if (!hasSkip && !hasCommon && !hasDecision) return null
   return (
-    <>
-      {/* 公共检查区：4h方向/指标多数决/回踩触点/形态量能/风险点逐项判定（单列） */}
-      {sections.common.length > 0 && (
-        <div
-          style={{
-            padding: '8px 10px',
-            marginBottom: 8,
-            marginLeft: indentLeft,
-            borderRadius: 8,
-            background: '#fafafa',
-            border: '1px solid #f0f0f0',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              fontSize: 12,
-              fontWeight: 600,
-              color: '#8c8c8c',
-              paddingBottom: 6,
-              borderBottom: '1px solid #f0f0f0',
-            }}
-          >
-            <SafetyCertificateOutlined />
-            公共检查
-          </div>
-          <AnalysisItemList text={sections.common.join('\n')} />
-        </div>
+    <div style={{ padding: '8px 10px', borderRadius: 8, ...cardStyle(decision, colorScheme) }}>
+      {/* AI 跳过理由（skip 分支）：原独立气泡卡并入本卡首节 */}
+      {hasSkip && (
+        <>
+          <SectionHead icon={<RobotOutlined />}>AI 跳过理由</SectionHead>
+          <AnalysisItemList text={skipReason} />
+        </>
       )}
-      {/* 决策结论卡：结论徽标取结构化字段，明细取 analysis 文本节；逐条单列展示，
+      {hasSkip && (hasCommon || hasDecision) && <Divider style={{ margin: '8px 0' }} />}
+      {/* 公共检查区：4h方向/指标多数决/回踩触点/形态量能/风险点逐项判定（单列） */}
+      {hasCommon && (
+        <>
+          <SectionHead icon={<SafetyCertificateOutlined />}>公共检查</SectionHead>
+          <AnalysisItemList text={sections.common.join('\n')} />
+        </>
+      )}
+      {hasCommon && hasDecision && <Divider style={{ margin: '8px 0' }} />}
+      {/* 决策结论：结论徽标取结构化字段，明细取 analysis 文本节；逐条单列展示，
           「结论：…」条行以涨跌色软底强调（accent 随系统红绿方案） */}
-      {decisionLines.length > 0 && (
-        <div
-          style={{
-            padding: '8px 10px',
-            marginLeft: indentLeft,
-            borderRadius: 8,
-            ...cardStyle(decision, colorScheme),
-          }}
-        >
+      {hasDecision && (
+        <>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
             <strong style={{ fontSize: 13 }}>决策结论</strong>
             <DecisionBadge decision={decision} scheme={colorScheme} />
@@ -318,9 +308,9 @@ function AnalysisSectionsView({
             accent={decisionColor}
             highlightLabels={['结论']}
           />
-        </div>
+        </>
       )}
-    </>
+    </div>
   )
 }
 
@@ -623,29 +613,26 @@ export default function AiAnalysisCard({ ai }: Props) {
         </div>
       )}
 
-      {/* skip：理由 + AI 推理，均走推理气泡；两节解析成功时追加分区展示 */}
+      {/* skip：两节解析成功时「AI 跳过理由 + 公共检查 + 决策结论」并入单卡（横线分隔）；
+          解析失败回退「AI 跳过理由」气泡 */}
       {isSkip ? (
         <>
-          <Bubble
-            variant="shadow"
-            avatar={{
-              icon: <RobotOutlined />,
-              style: { background: '#8c8c8c', color: '#fff' },
-            }}
-            content={eff.reason || ai.analysis || ''}
-            messageRender={(content) => <AnalysisItemList text={content as string} />}
-            styles={{
-              header: { fontSize: 12, color: '#8c8c8c', fontWeight: 600, paddingBottom: 2 },
-              content: { maxWidth: '100%', paddingTop: 0 },
-            }}
-            header="AI 跳过理由"
-          />
-          {/* 分区卡缩进气泡卡偏移量，与上方「AI 跳过理由」卡左侧对齐 */}
-          {sections && (
-            <AnalysisSectionsView
-              ai={ai}
-              sections={sections}
-              indentLeft={BUBBLE_CONTENT_OFFSET}
+          {sections ? (
+            <AnalysisSectionsView ai={ai} sections={sections} skipReason={eff.reason} />
+          ) : (
+            <Bubble
+              variant="shadow"
+              avatar={{
+                icon: <RobotOutlined />,
+                style: { background: '#8c8c8c', color: '#fff' },
+              }}
+              content={eff.reason || ai.analysis || ''}
+              messageRender={(content) => <AnalysisItemList text={content as string} />}
+              styles={{
+                header: { fontSize: 12, color: '#8c8c8c', fontWeight: 600, paddingBottom: 2 },
+                content: { maxWidth: '100%', paddingTop: 0 },
+              }}
+              header="AI 跳过理由"
             />
           )}
         </>
@@ -722,7 +709,7 @@ export default function AiAnalysisCard({ ai }: Props) {
               </Button>
             )}
           </div>
-          {/* AI 推理：两节解析成功走分区展示（公共检查/决策结论卡），失败回退平铺气泡 */}
+          {/* AI 推理：两节解析成功走单卡分区展示（公共检查/决策结论，横线分隔），失败回退平铺气泡 */}
           {sections ? (
             <AnalysisSectionsView ai={ai} sections={sections} />
           ) : (

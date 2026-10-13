@@ -5,7 +5,8 @@
  * - 主体被拒币种列表（Table，按漏斗逻辑序排列）：币种列点击弹K线复盘
  * - 进待确认池的币不算被拒（见同面板「待确认池」页签）；旧版本扫描/异常轮次无数据
  * - initialStage（2026-10-12）：预置关卡筛选，供「无触发」页签直接落在 no_trigger 上；
- *   该页签（2026-10-13）隐藏顶部漏斗概览（全市场/进管线等整体计数与单币未过条件无关）
+ *   该页签（2026-10-13）隐藏顶部漏斗概览（全市场/进管线等整体计数与单币未过条件无关），
+ *   并隐藏关卡筛选下拉（去掉筛选、固定列表为 no_trigger 分类），仅保留币种搜索
  * - 无触发原因（2026-10-13）：no_trigger 关判定说明列展示后端采集的未过条件明细
  *   （突破卡点/触点缺失/待确认失效等，分号分隔拆行），替代静态 hint
  */
@@ -184,18 +185,21 @@ export default function FunnelPanel({ initialStage }: { initialStage?: string } 
             </div>
           )}
 
-          {/* 工具栏：关卡筛选 + 币种搜索 + 刷新 */}
+          {/* 工具栏：关卡筛选（「无触发」页签隐藏，2026-10-13：该页签去掉筛选、
+              固定列表为 no_trigger 分类，仅保留搜索）+ 币种搜索 + 刷新 */}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <Select
-              value={stageFilter}
-              onChange={setStageFilter}
-              size="small"
-              style={{ minWidth: 170 }}
-              options={[
-                { value: 'all', label: `全部关卡 (${rows.length})` },
-                ...stageCounts.map((g) => ({ value: g.key, label: `${g.label} (${g.count})` })),
-              ]}
-            />
+            {initialStage !== 'no_trigger' && (
+              <Select
+                value={stageFilter}
+                onChange={setStageFilter}
+                size="small"
+                style={{ minWidth: 170 }}
+                options={[
+                  { value: 'all', label: `全部关卡 (${rows.length})` },
+                  ...stageCounts.map((g) => ({ value: g.key, label: `${g.label} (${g.count})` })),
+                ]}
+              />
+            )}
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -220,7 +224,13 @@ export default function FunnelPanel({ initialStage }: { initialStage?: string } 
             loading={loading}
             pagination={{ pageSize: 50, showSizeChanger: false, showTotal: (n) => `共 ${n} 个` }}
             locale={{ emptyText: <Empty
-              description={rows.length === 0 ? '本轮没有被拒币种' : '无匹配币种（调整关卡筛选或搜索词）'}
+              description={
+                rows.length === 0
+                  ? (initialStage === 'no_trigger' ? '本轮无未触发币种' : '本轮没有被拒币种')
+                  : (initialStage === 'no_trigger'
+                    ? '无匹配币种（调整搜索词）'
+                    : '无匹配币种（调整关卡筛选或搜索词）')
+              }
               style={{ marginTop: 40 }} /> }}
           />
         </>
