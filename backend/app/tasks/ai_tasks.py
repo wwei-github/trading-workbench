@@ -280,6 +280,9 @@ def run_ai_analysis_single(
             "volume_type": r.volume_type,
             "volume": float(r.volume),
             "volume_24h": float(r.volume_24h),
+            # 扫描套标识（2026-10-14-4）：随 signal 下传，风控 ATR 倍数与提示词
+            # 按套解析（risk_guard / ai_agent / ai_analyzer 从 signal 读）
+            "profile_key": profile.key,
         }
         # 战法库（2026-10-02）：装载活动战法 → 渲染判定块注入用户消息 + 白名单
         # 随 signal 进 risk_guard 闸门（防 LLM 编造战法名）。2026-10-03 删环境

@@ -254,7 +254,10 @@ class Settings(BaseSettings):
     # v2026-10-14-3（双周期扫描套，docs/22）：新增 s2 套（信号 4h / 背景 1d）——
     # 周期参数从全局单例提升为每套一份，信号周期/背景周期/跨周期 EMA21 触点均按
     # ScanRecord.profile_key 解析（scan_profiles）。s1（1h/4h）行为逐字不变。
-    RULE_VERSION: str = "v2026-10-14-3"
+    # v2026-10-14-4（s2 风控 ATR 倍数标定）：三个 ATR 倍数（止损宽度下限/止盈一
+    # 距离上限/止盈二间距下限）按套标定——s2 用 1h 等效倍率（0.15/1.0/0.25），
+    # Risk Guard 闸门与两管线提示词同源解析；s1 仍走 settings 默认，逐字不变。
+    RULE_VERSION: str = "v2026-10-14-4"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]
@@ -293,6 +296,9 @@ class Settings(BaseSettings):
     # 止损宽度下限（2026-10-12-2）：止损距入场须 ≥ SL_MIN_ATR×ATR14，防"止损过近"
     # 被噪音扫掉并抑制 R 放大。近锚（突破类 stop_anchor=near）豁免；ATR 不可算
     # （K线不足）放行；0 = 关闭。宽度上限仍走 signal_gate.max_stop_pct + 动态杠杆
+    # 下列三常数（SL_MIN_ATR / TP1_MAX_ATR / TP2_MIN_GAP_ATR）乘的是**本套信号周期**
+    # ATR14，默认值按 1h 校准；s2（信号 4h）由 scan_profiles 给出 1h 等效倍率，经
+    # resolve_risk_atr 解析（2026-10-14-4）。改这些值等于改 s1 与所有未标定套的基线
     SL_MIN_ATR: float = 0.3            # 止损宽度下限倍数（约 0.3 根 1h K 线全幅）
     # 止盈一距离上限（2026-10-12）：第一档止盈须"够近"——距入场不超过
     # min(TP1_MAX_ATR×ATR14, TP1_MAX_R×止损距离)，且不低于 rr_min×止损距离

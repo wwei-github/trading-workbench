@@ -1624,6 +1624,8 @@ def analyze_symbol(
         "volume_type": volume_type,
         "volume": vol,
         "volume_24h": volume_24h,
+        # 扫描套标识（2026-10-14-4）：随 signal 下传，风控 ATR 倍数与提示词按套解析
+        "profile_key": profile.key,
         # 近期摆动结构（HH/LH/HL/LL，高低点各 20 个）：足够 AI 锚定止盈档位与
         # 评估结构位的历史密度
         "recent_swings": recent_swings(klines, order=cfg.swing_order, n=20),

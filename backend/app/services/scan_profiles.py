@@ -13,6 +13,11 @@ archive/20「共享底盘 + 双大脑」：信号链各自独立，执行引擎/
 两套**共用同一份筛选阈值**（scan_filters JSONB 的所有键），**仅触点白名单按套内置**
 （触点语义与周期强绑定，共用会错配）。s1 的触点白名单走页面配置（`default_touch_refs=None`
 → 用 resolve_scan_filters 解析出的 pullback_touch_refs）；s2 用内置触点集覆盖。
+
+风控 ATR 倍数（2026-10-14-4）同样按套标定：`sl_min_atr`/`tp1_max_atr`/`tp2_min_gap_atr`
+三个常数直接乘**本套信号周期**的 ATR14，而 settings 里的默认值是按 1h ATR 校准的——
+s2 信号周期 4h 的 ATR ≈1.5~2× 1h ATR，沿用同一倍率会把实际距离放宽 ~2×。故 s2 给出
+**1h 等效倍率**（÷2：0.15/1.0/0.25）；s1 全 None = 走 settings 默认，逐字不变。
 """
 import logging
 from dataclasses import dataclass
@@ -43,6 +48,12 @@ class ScanProfile:
     htf_touch_ref: str          # 跨周期 EMA21 触点 ref："ema21_4h" / "ema21_1d"
     # 触点半名单：None=用页面配置（s1）；tuple=内置覆盖（s2，页面触点勾选只作用于 s1）
     default_touch_refs: Optional[tuple] = None
+    # 风控 ATR 倍数（按套标定，2026-10-14-4）：直接乘本套信号周期 ATR14 的三个常数。
+    # None = 走 settings 全局默认（该默认按 1h ATR 校准）；s1 全 None → 行为逐字不变。
+    # 周期无关的 R 腿（TP1_MAX_R / TP2_MIN_GAP_R）不在此列。
+    sl_min_atr: Optional[float] = None        # 止损宽度下限倍数（settings.SL_MIN_ATR）
+    tp1_max_atr: Optional[float] = None       # 止盈一距离上限 ATR 腿（settings.TP1_MAX_ATR）
+    tp2_min_gap_atr: Optional[float] = None   # 止盈二间距下限 ATR 腿（settings.TP2_MIN_GAP_ATR）
 
 
 S1 = ScanProfile(
@@ -54,6 +65,8 @@ S2 = ScanProfile(
     key="s2", label="4h·1d", signal_interval="4h", htf_interval="1d",
     signal_window=240, htf_window=300, htf_label="1d", htf_touch_ref=TOUCH_EMA21_1D,
     default_touch_refs=(TOUCH_EMA21, TOUCH_EMA21_1D, TOUCH_EMA55),
+    # 1h 等效倍率（4h ATR ≈2× 1h ATR → ÷2）：与 settings 默认 0.3/2.0/0.5 同价位距离
+    sl_min_atr=0.15, tp1_max_atr=1.0, tp2_min_gap_atr=0.25,
 )
 
 SCAN_PROFILES: dict[str, ScanProfile] = {"s1": S1, "s2": S2}
@@ -75,3 +88,19 @@ def get_profile(key: Optional[str]) -> ScanProfile:
 
 def is_valid_profile(key: Optional[str]) -> bool:
     return key in SCAN_PROFILES
+
+
+def resolve_risk_atr(profile_key: Optional[str]) -> tuple[float, float, float]:
+    """按套解析三个 ATR 倍数，返回 (止损宽度下限, 止盈一距离上限, 止盈二间距下限)。
+
+    这三个常数在 risk_guard 与两管线提示词中直接乘 ATR14——即乘的是**本套信号周期**
+    的 ATR。profile 未显式标定（None，含 s1 与未知 key）时回落 settings 全局默认
+    （按 1h ATR 校准），保证 s1/旧调用路径逐字不变。R 腿（TP1_MAX_R/TP2_MIN_GAP_R）
+    是止损距离口径、与周期无关，不经此处。"""
+    from app.config import settings  # 局部导入：避免 config ↔ services 顶层循环
+    p = get_profile(profile_key)
+    return (
+        float(settings.SL_MIN_ATR if p.sl_min_atr is None else p.sl_min_atr),
+        float(settings.TP1_MAX_ATR if p.tp1_max_atr is None else p.tp1_max_atr),
+        float(settings.TP2_MIN_GAP_ATR if p.tp2_min_gap_atr is None else p.tp2_min_gap_atr),
+    )

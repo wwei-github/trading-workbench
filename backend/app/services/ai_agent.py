@@ -25,6 +25,7 @@ from app.services.risk_guard import (
     build_forced_skip,
     validate_decision,
 )
+from app.services.scan_profiles import resolve_risk_atr
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import calc_atr
 from app.services.strategy.technical import atr_series, render_indicator_block
@@ -57,7 +58,7 @@ NEAR_STOP_RULE_AGENT = """11.5 突破类止损近锚降级链：结构锚（摆�
     止盈与盈亏比按新锚复算；近锚仍不达标 → skip。硬约束：仅当 skip 的唯一原因是
     盈亏比不达标（信号方向、{htf_label} 背景、趋势状态、量能特征、质量分等其余开单条件
     必须全部满足）才允许用近锚；量比 <1 的缩量突破无近锚资格；近锚后盈亏比 >4
-    时重新评估或 skip；近锚止损宽度仍须 ≥0.3×ATR。{stop_cap_clause}结构锚止损宽度
+    时重新评估或 skip；近锚止损宽度仍须 ≥{sl_min_atr}×ATR。{stop_cap_clause}结构锚止损宽度
     已超程序硬上限（见信号门槛块）时无近锚资格，直接 skip。程序会校验近锚止损必须
     贴近金K窗口极值 ±0.5%，偏离过远会被打回。距离分档衔接（2026-10-12-5）：
     结构锚距入场超过 11 条距离分档线时按 11 条直接降级金K锚，不受本条
@@ -67,6 +68,7 @@ NEAR_STOP_RULE_AGENT = """11.5 突破类止损近锚降级链：结构锚（摆�
 def render_system_prompt(
     risk_label: str = "", rr_min: Optional[float] = None,
     tp2_enabled: bool = True, htf_label: str = "4h",
+    profile_key: Optional[str] = None,
 ) -> str:
     """渲染最终生效的 P1 系统提示词（页面「查看当前生效提示词」与实际调用同源）。
 
@@ -79,15 +81,19 @@ def render_system_prompt(
     （system_config.tp2_enabled，默认关），与实际调用（analyze_coin_agent）同源。
     htf_label（2026-10-14 双周期套）：背景周期称谓（s1="4h"/s2="1d"），默认
     "4h" 保持现状逐字不变；_RULE_HTF_HARD 作为槽位值是常量，其内部
-    {htf_label} 需在此显式替换（.format 不递归替换值）。"""
+    {htf_label} 需在此显式替换（.format 不递归替换值）。
+    profile_key（2026-10-14-4）：扫描套标识——三个 ATR 倍数按套解析（s2 信号
+    4h 用 1h 等效倍率，见 scan_profiles.resolve_risk_atr），None → settings 默认
+    （s1 逐字不变），与 Risk Guard 闸门同源。"""
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
-    _tp1_atr = f"{settings.TP1_MAX_ATR:g}"
+    _sl_min_atr, _tp1_max_atr, _tp2_min_gap_atr = resolve_risk_atr(profile_key)
+    _tp1_atr = f"{_tp1_max_atr:g}"
     _tp1_r = f"{settings.TP1_MAX_R:g}"
-    _far_atr = round(settings.TP1_MAX_ATR / _rr, 2)
+    _far_atr = round(_tp1_max_atr / _rr, 2)
     return AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
         rr_min=_rr,
-        sl_min_atr=f"{settings.SL_MIN_ATR:g}",
+        sl_min_atr=f"{_sl_min_atr:g}",
         tp1_max_atr=_tp1_atr,
         tp1_max_r=_tp1_r,
         far_atr=_far_atr,
@@ -97,14 +103,14 @@ def render_system_prompt(
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
         near_stop_rule=NEAR_STOP_RULE_AGENT.format(
-            rr_min=_rr, htf_label=htf_label,
+            rr_min=_rr, htf_label=htf_label, sl_min_atr=f"{_sl_min_atr:g}",
             stop_cap_clause="止损宽度硬上限值以信号门槛块为准。",
         ),
         _price_anchor_desc=_PRICE_ANCHOR_ON if tp2_enabled else _PRICE_ANCHOR_OFF,
         _tp_anchor_desc=_TP_ANCHOR_DESC_ON if tp2_enabled else _TP_ANCHOR_DESC_OFF,
         _tp2_rule=(_TP2_RULE_ON if tp2_enabled else _TP2_RULE_OFF).format(
             rr_min=_rr, tp1_max_atr=_tp1_atr, tp1_max_r=_tp1_r,
-            tp2_gap_atr=f"{settings.TP2_MIN_GAP_ATR:g}",
+            tp2_gap_atr=f"{_tp2_min_gap_atr:g}",
             tp2_gap_r=f"{settings.TP2_MIN_GAP_R:g}",
         ),
         skill_index="",
@@ -632,9 +638,12 @@ def analyze_coin_agent(
     )
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     _tp2_on = bool(tp2_enabled)
+    # 三个 ATR 倍数按套解析（2026-10-14-4）：与 Risk Guard 同源，提示词数字 = 实际闸门
+    _sl_min_atr, _tp1_max_atr, _tp2_min_gap_atr = resolve_risk_atr(signal.get("profile_key"))
     # 近锚降级链仅突破类注入（docs/23）；回踩/其他类槽位留空
     near_stop_rule = (
         NEAR_STOP_RULE_AGENT.format(rr_min=_rr, htf_label=htf_label,
+                                    sl_min_atr=f"{_sl_min_atr:g}",
                                     stop_cap_clause=stop_cap_clause)
         if (signal.get("signal_type") or "") in ("trigger_breakout", "trigger_trend_breakout")
         else ""
@@ -642,10 +651,10 @@ def analyze_coin_agent(
     system = AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
         rr_min=_rr,
-        sl_min_atr=f"{settings.SL_MIN_ATR:g}",
-        tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
+        sl_min_atr=f"{_sl_min_atr:g}",
+        tp1_max_atr=f"{_tp1_max_atr:g}",
         tp1_max_r=f"{settings.TP1_MAX_R:g}",
-        far_atr=round(settings.TP1_MAX_ATR / _rr, 2),
+        far_atr=round(_tp1_max_atr / _rr, 2),
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
         htf_label=htf_label,
         _RULE_HTF_HARD=_RULE_HTF_HARD.format(htf_label=htf_label),
@@ -656,9 +665,9 @@ def analyze_coin_agent(
         _tp_anchor_desc=_TP_ANCHOR_DESC_ON if _tp2_on else _TP_ANCHOR_DESC_OFF,
         _tp2_rule=(_TP2_RULE_ON if _tp2_on else _TP2_RULE_OFF).format(
             rr_min=_rr,
-            tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
+            tp1_max_atr=f"{_tp1_max_atr:g}",
             tp1_max_r=f"{settings.TP1_MAX_R:g}",
-            tp2_gap_atr=f"{settings.TP2_MIN_GAP_ATR:g}",
+            tp2_gap_atr=f"{_tp2_min_gap_atr:g}",
             tp2_gap_r=f"{settings.TP2_MIN_GAP_R:g}",
         ),
         skill_index=skill_index,
@@ -826,7 +835,7 @@ def _build_user_msg(
         f"K线形态: {signal.get('pattern') or '无'}（位置: "
         f"{POSITION_LABEL_MAP.get(signal.get('position') or '', signal.get('position') or '未知')}）\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
-        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt, htf_label=htf_label)}"
+        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt, htf_label=htf_label, sl_min_atr=resolve_risk_atr(signal.get('profile_key'))[0])}"
         f"信号强度: {signal.get('strength', '—')}\n"
         f"量能: {vol_desc}\n"
         f"ATR(14): {atr:.6g}\n"

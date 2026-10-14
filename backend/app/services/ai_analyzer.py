@@ -10,6 +10,7 @@ from app.services import skill_library
 from app.services.llm_client import get_client, parse_llm_json, json_mode_kwargs, stream_completion
 from app.services.market_data import build_market_context, get_kline_client
 from app.services.risk_guard import build_forced_skip, parse_and_validate
+from app.services.scan_profiles import resolve_risk_atr
 from app.services.strategy.candlestick import golden_whitelist_labels
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.technical import render_indicator_block
@@ -45,8 +46,8 @@ _RULE_SL = """止损纪律（结构位优先，金K极值兜底，两锚取更�
 - 止损宽度不设固定百分比上限；不得以「止损过宽」为由 skip——宽止损由固定亏损法
   自动缩仓消化（止损越远仓位越小，BTWUSDT 等插针极值锚场景本就该宽），
   pin-bar/极端影线场景按技能减半仓位即可。
-- 但止损**不得过近**：宽度须 ≥ 0.3×ATR（低于噪音级必被扫），也不得低于 0.3%；
-  锚点落在 0.3×ATR 内时把锚外扩到该宽度再报，否则直接 skip（程序按此下限复算打回）。
+- 但止损**不得过近**：宽度须 ≥ {sl_min_atr}×ATR（低于噪音级必被扫），也不得低于 0.3%；
+  锚点落在 {sl_min_atr}×ATR 内时把锚外扩到该宽度再报，否则直接 skip（程序按此下限复算打回）。
   盈亏比不达标先调入场价，仍不达标如实 skip。"""
 
 _RULE_TP_BASE = """止盈锚定（多空方向不同，必须遵守；程序不再改挂止盈价）：
@@ -178,7 +179,7 @@ def render_signal_type_label(signal_type: str, htf_label: str = "4h") -> str:
 
 def render_signal_gate_block(
     signal_type: str, stop_cap_pct: Optional[float] = None, flt=None,
-    htf_label: str = "4h",
+    htf_label: str = "4h", sl_min_atr: Optional[float] = None,
 ) -> str:
     """触发器入场门槛说明（2026-09-28 动态化；2026-10-12 接线真实配置）：
     阈值读 scan_filters 生效值，消除与页面筛选配置的文本分叉（此前 0.2%/1.2×
@@ -186,10 +187,13 @@ def render_signal_gate_block(
     （ai_tasks / api 手动分析）透传 resolve_scan_filters(cfg) 结果；None 时
     回落 env/代码默认（无 cfg 上下文的直接调用）。按触发类型渲染对应门槛，
     非触发器类型输出空串。htf_label（2026-10-14 双周期套）：背景周期称谓，
-    s1="4h" / s2="1d"，默认 "4h" 保持现状。"""
+    s1="4h" / s2="1d"，默认 "4h" 保持现状。
+    sl_min_atr（2026-10-14-4）：止损宽度下限倍数（按套解析，见 scan_profiles），
+    None 回落 settings.SL_MIN_ATR；仅在突破类近锚资格线里以字面注入。"""
     if signal_type not in ("trigger_breakout", "trigger_trend_breakout",
                            "trigger_pullback", "trigger_pullback_confirm"):
         return ""
+    _sl_min_atr = float(settings.SL_MIN_ATR if sl_min_atr is None else sl_min_atr)
     from app.services.scan_filters import resolve_scan_filters
     flt = flt or resolve_scan_filters(None)  # 未透传时按 env/代码默认
     # 止损宽度硬上限（2026-09-29 透传 max_stop_pct 补丁参数）：AI 定止损前先自验
@@ -251,7 +255,7 @@ def render_signal_gate_block(
         f"{htf_label} 背景、"
         "趋势状态、量能特征、质量分等其余开单条件必须全部满足，否则照常 skip",
         "- 近锚资格附加线: 量比 <1 的缩量突破无近锚资格；近锚后盈亏比 >4 时重新评估或 skip；"
-        "近锚止损宽度仍须 ≥0.3×ATR",
+        f"近锚止损宽度仍须 ≥{_sl_min_atr:g}×ATR",
         "- 距离分档衔接（2026-10-12-5）: 结构锚距入场超过止损纪律的距离分档线时按止损纪律"
         "直接降级金K锚，不受\"盈亏比唯一不达标\"前提约束（量比 <1 无资格同样适用）；"
         "本条仅处理结构锚不远但盈亏比仍不达标的场景",
@@ -336,6 +340,7 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 def render_system_prompt(
     risk_label: Optional[str] = None, rr_min: Optional[float] = None,
     tp2_enabled: bool = True, htf_label: str = "4h",
+    profile_key: Optional[str] = None,
 ) -> str:
     """渲染最终生效的 P0 系统提示词（SYSTEM_PROMPT 为带槽位模板）。
 
@@ -347,20 +352,27 @@ def render_system_prompt(
     字段说明，AI 不再产出第二档止盈价（system_config.tp2_enabled，默认关）。
     htf_label（2026-10-14 双周期套）：背景周期称谓（s1="4h"/s2="1d"），默认
     "4h" 保证 s1 渲染逐字不变；_RULE_HTF_HARD 作为槽位值是常量，其内部
-    {htf_label} 需在此显式替换（.format 不递归替换值）。"""
+    {htf_label} 需在此显式替换（.format 不递归替换值）。
+    profile_key（2026-10-14-4）：扫描套标识——三个 ATR 倍数按套解析（s2 信号
+    4h 用 1h 等效倍率，见 scan_profiles.resolve_risk_atr），None → 回落 settings
+    默认（s1 逐字不变）。与 Risk Guard 同源，保证提示词数字与实际闸门口径一致。"""
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
+    _sl_min_atr, _tp1_max_atr, _tp2_min_gap_atr = resolve_risk_atr(profile_key)
     return SYSTEM_PROMPT.format(
         _RULE_HTF_HARD=_RULE_HTF_HARD.format(htf_label=htf_label),
         _RULE_DIRECTION=_RULE_DIRECTION.replace(chr(10), ' '),
         _RULE_STRUCT=_RULE_STRUCT,
-        _RULE_SL=_RULE_SL.format(far_atr=round(settings.TP1_MAX_ATR / _rr, 2)),
+        _RULE_SL=_RULE_SL.format(
+            far_atr=round(_tp1_max_atr / _rr, 2),
+            sl_min_atr=f"{_sl_min_atr:g}",
+        ),
         # _RULE_TP 值内含 {rr_min}/{tp1_max_atr}/{tp1_max_r}/{tp2_gap_atr}/{tp2_gap_r}
         # 字面占位（format 不递归替换值），须渲染前显式替换
         _RULE_TP=compose_rule_tp(tp2_enabled).format(
             rr_min=_rr,
-            tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
+            tp1_max_atr=f"{_tp1_max_atr:g}",
             tp1_max_r=f"{settings.TP1_MAX_R:g}",
-            tp2_gap_atr=f"{settings.TP2_MIN_GAP_ATR:g}",
+            tp2_gap_atr=f"{_tp2_min_gap_atr:g}",
             tp2_gap_r=f"{settings.TP2_MIN_GAP_R:g}",
         ),
         _RULE_TOUCH=_RULE_TOUCH,
@@ -368,7 +380,7 @@ def render_system_prompt(
         _RULE_VOTE=_RULE_VOTE.replace(chr(10), ' '),
         _tp2_field=_TP2_FIELD_ON if tp2_enabled else _TP2_FIELD_OFF,
         rr_min=_rr,
-        tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
+        tp1_max_atr=f"{_tp1_max_atr:g}",
         tp1_max_r=f"{settings.TP1_MAX_R:g}",
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
     )  # 模板槽位均为纯名称：表达式在渲染前预处理（f-string 时代的 .format 内嵌已移除）
@@ -450,7 +462,11 @@ def _build_messages(
     默认 True）。
     flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。
     htf_label（2026-10-14 双周期套）：背景周期称谓（s1="4h"/s2="1d"），
-    透传系统提示词/指标块/信号类型/门槛块，默认 "4h" 保持现状。"""
+    透传系统提示词/指标块/信号类型/门槛块，默认 "4h" 保持现状。
+    profile_key 随 signal 携带（signal["profile_key"]）：三个 ATR 倍数按套解析，
+    系统提示词与门槛块同源（2026-10-14-4）。"""
+    # 止损宽度下限倍数按套解析（2026-10-14-4）：仅门槛块近锚资格线用其字面值
+    _sl_min_atr = resolve_risk_atr(signal.get("profile_key"))[0]
     # 取最近 40 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-41:-1]）。
     # 60→40（2026-09-28）：CSV 是 user 消息 token 大头（60 根 ≈5000+），思考型模型
     # reasoning 时长与输入量正相关；浓缩结论（指标/摆动块）已覆盖形态识别所需，
@@ -547,7 +563,7 @@ def _build_messages(
         f"K线形态: {signal.get('pattern') or '无'}\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
         f"{touch_line}"
-        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt, htf_label=htf_label)}"
+        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt, htf_label=htf_label, sl_min_atr=_sl_min_atr)}"
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
         f"量能: {vol_desc}\n"
         f"{ema_summary}"
@@ -565,7 +581,8 @@ def _build_messages(
         )
 
     system_prompt = render_system_prompt(risk_label or None, rr_min=rr_min,
-                                         tp2_enabled=tp2_enabled, htf_label=htf_label)
+                                         tp2_enabled=tp2_enabled, htf_label=htf_label,
+                                         profile_key=signal.get("profile_key"))
     # 技能注入（P0 管线无工具循环，命中技能正文直接进系统提示词；与 Agent 管线共用同一事实判定）
     skill_block = skill_library.render_matched(skill_library.build_facts(signal, klines))
     if skill_block:
