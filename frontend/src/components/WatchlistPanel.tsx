@@ -61,7 +61,6 @@ export default function WatchlistPanel() {
     loading,
     fetchResults,
     aiConfig,
-    activeProfile,
   } = useScanStore();
   const colorScheme = useScanStore((s) => s.colorScheme);
 
@@ -253,8 +252,7 @@ export default function WatchlistPanel() {
       // 从未被扫描命中过：走手动搜索的同步分析（拉最新 K 线 + AI）
       setRowState(r.symbol, { loading: true, error: null });
       try {
-        // 手动分析按当前扫描套提交（2026-10-14 双周期套）：s2 选中时拉 4h 信号/1d 背景
-        const ai = await scanApi.analyzeCoin(r.symbol, activeProfile);
+        const ai = await scanApi.analyzeCoin(r.symbol);
         setAiMap((prev) => ({ ...prev, [r.symbol]: ai }));
         setRowState(r.symbol, { loading: false, error: null });
       } catch (e: any) {

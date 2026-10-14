@@ -43,11 +43,6 @@ from app.services.risk_guard import (
     PULLBACK_MARKET_PCT,
     MAX_SLIPPAGE_PCT,
 )
-from app.services.scan_profiles import (
-    DEFAULT_PROFILE_KEY,
-    get_profile,
-    resolve_stop_cap_mult,
-)
 from app.services.task_log import close_task, open_task
 
 import numpy as np
@@ -194,23 +189,6 @@ def _near_discounted_budget(risk_budget: float, stop_anchor: Optional[str],
         _f = settings.NEAR_ANCHOR_RISK_FACTOR if factor is None else float(factor)
         return risk_budget * _f
     return risk_budget
-
-
-def _analysis_profile_key(a: AIAnalysis) -> Optional[str]:
-    """分析记录的来源扫描套 key（2026-10-14-5）：来源 ScanRecord.profile_key；
-    scan_result / scan_record 缺失（手动/旧路径）→ None（按 s1 理解）。"""
-    sr = a.scan_result
-    if sr is None or sr.scan_record is None:
-        return None
-    return sr.scan_record.profile_key
-
-
-def _mgmt_interval(profile_key: Optional[str], default_interval: str) -> str:
-    """持仓管理（跟进止损）K 线周期按持有来源套（2026-10-14-5）：非默认套用其
-    信号周期（s2 → 4h）；s1 / 未标定（None/未知 key）沿用传入的全局周期，
-    保证 s1 行为逐字不变。"""
-    p = get_profile(profile_key)
-    return default_interval if p.key == DEFAULT_PROFILE_KEY else p.signal_interval
 
 
 def _attempt_open(
@@ -380,17 +358,13 @@ def _attempt_open(
             return False
         # 止损宽度硬上限（docs/12 §10 规则补丁参数 max_stop_pct）：
         # 「止损过宽」标签的补丁落点——AI 复盘产出建议值写入 system_config，
-        # NULL=不限制（默认）。策略性闸门，先于强平可行性闸门执行。
-        # 按套放宽（2026-10-14-5）：页面值按 1h 波动标定，s2 止损天然 ≈2× 宽，
-        # 乘 stop_cap_mult（s2 → ×2；s1 / 未标定 → ×1.0）避免误杀 4h 正常止损
+        # NULL=不限制（默认）。策略性闸门，先于强平可行性闸门执行
         if cfg.max_stop_pct is not None:
-            _cap_mult = resolve_stop_cap_mult(_analysis_profile_key(a))
-            max_stop = float(cfg.max_stop_pct) * _cap_mult
+            max_stop = float(cfg.max_stop_pct)
             if stop_pct >= max_stop:
                 logger.info(
-                    "开仓跳过 %s：止损距离 %.2f%% 达到上限 %.2f%%（max_stop_pct 补丁参数%s）",
+                    "开仓跳过 %s：止损距离 %.2f%% 达到上限 %.2f%%（max_stop_pct 补丁参数）",
                     symbol, stop_pct * 100, max_stop * 100,
-                    f"，按套 ×{_cap_mult:g}" if _cap_mult != 1.0 else "",
                 )
                 _mark_open_block(
                     db, a,
@@ -650,11 +624,6 @@ def _attempt_open(
                 signal_type=(a.scan_result.signal_type if a.scan_result is not None else None),
                 pattern=(a.scan_result.pattern if a.scan_result is not None else None),
                 rule_version=settings.RULE_VERSION,
-                # 扫描套来源快照（2026-10-14 双周期套）：来源 ScanRecord.profile_key，
-                # 复盘按套分组对比；scan_result 缺失（手动/旧路径）时 NULL 按 s1 理解
-                profile_key=(a.scan_result.scan_record.profile_key
-                             if a.scan_result is not None and a.scan_result.scan_record is not None
-                             else None),
                 testnet=trader.testnet,
                 account_key=trader.account_key,
                 ai_snapshot=_ai_snapshot(a),
@@ -730,9 +699,6 @@ def _attempt_open(
                         signal_type=(a.scan_result.signal_type if a.scan_result is not None else None),
                         pattern=(a.scan_result.pattern if a.scan_result is not None else None),
                         rule_version=settings.RULE_VERSION,
-                        profile_key=(a.scan_result.scan_record.profile_key
-                                     if a.scan_result is not None and a.scan_result.scan_record is not None
-                                     else None),
                         testnet=trader.testnet,
                         account_key=trader.account_key,
                         status="FAILED", raw={"fail_reason": str(e)[:200]},
@@ -1285,10 +1251,8 @@ def _move_sl_trailing(db: Session, trader: BinanceTrader, rec: TradeRecord,
 
     两腿取更紧者（docs/13 #5）：摆动腿（最近3根已收盘K线极值）+ ATR 腿
     （Chandelier，atr_k None/0 关闭）；聚合后统一 TP1 保本夹紧（与
-    _trailing_stop 内同语义，幂等）。K 线周期按持仓来源套（2026-10-14-5）：
-    s2 → 4h；s1 / 未标定沿用传入的全局周期，行为逐字不变。
+    _trailing_stop 内同语义，幂等）。
     """
-    interval = _mgmt_interval(getattr(rec, "profile_key", None), interval)
     cur = float(rec.stop_loss or 0)
     if cur <= 0:
         return
@@ -1377,13 +1341,8 @@ def _chandelier_sl(rec: TradeRecord, trader: BinanceTrader, k: float) -> Optiona
         opened_ms = opened.replace(tzinfo=timezone.utc).timestamp() * 1000
         now_utc = datetime.utcnow()
         hours = max(1, int((now_utc - opened).total_seconds() // 3600) + 1)
-        # 持仓期极值 K 线周期按持有来源套（2026-10-14-5）：s2 持仓用 4h K（每根覆盖
-        # 4h，根数上限仍按 1h 时间跨度换算），s1/未标定沿用 1h（行为逐字不变）。
-        # 上限 60 天（趋势单持仓可跨多日）
-        _extremes_interval = _mgmt_interval(getattr(rec, "profile_key", None), "1h")
-        _bars_per_hour = 4 if _extremes_interval in ("4h", "4H") else 1
-        _max_bars = min(math.ceil(hours / _bars_per_hour) + 1, 24 * 60)
-        kl = ExchangePool().get_klines(rec.symbol, _extremes_interval, _max_bars)
+        # 持仓期 1h K（上限 60 天，趋势单持仓可跨多日）
+        kl = ExchangePool().get_klines(rec.symbol, "1h", min(hours + 1, 24 * 60))
         closed = [b for b in (kl[:-1] if len(kl) >= 2 else kl)
                   if float(b[0]) >= opened_ms]
         if not closed:

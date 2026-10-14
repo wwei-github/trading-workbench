@@ -65,7 +65,6 @@ export default function ReviewStatsPanel() {
     swing: '摆动结构位',
     ema21: 'EMA21',
     ema21_4h: 'EMA21(4h)',
-    ema21_1d: 'EMA21(1d)',
     ema55: 'EMA55',
     ema144: 'EMA144',
   }

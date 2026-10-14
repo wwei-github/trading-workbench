@@ -50,7 +50,6 @@ const TOUCH_TAG_MAP: Record<string, { color: string; tip: string }> = {
   swing: { color: "purple", tip: "摆动结构位：最近 HL（多）/LH（空）防守位" },
   ema21: { color: "gold", tip: "回踩 EMA21 趋势价值区企稳" },
   ema21_4h: { color: "cyan", tip: "回踩 4h EMA21 大周期动态价值区企稳（1h 信号K线影线触及跨周期均线）" },
-  ema21_1d: { color: "blue", tip: "回踩 1d EMA21 大周期动态价值区企稳（4h 信号K线影线触及跨周期均线）" },
   ema55: { color: "orange", tip: "回踩 EMA55 深回撤价值区（数据/排列/斜率门已过）" },
   ema144: { color: "volcano", tip: "回踩 EMA144 大周期深回撤价值区（数据/排列/斜率门已过）" },
 };
@@ -60,7 +59,6 @@ const TOUCH_TAG_MAP: Record<string, { color: string; tip: string }> = {
 function touchLabel(ref: string, record: ScanResult): string {
   if (ref === "ema21") return "EMA21";
   if (ref === "ema21_4h") return "EMA21(4h)";
-  if (ref === "ema21_1d") return "EMA21(1d)";
   if (ref === "ema55") return "EMA55";
   if (ref === "ema144") return "EMA144";
   const votes = record.votes_json;
@@ -79,13 +77,7 @@ function touchLabel(ref: string, record: ScanResult): string {
   return ref;
 }
 
-export default function ResultTable({
-  headerExtra,
-  headerLeading,
-}: {
-  headerExtra?: ReactNode
-  headerLeading?: ReactNode
-}) {
+export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }) {
   const {
     results,
     total,
@@ -172,11 +164,10 @@ export default function ResultTable({
   // 每行的 AI 补充说明输入（scanResultId -> 输入内容）
   const [userInputs, setUserInputs] = useState<Record<string, string>>({});
 
-  // 刷新：先取激活扫描套的最新扫描记录 ID，再拉取该次扫描的结果（原顶部工具栏的刷新按钮）
+  // 刷新：先取最新扫描记录 ID，再拉取该次扫描的结果（原顶部工具栏的刷新按钮）
   const handleRefresh = async () => {
     await fetchStatus();
-    // fetchStatus 已按激活扫描套回填 currentScanId（缺失回落全局 last_scan）
-    const latestScanId = useScanStore.getState().currentScanId;
+    const latestScanId = useScanStore.getState().status?.last_scan?.id;
     if (latestScanId) {
       await fetchResults(latestScanId);
     } else {
@@ -826,16 +817,12 @@ export default function ResultTable({
           overflow: "hidden",
           paddingRight: 8,
         }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexShrink: 0, marginBottom: 4 }}>
-          {/* 左侧：外部传入（扫描套选择器，2026-10-14 从 Tab 栏移入） */}
-          {headerLeading}
-          <div style={{ display: 'flex', gap: 8 }}>
-            {/* 立即扫描（外部传入，置于刷新左侧，2026-09-20 移入扫描结果 Tab） */}
-            {headerExtra}
-            <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
-              刷新
-            </Button>
-          </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexShrink: 0, marginBottom: 4 }}>
+          {/* 立即扫描（外部传入，置于刷新左侧，2026-09-20 移入扫描结果 Tab） */}
+          {headerExtra}
+          <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
+            刷新
+          </Button>
         </div>
         <Table
           rowKey="id"

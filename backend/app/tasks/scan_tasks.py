@@ -6,7 +6,6 @@ from uuid import UUID
 from app.celery_app import celery_app
 from app.database import SessionLocal
 from app.models.scan import ScanRecord
-from app.models.system_config import SystemConfig
 from app.services.scanner import Scanner
 from app.services.task_log import close_task, open_task
 
@@ -14,16 +13,11 @@ logger = logging.getLogger(__name__)
 
 
 @celery_app.task(name="app.tasks.scan_tasks.run_scan_task", bind=True, max_retries=0)
-def run_scan_task(
-    self, scan_record_id: Optional[str] = None, scan_type: str = "manual",
-    profile_key: str = "s1",
-):
+def run_scan_task(self, scan_record_id: Optional[str] = None, scan_type: str = "manual"):
     """执行扫描任务
 
     scan_record_id: 已有的扫描记录 ID（手动触发时传入）
     scan_type: scheduled / manual
-    profile_key: 扫描套（2026-10-14 双周期套）——s1=信号1h/背景4h / s2=信号4h/背景1d；
-      定时调度按套各发一份（手动触发由 API 传入）。三层防重与开关早退均按套隔离。
     """
     db = SessionLocal()
     task_id = ""
@@ -33,11 +27,9 @@ def run_scan_task(
             if not record:
                 logger.error("扫描记录不存在: %s", scan_record_id)
                 return
-            # 记录自带套键为准（手动触发 API 建记录时已写入；历史行缺省 s1）
-            profile_key = record.profile_key or profile_key
         else:
             # 定时任务：创建新记录
-            record = ScanRecord(scan_type=scan_type, status="running", profile_key=profile_key)
+            record = ScanRecord(scan_type=scan_type, status="running")
             db.add(record)
             db.commit()
             db.refresh(record)
@@ -51,51 +43,27 @@ def run_scan_task(
             scan_record_id=scan_record_id,
         )
 
-        # 按套启用开关早退（2026-10-14 双周期套）：该套未启用则跳过（定时/手动一致）。
-        # 开关缺失（旧库/无单行）按启用处理（放行，与「未配置即默认」惯例一致）
-        cfg = db.get(SystemConfig, 1)
-        if cfg is not None:
-            if profile_key == "s1":
-                enabled = bool(cfg.scan_profile_s1_enabled)
-            elif profile_key == "s2":
-                enabled = bool(cfg.scan_profile_s2_enabled)
-            else:
-                enabled = True
-            if not enabled:
-                logger.info("扫描套 %s 未启用，跳过本次扫描 #%s", profile_key, scan_record_id)
-                record.status = "failed"
-                record.finished_at = datetime.utcnow()
-                db.commit()
-                close_task(task_id, "skipped", summary=f"扫描套 {profile_key} 未启用，跳过")
-                return
-
-        # 如果已有同套正在运行的扫描，跳过（按 profile 隔离：允许 s1/s2 并发）
+        # 如果已有正在运行的扫描，跳过
         running = (
             db.query(ScanRecord)
-            .filter(
-                ScanRecord.status == "running",
-                ScanRecord.profile_key == profile_key,
-                ScanRecord.id != record.id,
-            )
+            .filter(ScanRecord.status == "running", ScanRecord.id != record.id)
             .first()
         )
         if running:
-            logger.info("已有同套扫描任务运行中，跳过本次扫描")
+            logger.info("已有扫描任务运行中，跳过本次扫描")
             record.status = "failed"
             record.finished_at = datetime.utcnow()
             db.commit()
-            close_task(task_id, "skipped", summary="已有同套扫描任务运行中，跳过")
+            close_task(task_id, "skipped", summary="已有扫描任务运行中，跳过")
             return
 
         # 定时扫描防重：休眠唤醒后 Celery 会把积压的多轮 beat 任务背靠背执行，
-        # 10 分钟内已有定时扫描完成则跳过本轮（避免同一小时双扫描、结果重复命中）；
-        # 按套隔离——只与本套近期完成对比，两套互不干扰
+        # 10 分钟内已有定时扫描完成则跳过本轮（避免同一小时双扫描、结果重复命中）
         if scan_type == "scheduled":
             recent_done = (
                 db.query(ScanRecord)
                 .filter(
                     ScanRecord.scan_type == "scheduled",
-                    ScanRecord.profile_key == profile_key,
                     ScanRecord.status == "completed",
                     ScanRecord.id != record.id,
                     ScanRecord.started_at >= datetime.utcnow() - timedelta(minutes=10),
@@ -103,28 +71,25 @@ def run_scan_task(
                 .first()
             )
             if recent_done:
-                logger.info("10 分钟内已有同套定时扫描完成（唤醒积压），跳过本次扫描")
+                logger.info("10 分钟内已有定时扫描完成（唤醒积压），跳过本次扫描")
                 record.status = "failed"
                 record.finished_at = datetime.utcnow()
                 db.commit()
-                close_task(task_id, "skipped", summary="10 分钟内已有同套定时扫描完成，跳过（唤醒积压）")
+                close_task(task_id, "skipped", summary="10 分钟内已有定时扫描完成，跳过（唤醒积压）")
                 return
 
             # 定时扫描小时锁（2026-09-28）：beat 双发/消息重投/两执行几乎同时启动时，
             # 上面的 running 与 10 分钟防重存在「都在对方 commit 前查询」的竞态窗口，
             # 双双放行 → 双扫描 → 「扫描命中」飞书通知双发。以 UTC 小时为 bucket 的
-            # SETNX 原子锁，同一小时只有第一个执行能拿到；TTL 2h 自动清理。
-            # 键内含套键（2026-10-14）：两套各自持锁、可并发（s2 每 4h 一轮）
+            # SETNX 原子锁，同一小时只有第一个执行能拿到；TTL 2h 自动清理
             from app.tasks.ai_tasks import _get_redis
             bucket = datetime.utcnow().strftime("%Y%m%d%H")
-            lock_key = f"scan:beat:{profile_key}:{bucket}"
-            if not _get_redis().set(lock_key, str(record.id), nx=True, ex=7200):
-                logger.info("同套小时锁已被占（同小时已有同套定时扫描启动），跳过本次扫描 #%s",
-                            scan_record_id)
+            if not _get_redis().set(f"scan:hourly:{bucket}", str(record.id), nx=True, ex=7200):
+                logger.info("小时锁已被占（同小时已有定时扫描启动），跳过本次扫描 #%s", scan_record_id)
                 record.status = "failed"
                 record.finished_at = datetime.utcnow()
                 db.commit()
-                close_task(task_id, "skipped", summary="同小时已有同套定时扫描启动（小时锁），跳过")
+                close_task(task_id, "skipped", summary="同小时已有定时扫描启动（小时锁），跳过")
                 return
 
         scanner = Scanner()

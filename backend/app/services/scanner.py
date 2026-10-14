@@ -19,7 +19,6 @@
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from uuid import UUID
@@ -34,7 +33,6 @@ from app.models.shadow import ShadowMark
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.scan_filters import ScanFilters, resolve_scan_filters
-from app.services.scan_profiles import S1, ScanProfile, get_profile
 from app.services.exchange_pool import ExchangePool
 from app.services.binance_trader import BinanceTrader
 from app.services import market_data as md
@@ -214,7 +212,6 @@ def detect_indicator_candidate(
     retest: Optional[dict] = None,
     event_out: Optional[dict] = None,
     reject_out: Optional[dict] = None,
-    profile: ScanProfile = S1,
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """指标驱动单币检测（Scanner 与 watchlist.refresh 共用同一套逻辑与阈值）。
 
@@ -244,11 +241,6 @@ def detect_indicator_candidate(
       votes 关附 "detail"（全票明细）、htf_state_lock / no_trigger /
       trigger_whitelist 关附 "detail"（2026-10-13）——前端判定说明列渲染，
       其余关卡不写。
-    profile（可选，2026-10-14 双周期套）：扫描套参数（signal/htf 周期与跨周期
-      触点 ref）。默认 S1（信号 1h / 背景 4h）→ 现有调用方（watchlist.refresh、
-      全部测试）行为逐字不变；s2（信号 4h / 背景 1d）由 scanner 主扫描传入。
-      本函数只消费 profile.htf_interval/htf_window/htf_touch_ref（signal 周期与
-      触点半名单由调用方在 klines/flt 上准备）。
     返回 (候选 dict, pending_op) 二元组：
     - 候选 dict（signal_type/touch_ref/quality_score/votes 及展示字段），每币至多 1 个；
       无候选（中性/票数不足/无触发）为 None
@@ -285,13 +277,10 @@ def detect_indicator_candidate(
     # 异常=数据/实现问题，二者区分（原 ranging 过滤同口径）。4h 历史 <200 根
     # （新币冷静期默认 45 天≈270 根，正常覆盖不到）一并否决。
     try:
-        # 背景周期由 profile 决定（s1=4h / s2=1d）；300 根：EMA144 SMA 种子后
-        # 递推 155 步，收敛残留 ~12%（根数口径与周期无关）
-        htf = pool.get_klines(symbol, profile.htf_interval, profile.htf_window)
+        htf = pool.get_klines(symbol, "4h", 300)  # 300 根：EMA144 SMA 种子后递推 155 步，收敛残留 ~12%
     except Exception as e:
         htf = None
-        logger.warning("%s 获取%s K线失败（跳过%s票）: %s",
-                       symbol, profile.htf_interval, profile.htf_interval, e)
+        logger.warning("%s 获取4h K线失败（跳过4h票）: %s", symbol, e)
     htf_res = None
     gate = None
     if htf:
@@ -382,7 +371,6 @@ def detect_indicator_candidate(
     trig_diag: Optional[dict] = {} if reject_out is not None else None
     trig, pending_op = detect_trigger(
         klines, direction, pending, flt=flt, retest=retest, htf=htf,
-        htf_touch_ref=profile.htf_touch_ref,
         diag=trig_diag,
     )
     if trig is not None:
@@ -522,14 +510,8 @@ class Scanner:
 
             # 从数据库读取扫描策略配置
             cfg = _get_scan_config(db)
-            # 扫描套（2026-10-14 双周期套）：周期从全局单例提升为按套取值——
-            # s1=信号1h/背景4h、s2=信号4h/背景1d；历史行 profile_key 缺省 's1'。
-            # 信号周期/窗口取自 profile（取代 cfg.kline_interval/kline_window），
-            # 下游所有消费 kline_interval 的步骤（尾窗/漏斗/孤儿清扫/破轨窗口）
-            # 自动跟随本套。
-            profile = get_profile(record.profile_key)
-            kline_interval = profile.signal_interval
-            kline_window = profile.signal_window
+            kline_interval = cfg.kline_interval
+            kline_window = cfg.kline_window
             repeat_window_hours = cfg.repeat_window_hours
             # 扫描尾窗（2026-10-11-4）：beat 定在每小时第 SCAN_BEAT_MINUTE 分，
             # 尾窗内把未收盘根视作已收盘参与筛选（信号根前移一根，提前数分钟
@@ -547,11 +529,6 @@ class Scanner:
             tail_window = md.in_forming_tail(kline_interval, scan_now)
             # 筛选参数组（scan_filters JSONB > env > 代码默认）
             flt = resolve_scan_filters(cfg)
-            # 触点白名单按套内置（2026-10-14 双周期套）：页面触点勾选只作用于 s1；
-            # s2 用 profile.default_touch_refs 覆盖（触点语义与周期强绑定，两套共用
-            # 会错配——1h/4h 触点集套到 4h/1d 上语义错误）。其余阈值两套共用。
-            if profile.default_touch_refs is not None:
-                flt = replace(flt, pullback_touch_refs=profile.default_touch_refs)
 
             # 尾窗状态落日志（2026-10-12）：beat 分钟数与 FORMING_TAIL_MINUTES
             # 漂移、或扫描落在非预期分钟时，只看这行即可判定筛选口径是否生效
@@ -687,7 +664,7 @@ class Scanner:
                     cand, pop = detect_indicator_candidate(
                         self.pool, symbol, klines, pending=pendings.get(symbol),
                         flt=flt, retest=retests.get(symbol), event_out=ev_out,
-                        reject_out=rv_out, profile=profile,
+                        reject_out=rv_out,
                     )
                     # 破轨事件动作（T1 触发记录 / 回测触点确认消费）
                     if ev_out.get("op"):

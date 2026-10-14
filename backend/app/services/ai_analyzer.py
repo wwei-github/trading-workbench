@@ -10,7 +10,6 @@ from app.services import skill_library
 from app.services.llm_client import get_client, parse_llm_json, json_mode_kwargs, stream_completion
 from app.services.market_data import build_market_context, get_kline_client
 from app.services.risk_guard import build_forced_skip, parse_and_validate
-from app.services.scan_profiles import resolve_risk_atr
 from app.services.strategy.candlestick import golden_whitelist_labels
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.technical import render_indicator_block
@@ -24,9 +23,9 @@ logger = logging.getLogger(__name__)
 # （2026-10-11 再重构 EMA 状态机 11 态：「过热约束」行改「状态约束」（缠绕/
 # 拐头双向禁开），锁逆势集合扩为宏观交叉/恢复/排列六态，见 docs/17）
 _RULE_HTF_HARD = """0. **方向硬约束（最高优先级，先于一切规则）**：技术指标块出现「状态约束（硬性）」或「方向约束（硬性）」行时必须遵守——
-{htf_label}缠绕（无趋势）/多头拐头/空头拐头（排列内 EMA21 连续反向=趋势衰竭警戒）背景双向禁开新仓（long/short 一律 skip，程序会强制改判）；
-{htf_label}宏观金叉/死叉初期、多头/空头恢复初期、多头/空头排列（宏观同侧态）仅可顺势（逆势一律 skip，程序会强制改判）；
-{htf_label}牛内回调/熊内反弹（宏观逆侧过渡态）无此约束，但仍应结合质量分与打法合理性自评；
+4h缠绕（无趋势）/多头拐头/空头拐头（排列内 EMA21 连续反向=趋势衰竭警戒）背景双向禁开新仓（long/short 一律 skip，程序会强制改判）；
+4h宏观金叉/死叉初期、多头/空头恢复初期、多头/空头排列（宏观同侧态）仅可顺势（逆势一律 skip，程序会强制改判）；
+4h牛内回调/熊内反弹（宏观逆侧过渡态）无此约束，但仍应结合质量分与打法合理性自评；
 即使 1h 指标多数决指向反方向也以约束为准（1h 逆宏观同侧态背景信号视为回调噪音）。"""
 
 _RULE_VOTE = """指标多数决规则：用户消息"技术指标"块末尾的"指标方向"行为程序化统计
@@ -46,8 +45,8 @@ _RULE_SL = """止损纪律（结构位优先，金K极值兜底，两锚取更�
 - 止损宽度不设固定百分比上限；不得以「止损过宽」为由 skip——宽止损由固定亏损法
   自动缩仓消化（止损越远仓位越小，BTWUSDT 等插针极值锚场景本就该宽），
   pin-bar/极端影线场景按技能减半仓位即可。
-- 但止损**不得过近**：宽度须 ≥ {sl_min_atr}×ATR（低于噪音级必被扫），也不得低于 0.3%；
-  锚点落在 {sl_min_atr}×ATR 内时把锚外扩到该宽度再报，否则直接 skip（程序按此下限复算打回）。
+- 但止损**不得过近**：宽度须 ≥ 0.3×ATR（低于噪音级必被扫），也不得低于 0.3%；
+  锚点落在 0.3×ATR 内时把锚外扩到该宽度再报，否则直接 skip（程序按此下限复算打回）。
   盈亏比不达标先调入场价，仍不达标如实 skip。"""
 
 _RULE_TP_BASE = """止盈锚定（多空方向不同，必须遵守；程序不再改挂止盈价）：
@@ -161,39 +160,26 @@ SIGNAL_TYPE_LABELS = {
         "倒锤形线/上吊线/孕线突破/十字星（蜻蜓/墓碑/中性）不在白名单）"
     ),
     # 趋势回踩（2026-10-10 融合，docs/19）：普通回踩确认 + EMA 趋势门——
-    # 背景周期 EMA144 趋势闸门（斜率/缠绕/ADX 三重否决）+ 1H 三线排列/快中线发散度/
+    # 4H EMA144 趋势闸门（斜率/缠绕/ADX 三重否决）+ 1H 三线排列/快中线发散度/
     # EMA144 方向全过，其余确认机制与 trigger_pullback_confirm 完全一致
-    # （2026-10-14 双周期套：背景周期字面走 {htf_label} 槽位，s1=4h/s2=1d）
-    "trigger_trend_pullback": "指标同向·趋势回踩金K确认（{htf_label} EMA144 趋势闸门[斜率≥0.5%/20根+缠绕≤2次+ADX≥20 三重否决]与 1H EMA21>55>144 三线排列、快中线发散度达标、EMA144 方向顺信号方向全过后，回踩触点+同向金K入场；确认机制同回踩金K确认，趋势背景更强）",
+    "trigger_trend_pullback": "指标同向·趋势回踩金K确认（4H EMA144 趋势闸门[斜率≥0.5%/20根+缠绕≤2次+ADX≥20 三重否决]与 1H EMA21>55>144 三线排列、快中线发散度达标、EMA144 方向顺信号方向全过后，回踩触点+同向金K入场；确认机制同回踩金K确认，趋势背景更强）",
     "unknown": "未分类",
     "manual_search": "手动搜索",
 }
 
 
-def render_signal_type_label(signal_type: str, htf_label: str = "4h") -> str:
-    """信号类型中文对照渲染（2026-10-14 双周期套）：背景周期字面（{htf_label}）
-    按套注入；无该槽位的类型原样返回（.format 只对含槽位的条目生效）。"""
-    label = SIGNAL_TYPE_LABELS.get(signal_type, signal_type)
-    return label.format(htf_label=htf_label) if "{" in label else label
-
-
 def render_signal_gate_block(
     signal_type: str, stop_cap_pct: Optional[float] = None, flt=None,
-    htf_label: str = "4h", sl_min_atr: Optional[float] = None,
 ) -> str:
     """触发器入场门槛说明（2026-09-28 动态化；2026-10-12 接线真实配置）：
     阈值读 scan_filters 生效值，消除与页面筛选配置的文本分叉（此前 0.2%/1.2×
     硬编码，页面改配置后 AI 看到的口径与程序实际闸门不一致）。flt 由调用方
     （ai_tasks / api 手动分析）透传 resolve_scan_filters(cfg) 结果；None 时
     回落 env/代码默认（无 cfg 上下文的直接调用）。按触发类型渲染对应门槛，
-    非触发器类型输出空串。htf_label（2026-10-14 双周期套）：背景周期称谓，
-    s1="4h" / s2="1d"，默认 "4h" 保持现状。
-    sl_min_atr（2026-10-14-4）：止损宽度下限倍数（按套解析，见 scan_profiles），
-    None 回落 settings.SL_MIN_ATR；仅在突破类近锚资格线里以字面注入。"""
+    非触发器类型输出空串。"""
     if signal_type not in ("trigger_breakout", "trigger_trend_breakout",
                            "trigger_pullback", "trigger_pullback_confirm"):
         return ""
-    _sl_min_atr = float(settings.SL_MIN_ATR if sl_min_atr is None else sl_min_atr)
     from app.services.scan_filters import resolve_scan_filters
     flt = flt or resolve_scan_filters(None)  # 未透传时按 env/代码默认
     # 止损宽度硬上限（2026-09-29 透传 max_stop_pct 补丁参数）：AI 定止损前先自验
@@ -251,11 +237,10 @@ def render_signal_gate_block(
         "（做多=5 根最低价下方，做空=5 根最高价上方），止盈与盈亏比按新锚复算；"
         "近锚达标才可建议开单，并输出 stop_anchor=\"near\"（结构锚达标时输出 \"structure\"）；"
         "近锚仍不达标 → skip",
-        "- 近锚适用前提（硬约束）: 仅当 skip 的唯一原因是盈亏比不达标——信号方向、"
-        f"{htf_label} 背景、"
+        "- 近锚适用前提（硬约束）: 仅当 skip 的唯一原因是盈亏比不达标——信号方向、4h 背景、"
         "趋势状态、量能特征、质量分等其余开单条件必须全部满足，否则照常 skip",
         "- 近锚资格附加线: 量比 <1 的缩量突破无近锚资格；近锚后盈亏比 >4 时重新评估或 skip；"
-        f"近锚止损宽度仍须 ≥{_sl_min_atr:g}×ATR",
+        "近锚止损宽度仍须 ≥0.3×ATR",
         "- 距离分档衔接（2026-10-12-5）: 结构锚距入场超过止损纪律的距离分档线时按止损纪律"
         "直接降级金K锚，不受\"盈亏比唯一不达标\"前提约束（量比 <1 无资格同样适用）；"
         "本条仅处理结构锚不远但盈亏比仍不达标的场景",
@@ -339,8 +324,7 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 
 def render_system_prompt(
     risk_label: Optional[str] = None, rr_min: Optional[float] = None,
-    tp2_enabled: bool = True, htf_label: str = "4h",
-    profile_key: Optional[str] = None,
+    tp2_enabled: bool = True,
 ) -> str:
     """渲染最终生效的 P0 系统提示词（SYSTEM_PROMPT 为带槽位模板）。
 
@@ -349,30 +333,20 @@ def render_system_prompt(
     rr_min（2026-10-02 上页面）：盈亏比铁律下限，system_config.ai_rr_min
     覆盖时由调用方传入；None 回落 env 默认。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时剔除止盈二规则与
-    字段说明，AI 不再产出第二档止盈价（system_config.tp2_enabled，默认关）。
-    htf_label（2026-10-14 双周期套）：背景周期称谓（s1="4h"/s2="1d"），默认
-    "4h" 保证 s1 渲染逐字不变；_RULE_HTF_HARD 作为槽位值是常量，其内部
-    {htf_label} 需在此显式替换（.format 不递归替换值）。
-    profile_key（2026-10-14-4）：扫描套标识——三个 ATR 倍数按套解析（s2 信号
-    4h 用 1h 等效倍率，见 scan_profiles.resolve_risk_atr），None → 回落 settings
-    默认（s1 逐字不变）。与 Risk Guard 同源，保证提示词数字与实际闸门口径一致。"""
+    字段说明，AI 不再产出第二档止盈价（system_config.tp2_enabled，默认关）。"""
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
-    _sl_min_atr, _tp1_max_atr, _tp2_min_gap_atr = resolve_risk_atr(profile_key)
     return SYSTEM_PROMPT.format(
-        _RULE_HTF_HARD=_RULE_HTF_HARD.format(htf_label=htf_label),
+        _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_DIRECTION=_RULE_DIRECTION.replace(chr(10), ' '),
         _RULE_STRUCT=_RULE_STRUCT,
-        _RULE_SL=_RULE_SL.format(
-            far_atr=round(_tp1_max_atr / _rr, 2),
-            sl_min_atr=f"{_sl_min_atr:g}",
-        ),
+        _RULE_SL=_RULE_SL.format(far_atr=round(settings.TP1_MAX_ATR / _rr, 2)),
         # _RULE_TP 值内含 {rr_min}/{tp1_max_atr}/{tp1_max_r}/{tp2_gap_atr}/{tp2_gap_r}
         # 字面占位（format 不递归替换值），须渲染前显式替换
         _RULE_TP=compose_rule_tp(tp2_enabled).format(
             rr_min=_rr,
-            tp1_max_atr=f"{_tp1_max_atr:g}",
+            tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
             tp1_max_r=f"{settings.TP1_MAX_R:g}",
-            tp2_gap_atr=f"{_tp2_min_gap_atr:g}",
+            tp2_gap_atr=f"{settings.TP2_MIN_GAP_ATR:g}",
             tp2_gap_r=f"{settings.TP2_MIN_GAP_R:g}",
         ),
         _RULE_TOUCH=_RULE_TOUCH,
@@ -380,7 +354,7 @@ def render_system_prompt(
         _RULE_VOTE=_RULE_VOTE.replace(chr(10), ' '),
         _tp2_field=_TP2_FIELD_ON if tp2_enabled else _TP2_FIELD_OFF,
         rr_min=_rr,
-        tp1_max_atr=f"{_tp1_max_atr:g}",
+        tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
         tp1_max_r=f"{settings.TP1_MAX_R:g}",
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
     )  # 模板槽位均为纯名称：表达式在渲染前预处理（f-string 时代的 .format 内嵌已移除）
@@ -399,7 +373,6 @@ def analyze_coin(
     stop_cap_pct: Optional[float] = None, interval: str = "1h",
     tactics_block: str = "", rr_min: Optional[float] = None,
     crash_pct: Optional[float] = None, tp2_enabled: bool = True, flt=None,
-    htf_label: str = "4h",
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -429,7 +402,7 @@ def analyze_coin(
                         risk_label=risk_label, stop_cap_pct=stop_cap_pct,
                         interval=interval, tactics_block=tactics_block,
                         rr_min=rr_min, crash_pct=crash_pct,
-                        tp2_enabled=tp2_enabled, flt=flt, htf_label=htf_label),
+                        tp2_enabled=tp2_enabled, flt=flt),
     )
     if not tp2_enabled:
         # TP2 关闭兜底清零（提示词已要求输出 0；防止模型违规输出污染落库记录）
@@ -449,7 +422,6 @@ def _build_messages(
     crash_pct: Optional[float] = None,
     tp2_enabled: bool = True,
     flt=None,
-    htf_label: str = "4h",
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
 
@@ -460,13 +432,7 @@ def _build_messages(
     crash_pct（2026-10-02 上页面）：BTC 急跌阈值 %，透传市场环境块（None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关，注入系统提示词（None 不适用，
     默认 True）。
-    flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。
-    htf_label（2026-10-14 双周期套）：背景周期称谓（s1="4h"/s2="1d"），
-    透传系统提示词/指标块/信号类型/门槛块，默认 "4h" 保持现状。
-    profile_key 随 signal 携带（signal["profile_key"]）：三个 ATR 倍数按套解析，
-    系统提示词与门槛块同源（2026-10-14-4）。"""
-    # 止损宽度下限倍数按套解析（2026-10-14-4）：仅门槛块近锚资格线用其字面值
-    _sl_min_atr = resolve_risk_atr(signal.get("profile_key"))[0]
+    flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。"""
     # 取最近 40 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-41:-1]）。
     # 60→40（2026-09-28）：CSV 是 user 消息 token 大头（60 根 ≈5000+），思考型模型
     # reasoning 时长与输入量正相关；浓缩结论（指标/摆动块）已覆盖形态识别所需，
@@ -507,8 +473,8 @@ def _build_messages(
     if ema:
         ema_summary = f"均线形态: {ema['state_label']}（{ema['detail']}）\n"
 
-    # 技术指标（MACD/布林带/RSI/SuperTrend/ADX/OBV + 背景周期 + 程序化共振结论）
-    indicator_summary = render_indicator_block(klines, htf_klines, htf_label=htf_label)
+    # 技术指标（MACD/布林带/RSI/SuperTrend/ADX/OBV + 4h背景 + 程序化共振结论）
+    indicator_summary = render_indicator_block(klines, htf_klines)
 
     # 市场环境（docs/24 A4①）：本币资金费率 + BTC 状态摘要，紧跟指标块注入——
     # 系统提示词要求"勿臆测"，普跌日无环境感知 AI 只能凭本币指标判断；
@@ -557,13 +523,13 @@ def _build_messages(
     # 单次调用管线无工具循环，模型仅凭给定数据分析，环境数据缺失时按无环境处理
     user_prompt = (
         f"币种: {signal['symbol']}\n"
-        f"信号类型: {render_signal_type_label(signal['signal_type'], htf_label)}（{signal['signal_type']}）\n"
+        f"信号类型: {SIGNAL_TYPE_LABELS.get(signal['signal_type'], signal['signal_type'])}（{signal['signal_type']}）\n"
         f"当前价格: {signal['current_price']}\n"
         f"突破幅度: {signal['breakout_pct']:.2f}%\n"
         f"K线形态: {signal.get('pattern') or '无'}\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
         f"{touch_line}"
-        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt, htf_label=htf_label, sl_min_atr=_sl_min_atr)}"
+        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt)}"
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
         f"量能: {vol_desc}\n"
         f"{ema_summary}"
@@ -581,8 +547,7 @@ def _build_messages(
         )
 
     system_prompt = render_system_prompt(risk_label or None, rr_min=rr_min,
-                                         tp2_enabled=tp2_enabled, htf_label=htf_label,
-                                         profile_key=signal.get("profile_key"))
+                                         tp2_enabled=tp2_enabled)
     # 技能注入（P0 管线无工具循环，命中技能正文直接进系统提示词；与 Agent 管线共用同一事实判定）
     skill_block = skill_library.render_matched(skill_library.build_facts(signal, klines))
     if skill_block:
@@ -674,7 +639,6 @@ def analyze_with_guard(
     progress_id=None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
     crash_pct: Optional[float] = None, tp2_enabled: bool = True, flt=None,
-    htf_label: str = "4h",
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -682,21 +646,19 @@ def analyze_with_guard(
     risk_*（2026-09-27 止损金额模式）：risk_label 注入提示词；fixed 模式下
     risk_amount 作为预算实额传入仓位复算（与开仓引擎同口径）。
     stop_cap_pct（2026-09-29）：止损宽度硬上限注入门槛块（None=不限制）。
-    interval：K线周期标签（与取数口径一致，ai_tasks 传 profile.signal_interval）。
+    interval：K线周期标签（与取数口径一致，ai_tasks 传 cfg.kline_interval）。
     progress_id：scan_result_id，透传 _call_llm 推送 ai_progress 活进度事件（None=不推）。
     tactics_block：战法库判定块（2026-10-02，调用方预渲染；空=无战法不注入）。
     rr_min / risk_pct / crash_pct（2026-10-02 上页面）：盈亏比铁律下限、单笔
     风险比例与 BTC 急跌阈值，注入提示词并透传 Risk Guard 校验（None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时提示词剔除止盈二条目，
     且在风控校验前硬清零 take_profit_2（AI 不产出第二档止盈价）。
-    flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。
-    htf_label（2026-10-14 双周期套）：背景周期称谓（s1="4h"/s2="1d"），
-    透传 _build_messages（系统提示词/指标块/信号类型/门槛块），默认 "4h"。"""
+    flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。"""
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
         htf_klines=htf_klines, risk_label=risk_label, stop_cap_pct=stop_cap_pct,
         interval=interval, tactics_block=tactics_block, rr_min=rr_min,
-        crash_pct=crash_pct, tp2_enabled=tp2_enabled, flt=flt, htf_label=htf_label,
+        crash_pct=crash_pct, tp2_enabled=tp2_enabled, flt=flt,
     )
     client = _get_client()
     _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None

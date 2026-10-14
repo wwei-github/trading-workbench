@@ -931,17 +931,13 @@ HTF_DISPLAY, HTF_SHORT = "4h背景(EMA状态)", "4h背景"
 
 def _compute_all(
     klines: list[list], htf_klines: Optional[list] = None,
-    htf_bg: Optional[dict] = None, htf_label: str = "4h",
+    htf_bg: Optional[dict] = None,
 ) -> list[tuple]:
     """计算全部指标，返回 [(显示名, 短名, result|None)]；单指标异常降级为 None。
 
     htf_bg（2026-10-10）：调用方已算好的 4h 背景结果（如 scanner ranging 过滤
     步骤的产物），传入则直接复用不再重算；htf_klines 仅在 htf_bg 缺席时使用
-    （旧路径兼容：AI 管线仍传原始 4h K 线）。
-    htf_label（2026-10-14 双周期套）：背景周期显示称谓（s1="4h"/s2="1d"），
-    只改渲染文本，HTF_SHORT 内部键（票数匹配）保持不变。"""
-    # 背景周期展示名（HTF_DISPLAY 常量值不变，此处按套拼 s1="4h背景(EMA状态)"）
-    htf_display = f"{htf_label}背景(EMA状态)"
+    （旧路径兼容：AI 管线仍传原始 4h K 线）。"""
     results = []
     for display, short, fn in _INDICATORS:
         try:
@@ -951,14 +947,14 @@ def _compute_all(
             r = None
         results.append((display, short, r))
     if htf_bg is not None:
-        results.append((htf_display, HTF_SHORT, htf_bg))
+        results.append((HTF_DISPLAY, HTF_SHORT, htf_bg))
     elif htf_klines:
         try:
             htf = analyze_htf_background(htf_klines)
         except Exception as e:
             logger.warning("4h背景计算失败（跳过）: %s", e)
             htf = None
-        results.append((htf_display, HTF_SHORT, htf))
+        results.append((HTF_DISPLAY, HTF_SHORT, htf))
     return results
 
 
@@ -1007,16 +1003,13 @@ def _render_atr_line(
 
 def render_indicator_block(
     klines: list[list], htf_klines: Optional[list] = None,
-    htf_label: str = "4h",
 ) -> str:
-    """整块注入文本（含标题、背景周期与多数决结论行，尾带换行）；无可用指标返回空串。
+    """整块注入文本（含标题、4h 背景与多数决结论行，尾带换行）；无可用指标返回空串。
 
     P0/P1 两条管线共用：插在均线形态之后、摆动结构之前。
     结论行由程序统计（方向指标多空票数），提示词按此行执行多数决规则。
-    htf_label（2026-10-14 双周期套）：背景周期称谓（s1="4h"/s2="1d"），只改
-    渲染文本，默认 "4h" 保持现状逐字不变。
     """
-    results = _compute_all(klines, htf_klines, htf_label=htf_label)
+    results = _compute_all(klines, htf_klines)
     lines = [
         f"- {display}: {r['state_label']}（{r['detail']}）"
         for display, _, r in results if r
@@ -1057,18 +1050,18 @@ def render_indicator_block(
         _st = htf_r["state"]
         _why = "缠绕无趋势" if _st == "tangle" else "排列内拐头，趋势衰竭警戒"
         lines.append(
-            f"- 状态约束（硬性）: {htf_label}{htf_r['state_label']}（{_why}）"
+            f"- 状态约束（硬性）: 4h{htf_r['state_label']}（{_why}）"
             " —— 双向禁开新仓，long/short 一律 skip（优先于一切信号）"
         )
     elif htf_r and htf_r.get("state") in STATE_LOCK_CONTRA:
         if htf_r.get("dir") == 1:
             lines.append(
-                f"- 方向约束（硬性）: {htf_label}{htf_r['state_label']}（宏观同侧）"
+                f"- 方向约束（硬性）: 4h{htf_r['state_label']}（宏观同侧）"
                 " —— 仅可 long，开空一律 skip（优先于指标多数决，细则见系统提示词硬约束）"
             )
         else:
             lines.append(
-                f"- 方向约束（硬性）: {htf_label}{htf_r['state_label']}（宏观同侧）"
+                f"- 方向约束（硬性）: 4h{htf_r['state_label']}（宏观同侧）"
                 " —— 仅可 short，开多一律 skip（优先于指标多数决，细则见系统提示词硬约束）"
             )
 
@@ -1080,11 +1073,11 @@ def render_indicator_block(
         ma = htf_r.get("macro_aligned")
         if ma is None:
             lines.append(
-                f"- {htf_label}背景: state={htf_r['state']}（双向禁开，宏观对齐未评估）"
+                f"- 4h背景: state={htf_r['state']}（双向禁开，宏观对齐未评估）"
             )
         else:
             lines.append(
-                f"- {htf_label}背景: state={htf_r['state']}"
+                f"- 4h背景: state={htf_r['state']}"
                 f" macro={'同侧' if ma else '逆侧'}"
             )
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Card, Row, Col, Button, Space, Tabs, message, Segmented } from 'antd'
+import { Card, Row, Col, Button, Space, Tabs, message } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useTabMemory } from '../utils/tabMemory'
 import ScanStatus from '../components/ScanStatus'
@@ -49,21 +49,7 @@ export default function ScanResult({ mode }: ScanResultProps) {
     status,
     aiConfig,
     currentScanId,
-    activeProfile,
-    setActiveProfile,
   } = useScanStore()
-
-  // 激活扫描套运行态：优先取 status.profiles 匹配条目，缺失回落全局（旧后端=反映 s1）
-  const activeProf = status?.profiles?.find((p) => p.key === activeProfile)
-  const isScanning = activeProf ? activeProf.is_scanning : !!status?.is_scanning
-
-  // 扫描套选择器选项：优先用 status.profiles（含后端标签），缺失用两套静态标签
-  const profileOptions = status?.profiles?.length
-    ? status.profiles.map((p) => ({ value: p.key, label: p.label }))
-    : [
-        { value: 's1', label: '1h·4h' },
-        { value: 's2', label: '4h·1d' },
-      ]
 
   const wasScanning = useRef(false)
   // 合约内部 tab 记忆（既有 key 不动）
@@ -90,26 +76,9 @@ export default function ScanResult({ mode }: ScanResultProps) {
     return () => clearInterval(timer)
   }, [])
 
-  // 切换激活扫描套：重取状态（把 currentScanId 切到该套最近扫描）→ 重取结果（含 AI 分析）。
-  // 首渲染跳过（初始加载已取）。
-  const profileReady = useRef(false)
+  // 扫描状态变化处理
   useEffect(() => {
-    if (!profileReady.current) {
-      profileReady.current = true
-      return
-    }
-    ;(async () => {
-      await fetchStatus()
-      // 重置扫描态基线为新套，避免切换瞬间被下方完成判定误报「扫描完成」
-      const st = useScanStore.getState().status
-      const prof = st?.profiles?.find((p) => p.key === activeProfile)
-      wasScanning.current = prof ? prof.is_scanning : !!st?.is_scanning
-      await fetchResults(undefined, 1)
-    })()
-  }, [activeProfile])
-
-  // 扫描状态变化处理（按激活扫描套）
-  useEffect(() => {
+    const isScanning = !!status?.is_scanning
     const aiEnabled = !!aiConfig?.ai_analysis_enabled
     // 扫描完成时刷新结果
     if (wasScanning.current && !isScanning && aiEnabled && currentScanId) {
@@ -122,11 +91,11 @@ export default function ScanResult({ mode }: ScanResultProps) {
       fetchResults()
     }
     wasScanning.current = isScanning
-  }, [isScanning])
+  }, [status?.is_scanning])
 
   const handleTrigger = async () => {
     // 前端也检查是否正在扫描
-    if (isScanning) {
+    if (status?.is_scanning) {
       message.warning('扫描进行中，请等待完成')
       return
     }
@@ -137,6 +106,8 @@ export default function ScanResult({ mode }: ScanResultProps) {
       message.error(e?.response?.data?.detail || '触发扫描失败')
     }
   }
+
+  const isScanning = !!status?.is_scanning
 
   // 立即扫描按钮：置于扫描结果 Tab 内、ResultTable「刷新」左侧
   const scanButton = (
@@ -151,26 +122,12 @@ export default function ScanResult({ mode }: ScanResultProps) {
     </Button>
   )
 
-  // 扫描套选择器（2026-10-14）：从 Tab 栏右上角移入扫描结果区，与「立即扫描」
-  // 同排左右分布（扫描套贴最左、立即扫描+刷新贴最右）
-  const profileSelector = (
-    <Space size={8}>
-      <span style={{ color: '#8c8c8c', fontSize: 13 }}>扫描套</span>
-      <Segmented
-        size="small"
-        options={profileOptions}
-        value={activeProfile}
-        onChange={(v) => setActiveProfile(v as 's1' | 's2')}
-      />
-    </Space>
-  )
-
   // ── 合约 Tabs（现有 10 个 Tab，原样保留——docs/18 零侵入约束）──
   const futuresItems = [
     {
       key: 'results',
       label: '扫描结果',
-      children: <div style={{ height: '100%', overflow: 'hidden' }}><ResultTable headerLeading={profileSelector} headerExtra={scanButton} /></div>,
+      children: <div style={{ height: '100%', overflow: 'hidden' }}><ResultTable headerExtra={scanButton} /></div>,
     },
     {
       key: 'pending-pool',

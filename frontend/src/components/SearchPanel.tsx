@@ -4,7 +4,6 @@ import { SearchOutlined, RobotOutlined, LoadingOutlined } from "@ant-design/icon
 import KlineChart from "./KlineChart";
 import AiAnalysisCard, { getEffectiveDecision } from "./AiAnalysisCard";
 import { scanApi } from "../api/scan";
-import { useScanStore } from "../stores/scanStore";
 import type { AIAnalysis } from "../types";
 
 const { Text } = Typography;
@@ -28,8 +27,6 @@ export default function SearchPanel() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<AIAnalysis | null>(null);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
-  // 当前扫描套（2026-10-14 双周期套）：手动分析按选中套的参数（周期/背景）执行
-  const activeProfile = useScanStore((s) => s.activeProfile);
 
   const doSearch = async () => {
     const s = normalizeInput(input);
@@ -54,7 +51,7 @@ export default function SearchPanel() {
     setAnalyzeError(null);
     setAnalysis(null);
     try {
-      const result = await scanApi.analyzeCoin(symbol, activeProfile);
+      const result = await scanApi.analyzeCoin(symbol);
       setAnalysis(result);
     } catch (e: any) {
       setAnalyzeError(e?.response?.data?.detail || "AI 分析失败，请重试");

@@ -72,22 +72,10 @@ class ScanConfig(BaseModel):
     repeat_window_hours: int
 
 
-class ScanProfileStatus(BaseModel):
-    """扫描套运行状态（2026-10-14 双周期套，docs/22）：供前端套选择器/状态展示。"""
-    key: str                       # "s1" / "s2"
-    label: str                     # "1h·4h" / "4h·1d"
-    enabled: bool                  # 该套启用开关（system_config.scan_profile_*_enabled）
-    last_scan: Optional[ScanRecordOut] = None   # 该套最近一次扫描记录（无则 None）
-    is_scanning: bool = False      # 该套是否有 running 扫描
-
-
 class ScanStatusResponse(BaseModel):
     last_scan: Optional[ScanRecordOut] = None
     is_scanning: bool
     config: ScanConfig
-    # 扫描套清单（2026-10-14 双周期套）：每套一份 key/label/enabled/last_scan/is_scanning，
-    # 前端「套」选择器与状态展示据此渲染；config.* 仍为 s1 口径（历史兼容）
-    profiles: list[ScanProfileStatus] = []
     # 交易运行状态（2026-09-20 顶部一览；2026-10-03 双网独立开关；
     # 同日删环境切换，在跑单统计为双网合计）
     trading_enabled_testnet: bool = False  # 测试网自动交易开关
@@ -232,11 +220,6 @@ class SystemConfigOut(BaseModel):
     scan_filters: Optional[dict] = None
     scan_filters_effective: dict = {}
 
-    # 双周期扫描套启用开关（2026-10-14，docs/22）：s1=信号1h/背景4h（默认开）/
-    # s2=信号4h/背景1d（默认关）。两开关可同时开，PUT /config 约束不得两套皆关
-    scan_profile_s1_enabled: bool = True
-    scan_profile_s2_enabled: bool = False
-
     fib_enabled: bool
 
     # 自动交易（docs/06）
@@ -340,11 +323,6 @@ class SystemConfigUpdate(BaseModel):
     # 筛选参数组（2026-09-28）：整组覆盖；传 null=清除定制（恢复 env/代码默认）。
     # 键集与范围校验见 api/scan.py _validate_scan_filters
     scan_filters: Optional[dict] = None
-
-    # 双周期扫描套启用开关（2026-10-14，docs/22）：s1=信号1h/背景4h / s2=信号4h/背景1d。
-    # 可同时开启，但合并后不得两套皆关（PUT /config 校验，全关 400）
-    scan_profile_s1_enabled: Optional[bool] = None
-    scan_profile_s2_enabled: Optional[bool] = None
 
     fib_enabled: Optional[bool] = None
 

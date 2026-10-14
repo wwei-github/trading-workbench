@@ -39,7 +39,6 @@ from typing import Optional, Tuple
 from app.services.scan_filters import (
     TOUCH_EMA144,
     TOUCH_EMA21,
-    TOUCH_EMA21_1D,
     TOUCH_EMA21_4H,
     TOUCH_EMA55,
     TOUCH_RETEST,
@@ -68,15 +67,13 @@ PULLBACK_CONFIRM = "trigger_pullback_confirm"  # 回踩触点后金K确认（当
 # 回踩触点标注优先级与中文标签（docs/22 §2；与 scan_filters.ALL_TOUCH_REFS 同源顺序；
 # 2026-10-09 加入 4h EMA21——均线取最快原则按更新频率排序：1h EMA21 > 4h EMA21 > 1h EMA55）
 TOUCH_ORDER = (
-    TOUCH_RETEST, TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA21_1D,
-    TOUCH_EMA55, TOUCH_EMA144,
+    TOUCH_RETEST, TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55, TOUCH_EMA144,
 )
 TOUCH_LABELS = {
     TOUCH_RETEST: "突破回测位",
     TOUCH_SWING: "摆动结构位",
     TOUCH_EMA21: "EMA21",
     TOUCH_EMA21_4H: "EMA21(4h)",
-    TOUCH_EMA21_1D: "EMA21(1d)",
     TOUCH_EMA55: "EMA55",
     TOUCH_EMA144: "EMA144",
 }
@@ -307,19 +304,17 @@ def _detect_ema_touch(
 def _detect_htf_ema21_touch(
     klines: list[list], htf_klines: list[list], direction: int,
 ) -> Optional[float]:
-    """大周期 EMA21 跨周期触碰检测（2026-10-09；2026-10-14 周期无关化供双周期套复用）。
+    """4h EMA21 跨周期触碰检测（2026-10-09）。
 
-    语义：信号周期 K线（klines[-2]）影线/收盘触及大周期 EMA21 水平——大周期动态
-    价值区回踩，是信号周期 EMA21 的跨周期放大版。触碰带语义与 _detect_ema_touch
+    语义：1h 信号K线（klines[-2]）影线/收盘触及 4h EMA21 水平——大周期动态
+    价值区回踩，是 1h EMA21 的跨周期放大版。触碰带语义与 _detect_ema_touch
     完全一致（多头 low ≤ EMA ≤ close，空头对称），不带 band（同 ema21 原口径）。
-    大周期取哪一层由调用方决定（s1=4h / s2=1d），本函数只按传入的 htf_klines 算，
-    逻辑与周期无关。
 
-    不加排列/斜率门：大周期震荡（ranging）与方向冲突已被扫描端闸门（震荡过滤 +
-    方向一致门）前置过滤，此处只做触碰判定。大周期 EMA 取最新已收盘根
+    不加排列/斜率门：4h 震荡（ranging）与方向冲突已被扫描端闸门（震荡过滤 +
+    方向一致门）前置过滤，此处只做触碰判定。4h EMA 取最新已收盘根
     （htf_klines[-1] 为未收盘根，与 analyze_htf_background 同口径剔除）；
-    尾根差对 21 周期 EMA 的影响可忽略，且同一大周期根内的信号周期K线共享
-    同一大周期 EMA21 快照，口径自洽。
+    尾根差 ≤4h 对 21 周期 EMA 的影响可忽略，且同一 4h 根内的 1h K线共享
+    同一 4h EMA21 快照，口径自洽。
     """
     if len(htf_klines) < 22:
         return None
@@ -448,7 +443,6 @@ def detect_trigger(
     flt: Optional[ScanFilters] = None,
     retest: Optional[dict] = None,
     htf: Optional[list] = None,
-    htf_touch_ref: str = TOUCH_EMA21_4H,
     diag: Optional[dict] = None,
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """检测与候选方向一致的入场触发（两段式决策矩阵，docs/19 §4.1 + docs/22 触点）。
@@ -459,10 +453,8 @@ def detect_trigger(
     解析（env/代码默认），策略函数不读 DB。
     retest（可选）：scanner 侧活跃破轨事件快照 {price, direction, candle_open}
     （docs/22 §3.1；T1 突破触发时由 scanner 记录 breakout_events）。
-    htf（可选）：大周期原始K线（尾根未收盘，与 analyze_htf_background 同源序列）；
-    None/过短 → 大周期 EMA21 触点静默跳过（大周期数据缺失不阻断信号周期触点体系）。
-    htf_touch_ref（可选）：大周期 EMA21 触点键（2026-10-14 双周期套）：s1=ema21_4h
-    （默认，行为与历史完全一致）/ s2=ema21_1d；检测逻辑与周期无关，仅键名不同。
+    htf（可选）：4h 原始K线（尾根未收盘，与 analyze_htf_background 同源序列）；
+    None/过短 → ema21_4h 触点静默跳过（4h 数据缺失不阻断 1h 触点体系）。
     diag（可选，2026-10-13 漏斗「无触发」判定说明）：未触发路径的可选出参——
     向 diag["reasons"] 追加原因文本段（突破卡点/触点缺失/待确认失效/无金K），
     scanner 收口落 funnel_json.details 前端展示；触发命中时内容不保证完整，
@@ -640,10 +632,10 @@ def detect_trigger(
             p = _detect_ema_touch(klines, direction, period, flt)
             if p is not None:
                 touches[ref] = p
-    if htf_touch_ref in refs and htf:
+    if TOUCH_EMA21_4H in refs and htf:
         p = _detect_htf_ema21_touch(klines, htf, direction)
         if p is not None:
-            touches[htf_touch_ref] = p
+            touches[TOUCH_EMA21_4H] = p
     touch_ref = next((r for r in TOUCH_ORDER if r in touches), None)
     touch_price = touches.get(touch_ref) if touch_ref else None
     touch_label = TOUCH_LABELS.get(touch_ref, "") if touch_ref else None

@@ -11,11 +11,7 @@ export interface ResultFilters {
 }
 
 export const scanApi = {
-  // 触发扫描（2026-10-14 双扫描套）：profileKey 缺省=后端默认 s1；'s1'/'s2' 指定扫描套
-  trigger: (profileKey?: 's1' | 's2') =>
-    api
-      .post<{ scan_id: string; status: string }>('/scans', profileKey ? { profile_key: profileKey } : {})
-      .then((r) => r.data),
+  trigger: () => api.post<{ scan_id: string; status: string }>('/scans').then((r) => r.data),
   // 筛选漏斗明细（2026-10-11）：该轮各关卡被拒计数 + symbol→关卡映射；funnel=null（旧行/异常轮次）
   funnel: (scanId: string) =>
     api.get<{ scan_id: string; funnel: FunnelData | null }>(`/scans/${scanId}/funnel`).then((r) => r.data),
@@ -31,25 +27,10 @@ export const scanApi = {
       })
       .then((r) => r.data),
 
-  latestResults: (
-    page = 1,
-    pageSize = 20,
-    sortBy = 'quality_score',
-    order = 'desc',
-    filters?: ResultFilters,
-    profileKey?: string,
-  ) =>
+  latestResults: (page = 1, pageSize = 20, sortBy = 'quality_score', order = 'desc', filters?: ResultFilters) =>
     api
       .get<ListResponse<ScanResult>>('/scans/latest/results', {
-        params: {
-          page,
-          page_size: pageSize,
-          sort_by: sortBy,
-          order,
-          ...(filters || {}),
-          // 按扫描套隔离（2026-10-14 双周期套）：无该套轮次时返回空列表
-          ...(profileKey ? { profile_key: profileKey } : {}),
-        },
+        params: { page, page_size: pageSize, sort_by: sortBy, order, ...(filters || {}) },
       })
       .then((r) => r.data),
 
@@ -93,14 +74,9 @@ export const scanApi = {
     api.post<{ ok: boolean; ack_at: string }>('/scans/config/weekly-breaker-ack').then((r) => r.data),
 
   // 手动搜索币种 AI 分析（同步调用，AI 思考耗时较长，放宽超时）
-  // profileKey 缺省=后端默认 s1（2026-10-14 双扫描套）
-  analyzeCoin: (symbol: string, profileKey?: 's1' | 's2') =>
+  analyzeCoin: (symbol: string) =>
     api
-      .post<AIAnalysis>(
-        '/scans/analyze',
-        profileKey ? { symbol, profile_key: profileKey } : { symbol },
-        { timeout: 600000 },
-      )
+      .post<AIAnalysis>('/scans/analyze', { symbol }, { timeout: 600000 })
       .then((r) => r.data),
 
   // AI 分析进度事件流（展开区域流式展示分析过程，2s 轮询）

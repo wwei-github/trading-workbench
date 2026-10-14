@@ -54,14 +54,7 @@ export default function FunnelPanel({ initialStage }: { initialStage?: string } 
   const [loading, setLoading] = useState(false)
   const [klineSymbol, setKlineSymbol] = useState<string | null>(null)
   const currentScanId = useScanStore((s) => s.currentScanId)
-  const activeProfile = useScanStore((s) => s.activeProfile)
-  const status = useScanStore((s) => s.status)
-  // 按当前扫描套取「进行中」（2026-10-14 双周期套）：两套可并发，全局 is_scanning
-  // 会把 s2 的扫描误当成 s1 轮次结束；profiles 缺失（旧后端）回落全局值
-  const isScanning = !!(
-    status?.profiles?.find((p) => p.key === activeProfile)?.is_scanning
-    ?? status?.is_scanning
-  )
+  const isScanning = !!useScanStore((s) => s.status?.is_scanning)
 
   const fetchData = useCallback(async (scanId: string | null) => {
     if (!scanId) return

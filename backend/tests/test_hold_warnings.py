@@ -34,7 +34,7 @@ _COLS = (
     " fee_total FLOAT, funding_total FLOAT, error_tags JSON, error_lesson TEXT,"
     " attributed_at TIMESTAMP, ai_advice JSON, ai_advice_at TIMESTAMP,"
     " ai_advice_pnl FLOAT, peak_total_pnl FLOAT, hold_warn_level INTEGER,"
-    " rule_version VARCHAR(16), profile_key VARCHAR(16),"
+    " rule_version VARCHAR(16),"
     " raw JSON, created_at TIMESTAMP, updated_at TIMESTAMP"
 )
 

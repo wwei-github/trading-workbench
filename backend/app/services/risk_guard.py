@@ -18,13 +18,6 @@
   RISK_BUDGET_PCT（3%，默认）；fixed=亏固定 USDT 实额（position_pct 不折算），
   AI 不自报仓位
 
-风控 ATR 倍数按套标定（2026-10-14-4 双周期套）：下列 SL_MIN_ATR / TP1_MAX_ATR /
-TP2_MIN_GAP_ATR 三常数在 settings 里按 1h ATR 校准，实际乘的是**本套信号周期**
-ATR14——s2（信号 4h，ATR≈1.5~2×1h）经 scan_profiles.resolve_risk_atr 取 1h 等效
-倍率（0.15/1.0/0.25），否则沿用同一倍率会把实际距离放宽 ~2×。s1 / 无 profile_key
-（旧路径、测试直调）回落 settings 默认，行为逐字不变。R 腿（TP1_MAX_R /
-TP2_MIN_GAP_R）是止损距离口径、与周期无关，不经此解析。
-
 已移除的校验（方法论降级为 AI 提示词纪律，程序不再打回/改挂）：
 - 入场偏离现价 ≤2%（2026-09-15 移除）
 - 方向铁律入场贴近结构位 ±0.3%（2026-09-15 早些时候移除）
@@ -51,7 +44,6 @@ import numpy as np
 from pydantic import BaseModel, ValidationError
 
 from app.config import settings
-from app.services.scan_profiles import resolve_risk_atr
 from app.services.strategy.technical import atr_series
 
 logger = logging.getLogger(__name__)
@@ -354,12 +346,6 @@ def validate_decision(
     except Exception:
         _atr14 = None
 
-    # 风控 ATR 倍数按套解析（2026-10-14-4 双周期套）：三个常数乘的是**本套信号周期**
-    # 的 ATR14，而 settings 默认值按 1h ATR 校准——s2（信号 4h，ATR≈2×1h）沿用同一
-    # 倍率会把实际距离放宽 ~2×。按 signal 携带的 profile_key 取 1h 等效倍率；
-    # 无 profile_key（旧路径/测试）→ s1 默认，行为逐字不变。R 腿与周期无关，不动。
-    _sl_min_atr, _tp1_max_atr, _tp2_min_gap_atr = resolve_risk_atr(signal.get("profile_key"))
-
     # ── 止损宽度下限（2026-10-12-2 拍板）：防"止损过近"被噪音扫掉、并抑制 R 放大 ──
     # 止损宽度须 ≥ SL_MIN_ATR×ATR14（默认 0.3）。近锚（突破类 stop_anchor=near）
     # 豁免——其止损刻意贴金K窗口极值，另有 NEAR_ANCHOR_RISK_FACTOR 敞口折价与
@@ -375,13 +361,13 @@ def validate_decision(
     )
     if (
         not _near_anchor and stop_dist > 0 and _atr14 and _atr14 > 0
-        and _sl_min_atr > 0
+        and float(settings.SL_MIN_ATR) > 0
     ):
-        _sl_floor = _sl_min_atr * _atr14
+        _sl_floor = float(settings.SL_MIN_ATR) * _atr14
         if stop_dist < _sl_floor * (1 - 1e-9):
             violations.append(
                 f"止损宽度过近：距入场 {stop_dist:.6g}（≈{stop_dist / _atr14:.2f}×ATR），"
-                f"低于下限 {_sl_floor:.6g}（{_sl_min_atr:g}×ATR）——"
+                f"低于下限 {_sl_floor:.6g}（{settings.SL_MIN_ATR:g}×ATR）——"
                 f"把锚点外扩到至少该宽度再报，或直接 skip（过近必被噪音扫）"
             )
 
@@ -404,8 +390,8 @@ def validate_decision(
         _caps = []
         if float(settings.TP1_MAX_R) > 0:
             _caps.append(float(settings.TP1_MAX_R) * stop_dist)
-        if _atr14 and _atr14 > 0 and _tp1_max_atr > 0:
-            _caps.append(_tp1_max_atr * _atr14)
+        if _atr14 and _atr14 > 0 and float(settings.TP1_MAX_ATR) > 0:
+            _caps.append(float(settings.TP1_MAX_ATR) * _atr14)
         if _caps:
             _cap = max(min(_caps), _rr_floor * stop_dist)
             _tp1_dist = abs(d.take_profit_1 - d.entry_price)
@@ -429,13 +415,13 @@ def validate_decision(
     # d ≤ 0（反向/重合）或 d < gap_min 都撤档。ATR 不可算时 ATR 腿置 0；
     # TP2_MIN_GAP_ATR/R 都为 0 时整条保护失效（含手续费地板——开关口径）。
     _tp2 = float(d.take_profit_2) if d.take_profit_2 > 0 else 0.0
-    _gap_cfg_on = _tp2_min_gap_atr > 0 or float(settings.TP2_MIN_GAP_R) > 0
+    _gap_cfg_on = float(settings.TP2_MIN_GAP_ATR) > 0 or float(settings.TP2_MIN_GAP_R) > 0
     if _tp2 > 0 and _gap_cfg_on:
         _gaps = [2 * float(settings.TAKER_FEE_RATE) * d.entry_price]
         if float(settings.TP2_MIN_GAP_R) > 0:
             _gaps.append(float(settings.TP2_MIN_GAP_R) * stop_dist)
-        if _atr14 and _atr14 > 0 and _tp2_min_gap_atr > 0:
-            _gaps.append(_tp2_min_gap_atr * _atr14)
+        if _atr14 and _atr14 > 0 and float(settings.TP2_MIN_GAP_ATR) > 0:
+            _gaps.append(float(settings.TP2_MIN_GAP_ATR) * _atr14)
         _gap_min = max(_gaps)
         _tp2_gap = (
             _tp2 - d.take_profit_1 if d.direction == "long"
