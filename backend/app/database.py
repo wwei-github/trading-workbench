@@ -661,6 +661,19 @@ def _run_migrations(engine):
         conn.execute(text("DROP TABLE IF EXISTS futures_backtests"))
         conn.execute(text("DROP TABLE IF EXISTS backtest_kline_cache"))
         conn.execute(text("DROP TABLE IF EXISTS spot_backtests"))
+        # 双周期扫描套（1h·4h / 4h·1d）整体回退后的残留列清理（2026-10-14，见 revert
+        # 提交）：该特性曾给存量库补过 4 列 + 1 索引（scan_records/trade_records 的
+        # profile_key、system_config 的两个启用开关）。回退后模型不再映射、代码不再
+        # 引用这些列，留着虽无害（均为可空或带 DEFAULT），但按用户拍板做显式清理。
+        # 本仓库默认「列保留不删」，此处为显式例外（同上方 calc_stop_loss 先例）。
+        # 幂等：全新库由 create_all 建表本就不含这些列，IF EXISTS 下四句全部无害。
+        conn.execute(text("DROP INDEX IF EXISTS ix_scan_records_profile_key"))
+        conn.execute(text("ALTER TABLE scan_records DROP COLUMN IF EXISTS profile_key"))
+        conn.execute(text("ALTER TABLE trade_records DROP COLUMN IF EXISTS profile_key"))
+        conn.execute(text(
+            "ALTER TABLE system_config DROP COLUMN IF EXISTS scan_profile_s1_enabled"))
+        conn.execute(text(
+            "ALTER TABLE system_config DROP COLUMN IF EXISTS scan_profile_s2_enabled"))
 
 
 def init_db():
