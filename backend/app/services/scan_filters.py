@@ -130,8 +130,9 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
 
     def _touch_refs(key: str) -> tuple:
         """回踩触点白名单（docs/22）：list 过滤非法项后须非空，空/全非法回落
-        默认 ["ema21"]（回踩触点与触发类型不同——静默全空会让回踩管线整体
-        停摆，回落默认比全量放行安全）。退役触点（ema144，2026-10-10 三次拍板）
+        默认 DEFAULT_TOUCH_REFS（摆动结构位+均线族；回踩触点与触发类型不同——
+        静默全空会让回踩管线整体停摆，回落默认比全量放行安全）。退役触点
+        （ema144，2026-10-10 三次拍板）
         强制过滤——即使 DB 旧配置显式勾选也失效，保证「退役」语义不留暗门。"""
         v = raw.get(key)
         if not isinstance(v, list):

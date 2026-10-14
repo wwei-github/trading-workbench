@@ -11,7 +11,7 @@
   两类共享三重收紧：最小幅度 + 放量 + 长实体短影线 + 追高上限（各自按突破位衡量）
 - T3 trigger_pullback_confirm：回踩触点企稳 + 同向金K 两段式确认——
   当根同时触碰+金K（当根确认），或触碰根后 1..N 根已收盘K线内出现同向金K
-  （次根/N 根内确认，N=pending_confirm_window_bars 默认 3）；
+  （次根/N 根内确认，N=pending_confirm_window_bars 默认 4）；
   仅触碰无金K 不再当根触发，转入 pending 待确认池（scanner 持久化）
 - 纯金K触发（trigger_candlestick）2026-09-29 下线：金K必须与触点配合，无触碰
   无有效 pending 的金K 一律不触发（正式网复盘 28 笔 6 胜负期望）
@@ -28,7 +28,7 @@ retest > swing > ema21 > ema55 > ema144
 
 优先级（决策矩阵，docs/19 §4.1）：T1a/T1b 突破 > 当根确认 > 次根/N 根内确认 >
 触碰转 pending；pending 在触碰根后 N 根窗口内有效（N = ScanFilters.
-pending_confirm_window_bars，默认 3；N=1 即旧「恰好下一根」口径）。
+pending_confirm_window_bars，默认 4；N=1 即旧「恰好下一根」口径）。
 
 position 语义（docs/09 方向派生口径，2026-09-28 关键位移除后回归）：
 看涨形态/回踩企稳=support、向上突破/反抽受阻=resistance。

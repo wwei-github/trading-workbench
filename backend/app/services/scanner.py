@@ -772,7 +772,7 @@ class Scanner:
 
             # 5.5.1 孤儿行清扫（2026-10-10）：跌出本轮宇宙的币（缩量/黑名单/风险
             # 档位/拉K线持续失败等）无人再评估其 pending，行冻结在 pending 永不
-            # 终态。设计等待窗 ≤N 根（N=pending_confirm_window_bars，默认 3），
+            # 终态。设计等待窗 ≤N 根（N=pending_confirm_window_bars，默认 4），
             # 阈值取 N+1 根给「窗口最后一根仍未裁决」留一轮余量，超 N+1 根仍未
             # 终态即为孤儿，直接 expired（window_expired）。全表一条 UPDATE，
             # 每轮都跑（幂等，命中的轮次才写行）

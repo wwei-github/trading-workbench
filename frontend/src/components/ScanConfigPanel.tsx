@@ -23,8 +23,10 @@ const TOUCH_REF_OPTIONS = [
   { value: 'ema21_4h', label: 'EMA21(4h)' },
   { value: 'ema55', label: 'EMA55' },
 ]
-/** 默认均线族（2026-10-08，2026-10-09 加入 4h EMA21，2026-10-10 ema144 退役）：横向结构触点（retest/swing）默认关 */
-const DEFAULT_TOUCH_VALUES = ['ema21', 'ema21_4h', 'ema55']
+/** 默认触点 = 摆动结构位 + 均线族（2026-10-08 均线族，2026-10-09 加入 4h EMA21，
+ *  2026-10-10 ema144 退役，2026-10-14 加入 swing；retest 仍需显式勾选）——
+ *  与后端 DEFAULT_TOUCH_REFS 对齐，避免前端默认把 swing 静默写回旧列表（2026-10-14） */
+const DEFAULT_TOUCH_VALUES = ['swing', 'ema21', 'ema21_4h', 'ema55']
 
 /** 回踩类触发类型（2026-10-12 trend_pullback 并入）：仅此类会消费
  *  pullback_touch_refs，用于联动置灰触点白名单 */
