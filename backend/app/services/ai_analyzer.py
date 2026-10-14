@@ -639,6 +639,7 @@ def analyze_with_guard(
     progress_id=None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
     crash_pct: Optional[float] = None, tp2_enabled: bool = True, flt=None,
+    rr_tol: Optional[float] = None,
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -651,6 +652,7 @@ def analyze_with_guard(
     tactics_block：战法库判定块（2026-10-02，调用方预渲染；空=无战法不注入）。
     rr_min / risk_pct / crash_pct（2026-10-02 上页面）：盈亏比铁律下限、单笔
     风险比例与 BTC 急跌阈值，注入提示词并透传 Risk Guard 校验（None=env 默认）。
+    rr_tol（2026-10-14）：RR 铁律/TP1 上限容差（cfg.ai_rr_tol 透传，None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时提示词剔除止盈二条目，
     且在风控校验前硬清零 take_profit_2（AI 不产出第二档止盈价）。
     flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。"""
@@ -693,7 +695,7 @@ def analyze_with_guard(
 
         ok, violations, fixed = parse_and_validate(
             raw, signal, klines, risk_budget=_risk_budget,
-            rr_min=rr_min, risk_pct=risk_pct,
+            rr_min=rr_min, risk_pct=risk_pct, rr_tol=rr_tol,
         )
         if ok:
             logger.info(

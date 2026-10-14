@@ -253,7 +253,8 @@ class SystemConfigOut(BaseModel):
     daily_loss_stop_pct: Optional[float] = None       # 当日亏损熔断阈值 %（默认 9）
     daily_loss_stop_enabled: Optional[bool] = None    # 熔断开关（默认开）
     ai_rr_min: Optional[float] = None                 # 盈亏比铁律下限（默认 1.5）
-    ai_rr_tol: Optional[float] = None                 # 现价复算容差（默认 0.02，0=严格）
+    ai_rr_tol: Optional[float] = None                 # RR 容差（默认 0.02R，三处共用：开仓现价闸/
+                                                      # AI 三价铁律/TP1 上限；0=严格）
     risk_pct: Optional[float] = None                  # 单笔风险比例 %（默认 3，pct 模式）
     leverage_max: Optional[int] = None                # 杠杆上限（默认 20）
     taker_fee_rate: Optional[float] = None            # Taker 费率（默认 0.0005）

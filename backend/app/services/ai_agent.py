@@ -468,6 +468,7 @@ def _handle_submit(
     rr_min: Optional[float] = None,
     risk_pct: Optional[float] = None,
     tp2_enabled: bool = True,
+    rr_tol: Optional[float] = None,
 ) -> tuple[bool, str, Optional[dict]]:
     """submit_decision：锚点换算 → Risk Guard。返回 (done, tool_result, fixed)
 
@@ -541,7 +542,7 @@ def _handle_submit(
     )
     ok, violations, fixed = validate_decision(
         d, signal, klines, risk_budget=risk_budget,
-        rr_min=rr_min, risk_pct=risk_pct,
+        rr_min=rr_min, risk_pct=risk_pct, rr_tol=rr_tol,
     )
     if ok:
         return True, "决策已提交并通过风控校验", fixed
@@ -579,6 +580,7 @@ def _dispatch_tool(name: str, args: dict, ctx: dict) -> tuple[bool, str, Optiona
             args, ctx["signal"], ctx["klines"], risk_budget=ctx.get("risk_budget"),
             rr_min=ctx.get("rr_min"), risk_pct=ctx.get("risk_pct"),
             tp2_enabled=ctx.get("tp2_enabled", True),
+            rr_tol=ctx.get("rr_tol"),
         )
     return False, f"unknown tool: {name}", None
 
@@ -593,6 +595,7 @@ def analyze_coin_agent(
     stop_cap_pct: Optional[float] = None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
     tp2_enabled: bool = True, flt=None,
+    rr_tol: Optional[float] = None,
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -678,7 +681,8 @@ def analyze_coin_agent(
         # 风险比例% 口径）；2026-09-27 统一口径
         "risk_budget": risk_amount if risk_mode == "fixed" and risk_amount > 0 else None,
         # 盈亏比铁律/风险比例（2026-10-02 上页面）：透传 submit_decision 校验
-        "rr_min": rr_min, "risk_pct": risk_pct,
+        # rr_tol（2026-10-14）：RR/TP1 容差带同源透传（None=env 默认 0.02）
+        "rr_min": rr_min, "risk_pct": risk_pct, "rr_tol": rr_tol,
         # TP2 分批开关（2026-10-08）：透传 submit_decision 硬清零
         "tp2_enabled": _tp2_on,
     }

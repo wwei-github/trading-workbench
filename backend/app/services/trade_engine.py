@@ -328,8 +328,9 @@ def _attempt_open(
         # 退化——按现价复算仍须 ≥盈亏比铁律下限（ai_rr_min 可页面覆盖），否则市价进不划算。
         # 容差带（2026-10-11-3，v2026-10-11-3）：rr_now ≥ rr_min - ai_rr_tol 即放行——
         # CYBERUSDT 案例：AI 三价 RR 1.57 达标，3 分钟漂移后现价复算 1.4998 被 1.5 拦，
-        # 0.0002 级漂移误杀信号。容差仅容忍 AI 报价到开仓间的执行漂移，AI 入场价口径
-        # 铁律（risk_guard.validate_decision）不加容差。放行时落 task log 审计。
+        # 0.0002 级漂移误杀信号。初期限本闸（容忍 AI 报价到开仓间的执行漂移）；
+        # 2026-10-14-3 起同一条容差带扩到 AI 入场价口径铁律与 TP1 上限
+        # （risk_guard.validate_decision，吞 tick 取整擦边）。放行时落 task log 审计。
         if sl != price:
             rr_now = abs(tp1 - price) / abs(price - sl)
             if rr_now < rr_min - rr_tol:

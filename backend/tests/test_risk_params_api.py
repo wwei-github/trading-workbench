@@ -11,6 +11,7 @@ model_fields_set 区分「未传」与「显式传 null」。sqlite 内存库不
 4. 未传字段不改动（model_fields_set 语义）
 5. min_adapt_leverage 上限联动 leverage_max（cfg 覆盖 / body 同传）
 """
+import logging
 import sys
 from pathlib import Path
 
@@ -282,3 +283,34 @@ def test_daily_loss_stop_pct_zero_allowed(client):
     r = http.put("/api/scans/config", json={"daily_loss_stop_pct": 0})
     assert r.status_code == 200
     assert r.json()["daily_loss_stop_pct"] == 0
+
+
+# ── 配置变更审计日志（2026-10-14：模型/风控参数被改须可回溯） ──
+
+_AUDIT_LOGGER = "app.api.scan"
+
+
+def test_put_config_writes_audit_log(client, caplog):
+    """PUT 改模型 → WARNING 审计落 app_logs 链（log_sink 收 app.* WARNING），
+    含键名、旧值（未配置=NULL）与新值"""
+    http, _db = client
+    with caplog.at_level(logging.WARNING, logger=_AUDIT_LOGGER):
+        r = http.put("/api/scans/config", json={"ai_model": "deepseek/deepseek-flash"})
+    assert r.status_code == 200
+    audit = [
+        x.message for x in caplog.records
+        if x.name == _AUDIT_LOGGER and "系统配置更新" in x.message
+    ]
+    assert len(audit) == 1
+    assert "ai_model" in audit[0]
+    assert "deepseek/deepseek-flash" in audit[0]
+    assert "NULL" in audit[0]  # 旧值未配置
+
+
+def test_put_config_rejected_writes_no_audit(client, caplog):
+    """越界 400 未落库 → 不产生审计日志（防止审计记录与实际配置不符）"""
+    http, _db = client
+    with caplog.at_level(logging.WARNING, logger=_AUDIT_LOGGER):
+        r = http.put("/api/scans/config", json={"ai_rr_tol": 5})
+    assert r.status_code == 400
+    assert not any("系统配置更新" in x.message for x in caplog.records)

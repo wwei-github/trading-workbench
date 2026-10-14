@@ -251,7 +251,11 @@ class Settings(BaseSettings):
     # 提高到 1.8R（见 blacklist_service.AUTO_RISK_OVERSHOOT/AUTO_COOLDOWN_DAYS/
     # PERMANENT_R_OVERSHOOT）。动机：测试网孪生单的超预算亏损会把币种全局拉黑
     # （register_settle 不区分网络），1.2R 门槛过松、连坐 30 天。
-    RULE_VERSION: str = "v2026-10-14-2"
+    # v2026-10-14-3（程序校验口径修复，非拍板）：ai_rr_tol 容差带从开仓现价闸
+    # 扩到 AI 三价 RR 铁律与 TP1 距离上限——tick 取整后兜底 1.5R 价普遍复算为
+    # 1.49~1.51R，零容差白烧 Reflection 重试后强制 skip（10-14 实测过半）；
+    # 0.02R 带宽吞取整噪音，1.47R/1.55R 真·越界仍拦，页面置 0 回严格旧口径。
+    RULE_VERSION: str = "v2026-10-14-3"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]
@@ -285,8 +289,10 @@ class Settings(BaseSettings):
     # 合法 JSON、降低解析失败重试率；默认关——部分兼容网关不支持该参数（会 400）
     LLM_JSON_MODE: bool = False
     AI_RR_MIN: float = 1.5            # 盈亏比复算下限（交易系统铁律）
-    AI_RR_TOL: float = 0.02           # 开仓现价 RR 复算容差（rr_now ≥ rr_min - tol 放行；
-                                      # AI 三价铁律不加容差，容忍 AI 报价到开仓间漂移）
+    AI_RR_TOL: float = 0.02           # RR 复算容差（R 单位绝对带宽，三处共用，2026-10-14-3 起）：
+                                      # ① 开仓现价闸（容忍 AI 报价到成交间漂移）；
+                                      # ② AI 三价 RR 铁律；③ TP1 距离上限 R 带。
+                                      # 吞 tick 取整擦边（1.49~1.51R），0=严格旧口径
     # 止损宽度下限（2026-10-12-2）：止损距入场须 ≥ SL_MIN_ATR×ATR14，防"止损过近"
     # 被噪音扫掉并抑制 R 放大。近锚（突破类 stop_anchor=near）豁免；ATR 不可算
     # （K线不足）放行；0 = 关闭。宽度上限仍走 signal_gate.max_stop_pct + 动态杠杆

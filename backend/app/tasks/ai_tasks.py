@@ -364,6 +364,12 @@ def run_ai_analysis_single(
             float(cfg.ai_rr_min) if cfg.ai_rr_min is not None
             else float(settings.AI_RR_MIN)
         )
+        # RR/TP1 容差（2026-10-14）：同一条 ai_rr_tol 透传两管线的 Risk Guard
+        # （RR 三价铁律 + TP1 上限）；None 传 None，校验侧回落 settings.AI_RR_TOL
+        _rr_tol = (
+            float(cfg.ai_rr_tol) if cfg.ai_rr_tol is not None
+            else None
+        )
         _risk_pct = _risk_amount if _risk_mode == "pct" else None
         _crash_pct = (
             float(cfg.btc_crash_pause_pct) if cfg.btc_crash_pause_pct is not None
@@ -394,6 +400,7 @@ def run_ai_analysis_single(
                 tactics_block=tactics_block,
                 tp2_enabled=_tp2_on,
                 flt=_flt,
+                rr_tol=_rr_tol,
             )
         else:
             ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
@@ -409,6 +416,7 @@ def run_ai_analysis_single(
                 rr_min=_rr_min,
                 risk_pct=_risk_pct,
                 crash_pct=_crash_pct,
+                rr_tol=_rr_tol,
                 interval=cfg.kline_interval,
                 progress_id=r.id,  # 方案 B 轻量进度：流式增量计数推 "llm" 事件（≥2s 节流）
                 tactics_block=tactics_block,

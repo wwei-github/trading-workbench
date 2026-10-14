@@ -3,7 +3,8 @@
 校验链（2026-09-15 收缩为 RR 铁律 + 双评委辩论复核；2026-10-12 增止损宽度下限与
 止盈一距离上限）：
 - Schema 强约束（Pydantic）+ suggest 基本项（方向/开单类型/三价为正）
-- **RR 铁律**：按 AI 给的三价复算盈亏比 ≥ AI_RR_MIN(1.5)，声称值不信
+- **RR 铁律**：按 AI 给的三价复算盈亏比 ≥ AI_RR_MIN(1.5) − AI_RR_TOL(0.02)，
+  声称值不信（2026-10-14：容差带从开仓现价闸扩到 AI 三价闸，吞 tick 取整噪音）
 - **止损宽度下限**（2026-10-12-2）：止损距入场 ≥ SL_MIN_ATR×ATR14（默认 0.3），
   防"止损过近"被噪音扫掉并抑制 R 放大；近锚（突破类 stop_anchor=near）豁免
   （其止损刻意贴金K窗口极值，另有敞口折价与 ±0.5% 一致性校验兜底）
@@ -145,9 +146,13 @@ LIQ_GATE_BUFFER = 0.005
 # 超容差才维持「待回踩不下单」。回踩不远时市价进也能满足盈亏比，不必干等
 PULLBACK_MARKET_PCT = 0.01
 
-# 盈亏比现价复算容差（system_config.ai_rr_tol 可页面覆盖，NULL=默认 0.02）：
-# 开仓闸按现价复算 RR ≥ ai_rr_min - tol 即放行（AI 三价铁律不加容差）。
-# 0.0002 级价格漂移误杀案例：CYBERUSDT RR 1.4998 被 1.5 拦
+# 盈亏比复算容差（system_config.ai_rr_tol 可页面覆盖，NULL=settings.AI_RR_TOL=0.02），
+# 同一条容差带覆盖三处口径（2026-10-14 起，此前仅开仓现价闸生效）：
+# ① 开仓闸现价复算 RR ≥ rr_min - tol（容忍 AI 报价到成交间漂移，CYBERUSDT
+#   1.4998 误杀个案）；② AI 三价 RR 铁律同带（容忍交易所 tick 取整——兜底 1.5R
+#   价取整后普遍落 1.49~1.51R，10-14 实测零容差白烧过半 Reflection 重试）；
+# ③ TP1 距离上限同带（R 单位绝对容差：tp1_R ≤ cap_R + tol，1.50R 擦边放行、
+#   1.55R 真·过远仍拦）。0=严格旧口径
 AI_RR_TOL = 0.02
 
 # 近锚一致性校验（docs/23，2026-09-29；2026-10-12-5 起扩展至全信号类型——距离分档
@@ -222,6 +227,7 @@ def validate_decision(
     risk_budget: Optional[float] = None,
     rr_min: Optional[float] = None,
     risk_pct: Optional[float] = None,
+    rr_tol: Optional[float] = None,
 ) -> tuple[bool, list[str], dict]:
     """校验并修正决策（2026-09-15 拍板收缩：仅保留 RR 铁律 + 仓位复算）。
 
@@ -235,6 +241,8 @@ def validate_decision(
     复算（pct 模式，现行默认）。
     rr_min / risk_pct（2026-10-02 上页面）：盈亏比铁律下限与单笔风险比例，
     调用方从 system_config 解析传入（cfg 列 ?? env 默认）；None 回落 settings。
+    rr_tol（2026-10-14）：RR 铁律与 TP1 上限共用的 R 单位容差（cfg.ai_rr_tol
+    ?? settings.AI_RR_TOL，默认 0.02；0=严格），吞 tick 取整擦边、不放真过远。
     2026-10-12：策略二（EMA21 金K跟踪）与 trail 纯跟踪出场链整体删除，本校验器
     不再有 s2 资格闸/优先级改标——出场恒为 ladder，RR 铁律无豁免。
     """
@@ -372,12 +380,23 @@ def validate_decision(
             )
 
     # ── RR 铁律（唯一保留的价格校验）：按 AI 三价复算，声称值不信 ──
+    # 容差带（2026-10-14 起覆盖三价闸，此前仅开仓现价闸）：交易所 tick 取整后
+    # 「入场±rr_min×止损距离」兜底价普遍落 1.49~1.51R，零容差把擦边单全部打回、
+    # 白烧 Reflection 重试；tol 是 R 单位绝对带宽（默认 0.02），0=页面显式严格
     _rr_floor = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
+    _rr_tol = max(0.0, float(rr_tol)) if rr_tol is not None else float(settings.AI_RR_TOL)
+    _rr_floor_eff = max(0.0, _rr_floor - _rr_tol)
     rr = 0.0
     if stop_dist > 0:
         rr = abs(d.take_profit_1 - d.entry_price) / stop_dist
-        if rr < _rr_floor:
-            violations.append(f"盈亏比复算 {rr:.2f} < {_rr_floor:g}（交易系统铁律）")
+        if rr < _rr_floor_eff:
+            if _rr_tol > 0:
+                violations.append(
+                    f"盈亏比复算 {rr:.2f} < {_rr_floor_eff:g}"
+                    f"（交易系统铁律 {_rr_floor:g}，容差 {_rr_tol:g}）"
+                )
+            else:
+                violations.append(f"盈亏比复算 {rr:.2f} < {_rr_floor:g}（交易系统铁律）")
 
     # ── 止盈一距离上限（2026-10-12 拍板）：第一档止盈须"够近"──
     # 摆动点位稀疏/强趋势下"最近结构位"常落到 3~4R，第一档命中率被拉低。上限
@@ -385,7 +404,9 @@ def validate_decision(
     # 取 max 与 rr_min×止损距离 保证"入场±rr_min×止损距离"兜底永远可用、不会
     # 打回死循环；无 K 线（ATR 不可算）时只用 R 腿；某腿配置 0 即关闭该腿。
     # 超限 → 打回让 AI 改挂更近结构位或用兜底价（程序不改价，同止损锚定哲学）。
-    # 数据异常不锁死开单。
+    # 数据异常不锁死开单。容差（2026-10-14）：同一条 rr_tol 按 R 单位绝对加宽
+    # （允许带 = cap + tol×止损距离）——tick 取整后的 1.50~1.51R 兜底价放行，
+    # 1.55R 这类真·越界仍拦，与 RR 铁律容差带同源
     if stop_dist > 0 and d.take_profit_1 > 0:
         _caps = []
         if float(settings.TP1_MAX_R) > 0:
@@ -395,7 +416,7 @@ def validate_decision(
         if _caps:
             _cap = max(min(_caps), _rr_floor * stop_dist)
             _tp1_dist = abs(d.take_profit_1 - d.entry_price)
-            if _tp1_dist > _cap * (1 + 1e-9):
+            if _tp1_dist > (_cap + _rr_tol * stop_dist) * (1 + 1e-9):
                 violations.append(
                     f"止盈一距离过远：距入场 {_tp1_dist:.6g}（≈{_tp1_dist / stop_dist:.2f}R），"
                     f"超过上限 {_cap:.6g}——请改挂更近的结构位，"
@@ -497,6 +518,7 @@ def parse_and_validate(
     risk_budget: Optional[float] = None,
     rr_min: Optional[float] = None,
     risk_pct: Optional[float] = None,
+    rr_tol: Optional[float] = None,
 ) -> tuple[bool, list[str], dict]:
     """normalize + pydantic 校验 + 业务校验 的一步入口（预算参数透传 validate_decision）"""
     try:
@@ -504,4 +526,4 @@ def parse_and_validate(
     except (ValidationError, ValueError) as e:
         return False, [f"输出格式不合法: {str(e)[:200]}"], {}
     return validate_decision(d, signal, klines, risk_budget=risk_budget,
-                             rr_min=rr_min, risk_pct=risk_pct)
+                             rr_min=rr_min, risk_pct=risk_pct, rr_tol=rr_tol)

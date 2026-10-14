@@ -1,3 +1,6 @@
+import copy
+import json
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID, uuid4
@@ -51,6 +54,23 @@ from app.models.patch import PromptPatch
 from app.models.system_config import SystemConfig
 
 router = APIRouter(prefix="/api/scans", tags=["scans"])
+
+logger = logging.getLogger(__name__)
+
+
+def _audit_fmt_value(key: str, v) -> str:
+    """配置审计日志值格式化：None→NULL，布尔→开/关，长文本只记长度/摘要。"""
+    if v is None:
+        return "NULL"
+    if isinstance(v, bool):
+        return "开" if v else "关"
+    if key == "strategy_prompt":
+        return f"<策略提示词 {len(str(v))} 字>"
+    if key == "scan_filters":
+        s = json.dumps(v, ensure_ascii=False, sort_keys=True, default=str)
+        return s if len(s) <= 120 else s[:117] + "..."
+    s = str(v)
+    return s if len(s) <= 80 else s[:77] + "..."
 
 
 @router.post("", response_model=ScanTriggerResponse)
@@ -572,6 +592,13 @@ def update_system_config(
 ):
     """更新系统配置（AI 开关 + 扫描策略）"""
     cfg = _get_system_config(db)
+    # 审计快照（2026-10-14）：提交键的旧值。校验 400 在 commit 前抛出 → 无审计；
+    # commit 后按实际变化键记一条 WARNING 入 app_logs（保留 7 天），排查"谁在何时
+    # 改了模型/风控参数"。deepcopy 防 scan_filters 等可变对象别名
+    _audit_before = {
+        k: copy.deepcopy(getattr(cfg, k, None))
+        for k in body.model_fields_set if hasattr(cfg, k)
+    }
 
     # AI 开关
     if body.ai_analysis_enabled is not None:
@@ -852,6 +879,18 @@ def update_system_config(
 
     db.commit()
     db.refresh(cfg)
+    _audit_changes = []
+    for _k, _old in _audit_before.items():
+        _new = getattr(cfg, _k, None)
+        if _new != _old:
+            _audit_changes.append(
+                f"{_k}: {_audit_fmt_value(_k, _old)}→{_audit_fmt_value(_k, _new)}"
+            )
+    if _audit_changes:
+        logger.warning(
+            "系统配置更新（%d 项）：%s",
+            len(_audit_changes), "；".join(_audit_changes)[:1800],
+        )
     return _config_response(cfg)
 
 
