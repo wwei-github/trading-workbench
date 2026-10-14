@@ -245,7 +245,12 @@ class Settings(BaseSettings):
     # 止盈一，不再 skip（缠绕/拐头与过渡态仍 skip）；程序侧零改动（TP1 距离上限的
     # max(..., rr_min×止损距离) 下限天然放行）。P0 _RULE_TP_BASE/_RULE_TP_TAIL_* +
     # P1 rule 12 同步。
-    RULE_VERSION: str = "v2026-10-14"
+    # v2026-10-14-2（用户拍板，DUSKUSDT 个案）：黑名单自动拉黑分档收紧——冷却档门槛
+    # 由「实亏 ≥1.2R」提高到「≥1.5R」、冷却期 30 天缩短为 14 天；永久档门槛由 1.5R
+    # 提高到 1.8R（见 blacklist_service.AUTO_RISK_OVERSHOOT/AUTO_COOLDOWN_DAYS/
+    # PERMANENT_R_OVERSHOOT）。动机：测试网孪生单的超预算亏损会把币种全局拉黑
+    # （register_settle 不区分网络），1.2R 门槛过松、连坐 30 天。
+    RULE_VERSION: str = "v2026-10-14-2"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

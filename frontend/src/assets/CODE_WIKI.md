@@ -196,7 +196,7 @@ trading-workbench/
 | 交易 | `BINANCE_API_KEY/SECRET_KEY`, `BINANCE_LIVE_{N}_*`, `TRADING_MIN_RECOMMENDATION`, `TRADING_LEVERAGE`, `RISK_BUDGET_PCT` | 交易凭据与闸门 |
 | 止盈 | `TP1_QTY_PCT_WITH_TP2`, `TP2_QTY_PCT`, `TP1_QTY_PCT_NO_TP2` | 分批止盈比例 |
 
-> **`RULE_VERSION`** 是规则集的版本标记（当前 `v2026-10-11-4`），开仓与分析时快照到 `trade_records`/`ai_analyses`，复盘按版本分组对比。
+> **`RULE_VERSION`** 是规则集的版本标记（当前 `v2026-10-14-2`），开仓与分析时快照到 `trade_records`/`ai_analyses`，复盘按版本分组对比。
 
 #### [database.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/database.py)
 
@@ -367,7 +367,7 @@ AI 决策确定性校验：
 
 #### [blacklist_service.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/blacklist_service.py)
 
-`active_symbols(db)` — 生效黑名单集合（手动永久 / 自动冷却 / 止损≥1.5R 永久）。
+`active_symbols(db)` — 生效黑名单集合（手动永久 / 自动冷却 14 天（止损 ≥1.5R）/ 止损 ≥1.8R 永久）。
 
 #### 组合风控参数（SystemConfig）
 

@@ -15,9 +15,9 @@ from app.models.blacklist import SymbolBlacklist
 
 logger = logging.getLogger(__name__)
 
-AUTO_RISK_OVERSHOOT = 1.2  # 实际亏损达计划风险预算的 1.2 倍（超 20%）→ 冷却档
-AUTO_COOLDOWN_DAYS = 30    # 冷却档天数（到期自动失效）
-PERMANENT_R_OVERSHOOT = 1.5  # 实亏 ≥1.5R（2026-10-11 拍板）→ 永久档，只能手动移出
+AUTO_RISK_OVERSHOOT = 1.5  # 实亏 ≥1.5R（2026-10-14 拍板，原 1.2）→ 冷却档
+AUTO_COOLDOWN_DAYS = 14    # 冷却档天数（到期自动失效；2026-10-14 拍板，原 30 天）
+PERMANENT_R_OVERSHOOT = 1.8  # 实亏 ≥1.8R（2026-10-14 拍板，原 1.5）→ 永久档，只能手动移出
 
 
 def active_symbols(db: Session) -> set[str]:
@@ -37,9 +37,10 @@ def register_settle(db: Session, symbol: str, planned_risk, realized_pnl, exit_r
     就自动加入黑名单。
 
     触发条件（满足其一）：
-    - 净亏损 ≥ 计划风险 × 1.2：滑点撑爆止损距离（GRIFFAIN 实例 -121.7% R）、
-      资金费/费用侵蚀等「止损没兜住」的情形 → 冷却 AUTO_COOLDOWN_DAYS 天
-    - 净亏损 ≥ 计划风险 × 1.5（2026-10-11 拍板）：止损严重失控 → 永久档
+    - 净亏损 ≥ 计划风险 × 1.5（2026-10-14 拍板，原 1.2）：滑点撑爆止损距离
+      （GRIFFAIN 实例 -121.7% R）、资金费/费用侵蚀等「止损没兜住」的情形
+      → 冷却 AUTO_COOLDOWN_DAYS 天（2026-10-14 拍板，原 30 天）
+    - 净亏损 ≥ 计划风险 × 1.8（2026-10-14 拍板，原 1.5）：止损严重失控 → 永久档
       （origin=stop_hard，expires_at 恒 NULL），只能手动移出
     - exit_reason == liquidation：强平=止损彻底失效，无条件触发（倍数决定档位）
 

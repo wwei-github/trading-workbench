@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""黑名单止损分档回归（2026-10-11 用户拍板）：实亏 ≥1.5R → 永久档（stop_hard，
-只能手动移出）；1.2R≤实亏<1.5R → 冷却档（auto，30 天）维持原口径。
+"""黑名单止损分档回归（2026-10-14 用户拍板）：实亏 ≥1.8R → 永久档（stop_hard，
+只能手动移出）；1.5R≤实亏<1.8R → 冷却档（auto，14 天）。
 
 register_settle 挂在平仓结算路径（trade_engine 结算后调用），分档边界直接
 决定线上拉黑行为，纯函数边界用真实 Session 驱动（SQLite 内存表）。
@@ -35,9 +35,9 @@ def _row(db, symbol):
     ).scalar_one_or_none()
 
 
-def test_stop_loss_15r_permanent(db):
-    """实亏 =1.5R → stop_hard 永久档，expires_at=None，active 生效"""
-    register_settle(db, "AAAUSDT", planned_risk=10.0, realized_pnl=-15.0,
+def test_stop_loss_18r_permanent(db):
+    """实亏 =1.8R → stop_hard 永久档，expires_at=None，active 生效"""
+    register_settle(db, "AAAUSDT", planned_risk=10.0, realized_pnl=-18.0,
                     exit_reason="stop_loss")
     db.commit()
     r = _row(db, "AAAUSDT")
@@ -46,45 +46,50 @@ def test_stop_loss_15r_permanent(db):
     assert active_symbols(db) == {"AAAUSDT"}
 
 
-def test_stop_loss_12r_cooldown(db):
-    """实亏 1.2R~1.5R 区间 → 冷却档（auto，30 天）维持原口径"""
-    register_settle(db, "BBBUSDT", planned_risk=10.0, realized_pnl=-13.0,
+def test_stop_loss_15to18r_cooldown_14days(db):
+    """实亏 1.5R~1.8R 区间 → 冷却档（auto，14 天）"""
+    from datetime import datetime, timedelta
+    register_settle(db, "BBBUSDT", planned_risk=10.0, realized_pnl=-16.0,
                     exit_reason="stop_loss")
     db.commit()
     r = _row(db, "BBBUSDT")
     assert r is not None and r.origin == "auto" and r.expires_at is not None
     assert "冷却" in r.reason
+    # 冷却期锁定 14 天（AUTO_COOLDOWN_DAYS，2026-10-14 拍板）
+    days = (r.expires_at - datetime.utcnow()).total_seconds() / 86400
+    assert 13.9 < days <= 14.0
+    assert bs.AUTO_COOLDOWN_DAYS == 14
     assert active_symbols(db) == {"BBBUSDT"}
 
 
-def test_boundary_15r_exclusive_tiers(db):
-    """边界：恰好 -1.5R 落永久档；-1.49R 落冷却档（≥ 判定）"""
-    register_settle(db, "CCCUSDT", 10.0, -15.0, "stop_loss")
-    register_settle(db, "DDCUSDT", 10.0, -14.9, "stop_loss")
+def test_boundary_18r_exclusive_tiers(db):
+    """边界：恰好 -1.8R 落永久档；-1.79R 落冷却档（≥ 判定）"""
+    register_settle(db, "CCCUSDT", 10.0, -18.0, "stop_loss")
+    register_settle(db, "DDCUSDT", 10.0, -17.9, "stop_loss")
     db.commit()
     assert _row(db, "CCCUSDT").origin == "stop_hard"
     assert _row(db, "DDCUSDT").origin == "auto"
 
 
 def test_liquidation_tiered_by_overshoot(db):
-    """强平无条件触发，档位仍按倍数：<1.5R 冷却、≥1.5R 永久"""
-    register_settle(db, "EEEUSDT", 10.0, -12.0, "liquidation")
+    """强平无条件触发，档位仍按倍数：<1.8R 冷却、≥1.8R 永久"""
+    register_settle(db, "EEEUSDT", 10.0, -16.0, "liquidation")
     register_settle(db, "FFFUSDT", 10.0, -30.0, "liquidation")
     db.commit()
     assert _row(db, "EEEUSDT").origin == "auto"
     assert _row(db, "FFFUSDT").origin == "stop_hard"
 
 
-def test_below_12r_no_blacklist(db):
-    """实亏 <1.2R 且非强平 → 不拉黑"""
-    register_settle(db, "GGGUSDT", 10.0, -11.9, "stop_loss")
+def test_below_15r_no_blacklist(db):
+    """实亏 <1.5R 且非强平 → 不拉黑（门槛自 1.2R 提至 1.5R）"""
+    register_settle(db, "GGGUSDT", 10.0, -14.9, "stop_loss")
     db.commit()
     assert _row(db, "GGGUSDT") is None and active_symbols(db) == set()
 
 
 def test_upgrade_cooldown_to_permanent(db):
-    """冷却档行再触 ≥1.5R → 升级永久档（expires_at 清空）"""
-    register_settle(db, "HHHUSDT", 10.0, -13.0, "stop_loss")
+    """冷却档行再触 ≥1.8R → 升级永久档（expires_at 清空）"""
+    register_settle(db, "HHHUSDT", 10.0, -16.0, "stop_loss")
     db.commit()
     assert _row(db, "HHHUSDT").origin == "auto"
     register_settle(db, "HHHUSDT", 10.0, -20.0, "stop_loss")
@@ -98,7 +103,7 @@ def test_manual_row_not_downgraded(db):
     """manual 永久行触发自动登记 → 保持 manual 不被覆盖降级"""
     bs.add_manual(db, "IIIUSDT", reason="手动")
     db.commit()
-    register_settle(db, "IIIUSDT", 10.0, -15.0, "stop_loss")
+    register_settle(db, "IIIUSDT", 10.0, -20.0, "stop_loss")
     db.commit()
     r = _row(db, "IIIUSDT")
     assert r.origin == "manual" and r.expires_at is None
