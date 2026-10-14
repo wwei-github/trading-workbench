@@ -242,3 +242,15 @@ def test_chart_klines_client_force_overrides_outside_tail(chart_client, monkeypa
     )
     assert resp.status_code == 200
     assert calls[-1]["force_refresh"] is True
+
+
+def test_chart_klines_interval_1d(chart_client, monkeypatch):
+    """日K切换（2026-10-14）：1d 放行并透传取数层；未收录周期仍在白名单外"""
+    client, calls = chart_client
+    _force_flag(monkeypatch, False)
+    resp = client.get("/api/scans/klines/BTCUSDT", params={"limit": 40, "interval": "1d"})
+    assert resp.status_code == 200
+    assert resp.json()["interval"] == "1d"
+    assert calls[-1]["interval"] == "1d"
+    # 白名单外（如 30m）由 Query 校验拒绝，不落到取数层
+    assert client.get("/api/scans/klines/BTCUSDT", params={"interval": "30m"}).status_code == 422

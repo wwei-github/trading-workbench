@@ -267,7 +267,7 @@ export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKe
     setLoading(true)
     const req = isReplay
       ? scanApi.trades.klines(tradeId!, reqInterval ?? undefined)
-      : scanApi.klines(symbol!, limit, false, reqInterval as '1h' | '4h')
+      : scanApi.klines(symbol!, limit, false, reqInterval as '1h' | '4h' | '1d')
     req
       .then((d) => {
         if (!cancelled) {
@@ -301,7 +301,7 @@ export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKe
     try {
       const d = isReplay
         ? await scanApi.trades.klines(tradeId!, reqInterval ?? undefined)
-        : await scanApi.klines(symbol!, limit, true, reqInterval as '1h' | '4h')
+        : await scanApi.klines(symbol!, limit, true, reqInterval as '1h' | '4h' | '1d')
       setData(d)
       setServerInterval(d.interval)
       setError(null)
@@ -316,14 +316,14 @@ export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKe
   const replayData = isReplay ? (data as TradeKlineData | null) : null
   const isLong = replayData?.direction !== 'short'
 
-  // 周期切换档位（复盘模式）：1h/4h 固定顺序，服务端实际档（cfg.kline_interval
-  // 可配非 1h/4h，如 15m/30m/1d）按固定档序就近插入——之前把 serverInterval
+  // 周期切换档位（复盘模式）：1h/4h/1d 固定顺序，服务端实际档（cfg.kline_interval
+  // 可配非 1h/4h/1d，如 15m/30m）按固定档序就近插入——之前把 serverInterval
   // 放在最前，切到 4h 后列表变 [4h,1h]，选中档跑到了 1h 前面（位置漂移）
-  // 扫描模式固定 1h/4h（ChartCore 缺省档）
+  // 扫描模式固定 1h/4h/1d（ChartCore 缺省档；2026-10-14 加入 1d 日K）
   const intervalOptions = useMemo(() => {
     if (!isReplay) return undefined
-    const base = ['1h', '4h']
-    const extra = serverInterval !== '1h' && serverInterval !== '4h' ? [serverInterval] : []
+    const base = ['1h', '4h', '1d']
+    const extra = base.includes(serverInterval) ? [] : [serverInterval]
     return [...new Set([...base, ...extra])]
       .map((v) => ({ label: v, value: v }))
   }, [isReplay, serverInterval])

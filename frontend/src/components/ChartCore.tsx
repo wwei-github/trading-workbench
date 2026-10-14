@@ -979,6 +979,7 @@ export default function ChartCore({
               {(intervalOptions ?? [
                 { label: '1h', value: '1h' },
                 { label: '4h', value: '4h' },
+                { label: '1d', value: '1d' },
               ]).map((opt) => (
                 <TvButton
                   key={opt.value}

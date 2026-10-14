@@ -49,7 +49,7 @@ export const scanApi = {
       })
       .then((r) => r.data),
 
-  klines: (symbol: string, limit = 100, forceRefresh = false, interval?: '1h' | '4h') =>
+  klines: (symbol: string, limit = 100, forceRefresh = false, interval?: '1h' | '4h' | '1d') =>
     api
       .get<KlineData>(`/scans/klines/${symbol}`, {
         params: {
