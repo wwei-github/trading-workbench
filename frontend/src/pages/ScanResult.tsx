@@ -151,12 +151,26 @@ export default function ScanResult({ mode }: ScanResultProps) {
     </Button>
   )
 
+  // 扫描套选择器（2026-10-14）：从 Tab 栏右上角移入扫描结果区，与「立即扫描」
+  // 同排左右分布（扫描套贴最左、立即扫描+刷新贴最右）
+  const profileSelector = (
+    <Space size={8}>
+      <span style={{ color: '#8c8c8c', fontSize: 13 }}>扫描套</span>
+      <Segmented
+        size="small"
+        options={profileOptions}
+        value={activeProfile}
+        onChange={(v) => setActiveProfile(v as 's1' | 's2')}
+      />
+    </Space>
+  )
+
   // ── 合约 Tabs（现有 10 个 Tab，原样保留——docs/18 零侵入约束）──
   const futuresItems = [
     {
       key: 'results',
       label: '扫描结果',
-      children: <div style={{ height: '100%', overflow: 'hidden' }}><ResultTable headerExtra={scanButton} /></div>,
+      children: <div style={{ height: '100%', overflow: 'hidden' }}><ResultTable headerLeading={profileSelector} headerExtra={scanButton} /></div>,
     },
     {
       key: 'pending-pool',
@@ -318,18 +332,6 @@ export default function ScanResult({ mode }: ScanResultProps) {
           style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
           tabBarStyle={{ flexShrink: 0 }}
           items={futuresItems}
-          // 扫描套选择器（2026-10-14）：切换后 status/结果/AI 分析按该套刷新
-          tabBarExtraContent={
-            <Space size={8}>
-              <span style={{ color: '#8c8c8c', fontSize: 13 }}>扫描套</span>
-              <Segmented
-                size="small"
-                options={profileOptions}
-                value={activeProfile}
-                onChange={(v) => setActiveProfile(v as 's1' | 's2')}
-              />
-            </Space>
-          }
         />
       ) : (
         <Tabs

@@ -79,7 +79,13 @@ function touchLabel(ref: string, record: ScanResult): string {
   return ref;
 }
 
-export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }) {
+export default function ResultTable({
+  headerExtra,
+  headerLeading,
+}: {
+  headerExtra?: ReactNode
+  headerLeading?: ReactNode
+}) {
   const {
     results,
     total,
@@ -820,12 +826,16 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           overflow: "hidden",
           paddingRight: 8,
         }}>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexShrink: 0, marginBottom: 4 }}>
-          {/* 立即扫描（外部传入，置于刷新左侧，2026-09-20 移入扫描结果 Tab） */}
-          {headerExtra}
-          <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
-            刷新
-          </Button>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexShrink: 0, marginBottom: 4 }}>
+          {/* 左侧：外部传入（扫描套选择器，2026-10-14 从 Tab 栏移入） */}
+          {headerLeading}
+          <div style={{ display: 'flex', gap: 8 }}>
+            {/* 立即扫描（外部传入，置于刷新左侧，2026-09-20 移入扫描结果 Tab） */}
+            {headerExtra}
+            <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
+              刷新
+            </Button>
+          </div>
         </div>
         <Table
           rowKey="id"
