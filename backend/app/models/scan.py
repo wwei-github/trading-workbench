@@ -13,6 +13,9 @@ class ScanRecord(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     scan_type: Mapped[str] = mapped_column(String(20), default="manual")  # scheduled / manual
+    # 扫描套（2026-10-14 双周期套，docs/22）：s1=信号1h/背景4h（历史行默认）/ s2=信号4h/背景1d；
+    # 该行的信号周期、背景周期与跨周期触点均由本键经 scan_profiles.get_profile 决定
+    profile_key: Mapped[str] = mapped_column(String(16), default="s1", nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(20), default="running")  # running / completed / failed
     coin_count: Mapped[int] = mapped_column(Integer, default=0)
     hit_count: Mapped[int] = mapped_column(Integer, default=0)

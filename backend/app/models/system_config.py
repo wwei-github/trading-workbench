@@ -174,6 +174,12 @@ class SystemConfig(Base):
     # 筛选参数组（2026-09-28 筛选配置上页面）：JSON 列，键集见 services/scan_filters.py。
     # NULL=全部回落 env/代码默认；旧 breakout_threshold 等 3 个散列已废弃不再读
     scan_filters: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=None)
+    # 双周期扫描套启用开关（2026-10-14 双周期套，docs/22）：s1=信号1h/背景4h（默认开，
+    # 长期保留）/ s2=信号4h/背景1d（默认关，开启后参与实盘）。两开关相互独立、可同时
+    # 开启，但页面（PUT /config）约束「至少一套开启」——全关则扫描链路整体停摆。
+    # 定时任务（hourly-scan= s1 / four-hour-scan= s2）与手动触发均先过本开关再执行。
+    scan_profile_s1_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    scan_profile_s2_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # 现货环境开关（docs/18，2026-09-23 用户拍板：现货环境与合约完全独立）：
     # true=现货测试网（默认），false=现货正式网；现货环境与合约完全独立
     # （合约侧环境切换已于 2026-10-03 删除）

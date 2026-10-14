@@ -33,8 +33,8 @@ from app.services.ai_analyzer import (
     _RULE_HTF_HARD,
     _RULE_STRUCT,
     _RULE_VOTE,
-    SIGNAL_TYPE_LABELS,
     render_signal_gate_block,
+    render_signal_type_label,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ NEAR_STOP_RULE_AGENT = """11.5 突破类止损近锚降级链：结构锚（摆�
     且调整入场价仍无法达标（本应 skip）时，才降级近锚——stop_ref=signal_low
     （做多，金K窗口最低价）或 signal_high（做空，金K窗口最高价）+ offset_pct=-0.3，
     止盈与盈亏比按新锚复算；近锚仍不达标 → skip。硬约束：仅当 skip 的唯一原因是
-    盈亏比不达标（信号方向、4h 背景、趋势状态、量能特征、质量分等其余开单条件
+    盈亏比不达标（信号方向、{htf_label} 背景、趋势状态、量能特征、质量分等其余开单条件
     必须全部满足）才允许用近锚；量比 <1 的缩量突破无近锚资格；近锚后盈亏比 >4
     时重新评估或 skip；近锚止损宽度仍须 ≥0.3×ATR。{stop_cap_clause}结构锚止损宽度
     已超程序硬上限（见信号门槛块）时无近锚资格，直接 skip。程序会校验近锚止损必须
@@ -66,7 +66,7 @@ NEAR_STOP_RULE_AGENT = """11.5 突破类止损近锚降级链：结构锚（摆�
 
 def render_system_prompt(
     risk_label: str = "", rr_min: Optional[float] = None,
-    tp2_enabled: bool = True,
+    tp2_enabled: bool = True, htf_label: str = "4h",
 ) -> str:
     """渲染最终生效的 P1 系统提示词（页面「查看当前生效提示词」与实际调用同源）。
 
@@ -76,7 +76,10 @@ def render_system_prompt(
     rr_min（2026-10-02 上页面）：盈亏比铁律下限，system_config.ai_rr_min 覆盖时
     由调用方传入；None 回落 env 默认。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时剔除止盈二锚点语义
-    （system_config.tp2_enabled，默认关），与实际调用（analyze_coin_agent）同源。"""
+    （system_config.tp2_enabled，默认关），与实际调用（analyze_coin_agent）同源。
+    htf_label（2026-10-14 双周期套）：背景周期称谓（s1="4h"/s2="1d"），默认
+    "4h" 保持现状逐字不变；_RULE_HTF_HARD 作为槽位值是常量，其内部
+    {htf_label} 需在此显式替换（.format 不递归替换值）。"""
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     _tp1_atr = f"{settings.TP1_MAX_ATR:g}"
     _tp1_r = f"{settings.TP1_MAX_R:g}"
@@ -89,11 +92,12 @@ def render_system_prompt(
         tp1_max_r=_tp1_r,
         far_atr=_far_atr,
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
-        _RULE_HTF_HARD=_RULE_HTF_HARD,
+        htf_label=htf_label,
+        _RULE_HTF_HARD=_RULE_HTF_HARD.format(htf_label=htf_label),
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
         near_stop_rule=NEAR_STOP_RULE_AGENT.format(
-            rr_min=_rr,
+            rr_min=_rr, htf_label=htf_label,
             stop_cap_clause="止损宽度硬上限值以信号门槛块为准。",
         ),
         _price_anchor_desc=_PRICE_ANCHOR_ON if tp2_enabled else _PRICE_ANCHOR_OFF,
@@ -140,7 +144,7 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    structure_break 结构破位回踩（涵盖 123法则·N字结构·2B法则，见下方打法详解）/
    range_edge 区间边缘反转。
 6. "可用技能"列表中标注【当前命中】的技能，建议先 load_skill 阅读再决策。
-7. **效率与数据边界（重要）**：事实包只含信号与行情数据（60根K线含每根成交量与成交额/摆动结构/均线形态/ATR/技术指标MACD·布林带·RSI·SuperTrend·ADX·OBV·4h背景），
+7. **效率与数据边界（重要）**：事实包只含信号与行情数据（60根K线含每根成交量与成交额/摆动结构/均线形态/ATR/技术指标MACD·布林带·RSI·SuperTrend·ADX·OBV·{htf_label}背景），
    首轮即可直接 submit_decision；资金费率、大盘状态、恐贪指数等环境数据**不在**事实包中，
    确需时在同一轮一次性批量调用 get_funding / get_market_breadth / get_fear_greed 自行获取
    （如资金费率极端可 load_skill 阅读 funding-extreme-handling）；不要为用工具而用工具，
@@ -180,7 +184,7 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     ——不得贴死位或挂在越位一侧（价格常在位附近反弹，越位才触发的止盈大概率落空）。
     禁止把止盈一挂到更远结构位凑盈亏比：到第一结构位的盈亏比不足 {rr_min} 说明空间不足，
     应直接 skip（程序只复算盈亏比并按铁律打回）。唯一放宽：当盈亏比不达标是唯一不达标
-    项（其余开单条件全部满足）且 4h 背景为「宏观同侧态」——即出现「方向约束（硬性）」
+    项（其余开单条件全部满足）且 {htf_label} 背景为「宏观同侧态」——即出现「方向约束（硬性）」
     行的六态（宏观金叉/死叉初期、多头/空头恢复初期、多头/空头排列）——时，允许不 skip，
     改用"入场 ± {rr_min}×止损距离"作止盈一；缠绕/拐头与牛内回调/熊内反弹仍一律 skip。
     另：第一档止盈须"够近"——距入场 ≤{tp1_max_atr}×ATR 且 ≤{tp1_max_r}×止损距离；
@@ -592,7 +596,7 @@ def analyze_coin_agent(
     risk_mode: str = "pct", risk_amount: float = 0.0, risk_label: str = "",
     stop_cap_pct: Optional[float] = None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
-    tp2_enabled: bool = True, flt=None,
+    tp2_enabled: bool = True, flt=None, htf_label: str = "4h",
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -610,7 +614,9 @@ def analyze_coin_agent(
     submit_decision 工具 schema 隐藏 tp2_* 参数、提交的 tp2 硬清零
     （system_config.tp2_enabled，默认关）。
     flt（2026-10-12）：筛选参数组（resolve_scan_filters(cfg)），透传门槛块
-    渲染与页面配置同源；None=env/代码默认。"""
+    渲染与页面配置同源；None=env/代码默认。
+    htf_label（2026-10-14 双周期套）：背景周期称谓（s1="4h"/s2="1d"），注入
+    系统提示词与事实包指标块/门槛块，默认 "4h" 保持现状。"""
     client = get_client()
 
     # 布尔事实（技能 use_when 判定）
@@ -628,7 +634,7 @@ def analyze_coin_agent(
     _tp2_on = bool(tp2_enabled)
     # 近锚降级链仅突破类注入（docs/23）；回踩/其他类槽位留空
     near_stop_rule = (
-        NEAR_STOP_RULE_AGENT.format(rr_min=_rr,
+        NEAR_STOP_RULE_AGENT.format(rr_min=_rr, htf_label=htf_label,
                                     stop_cap_clause=stop_cap_clause)
         if (signal.get("signal_type") or "") in ("trigger_breakout", "trigger_trend_breakout")
         else ""
@@ -641,7 +647,8 @@ def analyze_coin_agent(
         tp1_max_r=f"{settings.TP1_MAX_R:g}",
         far_atr=round(settings.TP1_MAX_ATR / _rr, 2),
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
-        _RULE_HTF_HARD=_RULE_HTF_HARD,
+        htf_label=htf_label,
+        _RULE_HTF_HARD=_RULE_HTF_HARD.format(htf_label=htf_label),
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
         near_stop_rule=near_stop_rule,
@@ -666,7 +673,7 @@ def analyze_coin_agent(
 
     user_msg = _build_user_msg(signal, klines, ema, atr, user_input, htf_klines,
                                stop_cap_pct=stop_cap_pct, tactics_block=tactics_block,
-                               flt=flt)
+                               flt=flt, htf_label=htf_label)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
@@ -781,6 +788,7 @@ def _build_user_msg(
     signal: dict, klines: list, ema: Optional[dict], atr: float,
     user_input: Optional[str], htf_klines: Optional[list] = None,
     stop_cap_pct: Optional[float] = None, tactics_block: str = "", flt=None,
+    htf_label: str = "4h",
 ) -> str:
     closed = klines[:-1] if len(klines) >= 2 else klines
     # 40 根与 P0 管线同口径（60→40，2026-09-28 缩 token 提速，见 ai_analyzer._build_messages）
@@ -813,17 +821,17 @@ def _build_user_msg(
         vol_desc += f"（{float(signal['volume']):.1f}×20根均量）"
     msg = (
         f"币种: {signal['symbol']}\n"
-        f"信号类型: {SIGNAL_TYPE_LABELS.get(signal['signal_type'], signal['signal_type'])}（{signal['signal_type']}）\n"
+        f"信号类型: {render_signal_type_label(signal['signal_type'], htf_label)}（{signal['signal_type']}）\n"
         f"当前价格: {signal['current_price']}\n"
         f"K线形态: {signal.get('pattern') or '无'}（位置: "
         f"{POSITION_LABEL_MAP.get(signal.get('position') or '', signal.get('position') or '未知')}）\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
-        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt)}"
+        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt, htf_label=htf_label)}"
         f"信号强度: {signal.get('strength', '—')}\n"
         f"量能: {vol_desc}\n"
         f"ATR(14): {atr:.6g}\n"
         + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
-        + render_indicator_block(klines, htf_klines)
+        + render_indicator_block(klines, htf_klines, htf_label=htf_label)
         + swings_section
         + tactics_block
         + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"

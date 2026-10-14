@@ -31,10 +31,12 @@ TOUCH_RETEST = "retest"    # 突破回测位（破位价：结构前高/前低�
 TOUCH_SWING = "swing"      # 摆动结构位（HL/LH，结构防守位）
 TOUCH_EMA21 = "ema21"      # 趋势动态价值区（原口径）
 TOUCH_EMA21_4H = "ema21_4h"  # 4h EMA21 大周期动态价值区（1h 信号K线影线触及，2026-10-09）
+TOUCH_EMA21_1D = "ema21_1d"  # 1d EMA21 大周期动态价值区（4h 信号K线影线触及，2026-10-14 双周期套 s2）
 TOUCH_EMA55 = "ema55"      # 中深度回撤（排列+斜率门）
 TOUCH_EMA144 = "ema144"    # 深回撤（排列+斜率门，K线窗口≥300 才实际生效）
 ALL_TOUCH_REFS = (
-    TOUCH_RETEST, TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55, TOUCH_EMA144,
+    TOUCH_RETEST, TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA21_1D,
+    TOUCH_EMA55, TOUCH_EMA144,
 )
 # 默认均线族 + 摆动结构位（2026-10-08 均线族，2026-10-09 加入 4h EMA21，
 # 2026-10-14 加入 swing——实测回踩样本中 HL/LH 结构位占比可观，仅均线族覆盖面

@@ -31,6 +31,7 @@ from app.services import market_data as md
 from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
 from app.services.scan_filters import resolve_scan_filters
+from app.services.scan_profiles import DEFAULT_PROFILE_KEY, get_profile
 from app.services.llm_client import configure_from, current_concurrency
 from app.services.dual_judge import run_dual_judge
 from app.services.strategy.technical import enforce_htf_constraint, render_indicator_block
@@ -82,11 +83,15 @@ def _sem_release(ident: str) -> None:
             pass
 
 
-def compute_fingerprint(signal: dict) -> str:
-    """信号指纹：价格 0.5% 对数分桶 + 信号要素。同指纹在 TTL 内可复用结论"""
+def compute_fingerprint(signal: dict, profile_key: str = DEFAULT_PROFILE_KEY) -> str:
+    """信号指纹：价格 0.5% 对数分桶 + 信号要素。同指纹在 TTL 内可复用结论。
+
+    profile_key（2026-10-14 双周期套）：纳入指纹维度——两套（s1/s2）对同币同价
+    同信号是不同周期口径的分析，不可复用同一结论。"""
     close = float(signal.get("current_price") or 0)
     bucket = round(math.log(close) / 0.005) if close > 0 else 0
     raw = "|".join([
+        profile_key or DEFAULT_PROFILE_KEY,
         signal.get("symbol", ""),
         signal.get("signal_type", ""),
         signal.get("position") or "",
@@ -97,14 +102,19 @@ def compute_fingerprint(signal: dict) -> str:
     return hashlib.sha1(raw.encode()).hexdigest()[:40]
 
 
-def _build_judge_signal(signal: dict, klines: list, htf_klines: Optional[list]) -> dict:
+def _build_judge_signal(
+    signal: dict, klines: list, htf_klines: Optional[list], htf_label: str = "4h",
+) -> dict:
     """双评委事实包增厚（docs/24 D3）：把调用现场已有的技术指标块与摆动结构摘要
     注入 signal 副本传给 run_dual_judge——评委用数据核对三价与结构位矛盾
     （止损落在摆动区间内部、止盈近于争夺位）。零额外计算成本：
     klines / htf_klines / swings 均为分析现场已有变量；原 signal dict 不被污染。
+    htf_label（2026-10-14 双周期套）：背景周期称谓，透传指标块使评委口径与信号套一致。
     """
     judge_signal = dict(signal)
-    judge_signal["indicator_block"] = render_indicator_block(klines, htf_klines)
+    judge_signal["indicator_block"] = render_indicator_block(
+        klines, htf_klines, htf_label=htf_label,
+    )
     sw = signal.get("recent_swings") or {}
     if sw.get("highs") or sw.get("lows"):
         hi = f"{sw['highs'][0]['price']:.6g}" if sw.get("highs") else "—"
@@ -235,6 +245,11 @@ def run_ai_analysis_single(
         r = db.get(ScanResult, UUID(scan_result_id))
         if r is None:
             return
+        # 扫描套（2026-10-14 双周期套）：按来源 ScanRecord.profile_key 解析周期参数
+        # （信号/背景周期、背景根数、提示词周期称谓）；记录缺失或未知 key → get_profile
+        # 回落 s1（s1 行为与参数化前逐字一致）。profile 是冻结常量，可跨 db.close() 持有
+        record = db.get(ScanRecord, UUID(scan_record_id))
+        profile = get_profile(record.profile_key if record is not None else None)
         cfg = db.get(SystemConfig, 1)
         if not cfg or not settings.AI_API_KEY:
             return
@@ -274,7 +289,7 @@ def run_ai_analysis_single(
         _tactics = tactics_match.load_active_tactics(None)
         tactics_block = tactics_match.render_tactics_block(_tactics)
         signal["tactic_names"] = tactics_match.allowed_names(_tactics)
-        fp = compute_fingerprint(signal)
+        fp = compute_fingerprint(signal, profile.key)
         logger.info(
             "AI 分析开始: %s strength=%s fp=%s", r.symbol, r.strength, fp[:8]
         )
@@ -287,23 +302,27 @@ def run_ai_analysis_single(
         # 基准时刻取一次（H4，2026-10-12）：强刷判定与幽灵尾根判定共用同一 now，
         # 避免重读时钟造成「判定为尾窗、screen 时已跨点」的错配
         tail_now = datetime.now(timezone.utc)
-        in_tail = md.in_forming_tail(cfg.kline_interval, tail_now)
+        in_tail = md.in_forming_tail(profile.signal_interval, tail_now)
         # 扫描尾窗同口径 + 强刷（H5，2026-10-12）：K线缓存按小时桶且桶内不刷新，
         # 尾窗内未收盘根随时在变——不强刷会读到小时内早期快照（依赖扫描侧是否刚
         # 刷过桶的时序），与扫描看到的分属两根不同口径的「信号根」。尾窗内强刷，
         # 非尾窗沿用缓存（省请求）
-        klines = pool.get_klines(r.symbol, cfg.kline_interval, 500, force_refresh=in_tail)
+        klines = pool.get_klines(
+            r.symbol, profile.signal_interval, 500, force_refresh=in_tail,
+        )
         if len(klines) < 500 and not in_tail:
             # K线不足500根（止盈锚定/回退的前提是查满500根窗口）：强刷重取一次；
             # 仍不足则为新上市合约的全部历史，用可用K线继续（尾窗内已强刷，不重复）
-            klines = pool.get_klines(r.symbol, cfg.kline_interval, 500, force_refresh=True)
+            klines = pool.get_klines(
+                r.symbol, profile.signal_interval, 500, force_refresh=True,
+            )
             logger.info("AI 分析 %s K线不足500根，强刷重取后 %d 根", r.symbol, len(klines))
 
         # 扫描同口径（2026-10-11-4；2026-10-13 扩整点竞态）：分析紧随扫描，事实包
         # 必须与扫描看到同一根信号K线——尾窗内近收盘根、或整点取数竞态下末根实为
         # 刚收盘根（新周期根尚未出现在响应里）→ 幽灵尾根视图（K线摘要/指标块/摆动
         # 结构/current_price 全部对齐扫描口径）；否则原样返回（信号根=上一根已收盘）
-        klines = md.screen_klines(klines, cfg.kline_interval, tail_now)
+        klines = md.screen_klines(klines, profile.signal_interval, tail_now)
         if in_tail:
             # 信号根 = 未走完的近收盘根（H1，2026-10-12）：其收盘/极值未定型，
             # 下游「信号K极值已定型」前提不成立——打标供 risk_guard 放宽近锚硬校验。
@@ -337,12 +356,18 @@ def run_ai_analysis_single(
         # 近期摆动结构（HH/LH/HL/LL，高低点各 20 个）随事实包给 AI，与图表标注同源；
         # 分析时刻现算（现价已更新），锚点解析（ai_agent）与风控锚定共用
         signal["recent_swings"] = recent_swings(klines, order=cfg.swing_order, n=20)
-        # 4h 高周期 K 线（大方向背景注入，300 根）；失败只降级为无 4h 行，不中断分析
+        # 背景高周期 K 线（大方向背景注入，按 profile 背景周期/根数）；失败只降级为
+        # 无背景行，不中断分析
         try:
-            htf_klines = pool.get_klines(r.symbol, "4h", 300)  # 300 根：EMA144 收敛残留 ~12%（docs/17 §6）
+            htf_klines = pool.get_klines(
+                r.symbol, profile.htf_interval, profile.htf_window,
+            )  # 300 根：EMA144 收敛残留 ~12%（docs/17 §6）
         except Exception as e:
             htf_klines = None
-            logger.warning("AI 分析 %s 获取4h K线失败，跳过4h背景: %s", r.symbol, e)
+            logger.warning(
+                "AI 分析 %s 获取%s背景K线失败，跳过背景: %s",
+                r.symbol, profile.htf_label, e,
+            )
         # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
         # Agent 管线由模型按需调用工具自行获取
         # 止损金额口径（2026-09-27）：与开仓引擎同源的预算模式/金额/文案，
@@ -394,6 +419,7 @@ def run_ai_analysis_single(
                 tactics_block=tactics_block,
                 tp2_enabled=_tp2_on,
                 flt=_flt,
+                htf_label=profile.htf_label,
             )
         else:
             ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
@@ -409,11 +435,12 @@ def run_ai_analysis_single(
                 rr_min=_rr_min,
                 risk_pct=_risk_pct,
                 crash_pct=_crash_pct,
-                interval=cfg.kline_interval,
+                interval=profile.signal_interval,
                 progress_id=r.id,  # 方案 B 轻量进度：流式增量计数推 "llm" 事件（≥2s 节流）
                 tactics_block=tactics_block,
                 tp2_enabled=_tp2_on,
                 flt=_flt,
+                htf_label=profile.htf_label,
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto；
         # 事实包增厚（docs/24 D3）——指标块 + 摆动结构摘要随 signal 传入（_build_judge_signal）
@@ -421,7 +448,10 @@ def run_ai_analysis_single(
             if ai_result.get("trade_decision") == "suggest":
                 ai_progress.push(r.id, "gate", note="⚖️ 双评委辩论复核中…")
             ai_result = run_dual_judge(
-                ai_result, _build_judge_signal(signal, klines, htf_klines),
+                ai_result,
+                _build_judge_signal(
+                    signal, klines, htf_klines, htf_label=profile.htf_label,
+                ),
             )
         # 4h 状态机硬约束兜底（2026-10-11 再重构 EMA 状态机 11 态：缠绕/拐头双向禁开，宏观交叉/恢复/排列锁逆势，过渡放行）：LLM 无视 prompt 时程序强制 skip
         ai_result = enforce_htf_constraint(ai_result, htf_klines)

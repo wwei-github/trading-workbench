@@ -16,6 +16,19 @@ function loadColorScheme(): ColorScheme {
   }
 }
 
+// 激活扫描套（2026-10-14 双扫描套）：'s1'=信号1h/背景4h，'s2'=信号4h/背景1d；localStorage 持久化
+export type ScanProfileKey = 's1' | 's2'
+
+const ACTIVE_PROFILE_KEY = 'scan-active-profile'
+
+function loadActiveProfile(): ScanProfileKey {
+  try {
+    return localStorage.getItem(ACTIVE_PROFILE_KEY) === 's2' ? 's2' : 's1'
+  } catch {
+    return 's1'
+  }
+}
+
 // 图表技术指标（开源库 indicatorts 计算，目录见 constants/indicators.ts；开关 + 参数，localStorage 持久化）
 export interface IndicatorSetting {
   enabled: boolean
@@ -87,6 +100,9 @@ interface ScanState {
   logLevel: string // '' = 全部
   logQuery: string
   currentScanId: string | null
+  // 激活扫描套（2026-10-14）：结果/状态/AI 分析按此套切换并持久化
+  activeProfile: ScanProfileKey
+  setActiveProfile: (key: ScanProfileKey) => void
   aiConfig: SystemConfig | null
   aiAnalyses: AIAnalysis[]
   // 按行跟踪 AI 分析状态：scanResultId -> { loading, error }
@@ -217,6 +233,7 @@ export const useScanStore = create<ScanState>((set, get) => ({
   logLevel: '',
   logQuery: '',
   currentScanId: null,
+  activeProfile: loadActiveProfile(),
   aiConfig: null,
   aiAnalyses: [],
   analyzingMap: {},
@@ -225,7 +242,11 @@ export const useScanStore = create<ScanState>((set, get) => ({
   fetchStatus: async () => {
     try {
       const data = await scanApi.status()
-      set({ status: data })
+      // 激活扫描套的最近扫描：优先取 status.profiles 中匹配条目，缺失回落全局 last_scan
+      // （旧后端无 profiles；全局字段反映 s1）。currentScanId 随之切换，供结果/AI 分析拉取
+      const prof = data.profiles?.find((p) => p.key === get().activeProfile)
+      const activeLast = prof ? prof.last_scan : data.last_scan
+      set({ status: data, currentScanId: activeLast?.id ?? null })
     } catch (e) {
       console.error('获取扫描状态失败', e)
     }
@@ -310,11 +331,22 @@ export const useScanStore = create<ScanState>((set, get) => ({
 
   triggerScan: async () => {
     try {
-      await scanApi.trigger()
+      await scanApi.trigger(get().activeProfile)
       await get().fetchStatus()
     } catch (e) {
       console.error('触发扫描失败', e)
       throw e
+    }
+  },
+
+  // 切换激活扫描套并持久化（切换后由页面负责重取 status/results/AI 分析）
+  setActiveProfile: (key) => {
+    if (get().activeProfile === key) return
+    set({ activeProfile: key })
+    try {
+      localStorage.setItem(ACTIVE_PROFILE_KEY, key)
+    } catch {
+      /* 隐私模式等场景下忽略 */
     }
   },
 

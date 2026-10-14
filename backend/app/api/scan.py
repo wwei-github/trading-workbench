@@ -13,6 +13,7 @@ from app.schemas.scan import (
     ScanResultListResponse,
     ScanResultOut,
     ScanStatusResponse,
+    ScanProfileStatus,
     ScanTriggerResponse,
     ScanConfig,
     AIAnalysisOut,
@@ -36,6 +37,7 @@ from app.schemas.scan import (
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services import market_data as md
 from app.services.scanner import classify_volume
+from app.services.scan_profiles import SCAN_PROFILES, get_profile, is_valid_profile
 from app.services.trade_engine import breaker_status_by_net
 from app.services.ai_analyzer import analyze_coin
 from app.services.risk_guard import is_pullback_wait
@@ -54,21 +56,29 @@ router = APIRouter(prefix="/api/scans", tags=["scans"])
 
 
 @router.post("", response_model=ScanTriggerResponse)
-def trigger_scan(db: Session = Depends(get_db)):
-    """手动触发一次扫描"""
-    # 检查是否有正在运行的扫描
+def trigger_scan(
+    profile_key: str = Query("s1", description="扫描套：s1=1h·4h / s2=4h·1d"),
+    db: Session = Depends(get_db),
+):
+    """手动触发一次扫描（2026-10-14 双周期套：按 profile 触发，两套可并存）"""
+    if not is_valid_profile(profile_key):
+        raise HTTPException(status_code=400, detail=f"未知扫描套 profile_key={profile_key}")
+    # 检查该套是否有正在运行的扫描（按 profile 隔离：允许 s1/s2 并发）
     running = db.execute(
-        select(ScanRecord).where(ScanRecord.status == "running")
+        select(ScanRecord).where(
+            ScanRecord.status == "running",
+            ScanRecord.profile_key == profile_key,
+        )
     ).scalars().first()
     if running:
-        raise HTTPException(status_code=409, detail="已有扫描任务正在运行")
+        raise HTTPException(status_code=409, detail="该扫描套已有任务正在运行")
 
-    record = ScanRecord(scan_type="manual", status="running")
+    record = ScanRecord(scan_type="manual", status="running", profile_key=profile_key)
     db.add(record)
     db.commit()
     db.refresh(record)
 
-    run_scan_task.delay(str(record.id))
+    run_scan_task.delay(str(record.id), profile_key=profile_key)
     return ScanTriggerResponse(scan_id=record.id, status="running")
 
 
@@ -197,10 +207,45 @@ def scan_status(db: Session = Depends(get_db)):
         r_squared_threshold=float(cfg.r_squared_threshold),
         repeat_window_hours=cfg.repeat_window_hours,
     )
+    # 扫描套清单（2026-10-14 双周期套）：每套的启用开关 + 最近扫描 + 运行中标记。
+    # 逐套各查一次（套数固定 2，开销可忽略），避免把两套合并成复杂子查询
+    enabled_map = {
+        "s1": cfg.scan_profile_s1_enabled,
+        "s2": cfg.scan_profile_s2_enabled,
+    }
+    profiles: list[ScanProfileStatus] = []
+    for pkey, prof in SCAN_PROFILES.items():
+        p_last = db.execute(
+            select(ScanRecord)
+            .where(
+                ScanRecord.scan_type != "watchlist",
+                ScanRecord.profile_key == pkey,
+            )
+            .order_by(desc(ScanRecord.started_at))
+            .limit(1)
+        ).scalars().first()
+        p_running = (
+            db.execute(
+                select(func.count())
+                .select_from(ScanRecord)
+                .where(
+                    ScanRecord.status == "running",
+                    ScanRecord.profile_key == pkey,
+                )
+            ).scalar_one()
+            > 0
+        )
+        profiles.append(ScanProfileStatus(
+            key=pkey, label=prof.label,
+            enabled=bool(enabled_map.get(pkey)),
+            last_scan=ScanRecordOut.model_validate(p_last) if p_last else None,
+            is_scanning=p_running,
+        ))
     return ScanStatusResponse(
         last_scan=ScanRecordOut.model_validate(last_scan) if last_scan else None,
         is_scanning=is_scanning,
         config=config,
+        profiles=profiles,
         trading_enabled_testnet=cfg.trading_enabled_testnet,
         trading_enabled_live=cfg.trading_enabled_live,
         # 2026-10-03 删环境切换：在跑单统计为双网合计（明细按记录自带 testnet 区分）
@@ -461,6 +506,8 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
                                      if cfg.ai_call_timeout_s is not None
                                      else settings.AI_CALL_TIMEOUT_S),
         scan_filters=(cfg.scan_filters if isinstance(cfg.scan_filters, dict) else None),
+        scan_profile_s1_enabled=bool(cfg.scan_profile_s1_enabled),
+        scan_profile_s2_enabled=bool(cfg.scan_profile_s2_enabled),
         scan_filters_effective={
             "min_volume_24h": flt.min_volume_24h,
             "new_coin_cooldown_days": flt.new_coin_cooldown_days,
@@ -849,6 +896,25 @@ def update_system_config(
             _merge_scan_filters(cfg.scan_filters, body.scan_filters)
             if body.scan_filters is not None else None
         )
+
+    # 双周期扫描套启用开关（2026-10-14 双周期套，docs/22）：两开关独立、可同时开启，
+    # 但合并后不得两套皆关——全关则每小时/四小时扫描链路整体停摆。前端已做同款跨字段
+    # 校验，此处兜底防直接调 API 绕过。校验先于赋值（不落库即抛，session 不改动）
+    s1_enabled = (body.scan_profile_s1_enabled
+                  if body.scan_profile_s1_enabled is not None
+                  else cfg.scan_profile_s1_enabled)
+    s2_enabled = (body.scan_profile_s2_enabled
+                  if body.scan_profile_s2_enabled is not None
+                  else cfg.scan_profile_s2_enabled)
+    if not s1_enabled and not s2_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="至少需启用一个扫描套（1h·4h 或 4h·1d），两套不可同时关闭",
+        )
+    if body.scan_profile_s1_enabled is not None:
+        cfg.scan_profile_s1_enabled = body.scan_profile_s1_enabled
+    if body.scan_profile_s2_enabled is not None:
+        cfg.scan_profile_s2_enabled = body.scan_profile_s2_enabled
 
     db.commit()
     db.refresh(cfg)
@@ -1496,13 +1562,19 @@ def get_klines(
 # ===== 手动搜索 AI 分析 =====
 
 @router.post("/analyze", response_model=ManualAnalysisOut)
-def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
+def analyze_symbol(
+    body: ManualAnalyzeRequest,
+    profile_key: str = Query("s1", description="扫描套：s1=1h·4h / s2=4h·1d"),
+    db: Session = Depends(get_db),
+):
     """手动分析任意币种（搜索币种页签）：拉取 K 线后同步调用 AI，返回结构化建议"""
     cfg = _get_system_config(db)
     # 手动分析不受「筛选后自动 AI 分析」开关限制，仅要求已配置 API_KEY
     if not settings.AI_API_KEY:
         raise HTTPException(status_code=403, detail="未配置 AI API Key，无法分析")
 
+    # 扫描套（2026-10-14 双周期套）：信号周期与背景周期按套取值（未知 key 静默回落 s1）
+    profile = get_profile(profile_key)
     symbol = normalize_symbol(body.symbol)
     pool = ExchangePool()
     # 扫描尾窗/竞态同口径（2026-10-11-4；2026-10-13 扩整点竞态）：手动分析的事实包
@@ -1511,12 +1583,12 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
     # 基准时刻取一次（2026-10-12）：判定与 screen_klines 同一 now——强刷是网络
     # 请求（秒级），重读时钟会让 :59:5x 的判定在跨点后失效、基准不一致
     _tail_now = datetime.now(timezone.utc)
-    _tail = md.in_forming_tail(cfg.kline_interval, _tail_now)
+    _tail = md.in_forming_tail(profile.signal_interval, _tail_now)
     try:
         klines = pool.get_klines(
-            symbol, cfg.kline_interval, 500, force_refresh=_tail,
+            symbol, profile.signal_interval, 500, force_refresh=_tail,
         )
-        klines = md.screen_klines(klines, cfg.kline_interval, _tail_now)
+        klines = md.screen_klines(klines, profile.signal_interval, _tail_now)
     except AllExchangesFailed as e:
         raise HTTPException(
             status_code=503,
@@ -1526,9 +1598,11 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
     if len(klines) < 2:
         raise HTTPException(status_code=400, detail=f"币种 {symbol} K线数据不足")
 
-    # 4h 高周期 K 线（大方向背景注入）；失败只降级为无 4h 行，不中断分析
+    # 背景周期 K 线（大方向背景注入，周期按 profile；失败只降级为无背景行，不中断分析）
     try:
-        htf_klines = pool.get_klines(symbol, "4h", 300)  # 300 根：EMA144 收敛残留 ~12%（docs/17 §6）
+        htf_klines = pool.get_klines(
+            symbol, profile.htf_interval, profile.htf_window,
+        )
     except Exception:
         htf_klines = None
 
@@ -1572,7 +1646,7 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         ai_result = analyze_coin(
             signal, klines, strategy_prompt=strategy_prompt, htf_klines=htf_klines,
             risk_mode=_rm, risk_amount=_ra, risk_label=_rl, stop_cap_pct=_stop_cap,
-            interval=cfg.kline_interval, tactics_block=tactics_block,
+            interval=profile.signal_interval, tactics_block=tactics_block,
             tp2_enabled=bool(cfg.tp2_enabled),
             # 筛选参数组（2026-10-12）：门槛块阈值/触点启用列表读页面配置生效值
             flt=resolve_scan_filters(cfg),

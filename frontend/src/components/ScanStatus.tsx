@@ -19,8 +19,10 @@ import { useScanStore } from '../stores/scanStore'
  *  已进止盈止损（TP1_HIT/TP2_HIT，止损已移保本）用绿色 Tag 单独标注、不占名额；
  *  满仓红色 / 差一满橙色分级预警。 */
 export default function ScanStatus() {
-  const { status, fetchStatus } = useScanStore()
-  const last = status?.last_scan
+  const { status, fetchStatus, activeProfile } = useScanStore()
+  // 最近扫描按激活扫描套展示：优先 status.profiles 匹配条目，缺失回落全局（旧后端=反映 s1）
+  const activeProf = status?.profiles?.find((p) => p.key === activeProfile)
+  const last = activeProf ? activeProf.last_scan : status?.last_scan
   const tnTrading = status?.trading_enabled_testnet ?? false
   const liveTrading = status?.trading_enabled_live ?? false
   const lb = status?.loss_breaker

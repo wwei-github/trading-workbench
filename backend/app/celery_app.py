@@ -54,7 +54,15 @@ celery_app.conf.update(
             # 未收盘根快照。分钟数走单一来源 settings.SCAN_BEAT_MINUTE，
             # market_data.FORMING_TAIL_MINUTES 由同一常量派生（2026-10-12 解耦注释）
             "schedule": crontab(minute=settings.SCAN_BEAT_MINUTE),
-            "kwargs": {"scan_type": "scheduled"},
+            "kwargs": {"scan_type": "scheduled", "profile_key": "s1"},
+        },
+        "four-hour-scan": {
+            "task": "app.tasks.scan_tasks.run_scan_task",
+            # 四小时整点（北京，2026-10-14 双周期套 s2）：信号周期 4h → 每根 4h
+            # K线收盘（0/4/8/12/16/20 点）跑一轮。与 hourly-scan 各自独立防重锁，
+            # 两套可并发；任务内再过 s2 启用开关（关则早退），故可常驻调度。
+            "schedule": crontab(minute=0, hour="0,4,8,12,16,20"),
+            "kwargs": {"scan_type": "scheduled", "profile_key": "s2"},
         },
         "structure-watch": {
             "task": "app.tasks.structure_watch.run_structure_watch_task",

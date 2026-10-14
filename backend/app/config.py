@@ -251,7 +251,10 @@ class Settings(BaseSettings):
     # 提高到 1.8R（见 blacklist_service.AUTO_RISK_OVERSHOOT/AUTO_COOLDOWN_DAYS/
     # PERMANENT_R_OVERSHOOT）。动机：测试网孪生单的超预算亏损会把币种全局拉黑
     # （register_settle 不区分网络），1.2R 门槛过松、连坐 30 天。
-    RULE_VERSION: str = "v2026-10-14-2"
+    # v2026-10-14-3（双周期扫描套，docs/22）：新增 s2 套（信号 4h / 背景 1d）——
+    # 周期参数从全局单例提升为每套一份，信号周期/背景周期/跨周期 EMA21 触点均按
+    # ScanRecord.profile_key 解析（scan_profiles）。s1（1h/4h）行为逐字不变。
+    RULE_VERSION: str = "v2026-10-14-3"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

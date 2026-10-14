@@ -95,6 +95,9 @@ export default function ScanConfigPanel() {
         strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
         ai_pipeline_enabled: aiConfig.ai_pipeline_enabled ?? true,
         dual_judge_enabled: aiConfig.dual_judge_enabled ?? true,
+        // 扫描套开关（2026-10-14）：s1 默认开（原扫描行为）、s2 默认关；两者至少保留一套
+        scan_profile_s1_enabled: aiConfig.scan_profile_s1_enabled ?? true,
+        scan_profile_s2_enabled: aiConfig.scan_profile_s2_enabled ?? false,
         // AI 运行时参数：库内原始值（null=未定制，留空即回落 env 默认）
         ai_model: aiConfig.ai_model ?? undefined,
         ai_base_url: aiConfig.ai_base_url ?? undefined,
@@ -125,6 +128,9 @@ export default function ScanConfigPanel() {
         strategy_prompt_enabled: values.strategy_prompt_enabled,
         ai_pipeline_enabled: values.ai_pipeline_enabled,
         dual_judge_enabled: values.dual_judge_enabled,
+        // 扫描套开关（2026-10-14）：两套可同开，至少保留一套（前端校验兜底 + 后端 400）
+        scan_profile_s1_enabled: values.scan_profile_s1_enabled,
+        scan_profile_s2_enabled: values.scan_profile_s2_enabled,
         // AI 运行时参数：空串/未填 → null（后端回落 env 默认）
         ai_model: (values.ai_model ?? '').trim() || null,
         ai_base_url: (values.ai_base_url ?? '').trim() || null,
@@ -162,7 +168,8 @@ export default function ScanConfigPanel() {
       message.success('配置已保存')
       setOpen(false)
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || '保存失败')
+      // 表单校验失败（至少保留一套扫描套）：errorFields 携带校验消息，优先展示
+      message.error(e?.errorFields?.[0]?.errors?.[0] || e?.response?.data?.detail || '保存失败')
     } finally {
       setSaving(false)
     }
@@ -212,7 +219,7 @@ export default function ScanConfigPanel() {
                 label="K线周期"
                 name="kline_interval"
                 rules={[{ required: true }]}
-                tooltip="K线的时间周期"
+                tooltip="仅 1h·4h 套历史遗留字段，不再驱动扫描（两套扫描套均用固定周期）"
               >
                 <Select
                   options={[
@@ -233,7 +240,7 @@ export default function ScanConfigPanel() {
                 label="K线数量"
                 name="kline_window"
                 rules={[{ required: true }]}
-                tooltip="每次扫描获取的K线根数"
+                tooltip="仅 1h·4h 套历史遗留字段，不再驱动扫描（两套扫描套均用固定周期）"
               >
                 <InputNumber min={30} max={1500} style={{ width: '100%' }} />
               </Form.Item>
@@ -256,6 +263,46 @@ export default function ScanConfigPanel() {
                 tooltip="摆动点确认的左右比较根数（触发层结构位/突破、AI 事实包、K线标注共用）"
               >
                 <InputNumber min={1} max={10} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          {/* 扫描套（2026-10-14 双扫描套）：两套可同时开启，至少保留一套运行；
+              实际切换在「扫描结果」页顶部 Segmented 完成，此处仅控制启用。
+              s1=信号1h/背景4h（原有口径），s2=信号4h/背景1d（默认关） */}
+          <Divider style={{ margin: '8px 0 16px' }}>
+            <span style={{ fontSize: 13, color: '#999' }}>扫描套</span>
+          </Divider>
+          <Row gutter={16}>
+            <Col span={6}>
+              <Form.Item
+                label="1h·4h 扫描套"
+                name="scan_profile_s1_enabled"
+                valuePropName="checked"
+                dependencies={['scan_profile_s2_enabled']}
+                tooltip="信号 1h / 背景 4h：原有扫描口径；两套可同时开启，但至少保留一套运行"
+                rules={[
+                  ({ getFieldValue }) => ({
+                    validator: () => (
+                      getFieldValue('scan_profile_s1_enabled')
+                      || getFieldValue('scan_profile_s2_enabled')
+                        ? Promise.resolve()
+                        : Promise.reject(new Error('至少保留一套扫描套运行'))
+                    ),
+                  }),
+                ]}
+              >
+                <Switch />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="4h·1d 扫描套"
+                name="scan_profile_s2_enabled"
+                valuePropName="checked"
+                tooltip="信号 4h / 背景 1d：默认关闭；两套可同时开启，但至少保留一套运行"
+              >
+                <Switch />
               </Form.Item>
             </Col>
           </Row>

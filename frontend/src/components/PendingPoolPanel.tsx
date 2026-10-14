@@ -68,6 +68,7 @@ function touchWaitLabel(touch_ref: string | null, direction: 1 | -1): string {
   if (touch_ref === 'retest') return direction === 1 ? '前高' : '前低'
   if (touch_ref === 'swing') return direction === 1 ? '摆动低点' : '摆动高点'
   if (touch_ref === 'ema21_4h') return 'EMA21(4h)'
+  if (touch_ref === 'ema21_1d') return 'EMA21(1d)'
   return `EMA${touch_ref.replace('ema', '')}`
 }
 

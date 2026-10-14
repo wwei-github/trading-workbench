@@ -624,6 +624,11 @@ def _attempt_open(
                 signal_type=(a.scan_result.signal_type if a.scan_result is not None else None),
                 pattern=(a.scan_result.pattern if a.scan_result is not None else None),
                 rule_version=settings.RULE_VERSION,
+                # 扫描套来源快照（2026-10-14 双周期套）：来源 ScanRecord.profile_key，
+                # 复盘按套分组对比；scan_result 缺失（手动/旧路径）时 NULL 按 s1 理解
+                profile_key=(a.scan_result.scan_record.profile_key
+                             if a.scan_result is not None and a.scan_result.scan_record is not None
+                             else None),
                 testnet=trader.testnet,
                 account_key=trader.account_key,
                 ai_snapshot=_ai_snapshot(a),
@@ -699,6 +704,9 @@ def _attempt_open(
                         signal_type=(a.scan_result.signal_type if a.scan_result is not None else None),
                         pattern=(a.scan_result.pattern if a.scan_result is not None else None),
                         rule_version=settings.RULE_VERSION,
+                        profile_key=(a.scan_result.scan_record.profile_key
+                                     if a.scan_result is not None and a.scan_result.scan_record is not None
+                                     else None),
                         testnet=trader.testnet,
                         account_key=trader.account_key,
                         status="FAILED", raw={"fail_reason": str(e)[:200]},

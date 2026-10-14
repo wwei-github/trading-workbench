@@ -534,7 +534,8 @@ def _run_migrations(engine):
             " trading_enabled, "
             " trading_enabled_testnet, trading_enabled_live, "
             " risk_budget_mode, risk_fixed_amount, spot_trading_testnet, "
-            " live_initial_capital, tp2_enabled) "
+            " live_initial_capital, tp2_enabled, "
+            " scan_profile_s1_enabled, scan_profile_s2_enabled) "
             "VALUES (1, false, :kline_interval, :kline_window, "
             " :breakout_threshold, :r_squared_threshold, :repeat_window_hours, "
             " :swing_order, :pullback_tolerance, '系统运行时配置', "
@@ -546,7 +547,8 @@ def _run_migrations(engine):
             " :trading_enabled, "
             " :trading_enabled_testnet, :trading_enabled_live, "
             " 'pct', 3, true, "
-            " 0, false) "
+            " 0, false, "
+            " true, false) "
             "ON CONFLICT (id) DO NOTHING"
         ),
             {
@@ -661,6 +663,33 @@ def _run_migrations(engine):
         conn.execute(text("DROP TABLE IF EXISTS futures_backtests"))
         conn.execute(text("DROP TABLE IF EXISTS backtest_kline_cache"))
         conn.execute(text("DROP TABLE IF EXISTS spot_backtests"))
+        # 双周期扫描套（2026-10-14，docs/22）：扫描套键从全局单例提升为每行一份。
+        # scan_records.profile_key 带 DEFAULT 与索引，存量行自动归 s1；
+        # trade_records.profile_key 可空（开仓时快照来源套，旧行 NULL 按 s1 理解）；
+        # system_config 增两个启用开关（NOT NULL DEFAULT，存量行 s1=开/s2=关）。
+        conn.execute(text(
+            "ALTER TABLE scan_records "
+            "ADD COLUMN IF NOT EXISTS profile_key VARCHAR(16) "
+            "NOT NULL DEFAULT 's1'"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_scan_records_profile_key "
+            "ON scan_records (profile_key)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS profile_key VARCHAR(16)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS scan_profile_s1_enabled BOOLEAN "
+            "NOT NULL DEFAULT TRUE"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS scan_profile_s2_enabled BOOLEAN "
+            "NOT NULL DEFAULT FALSE"
+        ))
 
 
 def init_db():

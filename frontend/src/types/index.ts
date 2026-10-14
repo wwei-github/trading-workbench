@@ -62,10 +62,22 @@ export interface ScanConfig {
   repeat_window_hours: number;
 }
 
+// 扫描套状态（2026-10-14 双扫描套）：status.profiles 每套一条，前端切换激活套用
+export interface ScanProfileStatus {
+  key: string;
+  label: string; // "1h·4h" / "4h·1d"
+  enabled: boolean;
+  last_scan: ScanRecord | null;
+  is_scanning: boolean;
+}
+
 export interface ScanStatus {
   last_scan: ScanRecord | null;
   is_scanning: boolean;
   config: ScanConfig;
+  /** 扫描套分套状态（2026-10-14）：两套共存时的各自最近扫描/运行态；
+   *  旧后端无此字段时，前端各字段回落下方全局值（全局值反映 s1） */
+  profiles?: ScanProfileStatus[];
   // 交易运行状态（2026-09-20 顶部一览；2026-10-03 双网独立开关，统计双网合计）
   trading_enabled_testnet: boolean;
   trading_enabled_live: boolean;
@@ -285,6 +297,10 @@ export interface SystemConfig {
   ai_base_url_effective?: string;
   llm_concurrency_effective?: number;
   ai_call_timeout_s_effective?: number;
+  // 扫描套开关（2026-10-14 双扫描套）：两套可同时开启，保存时至少保留一套
+  // （两者皆 false 后端 PUT 返回 400）
+  scan_profile_s1_enabled?: boolean; // 信号 1h / 背景 4h（标签 1h·4h）
+  scan_profile_s2_enabled?: boolean; // 信号 4h / 背景 1d（标签 4h·1d，默认关）
 }
 
 // 账号注册表条目（docs/17）：key 稳定标识（testnet-1/live-N），只读不回传凭据

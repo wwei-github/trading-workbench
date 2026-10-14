@@ -571,3 +571,38 @@ def test_structure_gate_exempts_non_ema21_touch():
         t, _ = trig.detect_trigger(
             kl, 1, flt=_flt(refs=("ema21_4h",)), htf=_htf_flat(99.9))
     assert t is not None and t["touch_ref"] == "ema21_4h"
+
+
+# ── 双周期套：htf_touch_ref 参数化（2026-10-14，docs/22）──
+
+
+def test_touch_order_and_labels_include_ema21_1d():
+    """触点枚举/文案纳入 ema21_1d，优先级紧随 ema21_4h（更新频率排序）。"""
+    assert trig.TOUCH_LABELS["ema21_1d"] == "EMA21(1d)"
+    order = list(trig.TOUCH_ORDER)
+    assert order.index("ema21_4h") < order.index("ema21_1d") < order.index("ema55")
+
+
+def test_htf_touch_ref_default_is_ema21_4h():
+    """htf_touch_ref 缺省 = ema21_4h：s1 行为逐字不变。"""
+    kl = _kl(*_base())
+    ts, o, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, o, o + 0.4, 99.8, 100.1, vol, qv]
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, _ = trig.detect_trigger(
+            kl, 1, flt=_flt(refs=("ema21_4h",)), htf=_htf_flat(99.9))
+    assert t is not None and t["touch_ref"] == "ema21_4h"
+
+
+def test_htf_touch_ref_s2_produces_ema21_1d():
+    """s2 套（信号4h/背景1d）传 htf_touch_ref=ema21_1d：触点键与文案均为 1d。"""
+    kl = _kl(*_base())
+    ts, o, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, o, o + 0.4, 99.8, 100.1, vol, qv]
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, _ = trig.detect_trigger(
+            kl, 1, flt=_flt(refs=("ema21_1d",)), htf=_htf_flat(99.9),
+            htf_touch_ref="ema21_1d")
+    assert t is not None and t["touch_ref"] == "ema21_1d"
+    assert "EMA21(1d)" in t["reason"]
+    assert t["position_ref"] == "回踩EMA21(1d)"
