@@ -66,6 +66,20 @@ def _audit_fmt_value(key: str, v) -> str:
         return "开" if v else "关"
     if key == "strategy_prompt":
         return f"<策略提示词 {len(str(v))} 字>"
+    if key == "ai_base_url":
+        # URL userinfo（https://key:secret@host）可能携带网关凭证，审计只留主机位
+        try:
+            from urllib.parse import urlsplit
+            p = urlsplit(str(v))
+            if p.username is not None or p.password is not None:
+                _host = p.hostname or ""
+                if p.port:
+                    _host = f"{_host}:{p.port}"
+                v = p._replace(netloc=f"***@{_host}").geturl()
+        except ValueError:
+            pass
+        s = str(v)
+        return s if len(s) <= 120 else s[:117] + "..."
     if key == "scan_filters":
         s = json.dumps(v, ensure_ascii=False, sort_keys=True, default=str)
         return s if len(s) <= 120 else s[:117] + "..."
@@ -599,6 +613,13 @@ def update_system_config(
         k: copy.deepcopy(getattr(cfg, k, None))
         for k in body.model_fields_set if hasattr(cfg, k)
     }
+    # live_trading_keys 保存会隐式切换主账号（新集合不含当前主账号时取集合首个），
+    # 该副作用不在 model_fields_set 内——显式纳入快照，防主账号切换漏审
+    if (
+        "live_trading_keys" in body.model_fields_set
+        and "current_account_key" not in _audit_before
+    ):
+        _audit_before["current_account_key"] = copy.deepcopy(cfg.current_account_key)
 
     # AI 开关
     if body.ai_analysis_enabled is not None:
@@ -746,7 +767,7 @@ def update_system_config(
     if "ai_rr_tol" in body.model_fields_set:
         v = body.ai_rr_tol
         if v is not None and not (0 <= v <= 0.2):
-            raise HTTPException(status_code=400, detail="ai_rr_tol 需在 0~0.2 之间（现价复算 RR 容差，0=严格）")
+            raise HTTPException(status_code=400, detail="ai_rr_tol 需在 0~0.2 之间（RR 容差，现价闸/AI 三价铁律/TP1 上限三处共用，0=严格）")
         cfg.ai_rr_tol = v
     if "risk_pct" in body.model_fields_set:
         v = body.risk_pct

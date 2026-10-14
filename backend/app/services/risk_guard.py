@@ -416,10 +416,18 @@ def validate_decision(
         if _caps:
             _cap = max(min(_caps), _rr_floor * stop_dist)
             _tp1_dist = abs(d.take_profit_1 - d.entry_price)
-            if _tp1_dist > (_cap + _rr_tol * stop_dist) * (1 + 1e-9):
+            _cap_eff = _cap + _rr_tol * stop_dist
+            if _tp1_dist > _cap_eff * (1 + 1e-9):
+                _cap_desc = f"{_cap_eff:.6g}"
+                if _rr_tol > 0:
+                    # 告知 AI 容差后的真实边界，避免按旧 cap 自纠仍擦边、多耗一次重试
+                    _cap_desc = (
+                        f"{_cap_eff:.6g}（基础上限 {_cap / stop_dist:.4g}R"
+                        f"＋容差 {_rr_tol:g}R）"
+                    )
                 violations.append(
                     f"止盈一距离过远：距入场 {_tp1_dist:.6g}（≈{_tp1_dist / stop_dist:.2f}R），"
-                    f"超过上限 {_cap:.6g}——请改挂更近的结构位，"
+                    f"超过上限 {_cap_desc}——请改挂更近的结构位，"
                     f"或改用 入场±{_rr_floor:g}×止损距离 作为止盈一（程序只复算不改价）"
                 )
     if violations:

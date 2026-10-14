@@ -132,8 +132,8 @@ class SystemConfig(Base):
     tp1_qty_pct_no_tp2: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True, default=None)
     # 盈亏比铁律下限（NULL=默认 1.5）：risk_guard 校验 + 开仓现价复算 + AI 提示词共用
     ai_rr_min: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
-    # 盈亏比现价复算容差（NULL=默认 0.02，0=严格 ≥rr_min）：仅开仓闸现价复算层，
-    # AI 入场价口径铁律不受此参数影响
+    # RR 复算容差（NULL=默认 0.02，0=严格 ≥rr_min）：三处共用——开仓现价闸、
+    # AI 三价 RR 铁律、TP1 距离上限（2026-10-14-3 起；此前仅开仓现价闸生效）
     ai_rr_tol: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
 
     # ── AI 运行时参数上页面（2026-10-14，策略配置弹窗）──

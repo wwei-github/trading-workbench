@@ -266,9 +266,9 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="现价复算容差（留空=默认 0.02，0=严格）"
+                label="RR 容差（留空=默认 0.02R，0=严格）"
                 name="ai_rr_tol"
-                tooltip="开仓时盈亏比按现价复算的放行容差：RR ≥ 铁律下限-容差 即开单（AI 入场价口径铁律不受影响）。容忍 AI 报价到开仓间的价格漂移，0=恢复严格铁律"
+                tooltip="同一条容差三处共用：开仓现价复算闸、AI 三价 RR 铁律、止盈一距离上限。RR ≥ 铁律下限-容差 即放行，吞 tick 取整与报价漂移的擦边值（默认 0.02R），0=恢复严格铁律"
               >
                 <InputNumber min={0} max={0.2} step={0.01} style={{ width: '100%' }} placeholder="0.02" />
               </Form.Item>

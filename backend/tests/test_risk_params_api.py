@@ -314,3 +314,67 @@ def test_put_config_rejected_writes_no_audit(client, caplog):
         r = http.put("/api/scans/config", json={"ai_rr_tol": 5})
     assert r.status_code == 400
     assert not any("系统配置更新" in x.message for x in caplog.records)
+
+
+def test_put_config_audits_implicit_primary_account_switch(client, caplog, monkeypatch):
+    """前端常规保存只提交 live_trading_keys；新集合不含当前主账号时后端隐式切换
+    current_account_key——该副作用必须同条审计可见（修复前漏记）"""
+    from app.services import account_registry
+    from app.services.account_registry import Account
+    from app.models.system_config import SystemConfig
+
+    def _fake_get_account(key):
+        return next(
+            (Account(k, k, False, "ak", "sk") for k in ("live-1", "live-2") if k == key),
+            None,
+        )
+
+    monkeypatch.setattr(account_registry, "get_account", _fake_get_account)
+    http, db = client
+    # 预置：主账号 live-1、启用集合 [live-1]
+    r = http.put(
+        "/api/scans/config",
+        json={"current_account_key": "live-1", "live_trading_keys": ["live-1"]},
+    )
+    assert r.status_code == 200, r.text
+    cfg = db.query(SystemConfig).first()
+    assert cfg.current_account_key == "live-1"
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=_AUDIT_LOGGER):
+        r = http.put("/api/scans/config", json={"live_trading_keys": ["live-2"]})
+    assert r.status_code == 200, r.text
+    assert cfg.current_account_key == "live-2"  # 隐式切换已落库
+    audit = [
+        x.message for x in caplog.records
+        if x.name == _AUDIT_LOGGER and "系统配置更新" in x.message
+    ]
+    assert len(audit) == 1
+    assert "current_account_key" in audit[0]
+    assert "live-1→live-2" in audit[0]
+
+    # 同集合重复保存：无实际变化（含未切换的主账号）→ 不刷审计
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=_AUDIT_LOGGER):
+        r = http.put("/api/scans/config", json={"live_trading_keys": ["live-2"]})
+    assert r.status_code == 200, r.text
+    assert not any("系统配置更新" in x.message for x in caplog.records)
+
+
+def test_put_config_audit_redacts_base_url_userinfo(client, caplog):
+    """ai_base_url 内嵌网关凭证（https://key:secret@host）时审计须脱敏，
+    不落明文密钥（端点本身仍按配置原值存库）"""
+    http, _db = client
+    secret = "sk-secret-123456"
+    url = f"https://{secret}:pw@gateway.example.com/v1"
+    with caplog.at_level(logging.WARNING, logger=_AUDIT_LOGGER):
+        r = http.put("/api/scans/config", json={"ai_base_url": url})
+    assert r.status_code == 200, r.text
+    audit = [
+        x.message for x in caplog.records
+        if x.name == _AUDIT_LOGGER and "系统配置更新" in x.message
+    ]
+    assert len(audit) == 1
+    assert "gateway.example.com" in audit[0]
+    assert secret not in audit[0]
+    assert "***@" in audit[0]
