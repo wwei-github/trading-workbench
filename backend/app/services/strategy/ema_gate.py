@@ -38,6 +38,11 @@ BBW_MIN_HIST = 20          # 项6：历史样本下限（不足跳过该项，�
 CROSS_WINDOW = 20          # 项7：价格穿越 EMA21 的回看根数
 CROSS_MAX = 4              # 项7：穿越 ≥4 次 → 震荡最直观的表现
 VOL_CV_MIN = 0.3           # 项8：近 20 根成交量变异系数下限（<0.3 → 无规律低迷）
+# 项3/4 分离史回看根数（2026-10-14，与 EmaGateConfig.div_lookback 同口径拍板）：
+# 快中/中慢腿距离改取近 N 根已收盘的最大分离度——回踩的定义就是均线现值被压窄，
+# 用现值打分会把「深回踩」误记成「震荡粘合」；「这波趋势曾分离过」即不给震荡分，
+# 整段无分离史的真震荡照样计分（与 structure_1h 2026-10-10 三次拍板同源修复）
+RANGE_DIV_LOOKBACK = 12
 
 
 def ema_series(closes: np.ndarray, period: int) -> Optional[np.ndarray]:
@@ -222,10 +227,11 @@ def range_score(klines: list[list],
     每项独立评分，得分越高震荡概率越大——评分制比硬条件更灵活。
 
     项 1（4H EMA144 走平）复用 gate_4h 斜率证据不重算，筛选链中位于闸门之后
-    故恒为 0（standalone 使用时才可能命中）；项 2-4 与 structure_1h 同源，结构
-    门通过时亦恒为 0——评分卡在筛选链的实际杀伤力来自项 5-8（1h ADX 预警 /
-    布林带收口 / 价格反复穿越 EMA21 / 成交量低迷），即闸门与结构门漏掉的
-    残余震荡，≥3 即强震荡共识。
+    故恒为 0（standalone 使用时才可能命中）；项 2-4 与 structure_1h 同源（项 3/4
+    于 2026-10-14 改分离史口径——近 RANGE_DIV_LOOKBACK 根最大分离度，回踩压窄
+    均线现值不再误记震荡粘合），结构门通过时亦恒为 0——评分卡在筛选链的实际
+    杀伤力来自项 5-8（1h ADX 预警 / 布林带收口 / 价格反复穿越 EMA21 / 成交量
+    低迷），即闸门与结构门漏掉的残余震荡，≥3 即强震荡共识。
 
     klines：1h 原始K线（尾根未收盘，内部取已收盘）；gate_ev：gate_4h 证据
     （可 None，缺失跳过项 1）。返回 (score, reasons)。"""
@@ -261,12 +267,18 @@ def range_score(klines: list[list],
         reasons.append("1H三线交错")
 
     # 3/4. 快中/中慢线距离过近（ATR 归一化跨品种统一阈值：0.5 是"粘合"与
-    # "发散"的分界线，中慢线要求更高因代表更长期趋势）
+    # "发散"的分界线，中慢线要求更高因代表更长期趋势）。
+    # 2026-10-14 分离史口径（与 structure_1h div_lookback 同源）：取近
+    # RANGE_DIV_LOOKBACK 根已收盘的最大分离度——回踩时刻现值被压窄是回踩的
+    # 定义而非震荡证据，曾分离过即不给分；整段无分离史的真震荡照样计分。
     if atr > 0:
-        if abs(d21 - d55) / atr < 0.5:
+        lb = min(RANGE_DIV_LOOKBACK, n - 143)  # e144 有限区自 index 143 起
+        fm_div = float(np.max(np.abs(e21[-lb:] - e55[-lb:]))) / atr
+        ms_div = float(np.max(np.abs(e55[-lb:] - e144[-lb:]))) / atr
+        if fm_div < 0.5:
             score += 1
             reasons.append("21/55距离过近")
-        if abs(d55 - d144) / atr < 1.0:
+        if ms_div < 1.0:
             score += 1
             reasons.append("55/144距离过近")
 

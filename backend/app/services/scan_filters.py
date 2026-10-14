@@ -36,14 +36,15 @@ TOUCH_EMA144 = "ema144"    # 深回撤（排列+斜率门，K线窗口≥300 才
 ALL_TOUCH_REFS = (
     TOUCH_RETEST, TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55, TOUCH_EMA144,
 )
-# 默认仅均线族（2026-10-08 调整，2026-10-09 加入 4h EMA21）：1h 趋势价值区/4h 大周期
-# 价值区/中深度回撤；横向结构触点（retest/swing）默认关——语义不匹配时易产生
-# 低质量触点命中，需在配置弹窗显式勾选启用。ema55 受分离史结构门自筛（2026-10-10
-# 三次拍板：发散度改分离史口径，深回踩不再被触点时刻现值误杀）。
+# 默认均线族 + 摆动结构位（2026-10-08 均线族，2026-10-09 加入 4h EMA21，
+# 2026-10-14 加入 swing——实测回踩样本中 HL/LH 结构位占比可观，仅均线族覆盖面
+# 不足；retest 仍默认关——依赖 breakout_events 先手记录，语义不匹配时易产生
+# 低质量触点命中，需在配置弹窗显式勾选启用）。ema55 受分离史结构门自筛
+# （2026-10-10 三次拍板：发散度改分离史口径，深回踩不再被触点时刻现值误杀）。
 # ema144 触点退役（同批拍板）：深回撤存活率极低（排列门常先杀）且偏离「回踩入场」
 # 语义，检测代码保留但白名单默认剔除，_touch_refs 解析层强制过滤
 RETIRED_TOUCH_REFS = (TOUCH_EMA144,)
-DEFAULT_TOUCH_REFS = (TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55)
+DEFAULT_TOUCH_REFS = (TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55)
 
 # scan_filters JSONB 的合法键集（PUT /config 校验与前端字段一一对应）
 SCAN_FILTER_KEYS = (
@@ -80,8 +81,9 @@ class ScanFilters:
     allowed_triggers: tuple = ALL_TRIGGERS
     pullback_touch_refs: tuple = DEFAULT_TOUCH_REFS
     retest_window_bars: int = 24
-    # 回踩待确认窗口（2026-10-13-10）：触碰根后 1..N 根已收盘K线内出现同向金K即确认
-    pending_confirm_window_bars: int = 3
+    # 回踩待确认窗口（2026-10-13-10）：触碰根后 1..N 根已收盘K线内出现同向金K即确认；
+    # 2026-10-14 默认 3→4（实测金K迟到 1 根是待确认池最大卡点，放宽约多覆盖 30% 迟到确认）
+    pending_confirm_window_bars: int = 4
     structure_touch_band_pct: float = 0.3
     ema_touch_min_bars: int = 200
     new_coin_cooldown_days: int = 14

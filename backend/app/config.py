@@ -52,7 +52,8 @@ class Settings(BaseSettings):
     # 回踩待确认窗口（2026-10-13-10）：触碰根治不落金K后进入 pending 待确认池，
     # 同向金K允许出现在触碰根之后 1..N 根已收盘K线内（支持启明星/黄昏星等三根形态；
     # N=1 等价旧「恰好下一根」行为）。≥1，由 trigger 层消费。
-    PENDING_CONFIRM_WINDOW_BARS: int = 3
+    # 2026-10-14 默认 3→4：实测金K迟到 1 根是待确认池最大卡点，放宽约多覆盖 30% 迟到确认
+    PENDING_CONFIRM_WINDOW_BARS: int = 4
     STRUCTURE_TOUCH_BAND_PCT: float = 0.3  # retest/swing 横向位触碰带宽（%，影线可入带收盘须守住）
     EMA_TOUCH_MIN_BARS: int = 200  # EMA 触碰最小已收盘根数（数据门，EMA144 收敛兜底）
     # 1h 结构门开关：已于 2026-10-12 退役（docs/21 O7）。字段保留向后兼容，

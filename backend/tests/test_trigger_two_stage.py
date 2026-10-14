@@ -386,8 +386,16 @@ def test_row3_short_symmetric_window_confirm():
     # （close > 前低*(1-thr)，不构成跌破突破）→ 走行3 窗口内确认
     c = ema - 0.02
     _set_signal_candle(kl, c, ema - 0.01, c - 0.05)
+    # 触点白名单锁定 ema21（2026-10-14 默认白名单加入 swing：本夹具信号K影线
+    # 会意外触碰摆动低点走行2，与「无触碰 → 行3 窗口确认」的测试意图冲突）
+    flt = trig.ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=20,
+        breakout_threshold=0.002, breakout_vol_ratio=1.2,
+        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
+        ai_max_per_scan=10, pullback_touch_refs=("ema21",),
+    )
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_SHORT):
-        t, op = trig.detect_trigger(kl, -1, pending=_pending(kl, direction=-1, anchor_idx=-4))
+        t, op = trig.detect_trigger(kl, -1, pending=_pending(kl, direction=-1, anchor_idx=-4), flt=flt)
     assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
     assert t["position"] == "resistance"
     assert op == {"op": "confirm"}

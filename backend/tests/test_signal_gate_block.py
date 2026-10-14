@@ -101,9 +101,11 @@ def test_gate_block_pullback_touch_object():
     assert "ema144 触点已退役" in block          # 退役触点不再作可选语义暗示
     assert "两段式确认" in block
     assert "0.3%" in block  # structure_touch_band_pct 生效值
-    # 未配置 pullback_touch_refs → 启用列表回落 DEFAULT_TOUCH_REFS（均线族三触点）
+    # 未配置 pullback_touch_refs → 启用列表回落 DEFAULT_TOUCH_REFS
+    # （2026-10-14 起 = swing + 均线族三触点）
     assert (
-        "当前启用触点: EMA21（ema21）、EMA21(4h)（ema21_4h）、EMA55（ema55）"
+        "当前启用触点: 摆动结构位（swing）、EMA21（ema21）、"
+        "EMA21(4h)（ema21_4h）、EMA55（ema55）"
         in block
     )
     assert "Donchian" not in block  # 突破专属行不进回踩块

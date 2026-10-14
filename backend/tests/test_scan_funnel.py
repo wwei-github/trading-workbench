@@ -230,7 +230,7 @@ def test_no_trigger_detail_pending_expired():
     kl = _rising_klines()
     pending = {
         "id": 1, "direction": 1, "touch_ref": "swing",
-        "stage1_candle_open": dt.utcfromtimestamp(kl[-5][0] / 1000),  # elapsed=N=3
+        "stage1_candle_open": dt.utcfromtimestamp(kl[-6][0] / 1000),  # elapsed=N=4（2026-10-14 窗口默认 3→4）
     }
     rv: dict = {}
     cand, op = _detect(rv, kl, flt=_diag_flt(), pending=pending,

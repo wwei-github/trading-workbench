@@ -408,24 +408,25 @@ def test_breakout_trigger_carries_event_payload():
 # ── resolve_scan_filters：触点白名单与参数 ───────────────────────────────
 
 def test_resolve_default_touch_refs():
-    """默认触点均线族（2026-10-08 调整，2026-10-09 加入 4h EMA21，2026-10-10
-    ema144 退役）：横向结构触点（retest/swing）需配置显式启用"""
+    """默认触点 = 摆动结构位 + 均线族（2026-10-08 均线族，2026-10-09 加入 4h EMA21，
+    2026-10-10 ema144 退役，2026-10-14 加入 swing——回踩样本中 HL/LH 结构位占比
+    可观；retest 仍需配置显式启用）"""
     flt = resolve_scan_filters(None)
-    assert flt.pullback_touch_refs == ("ema21", "ema21_4h", "ema55")
+    assert flt.pullback_touch_refs == ("swing", "ema21", "ema21_4h", "ema55")
     assert flt.retest_window_bars == 24
     assert flt.structure_touch_band_pct == 0.3
     assert flt.ema_touch_min_bars == 200
 
 
 def test_resolve_touch_refs_filter_and_fallback():
-    """非法项过滤保留合法项；空/全非法/非 list 回落默认（均线族，触点全空会停摆回踩管线）；
-    退役触点 ema144 即使显式配置也被强制过滤（2026-10-10 三次拍板，不留暗门）"""
+    """非法项过滤保留合法项；空/全非法/非 list 回落默认（swing+均线族，触点全空会停摆
+    回踩管线）；退役触点 ema144 即使显式配置也被强制过滤（2026-10-10 三次拍板，不留暗门）"""
     cfg = SimpleNamespace(scan_filters={"pullback_touch_refs": ["retest", "bogus", "ema55"]})
     assert resolve_scan_filters(cfg).pullback_touch_refs == ("retest", "ema55")
     for bad in (None, "retest", [], ["bogus"], ["bogus", 1]):
         cfg2 = SimpleNamespace(scan_filters={"pullback_touch_refs": bad})
         assert resolve_scan_filters(cfg2).pullback_touch_refs == \
-            ("ema21", "ema21_4h", "ema55"), bad
+            ("swing", "ema21", "ema21_4h", "ema55"), bad
     cfg3 = SimpleNamespace(scan_filters={
         "pullback_touch_refs": ["ema21", "ema144", "retest"]})
     assert resolve_scan_filters(cfg3).pullback_touch_refs == ("ema21", "retest")

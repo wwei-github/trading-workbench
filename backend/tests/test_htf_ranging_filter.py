@@ -197,6 +197,32 @@ def test_range_score_trending_low():
     assert score < 3
 
 
+def _pullback_1h() -> list[list]:
+    """深回踩 1h（2026-10-14 分离史夹具）：270 根 +0.4 稳步趋势后 24 根 -0.6
+    回踩，全程 ±0.8 影线（真实行情 ATR 不随回踩塌缩的特征）。回踩末端
+    |e21-e55|/ATR ≈ 0.17（现值口径会误判"21/55距离过近"），但近 12 根最大
+    分离度 ≈ 1.85——这波趋势曾分离过，不是震荡粘合。"""
+    kl = []
+    price = 100.0
+    ts = 1_700_000_000_000
+    for i in range(270 + 24):
+        o = price
+        price += 0.4 if i < 270 else -0.6
+        kl.append([ts + i * 3_600_000, o, max(o, price) + 0.8,
+                   min(o, price) - 0.8, price, 80.0, 80.0])
+    return kl
+
+
+def test_range_score_pullback_not_glued():
+    """项3/4 分离史口径（2026-10-14，与 structure_1h div_lookback 同源）：
+    深回踩压窄均线现值不再误记震荡粘合——趋势曾分离过即不给"距离过近"分。
+    回归锚点：本夹具现值 |e21-e55|/ATR≈0.17<0.5（旧口径会给分）。"""
+    score, reasons = range_score(_pullback_1h())
+    assert "21/55距离过近" not in reasons
+    assert "55/144距离过近" not in reasons
+    assert score < 3
+
+
 # ── 4h 计算合并（2026-10-13）：htf_core 透传 vs 各自自算 数值等价 ──────────
 
 
