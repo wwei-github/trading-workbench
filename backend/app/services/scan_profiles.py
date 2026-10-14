@@ -18,6 +18,11 @@ archive/20「共享底盘 + 双大脑」：信号链各自独立，执行引擎/
 三个常数直接乘**本套信号周期**的 ATR14，而 settings 里的默认值是按 1h ATR 校准的——
 s2 信号周期 4h 的 ATR ≈1.5~2× 1h ATR，沿用同一倍率会把实际距离放宽 ~2×。故 s2 给出
 **1h 等效倍率**（÷2：0.15/1.0/0.25）；s1 全 None = 走 settings 默认，逐字不变。
+
+止损宽度硬上限倍数（2026-10-14-5）同理按套标定：页面 `max_stop_pct`（百分比）按 1h
+波动标定，s2 止损天然 ≈2× 宽，沿用会在正常止损时触顶被误杀——s2 经 `stop_cap_mult=2.0`
+放宽；s1 None=×1.0 逐字不变。持仓管理（跟进止损）的 K 线周期也按持仓来源套解析
+（`signal_interval`：s1 沿用页面全局、s2 用 4h）。
 """
 import logging
 from dataclasses import dataclass
@@ -54,6 +59,10 @@ class ScanProfile:
     sl_min_atr: Optional[float] = None        # 止损宽度下限倍数（settings.SL_MIN_ATR）
     tp1_max_atr: Optional[float] = None       # 止盈一距离上限 ATR 腿（settings.TP1_MAX_ATR）
     tp2_min_gap_atr: Optional[float] = None   # 止盈二间距下限 ATR 腿（settings.TP2_MIN_GAP_ATR）
+    # 止损宽度硬上限倍数（2026-10-14-5）：作用在页面补丁参数 max_stop_pct（百分比）上。
+    # None（s1）→ ×1.0，行为逐字不变；s2 止损距离天然 ≈2× 宽 → ×2.0，使「同一 ATR 宽度」
+    # 语义在两套上等价（否则按 1h 标定的百分比上限会误杀 4h 的正常止损）。
+    stop_cap_mult: Optional[float] = None
 
 
 S1 = ScanProfile(
@@ -67,6 +76,8 @@ S2 = ScanProfile(
     default_touch_refs=(TOUCH_EMA21, TOUCH_EMA21_1D, TOUCH_EMA55),
     # 1h 等效倍率（4h ATR ≈2× 1h ATR → ÷2）：与 settings 默认 0.3/2.0/0.5 同价位距离
     sl_min_atr=0.15, tp1_max_atr=1.0, tp2_min_gap_atr=0.25,
+    # 止损宽度硬上限：4h 止损天然 ≈2× 宽 → 同一百分比上限按 ×2 放宽，避免误杀
+    stop_cap_mult=2.0,
 )
 
 SCAN_PROFILES: dict[str, ScanProfile] = {"s1": S1, "s2": S2}
@@ -104,3 +115,14 @@ def resolve_risk_atr(profile_key: Optional[str]) -> tuple[float, float, float]:
         float(settings.TP1_MAX_ATR if p.tp1_max_atr is None else p.tp1_max_atr),
         float(settings.TP2_MIN_GAP_ATR if p.tp2_min_gap_atr is None else p.tp2_min_gap_atr),
     )
+
+
+def resolve_stop_cap_mult(profile_key: Optional[str]) -> float:
+    """按套解析止损宽度硬上限倍数（× 页面补丁参数 max_stop_pct 的百分比）。
+
+    页面 max_stop_pct 是按 1h 波动标定的单一百分比；s2 止损距离天然 ≈2× 宽，
+    沿用同一百分比会在正常止损时触顶被误杀（2026-10-14-5）。未标定（None，
+    含 s1 与未知 key）→ 1.0，s1/旧路径行为逐字不变。max_stop_pct 本身为 None
+    （不限制）时该倍数无意义，调用方只需在有值时才乘。"""
+    p = get_profile(profile_key)
+    return 1.0 if p.stop_cap_mult is None else float(p.stop_cap_mult)

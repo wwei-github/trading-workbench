@@ -477,6 +477,51 @@ def test_chandelier_unavailable_degrades(monkeypatch):
     assert _chandelier_sl(_rec(opened_hours_ago=0.2), None, 3.0) is None
 
 
+# ── 持仓管理周期按套（2026-10-14-5）────────────────────────────────────
+
+
+def test_mgmt_interval_follows_profile():
+    """_mgmt_interval：s1 / 未标定沿用传入的全局周期；s2 用其信号周期 4h。"""
+    assert te._mgmt_interval(None, "1h") == "1h"
+    assert te._mgmt_interval("s1", "1h") == "1h"
+    assert te._mgmt_interval("s2", "1h") == "4h"
+    assert te._mgmt_interval("s3", "1h") == "1h"  # 未知 key 回落 s1
+
+
+def _interval_pool(t0_ms):
+    """记录每次 get_klines 的周期；4h/1h 返回信号 K，其余（1d）返回日 K"""
+    class _Pool:
+        def __init__(self):
+            self.intervals: list = []
+
+        def get_klines(self, symbol, interval, n):
+            self.intervals.append(interval)
+            if interval in ("1h", "4h"):
+                return [_h1_bar(t0_ms, i, 105.0, 90.0) for i in range(6)]
+            return _d1_bars(30)
+
+    return _Pool()
+
+
+def test_chandelier_extremes_interval_follows_profile(monkeypatch):
+    """s2 持仓期极值取 4h K；s1 / 未标定取 1h（行为逐字不变）。"""
+    opened = datetime.utcnow() - timedelta(hours=5)
+    t0_ms = int((opened - timedelta(hours=3)).replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+    pool_s2 = _interval_pool(t0_ms)
+    monkeypatch.setattr(te, "ExchangePool", lambda: pool_s2)
+    rec = _rec(opened_hours_ago=5.0)
+    rec.profile_key = "s2"
+    _chandelier_sl(rec, None, 3.0)
+    assert pool_s2.intervals[0] == "4h"
+    assert "1d" in pool_s2.intervals  # D1 ATR(22) 腿不动
+
+    pool_s1 = _interval_pool(t0_ms)
+    monkeypatch.setattr(te, "ExchangePool", lambda: pool_s1)
+    _chandelier_sl(_rec(opened_hours_ago=5.0), None, 3.0)  # 无 profile_key
+    assert pool_s1.intervals[0] == "1h"
+
+
 def test_move_sl_takes_tighter_of_two_legs(monkeypatch):
     """两腿取更紧（多单含 cur 取 max）：摆动腿 104 < ATR 腿 107 → SL=107"""
     klines = [[i * 1e6, 100.0, 106.0, 104.0 if i >= 1 else 105.0, 105.0, 10.0] + [0.0] * 4

@@ -37,7 +37,12 @@ from app.schemas.scan import (
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services import market_data as md
 from app.services.scanner import classify_volume
-from app.services.scan_profiles import SCAN_PROFILES, get_profile, is_valid_profile
+from app.services.scan_profiles import (
+    SCAN_PROFILES,
+    get_profile,
+    is_valid_profile,
+    resolve_stop_cap_mult,
+)
 from app.services.trade_engine import breaker_status_by_net
 from app.services.ai_analyzer import analyze_coin
 from app.services.risk_guard import is_pullback_wait
@@ -1648,7 +1653,12 @@ def analyze_symbol(
         from app.services.llm_client import configure_from
         configure_from(cfg)  # 生效 AI 运行参数（模型/端点/超时）读页面配置
         _rm, _ra, _rl = resolve_risk_budget(cfg)
-        _stop_cap = float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None
+        # 止损宽度硬上限按套标定（2026-10-14-5）：s2 止损天然 ≈2× 宽 → 上限 ×倍数，
+        # 与开仓引擎 _attempt_open 同口径（避免提示词门槛比程序闸门更严而误杀）
+        _stop_cap = (
+            float(cfg.max_stop_pct) * resolve_stop_cap_mult(profile.key)
+            if cfg.max_stop_pct is not None else None
+        )
         ai_result = analyze_coin(
             signal, klines, strategy_prompt=strategy_prompt, htf_klines=htf_klines,
             risk_mode=_rm, risk_amount=_ra, risk_label=_rl, stop_cap_pct=_stop_cap,

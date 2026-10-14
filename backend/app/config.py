@@ -257,7 +257,11 @@ class Settings(BaseSettings):
     # v2026-10-14-4（s2 风控 ATR 倍数标定）：三个 ATR 倍数（止损宽度下限/止盈一
     # 距离上限/止盈二间距下限）按套标定——s2 用 1h 等效倍率（0.15/1.0/0.25），
     # Risk Guard 闸门与两管线提示词同源解析；s1 仍走 settings 默认，逐字不变。
-    RULE_VERSION: str = "v2026-10-14-4"
+    # v2026-10-14-5（s2 止损宽度上限与持仓管理周期标定）：① 页面补丁参数
+    # max_stop_pct 按套乘倍数——s2 止损天然 ≈2× 宽 → ×2.0，避免 4h 正常止损
+    # 触顶被误杀（开仓闸门 + 两管线提示词同源）；② 持仓管理（跟进止损）K 线
+    # 周期按持有来源套解析（s2 → 4h）。s1 / 未标定逐字不变。
+    RULE_VERSION: str = "v2026-10-14-5"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

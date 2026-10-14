@@ -235,6 +235,20 @@ def test_guard_tp2_gap_follows_profile(_atr_baseline):
     assert f2["take_profit_2"] == pytest.approx(102.2)  # 间距 0.7 ≥ 0.5 → 保留
 
 
+# ===== 止损宽度硬上限倍数按套标定（2026-10-14-5）=====
+
+def test_resolve_stop_cap_mult_s1_is_one():
+    """s1 / None / 未知 key → ×1.0（行为逐字不变的前提）。"""
+    assert sp.resolve_stop_cap_mult("s1") == 1.0
+    assert sp.resolve_stop_cap_mult(None) == 1.0
+    assert sp.resolve_stop_cap_mult("s3") == 1.0
+
+
+def test_resolve_stop_cap_mult_s2_doubles():
+    """s2 止损天然 ≈2× 宽 → 页面 max_stop_pct 上限 ×2.0 放宽，避免误杀。"""
+    assert sp.resolve_stop_cap_mult("s2") == 2.0
+
+
 def test_prompt_atr_numbers_follow_profile(_atr_baseline):
     """提示词数字与闸门同源：s2 渲染出 1h 等效倍率（止损宽度下限 0.15×ATR）。"""
     from app.services.ai_agent import render_system_prompt as render_p1

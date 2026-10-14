@@ -31,7 +31,11 @@ from app.services import market_data as md
 from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
 from app.services.scan_filters import resolve_scan_filters
-from app.services.scan_profiles import DEFAULT_PROFILE_KEY, get_profile
+from app.services.scan_profiles import (
+    DEFAULT_PROFILE_KEY,
+    get_profile,
+    resolve_stop_cap_mult,
+)
 from app.services.llm_client import configure_from, current_concurrency
 from app.services.dual_judge import run_dual_judge
 from app.services.strategy.technical import enforce_htf_constraint, render_indicator_block
@@ -378,8 +382,13 @@ def run_ai_analysis_single(
         from app.services.risk_budget import resolve_risk_budget
         _risk_mode, _risk_amount, _risk_label = resolve_risk_budget(cfg)
         # 止损宽度硬上限透传（2026-09-29）：max_stop_pct 补丁参数注入门槛块，
-        # AI 定止损前自验不超限，避免"AI 建议开单→程序宽度闸弃单"的无效调用
-        _stop_cap = float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None
+        # AI 定止损前自验不超限，避免"AI 建议开单→程序宽度闸弃单"的无效调用。
+        # 按套标定（2026-10-14-5）：s2 止损天然 ≈2× 宽 → 上限 ×stop_cap_mult，
+        # 与开仓引擎 _attempt_open 同口径（否则提示词门槛比程序闸门更严，仍会误杀）
+        _stop_cap = (
+            float(cfg.max_stop_pct) * resolve_stop_cap_mult(profile.key)
+            if cfg.max_stop_pct is not None else None
+        )
         # 风控参数上页面（2026-10-02）：RR 铁律 / BTC 急跌阈值按 cfg 覆盖优先、
         # NULL 回落 env，透传进两管线（提示词 + Risk Guard 同源）；
         # crash_pct 仅 P0 单次调用管线消费（Agent 管线不预注入市场环境，
