@@ -94,3 +94,29 @@ def test_get_config_exposes_switches(db):
     out = _config_response(_cfg(db))
     assert out.scan_profile_s1_enabled is True
     assert out.scan_profile_s2_enabled is False
+
+
+def test_seed_insert_referenced_columns_added_before_insert():
+    """迁移列序不变量（2026-10-14 线上部署事故回归）
+
+    _run_migrations 的 system_config 种子 INSERT 引用了新列；若某新列的
+    `ADD COLUMN IF NOT EXISTS` 出现在该 INSERT 之后，存量库（create_all 对既有
+    表不建列）执行到 INSERT 时列尚不存在 → PG 解析期即报 does not exist →
+    迁移事务整体回滚 → init_db() 抛异常 → 后端启动崩溃、探活失败。
+    本测试静态校验「被 INSERT 引用的 ADD COLUMN 必须位于 INSERT 之前」。
+    """
+    import inspect
+    import re
+
+    from app import database
+
+    src = inspect.getsource(database._run_migrations)
+    insert_pos = src.index("INSERT INTO system_config")
+    col_block = src[insert_pos:src.index("VALUES", insert_pos)]
+    insert_cols = set(re.findall(r"[a-z_][a-z0-9_]*", col_block))
+    for m in re.finditer(r"ADD COLUMN IF NOT EXISTS (\w+)", src):
+        if m.group(1) in insert_cols:
+            assert m.start() < insert_pos, (
+                f"{m.group(1)} 被种子 INSERT 引用，但其 ADD COLUMN 位于 INSERT 之后"
+                "——存量库会因该列不存在导致迁移失败（须移到 INSERT 之前）"
+            )

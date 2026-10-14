@@ -514,6 +514,22 @@ def _run_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_trade_reviews_touch_ref "
             "ON trade_reviews (touch_ref)"
         ))
+        # 双周期扫描套启用开关（2026-10-14，docs/22）：两个 system_config 列
+        # 必须在下方的裸 INSERT 之前补——INSERT 的列清单已引用它们，存量库
+        # （create_all 不建表）若此刻列尚不存在，PG 在解析期即报
+        # `column ... does not exist`，整个迁移事务回滚 → init_db() 抛异常 →
+        # 后端启动崩溃、/api/scans/config 探活失败（2026-10-14 线上部署事故）。
+        # 同上方 tp2_enabled 的「INSERT 引用列须先补」惯例。
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS scan_profile_s1_enabled BOOLEAN "
+            "NOT NULL DEFAULT TRUE"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS scan_profile_s2_enabled BOOLEAN "
+            "NOT NULL DEFAULT FALSE"
+        ))
         # 确保系统配置表有默认行（初始值从 env 注入）。
         # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有
         # Python 端 default 没有 server_default，漏列的裸 INSERT 会 NotNullViolation
@@ -665,8 +681,8 @@ def _run_migrations(engine):
         conn.execute(text("DROP TABLE IF EXISTS spot_backtests"))
         # 双周期扫描套（2026-10-14，docs/22）：扫描套键从全局单例提升为每行一份。
         # scan_records.profile_key 带 DEFAULT 与索引，存量行自动归 s1；
-        # trade_records.profile_key 可空（开仓时快照来源套，旧行 NULL 按 s1 理解）；
-        # system_config 增两个启用开关（NOT NULL DEFAULT，存量行 s1=开/s2=关）。
+        # trade_records.profile_key 可空（开仓时快照来源套，旧行 NULL 按 s1 理解）。
+        # （system_config 的两个启用开关列已在上方裸 INSERT 之前补，见该处注释）
         conn.execute(text(
             "ALTER TABLE scan_records "
             "ADD COLUMN IF NOT EXISTS profile_key VARCHAR(16) "
@@ -679,16 +695,6 @@ def _run_migrations(engine):
         conn.execute(text(
             "ALTER TABLE trade_records "
             "ADD COLUMN IF NOT EXISTS profile_key VARCHAR(16)"
-        ))
-        conn.execute(text(
-            "ALTER TABLE system_config "
-            "ADD COLUMN IF NOT EXISTS scan_profile_s1_enabled BOOLEAN "
-            "NOT NULL DEFAULT TRUE"
-        ))
-        conn.execute(text(
-            "ALTER TABLE system_config "
-            "ADD COLUMN IF NOT EXISTS scan_profile_s2_enabled BOOLEAN "
-            "NOT NULL DEFAULT FALSE"
         ))
 
 
