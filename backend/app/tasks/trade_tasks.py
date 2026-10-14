@@ -421,6 +421,8 @@ def run_position_advice(trade_id: str):
     执行前重查状态：巡检与诊断之间 SL 可能已触发结算为 CLOSED → 跳过；
     LLM 失败不落库，ai_advice_at 保持 NULL，下轮巡检按"未诊断"重试。
     """
+    from app.models.system_config import SystemConfig
+    from app.services.llm_client import configure_from
     from app.services.position_advisor import diagnose_trade
 
     db = SessionLocal()
@@ -428,6 +430,7 @@ def run_position_advice(trade_id: str):
         rec = db.get(TradeRecord, UUID(str(trade_id)))
         if rec is None or rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
             return  # 已结算/不存在，跳过
+        configure_from(db.get(SystemConfig, 1))  # 生效 AI 运行参数每轮重读 DB
         advice = diagnose_trade(db, rec)
         if advice is None:
             return  # 竞态丢弃：LLM 执行期间已平仓结算（position_advisor 记日志）

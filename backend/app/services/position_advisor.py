@@ -42,7 +42,7 @@ from app.config import settings
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeEvent, TradeRecord
 from app.services.event_executor import remaining_qty
-from app.services.llm_client import configure_from, current_model, get_client, parse_llm_json
+from app.services.llm_client import current_model, get_client, parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +338,6 @@ def diagnose_trade(db: Session, rec) -> "dict | None":
     结论陈旧不落库（2026-09-26 竞态守卫）。"""
     if not settings.AI_API_KEY:
         raise ValueError("AI 未配置（AI_API_KEY 为空）")
-    configure_from(db.get(SystemConfig, 1))  # 生效 AI 运行参数每轮重读 DB
     client = get_client()
     facts = build_facts(db, rec)
     resp = client.chat.completions.create(
