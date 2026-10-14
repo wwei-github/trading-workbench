@@ -239,7 +239,13 @@ class Settings(BaseSettings):
     # 形态等待：INJUSDT 触碰根→十字星→启明星决断根个案）；窗口未满且无金K时保持
     # 等待不再当轮 expire；窗口耗尽才 window_expired。N 默认 3，见
     # PENDING_CONFIRM_WINDOW_BARS；N=1 与旧行为完全等价。
-    RULE_VERSION: str = "v2026-10-13-10"
+    # v2026-10-14（用户拍板，LIGHTUSDT 个案）：止盈一兜底扩第三种情形——当盈亏比不达标
+    # 是唯一不达标项、且 4h 为宏观同侧六态（technical.STATE_LOCK_CONTRA，渲染层出现
+    # 「方向约束（硬性）」行）时，允许改用"入场价 ± rr_min×止损距离"固定 1.5R 价作
+    # 止盈一，不再 skip（缠绕/拐头与过渡态仍 skip）；程序侧零改动（TP1 距离上限的
+    # max(..., rr_min×止损距离) 下限天然放行）。P0 _RULE_TP_BASE/_RULE_TP_TAIL_* +
+    # P1 rule 12 同步。
+    RULE_VERSION: str = "v2026-10-14"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

@@ -201,3 +201,25 @@ def test_direction_constraint_line_rendered_for_strong_aligned():
     block = render_indicator_block(_kl_1h_stub(), htf_klines=_htf_kl(closes, 2.5))
     assert "方向约束（硬性）" in block
     assert "状态约束（硬性）" not in block
+
+
+# ── 不变量 10：盈亏比唯一不达标 → 固定 1.5R 放宽（2026-10-14）──────
+
+
+def test_rr_only_shortfall_fixed_rr_fallback_present():
+    """P0/P1 提示词必须含『唯一放宽』条款：盈亏比为唯一不达标项 ∧ 4h 宏观同侧六态
+    （渲染层出现「方向约束（硬性）」行）→ 改用『入场价 ± rr_min×止损距离』固定
+    1.5R 兜底；并声明缠绕/拐头与过渡态仍 skip（防放宽面被误读为无条件放行）。
+    兜底情形 (c)（近端结构位太近）在 TP2 开启版与关闭版均须齐备。"""
+    for txt in (_p0_system(), ai_agent.AGENT_SYSTEM):
+        assert "唯一放宽" in txt
+        assert "方向约束（硬性）" in txt
+        assert "缠绕/拐头" in txt
+    p0 = _p0_system()
+    assert "止盈一兜底" in p0               # 三情形兜底段已注入渲染后实文
+    assert "×止损距离" in p0                 # 渲染后 {rr_min} 已填为 1.5
+    assert "(c)" in ai_analyzer._RULE_TP_TAIL_ON
+    assert "唯一放宽" in ai_analyzer._RULE_TP_BASE  # 唯一放宽条款在公共段（TP2 开关无关）
+    assert "入场价 ± {rr_min}×止损距离" in ai_analyzer._RULE_TP_BASE
+    assert "入场 ± {rr_min}×止损距离" in ai_agent.AGENT_SYSTEM
+    assert "唯一不达标项" in ai_analyzer._RULE_TP_TAIL_OFF
