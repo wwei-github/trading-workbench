@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from app.config import settings
-from app.services.llm_client import get_client, parse_llm_json
+from app.services.llm_client import current_model, get_client, parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ def attribute_trade(rec, klines: list) -> dict:
     client: OpenAI = get_client()
     facts = build_facts(rec, klines)
     resp = client.chat.completions.create(
-        model=settings.AI_MODEL,
+        model=current_model(),
         messages=[
             {"role": "system", "content": ATTRIBUTION_SYSTEM},
             {"role": "user", "content": json.dumps(facts, ensure_ascii=False)},

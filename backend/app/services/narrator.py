@@ -7,9 +7,7 @@
 import logging
 from typing import Optional
 
-from openai import OpenAI
-
-from app.config import settings
+from app.services.llm_client import current_model, get_client
 from app.services.risk_guard import LEGACY_TRADE_TYPE_LABELS, TRADE_TYPE_LABELS
 from app.services.strategy.types import POSITION_LABEL_MAP
 
@@ -40,7 +38,7 @@ def generate_narrative(
 ) -> str:
     """为 suggest 决策生成叙述。任何失败回退模板。"""
     try:
-        client = OpenAI(api_key=settings.AI_API_KEY, base_url=settings.AI_BASE_URL)
+        client = get_client()
         facts = [
             f"币种 {signal['symbol']}，当前价 {signal['current_price']}",
             f"信号: {signal.get('signal_type')} + {signal.get('pattern') or '无'}"
@@ -64,7 +62,7 @@ def generate_narrative(
                 f"{s} {v.get('ema_label') or '—'}" for s, v in b.items()
             ))
         resp = client.chat.completions.create(
-            model=settings.AI_MODEL,
+            model=current_model(),
             messages=[
                 {"role": "system", "content": _NARRATOR_SYSTEM},
                 {"role": "user", "content": "\n".join(facts)},

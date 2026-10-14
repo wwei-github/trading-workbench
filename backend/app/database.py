@@ -274,6 +274,15 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS btc_crash_pause_pct NUMERIC(10, 6),
               ADD COLUMN IF NOT EXISTS ai_rr_tol NUMERIC(10, 6)
         """))
+        # AI 运行时参数上页面（2026-10-14，策略配置弹窗）：模型名/端点/并发/超时
+        # 全部 nullable（NULL=回落 config.py env 默认）
+        conn.execute(text("""
+            ALTER TABLE system_config
+              ADD COLUMN IF NOT EXISTS ai_model VARCHAR(64),
+              ADD COLUMN IF NOT EXISTS ai_base_url VARCHAR(255),
+              ADD COLUMN IF NOT EXISTS llm_concurrency INTEGER,
+              ADD COLUMN IF NOT EXISTS ai_call_timeout_s INTEGER
+        """))
         # 多账号支持（docs/17 P0，2026-09-23）：账号配置走 .env 注册表，存量表
         # 补 account_key 归属列并按 testnet 布尔回填（testnet→testnet-1，正式→live-1）
         conn.execute(text(

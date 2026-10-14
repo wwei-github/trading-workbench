@@ -275,6 +275,16 @@ export interface SystemConfig {
   // 2026-09-28 增量：allowed_triggers（数组）
   scan_filters?: Record<string, number | string[] | boolean> | null;
   scan_filters_effective?: Record<string, number | string[] | boolean>;
+  // AI 运行时参数（2026-10-14 上页面，策略配置弹窗）：库内原始值 null=回落 env；
+  // *_effective=实际生效值（DB>env>代码默认），前端作占位/提示用
+  ai_model?: string | null;
+  ai_base_url?: string | null;
+  llm_concurrency?: number | null;
+  ai_call_timeout_s?: number | null;
+  ai_model_effective?: string;
+  ai_base_url_effective?: string;
+  llm_concurrency_effective?: number;
+  ai_call_timeout_s_effective?: number;
 }
 
 // 账号注册表条目（docs/17）：key 稳定标识（testnet-1/live-N），只读不回传凭据

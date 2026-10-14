@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, InputNumber, Select, Switch, Checkbox, message, Button, Spin, Divider, Tooltip, Row, Col } from 'antd'
+import { Modal, Form, Input, InputNumber, Select, Switch, Checkbox, message, Button, Spin, Divider, Tooltip, Row, Col } from 'antd'
 import { SettingOutlined, RobotOutlined, FileTextOutlined, ApiOutlined, UndoOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
@@ -93,12 +93,22 @@ export default function ScanConfigPanel() {
         strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
         ai_pipeline_enabled: aiConfig.ai_pipeline_enabled ?? true,
         dual_judge_enabled: aiConfig.dual_judge_enabled ?? true,
+        // AI 运行时参数：库内原始值（null=未定制，留空即回落 env 默认）
+        ai_model: aiConfig.ai_model ?? undefined,
+        ai_base_url: aiConfig.ai_base_url ?? undefined,
+        llm_concurrency: aiConfig.llm_concurrency ?? undefined,
+        ai_call_timeout_s: aiConfig.ai_call_timeout_s ?? undefined,
       })
     }
   }, [open, aiConfig, form])
 
   const aiConfigured = !!aiConfig?.ai_configured
   const hasStrategy = !!aiConfig?.strategy_prompt
+  // AI 运行时参数生效值（作占位/提示：留空=回落 env 默认）
+  const aiModelEff = aiConfig?.ai_model_effective ?? ''
+  const aiBaseUrlEff = aiConfig?.ai_base_url_effective ?? ''
+  const aiConcurrencyEff = aiConfig?.llm_concurrency_effective ?? 0
+  const aiTimeoutEff = aiConfig?.ai_call_timeout_s_effective ?? 0
 
   const handleSave = async () => {
     try {
@@ -113,6 +123,11 @@ export default function ScanConfigPanel() {
         strategy_prompt_enabled: values.strategy_prompt_enabled,
         ai_pipeline_enabled: values.ai_pipeline_enabled,
         dual_judge_enabled: values.dual_judge_enabled,
+        // AI 运行时参数：空串/未填 → null（后端回落 env 默认）
+        ai_model: (values.ai_model ?? '').trim() || null,
+        ai_base_url: (values.ai_base_url ?? '').trim() || null,
+        llm_concurrency: values.llm_concurrency ?? null,
+        ai_call_timeout_s: values.ai_call_timeout_s ?? null,
       }
       // 筛选参数组：逐键比对快照，仅提交有改动的键（后端键级合并：未提交键保留
       // 库内旧值，故不会把 env 派生值固化进 DB、也不会丢先前定制键）；
@@ -356,6 +371,52 @@ export default function ScanConfigPanel() {
                 tooltip="对'建议开单'的决策做多空辩论复核，裁判可否决（额外LLM调用，仅Agent/单次管线的suggest决策生效）"
               >
                 <Switch />
+              </Form.Item>
+            </Col>
+          </Row>
+          {/* AI 运行时参数（2026-10-14）：模型名/端点/并发/超时取自 .env，可在此覆盖；
+              留空=回落 .env 默认（占位显示当前生效值）。密钥仍在后端 .env，不上页面 */}
+          <Row gutter={16}>
+            <Col span={6}>
+              <Form.Item
+                label="AI 模型名称"
+                name="ai_model"
+                tooltip={`当前生效：${aiModelEff || '—'}（留空=用后端 .env 默认；改后即生效）`}
+              >
+                <Input placeholder={aiModelEff} allowClear disabled={!aiConfigured} />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="AI 接口端点"
+                name="ai_base_url"
+                tooltip={`当前生效：${aiBaseUrlEff || '—'}（留空=用后端 .env 默认；须 http(s):// 前缀）`}
+              >
+                <Input placeholder={aiBaseUrlEff} allowClear disabled={!aiConfigured} />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="LLM 并发上限"
+                name="llm_concurrency"
+                tooltip={`当前生效：${aiConcurrencyEff}（留空=用后端 .env 默认；1~64，Redis 信号量阈值）`}
+              >
+                <InputNumber
+                  min={1} max={64} style={{ width: '100%' }}
+                  placeholder={String(aiConcurrencyEff)} disabled={!aiConfigured}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="AI 调用超时（秒）"
+                name="ai_call_timeout_s"
+                tooltip={`当前生效：${aiTimeoutEff}（留空=用后端 .env 默认；5~3600，单次 LLM 调用超时）`}
+              >
+                <InputNumber
+                  min={5} max={3600} style={{ width: '100%' }}
+                  placeholder={String(aiTimeoutEff)} disabled={!aiConfigured}
+                />
               </Form.Item>
             </Col>
           </Row>

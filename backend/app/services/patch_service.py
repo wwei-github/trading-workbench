@@ -26,7 +26,7 @@ from app.models.scan import AIAnalysis
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.ai_attribution import ERROR_TAGS
-from app.services.llm_client import get_client, parse_llm_json
+from app.services.llm_client import configure_from, current_model, get_client, parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +199,7 @@ def _generate_draft(db: Session, tag: str, heat: float, stats: dict,
     from app.services.ai_analyzer import render_system_prompt as render_p0_prompt
 
     cfg = _get_cfg(db)
+    configure_from(cfg)  # 生效 AI 运行参数（模型/端点/超时/并发）每轮重读 DB
     active_patches = db.execute(
         select(PromptPatch).where(PromptPatch.status == "active")
     ).scalars().all()
@@ -232,7 +233,7 @@ def _generate_draft(db: Session, tag: str, heat: float, stats: dict,
     )
     try:
         resp = get_client().chat.completions.create(
-            model=settings.AI_MODEL,
+            model=current_model(),
             messages=[
                 {"role": "system", "content": _PATCH_GEN_SYSTEM},
                 {"role": "user", "content": user_msg},

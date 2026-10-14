@@ -274,6 +274,17 @@ class SystemConfigOut(BaseModel):
     # 初始资金（2026-09-26）：正式网主账号首次入金，资金划转面板展示口径
     live_initial_capital: float = 0
 
+    # AI 运行时参数（2026-10-14 上页面，策略配置弹窗）：库内原始值 nullable
+    # （NULL=未定制，回落 env）；*_effective=实际生效值（DB>env>代码默认），前端占位/提示用
+    ai_model: Optional[str] = None                # AI 模型名（NULL=回落 env AI_MODEL）
+    ai_base_url: Optional[str] = None             # AI 接口端点（NULL=回落 env AI_BASE_URL）
+    llm_concurrency: Optional[int] = None         # LLM 并发上限（NULL=回落 env LLM_CONCURRENCY）
+    ai_call_timeout_s: Optional[int] = None       # 单次调用超时秒（NULL=回落 env AI_CALL_TIMEOUT_S）
+    ai_model_effective: str = ""
+    ai_base_url_effective: str = ""
+    llm_concurrency_effective: int = 0
+    ai_call_timeout_s_effective: int = 0
+
     class Config:
         from_attributes = True
 
@@ -361,6 +372,12 @@ class SystemConfigUpdate(BaseModel):
 
     # 初始资金（2026-09-26）：正式网主账号首次入金，资金划转面板展示口径（≥0）
     live_initial_capital: Optional[float] = None
+
+    # AI 运行时参数（2026-10-14 上页面；传 null=恢复 env 默认，范围/格式校验见 api/scan.py）
+    ai_model: Optional[str] = None
+    ai_base_url: Optional[str] = None
+    llm_concurrency: Optional[int] = None
+    ai_call_timeout_s: Optional[int] = None
 
 
 # ===== 复盘统计（docs/04 §10 P2） =====

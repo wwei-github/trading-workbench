@@ -18,7 +18,7 @@ import numpy as np
 from app.config import settings
 from app.services import market_data
 from app.services import skill_library
-from app.services.llm_client import get_client
+from app.services.llm_client import current_model, get_client
 from app.services.risk_guard import (
     TRADE_TYPES,
     TradeDecision,
@@ -690,7 +690,7 @@ def analyze_coin_agent(
     for rnd in range(1, MAX_ROUNDS + 1):
         rt = time.time()
         resp = client.chat.completions.create(
-            model=settings.AI_MODEL,
+            model=current_model(),
             messages=messages,
             tools=_tools_schema(tp2_enabled=_tp2_on),
             temperature=0.3,

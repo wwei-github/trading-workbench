@@ -31,6 +31,7 @@ from app.services import market_data as md
 from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
 from app.services.scan_filters import resolve_scan_filters
+from app.services.llm_client import configure_from, current_concurrency
 from app.services.dual_judge import run_dual_judge
 from app.services.strategy.technical import enforce_htf_constraint, render_indicator_block
 from app.services.exchange_pool import ExchangePool
@@ -65,7 +66,7 @@ def _sem_acquire(timeout_s: int = 900) -> str:
         r.zremrangebyscore(_LLM_SEM_KEY, 0, now_ms - _SEM_STALE_MS)
         r.zadd(_LLM_SEM_KEY, {ident: now_ms})
         rank = r.zrank(_LLM_SEM_KEY, ident)
-        if rank is not None and rank < settings.LLM_CONCURRENCY:
+        if rank is not None and rank < current_concurrency():
             return ident
         r.zrem(_LLM_SEM_KEY, ident)
         time.sleep(1.0)
@@ -221,6 +222,13 @@ def run_ai_analysis_single(
     user_input: Optional[str] = None, force: bool = False,
 ):
     """单币种 AI 分析子任务：闸门 → 缓存 → LLM(带校验回炉) → 落库"""
+    # 生效 AI 运行参数（模型/端点/超时/并发）每轮重读 DB：先短读 cfg 刷新再取
+    # 信号量（避免持 DB 连接等信号量——原顺序为先取信号量后开 session）
+    _boot = SessionLocal()
+    try:
+        configure_from(_boot.get(SystemConfig, 1))
+    finally:
+        _boot.close()
     sem = _sem_acquire()
     db = SessionLocal()
     try:

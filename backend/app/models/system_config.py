@@ -135,6 +135,19 @@ class SystemConfig(Base):
     # 盈亏比现价复算容差（NULL=默认 0.02，0=严格 ≥rr_min）：仅开仓闸现价复算层，
     # AI 入场价口径铁律不受此参数影响
     ai_rr_tol: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
+
+    # ── AI 运行时参数上页面（2026-10-14，策略配置弹窗）──
+    # 同「风控参数上页面」惯例：以下列 NULL=回落 config.py env 默认（页面留空即恢复默认）。
+    # 消费侧统一走 services/llm_client.py 的生效值解析（current_*），各 LLM 任务入口
+    # 调 configure_from(cfg) 每轮重读 DB 刷新 —— 改保存即生效。
+    # AI 模型名（NULL=回落 env AI_MODEL，默认 gpt-4o-mini）
+    ai_model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, default=None)
+    # AI 接口端点 base_url（NULL=回落 env AI_BASE_URL；须 http(s):// 前缀）
+    ai_base_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, default=None)
+    # LLM 并发上限（NULL=回落 env LLM_CONCURRENCY，默认 4；Redis 信号量阈值）
+    llm_concurrency: Mapped[Optional[int]] = mapped_column(nullable=True, default=None)
+    # 单次 LLM 调用超时（秒，NULL=回落 env AI_CALL_TIMEOUT_S，默认 300）
+    ai_call_timeout_s: Mapped[Optional[int]] = mapped_column(nullable=True, default=None)
     # 单笔风险比例 %（NULL=默认 3，pct 模式：风险基数 × 该比例）
     risk_pct: Mapped[float] = mapped_column(Numeric(10, 6), nullable=True, default=None)
     # 杠杆上限（NULL=默认 20，逐仓；动态杠杆上边界）

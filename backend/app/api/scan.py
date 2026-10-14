@@ -448,6 +448,18 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         tp1_qty_pct_no_tp2=(float(cfg.tp1_qty_pct_no_tp2)
                             if cfg.tp1_qty_pct_no_tp2 is not None else None),
         live_initial_capital=float(cfg.live_initial_capital or 0),
+        ai_model=cfg.ai_model,
+        ai_base_url=cfg.ai_base_url,
+        llm_concurrency=cfg.llm_concurrency,
+        ai_call_timeout_s=cfg.ai_call_timeout_s,
+        ai_model_effective=cfg.ai_model or settings.AI_MODEL,
+        ai_base_url_effective=cfg.ai_base_url or settings.AI_BASE_URL,
+        llm_concurrency_effective=(cfg.llm_concurrency
+                                   if cfg.llm_concurrency is not None
+                                   else settings.LLM_CONCURRENCY),
+        ai_call_timeout_s_effective=(cfg.ai_call_timeout_s
+                                     if cfg.ai_call_timeout_s is not None
+                                     else settings.AI_CALL_TIMEOUT_S),
         scan_filters=(cfg.scan_filters if isinstance(cfg.scan_filters, dict) else None),
         scan_filters_effective={
             "min_volume_24h": flt.min_volume_24h,
@@ -803,6 +815,31 @@ def update_system_config(
         if v is not None and v < 0:
             raise HTTPException(status_code=400, detail="live_initial_capital 需 ≥ 0")
         cfg.live_initial_capital = v if v is not None else 0
+
+    # AI 运行时参数（2026-10-14 上页面）：显式传 null/空串=恢复 env 默认；
+    # 模型名/端点/并发/超时（消费侧 llm_client.current_* 生效）
+    if "ai_model" in body.model_fields_set:
+        v = (body.ai_model or "").strip() or None
+        if v is not None and len(v) > 64:
+            raise HTTPException(status_code=400, detail="ai_model 长度需 ≤ 64")
+        cfg.ai_model = v
+    if "ai_base_url" in body.model_fields_set:
+        v = (body.ai_base_url or "").strip() or None
+        if v is not None and not (v.startswith("http://") or v.startswith("https://")):
+            raise HTTPException(status_code=400, detail="ai_base_url 需以 http:// 或 https:// 开头")
+        if v is not None and len(v) > 255:
+            raise HTTPException(status_code=400, detail="ai_base_url 长度需 ≤ 255")
+        cfg.ai_base_url = v
+    if "llm_concurrency" in body.model_fields_set:
+        v = body.llm_concurrency
+        if v is not None and not (1 <= v <= 64):
+            raise HTTPException(status_code=400, detail="llm_concurrency 需在 1~64 之间（LLM 并发上限）")
+        cfg.llm_concurrency = v
+    if "ai_call_timeout_s" in body.model_fields_set:
+        v = body.ai_call_timeout_s
+        if v is not None and not (5 <= v <= 3600):
+            raise HTTPException(status_code=400, detail="ai_call_timeout_s 需在 5~3600 秒之间（单次 LLM 调用超时）")
+        cfg.ai_call_timeout_s = v
 
     # 筛选参数组（2026-09-28，2026-10-13 改键级合并）：提交键校验后覆盖库内旧值、
     # 未提交键保留（前端只提交改动键，整组覆盖会静默抹掉先前定制键、回落 env）；
@@ -1527,6 +1564,8 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
     try:
         from app.services.risk_budget import resolve_risk_budget
         from app.services.scan_filters import resolve_scan_filters
+        from app.services.llm_client import configure_from
+        configure_from(cfg)  # 生效 AI 运行参数（模型/端点/超时）读页面配置
         _rm, _ra, _rl = resolve_risk_budget(cfg)
         _stop_cap = float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None
         ai_result = analyze_coin(

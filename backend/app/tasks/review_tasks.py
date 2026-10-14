@@ -19,6 +19,7 @@ from app.models.scan import AIAnalysis, ScanResult, TradeReview
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.exchange_pool import ExchangePool
+from app.services.llm_client import configure_from
 from app.services.shadow import tag_trade_close
 from app.services.task_log import close_task, open_task
 
@@ -258,6 +259,7 @@ def run_ai_attribution(db, pool, trader, trades: list) -> list[dict]:
     from app.services.ai_attribution import _interval_ms, attribute_trade
 
     cfg = db.get(SystemConfig, 1)
+    configure_from(cfg)  # 生效 AI 运行参数（模型/端点/超时/并发）每轮重读 DB
     interval = cfg.kline_interval if cfg else "1h"
 
     trades, mirror_skipped = _dedup_sibling_trades(db, trades)

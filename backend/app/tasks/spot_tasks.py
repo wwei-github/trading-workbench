@@ -356,11 +356,14 @@ def run_spot_weekly_review_task() -> dict:
     三币 evaluate_day 快照 → LLM → spot_weekly_reviews（week 唯一，重复跳过）→ 飞书卡片。"""
     from app.database import SessionLocal
     from app.models.spot import SPOT_SYMBOLS, SpotWeeklyReview
+    from app.models.system_config import SystemConfig
+    from app.services.llm_client import configure_from
     from app.services.spot_client import SpotClient
     from app.services.task_log import close_task, open_task
 
     task_id = open_task("spot", "AI 周度研判")
     db = SessionLocal()
+    configure_from(db.get(SystemConfig, 1))  # 生效 AI 运行参数每轮重读 DB
     client = SpotClient()
     try:
         week = _week_label()
@@ -425,8 +428,7 @@ def run_spot_weekly_review_task() -> dict:
 
 def _call_weekly_llm(snapshot: dict) -> dict:
     """快照 → LLM JSON（容错解析 + 字段收紧）。"""
-    from app.config import settings as app_settings
-    from app.services.llm_client import get_client, parse_llm_json
+    from app.services.llm_client import current_model, get_client, parse_llm_json
 
     lines = []
     for sym, d in snapshot.items():
@@ -442,7 +444,7 @@ def _call_weekly_llm(snapshot: dict) -> dict:
 
     client = get_client()
     resp = client.chat.completions.create(
-        model=app_settings.AI_MODEL,
+        model=current_model(),
         messages=[
             {"role": "system", "content": _WEEKLY_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
