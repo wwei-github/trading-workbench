@@ -5,8 +5,10 @@
 - 注册表键集与两套周期/窗口定义（s1=信号1h/背景4h 现状链路；s2=信号4h/背景1d 新增套）
 - 触点白名单按套内置：s1=None（走页面配置）、s2=内置（ema21/ema21_1d/ema55）
 - get_profile 未知/None 回落 s1（防拼错静默改周期）；is_valid_profile 白名单
+- /scans/latest/results 支持 profile_key（切套兜底拉取不串套）
 """
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -78,3 +80,65 @@ def test_is_valid_profile():
     assert not sp.is_valid_profile("s3")
     assert not sp.is_valid_profile(None)
     assert not sp.is_valid_profile("")
+
+
+# ===== /scans/latest/results 按套隔离：切套兜底拉取不得串套 =====
+
+@pytest.fixture()
+def db():
+    """sqlite 内存库（仅建表），供 scan.py API 函数直调。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import app.models  # noqa: E402,F401
+    from app.database import Base  # noqa: E402
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    yield session
+    session.close()
+
+
+def test_latest_results_scoped_by_profile(db, monkeypatch):
+    """latest/results 传 profile_key 时只取该套最近一轮；缺该套轮次即空。
+
+    前端切套后 currentScanId 为空走该接口兜底，不过滤会把另一套的最近
+    一轮当成当前套显示（用户反馈「切套没有显示空列表」）。
+    """
+    import app.api.scan as scan_api
+    from app.models.scan import ScanRecord
+    from app.schemas.scan import ScanResultListResponse
+
+    t0 = datetime.utcnow()
+    s1_rec = ScanRecord(
+        scan_type="scheduled", status="completed",
+        profile_key="s1", finished_at=t0 - timedelta(hours=2),
+    )
+    s2_rec = ScanRecord(
+        scan_type="scheduled", status="completed",
+        profile_key="s2", finished_at=t0 - timedelta(hours=1),
+    )
+    db.add_all([s1_rec, s2_rec])
+    db.commit()
+
+    # 记下 _get_results 实际收到的 scan_id（不构造 ScanResult 行）
+    seen: list = []
+    monkeypatch.setattr(
+        scan_api, "_get_results",
+        lambda scan_id, *a, **kw: (
+            seen.append(str(scan_id)), ScanResultListResponse(items=[], total=0)
+        )[1],
+    )
+
+    scan_api.latest_scan_results(profile_key="s1", db=db)
+    assert seen == [str(s1_rec.id)]
+
+    seen.clear()
+    scan_api.latest_scan_results(profile_key="s2", db=db)
+    assert seen == [str(s2_rec.id)]
+
+    # 不带 profile_key（FastAPI 解析缺省为 None，向后兼容）：仍取全局最近一轮
+    seen.clear()
+    scan_api.latest_scan_results(profile_key=None, db=db)
+    assert seen == [str(s2_rec.id)]

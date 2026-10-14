@@ -262,7 +262,8 @@ export const useScanStore = create<ScanState>((set, get) => ({
       const ps = pageSize ?? get().resultsPageSize
       const data = id
         ? await scanApi.results(id, p, ps, 'quality_score', 'desc', get().filters)
-        : await scanApi.latestResults(p, ps, 'quality_score', 'desc', get().filters)
+        // 兜底也按当前扫描套隔离（2026-10-14 双周期套）：该套无轮次时返回空列表
+        : await scanApi.latestResults(p, ps, 'quality_score', 'desc', get().filters, get().activeProfile)
       // 优先用传入的 id，否则从结果的 scan_record_id 推断
       const newScanId = id || data.items[0]?.scan_record_id || null
       set({

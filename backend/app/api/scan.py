@@ -124,6 +124,9 @@ def latest_scan_results(
     position: str = Query(None),
     pattern: str = Query(None),
     ema_state: str = Query(None),
+    # 扫描套（2026-10-14 双周期套）：前端切换套时兜底拉取需按套隔离，
+    # 否则会显示另一套的最近一轮结果（该套尚无轮次时应为空列表）
+    profile_key: str = Query(None),
     db: Session = Depends(get_db),
 ):
     latest = db.execute(
@@ -131,6 +134,7 @@ def latest_scan_results(
         .where(
             ScanRecord.status == "completed",
             ScanRecord.scan_type != "watchlist",  # 关注列表手动刷新不算常规扫描
+            *([ScanRecord.profile_key == profile_key] if profile_key else []),
         )
         .order_by(desc(ScanRecord.finished_at))
         .limit(1)

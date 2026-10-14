@@ -31,10 +31,25 @@ export const scanApi = {
       })
       .then((r) => r.data),
 
-  latestResults: (page = 1, pageSize = 20, sortBy = 'quality_score', order = 'desc', filters?: ResultFilters) =>
+  latestResults: (
+    page = 1,
+    pageSize = 20,
+    sortBy = 'quality_score',
+    order = 'desc',
+    filters?: ResultFilters,
+    profileKey?: string,
+  ) =>
     api
       .get<ListResponse<ScanResult>>('/scans/latest/results', {
-        params: { page, page_size: pageSize, sort_by: sortBy, order, ...(filters || {}) },
+        params: {
+          page,
+          page_size: pageSize,
+          sort_by: sortBy,
+          order,
+          ...(filters || {}),
+          // 按扫描套隔离（2026-10-14 双周期套）：无该套轮次时返回空列表
+          ...(profileKey ? { profile_key: profileKey } : {}),
+        },
       })
       .then((r) => r.data),
 
