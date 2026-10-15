@@ -118,6 +118,18 @@ def test_default_window_excludes_old(client, seeded):
     assert all(it["is_repeat"] is (i == 0) for i, it in enumerate(res["items"]))
 
 
+def test_all_time_returns_full_history(client, seeded):
+    """all_time=true（前端清空日期）= 不限下界：与默认 7 天窗口对照，返回全量 3 条"""
+    http, _ = client
+    res = http.get("/api/scans/hit-history", params={"all_time": True}).json()
+    assert res["total"] == 3
+    # 上界仍生效：end 早于全部命中时按 end 过滤（默认 end=now，此处显式收窄验证）
+    end = (datetime.utcnow() - timedelta(days=30)).isoformat() + "Z"
+    res2 = http.get("/api/scans/hit-history",
+                    params={"all_time": True, "end": end}).json()
+    assert res2["total"] == 0
+
+
 def test_explicit_range_returns_all(client, seeded):
     """显式 start/end（带时区 ISO）覆盖全量：三条命中"""
     http, _ = client

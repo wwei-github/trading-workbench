@@ -1,7 +1,8 @@
 /**
  * 命中历史（2026-10-15，docs/22）
  * - 待确认池第 3 段：跨轮次全量查询扫描命中（ScanResult 全量，不限回踩路径）
- * - 默认最近 7 天，可改时间范围往前查全量（时间粒度=整点，不提供分钟选择）；
+ * - 默认最近 7 天，可改时间范围往前查全量；清空日期 = 查全量历史（all_time）
+ *   （时间粒度=整点，不提供分钟选择）；
  *   币种精确搜索；「仅看首次命中」开关
  * - 点击币种名打开 K 线弹窗：最新K线 + 命中/触碰K线标签 + 时间裁剪的开单区间
  * - 数据源：GET /api/scans/hit-history（服务端分页）
@@ -65,8 +66,9 @@ export default function HitHistoryPanel() {
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(20)
-  // 查询条件：默认最近 7 天，时间粒度=整点（分钟固定 00，不提供分钟选择）
-  const [range, setRange] = useState<[Dayjs, Dayjs]>([
+  // 查询条件：默认最近 7 天，时间粒度=整点（分钟固定 00，不提供分钟选择）；
+  // 清空（null）= 不限下界查全量（all_time），右端仍按选值/now
+  const [range, setRange] = useState<[Dayjs, Dayjs] | null>([
     bj().subtract(7, 'day').startOf('hour'),
     bj().startOf('hour').add(1, 'hour'), // 右端取下一整点，保证覆盖"到现在"（不丢当前小时）
   ])
@@ -80,8 +82,9 @@ export default function HitHistoryPanel() {
       setLoading(true)
       try {
         const res = await scanApi.hitHistory({
-          start: range[0].toISOString(),
-          end: range[1].toISOString(),
+          start: range ? range[0].toISOString() : undefined,
+          end: range ? range[1].toISOString() : undefined,
+          all_time: !range,
           symbol: symbol.trim() || undefined,
           include_repeat: !firstOnly,
           page: pageNo,
@@ -198,10 +201,11 @@ export default function HitHistoryPanel() {
           format="MM-DD HH:00"
           disabledTime={() => ({ disabledMinutes: () => DISABLED_MINUTES })}
           value={range}
-          allowClear={false}
+          placeholder={['开始（清空=全量）', '结束']}
           onChange={(v) => {
-            // 仅整点：分钟列被禁用（只可选 00），此处再归一兜底
+            // 仅整点：分钟列被禁用（只可选 00），此处再归一兜底；清空 → null（all_time 全量）
             if (v && v[0] && v[1]) setRange([v[0].startOf('hour'), v[1].startOf('hour')])
+            else setRange(null)
           }}
         />
         <Input.Search
@@ -217,7 +221,7 @@ export default function HitHistoryPanel() {
           刷新
         </Button>
         <Text type="secondary" style={{ fontSize: 12 }}>
-          默认最近 7 天，可往前拉查全量历史
+          默认最近 7 天；清空日期 = 查询全量历史
         </Text>
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>

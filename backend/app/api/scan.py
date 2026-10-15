@@ -1495,6 +1495,7 @@ def hit_history(
     end: Optional[datetime] = Query(None, description="命中时刻上界（含），缺省 now"),
     symbol: Optional[str] = Query(None, description="币种精确匹配（空=全部）"),
     include_repeat: bool = Query(True, description="是否含重复命中 is_repeat"),
+    all_time: bool = Query(False, description="清空时间范围=不限下界（忽略 start）"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     sort_by: str = Query("created_at", description="created_at / quality_score"),
@@ -1506,12 +1507,15 @@ def hit_history(
     与开单（trade_records.scan_result_id，正式网主单优先）。
 
     命中口径=扫描信号命中（全部 signal_type 路径）；默认最近 7 天，可往前查全量。
+    all_time=true（前端清空日期选择器）时不设下界，查全量；上界仍按 end/now。
     """
     now = datetime.utcnow()
-    start_dt = _naive_utc(start) or (now - timedelta(days=7))
     end_dt = _naive_utc(end) or now
-
-    conds = [ScanResult.created_at >= start_dt, ScanResult.created_at <= end_dt]
+    if all_time:
+        conds: list = [ScanResult.created_at <= end_dt]
+    else:
+        start_dt = _naive_utc(start) or (now - timedelta(days=7))
+        conds = [ScanResult.created_at >= start_dt, ScanResult.created_at <= end_dt]
     if symbol and symbol.strip():
         conds.append(ScanResult.symbol == normalize_symbol(symbol.strip()))
     if not include_repeat:

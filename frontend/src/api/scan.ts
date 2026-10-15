@@ -176,12 +176,14 @@ export const scanApi = {
 
   // ===== 命中历史（2026-10-15，docs/22）=====
 
-  // 跨轮次扫描命中历史（默认最近 7 天，start/end 为 UTC ISO8601 闭区间）
+  // 跨轮次扫描命中历史（默认最近 7 天，start/end 为 UTC ISO8601 闭区间；
+  // all_time=true（清空日期选择器）= 不限下界，查全量）
   hitHistory: (params: {
     start?: string
     end?: string
     symbol?: string
     include_repeat?: boolean
+    all_time?: boolean
     page?: number
     page_size?: number
     sort_by?: string
