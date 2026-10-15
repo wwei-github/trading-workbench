@@ -97,11 +97,11 @@ def _place_label_ys(ys: list, *, box_h: int = 16,
             ty += 2
         tys.append(ty)
     over = max(tys) + box_h - bot
-    if over > 0:
+    if over > 0:  # 整组上抬消底边溢出（平移不改变组内间距，重叠不可能发生）
         tys = [p - over for p in tys]
-        up = top - min(tys)
-        if up > 0:  # 理论上不可达（组高 64px ≪ 画布高），保底不越顶边
-            tys = [p + up for p in tys]
+    up = top - min(tys)
+    if up > 0:  # 整组下压，保底不越顶边
+        tys = [p + up for p in tys]
     return tys
 
 
