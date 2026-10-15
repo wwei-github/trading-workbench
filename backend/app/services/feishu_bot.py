@@ -255,15 +255,25 @@ def _exec_open_live(analysis_id: str, account_key: str) -> None:
             ],
         }
     elif res.get("ok"):
+        # 2026-10-15 措辞修正：opened=False 但反查到交易记录 ⇒ 命中的是「同分析同
+        # 账号已开过」去重闸门（该闸门不落 block_reason）——此时币种其实已有单，
+        # 「未开单」是误述，改为「未重复开单」并点明因由
+        if res.get("trade_id"):
+            title, tpl = f"ℹ️ 未重复开单 · {symbol}", "blue"
+            reason = (f"该分析在账号 **{res.get('account_key') or '—'}** 已有成交"
+                      "（同分析同账号不重复开单），本次点击未产生新单")
+        else:
+            title, tpl = f"⚠️ 未开单 · {symbol}", "orange"
+            reason = str(res.get("block_reason")
+                         or "开仓闸门未过（未落具体原因，见系统日志）")
         card = {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"tag": "plain_text", "content": f"⚠️ 未开单 · {symbol}"},
-                "template": "orange",
+                "title": {"tag": "plain_text", "content": title},
+                "template": tpl,
             },
             "elements": [
-                {"tag": "div", "text": {"tag": "lark_md",
-                 "content": str(res.get("block_reason") or "开仓闸门未过")}},
+                {"tag": "div", "text": {"tag": "lark_md", "content": reason}},
                 {"tag": "note", "elements": [{"tag": "plain_text", "content": (
                     "已按现价走完整开仓闸门（市价入场口径），本次未成交；"
                     "可在工作台「扫描结果」手动重试")}]},

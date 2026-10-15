@@ -431,3 +431,19 @@ def test_exec_open_live_result_cards(monkeypatch):
     feishu_bot._exec_open_live("aid", "live-1")
     assert cards[2]["header"]["title"]["content"] == "❌ 开单未执行"
     assert "互斥" in cards[2]["elements"][0]["text"]["content"]
+
+
+def test_exec_open_live_dup_wording(monkeypatch):
+    """2026-10-15 措辞修正：去重闸门（已有单）不落 block_reason → 蓝卡
+    「未重复开单」而非「未开单」（币种其实已有持仓，原「未开单」是误述）"""
+    cards: list = []
+    monkeypatch.setattr(feishu_bot, "send_app_card",
+                        lambda c: cards.append(c) or True)
+    monkeypatch.setattr("app.tasks.trade_tasks.manual_open_from_analysis",
+                        lambda aid, acc: {"ok": True, "opened": False,
+                                          "trade_id": "t-1", "account_key": "live-1",
+                                          "symbol": "KSMUSDT", "block_reason": None})
+    feishu_bot._exec_open_live("aid", "live-1")
+    assert cards[0]["header"]["title"]["content"] == "ℹ️ 未重复开单 · KSMUSDT"
+    assert cards[0]["header"]["template"] == "blue"
+    assert "不重复开单" in cards[0]["elements"][0]["text"]["content"]

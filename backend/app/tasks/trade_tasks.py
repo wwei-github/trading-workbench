@@ -133,6 +133,9 @@ def manual_open_from_analysis(analysis_id: str, account_key: str) -> dict:
     "take_profit_2", "qty"} 或 {"ok": False, "code", "error"}；code ∈
     invalid(参数非法) / not_found / bad_request / conflict / error，由调用方
     映射 HTTP 状态码（网页）或结果卡片文案（飞书）。
+
+    trade_id 语义（2026-10-15）：opened=False 但非空 ⇒ 该分析在本账号已有成交、
+    本次命中的是去重闸门（未重复下单），调用方据此区分「已有单」与「真闸门拦截」。
     """
     from app.services import account_registry as reg
     from app.services.binance_trader import BinanceTrader
@@ -169,18 +172,19 @@ def manual_open_from_analysis(analysis_id: str, account_key: str) -> dict:
             opened = try_open_for_analysis(db, trader, aid, force_market=True)
             db.refresh(a)
             block_reason = a.open_block_reason
-            rec = None
-            if opened:
-                rec = db.execute(
-                    select(TradeRecord).where(
-                        TradeRecord.ai_analysis_id == aid,
-                        or_(
-                            TradeRecord.account_key == trader.account_key,
-                            and_(TradeRecord.account_key.is_(None),
-                                 TradeRecord.testnet == trader.testnet),
-                        ),
-                    ).order_by(TradeRecord.opened_at.desc()).limit(1)
-                ).scalars().first()
+            # 不论是否开单都反查（2026-10-15）：opened=False 却查到记录，说明命中的
+            # 是「同分析同账号已开过」去重闸门（该闸门不落 block_reason），供调用方
+            # 把「已有单、未重复开」与「真闸门拦截」区分呈现
+            rec = db.execute(
+                select(TradeRecord).where(
+                    TradeRecord.ai_analysis_id == aid,
+                    or_(
+                        TradeRecord.account_key == trader.account_key,
+                        and_(TradeRecord.account_key.is_(None),
+                             TradeRecord.testnet == trader.testnet),
+                    ),
+                ).order_by(TradeRecord.opened_at.desc()).limit(1)
+            ).scalars().first()
         except Exception as e:
             db.rollback()
             logger.exception("手动开单失败 analysis=%s", analysis_id)
@@ -198,6 +202,13 @@ def manual_open_from_analysis(analysis_id: str, account_key: str) -> dict:
             "take_profit_2": float(rec.tp2) if rec and rec.tp2 else None,
             "qty": float(rec.qty) if rec and rec.qty else None,
         }
+    except Exception as e:
+        # 锁外异常兜底（2026-10-15）：db.get / 账号注册表 / Redis.from_url 失败此前
+        # 直接抛出——飞书回调跑在守护线程里，异常即静默死掉、结果卡片永不送达；
+        # 网页端点则 500 原始堆栈。统一落 code=error，由调用方照常呈现
+        logger.exception("手动开单前置异常 analysis=%s", analysis_id)
+        return {"ok": False, "code": "error",
+                "error": f"开单流程异常：{str(e)[:120]}"}
     finally:
         db.close()
 

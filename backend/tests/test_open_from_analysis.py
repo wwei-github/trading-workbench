@@ -223,3 +223,32 @@ def test_lock_timeout_409(_patch_http, _patch_common, _analysis, _cfg_default,
     with pytest.raises(_HTTPException) as ei:
         open_from_analysis(_payload())
     assert ei.value.status_code == 409
+
+
+def test_dedup_returns_existing_trade_id(_patch_http, _patch_common, _analysis,
+                                         _cfg_default):
+    """2026-10-15：opened=False 但反查到记录 ⇒ 命中去重闸门，trade_id 回填已有单
+    ——调用方（飞书卡片）据此把「已有单、未重复开」与「真闸门拦截」区分呈现"""
+    _patch_common["opened"] = False
+    row = _trade_row()
+    _cfg_default._state["trade_row"] = row
+    res = open_from_analysis(_payload())
+    assert res["ok"] is True and res["opened"] is False
+    assert res["trade_id"] == str(row.id)
+
+
+def test_prelock_exception_returns_structured_error(_patch_http, _patch_common,
+                                                    _analysis, _cfg_default,
+                                                    monkeypatch):
+    """2026-10-15 兜底：锁外异常（账号注册表 / Redis 构建 / db.get）不再裸抛——
+    统一落 code=error（网页映射 500、飞书渲染红卡），避免回调守护线程静默死掉
+    不发结果卡片（原缺口，与 manual_close_market 同暴露面）"""
+    from app.services import account_registry as reg
+
+    def _boom(key):
+        raise RuntimeError("注册表不可用")
+
+    monkeypatch.setattr(reg, "get_account", _boom)
+    with pytest.raises(_HTTPException) as ei:
+        open_from_analysis(_payload())
+    assert ei.value.status_code == 500
