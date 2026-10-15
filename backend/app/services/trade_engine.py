@@ -2228,9 +2228,16 @@ def notify_open_cards(trade_ids: list[str]) -> int:
     return sent
 
 
-def _live_off_card(a: AIAnalysis) -> dict:
+def _live_off_card(a: AIAnalysis, img_key: str = "", open_account_key: str = "") -> dict:
     """正式网自动开单关闭提醒卡片（2026-10-09）：价格栅格复用开仓卡片风格，
-    橙色头区分（蓝=开仓成功、橙=实盘错过达标信号）。"""
+    橙色头区分（蓝=开仓成功、橙=实盘错过达标信号）。
+
+    2026-10-15 增强：内嵌服务端渲染的 K 线图（img_key 非空时挂 img 元素，
+    K线 + EMA21/55/144 + 入场/止损/止盈计划线，图由 kline_chart 画、feishu_bot
+    上传）；正式网仅一个启用账号且配了按钮令牌时附「开单」按钮（回调走
+    feishu_bot._exec_open_live → manual_open_from_analysis，与网页开单同源）。
+    两者任一不可用都退化为原纯文字卡片。
+    """
     def _col(title: str, value: str) -> dict:
         return {"tag": "column", "width": "weighted", "weight": 1,
                 "elements": [{"tag": "div", "text": {"tag": "lark_md",
@@ -2239,31 +2246,78 @@ def _live_off_card(a: AIAnalysis) -> dict:
     is_long = a.direction == "long"
     recmd = f"{float(a.recommendation):.0f} 分" if a.recommendation is not None else "—"
     rr = f"{float(a.risk_reward_ratio):.1f}" if a.risk_reward_ratio else "—"
+    elements: list = [
+        {"tag": "div", "text": {"tag": "lark_md", "content":
+         "该信号已达标可开单，但**正式网自动开单开关关闭**，本次未开实盘单（测试网照常）。"}},
+    ]
+    if img_key:
+        elements.append({
+            "tag": "img", "img_key": img_key,
+            "alt": {"tag": "plain_text", "content": f"{a.symbol} K线图（EMA 均线与开单计划）"},
+        })
+    elements += [
+        {"tag": "column_set", "flex_mode": "stretch", "columns": [
+            _col("方向", "做多 Long" if is_long else "做空 Short"),
+            _col("AI 评分", recmd),
+            _col("盈亏比", rr),
+        ]},
+        {"tag": "column_set", "flex_mode": "stretch", "columns": [
+            _col("入场价", _fmt_price(float(a.entry_price or 0))),
+            _col("止损 SL", _fmt_price(float(a.stop_loss or 0))),
+            _col("止盈 TP1", _fmt_price(float(a.take_profit_1 or 0))),
+            _col("止盈 TP2", _fmt_price(float(a.take_profit_2)) if a.take_profit_2 else "—"),
+        ]},
+    ]
+    # 「开单」按钮：正式网仅一个启用账号（多账号群聊里点一下不知道开哪个，不给
+    # 误开实盘的机会）且配了回调令牌时才挂；点击 → open_live 回调分支
+    if open_account_key and settings.FEISHU_ACTION_TOKEN:
+        elements.append({"tag": "action", "actions": [{
+            "tag": "button", "type": "primary",
+            "text": {"tag": "plain_text",
+                     "content": f"开单 · 正式网 {open_account_key}"},
+            "value": {"act": "open_live", "token": settings.FEISHU_ACTION_TOKEN,
+                      "analysis_id": str(a.id), "account_key": open_account_key},
+        }]})
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text",
+     "content": (f"战法 {a.tactic_name} · " if a.tactic_name else "")
+     + "如需实盘可在扫描结果/交易记录手动开单，或开启正式网自动开单"}]})
     return {
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": f"⚠️ 正式网未开单 · {a.symbol}"},
             "template": "orange",
         },
-        "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content":
-             "该信号已达标可开单，但**正式网自动开单开关关闭**，本次未开实盘单（测试网照常）。"}},
-            {"tag": "column_set", "flex_mode": "stretch", "columns": [
-                _col("方向", "做多 Long" if is_long else "做空 Short"),
-                _col("AI 评分", recmd),
-                _col("盈亏比", rr),
-            ]},
-            {"tag": "column_set", "flex_mode": "stretch", "columns": [
-                _col("入场价", _fmt_price(float(a.entry_price or 0))),
-                _col("止损 SL", _fmt_price(float(a.stop_loss or 0))),
-                _col("止盈 TP1", _fmt_price(float(a.take_profit_1 or 0))),
-                _col("止盈 TP2", _fmt_price(float(a.take_profit_2)) if a.take_profit_2 else "—"),
-            ]},
-            {"tag": "note", "elements": [{"tag": "plain_text",
-             "content": (f"战法 {a.tactic_name} · " if a.tactic_name else "")
-             + "如需实盘可在扫描结果/交易记录手动开单，或开启正式网自动开单"}]},
-        ],
+        "elements": elements,
     }
+
+
+def _live_off_img_key(a: AIAnalysis, cfg) -> str:
+    """正式网未开单卡片的 K 线图 img_key（拉 K 线 → 渲染 PNG → 上传飞书）。
+
+    任一环节失败返回 ""（调用方降级为纯文字卡片）——画图/上传是锦上添花，
+    不能因它让「信号达标却没开实盘单」这条提醒整体丢失。K 线周期取系统配置
+    周期（与该信号的分析/扫描同源），300 根供 EMA144 递推；allow_stale
+    容忍交易所瞬断（画一张略旧的图好过没图）。
+    """
+    from app.services.exchange_pool import ExchangePool
+    from app.services.feishu_bot import upload_image
+    from app.services.kline_chart import render_plan_chart
+
+    interval = (getattr(cfg, "kline_interval", None) or "1h") if cfg is not None else "1h"
+    try:
+        klines = ExchangePool().get_klines(a.symbol, interval, 300, allow_stale=True)
+        png = render_plan_chart(
+            klines, symbol=a.symbol, direction=a.direction,
+            entry=float(a.entry_price), stop_loss=float(a.stop_loss),
+            take_profit_1=float(a.take_profit_1),
+            take_profit_2=float(a.take_profit_2) if a.take_profit_2 else None,
+            interval=interval,
+            ai_score=float(a.recommendation) if a.recommendation is not None else None,
+        )
+        return upload_image(png) if png else ""
+    except Exception:
+        logger.exception("正式网未开单卡片 K 线图渲染/上传失败（降级纯文字卡）")
+        return ""
 
 
 def notify_live_auto_open_off(db: Session, cfg, analysis_id: str) -> None:
@@ -2274,6 +2328,11 @@ def notify_live_auto_open_off(db: Session, cfg, analysis_id: str) -> None:
     ——正式网开关关着本就没跑到账号闸门那一步，无法也不必预判其结果。
     该分析正式网任一账号已有成交（含此前提醒后手动开的单）则不提醒。
     每条分析至多随任务分发提醒一次；发送失败仅记日志不影响开仓扇出。
+
+    2026-10-15：卡片内嵌 K 线图（K线 + EMA 均线 + 开单计划线，见 kline_chart）
+    并在正式网仅一个启用账号时附「开单」按钮（点击 → feishu_bot._exec_open_live）。
+    画图/上传失败自动退化为纯文字卡片；本函数在竞态上安全——它不持开仓锁，
+    K 线拉取与图片上传（约 1~2s）只延后本任务后续的账号扇出，不影响开仓结果。
     """
     try:
         if cfg is None:
@@ -2298,9 +2357,15 @@ def notify_live_auto_open_off(db: Session, cfg, analysis_id: str) -> None:
         from app.services.feishu_bot import configured, send_app_card
         if not configured():
             return
-        if send_app_card(_live_off_card(a)):
-            logger.info("已发送正式网开关关闭提醒 analysis=%s symbol=%s",
-                        analysis_id, a.symbol)
+        # 正式网启用账号恰好一个时才挂「开单」按钮（多账号群聊里点一下不知道
+        # 开哪个账号，不给误开实盘单的机会）
+        from app.services.account_registry import live_enabled_accounts
+        live_accs = live_enabled_accounts(db)
+        open_acc = live_accs[0].key if len(live_accs) == 1 else ""
+        img_key = _live_off_img_key(a, cfg)
+        if send_app_card(_live_off_card(a, img_key=img_key, open_account_key=open_acc)):
+            logger.info("已发送正式网开关关闭提醒 analysis=%s symbol=%s 图=%s 按钮=%s",
+                        analysis_id, a.symbol, bool(img_key), open_acc or "无")
     except Exception:
         logger.exception("正式网开关关闭提醒异常 analysis=%s", analysis_id)
 

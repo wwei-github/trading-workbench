@@ -13,7 +13,7 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from redis import Redis
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from app.celery_app import celery_app
 from app.config import settings
@@ -109,6 +109,97 @@ def manual_close_market(trade_id: str) -> dict:
     finally:
         db.close()
     return res
+
+
+def manual_open_from_analysis(analysis_id: str, account_key: str) -> dict:
+    """手动开单共享执行核心（2026-10-15，网页扫描结果表「开单」按钮与飞书
+    卡片「开单」按钮同源）。
+
+    语义与 /api/trades/open-from-analysis（2026-09-27）完全一致：
+    - 仅开 payload.account_key 指定账号（2026-10-03 删环境切换：开到哪个网
+      由调用方显式指定，扇出会在所有启用账号真实下单，语义不对）
+    - 不受 trading_enabled 约束（2026-09-28 语义拆分：自动交易开关只管
+      「每小时 AI 分析后自动成交」，手动点击是用户对当下价格的明确意图）
+    - force_market=True：现价市价即时入场，跳过入场偏离/待回踩时机闸门；
+      其余风控闸门（RR 现价复算 / SL-TP 可挂性 / 保证金 / 滑点）全部保留
+
+    校验 → 账号口径开仓锁（与结算巡检互斥）→ 锁内开单。闸门未过不抛错，
+    以 opened=False + block_reason 返回（原因已由 _mark_open_block 落
+    ai_analyses.open_block_reason）。重复点击被 try_open_for_analysis 的
+    「同分析同账号已开仓」去重闸门自然拦住，无需额外防重放。
+
+    返回 {"ok": True, "opened", "block_reason", "trade_id", "account_key",
+    "symbol", "direction", "entry_price", "stop_loss", "take_profit_1",
+    "take_profit_2", "qty"} 或 {"ok": False, "code", "error"}；code ∈
+    invalid(参数非法) / not_found / bad_request / conflict / error，由调用方
+    映射 HTTP 状态码（网页）或结果卡片文案（飞书）。
+    """
+    from app.services import account_registry as reg
+    from app.services.binance_trader import BinanceTrader
+    from app.services.trade_engine import try_open_for_analysis
+
+    try:
+        aid = UUID(str(analysis_id))
+    except ValueError:
+        return {"ok": False, "code": "invalid", "error": "analysis_id 格式非法"}
+
+    db = SessionLocal()
+    try:
+        a = db.get(AIAnalysis, aid)
+        if a is None:
+            return {"ok": False, "code": "not_found", "error": "AI 分析不存在"}
+        if a.trade_decision != "suggest":
+            return {"ok": False, "code": "bad_request",
+                    "error": "该分析非建议开单（suggest）结论"}
+        acc = reg.get_account(account_key)
+        if acc is None:
+            return {"ok": False, "code": "bad_request",
+                    "error": f"账号 {account_key} 不在注册表中（检查服务器 .env）"}
+        trader = BinanceTrader(acc.key)
+        if not trader.configured:
+            return {"ok": False, "code": "bad_request", "error": "当前账号未配置 API 凭据"}
+
+        r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        ident = f"open-from-analysis-{uuid4().hex[:8]}"
+        if not _acquire_open_lock(r, ident, wait_s=10, ttl_s=_OPEN_LOCK_TTL_S,
+                                  account=trader.account_key):
+            return {"ok": False, "code": "conflict",
+                    "error": "与结算巡检/其他开仓互斥中，请稍后重试"}
+        try:
+            opened = try_open_for_analysis(db, trader, aid, force_market=True)
+            db.refresh(a)
+            block_reason = a.open_block_reason
+            rec = None
+            if opened:
+                rec = db.execute(
+                    select(TradeRecord).where(
+                        TradeRecord.ai_analysis_id == aid,
+                        or_(
+                            TradeRecord.account_key == trader.account_key,
+                            and_(TradeRecord.account_key.is_(None),
+                                 TradeRecord.testnet == trader.testnet),
+                        ),
+                    ).order_by(TradeRecord.opened_at.desc()).limit(1)
+                ).scalars().first()
+        except Exception as e:
+            db.rollback()
+            logger.exception("手动开单失败 analysis=%s", analysis_id)
+            return {"ok": False, "code": "error", "error": f"开单失败：{str(e)[:120]}"}
+        finally:
+            _release_open_lock(r, ident, account=trader.account_key)
+        return {
+            "ok": True, "opened": opened, "block_reason": block_reason,
+            "trade_id": str(rec.id) if rec else None,
+            "account_key": trader.account_key,
+            "symbol": a.symbol, "direction": a.direction,
+            "entry_price": float(rec.entry_price) if rec and rec.entry_price else None,
+            "stop_loss": float(rec.stop_loss) if rec and rec.stop_loss else None,
+            "take_profit_1": float(rec.tp1) if rec and rec.tp1 else None,
+            "take_profit_2": float(rec.tp2) if rec and rec.tp2 else None,
+            "qty": float(rec.qty) if rec and rec.qty else None,
+        }
+    finally:
+        db.close()
 
 
 @celery_app.task(name="app.tasks.trade_tasks.run_auto_trade_task", max_retries=0)

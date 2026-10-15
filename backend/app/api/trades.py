@@ -321,10 +321,16 @@ def inspect_now():
             "message": "巡检已派发后台执行，完成后刷新查看结果"}
 
 
+# core 失败码 → HTTP 状态码（网页端；飞书卡片按钮同源共享执行核心，
+# 用 code 映射结果卡片文案而非 HTTP）
+_OPEN_ERR_STATUS = {"invalid": 400, "not_found": 404, "bad_request": 400,
+                    "conflict": 409, "error": 500}
+
+
 @router.post("/open-from-analysis")
-def open_from_analysis(payload: OpenFromAnalysisRequest, db: Session = Depends(get_db)):
+def open_from_analysis(payload: OpenFromAnalysisRequest):
     """手动开单（2026-09-27 扫描结果表「开单」按钮）：对指定 AI 分析立即走一次
-    完整开仓闸门（try_open_for_analysis），仅请求指定的账号、不做多账号扇出。
+    完整开仓闸门，仅请求指定的账号、不做多账号扇出。
 
     与自动开仓路径（open_trade_for_analysis celery 任务）的差异：
     - 仅 payload.account_key 指定账号（2026-10-03 删环境切换：开到哪个网由
@@ -336,78 +342,19 @@ def open_from_analysis(payload: OpenFromAnalysisRequest, db: Session = Depends(g
       其余风控闸门（RR 现价复算 / SL-TP 可挂性 / 保证金 / 滑点）全部保留
     - 闸门未过返回 200 opened=false + block_reason（业务拦截非 HTTP 错误），
       拦截原因已由 _mark_open_block 落 ai_analyses.open_block_reason
+
+    执行核心 2026-10-15 抽到 trade_tasks.manual_open_from_analysis（飞书卡片
+    「开单」按钮同源，与 manual_close_market 同一抽取惯例），本端点只把 core
+    的失败码映射成 HTTP 状态码。
     """
-    import uuid as _uuid
+    from app.tasks.trade_tasks import manual_open_from_analysis
 
-    from redis import Redis
-
-    from app.config import settings
-    from app.models.scan import AIAnalysis
-    from app.services import account_registry as reg
-    from app.services.binance_trader import BinanceTrader
-    from app.services.trade_engine import try_open_for_analysis
-    from app.tasks.trade_tasks import (
-        _OPEN_LOCK_TTL_S,
-        _acquire_open_lock,
-        _release_open_lock,
-    )
-
-    # 手动开单不受自动交易开关约束（2026-09-28 语义拆分）；账号由请求显式指定
-
-    try:
-        analysis_id = _uuid.UUID(payload.analysis_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="analysis_id 格式非法")
-    a = db.get(AIAnalysis, analysis_id)
-    if a is None:
-        raise HTTPException(status_code=404, detail="AI 分析不存在")
-    if a.trade_decision != "suggest":
-        raise HTTPException(status_code=400, detail="该分析非建议开单（suggest）结论")
-
-    # 2026-10-03 删环境切换：手动开单账号由请求显式指定（前端弹窗选账号），
-    # 后端不猜网——防「以为开测试网实际开了实盘」的语义歧义
-    acc = reg.get_account(payload.account_key)
-    if acc is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"账号 {payload.account_key} 不在注册表中（检查服务器 .env）",
-        )
-    trader = BinanceTrader(acc.key)
-    if not trader.configured:
-        raise HTTPException(status_code=400, detail="当前账号未配置 API 凭据")
-
-    r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
-    ident = f"open-from-analysis-{uuid4().hex[:8]}"
-    if not _acquire_open_lock(r, ident, wait_s=10, ttl_s=_OPEN_LOCK_TTL_S,
-                              account=trader.account_key):
-        raise HTTPException(status_code=409, detail="与结算巡检/其他开仓互斥中，请稍后重试")
-    try:
-        opened = try_open_for_analysis(db, trader, analysis_id, force_market=True)
-        db.refresh(a)
-        block_reason = a.open_block_reason
-        trade_id = None
-        if opened:
-            rec = db.execute(
-                select(TradeRecord).where(
-                    TradeRecord.ai_analysis_id == analysis_id,
-                    or_(
-                        TradeRecord.account_key == trader.account_key,
-                        and_(TradeRecord.account_key.is_(None),
-                             TradeRecord.testnet == trader.testnet),
-                    ),
-                ).order_by(TradeRecord.opened_at.desc()).limit(1)
-            ).scalars().first()
-            trade_id = str(rec.id) if rec else None
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.exception("手动开单失败 analysis=%s", analysis_id)
-        raise HTTPException(status_code=500, detail=f"开单失败：{e}")
-    finally:
-        _release_open_lock(r, ident, account=trader.account_key)
-    return {"ok": True, "opened": opened, "block_reason": block_reason,
-            "trade_id": trade_id, "account_key": trader.account_key}
+    res = manual_open_from_analysis(str(payload.analysis_id), str(payload.account_key))
+    if not res["ok"]:
+        raise HTTPException(status_code=_OPEN_ERR_STATUS.get(res["code"], 500),
+                            detail=res["error"])
+    return {"ok": True, "opened": res["opened"], "block_reason": res["block_reason"],
+            "trade_id": res["trade_id"], "account_key": res["account_key"]}
 
 
 @router.post("/{trade_id}/close-market")

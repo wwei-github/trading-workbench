@@ -90,6 +90,34 @@ def send_app_text(text: str) -> bool:
     return _post_message("text", json.dumps({"text": text}, ensure_ascii=False))
 
 
+def upload_image(image: bytes) -> str:
+    """上传图片到飞书 → image_key（卡片 img 元素引用；2026-10-15）。
+
+    卡片内嵌图片必须两步走：先 im/v1/images 上传拿 image_key，再随卡片发。
+    image_type=message 为「用于发送消息」的消息图片（≤10MB，png/jpg 等）。
+    失败返回 ""（仅记日志），调用方降级为纯文字卡片。
+    部署前置：飞书后台需给自建应用开「上传图片」权限（im:resource 或
+    「上传文件 V2」任一），否则上传返回权限错误。
+    """
+    if not configured() or not image:
+        return ""
+    try:
+        r = httpx.post(
+            f"{_OPEN}/im/v1/images",
+            headers={"Authorization": f"Bearer {_tenant_token()}"},
+            files={"image": ("chart.png", image, "image/png")},
+            data={"image_type": "message"},
+            timeout=20,
+        )
+        data = r.json()
+        if data.get("code") == 0:
+            return str((data.get("data") or {}).get("image_key") or "")
+        logger.warning("飞书图片上传失败: %s", str(data)[:300])
+    except Exception as e:
+        logger.warning("飞书图片上传异常: %s", e)
+    return ""
+
+
 def start_card_listener() -> None:
     """启动长连接守护线程（backend lifespan 调用；未配置/缺 SDK 静默跳过）"""
     if not configured():
@@ -141,7 +169,8 @@ def _on_card_action(data):
     """卡片按钮回调：校验令牌 → 后台线程执行 → toast 即时反馈
 
     act 分支：close_market（合约平仓）/ spot_buy、spot_sell（现货屯币一键确认，
-    docs/18 P1 挂载点式扩展，合约逻辑零改动）。
+    docs/18 P1 挂载点式扩展，合约逻辑零改动）/ open_live（正式网未开单提醒
+    卡片「开单」按钮，2026-10-15）。
     """
     try:
         value = dict((getattr(data.event, "action", None) and data.event.action.value) or {})
@@ -161,10 +190,103 @@ def _on_card_action(data):
                 return _toast("缺少币种", "error")
             threading.Thread(target=_exec_spot_confirm, args=(act, dict(value)), daemon=True).start()
             return _toast("指令已接收，现货下单执行中…")
+        if act == "open_live":
+            if not settings.FEISHU_ACTION_TOKEN or value.get("token") != settings.FEISHU_ACTION_TOKEN:
+                return _toast("无效操作令牌", "error")
+            analysis_id = str(value.get("analysis_id") or "")
+            account_key = str(value.get("account_key") or "")
+            if not analysis_id or not account_key:
+                return _toast("缺少开单参数", "error")
+            threading.Thread(target=_exec_open_live, args=(analysis_id, account_key),
+                             daemon=True).start()
+            return _toast("指令已接收，正式网开单执行中…")
         return _toast("未知操作", "error")
     except Exception:
         logger.exception("卡片回调处理失败")
         return _toast("处理异常，请查看系统日志", "error")
+
+
+def _exec_open_live(analysis_id: str, account_key: str) -> None:
+    """后台执行正式网手动开单 → 会话内发结果卡片（新消息）。
+
+    2026-10-15：正式网自动开单关闭提醒卡片「开单」按钮的回调。执行核心与网页
+    扫描结果表「开单」按钮同源（trade_tasks.manual_open_from_analysis：账号口径
+    开仓锁 + force_market 市价闸门），本函数只负责结果呈现。重复点击被
+    try_open_for_analysis 的「同分析同账号已开仓」去重闸门拦住，不会二次下单；
+    按钮只在正式网仅一个启用账号时渲染（send 侧控制），回调再按注册表复验账号。
+    """
+    from app.services.trade_engine import _fmt_price
+    from app.tasks.trade_tasks import manual_open_from_analysis
+
+    res = manual_open_from_analysis(analysis_id, account_key)
+
+    def _col(title: str, value: str) -> dict:
+        return {"tag": "column", "width": "weighted", "weight": 1,
+                "elements": [{"tag": "div", "text": {"tag": "lark_md",
+                             "content": f"**{title}**\n{value}"}}]}
+
+    def _p(v) -> str:
+        return _fmt_price(float(v)) if v else "—"
+
+    symbol = str(res.get("symbol") or "")
+    if res.get("ok") and res.get("opened"):
+        is_long = res.get("direction") == "long"
+        qty_line = f"数量 {float(res['qty']):g} · " if res.get("qty") else ""
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": f"✅ 正式网手动开单 · {symbol}"},
+                "template": "green",
+            },
+            "elements": [
+                {"tag": "column_set", "flex_mode": "stretch", "columns": [
+                    _col("方向", "做多 Long" if is_long else "做空 Short"),
+                    _col("账号", str(res.get("account_key") or "—")),
+                    _col("入场价", _p(res.get("entry_price"))),
+                ]},
+                {"tag": "column_set", "flex_mode": "stretch", "columns": [
+                    _col("止损 SL", _p(res.get("stop_loss"))),
+                    _col("止盈 TP1", _p(res.get("take_profit_1"))),
+                    _col("止盈 TP2", _p(res.get("take_profit_2"))),
+                ]},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": (
+                    qty_line + "飞书卡片开单（市价即时入场）· SL/TP 条件单已挂 · "
+                    "详情见交易记录")}]},
+            ],
+        }
+    elif res.get("ok"):
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": f"⚠️ 未开单 · {symbol}"},
+                "template": "orange",
+            },
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md",
+                 "content": str(res.get("block_reason") or "开仓闸门未过")}},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": (
+                    "已按现价走完整开仓闸门（市价入场口径），本次未成交；"
+                    "可在工作台「扫描结果」手动重试")}]},
+            ],
+        }
+    else:
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "❌ 开单未执行"},
+                "template": "red",
+            },
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md",
+                 "content": str(res.get("error") or "未知错误")}},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": (
+                    "校验/锁/下单执行失败，请查看系统日志；可在工作台手动重试")}]},
+            ],
+        }
+    try:
+        send_app_card(card)
+    except Exception:
+        logger.exception("手动开单结果卡片发送失败")
 
 
 def _exec_spot_confirm(act: str, value: dict) -> None:

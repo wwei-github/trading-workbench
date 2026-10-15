@@ -41,8 +41,13 @@ def _patch_http(monkeypatch):
 
 
 @pytest.fixture()
-def _db():
-    """会话桩：get 返回预置对象，refresh/execute 空实现"""
+def _db(monkeypatch):
+    """会话桩：get 返回预置对象，refresh/execute 空实现。
+
+    2026-10-15 执行核心抽到 trade_tasks.manual_open_from_analysis（core 自建
+    SessionLocal 会话），故按 trade_tasks 模块属性注入桩会话——模块级
+    `from app.database import SessionLocal` 已绑定名字，patch 绑定处才生效。
+    """
     state = {"analysis": None, "cfg": None, "trade_row": None}
 
     def get(model, id_):
@@ -59,11 +64,13 @@ def _db():
 
     session = SimpleNamespace(
         get=get, refresh=lambda o: None, commit=lambda: None,
-        rollback=lambda: None,
+        rollback=lambda: None, close=lambda: None,
         execute=lambda q: SimpleNamespace(
             scalars=lambda: SimpleNamespace(first=lambda: state["trade_row"])),
     )
     session._state = state
+    from app.tasks import trade_tasks
+    monkeypatch.setattr(trade_tasks, "SessionLocal", lambda: session)
     return session
 
 
@@ -93,17 +100,17 @@ def _analysis(_cfg_default):
 def _patch_common(monkeypatch):
     """stub：账号注册表 / trader / redis 锁 / 开仓函数结果。
 
-    端点内是函数级延迟导入（from X import Y），monkeypatch 必须 stub 源头
-    模块属性，延迟导入才能命中替身。
+    端点与核心内既有函数级延迟导入（from X import Y），也有模块级绑定
+    （trade_tasks.Redis / trade_tasks._acquire_open_lock），两处都必须 patch
+    绑定处才能命中替身。
     """
     from app.services import account_registry as reg
     from app.services import trade_engine
     from app.tasks import trade_tasks
     import app.services.binance_trader as _bt_mod
-    import redis as _redis_mod
 
     class _FakeRedis:
-        """Redis 替身：from_url 返回无操作客户端（端点只做锁调用）"""
+        """Redis 替身：from_url 返回无操作客户端（core 只做锁调用）"""
         @classmethod
         def from_url(cls, *a, **kw):
             return SimpleNamespace()
@@ -122,7 +129,7 @@ def _patch_common(monkeypatch):
 
     monkeypatch.setattr(reg, "get_account", _fake_get_account)
     monkeypatch.setattr(_bt_mod, "BinanceTrader", lambda key=None: _FakeTrader())
-    monkeypatch.setattr(_redis_mod, "Redis", _FakeRedis)
+    monkeypatch.setattr(trade_tasks, "Redis", _FakeRedis)
     monkeypatch.setattr(trade_tasks, "_acquire_open_lock", lambda *a, **kw: True)
     monkeypatch.setattr(trade_tasks, "_release_open_lock", lambda *a, **kw: None)
     holder = {"opened": True, "trade_row": None, "force_market": None,
@@ -152,7 +159,7 @@ def _payload():
 
 def test_happy_path_opened(_patch_http, _patch_common, _analysis, _cfg_default):
     _patch_common["trade_row"] = _trade_row()
-    res = open_from_analysis(_payload(), _cfg_default)
+    res = open_from_analysis(_payload())
     assert res["opened"] is True and res["ok"] is True
     assert res["trade_id"] == str(_cfg_default._state["trade_row"].id)
     assert res["account_key"] == "testnet-1"
@@ -167,7 +174,7 @@ def test_gate_blocked_returns_200_with_reason(_patch_http, _patch_common,
     """闸门拦截（opened=false）是业务结果 200，block_reason 取自分析行"""
     _patch_common["opened"] = False
     _analysis.open_block_reason = "在跑单子已达上限 10"
-    res = open_from_analysis(_payload(), _cfg_default)
+    res = open_from_analysis(_payload())
     assert res["opened"] is False and res["block_reason"] == "在跑单子已达上限 10"
     assert res["trade_id"] is None
 
@@ -178,7 +185,7 @@ def test_switch_off_still_allowed(_patch_http, _patch_common, _analysis, _db):
     _db._state["cfg"] = SystemConfig(id=1, trading_enabled_testnet=False,
                                      trading_enabled_live=False)
     _patch_common["trade_row"] = _trade_row()
-    res = open_from_analysis(_payload(), _db)
+    res = open_from_analysis(_payload())
     assert res["opened"] is True and res["ok"] is True
 
 
@@ -188,7 +195,6 @@ def test_unknown_account_400(_patch_http, _patch_common, _analysis, _cfg_default
         open_from_analysis(
             OpenFromAnalysisRequest(analysis_id=str(ANALYSIS_ID),
                                     account_key="live-9"),
-            _cfg_default,
         )
     assert ei.value.status_code == 400
 
@@ -196,7 +202,7 @@ def test_unknown_account_400(_patch_http, _patch_common, _analysis, _cfg_default
 def test_non_suggest_400(_patch_http, _patch_common, _analysis, _cfg_default):
     _analysis.trade_decision = "skip"
     with pytest.raises(_HTTPException) as ei:
-        open_from_analysis(_payload(), _cfg_default)
+        open_from_analysis(_payload())
     assert ei.value.status_code == 400
 
 
@@ -205,7 +211,6 @@ def test_analysis_missing_404(_patch_http, _patch_common, _cfg_default):
         open_from_analysis(
             OpenFromAnalysisRequest(analysis_id=str(uuid.uuid4()),
                                     account_key="testnet-1"),
-            _cfg_default,
         )
     assert ei.value.status_code == 404
 
@@ -216,5 +221,5 @@ def test_lock_timeout_409(_patch_http, _patch_common, _analysis, _cfg_default,
     monkeypatch.setattr(trade_tasks, "_acquire_open_lock",
                         lambda *a, **kw: False)
     with pytest.raises(_HTTPException) as ei:
-        open_from_analysis(_payload(), _cfg_default)
+        open_from_analysis(_payload())
     assert ei.value.status_code == 409
