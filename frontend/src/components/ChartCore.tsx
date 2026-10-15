@@ -54,7 +54,7 @@ import {
   INDICATOR_CATALOG,
   type IndicatorBar,
 } from '../constants/indicators'
-import { IndicatorRenderer } from 'lightweight-charts-indicators/render'
+import { IndicatorRenderer, type RenderOptions } from 'lightweight-charts-indicators/render'
 import type { AIAnalysis, Kline, KlineData } from '../types'
 
 const { Text } = Typography
@@ -693,8 +693,17 @@ export default function ChartCore({
         paneIndex,
         mainSeries: seriesRef.current ?? undefined,
       })
+      // EMA 均线族线宽调细（插件默认 2px，主图 EMA21/55/144 三条叠线偏抢眼；
+      // 2026-10-15 用户要求变细）。仅覆盖 plot 线宽，颜色/样式仍走目录。
+      const renderOpts: RenderOptions = def.key === 'ema'
+        ? {
+            plots: Object.fromEntries(
+              def.renderable(setting.params).plotConfig.map((p) => [p.id, { lineWidth: 1 }]),
+            ),
+          }
+        : {}
       try {
-        renderer.render(def.renderable(setting.params), out, bars, {})
+        renderer.render(def.renderable(setting.params), out, bars, renderOpts)
       } catch (e) {
         console.error(`指标 ${def.label} 渲染失败`, e)
         continue
