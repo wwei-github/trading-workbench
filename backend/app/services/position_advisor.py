@@ -591,7 +591,7 @@ def _notify_advice(rec, advice: dict, total: float) -> None:
                 {"tag": "note", "elements": [{"tag": "plain_text",
                  "content": "点击「市价平仓」即以市价全平该单并回报结果 · 详情见交易记录"}]},
             ]
-        send_app_card(card)
+        send_app_card(card, testnet=bool(rec.testnet))
     except Exception as e:
         logger.warning("持仓建议飞书推送失败 %s: %s", rec.symbol, e)
 
@@ -741,7 +741,7 @@ def _notify_tighten_result(rec, old_sl: float, new_sl: float, price: float,
                 {"tag": "div", "text": {"tag": "lark_md", "content": body}},
                 {"tag": "note", "elements": [{"tag": "plain_text", "content": note}]},
             ],
-        })
+        }, testnet=bool(rec.testnet))
     except Exception as e:
         logger.warning("自动收紧结果卡片推送失败 %s: %s", rec.symbol, e)
 
@@ -834,6 +834,6 @@ def _notify_stale(rec, advice: dict, total: float) -> None:
             ]
         card["elements"].append({"tag": "note", "elements": [{"tag": "plain_text",
          "content": "持仓超24h未触发第一档止盈的定期复诊 · 详情见交易记录"}]})
-        send_app_card(card)
+        send_app_card(card, testnet=bool(rec.testnet))
     except Exception as e:
         logger.warning("滞留持仓建议飞书推送失败 %s: %s", rec.symbol, e)

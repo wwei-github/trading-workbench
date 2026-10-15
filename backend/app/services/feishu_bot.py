@@ -33,6 +33,31 @@ def configured() -> bool:
     )
 
 
+def testnet_notify_enabled() -> bool:
+    """测试网飞书通知开关（system_config.feishu_testnet_notify_enabled，2026-10-15）。
+
+    发送层在 testnet 标注的推送上调用；开关关闭时静默丢弃该推送。缺行/读库
+    异常按「开」兜底——不因配置读取失败静默丢通知（每个推送现场读 DB，
+    页面改保存即生效）。
+    """
+    from app.database import SessionLocal
+    from app.models.system_config import SystemConfig
+
+    db = None
+    try:
+        db = SessionLocal()
+        cfg = db.get(SystemConfig, 1)
+        if cfg is None:
+            return True
+        return bool(cfg.feishu_testnet_notify_enabled)
+    except Exception:
+        logger.warning("读取测试网飞书通知开关失败，按「开」处理", exc_info=True)
+        return True
+    finally:
+        if db is not None:
+            db.close()
+
+
 def _tenant_token() -> str:
     """tenant_access_token（内置缓存，提前 60s 过期）"""
     now = time.time()
@@ -77,16 +102,25 @@ def _post_message(msg_type: str, content: str) -> bool:
         return False
 
 
-def send_app_card(card: dict) -> bool:
+def send_app_card(card: dict, *, testnet: bool = False) -> bool:
     """以自建应用身份发 interactive 卡片（webhook 发的卡片收不到回调）。
 
     目标按前缀自动识别：oc_ → 群（chat_id），ou_ → 个人单聊（open_id）
+
+    testnet=True 表示这张卡来自「合约测试网单据」相关推送：系统配置的测试网
+    飞书通知开关关闭时静默丢弃（返回 False，不发、不重试）。
     """
+    if testnet and not testnet_notify_enabled():
+        logger.info("测试网飞书通知已关闭，跳过卡片推送")
+        return False
     return _post_message("interactive", json.dumps(card, ensure_ascii=False))
 
 
-def send_app_text(text: str) -> bool:
-    """以自建应用身份发纯文本（降级保底用）"""
+def send_app_text(text: str, *, testnet: bool = False) -> bool:
+    """以自建应用身份发纯文本（降级保底用）。testnet 语义同 send_app_card。"""
+    if testnet and not testnet_notify_enabled():
+        logger.info("测试网飞书通知已关闭，跳过文本推送")
+        return False
     return _post_message("text", json.dumps({"text": text}, ensure_ascii=False))
 
 

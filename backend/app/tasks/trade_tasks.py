@@ -341,14 +341,16 @@ def run_auto_trade_task():
                 _release_open_lock(r, ident, account=k)
 
         # 持仓时长预警卡发送（2026-09-27，锁外）：飞书 HTTP 不进开仓锁；
-        # 失败只记日志不影响巡检结果。_symbol/_hours 为构建侧日志字段，发送前剔除
+        # 失败只记日志不影响巡检结果。_symbol/_hours/_testnet 为构建侧内部
+        # 字段，发送前剔除；_testnet 透传给发送层做测试网通知开关过滤
         if hold_cards:
             from app.services.notify import send_feishu_card
             for c in hold_cards:
                 symbol = c.pop("_symbol", "?")
                 c.pop("_hours", None)
+                is_testnet = bool(c.pop("_testnet", False))
                 try:
-                    send_feishu_card(c)
+                    send_feishu_card(c, testnet=is_testnet)
                 except Exception:
                     logger.exception("持仓时长警告卡片发送失败：%s", symbol)
 
@@ -480,15 +482,20 @@ def open_trade_for_analysis(analysis_id: str):
             _release_open_lock(r, ident, account=acc.key)
 
     # 未上架飞书提示（2026-10-11，锁外）：仅列出受阻的网络；正式网有该合约的
-    # 账号已正常开单（常规开仓卡片），互不干扰。失败仅记日志
+    # 账号已正常开单（常规开仓卡片），互不干扰。失败仅记日志。
+    # 测试网飞书通知开关（2026-10-15）关闭时剔除测试网条目（全为测试网则整条不发）
     if untradable_blocked:
         try:
-            from app.services.feishu_bot import send_app_text
-            send_app_text(
-                "⚠️ 开单受阻：" + "；".join(
-                    f"{s}（{net}未上架该合约）" for s, net in untradable_blocked)
-                + "，该网络无法开单；有上架的网络已正常走开单流程"
-            )
+            from app.services.feishu_bot import send_app_text, testnet_notify_enabled
+            items = untradable_blocked
+            if not testnet_notify_enabled():
+                items = [(s, net) for s, net in untradable_blocked if net != "测试网"]
+            if items:
+                send_app_text(
+                    "⚠️ 开单受阻：" + "；".join(
+                        f"{s}（{net}未上架该合约）" for s, net in items)
+                    + "，该网络无法开单；有上架的网络已正常走开单流程"
+                )
         except Exception:
             logger.exception("未上架飞书通知异常 analysis=%s", analysis_id)
 

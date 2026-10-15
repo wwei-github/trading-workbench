@@ -169,7 +169,7 @@ def env(monkeypatch):
     cards = []
     import app.services.feishu_bot as fb
     monkeypatch.setattr(fb, "configured", lambda: True)
-    monkeypatch.setattr(fb, "send_app_card", lambda card: cards.append(card))
+    monkeypatch.setattr(fb, "send_app_card", lambda card, **kw: cards.append(card))
     return SimpleNamespace(trader=trader, acq=acq, rel=rel, cards=cards)
 
 
@@ -330,7 +330,7 @@ def test_notify_advice_exit_has_button(db, monkeypatch):
     cards = []
     import app.services.feishu_bot as fb
     monkeypatch.setattr(fb, "configured", lambda: True)
-    monkeypatch.setattr(fb, "send_app_card", lambda c: cards.append(c))
+    monkeypatch.setattr(fb, "send_app_card", lambda c, **kw: cards.append(c))
     from app.config import settings
     monkeypatch.setattr(settings, "FEISHU_ACTION_TOKEN", "tok")
     pa._notify_advice(rec, {"action": "exit", "thesis_valid": False,
@@ -345,7 +345,7 @@ def test_notify_advice_reduce_no_button(db, monkeypatch):
     cards = []
     import app.services.feishu_bot as fb
     monkeypatch.setattr(fb, "configured", lambda: True)
-    monkeypatch.setattr(fb, "send_app_card", lambda c: cards.append(c))
+    monkeypatch.setattr(fb, "send_app_card", lambda c, **kw: cards.append(c))
     from app.config import settings
     monkeypatch.setattr(settings, "FEISHU_ACTION_TOKEN", "tok")
     pa._notify_advice(rec, {"action": "reduce", "thesis_valid": True,

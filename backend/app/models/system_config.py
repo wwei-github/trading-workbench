@@ -55,6 +55,14 @@ class SystemConfig(Base):
     # (ai_analysis_id, account_key, testnet) 复合唯一）
     trading_enabled_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
     trading_enabled_live: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # 测试网飞书通知开关（2026-10-15）：开=测试网合约单据相关卡片照常推送；
+    # 关=发送层（feishu_bot._post_message 调用点）拦截所有标注 testnet=True 的
+    # 卡片/文本，静默丢弃（不重试、不计失败）。仅覆盖「合约测试网单据」相关
+    # 推送（开仓卡/持仓预警/AI 持仓建议/止损收紧结果/滞留复诊/未上架文本）；
+    # 扫描命中卡、满仓跳过卡、结构监控告警、日报、现货三卡、按钮回执不拦。
+    # 缺行/读库异常按「开」兜底（不因配置读取失败丢通知）。
+    feishu_testnet_notify_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # 当前正式网主账号（docs/17 P0）：记选中的 live 账号 key（live-1/live-2…），
     # NULL=回落 live-1。2026-10-03 删环境切换后仅作前端展示/默认 scope 用，
     # 后端开单/扇出一律显式传账号 key 或走账号清单

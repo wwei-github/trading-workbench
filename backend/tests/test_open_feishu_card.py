@@ -114,7 +114,7 @@ def test_notify_sends_and_tolerates_missing(monkeypatch):
         monkeypatch.setattr(feishu_bot, "configured", lambda: True)
         cards = []
         monkeypatch.setattr(feishu_bot, "send_app_card",
-                            lambda c: cards.append(c) or True)
+                            lambda c, **kw: cards.append(c) or True)
         monkeypatch.setattr("app.database.SessionLocal",
                             sessionmaker(bind=engine))
 

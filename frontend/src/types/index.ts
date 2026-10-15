@@ -265,6 +265,9 @@ export interface SystemConfig {
   // 2026-10-03 总开关拆分为双网独立开关可同时开启；同日删环境切换）
   trading_enabled_testnet?: boolean; // 测试网自动交易（默认开）
   trading_enabled_live?: boolean; // 正式网自动交易（默认关，实盘安全基线）
+  // 测试网飞书通知开关（2026-10-15，默认开）：关=不推送合约测试网单据相关
+  // 卡片/文本（开仓卡/持仓预警/AI 持仓建议/止损收紧/滞留复诊/未上架文本）
+  feishu_testnet_notify_enabled?: boolean;
   // 多账号（docs/17 P0/P1）：.env 注册表只读展示 + 主账号 + 启用自动交易的 live 账号集合
   current_account_key?: string | null;
   live_trading_keys?: string[]; // P1 扇出：正式网自动交易开关开启时扇出的账号（空=回落 live-1）

@@ -437,6 +437,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         risk_fixed_amount=float(cfg.risk_fixed_amount if cfg.risk_fixed_amount is not None else 3.0),
         trading_enabled_testnet=cfg.trading_enabled_testnet,
         trading_enabled_live=cfg.trading_enabled_live,
+        feishu_testnet_notify_enabled=bool(cfg.feishu_testnet_notify_enabled),
         current_account_key=cfg.current_account_key,
         live_trading_keys=parse_live_keys(cfg.live_trading_keys),
         accounts=[AccountBrief(key=a.key, name=a.name, testnet=a.testnet) for a in registry()],
@@ -703,6 +704,9 @@ def update_system_config(
         cfg.trading_enabled_testnet = body.trading_enabled_testnet
     if body.trading_enabled_live is not None:
         cfg.trading_enabled_live = body.trading_enabled_live
+    # 测试网飞书通知开关（2026-10-15）：关=发送层拦截标注 testnet 的合约单据推送
+    if body.feishu_testnet_notify_enabled is not None:
+        cfg.feishu_testnet_notify_enabled = body.feishu_testnet_notify_enabled
     # 规则补丁参数（docs/12 §10）：显式传 null = 恢复默认（用 model_fields_set 区分未传）
     if "max_stop_pct" in body.model_fields_set:
         v = body.max_stop_pct

@@ -233,6 +233,10 @@ class SystemConfigOut(BaseModel):
     # 拆分为双网独立开关可同时开启——同一 AI 分析双网各开一单；同日删环境切换）
     trading_enabled_testnet: bool = True   # 测试网自动交易（默认开）
     trading_enabled_live: bool = False     # 正式网自动交易（默认关，实盘安全基线）
+    # 测试网飞书通知开关（2026-10-15，默认开）：关=不推送「合约测试网单据」相关
+    # 卡片/文本（开仓卡/持仓预警/AI 持仓建议/止损收紧/滞留复诊/未上架文本）；
+    # 扫描命中卡、满仓跳过卡、结构监控、日报、现货三卡、按钮回执不受控
+    feishu_testnet_notify_enabled: bool = True
     # 多账号（docs/17 P0/P1）：.env 注册表只读展示 + 主账号 + 启用自动交易的 live 账号集合
     current_account_key: Optional[str] = None
     live_trading_keys: list[str] = []   # P1 扇出：正式网自动交易开关开启时扇出的账号（空=回落 live-1）
@@ -337,6 +341,8 @@ class SystemConfigUpdate(BaseModel):
     # 自动交易开关（2026-10-03 拆分双网独立开关，语义见 SystemConfigOut）
     trading_enabled_testnet: Optional[bool] = None
     trading_enabled_live: Optional[bool] = None
+    # 测试网飞书通知开关（2026-10-15，语义见 SystemConfigOut）
+    feishu_testnet_notify_enabled: Optional[bool] = None
     # 当前正式网主账号（docs/17）：需为注册表内 live 账号（仅前端展示/默认 scope）
     current_account_key: Optional[str] = None
     # P1 扇出（docs/17 §3）：启用自动交易的正式网账号集合

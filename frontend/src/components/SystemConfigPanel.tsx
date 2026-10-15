@@ -22,6 +22,7 @@ export default function SystemConfigPanel() {
   const [liveKeys, setLiveKeys] = useState<string[]>([]) // 正式网启用自动交易的账号集合
   const [tnTrading, setTnTrading] = useState(true)      // 测试网自动交易（默认开）
   const [liveTrading, setLiveTrading] = useState(false) // 正式网自动交易（默认关）
+  const [tnNotify, setTnNotify] = useState(true)        // 测试网飞书通知（默认开）
   // 一键清空测试网数据（2026-10-04 自交易记录页迁入）：预检 → 二次确认 → 执行
   const [purgeInfo, setPurgeInfo] = useState<PurgeStats | null>(null)
   const [purging, setPurging] = useState(false)
@@ -43,6 +44,7 @@ export default function SystemConfigPanel() {
       setLiveKeys(keys)
       setTnTrading(aiConfig.trading_enabled_testnet ?? true)
       setLiveTrading(aiConfig.trading_enabled_live ?? false)
+      setTnNotify(aiConfig.feishu_testnet_notify_enabled ?? true)
     }
   }, [open, aiConfig])
 
@@ -84,6 +86,7 @@ export default function SystemConfigPanel() {
         trading_enabled_testnet: tnTrading,
         trading_enabled_live: liveTrading,
         live_trading_keys: liveKeys, // 后端保存时联动维护主账号 current_account_key
+        feishu_testnet_notify_enabled: tnNotify,
       } as Partial<SystemConfig>)
       message.success('配置已保存（任务级即时生效，无需重启）')
       setOpen(false)
@@ -231,6 +234,38 @@ export default function SystemConfigPanel() {
             style={{ marginBottom: 16 }}
             message="正式网多账号共用同一次 AI 分析结论，各账号独立按钱包计算仓位并下单（扇出跟单）；单账号失败不影响其他账号。"
           />
+          </ConfigSection>
+
+          <ConfigSection title="飞书通知" hint="测试网合约单据推送开关">
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '8px 12px',
+              border: '1px solid #f0f0f0',
+              borderRadius: 8,
+              background: '#fff',
+              marginBottom: 8,
+            }}
+          >
+            <Space size={8}>
+              <Tag color="orange" style={{ marginInlineEnd: 0 }}>测试网</Tag>
+              <span>飞书通知</span>
+            </Space>
+            <Switch
+              checked={tnNotify}
+              onChange={(v) => setTnNotify(v)}
+              checkedChildren="开"
+              unCheckedChildren="关"
+            />
+          </div>
+          <div style={{ color: '#999', fontSize: 12, lineHeight: 1.7, marginBottom: 16 }}>
+            关闭后不推送测试网合约单据相关卡片与文本：开仓成功卡、持仓时长预警卡、
+            AI 持仓建议卡、止损收紧结果卡、滞留复诊卡、开单受阻（未上架）提示。
+            扫描命中卡、满仓跳过卡、结构监控告警、每日日报、现货卡片与按钮回调回执
+            不受此开关影响，仍会照常发送。
+          </div>
           </ConfigSection>
 
           <ConfigSection title="凭据配置" hint="仅存服务器 .env，页面不提供编辑与回显">

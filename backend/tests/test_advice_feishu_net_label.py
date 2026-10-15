@@ -22,7 +22,7 @@ def cards(monkeypatch):
     import app.services.feishu_bot as fb
     out = []
     monkeypatch.setattr(fb, "configured", lambda: True)
-    monkeypatch.setattr(fb, "send_app_card", lambda card: out.append(card))
+    monkeypatch.setattr(fb, "send_app_card", lambda card, **kw: out.append(card))
     return out
 
 

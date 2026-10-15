@@ -2219,7 +2219,7 @@ def notify_open_cards(trade_ids: list[str]) -> int:
                 rec = db.get(TradeRecord, UUID(str(tid)))
                 if rec is None:
                     continue
-                if send_app_card(_open_feishu_card(rec)):
+                if send_app_card(_open_feishu_card(rec), testnet=bool(rec.testnet)):
                     sent += 1
             except Exception as e:
                 logger.warning("开仓卡片发送失败 %s: %s", tid, e)
@@ -2440,9 +2440,11 @@ def _hold_warn_card(rec, hours: float, level: int) -> dict:
             "template": "red" if red else "yellow",
         },
         "elements": body,
-        # 内部字段：发送侧日志用，发送前无需剔除（飞书忽略未知键）
+        # 内部字段：发送侧日志与测试网通知过滤用（飞书忽略未知键，
+        # 调用方发送前 pop 掉再入卡；见 trade_tasks.run_auto_trade_task）
         "_symbol": rec.symbol,
         "_hours": hours,
+        "_testnet": bool(rec.testnet),
     }
 
 
