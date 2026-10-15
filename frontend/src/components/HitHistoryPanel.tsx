@@ -242,15 +242,17 @@ export default function HitHistoryPanel() {
         onCancel={() => setDetail(null)}
       >
         {detail && (
-          <div style={{ height: 640 }}>
-            <KlineChart
-              symbol={detail.symbol}
-              limit={limit}
-              hitTime={detail.created_at}
-              touchTime={detail.stage1_candle_open}
-              hitDirection={detail.direction}
-              tradeOverlay={detail.trade}
-            />
+          <>
+            <div style={{ height: 640 }}>
+              <KlineChart
+                symbol={detail.symbol}
+                limit={limit}
+                hitTime={detail.created_at}
+                touchTime={detail.stage1_candle_open}
+                hitDirection={detail.direction}
+                tradeOverlay={detail.trade}
+              />
+            </div>
             <Space size="small" style={{ marginTop: 8, fontSize: 12, color: '#8b93a7' }}>
               <span>
                 <Tag color="#1677ff">命中</Tag>
@@ -263,7 +265,7 @@ export default function HitHistoryPanel() {
                 </span>
               )}
             </Space>
-          </div>
+          </>
         )}
       </Modal>
     </div>

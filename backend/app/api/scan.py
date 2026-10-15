@@ -1632,7 +1632,8 @@ def skill_detail(name: str):
 @router.get("/klines/{symbol}")
 def get_klines(
     symbol: str,
-    limit: int = Query(100, ge=1, le=500),
+    # 上限 1500（Binance 合约 K 线上限）：命中历史回看久远命中时按需放大根数
+    limit: int = Query(100, ge=1, le=1500),
     interval: str = Query(
         None, pattern="^(1h|4h|1d)$",
         description="K线周期（1h 默认 / 4h / 1d 日K）；缺省用系统配置周期",

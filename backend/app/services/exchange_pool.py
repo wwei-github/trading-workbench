@@ -165,7 +165,8 @@ def _fetch_bitget(symbol: str, interval: str, limit: int, end_time: Optional[int
         "symbol": symbol,
         "productType": "USDT-FUTURES",
         "granularity": granularity,
-        "limit": limit,
+        # Bitget v2 合约 K 线上限 1000；命中历史需回看久远（最多请求 1500）时收敛，避免直接报错
+        "limit": min(limit, 1000),
     }
     if end_time is not None:
         params["endTime"] = int(end_time)
