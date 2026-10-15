@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
+from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.binance_trader import BinanceTrader
 from app.services.strategy.candlestick import PATTERN_LABEL_MAP
@@ -331,6 +333,22 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
                 push(dim, key, buckets.pop(key))
         for key, bucket in sorted(buckets.items()):  # 防御：未登记桶名兜底
             push(dim, key, bucket)
+
+    # RR 擦边分组（2026-10-15）：ai_rr_tol 容差带三处共用后，计划 RR 低于铁律
+    # 下限、仅靠容差放进的边际单（擦边过闸）与达标单分组对比胜率/EV——容差带
+    # 是否漏损，数据说话。下限取 system_config.ai_rr_min（页面覆盖）回落 env
+    # 默认；旧行/手动单无快照 RR 归「未知」。桶名固定不随配置漂移（保纵向可比）
+    cfg = db.get(SystemConfig, 1)
+    rr_min = float(cfg.ai_rr_min) if cfg and cfg.ai_rr_min is not None \
+        else float(settings.AI_RR_MIN)
+    rr_buckets: dict[str, list] = {}
+    for t in trades:
+        rr = (t.ai_snapshot or {}).get("risk_reward_ratio")
+        band = "未知" if rr is None else ("RR达标" if float(rr) >= rr_min else "擦边过闸")
+        rr_buckets.setdefault(band, []).append(t)
+    for key in ("RR达标", "擦边过闸", "未知"):
+        if key in rr_buckets:
+            push("RR擦边", key, rr_buckets[key])
 
     # 金K形态维度（2026-10-01-3 用户拍板）：完整 12 金K全量列出（0 笔也占行，
     # 12 维度齐全便于横向对比各形态样本）；突破类无金K形态、旧行 pattern 为

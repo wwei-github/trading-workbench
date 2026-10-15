@@ -424,7 +424,7 @@ AI 持仓诊断：浮亏在跑单 → `advice_due` 触发 AI 建议（hold/tight
 
 #### [ai_attribution.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_attribution.py)
 
-亏损单 AI 错误归因：打标签（追高追空/止损过宽过窄/逆指标多数…）、生成教训。
+亏损单 AI 错误归因：打标签（追高追空/止损过宽过窄/浮盈回撤/近锚被扫…）、生成教训。
 
 #### [patch_service.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/patch_service.py)
 
@@ -834,7 +834,7 @@ sequenceDiagram
 
     Note over Beat,AA: 每小时 :14 · 亏损单归因
     Beat->>RT: run_ai_attribution_task
-    RT->>AA: 已平仓亏损单打标签（追高追空 / 止损过宽过窄 / 逆多数决）
+    RT->>AA: 已平仓亏损单打标签（追高追空 / 止损过宽过窄 / 浮盈回撤 / 近锚被扫）
     AA->>LLM: 归因与教训生成
     LLM-->>AA: 标签 + 教训
     AA->>DB: 写入归因结果

@@ -17,14 +17,18 @@ from app.services.patch_service import RULE_TAGS
 
 def test_tag_vocabulary_revision():
     assert "浮盈回撤" in ERROR_TAGS
+    assert "近锚被扫" in ERROR_TAGS
     assert "逆指标多数" not in ERROR_TAGS
     assert "逆4h背景" not in ERROR_TAGS
     # 执行偏差定义收窄：显式排除出场时机导致的浮盈缩水（归「浮盈回撤」）
     assert "浮盈回撤" in ERROR_TAGS["执行偏差"]
+    # 止损过窄定义收窄：近锚单贴极值被扫切出到「近锚被扫」独立统计
+    assert "近锚被扫" in ERROR_TAGS["止损过窄"]
 
 
 def test_rule_tags_follow_vocabulary():
     assert "浮盈回撤" in RULE_TAGS
+    assert "近锚被扫" in RULE_TAGS
     assert "逆指标多数" not in RULE_TAGS
     assert "逆4h背景" not in RULE_TAGS
     for t in ("行情异常", "无明显错误"):  # 非规则性标签恒不参与补丁触发
