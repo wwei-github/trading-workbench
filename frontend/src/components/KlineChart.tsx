@@ -30,9 +30,9 @@ const utcMs = (v: string) => dayjs.utc(v).valueOf()
 // 命中历史 marker 配色（2026-10-15）：命中=蓝、触碰=紫（两者区分）
 const HIT_MARK_COLOR = '#1677ff'
 const TOUCH_MARK_COLOR = '#722ed1'
-// 标注区背景色：同色系低透明度填充（把命中/触碰K线的区域衬出来）
-const HIT_MARK_FILL = 'rgba(22, 119, 255, 0.14)'
-const TOUCH_MARK_FILL = 'rgba(114, 46, 209, 0.14)'
+// 标注区背景色：同色系高透明度填充（把命中/触碰K线的区域醒目衬出来）
+const HIT_MARK_FILL = 'rgba(22, 119, 255, 0.35)'
+const TOUCH_MARK_FILL = 'rgba(114, 46, 209, 0.35)'
 
 // ── 复盘模式部件（仅 tradeId 模式使用）────────────────────────────────
 
