@@ -1,8 +1,36 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, InputNumber, message, Button, Spin, Radio, Select, Divider, Switch, Row, Col } from 'antd'
+import type { ReactNode } from 'react'
+import { Modal, Form, InputNumber, message, Button, Spin, Radio, Select, Switch, Row, Col } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
+
+/** 分区卡片（2026-10-15 整理美化）：浅底描边容器 + 主色竖条标题 + 灰色说明文字 */
+function Section({ title, hint, first, children }: {
+  title: string
+  hint?: string
+  first?: boolean
+  children: ReactNode
+}) {
+  return (
+    <div
+      style={{
+        border: '1px solid #f0f0f0',
+        borderRadius: 8,
+        background: '#fafafa',
+        padding: '12px 16px 0',
+        marginTop: first ? 0 : 16,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <span style={{ width: 3, height: 13, borderRadius: 2, background: '#1677ff', flexShrink: 0 }} />
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{title}</span>
+        {hint && <span style={{ fontSize: 12, color: '#999' }}>{hint}</span>}
+      </div>
+      {children}
+    </div>
+  )
+}
 
 /** 交易配置弹窗（2026-09-20 拆分自 ScanConfigPanel）：自动交易参数 + 开仓闸门补丁参数 */
 export default function TradingConfigPanel() {
@@ -134,7 +162,9 @@ export default function TradingConfigPanel() {
         width={1200}
       >
         <Spin spinning={loading}>
-        <Form form={form} layout="vertical">
+        <div style={{ maxHeight: '64vh', overflowY: 'auto', paddingInlineEnd: 4 }}>
+        <Form form={form} layout="vertical" className="config-modal-form">
+          <Section title="开仓与仓位" hint="在跑单数上限与开仓所需最低可用余额" first>
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
@@ -158,6 +188,11 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0} max={100} step={1} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
+          </Row>
+          </Section>
+
+          <Section title="止损与闸门" hint="止损宽度/强平缓冲硬闸门与单笔止损金额口径">
+          <Row gutter={16}>
             <Col span={6}>
               <Form.Item
                 label="止损宽度上限（%，留空=不限制）"
@@ -210,7 +245,9 @@ export default function TradingConfigPanel() {
               ) : null
             }
           </Form.Item>
+          </Section>
 
+          <Section title="杠杆与滑点" hint="动态杠杆下限、入场偏离容差与开仓滑点闸门">
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
@@ -240,11 +277,9 @@ export default function TradingConfigPanel() {
               </Form.Item>
             </Col>
           </Row>
+          </Section>
 
-          <Divider plain style={{ fontSize: 12, color: '#999' }}>
-            风控参数（留空 = 恢复默认，保存即生效）
-          </Divider>
-
+          <Section title="风控参数" hint="留空 = 恢复默认，保存即生效">
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
@@ -392,6 +427,11 @@ export default function TradingConfigPanel() {
                 <InputNumber min={0} max={20} step={0.5} style={{ width: '100%' }} placeholder="3" />
               </Form.Item>
             </Col>
+          </Row>
+          </Section>
+
+          <Section title="止盈与分批" hint="TP2 分批开关与两档止盈数量比例（留空 = 恢复默认）">
+          <Row gutter={16}>
             <Col span={6}>
               <Form.Item
                 label="TP2 分批止盈"
@@ -433,7 +473,9 @@ export default function TradingConfigPanel() {
               </Form.Item>
             </Col>
           </Row>
+          </Section>
         </Form>
+        </div>
         </Spin>
       </Modal>
     </>

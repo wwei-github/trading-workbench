@@ -217,7 +217,17 @@ html, body, #root {
   display: inline-flex;
 }
 
-/* ── 图表全屏缩放查看（模态内）──────────────────────────────
+/* ── 配置弹窗表单（策略配置/交易配置，2026-10-15 整理美化）──────
+   分区卡片内表单项压缩默认垂直间距（24→16），四列长表单更紧凑；
+   校验错误文案缩小一档，避免撑高行高 */
+.config-modal-form .ant-form-item {
+  margin-bottom: 16px;
+}
+.config-modal-form .ant-form-item-explain-error {
+  font-size: 12px;
+}
+
+/* 图表全屏缩放查看（模态内）──────────────────────────────
    滚轮/按钮缩放（以光标或视口中心为锚点）、拖拽平移、适应屏幕 / 1:1 */
 .wiki-zoom-viewport {
   position: relative;

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, Input, InputNumber, Select, Switch, Checkbox, message, Button, Spin, Divider, Tooltip, Row, Col } from 'antd'
+import type { ReactNode } from 'react'
+import { Modal, Form, Input, InputNumber, Select, Switch, Checkbox, message, Button, Spin, Tooltip, Row, Col } from 'antd'
 import { SettingOutlined, RobotOutlined, FileTextOutlined, ApiOutlined, UndoOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import type { SystemConfig } from '../types'
@@ -49,6 +50,33 @@ const FILTER_FIELDS: { name: string; label: string; min: number; max: number; st
   { name: 'ai_max_per_scan', label: 'AI单轮分析上限（个）', min: 1, max: 50,
     tooltip: '单次扫描批量 AI 分析的币种上限，按质量分/24h成交额取前N（控制 LLM 成本）' },
 ]
+
+/** 分区卡片（2026-10-15 整理美化）：浅底描边容器 + 主色竖条标题 + 灰色说明文字 */
+function Section({ title, hint, first, children }: {
+  title: string
+  hint?: string
+  first?: boolean
+  children: ReactNode
+}) {
+  return (
+    <div
+      style={{
+        border: '1px solid #f0f0f0',
+        borderRadius: 8,
+        background: '#fafafa',
+        padding: '12px 16px 0',
+        marginTop: first ? 0 : 16,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <span style={{ width: 3, height: 13, borderRadius: 2, background: '#1677ff', flexShrink: 0 }} />
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{title}</span>
+        {hint && <span style={{ fontSize: 12, color: '#999' }}>{hint}</span>}
+      </div>
+      {children}
+    </div>
+  )
+}
 
 /** 策略配置弹窗：扫描策略 + AI 分析/策略/Agent 开关 + AI 实验功能。
  *  （2026-09-20 工具栏的 AI/策略/Agent 三个快捷开关收敛至此；交易参数见
@@ -205,7 +233,9 @@ export default function ScanConfigPanel() {
         width={1200}
       >
         <Spin spinning={loading}>
-        <Form form={form} layout="vertical">
+        <div style={{ maxHeight: '64vh', overflowY: 'auto', paddingInlineEnd: 4 }}>
+        <Form form={form} layout="vertical" className="config-modal-form">
+          <Section title="扫描基础" hint="K线周期/根数、重复命中窗口与摆动点阶数" first>
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
@@ -259,11 +289,10 @@ export default function ScanConfigPanel() {
               </Form.Item>
             </Col>
           </Row>
+          </Section>
 
           {/* 筛选参数组（2026-09-28 筛选配置上页面）：DB > env > 代码默认；四列排布 */}
-          <Divider style={{ margin: '8px 0 16px' }}>
-            <span style={{ fontSize: 13, color: '#999' }}>筛选参数</span>
-          </Divider>
+          <Section title="筛选参数" hint="DB > env > 代码默认；每项含义见字段悬停提示">
           {FILTER_FIELDS.reduce<typeof FILTER_FIELDS[]>((rows, f, i) => {
             if (i % 4 === 0) rows.push([f])
             else rows[rows.length - 1].push(f)
@@ -284,6 +313,9 @@ export default function ScanConfigPanel() {
               ))}
             </Row>
           ))}
+          </Section>
+
+          <Section title="触发与触点" hint="决定哪些信号进入候选与 AI 分析；「恢复默认」清空全部筛选定制">
           <Form.Item
             label="触发类型白名单"
             name="allowed_triggers"
@@ -307,14 +339,13 @@ export default function ScanConfigPanel() {
           >
             <Checkbox.Group options={TOUCH_REF_OPTIONS} disabled={!pullbackEnabled} />
           </Form.Item>
-          <Button size="small" icon={<UndoOutlined />} onClick={handleResetFilters} loading={saving}>
+          <Button size="small" icon={<UndoOutlined />} onClick={handleResetFilters} loading={saving} style={{ marginBottom: 16 }}>
             恢复默认
           </Button>
+          </Section>
 
           {/* AI 分析开关区（原工具栏快捷开关，2026-09-20 收敛至此）；四列排布 */}
-          <Divider style={{ margin: '8px 0 16px' }}>
-            <span style={{ fontSize: 13, color: '#999' }}>AI 分析</span>
-          </Divider>
+          <Section title="AI 分析" hint="开关保存后即时生效">
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
@@ -376,8 +407,11 @@ export default function ScanConfigPanel() {
               </Form.Item>
             </Col>
           </Row>
+          </Section>
+
           {/* AI 运行时参数（2026-10-14）：模型名/端点/并发/超时取自 .env，可在此覆盖；
               留空=回落 .env 默认（占位显示当前生效值）。密钥仍在后端 .env，不上页面 */}
+          <Section title="AI 运行时参数" hint="留空 = 用后端 .env 默认（占位显示当前生效值）；密钥仅存服务器 .env">
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
@@ -422,7 +456,9 @@ export default function ScanConfigPanel() {
               </Form.Item>
             </Col>
           </Row>
+          </Section>
         </Form>
+        </div>
         </Spin>
       </Modal>
     </>
