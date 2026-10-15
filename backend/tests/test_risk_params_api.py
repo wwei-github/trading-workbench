@@ -102,6 +102,25 @@ def test_explicit_null_restores_env(client):
     assert r.json()["risk_pct"] is None
 
 
+def test_feishu_testnet_notify_switch_roundtrip(client):
+    """测试网飞书通知开关（2026-10-15）：默认开，PUT 关闭 → GET 回读关闭（完整布尔列，
+    非 nullable 回落式）；未传该键的 PUT 不改动它"""
+    http, _db = client
+    assert http.get("/api/scans/config").json()["feishu_testnet_notify_enabled"] is True
+
+    r = http.put("/api/scans/config", json={"feishu_testnet_notify_enabled": False})
+    assert r.status_code == 200
+    assert r.json()["feishu_testnet_notify_enabled"] is False
+    assert http.get("/api/scans/config").json()["feishu_testnet_notify_enabled"] is False
+
+    # 未传该键（如仅调风控参数）不重置开关
+    assert http.put("/api/scans/config", json={"risk_pct": 4}).status_code == 200
+    assert http.get("/api/scans/config").json()["feishu_testnet_notify_enabled"] is False
+
+    r = http.put("/api/scans/config", json={"feishu_testnet_notify_enabled": True})
+    assert r.json()["feishu_testnet_notify_enabled"] is True
+
+
 def test_missing_fields_untouched(client):
     """未传字段不改动（model_fields_set 语义：未传 ≠ 显式 null）"""
     http, _db = client
