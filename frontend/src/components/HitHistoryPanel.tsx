@@ -1,7 +1,8 @@
 /**
  * 命中历史（2026-10-15，docs/22）
  * - 待确认池第 3 段：跨轮次全量查询扫描命中（ScanResult 全量，不限回踩路径）
- * - 默认最近 7 天，可改时间范围往前查全量；币种精确搜索；「仅看首次命中」开关
+ * - 默认最近 7 天，可改时间范围往前查全量（时间粒度=整点，不提供分钟选择）；
+ *   币种精确搜索；「仅看首次命中」开关
  * - 点击币种名打开 K 线弹窗：最新K线 + 命中/触碰K线标签 + 时间裁剪的开单区间
  * - 数据源：GET /api/scans/hit-history（服务端分页）
  */
@@ -32,6 +33,9 @@ const TRADE_STATUS_LABEL: Record<string, string> = {
   FAILED: '开单失败',
 }
 
+// 命中历史时间筛选：仅整点（1–59 分全部禁用，只可选 00）
+const DISABLED_MINUTES = Array.from({ length: 59 }, (_, i) => i + 1)
+
 // 回踩触点方向化文案（与 ResultTable.touchLabel 同口径；仅 position_ref 缺失时兜底）
 function touchLabel(ref: string, dir: number): string {
   if (ref === 'ema21') return 'EMA21'
@@ -61,8 +65,11 @@ export default function HitHistoryPanel() {
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(20)
-  // 查询条件：默认最近 7 天
-  const [range, setRange] = useState<[Dayjs, Dayjs]>([bj().subtract(7, 'day'), bj()])
+  // 查询条件：默认最近 7 天，时间粒度=整点（分钟固定 00，不提供分钟选择）
+  const [range, setRange] = useState<[Dayjs, Dayjs]>([
+    bj().subtract(7, 'day').startOf('hour'),
+    bj().startOf('hour').add(1, 'hour'), // 右端取下一整点，保证覆盖"到现在"（不丢当前小时）
+  ])
   const [symbol, setSymbol] = useState('')
   const [firstOnly, setFirstOnly] = useState(false)
   // 弹窗展示的命中行（null=关闭）
@@ -187,12 +194,14 @@ export default function HitHistoryPanel() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ flexShrink: 0, marginBottom: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <RangePicker
-          showTime={{ format: 'MM-DD HH:mm' }}
-          format="MM-DD HH:mm"
+          showTime={{ format: 'HH:00' }}
+          format="MM-DD HH:00"
+          disabledTime={() => ({ disabledMinutes: () => DISABLED_MINUTES })}
           value={range}
           allowClear={false}
           onChange={(v) => {
-            if (v && v[0] && v[1]) setRange([v[0], v[1]])
+            // 仅整点：分钟列被禁用（只可选 00），此处再归一兜底
+            if (v && v[0] && v[1]) setRange([v[0].startOf('hour'), v[1].startOf('hour')])
           }}
         />
         <Input.Search
