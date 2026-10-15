@@ -30,6 +30,9 @@ const utcMs = (v: string) => dayjs.utc(v).valueOf()
 // 命中历史 marker 配色（2026-10-15）：命中=蓝、触碰=紫（两者区分）
 const HIT_MARK_COLOR = '#1677ff'
 const TOUCH_MARK_COLOR = '#722ed1'
+// 标注区背景色：同色系低透明度填充（把命中/触碰K线的区域衬出来）
+const HIT_MARK_FILL = 'rgba(22, 119, 255, 0.14)'
+const TOUCH_MARK_FILL = 'rgba(114, 46, 209, 0.14)'
 
 // ── 复盘模式部件（仅 tradeId 模式使用）────────────────────────────────
 
@@ -384,7 +387,7 @@ const MARK_GAP = 7 // 徽标与标注框的间距（px）
 
 function drawHitMarks(
   klines: Kline[],
-  marks: Array<{ ms: number; color: string; kind: 'hit' | 'touch'; preferBelow: boolean }>,
+  marks: Array<{ ms: number; color: string; fill: string; kind: 'hit' | 'touch'; preferBelow: boolean }>,
   ctx: OverlayCtx,
 ) {
   const { chart, series, svg, container } = ctx
@@ -421,6 +424,16 @@ function drawHitMarks(
     }
     const x0 = cx - half
     const x1 = cx + half
+
+    // 背景色块：同色系低透明度衬底（先画，位于描边框之下）
+    const fillRect = el('rect')
+    fillRect.setAttribute('x', String(x0))
+    fillRect.setAttribute('y', String(yTop))
+    fillRect.setAttribute('width', String(x1 - x0))
+    fillRect.setAttribute('height', String(yBot - yTop))
+    fillRect.setAttribute('rx', '2')
+    fillRect.setAttribute('fill', m.fill)
+    svg.appendChild(fillRect)
 
     if (m.kind === 'touch') {
       // 感应框：虚线圆角框（圈住触碰K线）
@@ -671,10 +684,10 @@ export default function KlineChart({
       }
       if (!klines.length) return
       if (tradeOverlay) drawHitOverlay(klines, tradeOverlay, colorScheme, ctx)
-      const marks: Array<{ ms: number; color: string; kind: 'hit' | 'touch'; preferBelow: boolean }> = []
+      const marks: Array<{ ms: number; color: string; fill: string; kind: 'hit' | 'touch'; preferBelow: boolean }> = []
       const preferBelow = hitDirection >= 0
-      if (hitTime) marks.push({ ms: utcMs(hitTime), color: HIT_MARK_COLOR, kind: 'hit', preferBelow })
-      if (touchTime) marks.push({ ms: utcMs(touchTime), color: TOUCH_MARK_COLOR, kind: 'touch', preferBelow })
+      if (hitTime) marks.push({ ms: utcMs(hitTime), color: HIT_MARK_COLOR, fill: HIT_MARK_FILL, kind: 'hit', preferBelow })
+      if (touchTime) marks.push({ ms: utcMs(touchTime), color: TOUCH_MARK_COLOR, fill: TOUCH_MARK_FILL, kind: 'touch', preferBelow })
       if (marks.length) drawHitMarks(klines, marks, ctx)
     },
     [replayData, colorScheme, tradeOverlay, klines, hitTime, touchTime, hitDirection],
