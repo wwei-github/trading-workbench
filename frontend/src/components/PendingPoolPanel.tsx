@@ -43,7 +43,7 @@ const STATUS_META: Record<string, { color: string; label: string; hint: string }
   },
   expired: {
     color: 'default', label: '已卡掉',
-    hint: '被判定链某环节卡掉：ranging=4h 无明确趋势；structure_1h=1H 结构不符；range_score=震荡评分≥3；window_expired=确认窗口内无金K确认失效；direction_flip=指标方向失守作废；htf_state_lock=4h状态机双向禁开（缠绕/拐头），候选一票否决、待确认同轮失效',
+    hint: '被判定链某环节卡掉：ranging=4h 无明确趋势；range_score=震荡评分≥3；window_expired=确认窗口内无金K确认失效；direction_flip=指标方向失守作废；htf_state_lock=4h状态机双向禁开（缠绕/拐头），候选一票否决、待确认同轮失效',
   },
   superseded: {
     color: 'default', label: '已卡掉',
@@ -53,7 +53,7 @@ const STATUS_META: Record<string, { color: string; label: string; hint: string }
 
 const REASON_LABEL: Record<string, string> = {
   ranging: '4h无明确趋势',
-  structure_1h: '1H结构不符',
+  structure_1h: '1H结构不符（旧轮次）',
   range_score: '震荡评分≥3',
   window_expired: '窗口内无金K',
   direction_flip: '方向失守',
