@@ -376,18 +376,18 @@ function drawHitOverlay(
   }
 }
 
-// ── 命中历史图形化标注（2026-10-15，docs/22）：取代纯文字 tag ─────────────
-// 命中K线 = 蓝色「瞄准框」（四角括号）+ 准星徽标（靶心 + 十字刻度）
-// 触碰K线 = 紫色「感应框」（虚线圆角框）+ 脉冲徽标（同心圆环）
+// ── 命中历史图形化标注（2026-10-15，docs/22）：图形 + 文字组合（非纯文字）──
+// 命中K线 = 蓝色「瞄准框」（四角括号）+ 准星图标胶囊（靶心脉标 + 「命中」）
+// 触碰K线 = 紫色「感应框」（虚线圆角框）+ 脉冲图标胶囊（同心圆环 + 「触碰」）
 // 徽标位置跟随命中方向（多→K线下方 / 空→K线上方），越界自动翻面；
-// 全部为图形（颜色 + 形状双重区分），不依赖文字
+// 颜色 + 形状 + 文字三重区分
 const MARK_PAD = 3 // 标注框相对K线高/低点的外扩（px）
-const MARK_BADGE = 18 // 徽标边长（px）
+const MARK_BADGE = 18 // 徽标（图标区）边长（px）
 const MARK_GAP = 7 // 徽标与标注框的间距（px）
 
 function drawHitMarks(
   klines: Kline[],
-  marks: Array<{ ms: number; color: string; fill: string; kind: 'hit' | 'touch'; preferBelow: boolean }>,
+  marks: Array<{ ms: number; color: string; fill: string; label: string; kind: 'hit' | 'touch'; preferBelow: boolean }>,
   ctx: OverlayCtx,
 ) {
   const { chart, series, svg, container } = ctx
@@ -466,16 +466,21 @@ function drawHitMarks(
       svg.appendChild(p)
     }
 
-    // 徽标位置：默认跟随方向（多→下方 / 空→上方），越界翻面
+    // 徽标（图标 + 文字胶囊）：跟随方向（多→下方 / 空→上方），越界翻面
     const b = MARK_BADGE
     let sideBelow = m.preferBelow
     if (sideBelow && yBot + MARK_GAP + b > height - 2) sideBelow = false
     if (!sideBelow && yTop - MARK_GAP - b < 2) sideBelow = true
     const badgeCy = sideBelow ? yBot + MARK_GAP + b / 2 : yTop - MARK_GAP - b / 2
-    const badgeX = Math.max(2, Math.min(cx - b / 2, fullWidth - b - 2))
-    const bcx = badgeX + b / 2
 
-    // 徽标 → 标准框 的导引短线
+    // 胶囊宽度 = 图标区 + 间距 + 文字宽 + 内边距
+    const c2d = document.createElement('canvas').getContext('2d')!
+    c2d.font = 'bold 11px monospace'
+    const pillW = Math.round(b + 3 + c2d.measureText(m.label).width + 6)
+    const badgeX = Math.max(2, Math.min(cx - pillW / 2, fullWidth - pillW - 2))
+    const bcx = badgeX + b / 2 // 图标中心
+
+    // 徽标 → 标注框 的导引短线
     const g = el('line')
     g.setAttribute('x1', String(cx))
     g.setAttribute('y1', String(sideBelow ? badgeCy - b / 2 : badgeCy + b / 2))
@@ -485,17 +490,28 @@ function drawHitMarks(
     g.setAttribute('stroke-width', '1.5')
     svg.appendChild(g)
 
-    // 徽标底：圆角方块（实心主题色）
+    // 胶囊底（实心主题色，圆角=半高）
     const bg = el('rect')
     bg.setAttribute('x', String(badgeX))
     bg.setAttribute('y', String(badgeCy - b / 2))
-    bg.setAttribute('width', String(b))
+    bg.setAttribute('width', String(pillW))
     bg.setAttribute('height', String(b))
-    bg.setAttribute('rx', '4')
+    bg.setAttribute('rx', String(b / 2))
     bg.setAttribute('fill', m.color)
     svg.appendChild(bg)
 
-    // 徽标内白色图标（图形化，无文字）
+    // 胶囊内白色文字（命中 / 触碰）
+    const txt = el('text')
+    txt.setAttribute('x', String(badgeX + b + 3))
+    txt.setAttribute('y', String(badgeCy + 4))
+    txt.setAttribute('fill', '#fff')
+    txt.setAttribute('font-size', '11')
+    txt.setAttribute('font-family', 'monospace')
+    txt.setAttribute('font-weight', 'bold')
+    txt.textContent = m.label
+    svg.appendChild(txt)
+
+    // 胶囊内白色图标（图形化，与文字并存）
     const icon = (tag: 'circle' | 'line') => {
       const e = el(tag)
       e.setAttribute('stroke', '#fff')
@@ -684,10 +700,10 @@ export default function KlineChart({
       }
       if (!klines.length) return
       if (tradeOverlay) drawHitOverlay(klines, tradeOverlay, colorScheme, ctx)
-      const marks: Array<{ ms: number; color: string; fill: string; kind: 'hit' | 'touch'; preferBelow: boolean }> = []
+      const marks: Array<{ ms: number; color: string; fill: string; label: string; kind: 'hit' | 'touch'; preferBelow: boolean }> = []
       const preferBelow = hitDirection >= 0
-      if (hitTime) marks.push({ ms: utcMs(hitTime), color: HIT_MARK_COLOR, fill: HIT_MARK_FILL, kind: 'hit', preferBelow })
-      if (touchTime) marks.push({ ms: utcMs(touchTime), color: TOUCH_MARK_COLOR, fill: TOUCH_MARK_FILL, kind: 'touch', preferBelow })
+      if (hitTime) marks.push({ ms: utcMs(hitTime), color: HIT_MARK_COLOR, fill: HIT_MARK_FILL, label: '命中', kind: 'hit', preferBelow })
+      if (touchTime) marks.push({ ms: utcMs(touchTime), color: TOUCH_MARK_COLOR, fill: TOUCH_MARK_FILL, label: '触碰', kind: 'touch', preferBelow })
       if (marks.length) drawHitMarks(klines, marks, ctx)
     },
     [replayData, colorScheme, tradeOverlay, klines, hitTime, touchTime, hitDirection],
