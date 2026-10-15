@@ -373,6 +373,152 @@ function drawHitOverlay(
   }
 }
 
+// ── 命中历史图形化标注（2026-10-15，docs/22）：取代纯文字 tag ─────────────
+// 命中K线 = 蓝色「瞄准框」（四角括号）+ 准星徽标（靶心 + 十字刻度）
+// 触碰K线 = 紫色「感应框」（虚线圆角框）+ 脉冲徽标（同心圆环）
+// 徽标位置跟随命中方向（多→K线下方 / 空→K线上方），越界自动翻面；
+// 全部为图形（颜色 + 形状双重区分），不依赖文字
+const MARK_PAD = 3 // 标注框相对K线高/低点的外扩（px）
+const MARK_BADGE = 18 // 徽标边长（px）
+const MARK_GAP = 7 // 徽标与标注框的间距（px）
+
+function drawHitMarks(
+  klines: Kline[],
+  marks: Array<{ ms: number; color: string; kind: 'hit' | 'touch'; preferBelow: boolean }>,
+  ctx: OverlayCtx,
+) {
+  const { chart, series, svg, container } = ctx
+  const NS = 'http://www.w3.org/2000/svg'
+  const el = (tag: string) => document.createElementNS(NS, tag)
+
+  const fullWidth = container.clientWidth || 520
+  const height = container.clientHeight || CHART_HEIGHT
+  svg.setAttribute('width', String(fullWidth))
+  svg.setAttribute('height', String(height))
+  svg.setAttribute('viewBox', `0 0 ${fullWidth} ${height}`)
+
+  for (const m of marks) {
+    // 时刻所在K线（time <= ms 的最后一根；早于首根则无标注）
+    let idx = -1
+    for (let i = 0; i < klines.length; i++) {
+      if (klines[i].time <= m.ms) idx = i
+      else break
+    }
+    if (idx < 0) continue
+    const k = klines[idx]
+    const cx = chart.timeScale().timeToCoordinate(Math.floor(k.time / 1000) as UTCTimestamp)
+    const yH = series.priceToCoordinate(k.high)
+    const yL = series.priceToCoordinate(k.low)
+    if (cx == null || yH == null || yL == null) continue
+
+    // 标注框：覆盖该根K线并外扩；半宽取相邻K线间距的一半（回退 6px）
+    const yTop = Math.min(yH, yL) - MARK_PAD
+    const yBot = Math.max(yH, yL) + MARK_PAD
+    let half = 6
+    if (idx + 1 < klines.length) {
+      const nx = chart.timeScale().timeToCoordinate(Math.floor(klines[idx + 1].time / 1000) as UTCTimestamp)
+      if (nx != null) half = Math.max(4, Math.min(12, Math.abs(nx - cx) / 2))
+    }
+    const x0 = cx - half
+    const x1 = cx + half
+
+    if (m.kind === 'touch') {
+      // 感应框：虚线圆角框（圈住触碰K线）
+      const r = el('rect')
+      r.setAttribute('x', String(x0))
+      r.setAttribute('y', String(yTop))
+      r.setAttribute('width', String(x1 - x0))
+      r.setAttribute('height', String(yBot - yTop))
+      r.setAttribute('rx', '4')
+      r.setAttribute('fill', 'none')
+      r.setAttribute('stroke', m.color)
+      r.setAttribute('stroke-width', '1.5')
+      r.setAttribute('stroke-dasharray', '4,3')
+      svg.appendChild(r)
+    } else {
+      // 瞄准框：四角括号
+      const arm = Math.max(3, Math.min(half, (yBot - yTop) / 2))
+      const p = el('path')
+      p.setAttribute(
+        'd',
+        `M${x0} ${yTop + arm}L${x0} ${yTop}L${x0 + arm} ${yTop}` +
+          `M${x1 - arm} ${yTop}L${x1} ${yTop}L${x1} ${yTop + arm}` +
+          `M${x1} ${yBot - arm}L${x1} ${yBot}L${x1 - arm} ${yBot}` +
+          `M${x0 + arm} ${yBot}L${x0} ${yBot}L${x0} ${yBot - arm}`,
+      )
+      p.setAttribute('fill', 'none')
+      p.setAttribute('stroke', m.color)
+      p.setAttribute('stroke-width', '2')
+      p.setAttribute('stroke-linecap', 'round')
+      svg.appendChild(p)
+    }
+
+    // 徽标位置：默认跟随方向（多→下方 / 空→上方），越界翻面
+    const b = MARK_BADGE
+    let sideBelow = m.preferBelow
+    if (sideBelow && yBot + MARK_GAP + b > height - 2) sideBelow = false
+    if (!sideBelow && yTop - MARK_GAP - b < 2) sideBelow = true
+    const badgeCy = sideBelow ? yBot + MARK_GAP + b / 2 : yTop - MARK_GAP - b / 2
+    const badgeX = Math.max(2, Math.min(cx - b / 2, fullWidth - b - 2))
+    const bcx = badgeX + b / 2
+
+    // 徽标 → 标准框 的导引短线
+    const g = el('line')
+    g.setAttribute('x1', String(cx))
+    g.setAttribute('y1', String(sideBelow ? badgeCy - b / 2 : badgeCy + b / 2))
+    g.setAttribute('x2', String(cx))
+    g.setAttribute('y2', String(sideBelow ? yBot : yTop))
+    g.setAttribute('stroke', m.color)
+    g.setAttribute('stroke-width', '1.5')
+    svg.appendChild(g)
+
+    // 徽标底：圆角方块（实心主题色）
+    const bg = el('rect')
+    bg.setAttribute('x', String(badgeX))
+    bg.setAttribute('y', String(badgeCy - b / 2))
+    bg.setAttribute('width', String(b))
+    bg.setAttribute('height', String(b))
+    bg.setAttribute('rx', '4')
+    bg.setAttribute('fill', m.color)
+    svg.appendChild(bg)
+
+    // 徽标内白色图标（图形化，无文字）
+    const icon = (tag: 'circle' | 'line') => {
+      const e = el(tag)
+      e.setAttribute('stroke', '#fff')
+      e.setAttribute('fill', 'none')
+      e.setAttribute('stroke-width', '1.5')
+      e.setAttribute('stroke-linecap', 'round')
+      return e
+    }
+    if (m.kind === 'touch') {
+      // 脉冲：同心圆环
+      const c1 = icon('circle')
+      c1.setAttribute('cx', String(bcx)); c1.setAttribute('cy', String(badgeCy)); c1.setAttribute('r', '4.6')
+      svg.appendChild(c1)
+      const c2 = icon('circle')
+      c2.setAttribute('cx', String(bcx)); c2.setAttribute('cy', String(badgeCy)); c2.setAttribute('r', '1.7')
+      c2.setAttribute('fill', '#fff')
+      svg.appendChild(c2)
+    } else {
+      // 准星：靶心环 + 四向刻度
+      const ring = icon('circle')
+      ring.setAttribute('cx', String(bcx)); ring.setAttribute('cy', String(badgeCy)); ring.setAttribute('r', '3.2')
+      svg.appendChild(ring)
+      for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+        const tk = icon('line')
+        tk.setAttribute('x1', String(bcx + dx * 4.2)); tk.setAttribute('y1', String(badgeCy + dy * 4.2))
+        tk.setAttribute('x2', String(bcx + dx * 7)); tk.setAttribute('y2', String(badgeCy + dy * 7))
+        svg.appendChild(tk)
+      }
+      const dot = icon('circle')
+      dot.setAttribute('cx', String(bcx)); dot.setAttribute('cy', String(badgeCy)); dot.setAttribute('r', '1.3')
+      dot.setAttribute('fill', '#fff')
+      svg.appendChild(dot)
+    }
+  }
+}
+
 // ── 组件本体 ─────────────────────────────────────────────────────────
 
 interface Props {
@@ -479,7 +625,7 @@ export default function KlineChart({
   }, [isReplay, serverInterval])
 
   // K 线标记（useMemo 保持引用稳定：ChartCore 以引用判断是否重应用标记）：
-  // 复盘模式=事件箭头；命中历史=命中/触碰K线 marker（扫描模式）
+  // 复盘模式=事件箭头；命中历史的命中/触碰标注改由 SVG 图形层绘制（见 drawHitMarks）
   const extraMarkers = useMemo<SeriesMarker<UTCTimestamp>[]>(() => {
     const markers: SeriesMarker<UTCTimestamp>[] = []
     if (replayData) {
@@ -496,30 +642,9 @@ export default function KlineChart({
         if (time == null) continue
         markers.push({ ...m, time, size: 1 })
       }
-    } else if (klines.length && (hitTime || touchTime)) {
-      // 命中历史（2026-10-15）：多=belowBar↑ / 空=aboveBar↓
-      const below = hitDirection >= 0
-      const push = (ms: number, text: string, color: string) => {
-        // 命中/触碰时刻所在K线（time <= ms 的最后一根；早于首根则无标记）
-        let time: UTCTimestamp | null = null
-        for (const k of klines) {
-          if (k.time <= ms) time = Math.floor(k.time / 1000) as UTCTimestamp
-          else break
-        }
-        if (time == null) return
-        markers.push({
-          // size=2：命中/触碰标签放大加粗，在K线上更醒目（默认 1）
-          time, size: 2,
-          position: below ? 'belowBar' : 'aboveBar',
-          shape: below ? 'arrowUp' : 'arrowDown',
-          color, text,
-        })
-      }
-      if (hitTime) push(utcMs(hitTime), '命中', HIT_MARK_COLOR)
-      if (touchTime) push(utcMs(touchTime), '触碰', TOUCH_MARK_COLOR)
     }
     return markers.sort((a, b) => (a.time as number) - (b.time as number))
-  }, [replayData, isLong, colorScheme, klines, hitTime, touchTime, hitDirection])
+  }, [replayData, isLong, colorScheme])
 
   // 命中历史可视起点（2026-10-15）：命中/触碰较早时把可视窗口左沿收到其附近，
   // 保证标注入镜；命中在最近约 130 根内则维持默认窗口（取两者的更靠前者）
@@ -537,16 +662,22 @@ export default function KlineChart({
   }, [isReplay, klines, hitTime, touchTime])
 
   // 区域覆盖层回调（ChartCore 每帧在空白 SVG 上调用）：
-  // 复盘模式=全区间价格带；命中历史=时间裁剪的开单区间
+  // 复盘模式=全区间价格带；命中历史=时间裁剪的开单区间 + 命中/触碰图形化标注
   const drawZones = useCallback(
     (ctx: OverlayCtx) => {
       if (replayData) {
         drawReplayZones(replayData, colorScheme, ctx)
-      } else if (tradeOverlay && klines.length) {
-        drawHitOverlay(klines, tradeOverlay, colorScheme, ctx)
+        return
       }
+      if (!klines.length) return
+      if (tradeOverlay) drawHitOverlay(klines, tradeOverlay, colorScheme, ctx)
+      const marks: Array<{ ms: number; color: string; kind: 'hit' | 'touch'; preferBelow: boolean }> = []
+      const preferBelow = hitDirection >= 0
+      if (hitTime) marks.push({ ms: utcMs(hitTime), color: HIT_MARK_COLOR, kind: 'hit', preferBelow })
+      if (touchTime) marks.push({ ms: utcMs(touchTime), color: TOUCH_MARK_COLOR, kind: 'touch', preferBelow })
+      if (marks.length) drawHitMarks(klines, marks, ctx)
     },
-    [replayData, colorScheme, tradeOverlay, klines],
+    [replayData, colorScheme, tradeOverlay, klines, hitTime, touchTime, hitDirection],
   )
 
   // 无数据（首拉中/首拉失败/新周期返回空）：整块反馈；
@@ -590,9 +721,9 @@ export default function KlineChart({
         // 收到命中/触碰K线附近（保证标注入镜），其余扫描场景同缺省
         from={overlayFrom}
         ai={isReplay ? undefined : ai}
-        // 复盘=事件箭头；命中历史=命中/触碰 marker（无标记时为稳定空数组）
-        extraMarkers={isReplay || hitTime || touchTime ? extraMarkers : undefined}
-        drawOverlay={isReplay || tradeOverlay ? drawZones : undefined}
+        // 复盘=事件箭头；命中历史走 SVG 图形标注（见 drawOverlay）
+        extraMarkers={isReplay ? extraMarkers : undefined}
+        drawOverlay={isReplay || tradeOverlay || hitTime || touchTime ? drawZones : undefined}
         height={CHART_HEIGHT}
         onUpdate={handleUpdate}
         updating={updating}
