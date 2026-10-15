@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, FunnelData, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, PullbackPendingItem, PurgeStats, ReviewFunnel, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, TradeReconciliation, TransferStats, WatchlistItem } from '../types'
+import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, FunnelData, HitHistoryItem, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, PullbackPendingItem, PurgeStats, ReviewFunnel, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, TradeReconciliation, TransferStats, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -173,6 +173,20 @@ export const scanApi = {
         .get<PullbackPendingItem[]>(`/scans/pullback-pendings`, { params: { status, limit } })
         .then((r) => r.data),
   },
+
+  // ===== 命中历史（2026-10-15，docs/22）=====
+
+  // 跨轮次扫描命中历史（默认最近 7 天，start/end 为 UTC ISO8601 闭区间）
+  hitHistory: (params: {
+    start?: string
+    end?: string
+    symbol?: string
+    include_repeat?: boolean
+    page?: number
+    page_size?: number
+    sort_by?: string
+    order?: string
+  }) => api.get<ListResponse<HitHistoryItem>>('/scans/hit-history', { params }).then((r) => r.data),
 
   // ===== 币种黑名单（手动/自动）=====
 

@@ -331,6 +331,40 @@ export interface PullbackPendingItem {
   resolved_at: string | null;
 }
 
+// ===== 命中历史（2026-10-15，docs/22）=====
+
+// 命中行关联的开单摘要（正式网主单优先；null=未开单）
+export interface HitHistoryTrade {
+  trade_id: string
+  status: 'OPENED' | 'TP1_HIT' | 'TP2_HIT' | 'CLOSED' | 'FAILED'
+  direction: 'long' | 'short'
+  entry_price: number | null
+  stop_loss: number | null
+  take_profit_1: number | null
+  take_profit_2: number | null
+  opened_at: string | null
+  closed_at: string | null
+  realized_pnl: number | null
+  pnl_pct: number | null
+  testnet: boolean
+}
+
+// 跨轮次扫描命中历史行（GET /api/scans/hit-history）
+export interface HitHistoryItem {
+  id: string
+  symbol: string
+  created_at: string // 命中时刻（UTC，前端 bj() 转北京）
+  signal_type: string
+  pattern: string | null
+  touch_ref: string | null // 回踩触点（仅回踩路径）
+  position_ref: string | null
+  quality_score: number | null
+  is_repeat: boolean
+  direction: 1 | -1 | 0 // 命中方向（votes_json.net 符号 → trend_slope 符号兜底）
+  stage1_candle_open: string | null // 触碰K线开盘时间（仅回踩路径有）
+  trade: HitHistoryTrade | null
+}
+
 // ===== 筛选漏斗（2026-10-11，ScanRecord.funnel_json）=====
 
 export interface FunnelData {

@@ -20,12 +20,16 @@ import { SCHEME_UP_DOWN } from '../utils/scheme'
 import { fmtPrice, pctDelta, rrRatio } from './klineShared'
 import { dayjs } from '../utils/dayjs'
 import ChartCore, { type OverlayCtx } from './ChartCore'
-import type { AIAnalysis, KlineData, TradeKlineData, TradeKlineEvent } from '../types'
+import type { AIAnalysis, HitHistoryTrade, Kline, KlineData, TradeKlineData, TradeKlineEvent } from '../types'
 
 const CHART_HEIGHT = 560 // 容器无高度时的兜底值（各挂载点容器均有自身高度）
 
 // 后端 UTC naive → 毫秒（统一按 UTC 解析）
 const utcMs = (v: string) => dayjs.utc(v).valueOf()
+
+// 命中历史 marker 配色（2026-10-15）：命中=蓝、触碰=紫（两者区分）
+const HIT_MARK_COLOR = '#1677ff'
+const TOUCH_MARK_COLOR = '#722ed1'
 
 // ── 复盘模式部件（仅 tradeId 模式使用）────────────────────────────────
 
@@ -234,6 +238,124 @@ function drawReplayZones(data: TradeKlineData, colorScheme: ColorScheme, ctx: Ov
 // 复盘模式不再有专属界面件（信息卡/脚注/水印后缀已移除，界面与扫描图完全一致）：
 // 交易信息由图上内容承载——开多/开空价签、止损/止盈线与区域、事件箭头、摆动结构标注
 
+// 命中历史专属覆盖层（2026-10-15，docs/22 §5.3）：时间裁剪的开单区间——
+// 与复盘全区间价格带不同，横向左边界=开仓K线、右边界=平仓K线；
+// 未平仓（OPENED/TP1_HIT/TP2_HIT）或只有部分目标时，右边界延续到图右缘（开放右端）。
+// 纵向价格带沿用复盘配色（止损红 / 止盈1 绿 / 止盈2 浅绿）+ 水平线与百分比价签
+function drawHitOverlay(
+  klines: Kline[],
+  trade: HitHistoryTrade,
+  colorScheme: ColorScheme,
+  ctx: OverlayCtx,
+) {
+  const { chart, series, svg, container } = ctx
+
+  const isL = trade.direction !== 'short'
+  const { up, down } = SCHEME_UP_DOWN[colorScheme]
+  const colorEntry = isL ? up : down
+  const colorSL = down
+  const colorTP = up
+
+  const NS = 'http://www.w3.org/2000/svg'
+  const el = (tag: string) => document.createElementNS(NS, tag)
+
+  const fullWidth = container.clientWidth || 520
+  const height = container.clientHeight || CHART_HEIGHT
+  const priceScaleWidth = chart.priceScale('right').width()
+  const rightEdge = Math.max(20, fullWidth - priceScaleWidth)
+  svg.setAttribute('width', String(fullWidth))
+  svg.setAttribute('height', String(height))
+  svg.setAttribute('viewBox', `0 0 ${fullWidth} ${height}`)
+
+  if (trade.entry_price == null) return
+  const yEntry = series.priceToCoordinate(trade.entry_price)
+  if (yEntry == null) return
+
+  // 时间 → x 坐标：取 time <= ms 的最后一根K线（找不到回落 fallback）
+  const xAt = (ms: number | null, fallback: number): number => {
+    if (ms == null) return fallback
+    let t: number | null = null
+    for (const k of klines) {
+      if (k.time <= ms) t = k.time
+      else break
+    }
+    if (t == null) return fallback
+    const cx = chart.timeScale().timeToCoordinate(Math.floor(t / 1000) as UTCTimestamp)
+    return cx == null ? fallback : cx
+  }
+
+  const openMs = trade.opened_at ? utcMs(trade.opened_at) : null
+  const x0 = Math.max(0, Math.min(xAt(openMs, 0), rightEdge - 10))
+  // 右边界：已平仓（CLOSED/FAILED 且有平仓时刻）→ 平仓K线；否则延续到图右缘
+  const isClosed = (trade.status === 'CLOSED' || trade.status === 'FAILED') && !!trade.closed_at
+  const x1 = isClosed
+    ? Math.max(x0 + 2, Math.min(xAt(trade.closed_at ? utcMs(trade.closed_at) : null, rightEdge), rightEdge))
+    : rightEdge
+
+  // 区域色块（x0→x1 限定在持仓区间内）
+  const drawZone = (p1: number | null, p2: number | null, fill: string) => {
+    if (p1 == null || p2 == null) return
+    const y1 = series.priceToCoordinate(p1)
+    const y2 = series.priceToCoordinate(p2)
+    if (y1 == null || y2 == null) return
+    const r = el('rect')
+    r.setAttribute('x', String(x0))
+    r.setAttribute('y', String(Math.min(y1, y2)))
+    r.setAttribute('width', String(x1 - x0))
+    r.setAttribute('height', String(Math.abs(y2 - y1)))
+    r.setAttribute('fill', fill)
+    svg.appendChild(r)
+  }
+  drawZone(trade.entry_price, trade.stop_loss, 'rgba(239, 83, 80, 0.15)')
+  drawZone(trade.entry_price, trade.take_profit_1, 'rgba(38, 166, 154, 0.15)')
+  const hasTP2 = trade.take_profit_2 != null && trade.take_profit_2 > 0
+  if (hasTP2) drawZone(trade.take_profit_1, trade.take_profit_2, 'rgba(38, 166, 154, 0.08)')
+
+  // 水平线 + 右侧价签（与复盘同款；横线限定在持仓区间 x0→x1 内）
+  const drawLine = (price: number | null, color: string, label: string) => {
+    if (price == null) return
+    const y = series.priceToCoordinate(price)
+    if (y == null) return
+    const line = el('line')
+    line.setAttribute('x1', String(x0))
+    line.setAttribute('y1', String(y))
+    line.setAttribute('x2', String(x1))
+    line.setAttribute('y2', String(y))
+    line.setAttribute('stroke', color)
+    line.setAttribute('stroke-width', '1.5')
+    line.setAttribute('shape-rendering', 'crispEdges')
+    svg.appendChild(line)
+
+    const text = `${label} ${fmtPrice(price)}`
+    const c2d = document.createElement('canvas').getContext('2d')!
+    c2d.font = 'bold 10px monospace'
+    const boxW = c2d.measureText(text).width + 8
+    const boxH = 13
+    const boxX = rightEdge - boxW
+    const rect = el('rect')
+    rect.setAttribute('x', String(boxX))
+    rect.setAttribute('y', String(y - boxH / 2))
+    rect.setAttribute('width', String(boxW))
+    rect.setAttribute('height', String(boxH))
+    rect.setAttribute('fill', color)
+    svg.appendChild(rect)
+    const t = el('text')
+    t.setAttribute('x', String(boxX + 4))
+    t.setAttribute('y', String(y + 3))
+    t.setAttribute('fill', '#fff')
+    t.setAttribute('font-size', '10')
+    t.setAttribute('font-family', 'monospace')
+    t.setAttribute('font-weight', 'bold')
+    t.textContent = text
+    svg.appendChild(t)
+  }
+  const ep = trade.entry_price
+  drawLine(ep, colorEntry, isL ? '开多' : '开空')
+  drawLine(trade.stop_loss, colorSL, trade.stop_loss != null ? `止损 ${pctDelta(ep, trade.stop_loss)}` : '止损')
+  drawLine(trade.take_profit_1, colorTP, trade.take_profit_1 != null ? `止盈1 ${pctDelta(ep, trade.take_profit_1)}` : '止盈1')
+  if (hasTP2) drawLine(trade.take_profit_2, colorTP, `止盈2 ${pctDelta(ep, trade.take_profit_2!)}`)
+}
+
 // ── 组件本体 ─────────────────────────────────────────────────────────
 
 interface Props {
@@ -244,9 +366,18 @@ interface Props {
   ai?: AIAnalysis // 扫描模式 AI 仓位标注
   // 变化时强制重新拉取 K 线（关注列表手动刷新用）
   refreshKey?: number
+  // 命中历史（2026-10-15，docs/22）：扫描模式下追加命中/触碰K线 marker
+  // 与时间裁剪的开单区间；hitDirection 决定 marker 位于K线上方还是下方
+  hitTime?: string | null // 命中K线时刻（ScanResult.created_at）
+  touchTime?: string | null // 触碰K线时刻（回踩路径 stage1_candle_open）
+  hitDirection?: 1 | -1 | 0 // 命中方向（1 多 / -1 空 / 0 未知）
+  tradeOverlay?: HitHistoryTrade | null // 关联开单（时间裁剪区间）
 }
 
-export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKey = 0 }: Props) {
+export default function KlineChart({
+  symbol, tradeId, limit = 500, ai, refreshKey = 0,
+  hitTime, touchTime, hitDirection = 0, tradeOverlay,
+}: Props) {
   const colorScheme = useScanStore((s) => s.colorScheme)
   const isReplay = !!tradeId
   const [data, setData] = useState<KlineData | TradeKlineData | null>(null)
@@ -315,6 +446,8 @@ export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKe
   // ── 复盘模式派生件（仅 tradeId 模式计算）────────────────────────────
   const replayData = isReplay ? (data as TradeKlineData | null) : null
   const isLong = replayData?.direction !== 'short'
+  // 两模式 klines 同构（KlineData / TradeKlineData 均有 klines）
+  const klines: Kline[] = data?.klines ?? []
 
   // 周期切换档位（复盘模式）：1h/4h/1d 固定顺序，服务端实际档（cfg.kline_interval
   // 可配非 1h/4h/1d，如 15m/30m）按固定档序就近插入——之前把 serverInterval
@@ -328,32 +461,74 @@ export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKe
       .map((v) => ({ label: v, value: v }))
   }, [isReplay, serverInterval])
 
-  // 事件箭头标记（useMemo 保持引用稳定：ChartCore 以引用判断是否重应用标记）
+  // K 线标记（useMemo 保持引用稳定：ChartCore 以引用判断是否重应用标记）：
+  // 复盘模式=事件箭头；命中历史=命中/触碰K线 marker（扫描模式）
   const extraMarkers = useMemo<SeriesMarker<UTCTimestamp>[]>(() => {
-    if (!replayData) return []
     const markers: SeriesMarker<UTCTimestamp>[] = []
-    for (const ev of replayData.events) {
-      const m = eventMarker(ev, isLong, colorScheme)
-      if (!m) continue
-      const evMs = utcMs(ev.created_at)
-      // 找事件时刻所在的K线（time <= evMs 的最后一根；早于首根则取首根）
-      let time = replayData.klines[0] ? (Math.floor(replayData.klines[0].time / 1000) as UTCTimestamp) : undefined
-      for (const k of replayData.klines) {
-        if (k.time <= evMs) time = Math.floor(k.time / 1000) as UTCTimestamp
-        else break
+    if (replayData) {
+      for (const ev of replayData.events) {
+        const m = eventMarker(ev, isLong, colorScheme)
+        if (!m) continue
+        const evMs = utcMs(ev.created_at)
+        // 找事件时刻所在的K线（time <= evMs 的最后一根；早于首根则取首根）
+        let time = replayData.klines[0] ? (Math.floor(replayData.klines[0].time / 1000) as UTCTimestamp) : undefined
+        for (const k of replayData.klines) {
+          if (k.time <= evMs) time = Math.floor(k.time / 1000) as UTCTimestamp
+          else break
+        }
+        if (time == null) continue
+        markers.push({ ...m, time, size: 1 })
       }
-      if (time == null) continue
-      markers.push({ ...m, time, size: 1 })
+    } else if (klines.length && (hitTime || touchTime)) {
+      // 命中历史（2026-10-15）：多=belowBar↑ / 空=aboveBar↓
+      const below = hitDirection >= 0
+      const push = (ms: number, text: string, color: string) => {
+        // 命中/触碰时刻所在K线（time <= ms 的最后一根；早于首根则无标记）
+        let time: UTCTimestamp | null = null
+        for (const k of klines) {
+          if (k.time <= ms) time = Math.floor(k.time / 1000) as UTCTimestamp
+          else break
+        }
+        if (time == null) return
+        markers.push({
+          time, size: 1,
+          position: below ? 'belowBar' : 'aboveBar',
+          shape: below ? 'arrowUp' : 'arrowDown',
+          color, text,
+        })
+      }
+      if (hitTime) push(utcMs(hitTime), '命中', HIT_MARK_COLOR)
+      if (touchTime) push(utcMs(touchTime), '触碰', TOUCH_MARK_COLOR)
     }
     return markers.sort((a, b) => (a.time as number) - (b.time as number))
-  }, [replayData, isLong, colorScheme])
+  }, [replayData, isLong, colorScheme, klines, hitTime, touchTime, hitDirection])
 
-  // 复盘区域覆盖层回调（ChartCore 每帧在空白 SVG 上调用）
+  // 命中历史可视起点（2026-10-15）：命中/触碰较早时把可视窗口左沿收到其附近，
+  // 保证标注入镜；命中在最近约 130 根内则维持默认窗口（取两者的更靠前者）
+  const overlayFrom = useMemo(() => {
+    if (isReplay || !klines.length || (!hitTime && !touchTime)) return undefined
+    const cands = [hitTime, touchTime].filter((v): v is string => !!v).map(utcMs)
+    if (!cands.length) return undefined
+    const earliest = Math.min(...cands)
+    let idx = 0
+    for (let i = 0; i < klines.length; i++) {
+      if (klines[i].time <= earliest) idx = i
+      else break
+    }
+    return Math.min(Math.max(0, klines.length - 130), Math.max(0, idx - 5))
+  }, [isReplay, klines, hitTime, touchTime])
+
+  // 区域覆盖层回调（ChartCore 每帧在空白 SVG 上调用）：
+  // 复盘模式=全区间价格带；命中历史=时间裁剪的开单区间
   const drawZones = useCallback(
     (ctx: OverlayCtx) => {
-      if (replayData) drawReplayZones(replayData, colorScheme, ctx)
+      if (replayData) {
+        drawReplayZones(replayData, colorScheme, ctx)
+      } else if (tradeOverlay && klines.length) {
+        drawHitOverlay(klines, tradeOverlay, colorScheme, ctx)
+      }
     },
-    [replayData, colorScheme],
+    [replayData, colorScheme, tradeOverlay, klines],
   )
 
   // 无数据（首拉中/首拉失败/新周期返回空）：整块反馈；
@@ -393,10 +568,13 @@ export default function KlineChart({ symbol, tradeId, limit = 500, ai, refreshKe
         watermark={watermark}
         label={data.symbol}
         data={data}
-        // 可视范围不传 from：两模式同为「最近约 130 根」缺省（复盘不再全区间压缩）
+        // 可视起点：复盘缺省「最近约 130 根」；命中历史由 overlayFrom 把左沿
+        // 收到命中/触碰K线附近（保证标注入镜），其余扫描场景同缺省
+        from={overlayFrom}
         ai={isReplay ? undefined : ai}
-        extraMarkers={isReplay ? extraMarkers : undefined}
-        drawOverlay={isReplay ? drawZones : undefined}
+        // 复盘=事件箭头；命中历史=命中/触碰 marker（无标记时为稳定空数组）
+        extraMarkers={isReplay || hitTime || touchTime ? extraMarkers : undefined}
+        drawOverlay={isReplay || tradeOverlay ? drawZones : undefined}
         height={CHART_HEIGHT}
         onUpdate={handleUpdate}
         updating={updating}

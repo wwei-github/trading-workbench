@@ -1430,6 +1430,139 @@ def pullback_pendings_list(
     } for r in rows]
 
 
+# ===== 命中历史（2026-10-15，docs/22）=====
+
+_HIT_SORT_COLS = {"created_at": ScanResult.created_at, "quality_score": ScanResult.quality_score}
+
+
+def _naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """查询参数时间归一：带时区 → 转 UTC 再去 tzinfo（DB 存 naive UTC）"""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _hit_direction(r: ScanResult) -> int:
+    """命中方向派生：指标多数决净票符号 → 趋势斜率符号兜底
+    （与前端 ResultTable.touchLabel 同口径）；1 多 / -1 空 / 0 未知"""
+    votes = r.votes_json or {}
+    net = votes.get("net")
+    if isinstance(net, (int, float)) and net != 0:
+        return 1 if net > 0 else -1
+    slope = float(r.trend_slope or 0)
+    return 1 if slope > 0 else -1 if slope < 0 else 0
+
+
+def _trade_brief(t: TradeRecord) -> dict:
+    """开单摘要子集（docs/22 §三）：前端列表「开单状态/盈亏」列与 K 线区间绘制用"""
+    return {
+        "trade_id": str(t.id),
+        "status": t.status,
+        "direction": t.direction,
+        "entry_price": float(t.entry_price) if t.entry_price is not None else None,
+        "stop_loss": float(t.stop_loss) if t.stop_loss is not None else None,
+        "take_profit_1": float(t.tp1) if t.tp1 is not None else None,
+        "take_profit_2": float(t.tp2) if t.tp2 is not None else None,
+        "opened_at": t.opened_at.isoformat() if t.opened_at else None,
+        "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+        "realized_pnl": float(t.realized_pnl) if t.realized_pnl is not None else None,
+        "pnl_pct": float(t.pnl_pct) if t.pnl_pct is not None else None,
+        "testnet": bool(t.testnet),
+    }
+
+
+@router.get("/hit-history")
+def hit_history(
+    start: Optional[datetime] = Query(None, description="命中时刻下界（含），缺省 now-7d"),
+    end: Optional[datetime] = Query(None, description="命中时刻上界（含），缺省 now"),
+    symbol: Optional[str] = Query(None, description="币种精确匹配（空=全部）"),
+    include_repeat: bool = Query(True, description="是否含重复命中 is_repeat"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    sort_by: str = Query("created_at", description="created_at / quality_score"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
+    db: Session = Depends(get_db),
+):
+    """跨轮次扫描命中历史（docs/22）：全量 scan_results 按命中时刻窗口查询，
+    关联触碰K线（pullback_pendings.confirmed_scan_result_id 反查 stage1_candle_open）
+    与开单（trade_records.scan_result_id，正式网主单优先）。
+
+    命中口径=扫描信号命中（全部 signal_type 路径）；默认最近 7 天，可往前查全量。
+    """
+    now = datetime.utcnow()
+    start_dt = _naive_utc(start) or (now - timedelta(days=7))
+    end_dt = _naive_utc(end) or now
+
+    conds = [ScanResult.created_at >= start_dt, ScanResult.created_at <= end_dt]
+    if symbol and symbol.strip():
+        conds.append(ScanResult.symbol == normalize_symbol(symbol.strip()))
+    if not include_repeat:
+        conds.append(ScanResult.is_repeat.is_(False))
+
+    total = db.execute(select(func.count()).select_from(ScanResult).where(*conds)).scalar() or 0
+
+    col = _HIT_SORT_COLS.get(sort_by, ScanResult.created_at)
+    rows = (
+        db.execute(
+            select(ScanResult)
+            .where(*conds)
+            .order_by(desc(col) if order == "desc" else col)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .scalars()
+        .all()
+    )
+
+    ids = [r.id for r in rows]
+    # 触碰K线反查（仅回踩路径有 stage1_candle_open；非回踩路径为空）
+    pend_map: dict = {}
+    if ids:
+        for cid, s1 in db.execute(
+            select(PullbackPending.confirmed_scan_result_id, PullbackPending.stage1_candle_open)
+            .where(PullbackPending.confirmed_scan_result_id.in_(ids))
+        ).all():
+            pend_map[cid] = s1
+    # 开单关联（一命中可能多单：正式网优先，其次最近一笔）
+    trade_map: dict = {}
+    if ids:
+        for t in (
+            db.execute(
+                select(TradeRecord)
+                .where(TradeRecord.scan_result_id.in_(ids))
+                .order_by(desc(TradeRecord.created_at))
+            )
+            .scalars()
+            .all()
+        ):
+            cur = trade_map.get(t.scan_result_id)
+            if cur is None or (cur.testnet and not t.testnet):
+                trade_map[t.scan_result_id] = t
+
+    items = []
+    for r in rows:
+        s1 = pend_map.get(r.id)
+        t = trade_map.get(r.id)
+        items.append({
+            "id": str(r.id),
+            "symbol": r.symbol,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "signal_type": r.signal_type,
+            "pattern": r.pattern,
+            "touch_ref": r.touch_ref,
+            "position_ref": r.position_ref,
+            "quality_score": r.quality_score,
+            "is_repeat": bool(r.is_repeat),
+            "direction": _hit_direction(r),
+            "stage1_candle_open": s1.isoformat() if s1 else None,
+            "trade": _trade_brief(t) if t else None,
+        })
+
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
 # ===== 币种黑名单（2026-09-18，GRIFFAIN/4USDT 批次教训） =====
 
 @router.get("/blacklist")

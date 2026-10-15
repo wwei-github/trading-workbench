@@ -1,0 +1,173 @@
+# -*- coding: utf-8 -*-
+"""命中历史接口回归（/api/scans/hit-history，2026-10-15，docs/22）。
+
+sqlite 内存库 + dependency_overrides 注入会话，不触真库不触网。
+
+覆盖：
+1. 默认窗口（最近 7 天）与显式 start/end 全量查询
+2. 命中口径=ScanResult 全量；include_repeat=False 过滤重复命中
+3. 币种精确匹配
+4. 触碰K线反查（pullback_pendings.confirmed_scan_result_id）
+5. 开单关联（trade_records.scan_result_id，正式网主单优先）
+6. 方向派生（votes_json.net 符号）
+7. 服务端分页
+"""
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import app.models  # noqa: E402,F401
+from app.database import Base, get_db  # noqa: E402
+from app.main import app  # noqa: E402
+from app.models.scan import PullbackPending, ScanRecord, ScanResult  # noqa: E402
+from app.models.trade import TradeRecord  # noqa: E402
+
+
+@pytest.fixture()
+def client():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = TestSession()
+
+    def _override():
+        yield session
+
+    app.dependency_overrides[get_db] = _override
+    yield TestClient(app), session
+    app.dependency_overrides.pop(get_db, None)
+    session.close()
+
+
+def _mk_result(db, rec_id, symbol, created_at, *, is_repeat=False, net=3):
+    r = ScanResult(
+        scan_record_id=rec_id, symbol=symbol, signal_type="trigger_pullback_confirm",
+        current_price=100.0, breakout_pct=1.0, trend_slope=0.0, r_squared=0.5,
+        volume=1.0, quality_score=70, is_repeat=is_repeat,
+        pattern="hammer", touch_ref="ema21", position_ref="回踩EMA21",
+        votes_json={"net": net, "bull_n": 5, "bear_n": 1, "bull": [], "bear": [], "voted": 6},
+        created_at=created_at,
+    )
+    db.add(r)
+    db.flush()
+    return r
+
+
+@pytest.fixture()
+def seeded(client):
+    """造 3 条命中（AAA 近2h 正式网单+触碰 / AAA 近1h 重复命中 / BBB 20天前）、
+    1 条触碰K线关联、2 笔开单（同命中：测试网+正式网）"""
+    http, db = client
+    rec = ScanRecord(scan_type="scheduled")
+    db.add(rec)
+    db.flush()
+    now = datetime.utcnow()
+
+    recent = _mk_result(db, rec.id, "AAAUSDT", now - timedelta(hours=2))
+    repeat = _mk_result(db, rec.id, "AAAUSDT", now - timedelta(hours=1),
+                        is_repeat=True, net=-4)
+    old = _mk_result(db, rec.id, "BBBUSDT", now - timedelta(days=20))
+
+    touch = now - timedelta(hours=3)
+    db.add(PullbackPending(
+        symbol="AAAUSDT", direction=1, stage1_candle_open=touch,
+        status="confirmed", confirmed_scan_result_id=recent.id,
+    ))
+    t_test = TradeRecord(
+        symbol="AAAUSDT", direction="long", scan_result_id=recent.id,
+        status="CLOSED", testnet=True, entry_price=100.0, stop_loss=98.0, tp1=105.0,
+        realized_pnl=5.0, opened_at=now - timedelta(hours=1, minutes=30),
+        closed_at=now, created_at=now,
+    )
+    t_live = TradeRecord(
+        symbol="AAAUSDT", direction="long", scan_result_id=recent.id,
+        status="OPENED", testnet=False, entry_price=100.5, created_at=now + timedelta(seconds=1),
+    )
+    db.add_all([t_test, t_live])
+    db.commit()
+    return {"recent": recent, "repeat": repeat, "old": old, "touch": touch, "t_live": t_live}
+
+
+def test_default_window_excludes_old(client, seeded):
+    """默认窗口=最近 7 天：20 天前的命中不返回；窗口内两条重复命中全展示"""
+    http, _ = client
+    res = http.get("/api/scans/hit-history").json()
+    assert res["total"] == 2
+    symbols = [it["symbol"] for it in res["items"]]
+    assert symbols == ["AAAUSDT", "AAAUSDT"]  # created_at 倒序：1h 前 → 2h 前
+    assert all(it["is_repeat"] is (i == 0) for i, it in enumerate(res["items"]))
+
+
+def test_explicit_range_returns_all(client, seeded):
+    """显式 start/end（带时区 ISO）覆盖全量：三条命中"""
+    http, _ = client
+    now = datetime.utcnow()
+    start = (now - timedelta(days=30)).isoformat() + "Z"
+    end = (now + timedelta(minutes=1)).isoformat() + "Z"
+    res = http.get("/api/scans/hit-history", params={"start": start, "end": end}).json()
+    assert res["total"] == 3
+
+
+def test_include_repeat_and_symbol_filter(client, seeded):
+    """include_repeat=False 过滤重复命中；symbol 精确匹配"""
+    http, _ = client
+    res = http.get("/api/scans/hit-history", params={"include_repeat": False}).json()
+    assert res["total"] == 1
+    assert res["items"][0]["id"] == str(seeded["recent"].id)
+
+    res2 = http.get("/api/scans/hit-history", params={"symbol": "BBBUSDT",
+                                                      "start": (datetime.utcnow() - timedelta(days=30)).isoformat() + "Z"}).json()
+    assert res2["total"] == 1 and res2["items"][0]["symbol"] == "BBBUSDT"
+
+
+def test_touch_and_trade_association(client, seeded):
+    """触碰K线反查 + 开单关联（正式网主单优先）+ 方向派生"""
+    http, _ = client
+    res = http.get("/api/scans/hit-history", params={
+        "start": (datetime.utcnow() - timedelta(hours=6)).isoformat() + "Z"}).json()
+    by_id = {it["id"]: it for it in res["items"]}
+
+    recent = by_id[str(seeded["recent"].id)]
+    # 触碰K线来自 pullback_pendings.stage1_candle_open
+    assert recent["stage1_candle_open"] == seeded["touch"].isoformat()
+    # 方向派生：net=3 → 多
+    assert recent["direction"] == 1
+    # 开单取正式网主单
+    assert recent["trade"]["trade_id"] == str(seeded["t_live"].id)
+    assert recent["trade"]["testnet"] is False
+    assert recent["trade"]["status"] == "OPENED"
+
+    # 重复命中方向：net=-4 → 空；无触碰/无开单
+    repeat = by_id[str(seeded["repeat"].id)]
+    assert repeat["direction"] == -1
+    assert repeat["stage1_candle_open"] is None
+    assert repeat["trade"] is None
+
+
+def test_pagination(client, seeded):
+    """服务端分页：page_size=1 单页一条、total 为满足条件总数"""
+    http, _ = client
+    res = http.get("/api/scans/hit-history", params={
+        "start": (datetime.utcnow() - timedelta(days=30)).isoformat() + "Z",
+        "page": 1, "page_size": 1}).json()
+    assert res["total"] == 3
+    assert len(res["items"]) == 1
+    assert res["page"] == 1 and res["page_size"] == 1
+
+    res2 = http.get("/api/scans/hit-history", params={
+        "start": (datetime.utcnow() - timedelta(days=30)).isoformat() + "Z",
+        "page": 2, "page_size": 1}).json()
+    assert len(res2["items"]) == 1
+    assert res2["items"][0]["id"] != res["items"][0]["id"]

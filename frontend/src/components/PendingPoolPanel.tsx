@@ -2,7 +2,7 @@
  * 回踩两段式待确认池（docs/19，2026-09-25）
  * - Stage-1 回踩触碰但当根无金K 的币种转入 pending，等 N 根确认窗口内金K确认（默认 3 根）
  * - 状态流转：pending（等待中）→ confirmed（已确认进 AI）/ expired（无金K或方向失守）/ superseded（突破或当根确认抢先）
- * - 展示分段（2026-10-13 收敛）：待确认 / 后续结果 / 无触发 / 筛选漏斗。
+ * - 展示分段（2026-10-15）：待确认 / 后续结果 / 命中历史 / 无触发 / 筛选漏斗。
  *   「后续结果」由原「已确认/已卡掉/全部」三 tab 合并而来——展示待确认币种的结论
  *   （confirmed=已进 AI / expired·superseded=卡掉，行内「状态」列区分），仅保留
  *   最近三天（按 resolved_at，缺失回落 updated_at）；被哪个环节卡住看「卡住环节」列（后端 blocked_by）
@@ -22,11 +22,12 @@ import { schemeTag } from '../utils/scheme'
 import { useScanStore } from '../stores/scanStore'
 import KlineChart from './KlineChart'
 import FunnelPanel from './FunnelPanel'
+import HitHistoryPanel from './HitHistoryPanel'
 import type { PullbackPendingItem } from '../types'
 
 const { Text, Link } = Typography
 
-type StatusFilter = 'pending' | 'outcome' | 'funnel' | 'no-trigger'
+type StatusFilter = 'pending' | 'outcome' | 'hit-history' | 'funnel' | 'no-trigger'
 
 // 行内「状态」列口径（2026-10-10 归并，2026-10-13 分段收敛后沿用）：pending=待确认、
 // confirmed=已确认（已进 AI）；expired/superseded 一律归并「已卡掉」，
@@ -214,6 +215,7 @@ export default function PendingPoolPanel() {
   const segOptions: { label: string; value: StatusFilter }[] = [
     { label: `待确认 (${counts.pending})`, value: 'pending' },
     { label: `后续结果 (${counts.outcome})`, value: 'outcome' },
+    { label: '命中历史', value: 'hit-history' },
     { label: '无触发', value: 'no-trigger' },
     { label: '筛选漏斗', value: 'funnel' },
   ]
@@ -222,13 +224,19 @@ export default function PendingPoolPanel() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ flexShrink: 0, marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Segmented<StatusFilter> value={filter} onChange={setFilter} options={segOptions} />
-        {filter !== 'funnel' && filter !== 'no-trigger' && (
+        {filter !== 'funnel' && filter !== 'no-trigger' && filter !== 'hit-history' && (
           <Button icon={<ReloadOutlined />} onClick={() => fetchData()} loading={loading} size="small">
             刷新
           </Button>
         )}
       </div>
-      {filter === 'funnel' || filter === 'no-trigger' ? (
+      {filter === 'hit-history' ? (
+        // 命中历史（2026-10-15，docs/22）：跨轮次全量扫描命中查询 + K 线标注；
+        // 自带查询控件与刷新，独立子面板（与 funnel/no-trigger 同模式）
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
+          <HitHistoryPanel />
+        </div>
+      ) : filter === 'funnel' || filter === 'no-trigger' ? (
         // 筛选漏斗（2026-10-11 拍板：作为 Segmented 项）：每轮被拒币种列表 +
         // 卡住关卡筛选 + 币种搜索 + 点击看K线。
         // 「无触发」页签复用同一面板、预置关卡筛选为 no_trigger（2026-10-12；
