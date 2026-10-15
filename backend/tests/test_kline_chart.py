@@ -11,7 +11,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.kline_chart import render_plan_chart  # noqa: E402
+from app.services.kline_chart import (  # noqa: E402
+    _PAD_B,
+    _PAD_T,
+    _place_label_ys,
+    render_plan_chart,
+)
 
 
 def _klines(n: int = 300, base: float = 100.0) -> list:
@@ -73,4 +78,37 @@ def test_render_plan_far_from_price_range():
     """计划线远在可视区间外（如 TP2 +30%）也照样渲染（纵轴纳入计划价）"""
     png = render_plan_chart(_klines(150), **_plan(take_profit_1=140.0,
                                                   take_profit_2=170.0))
+    assert png and png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_place_label_ys_no_overlap_and_inside_plot():
+    """2026-10-15 修复：标签簇贴底时整组上抬，仍互不重叠且不出画布。
+
+    复现原 bug 的输入（极端行情 130 根区间 200% + 紧止损：期望位置全挤在底边，
+    旧实现错开后逐个钳位到同一 y → 3 对重叠）；正常分散输入行为不变。
+    """
+    bot = 470 - _PAD_B
+    box_h = 16
+
+    def _ok(tys):
+        assert all(abs(tys[i] - tys[j]) >= box_h
+                   for i in range(len(tys)) for j in range(i + 1, len(tys)))
+        assert min(tys) >= _PAD_T and max(tys) + box_h <= bot
+
+    _ok(_place_label_ys([400.6, 418.0, 430.0, 440.0]))   # 贴底簇（原 bug 场景）
+    _ok(_place_label_ys([420.0, 421.0, 422.0, 423.0]))   # 四点几乎同一价
+    _ok(_place_label_ys([64.9, 204.2, 343.5, 413.1]))    # 正常分散（不改行为）
+    # 单标签：原样落在价格线上（不因对齐逻辑整体偏移）
+    assert _place_label_ys([300.0]) == [300.0 - box_h / 2]
+
+
+def test_render_extreme_range_with_tight_stop():
+    """极端行情（130 根区间 200%、止损 0.4%）仍能出图（标签整组上抬不留重叠）"""
+    kl = _klines(130, base=100.0)
+    # 把可视区间拉到 ~200% 宽：前 100 根压到 40，后 30 根拉到 200 附近
+    for i, k in enumerate(kl):
+        f = 0.4 if i < 100 else 2.0
+        kl[i] = [k[0], k[1] * f, k[2] * f, k[3] * f, k[4] * f, k[5]]
+    png = render_plan_chart(kl, **_plan(entry=100.0, stop_loss=99.6,
+                                        take_profit_1=103.0, take_profit_2=106.0))
     assert png and png[:8] == b"\x89PNG\r\n\x1a\n"

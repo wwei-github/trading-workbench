@@ -79,6 +79,32 @@ def _blend(fg: tuple, bg: tuple, alpha: float) -> tuple:
     return tuple(int(round(bg[i] + (fg[i] - bg[i]) * alpha)) for i in range(3))
 
 
+def _place_label_ys(ys: list, *, box_h: int = 16,
+                    top: int = _PAD_T, bot: int = _H - _PAD_B) -> list:
+    """计划线右缘标签的纵向位置（2026-10-15 修复贴底重叠）。
+
+    入参为按升序排好的期望标签顶边（y − box_h/2）。相邻标签至少错开 box_h，
+    且整组必须落在 [top, bot − box_h] 内。**先错开、后整组平移**：原先「错开后
+    逐个钳位」在标签簇贴近底边时会把错开间距压掉（极端行情 130 根区间 200% +
+    紧止损时实测 3 对重叠），SL 标签被压在邻居下面读不出来——图是这张卡片唯一
+    的读数来源，故改为整组上抬，平移不改变组内间距，重叠不可能再发生（≤4 个
+    标签共 64px，画布高 390px，不会推到顶边之外）。
+    """
+    tys: list = []
+    for y in ys:
+        ty = y - box_h / 2
+        while any(abs(ty - p) < box_h for p in tys):
+            ty += 2
+        tys.append(ty)
+    over = max(tys) + box_h - bot
+    if over > 0:
+        tys = [p - over for p in tys]
+        up = top - min(tys)
+        if up > 0:  # 理论上不可达（组高 64px ≪ 画布高），保底不越顶边
+            tys = [p + up for p in tys]
+    return tys
+
+
 def render_plan_chart(
     klines: list,
     *,
@@ -221,13 +247,8 @@ def render_plan_chart(
                 x += 10
 
         box_h = 16
-        placed: list = []
-        for y, text, col in sorted(lines, key=lambda t: t[0]):
-            ty = y - box_h / 2
-            while any(abs(ty - p) < box_h for p in placed):  # 价格接近时标签下推防重叠
-                ty += 2
-            ty = max(plot_t, min(plot_b - box_h, ty))
-            placed.append(ty)
+        ordered = sorted(lines, key=lambda t: t[0])
+        for (y, text, col), ty in zip(ordered, _place_label_ys([t[0] for t in ordered])):
             tw = draw.textlength(text, font=f12)
             draw.rectangle([plot_r - tw - 10, ty, plot_r, ty + box_h], fill=col)
             draw.text((plot_r - tw - 5, ty + 3), text, font=f12, fill=(255, 255, 255))
