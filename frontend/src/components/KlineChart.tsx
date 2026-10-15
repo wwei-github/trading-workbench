@@ -311,8 +311,10 @@ function drawHitOverlay(
   const hasTP2 = trade.take_profit_2 != null && trade.take_profit_2 > 0
   if (hasTP2) drawZone(trade.take_profit_1, trade.take_profit_2, 'rgba(38, 166, 154, 0.08)')
 
-  // 水平线 + 右侧价签（与复盘同款；横线限定在持仓区间 x0→x1 内）
-  const drawLine = (price: number | null, color: string, label: string) => {
+  // 水平线 + 右侧价签（与复盘同款；横线限定在持仓区间 x0→x1 内）。
+  // tagDy：价签垂直偏移，防同价位标签重叠（保本止损=开仓价时与开仓线同高）
+  const tagYs: number[] = []
+  const drawLine = (price: number | null, color: string, label: string, dashed = false, tagDy = 0) => {
     if (price == null) return
     const y = series.priceToCoordinate(price)
     if (y == null) return
@@ -324,6 +326,7 @@ function drawHitOverlay(
     line.setAttribute('stroke', color)
     line.setAttribute('stroke-width', '1.5')
     line.setAttribute('shape-rendering', 'crispEdges')
+    if (dashed) line.setAttribute('stroke-dasharray', '5,3')
     svg.appendChild(line)
 
     const text = `${label} ${fmtPrice(price)}`
@@ -332,28 +335,42 @@ function drawHitOverlay(
     const boxW = c2d.measureText(text).width + 8
     const boxH = 13
     const boxX = rightEdge - boxW
+    const tagY = y + tagDy
     const rect = el('rect')
     rect.setAttribute('x', String(boxX))
-    rect.setAttribute('y', String(y - boxH / 2))
+    rect.setAttribute('y', String(tagY - boxH / 2))
     rect.setAttribute('width', String(boxW))
     rect.setAttribute('height', String(boxH))
     rect.setAttribute('fill', color)
     svg.appendChild(rect)
     const t = el('text')
     t.setAttribute('x', String(boxX + 4))
-    t.setAttribute('y', String(y + 3))
+    t.setAttribute('y', String(tagY + 3))
     t.setAttribute('fill', '#fff')
     t.setAttribute('font-size', '10')
     t.setAttribute('font-family', 'monospace')
     t.setAttribute('font-weight', 'bold')
     t.textContent = text
     svg.appendChild(t)
+    tagYs.push(tagY)
   }
   const ep = trade.entry_price
   drawLine(ep, colorEntry, isL ? '开多' : '开空')
-  drawLine(trade.stop_loss, colorSL, trade.stop_loss != null ? `止损 ${pctDelta(ep, trade.stop_loss)}` : '止损')
+  drawLine(trade.stop_loss, colorSL, trade.stop_loss != null ? `初始止损 ${pctDelta(ep, trade.stop_loss)}` : '初始止损')
   drawLine(trade.take_profit_1, colorTP, trade.take_profit_1 != null ? `止盈1 ${pctDelta(ep, trade.take_profit_1)}` : '止盈1')
   if (hasTP2) drawLine(trade.take_profit_2, colorTP, `止盈2 ${pctDelta(ep, trade.take_profit_2!)}`)
+
+  // 移动止损（SL_MOVE 后的跟踪止损现值）：与初始止损不同才加画（琥珀色虚线区分，
+  // 与复盘图同款）；同高时价签上下错位避让
+  const curSl = trade.current_stop_loss
+  if (curSl != null && trade.stop_loss != null && Math.abs(curSl - trade.stop_loss) > 1e-12) {
+    const cy = series.priceToCoordinate(curSl)
+    if (cy != null) {
+      const clash = tagYs.find((uy) => Math.abs(uy - cy) < TAG_GAP)
+      const dy = clash == null ? 0 : clash > cy ? -TAG_SHIFT : TAG_SHIFT
+      drawLine(curSl, CUR_SL_COLOR, `移动止损 ${pctDelta(ep, curSl)}`, true, dy)
+    }
+  }
 }
 
 // ── 组件本体 ─────────────────────────────────────────────────────────
@@ -491,7 +508,8 @@ export default function KlineChart({
         }
         if (time == null) return
         markers.push({
-          time, size: 1,
+          // size=2：命中/触碰标签放大加粗，在K线上更醒目（默认 1）
+          time, size: 2,
           position: below ? 'belowBar' : 'aboveBar',
           shape: below ? 'arrowUp' : 'arrowDown',
           color, text,

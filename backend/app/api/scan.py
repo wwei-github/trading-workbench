@@ -49,7 +49,7 @@ from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
 from app.models.scan import PullbackPending, ScanRecord, ScanResult, AIAnalysis, TradeReview
-from app.models.trade import TradeRecord
+from app.models.trade import TradeEvent, TradeRecord
 from app.models.patch import PromptPatch
 from app.models.system_config import SystemConfig
 
@@ -1455,16 +1455,32 @@ def _hit_direction(r: ScanResult) -> int:
     return 1 if slope > 0 else -1 if slope < 0 else 0
 
 
-def _trade_brief(t: TradeRecord) -> dict:
-    """开单摘要子集（docs/22 §三）：前端列表「开单状态/盈亏」列与 K 线区间绘制用"""
+def _nz(v) -> Optional[float]:
+    """0/None 归一为 None（未设止损/止盈二的行存 0，传 0 会画出异常区域）"""
+    if v is None:
+        return None
+    f = float(v)
+    return f if f != 0 else None
+
+
+def _trade_brief(t: TradeRecord, open_detail: Optional[dict] = None) -> dict:
+    """开单摘要子集（docs/22 §三）：前端列表「开单状态/盈亏」列与 K 线区间绘制用。
+
+    止损双口径（与复盘图同源，trades.py 同口径）：
+    - stop_loss = 初始止损（OPEN 事件 detail.stop_loss 优先）
+    - current_stop_loss = rec.stop_loss（SL_MOVE 后为跟踪止损现值）
+    """
+    od = open_detail or {}
+    init_sl = _nz(od.get("stop_loss")) or _nz(t.stop_loss)
     return {
         "trade_id": str(t.id),
         "status": t.status,
         "direction": t.direction,
         "entry_price": float(t.entry_price) if t.entry_price is not None else None,
-        "stop_loss": float(t.stop_loss) if t.stop_loss is not None else None,
-        "take_profit_1": float(t.tp1) if t.tp1 is not None else None,
-        "take_profit_2": float(t.tp2) if t.tp2 is not None else None,
+        "stop_loss": init_sl,
+        "current_stop_loss": _nz(t.stop_loss),  # 跟踪止损现值（未移动时与初始止损相同）
+        "take_profit_1": _nz(t.tp1),
+        "take_profit_2": _nz(t.tp2),
         "opened_at": t.opened_at.isoformat() if t.opened_at else None,
         "closed_at": t.closed_at.isoformat() if t.closed_at else None,
         "realized_pnl": float(t.realized_pnl) if t.realized_pnl is not None else None,
@@ -1540,6 +1556,17 @@ def hit_history(
             cur = trade_map.get(t.scan_result_id)
             if cur is None or (cur.testnet and not t.testnet):
                 trade_map[t.scan_result_id] = t
+    # 初始止损取 OPEN 事件 detail（SL_MOVE 会把 rec.stop_loss 改成现值，故需回溯初始快照）
+    open_map: dict = {}
+    trade_ids = [t.id for t in trade_map.values()]
+    if trade_ids:
+        for tid, detail in db.execute(
+            select(TradeEvent.trade_record_id, TradeEvent.detail).where(
+                TradeEvent.trade_record_id.in_(trade_ids),
+                TradeEvent.event_type == "OPEN",
+            )
+        ).all():
+            open_map[tid] = detail or {}
 
     items = []
     for r in rows:
@@ -1557,7 +1584,7 @@ def hit_history(
             "is_repeat": bool(r.is_repeat),
             "direction": _hit_direction(r),
             "stage1_candle_open": s1.isoformat() if s1 else None,
-            "trade": _trade_brief(t) if t else None,
+            "trade": _trade_brief(t, open_map.get(t.id)) if t else None,
         })
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}

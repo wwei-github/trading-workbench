@@ -339,7 +339,8 @@ export interface HitHistoryTrade {
   status: 'OPENED' | 'TP1_HIT' | 'TP2_HIT' | 'CLOSED' | 'FAILED'
   direction: 'long' | 'short'
   entry_price: number | null
-  stop_loss: number | null
+  stop_loss: number | null // 初始止损（OPEN 事件快照）
+  current_stop_loss: number | null // 移动止损现值（SL_MOVE 后更新；与初始止损不同时图上加画）
   take_profit_1: number | null
   take_profit_2: number | null
   opened_at: string | null

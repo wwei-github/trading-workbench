@@ -28,7 +28,7 @@ import app.models  # noqa: E402,F401
 from app.database import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models.scan import PullbackPending, ScanRecord, ScanResult  # noqa: E402
-from app.models.trade import TradeRecord  # noqa: E402
+from app.models.trade import TradeEvent, TradeRecord  # noqa: E402
 
 
 @pytest.fixture()
@@ -93,9 +93,17 @@ def seeded(client):
     )
     t_live = TradeRecord(
         symbol="AAAUSDT", direction="long", scan_result_id=recent.id,
-        status="OPENED", testnet=False, entry_price=100.5, created_at=now + timedelta(seconds=1),
+        status="OPENED", testnet=False, entry_price=100.5, stop_loss=100.0,  # 现值=已上移的止损
+        created_at=now + timedelta(seconds=1),
     )
     db.add_all([t_test, t_live])
+    db.flush()
+    # OPEN 事件快照：初始止损 98（rec.stop_loss 已被 SL_MOVE 改成 100）
+    db.add(TradeEvent(
+        trade_record_id=t_live.id, event_type="OPEN",
+        detail={"entry_price": 100.5, "stop_loss": 98.0, "tp1": 105.0},
+        created_at=now,
+    ))
     db.commit()
     return {"recent": recent, "repeat": repeat, "old": old, "touch": touch, "t_live": t_live}
 
@@ -148,6 +156,9 @@ def test_touch_and_trade_association(client, seeded):
     assert recent["trade"]["trade_id"] == str(seeded["t_live"].id)
     assert recent["trade"]["testnet"] is False
     assert recent["trade"]["status"] == "OPENED"
+    # 止损双口径：stop_loss=OPEN 事件快照（初始 98）、current_stop_loss=rec 现值（移动后 100）
+    assert recent["trade"]["stop_loss"] == 98.0
+    assert recent["trade"]["current_stop_loss"] == 100.0
 
     # 重复命中方向：net=-4 → 空；无触碰/无开单
     repeat = by_id[str(seeded["repeat"].id)]
