@@ -1013,17 +1013,20 @@ def try_open_for_analysis(
                 )
     # 单数上限（0 = 不限单数，仅靠余额风控兜底）；已开始移动止损的单子
     # （TP1_HIT 止损已移保本 / TP2_HIT 仅剩跟进仓）风险已锁定，不占名额（2026-09-25）
-    moved_syms = {
-        sym for (sym,) in db.execute(
-            select(TradeRecord.symbol).where(
-                TradeRecord.status.in_(("TP1_HIT", "TP2_HIT")),
-                TradeRecord.symbol.in_(list(positions.keys())),
-                _adopt_acc_cond(trader),
-            )
-        ).all()
-    }
-    slot_used = len(positions) - len(moved_syms)
-    if cfg.max_open_trades > 0:
+    # 测试网不受最大持仓限制（2026-10-15 用户拍板）：模拟环境用于多开观察策略
+    # 表现，持仓数量仅受下方「开仓最低可用余额」闸约束；同向上限/熔断/热度等
+    # 风险闸两网口径不变
+    if not trader.testnet and cfg.max_open_trades > 0:
+        moved_syms = {
+            sym for (sym,) in db.execute(
+                select(TradeRecord.symbol).where(
+                    TradeRecord.status.in_(("TP1_HIT", "TP2_HIT")),
+                    TradeRecord.symbol.in_(list(positions.keys())),
+                    _adopt_acc_cond(trader),
+                )
+            ).all()
+        }
+        slot_used = len(positions) - len(moved_syms)
         slot_limit = (
             max(1, cfg.max_open_trades // 2) if week_derate else cfg.max_open_trades
         )

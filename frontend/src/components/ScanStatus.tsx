@@ -105,23 +105,21 @@ export default function ScanStatus() {
   const weekActive = !!(lb?.testnet?.week?.active || lb?.live?.week?.active)
 
   // 在跑单（2026-10-04 按网拆分显示）：主数字 = 测试网/正式网各自 OPENED 数
-  // （TP1_HIT/TP2_HIT 已保本不占名额，绿色 Tag 全局标注）；满仓 = 任一网达上限
-  // （与后端定时扫描「满仓跳过 AI 分析」判定同口径）
+  // （TP1_HIT/TP2_HIT 已保本不占名额，绿色 Tag 全局标注）；满仓 = 正式网达上限
+  // （与后端定时扫描「满仓跳过 AI 分析」判定同口径；2026-10-15 起测试网不限
+  // 持仓数，OPENED 数不参与满仓判定）
   const tnOpen = status?.open_trades_testnet ?? 0
   const liveOpen = status?.open_trades_live ?? 0
   const tpHitN = status?.open_tp_hit ?? 0
   const maxN = status?.max_open_trades ?? 5
   const unbounded = maxN <= 0
-  const full = !unbounded && (tnOpen >= maxN || liveOpen >= maxN)
-  const nearFull = !unbounded && !full && (tnOpen >= maxN - 1 || liveOpen >= maxN - 1)
+  const full = !unbounded && liveOpen >= maxN
+  const nearFull = !unbounded && !full && liveOpen >= maxN - 1
   const numColor = full ? '#cf1322' : nearFull ? '#fa8c16' : undefined
-  const fullNet = tnOpen >= maxN && liveOpen >= maxN
-    ? '测试网/正式网'
-    : tnOpen >= maxN ? '测试网' : '正式网'
 
   const tip = unbounded
-    ? `在跑 测试网 ${tnOpen} + 正式网 ${liveOpen} 笔（未设上限）${tpHitN > 0 ? `；已保本 ${tpHitN} 笔` : ''}`
-    : `在跑 测试网 ${tnOpen} + 正式网 ${liveOpen} 笔（每网上限 ${maxN}，任一网满仓时定时扫描跳过本轮 AI 分析）${tpHitN > 0 ? `；已保本 ${tpHitN} 笔（不占名额）` : ''}${full ? `；${fullNet}满仓` : ''}`
+    ? `在跑 测试网 ${tnOpen}（不限） + 正式网 ${liveOpen} 笔（未设上限）${tpHitN > 0 ? `；已保本 ${tpHitN} 笔` : ''}`
+    : `在跑 测试网 ${tnOpen}（不限持仓） + 正式网 ${liveOpen} 笔（上限 ${maxN}，正式网满仓时定时扫描跳过本轮 AI 分析）${tpHitN > 0 ? `；已保本 ${tpHitN} 笔（不占名额）` : ''}${full ? '；正式网满仓' : ''}`
 
   return (
     <Row gutter={28}>

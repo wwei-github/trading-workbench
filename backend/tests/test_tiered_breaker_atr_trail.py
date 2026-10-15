@@ -251,27 +251,53 @@ class _TwoPosTrader(_FakeTrader):
                 "SOLUSDT": {"initial_margin": 10.0}}
 
 
+class _LiveTwoPosTrader(_TwoPosTrader):
+    """正式网版：在跑单上限/同向上限闸门仅正式网生效（2026-10-15 测试网不限持仓）"""
+
+    account_key = "live-1"
+    testnet = False
+
+
 @pytest.mark.skipif(_is_monday_utc(), reason="UTC 周一当周无昨日，周窗口无法与日窗口隔离")
 def test_week_derate_halves_slot_limit(db):
-    """2026-10-07 改口径：周减速 → 在跑上限减半（5 → 2）。在跑 2 单（常规
-    放行穿透）在减速期被单数闸门拦下（标记「周减速减半」）；ack 后同数据恢复放行"""
+    """2026-10-07 改口径：周减速 → 在跑上限减半（5 → 2）。正式网在跑 2 单
+    （常规放行穿透）在减速期被单数闸门拦下（标记「周减速减半」）；ack 后同数据
+    恢复放行。单数闸门仅正式网生效（2026-10-15 测试网不限持仓），用正式网 trader"""
     cfg = db.get(SystemConfig, 1)
     cfg.max_open_trades = 5
     db.commit()
     a = _make_analysis(db)
-    assert try_open_for_analysis(db, _TwoPosTrader(), a.id) is False
+    assert try_open_for_analysis(db, _LiveTwoPosTrader(), a.id) is False
     assert "开仓失败" in (a.open_block_reason or "")  # 常规口径：2 < 5 放行穿透
 
-    _week_hit_data(db)
+    _closed(db, -80.0, _yesterday_noon(), account_key="live-1", testnet=False)
+    _closed(db, -75.0, datetime.utcnow(), account_key="live-1", testnet=False)
     a2 = _make_analysis(db)
-    assert try_open_for_analysis(db, _TwoPosTrader(), a2.id) is False
+    assert try_open_for_analysis(db, _LiveTwoPosTrader(), a2.id) is False
     assert "在跑单子已达上限 2（周减速减半）" in (a2.open_block_reason or "")
 
     cfg.weekly_breaker_ack_at = datetime.utcnow()
     db.commit()
     a3 = _make_analysis(db)
-    assert try_open_for_analysis(db, _TwoPosTrader(), a3.id) is False
+    assert try_open_for_analysis(db, _LiveTwoPosTrader(), a3.id) is False
     assert "开仓失败" in (a3.open_block_reason or "")  # ack 后恢复常规上限
+
+
+def test_testnet_ignores_max_open_trades(db):
+    """测试网不受最大持仓限制（2026-10-15 用户拍板）：同样 2 在跑 + 上限 2，
+    测试网穿透单数闸门（余额/熔断等其余闸门两网口径不变）；正式网同配置仍被拦"""
+    cfg = db.get(SystemConfig, 1)
+    cfg.max_open_trades = 2
+    db.commit()
+    # 测试网：2 在跑 ≥ 上限 2 → 不拦，穿透到 _attempt_open（「开仓失败」）
+    a = _make_analysis(db)
+    assert try_open_for_analysis(db, _TwoPosTrader(), a.id) is False
+    assert "在跑单子已达上限" not in (a.open_block_reason or "")
+    assert "开仓失败" in (a.open_block_reason or "")
+    # 正式网对照：同配置被单数闸门拦下
+    a2 = _make_analysis(db)
+    assert try_open_for_analysis(db, _LiveTwoPosTrader(), a2.id) is False
+    assert "在跑单子已达上限 2" in (a2.open_block_reason or "")
 
 
 @pytest.mark.skipif(_is_monday_utc(), reason="UTC 周一当周无昨日，周窗口无法与日窗口隔离")

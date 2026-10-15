@@ -786,9 +786,10 @@ class Scanner:
                 )
 
             # 6. 触发 AI 分析（任务内自检开关；批量按24h成交额取前 AI_MAX_PER_SCAN 个）
-            # 满仓跳过（docs/06，2026-10-04 按网判定）：定时扫描时任一网（测试/正式）
-            # OPENED 数达 max_open_trades 上限则不做 AI 分析（省 LLM 成本，该网反正
-            # 开不了仓）；手动扫描/手动分析不受限。跳过说明返回给任务记录 summary 展示
+            # 满仓跳过（docs/06，2026-10-04 按网判定）：定时扫描时正式网 OPENED 数
+            # 达 max_open_trades 上限则不做 AI 分析（省 LLM 成本，正式网反正
+            # 开不了仓）；测试网不限持仓数（2026-10-15 用户拍板）不参与满仓判定。
+            # 手动扫描/手动分析不受限。跳过说明返回给任务记录 summary 展示
             from app.tasks.ai_tasks import run_ai_analysis_task
             try:
                 if record.scan_type == "scheduled":
@@ -959,13 +960,14 @@ class Scanner:
 
     @staticmethod
     def _slots_full() -> tuple[bool, str]:
-        """定时扫描 AI 分析跳过判定（docs/06）：在跑单按网区分——测试网/正式网
-        各自统计 OPENED 数对照 max_open_trades 上限，任一网满仓即跳过本轮
-        （2026-10-04 前为两网合计判定，单网额度没用完就整体跳过）。
+        """定时扫描 AI 分析跳过判定（docs/06）：正式网 OPENED 数对照
+        max_open_trades 上限，达上限即跳过本轮；测试网不限持仓数（2026-10-15
+        用户拍板，模拟环境多开观察）——OPENED 数不参与满仓判定，明细仍展示
+        两网计数供观测。
 
         只统计 OPENED：已开始移动止损的单子（TP1_HIT 止损已移保本 / TP2_HIT
         仅剩跟进仓）风险已锁定，不占上限名额（2026-09-25）。
-        返回 (是否满仓, 明细文案「测试网 X/Y、正式网 X/Y」)；
+        返回 (是否满仓, 明细文案「测试网 X（不限）、正式网 X/Y」)；
         上限 0=不限单数；查询失败按未满仓处理（宁可多花一次 AI 分析，
         不因统计故障漏掉开仓机会）。
         """
@@ -989,10 +991,9 @@ class Scanner:
             counts = {net: n for net, n in rows}
             tn = counts.get(True, 0)
             live = counts.get(False, 0)
-            detail = f"测试网 {tn}/{max_n}、正式网 {live}/{max_n}"
-            if tn >= max_n or live >= max_n:
-                which = "测试网" if tn >= max_n else "正式网"
-                return True, f"满仓跳过 AI 分析：{which}在跑单达上限（{detail}）"
+            detail = f"测试网 {tn}（不限）、正式网 {live}/{max_n}"
+            if live >= max_n:
+                return True, f"满仓跳过 AI 分析：正式网在跑单达上限（{detail}）"
             return False, detail
         except Exception:
             logger.exception("查询在跑单子数失败，按未满仓处理")

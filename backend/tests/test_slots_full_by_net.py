@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
-"""满仓跳过判定按网拆分（2026-10-04，docs/06 修订）：
+"""满仓跳过判定按网拆分（2026-10-04 docs/06；2026-10-15 测试网不限持仓）：
 
-Scanner._slots_full 用于定时扫描后决定是否跳过本轮 AI 分析。此前口径为
-「两网 OPENED 合计 ≥ max_open_trades」——测试网 6 + 正式网 4 = 10 就整体
-跳过，但每网额度都没用满，白白错过开仓机会。修订为按网判定：任一网
-OPENED 数达上限即跳过（明细文案带两网计数，进任务记录 summary）。
+Scanner._slots_full 用于定时扫描后决定是否跳过本轮 AI 分析。演进：
+- 2026-10-04 前：「两网 OPENED 合计 ≥ max_open_trades」整体跳过
+- 2026-10-04：按网判定，任一网 OPENED 数达上限即跳过
+- 2026-10-15（用户拍板）：测试网不限持仓数（模拟环境多开观察），OPENED 数
+  不参与满仓判定——仅正式网达上限才跳过本轮 AI 分析（正式网反正开不了仓）
 
 覆盖：
-1. 两网合计达上限但单网未满 → 不跳过（新口径放行的关键用例）
-2. 任一网单独达上限 → 跳过，明细文案含该网标识与两网计数
-3. 两网均达上限 → 跳过
+1. 测试网单独达上限 → 不跳过（2026-10-15 新口径的关键用例）
+2. 正式网单独达上限 → 跳过，明细文案含两网计数
+3. 两网合计达上限但正式网未满 → 不跳过
 4. 已保本单（TP1_HIT/TP2_HIT）不占名额；上限 0=不限
 5. 配置行缺失/查询异常 → 按未满仓处理（不因统计故障漏掉分析）
 """
@@ -64,28 +65,15 @@ def _full(db_factory, monkeypatch):
     return Scanner._slots_full()
 
 
-def test_combined_full_but_each_net_not(db, monkeypatch):
-    """两网合计 10（6+4）达上限但每网未满 → 不跳过（旧口径会误跳）"""
-    session, factory = db
-    for _ in range(6):
-        _opened(session, True)
-    for _ in range(4):
-        _opened(session, False)
-    full, detail = _full(factory, monkeypatch)
-    assert full is False
-    assert "测试网 6/10" in detail and "正式网 4/10" in detail
-
-
-def test_testnet_full_alone(db, monkeypatch):
-    """仅测试网达上限 → 跳过，文案指向测试网"""
+def test_testnet_full_alone_not_full(db, monkeypatch):
+    """仅测试网达上限 → 不跳过（2026-10-15 测试网不限持仓数）"""
     session, factory = db
     for _ in range(10):
         _opened(session, True)
     _opened(session, False)
     full, detail = _full(factory, monkeypatch)
-    assert full is True
-    assert "测试网在跑单达上限" in detail
-    assert "测试网 10/10" in detail and "正式网 1/10" in detail
+    assert full is False
+    assert "测试网 10（不限）" in detail and "正式网 1/10" in detail
 
 
 def test_live_full_alone(db, monkeypatch):
@@ -97,16 +85,19 @@ def test_live_full_alone(db, monkeypatch):
     full, detail = _full(factory, monkeypatch)
     assert full is True
     assert "正式网在跑单达上限" in detail
+    assert "正式网 11/10" in detail
 
 
-def test_both_nets_full(db, monkeypatch):
-    """两网均达上限 → 跳过"""
+def test_combined_full_but_live_not(db, monkeypatch):
+    """两网合计 10（6+4）达上限但正式网未满 → 不跳过"""
     session, factory = db
-    for _ in range(10):
+    for _ in range(6):
         _opened(session, True)
+    for _ in range(4):
         _opened(session, False)
     full, detail = _full(factory, monkeypatch)
-    assert full is True
+    assert full is False
+    assert "测试网 6（不限）" in detail and "正式网 4/10" in detail
 
 
 def test_tp_hit_not_counted_and_zero_cap(db, monkeypatch):
