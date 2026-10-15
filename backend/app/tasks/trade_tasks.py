@@ -269,7 +269,8 @@ def run_auto_trade_task():
             return
         try:
             db = SessionLocal()
-            adopted_all: list[str] = []
+            adopted_live: list[str] = []       # 正式网接管明细（与测试网分开发送）
+            adopted_testnet: list[str] = []    # 测试网接管明细（受测试网通知开关控制）
             hold_cards: list[dict] = []  # 持仓时长预警卡（锁外发送）
             try:
                 settled, advice_ids = settle_trades(db, trader)
@@ -289,7 +290,8 @@ def run_auto_trade_task():
                 # "测试网不接管"写死）+ 正式网启用账号照旧 → 测试网环境两网手动
                 # 单都导入；正式网环境仅正式网（下方循环与主账号去重）
                 try:
-                    adopted_all.extend(auto_adopt_positions(db, trader))
+                    adopted = auto_adopt_positions(db, trader)
+                    (adopted_testnet if trader.testnet else adopted_live).extend(adopted)
                 except Exception:
                     logger.exception("自动导入持仓失败（%s）", trader.account_key)
                 # 多账号手动单接管 + 孤儿清扫（docs/17 P1）：主账号已在上方接管，
@@ -311,7 +313,8 @@ def run_auto_trade_task():
                     }
                     # 其余启用账号同样自动导入手动持仓
                     try:
-                        adopted_all.extend(auto_adopt_positions(db, at))
+                        adopted = auto_adopt_positions(db, at)
+                        (adopted_testnet if acc.testnet else adopted_live).extend(adopted)
                     except Exception:
                         logger.exception("自动导入持仓失败（%s）", acc.key)
                     try:
@@ -327,13 +330,20 @@ def run_auto_trade_task():
                     logger.exception("持仓时长警告判定失败")
             finally:
                 db.close()
-            if adopted_all:
+            if adopted_live or adopted_testnet:
+                # 按网分开发送（2026-10-15）：测试网明细带 testnet 标记，受系统配置
+                # 「测试网飞书通知开关」控制（关闭时静默丢弃）；正式网明细不受影响。
+                # 原为两网合并单条文本，无法按开关单独过滤，故拆分。
                 try:
                     from app.services.feishu_bot import send_app_text
-                    send_app_text(
-                        "📥 自动导入持仓：" + "、".join(adopted_all)
-                        + "（币安 App 手动单已接管，SL/TP 按原条件单重挂，后续由系统统一管理）"
-                    )
+                    tail = "（币安 App 手动单已接管，SL/TP 按原条件单重挂，后续由系统统一管理）"
+                    if adopted_live:
+                        send_app_text("📥 自动导入持仓（正式网）：" + "、".join(adopted_live) + tail)
+                    if adopted_testnet:
+                        send_app_text(
+                            "📥 自动导入持仓（测试网）：" + "、".join(adopted_testnet) + tail,
+                            testnet=True,
+                        )
                 except Exception:
                     logger.exception("自动导入持仓飞书通知失败")
         finally:
