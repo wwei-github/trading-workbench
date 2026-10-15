@@ -157,7 +157,13 @@ def render_plan_chart(
         def y_of(p: float) -> float:
             return plot_t + (hi - p) / (hi - lo) * plot_h
 
-        step = plot_w / n
+        # 右侧走廊（对齐前端 klineShared.applyCorridorView）：按 barSpacing 迭代换算
+        # 需空置的 K 线根数，目标让最后一根 K 线到价格轴留 ~180px（下限 12 根），
+        # K 线不贴价格轴，视觉与工作台图表一致
+        corridor = 12
+        for _ in range(2):
+            corridor = max(12, math.ceil(180 / (plot_w / (n + 2 + corridor))))
+        step = plot_w / (n + 2 + corridor)
         bw = max(1.0, step * 0.62)
         f15, f12, f11 = _font(15), _font(12), _font(11)
 
