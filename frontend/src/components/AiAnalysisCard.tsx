@@ -71,7 +71,7 @@ function parseItem(raw: string): AnalysisItem {
     }
     break
   }
-  // 短标题只认首个冒号前 ≤12 字且不含标点空格（"4h方向：…"/"指标多数决：…"），长句不误拆
+  // 短标题只认首个冒号前 ≤12 字且不含标点空格（"4h方向：…"/"方向票：…"），长句不误拆
   let label: string | undefined
   const mL = s.match(/^([^：:，。；、,.()（）\[\]【】\s]{1,12})[：:]\s*(.+)$/)
   if (mL) {
@@ -287,7 +287,7 @@ function AnalysisSectionsView({
         </>
       )}
       {hasSkip && (hasCommon || hasDecision) && <Divider style={{ margin: '8px 0' }} />}
-      {/* 公共检查区：4h方向/指标多数决/回踩触点/形态量能/风险点逐项判定（单列） */}
+      {/* 公共检查区：4h方向/方向票/回踩触点/形态量能/风险点逐项判定（单列） */}
       {hasCommon && (
         <>
           <SectionHead icon={<SafetyCertificateOutlined />}>公共检查</SectionHead>

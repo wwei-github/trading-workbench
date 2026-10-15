@@ -1,7 +1,7 @@
 """入场触发器检测（指标驱动筛选管线，2026-09-17；两段式回踩确认 2026-09-25 docs/19；
 回踩触点体系 2026-09-28 docs/22；双突破分类+纯金K下线 2026-09-29）
 
-方向由技术指标多数决确定（technical.compute_indicator_votes），本模块只回答
+方向由方向票（MACD/布林带/RSI）多数决确定（technical.compute_indicator_votes），本模块只回答
 "此刻是否出现与候选方向一致的入场触发"：
 - T1a trigger_breakout（结构突破）：收盘越过最近未破的摆动结构前高（做多；
   做空=前低对称）——N 字/趋势延续的结构性破位
@@ -20,7 +20,9 @@
 - retest  突破回测位：前高/前低破位价（scanner 维护 breakout_events，T1 触发时记录），
   影线可入带、收盘须守住——回踩不破 = 突破有效性确认
 - swing   摆动结构位：最近的 HL（多）/LH（空）防守位，只认结构延续标签
-- ema21   趋势动态价值区（原口径，不加门，行为与 docs/19 完全一致）
+- ema21   趋势动态价值区（原口径，不加触点门）；2026-10-15 起叠加 1H 结构门
+  软校验（三线排列+快中线发散史+EMA144 方向）——不过门不再否决，改 quality
+  重罚（structure_gate=False → -15，docs/21 O9）
 - ema55/144 中/深回撤：数据门（ema_touch_min_bars）+ 排列门（快线在慢线同侧）
   + 斜率门（近 5 根同向）——走平/错排的慢线是震荡不是回踩
 同根多触点命中按优先级标注（横向结构 > 均线；均线取最快）：
@@ -447,7 +449,7 @@ def detect_trigger(
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """检测与候选方向一致的入场触发（两段式决策矩阵，docs/19 §4.1 + docs/22 触点）。
 
-    direction: 1 多 / -1 空（指标多数决的符号）
+    direction: 1 多 / -1 空（方向票多数决的符号）
     pending: 该币活跃 pending 快照（{id, direction, stage1_candle_open, touch_ref}）或 None
     flt（可选）：筛选参数组（2026-09-28 筛选配置上页面）；None=按 settings
     解析（env/代码默认），策略函数不读 DB。
@@ -604,14 +606,16 @@ def detect_trigger(
     patterns = detect_all_patterns(klines, idx=-2)
     golden, golden_note = resolve_golden_evidence(klines, wanted, patterns)
 
-    # 1H 结构门（2026-10-12 拍板）：三线排列 + 快中线发散史 + EMA144 方向。
-    # 仅当回踩触点为 1h EMA21 时作为硬门校验（见下方 touch_blocked），不过则
-    # 否决该次回踩；其余触点（retest/swing/4h EMA21/EMA55）不受此门约束。
+    # 1H 结构门（2026-10-12 硬门；2026-10-15「降级不否决」，docs/21 O9）：
+    # 三线排列 + 快中线发散史 + EMA144 方向。仅当回踩触点为 1h EMA21 时评估；
+    # 不过门不再否决该次回踩——照常产出信号并带 structure_gate=False 证据，
+    # 由质量分重罚（technical.STRUCTURE_GATE_PENALTY=-15）体现排序差异；
+    # 其余触点（retest/swing/4h EMA21/EMA55）豁免本门（structure_gate=True）。
     # 4H 全局闸门由 scanner 前置强制（gate_4h 三重否决 + 方向一致性），此处不重复。
     try:
         struct = structure_1h(klines[:-1], "long" if direction == 1 else "short")
     except Exception:
-        struct = None  # fail-closed：结构门计算异常按不过处理
+        struct = None  # fail-closed：结构门计算异常按不过处理（仍不否决，仅重罚）
 
     # 并行探测启用触点（docs/22 §3）：命中收集为 {ref: 位价}，标注取最高优先
     # （横向结构语义强于均线；均线取最快——最早确认、止损最紧）
@@ -644,15 +648,20 @@ def detect_trigger(
         enabled = "、".join(TOUCH_LABELS.get(r, r) for r in flt.pullback_touch_refs)
         _diag_note(diag, "回踩路径未过：未命中任何启用触点"
                    + (f"（{enabled}）" if enabled else ""))
-    # 1H 结构门硬否决标记：ema21 触点命中但结构门不过 → 本次回踩不成立
-    touch_blocked = (touch_ref == TOUCH_EMA21 and struct is None)
+    # 1H 结构门结果（2026-10-15 降级不否决）：仅 ema21 触点可能为 False，
+    # 其余触点豁免（True）。False 时照常出信号，由质量分重罚体现（-15）。
+    structure_gate = True
+    if touch_ref == TOUCH_EMA21:
+        structure_gate = struct is not None
+    # 结构门未过注记：随信号 reason 落库，AI/前端/复盘可见（截断前优先给出）
+    struct_note = "" if structure_gate else "·1H结构未过(重罚-15)"
 
     # 量能注记（docs/25 §3.1）：回踩金K路径补「大量」要素，双口径见 helper
     vol_note = _pullback_volume_note(klines)
 
     # 行2：当根触碰+金K → 当根确认（比纯形态更强，pending 一律被抢先）。
-    # ema21 触点须先过 1H 结构门；touch_blocked 时落到行6/7 否决
-    if touch_ref is not None and golden and not touch_blocked:
+    # ema21 触点未过 1H 结构门不再否决，改带 structure_gate=False 证据（2026-10-15）
+    if touch_ref is not None and golden:
         _label = PATTERN_LABEL_MAP.get(golden["pattern"], golden["pattern"])
         # 证据描述：单形态="当根X确认"；组合=note 原文+确认（如
         # "双流星组合确认"/"前根锤形线+当根趋势K确认"）
@@ -667,10 +676,13 @@ def detect_trigger(
             "position_ref": _position_ref_of(touch_ref, direction),
             "pattern": golden["pattern"], "breakout_pct": 0.0,
             "stabilize": _stab,
+            # 1H 结构门结果（2026-10-15 降级不否决）：scanner 据此算质量分重罚
+            "structure_gate": structure_gate,
             # 组合金K标志（2026-10-13-6）：供质量分算「金K组合价格带结构点密度」
             # 时决定价格带是否并入前根（True=组合两根包络，False=单根）
             "golden_combo": bool(golden_note),
-            "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且{_ev}{vol_note}",
+            "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且{_ev}"
+                      f"{vol_note}{struct_note}",
         }, _close_op(pending, direction, "same_candle_confirm")
 
     # 行3/行4：未触碰但有金K → 有效 pending 则次根确认（有回踩语境）。
@@ -681,9 +693,12 @@ def detect_trigger(
     if touch_ref is None and golden:
         if pending_valid and pending and pending.get("direction") == direction:
             p_ref = pending.get("touch_ref")
-            # ema21 触点同样受 1H 结构门约束（次根确认时刻复校，不过则 pending 失效）
-            if p_ref == TOUCH_EMA21 and struct is None:
-                return None, {"op": "expire", "reason": "structure_1h"}
+            # ema21 触点同样受 1H 结构门约束，但 2026-10-15 起复校只重罚不失效
+            # （降级不否决，docs/21 O9）：结构不过照常确认，带 structure_gate=False
+            p_structure_gate = True
+            if p_ref == TOUCH_EMA21:
+                p_structure_gate = struct is not None
+            p_struct_note = "" if p_structure_gate else "·1H结构未过(重罚-15)"
             p_label = TOUCH_LABELS.get(p_ref, "触点") if p_ref else "触点"
             _label = PATTERN_LABEL_MAP.get(golden["pattern"], golden["pattern"])
             _ev = f"本根{_label}确认" if not golden_note else f"{golden_note}确认"
@@ -697,9 +712,11 @@ def detect_trigger(
                 "position_ref": _position_ref_of(p_ref, direction),
                 "pattern": golden["pattern"], "breakout_pct": 0.0,
                 "stabilize": _stab,
+                # 1H 结构门结果（2026-10-15 降级不否决）：scanner 据此算质量分重罚
+                "structure_gate": p_structure_gate,
                 # 组合金K标志（2026-10-13-6）：质量分算金K组合价格带结构点密度用
                 "golden_combo": bool(golden_note),
-                "reason": f"指标同向·回踩{p_label}企稳·{_ev}{vol_note}",
+                "reason": f"指标同向·回踩{p_label}企稳·{_ev}{vol_note}{p_struct_note}",
             }, {"op": "confirm"}
         if pending:
             flip = pending.get("direction") != direction
@@ -712,20 +729,17 @@ def detect_trigger(
 
     # 行5：触碰但无金K → 不触发，转 pending 待确认（scanner 侧 upsert）。
     # ema21 键存 Stage-1 触碰锚点价（命中触点的位价），touch_ref 记触点类型。
-    # ema21 触点未过 1H 结构门（touch_blocked）不落 pending，落到行6/7 否决
-    if touch_ref is not None and not touch_blocked:
+    # 1H 结构门未过（structure_gate=False）不再挡进池，随 op 透传给 scanner 记重罚
+    if touch_ref is not None:
         return None, {
             "op": "upsert", "direction": direction, "touch_ref": touch_ref,
             "stage1_candle_open": datetime.utcfromtimestamp(float(klines[-2][0]) / 1000),
             "ema21": touch_price,
+            "structure_gate": structure_gate,
         }
 
-    # 行6/行7：未触碰无金K → 窗口未满保持等待；窗口耗尽/无效 pending 才终态（错过即过期）
-    if touch_blocked:
-        # ema21 触点未过 1H 结构门 → 该次回踩否决，活跃 pending 一并失效。
-        # 无活跃 pending 时也返回 expire 动作：仅供 scanner 漏斗归因
-        # （_reject("structure_1h")），scanner 对无 pending 币种不落该处置动作。
-        return None, {"op": "expire", "reason": "structure_1h"}
+    # 行6/行7：未触碰无金K → 窗口未满保持等待；窗口耗尽/无效 pending 才终态
+    # （错过即过期）。1H 结构门 2026-10-15 起不再作为死因（降级为质量分重罚）
     if pending:
         if pending.get("direction") != direction:
             _diag_note(diag, _expire_note(pending, direction, True))

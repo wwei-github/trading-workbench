@@ -418,39 +418,39 @@ def test_quality_matrix_all_states():
         d = _STATE_DIR[st]
         if d == 0:
             s = compute_quality_score(1, _votes(st), "trigger_pullback_confirm")
-            assert s == 50 + 1 * 3 * 7, st
+            assert s == 50 + 1 * 3 * 10, st
             continue
-        base = 50 + d * 3 * 7
+        base = 50 + d * 3 * 10
         # 过渡态 macro_aligned=False：同/逆都带逆宏观 -4（排列/交叉态恒 True 不触发）
         extra = -4 if _STATE_MACRO[st] is False else 0
         s_same = compute_quality_score(d, _votes(st), "trigger_pullback_confirm")
         assert s_same == base + same_mod + extra, st
         # 逆向：direction=-d，基础分按逆向重算（同 -d 方向的票数乘积）
         s_counter = compute_quality_score(-d, _votes(st), "trigger_pullback_confirm")
-        assert s_counter == 50 - d * 3 * 7 + counter_mod + extra, st
+        assert s_counter == 50 - d * 3 * 10 + counter_mod + extra, st
 
 
 def test_quality_transition_macro_penalty():
     """逆宏观 -4 天然只作用过渡态（macro_aligned=False）：牛内回调做空 /
     熊内反弹做多压分；排列态恒同侧不触发"""
     s_dip = compute_quality_score(-1, _votes("bull_dip"), "trigger_pullback_confirm")
-    assert s_dip == 50 - 1 * 3 * 7 + 5 - 4
+    assert s_dip == 50 - 1 * 3 * 10 + 5 - 4
     s_rally = compute_quality_score(1, _votes("bear_rally"), "trigger_pullback_confirm")
-    assert s_rally == 50 + 1 * 3 * 7 + 5 - 4
+    assert s_rally == 50 + 1 * 3 * 10 + 5 - 4
     s_aligned = compute_quality_score(1, _votes("aligned_bull"), "trigger_pullback_confirm")
-    assert s_aligned == 50 + 1 * 3 * 7 + 10
+    assert s_aligned == 50 + 1 * 3 * 10 + 10
 
 
 def test_quality_legacy_phase_fallback():
     """存量旧行 votes 快照无 state 键（phase=退役旧档）：走中性兜底
     （同向 +5 / 逆向 -8）；旧 phase 键兼容读取（state or phase）"""
     s = compute_quality_score(1, _votes(phase="strong"), "trigger_pullback_confirm")
-    assert s == 50 + 1 * 3 * 7 + 5
+    assert s == 50 + 1 * 3 * 10 + 5
     s2 = compute_quality_score(-1, _votes(phase="strong"), "trigger_pullback_confirm")
-    assert s2 == 50 - 1 * 3 * 7 - 8
+    assert s2 == 50 - 1 * 3 * 10 - 8
     s3 = compute_quality_score(
         1, _votes(phase="overheat", macro=False), "trigger_pullback_confirm")
-    assert s3 == 50 + 1 * 3 * 7 + 5 - 4   # 旧逆宏观行罚分照旧
+    assert s3 == 50 + 1 * 3 * 10 + 5 - 4   # 旧逆宏观行罚分照旧
 
 
 # ── 渲染行（状态约束 / 方向约束 / 结构化行）──────────────────────

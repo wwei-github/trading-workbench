@@ -43,7 +43,7 @@
 核心业务链路（每小时闭环）：
 
 ```
-全量合约扫描 ──→ 7指标多数决定向 ──→ 触发双确认 ──→ 质量分排序 ──→ AI 分析 ──→ 风控闸门 ──→ 自动开单 ──→ 半小时结算巡检 ──→ 复盘归因
+全量合约扫描 ──→ 方向票（MACD/布林/RSI）定向 ──→ 触发双确认 ──→ 质量分排序 ──→ AI 分析 ──→ 风控闸门 ──→ 自动开单 ──→ 半小时结算巡检 ──→ 复盘归因
      │                                                                                          │
      └── 观察池（仅方向无触发）/ 待确认池（回踩无金K）                                          └── 止损/分批止盈/跟踪止损/保本
 ```
@@ -281,12 +281,12 @@ FastAPI 应用入口：
 **`detect_indicator_candidate(...)`** — 单币判定链（核心）：
 1. **4h 趋势闸门** `gate_4h` — 一票否决（EMA144 斜率/缠绕/ADX 三重）
 2. **4h 状态机前置门**（2026-10-13-5）— `htf_state_lock`：状态机双向禁开（`tangle`/`turn_*`，`STATE_BLOCK_BOTH`）对**全部 1h 候选（回踩·突破）一票否决**，活跃 pending 同轮 `expire(htf_state_lock)`（第 1/2 步共用 `technical.htf_core` 一次算好的 EMA21/55/144+ADX+ATR，去重不改行为）
-3. **7 指标多数决** `compute_indicator_votes` — |net|≥3 才出方向
-4. **闸门方向一致性** — 4h 方向须与多数决一致
+3. **方向票（MACD/布林带/RSI）** `compute_indicator_votes` — 方向票同向≥2 张才出方向（2026-10-15 指标拆角色：ADX/OBV/SuperTrend/4h背景退出方向票）
+4. **闸门方向一致性** — 4h 方向须与方向票一致
 5. **震荡评分卡** `range_score` — ≥3 不入场
 6. **两段式触发确认** `detect_trigger` — 突破/回踩+金K/回踩两段式
 7. **进池准入闸**（2026-10-13-5）— 回踩确认须在触发类型白名单内，否则不进待确认池（漏斗记 `trigger_whitelist`；原状态机子闸已由第 2 步前置门接管）
-（1H 结构门 `structure_1h` 已从筛选链退役（2026-10-12），现为 trigger 层 **1h EMA21 触点硬门**——仅当回踩触点为 ema21 时校验，其余触点豁免）
+（1H 结构门 `structure_1h` 已从筛选链退役（2026-10-12），现为 trigger 层 **1h EMA21 触点软校验**——仅当回踩触点为 ema21 时复校；2026-10-15 起不过门**不否决**，仅质量分重罚 −15，见 docs/21 O9）
 
 #### [scan_filters.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/scan_filters.py)
 
@@ -656,7 +656,7 @@ sequenceDiagram
     loop 每个候选币（线程池并发）
         SC->>EX: get_klines(symbol, 1h, 240)
         SC->>ST: detect_indicator_candidate()
-        ST->>ST: gate_4h 一票否决 → 4h状态机前置门 → 7 指标多数决 → 闸门方向一致 → 震荡卡 → detect_trigger
+        ST->>ST: gate_4h 一票否决 → 4h状态机前置门 → 方向票（MACD/布林/RSI）→ 闸门方向一致 → 震荡卡 → detect_trigger
         ST-->>SC: 候选（方向 / 触发 / 质量分 / 票数）
     end
     SC->>SC: 质量分降序 + 重复命中抑制

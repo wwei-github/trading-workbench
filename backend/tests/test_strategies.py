@@ -4,10 +4,12 @@
 - ema_gate：gate_4h 三重否决（斜率走平/缠绕/ADX）与方向判定、structure_1h
   三线排列 + 快中线发散度 + EMA144 方向（2026-10-11 拍板中慢线发散度退役）；
   K 线格式 [ts, o, h, l, c, v]（与 ExchangePool 一致）；
-- trigger 1H 结构门硬门（2026-10-12 拍板）：回踩 1h EMA21 触点须过 structure_1h
-  （三线排列 + 快中线发散史 + EMA144 方向），不过则本次回踩不产生信号（硬门否决）；
-  其余触点（retest/swing/4h EMA21/EMA55）不受此门约束。趋势升级标注
-  trigger_trend_pullback 已下线（并入 trigger_pullback_confirm）；
+- trigger 1H 结构门「降级不否决」（2026-10-12 硬门 → 2026-10-15 软校验，docs/21
+  O9）：回踩 1h EMA21 触点仍复校 structure_1h（三线排列 + 快中线发散史 + EMA144
+  方向），但不过门不再否决——照常产出 trigger_pullback_confirm 并带
+  structure_gate=False 证据，由质量分重罚体现；其余触点（retest/swing/4h EMA21/
+  EMA55）豁免本门（structure_gate=True）。趋势升级标注 trigger_trend_pullback
+  已下线（并入 trigger_pullback_confirm）；
 - technical：KDJ / MACD 零轴状态（融合保留资产）+ 回踩企稳加分项（§3.3 条件2/3）。
 """
 import sys
@@ -251,15 +253,19 @@ def test_ema21_touch_structure_pass_triggers_plain_signal():
     assert op is None                     # 当根确认无处置动作
 
 
-def test_ema21_touch_structure_fail_vetoes_signal():
-    """回踩 1h EMA21 触点命中但 1H 结构门不过 → 硬门否决：不产生信号，
-    并返回 expire/structure_1h 动作（无 pending 时仅供 scanner 漏斗归因）"""
+def test_ema21_touch_structure_fail_still_signals():
+    """回踩 1h EMA21 触点命中但 1H 结构门不过 → 降级不否决（2026-10-15）：照常
+    产出 trigger_pullback_confirm，带 structure_gate=False 证据 + reason 注记，
+    由质量分重罚（-15）体现排序差异；无 pending 时任无处置动作"""
     kl = _pullback_klines_1h()
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG), \
          patch.object(trig, "structure_1h", return_value=None):
         t, op = trig.detect_trigger(kl, 1)
-    assert t is None
-    assert op == {"op": "expire", "reason": "structure_1h"}
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["touch_ref"] == "ema21"
+    assert t["structure_gate"] is False
+    assert "1H结构未过" in t["reason"]
+    assert op is None
 
 
 def test_next_candle_confirm_with_pending():
@@ -273,16 +279,18 @@ def test_next_candle_confirm_with_pending():
     assert op == {"op": "confirm"}
 
 
-def test_pending_ema21_touch_structure_fail_expires():
-    """次根确认时刻结构门复校：pending 命中 ema21 触点但结构门不过 → pending 失效"""
+def test_pending_ema21_touch_structure_fail_still_confirms():
+    """次根确认时刻结构门复校：pending 命中 ema21 触点但结构门不过 → 降级不否决
+    （2026-10-15）：照常确认，带 structure_gate=False 证据（质量分重罚体现差异）"""
     kl = _pullback_klines_1h(touch=False)
     pending = {"id": "x", "direction": 1, "touch_ref": "ema21",
                "stage1_candle_open": datetime.utcfromtimestamp(kl[-3][0] / 1000)}
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG), \
          patch.object(trig, "structure_1h", return_value=None):
         t, op = trig.detect_trigger(kl, 1, pending=pending)
-    assert t is None
-    assert op == {"op": "expire", "reason": "structure_1h"}
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["structure_gate"] is False
+    assert op == {"op": "confirm"}
 
 
 # ── 技术指标（融合保留资产）：KDJ / MACD 零轴 ─────────────────────────────

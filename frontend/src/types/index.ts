@@ -29,13 +29,14 @@ export interface ScanResult {
   volume: number;
   volume_type: string;
   quality_score: number | null; // 指标驱动筛选：候选质量分 0-100（AI 配额排序键）
-  votes_json: { // 指标票数明细（7 指标多数决）
-    bull: string[];
-    bear: string[];
+  votes_json: { // 方向票明细（2026-10-15 拆角色：仅 MACD/布林带/RSI 三张方向票计方向，
+                  // 门槛同向≥2；SuperTrend/ADX/OBV/4h背景不计方向票，docs/21 O9）
+    bull: string[]; // 方向票看多指标名
+    bear: string[]; // 方向票看空指标名
     bull_n: number;
     bear_n: number;
-    net: number;
-    voted: number;
+    net: number; // 方向票净差（∈{1,2,3}）
+    voted: number; // 投出的方向票张数（∈[0,3]）
     htf?: { // 4h 背景级别快照（旧扫描行无此键）
       state: string | null; // EMA 状态机 11 态 tangle/turn_*/macro_cross_*/*_recover/aligned_*/bull_dip/bear_rally（2026-10-11 再重构；旧行为 ranging/mixed/bullish/bearish）
       label: string | null; // 完整标签（状态机=状态中文+判据注记；旧行=价格位置与 ADX/间距）
@@ -323,7 +324,7 @@ export interface PullbackPendingItem {
   status: 'pending' | 'confirmed' | 'expired' | 'superseded';
   /** 卡住环节（后端派生）：pending/confirmed 为 null，expired/superseded = 死因（resolve_reason 同值） */
   blocked_by: string | null;
-  resolve_reason: string | null; // ranging / structure_1h / range_score / window_expired / direction_flip / htf_state_lock / breakout / same_candle_confirm
+  resolve_reason: string | null; // ranging / range_score / window_expired / direction_flip / htf_state_lock / breakout / same_candle_confirm（structure_1h 2026-10-15 退役，仅旧轮次数据可见）
   confirm_pattern: string | null; // 确认形态（confirmed 行）
   confirmed_scan_result_id: string | null;
   created_at: string | null;

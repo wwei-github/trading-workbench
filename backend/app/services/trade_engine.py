@@ -233,8 +233,8 @@ def _attempt_open(
         _mark_open_block(db, a, BLOCK_UNTRADABLE)
         return False
     # 开单类型仅作记录（2026-09-15 拍板）：策略开关不再拦截开仓（未知类型也不拦）
-    # EMA 排列前提随指标多数决重设计移除（2026-09-17）：方向判定权已移交指标多数决
-    # （|net|≥3 才成候选），与 AI 提示词、扫描筛选同一把尺子，开仓侧不再二次设限
+    # EMA 排列前提随指标多数决重设计移除（2026-09-17）：方向判定权已移交方向票多数决
+    # （方向票同向 ≥2 才成候选），与 AI 提示词、扫描筛选同一把尺子，开仓侧不再二次设限
     trade_type = a.trade_type or ""
     direction = a.direction
     entry_ai = float(a.entry_price)

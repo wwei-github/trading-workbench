@@ -1445,7 +1445,7 @@ def _naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
 
 
 def _hit_direction(r: ScanResult) -> int:
-    """命中方向派生：指标多数决净票符号 → 趋势斜率符号兜底
+    """命中方向派生：方向票（MACD/布林带/RSI）净票符号 → 趋势斜率符号兜底
     （与前端 ResultTable.touchLabel 同口径）；1 多 / -1 空 / 0 未知"""
     votes = r.votes_json or {}
     net = votes.get("net")

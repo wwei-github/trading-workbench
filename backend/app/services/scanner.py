@@ -5,16 +5,18 @@
 2. 4h 趋势闸门 gate_4h 一票否决：EMA144 斜率/缠绕/ADX 三重条件必须同时成立，
    否决直接不看（不跑票数不触发不进 AI）；震荡评分卡 ≥3 同为硬门
    （ema_gate.py，docs/19 §2/§3）。1H 结构门已于 2026-10-12 退役（docs/21
-   O7；策略二资格闸随策略二删除），不再整体否决信号，结构判定收敛到
-   trigger 层升级标注
-3. 分组：单趟 7 票净票 |net|≥3 → 多头/空头候选；-2~+2 中性跳过（震荡市不开单）
+   O7；策略二资格闸随策略二删除），2026-10-15 再由 trigger 层硬门降级为
+   质量分重罚（docs/21 O9）——结构判定不否决信号，只在质量分上体现
+3. 分组：方向票（MACD/布林带/RSI）同向 ≥2 张 → 多头/空头候选（2026-10-15
+   指标拆角色，docs/21 O9）；ADX/OBV/SuperTrend/4h背景退出方向票
 4. 触发确认：两段式决策矩阵（docs/19）——结构突破/趋势突破 / 回踩+金K确认；
    回踩触碰无金K 转入 pending 待确认池（pullback_pendings，次根金K才确认）；
    无触发 → 观察池（不落库，下轮重算）
 5. 质量分排序 + 重复命中抑制（仅定时）+ 落库 → AI 配额（按质量分取前 N）
 
 旧信号管线（Donchian+形态为主动作、EMA 硬门控）已整体替换：
-方向判定权从信号路径移交给指标多数决，与 AI 提示词的多数决规则同一把尺子。
+方向判定权从信号路径移交给方向票多数决（2026-10-15 指标拆角色，docs/21 O9），
+与 AI 提示词的方向票规则同一把尺子。
 """
 import logging
 import time
@@ -39,6 +41,7 @@ from app.services import market_data as md
 from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import volume_ratio
 from app.services.strategy.technical import (
+    DIR_VOTE_MIN,
     STATE_BLOCK_BOTH,
     compute_indicator_votes,
     compute_quality_score,
@@ -215,15 +218,15 @@ def detect_indicator_candidate(
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """指标驱动单币检测（Scanner 与 watchlist.refresh 共用同一套逻辑与阈值）。
 
-    流程（2026-10-12 拍板）：4h 趋势闸门 gate_4h 一票否决（走平/缠绕/ADX<20
-    任一命中直接不看，取代原 ranging 过滤 +htf_res 方向门）→ 单趟 7 票投票
-    → 闸门方向一致 → 震荡评分卡 range_score（≥3 不入场）→ 两段式触发确认
-    （trigger.py）→ 质量分。原 6 票预筛已于 10-10 撤销（4h 前置后失去省请求
-    价值，|net6|<2 被终判 |net|<3 完全蕴含），4h 背景复用第一步结果、6 项指标
-    不再双算。
-    1H 结构门已不在筛选链（2026-10-12 O7 退役筛选链硬门；同日
-    trigger_trend_pullback 升级标注下线）——现收敛为 trigger 层 1h EMA21 触点
-    硬门（不过则本次回踩不产生信号，scanner 侧仅按 reject 记结构门死因）。
+    流程：4h 趋势闸门 gate_4h 一票否决（走平/缠绕/ADX<20 任一命中直接不看，
+    取代原 ranging 过滤 +htf_res 方向门）→ 单趟指标计算 → 方向票（MACD/布林带/
+    RSI）同向 ≥2 张（2026-10-15 指标拆角色，docs/21 O9）→ 闸门方向一致 →
+    震荡评分卡 range_score（≥3 不入场）→ 两段式触发确认（trigger.py）→ 质量分。
+    4h 背景复用第一步结果、指标不再双算。
+    1H 结构门：2026-10-12 退役筛选链硬门（docs/21 O7），2026-10-15 再由
+    trigger 层硬门「降级不否决」（docs/21 O9）——ema21 触点不过门照常出信号，
+    仅质量分重罚（trigger 证据 structure_gate=False → -15），scanner 不再记
+    结构门死因。
 
     pending: 该币活跃回踩 pending 快照（{id, direction, stage1_candle_open, touch_ref}）或 None。
     flt: 筛选参数组（2026-09-28 筛选配置上页面）；None=按 settings 解析。
@@ -236,14 +239,14 @@ def detect_indicator_candidate(
       币种被关卡拒绝时写入 {"stage": <关卡代码>}，供主扫描漏斗落库展示
       「卡在哪一步」；候选产生/进待确认池（pending upsert）时不写。关卡代码：
       gate_4h / htf_state_lock（4h 状态机双向禁开前置门，2026-10-13）/
-      votes / direction_flip / range_score / structure_1h（ema21 触点未过 1H
-      结构门，2026-10-12）/ no_trigger / trigger_whitelist。
+      votes（方向票同向不足）/ direction_flip / range_score /
+      no_trigger / trigger_whitelist。
       votes 关附 "detail"（全票明细）、htf_state_lock / no_trigger /
       trigger_whitelist 关附 "detail"（2026-10-13）——前端判定说明列渲染，
       其余关卡不写。
     返回 (候选 dict, pending_op) 二元组：
     - 候选 dict（signal_type/touch_ref/quality_score/votes 及展示字段），每币至多 1 个；
-      无候选（中性/票数不足/无触发）为 None
+      无候选（方向票不足/无触发）为 None
     - pending_op: pending 处置动作（upsert/expire/confirm/supersede），可为 None；
       候选为 None 时仍可能携带动作（触碰转 pending、票崩/窗口过期）
 
@@ -321,15 +324,15 @@ def detect_indicator_candidate(
                     "双向禁开——回踩/突破候选均不做")
             return None, ({"op": "expire", "reason": "htf_state_lock"} if pending else None)
 
-    # 投票单趟计算（2026-10-10 精简）：6 票预筛层撤销——4h 前置拉取后预筛失去
-    # 「省 4h 请求」的存在理由，|net6|<2 被终判 |net|<3 完全蕴含（第 7 票至多
-    # ±1），有损的 voted<5 分支删除（voted6=4 + 第 7 票 → voted=5 本可通过终判，
-    # 不再被预筛误杀）。|net6|<2 的币照样死于终判 |net|<3，pending 过期原因不变；
-    # 4h 背景复用第一步的 htf_bg，6 项 1h 指标也不再双算（原两次
-    # compute_indicator_votes 各跑一遍全量指标）
+    # 投票单趟计算（2026-10-10 精简；2026-10-15 指标拆角色，docs/21 O9）：
+    # 方向票仅 MACD/布林带/RSI 三张（technical.DIR_VOTE_SHORTS），门槛改为
+    # 「方向票同向 ≥DIR_VOTE_MIN 张」——不再要求 7 票里净差 ≥3（滞后指标
+    # ADX/OBV/SuperTrend 与 4h背景退出方向票，改由 range_score/质量分承担），
+    # 消除大量有效回踩死在这一关的问题。net 仍为方向票净差（符号=方向）。
+    # 4h 背景复用第一步的 htf_bg，指标不再双算
     votes = compute_indicator_votes(klines, htf_bg=htf_res)
-    if not votes or votes["voted"] < 5 or abs(votes["net"]) < 3:
-        # 中性/票数不足 → 活跃 pending 方向失守（docs/19 §4.1 前置过期路径）
+    if not votes or max(votes["bull_n"], votes["bear_n"]) < DIR_VOTE_MIN:
+        # 方向票同向不足 → 活跃 pending 方向失守（docs/19 §4.1 前置过期路径）
         _reject("votes")
         # 漏斗明细（2026-10-11 用户拍板）：votes 关的判定说明展示全部票
         # （方向箭头+状态+细节），前端判定说明列优先于静态 hint 渲染；
@@ -349,9 +352,10 @@ def detect_indicator_candidate(
         _reject("direction_flip")
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
-    # 第二步：1H 结构门——已不在筛选链（2026-10-12，docs/21 O7 退役筛选链硬门）：
+    # 第二步：1H 结构门——不在筛选链（2026-10-12，docs/21 O7 退役筛选链硬门）：
     # 不再整体否决信号（s1 可见信号池恢复），结构判定收敛为 trigger 层 1h EMA21
-    # 触点硬门（不过则本次回踩不产生信号；scanner 侧仅按 reject 记结构门死因）。
+    # 触点的软校验；2026-10-15（docs/21 O9）再降级为「不过门不否决、仅质量分重罚」
+    # ——trigger 带 structure_gate 证据，scanner 透传进 compute_quality_score。
     # flt.structure_1h_gate 开关随之退役（scan_filters 字段保留向后兼容，不再消费）。
 
     # 第三步：震荡评分卡（2026-10-10 二次拍板，calc_range_score 语义硬门化）：
@@ -404,20 +408,22 @@ def detect_indicator_candidate(
                         "回踩确认类型未在触发类型白名单内（筛选配置）——不进待确认池")
                 return None, None
         # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩口径计，
-        # 触碰根即当前信号根 klines[-2]，企稳加分项量能语义照常评估）
+        # 触碰根即当前信号根 klines[-2]，企稳加分项量能语义照常评估）。
+        # structure_gate：ema21 触点未过 1H 结构门（2026-10-15 降级为重罚）随
+        # pending 快照进质量分，让待确认池也按结构合规度排序
         if pending_op and pending_op.get("op") == "upsert":
             _stab = pullback_stabilize_bonus(klines, direction, -2)
             pending_op["quality_score"] = compute_quality_score(
                 direction, votes, PULLBACK, klines=klines, stabilize=_stab,
+                structure_gate=bool(pending_op.get("structure_gate", True)),
             )
             pending_op["votes_json"] = _votes_snapshot(votes, stabilize=_stab)
         elif reject_out is not None:
             # 无触发且未进待确认池 → 漏斗记录（upsert 进池不算被拒）。
-            # structure_1h：ema21 触点未过 1H 结构门（硬门否决，2026-10-12）
-            if (pending_op and pending_op.get("op") == "expire"
-                    and pending_op.get("reason") == "structure_1h"):
-                _reject("structure_1h")
-            elif whitelist_reject:
+            # 1H 结构门 2026-10-15 起不再否决（降级为质量分重罚），
+            # 故触发层不再产生 expire(structure_1h)，此分支无需单列：
+            # trigger.py 已无 structure_1h 死因，故此处只区分白名单/无触发
+            if whitelist_reject:
                 _reject("trigger_whitelist")
             else:
                 # 无触发明细（2026-10-13）：trigger 侧采集的卡点文本段，分号连接
@@ -429,12 +435,14 @@ def detect_indicator_candidate(
         return None, pending_op
 
     # 企稳加分项证据（docs/19 §3.3，trigger 回踩路径产出）：进质量分 + votes 快照；
-    # pattern 透传供看涨吞没上影短加分（2026-10-13 硬门改加分项）
+    # pattern 透传供看涨吞没上影短加分（2026-10-13 硬门改加分项）；
+    # structure_gate 透传 1H 结构门结果（2026-10-15 降级为重罚，不过门照常出信号）
     stabilize = trig.get("stabilize")
     quality = compute_quality_score(direction, votes, trig["type"], klines=klines,
                                     stabilize=stabilize, pattern=trig.get("pattern"),
                                     golden_combo=bool(trig.get("golden_combo")),
-                                    swing_order=flt.swing_order)
+                                    swing_order=flt.swing_order,
+                                    structure_gate=bool(trig.get("structure_gate", True)))
     return {
         "signal_type": trig["type"],
         # 现价 = 未收盘K线最新价（仅作入场价差参考）：信号判定（投票/触发/形态/量能）
@@ -643,7 +651,7 @@ class Scanner:
             event_ops: dict[str, dict] = {}
 
             def scan_one(symbol: str) -> tuple[str, list[dict], bool]:
-                """指标多数决定向 → 两段式触发确认 → 质量分。返回 (symbol, [候选...], is_error)"""
+                """方向票定向 → 两段式触发确认 → 质量分。返回 (symbol, [候选...], is_error)"""
                 try:
                     # EMA144/指标暖机需要足够历史，至少拉 300 根；
                     # 尾窗内强刷（缓存可能是小时内早期快照，信号根必须新鲜）
@@ -676,8 +684,8 @@ class Scanner:
                         if (pop.get("op") == "confirm"
                                 and (pendings.get(symbol) or {}).get("touch_ref") == TOUCH_RETEST):
                             event_ops[symbol] = {"op": "consume"}
-                        # 无活跃 pending 时的 expire 仅为漏斗归因（如 structure_1h 硬门
-                        # 否决），不落 pending 处置——避免对无 pending 币种逐币空查询
+                        # 无活跃 pending 时的 expire 仅为漏斗归因，不落 pending
+                        # 处置——避免对无 pending 币种逐币空查询
                         if not (pop.get("op") == "expire" and pendings.get(symbol) is None):
                             pending_ops[symbol] = pop
                     # 当根确认消费：本次回踩金K命中的触点是回测位 → 事件 consumed

@@ -1,8 +1,9 @@
 """技术指标包：MACD / 布林带 / RSI / SuperTrend / ADX / OBV / 4h 背景
 
 AI 分析两条管线共用注入（P0 ai_analyzer._build_messages 与 P1 ai_agent._build_user_msg）：
-方向按指标票数多数决（2026-09-17 起）：多空票数谁多以谁为主，不再强制"以 K 线为准"；
-票数统计由程序完成，注入文本中的"指标方向"行直接给结论。
+方向按「方向票」多数决（2026-09-17 起；2026-10-15 指标拆角色，docs/21 O9）：
+仅 MACD/布林带/RSI 三张方向票计方向，同向 ≥2 张即定向，不再强制"以 K 线为准"；
+票数统计由程序完成，注入文本中的"方向票"行直接给结论。
 
 - 全部基于已收盘 K 线（剔除最后一根未收盘），与 ema.py 同口径
 - 每个指标一个 analyze_* 函数：数据不足返回 None，返回 dict 含 state/state_label/detail，
@@ -928,6 +929,23 @@ _INDICATORS = (
 )
 HTF_DISPLAY, HTF_SHORT = "4h背景(EMA状态)", "4h背景"
 
+# ── 指标角色分工（2026-10-15 拍板，docs/21 O9）────────────────────────────
+# 方向票：直接回答多空、对 1h 入场有时效性的三张——MACD / 布林带 / RSI。
+# 门槛 = 方向票同向 ≥DIR_VOTE_MIN 张（scanner），net = 方向票净差（符号=方向）。
+# 其余指标退出方向票、避免滞后指标主导 1h 方向：
+# - ADX(14) 表趋势强度非方向，强度交由 range_score 项5（1h ADX<18 预警）承担；
+# - OBV(20) 量价指标，改由质量分「顶/底背离」扣分（原有逻辑，不重复投方向票）；
+# - SuperTrend(10,3) 趋势跟踪天然滞后，逆向时仅作风险扣分（RISK_VOTE_PENALTY）；
+# - 4h背景已被前置硬门 gate_4h 一票否决覆盖，仍写入 votes_json 供 AI/质量分，
+#   但不计方向票（避免同一 4h 事实在筛选链里被二次投票）。
+DIR_VOTE_SHORTS = ("MACD", "布林带", "RSI")
+DIR_VOTE_MIN = 2                      # 方向票同向门槛（同向张数下限）
+RISK_VOTE_PENALTY = {"SuperTrend": -6}   # 辅助票逆向扣分（质量分，仅逆向时生效）
+# 1H 结构门未过重罚（2026-10-15 拍板，docs/21 O9）：结构门由硬门降级为质量分
+# 重罚（-15，量级≈两个 4h 逆向档）——不过门照常出信号，但排序显著落后，
+# 让 AI/配额优先取结构合规信号
+STRUCTURE_GATE_PENALTY = -15
+
 
 def _compute_all(
     klines: list[list], htf_klines: Optional[list] = None,
@@ -1004,10 +1022,10 @@ def _render_atr_line(
 def render_indicator_block(
     klines: list[list], htf_klines: Optional[list] = None,
 ) -> str:
-    """整块注入文本（含标题、4h 背景与多数决结论行，尾带换行）；无可用指标返回空串。
+    """整块注入文本（含标题、4h 背景与方向票结论行，尾带换行）；无可用指标返回空串。
 
     P0/P1 两条管线共用：插在均线形态之后、摆动结构之前。
-    结论行由程序统计（方向指标多空票数），提示词按此行执行多数决规则。
+    结论行由程序统计（方向票多空张数），提示词按此行执行方向票规则。
     """
     results = _compute_all(klines, htf_klines)
     lines = [
@@ -1023,24 +1041,27 @@ def render_indicator_block(
     if atr_line:
         lines.append(atr_line)
 
-    # 多数决统计（布林带按中轨上下投票）
-    bull = [s for _, s, r in results if r and int(r.get("dir") or 0) > 0]
-    bear = [s for _, s, r in results if r and int(r.get("dir") or 0) < 0]
+    # 方向票统计（2026-10-15 拍板，docs/21 O9）：仅 DIR_VOTE_SHORTS（MACD/
+    # 布林带/RSI）计方向，其余指标（SuperTrend/ADX/OBV/4h背景）不再投方向票——
+    # 结论行只承载数据（票数+来源指标），行为规则由系统提示词 _RULE_VOTE 承载
+    bull = [s for _, s, r in results
+            if s in DIR_VOTE_SHORTS and r and int(r.get("dir") or 0) > 0]
+    bear = [s for _, s, r in results
+            if s in DIR_VOTE_SHORTS and r and int(r.get("dir") or 0) < 0]
     nb, ns = len(bull), len(bear)
-    # 结论行只承载数据（票数+来源指标），行为规则（谁多以谁为准）由系统提示词
-    # _RULE_VOTE 承载，不在此重复（docs/24 提示词瘦身 B2）
     if nb > ns:
-        lines.append(
-            f"- 指标方向: 看多{nb}项（{'/'.join(bull)}） vs 看空{ns}项 → 看多为主"
-        )
+        _verdict = "看多为主"
     elif ns > nb:
-        lines.append(
-            f"- 指标方向: 看多{nb}项 vs 看空{ns}项（{'/'.join(bear)}）→ 看空为主"
-        )
+        _verdict = "看空为主"
     else:
-        lines.append(
-            f"- 指标方向: 多空平衡（看多{nb}项 vs 看空{ns}项）→ 结合K线结构与量能判断"
-        )
+        _verdict = "多空分歧"
+    lines.append(
+        f"- 方向票（{'/'.join(DIR_VOTE_SHORTS)}）: 看多{nb}项"
+        + (f"（{'/'.join(bull)}）" if bull else "")
+        + f" vs 看空{ns}项"
+        + (f"（{'/'.join(bear)}）" if bear else "")
+        + f" → {_verdict}；SuperTrend/ADX/OBV/4h背景不计方向票（仅强度/量价/风险提示）"
+    )
 
     # 4h 状态机硬约束行（2026-10-11 再重构 EMA 状态机 11 态）：缠绕/拐头
     # 双向禁开行在前（凌驾锁逆势），宏观同侧态（宏观交叉/恢复/排列）锁逆势，
@@ -1057,12 +1078,12 @@ def render_indicator_block(
         if htf_r.get("dir") == 1:
             lines.append(
                 f"- 方向约束（硬性）: 4h{htf_r['state_label']}（宏观同侧）"
-                " —— 仅可 long，开空一律 skip（优先于指标多数决，细则见系统提示词硬约束）"
+                " —— 仅可 long，开空一律 skip（优先于方向票，细则见系统提示词硬约束）"
             )
         else:
             lines.append(
                 f"- 方向约束（硬性）: 4h{htf_r['state_label']}（宏观同侧）"
-                " —— 仅可 short，开多一律 skip（优先于指标多数决，细则见系统提示词硬约束）"
+                " —— 仅可 short，开多一律 skip（优先于方向票，细则见系统提示词硬约束）"
             )
 
     # 4h 背景结构化行（2026-10-10 C7，docs/20）：state/macro 以机器
@@ -1084,34 +1105,41 @@ def render_indicator_block(
     # 盈亏比取舍提示行已随 trail RR 豁免一并退役（2026-10-11 策略一 ladder-only）；
     # 2026-10-12 策略二/trail 整体删除后：盈亏比不足一律如实 skip，无第三条路
 
-    return "技术指标（方向=多空票数多数决）:\n" + "\n".join(lines) + "\n"
+    return "技术指标（方向=方向票多数决）:\n" + "\n".join(lines) + "\n"
 
 
 def compute_indicator_votes(
     klines: list[list], htf_klines: Optional[list] = None,
     htf_bg: Optional[dict] = None,
 ) -> Optional[dict]:
-    """指标方向票数统计——扫描筛选与 AI 注入同一把尺子（指标驱动管线核心）。
+    """方向票数统计——扫描筛选与 AI 注入同一把尺子（指标驱动管线核心）。
 
     htf_bg：预计算的 4h 背景结果（scanner ranging 过滤产物），复用免重算；
-    与 htf_klines 二选一（htf_bg 优先），两者皆缺 → 第 7 票弃权。
+    与 htf_klines 二选一（htf_bg 优先），两者皆缺 → 4h背景行缺失。
+
+    2026-10-15 拍板（docs/21 O9）：仅 DIR_VOTE_SHORTS（MACD/布林带/RSI）投方向票，
+    其余指标（SuperTrend/ADX/OBV/4h背景）退出方向统计——net 恒为方向票净差，
+    符号=候选方向（scanner 与 _hit_direction 消费）。
 
     返回 None = 无任何可用指标；否则：
     {bull: [多票短名], bear: [空票短名], bull_n, bear_n, net, voted,
      results: [(短名, 指标结果dict)]}
+    voted = 有数据的「方向票」张数（≤len(DIR_VOTE_SHORTS)）；results 仍含全部指标
+    供 AI 注入/质量分使用。
     """
     results = [
         (short, r) for _, short, r in _compute_all(klines, htf_klines, htf_bg) if r
     ]
     if not results:
         return None
-    bull = [s for s, r in results if int(r.get("dir") or 0) > 0]
-    bear = [s for s, r in results if int(r.get("dir") or 0) < 0]
+    dir_votes = [(s, r) for s, r in results if s in DIR_VOTE_SHORTS]
+    bull = [s for s, r in dir_votes if int(r.get("dir") or 0) > 0]
+    bear = [s for s, r in dir_votes if int(r.get("dir") or 0) < 0]
     return {
         "bull": bull, "bear": bear,
         "bull_n": len(bull), "bear_n": len(bear),
         "net": len(bull) - len(bear),
-        "voted": len(results),
+        "voted": len(dir_votes),
         "results": results,
     }
 
@@ -1227,6 +1255,7 @@ def compute_quality_score(
     pattern: Optional[str] = None,
     golden_combo: bool = False,
     swing_order: int = 3,
+    structure_gate: bool = True,
 ) -> int:
     """候选质量分（0-100）：方向一致性为主，修饰项只影响排序不改变方向。
 
@@ -1238,9 +1267,18 @@ def compute_quality_score(
     不确认 -4；仅回踩类触发传入，加分不拦截）
     pattern: 可选，金K形态名（trigger 输出的 pattern 字段，回踩金K确认路径）；
     看涨吞没上影短加分项据此生效（上影长已不拦形态）
+    structure_gate: 1H 结构门结果（trigger 的 structure_gate 证据；仅 ema21 触点
+    可能为 False，其余触点豁免恒 True）。2026-10-15 拍板：结构门由硬门降级为
+    质量分重罚（STRUCTURE_GATE_PENALTY）——不过门照常出信号，仅排序落后
+
     修饰规则（2026-09-17 设计评审定稿；2026-09-24 4h 背景提权；2026-10-11
     再重构 EMA 状态机 11 态：div 强度档与过热/冷却分值矩阵退役，改
-    STATE_QUALITY 状态分矩阵；衰竭期分值同日早前已删）：
+    STATE_QUALITY 状态分矩阵；衰竭期分值同日早前已删；2026-10-15 指标拆角色：
+    基础分改按「方向票净差」net×10（net∈{1,2,3}→基础 60/70/80），SuperTrend
+    逆向改风险扣分、ADX/OBV 退出方向票）：
+    - 方向票基础：50 + direction × net × 10（net = MACD/布林带/RSI 净差）
+    - 辅助票逆向扣分：SuperTrend 方向与候选相反 −6（趋势跟踪滞后，仅风险提示，
+      同向/中性不加分）
     - 4h背景按状态机状态：同向 排列+10 / 宏观交叉+12（趋势级事件独享最高档，
       原 extreme 语义被吸收）/ 恢复初期+8 / 过渡态+5；逆向 同态 -12/-14/-10/-6
     - 拐头 turn_* 同向 -8 / 逆向 -4（双向禁开后仅扫描侧排序兜底）；
@@ -1262,9 +1300,10 @@ def compute_quality_score(
     - RSI>75 做多 / RSI<25 做空 -8（追高杀低）
     - OBV 顶背离做多 / 底背离做空 -6（量价背离）
     - 突破触发且布林带宽分位 ≤10 -5（带宽收窄的突破易假）
+    - 1H 结构门未过（structure_gate=False）−STRUCTURE_GATE_PENALTY
     """
     by_short = dict(votes["results"])
-    score = 50 + direction * votes["net"] * 7  # net≥3 → 基础 ≥71
+    score = 50 + direction * votes["net"] * 10  # 方向票 net∈{1,2,3} → 基础 60/70/80
 
     htf = by_short.get(HTF_SHORT)
     if htf and int(htf.get("dir") or 0):
@@ -1319,6 +1358,13 @@ def compute_quality_score(
         if (direction == 1 and st == "bear_div") or (direction == -1 and st == "bull_div"):
             score -= 6
 
+    # 辅助票逆向扣分（2026-10-15 拍板，docs/21 O9）：SuperTrend 等滞后指标退出
+    # 方向票，仅当方向与候选相反时作风险扣分（同向/中性不加分）
+    for _short, _pen in RISK_VOTE_PENALTY.items():
+        _r = by_short.get(_short)
+        if _r and int(_r.get("dir") or 0) and int(_r["dir"]) != direction:
+            score += _pen
+
     boll = by_short.get("布林带")
     if trigger_type == "trigger_breakout" and boll:
         rank = boll.get("bw_rank")
@@ -1343,5 +1389,10 @@ def compute_quality_score(
     # 与 MACD 零轴动量证据，加分不拦截，仅回踩类触发由调用方传入
     if stabilize:
         score += int(stabilize.get("mod") or 0)
+
+    # 1H 结构门重罚（2026-10-15 拍板，docs/21 O9）：门由硬门降级为质量分重罚，
+    # 不过门照常出信号、仅排序落后（仅 ema21 触点可能为 False）
+    if not structure_gate:
+        score += STRUCTURE_GATE_PENALTY
 
     return max(0, min(100, int(round(score))))

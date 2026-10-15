@@ -8,7 +8,7 @@
 1. atr_series：Wilder 平滑口径（与纯 Python 参考实现逐项对比、NaN 种子段、
    数据不足返回 None）
 2. ATR 行：出现、格式（值/占现价%/分位）、分位端点（平坦=0%、递增=100%）、
-   位置在"指标方向"结论行之前
+   位置在"方向票"结论行之前
 3. 数据不足：整行省略（块内无 ATR 行）
 """
 import math
@@ -88,7 +88,7 @@ _ATR_RE = re.compile(
 
 
 def test_atr_line_present_and_format():
-    """平坦波动：ATR 恒为 2×spread，分位 0%（序列无更小值），行在指标方向之前"""
+    """平坦波动：ATR 恒为 2×spread，分位 0%（序列无更小值），行在方向票之前"""
     klines = _make_klines([100.0] * 60)  # 59 根已收盘，有效 ATR 46 个
     block = render_indicator_block(klines)
     m = _ATR_RE.search(block)
@@ -97,8 +97,8 @@ def test_atr_line_present_and_format():
     assert float(m.group(2)) == pytest.approx(2.0, abs=0.05)   # 2/100=2.0%
     assert int(m.group(3)) == 46                               # 59-14+1
     assert float(m.group(4)) == pytest.approx(0.0, abs=0.5)    # 全等 → 0%
-    # 位置：ATR 行在指标行之后、"指标方向"结论行之前
-    assert block.index("ATR(14)=") < block.index("- 指标方向: ")
+    # 位置：ATR 行在指标行之后、"方向票"结论行之前
+    assert block.index("ATR(14)=") < block.index("- 方向票（")
 
 
 def test_atr_line_percentile_ramp_100():

@@ -1,7 +1,8 @@
 """质量分纯指标口径基线单测。
 
 关键位修饰项已随关键位子系统整体移除（2026-09-28），compute_quality_score
-回归纯指标口径：50 + net×7 + 修饰，不再接收 key_levels/atr/dual_touch。
+回归纯指标口径：50 + net×10 + 修饰，不再接收 key_levels/atr/dual_touch
+（2026-10-15 指标拆角色：net=方向票净差∈{1,2,3}，基础分改 net×10 保持量级）。
 放量加分（2026-09-29）：三类触发统一为加分项（≥量比门槛 +5），突破不再卡死。
 看涨吞没上影短加分（2026-10-13）：上影硬门改加分项（≤全长 25% +3），
 不再因上影长拒判形态。
@@ -16,11 +17,13 @@ from app.services.strategy.technical import compute_quality_score  # noqa: E402
 
 
 def _votes(net: int = 3) -> dict:
-    """最小票数集：无 4h/RSI/OBV/布林修饰干扰（基础分 = 50 + net×7）"""
+    """最小票数集：无 4h/RSI/OBV/布林修饰干扰（基础分 = 50 + net×10）"""
     return {
-        "bull": ["MACD"] if net > 0 else [], "bear": [] if net > 0 else ["MACD"],
+        "bull": ["MACD", "布林带", "RSI"][:max(net, 0)]
+        if net > 0 else [],
+        "bear": ["MACD"] if net < 0 else [],
         "bull_n": max(net, 0), "bear_n": max(-net, 0),
-        "net": net, "voted": 7,
+        "net": net, "voted": 3,
         "results": [["MACD", {"dir": 1 if net > 0 else -1}]],
     }
 
@@ -41,9 +44,9 @@ def _vol_klines(sig_vol: float, base: float = 100.0) -> list[list]:
 
 
 def test_baseline_score_unchanged():
-    """无关键位修饰的纯指标基线：net=3 → 50 + 21 = 71"""
+    """无关键位修饰的纯指标基线：net=3 → 50 + 30 = 80"""
     assert compute_quality_score(1, _votes(), "trigger_candlestick",
-                                 klines=_klines()) == 71
+                                 klines=_klines()) == 80
 
 
 def test_extra_params_rejected():
@@ -68,22 +71,22 @@ def test_volume_ratio_insufficient_data():
 def test_breakout_volume_bonus():
     """突破类放量 +5（2026-09-29 起放量降为加分项，突破类统一参与）"""
     kl = _vol_klines(120.0)
-    assert compute_quality_score(1, _votes(), "trigger_breakout", klines=kl) == 76
-    assert compute_quality_score(1, _votes(), "trigger_trend_breakout", klines=kl) == 76
+    assert compute_quality_score(1, _votes(), "trigger_breakout", klines=kl) == 85
+    assert compute_quality_score(1, _votes(), "trigger_trend_breakout", klines=kl) == 85
 
 
 def test_pullback_confirm_volume_bonus_kept():
     """回踩金K确认放量 +5 维持（2026-09-25 原有规则）"""
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
-                                 klines=_vol_klines(120.0)) == 76
+                                 klines=_vol_klines(120.0)) == 85
 
 
 def test_low_volume_no_bonus():
-    """缩量（量比 < 1.2）不加不减：基线 71；突破类缩量仍产生信号由 trigger 层放行"""
+    """缩量（量比 < 1.2）不加不减：基线 80；突破类缩量仍产生信号由 trigger 层放行"""
     assert compute_quality_score(1, _votes(), "trigger_breakout",
-                                 klines=_vol_klines(90.0)) == 71
+                                 klines=_vol_klines(90.0)) == 80
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
-                                 klines=_vol_klines(90.0)) == 71
+                                 klines=_vol_klines(90.0)) == 80
 
 
 def _engulf_klines(high: float, low: float,
@@ -99,14 +102,14 @@ def _engulf_klines(high: float, low: float,
 
 def test_bullish_engulfing_short_upper_shadow_bonus():
     """看涨吞没上影短 +3（2026-10-13 硬门改加分项）：上影 0.2/全长 2.0=10%
-    ≤25% → 71+3=74；不传 pattern / 其他形态名不加（仅看涨吞没专属）"""
+    ≤25% → 80+3=83；不传 pattern / 其他形态名不加（仅看涨吞没专属）"""
     kl = _engulf_klines(101.5, 99.5)
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
-                                 klines=kl, pattern="bullish_engulfing") == 74
+                                 klines=kl, pattern="bullish_engulfing") == 83
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
-                                 klines=kl) == 71
+                                 klines=kl) == 80
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
-                                 klines=kl, pattern="hammer") == 71
+                                 klines=kl, pattern="hammer") == 80
 
 
 def test_bullish_engulfing_upper_shadow_boundary_25pct_bonus():
@@ -114,15 +117,15 @@ def test_bullish_engulfing_upper_shadow_boundary_25pct_bonus():
     起该值不再拦截、照判形态）"""
     kl = _engulf_klines(101.8, 99.8)
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
-                                 klines=kl, pattern="bullish_engulfing") == 74
+                                 klines=kl, pattern="bullish_engulfing") == 83
 
 
 def test_bullish_engulfing_long_upper_shadow_no_bonus():
-    """上影长（1.0/2.6≈38% >25%）只失加分：71 不加分也不拦截（旧 25% 硬门
+    """上影长（1.0/2.6≈38% >25%）只失加分：80 不加分也不拦截（旧 25% 硬门
     时代此形态连候选都不产生）"""
     kl = _engulf_klines(102.3, 99.7)
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
-                                 klines=kl, pattern="bullish_engulfing") == 71
+                                 klines=kl, pattern="bullish_engulfing") == 80
 
 
 # ── 金K组合价格带结构点密度加分（2026-10-13-6；-7 改实体重叠口径）────────────
@@ -137,7 +140,7 @@ def _band_klines(sig_high: float, sig_low: float,
     供组合金K带（golden_combo）。sw_low_body/sw_high_body = 两个摆动K线的 (open,
     close)，控制其实体（默认实体落在各自极值点，即实体重叠≈极值点落带内）；
     其余K线实体恒 [100,100]。成交恒等量 → 量比 1.0；已收盘 20 根 <22 →
-    volume_ratio 返回 0（两类放量加分均不干扰，基线恒 71）"""
+    volume_ratio 返回 0（两类放量加分均不干扰，基线恒 80）"""
     highs = [101, 101, 101, 101, 101, 99, 99, 98, 99, 99,
              99, 99, 103, 99, 99, 99, 99, 99, prev_high, sig_high]
     lows = [100, 100, 100, 100, 100, 97, 96, 95, 96, 97,
@@ -181,35 +184,35 @@ def test_golden_zone_swing_count_combo_widens_band():
 
 
 def test_quality_score_golden_zone_bonus_single():
-    """回踩金K确认 + 单根价格带含 2 点 → 71 + 2×3 = 77；窄带不含点 → 71"""
+    """回踩金K确认 + 单根价格带含 2 点 → 80 + 2×3 = 86；窄带不含点 → 80"""
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
                                  klines=_band_klines(104.0, 94.0),
-                                 pattern="hammer") == 77
+                                 pattern="hammer") == 86
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
                                  klines=_band_klines(99.0, 97.0),
-                                 pattern="hammer") == 71
+                                 pattern="hammer") == 80
 
 
 def test_quality_score_golden_zone_bonus_combo():
-    """组合金K（golden_combo=True）用两根包络 → 2 点 +6=77；不带标志按单根 0 点=71"""
+    """组合金K（golden_combo=True）用两根包络 → 2 点 +6=86；不带标志按单根 0 点=80"""
     kl = _band_klines(99.0, 97.0, prev_high=104.0, prev_low=94.0)
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm", klines=kl,
-                                 pattern="hammer", golden_combo=True) == 77
+                                 pattern="hammer", golden_combo=True) == 86
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm", klines=kl,
-                                 pattern="hammer", golden_combo=False) == 71
+                                 pattern="hammer", golden_combo=False) == 80
 
 
 def test_quality_score_golden_zone_only_for_pullback_confirm():
     """仅回踩金K确认适用：突破触发 / 无 pattern（金K缺失的 upsert 快照）均不加分"""
     kl = _band_klines(104.0, 94.0)
     assert compute_quality_score(1, _votes(), "trigger_breakout",
-                                 klines=kl, pattern="hammer") == 71
+                                 klines=kl, pattern="hammer") == 80
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
-                                 klines=kl) == 71
+                                 klines=kl) == 80
 
 
 def test_quality_score_golden_zone_cap_12():
-    """带内点多时封顶 +12：正弦锯齿全峰谷落入宽带 → 71 + 12 = 83"""
+    """带内点多时封顶 +12：正弦锯齿全峰谷落入宽带 → 80 + 12 = 92"""
     import math
     n = 40
     kl = []
@@ -223,4 +226,4 @@ def test_quality_score_golden_zone_cap_12():
     from app.services.strategy.technical import golden_zone_swing_count
     assert golden_zone_swing_count(kl) >= 4
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
-                                 klines=kl, pattern="hammer") == 83
+                                 klines=kl, pattern="hammer") == 92

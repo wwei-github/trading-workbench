@@ -530,7 +530,7 @@ def detect_shooting_star(klines: list[list], idx: int = -1) -> Optional[dict]:
     形状与倒锤形线完全相同（长上影 + 小实体 + 短下影），区别仅在语境：
     反抽压力位/EMA21 受阻回落时为看跌（2026-09-28 起替代上吊线进入看空
     金K清单——反抽受阻的语义锚是"冲高回落长上影"）。顶部不限于近期区间
-    高位（顶部也可以是压力位），锚定语境由触发层保证（指标多数决定方向 +
+    高位（顶部也可以是压力位），锚定语境由触发层保证（方向票决定方向 +
     信号K线触碰 EMA21 收回防守侧 + 悬空金K拦截），检测器仅做形状
     判定——与锤形线无位置门控对称；同形双报（倒锤形线/流星线并列）与
     锤形线/上吊线对的设计一致。
@@ -722,7 +722,7 @@ def resolve_golden_evidence(klines: list[list], wanted: str,
 
     入参：
     - klines：全量K线（[-2]=当根已收盘、[-3]=前根已收盘）
-    - wanted：期望方向 "bullish"/"bearish"（指标多数决方向）
+    - wanted：期望方向 "bullish"/"bearish"（方向票多数决方向）
     - patterns：detect_all_patterns(klines, idx=-2) 的当根形态检测结果
     返回 (golden, note)：
     - golden：确认证据形态 dict（pattern/direction），None=无有效证据

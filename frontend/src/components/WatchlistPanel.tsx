@@ -349,7 +349,7 @@ export default function WatchlistPanel() {
         if (v == null) return <span style={{ color: "#999" }}>-</span>;
         const votes = r.scan?.votes_json;
         const detail = votes
-          ? `指标多数决：多${votes.bull_n} vs 空${votes.bear_n}（净${votes.net > 0 ? "+" : ""}${votes.net} / 已投${votes.voted}）`
+          ? `方向票：多${votes.bull_n} vs 空${votes.bear_n}（净${votes.net > 0 ? "+" : ""}${votes.net} / 已投${votes.voted}）`
             + (votes.bull.length ? `\n看多：${votes.bull.join("、")}` : "")
             + (votes.bear.length ? `\n看空：${votes.bear.join("、")}` : "")
           : undefined;

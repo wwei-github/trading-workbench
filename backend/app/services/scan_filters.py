@@ -22,7 +22,8 @@ TRIGGER_TREND_BREAKOUT = "trigger_trend_breakout"      # 趋势突破：收盘�
 TRIGGER_PULLBACK_CONFIRM = "trigger_pullback_confirm"  # 回踩触点后金K确认
 # trigger_trend_pullback（趋势回踩）2026-10-12 下线：它并非独立信号，而是同一
 # 回踩路径的「质量分层标注」（4H闸门+1H结构通过时升级），已将其并入
-# trigger_pullback_confirm；1H 结构门改作 ema21 触点的硬门（见 trigger.py）。
+# trigger_pullback_confirm；1H 结构门 2026-10-15 起降级为 ema21 触点的软校验
+# （不过门不否决、仅质量分重罚 -15，见 trigger.py 与 docs/21 O9）。
 # 历史 scan_results 行展示映射保留（labels/TRIGGER_FAMILY）
 ALL_TRIGGERS = (TRIGGER_BREAKOUT, TRIGGER_TREND_BREAKOUT, TRIGGER_PULLBACK_CONFIRM)
 
@@ -90,7 +91,7 @@ class ScanFilters:
     # 摆动点阶数（2026-10-12 触发层跟随配置）：swing 触点 / 结构突破 pivot 取材
     # 与 AI 事实包、K线标注共用 SystemConfig.swing_order，检测层不再硬编码 3
     swing_order: int = 3
-    # 1h 结构门开关：已于 2026-10-12 退役（docs/21 O7——结构门降格为 s2 资格闸，
+    # 1h 结构门开关：已于 2026-10-12 退役（docs/21 O7——结构门移出 scan 资格闸，
     # scanner 不再消费）。字段保留仅为向后兼容（DB JSONB 旧值可解析），同
     # candle_max_ema21_dist_pct 退役先例
     structure_1h_gate: bool = True

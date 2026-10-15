@@ -88,7 +88,7 @@ def _flat_1h(n: int = 110) -> list[list]:
 
 
 def test_ranging_4h_filtered_out():
-    """4h 走平/ADX弱（gate_4h 否决）：即使 1h 指标多数决通过也不产生候选"""
+    """4h 走平/ADX弱（gate_4h 否决）：即使 1h 方向票通过也不产生候选"""
     cand, op = detect_indicator_candidate(
         _FakePool(_trend_1h(), _ranging_4h()), "TEST/USDT", _trend_1h()
     )

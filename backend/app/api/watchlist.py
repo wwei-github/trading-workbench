@@ -150,7 +150,7 @@ def refresh_watchlist(symbol: str, db: Session = Depends(get_db)):
     except AllExchangesFailed as e:
         raise HTTPException(status_code=503, detail=f"K线刷新失败（{e.summary}）")
 
-    # 信号判定：与扫描器 scan_one 完全同一套指标多数决+两段式触发确认逻辑（每币至多 1 个候选）
+    # 信号判定：与扫描器 scan_one 完全同一套方向票多数决+两段式触发确认逻辑（每币至多 1 个候选）
     signals: list[dict] = []
     pending_op = None
     if klines:

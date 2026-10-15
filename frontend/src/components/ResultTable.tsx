@@ -55,7 +55,7 @@ const TOUCH_TAG_MAP: Record<string, { color: string; tip: string }> = {
 };
 
 // 回踩位置展示文案：EMA 触点直接显示周期；retest/swing 按方向给 前高/前低 措辞。
-// 方向推断：指标多数决净票（程序判定方向的真实依据）→ 趋势斜率符号兜底
+// 方向推断：方向票（MACD/布林带/RSI）净票（程序判定方向的真实依据）→ 趋势斜率符号兜底
 function touchLabel(ref: string, record: ScanResult): string {
   if (ref === "ema21") return "EMA21";
   if (ref === "ema21_4h") return "EMA21(4h)";
@@ -499,7 +499,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
         if (v == null) return <span style={{ color: "#999" }}>-</span>;
         const votes = record.votes_json;
         const detail = votes
-          ? `指标多数决：多${votes.bull_n} vs 空${votes.bear_n}（净${votes.net > 0 ? "+" : ""}${votes.net} / 已投${votes.voted}）`
+          ? `方向票：多${votes.bull_n} vs 空${votes.bear_n}（净${votes.net > 0 ? "+" : ""}${votes.net} / 已投${votes.voted}）`
             + (votes.bull.length ? `\n看多：${votes.bull.join("、")}` : "")
             + (votes.bear.length ? `\n看空：${votes.bear.join("、")}` : "")
           : undefined;
@@ -682,7 +682,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
     {
       // AI 推荐度列：0-100，仅 suggest 结论有值
       title: (
-        <Tooltip title="AI 推荐度（0-100，仅建议开单时有值）。与质量分不同：质量分是程序侧指标多数决打分（决定进入 AI 配额的顺序），推荐度是 AI 分析后的结论">
+        <Tooltip title="AI 推荐度（0-100，仅建议开单时有值）。与质量分不同：质量分是程序侧方向票打分（决定进入 AI 配额的顺序），推荐度是 AI 分析后的结论">
           <span>推荐度</span>
         </Tooltip>
       ),
