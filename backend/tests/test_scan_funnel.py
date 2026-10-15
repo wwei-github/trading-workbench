@@ -354,6 +354,35 @@ def test_pending_upsert_allowed_when_gates_pass():
     assert rv == {}
 
 
+def _pending_snapshot_kl(touch_vol: float):
+    """pending upsert 快照夹具：25 根平价 K（closes 全等 → MACD 零轴项两组同源），
+    仅触碰根 klines[-2] 量能可调——volume_ratio 测 closed[-1]=klines[-2]，中位窗
+    closed[-21:-1]=klines[-22:-2] 不含该根，故调量不影响中位量。"""
+    kl = [[1_700_000_000_000 + i * 3_600_000, 100.0, 101.0, 99.0, 100.0, 100.0, 100.0]
+          for i in range(25)]
+    kl[-2] = [kl[-2][0], 100.0, 101.0, 99.0, 100.0, float(touch_vol), 100.0]
+    return kl
+
+
+def test_pending_snapshot_volume_caliber_matches_pullback_confirm():
+    """历史 bug 修复（2026-10-15）：pending Stage-1 快照此前用 trigger_pullback
+    （历史类型）口径，「放量 +5」在待确认池失效。现改用 trigger_pullback_confirm
+    并跳过量能语义（镜像当根确认同规则）——触碰根量比 ≥1.2 时放量 +5 生效，
+    stabilize.touch_vol_ratio 恒为 None（量能语义已跳过、避免同根语义冲突）。"""
+    from app.services.scan_filters import ALL_TRIGGERS
+    up = {"op": "upsert", "direction": 1}
+    _, op_hi = _detect({}, _pending_snapshot_kl(300.0), trigger=(None, dict(up)),
+                       flt=_adm_flt(ALL_TRIGGERS), htf_state="aligned_bull")
+    _, op_lo = _detect({}, _pending_snapshot_kl(100.0), trigger=(None, dict(up)),
+                       flt=_adm_flt(ALL_TRIGGERS), htf_state="aligned_bull")
+    assert op_hi["op"] == op_lo["op"] == "upsert"
+    # 放量 +5 生效：仅触碰根量能不同（其余修饰项与零轴项同源），高量根应高 5 分
+    assert op_hi["quality_score"] - op_lo["quality_score"] == 5
+    # 量能语义已跳过（volume_semantics=False）→ 触碰根量比证据恒 None
+    assert op_hi["votes_json"]["stabilize"]["touch_vol_ratio"] is None
+    assert op_lo["votes_json"]["stabilize"]["touch_vol_ratio"] is None
+
+
 def test_existing_pending_expire_unaffected_by_admission_gate():
     """准入闸只挡新进池：已有 pending 的 expire 生命周期不受白名单/状态机影响"""
     from app.services.scan_filters import TRIGGER_BREAKOUT

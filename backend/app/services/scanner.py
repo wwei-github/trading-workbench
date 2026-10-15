@@ -52,7 +52,6 @@ from app.services.strategy.technical import (
 )
 from app.services.strategy.trigger import (
     BREAKOUT,
-    PULLBACK,
     PULLBACK_CONFIRM,
     TOUCH_RETEST,
     TREND_BREAKOUT,
@@ -407,14 +406,15 @@ def detect_indicator_candidate(
                     reject_out["detail"] = (
                         "回踩确认类型未在触发类型白名单内（筛选配置）——不进待确认池")
                 return None, None
-        # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩口径计，
-        # 触碰根即当前信号根 klines[-2]，企稳加分项量能语义照常评估）。
+        # 行5：触碰无金K → upsert pending；补 Stage-1 快照（质量分按回踩确认口径计，
+        # 触碰根即当前信号根 klines[-2]：量能走「放量 +5」加分，跳过量能语义——
+        # 与当根确认同规则，避免同一根上放量加分与放量/缩量回踩语义冲突）。
         # structure_gate：ema21 触点未过 1H 结构门（2026-10-15 降级为重罚）随
         # pending 快照进质量分，让待确认池也按结构合规度排序
         if pending_op and pending_op.get("op") == "upsert":
-            _stab = pullback_stabilize_bonus(klines, direction, -2)
+            _stab = pullback_stabilize_bonus(klines, direction, -2, volume_semantics=False)
             pending_op["quality_score"] = compute_quality_score(
-                direction, votes, PULLBACK, klines=klines, stabilize=_stab,
+                direction, votes, PULLBACK_CONFIRM, klines=klines, stabilize=_stab,
                 structure_gate=bool(pending_op.get("structure_gate", True)),
             )
             pending_op["votes_json"] = _votes_snapshot(votes, stabilize=_stab)
