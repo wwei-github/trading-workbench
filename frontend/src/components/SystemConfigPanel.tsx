@@ -3,6 +3,7 @@ import { Modal, Switch, Tag, message, Button, Spin, Alert, Space } from 'antd'
 import { ApiOutlined, DeleteOutlined, WarningOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import { scanApi } from '../api/scan'
+import ConfigSection from './ConfigSection'
 import type { AccountBrief, PurgeStats, SystemConfig } from '../types'
 
 /** 系统配置弹窗（docs/17 P1 扇出 + 2026-10-03 双网独立开关）：
@@ -109,7 +110,7 @@ export default function SystemConfigPanel() {
           padding: '8px 12px',
           border: '1px solid #f0f0f0',
           borderRadius: 8,
-          background: actionable && enabled ? '#f6ffed' : undefined,
+          background: actionable && enabled ? '#f6ffed' : '#fff',
         }}
       >
         <Space size={8}>
@@ -153,9 +154,8 @@ export default function SystemConfigPanel() {
         width={520}
       >
         <Spin spinning={loading}>
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
-            账号清单（正式网账号可多选启用自动交易，扇出跟单）
-          </div>
+          <div style={{ maxHeight: '64vh', overflowY: 'auto', paddingInlineEnd: 4 }}>
+          <ConfigSection title="账号清单" hint="正式网账号可多选启用自动交易，扇出跟单" first>
           {accounts.length === 0 ? (
             <Alert
               type="warning"
@@ -169,8 +169,9 @@ export default function SystemConfigPanel() {
               {liveAccounts.map((a) => accountRow(a, true))}
             </div>
           )}
+          </ConfigSection>
 
-          <div style={{ fontSize: 13, fontWeight: 600, margin: '16px 0 8px' }}>自动成交开关（AI 分析后自动开单，双网独立）</div>
+          <ConfigSection title="自动成交开关" hint="AI 分析后自动开单，双网独立">
           <div
             style={{
               display: 'flex',
@@ -179,6 +180,7 @@ export default function SystemConfigPanel() {
               padding: '8px 12px',
               border: '1px solid #f0f0f0',
               borderRadius: 8,
+              background: '#fff',
               marginBottom: 8,
             }}
           >
@@ -201,6 +203,7 @@ export default function SystemConfigPanel() {
               padding: '8px 12px',
               border: '1px solid #f0f0f0',
               borderRadius: 8,
+              background: '#fff',
               marginBottom: 8,
             }}
           >
@@ -228,14 +231,17 @@ export default function SystemConfigPanel() {
             style={{ marginBottom: 16 }}
             message="正式网多账号共用同一次 AI 分析结论，各账号独立按钱包计算仓位并下单（扇出跟单）；单账号失败不影响其他账号。"
           />
+          </ConfigSection>
 
-          <div style={{ color: '#999', fontSize: 12, lineHeight: 1.7 }}>
+          <ConfigSection title="凭据配置" hint="仅存服务器 .env，页面不提供编辑与回显">
+          <div style={{ color: '#999', fontSize: 12, lineHeight: 1.7, marginBottom: 16 }}>
             账号凭据为敏感信息，只在服务器 .env 中配置：测试网 BINANCE_TESTNET_API_KEY/SECRET_KEY、
             正式网 1 号 BINANCE_API_KEY/SECRET_KEY、附加账号 {'BINANCE_LIVE_{N}_API_KEY/SECRET_KEY'}（+可选 _NAME），
             页面不提供编辑与回显。新增账号后需重启服务生效。
           </div>
+          </ConfigSection>
 
-          <div style={{ fontSize: 13, fontWeight: 600, margin: '16px 0 8px', color: '#cf1322' }}>危险操作</div>
+          <ConfigSection title="危险操作" hint="操作不可恢复，请谨慎" danger>
           <div
             style={{
               display: 'flex',
@@ -244,7 +250,9 @@ export default function SystemConfigPanel() {
               padding: '8px 12px',
               border: '1px solid #ffccc7',
               borderRadius: 8,
+              background: '#fff',
               gap: 12,
+              marginBottom: 16,
             }}
           >
             <span style={{ fontSize: 12, color: '#8c8c8c', lineHeight: 1.7 }}>
@@ -254,6 +262,8 @@ export default function SystemConfigPanel() {
             <Button danger icon={<DeleteOutlined />} loading={purging} onClick={openPurge} style={{ flexShrink: 0 }}>
               清空测试网数据
             </Button>
+          </div>
+          </ConfigSection>
           </div>
         </Spin>
 

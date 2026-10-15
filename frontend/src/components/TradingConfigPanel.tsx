@@ -1,36 +1,9 @@
 import { useState, useEffect } from 'react'
-import type { ReactNode } from 'react'
 import { Modal, Form, InputNumber, message, Button, Spin, Radio, Select, Switch, Row, Col } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
+import ConfigSection from './ConfigSection'
 import type { SystemConfig } from '../types'
-
-/** 分区卡片（2026-10-15 整理美化）：浅底描边容器 + 主色竖条标题 + 灰色说明文字 */
-function Section({ title, hint, first, children }: {
-  title: string
-  hint?: string
-  first?: boolean
-  children: ReactNode
-}) {
-  return (
-    <div
-      style={{
-        border: '1px solid #f0f0f0',
-        borderRadius: 8,
-        background: '#fafafa',
-        padding: '12px 16px 0',
-        marginTop: first ? 0 : 16,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-        <span style={{ width: 3, height: 13, borderRadius: 2, background: '#1677ff', flexShrink: 0 }} />
-        <span style={{ fontSize: 13, fontWeight: 600 }}>{title}</span>
-        {hint && <span style={{ fontSize: 12, color: '#999' }}>{hint}</span>}
-      </div>
-      {children}
-    </div>
-  )
-}
 
 /** 交易配置弹窗（2026-09-20 拆分自 ScanConfigPanel）：自动交易参数 + 开仓闸门补丁参数 */
 export default function TradingConfigPanel() {
@@ -164,7 +137,7 @@ export default function TradingConfigPanel() {
         <Spin spinning={loading}>
         <div style={{ maxHeight: '64vh', overflowY: 'auto', paddingInlineEnd: 4 }}>
         <Form form={form} layout="vertical" className="config-modal-form">
-          <Section title="开仓与仓位" hint="在跑单数上限与开仓所需最低可用余额" first>
+          <ConfigSection title="开仓与仓位" hint="在跑单数上限与开仓所需最低可用余额" first>
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
@@ -189,13 +162,13 @@ export default function TradingConfigPanel() {
               </Form.Item>
             </Col>
           </Row>
-          </Section>
+          </ConfigSection>
 
-          <Section title="止损与闸门" hint="止损宽度/强平缓冲硬闸门与单笔止损金额口径">
+          <ConfigSection title="止损与闸门" hint="止损宽度/强平缓冲硬闸门与单笔止损金额口径">
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
-                label="止损宽度上限（%，留空=不限制）"
+                label="止损宽度上限（%）"
                 name="max_stop_pct"
                 tooltip="开仓闸门的止损宽度硬上限（AI 复盘补丁参数 max_stop_pct 的手改入口，与补丁回滚共用同一列）"
               >
@@ -204,7 +177,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="强平闸门缓冲（%，留空=默认 0.5%）"
+                label="强平闸门缓冲（%）"
                 name="liq_gate_buffer"
                 tooltip="强平闸门 = 1/杠杆 − 维持保证金率 − 缓冲（覆盖手续费/资金费/触发价差；AI 复盘补丁参数 liq_gate_buffer 的手改入口）"
               >
@@ -245,13 +218,13 @@ export default function TradingConfigPanel() {
               ) : null
             }
           </Form.Item>
-          </Section>
+          </ConfigSection>
 
-          <Section title="杠杆与滑点" hint="动态杠杆下限、入场偏离容差与开仓滑点闸门">
+          <ConfigSection title="杠杆与滑点" hint="动态杠杆下限、入场偏离容差与开仓滑点闸门">
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
-                label="动态杠杆下限（×，留空=默认 8）"
+                label="动态杠杆下限（×）"
                 name="min_adapt_leverage"
                 tooltip="止损距离超 20× 强平闸门时自动降杠杆开单；安全杠杆低于此下限的宽止损单直接放弃（限制层：不是所有单都动态算完就开）。8× 约等于止损距离上限 10.5%（小币）"
               >
@@ -260,7 +233,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="入场偏离容差（%，留空=默认 1）"
+                label="入场偏离容差（%）"
                 name="pullback_market_pct"
                 tooltip="开仓时现价对 AI 入场价的最大偏离。待回踩距离 ≤ 容差时市价入场（盈亏比按现价复算 ≥1.5 才放行），超容差维持待回踩不下单；普通单的开仓漂移上限同用此值"
               >
@@ -269,7 +242,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="开仓滑点上限（%，留空=默认 0.3）"
+                label="开仓滑点上限（%）"
                 name="max_slippage_pct"
                 tooltip="开仓前按本单数量走订单簿逐层吃，预期滑点超上限放弃开单（盘口过薄的小币会撑宽止损、实际风险超预算）。0=关闭滑点闸门"
               >
@@ -277,13 +250,13 @@ export default function TradingConfigPanel() {
               </Form.Item>
             </Col>
           </Row>
-          </Section>
+          </ConfigSection>
 
-          <Section title="风控参数" hint="留空 = 恢复默认，保存即生效">
+          <ConfigSection title="风控参数" hint="留空 = 恢复默认，保存即生效">
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
-                label="开单评分门槛（留空=默认 60）"
+                label="开单评分门槛"
                 name="min_recommendation"
                 tooltip="AI 推荐度 ≥ 该值才分发自动开仓（0~100）；连损降速在此基础上额外提档"
               >
@@ -292,7 +265,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="盈亏比铁律下限（留空=默认 1.5）"
+                label="盈亏比铁律下限"
                 name="ai_rr_min"
                 tooltip="按 AI 给的三价复算 RR 必须 ≥ 该值，不足直接打回（AI 提示词同源更新）"
               >
@@ -301,7 +274,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="RR 容差（留空=默认 0.02R，0=严格）"
+                label="RR 容差（R）"
                 name="ai_rr_tol"
                 tooltip="同一条容差三处共用：开仓现价复算闸、AI 三价 RR 铁律、止盈一距离上限。RR ≥ 铁律下限-容差 即放行，吞 tick 取整与报价漂移的擦边值（默认 0.02R），0=恢复严格铁律"
               >
@@ -310,7 +283,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="单笔风险比例（%，留空=默认 3）"
+                label="单笔风险比例（%）"
                 name="risk_pct"
                 tooltip="分档级别止损金额模式下：单笔止损预算 = 风险基数 × 该比例（仓位 = 预算 ÷ 止损距离）；固定金额模式不使用此值"
               >
@@ -319,7 +292,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="杠杆上限（×，留空=默认 20）"
+                label="杠杆上限（×）"
                 name="leverage_max"
                 tooltip="逐仓杠杆上限；止损距离超该杠杆的强平闸门时动态下调，安全杠杆低于动态下限的宽止损单直接放弃"
               >
@@ -330,7 +303,7 @@ export default function TradingConfigPanel() {
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
-                label="taker 手续费率（%，留空=默认 0.05）"
+                label="taker 手续费率（%）"
                 name="taker_fee_rate"
                 tooltip="开平仓 taker 费率（0.05% = 0.0005 比例），TP1 止损移保本的复算口径；随交易所费率调整时手改"
               >
@@ -339,7 +312,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="近锚风险折价系数（留空=默认 0.7）"
+                label="近锚风险折价系数"
                 name="near_anchor_factor"
                 tooltip="突破类信号用近锚止损时风险预算 × 该系数（>0 且 ≤1，收紧止损贴极值的单子预算）；1=不折价"
               >
@@ -362,7 +335,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="当日亏损熔断阈值（%，留空=默认 9）"
+                label="当日亏损熔断阈值（%）"
                 name="daily_loss_stop_pct"
                 tooltip="已平仓净亏 ≤ -风险基数 × 该值 时触发熔断（9% ≈ 3 笔满损，随账户金额缩放）；0=关闭"
               >
@@ -373,7 +346,7 @@ export default function TradingConfigPanel() {
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
-                label="组合热度上限（%，留空=默认关闭）"
+                label="组合热度上限（%）"
                 name="portfolio_heat_cap"
                 tooltip="在跑单止损合计 + 本单预估 > 钱包 × 该值 时拦截新单，限制同时承受止损的总金额（0 或留空 = 关闭）"
               >
@@ -382,7 +355,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="同向持仓上限（留空=不限）"
+                label="同向持仓上限"
                 name="same_direction_cap"
                 tooltip="同方向在跑单数达上限拦截新单，防全市场同涨同跌时同向单集体同损（0 或留空 = 不限）"
               >
@@ -391,7 +364,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="BTC 急跌警示阈值（%，留空=默认 1）"
+                label="BTC 急跌警示阈值（%）"
                 name="btc_crash_pause_pct"
                 tooltip="BTC 1h 近 3 根已收盘累计跌幅超该值时，AI 提示词追加急跌警示（2026-10-13 起仅供提示词参考，不再拦截开单）；0=关闭"
               >
@@ -402,7 +375,7 @@ export default function TradingConfigPanel() {
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
-                label="周回撤减速阈值（%，留空=默认 15）"
+                label="周回撤减速阈值（%）"
                 name="weekly_dd_stop_pct"
                 tooltip="UTC 周一起已平仓净亏 ≤ -风险基数 × 该值 时，本周剩余时间单笔预算减半（不拦开仓，周一 0 点自动恢复）；日熔断之上的二级减速，只收紧亏损侧；0=关闭"
               >
@@ -411,7 +384,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="月回撤熔断阈值（%，留空=默认 25）"
+                label="月回撤熔断阈值（%）"
                 name="monthly_dd_stop_pct"
                 tooltip="UTC 月起已平仓净亏 ≤ -风险基数 × 该值 时停开新仓，需在顶部熔断卡片「确认复盘」人工确认后恢复（本月内有效）；周熔断之上的三级总闸；0=关闭"
               >
@@ -420,7 +393,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="ATR 跟进倍数（留空=默认 3）"
+                label="ATR 跟进倍数"
                 name="atr_trail_k"
                 tooltip="跟进止损加 ATR 腿（Chandelier）：多单 SL=max(现SL, 持仓期最高价−k×ATR22)，空单对称，与摆动低点跟进取更紧者（只收紧不放松）；0=关闭 ATR 腿"
               >
@@ -428,9 +401,9 @@ export default function TradingConfigPanel() {
               </Form.Item>
             </Col>
           </Row>
-          </Section>
+          </ConfigSection>
 
-          <Section title="止盈与分批" hint="TP2 分批开关与两档止盈数量比例（留空 = 恢复默认）">
+          <ConfigSection title="止盈与分批" hint="TP2 分批开关与两档止盈数量比例（留空 = 恢复默认）">
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
@@ -447,7 +420,7 @@ export default function TradingConfigPanel() {
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
-                label="TP1 分批比例（有 TP2，留空=默认 60）"
+                label="TP1 分批比例（有 TP2）"
                 name="tp1_qty_pct_with_tp2"
                 tooltip="有 TP2 的单 TP1 档止盈数量占开仓量的比例（%），剩余 = 100 − TP1 − TP2 由跟进止损退出；两档合计需 ≤95%"
               >
@@ -456,7 +429,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="TP2 分批比例（留空=默认 20）"
+                label="TP2 分批比例"
                 name="tp2_qty_pct"
                 tooltip="有 TP2 的单 TP2 档止盈数量占开仓量的比例（%）；两档合计需 ≤95%（剩余 ≥5% 跟进）"
               >
@@ -465,7 +438,7 @@ export default function TradingConfigPanel() {
             </Col>
             <Col span={6}>
               <Form.Item
-                label="TP1 止盈比例（无 TP2，留空=默认 80）"
+                label="TP1 止盈比例（无 TP2）"
                 name="tp1_qty_pct_no_tp2"
                 tooltip="无 TP2 的单 TP1 一次止盈数量占开仓量的比例（%），剩余由跟进止损退出；需 ≤95%"
               >
@@ -473,7 +446,7 @@ export default function TradingConfigPanel() {
               </Form.Item>
             </Col>
           </Row>
-          </Section>
+          </ConfigSection>
         </Form>
         </div>
         </Spin>
