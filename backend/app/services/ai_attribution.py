@@ -19,14 +19,21 @@ from app.services.llm_client import current_model, get_client, parse_llm_json
 logger = logging.getLogger(__name__)
 
 # 错误标签词表（固定口径，分组统计按标签字符串聚合）
+# v2026-10-15 词表修订（归因体检，docs/16 §8 实盘周归因实证）：
+# - 新增「浮盈回撤」——实证最大单一漏损（17笔-108.6U，占亏损42%）此前被混入
+#   「执行偏差」；后者定义收窄回费用摩擦，二者互斥不再串味
+# - 退役「逆指标多数」「逆4h背景」——方向由程序多数决生成（scanner），4h 状态机
+#   硬约束（enforce_htf_constraint + scanner 前置门）已程序接管，周归因 0 次触发，
+#   结构上开不出来；历史已落库标签不清洗，分组统计仍可见旧桶
+# - patch_service.RULE_TAGS 自动跟随本词表（新标签即日进入补丁热度闭环；退役标签
+#   的存量 active 补丁热度归零，_judge 以 .get 容错自然判 valid，无失锚异常）
 ERROR_TAGS: dict[str, str] = {
     "追高追空": "入场位置差：价格已远离结构位后追入，回撤空间大",
+    "浮盈回撤": "持仓期浮盈曾达约 1R（MFE ≥ 止损宽度）却亏收/微利出场：保本/跟进/止盈时机未保住利润，属出场执行问题",
     "止损过宽": "止损距离过大，风险占用过高甚至触发强平风险",
     "止损过窄": "止损太贴近入场价，被正常波动扫掉后行情才走出",
-    "逆指标多数": "开仓方向与指标多数决相悖（净票数反向或接近平衡）",
-    "逆4h背景": "开仓方向与 4h 大级别趋势/均线排列相反",
     "区间中段开单": "价格处于盘整区间中部，无边缘或突破确认",
-    "执行偏差": "滑点/手续费/资金费侵蚀超出计划（计划外亏损来源）",
+    "执行偏差": "滑点/手续费/资金费等交易摩擦超出计划（费用类漏损；出场时机导致的浮盈缩水归「浮盈回撤」，不选本标签）",
     "行情异常": "突发消息或极端波动，计划内无法预见",
     "无明显错误": "计划内亏损：入场/止损/仓位均符合纪律，行情未走出",
 }
@@ -95,6 +102,16 @@ def build_facts(rec, klines: list) -> dict:
         "trade_type": snap.get("trade_type"),
         "recommendation": snap.get("recommendation"),
         "position_pct": snap.get("position_pct"),
+        # 信号上下文（2026-10-15 补齐：快照自持字段此前只进分组统计，归因 LLM
+        # 看不见——止损锚/4h状态/量比/触点/战法是判「追高/过窄/浮盈回撤」的
+        # 关键语境；手动单/导入持仓无快照时为 None，LLM 按未知处理）
+        "signal_context": {
+            "htf_phase": snap.get("htf_phase"),  # 4h EMA 状态机状态（tangle/aligned_*/bull_dip 等）
+            "stop_anchor": snap.get("stop_anchor"),  # structure / near（near=止损刻意贴突破K极值）
+            "volume_ratio": snap.get("volume_ratio"),  # 信号K量 ÷ 近20根中位量
+            "touch_ref": snap.get("touch_ref"),  # 回踩触点 retest/swing/ema21/55/144
+            "tactic_name": snap.get("tactic_name"),  # 命中战法（仅借鉴标注）
+        },
         "plan": {
             "entry": snap.get("entry_price"), "stop_loss": plan_sl or None,
             "take_profit_1": plan_tp1 or None, "take_profit_2": snap.get("take_profit_2"),
