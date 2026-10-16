@@ -96,7 +96,9 @@ export function createTradeChart(
     },
     timeScale: {
       borderColor: '#252b3b',
-      timeVisible: false,
+      // 显示时间（2026-10-16）：日内 1h/4h 周期 X 轴刻度显示「日 HH:mm」，
+      // 跨天自动退化为日期；1d 周期时间恒为 00:00，自动只显日期
+      timeVisible: true,
       secondsVisible: false,
       rightOffset: 12,
       lockVisibleTimeRangeOnResize: true,

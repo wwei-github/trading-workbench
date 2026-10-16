@@ -20,7 +20,8 @@ import { SCHEME_UP_DOWN } from '../utils/scheme'
 import { fmtPrice, pctDelta, rrRatio } from './klineShared'
 import { dayjs } from '../utils/dayjs'
 import ChartCore, { type OverlayCtx } from './ChartCore'
-import type { AIAnalysis, HitHistoryTrade, Kline, KlineData, TradeKlineData, TradeKlineEvent } from '../types'
+import { SIGNAL_TYPE_MAP } from '../constants/labels'
+import type { AIAnalysis, HitHistoryItem, HitHistoryTrade, Kline, KlineData, TradeKlineData, TradeKlineEvent } from '../types'
 
 const CHART_HEIGHT = 560 // 容器无高度时的兜底值（各挂载点容器均有自身高度）
 
@@ -383,7 +384,10 @@ function drawHitOverlay(
 // 颜色 + 形状 + 文字三重区分
 const MARK_PAD = 3 // 标注框相对K线高/低点的外扩（px）
 const MARK_BADGE = 18 // 徽标（图标区）边长（px）
-const MARK_GAP = 7 // 徽标与标注框的间距（px）
+// 徽标与标注框的间距（px，2026-10-16 调大：徽标远离K线，经箭头指向K线，
+// 避免遮挡K线本体；下跌命中→上方 / 上涨命中→下方，由 preferBelow 决定）
+const MARK_GAP = 40
+const MARK_ARROW = 6 // 导引线箭头半宽（px）
 
 function drawHitMarks(
   klines: Kline[],
@@ -480,15 +484,31 @@ function drawHitMarks(
     const badgeX = Math.max(2, Math.min(cx - pillW / 2, fullWidth - pillW - 2))
     const bcx = badgeX + b / 2 // 图标中心
 
-    // 徽标 → 标注框 的导引短线
+    // 徽标 → 标注框 的导引线 + 末端实心三角箭头（指向K线框，2026-10-16）
+    // sideBelow=true（徽标在K线下方）：线从徽标顶向上延伸到 K线框底，箭头尖端在 yBot 朝上
+    // sideBelow=false（徽标在K线上方）：线从徽标底向下延伸到 K线框顶，箭头尖端在 yTop 朝下
+    const tipY = sideBelow ? yBot : yTop // 箭头尖端 y（贴着K线框边）
+    const lineEndY = sideBelow ? tipY + MARK_ARROW * 1.6 : tipY - MARK_ARROW * 1.6
     const g = el('line')
     g.setAttribute('x1', String(cx))
     g.setAttribute('y1', String(sideBelow ? badgeCy - b / 2 : badgeCy + b / 2))
     g.setAttribute('x2', String(cx))
-    g.setAttribute('y2', String(sideBelow ? yBot : yTop))
+    g.setAttribute('y2', String(lineEndY))
     g.setAttribute('stroke', m.color)
     g.setAttribute('stroke-width', '1.5')
     svg.appendChild(g)
+    // 实心三角箭头（尖端指向K线框）
+    const arrow = el('polygon')
+    const aHalf = MARK_ARROW
+    const aH = MARK_ARROW * 1.6
+    arrow.setAttribute(
+      'points',
+      sideBelow
+        ? `${cx},${tipY} ${cx - aHalf},${tipY + aH} ${cx + aHalf},${tipY + aH}`
+        : `${cx},${tipY} ${cx - aHalf},${tipY - aH} ${cx + aHalf},${tipY - aH}`,
+    )
+    arrow.setAttribute('fill', m.color)
+    svg.appendChild(arrow)
 
     // 胶囊底（实心主题色，圆角=半高）
     const bg = el('rect')
@@ -550,6 +570,15 @@ function drawHitMarks(
 
 // ── 组件本体 ─────────────────────────────────────────────────────────
 
+// 有效命中行（外部显式传入单条 / 自动拉取最近 3 天列表 统一结构）
+interface EffHit {
+  hitTime: string | null
+  touchTime: string | null
+  direction: 1 | -1 | 0
+  trade: HitHistoryTrade | null
+  signalType: string | null
+}
+
 interface Props {
   // 数据源二选一（同实例固定一种模式）
   symbol?: string // 扫描模式：实时K线 + AI 仓位标注
@@ -564,11 +593,12 @@ interface Props {
   touchTime?: string | null // 触碰K线时刻（回踩路径 stage1_candle_open）
   hitDirection?: 1 | -1 | 0 // 命中方向（1 多 / -1 空 / 0 未知）
   tradeOverlay?: HitHistoryTrade | null // 关联开单（时间裁剪区间）
+  hitSignalType?: string | null // 命中信号类型（出点类型，追加在「命中」标签后）
 }
 
 export default function KlineChart({
   symbol, tradeId, limit = 500, ai, refreshKey = 0,
-  hitTime, touchTime, hitDirection = 0, tradeOverlay,
+  hitTime, touchTime, hitDirection = 0, tradeOverlay, hitSignalType,
 }: Props) {
   const colorScheme = useScanStore((s) => s.colorScheme)
   const isReplay = !!tradeId
@@ -582,6 +612,51 @@ export default function KlineChart({
   // 为服务端实际返回档位。两者分离：首拉固化 serverInterval 不触发重拉
   const [reqInterval, setReqInterval] = useState<string | null>(isReplay ? null : '1h')
   const [serverInterval, setServerInterval] = useState<string>('1h')
+
+  // 自动命中历史（2026-10-16）：所有扫描模式（symbol）K线图缺省显示该币最近
+  // 3 天命中/触碰标注；外部已显式传入（HitHistoryPanel 指定行）时以传入为准，
+  // 不再重复拉取；复盘模式（tradeId）已由事件箭头承载，不再叠加
+  const [autoHits, setAutoHits] = useState<HitHistoryItem[]>([])
+  const externalHit = !!(hitTime || touchTime)
+  useEffect(() => {
+    if (isReplay || !symbol || externalHit) return
+    let cancelled = false
+    const start = dayjs.utc().subtract(3, 'day').toISOString()
+    scanApi
+      .hitHistory({ symbol, start, page: 1, page_size: 20, sort_by: 'created_at', order: 'desc' })
+      .then((r) => {
+        if (!cancelled) setAutoHits(r.items ?? [])
+      })
+      .catch(() => {
+        if (!cancelled) setAutoHits([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isReplay, symbol, externalHit])
+  useEffect(() => {
+    setAutoHits([])
+  }, [symbol])
+
+  // 有效命中列表：外部显式传入（单条）优先，否则取自动拉取的最近 3 天列表
+  const effHits: EffHit[] = useMemo(() => {
+    if (externalHit) {
+      return [{
+        hitTime: hitTime ?? null,
+        touchTime: touchTime ?? null,
+        direction: hitDirection,
+        trade: tradeOverlay ?? null,
+        signalType: hitSignalType ?? null,
+      }]
+    }
+    return autoHits.map((h) => ({
+      hitTime: h.created_at ?? null,
+      touchTime: h.stage1_candle_open ?? null,
+      direction: (h.direction ?? 0) as 1 | -1 | 0,
+      trade: h.trade ?? null,
+      signalType: h.signal_type ?? null,
+    }))
+  }, [externalHit, hitTime, touchTime, hitDirection, tradeOverlay, hitSignalType, autoHits])
 
   // 拉取 K 线（数据源/周期/refreshKey 变化重拉；首拉整块 loading，
   // 有数据时旧图保留平滑替换）
@@ -678,8 +753,11 @@ export default function KlineChart({
   // 命中历史可视起点（2026-10-15）：命中/触碰较早时把可视窗口左沿收到其附近，
   // 保证标注入镜；命中在最近约 130 根内则维持默认窗口（取两者的更靠前者）
   const overlayFrom = useMemo(() => {
-    if (isReplay || !klines.length || (!hitTime && !touchTime)) return undefined
-    const cands = [hitTime, touchTime].filter((v): v is string => !!v).map(utcMs)
+    if (isReplay || !klines.length || !effHits.length) return undefined
+    const cands = effHits
+      .flatMap((h) => [h.hitTime, h.touchTime])
+      .filter((v): v is string => !!v)
+      .map(utcMs)
     if (!cands.length) return undefined
     const earliest = Math.min(...cands)
     let idx = 0
@@ -688,7 +766,7 @@ export default function KlineChart({
       else break
     }
     return Math.min(Math.max(0, klines.length - 130), Math.max(0, idx - 5))
-  }, [isReplay, klines, hitTime, touchTime])
+  }, [isReplay, klines, effHits])
 
   // 区域覆盖层回调（ChartCore 每帧在空白 SVG 上调用）：
   // 复盘模式=全区间价格带；命中历史=时间裁剪的开单区间 + 命中/触碰图形化标注
@@ -699,14 +777,23 @@ export default function KlineChart({
         return
       }
       if (!klines.length) return
-      if (tradeOverlay) drawHitOverlay(klines, tradeOverlay, colorScheme, ctx)
+      // 每条命中的关联开单区间（多条命中可能多个区间）
+      for (const h of effHits) {
+        if (h.trade) drawHitOverlay(klines, h.trade, colorScheme, ctx)
+      }
       const marks: Array<{ ms: number; color: string; fill: string; label: string; kind: 'hit' | 'touch'; preferBelow: boolean }> = []
-      const preferBelow = hitDirection >= 0
-      if (hitTime) marks.push({ ms: utcMs(hitTime), color: HIT_MARK_COLOR, fill: HIT_MARK_FILL, label: '命中', kind: 'hit', preferBelow })
-      if (touchTime) marks.push({ ms: utcMs(touchTime), color: TOUCH_MARK_COLOR, fill: TOUCH_MARK_FILL, label: '触碰', kind: 'touch', preferBelow })
+      for (const h of effHits) {
+        // 命中方向：1 多（上涨）→ K线下方； -1 空（下跌）→ K线上方
+        const preferBelow = h.direction >= 0
+        // 命中标签后追加信号类型（出点类型，2026-10-16）
+        const sigLabel = h.signalType ? (SIGNAL_TYPE_MAP[h.signalType]?.label ?? h.signalType) : ''
+        const hitLabel = sigLabel ? `命中 · ${sigLabel}` : '命中'
+        if (h.hitTime) marks.push({ ms: utcMs(h.hitTime), color: HIT_MARK_COLOR, fill: HIT_MARK_FILL, label: hitLabel, kind: 'hit', preferBelow })
+        if (h.touchTime) marks.push({ ms: utcMs(h.touchTime), color: TOUCH_MARK_COLOR, fill: TOUCH_MARK_FILL, label: '触碰', kind: 'touch', preferBelow })
+      }
       if (marks.length) drawHitMarks(klines, marks, ctx)
     },
-    [replayData, colorScheme, tradeOverlay, klines, hitTime, touchTime, hitDirection],
+    [replayData, colorScheme, effHits, klines],
   )
 
   // 无数据（首拉中/首拉失败/新周期返回空）：整块反馈；
@@ -752,7 +839,7 @@ export default function KlineChart({
         ai={isReplay ? undefined : ai}
         // 复盘=事件箭头；命中历史走 SVG 图形标注（见 drawOverlay）
         extraMarkers={isReplay ? extraMarkers : undefined}
-        drawOverlay={isReplay || tradeOverlay || hitTime || touchTime ? drawZones : undefined}
+        drawOverlay={isReplay || effHits.length > 0 ? drawZones : undefined}
         height={CHART_HEIGHT}
         onUpdate={handleUpdate}
         updating={updating}

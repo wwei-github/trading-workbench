@@ -264,6 +264,7 @@ export default function HitHistoryPanel() {
                 touchTime={detail.stage1_candle_open}
                 hitDirection={detail.direction}
                 tradeOverlay={detail.trade}
+                hitSignalType={detail.signal_type}
               />
             </div>
             <Space size="small" style={{ marginTop: 8, fontSize: 12, color: '#8b93a7' }}>
