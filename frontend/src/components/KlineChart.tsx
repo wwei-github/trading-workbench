@@ -387,6 +387,10 @@ const MARK_BADGE = 18 // 徽标（图标区）边长（px）
 // 徽标与标注框的间距（px，2026-10-16 调大：徽标远离K线，经箭头指向K线，
 // 避免遮挡K线本体；下跌命中→上方 / 上涨命中→下方，由 preferBelow 决定）
 const MARK_GAP = 72
+// 各周期一根K线的毫秒跨度（命中锚定用：信号时刻映射到当前图表周期开口）
+const INTERVAL_MS: Record<string, number> = { '1h': 3600_000, '4h': 4 * 3600_000, '1d': 86400_000 }
+// 扫描周期跨度（与后端 cfg.kline_interval 对齐，当前固定 1h）
+const SCAN_INTERVAL_MS = 3600_000
 const MARK_ARROW = 6 // 导引线箭头半宽（px）
 
 function drawHitMarks(
@@ -411,10 +415,9 @@ function drawHitMarks(
       if (klines[i].time <= m.ms) idx = i
       else break
     }
-    // 命中时间口径（2026-10-16）：hitTime=扫描发现时刻（created_at），信号确认
-    // 的是上一根已收盘K线，需回退一根；touchTime=触碰K线开盘时间（stage1_candle_open）
-    // 本身已精确指向目标K线，不回退
-    if (m.kind === 'hit') idx -= 1
+    // 时间口径（2026-10-16）：命中 ms 已在构建 marks 时锚定到「包含信号时刻
+    // 的周期K线开口」；touchTime=触碰K线开盘时间（stage1_candle_open）精确
+    // 指向目标K线。两者到此均直接定位，不再回退
     if (idx < 0) continue
     const k = klines[idx]
     const cx = chart.timeScale().timeToCoordinate(Math.floor(k.time / 1000) as UTCTimestamp)
@@ -786,18 +789,27 @@ export default function KlineChart({
         if (h.trade) drawHitOverlay(klines, h.trade, colorScheme, ctx)
       }
       const marks: Array<{ ms: number; color: string; fill: string; label: string; kind: 'hit' | 'touch'; preferBelow: boolean }> = []
+      const ivMs = INTERVAL_MS[serverInterval] ?? INTERVAL_MS['1h']
       for (const h of effHits) {
         // 命中方向：1 多（上涨）→ K线下方； -1 空（下跌）→ K线上方
         const preferBelow = h.direction >= 0
         // 命中标签后追加信号类型（出点类型，2026-10-16）
         const sigLabel = h.signalType ? (SIGNAL_TYPE_MAP[h.signalType]?.label ?? h.signalType) : ''
         const hitLabel = sigLabel ? `命中 · ${sigLabel}` : '命中'
-        if (h.hitTime) marks.push({ ms: utcMs(h.hitTime), color: HIT_MARK_COLOR, fill: HIT_MARK_FILL, label: hitLabel, kind: 'hit', preferBelow })
+        // 命中锚定（2026-10-16）：hitTime=扫描发现时刻，扫描周期固定 1h，
+        // 信号K线=扫描周期最后一根已收盘K线（开口=hitTime 所在小时开口-1h）；
+        // 再映射到当前图表周期：取「包含信号时刻」的周期K线——1h 图=已收盘信号根；
+        // 4h/1d 图=包含它的那根（可能未收盘，照样标注）
+        if (h.hitTime) {
+          const sigMs = Math.floor(utcMs(h.hitTime) / SCAN_INTERVAL_MS) * SCAN_INTERVAL_MS - SCAN_INTERVAL_MS
+          const anchorMs = Math.floor(sigMs / ivMs) * ivMs
+          marks.push({ ms: anchorMs, color: HIT_MARK_COLOR, fill: HIT_MARK_FILL, label: hitLabel, kind: 'hit', preferBelow })
+        }
         if (h.touchTime) marks.push({ ms: utcMs(h.touchTime), color: TOUCH_MARK_COLOR, fill: TOUCH_MARK_FILL, label: '触碰', kind: 'touch', preferBelow })
       }
       if (marks.length) drawHitMarks(klines, marks, ctx)
     },
-    [replayData, colorScheme, effHits, klines],
+    [replayData, colorScheme, effHits, klines, serverInterval],
   )
 
   // 无数据（首拉中/首拉失败/新周期返回空）：整块反馈；
