@@ -125,8 +125,13 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # NODE_OPTIONS 抬高堆上限（2026-10-16）：runner 侧 vite build（含 mermaid）
+      # 峰值贴 Node 20 默认 ~2GB old-space 帽，rendering chunks 阶段偶发
+      # "JavaScript heap out of memory"（exit 134，run 38850324395）。抬到 4GB 留余量。
       - name: 构建前端产物（dist.tar.gz）
         if: steps.prep.outputs.scope != 'backend'
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           cd frontend
           npm ci --no-audit --no-fund
