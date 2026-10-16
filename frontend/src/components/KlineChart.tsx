@@ -386,7 +386,7 @@ const MARK_PAD = 3 // 标注框相对K线高/低点的外扩（px）
 const MARK_BADGE = 18 // 徽标（图标区）边长（px）
 // 徽标与标注框的间距（px，2026-10-16 调大：徽标远离K线，经箭头指向K线，
 // 避免遮挡K线本体；下跌命中→上方 / 上涨命中→下方，由 preferBelow 决定）
-const MARK_GAP = 40
+const MARK_GAP = 72
 const MARK_ARROW = 6 // 导引线箭头半宽（px）
 
 function drawHitMarks(
@@ -411,6 +411,10 @@ function drawHitMarks(
       if (klines[i].time <= m.ms) idx = i
       else break
     }
+    // 命中时间口径（2026-10-16）：hitTime=扫描发现时刻（created_at），信号确认
+    // 的是上一根已收盘K线，需回退一根；touchTime=触碰K线开盘时间（stage1_candle_open）
+    // 本身已精确指向目标K线，不回退
+    if (m.kind === 'hit') idx -= 1
     if (idx < 0) continue
     const k = klines[idx]
     const cx = chart.timeScale().timeToCoordinate(Math.floor(k.time / 1000) as UTCTimestamp)
