@@ -92,20 +92,21 @@ def test_gate_block_non_trigger_empty():
 
 
 def test_gate_block_pullback_touch_object():
-    """回踩类门槛块（docs/22 触点体系；2026-10-12 补 ema21_4h/去 ema144）：
-    触点全线说明 + 启用列表（读生效白名单）；突破专属行（Donchian/量比）不进回踩块"""
+    """回踩类门槛块（docs/22 触点体系；2026-10-12 补 ema21_4h；2026-10-16 ema144
+    复出并默认启用）：触点全线说明 + 启用列表（读生效白名单）；突破专属行
+    （Donchian/量比）不进回踩块"""
     block = render_signal_gate_block("trigger_pullback_confirm")
     assert "回踩触点" in block
     assert "retest=突破回测位" in block
     assert "ema21_4h=4h 大周期价值区" in block  # 2026-10-09 上线触点补进语义行
-    assert "ema144 触点已退役" in block          # 退役触点不再作可选语义暗示
+    assert "ema144=1h 深回撤（走平或顺 4h 方向）" in block  # 2026-10-16 复出触点
     assert "两段式确认" in block
     assert "0.3%" in block  # structure_touch_band_pct 生效值
     # 未配置 pullback_touch_refs → 启用列表回落 DEFAULT_TOUCH_REFS
-    # （2026-10-14 起 = swing + 均线族三触点）
+    # （2026-10-16 起 = swing + 均线族四触点，含复出的 ema144）
     assert (
         "当前启用触点: 摆动结构位（swing）、EMA21（ema21）、"
-        "EMA21(4h)（ema21_4h）、EMA55（ema55）"
+        "EMA21(4h)（ema21_4h）、EMA55（ema55）、EMA144（ema144）"
         in block
     )
     assert "Donchian" not in block  # 突破专属行不进回踩块
@@ -131,6 +132,7 @@ def test_gate_block_follows_scan_filters_cfg():
     assert "当前启用触点: 摆动结构位（swing）、EMA21（ema21）" in pullback
     assert "（ema21_4h）" not in pullback
     assert "（ema55）" not in pullback
+    assert "（ema144）" not in pullback
     # 未透传 flt → 回落 env/代码默认（0.2% 基线）
     assert "≥0.2%" in render_signal_gate_block("trigger_breakout")
 

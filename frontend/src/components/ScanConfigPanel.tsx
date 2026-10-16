@@ -16,18 +16,19 @@ const ALL_TRIGGER_VALUES = TRIGGER_OPTIONS.map((o) => o.value)
 
 /** 回踩触点白名单选项（与后端 ALL_TOUCH_REFS 同源顺序；docs/22 触点体系。
  *  金K必须与触点配合（当根/次根确认），此白名单决定允许金K出现的位置。
- *  ema144 已退役（2026-10-10 三次拍板：深回撤存活率极低，后端强制过滤不再展示） */
+ *  ema144 于 2026-10-16 复出（改判门控口径「1h EMA144 走平或顺 4h 方向」后默认启用） */
 const TOUCH_REF_OPTIONS = [
   { value: 'retest', label: '突破回测位' },
   { value: 'swing', label: '摆动结构位' },
   { value: 'ema21', label: 'EMA21' },
   { value: 'ema21_4h', label: 'EMA21(4h)' },
   { value: 'ema55', label: 'EMA55' },
+  { value: 'ema144', label: 'EMA144' },
 ]
 /** 默认触点 = 摆动结构位 + 均线族（2026-10-08 均线族，2026-10-09 加入 4h EMA21，
- *  2026-10-10 ema144 退役，2026-10-14 加入 swing；retest 仍需显式勾选）——
+ *  2026-10-14 加入 swing，2026-10-16 ema144 复出；retest 仍需显式勾选）——
  *  与后端 DEFAULT_TOUCH_REFS 对齐，避免前端默认把 swing 静默写回旧列表（2026-10-14） */
-const DEFAULT_TOUCH_VALUES = ['swing', 'ema21', 'ema21_4h', 'ema55']
+const DEFAULT_TOUCH_VALUES = ['swing', 'ema21', 'ema21_4h', 'ema55', 'ema144']
 
 /** 回踩类触发类型（2026-10-12 trend_pullback 并入）：仅此类会消费
  *  pullback_touch_refs，用于联动置灰触点白名单 */

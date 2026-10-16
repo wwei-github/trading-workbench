@@ -34,7 +34,9 @@ TOUCH_SWING = "swing"      # 摆动结构位（HL/LH，结构防守位）
 TOUCH_EMA21 = "ema21"      # 趋势动态价值区（原口径）
 TOUCH_EMA21_4H = "ema21_4h"  # 4h EMA21 大周期动态价值区（1h 信号K线影线触及，2026-10-09）
 TOUCH_EMA55 = "ema55"      # 中深度回撤（排列+斜率门）
-TOUCH_EMA144 = "ema144"    # 深回撤（排列+斜率门，K线窗口≥300 才实际生效）
+TOUCH_EMA144 = "ema144"    # 深回撤（2026-10-16 复出：1h EMA144 走平或顺 4h 方向门，
+                           # 不再叠加排列门；数据门 ≥245 根，扫描链
+                           # limit=max(kline_window,300) 已满足）
 ALL_TOUCH_REFS = (
     TOUCH_RETEST, TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55, TOUCH_EMA144,
 )
@@ -45,10 +47,14 @@ ALL_TOUCH_REFS = (
 # 但默认值是否上调待实测后另行拍板，本次维持关、需在配置弹窗显式勾选启用）。
 # ema55 受分离史结构门自筛
 # （2026-10-10 三次拍板：发散度改分离史口径，深回踩不再被触点时刻现值误杀）。
-# ema144 触点退役（同批拍板）：深回撤存活率极低（排列门常先杀）且偏离「回踩入场」
-# 语义，检测代码保留但白名单默认剔除，_touch_refs 解析层强制过滤
-RETIRED_TOUCH_REFS = (TOUCH_EMA144,)
-DEFAULT_TOUCH_REFS = (TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55)
+# ema144 复出（2026-10-16 用户拍板）：2026-10-10 曾因「深回撤存活率极低（排列门
+# 常先杀）」退役——本次改判门控口径（去排列门，改「1h EMA144 走平或顺 4h 方向」，
+# 见 trigger._detect_ema_touch）后默认启用；退役机制保留（_touch_refs 仍过滤
+# RETIRED_TOUCH_REFS，当前为空集）。
+RETIRED_TOUCH_REFS = ()
+DEFAULT_TOUCH_REFS = (
+    TOUCH_SWING, TOUCH_EMA21, TOUCH_EMA21_4H, TOUCH_EMA55, TOUCH_EMA144,
+)
 
 # scan_filters JSONB 的合法键集（PUT /config 校验与前端字段一一对应）
 SCAN_FILTER_KEYS = (
@@ -136,8 +142,9 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
         """回踩触点白名单（docs/22）：list 过滤非法项后须非空，空/全非法回落
         默认 DEFAULT_TOUCH_REFS（摆动结构位+均线族；回踩触点与触发类型不同——
         静默全空会让回踩管线整体停摆，回落默认比全量放行安全）。退役触点
-        （ema144，2026-10-10 三次拍板）
-        强制过滤——即使 DB 旧配置显式勾选也失效，保证「退役」语义不留暗门。"""
+        （RETIRED_TOUCH_REFS，当前为空集——ema144 已于 2026-10-16 复出）
+        强制过滤——退役期间即使 DB 旧配置显式勾选也失效，保证「退役」语义
+        不留暗门（机制保留，供后续再退役）。"""
         v = raw.get(key)
         if not isinstance(v, list):
             return DEFAULT_TOUCH_REFS

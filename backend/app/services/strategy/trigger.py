@@ -27,8 +27,10 @@
 - ema21   趋势动态价值区（原口径，不加触点门）；2026-10-15 起叠加 1H 结构门
   软校验（三线排列+快中线发散史+EMA144 方向）——不过门不再否决，改 quality
   重罚（structure_gate=False → -15，docs/21 O9）
-- ema55/144 中/深回撤：数据门（ema_touch_min_bars）+ 排列门（快线在慢线同侧）
+- ema55 中回撤：数据门（ema_touch_min_bars）+ 排列门（EMA21 在 EMA55 同侧）
   + 斜率门（近 5 根同向）——走平/错排的慢线是震荡不是回踩
+- ema144 深回撤（2026-10-16 复出并默认启用）：数据门 + 走平/顺势门（1h EMA144
+  近 SLOPE_BARS 根变化 ≥0 当 4h 为多，做空镜像）——不叠加排列门
 同根多触点命中按优先级标注（横向结构 > 均线；均线取最快）：
 retest > swing > ema21 > ema55 > ema144
 
@@ -59,7 +61,7 @@ from app.services.strategy.candlestick import (
     resolve_golden_evidence,
 )
 from app.services.strategy.ema import calc_ema
-from app.services.strategy.ema_gate import structure_1h
+from app.services.strategy.ema_gate import SLOPE_BARS, structure_1h
 from app.services.strategy.indicators import volume_ratio
 from app.services.strategy.technical import pullback_stabilize_bonus
 import numpy as np
@@ -269,12 +271,16 @@ def _detect_ema_touch(
     （close ≤ EMA ≤ high）。命中返回触碰时的 EMA 值，未命中 None。
 
     ema21：原口径（docs/19），不加任何门，行为完全不变；
-    ema55/144：三道门防"把震荡当回踩"——
+    ema55：三道门防"把震荡当回踩"——
     ① 数据门：已收盘根数 < max(ema_touch_min_bars, 周期×1.7) 静默跳过
-      （EMA 收敛需要窗口，KLINE_WINDOW=240 时 ema144 自动不可用，须提窗 ≥300）
-    ② 排列门：多头要求快线在慢线上方（ema21>ema55 / ema55>ema144，55 不可用
-      降级只查斜率），空头对称——慢线之下还有快线托着才是趋势回踩
+      （EMA 收敛需要窗口）
+    ② 排列门：多头要求快线在慢线上方（EMA21>EMA55），空头对称
+       ——慢线之下还有快线托着才是趋势回踩
     ③ 斜率门：被触碰 EMA 近 5 根同向（走平的慢线是震荡盘整）
+    ema144（2026-10-16 用户拍板，深回撤，默认启用）：
+    ① 数据门同上（周期×1.7≈245 根，扫描链 limit=max(kline_window,300) 已满足）；
+    ② 走平/顺势门：1h EMA144 近 SLOPE_BARS 根变化 ≥0（走平或向上）当 4h 方向为多，
+    做空镜像——不叠加排列门（EMA55>EMA144 在深回撤时先杀）
     """
     closes = np.array([float(k[4]) for k in klines[:-1]], dtype=float)
     if period != 21 and len(closes) < max(flt.ema_touch_min_bars, int(period * 1.7)):
@@ -295,23 +301,32 @@ def _detect_ema_touch(
     if period == 21:
         return ema
 
-    # 排列门（ema55/144）
-    if period == 55:
-        e_fast = calc_ema(closes, 21)
-        if e_fast is not None and np.isfinite(float(e_fast[-1])) and float(e_fast[-1]) > 0:
-            fast = float(e_fast[-1])
-            if direction == 1 and not fast > ema:
-                return None
-            if direction == -1 and not fast < ema:
-                return None
-    else:  # 144：55 可用才查排列，不可用降级只查斜率
-        e_mid = calc_ema(closes, 55)
-        if e_mid is not None and np.isfinite(float(e_mid[-1])) and float(e_mid[-1]) > 0:
-            mid = float(e_mid[-1])
-            if direction == 1 and not mid > ema:
-                return None
-            if direction == -1 and not mid < ema:
-                return None
+    if period == 144:
+        # 深回撤 144 门（2026-10-16 用户拍板）：4h 趋势明确时，1h EMA144 必须走平
+        # 或顺 4h 方向（近 SLOPE_BARS=20 根变化 ≥0，含走平），做空镜像。scanner 的
+        # gate_4h 已强制 4h 方向与多数决方向一致，故此处用 direction 等价代表 4h
+        # 方向（影子/其他调用方无 4h 上下文时同口径近似）。不叠加排列门
+        # （EMA55>EMA144 在深回撤时先杀，正是 2026-10-10 退役主因）与 5 根严格
+        # 斜率门（走平不再被拒）。
+        if len(e) < SLOPE_BARS + 1:
+            return None
+        slope144 = float(e[-1]) - float(e[-SLOPE_BARS])
+        if not np.isfinite(slope144):
+            return None
+        if direction == 1 and slope144 < 0:
+            return None
+        if direction == -1 and slope144 > 0:
+            return None
+        return ema
+
+    # 排列门（ema55）：快线（EMA21）须在慢线上方——慢线之下还有快线托着才是趋势回踩
+    e_fast = calc_ema(closes, 21)
+    if e_fast is not None and np.isfinite(float(e_fast[-1])) and float(e_fast[-1]) > 0:
+        fast = float(e_fast[-1])
+        if direction == 1 and not fast > ema:
+            return None
+        if direction == -1 and not fast < ema:
+            return None
 
     # 斜率门：近 5 根同向
     if direction == 1 and not float(e[-1]) > float(e[-6]):

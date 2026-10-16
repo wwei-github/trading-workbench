@@ -455,6 +455,69 @@ def test_ema55_arrangement_gate_blocks_downtrend_long():
     assert trig._detect_ema_touch(kl, 1, 55, _flt(refs=("ema55",))) is None
 
 
+# ── ema144：深回撤（2026-10-16 复出，「1h EMA144 走平或顺 4h 方向」门）─────
+
+def _ema144_kl(n: int, shape: str) -> list[list]:
+    """ema144 夹具：shape='up' 上升 / 'down' 下降 / 'flat' 走平；信号K线触及 EMA144
+    （多头 low=ema-0.2、close=ema+0.3；做空镜像另改写，见各用例）"""
+    if shape == "up":
+        closes = [100.0 + 0.05 * i for i in range(n)]
+    elif shape == "down":
+        closes = [200.0 - 0.05 * i for i in range(n)]
+    else:
+        closes = [100.0] * n
+    kl = _klines(closes, [c + 0.1 for c in closes], [c - 0.1 for c in closes])
+    return kl
+
+
+def _touch_ema144(kl: list[list], direction: int) -> list[list]:
+    e = calc_ema([float(k[4]) for k in kl[:-1]], 144)
+    ema = float(e[-1])
+    ts, _, _, _, _, vol, qv = kl[-2]
+    if direction == 1:
+        kl[-2] = [ts, kl[-3][4], ema + 0.4, ema - 0.2, ema + 0.3, vol, qv]
+    else:
+        kl[-2] = [ts, kl[-3][4], ema + 0.2, ema - 0.5, ema - 0.3, vol, qv]
+    return kl
+
+
+def test_ema144_touch_uptrend_long_hits():
+    """上升序列（EMA144 向上）多头深回撤触碰 → 数据门 + 走平/顺势门全过 → 命中"""
+    kl = _touch_ema144(_ema144_kl(250, "up"), 1)
+    p = trig._detect_ema_touch(kl, 1, 144, _flt(refs=("ema144",)))
+    assert p is not None and p > 0
+
+
+def test_ema144_touch_downtrend_long_rejected():
+    """下降序列（EMA144 向下）多头触碰 → 顺势门不过（4h 多要求 EMA144 走平或向上）→ None"""
+    kl = _touch_ema144(_ema144_kl(250, "down"), 1)
+    assert trig._detect_ema_touch(kl, 1, 144, _flt(refs=("ema144",))) is None
+
+
+def test_ema144_touch_downtrend_short_hits_mirror():
+    """空头镜像：下降序列（EMA144 向下）空头反抽触碰 → 顺势门过（走平或向下）→ 命中"""
+    kl = _touch_ema144(_ema144_kl(250, "down"), -1)
+    p = trig._detect_ema_touch(kl, -1, 144, _flt(refs=("ema144",)))
+    assert p is not None and p > 0
+
+
+def test_ema144_touch_flat_allowed_both_directions():
+    """走平允许：EMA144 近 20 根变化 ≈0（走平）→ 多空两侧均放行（2026-10-16 口径，
+    不再沿用 5 根严格同向斜率门）"""
+    long_kl = _touch_ema144(_ema144_kl(250, "flat"), 1)
+    short_kl = _touch_ema144(_ema144_kl(250, "flat"), -1)
+    assert trig._detect_ema_touch(long_kl, 1, 144, _flt(refs=("ema144",))) is not None
+    assert trig._detect_ema_touch(short_kl, -1, 144, _flt(refs=("ema144",))) is not None
+
+
+def test_ema144_data_gate_skips_short_history():
+    """数据门：已收盘 239 根 < max(200, 周期×1.7≈245) → 静默跳过；250 根放行"""
+    assert trig._detect_ema_touch(
+        _touch_ema144(_ema144_kl(240, "up"), 1), 1, 144, _flt(refs=("ema144",))) is None
+    assert trig._detect_ema_touch(
+        _touch_ema144(_ema144_kl(250, "up"), 1), 1, 144, _flt(refs=("ema144",))) is not None
+
+
 # ── detect_trigger 接线：优先级 / 白名单 / 触发载荷 ───────────────────────
 
 def _ema21_of(kl: list[list]) -> float:
@@ -560,27 +623,29 @@ def test_breakout_trigger_carries_event_payload():
 
 def test_resolve_default_touch_refs():
     """默认触点 = 摆动结构位 + 均线族（2026-10-08 均线族，2026-10-09 加入 4h EMA21，
-    2026-10-10 ema144 退役，2026-10-14 加入 swing——回踩样本中 HL/LH 结构位占比
-    可观；retest 仍需配置显式启用）"""
+    2026-10-14 加入 swing——回踩样本中 HL/LH 结构位占比可观；2026-10-16 ema144
+    复出并默认启用；retest 仍需配置显式启用）"""
     flt = resolve_scan_filters(None)
-    assert flt.pullback_touch_refs == ("swing", "ema21", "ema21_4h", "ema55")
+    assert flt.pullback_touch_refs == (
+        "swing", "ema21", "ema21_4h", "ema55", "ema144")
     assert flt.retest_window_bars == 24
     assert flt.structure_touch_band_pct == 0.3
     assert flt.ema_touch_min_bars == 200
 
 
 def test_resolve_touch_refs_filter_and_fallback():
-    """非法项过滤保留合法项；空/全非法/非 list 回落默认（swing+均线族，触点全空会停摆
-    回踩管线）；退役触点 ema144 即使显式配置也被强制过滤（2026-10-10 三次拍板，不留暗门）"""
+    """非法项过滤保留合法项；空/全非法/非 list 回落默认（swing+均线族四触点，
+    触点全空会停摆回踩管线）；ema144 已于 2026-10-16 复出（退役过滤集清空），
+    显式配置不再被过滤"""
     cfg = SimpleNamespace(scan_filters={"pullback_touch_refs": ["retest", "bogus", "ema55"]})
     assert resolve_scan_filters(cfg).pullback_touch_refs == ("retest", "ema55")
     for bad in (None, "retest", [], ["bogus"], ["bogus", 1]):
         cfg2 = SimpleNamespace(scan_filters={"pullback_touch_refs": bad})
         assert resolve_scan_filters(cfg2).pullback_touch_refs == \
-            ("swing", "ema21", "ema21_4h", "ema55"), bad
+            ("swing", "ema21", "ema21_4h", "ema55", "ema144"), bad
     cfg3 = SimpleNamespace(scan_filters={
         "pullback_touch_refs": ["ema21", "ema144", "retest"]})
-    assert resolve_scan_filters(cfg3).pullback_touch_refs == ("ema21", "retest")
+    assert resolve_scan_filters(cfg3).pullback_touch_refs == ("ema21", "ema144", "retest")
 
 
 def test_resolve_touch_params_override():
