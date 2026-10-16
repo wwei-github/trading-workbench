@@ -7,6 +7,8 @@
   收盘守住；事件缺失/过期/方向不符时回落结构推导
 - swing：只认 HL（多）/LH（空）——LL/HH 不构成回踩结构；时效门 bars_ago ≤ 40
 - ema55：数据门（已收盘 < ema_touch_min_bars 静默跳过）+ 排列门 + 斜率门
+- ema144：数据门 + 「1h EMA144 走平或顺 4h 方向」门（4h 方向由 htf_dir 传入，
+  4h 降级缺失时 fail-closed 不出该触点）
 - 触点优先级 retest > swing > ema21；BREAKOUT 触发携带 breakout_level/candle_open
   （scanner 记 breakout_events 的事实源）；次根确认触点沿用 pending.touch_ref
 - resolve_scan_filters 触点白名单/参数解析（空/全非法回落默认，不停摆）
@@ -456,6 +458,7 @@ def test_ema55_arrangement_gate_blocks_downtrend_long():
 
 
 # ── ema144：深回撤（2026-10-16 复出，「1h EMA144 走平或顺 4h 方向」门）─────
+# htf_dir = scanner gate_4h 方向；None（4h 降级）时该触点 fail-closed 不出
 
 def _ema144_kl(n: int, shape: str) -> list[list]:
     """ema144 夹具：shape='up' 上升 / 'down' 下降 / 'flat' 走平；信号K线触及 EMA144
@@ -484,20 +487,21 @@ def _touch_ema144(kl: list[list], direction: int) -> list[list]:
 def test_ema144_touch_uptrend_long_hits():
     """上升序列（EMA144 向上）多头深回撤触碰 → 数据门 + 走平/顺势门全过 → 命中"""
     kl = _touch_ema144(_ema144_kl(250, "up"), 1)
-    p = trig._detect_ema_touch(kl, 1, 144, _flt(refs=("ema144",)))
+    p = trig._detect_ema_touch(kl, 1, 144, _flt(refs=("ema144",)), htf_dir="long")
     assert p is not None and p > 0
 
 
 def test_ema144_touch_downtrend_long_rejected():
     """下降序列（EMA144 向下）多头触碰 → 顺势门不过（4h 多要求 EMA144 走平或向上）→ None"""
     kl = _touch_ema144(_ema144_kl(250, "down"), 1)
-    assert trig._detect_ema_touch(kl, 1, 144, _flt(refs=("ema144",))) is None
+    assert trig._detect_ema_touch(
+        kl, 1, 144, _flt(refs=("ema144",)), htf_dir="long") is None
 
 
 def test_ema144_touch_downtrend_short_hits_mirror():
     """空头镜像：下降序列（EMA144 向下）空头反抽触碰 → 顺势门过（走平或向下）→ 命中"""
     kl = _touch_ema144(_ema144_kl(250, "down"), -1)
-    p = trig._detect_ema_touch(kl, -1, 144, _flt(refs=("ema144",)))
+    p = trig._detect_ema_touch(kl, -1, 144, _flt(refs=("ema144",)), htf_dir="short")
     assert p is not None and p > 0
 
 
@@ -506,16 +510,27 @@ def test_ema144_touch_flat_allowed_both_directions():
     不再沿用 5 根严格同向斜率门）"""
     long_kl = _touch_ema144(_ema144_kl(250, "flat"), 1)
     short_kl = _touch_ema144(_ema144_kl(250, "flat"), -1)
-    assert trig._detect_ema_touch(long_kl, 1, 144, _flt(refs=("ema144",))) is not None
-    assert trig._detect_ema_touch(short_kl, -1, 144, _flt(refs=("ema144",))) is not None
+    assert trig._detect_ema_touch(
+        long_kl, 1, 144, _flt(refs=("ema144",)), htf_dir="long") is not None
+    assert trig._detect_ema_touch(
+        short_kl, -1, 144, _flt(refs=("ema144",)), htf_dir="short") is not None
 
 
 def test_ema144_data_gate_skips_short_history():
     """数据门：已收盘 239 根 < max(200, 周期×1.7≈245) → 静默跳过；250 根放行"""
     assert trig._detect_ema_touch(
-        _touch_ema144(_ema144_kl(240, "up"), 1), 1, 144, _flt(refs=("ema144",))) is None
+        _touch_ema144(_ema144_kl(240, "up"), 1), 1, 144,
+        _flt(refs=("ema144",)), htf_dir="long") is None
     assert trig._detect_ema_touch(
-        _touch_ema144(_ema144_kl(250, "up"), 1), 1, 144, _flt(refs=("ema144",))) is not None
+        _touch_ema144(_ema144_kl(250, "up"), 1), 1, 144,
+        _flt(refs=("ema144",)), htf_dir="long") is not None
+
+
+def test_ema144_htf_dir_none_fail_closed():
+    """4h 上下文缺失（gate 降级 → htf_dir=None）→ fail-closed 不出 ema144 触点，
+    即使 1h EMA144 向上——不再用 1h 多数决方向冒充 4h 方向（2026-10-16 加固）"""
+    kl = _touch_ema144(_ema144_kl(250, "up"), 1)
+    assert trig._detect_ema_touch(kl, 1, 144, _flt(refs=("ema144",))) is None
 
 
 # ── detect_trigger 接线：优先级 / 白名单 / 触发载荷 ───────────────────────

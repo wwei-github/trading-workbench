@@ -374,6 +374,9 @@ def detect_indicator_candidate(
     trig_diag: Optional[dict] = {} if reject_out is not None else None
     trig, pending_op = detect_trigger(
         klines, direction, pending, flt=flt, retest=retest, htf=htf,
+        # 4h 方向传给触点层：ema144 深回撤门靠真实 4h 趋势方向判定；gate 降级
+        # （htf 拉取失败/异常 → gate=None）时该触点 fail-closed 不出（2026-10-16 加固）
+        htf_dir=(gate[0] if gate else None),
         diag=trig_diag,
     )
     if trig is not None:

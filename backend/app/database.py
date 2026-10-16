@@ -459,6 +459,21 @@ def _run_migrations(engine):
             "ALTER TABLE scan_records "
             "ADD COLUMN IF NOT EXISTS funnel_json JSONB"
         ))
+        # ema144 触点复出一致化（2026-10-16）：退役期（2026-10-10~10-16）前端不给该
+        # 选项、解析层强制过滤，故存量「未定制」的默认白名单必然是退役期默认
+        # ["swing","ema21","ema21_4h","ema55"]（缺 ema144）。此处对「恰好等于退役期
+        # 默认」的存量行一次性补入 ema144；补后数组变为 5 元 → 集合相等条件自动失效，
+        # 迁移天然幂等、且不触碰操作者已定制的白名单（增删任一项即不匹配，自行在
+        # 配置页勾选）。集合相等用 jsonb 双向包含（忽略元素顺序）。
+        conn.execute(text(
+            "UPDATE system_config SET scan_filters = jsonb_set("
+            "  scan_filters, '{pullback_touch_refs}',"
+            "  scan_filters->'pullback_touch_refs' || '\"ema144\"'::jsonb) "
+            "WHERE scan_filters->'pullback_touch_refs' "
+            "        @> '[\"swing\",\"ema21\",\"ema21_4h\",\"ema55\"]'::jsonb "
+            "  AND scan_filters->'pullback_touch_refs' "
+            "        <@ '[\"swing\",\"ema21\",\"ema21_4h\",\"ema55\"]'::jsonb"
+        ))
         # 黑名单永久档（2026-10-11）：origin 加 stop_hard 值（9 字符），列 8→16 扩宽
         conn.execute(text(
             "ALTER TABLE symbol_blacklist "
