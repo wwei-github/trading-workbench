@@ -32,7 +32,8 @@ const utcMs = (v: string) => dayjs.utc(v).valueOf()
 const HIT_MARK_COLOR = '#1677ff'
 const TOUCH_MARK_COLOR = '#722ed1'
 // 标注区背景色：同色系高透明度填充（把命中/触碰K线的区域醒目衬出来）
-const HIT_MARK_FILL = 'rgba(22, 119, 255, 0.35)'
+// 2026-10-16：命中侧背景再淡化（0.35→0.20），避免底色过深压住K线
+const HIT_MARK_FILL = 'rgba(22, 119, 255, 0.20)'
 const TOUCH_MARK_FILL = 'rgba(114, 46, 209, 0.35)'
 
 // ── 复盘模式部件（仅 tradeId 模式使用）────────────────────────────────
@@ -408,6 +409,9 @@ function drawHitMarks(
   svg.setAttribute('height', String(height))
   svg.setAttribute('viewBox', `0 0 ${fullWidth} ${height}`)
 
+  // 已放置徽标的占位矩形：连续多根同侧标注时，后放者逐档外移，防止徽标相互遮挡
+  const placed: Array<{ x: number; y: number; w: number; h: number }> = []
+
   for (const m of marks) {
     // 时刻所在K线（time <= ms 的最后一根；早于首根则无标注）
     let idx = -1
@@ -459,36 +463,50 @@ function drawHitMarks(
       r.setAttribute('stroke-width', '1.5')
       r.setAttribute('stroke-dasharray', '4,3')
       svg.appendChild(r)
-    } else {
-      // 瞄准框：四角括号
-      const arm = Math.max(3, Math.min(half, (yBot - yTop) / 2))
-      const p = el('path')
-      p.setAttribute(
-        'd',
-        `M${x0} ${yTop + arm}L${x0} ${yTop}L${x0 + arm} ${yTop}` +
-          `M${x1 - arm} ${yTop}L${x1} ${yTop}L${x1} ${yTop + arm}` +
-          `M${x1} ${yBot - arm}L${x1} ${yBot}L${x1 - arm} ${yBot}` +
-          `M${x0 + arm} ${yBot}L${x0} ${yBot}L${x0} ${yBot - arm}`,
-      )
-      p.setAttribute('fill', 'none')
-      p.setAttribute('stroke', m.color)
-      p.setAttribute('stroke-width', '2')
-      p.setAttribute('stroke-linecap', 'round')
-      svg.appendChild(p)
     }
+    // 命中K线不再描边框（2026-10-16）：去掉上下蓝色边框，仅保留背景色块
 
-    // 徽标（图标 + 文字胶囊）：跟随方向（多→下方 / 空→上方），越界翻面
+    // 徽标（图标 + 文字胶囊）：跟随方向（多→下方 / 空→上方）
+    // 连续多根K线同侧标注时，徽标逐档外移，避免与已在场的徽标相互遮挡（2026-10-16）
     const b = MARK_BADGE
-    let sideBelow = m.preferBelow
-    if (sideBelow && yBot + MARK_GAP + b > height - 2) sideBelow = false
-    if (!sideBelow && yTop - MARK_GAP - b < 2) sideBelow = true
-    const badgeCy = sideBelow ? yBot + MARK_GAP + b / 2 : yTop - MARK_GAP - b / 2
 
     // 胶囊宽度 = 图标区 + 间距 + 文字宽 + 内边距
     const c2d = document.createElement('canvas').getContext('2d')!
     c2d.font = 'bold 11px monospace'
     const pillW = Math.round(b + 3 + c2d.measureText(m.label).width + 6)
     const badgeX = Math.max(2, Math.min(cx - pillW / 2, fullWidth - pillW - 2))
+
+    // 候选位置：优先 m.preferBelow 侧，逐档外移（步长=徽标高+间距）；该侧排不下再翻面
+    const step = b + 8
+    const cands: Array<{ sideBelow: boolean; gap: number }> = []
+    for (let k = 0; k < 6; k++) cands.push({ sideBelow: m.preferBelow, gap: MARK_GAP + k * step })
+    for (let k = 0; k < 6; k++) cands.push({ sideBelow: !m.preferBelow, gap: MARK_GAP + k * step })
+
+    let sideBelow = m.preferBelow
+    let badgeCy = sideBelow ? yBot + MARK_GAP + b / 2 : yTop - MARK_GAP - b / 2
+    let placedOk = false
+    for (const c of cands) {
+      const cy = c.sideBelow ? yBot + c.gap + b / 2 : yTop - c.gap - b / 2
+      const top = cy - b / 2
+      if (top < 2 || top + b > height - 2) continue // 越出画布
+      const rect = { x: badgeX, y: top, w: pillW, h: b }
+      const clash = placed.some(
+        (p) => !(rect.x + rect.w <= p.x || p.x + p.w <= rect.x || rect.y + rect.h <= p.y || p.y + p.h <= rect.y),
+      )
+      if (clash) continue
+      sideBelow = c.sideBelow
+      badgeCy = cy
+      placed.push(rect)
+      placedOk = true
+      break
+    }
+    if (!placedOk) {
+      // 兜底：所有候选均冲突/越界时，按原逻辑贴边放置
+      if (sideBelow && yBot + MARK_GAP + b > height - 2) sideBelow = false
+      if (!sideBelow && yTop - MARK_GAP - b < 2) sideBelow = true
+      badgeCy = sideBelow ? yBot + MARK_GAP + b / 2 : yTop - MARK_GAP - b / 2
+      placed.push({ x: badgeX, y: badgeCy - b / 2, w: pillW, h: b })
+    }
     const bcx = badgeX + b / 2 // 图标中心
 
     // 徽标 → 标注框 的导引线 + 末端实心三角箭头（指向K线框，2026-10-16）
