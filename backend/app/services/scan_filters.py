@@ -28,7 +28,8 @@ TRIGGER_PULLBACK_CONFIRM = "trigger_pullback_confirm"  # 回踩触点后金K确�
 ALL_TRIGGERS = (TRIGGER_BREAKOUT, TRIGGER_TREND_BREAKOUT, TRIGGER_PULLBACK_CONFIRM)
 
 # 回踩触点白名单（docs/22）：横向结构语义强于均线，标注优先级即此顺序
-TOUCH_RETEST = "retest"    # 突破回测位（破位价：结构前高/前低或 Donchian 轨，回踩不破=突破有效性确认）
+TOUCH_RETEST = "retest"    # 突破回测位（破位价：结构前高/前低或 Donchian 轨，回踩不破=突破有效性确认；
+                           # 2026-10-16 起双来源：破轨事件 + 结构推导——新 HH 收盘越位后，被越过的前一个 HH 即回测位）
 TOUCH_SWING = "swing"      # 摆动结构位（HL/LH，结构防守位）
 TOUCH_EMA21 = "ema21"      # 趋势动态价值区（原口径）
 TOUCH_EMA21_4H = "ema21_4h"  # 4h EMA21 大周期动态价值区（1h 信号K线影线触及，2026-10-09）
@@ -39,8 +40,10 @@ ALL_TOUCH_REFS = (
 )
 # 默认均线族 + 摆动结构位（2026-10-08 均线族，2026-10-09 加入 4h EMA21，
 # 2026-10-14 加入 swing——实测回踩样本中 HL/LH 结构位占比可观，仅均线族覆盖面
-# 不足；retest 仍默认关——依赖 breakout_events 先手记录，语义不匹配时易产生
-# 低质量触点命中，需在配置弹窗显式勾选启用）。ema55 受分离史结构门自筛
+# 不足；retest 仍默认关——2026-10-16 起它已有结构推导来源（trigger.
+# _structural_retest_level，不依赖 breakout_events 先手记录），语义可靠性提升，
+# 但默认值是否上调待实测后另行拍板，本次维持关、需在配置弹窗显式勾选启用）。
+# ema55 受分离史结构门自筛
 # （2026-10-10 三次拍板：发散度改分离史口径，深回踩不再被触点时刻现值误杀）。
 # ema144 触点退役（同批拍板）：深回撤存活率极低（排列门常先杀）且偏离「回踩入场」
 # 语义，检测代码保留但白名单默认剔除，_touch_refs 解析层强制过滤

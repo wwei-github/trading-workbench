@@ -4,8 +4,8 @@
 回归纯指标口径：50 + net×10 + 修饰，不再接收 key_levels/atr/dual_touch
 （2026-10-15 指标拆角色：net=方向票净差∈{1,2,3}，基础分改 net×10 保持量级）。
 放量加分（2026-09-29）：三类触发统一为加分项（≥量比门槛 +5），突破不再卡死。
-看涨吞没上影短加分（2026-10-13）：上影硬门改加分项（≤全长 25% +3），
-不再因上影长拒判形态。
+决断K线影线梯度加分（2026-10-16）：吞没/启明星/黄昏星三处影线硬门全部删除，
+改按影线比梯度加分（≤10% +5、≤20% +3、≤30% +1、>30% 0，只加分不拒判形态）。
 """
 import sys
 from pathlib import Path
@@ -101,31 +101,93 @@ def _engulf_klines(high: float, low: float,
 
 
 def test_bullish_engulfing_short_upper_shadow_bonus():
-    """看涨吞没上影短 +3（2026-10-13 硬门改加分项）：上影 0.2/全长 2.0=10%
-    ≤25% → 80+3=83；不传 pattern / 其他形态名不加（仅看涨吞没专属）"""
-    kl = _engulf_klines(101.5, 99.5)
+    """看涨吞没上影梯度加分（2026-10-16 三档口径）：上影 0.1/全长 2.0=5%
+    ≤10% → +5=85；不传 pattern / 非映射形态名不加（仅决断类金K生效）"""
+    kl = _engulf_klines(101.4, 99.4)
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
-                                 klines=kl, pattern="bullish_engulfing") == 83
+                                 klines=kl, pattern="bullish_engulfing") == 85
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
                                  klines=kl) == 80
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
                                  klines=kl, pattern="hammer") == 80
 
 
-def test_bullish_engulfing_upper_shadow_boundary_25pct_bonus():
-    """上影恰 25%（0.5/2.0）→ 边界计加分（加分线口径 ≤25%；检测层 2026-10-13
-    起该值不再拦截、照判形态）"""
-    kl = _engulf_klines(101.8, 99.8)
+def test_bullish_engulfing_upper_shadow_grades():
+    """上影梯度中间档：0.3/2.0=15%（≤20%）→ +3=83；0.5/2.0=25%
+    （旧二值加分边界，现落 ≤30% 档）→ +1=81"""
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
-                                 klines=kl, pattern="bullish_engulfing") == 83
+                                 klines=_engulf_klines(101.6, 99.6),
+                                 pattern="bullish_engulfing") == 83
+    assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                 klines=_engulf_klines(101.8, 99.8),
+                                 pattern="bullish_engulfing") == 81
 
 
 def test_bullish_engulfing_long_upper_shadow_no_bonus():
-    """上影长（1.0/2.6≈38% >25%）只失加分：80 不加分也不拦截（旧 25% 硬门
-    时代此形态连候选都不产生）"""
+    """上影长（1.0/2.6≈38% >30%）只失加分：80 不加分也不拦截形态"""
     kl = _engulf_klines(102.3, 99.7)
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
                                  klines=kl, pattern="bullish_engulfing") == 80
+
+
+def test_decision_shadow_bonus_thresholds_inclusive():
+    """档位阈值取闭区间（≤10% +5、≤20% +3、≤30% +1）：几何用二进制可精确表示
+    （全长 2.5、上影 0.25/0.5/0.75）直接验证 decision_shadow_bonus 边界不丢档"""
+    from app.services.strategy.candlestick import decision_shadow_bonus
+
+    def _k(high: float, low: float) -> list[list]:
+        return [[0, 99.5, 99.5, 99.5, 99.5, 1.0, 1.0],
+                [1, 99.5, high, low, 101.5, 1.0, 1.0],
+                [2, 101.5, 101.5, 101.5, 101.5, 1.0, 1.0]]
+
+    assert decision_shadow_bonus("bullish_engulfing", _k(101.75, 99.25)) == 5  # 恰 10%
+    assert decision_shadow_bonus("bullish_engulfing", _k(102.0, 99.5)) == 3    # 恰 20%
+    assert decision_shadow_bonus("bullish_engulfing", _k(102.25, 99.75)) == 1  # 恰 30%
+    assert decision_shadow_bonus("bullish_engulfing", _k(102.3, 99.7)) == 0    # >30%
+
+
+def _bear_engulf_klines(high: float, low: float) -> list[list]:
+    """[-2] 为看跌吞没信号根（检测层几何：前根阳 100.0→101.2、当根阴 101.3→100.0
+    完整包住），[-1] 未收盘根；high/low 控制下影比（下影 = min(o,c) − low）"""
+    return [
+        [0, 100.0, 101.2, 99.9, 101.2, 10.0, 10.0],
+        [1, 101.3, high, low, 100.0, 10.0, 10.0],
+        [2, 100.0, 100.0, 100.0, 100.0, 10.0, 10.0],
+    ]
+
+
+def test_bearish_engulfing_lower_shadow_grades():
+    """看跌吞没下影梯度三档（2026-10-16 新增，沿用看涨镜像口径）：全长恒 2.0，
+    下影 0.1=5% → +5=85；0.3=15% → +3=83；0.5=25% → +1=81；0.8=40% → 0=80"""
+    sig = (-1, _votes(-3))
+    for low, high, bonus in ((99.9, 101.9, 5), (99.7, 101.7, 3),
+                             (99.5, 101.5, 1), (99.2, 101.2, 0)):
+        assert compute_quality_score(*sig, "trigger_pullback_confirm",
+                                     klines=_bear_engulf_klines(high, low),
+                                     pattern="bearish_engulfing") == 80 + bonus
+
+
+def _star_klines(high: float, low: float) -> list[list]:
+    """[-2] 为启明星/黄昏星第三根（决断K线，几何 99.0→101.0 阳线、实体 2.0），
+    前两根为占位；high/low 控制总影线比（总影线 = 全长 − 实体）"""
+    return [
+        [0, 101.0, 101.0, 99.0, 99.0, 10.0, 10.0],
+        [1, 99.2, 99.4, 99.0, 99.2, 10.0, 10.0],
+        [2, 99.0, high, low, 101.0, 10.0, 10.0],
+        [3, 101.0, 101.0, 101.0, 101.0, 10.0, 10.0],
+    ]
+
+
+def test_star_third_candle_total_shadow_grades():
+    """启明星/黄昏星第三根总影线梯度三档（2026-10-16 统一口径）：实体恒 2.0，
+    全长 2.1=5% → +5=85；2.3=13% → +3=83；2.6=23% → +1=81；3.2=38% → 0=80"""
+    for high, low, bonus in ((101.1, 99.0, 5), (101.3, 99.0, 3),
+                             (101.6, 99.0, 1), (101.6, 98.4, 0)):
+        for pattern, direction, net in (("morning_star", 1, 3),
+                                        ("evening_star", -1, -3)):
+            assert compute_quality_score(
+                direction, _votes(net), "trigger_pullback_confirm",
+                klines=_star_klines(high, low), pattern=pattern) == 80 + bonus
 
 
 # ── 金K组合价格带结构点密度加分（2026-10-13-6；-7 改实体重叠口径）────────────

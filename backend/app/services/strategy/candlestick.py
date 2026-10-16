@@ -131,22 +131,55 @@ ENGULF_BODY_LOOKBACK = 20
 ENGULF_BODY_MIN_RATIO = 0.6   # 吞没K线（body2）实体须 ≥ 基线中位数 × 该系数
 ENGULF_BODY_MIN_BARS = 10
 
-# 决断K线影线质量门（docs/25 §4，2026-09-30 用户拍板，替代提示词降权路线）：
-# 形态中承担「决断」角色的那根K线——总影线占全长比例过高 = 长影拉锯、犹豫非决断，
-# 直接不判金K（不满足要求的不判）。只约束决断K线自身，形态其余K线（被吞没方/
-# 趋势语境K/星）不参与该门；实体占比 ≥60% 即放行（门只拦 >40%）
-# - 吞没：第二根（吞没K线）
-# - 启明星/黄昏星：第三根（确认阳/阴线）
-DECISION_SHADOW_MAX_PCT = 0.40   # 决断K线总影线 / K线全长 上限
+# 决断K线影线梯度加分（docs/25 §4，2026-09-30 立「总影线 > 全长 40% 不判金K」硬门；
+# 2026-10-16 用户拍板三处硬门全部删除 → 多档加分、不否定形态）。
+# 决断K线 = 形态中承担决断角色的那根：吞没第二根 / 启明星·黄昏星第三根。
+# 影线占全长比例越高 = 长影拉锯、犹豫非决断 → 决断力越弱，按档位给质量分加分
+# （technical.compute_quality_score 消费），>30% 只失加分、照判形态。
+# 影线口径不对称（沿 2026-10-01 看涨吞没口径镜像）：
+#   看涨吞没 → 上影（冲高遭上方抛压打回 = 犹豫）；下影不限（探底回升=承接强）
+#   看跌吞没 → 下影（下探遭下方承接拉回 = 犹豫）；上影不限
+#   启明星 / 黄昏星 → 第三根总影线
+# 阈值沿革：2026-09-30 三处总影线 >40% 硬门 → 2026-10-01 看涨吞没不对称化（上影 ≤15%，
+# 下影不限）→ 2026-10-11 放宽 25%（EDUUSDT 17.3% 边缘拒绝个案）→ 2026-10-13 看涨吞没
+# 硬门改二值加分（≤25% +3）→ 2026-10-16 三处硬门全删、统一为三档梯度加分。
+DECISION_SHADOW_BONUS_GRADES = ((0.10, 5), (0.20, 3), (0.30, 1))
 
-# 看涨吞没上影短加分阈值（2026-10-13 用户拍板：硬门改加分项，不再卡死）：
-# 第二根上影/K线全长 ≤25% → 质量分 +3（technical.compute_quality_score），
-# 上影长只失加分、不再拒判形态。语义（冲高遭上方抛压打回=犹豫非决断）降级
-# 为排序信号；下影不限（探底回升=下方承接强，长下影不扣分）。阈值沿革：
-# 2026-10-01 定 15%（不对称化，替代对称总影线门）→ 2026-10-11 放宽 25%
-# （EDUUSDT 17.3% 边缘拒绝个案）→ 2026-10-13 硬门（upper2/rng2 > 阈值
-# return None）删除改加分。看跌吞没维持 DECISION_SHADOW_MAX_PCT 硬门。
-ENGULF_UPPER_SHADOW_SHORT_PCT = 0.25
+# 决断K线影线口径映射（pattern → upper/lower/total）
+_DECISION_SHADOW_SIDE = {
+    "bullish_engulfing": "upper",
+    "bearish_engulfing": "lower",
+    "morning_star": "total",
+    "evening_star": "total",
+}
+
+
+def decision_shadow_bonus(pattern: Optional[str], klines: list[list]) -> int:
+    """决断K线影线短梯度加分（0/1/3/5，2026-10-16 口径）。
+
+    决断K线 = klines[-2]（与 detect_* 在筛选链上的 idx=-2 同位置）。
+    影线比 = 对应影线 / K线全长：≤10% +5、≤20% +3、≤30% +1、>30% 0。
+    pattern 未映射（含 None / 非决断类金K）返回 0；K线零振幅返回 0。
+    """
+    side = _DECISION_SHADOW_SIDE.get(pattern or "")
+    if not side or not klines or len(klines) < 2:
+        return 0
+    k = klines[-2]
+    o, h, l, c = float(k[1]), float(k[2]), float(k[3]), float(k[4])
+    rng = h - l
+    if rng <= 0:
+        return 0
+    if side == "upper":
+        shadow = _upper_shadow(o, h, c)
+    elif side == "lower":
+        shadow = _lower_shadow(o, l, c)
+    else:
+        shadow = rng - _body(o, c)
+    ratio = shadow / rng
+    for threshold, bonus in DECISION_SHADOW_BONUS_GRADES:
+        if ratio <= threshold:
+            return bonus
+    return 0
 
 
 def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
@@ -158,11 +191,11 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     1. 吞没K线（第二根）实体 ≥ 近 20 根中位实体 ×0.6——弱吞没下限：决断K线
        须有基本实体分量，微实体互包不算吞没；被吞没方不设基线（大实体吞
        小十字=最强变体，2026-10-10 WUSDT 个案修订）；统计量中位数（10-10-2
-       均值→中位数稳健化）、比例 0.6（10-10-3 拍板，KAIA 87.6% 案由拒转过）；
-    2. 看跌吞没第二根总影线 ≤ 全长 40%（2026-09-30 口径维持）。
-    看涨吞没第二根上影不做硬门（2026-10-13 拍板硬门改加分项，不因上影长
-    拒判）：上影 ≤ 全长 25%（ENGULF_UPPER_SHADOW_SHORT_PCT）时质量分 +3，
-    见 technical.compute_quality_score；下影不限（2026-10-01 不对称化）。
+       均值→中位数稳健化）、比例 0.6（10-10-3 拍板，KAIA 87.6% 案由拒转过）。
+    影线不做硬门（2026-10-16 拍板：看涨上影 2026-10-13 起硬门改加分，看跌下影与
+    星形态一并统一）：只看影线比给梯度加分，不因影线长拒判形态，见
+    `decision_shadow_bonus` / `DECISION_SHADOW_BONUS_GRADES`（看涨吞没上影、
+    看跌吞没下影；≤10% +5、≤20% +3、≤30% +1、>30% 0）。
     """
     # idx 与其他检测器同语义（负数=倒数，正数=绝对位置），统一换算成绝对位置
     pos = idx if idx >= 0 else len(klines) + idx
@@ -195,8 +228,7 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
     if median_body <= 0 or body2 < median_body * ENGULF_BODY_MIN_RATIO:
         return None
 
-    # 影线几何（2026-10-13 起仅看跌侧套硬门）：看涨吞没上影已改质量分加分项
-    # （ENGULF_UPPER_SHADOW_SHORT_PCT，见上方常量注释），不再在此拦截
+    # 影线几何（2026-10-16 起两侧均不套硬门）：影线长短只影响质量分梯度加分
     rng2 = float(k_cur[2]) - float(k_cur[3])
     if rng2 <= 0:
         return None
@@ -207,8 +239,8 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
         # 薄盘口打印噪声 ≤0.1% 视同平开（2026-10-08 微跳空容差，同刺透线）；
         # c2 ≥ o1（收盘收复前实体上沿）属真语义临界，不加容差
         if o2 <= c1 * (1 + MICRO_GAP_TOLERANCE) and c2 >= o1:
-            # 上影短只加分、不拦形态（2026-10-13 拍板）：加分由
-            # technical.compute_quality_score 按 pattern 重算上影比判定；
+            # 上影短只加分、不拦形态（2026-10-13 拍板，2026-10-16 并入统一梯度）：
+            # 加分由 technical.compute_quality_score → decision_shadow_bonus 判定；
             # 下影不限（探底回升=下方承接强）
             strength = 0.7
             if body2 > body1 * 2:
@@ -220,9 +252,9 @@ def detect_engulfing(klines: list[list], idx: int = -1) -> Optional[dict]:
         # o2 ≥ c1×(1−0.1%)：镜像同口径（阴线开盘≈前阳收盘=前实体上沿，
         # 打印噪声视同平开）；c2 ≤ o1 属真语义临界，不加容差
         if o2 >= c1 * (1 - MICRO_GAP_TOLERANCE) and c2 <= o1:
-            # 决断K线影线质量门（2026-09-30 口径维持）：总影线 ≤ 全长 40%
-            if (rng2 - body2) / rng2 > DECISION_SHADOW_MAX_PCT:
-                return None
+            # 下影短只加分、不拦形态（2026-10-16 拍板，原 40% 总影线硬门删除）：
+            # 下探遭下方承接拉回=犹豫非决断 → 由质量分梯度体现排序差异；
+            # 上影不限（冲高后收低=空方强）
             strength = 0.7
             if body2 > body1 * 2:
                 strength = 0.9
@@ -244,7 +276,8 @@ def detect_morning_star(klines: list[list], idx: int = -1) -> Optional[dict]:
     2. 第二根：小实体（星），实体 < 外侧均值×0.3（2026-10-01 收紧，
        防退化为看涨吞没观感），可以是阴阳
     3. 第三根：阳线，收盘深入第一根实体
-    4. 第三根影线不过长（总影线 ≤ 全长 40%，决断K线影线质量门）
+    4. 第三根影线（2026-10-16 拍板：原总影线 ≤ 全长 40% 硬门删除）不再拒判，
+       只按总影线比给梯度加分（见 decision_shadow_bonus）
     """
     if len(klines) < abs(idx) + 2:
         return None
@@ -277,11 +310,10 @@ def detect_morning_star(klines: list[list], idx: int = -1) -> Optional[dict]:
     if not _is_bullish(o3, c3):
         return None
 
-    # 影线质量门（docs/25 §4，2026-09-30）：第三根是决断K线，总影线 > 全长 40%
-    # （冲高遭上方抛压打回/探底回拉）= 犹豫非决断，不判金K
-    h3, l3 = float(k3[2]), float(k3[3])
-    rng3 = h3 - l3
-    if rng3 <= 0 or (rng3 - body3) / rng3 > DECISION_SHADOW_MAX_PCT:
+    # 影线梯度加分（2026-10-16 拍板：原 40% 总影线硬门删除）：第三根是决断K线，
+    # 总影线比越高（冲高遭上方抛压打回）= 犹豫非决断，只失加分、照判形态
+    rng3 = float(k3[2]) - float(k3[3])
+    if rng3 <= 0:
         return None
 
     midpoint1 = (o1 + c1) / 2
@@ -356,7 +388,8 @@ def detect_evening_star(klines: list[list], idx: int = -1) -> Optional[dict]:
     2. 第二根：小实体（星），实体 < 外侧均值×0.3（2026-10-01 与启明星对齐收紧，
        防退化为看跌吞没观感），可以是阴阳
     3. 第三根：阴线，收盘深入第一根实体下半部
-    4. 第三根影线不过长（总影线 ≤ 全长 40%，决断K线影线质量门）
+    4. 第三根影线（2026-10-16 拍板：原总影线 ≤ 全长 40% 硬门删除）不再拒判，
+       只按总影线比给梯度加分（见 decision_shadow_bonus）
     """
     if len(klines) < abs(idx) + 2:
         return None
@@ -387,10 +420,10 @@ def detect_evening_star(klines: list[list], idx: int = -1) -> Optional[dict]:
     if not _is_bearish(o3, c3):
         return None
 
-    # 影线质量门：第三根是决断K线（启明星第三根的顶部镜像，口径同 40%）
-    h3, l3 = float(k3[2]), float(k3[3])
-    rng3 = h3 - l3
-    if rng3 <= 0 or (rng3 - body3) / rng3 > DECISION_SHADOW_MAX_PCT:
+    # 影线梯度加分（2026-10-16 拍板：原 40% 总影线硬门删除）：第三根是决断K线
+    # （启明星第三根的顶部镜像），长影只失加分、照判形态
+    rng3 = float(k3[2]) - float(k3[3])
+    if rng3 <= 0:
         return None
 
     midpoint1 = (o1 + c1) / 2

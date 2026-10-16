@@ -17,8 +17,10 @@
   无有效 pending 的金K 一律不触发（正式网复盘 28 笔 6 胜负期望）
 
 回踩触点（docs/22 §2，启用白名单见 ScanFilters.pullback_touch_refs）：
-- retest  突破回测位：前高/前低破位价（scanner 维护 breakout_events，T1 触发时记录），
-  影线可入带、收盘须守住——回踩不破 = 突破有效性确认
+- retest  突破回测位：前高/前低破位价。双来源（2026-10-16）——①事件派生：scanner
+  维护 breakout_events（T1 突破触发时记录）；②结构推导：新 HH 收盘越位后，被它越过的
+  前一个 HH 即回测位（空头镜像 LL），不依赖先手记录。影线可入带、收盘须守住
+  ——回踩不破 = 突破有效性确认
 - swing   摆动结构位：最近的 HL（多）/LH（空）防守位，只认结构延续标签
 - ema21   趋势动态价值区（原口径，不加触点门）；2026-10-15 起叠加 1H 结构门
   软校验（三线排列+快中线发散史+EMA144 方向）——不过门不再否决，改 quality
@@ -98,6 +100,13 @@ def _position_ref_of(touch_ref: Optional[str], direction: int) -> Optional[str]:
 
 # 摆动结构位时效门：防守点太老（>40 根前确认）防守意义衰减
 SWING_MAX_BARS_AGO = 40
+
+# 结构推导回测位（2026-10-16 用户拍板需求①）：新 HH 形成后，被它越过的前一个 HH 即为
+# 突破回测位——不依赖 scanner 破轨事件先手记录（breakout_events 只在 T1 结构突破信号
+# 产生时才 upsert，而 T1a 要求突破根为长实体顺向K线，非长实体突破的结构位永远记不上）。
+# 与事件派生来源共用同一「影线入带 + 收盘守位」触碰口径；新 HH 时效门复用
+# ScanFilters.retest_window_bars（默认 24 根；0 仍表示整体关闭 retest 触点）。
+RETEST_STRUCT_LOOKBACK_N = 10   # 取摆动点个数（与突破路径同源）
 
 # 突破K线形态门槛（2026-09-30-2 口径，用户拍板）：长实体占据K线主体，影线可有但要短——
 # 实体 ≥70% 全长即影线合计 ≤30%（原 75%/25% 放宽，HUMA 个案：影线略长但结构强的突破
@@ -337,42 +346,100 @@ def _detect_htf_ema21_touch(
     return None
 
 
+def _structural_retest_level(
+    klines: list[list], direction: int, order: int, window_bars: int,
+) -> Optional[float]:
+    """结构推导突破回测位（需求①，2026-10-16）。
+
+    多头：在 recent_swings(klines[:-1], order, n=RETEST_STRUCT_LOOKBACK_N)["highs"]
+    （新→旧）中取最近一个 label=="HH" 且 bars_ago ≤ window_bars 的摆动高点 A
+    （= 新 HH），再取比 A 更旧、label=="HH" 且 price < A.price 的最近一个 B
+    （= 被 A 越过的前一个 HH）→ 回测位 = B["price"]。
+    空头镜像：lows 中 label=="LL" 的 A（新 LL）+ 更旧的 LL 且 price > A.price 的 B。
+
+    保证项：
+    - 摆动取材用 klines[:-1]（与突破路径同口径）——信号K线因右侧根数不足不会成为
+      pivot，避免「破位者自己杀掉邻近 pivot」。
+    - A/B 均为收盘价口径的摆动极值，A 标签为 HH/LL 已蕴含「高于/低于前一摆动极值」，
+      再叠加 price 比较即等价于「已收盘越位」。
+    - 两个 HH 之间若夹着 LH（新 HH 相对前一摆动高点更高、但并未高于更旧的那个 HH）时，
+      price 比较会把它排除，继续向更旧找，不会误判为「已突破」。
+
+    数据不足 / 无满足条件的 A 或 B → None。
+    """
+    if window_bars <= 0:
+        return None
+    sw = recent_swings(klines[:-1], order=order, n=RETEST_STRUCT_LOOKBACK_N)
+    seq = sw["highs"] if direction == 1 else sw["lows"]
+    want = "HH" if direction == 1 else "LL"
+    a_price: Optional[float] = None
+    for p in seq:
+        if p["label"] != want:
+            continue
+        price = float(p["price"])
+        if a_price is None:
+            if p["bars_ago"] <= window_bars:
+                a_price = price      # A = 最近且未过时效的新 HH / LL
+            continue
+        lower_than_a = price < a_price if direction == 1 else price > a_price
+        if lower_than_a:
+            return price             # B = 被 A 越过的前一个 HH / LL
+    return None
+
+
 def _detect_retest(
     klines: list[list], direction: int, retest: Optional[dict],
-    window_bars: int, band_pct: float,
+    window_bars: int, band_pct: float, order: int = 3,
 ) -> Optional[float]:
-    """突破回测位触碰（docs/22 §3.1）。
+    """突破回测位触碰（docs/22 §3.1；2026-10-16 双来源）。
 
-    retest: scanner 侧活跃破轨事件快照 {price, direction, candle_open}
-    （naive UTC，与 klines 时间戳同源换算）。判定：
+    来源①事件派生（优先）：retest = scanner 侧活跃破轨事件快照
+    {price, direction, candle_open}（naive UTC，与 klines 时间戳同源换算）。
+    来源②结构推导（需求①）：`_structural_retest_level`——新 HH 收盘越位后，被它
+    越过的前一个 HH 即回测位（空头镜像 LL）；事件缺失 / 方向不符 / 窗口过期 /
+    未触碰时回落到本来源，故线上「突破根非长实体、事件从没登记上」的行情也能命中。
+
+    判定：
     - 方向一致（反向破轨事件对当前候选无效）
-    - 窗口：事件K线开盘须落在最近 window_bars 根已收盘K线内（越久回测语义越弱）；
-      window_bars=0 关闭该触点
+    - 窗口：`window_bars <= 0` 关闭该触点；事件K线开盘须落在最近 window_bars 根
+      已收盘K线内（越久回测语义越弱），结构推导则要求新 HH 的 bars_ago ≤ window_bars
     - 带宽触碰：影线可下插入带（l ≤ lvl×(1+band)），收盘须守住位上（c ≥ lvl），
       空头对称——收盘破位 = 突破失败，不构成回测
     命中返回位价，未命中 None。
     """
-    if window_bars <= 0 or not retest or retest.get("direction") != direction:
+    if window_bars <= 0:
         return None
-    lvl = float(retest.get("price") or 0)
-    if lvl <= 0 or not np.isfinite(lvl):
-        return None
-    ev_open = retest.get("candle_open")
-    if isinstance(ev_open, datetime):
-        try:
-            oldest = datetime.utcfromtimestamp(float(klines[-2 - int(window_bars)][0]) / 1000)
-            anchor = datetime.utcfromtimestamp(float(klines[-2][0]) / 1000)
-            if not (oldest <= ev_open <= anchor):
-                return None
-        except (IndexError, TypeError, ValueError, OSError):
-            return None
     band = max(band_pct, 0.0) / 100.0
     close_last = float(klines[-2][4])
     high_last = float(klines[-2][2])
     low_last = float(klines[-2][3])
-    if direction == 1:
-        return lvl if (low_last <= lvl * (1 + band) and close_last >= lvl) else None
-    return lvl if (high_last >= lvl * (1 - band) and close_last <= lvl) else None
+
+    def _touch(lvl: float) -> bool:
+        if lvl <= 0 or not np.isfinite(lvl):
+            return False
+        if direction == 1:
+            return low_last <= lvl * (1 + band) and close_last >= lvl
+        return high_last >= lvl * (1 - band) and close_last <= lvl
+
+    # 来源①：破轨事件（T1 突破事实源）
+    if retest and retest.get("direction") == direction:
+        ev_lvl = float(retest.get("price") or 0)
+        ev_open = retest.get("candle_open")
+        if isinstance(ev_open, datetime):
+            try:
+                oldest = datetime.utcfromtimestamp(float(klines[-2 - int(window_bars)][0]) / 1000)
+                anchor = datetime.utcfromtimestamp(float(klines[-2][0]) / 1000)
+            except (IndexError, TypeError, ValueError, OSError):
+                ev_lvl = 0.0      # 换算失败 → 该来源作废，继续结构推导
+            else:
+                if not (oldest <= ev_open <= anchor):
+                    ev_lvl = 0.0  # 事件过期 → 该来源作废，继续结构推导
+        if ev_lvl and _touch(ev_lvl):
+            return ev_lvl
+
+    # 来源②：结构推导（需求①）——事件缺失 / 过期 / 未触碰时的补充口径
+    lvl = _structural_retest_level(klines, direction, order, window_bars)
+    return lvl if lvl is not None and _touch(lvl) else None
 
 
 def _detect_swing_touch(
@@ -623,7 +690,8 @@ def detect_trigger(
     refs = flt.pullback_touch_refs
     if TOUCH_RETEST in refs:
         p = _detect_retest(klines, direction, retest,
-                           flt.retest_window_bars, flt.structure_touch_band_pct)
+                           flt.retest_window_bars, flt.structure_touch_band_pct,
+                           order=flt.swing_order)
         if p is not None:
             touches[TOUCH_RETEST] = p
     if TOUCH_SWING in refs:

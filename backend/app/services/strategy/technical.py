@@ -17,6 +17,7 @@ from typing import Optional
 
 import numpy as np
 
+from app.services.strategy.candlestick import decision_shadow_bonus
 from app.services.strategy.ema import calc_ema
 from app.services.strategy.indicators import volume_ratio
 from app.services.strategy.swing import find_swing_points
@@ -1289,9 +1290,10 @@ def compute_quality_score(
     - 突破触发且 ADX≥25 +5（强趋势中的突破可信）
     - 放量加分：量比 ≥1.2 +5（2026-09-25 金K类；2026-09-29 起突破放量不再
       是触发硬门，三类触发统一为加分项；缩量不加不减，仅排序自然落后）
-    - 看涨吞没上影短 +3（2026-10-13 硬门改加分项，candlestick.
-      ENGULF_UPPER_SHADOW_SHORT_PCT=0.25）：决断K线冲高遭抛压打回=犹豫的
-      语义降为排序信号，上影长只失加分、不再拒判形态
+    - 决断K线影线梯度加分 +5/+3/+1（2026-10-16 拍板：三处硬门全删、统一梯度，
+      candlestick.DECISION_SHADOW_BONUS_GRADES）：吞没第二根（看涨看上影/看跌看
+      下影）、启明星·黄昏星第三根（总影线），影线比 ≤10% +5、≤20% +3、≤30% +1、
+      >30% 0——长影=拉锯犹豫的语义降为排序信号，只失加分、不再拒判形态
     - 金K组合价格带结构点密度 +3×n、封顶 +12（2026-10-13-6 拍板，-7 改实体重叠
       口径）：金K确认（单根/组合）的 [min低, max高] 价格带与近 200 根 1h 摆动
       高低点K线的实体重叠个数越多加分越高——实体（open~close）与带相交即计，
@@ -1332,19 +1334,12 @@ def compute_quality_score(
         except (ValueError, TypeError, IndexError, ZeroDivisionError):
             pass  # 量能数据异常只降级该修饰项，不影响基础分
 
-    # 看涨吞没上影短加分（2026-10-13：硬门改加分项，不再卡死）：上影 ≤ 全长
-    # 25% +3（与缩量回踩同档）。阈值与 candlestick.ENGULF_UPPER_SHADOW_SHORT_PCT
-    # 同源（0.25）；信号K线 = klines[-2]（形态检测同位置），按检测器同口径
-    # 重算上影比（上影 = high − max(open, close)），上影长只失加分
-    if pattern == "bullish_engulfing" and klines:
-        try:
-            k2 = klines[-2]
-            o2, c2 = float(k2[1]), float(k2[4])
-            rng2 = float(k2[2]) - float(k2[3])
-            if rng2 > 0 and (float(k2[2]) - max(o2, c2)) / rng2 <= 0.25:
-                score += 3
-        except (ValueError, TypeError, IndexError, ZeroDivisionError):
-            pass  # K线数据异常只降级该修饰项，不影响基础分
+    # 决断K线影线梯度加分（2026-10-16 拍板：三处硬门全删 → 多档加分、不否定形态）：
+    # 口径与档位单一事实源 = candlestick.DECISION_SHADOW_BONUS_GRADES /
+    # decision_shadow_bonus（看涨吞没上影 / 看跌吞没下影 / 星第三根总影线，
+    # ≤10% +5、≤20% +3、≤30% +1、>30% 0；pattern 为 None 时返回 0）
+    if klines:
+        score += decision_shadow_bonus(pattern, klines)
 
     rsi = by_short.get("RSI")
     if rsi:

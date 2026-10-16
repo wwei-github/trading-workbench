@@ -152,9 +152,10 @@ def test_directional_doji_semantics_unchanged():
     assert r is not None and r["pattern"] == "gravestone_doji" and r["direction"] == "bearish"
 
 
-# ── 吞没影线质量门（2026-09-30 docs/25 §4：吞没K线总影线 > 全长 40% 不判金K。
-#    2026-10-13 看涨侧上影门改质量分加分项——上影长不再拒判，加分测试见
-#    test_quality_score.py）──
+# ── 吞没影线（2026-09-30 docs/25 §4：吞没K线总影线 > 全长 40% 不判金K。
+#    2026-10-13 看涨侧上影门改质量分加分项——上影长不再拒判；
+#    2026-10-16 看跌侧 40% 总影线硬门一并删除，两侧统一为梯度加分
+#    （加分测试见 test_quality_score.py）──
 
 def _engulf_base(n: int = 24) -> list[list]:
     """横盘序列：每根实体 1.0（开=前收，阴阳交替），作为吞没实体基线
@@ -237,12 +238,15 @@ def test_engulfing_bearish_clean_shadow_detected():
     assert r["direction"] == "bearish"
 
 
-def test_engulfing_bearish_long_shadow_rejected():
-    """空头对称：长影看跌吞没同样不判金K"""
+def test_engulfing_bearish_long_shadow_still_detected():
+    """空头对称：长影看跌吞没（总影线 1.1/2.6 ≈42%，旧 40% 门会拦）：2026-10-16 起
+    40% 总影线硬门删除、改为质量分梯度加分（下影短才加分）→ 照常判金K，不再拒判"""
     kl = _append_engulf_pair(_engulf_base(), prev_open=100.0, prev_close=101.2,
                              cur_open=101.3, cur_close=99.8,
                              cur_high=102.3, cur_low=99.7)
-    assert detect_engulfing(kl, idx=-1) is None
+    r = detect_engulfing(kl, idx=-1)
+    assert r is not None and r["pattern"] == "bearish_engulfing"
+    assert r["direction"] == "bearish"
 
 
 def test_engulfing_tiny_engulfed_body_detected():
@@ -304,7 +308,8 @@ def test_engulfing_outlier_inflated_mean_median_passes():
     assert r["direction"] == "bullish"
 
 
-# ── 启明星/黄昏星决断K线影线门（2026-09-30：第三根总影线 > 全长 40% 不判金K）──
+# ── 启明星/黄昏星决断K线影线（2026-09-30：第三根总影线 > 全长 40% 不判金K；
+#    2026-10-16 该硬门删除，改为质量分梯度加分，长影不再拒判）──
 
 def _star_first_two(k1: list, k2: list) -> list[list]:
     """形态前两根K线 + 基线样本（星实体门需要 avg(body1, body3)，样本由第三根补足）"""
@@ -323,19 +328,21 @@ def test_morning_star_clean_third_candle_detected():
     assert r["direction"] == "bullish"
 
 
-def test_morning_star_long_shadow_third_candle_rejected():
-    """第三根长上影（总影线 1.8/3.2 ≈56% > 40%）：收盘仍过中点但冲高遭抛压打回
-    → 不判金K（犹豫非决断，仅影线门拦截）"""
+def test_morning_star_long_shadow_third_candle_still_detected():
+    """第三根长上影（总影线 1.8/3.2 ≈56%，旧 40% 门会拦）：收盘仍过中点，
+    2026-10-16 起影线硬门删除 → 照判金K（长影只失质量分梯度加分）"""
     kl = _star_first_two(
         [1700000100000, 102.0, 102.3, 99.7, 100.0, 10.0, 10.0],
         [1700000200000, 99.9, 100.1, 99.5, 99.7, 10.0, 10.0],
     )
     kl.append([1700000300000, 99.8, 102.8, 99.6, 101.2, 10.0, 10.0])
-    assert detect_morning_star(kl, idx=-1) is None
+    r = detect_morning_star(kl, idx=-1)
+    assert r is not None and r["pattern"] == "morning_star"
 
 
 def test_morning_star_shadow_boundary_40pct_allowed():
-    """第三根总影线恰 40%（body 1.2 / rng 2.0）→ 边界放行（门只拦 > 40%）"""
+    """第三根总影线恰 40%（body 1.2 / rng 2.0）→ 照判金K：2026-10-16 起 40% 不再是
+    门线（该档位以上归入梯度加分的 0 分档，三角形态准入门槛已无影线项）"""
     kl = _star_first_two(
         [1700000100000, 102.0, 102.3, 99.7, 100.0, 10.0, 10.0],
         [1700000200000, 99.9, 100.1, 99.5, 99.7, 10.0, 10.0],
@@ -369,14 +376,16 @@ def test_evening_star_clean_third_candle_detected():
     assert r["direction"] == "bearish"
 
 
-def test_evening_star_long_shadow_third_candle_rejected():
-    """空头对称：第三根长下影（总影线 1.6/3.0 ≈53% > 40%）→ 不判金K"""
+def test_evening_star_long_shadow_third_candle_still_detected():
+    """空头对称：第三根长下影（总影线 1.6/3.0 ≈53%，旧 40% 门会拦）：2026-10-16
+    起影线硬门删除 → 照判金K（长影只失质量分梯度加分）"""
     kl = _star_first_two(
         [1700000100000, 100.0, 102.3, 99.7, 102.0, 10.0, 10.0],
         [1700000200000, 102.1, 102.5, 101.9, 102.3, 10.0, 10.0],
     )
     kl.append([1700000300000, 102.2, 102.4, 99.4, 100.8, 10.0, 10.0])
-    assert detect_evening_star(kl, idx=-1) is None
+    r = detect_evening_star(kl, idx=-1)
+    assert r is not None and r["pattern"] == "evening_star"
 
 
 def test_evening_star_fat_mid_body_rejected():

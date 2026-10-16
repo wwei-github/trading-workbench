@@ -91,7 +91,8 @@ class Settings(BaseSettings):
     # v2026-09-29-2：回踩金K复合确认（用户拍板）——单影线锤/流星单根不再确认，
     # 须双锤或锤+趋势K（candlestick.resolve_golden_evidence）
     # v2026-09-30：决断K线影线质量门（docs/25 §4，用户拍板）——吞没第二根、启明星/
-    # 黄昏星第三根总影线 > 全长 40% 不判金K（candlestick.DECISION_SHADOW_MAX_PCT）；
+    # 黄昏星第三根总影线 > 全长 40% 不判金K（已随 v2026-10-16 梯度加分口径整体废止，
+    # 原 40% 门由本版起见 candlestick.DECISION_SHADOW_BONUS_GRADES）；
     # 同日撤销 docs/25 提示词注入
     # v2026-09-30-2：突破K线/趋势K线长实体门 0.75→0.70（用户拍板）——实体 ≥70% 全长
     # （影线合计 ≤30%）即算长实体；trigger.BREAKOUT_BODY_RANGE_MIN 与
@@ -196,9 +197,9 @@ class Settings(BaseSettings):
     # 触点语义行补 ema21_4h（2026-10-09 上线）、移除 ema144 退役引用，并新增
     # 「当前启用触点」行渲染页面白名单生效值；默认配置下提示词数字不变
     # v2026-10-13（用户拍板）：看涨吞没上影门改加分项（不再卡死）——上影 ≤ 全长
-    # 25% 时质量分 +3（candlestick.ENGULF_UPPER_SHADOW_SHORT_PCT +
-    # technical.compute_quality_score），上影长只失加分、不再拒判形态
-    # （冲高遭抛压打回=犹豫的语义降为排序信号）；看跌吞没总影线 40% 门不变
+    # 25% 时质量分 +3（technical.compute_quality_score），上影长只失加分、
+    # 不再拒判形态（冲高遭抛压打回=犹豫的语义降为排序信号）；看跌吞没总影线 40% 门
+    # 当时不变（该二值口径与 40% 硬门均已随 v2026-10-16 并入统一梯度表）
     # v2026-10-13-2（用户拍板）：整点取数竞态修复——扫描取数末根已是已收盘根
     # （开盘时刻+周期 ≤ 扫描时刻）时视作信号根（market_data.screen_klines 幽灵
     # 尾根条件由「尾窗」扩为「尾窗 ∨ 末根已收盘」；scanner/api analyze/ai_tasks
@@ -255,7 +256,15 @@ class Settings(BaseSettings):
     # 扩到 AI 三价 RR 铁律与 TP1 距离上限——tick 取整后兜底 1.5R 价普遍复算为
     # 1.49~1.51R，零容差白烧 Reflection 重试后强制 skip（10-14 实测过半）；
     # 0.02R 带宽吞取整噪音，1.47R/1.55R 真·越界仍拦，页面置 0 回严格旧口径。
-    RULE_VERSION: str = "v2026-10-14-3"
+    # v2026-10-16（用户拍板，两项口径改造）：①retest 触点新增结构推导来源——新 HH
+    # 收盘越位后，被它越过的前一个 HH 即突破回测位（空头镜像 LL），不再依赖 scanner
+    # breakout_events 先手记录（trigger._structural_retest_level + _detect_retest 双来源）；
+    # ②决断K线影线三处硬门（看跌吞没第二根/启明星第三根/黄昏星第三根，原
+    # DECISION_SHADOW_MAX_PCT=0.40）全部删除，统一为梯度加分
+    # （candlestick.DECISION_SHADOW_BONUS_GRADES：影线比 ≤10% +5、≤20% +3、≤30% +1、
+    # >30% 不加分）；看涨吞没上影由二值（≤25% +3）并入同一梯度表，口径不变
+    # （看涨看上影 / 看跌看下影 / 星看第三根总影线）
+    RULE_VERSION: str = "v2026-10-16"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

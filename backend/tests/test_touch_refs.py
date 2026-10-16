@@ -2,7 +2,9 @@
 """回踩触点体系判定单测（docs/22，CI 一票否决）
 
 覆盖 trigger 三个触点探测器 + 优先级标注 + 启用白名单 + 配置接线：
-- retest：方向一致 / 窗口（事件K线须在最近 N 根内）/ 带宽（影线入带、收盘守住）
+- retest：双来源（2026-10-16）——①事件派生（方向一致 / 窗口内 / 带宽）；②结构推导
+  （新 HH 收盘越位后，被它越过的前一个 HH 即回测位，空头镜像 LL）——均须影线入带、
+  收盘守住；事件缺失/过期/方向不符时回落结构推导
 - swing：只认 HL（多）/LH（空）——LL/HH 不构成回踩结构；时效门 bars_ago ≤ 40
 - ema55：数据门（已收盘 < ema_touch_min_bars 静默跳过）+ 排列门 + 斜率门
 - 触点优先级 retest > swing > ema21；BREAKOUT 触发携带 breakout_level/candle_open
@@ -160,6 +162,83 @@ def test_retest_window_zero_disables():
 
 def test_retest_without_event_none():
     assert trig._detect_retest(_kl(*_base()), 1, None, 24, 0.3) is None
+
+
+# ── retest 来源②：结构推导回测位（需求①，2026-10-16）────────────────────
+
+def _zig(anchors: list, n: int) -> list:
+    """按 (idx, close) 锚点线性插值出 n 根收盘序列（相邻锚点间单调线性，
+    段内无并列极值 → 摆动点唯一）"""
+    out = []
+    for i in range(n):
+        for j in range(len(anchors) - 1):
+            i0, v0 = anchors[j]
+            i1, v1 = anchors[j + 1]
+            if i0 <= i <= i1:
+                t = (i - i0) / (i1 - i0) if i1 > i0 else 0.0
+                out.append(v0 + (v1 - v0) * t)
+                break
+        else:
+            out.append(anchors[-1][1])
+    return out
+
+
+def _mirror(kl: list) -> list:
+    """价格轴 200 镜像（高点↔低点、开↔收）：多头夹具 → 空头镜像"""
+    return [[k[0], 200 - k[1], 200 - k[3], 200 - k[2], 200 - k[4], k[5], k[6]]
+            for k in kl]
+
+
+def _struct_long_kl() -> list:
+    """结构推导多头夹具（order=3，收盘摆动高点 H1=99.5 → B=100.0(HH) →
+    A=101.0(HH)，A 为最近新 HH bars_ago=10）；信号K线（idx38）下探 B=100.0
+    入带、收盘 100.4 守住 → 结构推导回测位应命中 100.0"""
+    closes = _zig([(0, 98.4), (3, 98.0), (8, 99.5), (13, 98.5),
+                   (18, 100.0), (23, 99.0), (28, 101.0), (38, 100.4)], 40)
+    kl = _klines(closes, [c + 0.3 for c in closes], [c - 0.3 for c in closes])
+    ts, o, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, o, 100.5, 100.1, 100.4, vol, qv]
+    return kl
+
+
+def _struct_unbreached_kl() -> list:
+    """伪越位夹具：收盘摆动高点依次 102.0(H) → 101.0(LH) → 100.0(LH) →
+    100.5(HH)——最近新 HH 只高于前一摆动高点，并未越过更旧的 102.0/101.0，
+    无「被越过的前一个 HH」→ 结构推导 None"""
+    closes = _zig([(0, 99.0), (3, 98.5), (7, 102.0), (11, 100.5), (15, 101.0),
+                   (19, 99.5), (23, 100.0), (27, 99.0), (31, 100.5), (43, 99.5)], 45)
+    return _klines(closes, [c + 0.3 for c in closes], [c - 0.3 for c in closes])
+
+
+def test_retest_structural_hit_long():
+    """需求①：新 HH(101.0) 越过前一个 HH(100.0)，信号K线下探 100.0 入带、收盘
+    守住 → 事件缺失（retest=None）也能命中回测位 100.0"""
+    assert trig._detect_retest(_struct_long_kl(), 1, None, 24, 0.3) == pytest.approx(100.0)
+
+
+def test_retest_structural_hit_short_mirror():
+    """空头镜像：新 LL 越过前一个 LL，反抽入带、收盘压在位下 → 命中同一价位"""
+    assert trig._detect_retest(_mirror(_struct_long_kl()), -1, None, 24, 0.3) \
+        == pytest.approx(100.0)
+
+
+def test_retest_structural_new_hh_out_of_window():
+    """时效门复用 retest_window_bars：新 HH bars_ago=10 > window=5 → 不推导（None）"""
+    assert trig._detect_retest(_struct_long_kl(), 1, None, 5, 0.3) is None
+
+
+def test_retest_structural_close_below_level():
+    """结构推导仍要收盘守位：信号K线下探 100.0 入带但收盘 99.8 < 位价 → None
+    （防放水：扩覆盖面而非降低守位口径）"""
+    kl = _struct_long_kl()
+    ts, o, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, o, 100.5, 100.1, 99.8, vol, qv]
+    assert trig._detect_retest(kl, 1, None, 24, 0.3) is None
+
+
+def test_retest_structural_skips_unbreached_hh():
+    """伪越位排除：最近新 HH 只高于前一 LH、未高于更旧高位 → 无 B 可推导 → None"""
+    assert trig._detect_retest(_struct_unbreached_kl(), 1, None, 24, 0.3) is None
 
 
 # ── swing：摆动结构位（docs/22 §3.2） ────────────────────────────────────
