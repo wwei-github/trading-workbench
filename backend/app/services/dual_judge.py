@@ -100,7 +100,11 @@ def run_dual_judge(
         r = stream_completion(
             client, [{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=2000,
+            # 32000（2026-10-16）：与 ai_analyzer/ai_agent/position_advisor 等同一口径。
+            # GLM 思考型模型 reasoning tokens 计入配额，原 2000 常被思考整体耗尽 →
+            # 正文为空 → 裁判 JSON 解析抛 "Expecting value: line 1 column 1" →
+            # 双评委静默降级 keep，否决能力实效失效
+            max_tokens=32000,
             # 仅裁判输出 JSON（多空评委输出论据正文），JSON 模式只挂在裁判调用上
             **(json_mode_kwargs() if json_mode else {}),
         )
