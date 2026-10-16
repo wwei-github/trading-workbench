@@ -362,6 +362,51 @@ def test_swing_touch_stale_hl_ignored():
     assert trig._detect_swing_touch(kl, 1, 0.3, 3) is None
 
 
+# ── swing 三候选（2026-10-16 用户拍板需求②）──────────────────────────────
+# 递升 HL 序列（旧→新）：95.0@4(L) / 96.0@15(HL,ago=30) / 97.0@27(HL,ago=18)
+# / 98.0@38(HL,ago=7)；信号K线 idx44。取最近 3 个 HL 候选（新→旧：98.0/97.0/96.0），
+# 按序返回最先满足「影线入带+收盘守位」者。
+
+def _swing_three_hl_kl() -> list[list]:
+    closes = _zig([(0, 96.0), (4, 95.0), (10, 99.0), (15, 96.0), (21, 99.5),
+                   (27, 97.0), (33, 100.0), (38, 98.0), (42, 100.5),
+                   (44, 97.5), (45, 97.5)], 46)
+    return _klines(closes, [c + 0.3 for c in closes], [c - 0.3 for c in closes])
+
+
+def _with_signal(kl: list, o: float, h: float, l: float, c: float) -> list:
+    ts, _, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, o, h, l, c, vol, qv]
+    return kl
+
+
+def test_swing_touch_second_hl_hit_when_nearest_fails():
+    """需求②：最近 HL(98.0) 收盘未守住（close 97.5 < 98.0）→ 回落第 2 候选
+    HL(97.0)：下影入带（low 96.9 ≤ 97.0×1.003）、收盘守住（97.5 ≥ 97.0）→ 命中 97.0"""
+    kl = _with_signal(_swing_three_hl_kl(), 99.0, 99.1, 96.9, 97.5)
+    assert trig._detect_swing_touch(kl, 1, 0.3, 3) == pytest.approx(97.0)
+
+
+def test_swing_touch_nearest_hl_priority():
+    """候选按新→旧优先：最近 HL(98.0) 也满足触碰时返回它，不越级取更旧位"""
+    kl = _with_signal(_swing_three_hl_kl(), 98.0, 98.5, 97.6, 98.2)
+    assert trig._detect_swing_touch(kl, 1, 0.3, 3) == pytest.approx(98.0)
+
+
+def test_swing_touch_third_hl_fallback():
+    """需求②兜底：第 1/2 候选收盘均未守住（close 96.5 < 97.0 < 98.0）→ 第 3 候选
+    HL(96.0)：下影入带、收盘守住 → 命中 96.0"""
+    kl = _with_signal(_swing_three_hl_kl(), 96.0, 96.6, 95.9, 96.5)
+    assert trig._detect_swing_touch(kl, 1, 0.3, 3) == pytest.approx(96.0)
+
+
+def test_swing_touch_second_lh_hit_mirror():
+    """空头镜像：最近 LH(102) 收盘未压在位下（close 102.5 > 102）→ 第 2 候选
+    LH(103)：上影入带、收盘压在位下（102.5 ≤ 103）→ 命中 103.0"""
+    kl = _mirror(_with_signal(_swing_three_hl_kl(), 99.0, 99.1, 96.9, 97.5))
+    assert trig._detect_swing_touch(kl, -1, 0.3, 3) == pytest.approx(103.0)
+
+
 # ── ema55：数据门 / 排列门 / 斜率门（docs/22 §3.3） ───────────────────────
 
 def _pullback_to_ema_kl(n: int, period: int, rising: bool = True) -> list[list]:

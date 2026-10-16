@@ -21,7 +21,9 @@
   维护 breakout_events（T1 突破触发时记录）；②结构推导：新 HH 收盘越位后，被它越过的
   前一个 HH 即回测位（空头镜像 LL），不依赖先手记录。影线可入带、收盘须守住
   ——回踩不破 = 突破有效性确认
-- swing   摆动结构位：最近的 HL（多）/LH（空）防守位，只认结构延续标签
+- swing   摆动结构位：最近的 HL（多）/LH（空）防守位，只认结构延续标签；
+  2026-10-16 起取最近 3 个同向结构位候选（最近 1 个可能因 merge_swings 合并
+  消失而不稳、第 2 个常规、第 3 个兜底），任一满足「影线入带+收盘守位」即命中
 - ema21   趋势动态价值区（原口径，不加触点门）；2026-10-15 起叠加 1H 结构门
   软校验（三线排列+快中线发散史+EMA144 方向）——不过门不再否决，改 quality
   重罚（structure_gate=False → -15，docs/21 O9）
@@ -100,6 +102,13 @@ def _position_ref_of(touch_ref: Optional[str], direction: int) -> Optional[str]:
 
 # 摆动结构位时效门：防守点太老（>40 根前确认）防守意义衰减
 SWING_MAX_BARS_AGO = 40
+
+# 摆动结构位候选个数（2026-10-16 用户拍板需求②）：取最近 3 个同向结构位（多=HL/空=LH）——
+# 第 1 个（最近）可能因当前窗口内 merge_swings 把摆动点合并吞掉而"随时消失"（不稳），
+# 第 2 个是常规防守位，第 3 个兜底；按新→旧顺序取最先满足「影线入带 + 收盘守位」者。
+# 取样个数 SWING_TOUCH_SCAN_N 放大到覆盖 3 个同向位（各标签混合，故须多取几个）。
+SWING_TOUCH_CANDIDATES = 3
+SWING_TOUCH_SCAN_N = 10
 
 # 结构推导回测位（2026-10-16 用户拍板需求①）：新 HH 形成后，被它越过的前一个 HH 即为
 # 突破回测位——不依赖 scanner 破轨事件先手记录（breakout_events 只在 T1 结构突破信号
@@ -458,27 +467,36 @@ def _detect_swing_touch(
 
     复用 recent_swings（收盘价摆动点，两侧各 order 根确认、无前视；order 跟随
     配置 flt.swing_order，2026-10-12 起与 AI 事实包/K线标注同源）：
-    多头只认最近的 HL（更高低点，结构延续防守位），空头只认最近的 LH——
-    LL/HH 不构成回踩结构（是接刀/追高）。时效门 bars_ago ≤ 40。
-    带宽触碰与 retest 同口径（影线入带、收盘守住）。命中返回位价。
+    多头只认 HL（更高低点，结构延续防守位），空头只认 LH——
+    LL/HH 不构成回踩结构（是接刀/追高）。
+
+    候选口径（2026-10-16 用户拍板需求②）：取最近 SWING_TOUCH_CANDIDATES=3 个
+    同向结构位——最近 1 个可能因当前窗口 merge_swings 合并而消失（不稳），
+    第 2 个是常规防守位，第 3 个兜底；按新→旧顺序返回最先满足「影线入带 +
+    收盘守位」者的位价。时效门 bars_ago ≤ SWING_MAX_BARS_AGO。命中返回位价。
     """
-    sw = recent_swings(klines, order=order, n=3)
+    sw = recent_swings(klines, order=order, n=SWING_TOUCH_SCAN_N)
     seq = sw["lows"] if direction == 1 else sw["highs"]
     want = "HL" if direction == 1 else "LH"
-    lvl = next(
-        (float(p["price"]) for p in seq
-         if p["label"] == want and p["bars_ago"] <= SWING_MAX_BARS_AGO),
-        None,
-    )
-    if lvl is None or lvl <= 0:
+    levels = [
+        float(p["price"]) for p in seq
+        if p["label"] == want and p["bars_ago"] <= SWING_MAX_BARS_AGO
+    ][:SWING_TOUCH_CANDIDATES]
+    if not levels:
         return None
     band = max(band_pct, 0.0) / 100.0
     close_last = float(klines[-2][4])
     high_last = float(klines[-2][2])
     low_last = float(klines[-2][3])
-    if direction == 1:
-        return lvl if (low_last <= lvl * (1 + band) and close_last >= lvl) else None
-    return lvl if (high_last >= lvl * (1 - band) and close_last <= lvl) else None
+    for lvl in levels:
+        if lvl <= 0:
+            continue
+        if direction == 1:
+            if low_last <= lvl * (1 + band) and close_last >= lvl:
+                return lvl
+        elif high_last >= lvl * (1 - band) and close_last <= lvl:
+            return lvl
+    return None
 
 
 def _unbroken_pivot_level(swings: list[dict], klines: list[list], high: bool) -> Optional[float]:
