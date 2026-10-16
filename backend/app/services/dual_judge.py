@@ -85,7 +85,8 @@ def run_dual_judge(
 ) -> dict:
     """多空辩论复核。返回原决策（keep）或 forced skip（veto，skip_reason 附裁决理由）。
 
-    任何异常（LLM 失败/JSON 解析失败）都降级为 keep——辩论是增强层，不能阻塞主流程。
+    裁判 JSON 解析失败先反馈回炉重试 ≤2 次（docs/24 D2），3 次仍不可解析降级 keep；
+    其余任何异常（LLM 调用失败等）直接降级为 keep——辩论是增强层，不能阻塞主流程。
     """
     if decision.get("trade_decision") != "suggest":
         return decision
@@ -94,11 +95,11 @@ def run_dual_judge(
     d_text = _fmt_decision(decision)
     facts = _fmt_facts(signal)
 
-    def _ask(prompt: str, json_mode: bool = False) -> str:
+    def _ask(messages: list, json_mode: bool = False) -> str:
         # 流式（2026-09-30）：评委/裁判与主分析同网关同模型，非流式长推理挂死
         # 风险相同（见 llm_client.stream_completion），一并切换
         r = stream_completion(
-            client, [{"role": "user", "content": prompt}],
+            client, messages,
             temperature=0.3,
             # 32000（2026-10-16）：与 ai_analyzer/ai_agent/position_advisor 等同一口径。
             # GLM 思考型模型 reasoning tokens 计入配额，原 2000 常被思考整体耗尽 →
@@ -110,20 +111,61 @@ def run_dual_judge(
         )
         return r.content
 
+    def _strip_fence(s: str) -> str:
+        """剥掉 markdown 代码围栏残留（网关偶发用 ```json 包裹）"""
+        if s.startswith("```"):
+            return "\n".join(
+                l for l in s.split("\n") if not l.strip().startswith("```")
+            ).strip()
+        return s
+
     try:
         # 多空评委互不依赖，并行取论据（原串行 = 两次完整调用时长相加）
         with ThreadPoolExecutor(max_workers=2) as ex:
-            fut_bull = ex.submit(_ask, BULL_PROMPT.format(decision=d_text, facts=facts))
-            fut_bear = ex.submit(_ask, BEAR_PROMPT.format(decision=d_text, facts=facts))
+            fut_bull = ex.submit(_ask, [{
+                "role": "user", "content": BULL_PROMPT.format(decision=d_text, facts=facts),
+            }])
+            fut_bear = ex.submit(_ask, [{
+                "role": "user", "content": BEAR_PROMPT.format(decision=d_text, facts=facts),
+            }])
         bull = fut_bull.result()
         bear = fut_bear.result()
-        raw = _ask(JUDGE_PROMPT.format(decision=d_text, bull=bull, bear=bear),
-                   json_mode=True)
-        if raw.startswith("```"):
-            raw = "\n".join(
-                l for l in raw.split("\n") if not l.strip().startswith("```")
-            ).strip()
-        verdict = parse_llm_json(raw)
+        judge_msgs = [{
+            "role": "user",
+            "content": JUDGE_PROMPT.format(decision=d_text, bull=bull, bear=bear),
+        }]
+        verdict = None
+        last_err = ""
+        for attempt in range(3):  # 1 次初始 + 2 次解析失败反馈重试（docs/24 D2）
+            # 调用异常（网关超时等）直接抛外层 → 降级 keep，不在此重试
+            raw = _ask(judge_msgs, json_mode=True)
+            try:
+                parsed = parse_llm_json(_strip_fence(raw))
+                if not isinstance(parsed, dict):
+                    raise ValueError(f"裁判输出非 JSON 对象（{type(parsed).__name__}）")
+                verdict = parsed
+                break
+            except Exception as e:
+                last_err = str(e)[:150]
+                logger.warning(
+                    "双评委裁判解析失败（第%d次）: %s", attempt + 1, last_err,
+                )
+                # 反馈回炉（仿 ai_analyzer，docs/24 D2）：上次输出非空时以 assistant
+                # 回放进上下文，模型看着原文改错；空内容无原文可回放，仅附错误说明
+                if raw.strip():
+                    judge_msgs.append({"role": "assistant", "content": raw})
+                judge_msgs.append({
+                    "role": "user",
+                    "content": (
+                        f"上一次输出 JSON 解析失败：{last_err}。"
+                        '请严格只输出 JSON 对象：{"verdict": "keep" 或 "veto", '
+                        '"reason": "裁决理由"}，不要任何其他文本或 markdown 包裹'
+                    ),
+                })
+        if verdict is None:
+            # 重试耗尽仍未拿到可解析裁决 → 降级 keep（辩论是增强层，不比 forced skip）
+            logger.warning("双评委裁判 3 次输出均不可解析，降级 keep: %s", last_err)
+            return decision
         v = verdict.get("verdict")
         reason = str(verdict.get("reason", "")).strip()
         logger.info(

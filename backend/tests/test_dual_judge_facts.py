@@ -68,6 +68,12 @@ def test_run_dual_judge_enriched_facts_reach_prompts(monkeypatch):
             self.delta = _Delta(content)
             self.finish_reason = finish
 
+    class _Chunk:
+        """流式增量块：stream_completion 按 ev.choices[0].delta.content 取正文"""
+
+        def __init__(self, content=None, finish=None):
+            self.choices = [_Choice(content, finish)]
+
     class _Resp:
         """流式增量序列桩（2026-09-30 流式改造后 create 返回可迭代块）"""
 
@@ -75,8 +81,8 @@ def test_run_dual_judge_enriched_facts_reach_prompts(monkeypatch):
             self._content = content
 
         def __iter__(self):
-            yield _Choice(self._content)
-            yield _Choice(None, finish="stop")
+            yield _Chunk(self._content)
+            yield _Chunk(None, finish="stop")
 
     class _Completions:
         @staticmethod
