@@ -14,6 +14,7 @@ import {
   LineStyle,
   type IChartApi,
   type ISeriesApi,
+  type UTCTimestamp,
 } from 'lightweight-charts'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { dayjs, BJ } from '../utils/dayjs'
@@ -96,10 +97,12 @@ export function createTradeChart(
     },
     timeScale: {
       borderColor: '#252b3b',
-      // 显示时间（2026-10-16）：日内 1h/4h 周期 X 轴刻度显示「日 HH:mm」，
-      // 跨天自动退化为日期；1d 周期时间恒为 00:00，自动只显日期
+      // 显示时间（2026-10-16）：X 轴刻度统一显示「年月日 小时」（YYYY-MM-DD HH:mm），
+      // 不再随缩放退化为纯日期。刻度时间戳为 UTC epoch，按北京时间展示（与全站一致）
       timeVisible: true,
       secondsVisible: false,
+      tickMarkFormatter: (time: UTCTimestamp) =>
+        dayjs.unix(time).tz(BJ).format('YYYY-MM-DD HH:mm'),
       rightOffset: 12,
       lockVisibleTimeRangeOnResize: true,
     },
