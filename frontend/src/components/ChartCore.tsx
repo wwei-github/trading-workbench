@@ -7,7 +7,7 @@
  *   （事件箭头）+ headerExtra（复盘信息面板）；数据拉取由父组件负责
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Checkbox, Dropdown, Input, InputNumber, Popconfirm, Tooltip, Typography } from 'antd'
+import { Dropdown, Input, Popconfirm, Tooltip } from 'antd'
 import {
   ClearOutlined,
   DeleteOutlined,
@@ -50,14 +50,11 @@ import {
 } from './klineShared'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { SCHEME_UP_DOWN } from '../utils/scheme'
-import {
-  INDICATOR_CATALOG,
-  type IndicatorBar,
-} from '../constants/indicators'
+import { getIndicator, type ChartIndicatorDef, type IndicatorBar } from '../constants/indicators'
 import { IndicatorRenderer, type RenderOptions } from 'lightweight-charts-indicators/render'
+import type { IndicatorResult } from 'oakscriptjs'
+import IndicatorPanel from './IndicatorPanel'
 import type { AIAnalysis, Kline, KlineData } from '../types'
-
-const { Text } = Typography
 
 // 图表数据（KlineData / TradeKlineData 的图表相关子集，两者 klines 同为 Kline[]）
 export interface ChartCoreData {
@@ -167,6 +164,29 @@ const lastFinite = (values: (number | null)[]): number | null => {
 const lastFiniteOf = (
   pts: { value: number | null }[] | undefined,
 ): number | null => (pts ? lastFinite(pts.map((p) => p.value ?? null)) : null)
+
+// 会真正创建独立 series 的 plot 样式（这些才进 renderer.series() 的 plot 段）；
+// linebr / steplinebr / cross 走共享 anchor 画 primitive，不进 plot 段——
+// 图例若按 plotConfig 下标直接配 series() 会错位（名字与数值张冠李戴）
+const LEGEND_SERIES_STYLES = new Set([
+  'line',
+  'area',
+  'areabr',
+  'histogram',
+  'columns',
+  'circles',
+  'stepline',
+  'stepline_diamond',
+])
+
+// 复刻插件 IndicatorRenderer.plotVisible 的可见性判定（我们未传 plots override）：
+// display 排除 → 布尔 visible → 字符串 visible 引用 input → 数据兜底
+function plotVisible(pc: any, inputs: Record<string, unknown>, out: IndicatorResult): boolean {
+  if (pc.display === 'none' || pc.display === 'data_window' || pc.display === 'status_line') return false
+  if (pc.visible === undefined || typeof pc.visible === 'boolean') return pc.visible ?? true
+  if (inputs[pc.visible] !== undefined) return Boolean(inputs[pc.visible])
+  return (out.plots?.[pc.id] ?? []).some((p: any) => p.value != null && Number.isFinite(p.value))
+}
 
 // 图例中的一条指标线（悬浮时取悬浮位置的值，未悬浮取最新值）
 interface LegendIndicator {
@@ -382,7 +402,8 @@ export default function ChartCore({
   const colorScheme = useScanStore((s) => s.colorScheme)
   const indicatorSettings = useScanStore((s) => s.indicatorSettings)
   const toggleIndicator = useScanStore((s) => s.toggleIndicator)
-  const setIndicatorParams = useScanStore((s) => s.setIndicatorParams)
+  const setIndicatorInput = useScanStore((s) => s.setIndicatorInput)
+  const resetIndicator = useScanStore((s) => s.resetIndicator)
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -609,9 +630,10 @@ export default function ChartCore({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, chartKey, from, extraMarkers])
 
-  // 渲染技术指标：目录驱动（lightweight-charts-indicators 插件 + IndicatorRenderer），
+  // 渲染技术指标：插件 registry 全量驱动（lightweight-charts-indicators + IndicatorRenderer），
   // 计算与画线全部插件内建（Pine v6 口径）；VOL 仍为宿主直绘（成交量刻度插件不支持）。
-  // 主图叠加（pane 0）/ 副图（按目录顺序分配 pane 1,2,3…）
+  // 遍历「已启用」条目（不遍历全量 1290，未启用即无条目），主图叠加（pane 0）/
+  // 副图按稳定 order 顺序分配 pane 1,2,3…
   useEffect(() => {
     const chart = chartRef.current
     if (!chart || candlePoints.length === 0) return
@@ -645,28 +667,32 @@ export default function ChartCore({
     // 插件 Bar 形状与 candlePoints 一致（time 秒级 int），直接传引用
     const bars: IndicatorBar[] = candlePoints
 
-    // 为开启的副图指标按目录顺序分配 pane（1 起）
+    // 已启用指标（按稳定 order 排序，决定副图 pane 顺序）
+    const enabled: { def: ChartIndicatorDef; inputs: Record<string, unknown> }[] = []
+    for (const [id, setting] of Object.entries(indicatorSettings)) {
+      if (!setting.enabled) continue
+      const def = getIndicator(id)
+      if (def) enabled.push({ def, inputs: setting.inputs })
+    }
+    enabled.sort((a, b) => a.def.order - b.def.order)
+
+    // 为启用的副图指标分配 pane（1 起）
     const subPane: Record<string, number> = {}
     let nextPane = 1
-    for (const def of INDICATOR_CATALOG) {
-      if (def.pane === 'sub' && indicatorSettings[def.key]?.enabled) {
-        subPane[def.key] = nextPane++
-      }
+    for (const { def } of enabled) {
+      if (!def.overlay) subPane[def.id] = nextPane++
     }
 
     // 汇总图例元信息（effect 末尾一次性写入 ref）
     const metas: typeof indicatorMetaRef.current = []
 
-    for (const def of INDICATOR_CATALOG) {
-      const setting = indicatorSettings[def.key]
-      if (!setting?.enabled) continue
-
+    for (const { def, inputs } of enabled) {
       // VOL 成交量：宿主直绘（up/down 着色 + volume 刻度，插件无此定制）
-      if (def.key === 'vol') {
+      if (def.hostDrawn) {
         const hist = chart.addSeries(
           HistogramSeries,
           { priceLineVisible: false, lastValueVisible: false, priceFormat: { type: 'volume' as const } },
-          subPane[def.key] ?? 1,
+          subPane[def.id] ?? 1,
         )
         hist.setData(
           candlePoints.map((c) => ({
@@ -676,48 +702,54 @@ export default function ChartCore({
           })),
         )
         indicatorSeriesRef.current.push(hist)
-        metas.push({ series: hist, name: 'VOL', color: '#8b93a7', lastValue: candlePoints[candlePoints.length - 1]?.volume ?? null })
+        metas.push({
+          series: hist,
+          name: 'VOL',
+          color: '#8b93a7',
+          lastValue: candlePoints[candlePoints.length - 1]?.volume ?? null,
+        })
         continue
       }
 
-      let out: import('oakscriptjs').IndicatorResult
+      let out: IndicatorResult
       try {
-        out = def.calculate(bars, setting.params)
+        out = def.calculate(bars, inputs)
       } catch (e) {
-        console.error(`指标 ${def.label} 计算失败`, e)
+        console.error(`指标 ${def.name} 计算失败`, e)
         continue
       }
 
-      const paneIndex = def.pane === 'main' ? 0 : subPane[def.key]
+      const paneIndex = def.overlay ? 0 : subPane[def.id]
       const renderer = new IndicatorRenderer(chart, {
         paneIndex,
         mainSeries: seriesRef.current ?? undefined,
       })
-      // EMA 均线族线宽调细（插件默认 2px，主图 EMA21/55/144 三条叠线偏抢眼；
-      // 2026-10-15 用户要求变细）。仅覆盖 plot 线宽，颜色/样式仍走目录。
-      const renderOpts: RenderOptions = def.key === 'ema'
-        ? {
-            plots: Object.fromEntries(
-              def.renderable(setting.params).plotConfig.map((p) => [p.id, { lineWidth: 1 }]),
-            ),
-          }
-        : {}
+      const renderable = def.renderable(inputs)
+      // inputs 传给 renderer：plotConfig.visible 引用输入名时按其动态显隐
+      const renderOpts: RenderOptions = { inputs }
       try {
-        renderer.render(def.renderable(setting.params), out, bars, renderOpts)
+        renderer.render(renderable, out, bars, renderOpts)
       } catch (e) {
-        console.error(`指标 ${def.label} 渲染失败`, e)
+        console.error(`指标 ${def.name} 渲染失败`, e)
         continue
       }
       indicatorRenderersRef.current.push(renderer)
 
-      // 图例：plot series 在 plotConfig 顺序（renderer.series() 前 N 个），取最新有限值
-      const plotSeries = renderer.series().slice(0, def.renderable(setting.params).plotConfig.length)
-      const names =
-        def.legendNames ??
-        def.renderable(setting.params).plotConfig.map((p) => p.title ?? p.id)
-      plotSeries.forEach((s, i) => {
-        if (def.legendSkip?.includes(i)) return
-        const cfg = def.renderable(setting.params).plotConfig[i]
+      // 图例：只列「真正建了 series 的 plot」（样式入 plot 段 ∧ 可见 ∧ 有数据），
+      // 与 renderer.series() 的 plot 段（plotConfig 顺序）逐一对齐，避免错位
+      const plotConfig = renderable.plotConfig
+      const seriesPlots = plotConfig.filter(
+        (pc) =>
+          LEGEND_SERIES_STYLES.has(pc.style ?? 'line') &&
+          (out.plots[pc.id]?.length ?? 0) > 0 &&
+          plotVisible(pc, inputs, out),
+      )
+      const plotSeries = renderer.series().slice(0, seriesPlots.length)
+      const names = def.legendNames?.(inputs) ?? seriesPlots.map((p) => p.title ?? p.id)
+      seriesPlots.forEach((cfg, i) => {
+        if (def.legendSkip?.includes(plotConfig.indexOf(cfg))) return
+        const s = plotSeries[i]
+        if (!s) return
         metas.push({
           series: s,
           name: names[i] ?? cfg.title,
@@ -874,67 +906,17 @@ export default function ChartCore({
             gap: 4,
             padding: '4px 8px',
           }}>
-          {/* 技术指标面板（indicatorts 计算，主图/副图分组，开关 + 参数，全局生效） */}
+          {/* 技术指标面板（插件 registry 全量：搜索 + 分类过滤 + 常用/社区明星，全局生效） */}
           <Dropdown
             trigger={['click']}
             destroyPopupOnHide
             dropdownRender={() => (
-              <div
-                style={{
-                  background: '#1b1f2a',
-                  border: '1px solid #2a2e39',
-                  borderRadius: 6,
-                  padding: '10px 12px',
-                  width: 250,
-                  maxHeight: 420,
-                  overflowY: 'auto',
-                }}>
-                {(['main', 'sub'] as const).map((pane) => (
-                  <div key={pane} style={pane === 'main' ? { marginBottom: 10 } : undefined}>
-                    <Text style={{ color: '#9aa3b2', fontSize: 11 }}>
-                      {pane === 'main' ? '主图指标' : '副图指标'}
-                    </Text>
-                    {INDICATOR_CATALOG.filter((d) => d.pane === pane).map((def) => {
-                      const setting = indicatorSettings[def.key]
-                      return (
-                        <div key={def.key} style={{ marginTop: 4 }}>
-                          <Checkbox
-                            checked={!!setting?.enabled}
-                            onChange={() => toggleIndicator(def.key)}>
-                            <span style={{ color: '#d1d4dc', fontSize: 12 }}>{def.label}</span>
-                          </Checkbox>
-                          {setting?.enabled && def.paramLabels.length > 0 && (
-                            <div
-                              style={{
-                                display: 'flex',
-                                flexWrap: 'wrap',
-                                gap: 4,
-                                marginLeft: 22,
-                                marginTop: 2,
-                              }}>
-                              {def.paramLabels.map((pl, i) => (
-                                <InputNumber
-                                  key={i}
-                                  size="small"
-                                  min={1}
-                                  max={499}
-                                  value={setting.params[i]}
-                                  style={{ width: 56 }}
-                                  onChange={(v) => {
-                                    const params = [...setting.params]
-                                    params[i] = v ?? params[i]
-                                    setIndicatorParams(def.key, params)
-                                  }}
-                                />
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                ))}
-              </div>
+              <IndicatorPanel
+                settings={indicatorSettings}
+                onToggle={toggleIndicator}
+                onInput={setIndicatorInput}
+                onReset={resetIndicator}
+              />
             )}>
             <TvButton>
               <PlusOutlined style={{ fontSize: 12 }} />指标

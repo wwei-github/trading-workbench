@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { AIAnalysis, AppLog, ScanRecord, ScanResult, ScanStatus, SystemConfig, TaskRecord, WatchlistItem } from '../types'
 import { scanApi, type ResultFilters } from '../api/scan'
-import { INDICATOR_CATALOG } from '../constants/indicators'
+import { DEFAULT_ENABLED_IDS, getIndicator } from '../constants/indicators'
 
 // 图表涨跌配色（全局）：红涨绿跌（国内习惯，默认）/ 绿涨红跌（国际习惯）
 export type ColorScheme = 'red-up' | 'green-up'
@@ -16,10 +16,12 @@ function loadColorScheme(): ColorScheme {
   }
 }
 
-// 图表技术指标（开源库 indicatorts 计算，目录见 constants/indicators.ts；开关 + 参数，localStorage 持久化）
+// 图表技术指标（插件 registry 全量驱动，目录见 constants/indicators.ts）：
+// 每项 = 开关 + 参数记录（inputs 按插件 inputConfig 的 id 键控：数值/开关/颜色/下拉等），
+// localStorage 持久化。缺省的 key 视为未启用（不为 1290 个指标预建条目）
 export interface IndicatorSetting {
   enabled: boolean
-  params: number[]
+  inputs: Record<string, unknown>
 }
 
 export type IndicatorSettings = Record<string, IndicatorSetting>
@@ -28,12 +30,9 @@ const INDICATORS_KEY = 'chart-indicator-settings'
 
 function defaultIndicatorSettings(): IndicatorSettings {
   const base: IndicatorSettings = {}
-  for (const def of INDICATOR_CATALOG) {
-    // 默认开启 EMA（与后端趋势判断周期一致）和 VOL
-    base[def.key] = {
-      enabled: def.key === 'ema' || def.key === 'vol',
-      params: [...def.defaults],
-    }
+  for (const id of DEFAULT_ENABLED_IDS) {
+    const def = getIndicator(id)
+    if (def) base[id] = { enabled: true, inputs: { ...def.defaultInputs } }
   }
   return base
 }
@@ -43,25 +42,30 @@ function loadIndicatorSettings(): IndicatorSettings {
   try {
     const raw = localStorage.getItem(INDICATORS_KEY)
     if (raw) {
-      const saved = JSON.parse(raw)
-      for (const def of INDICATOR_CATALOG) {
-        const s = saved[def.key]
-        if (!s) continue
-        if (typeof s.enabled === 'boolean') base[def.key].enabled = s.enabled
-        // 参数个数与目录一致才接受，避免旧格式残留
-        if (
-          Array.isArray(s.params) &&
-          s.params.length === def.defaults.length &&
-          s.params.every((v: unknown) => typeof v === 'number' && Number.isFinite(v))
-        ) {
-          base[def.key].params = s.params
-        }
+      const saved = JSON.parse(raw) as Record<string, IndicatorSetting>
+      for (const [id, s] of Object.entries(saved)) {
+        const def = getIndicator(id)
+        // 已下线/未知指标、结构不合法的存档直接丢弃
+        if (!def || typeof s?.enabled !== 'boolean') continue
+        const inputs =
+          s.inputs && typeof s.inputs === 'object'
+            ? { ...def.defaultInputs, ...s.inputs }
+            : { ...def.defaultInputs }
+        base[id] = { enabled: s.enabled, inputs }
       }
     }
   } catch {
     /* 忽略 */
   }
   return base
+}
+
+function persistIndicatorSettings(settings: IndicatorSettings) {
+  try {
+    localStorage.setItem(INDICATORS_KEY, JSON.stringify(settings))
+  } catch {
+    /* 隐私模式等场景下忽略 */
+  }
 }
 
 interface ScanState {
@@ -110,10 +114,14 @@ interface ScanState {
   // 图表涨跌配色（全局切换，localStorage 持久化）
   colorScheme: ColorScheme
   setColorScheme: (scheme: ColorScheme) => void
-  // 图表技术指标（全局，开关 + 参数，localStorage 持久化）
+  // 图表技术指标（插件 registry 全量，开关 + 参数记录，localStorage 持久化）
   indicatorSettings: IndicatorSettings
-  toggleIndicator: (key: string) => void
-  setIndicatorParams: (key: string, params: number[]) => void
+  // 开关一个指标（首次启用时按目录 defaultInputs 建条目）
+  toggleIndicator: (id: string) => void
+  // 设置某项参数（按插件 inputConfig 的 input id）
+  setIndicatorInput: (id: string, inputId: string, value: unknown) => void
+  // 重置某指标参数回插件默认
+  resetIndicator: (id: string) => void
 }
 
 // 每行的轮询计时器：scanResultId -> timer
@@ -417,26 +425,43 @@ export const useScanStore = create<ScanState>((set, get) => ({
 
   // ===== 图表技术指标 =====
   indicatorSettings: loadIndicatorSettings(),
-  toggleIndicator: (key) => {
+  toggleIndicator: (id) => {
+    const def = getIndicator(id)
+    if (!def) return
     const cur = get().indicatorSettings
-    if (!cur[key]) return
-    const next = { ...cur, [key]: { ...cur[key], enabled: !cur[key].enabled } }
-    set({ indicatorSettings: next })
-    try {
-      localStorage.setItem(INDICATORS_KEY, JSON.stringify(next))
-    } catch {
-      /* 隐私模式等场景下忽略 */
+    const existing = cur[id]
+    const next: IndicatorSettings = {
+      ...cur,
+      [id]: existing
+        ? { ...existing, enabled: !existing.enabled }
+        : { enabled: true, inputs: { ...def.defaultInputs } },
     }
+    set({ indicatorSettings: next })
+    persistIndicatorSettings(next)
   },
-  setIndicatorParams: (key, params) => {
+  setIndicatorInput: (id, inputId, value) => {
+    const def = getIndicator(id)
+    if (!def) return
     const cur = get().indicatorSettings
-    if (!cur[key]) return
-    const next = { ...cur, [key]: { ...cur[key], params } }
-    set({ indicatorSettings: next })
-    try {
-      localStorage.setItem(INDICATORS_KEY, JSON.stringify(next))
-    } catch {
-      /* 隐私模式等场景下忽略 */
+    const existing = cur[id] ?? { enabled: false, inputs: { ...def.defaultInputs } }
+    const next: IndicatorSettings = {
+      ...cur,
+      [id]: { ...existing, inputs: { ...existing.inputs, [inputId]: value } },
     }
+    set({ indicatorSettings: next })
+    persistIndicatorSettings(next)
+  },
+  resetIndicator: (id) => {
+    const def = getIndicator(id)
+    if (!def) return
+    const cur = get().indicatorSettings
+    const existing = cur[id]
+    if (!existing) return
+    const next: IndicatorSettings = {
+      ...cur,
+      [id]: { ...existing, inputs: { ...def.defaultInputs } },
+    }
+    set({ indicatorSettings: next })
+    persistIndicatorSettings(next)
   },
 }))
