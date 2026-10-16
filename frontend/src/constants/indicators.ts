@@ -130,39 +130,45 @@ function compositeMA(
 }
 
 const EMA_MULTI = compositeMA('ema', {
-  id: 'ema-multi',
+  // 宿主特例 id 加 host- 前缀：registry 里已存在同名的社区指标 ema-multi
+  // （EMA 20/50/100/200），若沿用同 id 会被 registry 条目在 Map 中覆盖
+  id: 'host-ema-multi',
   name: 'EMA 指数均线',
   prefix: 'EMA',
   defaults: [21, 55, 144],
   order: -2,
 })
 const MA_MULTI = compositeMA('sma', {
-  id: 'ma-multi',
+  id: 'host-ma-multi',
   name: 'MA 移动平均',
   prefix: 'MA',
   defaults: [5, 10, 30, 60],
   order: -1,
 })
 
+// 宿主特例（先定 id），registry 条目按原始下标定 order；
+// 过滤掉与宿主特例同 id 的 registry 条目——ALL_INDICATORS 是数组，
+// 存在重复 id 会导致 INDICATOR_MAP 覆盖 + 面板重复 React key
+const HOST_DEFS: ChartIndicatorDef[] = [VOL_DEF, EMA_MULTI, MA_MULTI]
+const HOST_IDS = new Set(HOST_DEFS.map((d) => d.id))
+const REGISTRY_DEFS: ChartIndicatorDef[] = indicatorRegistry
+  .map((e, i) => fromRegistry(e, i))
+  .filter((d) => !HOST_IDS.has(d.id))
+
 // 全量指标：宿主特例在前，registry 条目按原始下标
-export const ALL_INDICATORS: ChartIndicatorDef[] = [
-  VOL_DEF,
-  EMA_MULTI,
-  MA_MULTI,
-  ...indicatorRegistry.map((e, i) => fromRegistry(e, i)),
-]
+export const ALL_INDICATORS: ChartIndicatorDef[] = [...HOST_DEFS, ...REGISTRY_DEFS]
 
 const INDICATOR_MAP = new Map(ALL_INDICATORS.map((d) => [d.id, d]))
 
 export const getIndicator = (id: string): ChartIndicatorDef | undefined => INDICATOR_MAP.get(id)
 
 // 默认开启：EMA 多周期族（与后端趋势判断周期一致）+ VOL
-export const DEFAULT_ENABLED_IDS = ['ema-multi', 'vol']
+export const DEFAULT_ENABLED_IDS = ['host-ema-multi', 'vol']
 
 // ── 常用指标（原 16 项保留 + VWAP/SuperTrend 高频项）──────────────────
 export const COMMON_IDS = [
-  'ema-multi',
-  'ma-multi',
+  'host-ema-multi',
+  'host-ma-multi',
   'bb',
   'keltner',
   'donchian',
