@@ -57,7 +57,7 @@
 | 层 | 技术 |
 |---|---|
 | 前端 | React 18、TypeScript、Vite 5、Ant Design 5、Zustand、axios、dayjs、lightweight-charts、ECharts |
-| 后端 | FastAPI、SQLAlchemy 2.0、Pydantic 2、Celery 5、Redis、httpx、numpy、openai |
+| 后端 | FastAPI、SQLAlchemy 2.0、Pydantic 2、Celery 5、Redis、httpx、numpy、Pillow（卡片内嵌图表渲染）、openai |
 | 数据库 | PostgreSQL 15 |
 | 任务队列 | Celery + Redis 7（broker + backend） |
 | 部署 | Docker、Docker Compose |
@@ -141,6 +141,7 @@ trading-workbench/
 │   │   │   ├── ai_attribution.py # 亏损单 AI 错误归因
 │   │   │   ├── spot_*.py         # 现货子系统（5 个文件）
 │   │   │   ├── shadow.py         # 影子模式打标与评估
+│   │   │   ├── kline_chart.py    # 飞书卡片内嵌 K 线图渲染
 │   │   │   ├── feishu_bot.py     # 飞书通知
 │   │   │   └── exchange_pool.py  # 多交易所 K 线故障转移
 │   │   ├── tasks/                # Celery 任务（9 个任务模块）
@@ -424,7 +425,7 @@ AI 持仓诊断：浮亏在跑单 → `advice_due` 触发 AI 建议（hold/tight
 
 #### [ai_attribution.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_attribution.py)
 
-亏损单 AI 错误归因：打标签（追高追空/止损过宽过窄/浮盈回撤/近锚被扫…）、生成教训。
+亏损单 AI 错误归因：打标签（追高追空/止损过宽过窄/逆指标多数…）、生成教训。
 
 #### [patch_service.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/patch_service.py)
 
@@ -452,7 +453,8 @@ AI 持仓诊断：浮亏在跑单 → `advice_due` 触发 AI 建议（hold/tight
 
 | 文件 | 职责 |
 |---|---|
-| [feishu_bot.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/feishu_bot.py) | 飞书自建应用机器人：卡片发送 + 长连接回调（平仓按钮），13 类通知 |
+| [feishu_bot.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/feishu_bot.py) | 飞书自建应用机器人：卡片发送（含 `upload_image` 内嵌图片上传）+ 长连接回调（平仓 / 现货确认 / 正式网开单按钮），通知全表见 docs/09 §5.4 |
+| [kline_chart.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/kline_chart.py) | 飞书卡片内嵌 K 线图 PNG 渲染（Pillow 手绘：K线 + EMA21/55/144 + 入场/SL/TP1/TP2 计划线；纯函数，失败返回 None 由调用方降级） |
 | [log_sink.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/log_sink.py) | WARNING+ 日志落库（前端「系统日志」），fork 后重启 |
 | [task_log.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/task_log.py) | 任务记录 `open_task`/`close_task` |
 | [event_stream.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/event_stream.py) | user-data-stream + mark price 长连接（事件驱动结算，`EVENT_EXEC_ENABLED` 开关） |
@@ -834,7 +836,7 @@ sequenceDiagram
 
     Note over Beat,AA: 每小时 :14 · 亏损单归因
     Beat->>RT: run_ai_attribution_task
-    RT->>AA: 已平仓亏损单打标签（追高追空 / 止损过宽过窄 / 浮盈回撤 / 近锚被扫）
+    RT->>AA: 已平仓亏损单打标签（追高追空 / 止损过宽过窄 / 逆多数决）
     AA->>LLM: 归因与教训生成
     LLM-->>AA: 标签 + 教训
     AA->>DB: 写入归因结果
