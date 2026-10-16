@@ -28,6 +28,12 @@ const CHART_HEIGHT = 560 // 容器无高度时的兜底值（各挂载点容器�
 // 后端 UTC naive → 毫秒（统一按 UTC 解析）
 const utcMs = (v: string) => dayjs.utc(v).valueOf()
 
+// 十六进制色 → 带透明度 rgba（胶囊底色「淡」用：半透明主题色 + 白字）
+const hexRgba = (hex: string, alpha: number) => {
+  const h = hex.replace('#', '')
+  return `rgba(${parseInt(h.slice(0, 2), 16)}, ${parseInt(h.slice(2, 4), 16)}, ${parseInt(h.slice(4, 6), 16)}, ${alpha})`
+}
+
 // 命中历史 marker 配色（2026-10-15）：命中=蓝、触碰=紫（两者区分）
 const HIT_MARK_COLOR = '#1677ff'
 const TOUCH_MARK_COLOR = '#722ed1'
@@ -385,6 +391,8 @@ function drawHitOverlay(
 // 颜色 + 形状 + 文字三重区分
 const MARK_PAD = 3 // 标注框相对K线高/低点的外扩（px）
 const MARK_BADGE = 18 // 徽标（图标区）边长（px）
+// 胶囊底色不透明度：半透明主题色 + 白色文字/图标，底色更淡更柔和（2026-10-16）
+const PILL_ALPHA = 0.7
 // 徽标与标注框的间距（px，2026-10-16 调大：徽标远离K线，经箭头指向K线，
 // 避免遮挡K线本体；下跌命中→上方 / 上涨命中→下方，由 preferBelow 决定）
 const MARK_GAP = 72
@@ -561,14 +569,14 @@ function drawHitMarks(
     const { color, label, kind, badgeX, badgeCy, pillW, b } = gm
     const bcx = badgeX + b / 2 // 图标中心
 
-    // 胶囊底（实心主题色，圆角=半高）
+    // 胶囊底（半透明主题色，圆角=半高；白色文字/图标仍清晰）
     const bg = el('rect')
     bg.setAttribute('x', String(badgeX))
     bg.setAttribute('y', String(badgeCy - b / 2))
     bg.setAttribute('width', String(pillW))
     bg.setAttribute('height', String(b))
     bg.setAttribute('rx', String(b / 2))
-    bg.setAttribute('fill', color)
+    bg.setAttribute('fill', hexRgba(color, PILL_ALPHA))
     svg.appendChild(bg)
 
     // 胶囊内白色文字（命中 / 触碰）
