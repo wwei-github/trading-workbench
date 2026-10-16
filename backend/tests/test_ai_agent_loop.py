@@ -247,6 +247,20 @@ def test_stream_completion_name_resent_not_duplicated():
     assert res.tool_calls[0]["function"]["arguments"] == '{"x": 1}'
 
 
+def test_stream_completion_no_id_no_index_continuation():
+    """index 与 id 皆缺：按续传归到最近一个槽，一次调用不被拆成多条、参数不碎片"""
+    chunks = [
+        _Chunk(_Delta(tool_calls=[_TC(name="get_funding", arguments='{"a"')])),
+        _Chunk(_Delta(tool_calls=[_TC(arguments=': 1}')])),
+        _Chunk(_Delta(), finish="tool_calls"),
+    ]
+    res = stream_completion(_FakeClient([chunks]), [{"role": "user", "content": "x"}])
+
+    assert len(res.tool_calls) == 1
+    assert res.tool_calls[0]["function"]["name"] == "get_funding"
+    assert res.tool_calls[0]["function"]["arguments"] == '{"a": 1}'
+
+
 def test_stream_completion_mixed_keys_no_crash():
     """混合键（部分条目带 index、部分缺 index）：返回处不得因排序崩溃，保持插入序"""
     chunks = [

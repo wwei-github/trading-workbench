@@ -120,6 +120,11 @@ def stream_completion(
     LLM 调用统一收口点，Agent 工具循环因此无需另起非流式 create（消除流式治理的
     唯一例外）。
 
+    非规范网关兜底（同上日期）：网关不带 `index` 时退化为按 `id` 分槽；`id` 也缺
+    则把该增量块按续传归到最近一个槽；`function.name` 按增量口径字符串累加，仅当
+    网关逐块重发完全相同的已聚合名时才跳过（不去重则会重复拼接）。以上兜底仅在
+    偏离 OpenAI 流式规范时生效，标准网关走 index 路径、行为不变。
+
     on_progress: 可选回调 dict(reasoning_chars/content_chars/elapsed_s)，
     首个增量立即触发、此后 ≥2s 节流——供分析管线把活进度推给前端
     （ai_progress 事件流），让用户看到「推理中」而非干等。
@@ -161,8 +166,12 @@ def stream_completion(
                 key = int(idx)
             elif tcd_id:
                 key = ("id", tcd_id)
+            elif tool_calls:
+                # index 与 id 皆缺：按续传归到最近一个槽（新建槽会把一次调用拆成多条、
+                # 参数碎片化）——真正的新调用几乎必带 id
+                key = next(reversed(tool_calls))
             else:
-                key = ("n", len(tool_calls))
+                key = ("n", 0)
             slot = tool_calls.setdefault(
                 key, {"id": "", "type": "function",
                       "function": {"name": "", "arguments": ""}}
@@ -174,12 +183,10 @@ def stream_completion(
                 nm = getattr(fn, "name", None)
                 if nm:
                     cur = slot["function"]["name"]
-                    # 名称按 SDK 口径做字符串累加（可能分片下发）；网关重复发同名/全名时
-                    # 不重复拼接（nm 是已聚合名的完整重发 → 直接覆盖）
+                    # 名称按 SDK 口径做字符串累加（可能分片下发）；仅当网关逐块重发
+                    # 完全相同的已聚合名时才跳过（避免重复拼接），不从前缀关系推断
                     if nm != cur:
-                        slot["function"]["name"] = (
-                            nm if not cur or nm.startswith(cur) else cur + nm
-                        )
+                        slot["function"]["name"] = cur + nm
                 if getattr(fn, "arguments", None):
                     slot["function"]["arguments"] += fn.arguments
         if choice.finish_reason:
