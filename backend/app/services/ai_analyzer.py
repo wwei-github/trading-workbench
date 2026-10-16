@@ -31,10 +31,19 @@ _RULE_HTF_HARD = """0. **方向硬约束（最高优先级，先于一切规则�
 _RULE_VOTE = """方向票规则：用户消息"技术指标"块"方向票"行由程序统计
 （仅 MACD/布林带/RSI 三张方向票投多/空/中性，门槛=同向≥2 张，程序已按此筛过候选）。
 以该行结论为主——即使 1h K线形态或摆动结构与方向票相反，也以方向票结论为准，
-并在 analysis 第一条写明"方向票: 看多N项 vs 看空M项"及各指标依据；
+并在 {field} 第一条写明"方向票: 看多N项 vs 看空M项"及各指标依据；
 多空分歧（各 1 项）时自行结合 K线结构与量能判断。SuperTrend/ADX/OBV/4h背景
 不是方向票：SuperTrend/OBV 仅作风险提示、ADX 表趋势强度、4h 方向由硬约束行决定，
 不得当作方向票计数。"""
+
+
+def render_rule_vote(field: str = "analysis") -> str:
+    """方向票纪律片段按落库字段名渲染（P0 field="analysis" / P1 field="reason"）。
+
+    2026-10-16：由 P1 侧的 `.replace("analysis", "reason")` 改为显式参数化渲染
+    ——replace 未命中会静默失配（文本漂移无告警），参数化后缺字段占位直接 KeyError。
+    """
+    return _RULE_VOTE.format(field=field)
 
 _RULE_EMA = """EMA 排列不构成方向限制：多头排列不禁止做空、空头排列不禁止做多，
 均线仅是趋势背景参考之一（金叉/死叉/拐头是动能转换信号）。"""
@@ -116,11 +125,16 @@ _TP2_FIELD_ON = """第二档止盈价，锚定更前方一档摆动结构位（�
 
 _TP2_FIELD_OFF = """当前未启用止盈二（TP2 分批关闭）：一律输出 0。"""
 
-_RULE_STRUCT = """结构破位回踩打法（structure_break）三子形态按行情阶段择一，选择理由写进 analysis：
+_RULE_STRUCT = """结构破位回踩打法（structure_break）三子形态按行情阶段择一，选择理由写进 {field}：
 1. 123法则（趋势反转）：破支撑(1) → 反弹不创新低(2) → 突破反弹高点时入场(3)；止损放转折点外侧。稳但滞后。
 2. N字结构（趋势延续）：回调不破支撑 → 突破压力 → 回踩不破入场；止损放 N 字中间低点，破即失效。
 3. 2B法则（假突破反手）：创阶段新高即收回位下方（或新低即收回位上方）→ 反向入场；止损放假突破极值外小缓冲。盈亏比最佳但胜率偏低，须严守止损。
 共同：震荡市最差（假突破连发），震荡区间信号归 range_edge 不用本打法。"""
+
+
+def render_rule_struct(field: str = "analysis") -> str:
+    """结构破位回踩打法片段按落库字段名渲染（P0 field="analysis" / P1 field="reason"）。"""
+    return _RULE_STRUCT.format(field=field)
 
 _RULE_DIRECTION = """方向纪律（不再程序强制，无 ±0.3% 贴近要求）：优先只在支撑结构做多、
 只在压力结构做空；现价已离开结构位时不再要求贴近，可按动能顺势给入场价（顺势追势
@@ -340,7 +354,7 @@ def render_system_prompt(
     return SYSTEM_PROMPT.format(
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_DIRECTION=_RULE_DIRECTION.replace(chr(10), ' '),
-        _RULE_STRUCT=_RULE_STRUCT,
+        _RULE_STRUCT=render_rule_struct("analysis"),
         _RULE_SL=_RULE_SL.format(far_atr=round(settings.TP1_MAX_ATR / _rr, 2)),
         # _RULE_TP 值内含 {rr_min}/{tp1_max_atr}/{tp1_max_r}/{tp2_gap_atr}/{tp2_gap_r}
         # 字面占位（format 不递归替换值），须渲染前显式替换
@@ -353,7 +367,7 @@ def render_system_prompt(
         ),
         _RULE_TOUCH=_RULE_TOUCH,
         _RULE_EMA=_RULE_EMA.replace(chr(10), ' '),
-        _RULE_VOTE=_RULE_VOTE.replace(chr(10), ' '),
+        _RULE_VOTE=render_rule_vote("analysis").replace(chr(10), ' '),
         _tp2_field=_TP2_FIELD_ON if tp2_enabled else _TP2_FIELD_OFF,
         rr_min=_rr,
         tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",

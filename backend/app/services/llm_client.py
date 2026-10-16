@@ -83,11 +83,18 @@ def get_client() -> OpenAI:
 
 
 class StreamResult(NamedTuple):
-    """stream_completion 的返回：拼接正文 + 延迟观测（首 token / 总耗时）"""
+    """stream_completion 的返回：拼接正文 + 延迟观测（首 token / 总耗时）+ 聚合工具调用
+
+    tool_calls（2026-10-16）：流式 tool_call 增量按 index 聚合后的 OpenAI 消息形状
+    列表（每项 {"id","type","function":{"name","arguments"}}），供 Agent 工具循环
+    直接回填 assistant 消息。P0（单次调用）与双评委不传 tools，该字段恒为空元组，
+    属纯新增字段，调用方按 4 个位置参数构造即向后兼容。
+    """
     content: str
     finish_reason: Optional[str]
     first_token_s: float  # 首个正文增量到达耗时；-1 = 全程无正文（纯 reasoning 耗尽）
     total_s: float
+    tool_calls: tuple = ()
 
 
 def stream_completion(
@@ -107,6 +114,12 @@ def stream_completion(
     reasoning_content 增量对调用方不可见（正文只拼 delta.content，与推理过程隔离）；
     首个正文增量耗时与总耗时随结果携带，供调用方打延迟观测日志。
 
+    tool_calls（2026-10-16）：流式 tool_call 增量按 `delta.tool_calls[].index` 聚合
+    ——首块带 id/name、后续块只带 arguments 片段，逐块拼接成完整工具调用（与
+    非流式 message.tool_calls 同形状），随 StreamResult.tool_calls 返回。这是全仓
+    LLM 调用统一收口点，Agent 工具循环因此无需另起非流式 create（消除流式治理的
+    唯一例外）。
+
     on_progress: 可选回调 dict(reasoning_chars/content_chars/elapsed_s)，
     首个增量立即触发、此后 ≥2s 节流——供分析管线把活进度推给前端
     （ai_progress 事件流），让用户看到「推理中」而非干等。
@@ -118,6 +131,7 @@ def stream_completion(
     n_reasoning = 0
     n_content = 0
     last_pub = -10.0  # 首个增量必触发（节流窗口外）
+    tool_calls: dict = {}  # index -> {"id","type","function":{"name","arguments"}}
     stream = client.chat.completions.create(
         model=current_model(),
         messages=messages,
@@ -138,6 +152,21 @@ def stream_completion(
             parts.append(piece)
             n_content += len(piece)
         n_reasoning += len((getattr(delta, "reasoning_content", None) or "")) if delta is not None else 0
+        for tcd in ((getattr(delta, "tool_calls", None) or []) if delta is not None else []):
+            idx = getattr(tcd, "index", None)
+            idx = 0 if idx is None else int(idx)
+            slot = tool_calls.setdefault(
+                idx, {"id": "", "type": "function",
+                      "function": {"name": "", "arguments": ""}}
+            )
+            if getattr(tcd, "id", None):
+                slot["id"] = tcd.id
+            fn = getattr(tcd, "function", None)
+            if fn is not None:
+                if getattr(fn, "name", None):
+                    slot["function"]["name"] = fn.name
+                if getattr(fn, "arguments", None):
+                    slot["function"]["arguments"] += fn.arguments
         if choice.finish_reason:
             finish = choice.finish_reason
         if on_progress is not None:
@@ -154,6 +183,7 @@ def stream_completion(
         finish,
         first_at if first_at is not None else -1.0,
         time.monotonic() - t0,
+        tuple(tool_calls[k] for k in sorted(tool_calls)),
     )
 
 

@@ -18,7 +18,7 @@ import numpy as np
 from app.config import settings
 from app.services import market_data
 from app.services import skill_library
-from app.services.llm_client import current_model, get_client
+from app.services.llm_client import get_client, stream_completion
 from app.services.risk_guard import (
     TRADE_TYPES,
     TradeDecision,
@@ -31,9 +31,9 @@ from app.services.strategy.technical import atr_series, render_indicator_block
 from app.services.strategy.types import POSITION_LABEL_MAP
 from app.services.ai_analyzer import (
     _RULE_HTF_HARD,
-    _RULE_STRUCT,
-    _RULE_VOTE,
     SIGNAL_TYPE_LABELS,
+    render_rule_struct,
+    render_rule_vote,
     render_signal_gate_block,
 )
 
@@ -41,12 +41,19 @@ logger = logging.getLogger(__name__)
 
 MAX_ROUNDS = 5
 
-# AGENT_SYSTEM 内嵌片段：公共片段的 P1 适配版（P1 有工具循环，analysis 字段名是 reason）
-_RULE_VOTE_BRIEF = _RULE_VOTE.replace("analysis 第一条", "reason 第一条")
-_RULE_STRUCT_BRIEF = _RULE_STRUCT.replace("analysis", "reason")
-# AGENT_SYSTEM 用 str.format 渲染，公共片段中可能存在的 { } 需先转义
-_RULE_VOTE_BRIEF = _RULE_VOTE_BRIEF.replace("{", "{{").replace("}", "}}")
-_RULE_STRUCT_BRIEF = _RULE_STRUCT_BRIEF.replace("{", "{{").replace("}", "}}")
+# ── 上下文预算（2026-10-16）─────────────────────────────────────────
+# messages 只增不减：每轮工具结果最长 12000 字符（get_recent_klines n=200 ≈11k），
+# 5 轮累积可逼近模型上下文上限。超预算时把较早的 tool 结果压成头尾摘要，保留最近
+# 若干条原文（决策链依赖最新数据；旧查询结果已可重查）。
+_CONTEXT_BUDGET_CHARS = 120_000   # 消息正文总字符预算（近似 token×2.5 的保守口径）
+_TOOL_RESULT_MAX_CHARS = 12_000   # 单条工具结果回填上限（原有口径）
+_TOOL_RESULT_TRIM_CHARS = 1_200   # 裁剪后保留的头+尾字符数
+_TOOL_RESULT_KEEP = 4             # 裁剪时保留原文的最近工具结果条数
+
+# AGENT_SYSTEM 内嵌片段：公共纪律段的 P1 适配版（P1 落库字段名是 reason，
+# P0 是 analysis）——显式参数化渲染，无 replace/手工转义（2026-10-16）
+_RULE_VOTE_BRIEF = render_rule_vote("reason")
+_RULE_STRUCT_BRIEF = render_rule_struct("reason")
 
 # 近锚降级链（docs/23，2026-09-29，仅突破类信号注入；P1 版：锚点用 signal_low/signal_high
 # 表达，stop_anchor 由程序从 stop_ref 推导、无需自报）。近锚只救"万事俱备、只差盈亏比"
@@ -585,6 +592,56 @@ def _dispatch_tool(name: str, args: dict, ctx: dict) -> tuple[bool, str, Optiona
     return False, f"unknown tool: {name}", None
 
 
+# ── 流式工具调用访问器（llm_client.stream_completion 聚合出的 OpenAI 形状 dict）──
+def _tc_name(tc: dict) -> str:
+    return ((tc.get("function") or {}).get("name")) or ""
+
+
+def _tc_args(tc: dict) -> str:
+    return ((tc.get("function") or {}).get("arguments")) or "{}"
+
+
+def _trim_context(
+    messages: list,
+    budget: int = _CONTEXT_BUDGET_CHARS,
+    keep_recent: int = _TOOL_RESULT_KEEP,
+) -> int:
+    """上下文预算裁剪：正文总字符超预算时，把较早的 tool 结果压成头尾摘要。
+
+    只裁 tool 消息（system/user/assistant 是决策链上下文，裁掉会破坏语义），
+    保留最近 keep_recent 条原文（决策依赖最新查询结果）。返回裁剪条数（0=未触发）。
+    """
+    total = sum(len(m.get("content") or "") for m in messages)
+    if total <= budget:
+        return 0
+    idxs = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+    older = idxs[:-keep_recent] if keep_recent > 0 else idxs
+    trimmed = 0
+    half = _TOOL_RESULT_TRIM_CHARS // 2
+    for i in older:
+        c = messages[i].get("content") or ""
+        if len(c) <= _TOOL_RESULT_TRIM_CHARS:
+            continue
+        messages[i]["content"] = (
+            f"{c[:half]}\n…（结果过长已裁剪 {len(c)} 字符，如需完整数据请重新调用工具）…\n"
+            f"{c[-half:]}"
+        )
+        trimmed += 1
+        total = sum(len(m.get("content") or "") for m in messages)
+        if total <= budget:
+            break
+    return trimmed
+
+
+def _summarize_trace(trace: list) -> str:
+    """耗尽兜底的轮次摘要（写在 forced skip 理由后，供复盘定位"卡在哪一轮"）。"""
+    parts = []
+    for st in trace:
+        tools = "、".join(st.get("tools") or []) or "空转未调工具"
+        parts.append(f"R{st.get('round')} {tools}")
+    return "（轮次：" + "；".join(parts) + "）" if parts else ""
+
+
 def analyze_coin_agent(
     signal: dict, klines: list,
     strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
@@ -600,7 +657,8 @@ def analyze_coin_agent(
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
     返回值额外带 "stage_trace" 键（工具循环 trace，docs/04 §5.9），落库时一并存储。
-    progress_cb: 可选回调，接收 {"t": round/tool, ...} 进度事件供前端流式展示。
+    progress_cb: 可选回调，接收 {"t": "round"/"tool", ...} 进度事件供前端流式展示
+    （每轮工具执行前推 round=轮次+tools，每次工具调用推 tool=工具名+args）。
     risk_*（2026-09-27 止损金额模式）：调用方（ai_tasks）从 system_config 解析的
     预算口径，注入提示词 risk_label 槽位 + submit_decision 校验的 risk_budget；
     缺省时回落百分比口径（pct），与历史行为一致。
@@ -693,43 +751,74 @@ def analyze_coin_agent(
 
     for rnd in range(1, MAX_ROUNDS + 1):
         rt = time.time()
-        resp = client.chat.completions.create(
-            model=current_model(),
-            messages=messages,
+        # 主循环走统一流式收口（2026-10-16，docs/03 §5.1）：消除全仓流式治理的唯一
+        # 非流式例外（GLM 思考型非流式长推理零字节返回会被读超时误杀）。
+        # stream_completion 已聚合 tool_calls，返回的 dict 与非流式 message 同形状。
+        resp = stream_completion(
+            client,
+            messages,
             tools=_tools_schema(tp2_enabled=_tp2_on),
             temperature=0.3,
             max_tokens=32000,  # GLM 思考型：reasoning 计入配额，12000 被思考耗尽过（同 ai_analyzer 口径）
         )
-        msg = resp.choices[0].message
-        tool_calls = msg.tool_calls or []
+        tool_calls = list(resp.tool_calls or [])
+        content = resp.content or ""
         trace.append({
             "round": rnd,
             "llm_ms": int((time.time() - rt) * 1000),
-            "tools": [tc.function.name for tc in tool_calls],
+            "tools": [_tc_name(tc) for tc in tool_calls],
         })
         logger.info(
             "Agent %s round%d: tools=%d content=%dB",
-            signal.get("symbol"), rnd, len(tool_calls), len(msg.content or ""),
+            signal.get("symbol"), rnd, len(tool_calls), len(content),
         )
+        # round 事件（2026-10-16，docs/03 §5.2）：此前只发 tool 事件、round 声明缺失，
+        # 前端无法显示轮次进度；每轮（含空转轮）工具执行前推一条，tools=本轮工具名
+        if progress_cb:
+            progress_cb({"t": "round", "round": rnd,
+                         "tools": [_tc_name(tc) for tc in tool_calls]})
 
         if not tool_calls:
-            messages.append({"role": "assistant", "content": msg.content or ""})
+            # 空转轮（模型未调工具只出正文）：记入 trace 供复盘，塞 nudge 进下一轮
+            trace[-1]["nudge"] = True
+            messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": "请调用 submit_decision 提交决策。"})
             continue
 
         messages.append({
             "role": "assistant",
-            "content": msg.content or "",
-            "tool_calls": [tc.model_dump() for tc in tool_calls],
+            "content": content,
+            "tool_calls": tool_calls,
         })
 
         def _run_tool(tc):
-            try:
-                args = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
-                args = {}
+            """单工具执行：参数 JSON 非法 → 明确错误文本回喂；工具内异常 → 护栏转文本。
+
+            2026-10-16：此前参数解析失败静默当 {}、_dispatch_tool 无 try——畸形参数
+            （如 get_recent_klines n="abc" 触发 int() ValueError）会穿出整个 Agent 循环，
+            导致不写 stage_trace、不返回 forced skip（外层记"分析失败"落库缺结论）。
+            """
+            name = _tc_name(tc)
+            raw = _tc_args(tc)
             tt = time.time()
-            done, result, decision = _dispatch_tool(tc.function.name, args, ctx)
+            try:
+                args = json.loads(raw or "{}")
+                if not isinstance(args, dict):
+                    raise ValueError("参数须为 JSON 对象")
+            except (json.JSONDecodeError, ValueError) as e:
+                return tc, {}, False, (
+                    f"工具参数 JSON 非法（{str(e)[:120]}）：{raw[:200]}。"
+                    "请重新以合法 JSON 对象调用。"
+                ), None, int((time.time() - tt) * 1000)
+            try:
+                done, result, decision = _dispatch_tool(name, args, ctx)
+            except Exception as e:  # 工具级异常护栏（含 submit 的畸形数值转换）
+                logger.warning("Agent 工具 %s 执行异常: %s", name, e, exc_info=True)
+                done, decision = False, None
+                result = (
+                    f"工具执行异常（{type(e).__name__}: {str(e)[:200]}），"
+                    "请检查参数后重试。"
+                )
             return tc, args, done, result, decision, int((time.time() - tt) * 1000)
 
         # 轮内多工具并行执行（GLM 常在一轮里同时要数据工具+技能），结果按 tool_call 顺序回填
@@ -739,28 +828,33 @@ def analyze_coin_agent(
         for tc, args, done, result, decision, ms in outcomes:
             tool_rounds += 1
             trace[-1].setdefault("calls", []).append({
-                "tool": tc.function.name,
+                "tool": _tc_name(tc),
                 "args": {k: (str(v)[:80]) for k, v in args.items()},
                 "result_len": len(result),
                 "ms": ms,
             })
             if progress_cb:
                 progress_cb({
-                    "t": "tool", "tool": tc.function.name,
+                    "t": "tool", "tool": _tc_name(tc),
                     "args": "; ".join(f"{k}={v}" for k, v in args.items())[:60],
                 })
             messages.append({
                 "role": "tool",
-                "tool_call_id": tc.id,
-                "content": result[:12000],
+                "tool_call_id": tc.get("id") or "",
+                "content": result[:_TOOL_RESULT_MAX_CHARS],
             })
-            if done:
+            # 单 submit 语义（2026-10-16）：一轮仅接受首个成功提交，同轮后续 submit
+            # 不再改写结论（原先 `if done: fixed = decision` 为后到覆盖）
+            if done and fixed is None:
                 fixed = decision
+        _trim_context(messages)
         if fixed:
             break
 
     if not fixed:
-        fixed = build_forced_skip(f"Agent {MAX_ROUNDS} 轮内未提交有效决策")
+        fixed = build_forced_skip(
+            f"Agent {MAX_ROUNDS} 轮内未提交有效决策{_summarize_trace(trace)}"
+        )
 
     fixed["stage_trace"] = {
         "rounds": len(trace),
