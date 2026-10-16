@@ -114,6 +114,9 @@ export function createTradeChart(
     localization: {
       // 加密货币价格跨度大（0.00001 ~ 100000），按量级适配小数位
       priceFormatter: (p: number) => fmtPrice(p),
+      // 十字光标在时间轴上的浮动标签与 X 轴刻度同口径：北京时区「年月日 小时」
+      timeFormatter: (time: UTCTimestamp) =>
+        dayjs.unix(time).tz(BJ).format('YYYY-MM-DD HH:mm'),
     },
     width: container.clientWidth || 520,
     height: container.clientHeight || opts.height,
