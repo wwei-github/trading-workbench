@@ -8,7 +8,8 @@
 - swing：只认 HL（多）/LH（空）——LL/HH 不构成回踩结构；时效门 bars_ago ≤ 40
 - ema55：数据门（已收盘 < ema_touch_min_bars 静默跳过）+ 排列门 + 斜率门
 - ema144：数据门 + 「1h EMA144 走平或顺 4h 方向」门（4h 方向由 htf_dir 传入，
-  4h 降级缺失时 fail-closed 不出该触点）
+  4h 降级缺失时 fail-closed 不出该触点；|20根变化|/EMA < SLOPE_FLAT_PCT 容差带内
+  一律视为走平放行）
 - 触点优先级 retest > swing > ema21；BREAKOUT 触发携带 breakout_level/candle_open
   （scanner 记 breakout_events 的事实源）；次根确认触点沿用 pending.touch_ref
 - resolve_scan_filters 触点白名单/参数解析（空/全非法回落默认，不停摆）
@@ -461,12 +462,22 @@ def test_ema55_arrangement_gate_blocks_downtrend_long():
 # htf_dir = scanner gate_4h 方向；None（4h 降级）时该触点 fail-closed 不出
 
 def _ema144_kl(n: int, shape: str) -> list[list]:
-    """ema144 夹具：shape='up' 上升 / 'down' 下降 / 'flat' 走平；信号K线触及 EMA144
-    （多头 low=ema-0.2、close=ema+0.3；做空镜像另改写，见各用例）"""
+    """ema144 夹具：shape='up' 明显上升 / 'down' 明显下降 / 'flat' 走平 /
+    'slight_down'·'slight_up' 轻微反向（|20根变化|/EMA 落在 SLOPE_FLAT_PCT 容差带内，
+    按走平放行）；信号K线触及 EMA144（多头 low=ema-0.2、close=ema+0.3；做空镜像
+    另改写，见各用例）。
+
+    up/down 斜率取 0.08/根（|20根变化|/EMA≈0.0086，稳超容差带 0.5%）；此前 0.05 时
+    比值仅 ≈0.0053，距带宽不足 5%，临界不可靠。slight_* 取 0.001/根（比值 ≈0.0001，
+    远在带内）——用于验证「看似走平的轻微反向不被误杀」。"""
     if shape == "up":
-        closes = [100.0 + 0.05 * i for i in range(n)]
+        closes = [100.0 + 0.08 * i for i in range(n)]
     elif shape == "down":
-        closes = [200.0 - 0.05 * i for i in range(n)]
+        closes = [200.0 - 0.08 * i for i in range(n)]
+    elif shape == "slight_down":
+        closes = [200.0 - 0.001 * i for i in range(n)]
+    elif shape == "slight_up":
+        closes = [100.0 + 0.001 * i for i in range(n)]
     else:
         closes = [100.0] * n
     kl = _klines(closes, [c + 0.1 for c in closes], [c - 0.1 for c in closes])
@@ -514,6 +525,33 @@ def test_ema144_touch_flat_allowed_both_directions():
         long_kl, 1, 144, _flt(refs=("ema144",)), htf_dir="long") is not None
     assert trig._detect_ema_touch(
         short_kl, -1, 144, _flt(refs=("ema144",)), htf_dir="short") is not None
+
+
+def test_ema144_flat_band_allows_slight_counter_trend_long():
+    """容差带（2026-10-16 拍板）：EMA144 近 20 根轻微向下（|变化|/EMA≈0.0001 <
+    SLOPE_FLAT_PCT=0.5%）→ 视为走平 → 4h 为多时放行（真走平时斜率在 ±数值噪声间抖动，
+    无带宽会把一侧随机误判为反向）"""
+    kl = _touch_ema144(_ema144_kl(250, "slight_down"), 1)
+    p = trig._detect_ema_touch(kl, 1, 144, _flt(refs=("ema144",)), htf_dir="long")
+    assert p is not None and p > 0
+
+
+def test_ema144_flat_band_allows_slight_counter_trend_short():
+    """空头镜像：EMA144 轻微向上但落在容差带内 → 视为走平 → 4h 为空时放行"""
+    kl = _touch_ema144(_ema144_kl(250, "slight_up"), -1)
+    p = trig._detect_ema_touch(kl, -1, 144, _flt(refs=("ema144",)), htf_dir="short")
+    assert p is not None and p > 0
+
+
+def test_ema144_beyond_band_rejects_counter_trend():
+    """超带否决：EMA144 近 20 根变化明显反向（比值 ≈0.0086 > 0.5%）→ 仍按方向严格
+    判据否决。容差带只放行「看似走平的轻微抖动」，不放行真实反向趋势"""
+    down_long = _touch_ema144(_ema144_kl(250, "down"), 1)
+    assert trig._detect_ema_touch(
+        down_long, 1, 144, _flt(refs=("ema144",)), htf_dir="long") is None
+    up_short = _touch_ema144(_ema144_kl(250, "up"), -1)
+    assert trig._detect_ema_touch(
+        up_short, -1, 144, _flt(refs=("ema144",)), htf_dir="short") is None
 
 
 def test_ema144_data_gate_skips_short_history():

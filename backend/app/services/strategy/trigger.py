@@ -30,8 +30,9 @@
 - ema55 中回撤：数据门（ema_touch_min_bars）+ 排列门（EMA21 在 EMA55 同侧）
   + 斜率门（近 5 根同向）——走平/错排的慢线是震荡不是回踩
 - ema144 深回撤（2026-10-16 复出并默认启用）：数据门 + 走平/顺势门（1h EMA144
-  近 SLOPE_BARS 根变化 ≥0 当 4h 为多，做空镜像）——不叠加排列门；4h 方向由
-  scanner gate_4h 经 htf_dir 传入，4h 数据降级（htf_dir=None）时不出该触点
+  近 SLOPE_BARS 根变化 ≥0 当 4h 为多，做空镜像；|变化|/EMA 落在 SLOPE_FLAT_PCT
+  容差带内一律视为走平放行）——不叠加排列门；4h 方向由 scanner gate_4h 经
+  htf_dir 传入，4h 数据降级（htf_dir=None）时不出该触点
 同根多触点命中按优先级标注（横向结构 > 均线；均线取最快）：
 retest > swing > ema21 > ema21_4h > ema55 > ema144
 
@@ -62,7 +63,7 @@ from app.services.strategy.candlestick import (
     resolve_golden_evidence,
 )
 from app.services.strategy.ema import calc_ema
-from app.services.strategy.ema_gate import SLOPE_BARS, structure_1h
+from app.services.strategy.ema_gate import SLOPE_BARS, SLOPE_FLAT_PCT, structure_1h
 from app.services.strategy.indicators import volume_ratio
 from app.services.strategy.technical import pullback_stabilize_bonus
 import numpy as np
@@ -282,7 +283,8 @@ def _detect_ema_touch(
     ema144（2026-10-16 用户拍板，深回撤，默认启用）：
     ① 数据门同上（周期×1.7≈245 根，扫描链 limit=max(kline_window,300) 已满足）；
     ② 走平/顺势门：1h EMA144 近 SLOPE_BARS 根变化 ≥0（走平或向上）当 4h 方向为多，
-    做空镜像——不叠加排列门（EMA55>EMA144 在深回撤时先杀）；
+    做空镜像——|变化|/EMA < SLOPE_FLAT_PCT 的容差带内一律视为走平放行；不叠加
+    排列门（EMA55>EMA144 在深回撤时先杀）；
     ③ 4h 上下文门：4h 方向由 scanner gate_4h 经 htf_dir 传入，None（4h 数据不可用/
     gate 降级）时 fail-closed 不出该触点（防用 1h 方向冒充 4h 方向）
     """
@@ -307,10 +309,11 @@ def _detect_ema_touch(
 
     if period == 144:
         # 深回撤 144 门（2026-10-16 用户拍板）：4h 趋势明确时，1h EMA144 必须走平
-        # 或顺 4h 方向（近 SLOPE_BARS=20 根变化 ≥0，含走平），做空镜像。4h 方向由
-        # scanner gate_4h 传入（htf_dir=gate[0]，已强制与多数决方向一致）；htf_dir
-        # 为 None 表示 4h 数据不可用/gate 降级——「4h 多时」前提不成立，fail-closed
-        # 不出该触点（2026-10-16 加固：不再用 1h 方向冒充 4h 方向）。不叠加排列门
+        # 或顺 4h 方向（近 SLOPE_BARS=20 根变化 ≥0，含走平；|变化|/EMA 落在
+        # SLOPE_FLAT_PCT 容差带内一律视为走平），做空镜像。4h 方向由 scanner
+        # gate_4h 传入（htf_dir=gate[0]，已强制与多数决方向一致）；htf_dir 为 None
+        # 表示 4h 数据不可用/gate 降级——「4h 多时」前提不成立，fail-closed 不出该
+        # 触点（2026-10-16 加固：不再用 1h 方向冒充 4h 方向）。不叠加排列门
         # （EMA55>EMA144 在深回撤时先杀，正是 2026-10-10 退役主因）与 5 根严格
         # 斜率门（走平不再被拒）。
         if htf_dir is None:
@@ -320,10 +323,14 @@ def _detect_ema_touch(
         slope144 = float(e[-1]) - float(e[-SLOPE_BARS])
         if not np.isfinite(slope144):
             return None
-        if htf_dir == "long" and slope144 < 0:
-            return None
-        if htf_dir == "short" and slope144 > 0:
-            return None
+        # 走平容差带（2026-10-16 拍板）：|SLOPE_BARS 根变化|/EMA144 < SLOPE_FLAT_PCT
+        # 视为走平 → 多空两侧均放行（真走平时斜率在 ±数值噪声间抖动，无带宽会把一侧
+        # 随机误判为反向）；超出带宽才按方向严格判据否决。常量与 4h 闸门/1h 结构门同源
+        if abs(slope144) / ema >= SLOPE_FLAT_PCT:
+            if htf_dir == "long" and slope144 < 0:
+                return None
+            if htf_dir == "short" and slope144 > 0:
+                return None
         return ema
 
     # 排列门（ema55）：快线（EMA21）须在慢线上方——慢线之下还有快线托着才是趋势回踩
