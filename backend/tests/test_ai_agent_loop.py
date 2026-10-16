@@ -27,11 +27,19 @@ class _Fn:
         self.arguments = arguments
 
 
-class _TC:
-    """流式 tool_call 增量块：首块带 index/id/name，后续块只带 arguments 片段"""
+_UNSET = object()
 
-    def __init__(self, index=0, id=None, name=None, arguments=None):
-        self.index = index
+
+class _TC:
+    """流式 tool_call 增量块：首块带 index/id/name，后续块只带 arguments 片段。
+
+    index 传 _UNSET（默认不传 index 参数）时不设置 `.index` 属性——模拟非规范网关
+    缺失 index 的场景（标准网关恒带 index）。
+    """
+
+    def __init__(self, index=_UNSET, id=None, name=None, arguments=None):
+        if index is not _UNSET:
+            self.index = index
         self.id = id
         self.function = _Fn(name, arguments)
 
@@ -178,6 +186,81 @@ def test_stream_completion_aggregates_directly(monkeypatch):
     assert stream_completion(
         _FakeClient([_msg_stream(content="纯正文")]), [{"role": "user", "content": "x"}]
     ).tool_calls == ()
+
+
+# ── 1b. 聚合鲁棒性：非规范网关的增量形状（index 缺失/name 分片/name 重发）──
+
+
+def test_stream_completion_missing_index_slots_by_id():
+    """非规范网关不给 index：按 id 分槽，两个调用不被并成一条、参数不串味"""
+    chunks = [
+        _Chunk(_Delta(tool_calls=[
+            _TC(id="call_a", name="get_funding", arguments='{"a": 1}')
+        ])),
+        _Chunk(_Delta(tool_calls=[
+            _TC(id="call_b", name="submit_decision", arguments='{"trade_decision": "skip"}')
+        ])),
+        _Chunk(_Delta(), finish="tool_calls"),
+    ]
+    res = stream_completion(_FakeClient([chunks]), [{"role": "user", "content": "x"}])
+
+    assert [tc["id"] for tc in res.tool_calls] == ["call_a", "call_b"]
+    assert [tc["function"]["name"] for tc in res.tool_calls] == [
+        "get_funding", "submit_decision",
+    ]
+    assert res.tool_calls[0]["function"]["arguments"] == '{"a": 1}'
+    assert res.tool_calls[1]["function"]["arguments"] == '{"trade_decision": "skip"}'
+
+
+def test_stream_completion_name_fragmented():
+    """name 分片下发：按 SDK 口径字符串累加，拼回完整工具名（不丢调用→unknown tool）"""
+    chunks = [
+        _Chunk(_Delta(tool_calls=[
+            _TC(index=0, id="call_0", name="get_re", arguments='{"n"')
+        ])),
+        _Chunk(_Delta(tool_calls=[
+            _TC(index=0, name="cent_klines", arguments=': 50}')
+        ])),
+        _Chunk(_Delta(), finish="tool_calls"),
+    ]
+    res = stream_completion(_FakeClient([chunks]), [{"role": "user", "content": "x"}])
+
+    assert len(res.tool_calls) == 1
+    assert res.tool_calls[0]["function"]["name"] == "get_recent_klines"
+    assert res.tool_calls[0]["function"]["arguments"] == '{"n": 50}'
+
+
+def test_stream_completion_name_resent_not_duplicated():
+    """网关每块重发已聚合的完整 name：不重复拼接（对照覆盖式写法）"""
+    chunks = [
+        _Chunk(_Delta(tool_calls=[
+            _TC(index=0, id="call_0", name="get_funding", arguments='{"x"')
+        ])),
+        _Chunk(_Delta(tool_calls=[
+            _TC(index=0, name="get_funding", arguments=': 1}')
+        ])),
+        _Chunk(_Delta(), finish="tool_calls"),
+    ]
+    res = stream_completion(_FakeClient([chunks]), [{"role": "user", "content": "x"}])
+
+    assert res.tool_calls[0]["function"]["name"] == "get_funding"
+    assert res.tool_calls[0]["function"]["arguments"] == '{"x": 1}'
+
+
+def test_stream_completion_mixed_keys_no_crash():
+    """混合键（部分条目带 index、部分缺 index）：返回处不得因排序崩溃，保持插入序"""
+    chunks = [
+        _Chunk(_Delta(tool_calls=[
+            _TC(index=0, id="call_a", name="get_funding", arguments='{"a": 1}')
+        ])),
+        _Chunk(_Delta(tool_calls=[
+            _TC(id="call_b", name="submit_decision", arguments='{"trade_decision": "skip"}')
+        ])),
+        _Chunk(_Delta(), finish="tool_calls"),
+    ]
+    res = stream_completion(_FakeClient([chunks]), [{"role": "user", "content": "x"}])
+
+    assert [tc["id"] for tc in res.tool_calls] == ["call_a", "call_b"]
 
 
 # ── 2. 首轮 submit 收敛（含 progress round/tool 事件）──

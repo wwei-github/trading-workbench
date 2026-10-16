@@ -154,17 +154,32 @@ def stream_completion(
         n_reasoning += len((getattr(delta, "reasoning_content", None) or "")) if delta is not None else 0
         for tcd in ((getattr(delta, "tool_calls", None) or []) if delta is not None else []):
             idx = getattr(tcd, "index", None)
-            idx = 0 if idx is None else int(idx)
+            tcd_id = getattr(tcd, "id", None)
+            # 槽位键：标准网关给 index；缺失时（非规范网关）退化为按 id 分槽——
+            # 若一律回落 0，多个调用会被并成一条、arguments 串味（丢调用 + 参数垃圾）
+            if idx is not None:
+                key = int(idx)
+            elif tcd_id:
+                key = ("id", tcd_id)
+            else:
+                key = ("n", len(tool_calls))
             slot = tool_calls.setdefault(
-                idx, {"id": "", "type": "function",
+                key, {"id": "", "type": "function",
                       "function": {"name": "", "arguments": ""}}
             )
-            if getattr(tcd, "id", None):
-                slot["id"] = tcd.id
+            if tcd_id:
+                slot["id"] = tcd_id
             fn = getattr(tcd, "function", None)
             if fn is not None:
-                if getattr(fn, "name", None):
-                    slot["function"]["name"] = fn.name
+                nm = getattr(fn, "name", None)
+                if nm:
+                    cur = slot["function"]["name"]
+                    # 名称按 SDK 口径做字符串累加（可能分片下发）；网关重复发同名/全名时
+                    # 不重复拼接（nm 是已聚合名的完整重发 → 直接覆盖）
+                    if nm != cur:
+                        slot["function"]["name"] = (
+                            nm if not cur or nm.startswith(cur) else cur + nm
+                        )
                 if getattr(fn, "arguments", None):
                     slot["function"]["arguments"] += fn.arguments
         if choice.finish_reason:
@@ -183,7 +198,9 @@ def stream_completion(
         finish,
         first_at if first_at is not None else -1.0,
         time.monotonic() - t0,
-        tuple(tool_calls[k] for k in sorted(tool_calls)),
+        # 按插入顺序（dict 保序）：index 缺失时 key 退化为 ("id", …)/("n", …) 元组，
+        # 与 int 混合后 sorted() 会 TypeError；标准网关 index 递增，插入序即索引序
+        tuple(tool_calls.values()),
     )
 
 
