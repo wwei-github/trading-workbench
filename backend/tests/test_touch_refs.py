@@ -241,6 +241,33 @@ def test_retest_structural_skips_unbreached_hh():
     assert trig._detect_retest(_struct_unbreached_kl(), 1, None, 24, 0.3) is None
 
 
+def _struct_two_highs_kl() -> list:
+    """边界夹具（2026-10-16 放宽项）：整个回看窗只有 2 个收盘摆动高点——
+    老 100.0 标 "H"（序列末位、无前参照）、新 101.0 标 "HH"；信号K线下探
+    100.0 入带、收盘 100.4 守住。放宽前 B 须严格为 HH → 推导不出；放宽后
+    B 接受末位 "H" → 回测位 100.0"""
+    closes = _zig([(0, 95.0), (5, 100.0), (10, 96.0), (15, 101.0), (20, 97.0)], 25)
+    kl = _klines(closes, [c + 0.3 for c in closes], [c - 0.3 for c in closes])
+    ts, o, _, _, _, vol, qv = kl[-2]
+    kl[-2] = [ts, o, 100.6, 100.1, 100.4, vol, qv]
+    return kl
+
+
+def test_retest_structural_terminal_h_counts_as_prev_high():
+    """放宽项：末位 "H" 无前参照、标签不足以否定「前高」身份，视同被 A 越过的
+    前高——仅 2 个摆动高点时也能命中回测位 100.0（放宽前为 None）"""
+    kl = _struct_two_highs_kl()
+    labels = [h["label"] for h in trig.recent_swings(kl[:-1], order=3, n=10)["highs"]]
+    assert labels == ["HH", "H"]          # 夹具前提：新=HH、末位=H（仅 2 个摆动高点）
+    assert trig._detect_retest(kl, 1, None, 24, 0.3) == pytest.approx(100.0)
+
+
+def test_retest_structural_terminal_h_short_mirror():
+    """空头镜像：末位 "L" 视同被新 LL 越过的前低 → 命中同一价位"""
+    assert trig._detect_retest(_mirror(_struct_two_highs_kl()), -1, None, 24, 0.3) \
+        == pytest.approx(100.0)
+
+
 # ── swing：摆动结构位（docs/22 §3.2） ────────────────────────────────────
 
 def _swing_uptrend_kl() -> list[list]:

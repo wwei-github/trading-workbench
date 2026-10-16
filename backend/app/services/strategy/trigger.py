@@ -353,9 +353,10 @@ def _structural_retest_level(
 
     多头：在 recent_swings(klines[:-1], order, n=RETEST_STRUCT_LOOKBACK_N)["highs"]
     （新→旧）中取最近一个 label=="HH" 且 bars_ago ≤ window_bars 的摆动高点 A
-    （= 新 HH），再取比 A 更旧、label=="HH" 且 price < A.price 的最近一个 B
-    （= 被 A 越过的前一个 HH）→ 回测位 = B["price"]。
-    空头镜像：lows 中 label=="LL" 的 A（新 LL）+ 更旧的 LL 且 price > A.price 的 B。
+    （= 新 HH），再取比 A 更旧、label 为 "HH" 或序列末位 "H" 且 price < A.price 的
+    最近一个 B（= 被 A 越过的前一个 HH）→ 回测位 = B["price"]。
+    空头镜像：lows 中 label=="LL" 的 A（新 LL）+ 更旧的 "LL"/末位 "L" 且
+    price > A.price 的 B。
 
     保证项：
     - 摆动取材用 klines[:-1]（与突破路径同口径）——信号K线因右侧根数不足不会成为
@@ -364,6 +365,10 @@ def _structural_retest_level(
       再叠加 price 比较即等价于「已收盘越位」。
     - 两个 HH 之间若夹着 LH（新 HH 相对前一摆动高点更高、但并未高于更旧的那个 HH）时，
       price 比较会把它排除，继续向更旧找，不会误判为「已突破」。
+    - B 接受序列末位 "H"/"L"（2026-10-16 边界放宽）：该点无前参照、标签不足以否定其
+      「前高/前低」身份，仅因回看窗内摆动点太少而拿不到「更高/更低」对照；此前要求
+      B 必须严格为 HH/LL，导致「整个回看窗只有 2 个摆动高点（老=H、新=HH）」时推导
+      不出 B。放宽只影响 B，A 仍须是 HH/LL（末位点无前参照，谈不上「破前高」）。
 
     数据不足 / 无满足条件的 A 或 B → None。
     """
@@ -372,18 +377,22 @@ def _structural_retest_level(
     sw = recent_swings(klines[:-1], order=order, n=RETEST_STRUCT_LOOKBACK_N)
     seq = sw["highs"] if direction == 1 else sw["lows"]
     want = "HH" if direction == 1 else "LL"
+    base = "H" if direction == 1 else "L"
+    b_labels = (want, base)
     a_price: Optional[float] = None
     for p in seq:
-        if p["label"] != want:
-            continue
+        label = p["label"]
         price = float(p["price"])
         if a_price is None:
-            if p["bars_ago"] <= window_bars:
-                a_price = price      # A = 最近且未过时效的新 HH / LL
+            # A = 最近且未过时效的新 HH / LL（末位 H/L 不算「新」）
+            if label == want and p["bars_ago"] <= window_bars:
+                a_price = price
+            continue
+        if label not in b_labels:
             continue
         lower_than_a = price < a_price if direction == 1 else price > a_price
         if lower_than_a:
-            return price             # B = 被 A 越过的前一个 HH / LL
+            return price             # B = 被 A 越过的前一个 HH / LL（或末位 H / L）
     return None
 
 

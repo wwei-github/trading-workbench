@@ -259,6 +259,9 @@ class Settings(BaseSettings):
     # v2026-10-16（用户拍板，两项口径改造）：①retest 触点新增结构推导来源——新 HH
     # 收盘越位后，被它越过的前一个 HH 即突破回测位（空头镜像 LL），不再依赖 scanner
     # breakout_events 先手记录（trigger._structural_retest_level + _detect_retest 双来源）；
+    # 同日边界放宽（未部署前合并，不单独 bump）：B 判定在 HH/LL 之外接受摆动序列末位
+    # 的 "H"/"L"（该点无前参照，标签不足以否定其「前高/前低」身份）——放宽前整个回看窗
+    # 只有 2 个摆动高点（老=H、新=HH）时推导不出 B；A 仍须为 HH/LL；
     # ②决断K线影线三处硬门（看跌吞没第二根/启明星第三根/黄昏星第三根，原
     # DECISION_SHADOW_MAX_PCT=0.40）全部删除，统一为梯度加分
     # （candlestick.DECISION_SHADOW_BONUS_GRADES：影线比 ≤10% +5、≤20% +3、≤30% +1、
