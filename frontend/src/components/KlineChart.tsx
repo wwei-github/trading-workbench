@@ -411,6 +411,21 @@ function drawHitMarks(
 
   // 已放置徽标的占位矩形：连续多根同侧标注时，后放者逐档外移，防止徽标相互遮挡
   const placed: Array<{ x: number; y: number; w: number; h: number }> = []
+  // 每枚标注的几何（第一趟算好后暂存，供第二/三趟分层绘制）
+  type MarkGeom = {
+    color: string
+    label: string
+    kind: 'hit' | 'touch'
+    cx: number
+    yTop: number
+    yBot: number
+    sideBelow: boolean
+    badgeCy: number
+    badgeX: number
+    pillW: number
+    b: number
+  }
+  const geoms: MarkGeom[] = []
 
   for (const m of marks) {
     // 时刻所在K线（time <= ms 的最后一根；早于首根则无标注）
@@ -507,9 +522,14 @@ function drawHitMarks(
       badgeCy = sideBelow ? yBot + MARK_GAP + b / 2 : yTop - MARK_GAP - b / 2
       placed.push({ x: badgeX, y: badgeCy - b / 2, w: pillW, h: b })
     }
-    const bcx = badgeX + b / 2 // 图标中心
+    geoms.push({ color: m.color, label: m.label, kind: m.kind, cx, yTop, yBot, sideBelow, badgeCy, badgeX, pillW, b })
+  }
 
-    // 徽标 → 标注框 的导引线 + 末端实心三角箭头（指向K线框，2026-10-16）
+  // ── 第二趟：导引线 + 箭头（2026-10-16 分层绘制）────────────────────
+  // 先于所有徽标胶囊绘制：任何一条导引线/箭头都处于徽标文案之下，
+  // 连续多根标注时不会再出现「下方标注的箭头压在上方标注文字之上」的情况
+  for (const gm of geoms) {
+    const { cx, yTop, yBot, sideBelow, badgeCy, b, color } = gm
     // sideBelow=true（徽标在K线下方）：线从徽标顶向上延伸到 K线框底，箭头尖端在 yBot 朝上
     // sideBelow=false（徽标在K线上方）：线从徽标底向下延伸到 K线框顶，箭头尖端在 yTop 朝下
     const tipY = sideBelow ? yBot : yTop // 箭头尖端 y（贴着K线框边）
@@ -519,7 +539,7 @@ function drawHitMarks(
     g.setAttribute('y1', String(sideBelow ? badgeCy - b / 2 : badgeCy + b / 2))
     g.setAttribute('x2', String(cx))
     g.setAttribute('y2', String(lineEndY))
-    g.setAttribute('stroke', m.color)
+    g.setAttribute('stroke', color)
     g.setAttribute('stroke-width', '1.5')
     svg.appendChild(g)
     // 实心三角箭头（尖端指向K线框）
@@ -532,8 +552,14 @@ function drawHitMarks(
         ? `${cx},${tipY} ${cx - aHalf},${tipY + aH} ${cx + aHalf},${tipY + aH}`
         : `${cx},${tipY} ${cx - aHalf},${tipY - aH} ${cx + aHalf},${tipY - aH}`,
     )
-    arrow.setAttribute('fill', m.color)
+    arrow.setAttribute('fill', color)
     svg.appendChild(arrow)
+  }
+
+  // ── 第三趟：徽标胶囊（底 + 文字 + 图形图标），最后绘制、压在最上层 ──
+  for (const gm of geoms) {
+    const { color, label, kind, badgeX, badgeCy, pillW, b } = gm
+    const bcx = badgeX + b / 2 // 图标中心
 
     // 胶囊底（实心主题色，圆角=半高）
     const bg = el('rect')
@@ -542,7 +568,7 @@ function drawHitMarks(
     bg.setAttribute('width', String(pillW))
     bg.setAttribute('height', String(b))
     bg.setAttribute('rx', String(b / 2))
-    bg.setAttribute('fill', m.color)
+    bg.setAttribute('fill', color)
     svg.appendChild(bg)
 
     // 胶囊内白色文字（命中 / 触碰）
@@ -553,7 +579,7 @@ function drawHitMarks(
     txt.setAttribute('font-size', '11')
     txt.setAttribute('font-family', 'monospace')
     txt.setAttribute('font-weight', 'bold')
-    txt.textContent = m.label
+    txt.textContent = label
     svg.appendChild(txt)
 
     // 胶囊内白色图标（图形化，与文字并存）
@@ -565,7 +591,7 @@ function drawHitMarks(
       e.setAttribute('stroke-linecap', 'round')
       return e
     }
-    if (m.kind === 'touch') {
+    if (kind === 'touch') {
       // 脉冲：同心圆环
       const c1 = icon('circle')
       c1.setAttribute('cx', String(bcx)); c1.setAttribute('cy', String(badgeCy)); c1.setAttribute('r', '4.6')
