@@ -28,6 +28,14 @@ export type IndicatorSettings = Record<string, IndicatorSetting>
 
 const INDICATORS_KEY = 'chart-indicator-settings'
 
+// 遗留宿主指标 key 一次性迁移（2026-10-17）：旧版宿主多周期 EMA/MA 的存档 key 为
+// 'ema'/'ma'（label「EMA 指数均线」），后又改 'ema-multi'/'ma-multi'；而这两个 id 现已被
+// 插件 registry 里同名的社区单周期指标占用（'ema'=EMA(9)、'ma'=SMA(9)）。未迁移的旧存档
+// 会把 enabled=true 解析成社区单周期线，导致图表在配置的 21/55/144 之外多画一条 EMA9/MA9。
+// 升级后清一次即可（用独立标记保证只清一次，避免误删用户此后主动启用的社区指标）。
+const LEGACY_MIGRATION_KEY = 'chart-indicator-settings-migrated-v1'
+const LEGACY_HOST_INDICATOR_KEYS = ['ema', 'ema-multi', 'ma', 'ma-multi']
+
 function defaultIndicatorSettings(): IndicatorSettings {
   const base: IndicatorSettings = {}
   for (const id of DEFAULT_ENABLED_IDS) {
@@ -43,6 +51,17 @@ function loadIndicatorSettings(): IndicatorSettings {
     const raw = localStorage.getItem(INDICATORS_KEY)
     if (raw) {
       const saved = JSON.parse(raw) as Record<string, IndicatorSetting>
+      if (!localStorage.getItem(LEGACY_MIGRATION_KEY)) {
+        let changed = false
+        for (const k of LEGACY_HOST_INDICATOR_KEYS) {
+          if (k in saved) {
+            delete saved[k]
+            changed = true
+          }
+        }
+        if (changed) localStorage.setItem(INDICATORS_KEY, JSON.stringify(saved))
+        localStorage.setItem(LEGACY_MIGRATION_KEY, '1')
+      }
       for (const [id, s] of Object.entries(saved)) {
         const def = getIndicator(id)
         // 已下线/未知指标、结构不合法的存档直接丢弃

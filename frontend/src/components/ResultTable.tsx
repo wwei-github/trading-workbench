@@ -134,17 +134,12 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
   // 展开行：同时控制左侧 AI 分析折叠和右侧图表
   const [expandedRowKeys, setExpandedRowKeys] = useState<string[]>([]);
 
-  // 默认展开第一行
+  // 展开态只保留仍存在的行（2026-10-17：取消默认展开第一行，改为点击行才展开）
   useEffect(() => {
-    if (results.length > 0) {
-      setExpandedRowKeys((prev) => {
-        // 保留当前展开的行（如果还在结果中）
-        const stillValid = prev.filter((id) =>
-          results.find((r) => r.id === id),
-        );
-        return stillValid.length > 0 ? stillValid : [results[0].id];
-      });
-    }
+    setExpandedRowKeys((prev) => {
+      const stillValid = prev.filter((id) => results.some((r) => r.id === id));
+      return stillValid.length === prev.length ? prev : stillValid;
+    });
   }, [results]);
 
   // 按 scan_result_id 索引 AI 分析
@@ -541,7 +536,8 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       ),
       dataIndex: "position_ref",
       key: "position_ref",
-      width: 100,
+      // 列宽加宽（2026-10-17）：位置文案含「回踩EMA21(4h)」「突破20根轨高」等较长标签，原 100px 常截断
+      width: 132,
       render: (v: string | null, record: ScanResult) => {
         if (v) {
           const isPullback = v.startsWith("回踩");
@@ -833,7 +829,8 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           size="small"
           tableLayout="fixed"
           // 表格总宽 x = 各列 width 之和（2026-09-30 列宽收窄后同步；改列宽须一并维护）
-          scroll={{ x: 1388 }}
+          // 位置列 100→132（2026-10-17）后同步 +32
+          scroll={{ x: 1420 }}
           onChange={handleTableChange}
           pagination={{
             current: resultsPage,
