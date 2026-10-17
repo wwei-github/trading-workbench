@@ -1697,199 +1697,201 @@ export default function TradesPanel() {
         </div>
       )}
 
-      {/* 交易记录表：「挂单」档选中时隐藏，主区让位给挂单三类视图 */}
-      <Spin
-        spinning={loading}
-        style={{ display: statusFilter === 'pending' ? 'none' : undefined }}
-      >
-        {scopeRows.length === 0 && !loading ? (
-          <Empty
-            description={
-              scopeIsTestnet(scope)
-                ? '暂无测试网交易记录'
-                : scope === 'live'
-                  ? '暂无实盘交易记录（自动交易开启后自动开单）'
-                  : '该账号暂无交易记录（自动交易开启后自动开单）'
-            }
-            style={{ marginTop: 60 }}
-          />
-        ) : (
-          <Table<TradeRecord>
-            rowKey="id"
-            columns={columns}
-            dataSource={filtered}
-            size="small"
-            scroll={{ x: 'max-content', y: 480 }}
-            onRow={(rec) => ({
-              onClick: (e) => {
-                // 点展开图标/按钮/链接时不重复触发（图标点击本身会冒泡到这里）
-                if ((e.target as HTMLElement).closest('button, a')) return
-                // antd 的 onExpand 只在点展开图标时触发，整行点击展开带不出
-                // loadEvents（历史 bug：时间线永远转圈）——展开前在此补拉
-                if (!expandedKeys.includes(rec.id) && !eventsMap[rec.id]) {
-                  loadEvents(rec.id)
-                }
-                setExpandedKeys((prev) =>
-                  prev.includes(rec.id) ? prev.filter((k) => k !== rec.id) : [...prev, rec.id],
-                )
-              },
-              style: { cursor: 'pointer' },
-            })}
-            pagination={{
-              current: page,
-              pageSize,
-              total: filtered.length,
-              showSizeChanger: true,
-              pageSizeOptions: [10, 20, 50],
-              showTotal: (t) => `共 ${t} 条`,
-              position: ['bottomRight'],
-              onChange: (p, ps) => {
-                setPage(ps !== pageSize ? 1 : p)
-                setPageSize(ps)
-              },
-            }}
-            expandable={{
-              expandedRowKeys: expandedKeys,
-              onExpandedRowsChange: (keys) => setExpandedKeys([...keys]),
-              expandedRowRender: (rec) => (
-                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                  {/* 左：AI 分析结论快照（较宽） */}
-                  <div
-                    style={{
-                      flex: '1.5 1 420px',
-                      minWidth: 0,
-                      padding: '12px 14px',
-                      borderRadius: 8,
-                      background: '#fafafa',
-                      border: '1px solid #f0f0f0',
-                    }}
-                  >
+      {/* 交易记录表：「挂单」档选中时隐藏，主区让位给挂单三类视图。
+          2026-10-17 修复「挂单区出现两个列表」：antd Spin 带 children 时 style 会
+          透传到内层 loading 指示器（仅 spinning 时渲染），包裹层拿不到 display:none，
+          表格照旧显示——隐藏必须挂在外层原生 div 上 */}
+      <div style={{ display: statusFilter === 'pending' ? 'none' : undefined }}>
+        <Spin spinning={loading}>
+          {scopeRows.length === 0 && !loading ? (
+            <Empty
+              description={
+                scopeIsTestnet(scope)
+                  ? '暂无测试网交易记录'
+                  : scope === 'live'
+                    ? '暂无实盘交易记录（自动交易开启后自动开单）'
+                    : '该账号暂无交易记录（自动交易开启后自动开单）'
+              }
+              style={{ marginTop: 60 }}
+            />
+          ) : (
+            <Table<TradeRecord>
+              rowKey="id"
+              columns={columns}
+              dataSource={filtered}
+              size="small"
+              scroll={{ x: 'max-content', y: 480 }}
+              onRow={(rec) => ({
+                onClick: (e) => {
+                  // 点展开图标/按钮/链接时不重复触发（图标点击本身会冒泡到这里）
+                  if ((e.target as HTMLElement).closest('button, a')) return
+                  // antd 的 onExpand 只在点展开图标时触发，整行点击展开带不出
+                  // loadEvents（历史 bug：时间线永远转圈）——展开前在此补拉
+                  if (!expandedKeys.includes(rec.id) && !eventsMap[rec.id]) {
+                    loadEvents(rec.id)
+                  }
+                  setExpandedKeys((prev) =>
+                    prev.includes(rec.id) ? prev.filter((k) => k !== rec.id) : [...prev, rec.id],
+                  )
+                },
+                style: { cursor: 'pointer' },
+              })}
+              pagination={{
+                current: page,
+                pageSize,
+                total: filtered.length,
+                showSizeChanger: true,
+                pageSizeOptions: [10, 20, 50],
+                showTotal: (t) => `共 ${t} 条`,
+                position: ['bottomRight'],
+                onChange: (p, ps) => {
+                  setPage(ps !== pageSize ? 1 : p)
+                  setPageSize(ps)
+                },
+              }}
+              expandable={{
+                expandedRowKeys: expandedKeys,
+                onExpandedRowsChange: (keys) => setExpandedKeys([...keys]),
+                expandedRowRender: (rec) => (
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                    {/* 左：AI 分析结论快照（较宽） */}
                     <div
                       style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 6,
-                        marginBottom: 10,
-                        fontWeight: 600,
-                        fontSize: 13,
-                        color: '#595959',
+                        flex: '1.5 1 420px',
+                        minWidth: 0,
+                        padding: '12px 14px',
+                        borderRadius: 8,
+                        background: '#fafafa',
+                        border: '1px solid #f0f0f0',
                       }}
                     >
-                      <RobotOutlined style={{ color: '#1677ff' }} />
-                      AI 分析结论（开单时快照）
-                    </div>
-                    {rec.ai_snapshot ? (
-                      <AiAnalysisCard ai={rec.ai_snapshot} />
-                    ) : (
-                      <Typography.Text type="secondary">
-                        该记录早于快照功能，未存档 AI 分析结论
-                      </Typography.Text>
-                    )}
-                    {/* 持仓诊断（docs/16）：浮亏在跑单的 AI 建议与理由 */}
-                    {rec.ai_advice && (() => {
-                      const meta = ADVICE_ACTION_META[rec.ai_advice!.action] || ADVICE_ACTION_META.hold
-                      return (
-                        <div
-                          style={{
-                            marginTop: 10,
-                            padding: '10px 14px',
-                            background: 'linear-gradient(135deg, #f9f0ff 0%, #fff 60%)',
-                            border: '1px solid #efdbff',
-                            borderRadius: 8,
-                          }}
-                        >
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          marginBottom: 10,
+                          fontWeight: 600,
+                          fontSize: 13,
+                          color: '#595959',
+                        }}
+                      >
+                        <RobotOutlined style={{ color: '#1677ff' }} />
+                        AI 分析结论（开单时快照）
+                      </div>
+                      {rec.ai_snapshot ? (
+                        <AiAnalysisCard ai={rec.ai_snapshot} />
+                      ) : (
+                        <Typography.Text type="secondary">
+                          该记录早于快照功能，未存档 AI 分析结论
+                        </Typography.Text>
+                      )}
+                      {/* 持仓诊断（docs/16）：浮亏在跑单的 AI 建议与理由 */}
+                      {rec.ai_advice && (() => {
+                        const meta = ADVICE_ACTION_META[rec.ai_advice!.action] || ADVICE_ACTION_META.hold
+                        return (
                           <div
                             style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 10,
-                              flexWrap: 'wrap',
+                              marginTop: 10,
+                              padding: '10px 14px',
+                              background: 'linear-gradient(135deg, #f9f0ff 0%, #fff 60%)',
+                              border: '1px solid #efdbff',
+                              borderRadius: 8,
                             }}
                           >
                             <div
                               style={{
-                                fontSize: 12,
-                                fontWeight: 600,
-                                color: '#722ed1',
                                 display: 'flex',
                                 alignItems: 'center',
-                                gap: 6,
+                                gap: 10,
+                                flexWrap: 'wrap',
                               }}
                             >
-                              <RobotOutlined />
-                              持仓诊断
+                              <div
+                                style={{
+                                  fontSize: 12,
+                                  fontWeight: 600,
+                                  color: '#722ed1',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 6,
+                                }}
+                              >
+                                <RobotOutlined />
+                                持仓诊断
+                              </div>
+                              <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>
+                                {meta.label}
+                              </Tag>
+                              <Tag
+                                color={rec.ai_advice.thesis_valid ? 'green' : 'red'}
+                                style={{ marginInlineEnd: 0 }}
+                              >
+                                开仓逻辑{rec.ai_advice.thesis_valid ? '成立' : '已破坏'}
+                              </Tag>
+                              <Tag
+                                color={rec.ai_advice.trend_broken ? 'red' : 'green'}
+                                style={{ marginInlineEnd: 0 }}
+                              >
+                                走势{rec.ai_advice.trend_broken ? '已走坏' : '未走坏'}
+                              </Tag>
+                              <span style={{ fontSize: 12, color: '#999', marginLeft: 'auto' }}>
+                                {rec.ai_advice_at ? bj(rec.ai_advice_at).format('MM-DD HH:mm') : ''}
+                              </span>
                             </div>
-                            <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>
-                              {meta.label}
-                            </Tag>
-                            <Tag
-                              color={rec.ai_advice.thesis_valid ? 'green' : 'red'}
-                              style={{ marginInlineEnd: 0 }}
-                            >
-                              开仓逻辑{rec.ai_advice.thesis_valid ? '成立' : '已破坏'}
-                            </Tag>
-                            <Tag
-                              color={rec.ai_advice.trend_broken ? 'red' : 'green'}
-                              style={{ marginInlineEnd: 0 }}
-                            >
-                              走势{rec.ai_advice.trend_broken ? '已走坏' : '未走坏'}
-                            </Tag>
-                            <span style={{ fontSize: 12, color: '#999', marginLeft: 'auto' }}>
-                              {rec.ai_advice_at ? bj(rec.ai_advice_at).format('MM-DD HH:mm') : ''}
-                            </span>
+                            {/* 理由与分析：左侧完整展示（右侧操作历史仅 Tag 摘要） */}
+                            {rec.ai_advice.reason && (
+                              <div style={{ fontSize: 12, color: '#595959', lineHeight: 1.6, marginTop: 6 }}>
+                                <b style={{ color: '#722ed1' }}>理由：</b>{rec.ai_advice.reason}
+                              </div>
+                            )}
+                            {rec.ai_advice.detail && (
+                              <div style={{ fontSize: 12, color: '#8c8c8c', lineHeight: 1.6, marginTop: 4 }}>
+                                <b style={{ color: '#722ed1' }}>分析：</b>{rec.ai_advice.detail}
+                              </div>
+                            )}
                           </div>
-                          {/* 理由与分析：左侧完整展示（右侧操作历史仅 Tag 摘要） */}
-                          {rec.ai_advice.reason && (
-                            <div style={{ fontSize: 12, color: '#595959', lineHeight: 1.6, marginTop: 6 }}>
-                              <b style={{ color: '#722ed1' }}>理由：</b>{rec.ai_advice.reason}
-                            </div>
-                          )}
-                          {rec.ai_advice.detail && (
-                            <div style={{ fontSize: 12, color: '#8c8c8c', lineHeight: 1.6, marginTop: 4 }}>
-                              <b style={{ color: '#722ed1' }}>分析：</b>{rec.ai_advice.detail}
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })()}
-                  </div>
-                  {/* 右：操作历史时间线（较窄） */}
-                  <div
-                    style={{
-                      flex: '1 1 280px',
-                      minWidth: 260,
-                      maxWidth: 440,
-                      padding: '12px 14px',
-                      borderRadius: 8,
-                      background: '#fafafa',
-                      border: '1px solid #f0f0f0',
-                    }}
-                  >
+                        )
+                      })()}
+                    </div>
+                    {/* 右：操作历史时间线（较窄） */}
                     <div
                       style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 6,
-                        marginBottom: 10,
-                        fontWeight: 600,
-                        fontSize: 13,
-                        color: '#595959',
+                        flex: '1 1 280px',
+                        minWidth: 260,
+                        maxWidth: 440,
+                        padding: '12px 14px',
+                        borderRadius: 8,
+                        background: '#fafafa',
+                        border: '1px solid #f0f0f0',
                       }}
                     >
-                      <HistoryOutlined style={{ color: '#fa8c16' }} />
-                      操作历史
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          marginBottom: 10,
+                          fontWeight: 600,
+                          fontSize: 13,
+                          color: '#595959',
+                        }}
+                      >
+                        <HistoryOutlined style={{ color: '#fa8c16' }} />
+                        操作历史
+                      </div>
+                      {renderTimeline(rec)}
                     </div>
-                    {renderTimeline(rec)}
                   </div>
-                </div>
-              ),
-              onExpand: (expanded, rec) => {
-                if (expanded && !eventsMap[rec.id]) loadEvents(rec.id)
-              },
-            }}
-          />
-        )}
-      </Spin>
+                ),
+                onExpand: (expanded, rec) => {
+                  if (expanded && !eventsMap[rec.id]) loadEvents(rec.id)
+                },
+              }}
+            />
+          )}
+        </Spin>
+      </div>
 
       {/* 复盘K线弹窗：开单前100根 + 持仓全程，初始止损止盈区域 + 关键事件标注 */}
       <Modal
