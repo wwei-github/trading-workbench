@@ -666,8 +666,13 @@ export default function TradesPanel() {
   const handleCancelPending = async (pe: PendingEntry) => {
     setCancelingId(pe.id)
     try {
-      await scanApi.trades.cancelPendingEntry(pe.id)
-      message.success(`已撤销 ${pe.symbol} 挂单`)
+      const res = await scanApi.trades.cancelPendingEntry(pe.id)
+      // 竞态：撤单瞬间限价单已成交 → 后端落地为持仓，提示语义需区分
+      if (res.filled) {
+        message.info(`${pe.symbol} 挂单已成交，已转为持仓`)
+      } else {
+        message.success(`已撤销 ${pe.symbol} 挂单`)
+      }
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '撤销挂单失败，请稍后重试')
     } finally {

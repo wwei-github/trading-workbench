@@ -396,9 +396,11 @@ def cancel_pending_entry(pending_id: str, db: Session = Depends(get_db)):
     """手动撤销挂单（docs/27）：撤币安 GTC 限价单 + 标记 canceled。
 
     取该账号开仓锁（与结算巡检/开单互斥），锁内重读状态防并发（可能已被
-    watch_pending_entries 撤单/成交落地）。撤单为 best-effort（交易所已成交
-    或已撤时静默）——DB 状态仍标记 canceled，分钟巡检会按交易所真源纠正
-    （成交则落地为 filled）。"""
+    watch_pending_entries 撤单/成交落地）。撤单 best-effort（交易所已成交
+    或已撤时静默）；**撤单后必须复查成交**（2026-10-17 修复竞态）：撤单瞬间
+    恰好成交时，若直接标记 canceled，则 watch_pending_entries 只扫
+    status=="pending" 行、永不复查该行——留下的真实仓位失去 SL/TP 管理且无
+    TradeRecord（孤儿仓）。故复查 executedQty>0 时改走 materialize 落地。"""
     from uuid import UUID as _UUID
     from redis import Redis
     from app.config import settings
@@ -425,15 +427,31 @@ def cancel_pending_entry(pending_id: str, db: Session = Depends(get_db)):
         db.refresh(pe)
         if pe.status != "pending":
             raise HTTPException(status_code=409, detail=f"挂单已了结（{pe.status}），无需撤销")
-        # 撤交易所限价单（best-effort：账号未配置/已成交/已撤均不阻断 DB 状态落定）
+        # 撤交易所限价单（best-effort：账号未配置/已成交/已撤均不阻断）+ 复查成交
+        filled_qty = 0.0
+        trader = None
         if pe.limit_order_id:
             acc = get_account(acc_key)
             trader = BinanceTrader(acc.key) if acc else BinanceTrader(acc_key)
             if trader.configured:
+                oid = int(pe.limit_order_id)
                 try:
-                    trader.cancel_regular_order(pe.symbol, pe.limit_order_id)
+                    trader.cancel_regular_order(pe.symbol, oid)
                 except Exception as e:
                     logger.warning("撤销挂单 %s 交易所撤单失败（best-effort）：%s", pe.id, e)
+                try:
+                    od = trader.order(pe.symbol, oid)
+                    filled_qty = float(od.get("executedQty") or 0)
+                except Exception as e:
+                    logger.warning("撤销挂单 %s 复查成交失败（按未成交处理）：%s", pe.id, e)
+        # 竞态修复：撤单瞬间已（部分）成交 → 不能标记 canceled（否则孤儿仓无
+        # SL/TP、无 TradeRecord），转 materialize 落地
+        if filled_qty > 0 and trader is not None:
+            from app.services.trade_engine import materialize_pending_entry
+            rid = materialize_pending_entry(db, trader, pe, db.get(SystemConfig, 1))
+            logger.info("撤销挂单 %s 时复查到已成交 %s，转落地 trade=%s", pe.id, filled_qty, rid)
+            return {"ok": True, "id": str(pe.id), "filled": True,
+                    "trade_id": str(rid) if rid else None}
         pe.status = "canceled"
         pe.resolve_reason = "manual"
         pe.resolved_at = datetime.utcnow()
@@ -441,7 +459,7 @@ def cancel_pending_entry(pending_id: str, db: Session = Depends(get_db)):
     finally:
         release_open_lock(r, ident, account=acc_key)
     logger.info("手动撤销挂单 %s %s（账号 %s）", pe.id, pe.symbol, acc_key)
-    return {"ok": True, "id": str(pe.id)}
+    return {"ok": True, "id": str(pe.id), "filled": False}
 
 
 @router.post("/{trade_id}/close-market")

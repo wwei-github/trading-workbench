@@ -239,7 +239,7 @@ def test_heat_beta_amplify_blocks(db, gate_env):
     _running(db, risk=40.0, beta=1.5)
     _running(db, risk=40.0, beta=1.5)
     a = _analysis(db)
-    assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "组合热度超限（β加权）" in (a.open_block_reason or "")
 
 
@@ -250,7 +250,7 @@ def test_heat_beta_discount_passes(db, gate_env):
     for _ in range(4):
         _running(db, risk=40.0, beta=0.5)
     a = _analysis(db)
-    assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "组合热度" not in (a.open_block_reason or "")
     assert "开仓失败" in (a.open_block_reason or "")  # 穿透到 _attempt_open
 
@@ -261,7 +261,7 @@ def test_heat_beta_missing_rows_orig_caliber(db, gate_env):
     for _ in range(4):
         _running(db, risk=40.0, beta=None)
     a = _analysis(db)
-    assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "组合热度超限（β加权）" in (a.open_block_reason or "")
 
 

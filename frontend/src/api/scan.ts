@@ -218,7 +218,11 @@ export const scanApi = {
         .then((r) => r.data),
     // 手动撤销挂单（撤交易所 GTC 限价单 + 标记 canceled）
     cancelPendingEntry: (id: string) =>
-      api.post<{ ok: boolean; id: string }>(`/trades/pending-entries/${id}/cancel`).then((r) => r.data),
+      api
+        .post<{ ok: boolean; id: string; filled?: boolean; trade_id?: string | null }>(
+          `/trades/pending-entries/${id}/cancel`,
+        )
+        .then((r) => r.data),
     // 一笔交易的操作历史（开仓/止盈成交/止损移动/结算/异常）
     events: (tradeId: string) =>
       api.get<TradeEvent[]>(`/trades/${tradeId}/events`).then((r) => r.data),

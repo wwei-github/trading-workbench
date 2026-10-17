@@ -79,11 +79,12 @@ class _PenetrationTrader:
         raise RuntimeError("替身终点")
 
 
-def test_s1_still_blocked_by_current_price_rr(db):
-    """现价复算 1.4 < 1.5 → 拦截，open_block_reason 记录死因"""
+def test_s1_still_blocked_by_current_price_rr(db, monkeypatch):
+    """现价复算 1.4 < 1.5 → 拦截，open_block_reason 记录死因（legacy 路径：PENDING_ENTRY_ENABLED=False）"""
+    monkeypatch.setattr(settings, "PENDING_ENTRY_ENABLED", False)
     a = _analysis(db)
     from app.services.trade_engine import try_open_for_analysis
-    assert try_open_for_analysis(db, _PenetrationTrader(), a.id) is False
+    assert try_open_for_analysis(db, _PenetrationTrader(), a.id) == "blocked"
     assert "盈亏比按现价复算" in (a.open_block_reason or "")
 
 
@@ -100,26 +101,30 @@ def test_s1_rr_tol_passes(db):
     [1.48, 1.5) → 放行穿透（CYBERUSDT 1.4998 被误杀案例的回归用例）"""
     a = _analysis(db)
     from app.services.trade_engine import try_open_for_analysis
-    assert try_open_for_analysis(db, _PenetrationTrader(price=100.41), a.id) is False
+    assert try_open_for_analysis(db, _PenetrationTrader(price=100.41), a.id) == "blocked"
     assert "替身终点" in (a.open_block_reason or "")
 
 
-def test_s1_rr_tol_exceeded_blocks(db):
-    """容差带外仍拦：现价 100.5 → rr=1.4 < 1.48 → 拦截，文案含容差口径"""
+def test_s1_rr_tol_exceeded_blocks(db, monkeypatch):
+    """容差带外仍拦：现价 100.5 → rr=1.4 < 1.48 → 拦截，文案含容差口径
+    （legacy 路径：PENDING_ENTRY_ENABLED=False）"""
+    monkeypatch.setattr(settings, "PENDING_ENTRY_ENABLED", False)
     a = _analysis(db)
     from app.services.trade_engine import try_open_for_analysis
-    assert try_open_for_analysis(db, _PenetrationTrader(price=100.5), a.id) is False
+    assert try_open_for_analysis(db, _PenetrationTrader(price=100.5), a.id) == "blocked"
     reason = a.open_block_reason or ""
     assert "盈亏比按现价复算" in reason
     assert "容差" in reason
 
 
-def test_s1_rr_tol_zero_strict(db):
-    """tol=0（页面显式严格）：退化为旧铁律，rr≈1.49 < 1.5 仍拦截"""
+def test_s1_rr_tol_zero_strict(db, monkeypatch):
+    """tol=0（页面显式严格）：退化为旧铁律，rr≈1.49 < 1.5 仍拦截
+    （legacy 路径：PENDING_ENTRY_ENABLED=False）"""
+    monkeypatch.setattr(settings, "PENDING_ENTRY_ENABLED", False)
     _set_rr_tol(db, 0)
     a = _analysis(db)
     from app.services.trade_engine import try_open_for_analysis
-    assert try_open_for_analysis(db, _PenetrationTrader(price=100.41), a.id) is False
+    assert try_open_for_analysis(db, _PenetrationTrader(price=100.41), a.id) == "blocked"
     assert "盈亏比按现价复算" in (a.open_block_reason or "")
     assert "替身终点" not in (a.open_block_reason or "")
 
@@ -129,5 +134,5 @@ def test_s1_rr_tol_db_override(db):
     _set_rr_tol(db, 0.11)
     a = _analysis(db)
     from app.services.trade_engine import try_open_for_analysis
-    assert try_open_for_analysis(db, _PenetrationTrader(price=100.5), a.id) is False
+    assert try_open_for_analysis(db, _PenetrationTrader(price=100.5), a.id) == "blocked"
     assert "替身终点" in (a.open_block_reason or "")

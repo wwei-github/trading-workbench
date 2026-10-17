@@ -140,7 +140,7 @@ def _patch_common(monkeypatch):
         holder["trader_key"] = trader.account_key
         if holder["opened"] and holder["trade_row"] is not None:
             db._state["trade_row"] = holder["trade_row"]
-        return holder["opened"]
+        return "opened" if holder["opened"] else "blocked"
 
     monkeypatch.setattr(trade_engine, "try_open_for_analysis", _fake_try)
     return holder

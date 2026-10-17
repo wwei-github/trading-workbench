@@ -225,7 +225,7 @@ def test_derate_gate_blocks_at_2_losses(db):
     _closed(db, -5.0, _ts(30))
     _closed(db, -5.0, _ts(20))
     a = _make_analysis(db, rec=65)
-    assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "连损2笔降速" in (a.open_block_reason or "")
     assert "75" in (a.open_block_reason or "")
 
@@ -235,7 +235,7 @@ def test_derate_gate_blocks_at_3_losses(db):
     for i in range(3):
         _closed(db, -5.0, _ts(30 - i * 5))
     a = _make_analysis(db, rec=80)
-    assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "连损3笔降速" in (a.open_block_reason or "")
     assert "85" in (a.open_block_reason or "")
 
@@ -245,7 +245,7 @@ def test_derate_gate_pass_at_2_losses_with_high_score(db):
     _closed(db, -5.0, _ts(30))
     _closed(db, -5.0, _ts(20))
     a = _make_analysis(db, rec=80)
-    assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "连损" not in (a.open_block_reason or "")
     assert "开仓失败" in (a.open_block_reason or "")
 
@@ -256,7 +256,7 @@ def test_derate_gate_switch_off(db, monkeypatch):
     for i in range(3):
         _closed(db, -5.0, _ts(30 - i * 5))
     a = _make_analysis(db, rec=65)
-    assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "连损" not in (a.open_block_reason or "")
     assert "开仓失败" in (a.open_block_reason or "")
 
@@ -269,7 +269,7 @@ def test_heat_cap_blocks(db):
     for i in range(4):
         _running(db, risk=40.0)
     a = _make_analysis(db, rec=90)
-    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) == "blocked"
     assert "组合热度超限" in (a.open_block_reason or "")
 
 
@@ -278,7 +278,7 @@ def test_heat_cap_within_limit_passes(db):
     _running(db, risk=1.0)
     _running(db, risk=1.0)
     a = _make_analysis(db, rec=90)
-    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) == "blocked"
     assert "组合热度" not in (a.open_block_reason or "")
 
 
@@ -288,11 +288,11 @@ def test_direction_cap_blocks(db, monkeypatch):
     _running(db, direction="long", risk=1.0)
     _running(db, direction="long", risk=1.0)
     a = _make_analysis(db, rec=90, direction="long")
-    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) == "blocked"
     assert "同向持仓达上限" in (a.open_block_reason or "")
     # 反方向计数为 0 → 同向闸门放行（穿透到 _attempt_open）
     a2 = _make_analysis(db, rec=90, direction="short")
-    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a2.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a2.id) == "blocked"
     assert "同向持仓达上限" not in (a2.open_block_reason or "")
 
 
@@ -302,7 +302,7 @@ def test_direction_cap_counts_all_running_statuses(db, monkeypatch):
     _running(db, status="TP1_HIT", direction="long", risk=1.0)
     _running(db, status="TP2_HIT", direction="long", risk=1.0)
     a = _make_analysis(db, rec=90, direction="long")
-    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) == "blocked"
     assert "同向持仓达上限" in (a.open_block_reason or "")
 
 
@@ -318,7 +318,7 @@ def test_daily_loss_stop_blocks(db):
     _closed(db, -50.0, datetime.utcnow())
     _closed(db, -50.0, datetime.utcnow())
     a = _make_analysis(db, rec=90)
-    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) == "blocked"
     assert "当日亏损熔断" in (a.open_block_reason or "")
     assert "-90" in (a.open_block_reason or "")  # 阈值随账户缩放：1000 × 9%
 
@@ -330,7 +330,7 @@ def test_daily_loss_stop_switch_off(db, monkeypatch):
     _closed(db, -50.0, datetime.utcnow())
     _closed(db, -50.0, datetime.utcnow())
     a = _make_analysis(db, rec=90)
-    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) == "blocked"
     assert "熔断" not in (a.open_block_reason or "")
     assert "开仓失败" in (a.open_block_reason or "")
 
@@ -346,7 +346,7 @@ def test_spread_too_wide_blocks(db):
     """bid=99 / ask=101 → 点差 2% > 0.3% → 放弃开单，未进入下单序列"""
     a = _make_analysis(db, rec=90)
     trader = _SpreadTrader(bid=99.0, ask=101.0)
-    assert _attempt(db, trader, a) is False
+    assert _attempt(db, trader, a) == "blocked"
     assert "盘口价差过宽" in (a.open_block_reason or "")
     assert trader.setup_calls == []
 
@@ -355,7 +355,7 @@ def test_spread_within_limit_reaches_order_sequence(db):
     """点差 0.1% ≤ 0.3% → 放行，流程走到 setup_leverage（替身在此终止）"""
     a = _make_analysis(db, rec=90)
     trader = _SpreadTrader(bid=99.95, ask=100.05)
-    assert _attempt(db, trader, a) is False
+    assert _attempt(db, trader, a) == "blocked"
     assert len(trader.setup_calls) == 1
     assert "盘口价差" not in (a.open_block_reason or "")
 
@@ -364,7 +364,7 @@ def test_spread_query_error_passes_through(db):
     """bookTicker 查询异常 → 不拦截放行（走原有滑点实测兜底），未落价差拦截原因"""
     a = _make_analysis(db, rec=90)
     trader = _SpreadTrader(book_error=True)
-    assert _attempt(db, trader, a) is False
+    assert _attempt(db, trader, a) == "blocked"
     assert len(trader.setup_calls) == 1
     assert "盘口价差" not in (a.open_block_reason or "")
 
@@ -525,7 +525,34 @@ def test_ladder_open_records_tp_orders(db):
     """ladder 路径：开仓成功、挂 TP1 单、raw 记挂单 id（tp1_order=None 守卫不改变原有行为）"""
     a = _make_analysis(db, rec=90)
     trader = _FullOpenTrader()
-    assert _attempt(db, trader, a) is True
+    assert _attempt(db, trader, a) == "opened"
     assert len(trader.tp_calls) == 1  # TP1 挂单
     rec = db.query(TradeRecord).filter(TradeRecord.ai_analysis_id == a.id).one()
     assert rec.raw["tp1_order_id"] == 33
+
+
+class _PendingTrader(_FullOpenTrader):
+    """挂单入场替身（docs/27）：现价对 AI 入场价有利漂移 → 写单不满足盈亏比，
+    改在入场价挂 GTC 限价单。price=102 使多头 rr_now=(104-102)/(102-98)=0.5 < 1.5"""
+
+    def price(self, symbol):
+        return 102.0
+
+    def limit_order(self, symbol, side, qty, price, time_in_force="GTC"):
+        return {"orderId": 77}
+
+
+def test_rr_shortfall_places_limit_pending(db):
+    """现价 RR 不足 → 返回 pending：不建 TradeRecord，落一条 pending_entry_orders，
+    限价单在 AI 入场价、状态 pending（docs/27）"""
+    from app.models.trade import PendingEntryOrder
+    a = _make_analysis(db, rec=90)
+    trader = _PendingTrader()
+    cfg = db.get(SystemConfig, 1)
+    assert _attempt_open(db, trader, cfg, a, 1000.0, {}, force_market=True) == "pending"
+    assert db.query(TradeRecord).filter(TradeRecord.ai_analysis_id == a.id).count() == 0
+    pe = db.query(PendingEntryOrder).filter(PendingEntryOrder.ai_analysis_id == a.id).one()
+    assert pe.status == "pending"
+    assert pe.entry_price == pytest.approx(100.0)
+    assert pe.limit_order_id == "77"
+    assert "挂单" in (a.open_block_reason or "")

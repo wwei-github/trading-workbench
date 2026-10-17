@@ -168,7 +168,7 @@ def test_month_breaker_blocks(db, caplog):
     _month_hit_data(db)
     a = _make_analysis(db)
     with caplog.at_level("WARNING"):
-        assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+        assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "月度回撤熔断" in (a.open_block_reason or "")
     assert "人工复盘确认" in (a.open_block_reason or "")
     assert any("月度回撤熔断拦截开仓" in r.message for r in caplog.records)
@@ -182,7 +182,7 @@ def test_month_breaker_ack_resumes(db):
     cfg.monthly_breaker_ack_at = datetime.utcnow()
     db.commit()
     a = _make_analysis(db)
-    assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "熔断" not in (a.open_block_reason or "")
     assert "开仓失败" in (a.open_block_reason or "")
 
@@ -195,7 +195,7 @@ def test_month_breaker_ack_stale_next_month(db):
     cfg.monthly_breaker_ack_at = datetime.utcnow().replace(day=1) - timedelta(days=1)
     db.commit()
     a = _make_analysis(db)
-    assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "月度回撤熔断" in (a.open_block_reason or "")
 
 
@@ -206,7 +206,7 @@ def test_month_breaker_disabled_at_zero(db, monkeypatch):
     monkeypatch.setattr(settings, "WEEKLY_DD_STOP_PCT", 0.0)
     _month_hit_data(db)
     a = _make_analysis(db)
-    assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "熔断" not in (a.open_block_reason or "")
     assert "减速" not in (a.open_block_reason or "")
 
@@ -227,7 +227,7 @@ def test_week_derate_no_block(db, caplog):
     _week_hit_data(db)
     a = _make_analysis(db)
     with caplog.at_level("WARNING"):
-        assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+        assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "开仓失败" in (a.open_block_reason or "")
     assert any("周度回撤减速" in r.message for r in caplog.records)
     assert any("减半" in r.message for r in caplog.records)
@@ -238,7 +238,7 @@ def test_week_not_triggered_under_threshold(db, caplog):
     _closed(db, -80.0, _yesterday_noon())
     a = _make_analysis(db)
     with caplog.at_level("WARNING"):
-        assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+        assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "开仓失败" in (a.open_block_reason or "")
     assert not any("周度回撤减速" in r.message for r in caplog.records)
 
@@ -267,19 +267,19 @@ def test_week_derate_halves_slot_limit(db):
     cfg.max_open_trades = 5
     db.commit()
     a = _make_analysis(db)
-    assert try_open_for_analysis(db, _LiveTwoPosTrader(), a.id) is False
+    assert try_open_for_analysis(db, _LiveTwoPosTrader(), a.id) == "blocked"
     assert "开仓失败" in (a.open_block_reason or "")  # 常规口径：2 < 5 放行穿透
 
     _closed(db, -80.0, _yesterday_noon(), account_key="live-1", testnet=False)
     _closed(db, -75.0, datetime.utcnow(), account_key="live-1", testnet=False)
     a2 = _make_analysis(db)
-    assert try_open_for_analysis(db, _LiveTwoPosTrader(), a2.id) is False
+    assert try_open_for_analysis(db, _LiveTwoPosTrader(), a2.id) == "blocked"
     assert "在跑单子已达上限 2（周减速减半）" in (a2.open_block_reason or "")
 
     cfg.weekly_breaker_ack_at = datetime.utcnow()
     db.commit()
     a3 = _make_analysis(db)
-    assert try_open_for_analysis(db, _LiveTwoPosTrader(), a3.id) is False
+    assert try_open_for_analysis(db, _LiveTwoPosTrader(), a3.id) == "blocked"
     assert "开仓失败" in (a3.open_block_reason or "")  # ack 后恢复常规上限
 
 
@@ -291,12 +291,12 @@ def test_testnet_ignores_max_open_trades(db):
     db.commit()
     # 测试网：2 在跑 ≥ 上限 2 → 不拦，穿透到 _attempt_open（「开仓失败」）
     a = _make_analysis(db)
-    assert try_open_for_analysis(db, _TwoPosTrader(), a.id) is False
+    assert try_open_for_analysis(db, _TwoPosTrader(), a.id) == "blocked"
     assert "在跑单子已达上限" not in (a.open_block_reason or "")
     assert "开仓失败" in (a.open_block_reason or "")
     # 正式网对照：同配置被单数闸门拦下
     a2 = _make_analysis(db)
-    assert try_open_for_analysis(db, _LiveTwoPosTrader(), a2.id) is False
+    assert try_open_for_analysis(db, _LiveTwoPosTrader(), a2.id) == "blocked"
     assert "在跑单子已达上限 2" in (a2.open_block_reason or "")
 
 
@@ -314,12 +314,12 @@ def test_week_derate_halves_same_dir_cap(db):
                            opened_at=datetime.utcnow(), risk_amount=10.0))
     db.commit()
     a = _make_analysis(db)
-    assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "开仓失败" in (a.open_block_reason or "")  # 常规：2 < 4 放行穿透
 
     _week_hit_data(db)
     a2 = _make_analysis(db)
-    assert try_open_for_analysis(db, _FakeTrader(), a2.id) is False
+    assert try_open_for_analysis(db, _FakeTrader(), a2.id) == "blocked"
     assert "long 方向在跑 2 单 ≥ 2（周减速减半）" in (a2.open_block_reason or "")
 
 
@@ -344,7 +344,7 @@ def test_week_derate_ack_resumes(db, caplog):
     db.commit()
     a = _make_analysis(db)
     with caplog.at_level("WARNING"):
-        assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+        assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert "开仓失败" in (a.open_block_reason or "")   # 仍穿透到 _attempt_open
     assert not any("周度回撤减速" in r.message for r in caplog.records)
 
@@ -360,7 +360,7 @@ def test_week_derate_ack_stale_next_week(db, caplog):
     db.commit()
     a = _make_analysis(db)
     with caplog.at_level("WARNING"):
-        assert try_open_for_analysis(db, _FakeTrader(), a.id) is False
+        assert try_open_for_analysis(db, _FakeTrader(), a.id) == "blocked"
     assert any("周度回撤减速" in r.message for r in caplog.records)
 
 
