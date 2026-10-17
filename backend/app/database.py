@@ -481,10 +481,14 @@ def _run_migrations(engine):
         # jsonb 双向包含（忽略顺序），补后数组变 6 元 → 条件自动失效，天然幂等；
         # 不触碰操作者已定制的白名单（增删任一项即不匹配，自行在配置页勾选）。
         # 上方 ema144 迁移先执行，故本次匹配的是「已补过 ema144」的 5 元集。
+        # 注：前插必须显式括号——PG 中 `->`/`||` 同为「其他运算符」级、左结合，
+        # `'[\"retest\"]'::jsonb || col->'k'` 会解析为 `('[\"retest\"]' || col) -> 'k'`
+        # → 取键失败得 NULL，jsonb_set(new_value=NULL) 会把整个 scan_filters 抹成 NULL
+        # （2026-10-17 首版即踩此坑，已用本机 PG15 复现并验证修复）。
         conn.execute(text(
             "UPDATE system_config SET scan_filters = jsonb_set("
             "  scan_filters, '{pullback_touch_refs}',"
-            "  '[\"retest\"]'::jsonb || scan_filters->'pullback_touch_refs') "
+            "  ('[\"retest\"]'::jsonb) || (scan_filters->'pullback_touch_refs')) "
             "WHERE scan_filters->'pullback_touch_refs' "
             "        @> '[\"swing\",\"ema21\",\"ema21_4h\",\"ema55\",\"ema144\"]'::jsonb "
             "  AND scan_filters->'pullback_touch_refs' "
