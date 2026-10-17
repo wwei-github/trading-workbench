@@ -18,6 +18,7 @@ import {
   Modal,
   Popconfirm,
   Row,
+  Segmented,
   Space,
   Spin,
   Statistic,
@@ -91,6 +92,14 @@ function statusMeta(rec: TradeRecord): { label: string; color: string } {
     if (passed) return { ...s, label: '移动止损' }
   }
   return s
+}
+
+// 挂单三类视图的展示元信息（2026-10-17 交易记录挂单历史）：pending=挂单中；
+// filled=已成交；canceled（手动撤）/expired（超时自动撤）/failed（落地失败）归「已取消」
+const PEND_GROUP_META: Record<'open' | 'filled' | 'closed', { label: string; color: string }> = {
+  open: { label: '挂单中', color: 'orange' },
+  filled: { label: '已成交', color: 'green' },
+  closed: { label: '已取消', color: 'default' },
 }
 
 // 出场原因映射（资金分析页复用）
@@ -370,6 +379,8 @@ function eventSummary(ev: TradeEvent, scheme: ColorScheme): React.ReactNode {
 export default function TradesPanel() {
   const [rows, setRows] = useState<TradeRecord[]>([])
   const [pendingRows, setPendingRows] = useState<PendingEntry[]>([])
+  // 挂单区状态筛选（2026-10-17）：三类视图——全部 / 挂单中 / 已成交 / 已取消
+  const [pendingFilter, setPendingFilter] = useState<'all' | 'open' | 'filled' | 'closed'>('all')
   const [eventsMap, setEventsMap] = useState<Record<string, TradeEvent[]>>({})
   const [loading, setLoading] = useState(false)
   const [statusFilter, setStatusFilter] = useState<string>('')
@@ -413,7 +424,9 @@ export default function TradesPanel() {
         scanApi.trades.list(undefined, 500, scope),
         scanApi.trades.analytics({ scope }),
         scanApi.trades.accountSummary(acctKey).catch(() => null),
-        scanApi.trades.pendingEntries('pending', 100, scope).catch(() => [] as PendingEntry[]),
+        // 挂单历史一次拉全（status='' 不过滤）：挂单中/已成交/已取消三类由前端筛选；
+        // 活跃挂单必是最新创建，300 条上限足以覆盖（在跑单数有上限）
+        scanApi.trades.pendingEntries('', 300, scope).catch(() => [] as PendingEntry[]),
       ])
       if (seq !== seqRef.current) return
       setRows(list)
@@ -692,6 +705,23 @@ export default function TradesPanel() {
   }
   const pendPrice = (v: number | null | undefined): string =>
     v == null ? '-' : v.toPrecision(6)
+
+  // 挂单归类（2026-10-17）：canceled/expired/failed 统一归「已取消」，
+  // 使挂单区呈现「挂单中 / 已成交 / 已取消」三类视图
+  const pendGroup = (s: PendingEntry['status']): 'open' | 'filled' | 'closed' =>
+    s === 'pending' ? 'open' : s === 'filled' ? 'filled' : 'closed'
+  const pendCounts = useMemo(() => {
+    const c = { open: 0, filled: 0, closed: 0 }
+    for (const r of pendingRows) c[pendGroup(r.status)] += 1
+    return c
+  }, [pendingRows])
+  const pendFiltered = useMemo(
+    () =>
+      pendingFilter === 'all'
+        ? pendingRows
+        : pendingRows.filter((r) => pendGroup(r.status) === pendingFilter),
+    [pendingRows, pendingFilter],
+  )
 
   // 导入持仓已自动化（2026-09-24）：每小时结算巡检自动检测币安 App 手动开仓
   // 并接管进系统（SL/TP 取 App 条件单原值），成功后飞书推送，无需手动操作；
@@ -1524,8 +1554,10 @@ export default function TradesPanel() {
         胜率 = 净盈利笔数占比；平均盈亏比 = 全部已结算单的 R 均值（净盈亏÷计划风险额，含止盈止损）
       </div>
 
-      {/* 挂单中（docs/27，2026-10-17）：现价盈亏比不足时在入场价挂的限价单，
-          无挂单时整块隐藏；1 小时未成交由后端巡检自动撤销 */}
+      {/* 挂单入场历史（docs/27，2026-10-17 扩展为三类视图）：现价盈亏比不足时在
+          入场价挂的限价单——挂单中(pending)等待回踩、已成交(filled)转为持仓、
+          已取消(canceled 手动撤 / expired 超时自动撤 / failed 落地失败)；
+          单表 + 顶部状态筛选，无任何挂单时整块隐藏 */}
       {pendingRows.length > 0 && (
         <div
           style={{
@@ -1537,20 +1569,32 @@ export default function TradesPanel() {
             padding: '10px 16px 12px',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fa8c16' }} />
             <span style={{ fontSize: 13, fontWeight: 600, color: 'rgba(0,0,0,0.88)' }}>
-              挂单中 · {pendingRows.length}
+              挂单 · {pendingRows.length}
             </span>
+            <Segmented
+              size="small"
+              value={pendingFilter}
+              onChange={(v) => setPendingFilter(v as typeof pendingFilter)}
+              options={[
+                { label: `全部 ${pendingRows.length}`, value: 'all' },
+                { label: `挂单中 ${pendCounts.open}`, value: 'open' },
+                { label: `已成交 ${pendCounts.filled}`, value: 'filled' },
+                { label: `已取消 ${pendCounts.closed}`, value: 'closed' },
+              ]}
+            />
             <span style={{ fontSize: 12, color: '#999' }}>
-              现价盈亏比不足，已在入场价挂限价单等待回踩；1 小时未成交自动撤销
+              限价挂单等待回踩入场；1 小时未成交自动撤销，成交后转为持仓
             </span>
           </div>
           <Table<PendingEntry>
             rowKey="id"
-            dataSource={pendingRows}
+            dataSource={pendFiltered}
             size="small"
             pagination={false}
+            locale={{ emptyText: '该状态下暂无挂单' }}
             columns={[
               {
                 title: '币种', dataIndex: 'symbol', key: 'symbol', width: 110,
@@ -1570,34 +1614,83 @@ export default function TradesPanel() {
                   v || (r.testnet ? 'testnet-1（回落）' : 'live-1（回落）'),
               },
               {
-                title: '挂单价', dataIndex: 'entry_price', key: 'entry_price', width: 110,
-                render: (v: number | null) => (
-                  <span style={{ color: '#1677ff', fontWeight: 600 }}>{pendPrice(v)}</span>
+                title: '挂单价', dataIndex: 'entry_price', key: 'entry_price', width: 150,
+                render: (v: number | null, r: PendingEntry) => (
+                  <span style={{ color: '#1677ff', fontWeight: 600 }}>
+                    {pendPrice(v)}
+                    {/* 已成交：挂单价 → 实际成交均价，便于复盘滑点 */}
+                    {r.status === 'filled' && r.filled_price != null && (
+                      <span style={{ color: '#26a69a', fontWeight: 400 }}>
+                        {' → '}{pendPrice(r.filled_price)}
+                      </span>
+                    )}
+                  </span>
                 ),
               },
               { title: '止损', dataIndex: 'stop_loss', key: 'stop_loss', width: 100, render: pendPrice },
               { title: '止盈1', dataIndex: 'tp1', key: 'tp1', width: 100, render: pendPrice },
               { title: '止盈2', dataIndex: 'tp2', key: 'tp2', width: 100, render: pendPrice },
               {
-                title: '剩余时间', dataIndex: 'seconds_left', key: 'seconds_left', width: 96,
-                render: (v: number | null) => (
-                  <span style={{ color: v !== null && v < 300 ? '#fa541c' : '#8c8c8c', fontVariantNumeric: 'tabular-nums' }}>
-                    {fmtLeft(v)}
-                  </span>
-                ),
+                title: '状态', dataIndex: 'status', key: 'status', width: 120,
+                render: (s: PendingEntry['status']) => {
+                  const meta = PEND_GROUP_META[pendGroup(s)]
+                  const detail = s === 'pending' ? ''
+                    : s === 'filled' ? ''
+                    : s === 'expired' ? '·超时撤销'
+                    : s === 'failed' ? '·落地失败'
+                    : '·手动撤销'
+                  return (
+                    <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>
+                      {meta.label}{detail}
+                    </Tag>
+                  )
+                },
               },
               {
-                title: '操作', key: 'op', width: 80,
-                render: (_: unknown, r: PendingEntry) => (
-                  <Popconfirm
-                    title={`撤销 ${r.symbol} 挂单？`}
-                    description="将撤销币安限价单，该币本次不再等待入场"
-                    okText="撤销" okButtonProps={{ danger: true }} cancelText="取消"
-                    onConfirm={() => handleCancelPending(r)}
-                  >
-                    <Button size="small" danger loading={cancelingId === r.id}>撤销</Button>
-                  </Popconfirm>
-                ),
+                title: '时间', key: 'time', width: 110,
+                render: (_: unknown, r: PendingEntry) =>
+                  r.status === 'pending' ? (
+                    // 挂单中显示距过期剩余时间（倒计时）；已了结显示收尾时刻
+                    <span
+                      style={{
+                        color: r.seconds_left !== null && r.seconds_left < 300 ? '#fa541c' : '#8c8c8c',
+                        fontVariantNumeric: 'tabular-nums',
+                      }}
+                    >
+                      {fmtLeft(r.seconds_left)}
+                    </span>
+                  ) : (
+                    <span style={{ color: '#8c8c8c' }}>
+                      {r.resolved_at ? bj(r.resolved_at).format('MM-DD HH:mm') : '-'}
+                    </span>
+                  ),
+              },
+              {
+                title: '操作', key: 'op', width: 100,
+                render: (_: unknown, r: PendingEntry) =>
+                  r.status === 'pending' ? (
+                    <Popconfirm
+                      title={`撤销 ${r.symbol} 挂单？`}
+                      description="将撤销币安限价单，该币本次不再等待入场"
+                      okText="撤销" okButtonProps={{ danger: true }} cancelText="取消"
+                      onConfirm={() => handleCancelPending(r)}
+                    >
+                      <Button size="small" danger loading={cancelingId === r.id}>撤销</Button>
+                    </Popconfirm>
+                  ) : r.status === 'filled' && r.trade_record_id ? (
+                    // 已成交：跳转到对应交易记录（打开 K 线复盘弹窗）
+                    <a
+                      onClick={() => {
+                        const rec = rows.find((x) => x.id === r.trade_record_id)
+                        if (rec) setReplayTrade(rec)
+                        else message.info('该交易不在当前列表中（超出加载范围）')
+                      }}
+                    >
+                      查看交易
+                    </a>
+                  ) : (
+                    <span style={{ color: '#bbb' }}>-</span>
+                  ),
               },
             ]}
           />

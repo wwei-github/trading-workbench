@@ -89,6 +89,11 @@ class PendingEntryOut(BaseModel):
     resolve_reason: Optional[str] = None
     expires_at: Optional[datetime] = None
     seconds_left: Optional[int] = None   # 距过期剩余秒（pending 有效；其余 0）
+    # 了结信息（2026-10-17 交易记录挂单历史展示）：成交/撤销/过期/失败的收尾时刻、
+    # 成交均价（仅 filled）、以及成交后关联的 TradeRecord（前端跳转复盘）
+    resolved_at: Optional[datetime] = None
+    filled_price: Optional[float] = None
+    trade_record_id: Optional[uuid.UUID] = None
     created_at: datetime
 
     class Config:

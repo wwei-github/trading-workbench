@@ -211,7 +211,8 @@ export const scanApi = {
         .get<TradeRecord[]>('/trades', { params: { status, limit, scope } })
         .then((r) => r.data),
     // 挂单入场列表（docs/27，2026-10-17）：现价盈亏比不足时在 AI 入场价挂的限价单
-    // status 默认 pending（进行中）；scope 同 trades.list
+    // status 默认 pending（进行中）；传 '' 不过滤 → 返回全部状态（交易记录页挂单历史用）；
+    // scope 同 trades.list
     pendingEntries: (status = 'pending', limit = 100, scope = 'all') =>
       api
         .get<PendingEntry[]>('/trades/pending-entries', { params: { status, limit, scope } })

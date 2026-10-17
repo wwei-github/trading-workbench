@@ -525,6 +525,9 @@ export interface PendingEntry {
   resolve_reason?: string | null
   expires_at: string | null
   seconds_left: number | null // 距过期剩余秒（前端倒计时）
+  resolved_at?: string | null // 了结时刻（成交/撤销/过期/失败）
+  filled_price?: number | null // 实际成交均价（仅 filled）
+  trade_record_id?: string | null // 成交后关联的交易记录（跳转复盘）
   created_at: string
 }
 
