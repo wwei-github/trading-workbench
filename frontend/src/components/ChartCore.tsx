@@ -331,7 +331,8 @@ function drawAiPosition(
     if (yTP2 != null) drawLine(yTP2, colorTP2, `止盈2 ${fmtPrice(tp2!)} ${pctDelta(ep, tp2!)}`)
   }
 
-  // RR 徽标（TV 仓位框 riskRewardRatio）：区域水平居中、入场↔止盈1 垂直居中
+  // RR 徽标（2026-10-17 改版，与复盘图同款）：无底色纯文字，右对齐到区域右缘
+  // （与右侧价签同一条右边界，留 5px 内缩）；垂直仍在入场↔止盈1 中线
   const rr = rrRatio(ep, ai.stop_loss, ai.take_profit_1)
   if (rr != null && ai.take_profit_1 != null) {
     const yTP1 = series.priceToCoordinate(ai.take_profit_1)
@@ -342,20 +343,9 @@ function drawAiPosition(
       ctx2.font = font
       const tw = ctx2.measureText(text).width
       const boxW = tw + 10
-      const boxH = 15
-      const cx = (x0 + x1) / 2
       const cy = (yEntry + yTP1) / 2
-      const rect = el('rect')
-      rect.setAttribute('x', String(cx - boxW / 2))
-      rect.setAttribute('y', String(cy - boxH / 2))
-      rect.setAttribute('width', String(boxW))
-      rect.setAttribute('height', String(boxH))
-      rect.setAttribute('fill', 'rgba(13, 17, 27, 0.85)')
-      rect.setAttribute('stroke', '#2a2e39')
-      rect.setAttribute('rx', '3')
-      svg.appendChild(rect)
       const t = el('text')
-      t.setAttribute('x', String(cx - boxW / 2 + 5))
+      t.setAttribute('x', String(x1 - boxW + 5))
       t.setAttribute('y', String(cy + 3.5))
       t.setAttribute('fill', '#d1d4dc')
       t.setAttribute('font-size', '10')

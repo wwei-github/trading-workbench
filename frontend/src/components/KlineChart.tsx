@@ -210,8 +210,8 @@ function drawReplayZones(data: TradeKlineData, colorScheme: ColorScheme, ctx: Ov
     }
   }
 
-  // RR 徽标（TV 仓位框 riskRewardRatio，与 ChartCore AI 标注同款）：
-  // 区域水平居中、入场↔止盈1（缺则入场↔止损）垂直居中
+  // RR 徽标（2026-10-17 改版）：无底色纯文字，右对齐到区域右缘（与右侧价签同一条
+  // 右边界，留 5px 内缩）；垂直仍在入场↔止盈1（缺则入场↔止损）中线
   const rr = rrRatio(ep, data.stop_loss, data.tp1)
   if (rr != null) {
     const anchor = data.tp1 ?? data.stop_loss
@@ -221,20 +221,9 @@ function drawReplayZones(data: TradeKlineData, colorScheme: ColorScheme, ctx: Ov
       const ctx2 = document.createElement('canvas').getContext('2d')!
       ctx2.font = 'bold 10px monospace'
       const boxW = ctx2.measureText(text).width + 10
-      const boxH = 15
-      const cx = x0 + (rightEdge - x0) / 2
       const cy = (yEntry + yA) / 2
-      const rect = el('rect')
-      rect.setAttribute('x', String(cx - boxW / 2))
-      rect.setAttribute('y', String(cy - boxH / 2))
-      rect.setAttribute('width', String(boxW))
-      rect.setAttribute('height', String(boxH))
-      rect.setAttribute('fill', 'rgba(13, 17, 27, 0.85)')
-      rect.setAttribute('stroke', '#2a2e39')
-      rect.setAttribute('rx', '3')
-      svg.appendChild(rect)
       const t = el('text')
-      t.setAttribute('x', String(cx - boxW / 2 + 5))
+      t.setAttribute('x', String(rightEdge - boxW + 5))
       t.setAttribute('y', String(cy + 3.5))
       t.setAttribute('fill', '#d1d4dc')
       t.setAttribute('font-size', '10')
