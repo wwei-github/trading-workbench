@@ -246,6 +246,7 @@ def _attempt_open(
     wallet: float, positions: dict,
     force_market: bool = False,
     beta: Optional[float] = None,
+    available: Optional[float] = None,
 ) -> str:
     """对单条分析过全部开仓闸门并尝试开仓（docs/06 §3 逐项检查）。
 
@@ -260,6 +261,10 @@ def _attempt_open(
     以现价市价立即入场——等待回踩是自动成交的时机安排，手动点击是用户对
     当下价格的明确意图；其余风控闸门（RR 现价复算 / SL-TP 可挂性 / 保证金 /
     滑点 / 上限 / 黑名单）全部保留。
+
+    available（可选）：交易所 availableBalance（真实可用保证金）。传入则保证金
+    闸门以它为准（权威口径，避免 -2019）；缺省（None，测试替身直接传 wallet）
+    回落本地估算 wallet - occupied。
     """
     # 占用保证金含同账号活跃挂单（挂单在交易所侧已锁保证金，见 _pending_reserved）
     _pend_n, _pend_margin = _pending_reserved(db, trader.account_key, trader.testnet)
@@ -585,9 +590,18 @@ def _attempt_open(
                         symbol, qty, max_qty, risk_pct)
             qty = trader.round_qty(symbol, max_qty)
         margin_used = qty * ref_price / leverage
-        if margin_used > wallet - occupied:
-            logger.info("开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f", symbol, margin_used, wallet - occupied)
-            _mark_open_block(db, a, f"所需保证金 {margin_used:.2f} 超过可用 {wallet - occupied:.2f}")
+        # 可用保证金闸门（2026-10-17 -2019 修复）：优先用交易所 availableBalance——
+        # 本地「钱包余额 - 估算占用」会高估可用（漏掉交易所侧非本系统挂单冻结、
+        # 逐仓已分配保证金、未实现亏损对可用额度的影响），本地放行后交易所按真实
+        # 可用余额拒单（-2019 Margin is insufficient）。无交易所口径时回落本地估算
+        avail = available if available is not None else wallet - occupied
+        if margin_used > avail:
+            logger.info(
+                "开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f（%s）",
+                symbol, margin_used, avail,
+                "交易所 availableBalance" if available is not None else "本地估算 wallet-occupied",
+            )
+            _mark_open_block(db, a, f"所需保证金 {margin_used:.2f} 超过可用 {avail:.2f}（{symbol}）")
             return "blocked"
         # 盘口滑点实测闸门（GRIFFAIN 案例，2026-09-18）：按本单数量走订单簿逐层吃，
         # 预期滑点超 max_slippage_pct（补丁参数，NULL=默认 0.3%）放弃——簿薄的小币
@@ -1289,6 +1303,10 @@ def try_open_for_analysis(
     positions = trader.positions()
     wallet_info = trader.wallet_balance()
     wallet = wallet_info["wallet"]
+    # 交易所权威「可用保证金」（availableBalance，2026-10-17 -2019 修复）：已扣除
+    # 全部持仓初始保证金 / 挂单冻结 / 未实现亏损对可用额度的影响，是「此刻再开新仓
+    # 最多能用多少保证金」的唯一真实口径，与钱包余额 wallet（balance）不是一个量
+    available = wallet_info["available"]
     # 周回撤减速（2026-10-04 docs/13 #2；2026-10-07 改口径：单笔预算减半 →
     # 在跑上限/同向上限减半）：UTC 周已平仓净亏达基数×阈值且未人工确认时，
     # 本请求的单数上限与同向上限减半（floor，至少 1）。软减速不拦开仓；
@@ -1528,7 +1546,8 @@ def try_open_for_analysis(
         except Exception:
             db.rollback()
     return _attempt_open(db, trader, cfg, a, wallet, positions,
-                         force_market=force_market, beta=beta_raw)
+                         force_market=force_market, beta=beta_raw,
+                         available=available)
 
 
 # ── 结算 ──────────────────────────────────────────────────────
