@@ -97,12 +97,12 @@ export function createTradeChart(
     },
     timeScale: {
       borderColor: '#252b3b',
-      // 显示时间（2026-10-16）：X 轴刻度统一显示「年月日 小时」（YYYY-MM-DD HH:mm），
-      // 不再随缩放退化为纯日期。刻度时间戳为 UTC epoch，按北京时间展示（与全站一致）
+      // X 轴刻度（2026-10-17）：仅显示「月-日 小时」（MM-DD HH:mm），不显示年份以保持刻度紧凑；
+      // 完整年份在 hover（十字光标浮动标签，见下方 localization.timeFormatter）时展示。
+      // 刻度时间戳为 UTC epoch，按北京时间展示（与全站一致）
       timeVisible: true,
       secondsVisible: false,
-      tickMarkFormatter: (time: UTCTimestamp) =>
-        dayjs.unix(time).tz(BJ).format('YYYY-MM-DD HH:mm'),
+      tickMarkFormatter: (time: UTCTimestamp) => fmtTime(time),
       rightOffset: 12,
       lockVisibleTimeRangeOnResize: true,
     },
@@ -114,7 +114,8 @@ export function createTradeChart(
     localization: {
       // 加密货币价格跨度大（0.00001 ~ 100000），按量级适配小数位
       priceFormatter: (p: number) => fmtPrice(p),
-      // 十字光标在时间轴上的浮动标签与 X 轴刻度同口径：北京时区「年月日 小时」
+      // hover（十字光标在时间轴上的浮动标签）：显示完整「年月日 小时」，
+      // 与 X 轴刻度（不含年份）区分，便于快速定位到具体年份
       timeFormatter: (time: UTCTimestamp) =>
         dayjs.unix(time).tz(BJ).format('YYYY-MM-DD HH:mm'),
     },
