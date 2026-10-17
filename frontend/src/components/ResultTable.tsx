@@ -567,8 +567,8 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       ),
       dataIndex: "position_ref",
       key: "position_ref",
-      // 列宽加宽（2026-10-17）：位置文案含「回踩EMA21(4h)」「突破20根轨高」等较长标签，原 100px 常截断
-      width: 132,
+      // 列宽（2026-10-17）：100→132 防长标签截断，随后 132→120 回收一点宽度
+      width: 120,
       render: (v: string | null, record: ScanResult) => {
         if (v) {
           const isPullback = v.startsWith("回踩");
@@ -871,8 +871,8 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           size="small"
           tableLayout="fixed"
           // 表格总宽 x = 各列 width 之和（2026-09-30 列宽收窄后同步；改列宽须一并维护）
-          // 位置列 100→132（2026-10-17）后同步 +32
-          scroll={{ x: 1420 }}
+          // 位置列 132→120（2026-10-17）后同步 −12
+          scroll={{ x: 1408 }}
           onChange={handleTableChange}
           pagination={{
             current: resultsPage,
