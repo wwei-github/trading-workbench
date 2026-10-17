@@ -596,12 +596,19 @@ def _attempt_open(
         # 可用余额拒单（-2019 Margin is insufficient）。无交易所口径时回落本地估算
         avail = available if available is not None else wallet - occupied
         if margin_used > avail:
+            # 三值分解（2026-10-17）：钱包余额高 ≠ 可用够——保证金可能已被其它持仓/
+            # 挂单冻结（availableBalance 已扣除全部持仓初始保证金与挂单冻结）。给出
+            # 钱包/占用明细，避免"钱包还有钱为什么开不了"的困惑
+            src = "交易所可用" if available is not None else "本地估算可用"
             logger.info(
-                "开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f（%s）",
-                symbol, margin_used, avail,
-                "交易所 availableBalance" if available is not None else "本地估算 wallet-occupied",
+                "开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f（%s；钱包 %.2f · 已占用 %.2f）",
+                symbol, margin_used, avail, src, wallet, wallet - avail,
             )
-            _mark_open_block(db, a, f"所需保证金 {margin_used:.2f} 超过可用 {avail:.2f}（{symbol}）")
+            _mark_open_block(
+                db, a,
+                f"可用保证金不足（{symbol}）：需 {margin_used:.2f}，{src} {avail:.2f}"
+                f"（钱包 {wallet:.2f}，已占用约 {wallet - avail:.2f}）",
+            )
             return "blocked"
         # 盘口滑点实测闸门（GRIFFAIN 案例，2026-09-18）：按本单数量走订单簿逐层吃，
         # 预期滑点超 max_slippage_pct（补丁参数，NULL=默认 0.3%）放弃——簿薄的小币
