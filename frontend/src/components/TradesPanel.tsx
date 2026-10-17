@@ -589,17 +589,20 @@ export default function TradesPanel() {
     }
   }, [scopeRows, summary])
 
-  // 状态筛选选项：进行中 = 三态聚合（运行中/TP1已止盈/TP2已止盈），带当前数量与状态色点
+  // 状态筛选选项：进行中 = 三态聚合（运行中/TP1已止盈/TP2已止盈），带当前数量与状态色点；
+  // 挂单（2026-10-17）= 限价挂单入场清单，独立一档置于「进行中」后，选中后主区切换为
+  // 挂单三类视图（挂单中/已成交/已取消），交易记录表让位隐藏
   const statusOptions = useMemo(() => {
     const running = scopeRows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status)).length
     const count = (s: string) => scopeRows.filter((r) => r.status === s).length
     return [
       { value: '', label: '全部', count: scopeRows.length, dot: null as string | null },
       { value: 'running', label: '进行中', count: running, dot: '#1677ff' },
+      { value: 'pending', label: '挂单', count: pendingRows.length, dot: '#fa8c16' },
       { value: 'CLOSED', label: '已平仓', count: count('CLOSED'), dot: '#8c8c8c' },
       { value: 'FAILED', label: '失败', count: count('FAILED'), dot: '#ff4d4f' },
     ]
-  }, [scopeRows])
+  }, [scopeRows, pendingRows])
 
   // 展开行时加载该笔交易的操作历史（失败落空数组，时间线显示"暂无"，避免永远转圈）
   const loadEvents = useCallback(async (tradeId: string) => {
@@ -1557,8 +1560,8 @@ export default function TradesPanel() {
       {/* 挂单入场历史（docs/27，2026-10-17 扩展为三类视图）：现价盈亏比不足时在
           入场价挂的限价单——挂单中(pending)等待回踩、已成交(filled)转为持仓、
           已取消(canceled 手动撤 / expired 超时自动撤 / failed 落地失败)；
-          单表 + 顶部状态筛选，无任何挂单时整块隐藏 */}
-      {pendingRows.length > 0 && (
+          单表 + 顶部状态筛选。「挂单」档选中时主区显示此块，其余档位隐藏 */}
+      {(statusFilter === 'pending' || pendingRows.length > 0) && (
         <div
           style={{
             background: '#fff',
@@ -1567,6 +1570,8 @@ export default function TradesPanel() {
             borderRadius: 10,
             boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
             padding: '10px 16px 12px',
+            // 未选「挂单」档时隐藏（有挂单才挂载，避免空版面）
+            display: statusFilter === 'pending' ? undefined : 'none',
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -1697,7 +1702,11 @@ export default function TradesPanel() {
         </div>
       )}
 
-      <Spin spinning={loading}>
+      {/* 交易记录表：「挂单」档选中时隐藏，主区让位给挂单三类视图 */}
+      <Spin
+        spinning={loading}
+        style={{ display: statusFilter === 'pending' ? 'none' : undefined }}
+      >
         {scopeRows.length === 0 && !loading ? (
           <Empty
             description={
