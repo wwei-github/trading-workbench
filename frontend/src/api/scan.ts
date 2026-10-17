@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, FunnelData, HitHistoryItem, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PromptView, PullbackPendingItem, PurgeStats, ReviewFunnel, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, TradeReconciliation, TransferStats, WatchlistItem } from '../types'
+import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, FunnelData, HitHistoryItem, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PendingEntry, PromptView, PullbackPendingItem, PurgeStats, ReviewFunnel, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, TradeReconciliation, TransferStats, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -210,6 +210,15 @@ export const scanApi = {
       api
         .get<TradeRecord[]>('/trades', { params: { status, limit, scope } })
         .then((r) => r.data),
+    // 挂单入场列表（docs/27，2026-10-17）：现价盈亏比不足时在 AI 入场价挂的限价单
+    // status 默认 pending（进行中）；scope 同 trades.list
+    pendingEntries: (status = 'pending', limit = 100, scope = 'all') =>
+      api
+        .get<PendingEntry[]>('/trades/pending-entries', { params: { status, limit, scope } })
+        .then((r) => r.data),
+    // 手动撤销挂单（撤交易所 GTC 限价单 + 标记 canceled）
+    cancelPendingEntry: (id: string) =>
+      api.post<{ ok: boolean; id: string }>(`/trades/pending-entries/${id}/cancel`).then((r) => r.data),
     // 一笔交易的操作历史（开仓/止盈成交/止损移动/结算/异常）
     events: (tradeId: string) =>
       api.get<TradeEvent[]>(`/trades/${tradeId}/events`).then((r) => r.data),
@@ -281,8 +290,10 @@ export const scanApi = {
         .post<{
           ok: boolean;
           opened: boolean;
+          pending?: boolean;
           block_reason: string | null;
           trade_id: string | null;
+          pending_entry_id?: string | null;
           account_key: string;
         }>(
           '/trades/open-from-analysis',

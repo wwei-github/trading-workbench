@@ -442,6 +442,35 @@ class BinanceTrader:
             raise BinanceTradeError(f"MARKET 下单响应异常: {str(r)[:120]}")
         return r
 
+    def limit_order(self, symbol: str, side: str, qty: float, price: float,
+                    time_in_force: str = "GTC") -> dict:
+        """限价单（挂单入场，docs/27）：普通订单，POST /fapi/v1/order type=LIMIT。
+
+        GTC 等待回踩成交；未成交由 watch_pending_entries 按时撤单。返回含 orderId。
+        """
+        r = self._req("POST", "/fapi/v1/order", {
+            "symbol": symbol, "side": side, "type": "LIMIT",
+            "timeInForce": time_in_force, "price": self._dec_str(price),
+            "quantity": self._dec_str(qty),
+        })
+        if "orderId" not in r:
+            raise BinanceTradeError(f"LIMIT 下单响应异常: {str(r)[:120]}")
+        return r
+
+    def cancel_regular_order(self, symbol: str, order_id: int) -> None:
+        """撤销**普通**订单（限价单；与 algo 条件单的 cancel_order 区分）。
+
+        已成交/已撤销/不存在的忽略（-2011/-2013，幂等撤单）。
+        """
+        try:
+            self._req("DELETE", "/fapi/v1/order",
+                      {"symbol": symbol, "orderId": int(order_id)})
+        except BinanceTradeError as e:
+            msg = str(e)
+            if "-2011" in msg or "-2013" in msg or "unknown" in msg.lower() or "not exist" in msg.lower():
+                return
+            raise
+
     def stop_market_close(self, symbol: str, side: str, stop_price: float) -> dict:
         """止损单（algo）：触发后市价全平剩余仓位（closePosition），返回含 algoId
 

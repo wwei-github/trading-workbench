@@ -32,7 +32,7 @@ import {
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import KlineChart from "./KlineChart";
 import AiExpandContent from "./AiExpandContent";
-import type { AIAnalysis, ScanResult } from "../types";
+import type { AIAnalysis, PendingEntry, ScanResult } from "../types";
 
 // 交易状态中文名（"开单状态"列 tooltip 用，与交易记录 Tab 口径一致）
 const TRADE_STATUS_LABEL: Record<string, string> = {
@@ -106,10 +106,16 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
   // 单网已开仍可点（另一网补开——后端按账号判重，docs/17 P1 多账号各开一单）。
   // 随结果列表刷新拉取（limit 500 足够覆盖当前页分析的近期交易）
   const [tradeMap, setTradeMap] = useState<Record<string, { status: string; nets: boolean[] }>>({});
+  // 挂单中映射：ai_analysis_id -> { id, nets }（docs/27，2026-10-17）。现价盈亏比
+  // 不足时后端在入场价挂限价单（无 TradeRecord），据此置灰「开单」按钮并展示「挂单中」
+  const [pendingMap, setPendingMap] = useState<Record<string, { id: string; nets: boolean[] }>>({});
   // tradeMap 拉取（"开单"按钮点击后手动调用刷新，与 results effect 共用）
   const refreshTradeMap = useCallback(async () => {
     try {
-      const rows = await scanApi.trades.list(undefined, 500);
+      const [rows, pendings] = await Promise.all([
+        scanApi.trades.list(undefined, 500),
+        scanApi.trades.pendingEntries("pending", 100, "all").catch(() => [] as PendingEntry[]),
+      ]);
       const m: Record<string, { status: string; nets: boolean[] }> = {};
       for (const t of rows) {
         if (!t.ai_analysis_id) continue;
@@ -119,6 +125,14 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
         m[t.ai_analysis_id] = cur;
       }
       setTradeMap(m);
+      const pm: Record<string, { id: string; nets: boolean[] }> = {};
+      for (const pe of pendings) {
+        if (!pe.ai_analysis_id) continue;
+        const cur = pm[pe.ai_analysis_id] ?? { id: pe.id, nets: [] };
+        if (!cur.nets.includes(pe.testnet)) cur.nets.push(pe.testnet);
+        pm[pe.ai_analysis_id] = cur;
+      }
+      setPendingMap(pm);
     } catch {
       // 静默：开单状态列缺失可接受，下次列表刷新重拉
     }
@@ -223,6 +237,16 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
         ? `已有开单尝试（${label}），不支持重试`
         : `已开单（测试网+正式网，${label}）`;
     }
+    // 挂单中（docs/27）：该分析已在入场价挂限价单等待成交（无 TradeRecord）。
+    // 已挂单的网与已成交的网合并覆盖双网才禁点（单网挂单仍可给另一网补开，
+    // 与「已开单」双网铁律同口径）
+    const pend = pendingMap[ai.id];
+    if (pend) {
+      const covered = new Set([...(tradeInfo?.nets ?? []), ...pend.nets]);
+      if (covered.has(true) && covered.has(false)) {
+        return "已挂单等待入场（1 小时内未成交自动撤销）";
+      }
+    }
     return null;
   };
 
@@ -325,12 +349,18 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           // 逐网顺序开单（共享 IP 权重，同自动扇出惯例）；单网失败不中断另一网
           const results: string[] = [];
           let okCount = 0;
+          let pendingCnt = 0;
           for (const t of targets) {
             try {
               const res = await scanApi.trades.openFromAnalysis(ai.id, t.accKey);
               if (res.opened) {
                 okCount += 1;
                 results.push(`${t.net}开单成功（${res.account_key}）`);
+              } else if (res.pending) {
+                // 挂单中（docs/27）：现价盈亏比不足 → 已在入场价挂限价单等待回踩
+                okCount += 1;
+                pendingCnt += 1;
+                results.push(`${t.net}已挂单等待入场（${res.account_key}）`);
               } else {
                 results.push(`${t.net}未开：${res.block_reason || "闸门未过"}`);
               }
@@ -339,7 +369,8 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
             }
           }
           const summary = `${record.symbol}：${results.join("；")}`;
-          if (okCount === targets.length) message.success(summary, 5);
+          if (pendingCnt > 0 && okCount === targets.length) message.info(summary, 5);
+          else if (okCount === targets.length) message.success(summary, 5);
           else if (okCount > 0) message.warning(summary, 5);
           else message.error(summary, 5);
           await refreshTradeMap();
@@ -715,6 +746,17 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
         const ai = aiMap[record.id];
         if (!ai || ai.trade_decision !== "suggest") {
           return <span style={{ color: "#999" }}>-</span>;
+        }
+        // 挂单中（docs/27）：现价盈亏比不足 → 已在入场价挂限价单等待回踩成交
+        const pend = pendingMap[ai.id];
+        if (pend) {
+          return (
+            <Tooltip title="现价盈亏比不足，已在入场价挂限价单等待回踩成交（1 小时未成交自动撤销），详见交易记录 Tab">
+              <Tag color="orange" style={{ marginInlineEnd: 0, cursor: "default" }}>
+                挂单中
+              </Tag>
+            </Tooltip>
+          );
         }
         // 已开单/开单失败：以 trade_records（按 ai_analysis_id 关联）为准，
         // 双网都有记录时展示两网标记

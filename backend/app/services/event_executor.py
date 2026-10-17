@@ -144,6 +144,60 @@ def react_to_fill(account_key: str, symbol: str) -> bool:
         db.close()
 
 
+def react_to_order_update(account_key: str, symbol: str, order_id: int) -> bool:
+    """成交事件反应（挂单入场优先，docs/27，2026-10-17）。
+
+    先按 (账号, limit_order_id == orderId, status == "pending") 查挂单：
+    - 命中 → 取该账号开仓锁 → materialize_pending_entry（秒级落地，窗口趋近 0）；
+    - 未命中 → 回落到既有 react_to_fill（结算路径不变，零行为变化）。
+
+    仅在 EVENT_EXEC_ENABLED=true 时由 event_stream 调用（默认关，不影响默认行为）。
+    等锁失败放弃 → 分钟巡检 watch_pending_entries 兜底；异常只记日志返回 False。
+    """
+    db = SessionLocal()
+    try:
+        from app.models.trade import PendingEntryOrder
+
+        pe = db.execute(
+            select(PendingEntryOrder).where(
+                PendingEntryOrder.account_key == account_key,
+                PendingEntryOrder.limit_order_id == str(order_id),
+                PendingEntryOrder.status == "pending",
+            ).limit(1)
+        ).scalars().first()
+        if pe is None:
+            return react_to_fill(account_key, symbol)
+
+        from redis import Redis
+        from app.models.system_config import SystemConfig
+        from app.services.trade_engine import materialize_pending_entry
+
+        r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        ident = f"event-pe-{uuid4().hex[:8]}"
+        if not acquire_open_lock(r, ident, wait_s=_LOCK_WAIT_S, ttl_s=OPEN_LOCK_TTL_S,
+                                 account=account_key):
+            logger.info("挂单成交事件 %s/%s 放弃：开仓锁被占用（分钟巡检兜底）",
+                        account_key, symbol)
+            return False
+        try:
+            trader = BinanceTrader(account_key)
+            if not trader.configured:
+                logger.warning("挂单成交事件 %s 跳过：账号凭据未配置", account_key)
+                return False
+            cfg = db.get(SystemConfig, 1)
+            rid = materialize_pending_entry(db, trader, pe, cfg)
+            logger.info("事件触发挂单落地 %s/%s orderId=%s：trade=%s",
+                        account_key, symbol, order_id, rid)
+            return rid is not None
+        finally:
+            release_open_lock(r, ident, account=account_key)
+    except Exception:
+        logger.exception("挂单成交事件 %s/%s 失败（分钟巡检兜底）", account_key, symbol)
+        return False
+    finally:
+        db.close()
+
+
 def remaining_qty(rec: TradeRecord) -> float:
     """按分批结构推导剩余仓位数量（USDT-M 线性，uPnL 自算分母）。
 

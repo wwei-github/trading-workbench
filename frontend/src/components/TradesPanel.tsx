@@ -56,7 +56,7 @@ import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import AiAnalysisCard from './AiAnalysisCard'
 import KlineChart from './KlineChart' // 统一K线图组件（tradeId 复盘模式）
 import ScopeSelector, { scopeIsTestnet } from './ScopeSelector'
-import type { AccountSummary, FundAnalytics, TradeEvent, TradeRecord, TradeReconciliation } from '../types'
+import type { AccountSummary, FundAnalytics, PendingEntry, TradeEvent, TradeRecord, TradeReconciliation } from '../types'
 import { ADVICE_ACTION_META } from '../types'
 
 // 状态标签：运行中三态 + 已平仓 + 失败
@@ -369,6 +369,7 @@ function eventSummary(ev: TradeEvent, scheme: ColorScheme): React.ReactNode {
  */
 export default function TradesPanel() {
   const [rows, setRows] = useState<TradeRecord[]>([])
+  const [pendingRows, setPendingRows] = useState<PendingEntry[]>([])
   const [eventsMap, setEventsMap] = useState<Record<string, TradeEvent[]>>({})
   const [loading, setLoading] = useState(false)
   const [statusFilter, setStatusFilter] = useState<string>('')
@@ -408,13 +409,15 @@ export default function TradesPanel() {
     setLoading(true)
     const acctKey = resolveAcctKey(scope)
     try {
-      const [list, analytics, acctData] = await Promise.all([
+      const [list, analytics, acctData, pendings] = await Promise.all([
         scanApi.trades.list(undefined, 500, scope),
         scanApi.trades.analytics({ scope }),
         scanApi.trades.accountSummary(acctKey).catch(() => null),
+        scanApi.trades.pendingEntries('pending', 100, scope).catch(() => [] as PendingEntry[]),
       ])
       if (seq !== seqRef.current) return
       setRows(list)
+      setPendingRows(pendings)
       setSummary(analytics.summary)
       // 账户概览为我们显式请求的账号实时数据：key 不匹配（含缺省回落 testnet-1）
       // 或交易所查询失败时丢弃/降级，不串数
@@ -655,6 +658,35 @@ export default function TradesPanel() {
       },
     })
   }
+
+  // 撤销挂单（docs/27，2026-10-17）：撤交易所限价单 + 标记 canceled。
+  // 失败分支同样刷新——后端可能实际已撤/已成交，巡检会按交易所真源纠正。
+  // 二次确认由操作列 Popconfirm 提供，此处只负责执行
+  const [cancelingId, setCancelingId] = useState<string | null>(null)
+  const handleCancelPending = async (pe: PendingEntry) => {
+    setCancelingId(pe.id)
+    try {
+      await scanApi.trades.cancelPendingEntry(pe.id)
+      message.success(`已撤销 ${pe.symbol} 挂单`)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '撤销挂单失败，请稍后重试')
+    } finally {
+      setCancelingId(null)
+      await fetchData()
+    }
+  }
+
+  // 挂单剩余时间展示：秒 → mm:ss / hh:mm:ss
+  const fmtLeft = (sec: number | null): string => {
+    if (sec === null || sec <= 0) return '即将撤销'
+    const h = Math.floor(sec / 3600)
+    const m = Math.floor((sec % 3600) / 60)
+    const s = sec % 60
+    return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+      : `${m}:${String(s).padStart(2, '0')}`
+  }
+  const pendPrice = (v: number | null | undefined): string =>
+    v == null ? '-' : v.toPrecision(6)
 
   // 导入持仓已自动化（2026-09-24）：每小时结算巡检自动检测币安 App 手动开仓
   // 并接管进系统（SL/TP 取 App 条件单原值），成功后飞书推送，无需手动操作；
@@ -1486,6 +1518,86 @@ export default function TradesPanel() {
         今日盈亏 = （今日已实现 + 全部未实现）÷ 期初钱包（当前钱包 − 今日已实现，忽略日内划转）；
         胜率 = 净盈利笔数占比；平均盈亏比 = 全部已结算单的 R 均值（净盈亏÷计划风险额，含止盈止损）
       </div>
+
+      {/* 挂单中（docs/27，2026-10-17）：现价盈亏比不足时在入场价挂的限价单，
+          无挂单时整块隐藏；1 小时未成交由后端巡检自动撤销 */}
+      {pendingRows.length > 0 && (
+        <div
+          style={{
+            background: '#fff',
+            border: '1px solid #f0f0f0',
+            borderTop: '3px solid #fa8c16',
+            borderRadius: 10,
+            boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+            padding: '10px 16px 12px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fa8c16' }} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: 'rgba(0,0,0,0.88)' }}>
+              挂单中 · {pendingRows.length}
+            </span>
+            <span style={{ fontSize: 12, color: '#999' }}>
+              现价盈亏比不足，已在入场价挂限价单等待回踩；1 小时未成交自动撤销
+            </span>
+          </div>
+          <Table<PendingEntry>
+            rowKey="id"
+            dataSource={pendingRows}
+            size="small"
+            pagination={false}
+            columns={[
+              {
+                title: '币种', dataIndex: 'symbol', key: 'symbol', width: 110,
+                render: (v: string) => <span style={{ fontWeight: 600 }}>{v}</span>,
+              },
+              {
+                title: '方向', dataIndex: 'direction', key: 'direction', width: 80,
+                render: (v: string) => (
+                  <Tag color={v === 'long' ? 'green' : 'red'} style={{ marginInlineEnd: 0 }}>
+                    {v === 'long' ? '做多' : '做空'}
+                  </Tag>
+                ),
+              },
+              {
+                title: '账号', dataIndex: 'account_key', key: 'account_key', width: 110,
+                render: (v: string | null, r: PendingEntry) =>
+                  v || (r.testnet ? 'testnet-1（回落）' : 'live-1（回落）'),
+              },
+              {
+                title: '挂单价', dataIndex: 'entry_price', key: 'entry_price', width: 110,
+                render: (v: number | null) => (
+                  <span style={{ color: '#1677ff', fontWeight: 600 }}>{pendPrice(v)}</span>
+                ),
+              },
+              { title: '止损', dataIndex: 'stop_loss', key: 'stop_loss', width: 100, render: pendPrice },
+              { title: '止盈1', dataIndex: 'tp1', key: 'tp1', width: 100, render: pendPrice },
+              { title: '止盈2', dataIndex: 'tp2', key: 'tp2', width: 100, render: pendPrice },
+              {
+                title: '剩余时间', dataIndex: 'seconds_left', key: 'seconds_left', width: 96,
+                render: (v: number | null) => (
+                  <span style={{ color: v !== null && v < 300 ? '#fa541c' : '#8c8c8c', fontVariantNumeric: 'tabular-nums' }}>
+                    {fmtLeft(v)}
+                  </span>
+                ),
+              },
+              {
+                title: '操作', key: 'op', width: 80,
+                render: (_: unknown, r: PendingEntry) => (
+                  <Popconfirm
+                    title={`撤销 ${r.symbol} 挂单？`}
+                    description="将撤销币安限价单，该币本次不再等待入场"
+                    okText="撤销" okButtonProps={{ danger: true }} cancelText="取消"
+                    onConfirm={() => handleCancelPending(r)}
+                  >
+                    <Button size="small" danger loading={cancelingId === r.id}>撤销</Button>
+                  </Popconfirm>
+                ),
+              },
+            ]}
+          />
+        </div>
+      )}
 
       <Spin spinning={loading}>
         {scopeRows.length === 0 && !loading ? (

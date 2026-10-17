@@ -9,6 +9,7 @@
 每次运行写任务记录（含跳过原因），失败进「系统日志」。
 """
 import logging
+from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -20,11 +21,13 @@ from app.config import settings
 from app.database import SessionLocal
 from app.models.scan import AIAnalysis
 from app.models.system_config import SystemConfig
-from app.models.trade import TradeRecord
+from app.models.trade import PendingEntryOrder, TradeRecord
 from app.services.binance_trader import BinanceTrader
 from app.services.task_log import close_task, open_task
 from app.services.trade_engine import (
+    _active_pendings,
     _mark_open_block,
+    materialize_pending_entry,
     settle_trades,
     sync_account_transfers,
     try_open_for_analysis,
@@ -169,9 +172,11 @@ def manual_open_from_analysis(analysis_id: str, account_key: str) -> dict:
             return {"ok": False, "code": "conflict",
                     "error": "与结算巡检/其他开仓互斥中，请稍后重试"}
         try:
-            opened = try_open_for_analysis(db, trader, aid, force_market=True)
+            outcome = try_open_for_analysis(db, trader, aid, force_market=True)
             db.refresh(a)
             block_reason = a.open_block_reason
+            opened = outcome == "opened"
+            pending = outcome == "pending"
             # 不论是否开单都反查（2026-10-15）：opened=False 却查到记录，说明命中的
             # 是「同分析同账号已开过」去重闸门（该闸门不落 block_reason），供调用方
             # 把「已有单、未重复开」与「真闸门拦截」区分呈现
@@ -185,22 +190,32 @@ def manual_open_from_analysis(analysis_id: str, account_key: str) -> dict:
                     ),
                 ).order_by(TradeRecord.opened_at.desc()).limit(1)
             ).scalars().first()
+            # 挂单反查（2026-10-17，docs/27）：pending 时无 TradeRecord，反查该分析在
+            # 本账号的活跃挂单——供前端展示「挂单中」并可撤销、卡片呈现挂单价三价
+            pend = None
+            if pending:
+                _pends = _active_pendings(db, trader.account_key, trader.testnet,
+                                          ai_analysis_id=aid)
+                pend = _pends[0] if _pends else None
         except Exception as e:
             db.rollback()
             logger.exception("手动开单失败 analysis=%s", analysis_id)
             return {"ok": False, "code": "error", "error": f"开单失败：{str(e)[:120]}"}
         finally:
             _release_open_lock(r, ident, account=trader.account_key)
+        # 展示用三价/数量：有成交单取 rec，挂单取 pend（pending 时 rec 为 None）
+        disp = rec if rec is not None else pend
         return {
-            "ok": True, "opened": opened, "block_reason": block_reason,
+            "ok": True, "opened": opened, "pending": pending, "block_reason": block_reason,
             "trade_id": str(rec.id) if rec else None,
+            "pending_entry_id": str(pend.id) if pend else None,
             "account_key": trader.account_key,
             "symbol": a.symbol, "direction": a.direction,
-            "entry_price": float(rec.entry_price) if rec and rec.entry_price else None,
-            "stop_loss": float(rec.stop_loss) if rec and rec.stop_loss else None,
-            "take_profit_1": float(rec.tp1) if rec and rec.tp1 else None,
-            "take_profit_2": float(rec.tp2) if rec and rec.tp2 else None,
-            "qty": float(rec.qty) if rec and rec.qty else None,
+            "entry_price": float(disp.entry_price) if disp and disp.entry_price else None,
+            "stop_loss": float(disp.stop_loss) if disp and disp.stop_loss else None,
+            "take_profit_1": float(disp.tp1) if disp and disp.tp1 else None,
+            "take_profit_2": float(disp.tp2) if disp and disp.tp2 else None,
+            "qty": float(disp.qty) if disp and disp.qty else None,
         }
     except Exception as e:
         # 锁外异常兜底（2026-10-15）：db.get / 账号注册表 / Redis.from_url 失败此前
@@ -434,6 +449,7 @@ def open_trade_for_analysis(analysis_id: str):
 
     r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     opened = 0
+    pending_cnt = 0
     opened_trade_ids: list[str] = []
     # 未上架受阻收集（2026-10-11）：扫描期不再过滤不可交易币，开单时逐网校验，
     # 未上架的（symbol, 网络名）收集后锁外统一飞书提示（HTTP 不进开仓锁）
@@ -458,7 +474,8 @@ def open_trade_for_analysis(analysis_id: str):
             try:
                 db = SessionLocal()
                 try:
-                    if try_open_for_analysis(db, trader, analysis_id):
+                    outcome = try_open_for_analysis(db, trader, analysis_id)
+                    if outcome == "opened":
                         opened += 1
                         # 锁内只取成交记录 ID（轻查询）；卡片在全部账号扇出
                         # 结束、锁外统一发送（飞书 HTTP 不进开仓锁）
@@ -471,6 +488,15 @@ def open_trade_for_analysis(analysis_id: str):
                         ).scalar()
                         if _rid:
                             opened_trade_ids.append(str(_rid))
+                    elif outcome == "pending":
+                        # 挂单入场（docs/27）：自动路径不新增飞书卡片（仅日志 +
+                        # 界面「挂单中」可见），成交后由 watch_pending_entries 落地
+                        pending_cnt += 1
+                        logger.info(
+                            "即时开仓挂单等待入场 account=%s analysis=%s"
+                            "（现价盈亏比不足，已在入场价挂限价单，docs/27）",
+                            acc.key, analysis_id,
+                        )
                     else:
                         # 未上架拒开（open_block_reason 刚由本账号写入，会话内
                         # 直读可靠）：收集后锁外飞书。正式网有该合约的账号在上
@@ -529,8 +555,108 @@ def open_trade_for_analysis(analysis_id: str):
                 db.close()
         except Exception:
             logger.exception("清除拒开原因残留失败 analysis=%s", analysis_id)
+    elif pending_cnt:
+        logger.info("即时开仓挂单等待入场：%d/%d 账号挂单（analysis=%s）",
+                    pending_cnt, len(accs), analysis_id)
     else:
         logger.info("即时开仓未成交（全部账号闸门未过），放弃（analysis=%s）", analysis_id)
+
+
+def _expire_or_materialize(db, trader, pe_id, cfg, now: datetime) -> None:
+    """单条 pending 的兜底处理（watch_pending_entries 循环体，异常由调用方吞）。
+
+    以交易所为真源：成交 → 落地；外部撤/拒 → 标记；到 TTL 未成交 → 撤单清除。
+    撤单与成交存在竞态（撤单瞬间恰好成交），故撤单后再确认一次成交，命中即落地。
+    """
+    pe = db.get(PendingEntryOrder, pe_id)
+    if pe is None or pe.status != "pending":
+        return
+    symbol = pe.symbol
+    od = trader.order(symbol, int(pe.limit_order_id))
+    status = str(od.get("status") or "").upper()
+    executed = float(od.get("executedQty") or 0)
+    if executed > 0 and status in ("FILLED", "PARTIALLY_FILLED"):
+        materialize_pending_entry(db, trader, pe, cfg)
+        return
+    if status in ("CANCELED", "EXPIRED", "REJECTED"):
+        pe.status = "expired" if status == "EXPIRED" else "canceled"
+        pe.resolve_reason = f"exchange_{status.lower()}"
+        pe.resolved_at = now
+        db.commit()
+        logger.info("挂单 %s：交易所侧状态 %s，标记 %s（无仓位）", symbol, status, pe.status)
+        return
+    if pe.expires_at is not None and now >= pe.expires_at:
+        try:
+            trader.cancel_regular_order(symbol, int(pe.limit_order_id))
+        except Exception as e:
+            logger.warning("挂单 %s 到期撤单失败（继续按无成交处理）: %s", symbol, e)
+        # 撤单后再确认成交（防撤单与成交竞态漏仓）
+        try:
+            od2 = trader.order(symbol, int(pe.limit_order_id))
+            if float(od2.get("executedQty") or 0) > 0:
+                materialize_pending_entry(db, trader, pe, cfg)
+                return
+        except Exception as e:
+            logger.warning("挂单 %s 到期撤单后复查成交失败: %s", symbol, e)
+        pe.status = "expired"
+        pe.resolve_reason = "ttl"
+        pe.resolved_at = now
+        db.commit()
+        logger.info("挂单 %s：%s 分钟未成交，撤单清除（docs/27）",
+                    symbol, settings.PENDING_ENTRY_TTL_MINUTES)
+
+
+@celery_app.task(name="app.tasks.trade_tasks.watch_pending_entries", max_retries=0)
+def watch_pending_entries():
+    """挂单入场兜底巡检（docs/27，每分钟 beat）：成交落地 + 1 小时未成交清除。
+
+    与 event_executor（WS 实时，EVENT_EXEC_ENABLED 开时）双入口；幂等由
+    materialize_pending_entry 的行锁 + status 二次校验保证，重复触发不会重复建单。
+    每账号取开仓锁（与该账号结算巡检/开仓互斥）后逐条处理——异常逐条吞掉记日志，
+    不中断其它账号。无 active pending 时零 REST 调用、只有一次 DB 查询。
+
+    高频任务不写 task_log（每分钟一条会刷爆系统日志页），异常走 logger 落到应用日志。
+    """
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            select(PendingEntryOrder).where(PendingEntryOrder.status == "pending")
+        ).scalars().all()
+        cfg = db.get(SystemConfig, 1)
+        # 按账号分组（account_key 空旧行按环境回落，与全局账号口径一致）
+        by_acc: dict = {}
+        for pe in rows:
+            key = pe.account_key or ("testnet-1" if pe.testnet else "live-1")
+            by_acc.setdefault(key, []).append(pe.id)
+    finally:
+        db.close()
+    if not rows:
+        return
+
+    r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    now = datetime.utcnow()
+    for key, pe_ids in by_acc.items():
+        trader = BinanceTrader(key)
+        if not trader.configured:
+            logger.warning("挂单巡检跳过账号 %s：缺少币安 API 凭据", key)
+            continue
+        ident = uuid4().hex
+        if not _acquire_open_lock(r, ident, wait_s=2, ttl_s=_OPEN_LOCK_TTL_S, account=key):
+            logger.info("挂单巡检等锁超时（%s），本轮跳过", key)
+            continue
+        try:
+            db = SessionLocal()
+            try:
+                for pe_id in pe_ids:
+                    try:
+                        _expire_or_materialize(db, trader, pe_id, cfg, now)
+                    except Exception:
+                        db.rollback()
+                        logger.exception("挂单巡检单条异常 %s", pe_id)
+            finally:
+                db.close()
+        finally:
+            _release_open_lock(r, ident, account=key)
 
 
 @celery_app.task(name="app.tasks.trade_tasks.run_position_advice", max_retries=0)

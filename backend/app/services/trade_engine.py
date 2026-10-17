@@ -31,7 +31,12 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.scan import AIAnalysis
 from app.models.system_config import SystemConfig
-from app.models.trade import AccountTransfer, TradeEvent, TradeRecord
+from app.models.trade import (
+    AccountTransfer,
+    PendingEntryOrder,
+    TradeEvent,
+    TradeRecord,
+)
 from app.services.binance_trader import BinanceTrader, BinanceTradeError
 from app.services.exchange_pool import ExchangePool
 from app.services.position_advisor import advice_due
@@ -191,16 +196,63 @@ def _near_discounted_budget(risk_budget: float, stop_anchor: Optional[str],
     return risk_budget
 
 
+_PENDING_ACTIVE = "pending"  # PendingEntryOrder.status 活跃态（挂单入场）
+
+
+def _pending_acc_cond(account_key: Optional[str], testnet: bool):
+    """挂单表账号过滤条件（与 _adopt_acc_cond 同口径：account_key 为空旧行按
+    testnet 环境回落，保证按账号查询不漏旧行）。"""
+    return or_(
+        PendingEntryOrder.account_key == account_key,
+        and_(PendingEntryOrder.account_key.is_(None), PendingEntryOrder.testnet == testnet),
+    )
+
+
+def _active_pendings(
+    db: Session, account_key: Optional[str], testnet: bool,
+    symbol: Optional[str] = None, ai_analysis_id: Optional[str] = None,
+) -> list:
+    """同账号活跃挂单（可按 symbol / ai_analysis_id 过滤）。"""
+    q = select(PendingEntryOrder).where(
+        PendingEntryOrder.status == _PENDING_ACTIVE,
+        _pending_acc_cond(account_key, testnet),
+    )
+    if symbol is not None:
+        q = q.where(PendingEntryOrder.symbol == symbol)
+    if ai_analysis_id is not None:
+        q = q.where(PendingEntryOrder.ai_analysis_id == ai_analysis_id)
+    return db.execute(q).scalars().all()
+
+
+def _pending_reserved(db: Session, account_key: Optional[str], testnet: bool) -> tuple[int, float]:
+    """同账号活跃挂单的占用：(条数, 预估保证金合计)。
+
+    计入在跑单上限与余额风控——挂单在交易所侧已锁保证金（available 减少），
+    不并入口径会在保金/单数闸门上重复分配。
+    """
+    n, margin = db.execute(
+        select(func.count(PendingEntryOrder.id),
+               func.coalesce(func.sum(PendingEntryOrder.margin_used), 0.0)).where(
+            PendingEntryOrder.status == _PENDING_ACTIVE,
+            _pending_acc_cond(account_key, testnet),
+        )
+    ).one()
+    return int(n or 0), float(margin or 0.0)
+
+
 def _attempt_open(
     db: Session, trader: BinanceTrader, cfg: SystemConfig,
     a: AIAnalysis,
     wallet: float, positions: dict,
     force_market: bool = False,
     beta: Optional[float] = None,
-) -> bool:
+) -> str:
     """对单条分析过全部开仓闸门并尝试开仓（docs/06 §3 逐项检查）。
 
-    返回是否成功开仓；成功时更新 positions（供调用方累计在跑数与占用保证金）。
+    返回开仓结局："opened"（市价成交并建单）/ "pending"（现价盈亏比不足，
+    已在入场价挂限价单等待入场，docs/27）/ "blocked"（闸门拦截或失败）。
+    市价成功时更新 positions（供调用方累计在跑数与占用保证金）；挂单不建
+    TradeRecord、不占 positions（成交由 materialize_pending_entry 落地）。
     即时开仓唯一入口（try_open_for_analysis，分析完成即分发）调用；
     开仓失败统一 rollback 并落 FAILED 记录（仅 -1121 未上架）。
 
@@ -209,19 +261,32 @@ def _attempt_open(
     当下价格的明确意图；其余风控闸门（RR 现价复算 / SL-TP 可挂性 / 保证金 /
     滑点 / 上限 / 黑名单）全部保留。
     """
-    occupied = sum(p["initial_margin"] for p in positions.values())
+    # 占用保证金含同账号活跃挂单（挂单在交易所侧已锁保证金，见 _pending_reserved）
+    _pend_n, _pend_margin = _pending_reserved(db, trader.account_key, trader.testnet)
+    occupied = sum(p["initial_margin"] for p in positions.values()) + _pend_margin
     symbol = a.symbol
     if symbol in positions:
         logger.info("开仓跳过 %s：已有持仓", symbol)
         _mark_open_block(db, a, "同币种已有在跑持仓")
-        return False
+        return "blocked"
+    # 挂单哨兵（2026-10-17，docs/27）：同币种已有活跃挂单时——同分析重复点击
+    # 幂等返回 pending（不重复挂单）；不同分析则拦截（一币一挂单，避免同币
+    # 挂出多张限价单，成交后超仓）
+    _pend_same_sym = _active_pendings(db, trader.account_key, trader.testnet, symbol=symbol)
+    if _pend_same_sym:
+        if any(pe.ai_analysis_id == a.id for pe in _pend_same_sym):
+            logger.info("开仓 %s：该分析已有挂单等待入场，幂等返回 pending", symbol)
+            return "pending"
+        logger.info("开仓跳过 %s：同币种已有挂单等待入场", symbol)
+        _mark_open_block(db, a, "同币种已有挂单等待入场")
+        return "blocked"
     # 黑名单兜底（2026-09-18）：扫描宇宙过滤（主过滤）与开仓之间的时间差内，
     # 币可能被手动拉黑或刚触发自动拉黑——开仓前最后核对一次（D 双保险）
     from app.services.blacklist_service import active_symbols
     if symbol in active_symbols(db):
         logger.info("开仓跳过 %s：币种在黑名单（手动/连续止损自动）", symbol)
         _mark_open_block(db, a, "币种在黑名单（手动添加或连续止损自动冷却中）")
-        return False
+        return "blocked"
     # 下单环境可交易校验（2026-09-19，ARX 案例；2026-10-11 升级为唯一校验点）：
     # 扫描期 C0 过滤已撤（用户拍板——未上架币照常分析，AI 配额换取全市场可见性），
     # 开单时按本单账号网络逐网校验：未上架 → 拒开 + 落原因（BLOCK_UNTRADABLE），
@@ -231,7 +296,7 @@ def _attempt_open(
     if listed and symbol not in listed:
         logger.info("开仓跳过 %s：下单环境未上架该合约（exchangeInfo 校验）", symbol)
         _mark_open_block(db, a, BLOCK_UNTRADABLE)
-        return False
+        return "blocked"
     # 开单类型仅作记录（2026-09-15 拍板）：策略开关不再拦截开仓（未知类型也不拦）
     # EMA 排列前提随指标多数决重设计移除（2026-09-17）：方向判定权已移交方向票多数决
     # （方向票同向 ≥2 才成候选），与 AI 提示词、扫描筛选同一把尺子，开仓侧不再二次设限
@@ -247,6 +312,10 @@ def _attempt_open(
         tp2 = 0
     try:
         price = trader.price(symbol)
+        # 挂单入场模式（docs/27）：默认市价；RR 闸门处若现价盈亏比不足则切换为
+        # "limit" 并把仓位计算基准价从现价下沉到 AI 入场价（ref_price=entry_ai）
+        order_mode = "market"
+        ref_price = price
         # 风控参数解析（2026-10-02 上页面）：system_config 列可页面覆盖，
         # NULL（页面留空）= 回落 env 默认；本单内取值一致
         rr_min = (
@@ -300,7 +369,7 @@ def _attempt_open(
                 logger.info("开仓作废 %s：现价偏离 AI 入场价超 %.2f%%", symbol, dev_tol * 100)
                 _mark_open_block(db, a, f"现价偏离 AI 入场价超 {dev_tol * 100:.2f}%"
                                         f"（入场 {entry_ai}，开仓时现价 {price}）")
-            return False
+            return "blocked"
         if a.pullback_wait and not force_market:
             logger.info(
                 "开仓 %s：待回踩距离 %.2f%% ≤ 容差 %.2f%%，市价入场（RR 按现价复算把关）",
@@ -322,7 +391,7 @@ def _attempt_open(
                 f"SL/TP 与现价矛盾不可挂单（方向 {direction}，SL={sl}，入场={entry_ai}，"
                 f"TP1={tp1}，现价 {price}）",
             )
-            return False
+            return "blocked"
         # 盈亏比按现价复算（2026-09-18 补上，此前仅 AI 入场价口径校验）：市价成交
         # 价就是现价，待回踩单/漂移单偏离 AI 入场价后风险变宽、盈利变窄，RR 随之
         # 退化——按现价复算仍须 ≥盈亏比铁律下限（ai_rr_min 可页面覆盖），否则市价进不划算。
@@ -334,29 +403,45 @@ def _attempt_open(
         if sl != price:
             rr_now = abs(tp1 - price) / abs(price - sl)
             if rr_now < rr_min - rr_tol:
-                logger.info(
-                    "开仓跳过 %s：盈亏比按现价复算 %.2f < %s-容差%s=%.2f（入场 %s，现价 %s）",
-                    symbol, rr_now, rr_min, rr_tol, rr_min - rr_tol, entry_ai, price,
-                )
-                _mark_open_block(
-                    db, a,
-                    f"盈亏比按现价复算 {rr_now:.2f} < {rr_min:g}-容差{rr_tol:.2f}"
-                    f"={rr_min - rr_tol:.2f}（入场 {entry_ai}，现价 {price}），市价进不满足盈亏计划",
-                )
-                return False
+                if settings.PENDING_ENTRY_ENABLED:
+                    # 挂单入场（docs/27）：现价 RR 不足 ≠ 计划不达标——AI 入场价口径
+                    # 仍自洽，只是现价已向有利侧漂移、此刻市价进场盈亏比退化。改为在
+                    # AI 入场价挂 GTC 限价单等待回踩成交，仓位计算基准价随之下沉到
+                    # 入场价（ref_price）——成交价即限价，RR/仓位须按真实成交口径自洽。
+                    # 多头 rr_now<rr_ai ⟺ 现价>入场价、空头对称，故限价单必然在现价
+                    # 回踩侧，天然被动挂单不会立即成交。
+                    order_mode = "limit"
+                    ref_price = entry_ai
+                    logger.info(
+                        "开仓 %s：盈亏比按现价复算 %.2f < %s-容差%s=%.2f（入场 %s，现价 %s），"
+                        "改在入场价挂限价单等待入场（docs/27）",
+                        symbol, rr_now, rr_min, rr_tol, rr_min - rr_tol, entry_ai, price,
+                    )
+                else:
+                    logger.info(
+                        "开仓跳过 %s：盈亏比按现价复算 %.2f < %s-容差%s=%.2f（入场 %s，现价 %s）",
+                        symbol, rr_now, rr_min, rr_tol, rr_min - rr_tol, entry_ai, price,
+                    )
+                    _mark_open_block(
+                        db, a,
+                        f"盈亏比按现价复算 {rr_now:.2f} < {rr_min:g}-容差{rr_tol:.2f}"
+                        f"={rr_min - rr_tol:.2f}（入场 {entry_ai}，现价 {price}），市价进不满足盈亏计划",
+                    )
+                    return "blocked"
             if rr_now < rr_min:
                 logger.info(
                     "开仓 %s：盈亏比按现价复算 %.2f 落在容差带 [%.2f, %.2f)，容差放行",
                     symbol, rr_now, rr_min - rr_tol, rr_min,
                 )
-        # 固定亏损仓位：基数分档 × 3% ÷ 止损距离
-        stop_pct = abs(price - sl) / price
+        # 固定亏损仓位：基数分档 × 3% ÷ 止损距离（基准价 ref_price：市价模式=现价，
+        # 挂单模式=AI 入场价——成交口径即限价，见上 RR 闸门）
+        stop_pct = abs(ref_price - sl) / ref_price
         if stop_pct <= 0:
             # 原"方向-价格一致性/RR 复验"闸门（2026-09-15 移除）曾顺带拦住 sl==现价；
             # 现在显式防零：止损距离为 0 无法按固定亏损法计算仓位
-            logger.info("开仓放弃 %s：止损距离为 0（sl=%s，现价 %s）", symbol, sl, price)
-            _mark_open_block(db, a, f"止损距离为 0（sl={sl}，现价 {price}），无法计算仓位")
-            return False
+            logger.info("开仓放弃 %s：止损距离为 0（sl=%s，基准价 %s）", symbol, sl, ref_price)
+            _mark_open_block(db, a, f"止损距离为 0（sl={sl}，基准价 {ref_price}），无法计算仓位")
+            return "blocked"
         # 止损宽度硬上限（docs/12 §10 规则补丁参数 max_stop_pct）：
         # 「止损过宽」标签的补丁落点——AI 复盘产出建议值写入 system_config，
         # NULL=不限制（默认）。策略性闸门，先于强平可行性闸门执行
@@ -372,7 +457,7 @@ def _attempt_open(
                     f"止损距离 {stop_pct * 100:.2f}% 达到配置上限 {max_stop * 100:.2f}%"
                     f"（max_stop_pct，复盘补丁参数）",
                 )
-                return False
+                return "blocked"
         # 止损宽度闸门（防强平）→ 动态杠杆适配（2026-09-18）：止损距离超过
         # 上限杠杆的强平闸门时不再直接放弃，而是按 _adaptive_leverage 反推
         # 安全杠杆继续开单；低于下限 TRADING_LEVERAGE_MIN 才放弃（止损过宽
@@ -409,7 +494,7 @@ def _attempt_open(
                 f"止损距离 {stop_pct * 100:.2f}% 过宽，动态安全杠杆 {leverage}×"
                 f" 低于下限 {lev_min}×（min_adapt_leverage 限制），放弃开单",
             )
-            return False
+            return "blocked"
         if leverage < lev_cap:
             liq_gate = liquidation_gate_pct(leverage=leverage, mmr=mmr_eff, buffer=liq_buf)
             logger.info(
@@ -452,7 +537,7 @@ def _attempt_open(
                 f"名义 {notional:.0f} 超该币最大档名义上限 {notional_cap:.0f}"
                 f"（交易所仓位限制）",
             )
-            return False
+            return "blocked"
         # 杠杆上限取三者最小：配置上限 / 档位最大杠杆 / 精确档 MMR 下的强平安全杠杆；
         # 低于下限 lev_min 仍放弃（限制层不变）
         cap_reason = None
@@ -473,16 +558,16 @@ def _attempt_open(
                 f"止损距离 {stop_pct * 100:.2f}%，复验后杠杆 {leverage}×"
                 f" 低于下限 {lev_min}×（{cap_reason or '强平闸门'}；min_adapt_leverage 限制）",
             )
-            return False
+            return "blocked"
         if cap_reason:
             logger.info(
                 "开仓 %s：杠杆下调至 %s×（%s，强平距离 %.2f%%）",
                 symbol, leverage, cap_reason,
                 liquidation_gate_pct(leverage=leverage, mmr=mmr_exact, buffer=liq_buf) * 100,
             )
-        qty = trader.round_qty(symbol, notional / price)
+        qty = trader.round_qty(symbol, notional / ref_price)
         f = trader.filters(symbol)
-        if qty < f["min_qty"] or qty * price < f["min_notional"]:
+        if qty < f["min_qty"] or qty * ref_price < f["min_notional"]:
             logger.info(
                 "开仓放弃 %s：计算数量 %s 低于交易所最小规则（min_qty=%s, min_notional=%s）",
                 symbol, qty, f["min_qty"], f["min_notional"],
@@ -491,7 +576,7 @@ def _attempt_open(
                 db, a,
                 f"计算数量 {qty} 低于交易所最小规则（min_qty={f['min_qty']}, min_notional={f['min_notional']}）",
             )
-            return False
+            return "blocked"
         # 市价入场按 MARKET_LOT_SIZE 校验（常比 LOT_SIZE 严得多，BBUSDT -4005 案例：
         # LOT_SIZE 100万 / MARKET_LOT_SIZE 5万），条件单按 LOT_SIZE；取两者更严的上限
         max_qty = min(f["max_qty"], f.get("market_max_qty", f["max_qty"]))
@@ -499,11 +584,11 @@ def _attempt_open(
             logger.info("开仓 %s：数量 %s 超交易所单笔上限 %s，按上限缩减（实际风险低于 %.0f%% 预算）",
                         symbol, qty, max_qty, risk_pct)
             qty = trader.round_qty(symbol, max_qty)
-        margin_used = qty * price / leverage
+        margin_used = qty * ref_price / leverage
         if margin_used > wallet - occupied:
             logger.info("开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f", symbol, margin_used, wallet - occupied)
             _mark_open_block(db, a, f"所需保证金 {margin_used:.2f} 超过可用 {wallet - occupied:.2f}")
-            return False
+            return "blocked"
         # 盘口滑点实测闸门（GRIFFAIN 案例，2026-09-18）：按本单数量走订单簿逐层吃，
         # 预期滑点超 max_slippage_pct（补丁参数，NULL=默认 0.3%）放弃——簿薄的小币
         # 吃单会撑宽止损距离、实际风险超预算（0.637% 滑点 → 风险多 17%）。成交额
@@ -512,7 +597,7 @@ def _attempt_open(
             float(cfg.max_slippage_pct)
             if getattr(cfg, "max_slippage_pct", None) is not None else MAX_SLIPPAGE_PCT
         )
-        if slip_max > 0:
+        if order_mode == "market" and slip_max > 0:
             est_slip = trader.market_slippage_estimate(
                 symbol, "BUY" if direction == "long" else "SELL", qty
             )
@@ -527,7 +612,7 @@ def _attempt_open(
                     f"盘口滑点实测 {est_slip * 100:.2f}% 超上限 {slip_max * 100:.2f}%"
                     f"（max_slippage_pct，按本单数量 {qty} 走簿计算），盘口过薄放弃开单",
                 )
-                return False
+                return "blocked"
         # 盘口价差预检（docs/24 A4'）：bookTicker 的 bid-ask 价差/中间价超
         # SPREAD_MAX_PCT（补丁前默认 0.3%）放弃开单——点差是市价单越不过去的
         # 固定成本，过宽说明流动性枯竭/行情剧烈（走簿滑点实测以最优价为基准，
@@ -549,7 +634,7 @@ def _attempt_open(
                         f"（上限 {settings.SPREAD_MAX_PCT * 100:.2f}%，SPREAD_MAX_PCT，"
                         f"bid={bid} ask={ask}）",
                     )
-                    return False
+                    return "blocked"
             except Exception as spread_err:
                 logger.warning(
                     "开仓 %s：盘口价差预检查询失败，放行（走滑点实测兜底）: %s",
@@ -571,15 +656,76 @@ def _attempt_open(
                 db, a,
                 f"止盈一数量 {qty_tp1_pre} 低于交易所最小数量 {f['min_qty']}，分批止盈无法挂单",
             )
-            return False
+            return "blocked"
         # 实际风险金额按最终数量精确计（向下取整/上限缩减只会低于 3% 预算）
-        risk_amount = round(qty * abs(price - sl), 4)
+        risk_amount = round(qty * abs(ref_price - sl), 4)
 
         # 下单：市价开仓 → 挂 SL/TP1/TP2 → 入库，全在保护块内：
         # 任何一步失败都紧急撤单+平仓，不留裸仓（含记录构建/入库失败）
         trader.setup_leverage(symbol, leverage)
         side = "BUY" if direction == "long" else "SELL"
         close_side = _close_side(direction)
+        if order_mode == "limit":
+            # 挂单入场分支（docs/27）：只在 AI 入场价挂 GTC 限价单——不建 TradeRecord、
+            # 不挂 SL/TP、不占 positions（成交前不污染结算/在跑计数）；成交后由
+            # materialize_pending_entry 补挂 SL/TP 并落 TradeRecord，1 小时未成交由
+            # watch_pending_entries 撤单清除。
+            limit_px = trader.round_price(symbol, entry_ai)
+            ok_side = (limit_px < price) if direction == "long" else (limit_px > price)
+            if not ok_side:
+                logger.info(
+                    "开仓放弃 %s：入场价 %s 取整后 %s 不在现价 %s 的正确侧，放弃挂单",
+                    symbol, entry_ai, limit_px, price,
+                )
+                _mark_open_block(
+                    db, a,
+                    f"入场价 {entry_ai} 取整后 {limit_px} 不在现价 {price} 的正确侧，放弃挂单",
+                )
+                return "blocked"
+            order = trader.limit_order(symbol, side, qty, limit_px)
+            pe = PendingEntryOrder(
+                symbol=symbol, direction=direction,
+                scan_result_id=a.scan_result_id, ai_analysis_id=a.id,
+                account_key=trader.account_key, testnet=trader.testnet,
+                rule_version=settings.RULE_VERSION,
+                entry_price=limit_px, stop_loss=sl, tp1=tp1, tp2=tp2,
+                qty=qty, leverage=leverage,
+                margin_used=round(qty * limit_px / leverage, 4),
+                risk_amount=round(qty * abs(limit_px - sl), 4),
+                limit_order_id=str(order["orderId"]), status="pending",
+                expires_at=datetime.utcnow() + timedelta(
+                    minutes=int(settings.PENDING_ENTRY_TTL_MINUTES)),
+                raw={
+                    "wallet": wallet, "capital_base": _capital_base(wallet),
+                    "risk_budget_mode": (cfg.risk_budget_mode or "pct"),
+                    "beta": (round(beta, 4) if beta is not None else None),
+                    "ai_snapshot": _ai_snapshot(a),
+                    "entry_order_id": str(order["orderId"]),
+                },
+            )
+            try:
+                db.add(pe)
+                db.commit()
+            except Exception:
+                # 入库失败即撤掉刚挂出的交易所限价单，不留悬挂单（防孤儿买单）
+                db.rollback()
+                try:
+                    trader.cancel_regular_order(symbol, int(order["orderId"]))
+                except Exception as cancel_err:
+                    logger.error("挂单入库失败后撤单失败 %s: %s", symbol, cancel_err)
+                raise
+            logger.info(
+                "已挂单等待入场 %s %s 限价=%s qty=%s sl=%s tp1=%s tp2=%s（现价 %s，"
+                "%s 分钟未成交自动撤销，docs/27）",
+                symbol, direction, limit_px, qty, sl, tp1, tp2, price,
+                int(settings.PENDING_ENTRY_TTL_MINUTES),
+            )
+            _mark_open_block(
+                db, a,
+                f"现价盈亏比不足，已在入场价 {limit_px} 挂单等待入场"
+                f"（{int(settings.PENDING_ENTRY_TTL_MINUTES)} 分钟未成交自动撤销）",
+            )
+            return "pending"
         entry_order = trader.market_order(symbol, side, qty)
         # 成交回报：下单响应为 ACK 不含均价，市价单即时成交后查实际成交价/量。
         # 滑点 = 成交价对参考价的偏离（testnet 盘口薄，深吃单可达 0.5%+）；
@@ -682,7 +828,7 @@ def _attempt_open(
         logger.info("已开仓 %s %s qty=%s 成交=%s（对参考价 %s 滑 %.2f%%）sl=%s tp1=%s tp2=%s（评分 %s）",
                     symbol, direction, qty, fill_price, price, slippage_pct,
                     sl, tp1, tp2, a.recommendation)
-        return True
+        return "opened"
     except Exception as e:
         db.rollback()
         logger.warning("开仓失败 %s: %s", symbol, e)
@@ -714,7 +860,166 @@ def _attempt_open(
             # 非 -1121 的开仓失败（如 testnet 对未上架币返回空 ticker 而非 -1121，
             # PUMPUSDT 案例）：同样不留"既没开单也没原因"的悬案，落拒开原因
             _mark_open_block(db, a, f"开仓失败：{str(e)[:200]}")
-        return False
+        return "blocked"
+
+
+def materialize_pending_entry(
+    db: Session, trader: BinanceTrader, pe: PendingEntryOrder, cfg: SystemConfig,
+) -> Optional[UUID]:
+    """把一条已成交的挂单幂等地转成真实仓位（docs/27 成交后落地）。
+
+    入口共用：watch_pending_entries（1 分钟兜底巡检）与 event_executor
+    （user-data-stream 实时，EVENT_EXEC_ENABLED 开时）。步骤：
+    ① 行锁重读 + status 二次校验（已终态直接返回既有 trade_record_id，幂等）；
+    ② 撤剩余未成交部分（部分成交防护——不加仓到超 SL/TP 覆盖）；
+    ③ 查实际成交（executedQty / avgPrice）；
+    ④ 设杠杆 + 补挂 SL/TP1/（TP2）；
+    ⑤ 建 TradeRecord(OPENED) + 落 OPEN 事件（source=pending_limit）；
+    ⑥ 回写 pending → filled；
+    ⑦ 挂 SL/TP 失败即紧急平仓并将 pending 落 failed（不留裸仓）。
+    返回新建 TradeRecord.id；无成交/失败返回 None（调用方据此记账）。
+    """
+    symbol = pe.symbol
+    pe_id = pe.id
+    raw = pe.raw or {}
+    # ① 行锁重读 + 幂等二次校验
+    locked = db.execute(
+        select(PendingEntryOrder)
+        .where(PendingEntryOrder.id == pe_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if locked is None:
+        db.rollback()
+        return None
+    if locked.status != _PENDING_ACTIVE:
+        db.commit()  # 释放行锁
+        logger.info("挂单落地跳过 %s：状态已为 %s（幂等）", symbol, locked.status)
+        return locked.trade_record_id
+    pe = locked
+    direction = pe.direction
+    sl = float(pe.stop_loss or 0)
+    tp1 = float(pe.tp1 or 0)
+    tp2 = float(pe.tp2 or 0)
+    leverage = int(pe.leverage or 1)
+    close_side = _close_side(direction)
+    filled_qty_real = 0.0
+    try:
+        # ② 撤剩余未成交部分（部分成交防护；已全成交/已撤则静默）
+        try:
+            trader.cancel_regular_order(symbol, int(pe.limit_order_id))
+        except Exception as cancel_err:
+            logger.warning("挂单 %s 撤剩余失败（继续按已成交量落地）: %s", symbol, cancel_err)
+        # ③ 实际成交
+        od = trader.order(symbol, int(pe.limit_order_id))
+        qty = float(od.get("executedQty") or 0)
+        fill_price = float(od.get("avgPrice") or 0) or float(pe.entry_price or 0)
+        filled_qty_real = qty
+        if qty <= 0:
+            pe.status = "canceled"
+            pe.resolve_reason = "no_fill"
+            pe.resolved_at = datetime.utcnow()
+            db.commit()
+            logger.info("挂单 %s：撤单后无成交，标记 canceled", symbol)
+            return None
+        # ④ 设杠杆 + 补挂 SL/TP（与市价开仓同口径）
+        a = db.get(AIAnalysis, pe.ai_analysis_id) if pe.ai_analysis_id else None
+        trader.setup_leverage(symbol, leverage)
+        f = trader.filters(symbol)
+        p1, p2, p1s = _tp_ratio_cfg(cfg)
+        sl_order = trader.stop_market_close(
+            symbol, close_side, trader.round_price(symbol, sl))
+        q1, q2 = _tp_quantities(qty, tp2, p1, p2, p1s)
+        qty_tp1 = trader.round_qty(symbol, q1)
+        qty_tp2 = trader.round_qty(symbol, q2)
+        tp1_order = trader.take_profit_reduce(
+            symbol, close_side, qty_tp1, trader.round_price(symbol, tp1))
+        tp2_order = None
+        if tp2 > 0 and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
+            tp2_order = trader.take_profit_reduce(
+                symbol, close_side, qty_tp2, trader.round_price(symbol, tp2))
+        # ⑤ 建 TradeRecord（口径镜像 _attempt_open 的市价开仓）
+        now = datetime.utcnow()
+        rec = TradeRecord(
+            symbol=symbol,
+            direction=direction,
+            scan_result_id=pe.scan_result_id,
+            ai_analysis_id=pe.ai_analysis_id,
+            recommendation=(float(a.recommendation)
+                            if a is not None and a.recommendation is not None else None),
+            signal_type=(a.scan_result.signal_type
+                         if a is not None and a.scan_result is not None else None),
+            pattern=(a.scan_result.pattern
+                     if a is not None and a.scan_result is not None else None),
+            rule_version=settings.RULE_VERSION,
+            testnet=trader.testnet,
+            account_key=trader.account_key,
+            ai_snapshot=raw.get("ai_snapshot") or (_ai_snapshot(a) if a is not None else None),
+            entry_price=fill_price,
+            qty=qty,
+            notional=round(qty * fill_price, 2),
+            leverage=leverage,
+            margin_mode="isolated",
+            margin_used=round(qty * fill_price / leverage, 4),
+            risk_amount=round(qty * abs(fill_price - sl), 4),
+            risk_budget_mode=raw.get("risk_budget_mode") or (cfg.risk_budget_mode or "pct"),
+            beta=raw.get("beta"),
+            stop_loss=sl,
+            tp1=tp1,
+            tp2=tp2 if tp2_order else 0,
+            status="OPENED",
+            opened_at=now,
+            raw={
+                "entry_order_id": pe.limit_order_id,
+                "sl_order_id": sl_order.get("algoId") or sl_order.get("orderId"),
+                "tp1_order_id": (tp1_order.get("algoId") or tp1_order.get("orderId")) if tp1_order else None,
+                "tp2_order_id": (tp2_order.get("algoId") or tp2_order.get("orderId")) if tp2_order else None,
+                "qty_tp1": qty_tp1,
+                "qty_tp2": qty_tp2 if tp2_order else 0,
+                "capital_base": raw.get("capital_base") or _capital_base(float(raw.get("wallet") or 0)),
+                "wallet": raw.get("wallet"),
+                "realized_bookmark": 0,
+                "pending_entry_id": str(pe_id),
+            },
+        )
+        db.add(rec)
+        db.flush()
+        _add_event(db, rec, "OPEN", {
+            "price": fill_price, "qty": qty, "stop_loss": sl, "tp1": tp1, "tp2": tp2,
+            "risk_amount": round(qty * abs(fill_price - sl), 4),
+            "entry_order_id": pe.limit_order_id, "source": "pending_limit",
+        })
+        # ⑥ 回写 pending
+        pe.status = "filled"
+        pe.filled_price = fill_price
+        pe.filled_qty = qty
+        pe.trade_record_id = rec.id
+        pe.resolved_at = now
+        db.commit()
+        logger.info(
+            "挂单成交落地 %s %s qty=%s 成交=%s sl=%s tp1=%s tp2=%s（trade=%s，docs/27）",
+            symbol, direction, qty, fill_price, sl, tp1, tp2, rec.id,
+        )
+        return rec.id
+    except Exception as e:
+        # ⑦ 挂 SL/TP 失败即紧急平仓，不留裸仓（镜像市价开仓的兜底）
+        db.rollback()
+        logger.error("挂单成交落地失败 %s: %s（紧急平仓防裸仓）", symbol, e)
+        close_qty = filled_qty_real if filled_qty_real > 0 else float(pe.qty or 0)
+        try:
+            trader.cancel_all_algo(symbol)
+            trader.market_order(symbol, close_side, close_qty, reduce_only=True)
+        except Exception as close_err:
+            logger.error("挂单成交后紧急平仓失败 %s: %s", symbol, close_err)
+        try:
+            fresh = db.get(PendingEntryOrder, pe_id)
+            if fresh is not None:
+                fresh.status = "failed"
+                fresh.resolve_reason = str(e)[:32]
+                fresh.resolved_at = datetime.utcnow()
+                db.commit()
+        except Exception:
+            db.rollback()
+        return None
 
 
 # 下单环境未上架拒开原因（2026-10-11 常量化）：_attempt_open 落库用文本，
@@ -922,21 +1227,23 @@ def analysis_open_eligible(a: AIAnalysis, min_rec: float) -> bool:
 def try_open_for_analysis(
     db: Session, trader: BinanceTrader, analysis_id,
     force_market: bool = False,
-) -> bool:
+) -> str:
     """单条分析完成即开仓（2026-09-14：不再等 :42 统一批次，docs/06 §2）。
 
     闸门与批量开仓完全一致（§3）：上限 / 70% 余额 / 最小资金 / 同币无仓 /
     策略开关 / 方向价格复验 / 盈亏比复验 / EMA / 强平闸门。
-    返回是否成功开仓；闸门未过即放弃（无批次重试，等该币下次信号重新分析）。
+    返回开仓结局："opened"（市价成交建单）/ "pending"（现价盈亏比不足，已在
+    入场价挂限价单等待入场，docs/27）/ "blocked"（闸门拦截或失败）；闸门未过
+    即放弃（无批次重试，等该币下次信号重新分析）。
     force_market=True（2026-09-28 手动开单按钮）：市价即时入场，跳过
     入场偏离/待回踩时机闸门（自动成交路径默认 False，语义不变）。
     """
     a = db.get(AIAnalysis, UUID(str(analysis_id)))
     if a is None:
-        return False
+        return "blocked"
     cfg = db.get(SystemConfig, 1)
     if not cfg:
-        return False
+        return "blocked"
     # 开仓资格快速过滤（suggest / 方向 / 三价 / 评分门槛 / 1 小时内）
     # 评分门槛（2026-10-02 上页面）：cfg.min_recommendation 覆盖时优先，NULL 回落 env
     min_rec = (
@@ -944,11 +1251,11 @@ def try_open_for_analysis(
         else float(settings.TRADING_MIN_RECOMMENDATION)
     )
     if not analysis_open_eligible(a, min_rec):
-        return False
+        return "blocked"
     if a.created_at and a.created_at < datetime.utcnow() - timedelta(hours=1):
         logger.info("即时开仓跳过 %s：分析已超过 1 小时", a.symbol)
         _mark_open_block(db, a, "分析已超过 1 小时（信号过期）")
-        return False
+        return "blocked"
     # 该分析在本账号已开过仓（docs/17 P1 扇出：同一 AI 分析允许多账号各开一单，
     # 按账号判断；NULL account_key 旧行按环境回落，与全局口径一致）
     acc_cond = or_(
@@ -958,7 +1265,7 @@ def try_open_for_analysis(
     if db.execute(
         select(TradeRecord.id).where(TradeRecord.ai_analysis_id == a.id).where(acc_cond)
     ).first():
-        return False  # 该账号已用此分析开过仓
+        return "blocked"  # 该账号已用此分析开过仓
     # 连损降速软熔断（docs/24 A3）：紧随评分门槛（TRADING_MIN_RECOMMENDATION）的
     # 动态提升——当日连损 ≥3 → 评分 ≥85，连损 2 → ≥75（绝对档位；提升档位低于
     # 现行门槛值时不生效，不会反向放宽）。连损趋势日降低开单频率观望，
@@ -976,7 +1283,7 @@ def try_open_for_analysis(
                 f"连损{losses}笔降速：评分门槛提升至{need_score}"
                 f"（当前评分 {float(a.recommendation or 0):.0f}）",
             )
-            return False
+            return "blocked"
     # 待回踩单不再在此跳过（2026-09-18）：回踩距离 ≤ pullback_market_pct 容差
     # 时市价入场、超容差维持不下单——判定移入 _attempt_open 偏离闸门
     positions = trader.positions()
@@ -1026,7 +1333,10 @@ def try_open_for_analysis(
                 )
             ).all()
         }
-        slot_used = len(positions) - len(moved_syms)
+        # 在跑单名额并计入同账号活跃挂单（docs/27 D7）：挂单已锁定保证金/敞口，
+        # 不并入会在单数闸门上重复分配名额
+        _pend_live_n, _ = _pending_reserved(db, trader.account_key, trader.testnet)
+        slot_used = len(positions) - len(moved_syms) + _pend_live_n
         slot_limit = (
             max(1, cfg.max_open_trades // 2) if week_derate else cfg.max_open_trades
         )
@@ -1035,8 +1345,11 @@ def try_open_for_analysis(
             logger.info("即时开仓跳过 %s：在跑单子已达上限 %d%s",
                         a.symbol, slot_limit, suffix)
             _mark_open_block(db, a, f"在跑单子已达上限 {slot_limit}{suffix}")
-            return False
+            return "blocked"
     occupied = sum(p["initial_margin"] for p in positions.values())
+    # 余额风控占用并计入活跃挂单保证金（docs/27 D7）
+    _, _pend_margin = _pending_reserved(db, trader.account_key, trader.testnet)
+    occupied += _pend_margin
     # 余额风控（2026-09-15 起可配置）：开仓最低可用余额占钱包比例，默认 50%（原固定 70%）
     min_free = (
         settings.TRADING_MIN_FREE_PCT
@@ -1046,11 +1359,11 @@ def try_open_for_analysis(
     if wallet > 0 and wallet - occupied < wallet * min_free:
         logger.info("即时开仓跳过 %s：可用余额低于总资金 %.0f%%", a.symbol, min_free * 100)
         _mark_open_block(db, a, f"可用余额低于总资金 {min_free * 100:.0f}%")
-        return False
+        return "blocked"
     if _capital_base(wallet) <= 0:
         logger.info("即时开仓跳过 %s：钱包余额低于最小风险档位", a.symbol)
         _mark_open_block(db, a, "钱包余额低于最小风险档位")
-        return False
+        return "blocked"
     # 组合热度上限 + 同向持仓上限（docs/24 A3'，紧随在跑单上限闸门）：在跑单按
     # 全状态集合（OPENED/TP1_HIT/TP2_HIT）计——TP1_HIT/TP2_HIT 止损已上移不占
     # 单数名额，但剩余仓的风险敞口与方向集中度仍然真实存在
@@ -1126,7 +1439,7 @@ def try_open_for_analysis(
                     f"组合热度超限（β加权）：在跑 {heat_used:.2f} + 本单 "
                     f"{est_risk_eff:.2f} > 钱包 {wallet:.2f} × {heat_cap * 100:.0f}%",
                 )
-                return False
+                return "blocked"
         # ② 同向：同 direction 在跑单数 ≥ 同向上限 → 拦截。
         #    全市场同涨同跌（趋势同震）时同向单几乎同损——方向集中度上限（0=不限）
         if same_cap > 0:
@@ -1141,7 +1454,7 @@ def try_open_for_analysis(
                     f"同向持仓达上限：{a.direction} 方向在跑 {same_n} 单 ≥ {same_cap}"
                     + ("（周减速减半）" if week_derate else ""),
                 )
-                return False
+                return "blocked"
     # 当日亏损熔断（2026-09-27 正式网复盘）：UTC 日本账号已平仓净亏 ≤ -阈值
     # （风险基数 × DAILY_LOSS_STOP_PCT，默认 9% ≈ 3 笔满损，随账户金额缩放）
     # 停开仓——09-26 全天 13 笔全灭仍持续开单，趋势日的赢单无法覆盖
@@ -1174,7 +1487,7 @@ def try_open_for_analysis(
                 f"当日亏损熔断：已平仓净亏 {day_pnl:.2f} USDT "
                 f"达 -{loss_cap:.0f} 阈值（风险基数 {_capital_base(wallet):.0f} "
                 f"× {loss_pct:.0f}%）")
-            return False
+            return "blocked"
     # 月回撤熔断（2026-10-04，docs/13 #2）：日级之上的总闸——连亏跨日的阴跌
     # 行情日熔断天天复位天天开（日亏 5% 连 4 天 = -18.5%），缺少总闸。
     # 月 ≥ 阈值 → 停开新仓，人工复盘确认（monthly_breaker_ack_at 写确认时刻，
@@ -1206,7 +1519,7 @@ def try_open_for_analysis(
                     f"月度回撤熔断：本月已平仓净亏 {month_pnl:.2f} USDT "
                     f"达 -{month_cap:.0f} 阈值（基数 × {month_pct:.0f}%）——"
                     "人工复盘确认后恢复")
-                return False
+                return "blocked"
     # 即将进入闸门序列：清掉沿用/上一轮尝试残留的拒开原因，本次成败由闸门重新裁定
     if a.open_block_reason:
         try:

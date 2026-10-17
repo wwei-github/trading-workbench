@@ -87,6 +87,12 @@ celery_app.conf.update(
             # 自动导入手动持仓、AI 持仓诊断；开仓唯一通道 = 分析后即时开仓
             "schedule": crontab(minute="0,30"),
         },
+        "pending-entry-sweep": {
+            "task": "app.tasks.trade_tasks.watch_pending_entries",
+            # 每分钟：挂单入场兜底（docs/27）——成交落地 + 1 小时未成交撤单清除。
+            # 与 user-data-stream 实时路径（EVENT_EXEC_ENABLED 开时）双入口，幂等
+            "schedule": crontab(minute="*"),
+        },
         "daily-report": {
             "task": "app.tasks.daily_report.notify_daily_report",
             # 每日 08:05（北京）：币安日K 08:00 北京收盘后 5 分钟，推主流币收盘价 + 前一日交易统计

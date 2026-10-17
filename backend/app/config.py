@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     # 30 分钟巡检永久保留兜底，本开关只控制事件流是否叠加；默认关——部署后
     # 先在测试网账号验证（系统日志看「事件触发结算」）再放开正式网
     EVENT_EXEC_ENABLED: bool = False
+    # 挂单入场流程（2026-10-17，docs/27）：现价盈亏比复算不足时，不再拦下不开单，
+    # 改为在 AI 入场价挂 GTC 限价单等待成交（1 小时内未成交自动撤销）。
+    # False=回退旧行为（现价 RR 不足即拦下）；TTL 为挂单存活分钟数
+    PENDING_ENTRY_ENABLED: bool = True
+    PENDING_ENTRY_TTL_MINUTES: int = 60
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
     # 规则版本标记（docs/24 A0，2026-09-29）：随规则集变更递增（改 trigger/risk_guard/
     # 提示词纪律/分批比例均算改版），开仓与分析落库时快照到 trade_records/ai_analyses；

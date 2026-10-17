@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.system_config import SystemConfig
-from app.models.trade import AccountTransfer, TradeEvent, TradeRecord
+from app.models.trade import AccountTransfer, PendingEntryOrder, TradeEvent, TradeRecord
 from app.schemas.trade import (
     AccountTransferOut,
     DailyPoint,
@@ -19,6 +19,7 @@ from app.schemas.trade import (
     FundAnalyticsOut,
     FundSummary,
     OpenFromAnalysisRequest,
+    PendingEntryOut,
     PnlBucket,
     SymbolPnl,
     TradeEventOut,
@@ -353,8 +354,94 @@ def open_from_analysis(payload: OpenFromAnalysisRequest):
     if not res["ok"]:
         raise HTTPException(status_code=_OPEN_ERR_STATUS.get(res["code"], 500),
                             detail=res["error"])
-    return {"ok": True, "opened": res["opened"], "block_reason": res["block_reason"],
-            "trade_id": res["trade_id"], "account_key": res["account_key"]}
+    return {"ok": True, "opened": res["opened"], "pending": res.get("pending", False),
+            "block_reason": res["block_reason"],
+            "trade_id": res["trade_id"], "pending_entry_id": res.get("pending_entry_id"),
+            "account_key": res["account_key"]}
+
+
+@router.get("/pending-entries", response_model=list[PendingEntryOut])
+def list_pending_entries(
+    status: str = "pending",
+    scope: str = "all",
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    """挂单入场列表（docs/27，2026-10-17）：现价盈亏比不足时在 AI 入场价挂的
+    限价单。status 默认只看 pending（进行中）；scope 支持环境聚合（live/testnet）、
+    all 与账号 key（docs/17，复用 _account_scope_filter）。seconds_left 为距
+    1 小时 TTL 过期的剩余秒数，供前端倒计时（已过期/已了结归 0）。"""
+    q = select(PendingEntryOrder).order_by(PendingEntryOrder.created_at.desc()).limit(min(limit, 500))
+    if status:
+        q = q.where(PendingEntryOrder.status == status.lower())
+    cond = _account_scope_filter(PendingEntryOrder, scope)
+    if cond is not None:
+        q = q.where(cond)
+    rows = db.execute(q).scalars().all()
+
+    now = datetime.utcnow()
+    out = []
+    for r in rows:
+        item = PendingEntryOut.model_validate(r)
+        if r.status == "pending" and r.expires_at:
+            item.seconds_left = max(0, int((r.expires_at - now).total_seconds()))
+        else:
+            item.seconds_left = 0
+        out.append(item)
+    return out
+
+
+@router.post("/pending-entries/{pending_id}/cancel")
+def cancel_pending_entry(pending_id: str, db: Session = Depends(get_db)):
+    """手动撤销挂单（docs/27）：撤币安 GTC 限价单 + 标记 canceled。
+
+    取该账号开仓锁（与结算巡检/开单互斥），锁内重读状态防并发（可能已被
+    watch_pending_entries 撤单/成交落地）。撤单为 best-effort（交易所已成交
+    或已撤时静默）——DB 状态仍标记 canceled，分钟巡检会按交易所真源纠正
+    （成交则落地为 filled）。"""
+    from uuid import UUID as _UUID
+    from redis import Redis
+    from app.config import settings
+    from app.services.account_registry import get_account
+    from app.services.binance_trader import BinanceTrader
+    from app.services.trade_locks import OPEN_LOCK_TTL_S, acquire_open_lock, release_open_lock
+
+    try:
+        pid = _UUID(pending_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="挂单不存在")
+    pe = db.get(PendingEntryOrder, pid)
+    if pe is None:
+        raise HTTPException(status_code=404, detail="挂单不存在")
+    if pe.status != "pending":
+        raise HTTPException(status_code=409, detail=f"挂单已了结（{pe.status}），无需撤销")
+
+    acc_key = pe.account_key or ("testnet-1" if pe.testnet else "live-1")
+    r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    ident = f"cancel-pending-{uuid4().hex[:8]}"
+    if not acquire_open_lock(r, ident, wait_s=10, ttl_s=OPEN_LOCK_TTL_S, account=acc_key):
+        raise HTTPException(status_code=409, detail="与结算巡检/开仓互斥中，请稍后重试")
+    try:
+        db.refresh(pe)
+        if pe.status != "pending":
+            raise HTTPException(status_code=409, detail=f"挂单已了结（{pe.status}），无需撤销")
+        # 撤交易所限价单（best-effort：账号未配置/已成交/已撤均不阻断 DB 状态落定）
+        if pe.limit_order_id:
+            acc = get_account(acc_key)
+            trader = BinanceTrader(acc.key) if acc else BinanceTrader(acc_key)
+            if trader.configured:
+                try:
+                    trader.cancel_regular_order(pe.symbol, pe.limit_order_id)
+                except Exception as e:
+                    logger.warning("撤销挂单 %s 交易所撤单失败（best-effort）：%s", pe.id, e)
+        pe.status = "canceled"
+        pe.resolve_reason = "manual"
+        pe.resolved_at = datetime.utcnow()
+        db.commit()
+    finally:
+        release_open_lock(r, ident, account=acc_key)
+    logger.info("手动撤销挂单 %s %s（账号 %s）", pe.id, pe.symbol, acc_key)
+    return {"ok": True, "id": str(pe.id)}
 
 
 @router.post("/{trade_id}/close-market")

@@ -65,6 +65,36 @@ class TradeOut(BaseModel):
         from_attributes = True
 
 
+class PendingEntryOut(BaseModel):
+    """挂单入场（docs/27，2026-10-17）：现价盈亏比不足时在 AI 入场价挂的限价单。
+
+    未成交前不建 TradeRecord/不占仓位；此处透出待入场计划参数供前端
+    「挂单中」表展示与一键撤销。seconds_left 为距过期剩余秒数（前端倒计时），
+    已过期/已了结行取 0（负数归零）。"""
+    id: uuid.UUID
+    symbol: str
+    direction: str
+    account_key: Optional[str] = None
+    testnet: bool = True
+    entry_price: Optional[float] = None   # 限价单挂单价（tick 取整后）
+    stop_loss: Optional[float] = None
+    tp1: Optional[float] = None
+    tp2: Optional[float] = None
+    qty: Optional[float] = None
+    leverage: Optional[int] = None
+    margin_used: Optional[float] = None
+    risk_amount: Optional[float] = None
+    ai_analysis_id: Optional[uuid.UUID] = None
+    status: str                          # pending/filled/canceled/expired/failed
+    resolve_reason: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    seconds_left: Optional[int] = None   # 距过期剩余秒（pending 有效；其余 0）
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class AccountTransferOut(BaseModel):
     """合约账户资金划转（amount 带符号：正=转入，负=转出）"""
     id: uuid.UUID

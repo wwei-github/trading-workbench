@@ -504,6 +504,30 @@ export interface TradeEvent {
   created_at: string
 }
 
+// 挂单入场（docs/27，2026-10-17）：现价盈亏比不足时在 AI 入场价挂的 GTC 限价单。
+// 未成交前不建 TradeRecord/不占仓位；1 小时未成交由巡检撤单清除。
+export interface PendingEntry {
+  id: string
+  symbol: string
+  direction: 'long' | 'short'
+  account_key?: string | null
+  testnet: boolean
+  entry_price: number | null // 限价单挂单价（tick 取整后）
+  stop_loss: number | null
+  tp1: number | null
+  tp2: number | null
+  qty: number | null
+  leverage: number | null
+  margin_used: number | null
+  risk_amount: number | null
+  ai_analysis_id: string | null
+  status: 'pending' | 'filled' | 'canceled' | 'expired' | 'failed'
+  resolve_reason?: string | null
+  expires_at: string | null
+  seconds_left: number | null // 距过期剩余秒（前端倒计时）
+  created_at: string
+}
+
 // 一键清空测试网数据（预检/执行共用返回；executed=true 表示已删除）
 export interface PurgeStats {
   records: number

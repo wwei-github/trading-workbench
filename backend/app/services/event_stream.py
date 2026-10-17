@@ -79,6 +79,28 @@ def _extract_fill_symbol(payload: dict) -> str | None:
         return None
 
 
+def _extract_order_update(payload: dict) -> tuple[str, int] | None:
+    """ORDER_TRADE_UPDATE → (成交事件币种, orderId)（FILLED/PARTIALLY_FILLED）。
+
+    挂单入场（docs/27）：orderId 用于匹配 pending_entry_orders.limit_order_id，
+    命中即秒级落地；未命中时 event_executor.react_to_order_update 回落到原有
+    react_to_fill（结算路径不变）。
+    """
+    try:
+        if payload.get("e") != "ORDER_TRADE_UPDATE":
+            return None
+        o = payload.get("o") or {}
+        if o.get("X") not in ("FILLED", "PARTIALLY_FILLED"):
+            return None
+        symbol = o.get("s")
+        oid = o.get("i")
+        if not symbol or oid is None:
+            return None
+        return str(symbol), int(oid)
+    except Exception:
+        return None
+
+
 def _extract_mark(payload: dict) -> tuple[str, float] | None:
     """markPriceUpdate → (symbol, mark price)；裸 /ws 端点事件不包 data 层，
     兼容 combined 包装（data 字段）以备连接方式调整"""
@@ -129,10 +151,12 @@ def _run_user_data(account_key: str) -> None:
                         if payload.get("e") == "listenKeyExpired":
                             logger.warning("事件流 %s listenKey 失效，重建连接", account_key)
                             raise ConnectionError("listenKeyExpired")
-                        symbol = _extract_fill_symbol(payload)
-                        if symbol:
+                        upd = _extract_order_update(payload)
+                        if upd:
+                            symbol, order_id = upd
                             try:
-                                event_executor.react_to_fill(account_key, symbol)
+                                event_executor.react_to_order_update(
+                                    account_key, symbol, order_id)
                             except Exception:
                                 logger.exception("事件反应异常 %s/%s", account_key, symbol)
                     if time.time() >= ka_deadline:

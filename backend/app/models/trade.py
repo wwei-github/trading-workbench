@@ -166,3 +166,66 @@ class AccountTransfer(Base):
     raw: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PendingEntryOrder(Base):
+    """挂单入场（2026-10-17，docs/27）——现价盈亏比不足时在 AI 入场价挂的限价单。
+
+    开单闸门（trade_engine._attempt_open）在「现价盈亏比复算不足」时不再拦下，
+    改为在 AI 入场价挂 GTC 限价单等待回踩成交；未成交前**不建 TradeRecord、
+    不占 positions、不挂 SL/TP**（避免污染结算/在跑计数）。成交后由
+    trade_engine.materialize_pending_entry 补挂 SL/TP 并落一笔 OPENED 的
+    TradeRecord；1 小时未成交由 watch_pending_entries 撤单清除。
+
+    status 生命周期：pending → filled（成交）/ canceled（手动撤/外部撤）
+    / expired（超时未成交，或外部过期）/ failed（成交后补挂 SL/TP 失败并已紧急平仓）。
+    """
+
+    __tablename__ = "pending_entry_orders"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)  # long / short
+
+    # 溯源（无 FK，防误删历史分析导致断链，与 trade_records 同惯例）
+    scan_result_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    ai_analysis_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    account_key: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # 下单账号
+    testnet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    rule_version: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
+    # 计划价（限价单挂在 entry_price；SL/TP 成交后才真实挂出）
+    entry_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)  # 限价（tick 取整后）
+    stop_loss: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+    tp1: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+    tp2: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+
+    # 挂单时刻按入场价口径预算的仓位参数（成交时按实际成交价复算覆盖 TradeRecord）
+    qty: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+    leverage: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    margin_used: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)
+    risk_amount: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)
+
+    limit_order_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)  # 币安普通单 orderId
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    # pending / filled / canceled / expired / failed
+    resolve_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+
+    filled_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+    filled_qty: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+    trade_record_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)  # 成交后关联
+
+    raw: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # {wallet, capital_base, ai_snapshot, entry_order_id...}
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_pending_entry_symbol_status", "symbol", "status"),
+        Index("ix_pending_entry_account_status", "account_key", "status"),
+    )

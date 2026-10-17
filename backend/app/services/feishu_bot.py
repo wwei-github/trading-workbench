@@ -288,6 +288,33 @@ def _exec_open_live(analysis_id: str, account_key: str) -> None:
                     "详情见交易记录")}]},
             ],
         }
+    elif res.get("ok") and res.get("pending"):
+        # 2026-10-17（docs/27）：现价盈亏比不足 → 不再拦下不开单，改为在 AI 入场价
+        # 挂 GTC 限价单等待回踩成交；展示挂单价三价 + 1 小时未成交自动撤销提示
+        is_long = res.get("direction") == "long"
+        qty_line = f"数量 {float(res['qty']):g} · " if res.get("qty") else ""
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": f"📌 已挂单等待入场 · {symbol}"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "column_set", "flex_mode": "stretch", "columns": [
+                    _col("方向", "做多 Long" if is_long else "做空 Short"),
+                    _col("账号", str(res.get("account_key") or "—")),
+                    _col("挂单价", _p(res.get("entry_price"))),
+                ]},
+                {"tag": "column_set", "flex_mode": "stretch", "columns": [
+                    _col("止损 SL", _p(res.get("stop_loss"))),
+                    _col("止盈 TP1", _p(res.get("take_profit_1"))),
+                    _col("止盈 TP2", _p(res.get("take_profit_2"))),
+                ]},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": (
+                    qty_line + "现价盈亏比不足，已在入场价挂限价单；"
+                    "1 小时未成交自动撤销 · SL/TP 成交后才挂出 · 可在工作台交易记录撤销")}]},
+            ],
+        }
     elif res.get("ok"):
         # 2026-10-15 措辞修正：opened=False 但反查到交易记录 ⇒ 命中的是「同分析同
         # 账号已开过」去重闸门（该闸门不落 block_reason）——此时币种其实已有单，
