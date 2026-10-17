@@ -342,13 +342,41 @@ def detect_indicator_candidate(
                 reject_out["detail"] = detail
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
-    direction = 1 if votes["net"] > 0 else -1
+    # 方向派生（2026-10-17 docs/23 方案 A2 修复「净差为0静默偏置为空头」）：
+    # net≠0 取符号（原口径）；net=0 无多数决依据 → 改由 4h 闸门方向兜底；net=0 且
+    # gate=None（4h 拉取失败/异常降级）→ 无方向依据，直接不出信号（活跃 pending 按
+    # 方向失守过期，与 votes 关同口径）。
+    # 注：net=0 在当前生产链路不可达——方向票仅 MACD/布林带/RSI 三张
+    # （technical.DIR_VOTE_SHORTS），net=0 ⇒ bull_n=bear_n ∈ {0,1} ⇒ max≤1 <
+    # DIR_VOTE_MIN=2，必被上方 votes 关先拒；此路为防御性修复（一旦票表/门槛调整使
+    # net=0 可达，避免原 `else -1` 把中性静默偏置为空头）。
+    if votes["net"] != 0:
+        direction = 1 if votes["net"] > 0 else -1
+    elif gate is not None:
+        direction = 1 if gate[0] == "long" else -1
+    else:
+        _reject("votes")
+        if reject_out is not None:
+            reject_out["detail"] = (
+                "方向票净差为0（多空各1或全中性），且无4h闸门方向可兜底，无法定向")
+        return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
+
     # 闸门方向一致性（2026-10-10 二次拍板，取代原 htf_res dir 门）：gate_4h 给出
-    # 的 4h 方向（价格×EMA144 位置+斜率方向）必须与多数决方向一致——gate 在上面
-    # 已保证非 None（htf 拉取失败降级时 gate=None，跳过检查与原降级口径一致）。
-    # 与 4h 冲突的活跃 pending 不可能被确认（金K 方向跟着多数决走），按方向失守过期
+    # 的 4h 方向（价格×EMA144 位置+斜率方向）必须与定向一致——gate 在上面已保证
+    # 非 None（htf 拉取失败降级时 gate=None，跳过检查与原降级口径一致）。
+    # 与 4h 冲突的活跃 pending 不可能被确认（金K 方向跟着多数决走），按方向失守过期。
+    # A3 深回撤语义（2026-10-17 docs/23，隐性行为显性化）：本关是深回撤触点
+    # （EMA55/EMA144）的生死线——价格深跌到中期/长期均线几乎必然打翻 1h 方向票
+    # （MACD/布林带/RSI 转空），使定向与 4h 多头闸门相反 → 被本关挡下；「慢速深回撤」
+    # 因此无法穿过，仅「插针式触及」（单根影线插到均线、收盘仍强、1h 票未转向）可过。
+    # 非缺陷：深回撤与 1h 票同向本就是小概率形态。detail 给漏斗可读的方向对撞说明。
     if gate is not None and gate[0] != ("long" if direction == 1 else "short"):
         _reject("direction_flip")
+        if reject_out is not None:
+            reject_out["detail"] = (
+                f"定向={'多' if direction == 1 else '空'}头（方向票净差{votes['net']:+d}），"
+                f"与4h闸门方向（{'多' if gate[0] == 'long' else '空'}头）相反；"
+                "深回撤触点常见此冲突（仅插针式可过）")
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
     # 第二步：1H 结构门——不在筛选链（2026-10-12，docs/21 O7 退役筛选链硬门）：

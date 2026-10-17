@@ -675,27 +675,26 @@ def test_breakout_trigger_carries_event_payload():
 # ── resolve_scan_filters：触点白名单与参数 ───────────────────────────────
 
 def test_resolve_default_touch_refs():
-    """默认触点 = 摆动结构位 + 均线族（2026-10-08 均线族，2026-10-09 加入 4h EMA21，
-    2026-10-14 加入 swing——回踩样本中 HL/LH 结构位占比可观；2026-10-16 ema144
-    复出并默认启用；retest 仍需配置显式启用）"""
+    """默认触点 = 回测位 + 摆动结构位 + 均线族（2026-10-08 均线族，2026-10-09 加入
+    4h EMA21，2026-10-14 加入 swing，2026-10-16 ema144 复出，2026-10-17 retest
+    默认启用〔docs/23 A1〕）"""
     flt = resolve_scan_filters(None)
     assert flt.pullback_touch_refs == (
-        "swing", "ema21", "ema21_4h", "ema55", "ema144")
+        "retest", "swing", "ema21", "ema21_4h", "ema55", "ema144")
     assert flt.retest_window_bars == 24
     assert flt.structure_touch_band_pct == 0.3
     assert flt.ema_touch_min_bars == 200
 
 
 def test_resolve_touch_refs_filter_and_fallback():
-    """非法项过滤保留合法项；空/全非法/非 list 回落默认（swing+均线族四触点，
-    触点全空会停摆回踩管线）；ema144 已于 2026-10-16 复出（退役过滤集清空），
-    显式配置不再被过滤"""
+    """非法项过滤保留合法项；空/全非法/非 list 回落默认（回测位+摆动结构位+均线族
+    五触点，触点全空会停摆回踩管线）；ema144/retest 均已默认启用，显式配置按原样生效"""
     cfg = SimpleNamespace(scan_filters={"pullback_touch_refs": ["retest", "bogus", "ema55"]})
     assert resolve_scan_filters(cfg).pullback_touch_refs == ("retest", "ema55")
     for bad in (None, "retest", [], ["bogus"], ["bogus", 1]):
         cfg2 = SimpleNamespace(scan_filters={"pullback_touch_refs": bad})
         assert resolve_scan_filters(cfg2).pullback_touch_refs == \
-            ("swing", "ema21", "ema21_4h", "ema55", "ema144"), bad
+            ("retest", "swing", "ema21", "ema21_4h", "ema55", "ema144"), bad
     cfg3 = SimpleNamespace(scan_filters={
         "pullback_touch_refs": ["ema21", "ema144", "retest"]})
     assert resolve_scan_filters(cfg3).pullback_touch_refs == ("ema21", "ema144", "retest")

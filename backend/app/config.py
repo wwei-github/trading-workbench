@@ -272,7 +272,14 @@ class Settings(BaseSettings):
     # （candlestick.DECISION_SHADOW_BONUS_GRADES：影线比 ≤10% +5、≤20% +3、≤30% +1、
     # >30% 不加分）；看涨吞没上影由二值（≤25% +3）并入同一梯度表，口径不变
     # （看涨看上影 / 看跌看下影 / 星看第三根总影线）
-    RULE_VERSION: str = "v2026-10-16"
+    # v2026-10-17（用户拍板，docs/23 方案 A 全做、不做影子直接上线）：①retest 触点
+    # 默认启用——DEFAULT_TOUCH_REFS 加入 retest、前端默认同步，存量「未定制」白名单由
+    # database._run_migrations 一次性补入（2026-10-16 起它已有结构推导来源，语义可靠性
+    # 达标）；②方向派生修复（scanner A2）：net=0 不再静默偏置为空头，改由 4h 闸门方向
+    # 兜底、无闸门方向则不出信号（现网 net=0 不可达，属防御性修复）；③深回撤语义显性化
+    # （A3）：EMA55/EMA144 慢速深回撤必被 1h 方向票/方向冲突关挡下、仅插针式可过——写入
+    # 代码注释 + 漏斗 direction_flip/votes 关判定说明。
+    RULE_VERSION: str = "v2026-10-17"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

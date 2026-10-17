@@ -287,6 +287,12 @@ def _detect_ema_touch(
     排列门（EMA55>EMA144 在深回撤时先杀）；
     ③ 4h 上下文门：4h 方向由 scanner gate_4h 经 htf_dir 传入，None（4h 数据不可用/
     gate 降级）时 fail-closed 不出该触点（防用 1h 方向冒充 4h 方向）
+
+    A3 深回撤语义（2026-10-17 docs/23）：本函数只负责「几何命中」，深回撤
+    （ema55/ema144）能否真正产出信号还取决于 scanner 上游的方向票关（③）与方向
+    冲突关（⑤）——价格深跌到中期/长期均线通常已打翻 1h 方向票，使定向与 4h 多头
+    闸门相反而被 ⑤ 挡下；故「慢速深回撤」实际几乎不产生信号，仅「插针式触及」
+    （单根影线插到均线、收盘仍强、1h 票未转向）可穿过。此处命中率低≠缺陷。
     """
     closes = np.array([float(k[4]) for k in klines[:-1]], dtype=float)
     if period != 21 and len(closes) < max(flt.ema_touch_min_bars, int(period * 1.7)):

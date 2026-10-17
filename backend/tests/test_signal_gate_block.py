@@ -103,9 +103,9 @@ def test_gate_block_pullback_touch_object():
     assert "两段式确认" in block
     assert "0.3%" in block  # structure_touch_band_pct 生效值
     # 未配置 pullback_touch_refs → 启用列表回落 DEFAULT_TOUCH_REFS
-    # （2026-10-16 起 = swing + 均线族四触点，含复出的 ema144）
+    # （2026-10-16 起 = swing + 均线族四触点含复出的 ema144；2026-10-17 起再补 retest，docs/23 A1）
     assert (
-        "当前启用触点: 摆动结构位（swing）、EMA21（ema21）、"
+        "当前启用触点: 突破回测位（retest）、摆动结构位（swing）、EMA21（ema21）、"
         "EMA21(4h)（ema21_4h）、EMA55（ema55）、EMA144（ema144）"
         in block
     )

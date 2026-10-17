@@ -474,6 +474,22 @@ def _run_migrations(engine):
             "  AND scan_filters->'pullback_touch_refs' "
             "        <@ '[\"swing\",\"ema21\",\"ema21_4h\",\"ema55\"]'::jsonb"
         ))
+        # retest 触点默认启用（2026-10-17 docs/23 方案 A1，用户拍板直接上线不做影子）：
+        # 与上方 ema144 迁移同款「存量未定制一致化」——凡「恰好等于现行默认 5 类」
+        # （swing/ema21/ema21_4h/ema55/ema144，即 ema144 迁移后的默认集）的存量行，
+        # 一次性补入 retest（前插，与 DEFAULT_TOUCH_REFS 顺序一致）。集合相等用
+        # jsonb 双向包含（忽略顺序），补后数组变 6 元 → 条件自动失效，天然幂等；
+        # 不触碰操作者已定制的白名单（增删任一项即不匹配，自行在配置页勾选）。
+        # 上方 ema144 迁移先执行，故本次匹配的是「已补过 ema144」的 5 元集。
+        conn.execute(text(
+            "UPDATE system_config SET scan_filters = jsonb_set("
+            "  scan_filters, '{pullback_touch_refs}',"
+            "  '[\"retest\"]'::jsonb || scan_filters->'pullback_touch_refs') "
+            "WHERE scan_filters->'pullback_touch_refs' "
+            "        @> '[\"swing\",\"ema21\",\"ema21_4h\",\"ema55\",\"ema144\"]'::jsonb "
+            "  AND scan_filters->'pullback_touch_refs' "
+            "        <@ '[\"swing\",\"ema21\",\"ema21_4h\",\"ema55\",\"ema144\"]'::jsonb"
+        ))
         # 黑名单永久档（2026-10-11）：origin 加 stop_hard 值（9 字符），列 8→16 扩宽
         conn.execute(text(
             "ALTER TABLE symbol_blacklist "

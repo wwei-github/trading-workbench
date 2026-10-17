@@ -130,10 +130,41 @@ def test_votes_detail_render():
 
 
 def test_reject_direction_flip():
-    """方向票空头 + 闸门多头 → stage=direction_flip（4h 方向硬门）"""
+    """方向票空头 + 闸门多头 → stage=direction_flip（4h 方向硬门）；2026-10-17 A3
+    起附带方向对撞判定说明（漏斗「判定说明」列展示）"""
     rv: dict = {}
     cand, _ = _detect(rv, votes=_SHORT_VOTES, gate=("long", {}))
-    assert cand is None and rv == {"stage": "direction_flip"}
+    assert cand is None and rv["stage"] == "direction_flip"
+    assert "方向票净差-2" in rv["detail"]
+    assert "与4h闸门方向（多头）相反" in rv["detail"]
+
+
+# ── 方向派生 A2 修复（2026-10-17 docs/23）：net=0 不再静默偏置为空头 ──────
+
+def test_net_zero_falls_back_to_gate_direction():
+    """net=0（多空各1）且 gate_4h 多头 → A2 后定向改由闸门方向兜底（=多头），
+    不再恒判空：旧 `else -1` 会把定向置空与闸门冲突而撞 direction_flip，修复后
+    与闸门同向 → 正常进入触发层（stub 无触发 → no_trigger）。票数桩满足 votes 关
+    （max≥2）以隔离被测点（真实 3 票链路 net=0 不可达，见 scanner A2 注释）"""
+    rv: dict = {}
+    votes = {"bull": ["MACD", "RSI"], "bear": ["KDJ", "布林带"],
+             "bull_n": 2, "bear_n": 2, "net": 0, "voted": 4, "results": {}}
+    cand, _ = _detect(rv, votes=votes, gate=("long", {}), trigger=(None, None))
+    assert cand is None and rv["stage"] == "no_trigger"
+
+
+def test_net_zero_no_gate_direction_rejects():
+    """net=0 且无 4h 闸门方向（htf 空 → gate=None）→ A2 无方向依据，不出信号，
+    漏斗记 votes 关；活跃 pending 按方向失守过期（防御路径）"""
+    rv: dict = {}
+    votes = {"bull": ["MACD", "RSI"], "bear": ["KDJ", "布林带"],
+             "bull_n": 2, "bear_n": 2, "net": 0, "voted": 4, "results": {}}
+    pend = {"id": 1, "direction": 1, "stage1_candle_open": 1_700_000_000_000,
+            "touch_ref": "ema21"}
+    cand, op = _detect(rv, votes=votes, htf_nonempty=False, pending=pend)
+    assert cand is None and rv["stage"] == "votes"
+    assert "净差为0" in rv["detail"]
+    assert op == {"op": "expire", "reason": "direction_flip"}
 
 
 def test_structure_1h_gate_retired_signal_survives():
