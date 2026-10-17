@@ -589,6 +589,9 @@ export default function TradesPanel() {
     }
   }, [scopeRows, summary])
 
+  // 正在挂单数量（2026-10-17）：挂单档的入口数字口径——「进行中」数=在跑单数，
+  // 对应地「挂单」数=当前正在挂单(pending) 的数量，而非含已成交/已取消的总数
+  const pendOpen = pendingRows.filter((r) => r.status === 'pending').length
   // 状态筛选选项：进行中 = 三态聚合（运行中/TP1已止盈/TP2已止盈），带当前数量与状态色点；
   // 挂单（2026-10-17）= 限价挂单入场清单，独立一档置于「进行中」后，选中后主区切换为
   // 挂单三类视图（挂单中/已成交/已取消），交易记录表让位隐藏
@@ -598,7 +601,7 @@ export default function TradesPanel() {
     return [
       { value: '', label: '全部', count: scopeRows.length, dot: null as string | null },
       { value: 'running', label: '进行中', count: running, dot: '#1677ff' },
-      { value: 'pending', label: '挂单', count: pendingRows.length, dot: '#fa8c16' },
+      { value: 'pending', label: '挂单', count: pendOpen, dot: '#fa8c16' },
       { value: 'CLOSED', label: '已平仓', count: count('CLOSED'), dot: '#8c8c8c' },
       { value: 'FAILED', label: '失败', count: count('FAILED'), dot: '#ff4d4f' },
     ]
@@ -1577,7 +1580,7 @@ export default function TradesPanel() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fa8c16' }} />
             <span style={{ fontSize: 13, fontWeight: 600, color: 'rgba(0,0,0,0.88)' }}>
-              挂单 · {pendingRows.length}
+              挂单 · {pendOpen}
             </span>
             <Segmented
               size="small"
@@ -1614,12 +1617,7 @@ export default function TradesPanel() {
                 ),
               },
               {
-                title: '账号', dataIndex: 'account_key', key: 'account_key', width: 110,
-                render: (v: string | null, r: PendingEntry) =>
-                  v || (r.testnet ? 'testnet-1（回落）' : 'live-1（回落）'),
-              },
-              {
-                title: '挂单价', dataIndex: 'entry_price', key: 'entry_price', width: 150,
+                title: '挂单价', dataIndex: 'entry_price', key: 'entry_price', width: 170,
                 render: (v: number | null, r: PendingEntry) => (
                   <span style={{ color: '#1677ff', fontWeight: 600 }}>
                     {pendPrice(v)}
@@ -1632,11 +1630,8 @@ export default function TradesPanel() {
                   </span>
                 ),
               },
-              { title: '止损', dataIndex: 'stop_loss', key: 'stop_loss', width: 100, render: pendPrice },
-              { title: '止盈1', dataIndex: 'tp1', key: 'tp1', width: 100, render: pendPrice },
-              { title: '止盈2', dataIndex: 'tp2', key: 'tp2', width: 100, render: pendPrice },
               {
-                title: '状态', dataIndex: 'status', key: 'status', width: 120,
+                title: '状态', dataIndex: 'status', key: 'status', width: 130,
                 render: (s: PendingEntry['status']) => {
                   const meta = PEND_GROUP_META[pendGroup(s)]
                   const detail = s === 'pending' ? ''
