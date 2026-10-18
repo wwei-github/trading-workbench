@@ -101,6 +101,7 @@ def _notify_daily_report_body(task_id: str) -> dict:
                 TradeRecord.closed_at >= day_start.replace(tzinfo=None),
                 TradeRecord.closed_at < day_end.replace(tzinfo=None),
                 TradeRecord.status == "CLOSED",
+                TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
             )
         ).scalars().all()
         closed = len(closed_rows)
@@ -114,12 +115,14 @@ def _notify_daily_report_body(task_id: str) -> dict:
         # 胜率口径：全部历史已闭单（不只当日），与交易记录页概览一致
         total_closed = db.execute(
             select(func.count(TradeRecord.id)).where(
-                TradeRecord.status == "CLOSED"
+                TradeRecord.status == "CLOSED",
+                TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
             )
         ).scalar() or 0
         total_win = db.execute(
             select(func.count(TradeRecord.id)).where(
                 TradeRecord.status == "CLOSED",
+                TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
                 TradeRecord.realized_pnl > 0,
             )
         ).scalar() or 0

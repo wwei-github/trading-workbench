@@ -470,6 +470,8 @@ export interface TradeRecord {
   signal_type?: string | null // 触发信号类型（trigger_breakout 等；null=导入持仓/旧行）
   pattern?: string | null // 触发K线形态（hammer 等；突破类为 null）
   testnet: boolean // 测试网/正式网
+  excluded?: boolean // 异常单标记（2026-10-18）：人工认定（如测试网伪盈亏），统计/风控/日报全链路剔除
+  excluded_at?: string | null // 标记时刻（UTC）
   account_key?: string | null // 开单账号（docs/17：testnet-1/live-N；null=旧行按 testnet 回落）
   ai_snapshot: AIAnalysis | null // 开单时 AI 分析结论快照
   ai_analysis_id: string | null

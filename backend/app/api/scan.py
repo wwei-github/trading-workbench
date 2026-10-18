@@ -1247,6 +1247,7 @@ def review_attribute(body: dict, db: Session = Depends(get_db)):
         select(TradeRecord)
         .where(
             TradeRecord.status == "CLOSED",
+            TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
             TradeRecord.exit_reason.isnot(None),
         )
         .order_by(TradeRecord.closed_at.desc())

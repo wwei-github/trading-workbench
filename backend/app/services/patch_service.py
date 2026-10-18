@@ -68,6 +68,7 @@ def window_stats(db: Session, days: int = 7) -> dict:
         select(TradeRecord).where(
             TradeRecord.closed_at >= since,
             TradeRecord.realized_pnl.is_not(None),
+            TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
         )
     ).scalars().all()
 
@@ -158,6 +159,7 @@ def run_trigger(db: Session) -> dict:
                 select(TradeRecord).where(
                     TradeRecord.closed_at >= datetime.utcnow() - timedelta(days=7),
                     TradeRecord.realized_pnl.is_not(None),
+                    TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
                     TradeRecord.error_tags.isnot(None),
                 ).order_by(TradeRecord.closed_at.desc()).limit(50)
             ).scalars().all()

@@ -60,6 +60,8 @@ class TradeOut(BaseModel):
     htf: Optional[dict] = None  # 4h 背景快照（经 AI分析→扫描结果 votes_json 取，旧数据 None）
     ai_advice: Optional[dict] = None  # AI 持仓诊断（docs/16，NULL=未诊断）
     ai_advice_at: Optional[datetime] = None  # 最近诊断时间
+    excluded: bool = False  # 异常单标记（2026-10-18）：标记后全链路剔除（统计/复盘/熔断/日报）
+    excluded_at: Optional[datetime] = None  # 标记时刻（未标记 None）
 
     class Config:
         from_attributes = True

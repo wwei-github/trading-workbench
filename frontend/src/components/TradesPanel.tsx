@@ -700,6 +700,28 @@ export default function TradesPanel() {
     }
   }
 
+  // 异常单标记（2026-10-18）：人工认定测试网伪盈亏等异常单——标记后资金分析/
+  // 复盘统计、熔断闸门、飞书日报全链路剔除该单，避免伪盈亏扭曲真实口径；
+  // 行本身保留在列表与库中可审计（灰显 + 「异常」标签），可随时取消
+  const [excludingId, setExcludingId] = useState<string | null>(null)
+  const handleToggleExcluded = async (rec: TradeRecord) => {
+    const next = !rec.excluded
+    setExcludingId(rec.id)
+    try {
+      await scanApi.trades.setExcluded(rec.id, next)
+      message.success(
+        next
+          ? `${rec.symbol} 已标记为异常单（统计/风控/日报口径剔除）`
+          : `${rec.symbol} 已取消异常单标记`,
+      )
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '标记异常单失败，请稍后重试')
+    } finally {
+      setExcludingId(null)
+      await fetchData()
+    }
+  }
+
   // 挂单剩余时间展示：秒 → mm:ss / hh:mm:ss
   const fmtLeft = (sec: number | null): string => {
     if (sec === null || sec <= 0) return '即将撤销'
@@ -1056,6 +1078,12 @@ export default function TradesPanel() {
       width: 110,
       render: (v: string, rec) => {
         const s = statusMeta(rec)
+        // 异常单标记（2026-10-18）：与状态标签同行显示，一眼看出该单已被剔除口径
+        const exclTag = rec.excluded ? (
+          <Tooltip title="已标记为异常单（人工认定，如测试网伪盈亏）：不计入资金分析/复盘统计、不触发熔断、不进飞书日报；行保留可审计，可在操作列取消">
+            <Tag color="red" style={{ marginInlineStart: 6, marginInlineEnd: 0 }}>异常</Tag>
+          </Tooltip>
+        ) : null
         // 只显当前状态标签；止损移动/出场等明细展开行「操作历史」查看。
         // 失败状态保留原因小字（悬停看完整报错）
         if (v === 'FAILED' && rec.fail_reason) {
@@ -1063,6 +1091,7 @@ export default function TradesPanel() {
             <Tooltip title={rec.fail_reason}>
               <div>
                 <Tag color={s.color}>{s.label}</Tag>
+                {exclTag}
                 <div
                   style={{
                     fontSize: 11,
@@ -1080,7 +1109,12 @@ export default function TradesPanel() {
             </Tooltip>
           )
         }
-        return <Tag color={s.color}>{s.label}</Tag>
+        return (
+          <>
+            <Tag color={s.color}>{s.label}</Tag>
+            {exclTag}
+          </>
+        )
       },
     },
     {
@@ -1281,7 +1315,8 @@ export default function TradesPanel() {
     {
       title: '操作',
       key: 'blacklist',
-      width: 160,
+      // 2026-10-18：新增「标记/取消异常」按钮（对账/拉黑并存），列宽 160→210
+      width: 210,
       fixed: 'right',
       render: (_: unknown, rec) => {
         const inBl = blacklistSet.has(rec.symbol)
@@ -1316,6 +1351,30 @@ export default function TradesPanel() {
                 </Button>
               </Tooltip>
             )}
+            {/* 异常单标记（2026-10-18）：测试网伪盈亏等人工认定单，标记后全链路剔除 */}
+            <Popconfirm
+              title={rec.excluded ? `取消 ${rec.symbol} 的异常单标记？` : `标记 ${rec.symbol} 为异常单？`}
+              description={
+                rec.excluded
+                  ? '取消后该单重新计入资金分析/复盘统计、熔断闸门与飞书日报'
+                  : '标记后该单不计入资金分析/复盘统计、不触发熔断、不进飞书日报；行保留可审计'
+              }
+              okText={rec.excluded ? '取消标记' : '标记异常'}
+              okButtonProps={{ danger: !rec.excluded }}
+              cancelText="返回"
+              onConfirm={() => handleToggleExcluded(rec)}
+            >
+              <Tooltip title="异常单：伪盈亏（如测试网模拟撮合）不参与任何统计口径">
+                <Button
+                  size="small"
+                  type="link"
+                  danger={!rec.excluded}
+                  loading={excludingId === rec.id}
+                >
+                  {rec.excluded ? '取消异常' : '标记异常'}
+                </Button>
+              </Tooltip>
+            </Popconfirm>
             {inBl ? (
               <Popconfirm
                 title="移出黑名单？"
@@ -1557,7 +1616,8 @@ export default function TradesPanel() {
       <div style={{ fontSize: 12, color: '#999', marginTop: -4 }}>
         保证金余额 = 钱包余额 + 未实现盈亏；今日口径按北京时间自然日（闭单时刻归属当日）；
         今日盈亏 = （今日已实现 + 全部未实现）÷ 期初钱包（当前钱包 − 今日已实现，忽略日内划转）；
-        胜率 = 净盈利笔数占比；平均盈亏比 = 全部已结算单的 R 均值（净盈亏÷计划风险额，含止盈止损）
+        胜率 = 净盈利笔数占比；平均盈亏比 = 全部已结算单的 R 均值（净盈亏÷计划风险额，含止盈止损）；
+        已标记的「异常单」不计入以上任何口径（也不触发熔断、不进飞书日报）
       </div>
 
       {/* 挂单入场历史（docs/27，2026-10-17 扩展为三类视图）：现价盈亏比不足时在
@@ -1734,7 +1794,8 @@ export default function TradesPanel() {
                     prev.includes(rec.id) ? prev.filter((k) => k !== rec.id) : [...prev, rec.id],
                   )
                 },
-                style: { cursor: 'pointer' },
+                // 异常单灰显（2026-10-18）：保留可审计，同时提示该行不参与统计口径
+                style: { cursor: 'pointer', opacity: rec.excluded ? 0.55 : undefined },
               })}
               pagination={{
                 current: page,

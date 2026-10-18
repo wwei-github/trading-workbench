@@ -104,6 +104,7 @@ def account_summary(
         today_realized = db.execute(
             select(func.coalesce(func.sum(TradeRecord.realized_pnl), 0.0)).where(
                 TradeRecord.status == "CLOSED",
+                TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
                 acc_cond,
                 TradeRecord.closed_at >= day_start_utc,
             )
@@ -111,6 +112,7 @@ def account_summary(
         realized = db.execute(
             select(func.coalesce(func.sum(TradeRecord.realized_pnl), 0.0)).where(
                 TradeRecord.status == "CLOSED",
+                TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
                 acc_cond,
             )
         ).scalar_one()
@@ -488,6 +490,29 @@ def close_market(trade_id: str, db: Session = Depends(get_db)):
     return res
 
 
+@router.post("/{trade_id}/excluded")
+def set_trade_excluded(
+    trade_id: str,
+    excluded: bool = Query(True, description="true=标记异常单（默认）；false=取消标记"),
+    db: Session = Depends(get_db),
+):
+    """标记/取消标记异常单（2026-10-18）：人工认定测试网伪盈亏单（模拟撮合
+    导致的伪巨亏，如 HYPEUSDT 一笔 -2330.51）。标记后该单不再参与统计/风控
+    熔断/定时日报（全链路剔除），行本身保留在库中可审计；可在页面取消
+    （excluded=false）。query 参数便于 curl 直接调（缺省 true=标记）。"""
+    try:
+        tid = UUID(trade_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="交易记录不存在")
+    rec = db.get(TradeRecord, tid)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="交易记录不存在")
+    rec.excluded = excluded
+    rec.excluded_at = datetime.utcnow() if excluded else None
+    db.commit()
+    return {"id": str(rec.id), "excluded": rec.excluded}
+
+
 def _bj_day(dt: datetime) -> str:
     """UTC naive → 北京时间自然日键（DB 存 UTC，北京 = UTC+8）"""
     return (dt + timedelta(hours=8)).date().isoformat()
@@ -551,6 +576,7 @@ def fund_analytics(
     base = select(TradeRecord).where(
         TradeRecord.status == "CLOSED",
         TradeRecord.closed_at.is_not(None),
+        TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）：派生曲线/分布全部口径
     )
     if trade_cond is not None:
         base = base.where(trade_cond)

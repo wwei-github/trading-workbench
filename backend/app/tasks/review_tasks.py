@@ -328,6 +328,7 @@ def run_ai_attribution_task():
                 select(TradeRecord)
                 .where(
                     TradeRecord.status == "CLOSED",
+                    TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
                     TradeRecord.exit_reason.isnot(None),
                     TradeRecord.attributed_at.is_(None),
                 )
@@ -365,6 +366,7 @@ def run_ai_attribution_task():
             select(TradeRecord)
             .where(
                 TradeRecord.status == "CLOSED",
+                TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
                 TradeRecord.exit_reason.isnot(None),
                 TradeRecord.attributed_at.is_(None),
             )

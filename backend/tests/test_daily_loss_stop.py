@@ -25,16 +25,19 @@ _DDL = (
     " testnet BOOLEAN,"
     " status VARCHAR(16),"
     " closed_at TIMESTAMP,"
+    " excluded BOOLEAN,"
     " realized_pnl FLOAT)"
 )
 
 
-def _row(account_key, testnet, status, closed_at, pnl):
+def _row(account_key, testnet, status, closed_at, pnl, excluded=False):
     ak = "NULL" if account_key is None else f"'{account_key}'"
+    ex = 1 if excluded else 0
     return (
-        f"INSERT INTO trade_records (id, account_key, testnet, status, closed_at, realized_pnl) "
+        f"INSERT INTO trade_records "
+        f"(id, account_key, testnet, status, closed_at, excluded, realized_pnl) "
         f"VALUES ('{uuid.uuid4()}', {ak}, {int(testnet)}, '{status}', "
-        f"'{closed_at.isoformat(sep=' ')}', {pnl})"
+        f"'{closed_at.isoformat(sep=' ')}', {ex}, {pnl})"
     )
 
 
@@ -99,6 +102,18 @@ def test_other_account_not_fused(db, monkeypatch):
 def test_other_env_not_matched(db):
     """测试网账号（live 口径 NULL 行不回落）：仅 testnet=true 的 NULL 行 -77"""
     assert _daily_closed_pnl(db, "any-live-missing", True) == pytest.approx(-77.0)
+
+
+def test_excluded_trade_not_counted(db):
+    """异常单标记（2026-10-18）：excluded=true 的已平仓单不计入当日亏损熔断口径。
+
+    模拟测试网伪巨亏单（模拟撮合 -2330.51）标记后被熔断闸门彻底剔除——
+    即使数量级远超熔断阈值也不触发。"""
+    base = _daily_closed_pnl(db, "live-1", False)
+    db.execute(text(_row(
+        "live-1", False, "CLOSED", datetime.utcnow(), -2330.51, excluded=True)))
+    db.commit()
+    assert _daily_closed_pnl(db, "live-1", False) == pytest.approx(base)
 
 
 # ── breaker_status_by_net（2026-10-04 顶部卡片「熔断状态」列） ─────────

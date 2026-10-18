@@ -306,6 +306,14 @@ export const scanApi = {
           { timeout: 60000 },
         )
         .then((r) => r.data),
+    // 异常单标记（2026-10-18）：人工认定测试网伪盈亏等异常单，标记后资金分析/
+    // 复盘统计、熔断闸门、飞书日报全链路剔除该单；行本身保留可审计、可取消
+    setExcluded: (tradeId: string, excluded: boolean) =>
+      api
+        .post<{ id: string; excluded: boolean }>(`/trades/${tradeId}/excluded`, null, {
+          params: { excluded },
+        })
+        .then((r) => r.data),
     // 市价平仓（与飞书卡片按钮同源）：同步执行约 2~5s，立即结算落终态
     closeMarket: (tradeId: string) =>
       api

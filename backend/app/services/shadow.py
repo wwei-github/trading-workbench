@@ -882,6 +882,7 @@ def tag_reentry_backfill(batch: int = 40, days: int = 90) -> int:
         rows = db.execute(
             select(TradeRecord).where(
                 TradeRecord.status == "CLOSED",
+                TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
                 TradeRecord.exit_reason == REENTRY_EXIT_REASON,
                 TradeRecord.closed_at.isnot(None),
                 TradeRecord.closed_at >= now - timedelta(days=days),

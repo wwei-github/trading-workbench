@@ -51,6 +51,7 @@ def backfill_costs(db: Session, trader: BinanceTrader, limit: int = _BACKFILL_LI
         select(TradeRecord)
         .where(
             TradeRecord.status == "CLOSED",
+            TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
             TradeRecord.exit_reason.isnot(None),
             TradeRecord.fee_total.is_(None),
         )
@@ -238,6 +239,7 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
     cutoff = datetime.utcnow() - timedelta(days=days)
     q = select(TradeRecord).where(
         TradeRecord.status == "CLOSED",
+        TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
         TradeRecord.exit_reason.isnot(None),
         TradeRecord.closed_at >= cutoff,
     )

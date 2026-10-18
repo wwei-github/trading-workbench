@@ -379,6 +379,18 @@ def _run_migrations(engine):
             "ALTER TABLE trade_records "
             "ADD COLUMN IF NOT EXISTS hold_warn_level INTEGER NOT NULL DEFAULT 0"
         ))
+        # 异常单标记（2026-10-18）：测试网模拟撮合曾产出伪盈亏单（HYPEUSDT 一笔
+        # -2330.51 伪巨亏），污染资金分析曲线/复盘统计，甚至误触发测试网当日亏损
+        # 熔断/周月回撤闸门。人工标记（excluded=True）后全链路剔除该单——统计/复盘/
+        # 熔断闸门/日报口径一致剔除，行本身保留在库中可审计，可在页面取消标记。
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS excluded BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS excluded_at TIMESTAMP"
+        ))
         # 止损锚类型（docs/23，2026-09-29）：structure/near，仅突破类信号有值，
         # 旧行 NULL 按 structure 理解
         conn.execute(text(

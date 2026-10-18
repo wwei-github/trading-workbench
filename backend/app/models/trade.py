@@ -93,6 +93,12 @@ class TradeRecord(Base):
     # 巡检幂等去重用（每 30 分钟一轮，不重发已发级别；平仓后不再参与判定）
     hold_warn_level: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # 异常单标记（2026-10-18）：人工认定测试网伪盈亏单（模拟撮合导致的伪巨亏，
+    # 如 HYPEUSDT 一笔 -2330.51）。标记后全链路剔除——统计/复盘/风控熔断闸门/
+    # 定时日报均不计入该单，行本身保留在库中可审计；可在页面取消标记。
+    excluded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    excluded_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     # 规则版本（docs/24 A0，2026-09-29）：开单时规则集快照（如 v2026-09-29），
     # 复盘/归因按版本分组对比，NULL=标记上线前的旧行（按 legacy 理解）
     rule_version: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)

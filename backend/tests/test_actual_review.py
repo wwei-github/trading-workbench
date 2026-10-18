@@ -68,3 +68,15 @@ def test_rr_band_threshold_follows_config_override(db):
     bands = _rr_band_groups(build_actual_review(db, days=7))
     assert bands["RR达标"]["count"] == 1
     assert "擦边过闸" not in bands
+
+
+def test_excluded_trade_not_counted_in_review(db):
+    """异常单标记（2026-10-18）：excluded=true 的已平仓单不计入复盘统计口径
+    （笔数/净盈亏），伪巨亏不污染资金分析/复盘。"""
+    fake = _rec(1.6, pnl=-2330.51)
+    fake.excluded = True
+    db.add_all([_rec(1.6, pnl=10.0), fake])
+    db.commit()
+    result = build_actual_review(db, days=7)
+    assert result["overview"]["count"] == 1
+    assert result["overview"]["pnl"] == pytest.approx(10.0)

@@ -1071,6 +1071,7 @@ def _closed_pnl_since(db: Session, account_key: Optional[str], testnet: bool,
         select(func.coalesce(func.sum(TradeRecord.realized_pnl), 0.0)).where(
             _adopt_acc_cond(SimpleNamespace(account_key=account_key, testnet=testnet)),
             TradeRecord.status == "CLOSED",
+            TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）：伪亏损不得触发熔断
             TradeRecord.closed_at >= since,
         )
     ).scalar_one())
@@ -1216,6 +1217,7 @@ def _consecutive_losses_today(db: Session, account_key: Optional[str], testnet: 
         select(TradeRecord.realized_pnl).where(
             _adopt_acc_cond(SimpleNamespace(account_key=account_key, testnet=testnet)),
             TradeRecord.status == "CLOSED",
+            TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
             TradeRecord.closed_at >= day_start,
         ).order_by(TradeRecord.closed_at.desc())
     ).scalars().all()
