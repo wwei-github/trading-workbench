@@ -143,6 +143,10 @@ jobs:
       # NODE_OPTIONS 抬高堆上限（2026-10-16）：runner 侧 vite build（含 mermaid）
       # 峰值贴 Node 20 默认 ~2GB old-space 帽，rendering chunks 阶段偶发
       # "JavaScript heap out of memory"（exit 134，run 38850324395）。抬到 4GB 留余量。
+      #
+      # docs wiki（2026-10-18）：由 frontend 的 prebuild 钩子（scripts/sync-wiki.mjs）完成——
+      # 增量生成 docs/ → docs-wiki/ 并发布到 frontend/public/wiki/，再由 vite 拷入 dist。
+      # 这里不再单独跑生成器或手写 cp：生成/发布规则收在一处，dev 与 build 同路径。
       - name: 构建前端产物
         if: steps.prep.outputs.scope != 'backend'
         env:
@@ -151,25 +155,6 @@ jobs:
           cd frontend
           npm ci --no-audit --no-fund
           npm run build
-
-      # docs wiki 增量生成（2026-10-18）：scripts/build_docs_wiki.mjs 按 .build-manifest.json
-      # 里的内容 sha256 比对，**只重生成 docs/ 中有变更的那几篇**，不是每次全量。
-      # 产出并入前端 dist，随站点发布到 /wiki/。
-      - name: 生成 docs wiki（增量）并并入前端产物
-        if: steps.prep.outputs.scope != 'backend'
-        run: |
-          # docs-wiki/ 需随仓库提交（docs-wiki.html、assets/wiki.js、_shared 为手写源；
-          # assets/docs/*.js 与 .build-manifest.json 为生成物，提交后 CI 才能做增量比对）；
-          # 未提交时本步骤自动跳过，不阻塞部署。
-          if [ ! -f docs-wiki/docs-wiki.html ]; then
-            echo "docs-wiki/ 未纳入版本库，跳过 wiki 生成与发布"
-            exit 0
-          fi
-          node scripts/build_docs_wiki.mjs
-          mkdir -p frontend/dist/wiki
-          cp -R docs-wiki/. frontend/dist/wiki/
-          rm -f frontend/dist/wiki/.build-manifest.json
-          cp docs-wiki/docs-wiki.html frontend/dist/wiki/index.html
 
       - name: 打包前端产物（dist.tar.gz）
         if: steps.prep.outputs.scope != 'backend'

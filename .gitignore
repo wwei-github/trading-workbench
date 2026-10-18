@@ -35,6 +35,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+# 前端 public/ 下由 scripts/sync-wiki.mjs 生成并发布的 wiki 浏览数据
+# （源在仓库根 docs-wiki/，属构建产物，不入库）
+frontend/public/wiki/
 
 # ===== IDE / Editor =====
 .vscode/*
