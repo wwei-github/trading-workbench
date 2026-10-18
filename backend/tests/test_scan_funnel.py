@@ -207,6 +207,26 @@ def test_vote_gate_disabled_no_votes_no_gate_rejects():
     assert "无方向依据" in rv["detail"]
 
 
+def test_vote_gate_disabled_no_votes_with_gate_builds_candidate():
+    """方向票关关闭且指标全不可用（votes=None）但有 4h 闸门方向 → 由闸门兜底定向，
+    照常组装候选；下游 compute_quality_score / _votes_snapshot 须对 votes=None 安全
+    （2026-10-18 bug 修复：此前会 TypeError 崩溃），票快照落中性空票、质量分按空票计"""
+    from app.services.strategy.trigger import PULLBACK_CONFIRM
+
+    kl = [[1_700_000_000_000 + i * 3_600_000, 100.0, 101.0, 99.0, 100.0, 10.0, 10.0]
+          for i in range(12)]
+    trig = {"type": PULLBACK_CONFIRM, "direction": 1, "position": "support",
+            "pattern": "hammer", "breakout_pct": 0.5, "reason": "r",
+            "touch_ref": "ema21", "structure_gate": True}
+    rv: dict = {}
+    flt = _diag_flt(direction_vote_gate_enabled=False)
+    cand, _ = _detect(rv, kl, votes=None, gate=("long", {}), trigger=(trig, None),
+                      flt=flt)
+    assert cand is not None and rv == {}
+    assert cand["votes"] == {"bull": [], "bear": [], "bull_n": 0, "bear_n": 0,
+                             "net": 0, "voted": 0}
+
+
 def test_structure_1h_gate_retired_signal_survives():
     """筛选链 1H 结构门退役（2026-10-12 O7；2026-10-15 O8 再降级重罚）：scanner
     不再整体否决信号——触发链照常返回候选（structure_gate=False 也照常出候选，

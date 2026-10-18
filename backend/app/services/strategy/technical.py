@@ -1304,8 +1304,10 @@ def compute_quality_score(
     - 突破触发且布林带宽分位 ≤10 -5（带宽收窄的突破易假）
     - 1H 结构门未过（structure_gate=False）−STRUCTURE_GATE_PENALTY
     """
-    by_short = dict(votes["results"])
-    score = 50 + direction * votes["net"] * 10  # 方向票 net∈{1,2,3} → 基础 60/70/80
+    # votes=None（2026-10-18 方向票关关闭后，指标全不可用且 4h 闸门兜底定向的
+    # 罕见路径可达）：按无票处理——空票集、net=0、基础分 50，各修饰项自动跳过
+    by_short = dict(votes["results"]) if votes else {}
+    score = 50 + direction * (votes["net"] if votes else 0) * 10  # net∈{1,2,3} → 基础 60/70/80
 
     htf = by_short.get(HTF_SHORT)
     if htf and int(htf.get("dir") or 0):

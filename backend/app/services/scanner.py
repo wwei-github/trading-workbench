@@ -508,10 +508,17 @@ def detect_indicator_candidate(
     }, pending_op
 
 
-def _votes_snapshot(votes: dict, stabilize: Optional[dict] = None) -> dict:
+def _votes_snapshot(votes: Optional[dict], stabilize: Optional[dict] = None) -> dict:
     """指标票数快照（含 4h 背景级别，前端「4h方向」列展示；旧行无此键显示 -）。
     stabilize：回踩企稳加分项证据（docs/19 §3.3 条件2/3，可 None）——
-    落 votes_json["stabilize"] 供复盘审计（加分名目/触碰根量比/MACD 零轴态）"""
+    落 votes_json["stabilize"] 供复盘审计（加分名目/触碰根量比/MACD 零轴态）。
+    votes=None（2026-10-18 方向票关关闭后指标全不可用、4h 闸门兜底定向的罕见
+    路径可达）：返回中性空票快照，避免下游 KeyError/TypeError"""
+    if not votes:
+        snap = {"bull": [], "bear": [], "bull_n": 0, "bear_n": 0, "net": 0, "voted": 0}
+        if stabilize:
+            snap["stabilize"] = stabilize
+        return snap
     snap = {
         "bull": votes["bull"], "bear": votes["bear"],
         "bull_n": votes["bull_n"], "bear_n": votes["bear_n"],
