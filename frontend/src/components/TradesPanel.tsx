@@ -203,10 +203,11 @@ interface OverviewMetric {
   color?: string
 }
 
-// 概览面板分组：accent=顶部彩条/圆点颜色
+// 概览面板分组：accent=顶部彩条/圆点颜色；cols=指标网格列数（默认 5，指标多于 5 项时调宽）
 interface OverviewGroup {
   accent: string
   title: string
+  cols?: number
   items: OverviewMetric[]
 }
 
@@ -563,7 +564,8 @@ export default function TradesPanel() {
 
   // 概览统计：在跑（三态，从当前范围列表算，按网拆分显示 2026-10-04）；
   // 其余取自 analytics 接口（closed/wins/win_rate/net_pnl 与资金分析页同源）；
-  // avg_r = 全部已结算单 R 均值（含止盈止损，2026-10-12 取代仅计盈利单的 avg_win_r）
+  // avg_r = 全部已结算单 R 均值（含止盈止损，2026-10-12 取代仅计盈利单的 avg_win_r）；
+  // avgWinR = 仅盈利单 R 均值，与 avg_r 并列展示（亏损单已剔除，偏乐观，勿与 avg_r 混用）
   const stats = useMemo(() => {
     const runningRows = scopeRows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status))
     const running = runningRows.length
@@ -572,7 +574,18 @@ export default function TradesPanel() {
     const runningTn = runningRows.filter((r) => r.testnet).length
     const runningLive = running - runningTn
     if (!summary) {
-      return { running, runningTn, runningLive, closed: 0, wins: 0, loses: 0, winRate: null as number | null, totalPnl: 0, avgR: null as number | null }
+      return {
+        running,
+        runningTn,
+        runningLive,
+        closed: 0,
+        wins: 0,
+        loses: 0,
+        winRate: null as number | null,
+        totalPnl: 0,
+        avgR: null as number | null,
+        avgWinR: null as number | null,
+      }
     }
     const wins = summary.wins
     const closed = summary.closed
@@ -586,6 +599,7 @@ export default function TradesPanel() {
       winRate: summary.win_rate,
       totalPnl: summary.net_pnl,
       avgR: summary.avg_r,
+      avgWinR: summary.avg_win_r,
     }
   }, [scopeRows, summary])
 
@@ -1494,7 +1508,7 @@ export default function TradesPanel() {
         </Space>
       </Row>
 
-      {/* 概览条：两组面板（账户资金 5 项 / 交易统计 5 项），彩条标题 + 网格布局 */}
+      {/* 概览条：两组面板（账户资金 5 项 / 交易统计 6 项），彩条标题 + 网格布局 */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'stretch' }}>
         {/*
          * 面板样式：顶部 3px 彩条（资金=蓝 / 统计=紫）+ 白底浅阴影圆角；
@@ -1545,6 +1559,7 @@ export default function TradesPanel() {
           {
             accent: '#722ed1',
             title: '交易统计',
+            cols: 6,
             items: [
               {
                 // 运行中按网拆分（2026-10-04，与顶部在跑单卡同口径）；当前范围
@@ -1569,6 +1584,13 @@ export default function TradesPanel() {
                 value: stats.avgR === null ? '-' : `${stats.avgR > 0 ? '+' : ''}${stats.avgR.toFixed(2)}R`,
                 color: stats.avgR === null ? undefined : schemeValueColor(stats.avgR, colorScheme),
               },
+              {
+                // 仅盈利单 R 均值（2026-10-18）：与「平均盈亏比」并列，看盈利单的幅度
+                // （亏损单不计入，故通常高于平均值）
+                label: '盈利单盈亏比',
+                value: stats.avgWinR === null ? '-' : `${stats.avgWinR > 0 ? '+' : ''}${stats.avgWinR.toFixed(2)}R`,
+                color: stats.avgWinR === null ? undefined : schemeValueColor(stats.avgWinR, colorScheme),
+              },
             ],
           },
         ] as OverviewGroup[]).map((group) => (
@@ -1589,7 +1611,7 @@ export default function TradesPanel() {
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: group.accent }} />
               <span style={{ fontSize: 13, fontWeight: 600, color: 'rgba(0,0,0,0.88)' }}>{group.title}</span>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(84px, 1fr))', gap: '4px 12px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${group.cols ?? 5}, minmax(84px, 1fr))`, gap: '4px 12px' }}>
               {group.items.map((it) => (
                 <div key={it.label}>
                   <div style={{ fontSize: 12, color: '#8c8c8c', whiteSpace: 'nowrap' }}>{it.label}</div>
