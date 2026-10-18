@@ -837,6 +837,7 @@ export interface FundSummary {
   net_pnl: number; fee_total: number; funding_total: number
   avg_win_r: number | null
   avg_r: number | null
+  excluded_n: number // 已标记异常单笔数（不计入以上口径，仅提示标记是否生效）
   transfer_in: number; transfer_out: number; transfer_net: number
 }
 export interface DailyPoint { date: string; pnl: number }
