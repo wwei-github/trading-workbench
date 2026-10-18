@@ -1351,30 +1351,32 @@ export default function TradesPanel() {
                 </Button>
               </Tooltip>
             )}
-            {/* 异常单标记（2026-10-18）：测试网伪盈亏等人工认定单，标记后全链路剔除 */}
-            <Popconfirm
-              title={rec.excluded ? `取消 ${rec.symbol} 的异常单标记？` : `标记 ${rec.symbol} 为异常单？`}
-              description={
-                rec.excluded
-                  ? '取消后该单重新计入资金分析/复盘统计、熔断闸门与飞书日报'
-                  : '标记后该单不计入资金分析/复盘统计、不触发熔断、不进飞书日报；行保留可审计'
-              }
-              okText={rec.excluded ? '取消标记' : '标记异常'}
-              okButtonProps={{ danger: !rec.excluded }}
-              cancelText="返回"
-              onConfirm={() => handleToggleExcluded(rec)}
-            >
-              {/* 直接以 Button 为 Popconfirm 子节点（antd 要求子节点可承接 ref/onClick）：
-                  Popconfirm 里再套一层 Tooltip 会让浮层挂载点不确定，说明文案已写在 description */}
-              <Button
-                size="small"
-                type="link"
-                danger={!rec.excluded}
-                loading={excludingId === rec.id}
+            {/* 异常单标记（2026-10-18）：只在测试网单上提供——伪盈亏来自测试网
+                模拟撮合（如 HYPEUSDT 一笔 -2330.51）。标记后该单全链路剔除
+                （统计/复盘/熔断/日报），行保留可审计，可取消 */}
+            {rec.testnet && (
+              <Popconfirm
+                title={rec.excluded ? `取消 ${rec.symbol} 的异常单标记？` : `标记 ${rec.symbol} 为异常单？`}
+                description={
+                  rec.excluded
+                    ? '取消后该单重新计入资金分析/复盘统计、熔断闸门与飞书日报'
+                    : '标记后该单不计入资金分析/复盘统计、不触发熔断、不进飞书日报；行保留可审计'
+                }
+                okText={rec.excluded ? '取消标记' : '标记异常'}
+                okButtonProps={{ danger: !rec.excluded }}
+                cancelText="返回"
+                onConfirm={() => handleToggleExcluded(rec)}
               >
-                {rec.excluded ? '取消异常' : '标记异常'}
-              </Button>
-            </Popconfirm>
+                <Button
+                  size="small"
+                  type="link"
+                  danger={!rec.excluded}
+                  loading={excludingId === rec.id}
+                >
+                  {rec.excluded ? '取消异常' : '标记异常'}
+                </Button>
+              </Popconfirm>
+            )}
             {inBl ? (
               <Popconfirm
                 title="移出黑名单？"
