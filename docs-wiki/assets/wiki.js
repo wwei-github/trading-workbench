@@ -100,8 +100,53 @@
     return loads[id];
   }
 
-  /* ---------- 侧边导航 ---------- */
+  /* ---------- 侧边导航（三级树：模块 → 文档 → 性质） ---------- */
   var navItems = [];
+  var openKeys = {};      // 已展开的「文档」子树（key = group:docKey）
+  var closedGroups = {};  // 已收起的模块
+
+  function docRowLabel(d) {
+    return /^\d+$/.test(d.docKey) ? d.docKey + ' ' + d.docName : d.docName;
+  }
+
+  function cmpDocKey(a, b) {
+    var na = /^\d+$/.test(a), nb = /^\d+$/.test(b);
+    if (na && nb) return parseInt(a, 10) - parseInt(b, 10);
+    if (na !== nb) return na ? -1 : 1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+
+  var NATURE_ORDER = ['flow', 'tech', 'req', 'overview'];
+  function cmpNature(a, b) {
+    var ia = NATURE_ORDER.indexOf(a.nature), ib = NATURE_ORDER.indexOf(b.nature);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  }
+
+  function applyGroupState() {
+    el.nav.querySelectorAll('.group').forEach(function (g) {
+      g.classList.toggle('collapsed', !!closedGroups[g.dataset.group]);
+    });
+  }
+
+  function applyOpenState() {
+    el.nav.querySelectorAll('.doc-wrap').forEach(function (w) {
+      w.classList.toggle('open', !!openKeys[w.dataset.treeKey]);
+    });
+  }
+
+  function makeItem(doc, cls, label) {
+    var a = document.createElement('a');
+    a.className = cls;
+    a.dataset.docId = doc.id;
+    a.href = '#' + doc.id;
+    a.title = doc.title;
+    var span = document.createElement('span');
+    span.className = 'nav-label';
+    span.textContent = label;
+    a.appendChild(span);
+    navItems.push(a);
+    return a;
+  }
 
   function buildNav() {
     var frag = document.createDocumentFragment();
@@ -112,46 +157,97 @@
 
       var title = document.createElement('div');
       title.className = 'group-title';
-      title.textContent = g.name;
+      var caret = document.createElement('span');
+      caret.className = 'nav-caret';
+      caret.textContent = '\u25be';
+      title.appendChild(caret);
+      var name = document.createElement('span');
+      name.className = 'group-name';
+      name.textContent = g.name;
+      title.appendChild(name);
+      title.addEventListener('click', function () {
+        closedGroups[g.id] = !closedGroups[g.id];
+        applyGroupState();
+      });
       group.appendChild(title);
 
-      DOCS.filter(function (d) { return d.group === g.id; }).forEach(function (d) {
-        var a = document.createElement('a');
-        a.className = 'nav-item';
-        a.dataset.docId = d.id;
-        a.href = '#' + d.id;
-        var label = document.createElement('span');
-        label.className = 'nav-label';
-        label.textContent = d.label;
-        a.appendChild(label);
-        a.title = d.title;
-        group.appendChild(a);
-        navItems.push(a);
+      // 模块内按 docKey 归档（数字升序在前、非数字在后）
+      var map = {};
+      var keys = [];
+      DOCS.forEach(function (d) {
+        if (d.group !== g.id) return;
+        if (!map[d.docKey]) { map[d.docKey] = []; keys.push(d.docKey); }
+        map[d.docKey].push(d);
       });
+      keys.sort(cmpDocKey);
+      keys.forEach(function (key) {
+        var docs = map[key].slice().sort(cmpNature);
+        if (docs.length === 1) {
+          group.appendChild(makeItem(docs[0], 'nav-item nav-leaf', docRowLabel(docs[0])));
+          return;
+        }
+        var treeKey = g.id + ':' + key;
+        var wrap = document.createElement('div');
+        wrap.className = 'doc-wrap';
+        wrap.dataset.treeKey = treeKey;
+
+        var row = document.createElement('div');
+        row.className = 'nav-doc';
+        var rc = document.createElement('span');
+        rc.className = 'nav-caret';
+        rc.textContent = '\u25be';
+        row.appendChild(rc);
+        var rl = document.createElement('span');
+        rl.className = 'nav-label';
+        rl.textContent = docRowLabel(docs[0]);
+        row.appendChild(rl);
+        row.addEventListener('click', function () {
+          openKeys[treeKey] = !openKeys[treeKey];
+          applyOpenState();
+        });
+        wrap.appendChild(row);
+
+        docs.forEach(function (d) { wrap.appendChild(makeItem(d, 'nav-item nav-sub', d.label)); });
+        group.appendChild(wrap);
+      });
+
       frag.appendChild(group);
     });
     el.nav.appendChild(frag);
+    applyGroupState();
+    applyOpenState();
   }
 
   function markActive(id) {
     navItems.forEach(function (a) {
       var on = a.dataset.docId === id;
       a.classList.toggle('active', on);
-      if (on && a.scrollIntoView) a.scrollIntoView({ block: 'nearest' });
+      if (!on) return;
+      var wrap = a.closest('.doc-wrap');
+      if (wrap) openKeys[wrap.dataset.treeKey] = true;
+      var group = a.closest('.group');
+      if (group) delete closedGroups[group.dataset.group]; // 当前篇所在模块保持展开
+      applyGroupState();
+      applyOpenState();
+      if (a.scrollIntoView) a.scrollIntoView({ block: 'nearest' });
     });
   }
 
   /* ---------- 搜索（导航元数据级，保持按需加载） ---------- */
   function haystack(d) {
-    return (d.label + ' ' + d.title + ' ' + d.path).toLowerCase();
+    return (d.docKey + ' ' + d.docName + ' ' + d.label + ' ' + d.title + ' ' + d.path).toLowerCase();
   }
 
   function filterNav(query) {
     var q = query.trim().toLowerCase();
     var groups = el.nav.querySelectorAll('.group');
+    el.nav.classList.toggle('filtering', !!q);
     if (!q) {
       navItems.forEach(function (a) { a.classList.remove('hidden'); });
+      el.nav.querySelectorAll('.doc-wrap').forEach(function (w) { w.classList.remove('hidden'); });
       groups.forEach(function (g) { g.classList.remove('hidden'); });
+      applyGroupState();
+      applyOpenState();
       el.searchWrap.classList.toggle('has-value', false);
       el.searchHint.textContent = '';
       return;
@@ -160,13 +256,19 @@
     var hit = 0;
     navItems.forEach(function (a) {
       var d = byId[a.dataset.docId];
-      var hay = haystack(d);
-      var ok = terms.every(function (t) { return hay.indexOf(t) !== -1; });
+      var ok = terms.every(function (t) { return haystack(d).indexOf(t) !== -1; });
       a.classList.toggle('hidden', !ok);
       if (ok) hit++;
     });
+    // 文档行：其下无命中子项则整棵隐藏
+    el.nav.querySelectorAll('.doc-wrap').forEach(function (w) {
+      w.classList.toggle('hidden', w.querySelectorAll('.nav-item:not(.hidden)').length === 0);
+    });
+    // 搜索时展开全部模块，仅按命中决定显隐
     groups.forEach(function (g) {
-      g.classList.toggle('hidden', g.querySelectorAll('.nav-item:not(.hidden)').length === 0);
+      g.classList.remove('collapsed');
+      var any = g.querySelector('.nav-item:not(.hidden)') || g.querySelector('.doc-wrap:not(.hidden)');
+      g.classList.toggle('hidden', !any);
     });
     el.searchWrap.classList.toggle('has-value', true);
     el.searchHint.textContent = hit + ' / ' + DOCS.length + ' 篇匹配';
@@ -267,10 +369,10 @@
     var next = index < DOCS.length - 1 ? DOCS[index + 1] : null;
     var out = '<nav class="doc-nav">';
     out += prev
-      ? '<a href="#' + prev.id + '" data-doc-id="' + prev.id + '"><span class="dn-dir">← 上一篇</span><span class="dn-title">' + esc(prev.label) + '</span></a>'
+      ? '<a href="#' + prev.id + '" data-doc-id="' + prev.id + '"><span class="dn-dir">← 上一篇</span><span class="dn-title">' + esc(prev.docName + ' · ' + prev.label) + '</span></a>'
       : '<span></span>';
     out += next
-      ? '<a class="next" href="#' + next.id + '" data-doc-id="' + next.id + '"><span class="dn-dir">下一篇 →</span><span class="dn-title">' + esc(next.label) + '</span></a>'
+      ? '<a class="next" href="#' + next.id + '" data-doc-id="' + next.id + '"><span class="dn-dir">下一篇 →</span><span class="dn-title">' + esc(next.docName + ' · ' + next.label) + '</span></a>'
       : '<span></span>';
     out += '</nav>';
     return out;
@@ -301,7 +403,7 @@
 
     var token = ++renderToken;
     current = { id: id, path: meta.path };
-    document.title = meta.label + ' · 交易工作台';
+    document.title = meta.docName + ' · ' + meta.label + ' · 交易工作台';
     el.topbarDoc.textContent = meta.path;
     markActive(id);
     scrollToTop(!anchor);

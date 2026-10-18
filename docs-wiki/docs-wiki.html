@@ -132,8 +132,23 @@
     font-size: 0.7rem; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase;
     color: var(--muted);
     display: flex; align-items: center; gap: 8px;
+    cursor: pointer; user-select: none;
   }
   .group-title::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+  .nav-caret {
+    display: inline-block; flex: 0 0 auto; width: 10px;
+    font-size: 0.6rem; color: var(--muted);
+    transition: transform 0.12s ease;
+  }
+  .group.collapsed .group-title .nav-caret { transform: rotate(-90deg); }
+  .doc-wrap:not(.open) .nav-doc .nav-caret { transform: rotate(-90deg); }
+  .nav.filtering .doc-wrap .nav-doc .nav-caret { transform: rotate(0deg); }
+  .nav-doc {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 20px 6px 27px;
+    color: var(--ink); font-size: 0.875rem; cursor: pointer; user-select: none;
+  }
+  .nav-doc:hover { background: var(--hover); }
   .nav-item {
     display: flex; align-items: baseline; gap: 8px;
     padding: 6px 20px 6px 17px;
@@ -143,7 +158,13 @@
   .nav-item:hover { background: var(--hover); }
   .nav-item.active { background: var(--bg); border-left-color: var(--accent); color: var(--accent); font-weight: 700; }
   .nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .group.hidden, .nav-item.hidden { display: none; }
+  .nav-item.nav-leaf { padding-left: 27px; }
+  .nav-item.nav-sub { padding-left: 44px; font-size: 0.82rem; color: var(--muted); }
+  .doc-wrap:not(.open) > .nav-sub { display: none; }
+  .nav.filtering .doc-wrap > .nav-sub { display: flex; }
+  .nav.filtering .doc-wrap > .nav-sub.hidden { display: none; }
+  .group.collapsed .nav-item, .group.collapsed .doc-wrap { display: none; }
+  .group.hidden, .doc-wrap.hidden, .nav-item.hidden { display: none; }
 
   .sidebar-foot { margin-top: 18px; padding: 12px 20px 0; border-top: 1px solid var(--rule); font-size: 0.72rem; color: var(--muted); font-family: var(--font-mono); }
 
@@ -288,7 +309,7 @@
         <div class="search-hint" id="searchHint"></div>
       </div>
       <nav id="nav"></nav>
-      <div class="sidebar-foot">docs/ · 技术文档 + 流程文档</div>
+      <div class="sidebar-foot">docs/ · 模块 → 文档 → 性质</div>
     </aside>
 
     <main class="content">

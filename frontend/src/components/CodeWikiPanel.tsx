@@ -21,6 +21,9 @@ const WIKI_BASE = '/wiki'
 interface DocMeta {
   id: string
   group: string
+  docKey: string
+  docName: string
+  nature: string
   label: string
   title: string
   path: string
@@ -98,6 +101,20 @@ function resolvePath(curPath: string, href: string): string {
   }
   return parts.join('/')
 }
+
+// ── 侧栏三级树：docKey 排序（数字升序在前、非数字在后）与性质排序 ──
+const NATURE_ORDER = ['flow', 'tech', 'req', 'overview']
+const cmpDocKey = (a: string, b: string): number => {
+  const na = /^\d+$/.test(a)
+  const nb = /^\d+$/.test(b)
+  if (na && nb) return Number(a) - Number(b)
+  if (na !== nb) return na ? -1 : 1
+  return a.localeCompare(b)
+}
+const cmpNature = (a: DocMeta, b: DocMeta): number =>
+  NATURE_ORDER.indexOf(a.nature) - NATURE_ORDER.indexOf(b.nature)
+// docKey 为纯数字时显示 `NN 名称`，否则仅显示名称（如 CODE_WIKI → 代码知识库）
+const rowLabel = (d: DocMeta): string => (/^\d+$/.test(d.docKey) ? `${d.docKey} ${d.docName}` : d.docName)
 
 // ── markdown → HTML 后的语义补齐：标题 id（内链锚点）、表格横向滚动容器、正文链接重写 ──
 function enhance(root: HTMLElement, docPath: string, pathIndex: Record<string, string>, usedIds: Set<string>): void {
@@ -408,6 +425,9 @@ export default function CodeWikiPanel() {
   const [currentId, setCurrentId] = useState('')
   const [segments, setSegments] = useState<WikiSegment[]>([])
   const [docError, setDocError] = useState('')
+  // 三级树折叠态：模块默认展开（记录「已收起」）、文档行默认收起（记录「已展开」）
+  const [closedGroups, setClosedGroups] = useState<Set<string>>(new Set())
+  const [openDocs, setOpenDocs] = useState<Set<string>>(new Set())
 
   const docRef = useRef<HTMLDivElement>(null)
   const navRef = useRef<HTMLDivElement>(null)
@@ -515,8 +535,24 @@ export default function CodeWikiPanel() {
 
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
   const matchDoc = (d: DocMeta) =>
-    !terms.length || terms.every((t) => `${d.label} ${d.title} ${d.path}`.toLowerCase().includes(t))
+    !terms.length || terms.every((t) => `${d.docKey} ${d.docName} ${d.label} ${d.title} ${d.path}`.toLowerCase().includes(t))
   const hitCount = terms.length ? index.filter(matchDoc).length : index.length
+
+  // 三级树折叠交互（模块默认展开、文档行默认收起，当前篇所在行强制展开）
+  const toggleGroup = (id: string) =>
+    setClosedGroups((s) => {
+      const n = new Set(s)
+      if (n.has(id)) n.delete(id)
+      else n.add(id)
+      return n
+    })
+  const toggleDoc = (key: string) =>
+    setOpenDocs((s) => {
+      const n = new Set(s)
+      if (n.has(key)) n.delete(key)
+      else n.add(key)
+      return n
+    })
 
   const idx = index.findIndex((d) => d.id === currentId)
   const prev = idx > 0 ? index[idx - 1] : null
@@ -560,19 +596,64 @@ export default function CodeWikiPanel() {
           {groups.map((g) => {
             const items = index.filter((d) => d.group === g.id && matchDoc(d))
             if (!items.length) return null
+            const closed = closedGroups.has(g.id)
+            // 模块内按 docKey 归档（数字升序、非数字排后），每个 docKey 即一棵「文档」子树
+            const docMap = new Map<string, DocMeta[]>()
+            for (const d of items) {
+              const arr = docMap.get(d.docKey)
+              if (arr) arr.push(d)
+              else docMap.set(d.docKey, [d])
+            }
+            const keys = [...docMap.keys()].sort(cmpDocKey)
             return (
               <div className="wiki-nav-group" key={g.id}>
-                <div className="wiki-nav-group-title">{g.name}</div>
-                {items.map((d) => (
-                  <a
-                    key={d.id}
-                    className={`wiki-nav-item${d.id === currentId ? ' active' : ''}`}
-                    title={d.title}
-                    onClick={() => openDoc(d.id)}
-                  >
-                    {d.label}
-                  </a>
-                ))}
+                <div
+                  className={`wiki-nav-group-title${closed ? ' collapsed' : ''}`}
+                  onClick={() => toggleGroup(g.id)}
+                >
+                  <span className="nav-caret">{closed ? '▸' : '▾'}</span>
+                  {g.name}
+                </div>
+                {!closed && keys.map((key) => {
+                  const docs = docMap.get(key)!.slice().sort(cmpNature)
+                  const treeKey = `${g.id}:${key}`
+                  if (docs.length === 1) {
+                    const d = docs[0]
+                    return (
+                      <a
+                        key={treeKey}
+                        className={`wiki-nav-item wiki-nav-leaf${d.id === currentId ? ' active' : ''}`}
+                        title={d.title}
+                        onClick={() => openDoc(d.id)}
+                      >
+                        {rowLabel(d)}
+                      </a>
+                    )
+                  }
+                  // 搜索时强制展开命中的文档行，保证命中项可见
+                  const open = openDocs.has(treeKey) || terms.length > 0 || docs.some((d) => d.id === currentId)
+                  return (
+                    <div className="wiki-nav-doc-wrap" key={treeKey}>
+                      <div
+                        className={`wiki-nav-doc${open ? ' open' : ''}`}
+                        onClick={() => toggleDoc(treeKey)}
+                      >
+                        <span className="nav-caret">{open ? '▾' : '▸'}</span>
+                        {rowLabel(docs[0])}
+                      </div>
+                      {open && docs.map((d) => (
+                        <a
+                          key={d.id}
+                          className={`wiki-nav-item wiki-nav-sub${d.id === currentId ? ' active' : ''}`}
+                          title={d.title}
+                          onClick={() => openDoc(d.id)}
+                        >
+                          {d.label}
+                        </a>
+                      ))}
+                    </div>
+                  )
+                })}
               </div>
             )
           })}
@@ -606,7 +687,7 @@ export default function CodeWikiPanel() {
               {prev ? (
                 <a onClick={() => openDoc(prev.id)}>
                   <span className="dn-dir">← 上一篇</span>
-                  <span className="dn-title">{prev.label}</span>
+                  <span className="dn-title">{prev.docName} · {prev.label}</span>
                 </a>
               ) : (
                 <span />
@@ -614,7 +695,7 @@ export default function CodeWikiPanel() {
               {next ? (
                 <a className="next" onClick={() => openDoc(next.id)}>
                   <span className="dn-dir">下一篇 →</span>
-                  <span className="dn-title">{next.label}</span>
+                  <span className="dn-title">{next.docName} · {next.label}</span>
                 </a>
               ) : (
                 <span />

@@ -244,11 +244,43 @@ html, body, #root {
   padding-bottom: 16px;
 }
 .wiki-nav-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 10px 14px 4px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.08em;
   color: rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  user-select: none;
+}
+.wiki-nav-group-title:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+.nav-caret {
+  flex: 0 0 auto;
+  width: 12px;
+  font-size: 10px;
+  color: rgba(0, 0, 0, 0.35);
+}
+/* 文档行（中间的「文档」层级，可折叠） */
+.wiki-nav-doc {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px 5px 22px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(0, 0, 0, 0.78);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wiki-nav-doc:hover {
+  background: rgba(0, 0, 0, 0.04);
 }
 .wiki-nav-item {
   display: block;
@@ -261,6 +293,16 @@ html, body, #root {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* 单成员文档的叶子行（即「文档」层级本身） */
+.wiki-nav-leaf {
+  padding-left: 22px;
+}
+/* 性质子项（第三级：功能流程 / 技术实现） */
+.wiki-nav-sub {
+  padding-left: 40px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.6);
 }
 .wiki-nav-item:hover {
   background: rgba(0, 0, 0, 0.04);

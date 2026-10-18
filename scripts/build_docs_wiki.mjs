@@ -41,19 +41,32 @@ const DOCS_OUT = join(OUT, 'assets', 'docs')
 const INDEX_OUT = join(OUT, 'assets', 'docs-index.js')
 const MANIFEST_OUT = join(OUT, '.build-manifest.json')
 
-// —— 分组定义（overview 固定两篇；其余按目录自动发现，新增/删除文档零维护）——
-const GROUPS = [
-  { id: 'overview', name: '项目概览' },
-  { id: 'tech', name: '技术文档' },
-  { id: 'flow', name: '流程文档' },
+// —— 模块定义（顺序即侧栏顺序；dir 为 docs/ 下的一级目录）——
+// 配对模块：目录下固定 `功能流程/` 与 `技术实现/` 两个性质子目录。
+// flat 模块（需求文档）：目录下直接平铺 NN-*.md，nature = req。
+const MODULES = [
+  { id: 'overview', name: '索引与总览', dir: '总览与索引' },
+  { id: 'scan',     name: '扫描与筛选', dir: '扫描与筛选' },
+  { id: 'signal',   name: '信号与形态', dir: '信号与形态' },
+  { id: 'ai',       name: 'AI 决策',    dir: 'AI决策' },
+  { id: 'exec',     name: '交易执行',   dir: '交易执行' },
+  { id: 'risk',     name: '风控',       dir: '风控' },
+  { id: 'review',   name: '复盘归因',   dir: '复盘归因' },
+  { id: 'spot',     name: '现货屯币',   dir: '现货屯币' },
+  { id: 'tactic',   name: '战法',       dir: '战法' },
+  { id: 'frontend', name: '前端与查询', dir: '前端与查询' },
+  { id: 'infra',    name: '基建与通知', dir: '基建与通知' },
+  { id: 'req',      name: '需求与路线', dir: '需求文档', flat: true },
 ]
-const OVERVIEW = [
-  { id: 'code-wiki', label: '代码知识库', file: 'CODE_WIKI.md' },
-  { id: 'doc-map', label: '文档地图', file: '00-文档地图.md' },
+// 配对模块的两个性质子目录（flat 模块不用）
+const NATURES = [
+  { n: 'flow', label: '功能流程', dir: '功能流程', prefix: 'flow' },
+  { n: 'tech', label: '技术实现', dir: '技术实现', prefix: 'tech' },
 ]
-const DIRS = [
-  { group: 'tech', dir: '技术文档', prefix: 'tech' },
-  { group: 'flow', dir: '项目功能流程文档', prefix: 'flow' },
+// 根目录两篇（nature = overview，归入 overview 模块）
+const ROOT_DOCS = [
+  { id: 'doc-map',   docKey: '00',        docName: '文档地图',   file: '00-文档地图.md' },
+  { id: 'code-wiki', docKey: 'CODE_WIKI', docName: '代码知识库', file: 'CODE_WIKI.md' },
 ]
 
 const sha = (s) => createHash('sha256').update(s).digest('hex').slice(0, 16)
@@ -67,24 +80,57 @@ function firstHeading(md) {
   return ''
 }
 
+// 从文件名 `NN-名称.md` 解析出编号与名称（无编号时 num 为空、name 取整体）
+function parseName(file) {
+  const m = /^(\d+)-(.+)\.md$/.exec(file)
+  if (m) return { num: m[1], name: m[2] }
+  return { num: '', name: file.replace(/\.md$/, '') }
+}
+
 function collect() {
   const list = []
-  for (const o of OVERVIEW) {
+  // 根目录两篇（归入 overview 模块，nature = overview）
+  for (const o of ROOT_DOCS) {
     const abs = join(DOCS, o.file)
     if (!existsSync(abs)) continue
     const md = readFileSync(abs, 'utf8')
-    list.push({ id: o.id, group: 'overview', label: o.label, path: o.file, md, title: firstHeading(md) || o.label })
+    list.push({
+      id: o.id, group: 'overview', docKey: o.docKey, docName: o.docName,
+      nature: 'overview', label: '概览', path: o.file, md,
+      title: firstHeading(md) || o.docName,
+    })
   }
-  for (const d of DIRS) {
-    const abs = join(DOCS, d.dir)
+  for (const m of MODULES) {
+    const abs = join(DOCS, m.dir)
     if (!existsSync(abs)) continue
-    const files = readdirSync(abs).filter((f) => f.endsWith('.md')).sort()
-    for (const f of files) {
-      const m = /^(\d+)-(.+)\.md$/.exec(f)
-      const id = m ? `${d.prefix}-${m[1]}` : `${d.prefix}-${sha(f)}`
-      const label = m ? `${m[1]} · ${m[2]}` : f.replace(/\.md$/, '')
-      const md = readFileSync(join(abs, f), 'utf8')
-      list.push({ id, group: d.group, label, path: `${d.dir}/${f}`, md, title: firstHeading(md) || label })
+    if (m.flat) {
+      const files = readdirSync(abs).filter((f) => f.endsWith('.md')).sort()
+      for (const f of files) {
+        const p = parseName(f)
+        const md = readFileSync(join(abs, f), 'utf8')
+        list.push({
+          id: `req-${p.num || sha(f)}`,
+          group: m.id, docKey: p.num || f.replace(/\.md$/, ''), docName: p.name,
+          nature: 'req', label: '需求', path: `${m.dir}/${f}`, md,
+          title: firstHeading(md) || p.name,
+        })
+      }
+    } else {
+      for (const n of NATURES) {
+        const sub = join(abs, n.dir)
+        if (!existsSync(sub)) continue
+        const files = readdirSync(sub).filter((f) => f.endsWith('.md')).sort()
+        for (const f of files) {
+          const p = parseName(f)
+          const md = readFileSync(join(sub, f), 'utf8')
+          list.push({
+            id: `${n.prefix}-${p.num || sha(f)}`,
+            group: m.id, docKey: p.num || f.replace(/\.md$/, ''), docName: p.name,
+            nature: n.n, label: n.label, path: `${m.dir}/${n.dir}/${f}`, md,
+            title: firstHeading(md) || p.name,
+          })
+        }
+      }
     }
   }
   return list
@@ -97,9 +143,10 @@ function docFileContent(doc) {
 }
 
 function indexFileContent(docs) {
-  const groups = JSON.stringify(GROUPS)
+  const groups = JSON.stringify(MODULES.map((m) => ({ id: m.id, name: m.name })))
   const index = JSON.stringify(docs.map((d) => ({
-    id: d.id, group: d.group, label: d.label, title: d.title, path: d.path,
+    id: d.id, group: d.group, docKey: d.docKey, docName: d.docName,
+    nature: d.nature, label: d.label, title: d.title, path: d.path,
   })))
   return [
     '/* 自动生成，请勿手改 — 由 scripts/build_docs_wiki.mjs 产出 */',
