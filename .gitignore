@@ -76,3 +76,5 @@ Thumbs.db
 
 # ===== Trae IDE =====
 .trae/
+# HTML 交付物分享包（IDE 导出，内容与 docs-wiki/ 源目录重复，不入库）
+.trae-html-share-packages/
