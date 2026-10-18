@@ -586,21 +586,6 @@ def fund_analytics(
         base = base.where(TradeRecord.closed_at < hi)
     rows = db.execute(base).scalars().all()
 
-    # 同 scope/区间口径下已标记异常单的笔数（2026-10-18）：剔除是静默的（数字不跳变），
-    # 前端据此显式提示「标记已落库生效」，避免「已经去掉了吗」这类无法自查的困惑
-    ex_q = select(func.count()).select_from(TradeRecord).where(
-        TradeRecord.status == "CLOSED",
-        TradeRecord.closed_at.is_not(None),
-        TradeRecord.excluded.is_(True),
-    )
-    if trade_cond is not None:
-        ex_q = ex_q.where(trade_cond)
-    if lo is not None:
-        ex_q = ex_q.where(TradeRecord.closed_at >= lo)
-    if hi is not None:
-        ex_q = ex_q.where(TradeRecord.closed_at < hi)
-    excluded_n = int(db.execute(ex_q).scalar() or 0)
-
     closed = len(rows)
     wins = sum(1 for r in rows if (r.realized_pnl or 0) > 0)
     net_pnl = round(sum(float(r.realized_pnl or 0) for r in rows), 2)
@@ -682,7 +667,6 @@ def fund_analytics(
             funding_total=funding_total,
             avg_win_r=avg_win_r,
             avg_r=avg_r,
-            excluded_n=excluded_n,
             transfer_in=t_in,
             transfer_out=t_out,
             transfer_net=round(t_in - t_out, 2),

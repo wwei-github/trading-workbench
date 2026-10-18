@@ -61,7 +61,6 @@ def test_summary_excludes_anomaly_trade(db):
     assert s.net_pnl == pytest.approx(10.0)
     assert s.win_rate == pytest.approx(100.0)
     assert s.avg_r == pytest.approx(0.10)
-    assert s.excluded_n == 1  # 前端据此提示「标记已生效」
 
 
 def test_unmarked_anomaly_trade_still_counted(db):

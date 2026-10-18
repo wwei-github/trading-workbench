@@ -125,7 +125,6 @@ class FundSummary(BaseModel):
     funding_total: float = 0.0
     avg_win_r: Optional[float] = None     # 仅 risk_amount>0 的盈利单均值（资金分析「盈亏比R（止盈单）」）
     avg_r: Optional[float] = None         # 全部已结算单的 R 均值，含止盈止损（2026-10-12，交易记录「平均盈亏比」）
-    excluded_n: int = 0                   # 已标记异常单笔数（2026-10-18）：不计入以上任何口径，仅供提示是否落库生效
     transfer_in: float = 0.0
     transfer_out: float = 0.0
     transfer_net: float = 0.0
