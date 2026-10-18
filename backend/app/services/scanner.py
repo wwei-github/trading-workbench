@@ -330,7 +330,10 @@ def detect_indicator_candidate(
     # 消除大量有效回踩死在这一关的问题。net 仍为方向票净差（符号=方向）。
     # 4h 背景复用第一步的 htf_bg，指标不再双算
     votes = compute_indicator_votes(klines, htf_bg=htf_res)
-    if not votes or max(votes["bull_n"], votes["bear_n"]) < DIR_VOTE_MIN:
+    # 方向票关（2026-10-18 开关化）：flt.direction_vote_gate_enabled=False 时跳过本关
+    # （不再因同向票不足否决候选），方向照下方派生——即使只 1 张同向票也可定向
+    if flt.direction_vote_gate_enabled and (
+            not votes or max(votes["bull_n"], votes["bear_n"]) < DIR_VOTE_MIN):
         # 方向票同向不足 → 活跃 pending 方向失守（docs/19 §4.1 前置过期路径）
         _reject("votes")
         # 漏斗明细（2026-10-11 用户拍板）：votes 关的判定说明展示全部票
@@ -350,15 +353,18 @@ def detect_indicator_candidate(
     # （technical.DIR_VOTE_SHORTS），net=0 ⇒ bull_n=bear_n ∈ {0,1} ⇒ max≤1 <
     # DIR_VOTE_MIN=2，必被上方 votes 关先拒；此路为防御性修复（一旦票表/门槛调整使
     # net=0 可达，避免原 `else -1` 把中性静默偏置为空头）。
-    if votes["net"] != 0:
-        direction = 1 if votes["net"] > 0 else -1
+    # 2026-10-18 开关化：方向票关关闭后 votes=None（指标全不可用）或 net=0 均可达此处，
+    # 一律按无票（net=0）处理 → 4h 闸门方向兜底；闸门也无方向才判无依据不出信号。
+    net = votes["net"] if votes else 0
+    if net != 0:
+        direction = 1 if net > 0 else -1
     elif gate is not None:
         direction = 1 if gate[0] == "long" else -1
     else:
         _reject("votes")
         if reject_out is not None:
             reject_out["detail"] = (
-                "方向票净差为0（多空各1或全中性），且无4h闸门方向可兜底，无法定向")
+                "无方向依据（方向票缺失或净差为0，且无4h闸门方向可兜底），无法定向")
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
     # 闸门方向一致性（2026-10-10 二次拍板，取代原 htf_res dir 门）：gate_4h 给出
@@ -370,11 +376,14 @@ def detect_indicator_candidate(
     # （MACD/布林带/RSI 转空），使定向与 4h 多头闸门相反 → 被本关挡下；「慢速深回撤」
     # 因此无法穿过，仅「插针式触及」（单根影线插到均线、收盘仍强、1h 票未转向）可过。
     # 非缺陷：深回撤与 1h 票同向本就是小概率形态。detail 给漏斗可读的方向对撞说明。
-    if gate is not None and gate[0] != ("long" if direction == 1 else "short"):
+    # 方向冲突关（2026-10-18 开关化）：flt.direction_conflict_gate_enabled=False 时
+    # 跳过本关——允许逆 4h 闸门方向的候选照常产生（放开深回撤等逆势形态）。
+    if (flt.direction_conflict_gate_enabled and gate is not None
+            and gate[0] != ("long" if direction == 1 else "short")):
         _reject("direction_flip")
         if reject_out is not None:
             reject_out["detail"] = (
-                f"定向={'多' if direction == 1 else '空'}头（方向票净差{votes['net']:+d}），"
+                f"定向={'多' if direction == 1 else '空'}头（方向票净差{net:+d}），"
                 f"与4h闸门方向（{'多' if gate[0] == 'long' else '空'}头）相反；"
                 "深回撤触点常见此冲突（仅插针式可过）")
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)

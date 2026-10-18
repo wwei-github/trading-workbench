@@ -73,6 +73,9 @@ SCAN_FILTER_KEYS = (
     "structure_touch_band_pct",   # ③ 触发层：retest/swing 横向位触碰带宽（%）
     "ema_touch_min_bars",         # ③ 触发层：EMA 触碰最小已收盘根数（数据门）
     "structure_1h_gate",          # ② 结构层：1h 结构门开关（2026-10-11，false=跳过判定）
+    # 方向过滤开关（2026-10-18）：True=过滤生效（默认，保持现网门槛），false=跳过该检测
+    "direction_vote_gate_enabled",      # ② 方向层：方向票关（方向票同向张数不足是否否决候选）
+    "direction_conflict_gate_enabled",  # ② 方向层：方向冲突关（定向与 4h 闸门方向相反是否否决）
 )
 # swing_order（摆动点阶数）不在上表：它是 SystemConfig 顶层列（前端「摆动点阶数」
 # 独立提交），resolve 时单独读取并注入 ScanFilters.swing_order（2026-10-12 触发层
@@ -104,6 +107,11 @@ class ScanFilters:
     # scanner 不再消费）。字段保留仅为向后兼容（DB JSONB 旧值可解析），同
     # candle_max_ema21_dist_pct 退役先例
     structure_1h_gate: bool = True
+    # 方向过滤开关（2026-10-18）：True=过滤生效（默认，保持现网门槛行为）；
+    # False=跳过该检测。①方向票关：同向张数 < DIR_VOTE_MIN 是否否决；
+    # ②方向冲突关：定向方向与 4h 闸门方向相反是否否决（scanner 判定链消费）
+    direction_vote_gate_enabled: bool = True
+    direction_conflict_gate_enabled: bool = True
 
 
 def resolve_scan_filters(cfg=None) -> ScanFilters:
@@ -185,5 +193,9 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
         structure_touch_band_pct=_num("structure_touch_band_pct", settings.STRUCTURE_TOUCH_BAND_PCT),
         ema_touch_min_bars=_int("ema_touch_min_bars", settings.EMA_TOUCH_MIN_BARS),
         structure_1h_gate=_bool("structure_1h_gate", settings.STRUCTURE_1H_GATE),
+        direction_vote_gate_enabled=_bool(
+            "direction_vote_gate_enabled", settings.DIRECTION_VOTE_GATE_ENABLED),
+        direction_conflict_gate_enabled=_bool(
+            "direction_conflict_gate_enabled", settings.DIRECTION_CONFLICT_GATE_ENABLED),
         swing_order=_swing_order(settings.SWING_ORDER),
     )

@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     # 1h 结构门开关：已于 2026-10-12 退役（docs/21 O7）。字段保留向后兼容，
     # scanner 不再消费，scan_filters.structure_1h_gate 同理（同退役先例）
     STRUCTURE_1H_GATE: bool = True
+    # 方向过滤开关（2026-10-18，配置页可调）：扫描链上两道方向硬过滤的环境默认值
+    # （DB system_config.scan_filters 同名键优先，见 scan_filters.resolve_scan_filters）。
+    # 默认 True=保持现网门槛行为（上线零差异），关闭=跳过该检测、放开信号池。
+    # ① 方向票关：方向票同向张数 < DIR_VOTE_MIN(2) 是否否决候选
+    DIRECTION_VOTE_GATE_ENABLED: bool = True
+    # ② 方向冲突关：定向方向与 4h 闸门 gate_4h 方向相反时是否否决候选
+    DIRECTION_CONFLICT_GATE_ENABLED: bool = True
     DAILY_LOSS_STOP_PCT: float = 9.0  # 当日亏损熔断：UTC 日已平仓净亏 ≤ -风险基数×9%（≈3笔满损）停开仓（0=关闭）
     # 当日亏损熔断总开关（2026-09-30 用户拍板开关化）：True=启用（默认，保持现行为），
     # False=关闭；阈值仍由 DAILY_LOSS_STOP_PCT 控制（9% ≈ 3 笔满损，随账户金额缩放）。
@@ -279,7 +286,11 @@ class Settings(BaseSettings):
     # 兜底、无闸门方向则不出信号（现网 net=0 不可达，属防御性修复）；③深回撤语义显性化
     # （A3）：EMA55/EMA144 慢速深回撤必被 1h 方向票/方向冲突关挡下、仅插针式可过——写入
     # 代码注释 + 漏斗 direction_flip/votes 关判定说明。
-    RULE_VERSION: str = "v2026-10-17"
+    # v2026-10-18（用户拍板）：扫描链两道方向过滤开关化——新增 scan_filters 布尔键
+    # direction_vote_gate_enabled（方向票关）/ direction_conflict_gate_enabled（方向冲突关），
+    # 默认 True=保持现网门槛行为（上线零差异）、关闭=跳过该检测；配置页可分别启停，
+    # 用于按需放开信号池观察影响（scanner 判定链条件化，见 docs/01 §4 键表）。
+    RULE_VERSION: str = "v2026-10-18"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

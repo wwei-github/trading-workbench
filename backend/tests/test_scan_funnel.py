@@ -167,6 +167,46 @@ def test_net_zero_no_gate_direction_rejects():
     assert op == {"op": "expire", "reason": "direction_flip"}
 
 
+# ── 方向过滤开关（2026-10-18）：方向票关 / 方向冲突关 可配置跳过 ──────────
+
+
+def test_vote_gate_enabled_still_rejects():
+    """对照：方向票关开启（默认）时同向不足仍否决（保持现网门槛）"""
+    rv: dict = {}
+    cand, _ = _detect(rv, votes=_FAIL_VOTES, htf_nonempty=False, flt=_diag_flt())
+    assert cand is None and rv["stage"] == "votes"
+
+
+def test_vote_gate_disabled_skips_vote_rejection():
+    """方向票关关闭：方向票同向不足（_FAIL_VOTES，1多1空）不再否决候选——
+    方向改由 4h 闸门兜底（net=0 → gate 方向），照常走后续链路（stub 无触发）"""
+    rv: dict = {}
+    flt = _diag_flt(direction_vote_gate_enabled=False)
+    cand, _ = _detect(rv, votes=_FAIL_VOTES, gate=("long", {}),
+                      trigger=(None, None), flt=flt)
+    assert cand is None and rv["stage"] == "no_trigger"
+
+
+def test_conflict_gate_disabled_allows_counter_trend():
+    """方向冲突关关闭：定向空头 vs 闸门多头（默认会 direction_flip）不再否决——
+    照常进入触发层（stub 无触发 → no_trigger）"""
+    rv: dict = {}
+    flt = _diag_flt(direction_conflict_gate_enabled=False)
+    cand, _ = _detect(rv, votes=_SHORT_VOTES, gate=("long", {}),
+                      trigger=(None, None), flt=flt)
+    assert cand is None and rv["stage"] == "no_trigger"
+
+
+def test_vote_gate_disabled_no_votes_no_gate_rejects():
+    """方向票关关闭但指标全不可用（votes=None）且无 4h 闸门方向 → 无方向依据，
+    仍不出信号（安全兜底，漏斗记 votes 关）"""
+    rv: dict = {}
+    flt = _diag_flt(direction_vote_gate_enabled=False)
+    cand, _ = _detect(rv, votes=None, htf_nonempty=False, flt=flt)
+    assert cand is None and rv["stage"] == "votes"
+    assert "无方向依据" in rv["detail"]
+
+
 def test_structure_1h_gate_retired_signal_survives():
     """筛选链 1H 结构门退役（2026-10-12 O7；2026-10-15 O8 再降级重罚）：scanner
     不再整体否决信号——触发链照常返回候选（structure_gate=False 也照常出候选，

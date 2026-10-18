@@ -302,6 +302,42 @@ def test_validate_scan_filters_structure_1h_gate():
             _validate_scan_filters({"structure_1h_gate": bad})
 
 
+# ── 方向过滤开关（2026-10-18：方向票关 / 方向冲突关，默认 True）───────────
+
+_DIRECTION_GATE_KEYS = ("direction_vote_gate_enabled",
+                        "direction_conflict_gate_enabled")
+
+
+def test_resolve_direction_gates():
+    """布尔键：真布尔生效；字符串/数字等非法类型按缺失回落默认 True"""
+    flt = resolve_scan_filters(None)
+    assert flt.direction_vote_gate_enabled is True
+    assert flt.direction_conflict_gate_enabled is True
+    off = resolve_scan_filters(SimpleNamespace(scan_filters={
+        "direction_vote_gate_enabled": False,
+        "direction_conflict_gate_enabled": False,
+    }))
+    assert off.direction_vote_gate_enabled is False
+    assert off.direction_conflict_gate_enabled is False
+    for key in _DIRECTION_GATE_KEYS:
+        for bad in ("false", 0, None, [False]):
+            f = resolve_scan_filters(SimpleNamespace(scan_filters={key: bad}))
+            assert getattr(f, key) is True, f"{key} 非法值 {bad!r} 应回落默认"
+
+
+def test_validate_scan_filters_direction_gates():
+    """PUT 校验：布尔合法；字符串/数字 400"""
+    from fastapi import HTTPException
+
+    from app.api.scan import _validate_scan_filters
+    for key in _DIRECTION_GATE_KEYS:
+        assert _validate_scan_filters({key: False}) == {key: False}
+        assert _validate_scan_filters({key: True}) == {key: True}
+        for bad in ("false", 0, 1, None):
+            with pytest.raises(HTTPException):
+                _validate_scan_filters({key: bad})
+
+
 def test_candidate_structure_gate_retired(monkeypatch):
     """O7（2026-10-12 拍板，docs/21）：structure_1h 筛选链硬门退役——scanner
     不再消费 structure_1h_gate 开关，True/False 行为一致（候选照常产生，

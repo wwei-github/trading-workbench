@@ -93,6 +93,8 @@ export default function ScanConfigPanel() {
         ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
         allowed_triggers: eff.allowed_triggers ?? ALL_TRIGGER_VALUES,
         pullback_touch_refs: eff.pullback_touch_refs ?? DEFAULT_TOUCH_VALUES,
+        direction_vote_gate_enabled: eff.direction_vote_gate_enabled ?? true,
+        direction_conflict_gate_enabled: eff.direction_conflict_gate_enabled ?? true,
         ai_analysis_enabled: aiConfig.ai_analysis_enabled ?? false,
         strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
         ai_pipeline_enabled: aiConfig.ai_pipeline_enabled ?? true,
@@ -157,6 +159,16 @@ export default function ScanConfigPanel() {
         || curRefs.some((t) => !snapRefs.includes(t))) {
         scanFilters.pullback_touch_refs = curRefs
       }
+      // 方向过滤开关（2026-10-18）：布尔键同样仅提交有改动的项（未动则不提交该键，
+      // 后端键级合并保留库内旧值）
+      const curVoteGate = values.direction_vote_gate_enabled ?? true
+      if (curVoteGate !== (filtersSnapshot.direction_vote_gate_enabled ?? true)) {
+        scanFilters.direction_vote_gate_enabled = curVoteGate
+      }
+      const curConflictGate = values.direction_conflict_gate_enabled ?? true
+      if (curConflictGate !== (filtersSnapshot.direction_conflict_gate_enabled ?? true)) {
+        scanFilters.direction_conflict_gate_enabled = curConflictGate
+      }
       // 1h 结构门开关（2026-10-11，2026-10-12 退役）：已从配置弹窗移除，
       // 不再提交该键（后端 scan_filters 保留兼容键位，仅读旧值不做消费）
       if (Object.keys(scanFilters).length > 0) data.scan_filters = scanFilters
@@ -181,6 +193,8 @@ export default function ScanConfigPanel() {
         ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
         allowed_triggers: eff.allowed_triggers ?? ALL_TRIGGER_VALUES,
         pullback_touch_refs: eff.pullback_touch_refs ?? DEFAULT_TOUCH_VALUES,
+        direction_vote_gate_enabled: eff.direction_vote_gate_enabled ?? true,
+        direction_conflict_gate_enabled: eff.direction_conflict_gate_enabled ?? true,
       })
       message.success('筛选参数已恢复默认')
     } catch (e: any) {
@@ -316,6 +330,32 @@ export default function ScanConfigPanel() {
           <Button size="small" icon={<UndoOutlined />} onClick={handleResetFilters} loading={saving} style={{ marginBottom: 16 }}>
             恢复默认
           </Button>
+          </ConfigSection>
+
+          {/* 方向过滤开关（2026-10-18）：扫描链两道方向硬过滤的启停；默认开=保持现网门槛 */}
+          <ConfigSection title="方向过滤" hint="默认开启=保持现网门槛；关闭=跳过该检测、放开信号池">
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                label="方向票关"
+                name="direction_vote_gate_enabled"
+                valuePropName="checked"
+                tooltip="开启：方向票（MACD/布林带/RSI）同向张数不足 2 张时否决候选（现网默认）；关闭：跳过该判定，即使只 1 张同向票也照常走后续链路"
+              >
+                <Switch checkedChildren="开" unCheckedChildren="关" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="方向冲突关"
+                name="direction_conflict_gate_enabled"
+                valuePropName="checked"
+                tooltip="开启：定向方向与 4h 趋势闸门方向相反时否决候选（现网默认，深回撤触点的主要生死线）；关闭：跳过该判定，允许逆 4h 闸门方向的信号进入候选"
+              >
+                <Switch checkedChildren="开" unCheckedChildren="关" />
+              </Form.Item>
+            </Col>
+          </Row>
           </ConfigSection>
 
           {/* AI 分析开关区（原工具栏快捷开关，2026-09-20 收敛至此）；四列排布 */}

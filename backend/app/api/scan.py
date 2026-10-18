@@ -513,6 +513,9 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
             "structure_touch_band_pct": flt.structure_touch_band_pct,
             "ema_touch_min_bars": flt.ema_touch_min_bars,
             "structure_1h_gate": flt.structure_1h_gate,
+            # 方向过滤开关（2026-10-18）：前端表单初值/回显（默认 True=过滤生效）
+            "direction_vote_gate_enabled": flt.direction_vote_gate_enabled,
+            "direction_conflict_gate_enabled": flt.direction_conflict_gate_enabled,
         },
     )
 
@@ -534,20 +537,30 @@ _SCAN_FILTER_RANGES: dict[str, tuple[float, float, str]] = {
     "ema_touch_min_bars": (50, 1000, "EMA 触点最小已收盘根数（数据门）"),
 }
 
+# 布尔开关键（非数值键，PUT 校验走 isinstance(bool)）：2026-10-18 起为集合——
+# structure_1h_gate（退役兼容键，无消费方）+ 方向过滤两开关（direction_vote_gate
+# _enabled 方向票关 / direction_conflict_gate_enabled 方向冲突关，scanner 消费）。
+_BOOL_FILTER_KEYS: tuple[str, ...] = (
+    "structure_1h_gate",
+    "direction_vote_gate_enabled",
+    "direction_conflict_gate_enabled",
+)
+
 
 def _validate_scan_filters(raw: dict) -> dict:
     """筛选参数组校验：未知键拒绝（防拼错静默失效）、范围越界 400、数值化清洗。
     合法但缺省的键不补齐——由调用方 `_merge_scan_filters` 与库内旧值做键级合并
     （合并后仍缺的键回落 env）。非数值键：allowed_triggers / pullback_touch_refs
-    （非空合法类型列表）、structure_1h_gate（布尔开关，2026-10-11）。"""
+    （非空合法类型列表）、布尔开关（_BOOL_FILTER_KEYS，2026-10-11 起 structure_1h_gate，
+    2026-10-18 起方向过滤两开关）。"""
     from app.services.scan_filters import ALL_TRIGGERS, ALL_TOUCH_REFS
 
     out: dict = {}
     for k, v in raw.items():
-        if k == "structure_1h_gate":
+        if k in _BOOL_FILTER_KEYS:
             if not isinstance(v, bool):
                 raise HTTPException(status_code=400,
-                                    detail="scan_filters.structure_1h_gate 需为布尔值")
+                                    detail=f"scan_filters.{k} 需为布尔值")
             out[k] = v
         elif k == "allowed_triggers":
             if (not isinstance(v, list) or not v
