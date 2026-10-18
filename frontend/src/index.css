@@ -243,48 +243,67 @@ html, body, #root {
   overflow-y: auto;
   padding-bottom: 16px;
 }
+/* 分区标题（业务主链路 / 辅助模块）：小字 + 右侧延伸细线 */
+.wiki-nav-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 14px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: rgba(0, 0, 0, 0.4);
+}
+.wiki-nav-section::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(0, 0, 0, 0.07);
+}
+/* 模块标题（主链路模块带 ①~⑥ 序号徽标） */
 .wiki-nav-group-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 10px 14px 4px;
-  font-size: 11px;
+  padding: 7px 14px;
+  font-size: 12.5px;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  color: rgba(0, 0, 0, 0.45);
+  color: rgba(0, 0, 0, 0.78);
   cursor: pointer;
   user-select: none;
 }
 .wiki-nav-group-title:hover {
   background: rgba(0, 0, 0, 0.03);
 }
+.wiki-nav-ord {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(22, 119, 255, 0.12);
+  color: #1677ff;
+  font-size: 10px;
+  font-weight: 700;
+}
 .nav-caret {
   flex: 0 0 auto;
-  width: 12px;
+  width: 10px;
   font-size: 10px;
   color: rgba(0, 0, 0, 0.35);
 }
-/* 性质分组标题（模块内的「功能流程 / 技术实现」，可折叠） */
-.wiki-nav-nature {
+/* 文档行：一篇文档一行（名称 + 行内「流程 / 技术」切换），不再有第三级 */
+.wiki-nav-doc-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 14px 5px 22px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: rgba(0, 0, 0, 0.55);
-  cursor: pointer;
-  user-select: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.wiki-nav-nature:hover {
-  background: rgba(0, 0, 0, 0.04);
+  min-width: 0;
 }
 .wiki-nav-item {
   display: block;
-  padding: 5px 14px;
+  min-width: 0;
+  padding: 5px 8px 5px 14px;
   border-left: 3px solid transparent;
   font-size: 13px;
   line-height: 1.5;
@@ -294,19 +313,42 @@ html, body, #root {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* 文档行：直接挂在模块下（单性质模块，如需求）*/
-.wiki-nav-leaf {
-  padding-left: 22px;
+.wiki-nav-doc {
+  flex: 1 1 auto;
+  padding-left: 43px;
 }
-/* 文档行：挂在性质分组下（功能流程 / 技术实现） */
-.wiki-nav-sub {
-  padding-left: 40px;
-  color: rgba(0, 0, 0, 0.78);
+.wiki-nature-switch {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 2px;
+  padding-right: 10px;
+}
+.wiki-nature-btn {
+  appearance: none;
+  border: 0;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.05);
+  color: rgba(0, 0, 0, 0.5);
+  font-family: inherit;
+  font-size: 10.5px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.wiki-nature-btn:hover {
+  background: rgba(0, 0, 0, 0.09);
+  color: rgba(0, 0, 0, 0.72);
+}
+.wiki-nature-btn.active {
+  background: #1677ff;
+  color: #fff;
+  font-weight: 600;
 }
 .wiki-nav-item:hover {
   background: rgba(0, 0, 0, 0.04);
 }
-.wiki-nav-item.active {
+.wiki-nav-item.active,
+.wiki-nav-doc-row.current .wiki-nav-item {
   background: #fff;
   border-left-color: #1677ff;
   color: #1677ff;

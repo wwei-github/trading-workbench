@@ -127,45 +127,59 @@
   .search-wrap.has-value .s-clear { display: block; }
   .search-hint { margin-top: 6px; font-size: 0.75rem; color: var(--muted); min-height: 1em; }
 
-  .group-title {
-    padding: 12px 20px 4px;
-    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase;
-    color: var(--muted);
+  /* 分区标题（业务主链路 / 辅助模块）：小字 + 右侧延伸细线 */
+  .section {
     display: flex; align-items: center; gap: 8px;
+    padding: 14px 16px 4px;
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.1em;
+    color: var(--muted);
+  }
+  .section::after { content: ""; flex: 1; height: 1px; background: var(--rule-soft); }
+
+  /* 模块标题（主链路模块带 ①~⑥ 序号徽标） */
+  .group-title {
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 16px;
+    font-size: 0.8rem; font-weight: 700; color: var(--ink);
     cursor: pointer; user-select: none;
   }
-  .group-title::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+  .group-title:hover { background: var(--hover); }
+  .nav-ord {
+    flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: rgba(58, 86, 212, 0.12); color: var(--accent);
+    font-family: var(--font-mono); font-size: 0.6rem; font-weight: 700;
+  }
   .nav-caret {
     display: inline-block; flex: 0 0 auto; width: 10px;
     font-size: 0.6rem; color: var(--muted);
     transition: transform 0.12s ease;
   }
   .group.collapsed .group-title .nav-caret { transform: rotate(-90deg); }
-  .nature-wrap.collapsed .nav-nature .nav-caret { transform: rotate(-90deg); }
-  /* 性质分组标题（模块内的「功能流程 / 技术实现」） */
-  .nav-nature {
-    display: flex; align-items: center; gap: 8px;
-    padding: 6px 20px 6px 27px;
-    color: var(--muted); font-size: 0.78rem; font-weight: 600; letter-spacing: 0.04em;
-    cursor: pointer; user-select: none;
-  }
-  .nav-nature:hover { background: var(--hover); }
+
+  /* 文档行：一篇文档一行（名称 + 行内「流程 / 技术」切换），不再有第三级 */
+  .doc-row { display: flex; align-items: center; min-width: 0; }
   .nav-item {
-    display: flex; align-items: baseline; gap: 8px;
-    padding: 6px 20px 6px 17px;
+    display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0;
+    padding: 5px 8px 5px 43px;
     border-left: 3px solid transparent;
-    color: var(--ink); text-decoration: none; font-size: 0.875rem; cursor: pointer;
+    color: var(--ink); text-decoration: none; font-size: 0.86rem; cursor: pointer;
   }
   .nav-item:hover { background: var(--hover); }
-  .nav-item.active { background: var(--bg); border-left-color: var(--accent); color: var(--accent); font-weight: 700; }
+  .nav-item.active,
+  .doc-row.current .nav-item { background: var(--bg); border-left-color: var(--accent); color: var(--accent); font-weight: 700; }
   .nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* 文档行：直接挂在模块下（单性质模块，如需求）*/
-  .nav-item.nav-leaf { padding-left: 27px; }
-  /* 文档行：挂在性质分组下 */
-  .nav-item.nav-sub { padding-left: 44px; }
-  .nature-wrap.collapsed .nav-item { display: none; }
-  .group.collapsed .nav-item, .group.collapsed .nature-wrap { display: none; }
-  .group.hidden, .nature-wrap.hidden, .nav-item.hidden { display: none; }
+  .nature-switch { flex: 0 0 auto; display: inline-flex; gap: 2px; padding-right: 16px; }
+  .nature-btn {
+    appearance: none; border: 0; padding: 3px 7px; border-radius: 5px;
+    background: var(--rule-soft); color: var(--muted);
+    font-family: var(--font); font-size: 0.62rem; line-height: 1.3; cursor: pointer;
+  }
+  .nature-btn:hover { background: var(--rule); color: var(--ink); }
+  .nature-btn.active { background: var(--accent); color: #fff; font-weight: 700; }
+  .group.collapsed .doc-row { display: none; }
+  .group.hidden, .section.hidden, .doc-row.hidden, .nature-btn.hidden { display: none; }
 
   .sidebar-foot { margin-top: 18px; padding: 12px 20px 0; border-top: 1px solid var(--rule); font-size: 0.72rem; color: var(--muted); font-family: var(--font-mono); }
 
@@ -310,7 +324,7 @@
         <div class="search-hint" id="searchHint"></div>
       </div>
       <nav id="nav"></nav>
-      <div class="sidebar-foot">docs/ · 模块 → 性质 → 文档</div>
+      <div class="sidebar-foot">docs/ · 模块 → 文档 · 行内切换 流程/技术</div>
     </aside>
 
     <main class="content">

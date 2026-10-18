@@ -42,26 +42,29 @@ const INDEX_OUT = join(OUT, 'assets', 'docs-index.js')
 const MANIFEST_OUT = join(OUT, '.build-manifest.json')
 
 // —— 模块定义（顺序即侧栏顺序；dir 为 docs/ 下的一级目录）——
+// section=main 的模块按业务主链路顺序排列（侧栏加 ①~⑥ 序号），section=aux 的归入「辅助模块」。
 // 配对模块：目录下固定 `功能流程/` 与 `技术实现/` 两个性质子目录。
 // flat 模块（需求文档）：目录下直接平铺 NN-*.md，nature = req。
 const MODULES = [
-  { id: 'overview', name: '索引与总览', dir: '总览与索引' },
-  { id: 'scan',     name: '扫描与筛选', dir: '扫描与筛选' },
-  { id: 'signal',   name: '信号与形态', dir: '信号与形态' },
-  { id: 'ai',       name: 'AI 决策',    dir: 'AI决策' },
-  { id: 'exec',     name: '交易执行',   dir: '交易执行' },
-  { id: 'risk',     name: '风控',       dir: '风控' },
-  { id: 'review',   name: '复盘归因',   dir: '复盘归因' },
-  { id: 'spot',     name: '现货屯币',   dir: '现货屯币' },
-  { id: 'tactic',   name: '战法',       dir: '战法' },
-  { id: 'frontend', name: '前端与查询', dir: '前端与查询' },
-  { id: 'infra',    name: '基建与通知', dir: '基建与通知' },
-  { id: 'req',      name: '需求与路线', dir: '需求文档', flat: true },
+  // 业务主链路：扫描 → 信号 → AI 决策 → 交易执行 → 风控 → 复盘
+  { id: 'scan',     name: '扫描与筛选', dir: '扫描与筛选', section: 'main' },
+  { id: 'signal',   name: '信号与形态', dir: '信号与形态', section: 'main' },
+  { id: 'ai',       name: 'AI 决策',    dir: 'AI决策',     section: 'main' },
+  { id: 'exec',     name: '交易执行',   dir: '交易执行',   section: 'main' },
+  { id: 'risk',     name: '风控',       dir: '风控',       section: 'main' },
+  { id: 'review',   name: '复盘归因',   dir: '复盘归因',   section: 'main' },
+  // 辅助模块
+  { id: 'overview', name: '索引与总览', dir: '总览与索引', section: 'aux' },
+  { id: 'spot',     name: '现货屯币',   dir: '现货屯币',   section: 'aux' },
+  { id: 'tactic',   name: '战法',       dir: '战法',       section: 'aux' },
+  { id: 'frontend', name: '前端与查询', dir: '前端与查询', section: 'aux' },
+  { id: 'infra',    name: '基建与通知', dir: '基建与通知', section: 'aux' },
+  { id: 'req',      name: '需求与路线', dir: '需求文档',   flat: true, section: 'aux' },
 ]
-// 配对模块的两个性质子目录（flat 模块不用）
+// 配对模块的两个性质子目录（flat 模块不用）；short 为侧栏行内切换按钮的短名
 const NATURES = [
-  { n: 'flow', label: '功能流程', dir: '功能流程', prefix: 'flow' },
-  { n: 'tech', label: '技术实现', dir: '技术实现', prefix: 'tech' },
+  { n: 'flow', label: '功能流程', short: '流程', dir: '功能流程', prefix: 'flow' },
+  { n: 'tech', label: '技术实现', short: '技术', dir: '技术实现', prefix: 'tech' },
 ]
 // 根目录两篇（nature = overview，归入 overview 模块）
 const ROOT_DOCS = [
@@ -96,7 +99,7 @@ function collect() {
     const md = readFileSync(abs, 'utf8')
     list.push({
       id: o.id, group: 'overview', docKey: o.docKey, docName: o.docName,
-      nature: 'overview', label: '概览', path: o.file, md,
+      nature: 'overview', label: '概览', short: '概览', path: o.file, md,
       title: firstHeading(md) || o.docName,
     })
   }
@@ -111,7 +114,7 @@ function collect() {
         list.push({
           id: `req-${p.num || sha(f)}`,
           group: m.id, docKey: p.num || f.replace(/\.md$/, ''), docName: p.name,
-          nature: 'req', label: '需求', path: `${m.dir}/${f}`, md,
+          nature: 'req', label: '需求', short: '需求', path: `${m.dir}/${f}`, md,
           title: firstHeading(md) || p.name,
         })
       }
@@ -126,7 +129,7 @@ function collect() {
           list.push({
             id: `${n.prefix}-${p.num || sha(f)}`,
             group: m.id, docKey: p.num || f.replace(/\.md$/, ''), docName: p.name,
-            nature: n.n, label: n.label, path: `${m.dir}/${n.dir}/${f}`, md,
+            nature: n.n, label: n.label, short: n.short, path: `${m.dir}/${n.dir}/${f}`, md,
             title: firstHeading(md) || p.name,
           })
         }
@@ -143,10 +146,15 @@ function docFileContent(doc) {
 }
 
 function indexFileContent(docs) {
-  const groups = JSON.stringify(MODULES.map((m) => ({ id: m.id, name: m.name })))
+  // ord 为主链路模块的业务序号（辅助模块为 null）
+  let ord = 0
+  const groups = JSON.stringify(MODULES.map((m) => {
+    if (m.section === 'main') ord += 1
+    return { id: m.id, name: m.name, section: m.section, ord: m.section === 'main' ? ord : null }
+  }))
   const index = JSON.stringify(docs.map((d) => ({
     id: d.id, group: d.group, docKey: d.docKey, docName: d.docName,
-    nature: d.nature, label: d.label, title: d.title, path: d.path,
+    nature: d.nature, label: d.label, short: d.short, title: d.title, path: d.path,
   })))
   return [
     '/* 自动生成，请勿手改 — 由 scripts/build_docs_wiki.mjs 产出 */',

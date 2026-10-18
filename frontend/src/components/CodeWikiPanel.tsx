@@ -25,12 +25,15 @@ interface DocMeta {
   docName: string
   nature: string
   label: string
+  short: string
   title: string
   path: string
 }
 interface DocGroup {
   id: string
   name: string
+  section: string
+  ord: number | null
 }
 interface DocPayload extends DocMeta {
   md: string
@@ -102,9 +105,11 @@ function resolvePath(curPath: string, href: string): string {
   return parts.join('/')
 }
 
-// ── 侧栏两级分组：性质分组顺序（概览 → 功能流程 → 技术实现 → 需求，未知性质排最后）
-//    与 docKey 排序（数字升序在前、非数字在后）──
-const NATURE_ORDER = ['overview', 'flow', 'tech', 'req']
+// ── 侧栏：模块按业务分区展示（主链路带序号），模块内按 docKey 归档，
+//    文档行内联「流程 / 技术」切换（同一篇的两种性质各占一个文档文件）──
+const SECTION_NAME: Record<string, string> = { main: '业务主链路', aux: '辅助模块' }
+// 同一篇文档的两种性质排序（功能流程在前、技术实现在后）
+const NATURE_ORDER = ['flow', 'tech', 'overview', 'req']
 const cmpNature = (a: string, b: string): number => {
   const ia = NATURE_ORDER.indexOf(a)
   const ib = NATURE_ORDER.indexOf(b)
@@ -429,9 +434,8 @@ export default function CodeWikiPanel() {
   const [currentId, setCurrentId] = useState('')
   const [segments, setSegments] = useState<WikiSegment[]>([])
   const [docError, setDocError] = useState('')
-  // 侧栏折叠态（均默认展开，记录「已收起」）：模块、模块内的性质分组
+  // 侧栏折叠态（默认展开，记录「已收起」的模块）
   const [closedGroups, setClosedGroups] = useState<Set<string>>(new Set())
-  const [closedNatures, setClosedNatures] = useState<Set<string>>(new Set())
 
   const docRef = useRef<HTMLDivElement>(null)
   const navRef = useRef<HTMLDivElement>(null)
@@ -542,7 +546,7 @@ export default function CodeWikiPanel() {
     !terms.length || terms.every((t) => `${d.docKey} ${d.docName} ${d.label} ${d.title} ${d.path}`.toLowerCase().includes(t))
   const hitCount = terms.length ? index.filter(matchDoc).length : index.length
 
-  // 折叠交互（模块 / 性质分组，均默认展开）
+  // 模块折叠交互（默认展开）
   const toggleGroup = (id: string) =>
     setClosedGroups((s) => {
       const n = new Set(s)
@@ -550,17 +554,15 @@ export default function CodeWikiPanel() {
       else n.add(id)
       return n
     })
-  const toggleNature = (key: string) =>
-    setClosedNatures((s) => {
-      const n = new Set(s)
-      if (n.has(key)) n.delete(key)
-      else n.add(key)
-      return n
-    })
 
   const idx = index.findIndex((d) => d.id === currentId)
   const prev = idx > 0 ? index[idx - 1] : null
   const next = idx >= 0 && idx < index.length - 1 ? index[idx + 1] : null
+
+  // 侧栏渲染用：过滤后的可见模块（分区标题只在该分区仍有可见模块时出现）
+  const visibleGroups = groups
+    .map((g) => ({ group: g, items: index.filter((d) => d.group === g.id && matchDoc(d)) }))
+    .filter((x) => x.items.length > 0)
 
   if (status === 'error') {
     return (
@@ -597,58 +599,67 @@ export default function CodeWikiPanel() {
           </div>
         </div>
         <div className="wiki-nav-scroll" ref={navRef}>
-          {groups.map((g) => {
-            const items = index.filter((d) => d.group === g.id && matchDoc(d))
-            if (!items.length) return null
+          {visibleGroups.map(({ group: g, items }, i) => {
             const closed = closedGroups.has(g.id)
-            // 模块内按性质归档（概览 / 功能流程 / 技术实现 / 需求，各自成组）
-            const natureMap = new Map<string, DocMeta[]>()
+            const section = g.section ?? 'aux'
+            // 分区标题：该分区第一个可见模块之前出现
+            const newSection = i === 0 || visibleGroups[i - 1].group.section !== section
+            // 模块内按 docKey 归档（数字升序、非数字排后），每个 docKey 即「一篇文档」的两种性质
+            const docMap = new Map<string, DocMeta[]>()
             for (const d of items) {
-              const arr = natureMap.get(d.nature)
+              const arr = docMap.get(d.docKey)
               if (arr) arr.push(d)
-              else natureMap.set(d.nature, [d])
+              else docMap.set(d.docKey, [d])
             }
-            const natures = [...natureMap.keys()].sort(cmpNature)
-            // 单一性质模块（索引与总览 / 需求与路线）省略性质层，文档直接挂在模块下
-            const flat = natures.length === 1
+            const keys = [...docMap.keys()].sort(cmpDocKey)
             return (
-              <div className="wiki-nav-group" key={g.id}>
-                <div
-                  className={`wiki-nav-group-title${closed ? ' collapsed' : ''}`}
-                  onClick={() => toggleGroup(g.id)}
-                >
-                  <span className="nav-caret">{closed ? '▸' : '▾'}</span>
-                  {g.name}
-                </div>
-                {!closed && natures.map((nature) => {
-                  const docs = natureMap.get(nature)!.slice().sort((a, b) => cmpDocKey(a.docKey, b.docKey))
-                  const natureKey = `${g.id}:${nature}`
-                  const links = docs.map((d) => (
-                    <a
-                      key={d.id}
-                      className={`wiki-nav-item ${flat ? 'wiki-nav-leaf' : 'wiki-nav-sub'}${d.id === currentId ? ' active' : ''}`}
-                      title={d.title}
-                      onClick={() => openDoc(d.id)}
-                    >
-                      {rowLabel(d)}
-                    </a>
-                  ))
-                  if (flat) return <Fragment key={natureKey}>{links}</Fragment>
-                  const natureClosed = closedNatures.has(natureKey)
-                  return (
-                    <Fragment key={natureKey}>
+              <Fragment key={g.id}>
+                {newSection && <div className="wiki-nav-section">{SECTION_NAME[section] ?? section}</div>}
+                <div className="wiki-nav-group">
+                  <div
+                    className={`wiki-nav-group-title${closed ? ' collapsed' : ''}`}
+                    onClick={() => toggleGroup(g.id)}
+                  >
+                    <span className="nav-caret">{closed ? '▸' : '▾'}</span>
+                    {g.ord ? <span className="wiki-nav-ord">{g.ord}</span> : null}
+                    {g.name}
+                  </div>
+                  {!closed && keys.map((key) => {
+                    const docs = docMap.get(key)!.slice().sort((a, b) => cmpNature(a.nature, b.nature))
+                    // 行内性质按钮高亮当前篇；点击文档名打开该行当前选中的性质（默认功能流程）
+                    const chosen = docs.find((d) => d.id === currentId) ?? docs[0]
+                    return (
                       <div
-                        className={`wiki-nav-nature${natureClosed ? ' collapsed' : ''}`}
-                        onClick={() => toggleNature(natureKey)}
+                        className={`wiki-nav-doc-row${docs.some((d) => d.id === currentId) ? ' current' : ''}`}
+                        key={`${g.id}:${key}`}
                       >
-                        <span className="nav-caret">{natureClosed ? '▸' : '▾'}</span>
-                        {docs[0].label}
+                        <a
+                          className="wiki-nav-item wiki-nav-doc"
+                          title={chosen.title}
+                          onClick={() => openDoc(chosen.id)}
+                        >
+                          {rowLabel(chosen)}
+                        </a>
+                        {docs.length > 1 && (
+                          <span className="wiki-nature-switch">
+                            {docs.map((d) => (
+                              <button
+                                key={d.id}
+                                type="button"
+                                className={`wiki-nature-btn${d.id === currentId ? ' active' : ''}`}
+                                title={`${rowLabel(d)} · ${d.label}`}
+                                onClick={() => openDoc(d.id)}
+                              >
+                                {d.short}
+                              </button>
+                            ))}
+                          </span>
+                        )}
                       </div>
-                      {!natureClosed && links}
-                    </Fragment>
-                  )
-                })}
-              </div>
+                    )
+                  })}
+                </div>
+              </Fragment>
             )
           })}
           {status === 'loading' && (

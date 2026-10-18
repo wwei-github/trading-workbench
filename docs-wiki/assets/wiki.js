@@ -100,10 +100,9 @@
     return loads[id];
   }
 
-  /* ---------- 侧边导航（两级分组：模块 → 性质分组 → 文档） ---------- */
-  var navItems = [];
-  var closedGroups = {};   // 已收起的模块
-  var closedNatures = {};  // 已收起的性质分组（key = group:nature）
+  /* ---------- 侧边导航（模块 → 文档；文档行内联「流程 / 技术」切换） ---------- */
+  var navRows = [];      // 文档行（一篇文档一行，含该篇的全部性质）
+  var closedGroups = {};  // 已收起的模块
 
   function docRowLabel(d) {
     return /^\d+$/.test(d.docKey) ? d.docKey + ' ' + d.docName : d.docName;
@@ -116,12 +115,14 @@
     return a < b ? -1 : a > b ? 1 : 0;
   }
 
-  // 性质分组顺序：概览 → 功能流程 → 技术实现 → 需求（未知性质排最后）
-  var NATURE_ORDER = ['overview', 'flow', 'tech', 'req'];
+  // 同一篇文档的两种性质排序（功能流程在前、技术实现在后）
+  var NATURE_ORDER = ['flow', 'tech', 'overview', 'req'];
   function cmpNature(a, b) {
     var ia = NATURE_ORDER.indexOf(a), ib = NATURE_ORDER.indexOf(b);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
   }
+
+  var SECTION_NAME = { main: '业务主链路', aux: '辅助模块' };
 
   function applyGroupState() {
     el.nav.querySelectorAll('.group').forEach(function (g) {
@@ -129,32 +130,65 @@
     });
   }
 
-  function applyNatureState() {
-    el.nav.querySelectorAll('.nature-wrap').forEach(function (w) {
-      w.classList.toggle('collapsed', !!closedNatures[w.dataset.natureKey]);
-    });
-  }
-
-  function makeItem(doc, cls, label) {
+  function makeItem(doc) {
     var a = document.createElement('a');
-    a.className = cls;
+    a.className = 'nav-item nav-doc';
     a.dataset.docId = doc.id;
     a.href = '#' + doc.id;
     a.title = doc.title;
     var span = document.createElement('span');
     span.className = 'nav-label';
-    span.textContent = label;
+    span.textContent = docRowLabel(doc);
     a.appendChild(span);
-    navItems.push(a);
     return a;
+  }
+
+  // 文档行：名称 + 行内性质切换（同一篇的功能流程 / 技术实现是两个独立文件）
+  function makeDocRow(docs) {
+    var row = document.createElement('div');
+    row.className = 'doc-row';
+    row.appendChild(makeItem(docs[0]));
+    if (docs.length > 1) {
+      var sw = document.createElement('span');
+      sw.className = 'nature-switch';
+      docs.forEach(function (d) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'nature-btn';
+        b.dataset.docId = d.id;
+        b.textContent = d.short;
+        b.title = docRowLabel(d) + ' · ' + d.label;
+        b.addEventListener('click', function () {
+          navigate(d.id, '');
+          openSidebar(false);
+        });
+        sw.appendChild(b);
+      });
+      row.appendChild(sw);
+    }
+    navRows.push({ row: row, docs: docs });
+    return row;
   }
 
   function buildNav() {
     var frag = document.createDocumentFragment();
+    var lastSection = null;
     GROUPS.forEach(function (g) {
+      // 分区标题：主链路 / 辅助模块各出现一次
+      var section = g.section || 'aux';
+      if (section !== lastSection) {
+        var sec = document.createElement('div');
+        sec.className = 'section';
+        sec.dataset.section = section;
+        sec.textContent = SECTION_NAME[section] || section;
+        frag.appendChild(sec);
+        lastSection = section;
+      }
+
       var group = document.createElement('div');
       group.className = 'group';
       group.dataset.group = g.id;
+      group.dataset.section = section;
 
       var title = document.createElement('div');
       title.className = 'group-title';
@@ -162,6 +196,12 @@
       caret.className = 'nav-caret';
       caret.textContent = '\u25be';
       title.appendChild(caret);
+      if (g.ord) {
+        var ord = document.createElement('span');
+        ord.className = 'nav-ord';
+        ord.textContent = g.ord;
+        title.appendChild(ord);
+      }
       var name = document.createElement('span');
       name.className = 'group-name';
       name.textContent = g.name;
@@ -172,67 +212,42 @@
       });
       group.appendChild(title);
 
-      // 模块内按性质归档，单一性质模块的文档直接挂在模块下
+      // 模块内按 docKey 归档（数字升序在前、非数字在后）
       var map = {};
-      var natures = [];
+      var keys = [];
       DOCS.forEach(function (d) {
         if (d.group !== g.id) return;
-        if (!map[d.nature]) { map[d.nature] = []; natures.push(d.nature); }
-        map[d.nature].push(d);
+        if (!map[d.docKey]) { map[d.docKey] = []; keys.push(d.docKey); }
+        map[d.docKey].push(d);
       });
-      natures.sort(cmpNature);
-      var flat = natures.length === 1;
-
-      natures.forEach(function (nature) {
-        var docs = map[nature].slice().sort(function (a, b) { return cmpDocKey(a.docKey, b.docKey); });
-        var key = g.id + ':' + nature;
-        if (flat) {
-          docs.forEach(function (d) { group.appendChild(makeItem(d, 'nav-item nav-leaf', docRowLabel(d))); });
-          return;
-        }
-        var wrap = document.createElement('div');
-        wrap.className = 'nature-wrap';
-        wrap.dataset.natureKey = key;
-
-        var head = document.createElement('div');
-        head.className = 'nav-nature';
-        var hc = document.createElement('span');
-        hc.className = 'nav-caret';
-        hc.textContent = '\u25be';
-        head.appendChild(hc);
-        var hl = document.createElement('span');
-        hl.className = 'nav-label';
-        hl.textContent = docs[0].label;
-        head.appendChild(hl);
-        head.addEventListener('click', function () {
-          closedNatures[key] = !closedNatures[key];
-          applyNatureState();
-        });
-        wrap.appendChild(head);
-        docs.forEach(function (d) { wrap.appendChild(makeItem(d, 'nav-item nav-sub', docRowLabel(d))); });
-        group.appendChild(wrap);
+      keys.sort(cmpDocKey);
+      keys.forEach(function (key) {
+        var docs = map[key].slice().sort(function (a, b) { return cmpNature(a.nature, b.nature); });
+        group.appendChild(makeDocRow(docs));
       });
 
       frag.appendChild(group);
     });
     el.nav.appendChild(frag);
     applyGroupState();
-    applyNatureState();
   }
 
   function markActive(id) {
-    navItems.forEach(function (a) {
-      var on = a.dataset.docId === id;
-      a.classList.toggle('active', on);
-      if (!on) return;
-      var wrap = a.closest('.nature-wrap');
-      if (wrap) delete closedNatures[wrap.dataset.natureKey];
-      var group = a.closest('.group');
-      if (group) delete closedGroups[group.dataset.group]; // 当前篇所在模块保持展开
-      applyGroupState();
-      applyNatureState();
-      if (a.scrollIntoView) a.scrollIntoView({ block: 'nearest' });
+    // 文档行「当前篇」标记 + 行内性质按钮高亮（同一行的两种性质共用一个名称行）
+    var found = null;
+    navRows.forEach(function (r) {
+      var isCur = r.docs.some(function (d) { return d.id === id; });
+      r.row.classList.toggle('current', isCur);
+      if (isCur) found = r.row;
     });
+    el.nav.querySelectorAll('.nature-btn').forEach(function (b) {
+      b.classList.toggle('active', b.dataset.docId === id);
+    });
+    if (!found) return;
+    var group = found.closest('.group');
+    if (group) delete closedGroups[group.dataset.group]; // 当前篇所在模块保持展开
+    applyGroupState();
+    if (found.scrollIntoView) found.scrollIntoView({ block: 'nearest' });
   }
 
   /* ---------- 搜索（导航元数据级，保持按需加载） ---------- */
@@ -243,36 +258,42 @@
   function filterNav(query) {
     var q = query.trim().toLowerCase();
     var groups = el.nav.querySelectorAll('.group');
-    var natures = el.nav.querySelectorAll('.nature-wrap');
+    var sections = el.nav.querySelectorAll('.section');
     if (!q) {
-      navItems.forEach(function (a) { a.classList.remove('hidden'); });
-      natures.forEach(function (w) { w.classList.remove('hidden'); });
+      navRows.forEach(function (r) {
+        r.row.classList.remove('hidden');
+        r.row.querySelectorAll('.nature-btn').forEach(function (b) { b.classList.remove('hidden'); });
+      });
       groups.forEach(function (g) { g.classList.remove('hidden'); });
+      sections.forEach(function (s) { s.classList.remove('hidden'); });
       applyGroupState();
-      applyNatureState();
       el.searchWrap.classList.toggle('has-value', false);
       el.searchHint.textContent = '';
       return;
     }
     var terms = q.split(/\s+/).filter(Boolean);
     var hit = 0;
-    navItems.forEach(function (a) {
-      var d = byId[a.dataset.docId];
-      var ok = terms.every(function (t) { return haystack(d).indexOf(t) !== -1; });
-      a.classList.toggle('hidden', !ok);
-      if (ok) hit++;
+    // 按「文档行」过滤：行内任一性质命中即保留整行，未命中的性质按钮隐藏
+    navRows.forEach(function (r) {
+      var matched = r.docs.filter(function (d) {
+        return terms.every(function (t) { return haystack(d).indexOf(t) !== -1; });
+      });
+      hit += matched.length;
+      r.row.classList.toggle('hidden', matched.length === 0);
+      r.row.querySelectorAll('.nature-btn').forEach(function (b) {
+        b.classList.toggle('hidden', matched.indexOf(byId[b.dataset.docId]) === -1);
+      });
     });
-    // 性质分组：其下无命中文档则整组隐藏
-    natures.forEach(function (w) {
-      w.classList.toggle('hidden', w.querySelectorAll('.nav-item:not(.hidden)').length === 0);
-    });
-    // 搜索时展开全部模块与性质分组，仅按命中决定显隐
+    // 搜索时展开全部模块，仅按命中决定显隐
     groups.forEach(function (g) {
       g.classList.remove('collapsed');
-      var any = g.querySelector('.nav-item:not(.hidden)') || g.querySelector('.nature-wrap:not(.hidden)');
-      g.classList.toggle('hidden', !any);
+      g.classList.toggle('hidden', g.querySelectorAll('.doc-row:not(.hidden)').length === 0);
     });
-    natures.forEach(function (w) { w.classList.remove('collapsed'); });
+    // 分区标题：该分区无可见模块则隐藏
+    sections.forEach(function (s) {
+      var any = el.nav.querySelector('.group[data-section="' + s.dataset.section + '"]:not(.hidden)');
+      s.classList.toggle('hidden', !any);
+    });
     el.searchWrap.classList.toggle('has-value', true);
     el.searchHint.textContent = hit + ' / ' + DOCS.length + ' 篇匹配';
   }

@@ -1,6 +1,6 @@
 {
   "v": 1,
-  "builder": "e1b04e59d0276333",
+  "builder": "0a780b73ab8a50c6",
   "docs": {
     "doc-map": {
       "hash": "46c68d04d70a5529",
@@ -9,14 +9,6 @@
     "code-wiki": {
       "hash": "ed7cd8d03016f805",
       "path": "CODE_WIKI.md"
-    },
-    "flow-12": {
-      "hash": "5927d5af3ba9cf2e",
-      "path": "总览与索引/功能流程/12-交易系统总览.md"
-    },
-    "tech-12": {
-      "hash": "673d96aa2a2d0545",
-      "path": "总览与索引/技术实现/12-交易系统总览.md"
     },
     "flow-01": {
       "hash": "b9e2ef191d04dc30",
@@ -81,6 +73,14 @@
     "tech-06": {
       "hash": "ad500dde48d7e1ed",
       "path": "复盘归因/技术实现/06-复盘归因.md"
+    },
+    "flow-12": {
+      "hash": "5927d5af3ba9cf2e",
+      "path": "总览与索引/功能流程/12-交易系统总览.md"
+    },
+    "tech-12": {
+      "hash": "673d96aa2a2d0545",
+      "path": "总览与索引/技术实现/12-交易系统总览.md"
     },
     "flow-07": {
       "hash": "3d5a49354865dd78",
