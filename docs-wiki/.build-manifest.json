@@ -1,0 +1,126 @@
+{
+  "v": 1,
+  "builder": "b787b3e0a9691171",
+  "docs": {
+    "code-wiki": {
+      "hash": "79ebe33a53ea68bb",
+      "path": "CODE_WIKI.md"
+    },
+    "doc-map": {
+      "hash": "506b81161c4b3b7f",
+      "path": "00-文档地图.md"
+    },
+    "tech-01": {
+      "hash": "ec4f8c63072b8bb7",
+      "path": "技术文档/01-币种筛选与扫描.md"
+    },
+    "tech-02": {
+      "hash": "98e3a1c80a90fa97",
+      "path": "技术文档/02-信号触发器.md"
+    },
+    "tech-03": {
+      "hash": "f89b1bf28ccf4402",
+      "path": "技术文档/03-AI分析.md"
+    },
+    "tech-04": {
+      "hash": "63c945c83b7aa21e",
+      "path": "技术文档/04-交易执行与多账号.md"
+    },
+    "tech-05": {
+      "hash": "d046fe91fd589f2c",
+      "path": "技术文档/05-风控体系.md"
+    },
+    "tech-06": {
+      "hash": "912f4094bfc5eaaa",
+      "path": "技术文档/06-复盘归因.md"
+    },
+    "tech-07": {
+      "hash": "7c90dc28bb5eff8a",
+      "path": "技术文档/07-现货屯币.md"
+    },
+    "tech-08": {
+      "hash": "2657d764d261bc61",
+      "path": "技术文档/08-前端界面.md"
+    },
+    "tech-09": {
+      "hash": "96948d4bdf1b5a20",
+      "path": "技术文档/09-基建与通知.md"
+    },
+    "tech-10": {
+      "hash": "8aafa24b10db664d",
+      "path": "技术文档/10-战法模块.md"
+    },
+    "tech-11": {
+      "hash": "6db88875b5da3f03",
+      "path": "技术文档/11-金K形态库.md"
+    },
+    "tech-12": {
+      "hash": "d6893623e6b0080c",
+      "path": "技术文档/12-交易系统总览.md"
+    },
+    "tech-13": {
+      "hash": "01b3a4e1959f8d1c",
+      "path": "技术文档/13-4H背景排列强度判定.md"
+    },
+    "tech-14": {
+      "hash": "2276f745ac7050c8",
+      "path": "技术文档/14-命中历史查询.md"
+    },
+    "flow-01": {
+      "hash": "b9e2ef191d04dc30",
+      "path": "项目功能流程文档/01-币种筛选与扫描.md"
+    },
+    "flow-02": {
+      "hash": "4c69ee932a4b82bc",
+      "path": "项目功能流程文档/02-信号触发器.md"
+    },
+    "flow-03": {
+      "hash": "cbc918f615f92159",
+      "path": "项目功能流程文档/03-AI分析.md"
+    },
+    "flow-04": {
+      "hash": "f16ad67c9a44f702",
+      "path": "项目功能流程文档/04-交易执行与多账号.md"
+    },
+    "flow-05": {
+      "hash": "e739da05f03ee39f",
+      "path": "项目功能流程文档/05-风控体系.md"
+    },
+    "flow-06": {
+      "hash": "dcb706ab372e32e1",
+      "path": "项目功能流程文档/06-复盘归因.md"
+    },
+    "flow-07": {
+      "hash": "3d5a49354865dd78",
+      "path": "项目功能流程文档/07-现货屯币.md"
+    },
+    "flow-08": {
+      "hash": "b7653e7ec3c4e211",
+      "path": "项目功能流程文档/08-前端界面.md"
+    },
+    "flow-09": {
+      "hash": "54529b2ef4bea7da",
+      "path": "项目功能流程文档/09-基建与通知.md"
+    },
+    "flow-10": {
+      "hash": "5cd41e4defb8bdd4",
+      "path": "项目功能流程文档/10-战法模块.md"
+    },
+    "flow-11": {
+      "hash": "9685878930608e5d",
+      "path": "项目功能流程文档/11-金K形态库.md"
+    },
+    "flow-12": {
+      "hash": "5927d5af3ba9cf2e",
+      "path": "项目功能流程文档/12-交易系统总览.md"
+    },
+    "flow-13": {
+      "hash": "1b887d2fdca3cbdc",
+      "path": "项目功能流程文档/13-4H背景排列强度判定.md"
+    },
+    "flow-14": {
+      "hash": "5ace2e5735886d52",
+      "path": "项目功能流程文档/14-命中历史查询.md"
+    }
+  }
+}
