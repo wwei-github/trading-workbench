@@ -150,7 +150,13 @@ cmd_deploy() {
 
     # 切换到新版本
     step "启动新版本容器..."
-    if ! IMAGE_TAG="$sha" compose up -d --no-build $services; then
+    # frontend-only 必须 --no-deps（2026-10-18 事故）：compose 会把 depends_on 的
+    # backend 一起拉起，而本次只构建了前端镜像，backend 的 :$sha 标签不存在 →
+    # "No such image: trading-workbench-backend:$sha" → up 失败、回滚（docs-only 部署实测）。
+    # backend/all 不能用 --no-deps：需要依赖 db/redis 的 healthy 门。
+    local dep_flag=""
+    if [ "$scope" == "frontend" ]; then dep_flag="--no-deps"; fi
+    if ! IMAGE_TAG="$sha" compose up -d --no-build $dep_flag $services; then
         error "up -d 失败，尝试回滚"
         echo "DEPLOY_FAILED stage=up sha=$sha"
         [ -n "$prev_sha" ] && rollback_services "$prev_sha" "$services" || true
@@ -182,7 +188,11 @@ rollback_services() {
     local target_sha="$1"; shift
     local services=("$@")
     step "回滚容器到 $target_sha ..."
-    if IMAGE_TAG="$target_sha" compose up -d --no-build "${services[@]}"; then
+    # 与 up 一致（2026-10-18）：仅前端服务时 --no-deps，否则会连带拉起 backend，
+    # 而 :$target_sha 的 backend 镜像未必存在，会让回滚本身失败、容器停在半启动态
+    local dep_flag=""
+    if [ "$*" == "frontend" ]; then dep_flag="--no-deps"; fi
+    if IMAGE_TAG="$target_sha" compose up -d --no-build $dep_flag "${services[@]}"; then
         info "已回滚到 $target_sha"
         echo "ROLLED_BACK_TO=$target_sha"
     else
