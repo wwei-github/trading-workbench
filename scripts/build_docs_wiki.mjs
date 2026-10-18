@@ -12,16 +12,17 @@
 //   - docs-index.js（导航元数据，无正文）仅内容有变时写盘
 //
 // 用法：
-//   node scripts/build_docs_wiki.mjs            # 增量（默认）
-//   node scripts/build_docs_wiki.mjs --force    # 全量重生成
-//   node scripts/build_docs_wiki.mjs --out=DIR  # 指定产出目录（默认 docs-wiki）
-//   node scripts/build_docs_wiki.mjs --quiet    # 只打印汇总
+//   node scripts/build_docs_wiki.mjs                  # 增量（默认）
+//   node scripts/build_docs_wiki.mjs --force          # 全量重生成
+//   node scripts/build_docs_wiki.mjs --out=DIR        # 指定产出目录（默认 docs-wiki）
+//   node scripts/build_docs_wiki.mjs --publish=DIR    # 生成后把浏览页镜像到 DIR（供 vite publicDir）
+//   node scripts/build_docs_wiki.mjs --quiet          # 只打印汇总
 // ============================================================
 import { createHash } from 'node:crypto'
 import {
-  existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync,
+  cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, readdirSync, rmSync,
 } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SELF = fileURLToPath(import.meta.url)
@@ -33,6 +34,8 @@ const FORCE = argv.includes('--force')
 const QUIET = argv.includes('--quiet')
 const outArg = argv.find((a) => a.startsWith('--out='))
 const OUT = resolve(REPO, outArg ? outArg.slice('--out='.length) : 'docs-wiki')
+const publishArg = argv.find((a) => a.startsWith('--publish='))
+const PUBLISH = publishArg ? resolve(REPO, publishArg.slice('--publish='.length)) : null
 
 const DOCS_OUT = join(OUT, 'assets', 'docs')
 const INDEX_OUT = join(OUT, 'assets', 'docs-index.js')
@@ -139,6 +142,23 @@ function writeIfChanged(path, content) {
   return true
 }
 
+// —— 发布：把浏览页产出镜像到 DIR（如 frontend/public/wiki，由 vite 直接提供服务并拷入 dist）——
+// 产出目录 docs-wiki/ 保留 .build-manifest.json 供下次增量比对；发布目录只放运行时所需文件，
+// 且整体重建（先删后拷）以保证与产出目录严格一致、无残留。
+function publish() {
+  if (!PUBLISH) return null
+  if (PUBLISH === OUT) throw new Error(`--publish 目录不能与产出目录相同：${PUBLISH}`)
+  rmSync(PUBLISH, { recursive: true, force: true })
+  cpSync(OUT, PUBLISH, {
+    recursive: true,
+    filter: (src) => basename(src) !== '.build-manifest.json',
+  })
+  // 入口统一命名 index.html，使 /wiki/ 可直接打开
+  const html = join(PUBLISH, 'docs-wiki.html')
+  if (existsSync(html)) renameSync(html, join(PUBLISH, 'index.html'))
+  return PUBLISH
+}
+
 // —— 主流程 ——
 const t0 = Date.now()
 const builderHash = sha(readFileSync(SELF, 'utf8'))
@@ -181,6 +201,7 @@ if (prev) {
 const indexChanged = writeIfChanged(INDEX_OUT, indexFileContent(docs))
 writeIfChanged(MANIFEST_OUT, JSON.stringify(nextManifest, null, 2) + '\n')
 const staticCopied = ensureStatic()
+const published = publish()
 
 // —— 报告 ——
 const ms = Date.now() - t0
@@ -188,6 +209,7 @@ console.log(`[docs-wiki] ${fullRebuild ? '全量' : '增量'}生成：重生成 
   (removed.length ? ` / 删除 ${removed.length} 篇` : '') +
   (indexChanged ? ' / 导航索引已更新' : '') +
   (staticCopied.length ? ` / 补齐依赖 ${staticCopied.join(',')}` : '') +
+  (published ? ` / 已发布到 ${relative(REPO, published)}` : '') +
   `（${ms}ms）`)
 if (!QUIET && touched.length) {
   console.log(`[docs-wiki] 重生成：${touched.join(', ')}`)

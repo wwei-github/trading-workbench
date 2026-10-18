@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Card, Modal, Spin, Tooltip, Typography } from 'antd'
+import { Button, Card, Input, Modal, Spin, Tooltip, Typography } from 'antd'
 import { CloseOutlined, FullscreenOutlined, ZoomInOutlined, ZoomOutOutlined } from '@ant-design/icons'
 import { marked } from 'marked'
-// 权威源在仓库根 docs/CODE_WIKI.md；此处为经 scripts/sync-wiki.mjs 同步的前端副本
-// （docker 构建上下文不含 docs/，故必须随源码提交一份）
-import wikiRaw from '../assets/CODE_WIKI.md?raw'
 
 const { Text } = Typography
 
@@ -17,12 +14,93 @@ function slugify(text: string): string {
     .replace(/\s/g, '-')
 }
 
-// markdown → HTML，并为标题补 id（marked 新版已不再生成 header id）
-function renderMarkdown(source: string, usedIds: Set<string>): string {
-  const html = marked.parse(source) as string
-  const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html')
-  const root = doc.body.firstElementChild
-  if (!root) return html
+// ── 数据层：浏览数据由 scripts/build_docs_wiki.mjs 生成并发布到 public/wiki，
+//    经 vite publicDir 在 dev 直接服务、build 拷入 dist；此处运行时按需注入脚本加载 ──
+const WIKI_BASE = '/wiki'
+
+interface DocMeta {
+  id: string
+  group: string
+  label: string
+  title: string
+  path: string
+}
+interface DocGroup {
+  id: string
+  name: string
+}
+interface DocPayload extends DocMeta {
+  md: string
+}
+
+type WikiWindow = Window & {
+  DOC_GROUPS?: DocGroup[]
+  DOC_INDEX?: DocMeta[]
+  DOC_REGISTRY?: Record<string, DocPayload>
+}
+
+const wikiWindow = () => window as WikiWindow
+
+// 同一 URL 只注入一次；失败则移除缓存，允许重试
+const scriptCache = new Map<string, Promise<void>>()
+
+function loadScript(src: string): Promise<void> {
+  const cached = scriptCache.get(src)
+  if (cached) return cached
+  const task = new Promise<void>((resolve, reject) => {
+    const s = document.createElement('script')
+    s.src = src
+    s.async = true
+    s.onload = () => resolve()
+    s.onerror = () => {
+      scriptCache.delete(src)
+      reject(new Error(`资源加载失败：${src}`))
+    }
+    document.head.appendChild(s)
+  })
+  scriptCache.set(src, task)
+  return task
+}
+
+async function loadIndex(): Promise<{ groups: DocGroup[]; index: DocMeta[] }> {
+  const w = wikiWindow()
+  if (!w.DOC_INDEX) await loadScript(`${WIKI_BASE}/assets/docs-index.js`)
+  return { groups: w.DOC_GROUPS ?? [], index: w.DOC_INDEX ?? [] }
+}
+
+async function loadDoc(id: string): Promise<DocPayload> {
+  const w = wikiWindow()
+  w.DOC_REGISTRY = w.DOC_REGISTRY ?? {}
+  if (!w.DOC_REGISTRY[id]) await loadScript(`${WIKI_BASE}/assets/docs/${id}.js`)
+  const doc = w.DOC_REGISTRY[id]
+  if (!doc) throw new Error(`文档数据为空：${id}`)
+  return doc
+}
+
+// ── 百分号解码：marked 会把 href 里的非 ASCII 编码（中文路径 → %E6%8A%80…），
+//    还原后才能与 pathIndex 的原始路径比对；非法转义序列（如正文里字面量的 %）原样返回 ──
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+// ── 文档相对路径归一化（用于解析正文里的跨文档 .md 链接）──
+function resolvePath(curPath: string, href: string): string {
+  const parts = curPath.split('/')
+  parts.pop()
+  for (const seg of href.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') parts.pop()
+    else parts.push(seg)
+  }
+  return parts.join('/')
+}
+
+// ── markdown → HTML 后的语义补齐：标题 id（内链锚点）、表格横向滚动容器、正文链接重写 ──
+function enhance(root: HTMLElement, docPath: string, pathIndex: Record<string, string>, usedIds: Set<string>): void {
   root.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((h) => {
     const base = slugify(h.textContent ?? '') || 'section'
     let id = base
@@ -31,7 +109,70 @@ function renderMarkdown(source: string, usedIds: Set<string>): string {
     usedIds.add(id)
     h.id = id
   })
-  return root.innerHTML
+
+  root.querySelectorAll<HTMLTableElement>('table').forEach((t) => {
+    if (t.parentElement?.classList.contains('table-wrap')) return
+    const wrap = document.createElement('div')
+    wrap.className = 'table-wrap'
+    t.parentNode?.insertBefore(wrap, t)
+    wrap.appendChild(t)
+  })
+
+  root.querySelectorAll<HTMLAnchorElement>('a[href]').forEach((a) => {
+    const href = a.getAttribute('href') ?? ''
+    if (/^https?:/i.test(href)) {
+      a.setAttribute('target', '_blank')
+      a.setAttribute('rel', 'noopener')
+      return
+    }
+    if (href.startsWith('#')) {
+      // 同文档锚点：点击时由容器委托处理，不触发页面跳转
+      a.dataset.anchor = safeDecode(href.slice(1))
+      return
+    }
+    if (/\.md(#|$)/i.test(href)) {
+      const [rawPath, rawAnchor] = href.split('#')
+      const target = resolvePath(docPath, safeDecode(rawPath))
+      const id = pathIndex[target]
+      if (id) {
+        a.dataset.docId = id
+        if (rawAnchor) a.dataset.anchor = safeDecode(rawAnchor)
+        a.setAttribute('href', `#${id}${rawAnchor ? `:${rawAnchor}` : ''}`)
+      } else {
+        a.classList.add('missing')
+        a.setAttribute('title', `未纳入本页：${target}`)
+        a.removeAttribute('href')
+      }
+    }
+  })
+}
+
+// ── 内容分段：```mermaid 围栏单独抽取（交给 MermaidBlock），其余按 markdown 渲染 ──
+type WikiSegment = { kind: 'markdown'; html: string } | { kind: 'mermaid'; code: string }
+
+const MERMAID_FENCE = /^```mermaid[ \t]*\r?\n([\s\S]*?)^```[ \t]*$/gm
+
+function renderSegments(raw: string, docPath: string, pathIndex: Record<string, string>): WikiSegment[] {
+  const usedIds = new Set<string>()
+  const out: WikiSegment[] = []
+  const toMarkdown = (chunk: string) => {
+    const html = marked.parse(chunk) as string
+    const parsed = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html')
+    const root = parsed.body.firstElementChild as HTMLElement | null
+    if (!root) return html
+    enhance(root, docPath, pathIndex, usedIds)
+    return root.innerHTML
+  }
+  let last = 0
+  let m: RegExpExecArray | null
+  MERMAID_FENCE.lastIndex = 0
+  while ((m = MERMAID_FENCE.exec(raw))) {
+    if (m.index > last) out.push({ kind: 'markdown', html: toMarkdown(raw.slice(last, m.index)) })
+    out.push({ kind: 'mermaid', code: m[1].trim() })
+    last = MERMAID_FENCE.lastIndex
+  }
+  if (last < raw.length) out.push({ kind: 'markdown', html: toMarkdown(raw.slice(last)) })
+  return out
 }
 
 // ── mermaid：按需动态加载（体积大，不进主包），渲染串行化避免内部状态竞争 ──
@@ -257,44 +398,235 @@ function MermaidBlock({ code }: { code: string }) {
   )
 }
 
-// ── 内容分段：```mermaid 围栏单独抽取，其余按 markdown 渲染 ──
-type WikiSegment = { kind: 'markdown'; html: string } | { kind: 'mermaid'; code: string }
-
-const MERMAID_FENCE = /^```mermaid[ \t]*\r?\n([\s\S]*?)^```[ \t]*$/gm
-
-function splitSegments(raw: string): WikiSegment[] {
-  const usedIds = new Set<string>()
-  const out: WikiSegment[] = []
-  let last = 0
-  let m: RegExpExecArray | null
-  MERMAID_FENCE.lastIndex = 0
-  while ((m = MERMAID_FENCE.exec(raw))) {
-    if (m.index > last) out.push({ kind: 'markdown', html: renderMarkdown(raw.slice(last, m.index), usedIds) })
-    out.push({ kind: 'mermaid', code: m[1].trim() })
-    last = MERMAID_FENCE.lastIndex
-  }
-  if (last < raw.length) out.push({ kind: 'markdown', html: renderMarkdown(raw.slice(last), usedIds) })
-  return out
-}
-
+// ── 面板：左「搜索 + 三组目录」，右「正文 + 上/下篇」──────────────────────
 export default function CodeWikiPanel() {
-  const segments = useMemo(() => splitSegments(wikiRaw), [])
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [error, setError] = useState('')
+  const [groups, setGroups] = useState<DocGroup[]>([])
+  const [index, setIndex] = useState<DocMeta[]>([])
+  const [query, setQuery] = useState('')
+  const [currentId, setCurrentId] = useState('')
+  const [segments, setSegments] = useState<WikiSegment[]>([])
+  const [docError, setDocError] = useState('')
+
+  const docRef = useRef<HTMLDivElement>(null)
+  const navRef = useRef<HTMLDivElement>(null)
+  const pendingAnchor = useRef<string | null>(null)
+
+  const pathIndex = useMemo(() => Object.fromEntries(index.map((d) => [d.path, d.id])), [index])
+  const current = useMemo(() => index.find((d) => d.id === currentId) ?? null, [index, currentId])
+
+  const scrollToAnchor = useCallback((anchor: string) => {
+    const root = docRef.current
+    if (!root) return
+    const target =
+      root.querySelector(`#${CSS.escape(anchor)}`) ??
+      root.querySelector(`#${CSS.escape(slugify(anchor))}`)
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [])
+
+  // 载入导航索引（一次性）
+  useEffect(() => {
+    let alive = true
+    loadIndex()
+      .then(({ groups: g, index: list }) => {
+        if (!alive) return
+        if (!list.length) throw new Error('文档索引为空（assets/docs-index.js）')
+        setGroups(g)
+        setIndex(list)
+        setCurrentId(list[0].id)
+        setStatus('ready')
+      })
+      .catch((e: unknown) => {
+        if (!alive) return
+        setError(e instanceof Error ? e.message : String(e))
+        setStatus('error')
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // 切换文档 → 按需加载该篇数据并渲染
+  useEffect(() => {
+    if (!current) return
+    let alive = true
+    setSegments([])
+    setDocError('')
+    loadDoc(current.id)
+      .then((doc) => {
+        if (alive) setSegments(renderSegments(doc.md, doc.path, pathIndex))
+      })
+      .catch((e: unknown) => {
+        if (alive) setDocError(e instanceof Error ? e.message : String(e))
+      })
+    return () => {
+      alive = false
+    }
+  }, [current, pathIndex])
+
+  // 无锚点时切换文档需回到顶部
+  useEffect(() => {
+    if (!pendingAnchor.current) docRef.current?.scrollTo({ top: 0 })
+  }, [currentId])
+
+  // 正文渲染完成后再跳到目标锚点（跨文档链接：先换文档、后定位）
+  useEffect(() => {
+    const anchor = pendingAnchor.current
+    if (!anchor || !segments.length) return
+    pendingAnchor.current = null
+    requestAnimationFrame(() => scrollToAnchor(anchor))
+  }, [segments, scrollToAnchor])
+
+  // 目录中的当前项保持在可视区
+  useEffect(() => {
+    navRef.current
+      ?.querySelector<HTMLElement>('.wiki-nav-item.active')
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [currentId])
+
+  const openDoc = useCallback(
+    (id: string, anchor?: string | null) => {
+      if (id === currentId) {
+        if (anchor) scrollToAnchor(anchor)
+        return
+      }
+      pendingAnchor.current = anchor ?? null
+      setCurrentId(id)
+    },
+    [currentId, scrollToAnchor],
+  )
+
+  // 正文链接委托：跨文档 .md → 切换文档（可带锚点）；#锚点 → 容器内滚动
+  const handleDocClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const a = (e.target as HTMLElement).closest('a')
+    if (!a) return
+    const { docId, anchor } = a.dataset
+    if (docId) {
+      e.preventDefault()
+      openDoc(docId, anchor ?? null)
+      return
+    }
+    if (anchor !== undefined) {
+      e.preventDefault()
+      scrollToAnchor(anchor)
+    }
+  }
+
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  const matchDoc = (d: DocMeta) =>
+    !terms.length || terms.every((t) => `${d.label} ${d.title} ${d.path}`.toLowerCase().includes(t))
+  const hitCount = terms.length ? index.filter(matchDoc).length : index.length
+
+  const idx = index.findIndex((d) => d.id === currentId)
+  const prev = idx > 0 ? index[idx - 1] : null
+  const next = idx >= 0 && idx < index.length - 1 ? index[idx + 1] : null
+
+  if (status === 'error') {
+    return (
+      <Card title="CODE WIKI · docs/" size="small" style={{ height: '100%' }}>
+        <Text type="danger">wiki 数据加载失败：{error}</Text>
+        <Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
+          数据由 frontend/scripts/sync-wiki.mjs 生成并发布到 public/wiki（npm run dev / build 前置自动执行）。
+        </Text>
+      </Card>
+    )
+  }
 
   return (
     <Card
-      title="CODE WIKI（docs/CODE_WIKI.md）"
+      title={current ? `CODE WIKI · docs/${current.path}` : 'CODE WIKI · docs/'}
       size="small"
       style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
-      styles={{ body: { flex: 1, minHeight: 0, overflow: 'auto', padding: '8px 16px 24px' } }}
+      styles={{ body: { flex: 1, minHeight: 0, padding: 0, display: 'flex' } }}
     >
-      <div className="code-wiki">
-        {segments.map((seg, i) =>
-          seg.kind === 'mermaid' ? (
-            <MermaidBlock key={i} code={seg.code} />
+      <aside className="wiki-nav">
+        <div className="wiki-search">
+          <Input
+            allowClear
+            size="small"
+            placeholder="搜索文档（标题 / 路径）"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setQuery('')
+            }}
+          />
+          <div className="wiki-search-hint">
+            {terms.length ? `${hitCount} / ${index.length} 篇匹配` : ''}
+          </div>
+        </div>
+        <div className="wiki-nav-scroll" ref={navRef}>
+          {groups.map((g) => {
+            const items = index.filter((d) => d.group === g.id && matchDoc(d))
+            if (!items.length) return null
+            return (
+              <div className="wiki-nav-group" key={g.id}>
+                <div className="wiki-nav-group-title">{g.name}</div>
+                {items.map((d) => (
+                  <a
+                    key={d.id}
+                    className={`wiki-nav-item${d.id === currentId ? ' active' : ''}`}
+                    title={d.title}
+                    onClick={() => openDoc(d.id)}
+                  >
+                    {d.label}
+                  </a>
+                ))}
+              </div>
+            )
+          })}
+          {status === 'loading' && (
+            <div className="wiki-loading">
+              <Spin size="small" />
+            </div>
+          )}
+        </div>
+      </aside>
+
+      <div className="wiki-doc" ref={docRef}>
+        <div className="code-wiki" onClick={handleDocClick}>
+          {docError ? (
+            <Text type="danger">文档加载失败：{docError}</Text>
+          ) : segments.length === 0 ? (
+            <div className="wiki-loading">
+              加载中… <Spin size="small" />
+            </div>
           ) : (
-            <div key={i} dangerouslySetInnerHTML={{ __html: seg.html }} />
-          ),
-        )}
+            segments.map((seg, i) =>
+              seg.kind === 'mermaid' ? (
+                <MermaidBlock key={`${currentId}-${i}`} code={seg.code} />
+              ) : (
+                <div key={`${currentId}-${i}`} dangerouslySetInnerHTML={{ __html: seg.html }} />
+              ),
+            )
+          )}
+          {!!segments.length && (
+            <nav className="wiki-doc-nav">
+              {prev ? (
+                <a onClick={() => openDoc(prev.id)}>
+                  <span className="dn-dir">← 上一篇</span>
+                  <span className="dn-title">{prev.label}</span>
+                </a>
+              ) : (
+                <span />
+              )}
+              {next ? (
+                <a className="next" onClick={() => openDoc(next.id)}>
+                  <span className="dn-dir">下一篇 →</span>
+                  <span className="dn-title">{next.label}</span>
+                </a>
+              ) : (
+                <span />
+              )}
+            </nav>
+          )}
+          {!!segments.length && current && (
+            <footer className="wiki-doc-foot">
+              来源：docs/{current.path} · 本页为 docs 文档的只读浏览视图（以仓库内文档为准）
+            </footer>
+          )}
+        </div>
       </div>
     </Card>
   )

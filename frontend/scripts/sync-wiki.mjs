@@ -1,28 +1,36 @@
-// 同步仓库根 docs/CODE_WIKI.md → frontend/src/assets/CODE_WIKI.md（提交到 git 的前端副本）。
+// 前端构建前置（predev / prebuild）：生成 docs wiki 浏览数据并发布到 public/wiki/。
 //
-// 背景：docker-compose 前端构建上下文仅 ./frontend，docs/ 不进镜像，
-// 故前端必须自带一份副本并在构建时经 Vite `?raw` 打包。
-// 本地开发/构建时（docs/ 存在）该脚本确保副本与权威源一致；
-// Docker 构建时（docs/ 不存在）为 no-op，直接使用已提交的副本。
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+// 应用内 CODE WIKI 面板与 /wiki/ 独立页都读它；vite 的 publicDir 会直接服务
+// public/（dev）并拷入 dist（build），故 wiki 的「生成 + 发布」规则只收在这一处，
+// CI 无需再手写拷贝步骤。
+//
+// 实际生成仍是增量：scripts/build_docs_wiki.mjs 按 docs-wiki/.build-manifest.json
+// 的内容 sha256 比对，只重生成 docs/ 中有变更的篇目。
+//
+// Docker 构建时（前端构建上下文仅 ./frontend，docs/ 与生成器不存在）为 no-op：
+// 复用已生成的 public/wiki，缺失时应用内面板会提示（生产链路走 CI，不受影响）。
+import { existsSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const source = resolve(here, '../../docs/CODE_WIKI.md')
-const dest = resolve(here, '../src/assets/CODE_WIKI.md')
+const repo = resolve(here, '../..')
+const docsDir = resolve(repo, 'docs')
+const generator = resolve(repo, 'scripts/build_docs_wiki.mjs')
+const publishDir = resolve(here, '../public/wiki')
 
-if (!existsSync(source)) {
-  console.log('[sync-wiki] docs/CODE_WIKI.md 不存在（Docker 构建上下文），跳过')
+if (!existsSync(docsDir) || !existsSync(generator)) {
+  console.log(
+    existsSync(publishDir)
+      ? '[sync-wiki] docs/ 或生成器不存在（Docker 构建上下文），复用已生成的 public/wiki'
+      : '[sync-wiki] docs/ 或生成器不存在（Docker 构建上下文），且 public/wiki 未生成，跳过',
+  )
   process.exit(0)
 }
 
-const content = readFileSync(source, 'utf8')
-if (existsSync(dest) && readFileSync(dest, 'utf8') === content) {
-  console.log('[sync-wiki] 副本已是最新')
-  process.exit(0)
-}
-
-mkdirSync(dirname(dest), { recursive: true })
-writeFileSync(dest, content)
-console.log('[sync-wiki] 已同步 docs/CODE_WIKI.md → src/assets/CODE_WIKI.md')
+const r = spawnSync(process.execPath, [generator, `--publish=${publishDir}`], {
+  cwd: repo,
+  stdio: 'inherit',
+})
+process.exit(r.status ?? 1)

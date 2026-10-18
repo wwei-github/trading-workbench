@@ -76,7 +76,7 @@ html, body, #root {
   overflow-x: hidden;
 }
 
-/* ── CODE WIKI 面板（docs/CODE_WIKI.md 渲染，2026-10-12）────────────
+/* ── CODE WIKI 面板（docs/ 文档浏览视图，2026-10-12；2026-10-18 改为两栏浏览）──
    自带文档排版：标题锚点 scroll-margin 兼容 TOC 跳转；表格/代码块横向滚动 */
 .code-wiki {
   max-width: 1100px;
@@ -215,6 +215,130 @@ html, body, #root {
 }
 .code-wiki-mermaid:hover .code-wiki-mermaid-hint {
   display: inline-flex;
+}
+
+/* ── 文档浏览两栏（左：搜索 + 三组目录；右：正文，2026-10-18）──────────
+   左栏固定宽、独立滚动；右栏正文复用 .code-wiki 排版，标题锚点/表格容器/
+   正文链接的语义由 CodeWikiPanel 渲染后补齐 */
+.wiki-nav {
+  flex: 0 0 248px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid #f0f0f0;
+  background: #fafafa;
+}
+.wiki-search {
+  padding: 10px 12px 6px;
+}
+.wiki-search-hint {
+  margin-top: 4px;
+  min-height: 1em;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+.wiki-nav-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 16px;
+}
+.wiki-nav-group-title {
+  padding: 10px 14px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: rgba(0, 0, 0, 0.45);
+}
+.wiki-nav-item {
+  display: block;
+  padding: 5px 14px;
+  border-left: 3px solid transparent;
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(0, 0, 0, 0.88);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wiki-nav-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.wiki-nav-item.active {
+  background: #fff;
+  border-left-color: #1677ff;
+  color: #1677ff;
+  font-weight: 600;
+}
+.wiki-doc {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 8px 20px 24px;
+}
+.wiki-loading {
+  padding: 16px 0;
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+/* 上/下篇导航与来源页脚 */
+.wiki-doc-nav {
+  display: flex;
+  gap: 12px;
+  margin-top: 32px;
+  padding-top: 14px;
+  border-top: 1px solid #f0f0f0;
+}
+.wiki-doc-nav a {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.wiki-doc-nav a:hover {
+  border-color: #1677ff;
+}
+.wiki-doc-nav .dn-dir {
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.45);
+}
+.wiki-doc-nav .dn-title {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wiki-doc-nav .next {
+  text-align: right;
+}
+.wiki-doc-foot {
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f0f0;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+/* 正文内：表格横向滚动容器、可点击链接指针、未纳入本页的链接样式 */
+.code-wiki .table-wrap {
+  margin: 10px 0 16px;
+  overflow-x: auto;
+}
+.code-wiki a[data-doc-id],
+.code-wiki a[data-anchor] {
+  cursor: pointer;
+}
+.code-wiki a.missing {
+  color: rgba(0, 0, 0, 0.45);
+  border-bottom: 1px dashed #d9d9d9;
+  cursor: help;
 }
 
 /* ── 配置弹窗表单（策略配置/交易配置，2026-10-15 整理美化）──────
