@@ -55,6 +55,12 @@
     return parts.join('/');
   }
 
+  // marked 会把 href 里的非 ASCII 百分号编码（中文路径 → %E6%8A%80…），
+  // 还原后才能与 pathIndex 的原始路径比对；非法转义序列（字面量 %）原样返回
+  function safeDecode(value) {
+    try { return decodeURIComponent(value); } catch (e) { return value; }
+  }
+
   function esc(s) {
     return String(s).replace(/[&<>"]/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
@@ -205,16 +211,16 @@
         return;
       }
       if (href.charAt(0) === '#') {
-        a.dataset.anchor = decodeURIComponent(href.slice(1));
+        a.dataset.anchor = safeDecode(href.slice(1));
         return;
       }
       if (/\.md(#|$)/i.test(href)) {
         var parts = href.split('#');
-        var target = resolvePath(docPath, parts[0]);
+        var target = resolvePath(docPath, safeDecode(parts[0]));
         var id = pathIndex[target];
         if (id) {
           a.dataset.docId = id;
-          if (parts[1]) a.dataset.anchor = decodeURIComponent(parts[1]);
+          if (parts[1]) a.dataset.anchor = safeDecode(parts[1]);
           a.setAttribute('href', '#' + id + (parts[1] ? ':' + parts[1] : ''));
         } else {
           a.classList.add('missing');
