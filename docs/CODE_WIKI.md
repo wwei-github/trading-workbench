@@ -170,7 +170,7 @@ trading-workbench/
 │   ├── package.json
 │   ├── vite.config.ts
 │   └── nginx.conf
-├── docs/                         # 功能文档（中文，21 篇 + archive）
+├── docs/                         # 文档（中文，19 篇：项目功能流程文档 14 + 需求文档 5）
 ├── docker-compose.yml
 ├── deploy.sh
 └── README.md
@@ -197,7 +197,7 @@ trading-workbench/
 | 交易 | `BINANCE_API_KEY/SECRET_KEY`, `BINANCE_LIVE_{N}_*`, `TRADING_MIN_RECOMMENDATION`, `TRADING_LEVERAGE`, `RISK_BUDGET_PCT` | 交易凭据与闸门 |
 | 止盈 | `TP1_QTY_PCT_WITH_TP2`, `TP2_QTY_PCT`, `TP1_QTY_PCT_NO_TP2` | 分批止盈比例 |
 
-> **`RULE_VERSION`** 是规则集的版本标记（当前 `v2026-10-14-2`），开仓与分析时快照到 `trade_records`/`ai_analyses`，复盘按版本分组对比。
+> **`RULE_VERSION`** 是规则集的版本标记（当前 `v2026-10-18`），开仓与分析时快照到 `trade_records`/`ai_analyses`，复盘按版本分组对比。
 
 #### [database.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/database.py)
 
@@ -287,7 +287,7 @@ FastAPI 应用入口：
 5. **震荡评分卡** `range_score` — ≥3 不入场
 6. **两段式触发确认** `detect_trigger` — 突破/回踩+金K/回踩两段式
 7. **进池准入闸**（2026-10-13-5）— 回踩确认须在触发类型白名单内，否则不进待确认池（漏斗记 `trigger_whitelist`；原状态机子闸已由第 2 步前置门接管）
-（1H 结构门 `structure_1h` 已从筛选链退役（2026-10-12），现为 trigger 层 **1h EMA21 触点软校验**——仅当回踩触点为 ema21 时复校；2026-10-15 起不过门**不否决**，仅质量分重罚 −15，见 docs/21 O9）
+（1H 结构门 `structure_1h` 已从筛选链退役（2026-10-12），现为 trigger 层 **1h EMA21 触点软校验**——仅当回踩触点为 ema21 时复校；2026-10-15 起不过门**不否决**，仅质量分重罚 −15）
 
 #### [scan_filters.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/scan_filters.py)
 
@@ -317,7 +317,7 @@ FastAPI 应用入口：
 | [swing.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/swing.py) | `find_swing_points`、`merge_swings` — 摆动点检测与 HH/LH/HL/LL 分类 |
 | [indicators.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/indicators.py) | `volume_ratio` 等量能指标 |
 
-7 个投票指标：MACD(12,26,9)、布林带(20,2)、RSI(14)、SuperTrend(10,3)、ADX(14)、OBV(20)、4h EMA21/55 背景。
+方向票现行 **3 张**：MACD(12,26,9)、布林带(20,2)、RSI(14)（`DIR_VOTE_SHORTS`，2026-10-15 指标拆角色）；SuperTrend(10,3)、ADX(14)、OBV(20)、4h EMA21/55 背景退出方向票，其方向仍计算并写入 `votes_json` 供展示/质量分/AI 上下文用。
 
 ---
 
@@ -464,6 +464,7 @@ AI 持仓诊断：浮亏在跑单 → `advice_due` 触发 AI 建议（hold/tight
 | [shadow.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/shadow.py) | 影子模式：特征注册表 + 打标 + 每日评估 + 预注册标准卡（CARD-01~09） |
 | [tactics_match.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/tactics_match.py) | 战法匹配 + 白名单闸门防幻觉 |
 | [sequential.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/sequential.py) | 序贯判读（SPRT 早停，影子模式用） |
+| [trade_locks.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/trade_locks.py) | 开仓互斥锁共享助手：账号级 Redis 锁 `lock:trade_open:{account_key}`（结算巡检/即时开仓/手动平仓/事件驱动共用，2026-10-07 从 `tasks/trade_tasks.py` 提取） |
 | [ai_progress.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_progress.py) | AI 分析进度事件流（Redis 发布） |
 
 ---
