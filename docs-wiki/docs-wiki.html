@@ -141,14 +141,15 @@
     transition: transform 0.12s ease;
   }
   .group.collapsed .group-title .nav-caret { transform: rotate(-90deg); }
-  .doc-wrap:not(.open) .nav-doc .nav-caret { transform: rotate(-90deg); }
-  .nav.filtering .doc-wrap .nav-doc .nav-caret { transform: rotate(0deg); }
-  .nav-doc {
+  .nature-wrap.collapsed .nav-nature .nav-caret { transform: rotate(-90deg); }
+  /* 性质分组标题（模块内的「功能流程 / 技术实现」） */
+  .nav-nature {
     display: flex; align-items: center; gap: 8px;
     padding: 6px 20px 6px 27px;
-    color: var(--ink); font-size: 0.875rem; cursor: pointer; user-select: none;
+    color: var(--muted); font-size: 0.78rem; font-weight: 600; letter-spacing: 0.04em;
+    cursor: pointer; user-select: none;
   }
-  .nav-doc:hover { background: var(--hover); }
+  .nav-nature:hover { background: var(--hover); }
   .nav-item {
     display: flex; align-items: baseline; gap: 8px;
     padding: 6px 20px 6px 17px;
@@ -158,13 +159,13 @@
   .nav-item:hover { background: var(--hover); }
   .nav-item.active { background: var(--bg); border-left-color: var(--accent); color: var(--accent); font-weight: 700; }
   .nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 文档行：直接挂在模块下（单性质模块，如需求）*/
   .nav-item.nav-leaf { padding-left: 27px; }
-  .nav-item.nav-sub { padding-left: 44px; font-size: 0.82rem; color: var(--muted); }
-  .doc-wrap:not(.open) > .nav-sub { display: none; }
-  .nav.filtering .doc-wrap > .nav-sub { display: flex; }
-  .nav.filtering .doc-wrap > .nav-sub.hidden { display: none; }
-  .group.collapsed .nav-item, .group.collapsed .doc-wrap { display: none; }
-  .group.hidden, .doc-wrap.hidden, .nav-item.hidden { display: none; }
+  /* 文档行：挂在性质分组下 */
+  .nav-item.nav-sub { padding-left: 44px; }
+  .nature-wrap.collapsed .nav-item { display: none; }
+  .group.collapsed .nav-item, .group.collapsed .nature-wrap { display: none; }
+  .group.hidden, .nature-wrap.hidden, .nav-item.hidden { display: none; }
 
   .sidebar-foot { margin-top: 18px; padding: 12px 20px 0; border-top: 1px solid var(--rule); font-size: 0.72rem; color: var(--muted); font-family: var(--font-mono); }
 
@@ -309,7 +310,7 @@
         <div class="search-hint" id="searchHint"></div>
       </div>
       <nav id="nav"></nav>
-      <div class="sidebar-foot">docs/ · 模块 → 文档 → 性质</div>
+      <div class="sidebar-foot">docs/ · 模块 → 性质 → 文档</div>
     </aside>
 
     <main class="content">

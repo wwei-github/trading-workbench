@@ -100,10 +100,10 @@
     return loads[id];
   }
 
-  /* ---------- 侧边导航（三级树：模块 → 文档 → 性质） ---------- */
+  /* ---------- 侧边导航（两级分组：模块 → 性质分组 → 文档） ---------- */
   var navItems = [];
-  var openKeys = {};      // 已展开的「文档」子树（key = group:docKey）
-  var closedGroups = {};  // 已收起的模块
+  var closedGroups = {};   // 已收起的模块
+  var closedNatures = {};  // 已收起的性质分组（key = group:nature）
 
   function docRowLabel(d) {
     return /^\d+$/.test(d.docKey) ? d.docKey + ' ' + d.docName : d.docName;
@@ -116,9 +116,10 @@
     return a < b ? -1 : a > b ? 1 : 0;
   }
 
-  var NATURE_ORDER = ['flow', 'tech', 'req', 'overview'];
+  // 性质分组顺序：概览 → 功能流程 → 技术实现 → 需求（未知性质排最后）
+  var NATURE_ORDER = ['overview', 'flow', 'tech', 'req'];
   function cmpNature(a, b) {
-    var ia = NATURE_ORDER.indexOf(a.nature), ib = NATURE_ORDER.indexOf(b.nature);
+    var ia = NATURE_ORDER.indexOf(a), ib = NATURE_ORDER.indexOf(b);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
   }
 
@@ -128,9 +129,9 @@
     });
   }
 
-  function applyOpenState() {
-    el.nav.querySelectorAll('.doc-wrap').forEach(function (w) {
-      w.classList.toggle('open', !!openKeys[w.dataset.treeKey]);
+  function applyNatureState() {
+    el.nav.querySelectorAll('.nature-wrap').forEach(function (w) {
+      w.classList.toggle('collapsed', !!closedNatures[w.dataset.natureKey]);
     });
   }
 
@@ -171,43 +172,44 @@
       });
       group.appendChild(title);
 
-      // 模块内按 docKey 归档（数字升序在前、非数字在后）
+      // 模块内按性质归档，单一性质模块的文档直接挂在模块下
       var map = {};
-      var keys = [];
+      var natures = [];
       DOCS.forEach(function (d) {
         if (d.group !== g.id) return;
-        if (!map[d.docKey]) { map[d.docKey] = []; keys.push(d.docKey); }
-        map[d.docKey].push(d);
+        if (!map[d.nature]) { map[d.nature] = []; natures.push(d.nature); }
+        map[d.nature].push(d);
       });
-      keys.sort(cmpDocKey);
-      keys.forEach(function (key) {
-        var docs = map[key].slice().sort(cmpNature);
-        if (docs.length === 1) {
-          group.appendChild(makeItem(docs[0], 'nav-item nav-leaf', docRowLabel(docs[0])));
+      natures.sort(cmpNature);
+      var flat = natures.length === 1;
+
+      natures.forEach(function (nature) {
+        var docs = map[nature].slice().sort(function (a, b) { return cmpDocKey(a.docKey, b.docKey); });
+        var key = g.id + ':' + nature;
+        if (flat) {
+          docs.forEach(function (d) { group.appendChild(makeItem(d, 'nav-item nav-leaf', docRowLabel(d))); });
           return;
         }
-        var treeKey = g.id + ':' + key;
         var wrap = document.createElement('div');
-        wrap.className = 'doc-wrap';
-        wrap.dataset.treeKey = treeKey;
+        wrap.className = 'nature-wrap';
+        wrap.dataset.natureKey = key;
 
-        var row = document.createElement('div');
-        row.className = 'nav-doc';
-        var rc = document.createElement('span');
-        rc.className = 'nav-caret';
-        rc.textContent = '\u25be';
-        row.appendChild(rc);
-        var rl = document.createElement('span');
-        rl.className = 'nav-label';
-        rl.textContent = docRowLabel(docs[0]);
-        row.appendChild(rl);
-        row.addEventListener('click', function () {
-          openKeys[treeKey] = !openKeys[treeKey];
-          applyOpenState();
+        var head = document.createElement('div');
+        head.className = 'nav-nature';
+        var hc = document.createElement('span');
+        hc.className = 'nav-caret';
+        hc.textContent = '\u25be';
+        head.appendChild(hc);
+        var hl = document.createElement('span');
+        hl.className = 'nav-label';
+        hl.textContent = docs[0].label;
+        head.appendChild(hl);
+        head.addEventListener('click', function () {
+          closedNatures[key] = !closedNatures[key];
+          applyNatureState();
         });
-        wrap.appendChild(row);
-
-        docs.forEach(function (d) { wrap.appendChild(makeItem(d, 'nav-item nav-sub', d.label)); });
+        wrap.appendChild(head);
+        docs.forEach(function (d) { wrap.appendChild(makeItem(d, 'nav-item nav-sub', docRowLabel(d))); });
         group.appendChild(wrap);
       });
 
@@ -215,7 +217,7 @@
     });
     el.nav.appendChild(frag);
     applyGroupState();
-    applyOpenState();
+    applyNatureState();
   }
 
   function markActive(id) {
@@ -223,12 +225,12 @@
       var on = a.dataset.docId === id;
       a.classList.toggle('active', on);
       if (!on) return;
-      var wrap = a.closest('.doc-wrap');
-      if (wrap) openKeys[wrap.dataset.treeKey] = true;
+      var wrap = a.closest('.nature-wrap');
+      if (wrap) delete closedNatures[wrap.dataset.natureKey];
       var group = a.closest('.group');
       if (group) delete closedGroups[group.dataset.group]; // 当前篇所在模块保持展开
       applyGroupState();
-      applyOpenState();
+      applyNatureState();
       if (a.scrollIntoView) a.scrollIntoView({ block: 'nearest' });
     });
   }
@@ -241,13 +243,13 @@
   function filterNav(query) {
     var q = query.trim().toLowerCase();
     var groups = el.nav.querySelectorAll('.group');
-    el.nav.classList.toggle('filtering', !!q);
+    var natures = el.nav.querySelectorAll('.nature-wrap');
     if (!q) {
       navItems.forEach(function (a) { a.classList.remove('hidden'); });
-      el.nav.querySelectorAll('.doc-wrap').forEach(function (w) { w.classList.remove('hidden'); });
+      natures.forEach(function (w) { w.classList.remove('hidden'); });
       groups.forEach(function (g) { g.classList.remove('hidden'); });
       applyGroupState();
-      applyOpenState();
+      applyNatureState();
       el.searchWrap.classList.toggle('has-value', false);
       el.searchHint.textContent = '';
       return;
@@ -260,16 +262,17 @@
       a.classList.toggle('hidden', !ok);
       if (ok) hit++;
     });
-    // 文档行：其下无命中子项则整棵隐藏
-    el.nav.querySelectorAll('.doc-wrap').forEach(function (w) {
+    // 性质分组：其下无命中文档则整组隐藏
+    natures.forEach(function (w) {
       w.classList.toggle('hidden', w.querySelectorAll('.nav-item:not(.hidden)').length === 0);
     });
-    // 搜索时展开全部模块，仅按命中决定显隐
+    // 搜索时展开全部模块与性质分组，仅按命中决定显隐
     groups.forEach(function (g) {
       g.classList.remove('collapsed');
-      var any = g.querySelector('.nav-item:not(.hidden)') || g.querySelector('.doc-wrap:not(.hidden)');
+      var any = g.querySelector('.nav-item:not(.hidden)') || g.querySelector('.nature-wrap:not(.hidden)');
       g.classList.toggle('hidden', !any);
     });
+    natures.forEach(function (w) { w.classList.remove('collapsed'); });
     el.searchWrap.classList.toggle('has-value', true);
     el.searchHint.textContent = hit + ' / ' + DOCS.length + ' 篇匹配';
   }
