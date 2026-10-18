@@ -92,6 +92,7 @@ def _notify_daily_report_body(task_id: str) -> dict:
             select(TradeRecord).where(
                 TradeRecord.opened_at >= day_start.replace(tzinfo=None),
                 TradeRecord.opened_at < day_end.replace(tzinfo=None),
+                TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）：伪开仓不计入日报口径
             )
         ).scalars().all()
         opened = len(rows)

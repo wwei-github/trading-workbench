@@ -1364,16 +1364,16 @@ export default function TradesPanel() {
               cancelText="返回"
               onConfirm={() => handleToggleExcluded(rec)}
             >
-              <Tooltip title="异常单：伪盈亏（如测试网模拟撮合）不参与任何统计口径">
-                <Button
-                  size="small"
-                  type="link"
-                  danger={!rec.excluded}
-                  loading={excludingId === rec.id}
-                >
-                  {rec.excluded ? '取消异常' : '标记异常'}
-                </Button>
-              </Tooltip>
+              {/* 直接以 Button 为 Popconfirm 子节点（antd 要求子节点可承接 ref/onClick）：
+                  Popconfirm 里再套一层 Tooltip 会让浮层挂载点不确定，说明文案已写在 description */}
+              <Button
+                size="small"
+                type="link"
+                danger={!rec.excluded}
+                loading={excludingId === rec.id}
+              >
+                {rec.excluded ? '取消异常' : '标记异常'}
+              </Button>
             </Popconfirm>
             {inBl ? (
               <Popconfirm

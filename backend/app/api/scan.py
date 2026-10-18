@@ -1160,7 +1160,11 @@ def review_funnel(
     profit_cnt = 0
     if suggest_rows:
         ana_ids = [a.id for a in suggest_rows]
-        tfilter = [TradeRecord.ai_analysis_id.in_(ana_ids), TradeRecord.status != "FAILED"]
+        tfilter = [
+            TradeRecord.ai_analysis_id.in_(ana_ids),
+            TradeRecord.status != "FAILED",
+            TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）：伪单不计入开仓/盈利转化
+        ]
         from app.api.trades import _account_scope_filter
 
         extra = _account_scope_filter(TradeRecord, scope)
