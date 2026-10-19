@@ -43,6 +43,7 @@ from app.services.strategy.indicators import volume_ratio
 from app.services.strategy.technical import (
     DIR_VOTE_MIN,
     STATE_BLOCK_BOTH,
+    STATE_LOCK_CONTRA,
     compute_indicator_votes,
     compute_quality_score,
     pullback_stabilize_bonus,
@@ -387,6 +388,29 @@ def detect_indicator_candidate(
                 f"与4h闸门方向（{'多' if gate[0] == 'long' else '空'}头）相反；"
                 "深回撤触点常见此冲突（仅插针式可过）")
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
+
+    # 4h 状态机逆势锁（2026-10-19 用户拍板）：STATE_LOCK_CONTRA（宏观同侧六态：
+    # macro_cross_* / *_recover / aligned_*）时，逆状态的候选一票否决——与
+    # STATE_BLOCK_BOTH 同属「前置筛选」层，但需先定向才能判逆势，故放在方向派生
+    # 之后。置于方向冲突关「之后」：gate_4h 与定向已一致时，再核对 4h 排列结构
+    # （EMA21/55/144 状态机）——二者不一致（如宏观死叉但价格仍在 EMA144 上方）
+    # 是方向冲突关的盲区，本关补齐。命中即直接不看：不触发、不进候选，活跃
+    # pending 同轮 expire(htf_state_lock)。
+    # 目的：4h 死叉/空头排列时不再产出看涨金K（看涨吞没/刺透等）候选——
+    # 金K方向只跟 1h 方向票走，此前 4h 排列不参与，逆势金K会落到命中列表，
+    # 仅在 AI 层 enforce_htf_constraint 兜底。异常降级（htf_res=None）放行，与
+    # gate_4h / STATE_BLOCK_BOTH 同口径。过渡态 bull_dip/bear_rally 不在白名单，
+    # 仍放行（质量分兜底）——本次不覆盖「宏观多头内的 4h 死叉」。
+    if (htf_res is not None and htf_res.get("state") in STATE_LOCK_CONTRA):
+        st_dir = htf_res.get("dir") or 0
+        if st_dir and st_dir != direction:
+            _reject("htf_state_lock")
+            if reject_out is not None:
+                reject_out["detail"] = (
+                    f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
+                    f"（宏观同侧）锁逆势——仅可{'多' if st_dir > 0 else '空'}头，"
+                    f"当前定向={'多' if direction == 1 else '空'}头")
+            return None, ({"op": "expire", "reason": "htf_state_lock"} if pending else None)
 
     # 第二步：1H 结构门——不在筛选链（2026-10-12，docs/21 O7 退役筛选链硬门）：
     # 不再整体否决信号（s1 可见信号池恢复），结构判定收敛为 trigger 层 1h EMA21

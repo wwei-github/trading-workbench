@@ -49,11 +49,13 @@ class FakePool:
 
 
 def _detect(reject_out, klines=None, *, votes=_PASS_VOTES, gate=("long", {}), htf_nonempty=True,
-            rs=0, trigger=None, flt=None, pending=None, real_trigger=False, htf_state=None):
+            rs=0, trigger=None, flt=None, pending=None, real_trigger=False, htf_state=None,
+            htf_dir=None):
     """打桩装配一次 detect：各桩默认全放行，命中点由参数控制。
     real_trigger=True 时不打桩 detect_trigger（跑真实触发链，测 no_trigger 明细）；
     htf_state 非 None 时打桩 analyze_htf_background 返回该 4h 状态机态（4h 状态机
-    前置门用：tangle/turn_* 一票否决全部 1h 候选）"""
+    前置门用：tangle/turn_* 一票否决全部 1h 候选；htf_dir 为该态方向，供
+    STATE_LOCK_CONTRA 逆势锁用，缺省 None=0 不判逆势）"""
     import app.services.scanner as sm
 
     orig = {
@@ -72,9 +74,11 @@ def _detect(reject_out, klines=None, *, votes=_PASS_VOTES, gate=("long", {}), ht
     sm.gate_4h = lambda k, cfg=None, core=None: gate
     if htf_state is not None:
         _labels = {"tangle": "缠绕", "turn_bull": "多头拐头", "turn_bear": "空头拐头",
-                   "aligned_bull": "多头排列", "macro_cross_bull": "55×144金叉"}
+                   "aligned_bull": "多头排列", "aligned_bear": "空头排列",
+                   "macro_cross_bull": "55×144金叉", "macro_cross_bear": "55×144死叉"}
         sm.analyze_htf_background = lambda k, fast=21, slow=55, core=None: {
-            "state": htf_state, "state_label": _labels.get(htf_state, htf_state)}
+            "state": htf_state, "state_label": _labels.get(htf_state, htf_state),
+            "dir": htf_dir or 0}
     sm.range_score = lambda k, gate_ev=None: (rs, [])
     if not real_trigger:
         sm.detect_trigger = lambda *a, **k: trigger
@@ -433,6 +437,48 @@ def test_htf_state_front_gate_expires_active_pending():
     cand, op = _detect(rv, trigger=(None, None), pending=pend, htf_state="tangle")
     assert cand is None and op == {"op": "expire", "reason": "htf_state_lock"}
     assert rv["stage"] == "htf_state_lock"
+
+
+# ── 4h 状态机逆势锁 STATE_LOCK_CONTRA（2026-10-19）───────────────────────────
+# 宏观同侧六态（macro_cross_* / *_recover / aligned_*）锁逆势：定向与 4h 状态方向
+# 相反 → 一票否决，逆势金K（看涨吞没/刺透等）不再产出（此前只在 AI 层兜底）
+
+
+def test_htf_contra_lock_blocks_opposite_side():
+    """4h 空头排列（dir=-1）+ 定向多头 → 逆势锁一票否决：stage=htf_state_lock、
+    无候选、判定说明含状态标签与「锁逆势」——即「4h 空头排列不应命中看涨金K」"""
+    rv: dict = {}
+    cand, op = _detect(rv, trigger=(None, {"op": "upsert", "direction": 1}),
+                       htf_state="aligned_bear", htf_dir=-1)
+    assert cand is None and op is None
+    assert rv["stage"] == "htf_state_lock"
+    assert "空头排列" in rv["detail"] and "锁逆势" in rv["detail"]
+
+
+def test_htf_contra_lock_allows_same_side():
+    """4h 多头排列（dir=+1）+ 定向多头 → 同向放行，不被逆势锁拦（落到 no_trigger）"""
+    rv: dict = {}
+    cand, op = _detect(rv, trigger=(None, None), htf_state="aligned_bull", htf_dir=1)
+    assert cand is None and rv["stage"] == "no_trigger"
+
+
+def test_htf_contra_lock_expires_active_pending():
+    """逆势锁命中时活跃 pending 同轮失效（expire/htf_state_lock）"""
+    rv: dict = {}
+    pend = {"id": 1, "direction": 1, "touch_ref": "ema21",
+            "stage1_candle_open": 1_700_000_000_000}
+    cand, op = _detect(rv, trigger=(None, None), pending=pend,
+                       htf_state="macro_cross_bear", htf_dir=-1)
+    assert cand is None and op == {"op": "expire", "reason": "htf_state_lock"}
+    assert rv["stage"] == "htf_state_lock"
+
+
+def test_htf_transition_states_not_locked_contra():
+    """过渡态 bull_dip/bear_rally 不在逆势锁白名单 → 仍放行（质量分兜底）——
+    本次不覆盖「宏观多头内的 4h 死叉」等过渡形态"""
+    rv: dict = {}
+    cand, _ = _detect(rv, trigger=(None, None), htf_state="bull_dip", htf_dir=-1)
+    assert cand is None and rv["stage"] == "no_trigger"
 
 
 def test_pending_upsert_allowed_when_gates_pass():
