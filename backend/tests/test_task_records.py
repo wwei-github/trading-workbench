@@ -177,7 +177,7 @@ def test_shadow_evaluate_completes_with_summary(wire_sessions, monkeypatch):
         shadow_tasks, "build_report_safe",
         lambda db, window_days=30: [
             {"feature": "cvd_div", "baseline": {"n": 42}, "sufficient": True},
-            {"feature": "vol_regime", "baseline": {"n": 5}, "sufficient": False},
+            {"feature": "macd_div", "baseline": {"n": 5}, "sufficient": False},
         ])
 
     out = shadow_tasks.run_shadow_evaluate_task()

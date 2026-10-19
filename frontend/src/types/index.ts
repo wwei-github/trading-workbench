@@ -888,23 +888,14 @@ export interface MarketOverview {
 // ===== 影子模式（docs/14，2026-10-04：只计算+打标+记录，不参与决策）=====
 
 // 影子单桶统计（n=标记数；counted=有效归因数 win/loss；win_rate 基于 counted）
-// CARD-05/06（反事实口径）没有 counted/win_rate，改用 decided/sum_delta_r 组
+// trade_record 宿主卡（CARD-07）无 counted/win_rate，改用 continued/cont_rate 组
 export interface ShadowBucketStat {
   bucket: string
   n: number
   counted?: number
   win_rate?: number | null
-  avg_r?: number | null // 平均真实 R（仅 CARD-09 有——读数即真实盈亏）
+  avg_r?: number | null // 平均 R：CARD-09=trade_record 真实盈亏 R；CARD-01/10=建议回放 ev_r（预注册 2026-10-19）
   insufficient?: boolean // n < 30：样本不足，仅供参考
-}
-
-// 早期保护反事实统计（docs/15 §五：CARD-05/06，trade_record 宿主）
-export interface ShadowProtectStat {
-  decided: number // |ΔR|>0.05R 的笔数（saved+injured，预注册判定基数）
-  sum_delta_r: number // 净改善 ΣΔR（正=规则救回多于误伤）
-  decided_sum_delta_r: number // 净改善只按 decided 桶计（docs/16 P-04：剔除 no_arm/untouched 的 phantom 残差）
-  avg_real_r: number | null // 平均真实收益（R）
-  avg_cf_r: number | null // 平均反事实收益（R）
 }
 
 // 再入场前置统计（docs/13 #12：CARD-07，trade_record 宿主）——
@@ -924,18 +915,13 @@ export interface ShadowFeatureReport {
   window_days: number
   baseline:
     & { n: number; counted?: number; win_rate?: number | null; avg_r?: number | null }
-    & Partial<ShadowProtectStat>
     & Partial<ShadowReentryStat>
-  buckets: (ShadowBucketStat & Partial<ShadowProtectStat> & Partial<ShadowReentryStat>)[]
-  // CARD-05/06/07/09 专用：测试网对照组（分层统计，不进判定）——
-  // ProtectStat 字段仅 CARD-05/06 有值，ReentryStat 字段仅 CARD-07 有值，
+  buckets: (ShadowBucketStat & Partial<ShadowReentryStat>)[]
+  // 测试网对照组（分层统计，不进判定）：ReentryStat 字段仅 CARD-07 有值，
   // counted/win_rate/avg_r 仅 CARD-09 有值
-  testnet_baseline?: ShadowProtectStat
-    & Partial<ShadowReentryStat>
+  testnet_baseline?: Partial<ShadowReentryStat>
     & { n: number; buckets: Record<string, number> }
     & Partial<{ counted: number; win_rate: number | null; avg_r: number | null }>
-  decided?: number // CARD-05/06：正式网 decided（= baseline.decided）
-  excluded_n?: number // CARD-05/06：非机械出场剔除笔数（manual/liquidation，docs/16 P-04）
   sufficient: boolean // 有效归因样本 ≥ min_sample（达标 ≠ 升格，升格走人工流程）
   court_date?: string | null // 预注册开庭日（docs/14 §七 时间锁，YYYY-MM-DD）：到期前不进人工裁决；null=到量即判卡
   // P-08 序贯判读（docs/14 §七 CARD-07/09 预注册 SPRT）：h1=早停达标方向 /

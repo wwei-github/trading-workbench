@@ -317,8 +317,8 @@ def run_ai_attribution(db, pool, trader, trades: list) -> list[dict]:
 def run_ai_attribution_task():
     """定时归因：找已平仓未归因的交易，逐笔 AI 复盘出错误标签与教训。
 
-    开头先跑 trade_close 影子打标（docs/15 §五，CARD-05/06 早期保护反事实，
-    AI-Key 门之前执行——打标只依赖 K 线不依赖 LLM，AI 未配置时也要积累）；
+    开头先跑 trade_close 影子打标（docs/14 §七 CARD-09 评分门槛前向对照，
+    AI-Key 门之前执行——打标只依赖交易记录不依赖 LLM，AI 未配置时也要积累）；
     打标与归因共用同一批未归因交易查询，但打标幂等、不受归因结果影响。"""
     db = SessionLocal()
     try:

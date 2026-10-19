@@ -5,7 +5,8 @@
 1. _rec70_stats：空组 / 胜率与 avg_r 读数（win=pnl>0、risk 缺失行不计 avg_r）
 2. _tag_rec70（经 tag_trade_close）：ai_snapshot.recommendation 分桶
    （65→rec60_69 / 75→rec70plus）、无快照与 <60 跳过、testnet 进 decision_json、
-   幂等覆盖、与 CARD-05/06 K 线打标事务独立（K 线全失败不影响 rec70 落标）
+   幂等覆盖（CARD-05/06 已于 2026-10-13 / 10-19 裁决关闭并删除代码，本函数现
+   仅服务 CARD-09，不依赖 K 线）
 3. build_report CARD-09 分支：前向窗口过滤（REC70_START 前平仓不计入）、
    正式网主判定/测试网分层、avg_r 读取、sufficient 判定
 4. registry：CARD-09 注册元数据、compute 占位恒 None
@@ -51,13 +52,6 @@ def test_rec70_stats_empty_and_rounding():
 # ── 2. 打标 ──────────────────────────────────────────────────────────
 
 
-class _FakePool:
-    """get_klines_range 恒空：CARD-05/06 分支静默跳过（证 rec70 事务独立）"""
-
-    def get_klines_range(self, *a, **k):
-        return []
-
-
 @pytest.fixture()
 def shadow_db(monkeypatch):
     engine = create_engine(
@@ -70,8 +64,6 @@ def shadow_db(monkeypatch):
     monkeypatch.setattr(shadow_mod, "SessionLocal", maker, raising=False)
     from app import database as db_mod
     monkeypatch.setattr(db_mod, "SessionLocal", maker, raising=False)
-    from app.services import exchange_pool as ep_mod
-    monkeypatch.setattr(ep_mod, "ExchangePool", lambda: _FakePool())
     return maker
 
 

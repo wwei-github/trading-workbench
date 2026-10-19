@@ -6,11 +6,11 @@
    零方差/负 β/查询失败 → None（调用方按 1.0 保守）、24h 进程内缓存命中
 2. 热度闸门 β 加权：β>1 放大拦截（原口径放行的组合被拦下）、β<1 折价放行、
    旧行/缺失 β=None 回落 1.0（原口径等价回归）
-3. 影子特征 compute 分桶：cvd_div 三桶 + 样本不足、vol_regime 三桶 + 样本不足
+3. 影子特征 compute 分桶：cvd_div 三桶 + 样本不足、r2_slope 三桶
 4. scanner._save_results 打标：仅定时扫描、value_json/decision_json 快照、
    uq_shadow_mark 唯一约束（幂等基座）、影子落库失败不影响扫描结果本身
 5. build_report 归因链 join（win/pending/no_analysis/loss）、分桶统计、
-   达标判定、窗口过滤、无标记空态
+   达标判定、窗口过滤、无标记空态、scan 宿主卡 avg_r 读数（预注册 R 口径）
 6. 异常隔离：build_report 抛错时日报附录降级为空、行格式符合预期
 
 sqlite 内存库 + 替身 client，不触网。
@@ -41,7 +41,7 @@ from app.services.shadow import (  # noqa: E402
     SHADOW_FEATURES,
     build_report,
     compute_cvd_div,
-    compute_vol_regime,
+    compute_r2_slope,
 )
 from app.services.trade_engine import try_open_for_analysis  # noqa: E402
 from app.tasks import shadow_tasks  # noqa: E402
@@ -303,33 +303,10 @@ def test_compute_outputs_json_serializable():
     up = [100 * (1 + 0.0015 * i) for i in range(26)]
     for value in (
         compute_cvd_div(_cvd_bars(up, [100.0] * 26, np.linspace(80, 30, 26))),
-        compute_vol_regime(_atr_bars(130, 1.0, 0.1)),
+        compute_r2_slope(_cvd_bars(up, [100.0] * 26, np.linspace(30, 80, 26))),
     ):
         assert value is not None
         json.dumps(value)  # 不抛 TypeError
-
-
-def _atr_bars(n, first_n_range, last_m_range):
-    """构造 ATR 用 K 线：前 first_n_range 根振幅 1.0，其余 last_m_range"""
-    kl = []
-    for i in range(n):
-        rng = first_n_range if i < n - 20 else last_m_range
-        kl.append([0, 100, 100 + rng / 2, 100 - rng / 2, 100, 1000.0])
-    return kl
-
-
-def test_vol_regime_buckets():
-    n = 130  # 已收盘 129 ≥ 100+5
-    compress = compute_vol_regime(_atr_bars(n, 1.0, 0.1))
-    assert compress["bucket"] == "compress"               # 近端波动塌缩
-    expand = compute_vol_regime(_atr_bars(n, 0.1, 3.0))
-    assert expand["bucket"] == "expand"                   # 近端波动放大
-    normal = compute_vol_regime(_atr_bars(n, 1.0, 1.0))
-    assert normal["bucket"] == "normal"
-
-
-def test_vol_regime_insufficient_none():
-    assert compute_vol_regime(_atr_bars(50, 1.0, 1.0)) is None  # ATR100 未成形
 
 
 # ── 4. scanner._save_results 打标 ─────────────────────────────────────
@@ -448,11 +425,13 @@ def test_build_report_attribution_join(db):
     _mark(db, "cvd_div", sr_pending.id, "confirm")
     _mark(db, "cvd_div", sr_noai.id, "diverge_bear")
     _mark(db, "cvd_div", sr_loss.id, "confirm")
+    # 已删除卡的孤儿标记（CARD-03 vol_regime 2026-10-13 关闭并删代码，DB 历史
+    # marks 保留）：注册表无条目 → 不进报告（历史归档不影响新评估）
     _mark(db, "vol_regime", sr_win.id, "compress")
 
     rep = {r["feature"]: r for r in build_report(db, window_days=30)}
     cvd = rep["cvd_div"]
-    assert cvd["baseline"] == {"n": 4, "counted": 2, "win_rate": 0.5}
+    assert cvd["baseline"] == {"n": 4, "counted": 2, "win_rate": 0.5, "avg_r": None}
     buckets = {b["bucket"]: b for b in cvd["buckets"]}
     assert buckets["diverge_bear"]["n"] == 2 and buckets["diverge_bear"]["counted"] == 1
     assert buckets["diverge_bear"]["win_rate"] == 1.0  # 只计入 win_tp1
@@ -461,8 +440,56 @@ def test_build_report_attribution_join(db):
     assert buckets["confirm"].get("insufficient") is True
     assert cvd["sufficient"] is False  # counted 2 < min_sample 80
 
-    # CARD-03 于 2026-10-13 裁决关闭（docs/14 §十一）→ 不出报告（marks 仍在库）
+    # CARD-03 于 2026-10-13 裁决关闭并删代码（docs/14 §十一）→ 不出报告（marks 仍在库）
     assert "vol_regime" not in rep
+
+
+def test_build_report_scan_avg_r(db):
+    """scan_result 宿主卡 avg_r 读数（预注册 2026-10-19，docs/14 §十一 遗留问题 1）：
+    R 逐字复用建议回放 ev_r（api/scan.py::_ev_r）——win_tp1=(TP1−entry)/stop_dist、
+    loss=−1.0R、win_tp2=(TP2−entry)/stop_dist，各减往返费用（0.001+
+    0.0003×max(1,bars//8)，折成 R）；expired/缺三价不计 avg_r 分母（胜率分母照计）。"""
+    sr1, sr2, sr3, sr4 = (_scan_result(db) for _ in range(4))
+    prices = dict(entry_price=100.0, stop_loss=95.0,
+                  take_profit_1=105.0, take_profit_2=110.0)
+    a1 = AIAnalysis(symbol="SUSDT", trade_decision="suggest", direction="long",
+                    recommendation=80, created_at=datetime.utcnow(),
+                    scan_result_id=sr1.id, **prices)
+    a2 = AIAnalysis(symbol="SUSDT", trade_decision="suggest", direction="long",
+                    recommendation=80, created_at=datetime.utcnow(),
+                    scan_result_id=sr2.id, **prices)
+    a3 = AIAnalysis(symbol="SUSDT", trade_decision="suggest", direction="long",
+                    recommendation=80, created_at=datetime.utcnow(),
+                    scan_result_id=sr3.id, **prices)
+    a4 = AIAnalysis(symbol="SUSDT", trade_decision="suggest", direction="long",
+                    recommendation=80, created_at=datetime.utcnow(),
+                    scan_result_id=sr4.id)  # 缺三价 → 不回放 R
+    db.add_all([a1, a2, a3, a4])
+    db.commit()
+    db.add_all([
+        TradeReview(ai_analysis_id=a1.id, symbol="SUSDT", outcome="win_tp1", bars_to_exit=1),
+        TradeReview(ai_analysis_id=a2.id, symbol="SUSDT", outcome="loss", bars_to_exit=1),
+        TradeReview(ai_analysis_id=a3.id, symbol="SUSDT", outcome="win_tp2", bars_to_exit=1),
+        TradeReview(ai_analysis_id=a4.id, symbol="SUSDT", outcome="loss", bars_to_exit=1),
+    ])
+    db.commit()
+    _mark(db, "cvd_div", sr1.id, "confirm")
+    _mark(db, "cvd_div", sr2.id, "confirm")
+    _mark(db, "cvd_div", sr3.id, "diverge_bear")
+    _mark(db, "cvd_div", sr4.id, "diverge_bear")
+
+    cvd = {r["feature"]: r for r in build_report(db, window_days=30)}["cvd_div"]
+    buckets = {b["bucket"]: b for b in cvd["buckets"]}
+    # 费用 0.001+0.0003×1=0.0013 → 折算 R = 0.0013/(5/100)=0.026
+    # win_tp1 = 1.0−0.026 = 0.974；loss = −1.0−0.026 = −1.026 → 均值 −0.026
+    assert buckets["confirm"]["counted"] == 2
+    assert buckets["confirm"]["avg_r"] == pytest.approx(-0.026, abs=1e-4)
+    # win_tp2 = 2.0−0.026 = 1.974；sr4 缺三价 → R None（不计 avg_r 分母，胜率分母照计）
+    assert buckets["diverge_bear"]["counted"] == 2
+    assert buckets["diverge_bear"]["avg_r"] == pytest.approx(1.974, abs=1e-4)
+    # baseline：四笔 counted、R 有效 3 笔 → (0.974 − 1.026 + 1.974)/3
+    assert cvd["baseline"]["counted"] == 4
+    assert cvd["baseline"]["avg_r"] == pytest.approx(0.6407, abs=1e-4)
 
 
 def test_build_report_sufficient_threshold(db, monkeypatch):
@@ -496,7 +523,7 @@ def test_build_report_window_and_empty(db):
     assert rep["cvd_div"]["baseline"]["n"] == 0       # 60 天前 → 30 天窗口外
     assert rep["cvd_div"]["buckets"] == []
     assert rep["cvd_div"]["sufficient"] is False
-    assert "vol_regime" not in rep  # CARD-03 已关闭 → 不出报告
+    assert "vol_regime" not in rep  # CARD-03 已删代码 → 不出报告（marks 仍在库）
 
 
 def test_build_report_rule_version_window(db):
@@ -533,7 +560,7 @@ def _fake_report():
              {"bucket": "diverge_bear", "n": 34, "counted": 24, "win_rate": 0.29},
              {"bucket": "diverge_bull", "n": 26, "counted": 6, "win_rate": None},
          ]},
-        {"feature": "vol_regime", "name": "波动率状态", "card": "CARD-03", "min_sample": 100,
+        {"feature": "macd_div", "name": "MACD 背离", "card": "CARD-04", "min_sample": 60,
          "sufficient": False,
          "baseline": {"n": 0, "counted": 0, "win_rate": None},
          "buckets": []},
@@ -545,7 +572,7 @@ def test_shadow_report_lines_format(monkeypatch):
     monkeypatch.setattr(shadow_tasks, "build_report_safe",
                         lambda db, window_days=30: _fake_report())
     lines = shadow_tasks.shadow_report_lines()
-    assert len(lines) == 1  # vol_regime 无样本不占版面
+    assert len(lines) == 1  # macd_div 无样本不占版面
     line = lines[0]
     assert "CVD 背离" in line and "✅ 达标" in line
     assert "基线 41%（n=210）" in line

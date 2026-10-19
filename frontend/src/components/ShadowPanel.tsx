@@ -12,7 +12,7 @@ import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { shadowApi } from '../api/shadow'
 import type {
-  ShadowBucketStat, ShadowFeatureReport, ShadowProtectStat, ShadowReentryStat,
+  ShadowBucketStat, ShadowFeatureReport, ShadowReentryStat,
 } from '../types'
 
 const { Text } = Typography
@@ -22,9 +22,6 @@ const BUCKET_META: Record<string, string> = {
   diverge_bear: '价升·CVD背离',
   diverge_bull: '价跌·CVD背离',
   confirm: '价量同向',
-  compress: '波动收缩',
-  expand: '波动扩张',
-  normal: '常态',
   sweep_reclaim: '插针收回',
   sweep_open: '插针未收回',
   no_sweep: '干净触碰',
@@ -34,19 +31,12 @@ const BUCKET_META: Record<string, string> = {
   r2_mid: '弱趋势 R²0.4~0.7',
   r2_low: '震荡 R²<0.4',
 }
-const CONTROL_BUCKETS = new Set(['confirm', 'normal']) // 对照桶（非信号桶）
+const CONTROL_BUCKETS = new Set(['confirm']) // 对照桶（非信号桶）
 
-// 早期保护桶中文标签（docs/15 §五：CARD-05 A腿 / CARD-06 B腿；unknown 回退原文）
-const PROTECT_BUCKET_META: Record<string, { label: string; tone?: 'success' | 'danger' }> = {
-  saved: { label: '真亏→保本救回', tone: 'success' },
-  injured: { label: '真赢→被扫出', tone: 'danger' },
-  no_arm: { label: '未武装（MFE<0.8R）' },
-  carry: { label: '武装未回踩' },
-  protected: { label: '真亏→TP0救回', tone: 'success' },
-  survived: { label: 'TP0后走到原出场' },
-  below_gate: { label: 'TP1<1.2R 未挂TP0' },
-  untouched: { label: 'TP0 未成交' },
-}
+// 标准卡含 avg_r 判定项的卡（avg R 列仅这些卡渲染）：
+// CARD-09 = trade_record 宿主真实盈亏 R；CARD-01/10 = scan_result 宿主建议回放
+// ev_r（预注册 2026-10-19，详见 docs/14 §十一 遗留问题 1 收口）
+const AVG_R_CARDS = new Set(['CARD-01', 'CARD-09', 'CARD-10'])
 
 // 再入场前置桶中文标签（docs/13 #12：CARD-07；unknown 回退原文）
 const REENTRY_BUCKET_META: Record<string, { label: string; tone?: 'success' | 'danger' }> = {
@@ -56,20 +46,6 @@ const REENTRY_BUCKET_META: Record<string, { label: string; tone?: 'success' | 'd
 
 function pct(v: number | null | undefined): string {
   return v === null || v === undefined ? '—' : `${(v * 100).toFixed(0)}%`
-}
-
-function rStr(v: number | null | undefined): string {
-  return v === null || v === undefined ? '—' : v.toFixed(2)
-}
-
-function deltaR(v: number | null | undefined) {
-  if (v === null || v === undefined) return <Text type="secondary">—</Text>
-  if (Math.abs(v) < 0.005) return <Text type="secondary">0.00R</Text>
-  return (
-    <Text type={v > 0 ? 'success' : 'danger'}>
-      {v > 0 ? '+' : ''}{v.toFixed(2)}R
-    </Text>
-  )
 }
 
 // P-08 序贯判读标签（CARD-07/09）：SPRT 早停三态 + 悬停展示读数
@@ -113,7 +89,11 @@ function SeqTag({ seq }: { seq: ShadowFeatureReport['sequential'] }) {
 // 达标状态标签三态（2026-10-10 开庭日期感知，docs/14 §七 时间锁）：
 // 样本不足 = 观察中（橙）；样本达标但未到预注册开庭日 = 达标·MM-DD 开庭（蓝，
 // §八 人工裁决不得提前——时间窗防单一行情 regime 的自相关样本，与样本量正交）；
-// 达标且到期（或无日历窗的到量即判卡 court_date=null）= 可开庭（绿）
+// 达标且到期（或无日历窗的到量即判卡 court_date=null）= 可开庭（绿）。
+// 注意（2026-10-19，docs/14 §十一 遗留问题 2）：sufficient 为**全卡** counted 口径、
+// **必要非充分**——各卡真实判据含**分桶**门槛（如 CARD-01 n≥80/桶、CARD-10 判定桶
+// 各≥60），绿灯只保证够开庭样本，判定仍须人工核对 §七 卡文本。
+const COURT_READY_TIP = '绿灯=已达卡最小样本（全卡 counted 口径，必要非充分）：各卡真实判据含分桶门槛（如 CARD-01 n≥80/桶、CARD-10 判定桶各≥60），判定须人工核对 docs/14 §七 卡文本'
 function SufficiencyTag({ report, count }: { report: ShadowFeatureReport; count: number }) {
   if (!report.sufficient) {
     return <Tag color="orange">观察中 {count}/{report.min_sample}</Tag>
@@ -125,18 +105,22 @@ function SufficiencyTag({ report, count }: { report: ShadowFeatureReport; count:
     const days = Math.round((new Date(`${court}T00:00:00`).getTime() - today.getTime()) / 86_400_000)
     if (days > 0) {
       return (
-        <Tooltip title={`预注册开庭日 ${court}（docs/14 §七 时间锁）：到期前不进人工裁决，样本继续累积覆盖更多行情阶段`}>
+        <Tooltip title={`预注册开庭日 ${court}（docs/14 §七 时间锁）：到期前不进人工裁决，样本继续累积覆盖更多行情阶段。${COURT_READY_TIP}`}>
           <Tag color="blue">达标 · {court.slice(5)} 开庭（剩 {days} 天）</Tag>
         </Tooltip>
       )
     }
     return (
-      <Tooltip title={`预注册开庭日 ${court} 已到：可按 docs/14 §八 流程人工裁决（快照 → 标准卡核对 → 拍板）`}>
+      <Tooltip title={`预注册开庭日 ${court} 已到：可按 docs/14 §八 流程人工裁决（快照 → 标准卡核对 → 拍板）。${COURT_READY_TIP}`}>
         <Tag color="green">可开庭</Tag>
       </Tooltip>
     )
   }
-  return <Tag color="green">可开庭</Tag>
+  return (
+    <Tooltip title={`到量即判卡（无日历窗）：${COURT_READY_TIP}`}>
+      <Tag color="green">可开庭</Tag>
+    </Tooltip>
+  )
 }
 
 function FeatureCard({ report }: { report: ShadowFeatureReport }) {
@@ -165,7 +149,7 @@ function FeatureCard({ report }: { report: ShadowFeatureReport }) {
     {
       title: 'vs 基线', key: 'diff', width: 90, align: 'right',
       render: (_: unknown, r) => {
-        // ?? null 兜底 undefined：CARD-05/06 无 win_rate 字段时不得算出 NaNpp
+        // ?? null 兜底 undefined：胜率缺失时不得算出 NaNpp
         if (r.key === '__baseline__' || (r.win_rate ?? null) === null || (base.win_rate ?? null) === null) return '—'
         const d = ((r.win_rate ?? 0) - (base.win_rate ?? 0)) * 100
         if (Math.abs(d) < 0.5) return <Text type="secondary">±0pp</Text>
@@ -176,9 +160,10 @@ function FeatureCard({ report }: { report: ShadowFeatureReport }) {
         )
       },
     },
-    // CARD-09 专属列：读数即真实盈亏（trade_record 宿主），avg R 是预注册
-    // 裁决主读数之一（avg_r(60-69) < 0 才达标）；其他卡无此字段不渲染
-    ...(report.card === 'CARD-09'
+    // avg R 判定列：仅标准卡含 avg_r 判定项的卡渲染——CARD-09（trade_record
+    // 宿主，读数即真实盈亏风险倍数）、CARD-01/10（scan_result 宿主，读数为
+    // 建议回放 ev_r，预注册 2026-10-19，见 docs/14 §十一）；无此字段的卡不渲染
+    ...(AVG_R_CARDS.has(report.card)
       ? [{
           title: 'avg R', key: 'avgr', width: 80, align: 'right' as const,
           render: (_: unknown, r: ShadowBucketStat & { key: string }) => {
@@ -227,92 +212,9 @@ function FeatureCard({ report }: { report: ShadowFeatureReport }) {
   )
 }
 
-// 早期保护反事实卡（CARD-05/06，docs/15 §五）：trade_record 宿主，
-// 无胜率口径——读数是反事实重放的 ΣΔR / decided，另附测试网对照组（分层不进判定）
-function ProtectFeatureCard({ report }: { report: ShadowFeatureReport }) {
-  const base = report.baseline
-  const decided = report.decided ?? base.decided ?? 0
-  const tb = report.testnet_baseline
-
-  const columns: ColumnsType<ShadowBucketStat & Partial<ShadowProtectStat> & { key: string }> = [
-    {
-      title: '分桶', dataIndex: 'bucket', key: 'bucket', width: 190,
-      render: (v: string, r) => {
-        const meta = PROTECT_BUCKET_META[v]
-        return (
-          <Space size={4}>
-            <Text strong={!!meta?.tone} type={meta?.tone}>{meta?.label ?? v}</Text>
-            {r.insufficient && (
-              <Tooltip title="n < 30，统计意义有限，仅供参考">
-                <Tag style={{ fontSize: 11 }}>小样本</Tag>
-              </Tooltip>
-            )}
-          </Space>
-        )
-      },
-    },
-    { title: 'n', dataIndex: 'n', key: 'n', width: 70, align: 'right' },
-    { title: 'decided', key: 'decided', width: 80, align: 'right',
-      render: (_: unknown, r) => <Text type="secondary">{r.decided ?? 0}</Text> },
-    { title: 'ΣΔR', key: 'delta', width: 90, align: 'right',
-      render: (_: unknown, r) => deltaR(r.decided_sum_delta_r ?? r.sum_delta_r) },
-    { title: 'real→cf（R）', key: 'rcf', width: 110, align: 'right',
-      render: (_: unknown, r) => (
-        <Text type="secondary">{rStr(r.avg_real_r)} → {rStr(r.avg_cf_r)}</Text>
-      ) },
-  ]
-
-  const rows: (ShadowBucketStat & Partial<ShadowProtectStat> & { key: string })[] = [
-    {
-      key: '__baseline__', bucket: '基线（全部合计）', n: base.n,
-      decided: base.decided, sum_delta_r: base.sum_delta_r,
-      decided_sum_delta_r: base.decided_sum_delta_r,
-      avg_real_r: base.avg_real_r, avg_cf_r: base.avg_cf_r,
-    },
-    ...report.buckets.map((b) => ({ ...b, key: b.bucket })),
-  ]
-
-  return (
-    <Card
-      size="small"
-      title={
-        <Space size={8}>
-          <Text strong>{report.name}</Text>
-          <Tooltip title={`预注册标准卡 ${report.card}：反事实重放口径（docs/15 §五）——ΣΔR>0 且 saved:injured 比达标才可升格`}>
-            <Tag color="geekblue">{report.card}</Tag>
-          </Tooltip>
-          <SufficiencyTag report={report} count={decided} />
-        </Space>
-      }
-      extra={<Text type="secondary" style={{ fontSize: 12 }}>近 {report.window_days} 天 · 正式网</Text>}
-    >
-      <Table
-        rowKey="key"
-        columns={columns}
-        dataSource={rows}
-        size="small"
-        pagination={false}
-        scroll={{ y: 240 }}
-        locale={{ emptyText: <Empty description="该特征暂无影子标记" /> }}
-      />
-      {(report.excluded_n ?? 0) > 0 && (
-        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-          已剔除非机械出场（manual/liquidation）{report.excluded_n} 笔：反事实按机械原计划出场重放，与真实出场不可比（docs/16 P-04）
-        </Text>
-      )}
-      {tb && tb.n > 0 && (
-        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-          测试网对照（分层统计，不进判定）：n={tb.n} · decided={tb.decided} · ΣΔR={rStr(tb.decided_sum_delta_r ?? tb.sum_delta_r)}R
-          {' '}· 桶：{Object.entries(tb.buckets).map(([k, n]) => `${PROTECT_BUCKET_META[k]?.label ?? k} ${n}`).join(' · ')}
-        </Text>
-      )}
-    </Card>
-  )
-}
-
 // 再入场前置卡（CARD-07，docs/13 #12）：trade_record 宿主——回答「止损后
 // 结构完好时价格同向续走（回到开仓价）的概率」。读数是续走率 continued/n，
-// 既非胜率也非反事实 ΣΔR；分层同 CARD-05/06（正式网主判定，测试网对照）
+// 既非胜率也非反事实 ΣΔR；分层：正式网主判定，测试网对照
 function ReentryFeatureCard({ report }: { report: ShadowFeatureReport }) {
   const base = report.baseline
   const tb = report.testnet_baseline
@@ -433,11 +335,9 @@ export default function ShadowPanel() {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {reports.map((r) => (
-              r.card === 'CARD-05' || r.card === 'CARD-06'
-                ? <ProtectFeatureCard key={r.feature} report={r} />
-                : r.card === 'CARD-07'
-                  ? <ReentryFeatureCard key={r.feature} report={r} />
-                  : <FeatureCard key={r.feature} report={r} />
+              r.card === 'CARD-07'
+                ? <ReentryFeatureCard key={r.feature} report={r} />
+                : <FeatureCard key={r.feature} report={r} />
             ))}
           </div>
         )}
