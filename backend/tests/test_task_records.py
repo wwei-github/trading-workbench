@@ -112,6 +112,60 @@ def test_daily_report_failure_marks_failed(wire_sessions, monkeypatch):
     assert rec.status == "failed" and "币安不可用" in (rec.error or "")
 
 
+def test_daily_report_splits_stats_by_network(wire_sessions, monkeypatch):
+    """日报：交易统计与净收益按正式网/测试网分列（2026-10-19）
+
+    昨日各留一笔闭单（正式网 +120 / 测试网 -40），断言卡片、任务记录
+    summary 与返回值都把两网分开统计，互不混入。
+    """
+    import json
+    from datetime import timedelta, timezone
+
+    from app.models.trade import TradeRecord
+    from app.tasks import daily_report
+
+    bj = timezone(timedelta(hours=8))
+    yday = (datetime.now(bj) - timedelta(days=1)).replace(
+        hour=12, minute=0, second=0, microsecond=0, tzinfo=None)
+    maker = wire_sessions
+    s = maker()
+    s.add_all([
+        TradeRecord(symbol="BTCUSDT", direction="long", status="CLOSED",
+                    testnet=False, account_key="live-1",
+                    opened_at=yday, closed_at=yday, realized_pnl=120.0),
+        TradeRecord(symbol="ETHUSDT", direction="short", status="CLOSED",
+                    testnet=True, account_key="testnet-1",
+                    opened_at=yday, closed_at=yday, realized_pnl=-40.0),
+    ])
+    s.commit()
+    s.close()
+
+    monkeypatch.setattr(
+        daily_report, "_daily_close",
+        lambda sym: (sym.replace("USDT", ""), "100.00", "+1.0%"))
+    sent = {}
+    monkeypatch.setattr(
+        daily_report, "send_feishu_card", lambda card: sent.update(card=card) or True)
+    monkeypatch.setattr(
+        daily_report, "send_feishu_text", lambda text: sent.update(text=text) or True)
+
+    out = daily_report.notify_daily_report()
+
+    assert out["notified"] is True
+    assert out["live"]["closed"] == 1 and out["live"]["net"] == pytest.approx(120.0)
+    assert out["testnet"]["closed"] == 1 and out["testnet"]["net"] == pytest.approx(-40.0)
+
+    # 卡片：两网分列 + 各自净收益
+    card_text = json.dumps(sent["card"], ensure_ascii=False)
+    assert "正式网" in card_text and "测试网" in card_text
+    assert "+120.00 USDT" in card_text and "-40.00 USDT" in card_text
+
+    # 任务记录 summary 分网呈现，两网互不混入
+    rec = _latest_record(maker)
+    assert "正式网 开1/闭1 净+120.00 USDT" in rec.summary
+    assert "测试网 开1/闭1 净-40.00 USDT" in rec.summary
+
+
 # ── 2. 影子评估 ──────────────────────────────────────────────────────
 
 

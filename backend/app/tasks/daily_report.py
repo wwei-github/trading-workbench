@@ -6,8 +6,9 @@
 
 统计口径（与交易记录页一致）：
 - 「当日」按北京时间自然日切
-- 2026-10-03 删环境切换：统计为双网合计（测试网 + 正式网），明细区分见
-  交易记录页 scope 筛选
+- 2026-10-19：交易统计与净收益按【正式网 / 测试网】分列（此前为双网合计）。
+  双网同时在跑（2026-10-03 删环境切换后），测试网是模拟撮合且仓位大数倍，
+  混网合计会淹没真钱表现；分列后各网独立呈现（口径对齐交易记录页 scope）。
 - 止盈 = 已闭单且净收益 > 0；止损 = 已闭单且净收益 <= 0（保本/微亏归止损侧）
 - 净收益 = 当日闭单 realized_pnl 之和（含手续费/资金费），在跑单浮动盈亏不计
 """
@@ -56,6 +57,62 @@ def _daily_close(symbol: str) -> tuple[str, str, str]:
         return name, "获取失败", ""
 
 
+def _env_day_stats(db, day_start: datetime, day_end: datetime, is_testnet: bool) -> dict:
+    """单网（正式网 / 测试网）当日交易统计 + 该网全部历史已闭单胜率口径。
+
+    口径与交易记录页一致：异常单（excluded）剔除；止盈 = 已闭单且净收益 > 0，
+    止损 = 其余已闭单（保本/微亏归止损侧）；净收益 = 当日闭单 realized_pnl 之和
+    （含手续费/资金费），在跑单浮动盈亏不计。
+    """
+    base = TradeRecord.testnet.is_(is_testnet)
+    ds, de = day_start.replace(tzinfo=None), day_end.replace(tzinfo=None)
+    rows = db.execute(
+        select(TradeRecord).where(
+            TradeRecord.opened_at >= ds,
+            TradeRecord.opened_at < de,
+            TradeRecord.excluded.is_(False),
+            base,
+        )
+    ).scalars().all()
+    closed_rows = db.execute(
+        select(TradeRecord).where(
+            TradeRecord.closed_at >= ds,
+            TradeRecord.closed_at < de,
+            TradeRecord.status == "CLOSED",
+            TradeRecord.excluded.is_(False),
+            base,
+        )
+    ).scalars().all()
+    win = sum(1 for r in closed_rows if (r.realized_pnl or 0) > 0)
+    # 胜率口径：该网全部历史已闭单（不只当日），与交易记录页概览一致
+    total_closed = db.execute(
+        select(func.count(TradeRecord.id)).where(
+            TradeRecord.status == "CLOSED",
+            TradeRecord.excluded.is_(False),
+            base,
+        )
+    ).scalar() or 0
+    total_win = db.execute(
+        select(func.count(TradeRecord.id)).where(
+            TradeRecord.status == "CLOSED",
+            TradeRecord.excluded.is_(False),
+            TradeRecord.realized_pnl > 0,
+            base,
+        )
+    ).scalar() or 0
+    return {
+        "opened": len(rows),
+        "closed": len(closed_rows),
+        "win": win,
+        "loss": len(closed_rows) - win,
+        "net": sum(float(r.realized_pnl or 0) for r in closed_rows),
+        "running": sum(1 for r in rows if r.status in ("OPENED", "TP1_HIT", "TP2_HIT")),
+        "failed": sum(1 for r in rows if r.status == "FAILED"),
+        "total_closed": total_closed,
+        "total_win": total_win,
+    }
+
+
 @celery_app.task(name="app.tasks.daily_report.notify_daily_report")
 def notify_daily_report() -> dict:
     """每日 08:05（北京）日报：主流币收盘价 + 昨日交易统计。"""
@@ -84,49 +141,12 @@ def _notify_daily_report_body(task_id: str) -> dict:
     with ThreadPoolExecutor(max_workers=3) as ex:
         prices = list(ex.map(_daily_close, _MAJOR_SYMBOLS))
 
-    # 当日交易统计（2026-10-03 删环境切换：双网合计——交易记录自带 testnet
-    # 标记，明细区分见交易记录页 scope 筛选）
+    # 当日交易统计（2026-10-19）：正式网 / 测试网分列——双网同时在跑，
+    # 测试网是模拟撮合且仓位大数倍，混网合计会淹没真钱表现。
     db = SessionLocal()
     try:
-        rows = db.execute(
-            select(TradeRecord).where(
-                TradeRecord.opened_at >= day_start.replace(tzinfo=None),
-                TradeRecord.opened_at < day_end.replace(tzinfo=None),
-                TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）：伪开仓不计入日报口径
-            )
-        ).scalars().all()
-        opened = len(rows)
-
-        closed_rows = db.execute(
-            select(TradeRecord).where(
-                TradeRecord.closed_at >= day_start.replace(tzinfo=None),
-                TradeRecord.closed_at < day_end.replace(tzinfo=None),
-                TradeRecord.status == "CLOSED",
-                TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
-            )
-        ).scalars().all()
-        closed = len(closed_rows)
-        win = sum(1 for r in closed_rows if (r.realized_pnl or 0) > 0)
-        loss = closed - win
-        net = sum(float(r.realized_pnl or 0) for r in closed_rows)
-
-        running = sum(1 for r in rows if r.status in ("OPENED", "TP1_HIT", "TP2_HIT"))
-        failed = sum(1 for r in rows if r.status == "FAILED")
-
-        # 胜率口径：全部历史已闭单（不只当日），与交易记录页概览一致
-        total_closed = db.execute(
-            select(func.count(TradeRecord.id)).where(
-                TradeRecord.status == "CLOSED",
-                TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
-            )
-        ).scalar() or 0
-        total_win = db.execute(
-            select(func.count(TradeRecord.id)).where(
-                TradeRecord.status == "CLOSED",
-                TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）
-                TradeRecord.realized_pnl > 0,
-            )
-        ).scalar() or 0
+        live = _env_day_stats(db, day_start, day_end, is_testnet=False)
+        testnet = _env_day_stats(db, day_start, day_end, is_testnet=True)
     finally:
         db.close()
 
@@ -134,8 +154,24 @@ def _notify_daily_report_body(task_id: str) -> dict:
         sign = "+" if v > 0 else ""
         return f"{sign}{v:,.2f} USDT"
 
-    # 胜率：全部历史已闭单口径（total_win/total_closed）；无闭单显示 —
-    win_rate = f"{total_win / total_closed * 100:.0f}%" if total_closed else "—"
+    def _win_rate(s: dict) -> str:
+        """胜率：该网全部历史已闭单口径（total_win/total_closed）；无闭单显示 —"""
+        return f"{s['total_win'] / s['total_closed'] * 100:.0f}%" if s["total_closed"] else "—"
+
+    def _stat_fields(s: dict) -> list[dict]:
+        """单网统计 6 格（原生 fields 两列栅格，与旧版布局一致）。"""
+        return [
+            {"is_short": True, "text": {"tag": "lark_md", "content": f"**开单**　{s['opened']} 笔"}},
+            {"is_short": True, "text": {"tag": "lark_md", "content": f"**闭单**　{s['closed']} 笔"}},
+            {"is_short": True, "text": {"tag": "lark_md",
+             "content": f"**止盈**　{s['win']} 笔 <font color='success'>✔</font>"}},
+            {"is_short": True, "text": {"tag": "lark_md",
+             "content": f"**止损**　{s['loss']} 笔 <font color='red'>✖</font>"}},
+            {"is_short": True, "text": {"tag": "lark_md",
+             "content": f"**胜率**　{_win_rate(s)}（{s['total_win']}/{s['total_closed']}）"}},
+            {"is_short": True, "text": {"tag": "lark_md",
+             "content": f"**在跑**　{s['running']} 笔 · 失败 {s['failed']}"}},
+        ]
 
     # ── 飞书消息卡片（interactive）：列对齐由卡片布局引擎负责。
     #    文本消息是比例字体，空格补位永远对不齐价格列/个位数，卡片栅格才是真对齐 ──
@@ -147,8 +183,10 @@ def _notify_daily_report_body(task_id: str) -> dict:
                          "content": "\n".join([f"**{title}**", *lines])}}],
         }
 
-    # 头部：净收益为正绿/为负红/持平蓝，emoji 跟随
-    head_emoji = "📈" if net > 0 else ("📉" if net < 0 else "📊")
+    # 头部：以正式网（真钱）净收益定色——为正绿/为负红/持平蓝，emoji 跟随。
+    #    2026-10-19 分网后，标题不再取双网合计（混入模拟盘会误导真钱表现判断）
+    head_net = live["net"]
+    head_emoji = "📈" if head_net > 0 else ("📉" if head_net < 0 else "📊")
 
     # 行情列权重：BTC 价格位数多给大列，避免挤压换行
     price_weight = {"BTC": 4, "ETH": 3, "BNB": 3}
@@ -174,31 +212,25 @@ def _notify_daily_report_body(task_id: str) -> dict:
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": f"{head_emoji} 每日交易日报 · {date_label}"},
-            "template": "green" if net > 0 else ("red" if net < 0 else "blue"),
+            "template": "green" if head_net > 0 else ("red" if head_net < 0 else "blue"),
         },
         "elements": [
             # ── 行情区：3 列（按价格位数加权），币种/收盘价(粗体)/涨跌幅 ──
             {"tag": "div", "text": {"tag": "lark_md", "content": "**📈 主流币日收盘**"}},
             {"tag": "column_set", "flex_mode": "stretch", "columns": price_cols},
             {"tag": "hr"},
-            # ── 统计区：原生 fields 两列栅格，每格独立单元格（单双位数不挤歪）──
+            # ── 统计区：正式网 / 测试网分列（各 6 格原生 fields 两列栅格）──
             {"tag": "div", "text": {"tag": "lark_md", "content": "**💼 交易统计**"}},
-            {"tag": "div", "fields": [
-                {"is_short": True, "text": {"tag": "lark_md", "content": f"**开单**　{opened} 笔"}},
-                {"is_short": True, "text": {"tag": "lark_md", "content": f"**闭单**　{closed} 笔"}},
-                {"is_short": True, "text": {"tag": "lark_md",
-                 "content": f"**止盈**　{win} 笔 <font color='success'>✔</font>"}},
-                {"is_short": True, "text": {"tag": "lark_md",
-                 "content": f"**止损**　{loss} 笔 <font color='red'>✖</font>"}},
-                {"is_short": True, "text": {"tag": "lark_md",
-                 "content": f"**胜率**　{win_rate}（{total_win}/{total_closed}）"}},
-                {"is_short": True, "text": {"tag": "lark_md",
-                 "content": f"**在跑**　{running} 笔 · 失败 {failed}"}},
-            ]},
+            {"tag": "div", "text": {"tag": "lark_md", "content": "**正式网**"}},
+            {"tag": "div", "fields": _stat_fields(live)},
+            {"tag": "div", "text": {"tag": "lark_md", "content": "**测试网**"}},
+            {"tag": "div", "fields": _stat_fields(testnet)},
             {"tag": "hr"},
-            # ── 收益区：独立一行加粗突出 ──
+            # ── 收益区：分网净收益，各占一行加粗突出 ──
             {"tag": "div", "text": {"tag": "lark_md",
-             "content": f"💰 **净收益　{_net_str(net)}**"}},
+             "content": (f"💰 **净收益**\n"
+                         f"**正式网**　{_net_str(live['net'])}\n"
+                         f"**测试网**　{_net_str(testnet['net'])}")}},
             *([
                 {"tag": "hr"},
                 {"tag": "div", "text": {"tag": "lark_md",
@@ -206,7 +238,7 @@ def _notify_daily_report_body(task_id: str) -> dict:
             ] if shadow_lines else []),
             # ── 口径脚注（小字灰显）──
             {"tag": "note", "elements": [{"tag": "plain_text",
-             "content": (f"统计范围 = 双网合计（测试网 + 正式网）· 胜率 = 止盈笔数 ÷ 全部已闭单 · "
+             "content": ("统计范围 = 正式网 / 测试网分列 · 胜率 = 止盈笔数 ÷ 该网全部已闭单 · "
                          "净收益只计已闭单（含手续费/资金费），在跑单浮动盈亏不计")}]},
         ],
     }
@@ -216,9 +248,17 @@ def _notify_daily_report_body(task_id: str) -> dict:
         text = "\n".join([
             f"📊 每日交易日报 · {date_label}",
             *[f"{name} 收盘 {price} {chg}" for name, price, chg in prices],
-            f"开单 {opened}（在跑 {running} · 失败 {failed}）/ 闭单 {closed}",
-            f"止盈 {win} / 止损 {loss} / 胜率 {win_rate}（{total_win}/{total_closed}）",
-            f"净收益 {_net_str(net)}",
+            # 分网统计（每网一行摘要，与卡片同口径）
+            f"【正式网】开单 {live['opened']}（在跑 {live['running']} · 失败 {live['failed']}）"
+            f"/ 闭单 {live['closed']}",
+            f"【正式网】止盈 {live['win']} / 止损 {live['loss']} / "
+            f"胜率 {_win_rate(live)}（{live['total_win']}/{live['total_closed']}）",
+            f"【正式网】净收益 {_net_str(live['net'])}",
+            f"【测试网】开单 {testnet['opened']}（在跑 {testnet['running']} · "
+            f"失败 {testnet['failed']}）/ 闭单 {testnet['closed']}",
+            f"【测试网】止盈 {testnet['win']} / 止损 {testnet['loss']} / "
+            f"胜率 {_win_rate(testnet)}（{testnet['total_win']}/{testnet['total_closed']}）",
+            f"【测试网】净收益 {_net_str(testnet['net'])}",
             *(["", "🔬 影子实验（只统计不决策）", *shadow_lines] if shadow_lines else []),
         ])
         ok = send_feishu_text(text)
@@ -227,10 +267,16 @@ def _notify_daily_report_body(task_id: str) -> dict:
 
     close_task(
         task_id, "completed",
-        summary=f"{date_label} 开{opened}/闭{closed} 净{_net_str(net)}"
-                f"（飞书{'已推送' if ok else '未推送'}）",
-        detail={"date": date_label, "opened": opened, "closed": closed,
-                "win": win, "loss": loss, "net": round(net, 2), "notified": ok},
+        summary=(f"正式网 开{live['opened']}/闭{live['closed']} 净{_net_str(live['net'])} · "
+                 f"测试网 开{testnet['opened']}/闭{testnet['closed']} 净{_net_str(testnet['net'])}"
+                 f"（飞书{'已推送' if ok else '未推送'}）"),
+        detail={"date": date_label,
+                "live_opened": live["opened"], "live_closed": live["closed"],
+                "live_win": live["win"], "live_loss": live["loss"],
+                "live_net": round(live["net"], 2),
+                "tn_opened": testnet["opened"], "tn_closed": testnet["closed"],
+                "tn_win": testnet["win"], "tn_loss": testnet["loss"],
+                "tn_net": round(testnet["net"], 2),
+                "notified": ok},
     )
-    return {"date": date_label, "opened": opened, "closed": closed,
-            "win": win, "loss": loss, "net": round(net, 2), "notified": ok}
+    return {"date": date_label, "live": live, "testnet": testnet, "notified": ok}
