@@ -471,6 +471,23 @@ class BinanceTrader:
                 return
             raise
 
+    def _algo_place(self, params: dict, tries: int = 3, delay: float = 0.4) -> dict:
+        """提交条件单（algo）：对 -4509 短退避重试后原样抛出。
+
+        -4509（TIF=GTE 仅可用于已有持仓）在「市价入场单刚 ACK、持仓尚未落账」的竞态下
+        会被交易所拒绝，稍等即成（2026-10-19 AVAUSDT/GTCUSDT 测试网实例）；-2013
+        （Order does not exist）同属入场单/持仓短暂未落账，一并重试。其余错误立即抛出。
+        """
+        for attempt in range(tries):
+            try:
+                return self._req("POST", "/fapi/v1/algoOrder", params)
+            except BinanceTradeError as e:
+                msg = str(e)
+                if attempt >= tries - 1 or ("-4509" not in msg and "-2013" not in msg):
+                    raise
+                time.sleep(delay)
+        raise BinanceTradeError("条件单提交失败：重试次数用尽")
+
     def stop_market_close(self, symbol: str, side: str, stop_price: float) -> dict:
         """止损单（algo）：触发后市价全平剩余仓位（closePosition），返回含 algoId
 
@@ -478,7 +495,7 @@ class BinanceTrader:
         不受单一订单簿打飞影响（测试网薄订单簿曾把 last price 打飞 30%误触发止损，
         成交于 100 vs 真实市价 77）。
         """
-        return self._req("POST", "/fapi/v1/algoOrder", {
+        return self._algo_place({
             "algoType": "CONDITIONAL", "symbol": symbol, "side": side,
             "type": "STOP_MARKET", "triggerPrice": self._dec_str(stop_price),
             "closePosition": "true", "workingType": "MARK_PRICE",
@@ -499,7 +516,7 @@ class BinanceTrader:
         止盈保留默认 CONTRACT_PRICE（最新成交价）：到止盈位说明行情真到了，
         用 last price 触发更贴近实际可成交价格，避免标记价格滞后于行情尖峰。
         """
-        return self._req("POST", "/fapi/v1/algoOrder", {
+        return self._algo_place({
             "algoType": "CONDITIONAL", "symbol": symbol, "side": side,
             "type": "TAKE_PROFIT_MARKET", "triggerPrice": self._dec_str(stop_price),
             "quantity": self._dec_str(qty), "reduceOnly": "true",

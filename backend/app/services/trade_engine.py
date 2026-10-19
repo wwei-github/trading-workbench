@@ -146,6 +146,32 @@ def _tp_quantities(qty: float, tp2: float,
     return qty * p1s / 100, 0.0
 
 
+# 市价入场确认（2026-10-19 最小加固）：POST 市价单返回 200+orderId 仅表示「已受理」，
+# 交易所侧可能瞬时异常导致从未真正落单（AVAUSDT/GTCUSDT 测试网实例：allOrders/
+# userTrades 均查无此单）。此情形下无持仓，closePosition 止损单会被 -4509 拒绝，
+# 而旧代码误判为「开仓失败」并空转应急平仓。以下常量控制入场成交/持仓确认的短重试。
+_ENTRY_FILL_TRIES = 3
+_ENTRY_FILL_DELAY = 0.4
+
+
+def _confirm_position(trader: BinanceTrader, symbol: str,
+                      tries: int = _ENTRY_FILL_TRIES, delay: float = _ENTRY_FILL_DELAY) -> bool:
+    """挂 SL/TP 前确认交易所侧已有本 symbol 持仓（市价单 ACK≠成交）。
+
+    查询失败（网络/接口异常）保守返回 True——宁可继续走原有「挂 SL/TP（-4509 有短
+    重试兜底）」路径，也不误判「未成交」而把真实仓位弃成裸仓。"""
+    for attempt in range(tries):
+        try:
+            if symbol in trader.positions():
+                return True
+        except Exception as e:
+            logger.warning("开仓 %s：持仓确认查询失败（按已开仓继续）: %s", symbol, e)
+            return True
+        if attempt < tries - 1:
+            time.sleep(delay)
+    return False
+
+
 def _ai_snapshot(a: AIAnalysis) -> dict:
     """开单时 AI 分析结论快照：交易记录自持一份，不随 ai_analyses 清理断链。
     字段与前端 AIAnalysisCard 展示所需一致（scan_result_id 置空 = 不提供运行轨迹入口）"""
@@ -769,13 +795,55 @@ def _attempt_open(
         # 滑点 = 成交价对参考价的偏离（testnet 盘口薄，深吃单可达 0.5%+）；
         # 查询失败按参考价记账，不阻断挂 SL/TP（保护块兜底仍在）
         fill_price, fill_qty = price, qty
-        try:
-            od = trader.order(symbol, entry_order["orderId"])
+        od = None
+        for attempt in range(_ENTRY_FILL_TRIES):
+            try:
+                od = trader.order(symbol, entry_order["orderId"])
+                break
+            except Exception as fill_err:
+                # -2013（Order does not exist）：市价单已 ACK 但交易所侧尚未落账
+                # （2026-10-19 实例），短退避重试；其余错误不重试，直接放弃查询
+                if attempt >= _ENTRY_FILL_TRIES - 1 or "-2013" not in str(fill_err):
+                    logger.warning("开仓 %s：成交回报查询失败，按参考价 %s 记账（%s）",
+                                   symbol, price, fill_err)
+                    break
+                time.sleep(_ENTRY_FILL_DELAY)
+        if od is not None and float(od.get("executedQty") or 0) > 0:
+            fill_qty = float(od["executedQty"])
             if float(od.get("avgPrice") or 0) > 0:
                 fill_price = float(od["avgPrice"])
-                fill_qty = float(od.get("executedQty") or qty)
-        except Exception as fill_err:
-            logger.warning("开仓 %s：成交回报查询失败，按参考价 %s 记账（%s）", symbol, price, fill_err)
+        else:
+            # 成交未确认（查不到成交单或成交量为 0）：挂 SL/TP 前先确认交易所侧已有持仓
+            # （2026-10-19 最小加固）。市价单 ACK≠成交——交易所侧瞬时异常时无持仓，
+            # closePosition 止损单会被 -4509 拒绝（AVAUSDT/GTCUSDT 实例）。确认无持仓即
+            # 判定入场未成交，放弃本币开仓（不挂 SL/TP、不应急平仓），避免空转与裸仓误判
+            if not _confirm_position(trader, symbol):
+                # 放弃前先尽力撤掉入场的普通单（幂等：-2011/-2013 静默），防「判定未成交后
+                # 又迟到成交」造裸仓；随后复核成交——撤单失败于已成交单（-2011 被静默吞掉）
+                # 时，此处能查到成交并转按已开仓继续，绝不把真实仓位弃成裸仓。复核查询
+                # 自身失败时同样保守继续（不 bail），宁可多挂一次保护单也不误弃仓位
+                try:
+                    trader.cancel_regular_order(symbol, int(entry_order["orderId"]))
+                except Exception as cancel_err:
+                    logger.warning("开仓 %s：撤销未成交入场单失败（忽略）: %s", symbol, cancel_err)
+                recheck = None
+                try:
+                    recheck = trader.order(symbol, entry_order["orderId"])
+                except Exception as re_err:
+                    logger.warning("开仓 %s：放弃前成交复核失败，保守继续挂保护单（%s）",
+                                   symbol, re_err)
+                if recheck is not None and float(recheck.get("executedQty") or 0) <= 0:
+                    logger.warning(
+                        "开仓 %s：市价入场单 %s 交易所侧无持仓/无成交，放弃本币开仓",
+                        symbol, entry_order.get("orderId"),
+                    )
+                    _mark_open_block(
+                        db, a, "市价入场单未成交（交易所侧无持仓），放弃本币开仓（未挂 SL/TP）")
+                    return "blocked"
+                if recheck is not None:
+                    fill_qty = float(recheck["executedQty"])
+                    if float(recheck.get("avgPrice") or 0) > 0:
+                        fill_price = float(recheck["avgPrice"])
         slippage_pct = (fill_price / price - 1) * 100
         actual_risk = fill_qty * abs(fill_price - sl)
         if risk_amount > 0 and actual_risk > risk_amount * 1.15:
@@ -850,7 +918,25 @@ def _attempt_open(
                 "actual_risk": round(actual_risk, 4),
             })
             db.commit()
-        except Exception:
+        except Exception as place_err:
+            # -4509（TIF=GTE 仅可用于已有持仓）是「交易所侧无持仓」的可靠信号，发生在
+            # 入场单 ACK 未落单时（2026-10-19 最小加固）：不做 reduceOnly 应急平仓（会
+            # 白付两次市价手续费，且真实竞态下可能误杀已成交好单）；仅清理可能已挂出的
+            # 残余条件单，落拒开原因后按「未开仓」返回，交由下一轮候选重试。
+            # 注意：只认 -4509——-2013（Order does not exist）在 POST 建单语境下不成立，
+            # 若据此旁路应急平仓会误弃真实持仓
+            if "-4509" in str(place_err):
+                logger.warning(
+                    "开仓 %s：挂保护单遇无持仓错误（%s），判定入场未成交，放弃本币开仓",
+                    symbol, place_err,
+                )
+                try:
+                    trader.cancel_all_algo(symbol)
+                except Exception as cancel_err:
+                    logger.warning("开仓 %s：清理残余条件单失败（忽略）: %s", symbol, cancel_err)
+                _mark_open_block(
+                    db, a, f"市价入场单未成交（{str(place_err)[:120]}），放弃本币开仓")
+                return "blocked"
             # 紧急处理：先撤全部挂单再只减仓平仓（reduceOnly：开仓单未成交时会被
             # 交易所拒绝，而不是反向开成裸仓）
             try:
