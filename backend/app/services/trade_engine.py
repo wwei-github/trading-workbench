@@ -86,6 +86,20 @@ def _adaptive_leverage(stop_pct: float, mmr: float, buffer: float,
     return 0
 
 
+def _open_margin_required(qty: float, price: float, leverage: int,
+                          fee_rate: Optional[float] = None) -> float:
+    """开仓保证金需求 = 初始保证金 + 开仓 taker 手续费（2026-10-19 -2019 加固）。
+
+    交易所对新开仓按「初始保证金 + 开仓手续费」之和校验可用余额
+    （availableBalance）；此前闸门只比初始保证金（qty×价/杠杆），可用余额
+    恰好等于初始保证金时被交易所按「+手续费」拒单（-2019 Margin is
+    insufficient）。fee_rate 缺省取 settings.TAKER_FEE_RATE（交易所真实 taker
+    费率，非页面建模参数 system_config.taker_fee_rate）。"""
+    notional = qty * price
+    fee = notional * (settings.TAKER_FEE_RATE if fee_rate is None else fee_rate)
+    return notional / leverage + fee
+
+
 def _add_event(db: Session, rec: TradeRecord, event_type: str, detail: Optional[dict] = None) -> None:
     db.add(TradeEvent(trade_record_id=rec.id, event_type=event_type, detail=detail or {}))
 
@@ -589,24 +603,27 @@ def _attempt_open(
             logger.info("开仓 %s：数量 %s 超交易所单笔上限 %s，按上限缩减（实际风险低于 %.0f%% 预算）",
                         symbol, qty, max_qty, risk_pct)
             qty = trader.round_qty(symbol, max_qty)
-        margin_used = qty * ref_price / leverage
+        # 开仓保证金需求 = 初始保证金 + 开仓 taker 手续费（2026-10-19 -2019 加固）：
+        # 交易所按「初始保证金 + 手续费」之和校验可用余额，此前只比初始保证金，
+        # 可用恰好等于 margin_used 时被交易所按「+手续费」拒单（-2019）。
+        margin_needed = _open_margin_required(qty, ref_price, leverage)
         # 可用保证金闸门（2026-10-17 -2019 修复）：优先用交易所 availableBalance——
         # 本地「钱包余额 - 估算占用」会高估可用（漏掉交易所侧非本系统挂单冻结、
         # 逐仓已分配保证金、未实现亏损对可用额度的影响），本地放行后交易所按真实
         # 可用余额拒单（-2019 Margin is insufficient）。无交易所口径时回落本地估算
         avail = available if available is not None else wallet - occupied
-        if margin_used > avail:
+        if margin_needed > avail:
             # 三值分解（2026-10-17）：钱包余额高 ≠ 可用够——保证金可能已被其它持仓/
             # 挂单冻结（availableBalance 已扣除全部持仓初始保证金与挂单冻结）。给出
             # 钱包/占用明细，避免"钱包还有钱为什么开不了"的困惑
             src = "交易所可用" if available is not None else "本地估算可用"
             logger.info(
                 "开仓放弃 %s：所需保证金 %.2f 超过可用 %.2f（%s；钱包 %.2f · 已占用 %.2f）",
-                symbol, margin_used, avail, src, wallet, wallet - avail,
+                symbol, margin_needed, avail, src, wallet, wallet - avail,
             )
             _mark_open_block(
                 db, a,
-                f"可用保证金不足（{symbol}）：需 {margin_used:.2f}，{src} {avail:.2f}"
+                f"可用保证金不足（{symbol}）：需 {margin_needed:.2f}，{src} {avail:.2f}"
                 f"（钱包 {wallet:.2f}，已占用约 {wallet - avail:.2f}）",
             )
             return "blocked"

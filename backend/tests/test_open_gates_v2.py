@@ -369,6 +369,48 @@ def test_spread_query_error_passes_through(db):
     assert "盘口价差" not in (a.open_block_reason or "")
 
 
+# ── 可用保证金闸门：计入开仓 taker 手续费（2026-10-19 -2019 加固）───────────
+
+
+def test_open_margin_required_includes_taker_fee():
+    """保证金需求 = 初始保证金 + 开仓 taker 手续费：
+    20×100/20=100（初始保证金）+ 2000×0.0005=1（手续费）→ 101"""
+    from app.services.trade_engine import _open_margin_required
+    assert _open_margin_required(20.0, 100.0, 20) == pytest.approx(101.0)
+
+
+def _fee_gate_fixture(db, monkeypatch):
+    """固定杠杆（打桩 _adaptive_leverage=20）+ 固定金额风险 40 → 名义 2000、数量 20，
+    保证金需求恒为 101（初始 100 + 手续费 1），便于按 available 精确切边界"""
+    import app.services.trade_engine as te
+    monkeypatch.setattr(te, "_adaptive_leverage", lambda *a, **k: 20)
+    a = _make_analysis(db, rec=90)
+    cfg = db.get(SystemConfig, 1)
+    cfg.risk_budget_mode = "fixed"
+    cfg.risk_fixed_amount = 40.0
+    db.commit()
+    return a, cfg
+
+
+def test_margin_gate_blocks_when_fee_tips_over_available(db, monkeypatch):
+    """可用 100.4 ≥ 初始保证金 100 但 < 需求 101（+手续费）→ 拦为「可用保证金不足」，
+    不进入下单序列——此前只比初始保证金会放行，随后被交易所按「+手续费」拒单 -2019"""
+    a, cfg = _fee_gate_fixture(db, monkeypatch)
+    trader = _SpreadTrader()
+    assert _attempt_open(db, trader, cfg, a, 100.4, {}) == "blocked"
+    assert "可用保证金不足" in (a.open_block_reason or "")
+    assert trader.setup_calls == []
+
+
+def test_margin_gate_passes_with_available_over_needed(db, monkeypatch):
+    """可用 101 ≥ 需求 101 → 放行进入下单序列（替身在 setup_leverage 终止）"""
+    a, cfg = _fee_gate_fixture(db, monkeypatch)
+    trader = _SpreadTrader()
+    assert _attempt_open(db, trader, cfg, a, 101.0, {}) == "blocked"
+    assert len(trader.setup_calls) == 1
+    assert "可用保证金不足" not in (a.open_block_reason or "")
+
+
 # ── A1''：保本价含往返费用缓冲 ────────────────────────────────────────
 
 
