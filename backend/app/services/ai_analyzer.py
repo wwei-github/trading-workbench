@@ -60,16 +60,34 @@ _RULE_SL = """止损纪律（结构位优先，金K极值兜底，两锚取更�
   锚点落在 0.3×ATR 内时把锚外扩到该宽度再报，否则直接 skip（程序按此下限复算打回）。
   盈亏比不达标先调入场价，仍不达标如实 skip。"""
 
+def render_tp1_cap_desc(rr_min: Optional[float] = None) -> str:
+    """第一档止盈距离上限的**程序口径**文案（2026-10-19）。
+
+    与 risk_guard 复算严格一致：cap = max(min(TP1_MAX_ATR×ATR, TP1_MAX_R×止损距离),
+    rr_min×止损距离)。此前提示词写成"≤TP1_MAX_ATR×ATR **且** ≤TP1_MAX_R×止损距离"的绝对
+    硬上限，且 TP1_MAX_R=0（R 腿关闭）时渲染出无意义的"≤0×止损距离"——AI 据此把
+    "入场 ± rr_min×止损距离"兜底价判为越 2×ATR 上限并 skip，与程序"兜底价永远可用、
+    永不打回"相悖（2026-10-19 线上排查：当日高置信误 skip 9 笔）。TP1_MAX_R=0 时不渲染该腿。"""
+    _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
+    _atr = f"{settings.TP1_MAX_ATR:g}"
+    _r = float(settings.TP1_MAX_R)
+    if _r > 0:
+        return f"max(min({_atr}×ATR, {_r:g}×止损距离), {_rr:g}×止损距离)"
+    return f"max({_atr}×ATR, {_rr:g}×止损距离)"
+
+
 _RULE_TP_BASE = """止盈锚定（多空方向不同，必须遵守；程序不再改挂止盈价）：
 - 结构位=摆动高低点（用户消息中"近期摆动结构"）。距现价 ≤1×ATR 的位是正在
   测试的争夺位、不算止盈目标，止盈一必须挂更远的第一档结构位外侧：
   做多 = 上方摆动高点下方 0.2%~0.5%（不得越到位上方或贴死位）；
   做空 = 下方摆动低点上方 0.2%~0.5%（不得越到位下方或贴死位）。
-- 第一档止盈须"够近"：距入场价不得超过 {tp1_max_atr}×ATR，也不得超过
-  {tp1_max_r}×止损距离。若更远的第一档结构位已越过此上限（强趋势/点位稀疏时
-  常见，会落到 3~4R），说明近端无合适目标——不要跳档硬挂远位凑盈亏比，改用
-  "入场价 ± {rr_min}×止损距离"作止盈一（程序按此上限复算打回；启用止盈二时
-  该远端结构位可保留为止盈二，见下方兜底条）。
+- 第一档止盈须"够近"：距入场价上限 = {tp1_cap_desc}（与程序复算口径一致）。
+  上限里的 {rr_min}×止损距离 一项保证"入场价 ± {rr_min}×止损距离"兜底价**永远合规、
+  绝不会因超 {tp1_max_atr}×ATR 被打回**——止损宽度 > {far_atr}×ATR 时上限即自动放宽
+  到兜底价。若更远的第一档结构位已越过此上限（强趋势/点位稀疏时常见，会落到 3~4R），
+  说明近端无合适目标——不要跳档硬挂远位凑盈亏比，改用"入场价 ± {rr_min}×止损距离"
+  作止盈一（启用止盈二时该远端结构位可保留为止盈二，见下方兜底条）。
+  **禁止以"兜底价超过 {tp1_max_atr}×ATR 上限"为由 skip。**
 - 禁止跳档凑盈亏比：到第一结构位不足 {rr_min}R 就是空间不足，应直接 skip
   （程序按盈亏比铁律复算打回）。**唯一放宽**：当盈亏比不达标是**唯一**不达标项
   （信号方向、4h 背景、趋势状态、量能特征、质量分等其余开单条件必须全部满足）
@@ -92,8 +110,8 @@ _RULE_TP2_BULLET_OFF = """- 当前未启用止盈二（TP2 分批止盈已关闭
 _RULE_TP_TAIL_ON = """- 止盈一兜底，分三种情形：
   (a) 前方无任何结构位可锚（如创新高突破）：止盈一 = 入场价 ± {rr_min}×止损距离
       （盈亏比恰达标），止盈二设 0（仅设一档）。
-  (b) 近端无合适结构位、更远的第一档结构位已越过距离上限（{tp1_max_atr}×ATR 或
-      {tp1_max_r}×止损距离）：止盈一 = 入场价 ± {rr_min}×止损距离，止盈二保留
+  (b) 近端无合适结构位、更远的第一档结构位已越过距离上限（上限 = {tp1_cap_desc}）：
+      止盈一 = 入场价 ± {rr_min}×止损距离，止盈二保留
       锚定该远端结构位外侧（留 0.2%~0.5% 余地），作为趋势跑手档。
   (c) 近端第一档结构位本身太近、到它不足 {rr_min}R（原应 skip）：仅当盈亏比不达标
       是唯一不达标项且 4h 为宏观同侧六态（出现「方向约束（硬性）」行）时，止盈一 =
@@ -101,7 +119,7 @@ _RULE_TP_TAIL_ON = """- 止盈一兜底，分三种情形：
       （同 (b) 做法）；否则止盈二设 0；其余情形一律 skip。"""
 
 _RULE_TP_TAIL_OFF = """- 前方无任何结构位可锚（如创新高突破）、更远的第一档结构位已越过距离上限
-  （{tp1_max_atr}×ATR 或 {tp1_max_r}×止损距离）、或近端第一档结构位太近
+  （上限 = {tp1_cap_desc}）、或近端第一档结构位太近
   （到它不足 {rr_min}R 且盈亏比不达标为唯一不达标项、4h 为宏观同侧六态）：
   止盈一 = 入场价 ± {rr_min}×止损距离（盈亏比恰达标）；其余情形一律 skip。"""
 
@@ -299,9 +317,9 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 - take_profit_1: 第一档止盈价，做多=上方摆动高点下方留 0.2%~0.5% 余地，
   做空=下方摆动低点上方留 0.2%~0.5%。盈亏比铁律（程序按三价复算打回，声称值无效）：
   RR = |TP1 − 入场| ÷ |入场 − 止损| 必须 ≥ {rr_min}，输出前先自行代入验算
-  （近位争夺位不算止盈目标，细则见下方止盈锚定）。距离上限（程序复算打回）：
-  距入场 ≤ {tp1_max_atr}×ATR 且 ≤ {tp1_max_r}×止损距离，超限请改挂更近结构位或
-  用"入场 ± {rr_min}×止损距离"兜底。
+  （近位争夺位不算止盈目标，细则见下方止盈锚定）。距离上限（程序复算口径）：
+  距入场 ≤ {tp1_cap_desc}；其中 {rr_min}×止损距离 项使"入场 ± {rr_min}×止损距离"
+  兜底价永远合规、不会因超 {tp1_max_atr}×ATR 被打回。超限请改挂更近结构位或直接用兜底价。
 - take_profit_2: {_tp2_field}
 - risk_reward_ratio: take_profit_1 的盈亏比，2位小数（按报价如实复算）。
 - position_pct: 建议名义仓位占账户资金百分比，2位小数。程序会按固定亏损复算覆盖
@@ -365,6 +383,8 @@ def render_system_prompt(
             rr_min=_rr,
             tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
             tp1_max_r=f"{settings.TP1_MAX_R:g}",
+            tp1_cap_desc=render_tp1_cap_desc(_rr),
+            far_atr=round(settings.TP1_MAX_ATR / _rr, 2),
             tp2_gap_atr=f"{settings.TP2_MIN_GAP_ATR:g}",
             tp2_gap_r=f"{settings.TP2_MIN_GAP_R:g}",
         ),
@@ -375,6 +395,7 @@ def render_system_prompt(
         rr_min=_rr,
         tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
         tp1_max_r=f"{settings.TP1_MAX_R:g}",
+        tp1_cap_desc=render_tp1_cap_desc(_rr),
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
     )  # 模板槽位均为纯名称：表达式在渲染前预处理（f-string 时代的 .format 内嵌已移除）
 

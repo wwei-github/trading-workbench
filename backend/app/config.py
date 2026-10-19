@@ -290,7 +290,13 @@ class Settings(BaseSettings):
     # direction_vote_gate_enabled（方向票关）/ direction_conflict_gate_enabled（方向冲突关），
     # 默认 True=保持现网门槛行为（上线零差异）、关闭=跳过该检测；配置页可分别启停，
     # 用于按需放开信号池观察影响（scanner 判定链条件化，见 docs/01 §4 键表）。
-    RULE_VERSION: str = "v2026-10-18"
+    # v2026-10-19（用户拍板）：止盈一距离上限提示词口径对齐程序——此前 P0/P1 提示词写成
+    # "≤TP1_MAX_ATR×ATR 且 ≤TP1_MAX_R×止损距离"的绝对硬上限（TP1_MAX_R=0 时渲染成
+    # "≤0×止损距离"），AI 遂把"入场±rr_min×止损距离"兜底价判为越 2×ATR 上限并误 skip；
+    # 程序实为 cap=max(min(TP1_MAX_ATR×ATR, TP1_MAX_R×止损距离), rr_min×止损距离)，
+    # 兜底价永远可用。改为按程序口径渲染上限描述（render_tp1_cap_desc）并显式禁止
+    # "兜底超 2×ATR"式 skip（2026-10-19 线上排查：当日高置信误 skip 9 笔）。
+    RULE_VERSION: str = "v2026-10-19"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

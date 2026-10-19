@@ -35,6 +35,7 @@ from app.services.ai_analyzer import (
     render_rule_struct,
     render_rule_vote,
     render_signal_gate_block,
+    render_tp1_cap_desc,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,7 @@ def render_system_prompt(
         sl_min_atr=f"{settings.SL_MIN_ATR:g}",
         tp1_max_atr=_tp1_atr,
         tp1_max_r=_tp1_r,
+        tp1_cap_desc=render_tp1_cap_desc(_rr),
         far_atr=_far_atr,
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
         _RULE_HTF_HARD=_RULE_HTF_HARD,
@@ -107,6 +109,7 @@ def render_system_prompt(
         _tp_anchor_desc=_TP_ANCHOR_DESC_ON if tp2_enabled else _TP_ANCHOR_DESC_OFF,
         _tp2_rule=(_TP2_RULE_ON if tp2_enabled else _TP2_RULE_OFF).format(
             rr_min=_rr, tp1_max_atr=_tp1_atr, tp1_max_r=_tp1_r,
+            tp1_cap_desc=render_tp1_cap_desc(_rr),
             tp2_gap_atr=f"{settings.TP2_MIN_GAP_ATR:g}",
             tp2_gap_r=f"{settings.TP2_MIN_GAP_R:g}",
         ),
@@ -190,10 +193,12 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     项（其余开单条件全部满足）且 4h 背景为「宏观同侧态」——即出现「方向约束（硬性）」
     行的六态（宏观金叉/死叉初期、多头/空头恢复初期、多头/空头排列）——时，允许不 skip，
     改用"入场 ± {rr_min}×止损距离"作止盈一；缠绕/拐头与牛内回调/熊内反弹仍一律 skip。
-    另：第一档止盈须"够近"——距入场 ≤{tp1_max_atr}×ATR 且 ≤{tp1_max_r}×止损距离；
+    另：第一档止盈须"够近"——距入场上限 = {tp1_cap_desc}（与程序复算口径一致）；
+    上限里的 {rr_min}×止损距离 一项保证"入场 ± {rr_min}×止损距离"兜底价永远合规、
+    绝不会因超 {tp1_max_atr}×ATR 被打回（止损宽度 > {far_atr}×ATR 时上限即放宽到兜底价）。
     更远的第一档结构位越过此上限时（强趋势/点位稀疏常见，会落到 3~4R）不要跳档硬挂，
-    改用"入场 ± {rr_min}×止损距离"兜底（程序按距离上限复算打回；启用止盈二时
-    该远端结构位保留为止盈二锚，见下条）。
+    改用"入场 ± {rr_min}×止损距离"兜底（启用止盈二时该远端结构位保留为止盈二锚，见下条）。
+    **禁止以"兜底价超过 {tp1_max_atr}×ATR 上限"为由 skip。**
     {_tp2_rule}
 12.5 分析格式（reason 落库展示，前端按固定节标题分区）：按固定节标题两节输出
     （节标题逐字含冒号），每条独占一行（JSON 字符串内换行写 \n）：
@@ -232,7 +237,7 @@ _TP_ANCHOR_DESC_OFF = """止盈用线外锚点：做多止盈一 tp1_ref=resista
 _TP2_RULE_ON = """止盈二取止盈一锚定档的下一档同类结构位（做多=更高一档摆动高点下方，做空=更低一档
     摆动低点上方）且必须比止盈一更远。价格创新高/新低、前方无摆动结构位时
     （如创新高突破），止盈一 = 入场 ± {rr_min}×止损距离、止盈二不设（仅一档）；
-    若近端无合适结构位、第一档结构位距入场超过 {tp1_max_atr}×ATR / {tp1_max_r}×止损距离
+    若近端无合适结构位、第一档结构位距入场超过 {tp1_cap_desc}
     （结构位存在但过远），止盈一 = 入场 ± {rr_min}×止损距离，止盈二保留锚定该远端
     结构位（做多 tp2_ref=resistance_zone_low，做空 tp2_ref=support_zone_high，
     即"止盈一因过远弃用的那一档"），作为趋势跑手档。
@@ -243,7 +248,7 @@ _TP2_RULE_ON = """止盈二取止盈一锚定档的下一档同类结构位（�
 
 _TP2_RULE_OFF = """当前未启用止盈二（TP2 分批止盈已关闭）：不要提交 tp2_ref/tp2_offset_pct
     （提交也会被程序置 0），止盈一只挂第一档结构位。价格创新高/新低、前方无摆动
-    结构位时，或第一档结构位距入场超过 {tp1_max_atr}×ATR / {tp1_max_r}×止损距离时，
+    结构位时，或第一档结构位距入场超过 {tp1_cap_desc} 时，
     止盈一 = 入场 ± {rr_min}×止损距离。
     盈亏比 ≥{rr_min} 是开单硬性要求（程序复算，不足即打回）。"""
 
@@ -700,6 +705,7 @@ def analyze_coin_agent(
         sl_min_atr=f"{settings.SL_MIN_ATR:g}",
         tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
         tp1_max_r=f"{settings.TP1_MAX_R:g}",
+        tp1_cap_desc=render_tp1_cap_desc(_rr),
         far_atr=round(settings.TP1_MAX_ATR / _rr, 2),
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
         _RULE_HTF_HARD=_RULE_HTF_HARD,
@@ -712,6 +718,7 @@ def analyze_coin_agent(
             rr_min=_rr,
             tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
             tp1_max_r=f"{settings.TP1_MAX_R:g}",
+            tp1_cap_desc=render_tp1_cap_desc(_rr),
             tp2_gap_atr=f"{settings.TP2_MIN_GAP_ATR:g}",
             tp2_gap_r=f"{settings.TP2_MIN_GAP_R:g}",
         ),
