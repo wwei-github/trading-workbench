@@ -296,7 +296,13 @@ class Settings(BaseSettings):
     # 程序实为 cap=max(min(TP1_MAX_ATR×ATR, TP1_MAX_R×止损距离), rr_min×止损距离)，
     # 兜底价永远可用。改为按程序口径渲染上限描述（render_tp1_cap_desc）并显式禁止
     # "兜底超 2×ATR"式 skip（2026-10-19 线上排查：当日高置信误 skip 9 笔）。
-    RULE_VERSION: str = "v2026-10-19"
+    # v2026-10-20（用户拍板）：止损宽度纪律提示词自相矛盾修复——P0 _RULE_SL 与 P1 规则 9
+    # 原写"止损宽度不设固定百分比上限；不得以「止损过宽」为由 skip"，与信号门槛块注入的
+    # "止损宽度硬上限 max_stop_pct（程序硬闸，超限必弃单）"及 skip_reason 枚举 [止损过宽]
+    # 直接冲突（2026-10-20 线上排查：当日 104 笔 skip 中 29 笔引用 5.5% 硬闸）。合并为一
+    # 条条件句：内部纪律不设百分比上限、不得以其为由 skip，但门槛块给出程序硬闸时以硬闸
+    # 为准、超限如实 skip（与 trade_engine 开仓闸门一致）。仅改提示词、程序零改动。
+    RULE_VERSION: str = "v2026-10-20"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]
