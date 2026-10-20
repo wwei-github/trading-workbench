@@ -616,7 +616,8 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
         const htf = record.votes_json?.htf;
         if (!htf) return <span style={{ color: "#999" }}>-</span>;
         // EMA 状态机 11 态短标签（2026-10-11 再重构，docs/17）；多空着色按
-        // 状态方向 dir（tangle 不着色）；退役旧档映射兜底保历史行展示
+        // 状态方向 dir（tangle 不着色；过渡态按宏观校正，见下方）；退役旧档
+        // 映射兜底保历史行展示
         const STATE_SHORT: Record<string, string> = {
           tangle: "缠绕",
           turn_bull: "多拐", turn_bear: "空拐",
@@ -631,8 +632,14 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           extreme: "极强", exhausted: "衰竭",
           launch: "前期", mid: "中期", late: "后期",
         };
-        const isBull = (htf.dir ?? 0) > 0 || htf.state === "bullish";
-        const isBear = (htf.dir ?? 0) < 0 || htf.state === "bearish";
+        // 过渡态（bull_dip/bear_rally）的 dir 记的是 21×55 近端方向，与宏观
+        // （55×144）相反；「4h方向」列语义按宏观着色——牛回调=宏观多头内的回调
+        // （多色）、熊反弹=宏观空头内的反弹（空色），消除「标签写牛、颜色画空」
+        // 的观感矛盾（2026-10-20）
+        const isTransition = htf.state === "bull_dip" || htf.state === "bear_rally";
+        const d = (htf.dir ?? 0) * (isTransition ? -1 : 1);
+        const isBull = d > 0 || htf.state === "bullish";
+        const isBear = d < 0 || htf.state === "bearish";
         const short =
           STATE_SHORT[htf.state ?? ""] ??
           (htf.label?.startsWith("强") ? "强多" : "弱多");
