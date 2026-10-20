@@ -314,7 +314,7 @@ FastAPI 应用入口：
 | [trigger.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/trigger.py) | `detect_trigger` — 两段式决策矩阵：T1 突破/趋势突破、T3 回踩+金K确认、回踩两段式 pending 状态机 |
 | [candlestick.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/candlestick.py) | 8 种金K形态判定（看涨 4 + 看跌 4）、`GOLDEN_PATTERNS` 白名单、影线质量门 |
 | [ema.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/ema.py) | `analyze_ema` — EMA21/55/144 排列形态分析 |
-| [ema_gate.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/ema_gate.py) | `gate_4h`（4h 趋势闸门，`core` 透传可选）、`structure_1h`（1H 结构门）、`range_score`（震荡评分卡） |
+| [ema_gate.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/ema_gate.py) | `structure_1h`（1H 结构门）、`range_score`（震荡闸门：4 项合取，任一命中即拒） |
 | [swing.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/swing.py) | `find_swing_points`、`merge_swings` — 摆动点检测与 HH/LH/HL/LL 分类 |
 | [indicators.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/indicators.py) | `volume_ratio` 等量能指标 |
 

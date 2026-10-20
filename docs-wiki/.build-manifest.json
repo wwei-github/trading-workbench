@@ -3,23 +3,23 @@
   "builder": "0a780b73ab8a50c6",
   "docs": {
     "doc-map": {
-      "hash": "46c68d04d70a5529",
+      "hash": "4416796710a32eba",
       "path": "00-文档地图.md"
     },
     "code-wiki": {
-      "hash": "ed7cd8d03016f805",
+      "hash": "aa6cb82ed6b7b4a6",
       "path": "CODE_WIKI.md"
     },
     "flow-01": {
-      "hash": "b9e2ef191d04dc30",
+      "hash": "c4635f56c1d4f546",
       "path": "扫描与筛选/功能流程/01-币种筛选与扫描.md"
     },
     "tech-01": {
-      "hash": "73599c1dde8be380",
+      "hash": "c8d7b964703ba7bc",
       "path": "扫描与筛选/技术实现/01-币种筛选与扫描.md"
     },
     "flow-02": {
-      "hash": "4c69ee932a4b82bc",
+      "hash": "50a9f2fc9045a75f",
       "path": "信号与形态/功能流程/02-信号触发器.md"
     },
     "flow-11": {
@@ -27,7 +27,7 @@
       "path": "信号与形态/功能流程/11-金K形态库.md"
     },
     "flow-13": {
-      "hash": "1b887d2fdca3cbdc",
+      "hash": "4804d7f57cdaa376",
       "path": "信号与形态/功能流程/13-4H背景排列强度判定.md"
     },
     "tech-02": {
@@ -43,11 +43,11 @@
       "path": "信号与形态/技术实现/13-4H背景排列强度判定.md"
     },
     "flow-03": {
-      "hash": "cbc918f615f92159",
+      "hash": "d6343c1085a1bb84",
       "path": "AI决策/功能流程/03-AI分析.md"
     },
     "tech-03": {
-      "hash": "6df74c5fdbde8b9d",
+      "hash": "be447891a3a30603",
       "path": "AI决策/技术实现/03-AI分析.md"
     },
     "flow-04": {
@@ -59,19 +59,19 @@
       "path": "交易执行/技术实现/04-交易执行与多账号.md"
     },
     "flow-05": {
-      "hash": "e739da05f03ee39f",
+      "hash": "daf3d3bb5000bcd5",
       "path": "风控/功能流程/05-风控体系.md"
     },
     "tech-05": {
-      "hash": "262fed3f21957b40",
+      "hash": "2ddf5a01a3819dca",
       "path": "风控/技术实现/05-风控体系.md"
     },
     "flow-06": {
-      "hash": "dcb706ab372e32e1",
+      "hash": "9232ef4336d9501b",
       "path": "复盘归因/功能流程/06-复盘归因.md"
     },
     "tech-06": {
-      "hash": "ad500dde48d7e1ed",
+      "hash": "b772ceb6e936dc65",
       "path": "复盘归因/技术实现/06-复盘归因.md"
     },
     "flow-12": {
@@ -123,11 +123,11 @@
       "path": "基建与通知/技术实现/09-基建与通知.md"
     },
     "req-01": {
-      "hash": "82125fa9b00f6d1d",
+      "hash": "a6195c2a9529a19e",
       "path": "需求文档/01-流派融入路线.md"
     },
     "req-02": {
-      "hash": "e20b1b71a7118e8d",
+      "hash": "37a7702f3e5ddd26",
       "path": "需求文档/02-影子模式方案.md"
     },
     "req-03": {
@@ -141,6 +141,10 @@
     "req-05": {
       "hash": "48f8160e4829b9c4",
       "path": "需求文档/05-回踩触点优化方案.md"
+    },
+    "req-06": {
+      "hash": "a3d1f5adc1acee17",
+      "path": "需求文档/06-App移动端方案.md"
     }
   }
 }

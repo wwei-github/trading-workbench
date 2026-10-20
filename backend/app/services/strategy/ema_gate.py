@@ -1,4 +1,4 @@
-"""EMA 趋势门 + 震荡评分卡（docs/19 §2/§3）。
+"""EMA 趋势门 + 震荡闸门（docs/19 §2/§3）。
 
 2026-10-10 融合拍板：影子层退役并入原生触发层（trend_pullback 升级标注）；
 同日二次拍板：三件套提为筛选链硬门（scanner.detect_indicator_candidate，
@@ -25,7 +25,7 @@ import numpy as np
 # SLOPE_BARS/SLOPE_FLAT_PCT 已于 2026-10-20 随 4h 闸门合并迁入 technical，
 # 此处从 technical 再导出（trigger 1h 结构门与 4h 闸门共用同一斜率窗口口径）
 from app.services.strategy.technical import (
-    SLOPE_BARS, SLOPE_FLAT_PCT, analyze_adx,
+    SLOPE_BARS, SLOPE_FLAT_PCT, analyze_adx,  # noqa: F401  (SLOPE_FLAT_PCT 供 trigger 再导出)
 )
 
 # ── 震荡闸门常量（2026-10-20 重构：4 项合取，≥RANGE_SCORE_REJECT 不入场）────
@@ -66,7 +66,7 @@ class EmaGateConfig:
     div_fast_mid: float = 0.5       # 1h |EMA21-EMA55|/ATR 下限（分离史口径）
     # div_mid_slow 已退役（2026-10-11 拍板）：|EMA55-EMA144|/ATR≥1.0 硬门撤销，
     # 长期趋势健康度改判「排列内 EMA144 走平或沿信号方向」，ms 分离度降级为
-    # 证据观测注记（复盘定标留档）；55/144 距离过近仍以 +1 分参与震荡评分卡
+    # 证据观测注记（复盘定标留档）；55/144 分离度仍参与震荡闸门判定
     # 分离史回看根数（2026-10-10 三次拍板）：快中腿按近 N 根已收盘的最大值
     # 判定——深回踩（触 EMA55/144）会把 EMA21/55 间距压缩到不达标，触点时刻
     # 现值误杀深回踩；「这波趋势曾分离过」即可，三线黏着的假趋势整段无分离
