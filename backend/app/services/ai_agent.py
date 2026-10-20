@@ -147,8 +147,7 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
    不要给出既不贴近现价也不贴近结构位的模糊入场价。
 5. 开单类型归类（trade_type，suggest 必填其一）：
    trend_follow 顺势交易（趋势方向由 EMA 排列或方向票确立，纯 EMA 排列不是硬门槛）/
-   structure_break 结构破位回踩（涵盖 123法则·N字结构·2B法则，见下方打法详解）/
-   range_edge 区间边缘反转。
+   structure_break 结构破位回踩（涵盖 123法则·N字结构，见下方打法详解）。
 6. "可用技能"列表中标注【当前命中】的技能，建议先 load_skill 阅读再决策。
 7. **效率与数据边界（重要）**：事实包只含信号与行情数据（60根K线含每根成交量与成交额/摆动结构/均线形态/ATR/技术指标MACD·布林带·RSI·SuperTrend·ADX·OBV·4h背景），
    首轮即可直接 submit_decision；资金费率、大盘状态、恐贪指数等环境数据**不在**事实包中，
@@ -295,7 +294,7 @@ TOOLS_SCHEMA = [
                 "type": "string",
                 "enum": list(TRADE_TYPES),
                 "description": "开单类型归类，suggest 时必填：trend_follow 顺势交易 / "
-                               "structure_break 结构破位回踩（123·N字·2B 合并）/ range_edge 区间边缘反转",
+                               "structure_break 结构破位回踩（123·N字 合并）",
             },
             "entry_ref": {"type": "string", "enum": list(LEVEL_REFS), "description": "入场锚点"},
             "entry_offset_pct": {"type": "number", "description": "入场相对锚点偏移%，默认0"},

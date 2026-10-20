@@ -50,19 +50,21 @@ from app.services.strategy.technical import atr_series
 logger = logging.getLogger(__name__)
 
 # 开单类型（结构打法归类，docs/04 §4 Stage 3；skip 时为空）
-# 2026-09-12 起三种破位/回踩类打法（123法则·N字结构·2B法则）合并为 structure_break
+# 2026-09-12 起破位/回踩类打法（123法则·N字结构）合并为 structure_break；
+# 2026-10-20 下线 range_edge——区间市在筛选层（gate_4h/range_score）已被前置剔除、
+# 不产生候选，该类型不再作为合法输出（仅历史快照展示，见 LEGACY_*）
 TRADE_TYPE_LABELS = {
     "trend_follow": "顺势交易",
     "structure_break": "结构破位回踩",
-    "range_edge": "区间边缘反转",
 }
 TRADE_TYPES = tuple(TRADE_TYPE_LABELS)
 
-# 合并前的历史类型（旧分析/旧交易快照仍可能携带，仅作展示，不再接受 AI 新输出）
+# 合并/下线前的历史类型（旧分析/旧交易快照仍可能携带，仅作展示，不再接受 AI 新输出）
 LEGACY_TRADE_TYPE_LABELS = {
     "rule_123": "123法则（已并入结构破位回踩）",
     "n_structure": "N字结构（已并入结构破位回踩）",
     "rule_2b": "2B法则（已并入结构破位回踩）",
+    "range_edge": "区间边缘反转（已下线：区间市在筛选层被剔除）",
 }
 
 
@@ -72,7 +74,7 @@ class TradeDecision(BaseModel):
     trade_decision: Literal["suggest", "skip"]
     skip_reason: str = ""
     direction: Optional[Literal["long", "short"]] = None
-    trade_type: Optional[str] = None  # 开单类型：trend_follow / structure_break / range_edge
+    trade_type: Optional[str] = None  # 开单类型：trend_follow / structure_break
     # 止损锚类型（docs/23，仅突破类信号需要）：structure=结构锚（默认）/ near=金K窗口极值近锚
     stop_anchor: Optional[Literal["structure", "near"]] = None
     # 战法命中标注（2026-10-02，仅借鉴不影响结论）：tactic_name 必须逐字取自

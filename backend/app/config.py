@@ -302,7 +302,20 @@ class Settings(BaseSettings):
     # 直接冲突（2026-10-20 线上排查：当日 104 笔 skip 中 29 笔引用 5.5% 硬闸）。合并为一
     # 条条件句：内部纪律不设百分比上限、不得以其为由 skip，但门槛块给出程序硬闸时以硬闸
     # 为准、超限如实 skip（与 trade_engine 开仓闸门一致）。仅改提示词、程序零改动。
-    RULE_VERSION: str = "v2026-10-20"
+    # v2026-10-20-2（用户拍板）：打法口径收窄 + trade_type 白名单收敛——_RULE_STRUCT 删 2B
+    # 假突破反手（逆势反手与顺势定位/4h 硬约束冲突）、123 法则收窄为"顺势方向的结构反转"；
+    # 下线 range_edge（区间市在筛选层 gate_4h/range_score 已前置剔除、不产生候选），
+    # risk_guard.TRADE_TYPES 由三选一收敛为 trend_follow/structure_break（range_edge 移入
+    # LEGACY_TRADE_TYPE_LABELS 仅历史展示，validate_decision 判违规回炉）；退役
+    # structure-break/range-bound-fade 技能（use_when 指向遗留类型永不命中、正文已内联）。
+    # v2026-10-20-3（用户拍板）：trend-pullback 死技能复出——use_when 由遗留
+    # signal_type（uptrend/downtrend）修正为生产类型 trigger_pullback_confirm，
+    # 该技能此前永不命中、P0/P1 均不注入（render_matched/render_index 皆空）；复出后
+    # P0 对回踩金K确认候选重新注入"顺势回踩"正文（改变 AI 输入=判定变化，故本版单独
+    # bump）；同步清理正文退役语境（删 uptrend=HH+HL 旧分类前提、删已下线的策略二/
+    # trail 盈亏比取舍句）并把止损 offset 口径对齐提示词 _RULE_SL（0.3%~0.5% 结构锚
+    # + 金K窗口极值兜底两锚取更远者，原写"锚点外 0.5~1×ATR"）。
+    RULE_VERSION: str = "v2026-10-20-3"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

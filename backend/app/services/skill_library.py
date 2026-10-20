@@ -6,9 +6,12 @@
 
 维护约定（2026-10-10 B6，docs/20 §六-6）：SKILL.md 仅服务 P1 Agent 管线；修改
 系统提示词纪律（ai_analyzer/ai_agent）时须同步检查全部 SKILL.md 是否冲突，
-冲突时以系统提示词为准修技能（先例：trend-pullback 盈亏比取舍、
-range-bound-fade 区间 skip 与取舍提示行互斥——后者由 render_indicator_block
-对 range_bound 信号不注入提示行解决）。
+冲突时以系统提示词为准修技能（先例：trend-pullback 盈亏比取舍）。
+另：use_when 必须引用生产 signal_type（trigger_*），沿用遗留类型
+（uptrend/range_bound/trend_reversal 等）会导致技能永不命中——2026-10-20 据此
+退役 structure-break / range-bound-fade 两个技能（内容已内联进系统提示词）；
+trend-pullback 同因 use_when 引用遗留类型失活，同批修正为 trigger_pullback_confirm
+并清理退役语境（uptrend 前提/trail 取舍句/止损 offset 口径对齐提示词）后复出。
 """
 import logging
 import re
