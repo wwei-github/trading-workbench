@@ -419,9 +419,11 @@ def detect_indicator_candidate(
     # flt.structure_1h_gate 开关随之退役（scan_filters 字段保留向后兼容，不再消费）。
 
     # 第三步：震荡评分卡（2026-10-10 二次拍板，calc_range_score 语义硬门化）：
-    # 8 项独立评分 ≥3 不入场——单一指标可能失效，多指标共振才可靠。闸门与结构
-    # 门已通过的币，评分实际来自 1h ADX 预警/布林带收口/价格反复穿越 EMA21/
-    # 成交量低迷四项（项 1-4 恒 0），≥3 即强震荡共识
+    # 8 项独立评分 ≥3 不入场——单一指标可能失效，多指标共振才可靠。本卡位于
+    # gate_4h 之后，项 1（4H EMA144 走平）恒为 0；项 2-4（1h 三线排列/分离度）
+    # 自 2026-10-12 结构门退出筛选链后不再被前置门屏蔽、按 1h 实际排列独立计分
+    # （旧注「项 1-4 恒 0」随结构门退役失效）。实际杀伤力主要来自项 5-8（1h ADX
+    # 预警/布林带收口/价格反复穿越 EMA21/成交量低迷），≥3 即强震荡共识
     rs, _rs_reasons = range_score(klines, gate_ev=gate[1] if gate else None)
     if rs >= RANGE_SCORE_REJECT:
         _reject("range_score")
