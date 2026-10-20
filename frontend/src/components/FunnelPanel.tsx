@@ -29,7 +29,7 @@ const FUNNEL_STAGES: { key: string; label: string; color: string; hint: string }
   { key: 'risk_tier', label: '风险档位', color: 'default', hint: '交易所最大允许杠杆 <10×' },
   { key: 'blacklist', label: '黑名单', color: 'default', hint: '手动添加（永久）或止损超预算自动加入（1.2R 冷却 30 天 / ≥1.5R 永久）' },
   { key: 'gate_4h', label: '4h趋势闸门', color: 'orange', hint: '4h 无明确趋势（EMA144 斜率不足/缠绕/ADX<20）一票否决' },
-  { key: 'htf_state_lock', label: '4h状态禁开', color: 'orange', hint: '4h EMA 状态机双向禁开（缠绕/拐头）——回踩·突破均一票否决' },
+  { key: 'htf_state_lock', label: '4h状态禁开', color: 'orange', hint: '4h 非多头/空头排列（拐头/交叉初期/恢复初期/过渡态）双向禁开——回踩·突破均一票否决（2026-10-20 收紧，仅排列放行）' },
   { key: 'votes', label: '方向票', color: 'orange', hint: '方向票（MACD/布林带/RSI）同向张数不足 2（2026-10-15 拆角色，docs/21 O9）' },
   { key: 'direction_flip', label: '方向冲突', color: 'orange', hint: '方向票方向与 4h 闸门方向相反' },
   { key: 'structure_1h', label: '1h结构（旧轮次）', color: 'default', hint: '（2026-10-15 退役硬门：仅旧轮次数据可见；现不过门不否决，仅质量分重罚 -15）' },

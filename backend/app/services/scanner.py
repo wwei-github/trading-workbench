@@ -297,18 +297,20 @@ def detect_indicator_candidate(
             if htf_res is None or htf_res.get("reject_reason"):
                 _reject("gate_4h")
                 return None, ({"op": "expire", "reason": "ranging"} if pending else None)
-        # 4h 状态机双向禁开（2026-10-13 用户拍板）：block_both（tangle 缠绕 /
-        # turn_* 拐头）时，回踩·突破候选均一票否决——与闸门同属「前置筛选」层
-        # （4h 决定做不做，1h 负责命中与待确认）。tangle 已由上方 reject_reason
-        # 先行否决（统一判据），此处实际拦 turn_*；命中即直接不看：不跑票数、
-        # 不触发、不进候选，活跃 pending 同轮 expire(htf_state_lock)。异常降级
-        # （htf_res=None）放行，与闸门同口径。
+        # 4h 状态机双向禁开（2026-10-20 用户拍板收紧：前置门仅放行多头/空头
+        # 排列 aligned_*）：block_both（非 aligned_*）时，回踩·突破候选均一票
+        # 否决——与闸门同属「前置筛选」层（4h 决定做不做，1h 负责命中与待确认）。
+        # tangle 已由上方 reject_reason 先行否决（统一判据），此处实际拦 turn_*
+        # 拐头、macro_cross_*/*_recover（趋势刚交叉/恢复、尚未完全排列）与
+        # bull_dip/bear_rally 过渡态；命中即直接不看：不跑票数、不触发、不进候选，
+        # 活跃 pending 同轮 expire(htf_state_lock)。异常降级（htf_res=None）放行，
+        # 与闸门同口径。
         if htf_res is not None and htf_res.get("block_both"):
             _reject("htf_state_lock")
             if reject_out is not None:
                 reject_out["detail"] = (
-                    f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
-                    "双向禁开——回踩/突破候选均不做")
+                        f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
+                        "非多头/空头排列——回踩/突破候选均不做")
             return None, ({"op": "expire", "reason": "htf_state_lock"} if pending else None)
 
     # 4h 方向权威（原 gate_4h 的 long/short；合并后即 htf_context.direction）。
@@ -382,8 +384,10 @@ def detect_indicator_candidate(
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
     # 4h 状态机逆势锁（2026-10-19 用户拍板）：STATE_LOCK_CONTRA（宏观同侧六态：
-    # macro_cross_* / *_recover / aligned_*）时，逆状态的候选一票否决——与
-    # STATE_BLOCK_BOTH 同属「前置筛选」层，但需先定向才能判逆势，故放在方向派生
+    # macro_cross_* / *_recover / aligned_*）时，逆状态的候选一票否决。2026-10-20
+    # 前置门收紧到「仅排列放行」后，macro_cross_*/*_recover 已在 block_both 层被
+    # 拦，实际到达此处者仅 aligned_bull/aligned_bear——本关把通过集锁到其自身排列
+    # 方向。与 STATE_BLOCK_BOTH 同属「前置筛选」层，但需先定向才能判逆势，故放在方向派生
     # 之后。置于方向冲突关「之后」：gate_4h 与定向已一致时，再核对 4h 排列结构
     # （EMA21/55/144 状态机）——二者不一致（如宏观死叉但价格仍在 EMA144 上方）
     # 是方向冲突关的盲区，本关补齐。命中即直接不看：不触发、不进候选，活跃
@@ -391,8 +395,8 @@ def detect_indicator_candidate(
     # 目的：4h 死叉/空头排列时不再产出看涨金K（看涨吞没/刺透等）候选——
     # 金K方向只跟 1h 方向票走，此前 4h 排列不参与，逆势金K会落到命中列表，
     # 仅在 AI 层 enforce_htf_constraint 兜底。异常降级（htf_res=None）放行，与
-    # gate_4h / STATE_BLOCK_BOTH 同口径。过渡态 bull_dip/bear_rally 不在白名单，
-    # 仍放行（质量分兜底）——本次不覆盖「宏观多头内的 4h 死叉」。
+    # gate_4h / STATE_BLOCK_BOTH 同口径。过渡态 bull_dip/bear_rally 已在 block_both
+    # 层被拦（2026-10-20 前置门收紧），不再到达本关。
     if (htf_res is not None and htf_res.get("state") in STATE_LOCK_CONTRA):
         st_dir = htf_res.get("dir") or 0
         if st_dir and st_dir != direction:

@@ -47,8 +47,9 @@ def _htf_context_stub(gate, htf_state, htf_dir):
     """4h 合并入口 htf_context 打桩（2026-10-20 合并）：把旧的 gate_4h 方向
     (gate) 与 4h 状态机态 (htf_state) 合成一份返回 dict。gate=None ⇒
     reject_reason 非空（等价旧「gate_4h 返回 None」→ 漏斗 gate_4h 关）；
-    block_both 由状态机态推导（前置门）；逆势锁由调用方以 state/dir 判定。"""
-    from app.services.strategy.technical import STATE_BLOCK_BOTH
+    block_both=非 aligned_*（前置门，2026-10-20 收紧仅放行排列）；
+    逆势锁由调用方以 state/dir 判定。"""
+    from app.services.strategy.technical import STATE_ALIGNED
 
     def _stub(k, core=None):
         st = htf_state
@@ -56,7 +57,7 @@ def _htf_context_stub(gate, htf_state, htf_dir):
         return {
             "direction": gate[0] if gate else None,
             "reject_reason": None if gate is not None else "tangle",
-            "block_both": st in STATE_BLOCK_BOTH,
+            "block_both": st is not None and st not in STATE_ALIGNED,
             "state": st, "state_label": _HTF_LABELS.get(st, st),
             "dir": st_dir, "macro_aligned": (st_dir == 1),
             "evidence": {},
@@ -81,8 +82,8 @@ def _detect(reject_out, klines=None, *, votes=_PASS_VOTES, gate=("long", {}), ht
     """打桩装配一次 detect：各桩默认全放行，命中点由参数控制。
     real_trigger=True 时不打桩 detect_trigger（跑真实触发链，测 no_trigger 明细）；
     gate 为 4h 闸门方向（("long"|"short", {...})，None=闸门否决）；htf_state 非 None
-    时合并入口 htf_context 桩返回该 4h 状态机态（4h 状态机前置门用：tangle/turn_*
-    一票否决全部 1h 候选；htf_dir 为该态方向，供 STATE_LOCK_CONTRA 逆势锁用，
+    时合并入口 htf_context 桩返回该 4h 状态机态（4h 状态机前置门用：非 aligned_*
+    〔2026-10-20 收紧〕一票否决全部 1h 候选；htf_dir 为该态方向，供 STATE_LOCK_CONTRA 逆势锁用，
     缺省 None=0 不判逆势）"""
     import app.services.scanner as sm
 
@@ -460,7 +461,9 @@ def test_htf_state_front_gate_expires_active_pending():
 
 # ── 4h 状态机逆势锁 STATE_LOCK_CONTRA（2026-10-19）───────────────────────────
 # 宏观同侧六态（macro_cross_* / *_recover / aligned_*）锁逆势：定向与 4h 状态方向
-# 相反 → 一票否决，逆势金K（看涨吞没/刺透等）不再产出（此前只在 AI 层兜底）
+# 相反 → 一票否决，逆势金K（看涨吞没/刺透等）不再产出（此前只在 AI 层兜底）。
+# 2026-10-20 前置门收紧「仅排列放行」后，macro_cross_*/*_recover 已在 block_both
+# 层被拦，实际到达逆势锁者仅 aligned_*——通过集被锁到其自身排列方向。
 
 
 def test_htf_contra_lock_blocks_opposite_side():
@@ -492,12 +495,14 @@ def test_htf_contra_lock_expires_active_pending():
     assert rv["stage"] == "htf_state_lock"
 
 
-def test_htf_transition_states_not_locked_contra():
-    """过渡态 bull_dip/bear_rally 不在逆势锁白名单 → 仍放行（质量分兜底）——
-    本次不覆盖「宏观多头内的 4h 死叉」等过渡形态"""
-    rv: dict = {}
-    cand, _ = _detect(rv, trigger=(None, None), htf_state="bull_dip", htf_dir=-1)
-    assert cand is None and rv["stage"] == "no_trigger"
+def test_htf_transition_states_now_blocked_by_front_gate():
+    """过渡态 bull_dip/bear_rally（2026-10-20 前置门收紧）不再放行——非 aligned_*
+    即 block_both、映射漏斗 htf_state_lock，即使无逆势锁也被前置门拦下"""
+    for st in ("bull_dip", "bear_rally"):
+        rv: dict = {}
+        cand, op = _detect(rv, trigger=(None, None), htf_state=st, htf_dir=-1)
+        assert cand is None and op is None
+        assert rv["stage"] == "htf_state_lock"
 
 
 def test_pending_upsert_allowed_when_gates_pass():

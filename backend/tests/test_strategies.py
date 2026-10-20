@@ -59,6 +59,7 @@ def test_htf_context_uptrend_passes_long():
     assert ctx is not None
     assert ctx["direction"] == "long"
     assert ctx["reject_reason"] is None
+    assert ctx["block_both"] is False         # 多头排列放行（2026-10-20 收紧）
     ev = ctx["evidence"]
     assert ev["direction"] == "up"
     assert ev["slope_pct"] >= 0.005
@@ -71,6 +72,7 @@ def test_htf_context_downtrend_passes_short():
     ctx = htf_context(k4)
     assert ctx is not None
     assert ctx["direction"] == "short" and ctx["evidence"]["direction"] == "down"
+    assert ctx["block_both"] is False         # 空头排列放行（2026-10-20 收紧）
 
 
 def test_htf_context_flat_market_rejected():

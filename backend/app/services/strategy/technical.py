@@ -615,6 +615,13 @@ STATE_LOCK_CONTRA = (                                     # 锁逆势（宏观�
     "aligned_bull", "aligned_bear",
 )
 STATE_TRANSITION = ("bull_dip", "bear_rally")             # 宏观逆侧过渡态（回调/反弹区）
+# 前置门放行白名单（2026-10-20 用户拍板，硬改无开关）：htf_context 的 block_both
+# 收紧为「非本集即双向禁开」——4h 前置门仅放行多头/空头排列（aligned_*），其余
+# 状态（turn_* 拐头 / macro_cross_* 交叉初期 / *_recover 恢复初期 / bull_dip·
+# bear_rally 过渡态）一律拦下，映射漏斗关卡 htf_state_lock（tangle 仍由
+# reject_reason 先行否决，映射 gate_4h）。STATE_BLOCK_BOTH 保留原义（tangle/turn_*），
+# 仅供 AI 层 enforce_htf_constraint 使用，不参与前置门。
+STATE_ALIGNED = ("aligned_bull", "aligned_bear")
 
 # 质量分（同向加分, 逆向减分）：tangle/turn 双向禁开后仅扫描侧排序兜底；
 # macro_cross 趋势级事件独享最高档（原 extreme 语义被吸收）
@@ -921,7 +928,10 @@ def htf_context(htf_klines: list[list], core: Optional[dict] = None) -> Optional
     - direction "long"/"short" 或 None（None ⇒ reject_reason 非空）
     - reject_reason: None|"data"|"flat"|"tangle"|"adx"|"undetermined"
       （映射漏斗关卡 gate_4h；"adx" 仅表示 ADX 计算不可用的 fail-closed）
-    - block_both: 状态机双向禁开（映射漏斗关卡 htf_state_lock）
+    - block_both: 非多头/空头排列（aligned_*）即双向禁开——映射漏斗关卡
+      htf_state_lock（含 turn_* 拐头、macro_cross_*/*_recover 未完全排列、
+      bull_dip/bear_rally 过渡态；tangle 已由 reject_reason 先行否决）。2026-10-20
+      用户拍板收紧：4h 前置门仅放行 aligned_bull/aligned_bear（硬改无开关）。
     - evidence: {slope_pct, wraps, adx, close_vs_ema144, direction(up/down)}
     逆势锁方向不单列：调用方以 state∈STATE_LOCK_CONTRA 判定，方向读 dir。
     """
@@ -973,7 +983,7 @@ def htf_context(htf_klines: list[list], core: Optional[dict] = None) -> Optional
     out.update({
         "direction": direction,
         "reject_reason": reject,
-        "block_both": st in STATE_BLOCK_BOTH,
+        "block_both": st not in STATE_ALIGNED,
         "evidence": ev,
     })
     return out
