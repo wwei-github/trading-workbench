@@ -281,8 +281,8 @@ FastAPI 应用入口：
   9. 组装筛选漏斗 `funnel_json`
 
 **`detect_indicator_candidate(...)`** — 单币判定链（核心）：
-1. **4h 趋势闸门** `gate_4h` — 一票否决（EMA144 斜率/缠绕/ADX 三重）
-2. **4h 状态机前置门**（2026-10-13-5）— `htf_state_lock`：状态机双向禁开（`tangle`/`turn_*`，`STATE_BLOCK_BOTH`）对**全部 1h 候选（回踩·突破）一票否决**，活跃 pending 同轮 `expire(htf_state_lock)`（第 1/2 步共用 `technical.htf_core` 一次算好的 EMA21/55/144+ADX+ATR，去重不改行为）
+1. **4h 趋势闸门** `gate_4h` — 一票否决（`reject_reason`：`flat` 走平 / `tangle` 缠绕 / `adx` 不可用 / `undetermined` 方向歧义 / `data` 数据不足）
+2. **4h 状态机前置门**（2026-10-20 收紧）— `htf_state_lock`：`block_both`（非 `aligned_bull`/`aligned_bear`）对**全部 1h 候选（回踩·突破）一票否决**；另含「排列方向与候选逆势」锁（`STATE_LOCK_CONTRA`）。活跃 pending 同轮 `expire(htf_state_lock)`（第 1/2 步共用 `technical.htf_core` 一次算好的 EMA21/55/144+ADX+ATR，去重不改行为）
 3. **方向票（MACD/布林带/RSI）** `compute_indicator_votes` — 方向票同向≥2 张才出方向（2026-10-15 指标拆角色：ADX/OBV/SuperTrend/4h背景退出方向票）
 4. **闸门方向一致性** — 4h 方向须与方向票一致
 5. **震荡闸门** `range_score` — 4 项合取（三线交错 / 55-144 分离史 / ADX<18 / 波动过度扩张），任一命中不入场
