@@ -219,7 +219,7 @@ def detect_indicator_candidate(
     流程：4h 合并入口 htf_context 一票否决（走平/缠绕/ADX 任一命中直接不看，
     取代原 gate_4h + 状态机前置门）→ 单趟指标计算 → 方向票（MACD/布林带/
     RSI）同向 ≥2 张（2026-10-15 指标拆角色，docs/21 O9）→ 闸门方向一致 →
-    震荡评分卡 range_score（≥3 不入场）→ 两段式触发确认（trigger.py）→ 质量分。
+    震荡闸门 range_score（4 项合取，任一命中不入场）→ 两段式触发确认（trigger.py）→ 质量分。
     4h 背景复用第一步结果、指标不再双算。
     1H 结构门：2026-10-12 退役筛选链硬门（docs/21 O7），2026-10-15 再由
     trigger 层硬门「降级不否决」（docs/21 O9）——ema21 触点不过门照常出信号，
@@ -414,12 +414,11 @@ def detect_indicator_candidate(
     # ——trigger 带 structure_gate 证据，scanner 透传进 compute_quality_score。
     # flt.structure_1h_gate 开关随之退役（scan_filters 字段保留向后兼容，不再消费）。
 
-    # 第三步：震荡评分卡（2026-10-10 二次拍板，calc_range_score 语义硬门化）：
-    # 8 项独立评分 ≥3 不入场——单一指标可能失效，多指标共振才可靠。本卡位于
-    # gate_4h 之后，项 1（4H EMA144 走平）恒为 0；项 2-4（1h 三线排列/分离度）
-    # 自 2026-10-12 结构门退出筛选链后不再被前置门屏蔽、按 1h 实际排列独立计分
-    # （旧注「项 1-4 恒 0」随结构门退役失效）。实际杀伤力主要来自项 5-8（1h ADX
-    # 预警/布林带收口/价格反复穿越 EMA21/成交量低迷），≥3 即强震荡共识
+    # 第三步：震荡闸门（2026-10-20 重构，原 8 项评分卡「≥3」退役）：
+    # 4 项合取判据任一命中即不入场——1h 三线交错 / 55-144 分离史过近 /
+    # ADX<18 / 波动过度扩张（Donchian 或布林带宽分位 ≥0.8）。判据来自方向感知
+    # 近锚止损 PNL 回放：原评分卡放行池净期望 −0.02R（打平偏亏），新判据
+    # 全样本 +0.10R 且 train/test 双段为正。详见 ema_gate.range_score
     rs, _rs_reasons = range_score(
         klines, gate_ev=htf_res.get("evidence") if htf_res else None)
     if rs >= RANGE_SCORE_REJECT:

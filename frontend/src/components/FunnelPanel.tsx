@@ -33,7 +33,7 @@ const FUNNEL_STAGES: { key: string; label: string; color: string; hint: string }
   { key: 'votes', label: '方向票', color: 'orange', hint: '方向票（MACD/布林带/RSI）同向张数不足 2（2026-10-15 拆角色，docs/21 O9）' },
   { key: 'direction_flip', label: '方向冲突', color: 'orange', hint: '方向票方向与 4h 闸门方向相反' },
   { key: 'structure_1h', label: '1h结构（旧轮次）', color: 'default', hint: '（2026-10-15 退役硬门：仅旧轮次数据可见；现不过门不否决，仅质量分重罚 -15）' },
-  { key: 'range_score', label: '震荡评分', color: 'orange', hint: '震荡评分卡 ≥3（强震荡共识）' },
+  { key: 'range_score', label: '震荡闸门', color: 'orange', hint: '4 项合取任一命中即拒：1h 三线交错 / 55-144 分离过近 / ADX<18 / 波动过度扩张（Donchian 或布林带宽分位 ≥0.8）' },
   { key: 'no_trigger', label: '无触发', color: 'purple', hint: '通过全部门但无触发信号，也未进待确认池；判定说明列为具体未过条件（新轮次）' },
   { key: 'trigger_whitelist', label: '触发白名单外', color: 'purple', hint: '触发类型不在白名单（筛选配置）' },
 ]

@@ -9,10 +9,13 @@ ADX=缠绕第一道、缠绕=detect_tangle 统一判据」，本模块不再持�
 - structure_1h：1H 三线排列 + 快中线发散度 + EMA144 方向结构门（2026-10-11
   拍板：中慢线发散度退役为观测注记，长期趋势健康度改由「144 走平或反向
   拒绝」判定），输出结构证据或 None；
-- range_score：震荡评分卡 8 项独立评分，≥3 判震荡不入场。
+- range_score：震荡闸门 4 项合取判据（任一命中即不入场）。2026-10-20 重构：
+  原 8 项评分卡「≥3」经方向感知 PNL 回放证明无区分力（放行池净期望 −0.02R，
+  与拦下池差异仅靠费率噪声），改为 PNL 口径下唯一 train/test 双段为正的
+  4 项合取门。
 
 K 线口径：structure_1h 由调用方传已剔尾序列（scanner/trigger 均传 klines[:-1]）；
-range_score 收原始 1h 序列（内部自剔尾，项 5 analyze_adx 同口径）。
+range_score 收原始 1h 序列（内部自剔尾，ADX 项同口径）。
 """
 from dataclasses import dataclass
 from typing import Optional
@@ -25,19 +28,23 @@ from app.services.strategy.technical import (
     SLOPE_BARS, SLOPE_FLAT_PCT, analyze_adx,
 )
 
-# ── 震荡评分卡常量（docs/19 §3，≥RANGE_SCORE_REJECT 分不入场）──────────────
-RANGE_SCORE_REJECT = 3
-ADX_WARN_MIN = 18.0        # 项5：1h ADX 预警下限（比闸门 20 略低，作"预警"档）
-BBW_HISTORY = 100          # 项6：带宽分位的回看根数
-BBW_PCTL = 30.0            # 项6：当前带宽低于历史 30 分位 → 波动率压缩
-BBW_MIN_HIST = 20          # 项6：历史样本下限（不足跳过该项，不给分）
-CROSS_WINDOW = 20          # 项7：价格穿越 EMA21 的回看根数
-CROSS_MAX = 4              # 项7：穿越 ≥4 次 → 震荡最直观的表现
-VOL_CV_MIN = 0.3           # 项8：近 20 根成交量变异系数下限（<0.3 → 无规律低迷）
-# 项3/4 分离史回看根数（2026-10-14，与 EmaGateConfig.div_lookback 同口径拍板）：
-# 快中/中慢腿距离改取近 N 根已收盘的最大分离度——回踩的定义就是均线现值被压窄，
-# 用现值打分会把「深回踩」误记成「震荡粘合」；「这波趋势曾分离过」即不给震荡分，
-# 整段无分离史的真震荡照样计分（与 structure_1h 2026-10-10 三次拍板同源修复）
+# ── 震荡闸门常量（2026-10-20 重构：4 项合取，≥RANGE_SCORE_REJECT 不入场）────
+# 依据：range_score_pnl_replay / range_score_ablation_replay（60 币 × 60 天，
+# 方向感知近锚止损 PNL 口径）。原 8 项评分卡「≥3」的放行池净期望 −0.02R，
+# 且 threshold 敏感性 Δ 仅 −0.001（无区分力）；项 1 在链路中恒 0（死项），
+# 项 3/7/8 滞后，项 6（布林带收口）方向相反（命中反而更好，squeeze 是突破
+# 前奏）。V3 = {三线排列, 55/144 分离史, ADX} + 新增「过度扩张」四项合取，
+# 是唯一在全样本（+0.10R）、train（+0.02R）、test（+0.26R）同时为正的变体。
+RANGE_SCORE_REJECT = 1     # 4 项合取：任一命中即判震荡不入场
+ADX_WARN_MIN = 18.0        # 1h ADX 下限（趋势强度必备）
+MS_DIV_MIN = 1.0           # 55/144 近 N 根最大分离度下限（ATR 归一）
+EXP_PCTL = 0.80            # 波动过度扩张分位阈值（Donchian / BBW 任一命中）
+EXP_HISTORY = 100          # 分位回看根数
+EXP_DONCH_N = 20           # Donchian 通道宽度窗口
+EXP_BB_N = 20              # 布林带窗口（带宽 = 4σ/中轨）
+# 55/144 分离史回看根数（2026-10-14，与 EmaGateConfig.div_lookback 同口径拍板）：
+# 回踩的定义就是均线现值被压窄，用现值打分会把「深回踩」误记成「震荡粘合」；
+# 「这波趋势曾分离过」即放行，整段无分离史的真震荡照样被拦
 RANGE_DIV_LOOKBACK = 12
 
 
@@ -157,34 +164,69 @@ def structure_1h(k1: list[list], direction: str,
     return {"d21": d21, "d55": d55, "d144": d144, "atr": atr}, ev
 
 
+def _pctl_last(vals: np.ndarray) -> Optional[float]:
+    """当前值在窗口内的分位（0=最小，1=最大；并列按 ≤ 计，与回放同口径）。"""
+    if len(vals) < 20:
+        return None
+    cur = float(vals[-1])
+    if not np.isfinite(cur):
+        return None
+    return float((vals <= cur).mean())
+
+
+def _donch_width_pctl(h: np.ndarray, low: np.ndarray,
+                      closes: np.ndarray) -> Optional[float]:
+    """Donchian(EXP_DONCH_N) 通道宽度（按收盘价归一）在当前值上的历史分位。"""
+    if len(closes) < EXP_DONCH_N + EXP_HISTORY - 1:
+        return None
+    w = np.empty(EXP_HISTORY)
+    for j in range(EXP_HISTORY):
+        end = len(closes) - EXP_HISTORY + j + 1
+        w[j] = (float(h[end - EXP_DONCH_N:end].max())
+                - float(low[end - EXP_DONCH_N:end].min())) / float(closes[end - 1])
+    return _pctl_last(w)
+
+
+def _bbw_width_pctl(closes: np.ndarray) -> Optional[float]:
+    """布林带宽（4σ/中轨，EXP_BB_N 根）在当前值上的历史分位。"""
+    if len(closes) < EXP_BB_N + EXP_HISTORY - 1:
+        return None
+    w = np.empty(EXP_HISTORY)
+    for j in range(EXP_HISTORY):
+        end = len(closes) - EXP_HISTORY + j + 1
+        seg = closes[end - EXP_BB_N:end]
+        mid = float(seg.mean())
+        w[j] = 4.0 * float(seg.std(ddof=0)) / mid if mid > 0 else 0.0
+    return _pctl_last(w)
+
+
 def range_score(klines: list[list],
                 gate_ev: Optional[dict] = None) -> tuple[int, list[str]]:
-    """震荡评分卡：8 项独立评分，累计 ≥RANGE_SCORE_REJECT 判震荡不入场。
+    """震荡闸门：4 项合取判据，任一命中即判震荡不入场（≥RANGE_SCORE_REJECT）。
 
-    设计思想（docs/19 §3）：单一指标可能失效，多个指标共振时判断更可靠；
-    每项独立评分，得分越高震荡概率越大——评分制比硬条件更灵活。
+    2026-10-20 重构（原 8 项评分卡「≥3」退役）——判据全部来自方向感知的近锚
+    止损 PNL 回放（60 币 × 60 天），而非拍脑袋的「多指标共振」：
 
-    项 1（4H EMA144 走平）复用 gate_4h 斜率证据不重算，筛选链中位于闸门之后
-    故恒为 0（standalone 使用时才可能命中）；项 2-4 与 structure_1h 同源（项 3/4
-    于 2026-10-14 改分离史口径——近 RANGE_DIV_LOOKBACK 根最大分离度，回踩压窄
-    均线现值不再误记震荡粘合）。注意：「结构门通过时项 2-4 恒为 0」是 2026-10-12
-    结构门退出筛选链前的旧假设，该前置屏蔽现已失效——项 2-4 会按 1h 实际三线
-    排列/分离度独立计分。评分卡在筛选链的实际杀伤力仍主要来自项 5-8（1h ADX
-    预警 / 布林带收口 / 价格反复穿越 EMA21 / 成交量低迷），即闸门漏掉的残余震荡，
-    ≥3 即强震荡共识。
+    - 三线交错：1h EMA21/55/144 排列错误 = 结构混乱（PNL Δ −0.14）；
+    - 55/144 分离史：近 RANGE_DIV_LOOKBACK 根最大分离度 < MS_DIV_MIN×ATR，
+      整段无分离史的才是真震荡（回踩压窄现值不算，2026-10-14 同源修复）；
+    - ADX 过低：1h ADX < ADX_WARN_MIN = 趋势强度不足（PNL Δ −0.21，最强单项）；
+    - 波动过度扩张：Donchian / BBW 宽度分位 ≥ EXP_PCTL = 追在趋势末端
+      （最高分位档 netR −0.19/−0.16）。
 
-    klines：1h 原始K线（尾根未收盘，内部取已收盘）；gate_ev：gate_4h 证据
-    （可 None，缺失跳过项 1）。返回 (score, reasons)。"""
+    被删除的原项及其依据：项 1（4H EMA144 走平）在链路中位于 4h 闸门之后，
+    恒为 0 的死项；项 3（21/55 距离）与三项共线，重复计数；项 6（布林带收口）
+    方向相反——squeeze 是突破前奏，命中反而更好（Δ +0.03），且是最高频触发
+    项；项 7/8（反复穿越 / 量能低迷）滞后于 PNL 标签。
+
+    klines：1h 原始K线（尾根未收盘，内部取已收盘）；gate_ev 保留入参仅为
+    调用方兼容，当前判据不再消费 4h 证据。返回 (score, reasons)。
+    """
     closed = klines[:-1] if len(klines) >= 2 else klines
     n = len(closed)
     score, reasons = 0, []
 
-    # 1. 4H EMA144 走平——最硬的条件，若走平直接高分
-    if gate_ev is not None and float(gate_ev.get("slope_pct") or 0) < SLOPE_FLAT_PCT:
-        score += 1
-        reasons.append("4H EMA144走平")
-
-    if n < 200:  # EMA144 种子 + 余量（与 structure_1h 同门槛），不足不给分
+    if n < 200:  # EMA144 种子 + 余量（与 structure_1h 同门槛），数据不足不判
         return score, reasons
     closes = np.array([float(k[4]) for k in closed], dtype=float)
     e21 = ema_series(closes, 21)
@@ -201,28 +243,20 @@ def range_score(klines: list[list],
                     np.maximum(np.abs(h[1:] - closes[:-1]), np.abs(low[1:] - closes[:-1])))
     atr = float(tr[-14:].mean()) if len(tr) >= 14 else 0.0
 
-    # 2. 1H 三线交错——排列错误 = 结构混乱
+    # 1. 1H 三线交错——排列错误 = 结构混乱
     if not (d21 > d55 > d144 or d21 < d55 < d144):
         score += 1
         reasons.append("1H三线交错")
 
-    # 3/4. 快中/中慢线距离过近（ATR 归一化跨品种统一阈值：0.5 是"粘合"与
-    # "发散"的分界线，中慢线要求更高因代表更长期趋势）。
-    # 2026-10-14 分离史口径（与 structure_1h div_lookback 同源）：取近
-    # RANGE_DIV_LOOKBACK 根已收盘的最大分离度——回踩时刻现值被压窄是回踩的
-    # 定义而非震荡证据，曾分离过即不给分；整段无分离史的真震荡照样计分。
+    # 2. 中慢线分离史过近（ATR 归一化跨品种统一阈值）
     if atr > 0:
         lb = min(RANGE_DIV_LOOKBACK, n - 143)  # e144 有限区自 index 143 起
-        fm_div = float(np.max(np.abs(e21[-lb:] - e55[-lb:]))) / atr
         ms_div = float(np.max(np.abs(e55[-lb:] - e144[-lb:]))) / atr
-        if fm_div < 0.5:
-            score += 1
-            reasons.append("21/55距离过近")
-        if ms_div < 1.0:
+        if ms_div < MS_DIV_MIN:
             score += 1
             reasons.append("55/144距离过近")
 
-    # 5. 1H ADX 预警——已低于 18 说明趋势明显不足
+    # 3. 1H ADX 预警——已低于 18 说明趋势明显不足
     try:
         adx_info = analyze_adx(klines, period=14)
     except Exception:
@@ -231,36 +265,11 @@ def range_score(klines: list[list],
         score += 1
         reasons.append("1H ADX过低")
 
-    # 6. 布林带收口：当前带宽 < 过去 BBW_HISTORY 根的 BBW_PCTL 分位 = 波动率
-    #    压缩，往往伴随震荡（带宽 = 4σ/中轨，布林带 (upper-lower)/mid 同构）
-    if n >= 20 + BBW_MIN_HIST + 1:
-        csum = np.cumsum(np.insert(closes, 0, 0.0))
-        csum2 = np.cumsum(np.insert(closes ** 2, 0, 0.0))
-        idx = np.arange(19, n)  # 每个位置 i 的 20 根窗口 [i-19, i]
-        mid = (csum[idx + 1] - csum[idx + 1 - 20]) / 20
-        var = (csum2[idx + 1] - csum2[idx + 1 - 20]) / 20 - mid ** 2
-        bw = 4.0 * np.sqrt(np.maximum(var, 0.0)) / np.maximum(mid, 1e-12)
-        hist = bw[max(0, len(bw) - 1 - BBW_HISTORY): len(bw) - 1]
-        if len(hist) >= BBW_MIN_HIST and np.isfinite(bw[-1]) \
-                and float(bw[-1]) < float(np.percentile(hist, BBW_PCTL)):
-            score += 1
-            reasons.append("布林带收口")
-
-    # 7. 价格反复穿越 EMA21——近 CROSS_WINDOW 根穿越 ≥CROSS_MAX 次
-    crosses = 0
-    for i in range(max(1, n - CROSS_WINDOW), n):
-        if (closes[i - 1] - float(e21[i - 1])) * (closes[i] - float(e21[i])) < 0:
-            crosses += 1
-    if crosses >= CROSS_MAX:
+    # 4. 波动过度扩张——Donchian / 布林带宽分位进极值 = 追在趋势末端
+    dp = _donch_width_pctl(h, low, closes)
+    bp = _bbw_width_pctl(closes)
+    if (dp is not None and dp >= EXP_PCTL) or (bp is not None and bp >= EXP_PCTL):
         score += 1
-        reasons.append("价格反复穿越EMA21")
-
-    # 8. 成交量低迷——变异系数（std/mean）低于阈值 = 无规律；趋势行情中量应
-    #    有明显的放大与萎缩
-    vols = np.array([float(k[5]) for k in closed[-CROSS_WINDOW:]], dtype=float)
-    vmean = float(vols.mean()) if len(vols) else 0.0
-    if vmean > 0 and float(vols.std(ddof=0)) / vmean < VOL_CV_MIN:
-        score += 1
-        reasons.append("成交量低迷")
+        reasons.append("波动过度扩张")
 
     return score, reasons

@@ -4,8 +4,9 @@
 detect_indicator_candidate 判定链（docs/01 §3.2）：
 gate_4h（4h 趋势闸门一票否决：走平/缠绕/ADX<20 → 不跑票数不触发，pending
 expire(ranging)）→ 7 票多数决 → 闸门方向一致 → range_score
-（震荡评分 ≥3 → expire(range_score)）→ 触发。4h 拉取失败（htf=None）
-降级放行与第 7 票口径一致；评分卡不依赖 4h，htf 缺失时照常生效。
+（2026-10-20 起为 4 项合取门，任一命中 → expire(range_score)）→ 触发。
+4h 拉取失败（htf=None）降级放行与第 7 票口径一致；闸门不依赖 4h，htf 缺失
+时照常生效。
 structure_1h 硬门 2026-10-12 退役（docs/21 O7：降格为 s2 资格闸，
 结构判定收敛到 trigger 层 trend_pullback 升级标注）。
 
@@ -166,11 +167,11 @@ def test_structure_gate_no_longer_vetoes():
 
 
 def test_range_score_gate_veto_expires_pending(monkeypatch):
-    """震荡评分 ≥3（桩强制命中）→ 不产生候选，pending expire(range_score)"""
+    """震荡闸门命中（桩强制命中）→ 不产生候选，pending expire(range_score)"""
     import app.services.scanner as scanner_mod
 
     monkeypatch.setattr(scanner_mod, "range_score",
-                        lambda k, gate_ev=None: (3, ["1H ADX过低", "布林带收口", "成交量低迷"]))
+                        lambda k, gate_ev=None: (1, ["1H ADX过低"]))
     kl = _trend_1h()
     pending = {"id": "x", "direction": 1, "stage1_candle_open": 1_700_000_000_000}
     cand, op = detect_indicator_candidate(
@@ -180,21 +181,21 @@ def test_range_score_gate_veto_expires_pending(monkeypatch):
     assert op is not None and op["op"] == "expire" and op["reason"] == "range_score"
 
 
-# ── range_score 评分卡本身 ─────────────────────────────────────────────
+# ── range_score 闸门本身（2026-10-20 重构：4 项合取）────────────────────
 
 
 def test_range_score_choppy_high():
-    """正弦震荡 1h（n≥201）：距离过近/ADX 预警/反复穿越 EMA21/量低迷共振 → ≥3"""
+    """正弦震荡 1h（n≥201）：中慢线黏合 + ADX 预警 → 必被拦"""
     score, reasons = range_score(_flat_1h(300))
-    assert score >= 3
-    assert "21/55距离过近" in reasons
+    assert score >= 1
     assert "55/144距离过近" in reasons
+    assert "1H ADX过低" in reasons
 
 
 def test_range_score_trending_low():
-    """稳步趋势 1h：评分卡不误伤（唯一命中是恒量成交的 cv 项，<3）"""
+    """稳步趋势 1h：4 项合取门不误伤（三线排列、分离充足、ADX 高、未过度扩张）"""
     score, reasons = range_score(_trend_1h())
-    assert score < 3
+    assert score == 0, reasons
 
 
 def _pullback_1h() -> list[list]:
@@ -214,13 +215,11 @@ def _pullback_1h() -> list[list]:
 
 
 def test_range_score_pullback_not_glued():
-    """项3/4 分离史口径（2026-10-14，与 structure_1h div_lookback 同源）：
-    深回踩压窄均线现值不再误记震荡粘合——趋势曾分离过即不给"距离过近"分。
-    回归锚点：本夹具现值 |e21-e55|/ATR≈0.17<0.5（旧口径会给分）。"""
-    score, reasons = range_score(_pullback_1h())
-    assert "21/55距离过近" not in reasons
+    """分离史口径（2026-10-14，与 structure_1h div_lookback 同源）：
+    深回踩压窄均线现值不再误记震荡粘合——趋势曾分离过即不拦。
+    回归锚点：本夹具现值 |e55-e144|/ATR 远小于 MS_DIV_MIN（现值口径会命中）。"""
+    _, reasons = range_score(_pullback_1h())
     assert "55/144距离过近" not in reasons
-    assert score < 3
 
 
 # ── 4h 计算合并（2026-10-13）：htf_core 透传 vs 各自自算 数值等价 ──────────

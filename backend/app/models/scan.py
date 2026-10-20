@@ -235,7 +235,7 @@ class PullbackPending(Base):
     - confirmed：次根出现同向 GOLDEN_PATTERNS 且多数决复验通过 → 以
       trigger_pullback_confirm 落库进 AI（confirmed_scan_result_id 可回溯）
     - expired：4h 无明确趋势（ranging：走平/缠绕/ADX弱）/
-      震荡评分≥3（range_score）/ 次根无金K（window_expired）/ 方向失守（direction_flip）
+      震荡闸门命中（range_score：三线交错/分离过近/ADX<18/过度扩张）/ 次根无金K（window_expired）/ 方向失守（direction_flip）
       （structure_1h 死因 2026-10-15 随 1H 结构门降级退役，仅旧行可见）
     - superseded：次根 T1 突破或当根触碰+金K 抢先
     每币至多一条活跃 pending（status=pending）；终态行保留审计，下次触碰新建行。

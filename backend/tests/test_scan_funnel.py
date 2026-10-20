@@ -276,9 +276,9 @@ def test_structure_1h_gate_retired_signal_survives():
 
 
 def test_reject_range_score():
-    """震荡评分 ≥3 → stage=range_score"""
+    """震荡闸门命中（4 项合取，≥1 即拒）→ stage=range_score"""
     rv: dict = {}
-    cand, _ = _detect(rv, rs=3, htf_nonempty=False)
+    cand, _ = _detect(rv, rs=1, htf_nonempty=False)
     assert cand is None and rv == {"stage": "range_score"}
 
 
