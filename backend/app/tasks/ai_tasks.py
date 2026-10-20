@@ -432,7 +432,9 @@ def run_ai_analysis_single(
                 ai_result, _build_judge_signal(signal, klines, htf_klines),
             )
         # 4h 状态机硬约束兜底（2026-10-11 再重构 EMA 状态机 11 态：缠绕/拐头双向禁开，宏观交叉/恢复/排列锁逆势，过渡放行）：LLM 无视 prompt 时程序强制 skip
-        ai_result = enforce_htf_constraint(ai_result, htf_klines)
+        # signal_type 透传（2026-10-20 影子 A/B）：过渡态 × 回踩确认 → 程序 veto 转影子
+        ai_result = enforce_htf_constraint(
+            ai_result, htf_klines, signal.get("signal_type"))
         # Narrator 已下线（提速）：submit_decision 的 reason 直接承载完整分点分析
         # （工具 schema 强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返
         # 待回踩判定（2026-09-15）：入场在现价回踩侧的建议仅展示标识、不下单

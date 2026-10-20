@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -93,14 +93,17 @@ def review_env(db, monkeypatch):
 
 
 def test_veto_review_replayed(review_env):
-    """veto 否决单纳入回放：is_veto=True、三价取 veto_original"""
+    """veto 否决单纳入回放：is_veto=True、三价取 veto_original；
+    4h 背景快照与影子桶标记随分析行/veto 快照落库（2026-10-20）"""
     _, a = _make_signal(review_env)
     a.trade_decision = "skip"
     a.skip_reason = "双评委否决：止损落在摆动区间内部"
+    a.htf_phase = "bull_dip"
     a.veto_original = {
         "direction": "long", "entry_price": 100.0, "stop_loss": 98.0,
         "take_profit_1": 104.0, "take_profit_2": 0, "recommendation": 72,
         "reason": "止损落在摆动区间内部",
+        "ab_bucket": "transition_pbc",
     }
     review_env.commit()
 
@@ -113,6 +116,8 @@ def test_veto_review_replayed(review_env):
     assert r.outcome == "loss"  # h0 low 97.5 ≤ sl 98 → loss
     assert r.recommendation == 72  # 评分取 veto 原值（skip 行自身已钳到 ≤30）
     assert r.signal_type == "trigger_breakout"
+    assert r.htf_phase == "bull_dip"          # 4h 背景快照落库
+    assert r.ab_bucket == "transition_pbc"    # 影子桶标记落库
 
 
 def test_suggest_review_untouched(review_env):
@@ -146,14 +151,51 @@ def test_plain_skip_not_replayed(review_env):
     assert review_env.query(TradeReview).count() == 0
 
 
-# ── /review/stats veto 块 ──
+def test_plain_skip_json_null_veto_not_replayed(review_env):
+    """veto_original 落 JSON `null`（none_as_null 生效前的旧写入口径）的普通 skip
+    不回放——回归防护 `IS NOT NULL` 误纳：该口径下普通 skip 行也曾被选为 veto 单
+    回放，生成 outcome=expired 的假复盘行（线上曾 462 条，2026-10-20 修正）"""
+    _, a = _make_signal(review_env)
+    a.trade_decision = "skip"
+    a.skip_reason = "1. 信号强度不足"
+    review_env.commit()
+    # 直写 JSON `null`（非 SQL NULL）：复现旧写入口径，绕开 ORM 的 none_as_null
+    review_env.execute(text(
+        "UPDATE ai_analyses SET veto_original = 'null' WHERE symbol = 'TESTUSDT'"
+    ))
+    review_env.commit()
+    # 前置条件自检：确为 JSON `null` 而非 SQL NULL（否则本用例会空转通过）
+    stored = review_env.execute(text(
+        "SELECT veto_original FROM ai_analyses WHERE symbol = 'TESTUSDT'"
+    )).scalar()
+    assert stored == "null", f"前置条件应为 JSON null，实为 {stored!r}"
+
+    review_tasks.run_trade_review_task.apply()
+    assert review_env.query(TradeReview).count() == 0
 
 
-def _add_review(db, a, outcome, is_veto=False, bars=5):
+def test_orm_none_veto_stored_as_sql_null(db):
+    """none_as_null（2026-10-20 卫生修正）：ORM 写 None 落 SQL NULL、非 JSON `null`
+    ——否则 `veto_original IS NOT NULL` 对「无否决」行也为真（假 veto 行来源）"""
+    sr, _ = _make_signal(db)
+    db.add(AIAnalysis(
+        scan_result_id=sr.id, symbol="ORMNULLUSDT",
+        created_at=datetime.utcnow() - timedelta(hours=25), veto_original=None,
+    ))
+    db.commit()
+    val = db.execute(text(
+        "SELECT veto_original FROM ai_analyses WHERE symbol = 'ORMNULLUSDT'"
+    )).scalar()
+    assert val is None, f"应为 SQL NULL，实为 {val!r}"
+
+
+def _add_review(db, a, outcome, is_veto=False, bars=5, signal_type="trigger_breakout",
+                direction="long", htf_phase=None, ab_bucket=None):
     db.add(TradeReview(
-        ai_analysis_id=a.id, symbol=a.symbol, direction="long",
+        ai_analysis_id=a.id, symbol=a.symbol, direction=direction,
         outcome=outcome, tp1_hit=outcome.startswith("win"),
-        bars_to_exit=bars, signal_type="trigger_breakout",
+        bars_to_exit=bars, signal_type=signal_type,
+        htf_phase=htf_phase, ab_bucket=ab_bucket,
         is_veto=is_veto,
     ))
     db.commit()
@@ -216,6 +258,63 @@ def test_stats_veto_block(db):
     assert resp.ev_r == pytest.approx(1.935, abs=0.01)
     # 规则版本分组：veto 行也计入 legacy 桶（analysis 无 rule_version）
     assert any(g.rule_version == "legacy" for g in resp.rule_version_groups)
+
+
+def test_stats_shadow_ab_block(db):
+    """影子 A/B 分组（2026-10-20）：ab_bucket 行单独成组、不并入 veto_stats；
+    过渡态×回踩确认假想侧 + 同信号通过单基线（按 4h 过渡态/同侧 × 方向分层）"""
+    from app.api.scan import review_stats
+
+    # 影子 veto 行（过渡态×回踩确认）
+    _, a_shadow = _make_signal(db)
+    a_shadow.trade_decision = "skip"
+    a_shadow.htf_phase = "bull_dip"
+    a_shadow.veto_original = {
+        "direction": "long", "entry_price": 100.0, "stop_loss": 98.0,
+        "take_profit_1": 104.0, "take_profit_2": 0,
+        "ab_bucket": "transition_pbc",
+    }
+    db.commit()
+    _add_review(db, a_shadow, "loss", is_veto=True, ab_bucket="transition_pbc",
+                htf_phase="bull_dip", signal_type="trigger_pullback_confirm")
+
+    # 普通双评委 veto 行（无 ab_bucket）——仍归 veto_stats
+    a_veto = AIAnalysis(
+        scan_result_id=None, symbol="TESTUSDT", trade_decision="skip",
+        veto_original={
+            "direction": "long", "entry_price": 100.0, "stop_loss": 98.0,
+            "take_profit_1": 104.0, "take_profit_2": 0,
+        },
+        created_at=datetime.utcnow() - timedelta(hours=25),
+    )
+    db.add(a_veto)
+    db.commit()
+    _add_review(db, a_veto, "win_tp1", is_veto=True)
+
+    # 基线通过单：同侧回踩确认
+    a_base = AIAnalysis(
+        scan_result_id=None, symbol="TESTUSDT", trade_decision="suggest",
+        direction="long", entry_price=100.0, stop_loss=98.0, take_profit_1=104.0,
+        recommendation=70, created_at=datetime.utcnow() - timedelta(hours=25),
+    )
+    db.add(a_base)
+    db.commit()
+    _add_review(db, a_base, "win_tp1", is_veto=False,
+                signal_type="trigger_pullback_confirm", htf_phase="aligned_bull")
+
+    resp = review_stats(days=30, db=db)
+    # 影子 veto 不并入双评委 veto 组（只剩 1 笔普通 veto）
+    assert resp.veto_stats is not None and resp.veto_stats.total == 1
+    assert resp.veto_stats.win_tp1 == 1
+    # shadow_ab：假想侧 transition_pbc(long) + 基线 pbc_same_side(long)
+    by_key = {(g.ab_bucket, g.direction, g.is_veto): g for g in resp.shadow_ab}
+    assert ("transition_pbc", "long", True) in by_key
+    sh = by_key[("transition_pbc", "long", True)]
+    assert sh.total == 1 and sh.loss == 1
+    assert ("pbc_same_side", "long", False) in by_key
+    base = by_key[("pbc_same_side", "long", False)]
+    assert base.total == 1 and base.win_tp1 == 1
+    assert "影子 A/B" in resp.shadow_ab_note
 
 
 # ── A5c：funnel ──

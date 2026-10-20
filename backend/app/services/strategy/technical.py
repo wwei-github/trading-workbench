@@ -601,6 +601,8 @@ STATE_LOCK_CONTRA = (                                     # 锁逆势（宏观�
     "bull_recover", "bear_recover",
     "aligned_bull", "aligned_bear",
 )
+STATE_TRANSITION = ("bull_dip", "bear_rally")             # 宏观逆侧过渡态（回调/反弹区）
+
 # 质量分（同向加分, 逆向减分）：tangle/turn 双向禁开后仅扫描侧排序兜底；
 # macro_cross 趋势级事件独享最高档（原 extreme 语义被吸收）
 STATE_QUALITY = {
@@ -846,7 +848,9 @@ def analyze_htf_background(
     }
 
 
-def enforce_htf_constraint(ai_result: dict, htf_klines: Optional[list]) -> dict:
+def enforce_htf_constraint(
+    ai_result: dict, htf_klines: Optional[list], signal_type: Optional[str] = None,
+) -> dict:
     """4h 状态机硬约束的程序化兜底（原地修改并返回 ai_result）。
 
     锁单矩阵（2026-10-11 再重构为 EMA 状态机 11 态，docs/17）：
@@ -855,10 +859,25 @@ def enforce_htf_constraint(ai_result: dict, htf_klines: Optional[list]) -> dict:
       「闸门管进、持仓管出」）；
     - macro_cross_* / *_recover / aligned_*（宏观同侧态）→ 锁逆势
       （宏观对齐由状态机自然吸收，无需另查 EMA55 vs 144）；
-    - bull_dip / bear_rally（宏观逆侧过渡态）→ 放行，质量分兜底。
+    - bull_dip / bear_rally（宏观逆侧过渡态）→ 放行，质量分兜底；但回踩
+      确认单（signal_type=trigger_pullback_confirm）例外，程序 veto 转
+      影子 A/B（见下「影子 A/B」段）。
     LLM 可能无视 prompt 注入的约束行，开单前程序把关。无 4h 数据或非
     suggest 时原样返回；suggest 且有 4h 数据时顺带 stash htf_phase（=状态
     key），供 AIAnalysis / 复盘「4h趋势期」维度落库。
+
+    影子 A/B（2026-10-20，用户拍板）：过渡态 × 回踩确认 → 程序 veto、不进真单。
+    决策假设（2026-10-20 正式网复盘，仅正式网、已剔除测试网异常单）：逆宏观回踩
+    缺乏趋势跟随赖以盈利的肥尾、期望为负，而同侧背景同信号盈利。
+    入库快照口径复核（trade_records.ai_snapshot->>'htf_phase'，该列 2026-10-09 起
+    写入）：该组合 n=3（均值 −0.334R、最佳 +1.07R）、同侧对照 n=186（long 81 均
+    −0.165R / short 105 均 +0.128R，方向差异 t≈1.4、p≈0.16 不显著）——样本远不足
+    以单独判读，仅作影子观察。原注释所引「74 笔均值 −0.29R / 最佳 +2.4R，同侧
+    +0.16R / 最佳 +6.3R」无留存脚本、无法按上述快照列复现（疑为对历史 K 线回溯
+    重算 4h 状态），判读前应补可复现口径。
+    本分支只否决入场，veto_original 三价快照仍保留，由复盘任务
+    （run_trade_review_task）回放假想表现，与同侧通过单逐日对比，构成样本外
+    影子 A/B（ab_bucket 标记供统计隔离）。
     """
     try:
         if not htf_klines or ai_result.get("trade_decision") != "suggest":
@@ -913,7 +932,19 @@ def enforce_htf_constraint(ai_result: dict, htf_klines: Optional[list]) -> dict:
                 )
                 ai_result["veto_original"] = _veto("4h 状态机方向硬约束（宏观同侧）")
             # 同向 → 放行
-        # 过渡态（bull_dip/bear_rally）→ 放行，质量分逆宏观罚兜底
+        # 影子 A/B（2026-10-20）：过渡态 × 回踩确认 → 程序 veto、不进真单
+        # （只否入场，veto_original 三价快照保留供复盘回放假想表现，见 docstring）
+        if st in STATE_TRANSITION and signal_type == "trigger_pullback_confirm":
+            _v = _veto(f"影子AB：过渡态×回踩确认（4h{_label}）")
+            _v["ab_bucket"] = "transition_pbc"   # 统计隔离标记
+            ai_result["trade_decision"] = "skip"
+            ai_result["skip_reason"] = (
+                f"状态约束：4h{_label}（宏观逆侧过渡态）的回踩确认单暂不进场"
+                "（影子 A/B 观察中，程序强制 skip）"
+            )
+            ai_result["veto_original"] = _v
+            return ai_result
+        # 过渡态非回踩确认（bull_dip/bear_rally 其他信号）→ 放行，质量分逆宏观罚兜底
     except Exception as e:
         logger.warning("4h方向约束兜底检查失败（放行）: %s", e)
     return ai_result

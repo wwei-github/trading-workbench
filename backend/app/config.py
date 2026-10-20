@@ -315,7 +315,20 @@ class Settings(BaseSettings):
     # bump）；同步清理正文退役语境（删 uptrend=HH+HL 旧分类前提、删已下线的策略二/
     # trail 盈亏比取舍句）并把止损 offset 口径对齐提示词 _RULE_SL（0.3%~0.5% 结构锚
     # + 金K窗口极值兜底两锚取更远者，原写"锚点外 0.5~1×ATR"）。
-    RULE_VERSION: str = "v2026-10-20-3"
+    # v2026-10-20-4（用户拍板）：过渡态 × 回踩确认影子 A/B——enforce_htf_constraint
+    # 新增分支：4h 背景为 bull_dip/bear_rally（宏观逆侧过渡态）且 signal_type=
+    # trigger_pullback_confirm 时程序 veto（skip + veto_original 三价快照，ab_bucket=
+    # transition_pbc），不进真单；由复盘任务回放假想表现与同侧通过单对比。
+    # 决策假设（2026-10-20 正式网复盘，仅正式网、剔除测试网异常单）：逆宏观回踩缺
+    # 趋势跟随赖以盈利的右尾、期望为负，同侧背景同信号盈利。
+    # 入库快照口径复核（trade_records.ai_snapshot->>'htf_phase'，该列 2026-10-09 起
+    # 写入）：该组合 n=3（均值 −0.334R、最佳 +1.07R）、同侧对照 n=186（long 81 均
+    # −0.165R / short 105 均 +0.128R，方向差异 t≈1.4、p≈0.16 不显著）——样本远不足以
+    # 单独判读，仅作影子观察。原注释所引「74 笔均值 −0.29R / 最佳 +2.4R，同侧 +0.16R /
+    # 最佳 +6.3R」无留存脚本、无法按上述快照列复现（疑为对历史 K 线回溯重算 4h 状态），
+    # 判读前应补可复现口径。
+    # 属程序判定变化（新增否决），故单独 bump。
+    RULE_VERSION: str = "v2026-10-20-4"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

@@ -106,7 +106,12 @@ class AIAnalysis(Base):
     # 双评委否决原始快照（docs/24 A5a，2026-09-29）：veto 强制 skip 前的建议
     # 三价/方向/评分等（dict），复盘任务据此回放"被否决建议的假想表现"，
     # 对比通过单表现验证 veto 是否有正贡献；suggest/正常 skip 为 NULL
-    veto_original: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # none_as_null=True（2026-10-20 卫生修正）：Python None 落 SQL NULL 而非 JSON
+    # `null`——否则「无否决」与「有否决快照」在 SQL 侧同显非 NULL，`IS NOT NULL`
+    # 会把普通 skip 行误纳为 veto 行（线上曾据此生成 462 条假 expired 复盘行）
+    veto_original: Mapped[Optional[dict]] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
     # 战法命中标注（2026-10-02）：AI 判定该信号符合的战法名（逐字取自 tactics
     # 表白名单，防幻觉闸门外值清空）+ 判定依据；战法仅借鉴不拦截，旧行 NULL
     tactic_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -184,10 +189,16 @@ class TradeReview(Base):
     position: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
     touch_ref: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)  # 回踩触点（docs/22）
     ema_state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)
+    # 4h 背景状态 key（= AIAnalysis.htf_phase，2026-10-20 扩列）：影子 A/B 与「4h
+    # 趋势期」复盘维度用；NULL=退役旧档/无 4h 数据/本列上线前的历史行
+    htf_phase: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
     recommendation: Mapped[Optional[float]] = mapped_column(Numeric(5, 2), nullable=True)
     # 双评委否决单回放标记（docs/24 A5a）：True=回放的是"被 veto 建议的假想表现"，
     # 统计口径与通过单一致，用于对比评委否决的贡献；默认 False=正常 suggest 回放
     is_veto: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    # 影子 A/B 桶标记（2026-10-20）：过渡态×回踩确认 veto 行='transition_pbc'，
+    # 统计隔离用（该组不并入双评委 veto 组，见 api/scan.py review_stats）；普通行 NULL
+    ab_bucket: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
 
     checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

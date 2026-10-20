@@ -394,8 +394,11 @@ class ReviewGroupStats(BaseModel):
     touch_ref: Optional[str] = None  # 回踩触点（docs/22：分组维度，None=无触点行）
     position: Optional[str] = None
     ema_state: Optional[str] = None
+    htf_phase: Optional[str] = None  # 4h 背景状态（2026-10-20，影子 A/B 分组维度）
     rule_version: Optional[str] = None  # 规则版本分组维度（docs/24 A0，None=非版本组）
     is_veto: Optional[bool] = None  # 双评委否决单回放标记（docs/24 A5a，None=非 veto 维度组）
+    direction: Optional[str] = None  # 方向分层维度（2026-10-20 影子 A/B 按 long/short 出）
+    ab_bucket: Optional[str] = None  # 影子 A/B 桶标记（transition_pbc / pbc_same_side 等）
     total: int
     win_tp1: int = 0
     win_tp2: int = 0
@@ -423,6 +426,11 @@ class ReviewStatsResponse(BaseModel):
     # 与整体（=通过单）对比 win_rate/ev_r 验证 veto 是否有正贡献
     veto_stats: Optional[ReviewGroupStats] = None
     veto_note: str = ""
+    # 影子 A/B（2026-10-20）：过渡态×回踩确认 veto 行按 (ab_bucket, direction) 分层，
+    # 与同信号类型通过单对照——单独成组，不并入 veto_stats（避免质量分兜底实验
+    # 污染「评委是否错杀」判读）；方向分层用于决定是否收窄为单方向 veto
+    shadow_ab: list[ReviewGroupStats] = []
+    shadow_ab_note: str = ""
 
 
 # ===== 全漏斗转化率（docs/24 A5c） =====

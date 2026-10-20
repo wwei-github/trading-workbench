@@ -414,9 +414,28 @@ def _run_migrations(engine):
             "ALTER TABLE ai_analyses "
             "ADD COLUMN IF NOT EXISTS veto_original JSONB"
         ))
+        # veto 快照卫生（2026-10-20）：本列 none_as_null 生效前，Python None 被写成
+        # JSON `null`（非 SQL NULL），`veto_original IS NOT NULL` 因此对普通 skip 行
+        # 也为真 → 复盘任务误把无否决快照的 skip 单当 veto 单回放。此处把存量 JSON
+        # `null` 归一回 SQL NULL（幂等：归一后无行匹配）；列非空且文本为 'null' 才动。
+        conn.execute(text(
+            "UPDATE ai_analyses SET veto_original = NULL "
+            "WHERE veto_original IS NOT NULL AND veto_original::text = 'null'"
+        ))
         conn.execute(text(
             "ALTER TABLE trade_reviews "
             "ADD COLUMN IF NOT EXISTS is_veto BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        # 影子 A/B（2026-10-20）：复盘行携带 4h 背景状态 key（与 AIAnalysis.htf_phase
+        # 同源）与影子桶标记（过渡态×回踩确认 veto 行='transition_pbc'），使
+        # /review/stats 可按 (ab_bucket, direction) 出分层对比，无需回查 ai_analyses
+        conn.execute(text(
+            "ALTER TABLE trade_reviews "
+            "ADD COLUMN IF NOT EXISTS htf_phase VARCHAR(20)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE trade_reviews "
+            "ADD COLUMN IF NOT EXISTS ab_bucket VARCHAR(32)"
         ))
         conn.execute(text(
             "UPDATE trade_records SET account_key = 'testnet-1' "

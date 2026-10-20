@@ -31,6 +31,7 @@ from app.services.strategy.technical import (
     STATE_LABELS,
     STATE_LOCK_CONTRA,
     STATE_QUALITY,
+    STATE_TRANSITION,
     _STATE_DIR,
     _STATE_MACRO,
     _ema_state,
@@ -378,6 +379,37 @@ def test_enforce_transition_always_allows():
                 {"trade_decision": "suggest", "direction": direction},
                 _STATE_FIXTURES[st])
             assert out["trade_decision"] == "suggest", (st, direction)
+            assert "veto_original" not in out
+            assert out["htf_phase"] == st
+
+
+def test_enforce_transition_pbc_shadow_veto():
+    """影子 A/B（2026-10-20）：过渡态 × 回踩确认 → 程序 veto 不进真单；
+    veto_original 三价快照保留 + ab_bucket 标记；非回踩确认仍放行。"""
+    for st in STATE_TRANSITION:
+        d = {"trade_decision": "suggest", "direction": "long", "entry_price": 100,
+             "stop_loss": 98, "take_profit_1": 104, "take_profit_2": 108,
+             "risk_reward_ratio": 2.0, "recommendation": 70}
+        out = enforce_htf_constraint(
+            d, _STATE_FIXTURES[st], "trigger_pullback_confirm")
+        assert out["trade_decision"] == "skip", st
+        assert out["htf_phase"] == st
+        assert "回踩确认" in out["skip_reason"] and "影子 A/B" in out["skip_reason"]
+        v = out["veto_original"]
+        assert v["source"] == "htf_constraint" and v["ab_bucket"] == "transition_pbc"
+        assert v["entry_price"] == 100 and v["stop_loss"] == 98
+        assert v["take_profit_1"] == 104 and v["recommendation"] == 70
+
+
+def test_enforce_transition_non_pbc_still_allows():
+    """过渡态非回踩确认信号（突破型）仍放行；缺 signal_type 亦放行
+    （向后兼容：不透传时退回原「过渡态一律放行」口径）"""
+    for st in STATE_TRANSITION:
+        for sig in ("trigger_breakout", "trigger_trend_breakout", None):
+            out = enforce_htf_constraint(
+                {"trade_decision": "suggest", "direction": "long"},
+                _STATE_FIXTURES[st], sig)
+            assert out["trade_decision"] == "suggest", (st, sig)
             assert "veto_original" not in out
             assert out["htf_phase"] == st
 

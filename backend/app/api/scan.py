@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import delete, desc, select, update, func
+from sqlalchemy import String, cast, delete, desc, select, update, func
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -44,7 +44,7 @@ from app.services.ai_analyzer import analyze_coin
 from app.services.risk_guard import is_pullback_wait
 from app.services.skill_library import list_skills
 from app.services.strategy import recent_swings, swing_annotations
-from app.services.strategy.technical import enforce_htf_constraint
+from app.services.strategy.technical import STATE_TRANSITION, enforce_htf_constraint
 from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
@@ -1103,7 +1103,12 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
     # 双评委 veto 闭环统计（docs/24 A5a）：is_veto=True 的回放行是"被否决建议的
     # 假想表现"，与整体统计（=通过单，veto 行不混入）对比——若 veto 组假想
     # 胜率/ev_r 反而更高，说明评委在错杀；一致或更低说明 veto 有正贡献
-    veto_rows = [r for r in all_rows if getattr(r, "is_veto", False)]
+    # 2026-10-20：影子 A/B 行（ab_bucket 非空）单独成组、不并入此判读，避免质量分
+    # 兜底实验污染「评委是否错杀」结论
+    veto_rows = [
+        r for r in all_rows
+        if getattr(r, "is_veto", False) and not getattr(r, "ab_bucket", None)
+    ]
     if veto_rows:
         resp.veto_stats = ReviewGroupStats(
             is_veto=True, **_agg_stats(veto_rows), ev_r=_agg_ev(veto_rows)
@@ -1115,6 +1120,36 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
             f"veto 假想回放 {v_agg.total} 笔（win_rate {v_agg.win_rate:.0%}）vs "
             f"通过单 {passed_agg['total']} 笔（win_rate {passed_agg['win_rate']:.0%}）；"
             "veto 组假想胜率明显更高 = 评委在错杀好单，需审视裁决质量"
+        )
+
+    # 影子 A/B（2026-10-20）：过渡态×回踩确认 veto 行按 (ab_bucket, direction) 分层，
+    # 与同信号类型（回踩确认）通过单对照。方向分层用于判断是否需收窄为单方向 veto
+    shadow_rows = [r for r in all_rows if getattr(r, "ab_bucket", None)]
+    if shadow_rows:
+        shadow_groups: dict[tuple, list[TradeReview]] = {}
+        for r in shadow_rows:
+            shadow_groups.setdefault((r.ab_bucket, r.direction or ""), []).append(r)
+        for (bucket, d), items in sorted(shadow_groups.items()):
+            resp.shadow_ab.append(ReviewGroupStats(
+                ab_bucket=bucket, direction=d or None, is_veto=True,
+                **_agg_stats(items), ev_r=_agg_ev(items)))
+        # 对照基线：同信号（回踩确认）通过单，按 4h 过渡态/同侧 × 方向分层
+        base_groups: dict[tuple, list[TradeReview]] = {}
+        for r in rows:
+            if r.signal_type != "trigger_pullback_confirm":
+                continue
+            side = ("transition" if getattr(r, "htf_phase", None) in STATE_TRANSITION
+                    else "same_side")
+            base_groups.setdefault((side, r.direction or ""), []).append(r)
+        for (side, d), items in sorted(base_groups.items()):
+            resp.shadow_ab.append(ReviewGroupStats(
+                ab_bucket=f"pbc_{side}", direction=d or None, is_veto=False,
+                **_agg_stats(items), ev_r=_agg_ev(items)))
+        resp.shadow_ab_note = (
+            f"影子 A/B（2026-10-20）：过渡态×回踩确认已程序 veto，假想回放 "
+            f"{len(shadow_rows)} 笔（is_veto=True）；对照为同信号通过单"
+            "（is_veto=False，按 4h 过渡态/同侧 × long/short 分层）。"
+            "假想侧 ev_r 明显低于同侧对照 = veto 正确；反之需回退。"
         )
     return resp
 
@@ -1155,7 +1190,9 @@ def review_funnel(
         select(func.count()).select_from(AIAnalysis).where(
             AIAnalysis.created_at >= cutoff,
             AIAnalysis.trade_decision == "skip",
-            AIAnalysis.veto_original.isnot(None),
+            # 有 veto 快照的内容判据（非 SQL NULL、亦非 JSON `null`）——`IS NOT NULL`
+            # 会把普通 skip 行误计为 veto 行，见 models/scan.py 列注（2026-10-20）
+            cast(AIAnalysis.veto_original, String) != "null",
         )
     ).scalar() or 0
     blocked_cnt = db.execute(
@@ -1816,16 +1853,34 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
         configure_from(cfg)  # 生效 AI 运行参数（模型/端点/超时）读页面配置
         _rm, _ra, _rl = resolve_risk_budget(cfg)
         _stop_cap = float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None
+        # 筛选参数组（2026-10-12）：门槛块阈值/触点启用列表读页面配置生效值；
+        # 提前解析并复用（下方触发回填检测与主分析同参，避免二次解析漂移）
+        _flt = resolve_scan_filters(cfg)
         ai_result = analyze_coin(
             signal, klines, strategy_prompt=strategy_prompt, htf_klines=htf_klines,
             risk_mode=_rm, risk_amount=_ra, risk_label=_rl, stop_cap_pct=_stop_cap,
             interval=cfg.kline_interval, tactics_block=tactics_block,
             tp2_enabled=bool(cfg.tp2_enabled),
-            # 筛选参数组（2026-10-12）：门槛块阈值/触点启用列表读页面配置生效值
-            flt=resolve_scan_filters(cfg),
+            flt=_flt,
         )
+        # 真实信号类型回填（2026-10-20 影子 A/B 覆盖手动路径）：手动搜索默认
+        # signal_type=manual_search 无「触发」语义；按 AI 判定方向在当根检测是否
+        # 恰为回踩确认触发——命中则回填 signal_type，使其纳入 4h 状态机约束
+        # （过渡态×回踩确认 → 影子 A/B veto），与自动扫描路径同一口径
+        _d = str(ai_result.get("direction") or "").lower()
+        if _d in ("long", "short"):
+            try:
+                from app.services.strategy.trigger import PULLBACK_CONFIRM, detect_trigger
+                _trig, _ = detect_trigger(
+                    klines, 1 if _d == "long" else -1, flt=_flt, htf=htf_klines)
+                if _trig and _trig.get("type") == PULLBACK_CONFIRM:
+                    signal["signal_type"] = PULLBACK_CONFIRM
+            except Exception:
+                pass  # 检测异常不阻断手动分析主流程（退回 manual_search 语义）
         # 4h 状态机硬约束兜底（2026-10-11 再重构 EMA 状态机 11 态：缠绕/拐头双向禁开，宏观交叉/恢复/排列锁逆势，过渡放行）
-        ai_result = enforce_htf_constraint(ai_result, htf_klines)
+        # signal_type 透传（2026-10-20 影子 A/B）：过渡态 × 回踩确认 → 程序 veto 转影子
+        ai_result = enforce_htf_constraint(
+            ai_result, htf_klines, signal.get("signal_type"))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI 分析失败: {e}")
 

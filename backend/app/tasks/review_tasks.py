@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import select, or_, and_
+from sqlalchemy import String, and_, cast, or_, select
 
 from app.celery_app import celery_app
 from app.config import settings
@@ -84,7 +84,9 @@ def run_trade_review_task():
                     AIAnalysis.trade_decision == "suggest",
                     and_(
                         AIAnalysis.trade_decision == "skip",
-                        AIAnalysis.veto_original.isnot(None),
+                        # 有 veto 快照（非 SQL NULL、亦非 JSON `null`）——用内容判据而非
+                        # IS NOT NULL，见 models/scan.py veto_original 列注（2026-10-20）
+                        cast(AIAnalysis.veto_original, String) != "null",
                     ),
                 ),
                 AIAnalysis.created_at <= cutoff,
@@ -153,6 +155,10 @@ def run_trade_review_task():
                     touch_ref=sr.touch_ref,  # 回踩触点快照（docs/22），复盘按触点分组
                     position=sr.position,
                     ema_state=sr.ema_state,
+                    # 4h 背景状态快照（2026-10-20）：影子 A/B 与「4h趋势期」维度用；
+                    # 与 ab_bucket 同在复盘行上，/review/stats 可直接分组无需回查分析行
+                    htf_phase=getattr(a, "htf_phase", None),
+                    ab_bucket=(veto.get("ab_bucket") if veto else None),
                     recommendation=float(r_rating) if r_rating is not None else None,
                     is_veto=bool(veto),
                 ))
