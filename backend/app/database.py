@@ -641,6 +641,11 @@ def _run_migrations(engine):
         conn.execute(text(
             "ALTER TABLE trade_records ADD COLUMN IF NOT EXISTS beta NUMERIC(10, 4)"
         ))
+        # 移动止损方式（2026-10-20）：hl=HL/LH 结构跟踪（新开单默认）；
+        # three_line=三线止损。NULL=旧行，运行期按 three_line 理解
+        conn.execute(text(
+            "ALTER TABLE trade_records ADD COLUMN IF NOT EXISTS trailing_mode VARCHAR(16)"
+        ))
         # 周/月回撤分层熔断 + ATR 跟进倍数（2026-10-04，docs/13 #2/#5）：
         # 阈值列 NULL=回落 env（页面留空恢复默认）、0=关闭该层；
         # ack 时刻 = 月熔断人工复盘确认，确认在当前 UTC 月内即放行至月底

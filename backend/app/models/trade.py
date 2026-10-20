@@ -65,6 +65,11 @@ class TradeRecord(Base):
     tp1: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
     tp2: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
 
+    # 移动止损方式（2026-10-20）：hl=HL/LH 结构跟踪（新开单默认）；
+    # three_line=三线止损（摆动极值 + ATR Chandelier + TP1 保本夹紧）。
+    # NULL=上线前的旧行，按 three_line 理解（保持存量单既有行为）
+    trailing_mode: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
     # 状态与结算
     status: Mapped[str] = mapped_column(String(16), default="OPENED", index=True)
     # OPENED（运行中）/ TP1_HIT（部分止盈，止损已移至成本价保本）/ TP2_HIT（仅剩跟进仓）/ CLOSED / FAILED

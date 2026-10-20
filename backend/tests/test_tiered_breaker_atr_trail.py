@@ -33,6 +33,7 @@ from app.services import trade_engine as te  # noqa: E402
 from app.services.trade_engine import (  # noqa: E402
     _chandelier_sl,
     _closed_pnl_since,
+    _hl_structure_stop,
     _move_sl_trailing,
     breaker_status_by_net,
     try_open_for_analysis,
@@ -560,6 +561,204 @@ def test_move_sl_swing_only_when_k_zero(monkeypatch):
     _move_sl_trailing(db, trader, rec, "1h", set(), atr_k=0)
     # 摆动腿 = max(现SL 100, 近3根 low 103) = 103（收紧）
     assert captured["sl"] == 103.0
+
+
+# ── HL/LH 结构跟进（2026-10-20 新默认） ─────────────────────────────
+
+
+def _bars(lows: list[float], highs: list[float] | None = None) -> list[list]:
+    """按给定 low 序列造 K 线（high 缺省 = low + 1）；index 0=时间、2=high、3=low"""
+    hs = highs or [v + 1 for v in lows]
+    return [[i * 3_600_000, (hs[i] + lows[i]) / 2, hs[i], lows[i],
+             (hs[i] + lows[i]) / 2, 10.0] + [0.0] * 4
+            for i in range(len(lows))]
+
+
+def _hl_rec(direction="long", stop_loss=90.0):
+    """无 opened_at：结构过滤关闭（开仓过滤在专项用例覆盖）"""
+    return SimpleNamespace(symbol="TESTUSDT", direction=direction, opened_at=None,
+                           stop_loss=stop_loss, status="TP2_HIT", tp1=None,
+                           trailing_mode="hl", raw={})
+
+
+def test_hl_structure_long_moves_to_latest_hl():
+    """多单：摆动低点 95 → 100（HL）→ 止损目标 = 最近 HL 的低点 100。
+    最后一根未收盘（low=50）必须排除，否则会误判为新低点"""
+    klines = _bars([100, 95, 105, 100, 105, 50])
+    assert _hl_structure_stop(_hl_rec("long"), klines, order=1) == 100.0
+
+
+def test_hl_structure_long_none_when_latest_is_ll():
+    """多单：最近摆动低点 92 < 前低 95（LL）→ 无新 HL，保留现 SL"""
+    klines = _bars([100, 95, 105, 92, 105, 110])
+    assert _hl_structure_stop(_hl_rec("long"), klines, order=1) is None
+
+
+def test_hl_structure_short_moves_to_latest_lh():
+    """空单：摆动高点 120 → 115（LH）→ 止损目标 = 最近 LH 的高点 115"""
+    klines = _bars([100] * 6, highs=[110, 120, 105, 115, 100, 130])
+    assert _hl_structure_stop(_hl_rec("short"), klines, order=1) == 115.0
+
+
+def test_hl_structure_short_none_when_latest_is_hh():
+    """空单：最近摆动高点 125 > 前高 120（HH）→ 无新 LH"""
+    klines = _bars([100] * 6, highs=[110, 120, 105, 125, 100, 90])
+    assert _hl_structure_stop(_hl_rec("short"), klines, order=1) is None
+
+
+def test_hl_structure_ignores_pre_entry_swings():
+    """入场过滤：opened_at 之后的摆动点不足两个 → 不回看入场前结构"""
+    klines = _bars([100, 95, 105, 100, 105, 50])
+    # 入场时刻 = 第 4 根（index 3）开盘：index 3 之后仅一个摆动低点
+    rec = _hl_rec("long")
+    rec.opened_at = datetime.utcfromtimestamp(3 * 3600)
+    assert _hl_structure_stop(rec, klines, order=1) is None
+
+
+def test_move_sl_hl_mode_ignores_atr_leg(monkeypatch):
+    """hl 模式只走结构腿：ATR 腿不得被调用（避免三线逻辑混入新方案）"""
+    klines = _bars([100, 95, 105, 100, 105, 110])
+    pool = SimpleNamespace(get_klines=lambda s, iv, n: klines)
+    monkeypatch.setattr(te, "ExchangePool", lambda: pool)
+
+    def _boom(rec, trader, k):
+        raise AssertionError("hl 模式不应调用 ATR 腿")
+
+    monkeypatch.setattr(te, "_chandelier_sl", _boom)
+    captured = {}
+    monkeypatch.setattr(te, "_replace_sl",
+                        lambda db, trader, rec, open_ids, new_sl, reason=None:
+                        captured.update(sl=new_sl))
+    trader = SimpleNamespace(round_price=lambda s, p: round(p, 2),
+                             price=lambda s: 120.0)
+    rec = _hl_rec("long", stop_loss=90.0)
+    _move_sl_trailing(db, trader, rec, "1h", set(), atr_k=3.0, swing_order=1)
+    assert captured["sl"] == 100.0
+
+
+def test_move_sl_hl_mode_never_loosens(monkeypatch):
+    """hl 模式同样只收紧：HL 低点 100 低于现 SL 105 → 保持 105 不动"""
+    klines = _bars([100, 95, 105, 100, 105, 110])
+    pool = SimpleNamespace(get_klines=lambda s, iv, n: klines)
+    monkeypatch.setattr(te, "ExchangePool", lambda: pool)
+    called = []
+    monkeypatch.setattr(te, "_replace_sl",
+                        lambda db, trader, rec, open_ids, new_sl, reason=None:
+                        called.append(new_sl))
+    trader = SimpleNamespace(round_price=lambda s, p: round(p, 2),
+                             price=lambda s: 120.0)
+    _move_sl_trailing(db, trader, _hl_rec("long", stop_loss=105.0), "1h", set(),
+                      swing_order=1)
+    assert not called
+
+
+def test_move_sl_legacy_null_mode_uses_three_line(monkeypatch):
+    """存量行 trailing_mode=NULL 仍按三线（ATR 腿参与），不做行为切换"""
+    klines = _bars([100, 96, 104, 99, 105])
+    pool = SimpleNamespace(get_klines=lambda s, iv, n: klines)
+    monkeypatch.setattr(te, "ExchangePool", lambda: pool)
+    monkeypatch.setattr(te, "_chandelier_sl", lambda rec, trader, k: 107.0)
+    captured = {}
+    monkeypatch.setattr(te, "_replace_sl",
+                        lambda db, trader, rec, open_ids, new_sl, reason=None:
+                        captured.update(sl=new_sl))
+    trader = SimpleNamespace(round_price=lambda s, p: round(p, 2),
+                             price=lambda s: 120.0)
+    rec = _rec(stop_loss=100.0)
+    rec.trailing_mode = None
+    _move_sl_trailing(db, trader, rec, "1h", set(), atr_k=3.0)
+    assert captured["sl"] == 107.0
+
+
+def test_move_sl_klines_limit_by_mode(monkeypatch):
+    """拉取根数按模式取：hl 需 60 根确认多个摆动点，三线只用尾部 20 根"""
+    limits = []
+
+    def _pool():
+        return SimpleNamespace(
+            get_klines=lambda s, iv, n: limits.append(n) or _bars([100] * 8))
+
+    monkeypatch.setattr(te, "ExchangePool", _pool)
+    monkeypatch.setattr(te, "_replace_sl", lambda *a, **k: None)
+    trader = SimpleNamespace(round_price=lambda s, p: round(p, 2),
+                             price=lambda s: 200.0)
+
+    _move_sl_trailing(db, trader, _hl_rec("long"), "1h", set(), swing_order=1)
+    rec = _rec(stop_loss=100.0)
+    rec.trailing_mode = None
+    _move_sl_trailing(db, trader, rec, "1h", set(), atr_k=0)
+    assert limits == [60, 20]
+
+
+def test_unknown_trailing_mode_falls_back_with_warning(caplog):
+    """白名单外的模式值（手工改库/坏配置）回落三线并告警，不静默换策略"""
+    rec = SimpleNamespace(symbol="BADUSDT", trailing_mode="HL")
+    with caplog.at_level("WARNING"):
+        assert te._trailing_mode(rec) == "three_line"
+    assert "未知移动止损方式" in caplog.text
+
+
+def test_trail_swing_order_follows_config_field(monkeypatch):
+    """结构确认阶数跟随扫描配置页「摆动点阶数」(cfg.swing_order)，
+    NULL/非法值/<1 全部回落 env SWING_ORDER（与扫描侧解析口径一致）"""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(settings, "SWING_ORDER", 7)
+    assert te._trail_swing_order(SimpleNamespace(swing_order=4)) == 4
+    assert te._trail_swing_order(SimpleNamespace(swing_order=10)) == 10
+    assert te._trail_swing_order(SimpleNamespace(swing_order=None)) == 7   # 列 NULL 回落 env
+    assert te._trail_swing_order(SimpleNamespace(swing_order=0)) == 7      # 0 回落 env（同扫描）
+    assert te._trail_swing_order(SimpleNamespace(swing_order=-2)) == 7     # 负值回落 env
+    assert te._trail_swing_order(SimpleNamespace(swing_order="abc")) == 7  # 非法类型回落 env
+    assert te._trail_swing_order(None) == 7                               # 无配置回落 env
+
+
+def test_set_trailing_mode_api(db):
+    """POST /trades/{id}/trailing-mode：运行中单可切换并落 TRAIL_MODE 事件"""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.database import get_db
+    from app.models.trade import TradeEvent
+
+    rec = TradeRecord(symbol="AAAUSDT", direction="long", status="OPENED",
+                      account_key="testnet-1", testnet=True,
+                      opened_at=datetime.utcnow(), stop_loss=90.0,
+                      trailing_mode="hl")
+    db.add(rec)
+    db.commit()
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.post(f"/api/trades/{rec.id}/trailing-mode",
+                           params={"mode": "three_line"})
+        assert resp.status_code == 200
+        assert resp.json()["trailing_mode"] == "three_line"
+        assert client.post(f"/api/trades/{rec.id}/trailing-mode",
+                           params={"mode": "bogus"}).status_code == 400
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    db.refresh(rec)
+    assert rec.trailing_mode == "three_line"
+    evt = db.query(TradeEvent).filter(TradeEvent.trade_record_id == rec.id,
+                                      TradeEvent.event_type == "TRAIL_MODE").one()
+    assert evt.detail == {"from_mode": "hl", "to_mode": "three_line"}
+
+    # 库内为白名单外的旧值（实际执行回落三线）→ 事件按实际口径记 from_mode=three_line
+    rec.trailing_mode = "HL"
+    db.commit()
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        resp = TestClient(app).post(f"/api/trades/{rec.id}/trailing-mode",
+                                    params={"mode": "hl"})
+        assert resp.status_code == 200
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+    details = [e.detail for e in
+               db.query(TradeEvent).filter(TradeEvent.trade_record_id == rec.id,
+                                           TradeEvent.event_type == "TRAIL_MODE").all()]
+    assert {"from_mode": "three_line", "to_mode": "hl"} in details
 
 
 # ── ack API ──────────────────────────────────────────────────────────

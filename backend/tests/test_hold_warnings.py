@@ -29,7 +29,7 @@ _COLS = (
     " account_key VARCHAR(20), ai_snapshot JSON, entry_price FLOAT, qty FLOAT,"
     " notional FLOAT, leverage INTEGER, margin_mode VARCHAR(12), margin_used FLOAT,"
     " risk_amount FLOAT, risk_budget_mode VARCHAR(8), beta FLOAT, stop_loss FLOAT, tp1 FLOAT,"
-    " tp2 FLOAT, status VARCHAR(16), opened_at TIMESTAMP, closed_at TIMESTAMP,"
+    " tp2 FLOAT, trailing_mode VARCHAR(16), status VARCHAR(16), opened_at TIMESTAMP, closed_at TIMESTAMP,"
     " realized_pnl FLOAT, unrealized_pnl FLOAT, pnl_pct FLOAT, exit_reason VARCHAR(32),"
     " fee_total FLOAT, funding_total FLOAT, error_tags JSON, error_lesson TEXT,"
     " attributed_at TIMESTAMP, ai_advice JSON, ai_advice_at TIMESTAMP,"

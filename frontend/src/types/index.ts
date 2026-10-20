@@ -460,6 +460,7 @@ export interface TradeRecord {
   tp2: number | null
   status: 'OPENED' | 'TP1_HIT' | 'TP2_HIT' | 'CLOSED' | 'FAILED'
   tp_mode?: 'ladder' | 'trail' | null // 止盈模式（历史字段：2026-10-12 策略二退役后停写，仍读自 raw 供历史单展示；null=旧行按 ladder）
+  trailing_mode?: 'hl' | 'three_line' | null // 移动止损方式：hl=HL/LH 结构跟踪（新开单默认）/ three_line=三线止损；null=旧行按三线
   opened_at: string | null
   closed_at: string | null
   realized_pnl: number | null // 正/负值 USDT（净额：含手续费/资金费；运行中=已止盈部分，结算后=全程净额）

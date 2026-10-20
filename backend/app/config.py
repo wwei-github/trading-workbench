@@ -87,8 +87,8 @@ class Settings(BaseSettings):
     TP2_QTY_PCT: float = 20.0
     TP1_QTY_PCT_NO_TP2: float = 80.0
     # P-09 事件驱动执行开关（2026-10-07，docs/16）：user-data-stream 成交事件
-    # 秒级触发现有结算链路 + mark price 盈亏快照；False=纯 30 分钟巡检（原行为）。
-    # 30 分钟巡检永久保留兜底，本开关只控制事件流是否叠加；默认关——部署后
+    # 秒级触发现有结算链路 + mark price 盈亏快照；False=纯定时巡检（现为每小时）
+    # 定时巡检永久保留兜底，本开关只控制事件流是否叠加；默认关——部署后
     # 先在测试网账号验证（系统日志看「事件触发结算」）再放开正式网
     EVENT_EXEC_ENABLED: bool = False
     # 挂单入场流程（2026-10-17，docs/27）：现价盈亏比复算不足时，不再拦下不开单，

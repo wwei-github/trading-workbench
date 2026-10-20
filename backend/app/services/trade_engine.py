@@ -6,7 +6,7 @@
     方向价格复验）→ 固定亏损法定仓位（基数分档 ×3% ÷ 止损距离）
     → 市价开仓 + 挂 SL/TP1/TP2 → 入库；闸门未过即放弃，无批次重试
 
-结算（settle_trades，每小时 :42 巡检）：
+结算（settle_trades，每小时 :01 巡检，对齐 1h K 线收盘 1 分钟）：
     以交易所为真源（持仓量/挂单/已实现盈亏）推断成交事件：
     仓位归零 → 结算收益（正/负值）；外部平仓识别（actualOrderId 单链，
     2026-10-02）→ exit_reason=manual 不误标止损类；TP1/TP2 真成交 → 状态迁移
@@ -15,7 +15,9 @@
     止损挂单消失（被撤/交易所异常）→ 按当前止损价补挂（裸仓保护）；
     TP1 成交 → 止损移至成本价 ± 往返费缓冲（保本，幂等，docs/24 A1''）；
     无 TP2 的单：TP1 止盈 80%，剩余 20% 从 TP1 起跟进止损（2026-10-09 调整）；
-    TP2 后每次巡检跟进止损（最近3根已收盘K线极值，只收紧不放松）
+    TP2 后（或无 TP2 的单 TP1 后）每次巡检跟进止损（只收紧不放松）；
+    移动止损方式按 trade_records.trailing_mode：hl=HL/LH 结构跟踪（新开单
+    默认，2026-10-20）/ three_line=摆动极值 + ATR Chandelier（旧行与可选手动）
 """
 import logging
 import math
@@ -54,8 +56,15 @@ from app.services.task_log import close_task, open_task
 
 import numpy as np
 from app.services.strategy.ema_gate import ema_series
+from app.services.strategy.swing import find_swing_points
 
 logger = logging.getLogger(__name__)
+
+# 移动止损方式（2026-10-20）：hl=HL/LH 结构跟踪（新开单默认）；
+# three_line=三线止损（摆动极值 + ATR Chandelier + TP1 保本夹紧）
+TRAIL_MODE_HL = "hl"
+TRAIL_MODE_THREE_LINE = "three_line"
+TRAIL_MODES = (TRAIL_MODE_HL, TRAIL_MODE_THREE_LINE)
 
 
 def _capital_base(wallet: float) -> float:
@@ -894,6 +903,7 @@ def _attempt_open(
                 stop_loss=sl,
                 tp1=rec_tp1,  # tp1 恒为挂档止盈价（2026-10-12 起无纯跟踪单）
                 tp2=tp2 if tp2_order else 0,
+                trailing_mode=TRAIL_MODE_HL,  # 新开单默认 HL/LH 结构移动止损（2026-10-20）
                 status="OPENED",
                 opened_at=now,
                 raw={
@@ -1092,6 +1102,7 @@ def materialize_pending_entry(
             stop_loss=sl,
             tp1=tp1,
             tp2=tp2 if tp2_order else 0,
+            trailing_mode=TRAIL_MODE_HL,  # 新开单默认 HL/LH 结构移动止损（2026-10-20）
             status="OPENED",
             opened_at=now,
             raw={
@@ -1693,29 +1704,132 @@ def _trailing_stop(rec: TradeRecord, klines: list[list]) -> Optional[float]:
     return new_sl if new_sl != cur else None
 
 
+def _hl_structure_stop(rec: TradeRecord, klines: list[list],
+                       order: int = 3) -> Optional[float]:
+    """HL/LH 结构跟进止损（2026-10-20 用户方案）。
+
+    多单：入场后最近一个已确认的 **HL（更高低点）** → 止损移到该 HL 的低点；
+    空单：入场后最近一个已确认的 **LH（更低高点）** → 止损移到该 LH 的高点。
+
+    结构判定用实际 K 线高/低点（非收盘价）：摆动低点 = 低于左右各 order 根的
+    最低价，两个相邻摆动低点抬高即为 HL。只用已收盘 K 线（剔除最后一根未收盘），
+    确认延迟 = order 根，避免用未确认摆动点追价。
+    最近摆动低点为 LL（未抬高）时返回 None → 保留现 SL，等下一个 HL 确认。
+    """
+    if not klines or order < 1:
+        # 数据/配置异常：本轮 HL 腿静默不生效，必须留下告警（系统日志只收 WARNING+）
+        logger.warning("HL 结构 %s：无 K 线或阶数非法（order=%s），本轮不跟进止损",
+                       getattr(rec, "symbol", "?"), order)
+        return None
+    closed = klines[:-1] if len(klines) >= 2 else klines
+    if len(closed) < 2 * order + 1:
+        logger.warning("HL 结构 %s：已收盘 K 线不足（%d < %d，order=%s），"
+                       "摆动点无法确认，本轮不跟进止损",
+                       getattr(rec, "symbol", "?"), len(closed), 2 * order + 1, order)
+        return None
+    highs = np.array([float(k[2]) for k in closed], dtype=float)
+    lows = np.array([float(k[3]) for k in closed], dtype=float)
+    high_idx, low_idx = find_swing_points(highs, lows, order)
+    opened = getattr(rec, "opened_at", None)
+    opened_ms = (opened.replace(tzinfo=timezone.utc).timestamp() * 1000
+                 if opened is not None else None)
+
+    def _after_open(seq: list[int]) -> list[int]:
+        if opened_ms is None:
+            return seq
+        return [i for i in seq if float(closed[i][0]) >= opened_ms]
+
+    if rec.direction == "long":
+        seq = _after_open(low_idx)
+        if len(seq) < 2:
+            logger.debug("HL 结构 %s：入场后确认摆动低点不足 2 个（%d），无 HL 可比对",
+                         getattr(rec, "symbol", "?"), len(seq))
+            return None
+        last, prev = seq[-1], seq[-2]
+        if lows[last] <= lows[prev]:
+            logger.debug("HL 结构 %s：最近摆动低点 %s 未抬高（前低 %s），无新 HL",
+                         getattr(rec, "symbol", "?"), lows[last], lows[prev])
+            return None  # 最近低点未抬高（LL/持平）→ 无新 HL
+        return float(lows[last])
+    seq = _after_open(high_idx)
+    if len(seq) < 2:
+        logger.debug("HL 结构 %s：入场后确认摆动高点不足 2 个（%d），无 LH 可比对",
+                     getattr(rec, "symbol", "?"), len(seq))
+        return None
+    last, prev = seq[-1], seq[-2]
+    if highs[last] >= highs[prev]:
+        logger.debug("HL 结构 %s：最近摆动高点 %s 未降低（前高 %s），无新 LH",
+                     getattr(rec, "symbol", "?"), highs[last], highs[prev])
+        return None  # 最近高点未降低（HH/持平）→ 无新 LH
+    return float(highs[last])
+
+
+def _trail_swing_order(cfg) -> int:
+    """HL/LH 结构确认阶数：取扫描配置页「摆动点阶数」(system_config.swing_order)。
+
+    解析口径与扫描侧 scan_filters._swing_order 完全一致：NULL / 非法类型 /
+    <1 一律回落 env SWING_ORDER（默认 3）——跟进止损与扫描必须用同一把尺子，
+    否则直连 API 写入 0 时会出现「扫描按 3 阶、跟进按 1 阶」的口径分裂。
+    确认延迟 = order 根已收盘 K——阶数越大，新 HL/LH 出现得越稀。
+    """
+    try:
+        v = int(getattr(cfg, "swing_order", None))
+    except (TypeError, ValueError, OverflowError):
+        return settings.SWING_ORDER
+    return v if v >= 1 else settings.SWING_ORDER
+
+
+def _trailing_mode(rec: TradeRecord) -> str:
+    """记录的移动止损方式：NULL（上线前旧行）按三线止损理解。
+
+    非空但不在白名单内的值（手工改库/坏配置）同样回落三线，并告警——
+    避免一个拼写错误的模式名静默改变风控行为而不留痕迹。"""
+    mode = getattr(rec, "trailing_mode", None)
+    if mode in TRAIL_MODES:
+        return mode
+    if mode:
+        logger.warning(
+            "未知移动止损方式 %r（%s），按三线止损执行",
+            mode, getattr(rec, "symbol", "?"),
+        )
+    return TRAIL_MODE_THREE_LINE
+
+
 def _move_sl_trailing(db: Session, trader: BinanceTrader, rec: TradeRecord,
                       interval: str, open_ids: set[int],
-                      atr_k: Optional[float] = None) -> None:
-    """按跟进规则移动止损（只收紧不放松）；新 SL 会立即触发时跳过本轮（旧 SL 仍有效保护：
-    仓位存在即旧 SL 未触发），避免交易所 -2021 拒单导致整轮结算回滚重试。
+                      atr_k: Optional[float] = None,
+                      swing_order: int = 3) -> None:
+    """按记录的移动止损方式跟进（只收紧不放松）；新 SL 会立即触发时跳过本轮
+    （旧 SL 仍有效保护：仓位存在即旧 SL 未触发），避免交易所 -2021 拒单导致
+    整轮结算回滚重试。
 
-    两腿取更紧者（docs/13 #5）：摆动腿（最近3根已收盘K线极值）+ ATR 腿
-    （Chandelier，atr_k None/0 关闭）；聚合后统一 TP1 保本夹紧（与
-    _trailing_stop 内同语义，幂等）。
+    - hl（新开单默认）：HL/LH 结构腿——多单移到最近已确认 HL 低点，空单移到
+      LH 高点；不再叠加 ATR 腿与 3 根极值腿
+    - three_line（存量默认/可手动切回）：摆动腿（最近3根已收盘K线极值）+
+      ATR 腿（Chandelier，atr_k None/0 关闭）取更紧者（docs/13 #5）
+    两模式聚合后统一只收紧 + TP1 保本夹紧。
     """
     cur = float(rec.stop_loss or 0)
     if cur <= 0:
         return
-    klines = ExchangePool().get_klines(rec.symbol, interval, 20)
+    mode = _trailing_mode(rec)
+    # HL 结构需要更长历史确认多个摆动点；三线腿只用尾部 3 根，按 20 根取够即可
+    limit = 60 if mode == TRAIL_MODE_HL else 20
+    klines = ExchangePool().get_klines(rec.symbol, interval, limit)
     candidates: list[float] = []
-    swing = _trailing_stop(rec, klines)
-    if swing is not None:
-        candidates.append(swing)
-    k = float(settings.ATR_TRAIL_K) if atr_k is None else float(atr_k)
-    if k > 0:
-        chand = _chandelier_sl(rec, trader, k)
-        if chand is not None:
-            candidates.append(chand)
+    if mode == TRAIL_MODE_HL:
+        hl_sl = _hl_structure_stop(rec, klines, order=swing_order)
+        if hl_sl is not None:
+            candidates.append(hl_sl)
+    else:
+        swing = _trailing_stop(rec, klines)
+        if swing is not None:
+            candidates.append(swing)
+        k = float(settings.ATR_TRAIL_K) if atr_k is None else float(atr_k)
+        if k > 0:
+            chand = _chandelier_sl(rec, trader, k)
+            if chand is not None:
+                candidates.append(chand)
     if not candidates:
         return
     # 只收紧铁律：聚合必须包含现 SL——ATR 腿可能松于现 SL（如回调后高点回落），
@@ -2415,6 +2529,8 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
         if cfg is not None and cfg.atr_trail_k is not None
         else float(settings.ATR_TRAIL_K)
     )
+    # HL/LH 结构确认深度：跟扫描配置页「摆动点阶数」（与扫描同一把尺子）
+    swing_order = _trail_swing_order(cfg)
     records = db.execute(
         select(TradeRecord).where(TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")))
     ).scalars().all()
@@ -2605,7 +2721,8 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                         tp2_detail["realized_pnl"] = realized  # 两档累计（旧口径）
                     _add_event(db, rec, "TP2_FILL", tp2_detail)
                     rec.status = "TP2_HIT"
-                    _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
+                    _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k,
+                                     swing_order=swing_order)
                     db.commit()
                     handled += 1
                 elif tp1_hit and ratio <= 0.75:
@@ -2618,7 +2735,8 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                     _move_sl_breakeven(db, rt, rec, open_ids, fee_rate)  # 用户规则：TP1 后止损移至保本价（成本价±往返费缓冲）
                     if not rec.tp2:
                         # 无 TP2：TP1 止盈 80% 后剩余仓即启用跟进止损（与 TP2 后同机制）
-                        _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
+                        _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k,
+                                         swing_order=swing_order)
                     db.commit()
                     handled += 1
                 else:
@@ -2645,7 +2763,8 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                                                      "pnl": tranche,
                                                      "cum_pnl": realized})
                     rec.status = "TP2_HIT"
-                    _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
+                    _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k,
+                                     swing_order=swing_order)
                     db.commit()
                     handled += 1
                 else:
@@ -2656,12 +2775,14 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                     _move_sl_breakeven(db, rt, rec, open_ids, fee_rate)
                     if not rec.tp2:
                         # 无 TP2：与 TP2 后同规则，每次巡检跟进止损（只收紧不放松）
-                        _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
+                        _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k,
+                                         swing_order=swing_order)
                     db.commit()
                     handled += 1
             elif rec.status == "TP2_HIT":
                 # 每小时跟进止损（只收紧不放松）
-                _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
+                _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k,
+                                  swing_order=swing_order)
                 db.commit()
                 handled += 1
         except Exception as e:
@@ -3214,6 +3335,7 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
         stop_loss=stop_loss,
         tp1=tp1,
         tp2=tp2 if tp2_order else 0,
+        trailing_mode=TRAIL_MODE_HL,  # 接管单同样默认 HL/LH 结构移动止损（2026-10-20）
         status="OPENED",
         opened_at=now,
         raw={

@@ -19,6 +19,7 @@ import {
   Popconfirm,
   Row,
   Segmented,
+  Select,
   Space,
   Spin,
   Statistic,
@@ -121,6 +122,7 @@ const EVENT_META: Record<string, { label: string; color: string; icon: React.Rea
   TP1_FILL: { label: 'TP1 止盈成交', color: '#52c41a', icon: <CheckCircleOutlined /> },
   TP2_FILL: { label: 'TP2 止盈成交', color: '#52c41a', icon: <CheckCircleOutlined /> },
   SL_MOVE: { label: '止损移动', color: '#fa8c16', icon: <SwapOutlined /> },
+  TRAIL_MODE: { label: '移动止损方式', color: '#13c2c2', icon: <SwapOutlined /> },
   SL_FILL: { label: '止损成交', color: '#ff4d4f', icon: <CloseCircleOutlined /> },
   CUT_EMA21: { label: '破EMA21减半', color: '#fa541c', icon: <ScissorOutlined /> },
   TP_TRAIL: { label: '浮盈落袋·减1/3', color: '#52c41a', icon: <ScissorOutlined /> },
@@ -151,6 +153,9 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   actual_risk: '实际止损风险',
   from: '原止损',
   to: '新止损',
+  // 移动止损方式切换（2026-10-20）
+  from_mode: '原方式',
+  to_mode: '新方式',
   realized_pnl: '净盈亏',
   pnl: '本档盈亏',
   cum_pnl: '累计盈亏',
@@ -257,6 +262,10 @@ function detailValue(k: string, v: unknown, scheme: ColorScheme): React.ReactNod
   if (k === 'action') return ADVICE_ACTION_META[String(v)]?.label || String(v)
   // 止盈模式快照（docs/19 §3.4）：ladder=分批止盈 / trail=纯跟踪
   if (k === 'tp_mode') return v === 'trail' ? '纯跟踪' : v === 'ladder' ? '分批止盈' : String(v)
+  // 移动止损方式（2026-10-20）：hl=HL/LH 结构跟踪 / three_line=三线止损
+  if (k === 'from_mode' || k === 'to_mode') {
+    return v === 'hl' ? 'HL/LH 结构' : v === 'three_line' ? '三线' : String(v)
+  }
   // 入场 ATR（1d/22）快照：按价格量级格式化
   if (k === 'entry_atr' && v != null && !Number.isNaN(Number(v))) {
     const n = Number(v)
@@ -329,6 +338,15 @@ function eventSummary(ev: TradeEvent, scheme: ColorScheme): React.ReactNode {
       >
         {meta?.label || String(d.action)}
       </Tag>
+    )
+  }
+  if (ev.event_type === 'TRAIL_MODE' && d.to_mode != null) {
+    const label = (m: unknown) =>
+      m === 'hl' ? 'HL/LH 结构' : m === 'three_line' ? '三线' : String(m)
+    return (
+      <span style={{ fontSize: 12, color: '#595959' }}>
+        {label(d.from_mode)} → {label(d.to_mode)}
+      </span>
     )
   }
   if (d.from != null && d.to != null) {
@@ -732,6 +750,29 @@ export default function TradesPanel() {
       message.error(e?.response?.data?.detail || '标记异常单失败，请稍后重试')
     } finally {
       setExcludingId(null)
+      await fetchData()
+    }
+  }
+
+  // 切换移动止损方式（2026-10-20）：hl=HL/LH 结构跟踪；three_line=三线止损。
+  // 只影响下一轮巡检的跟进计算，当前止损价不立即变动（仍只收紧）
+  const [trailModeId, setTrailModeId] = useState<string | null>(null)
+  const handleTrailModeChange = async (
+    rec: TradeRecord,
+    mode: 'hl' | 'three_line',
+  ) => {
+    if ((rec.trailing_mode || 'three_line') === mode) return
+    setTrailModeId(rec.id)
+    try {
+      await scanApi.trades.setTrailingMode(rec.id, mode)
+      message.success(
+        `${rec.symbol} 移动止损已切换为${mode === 'hl' ? 'HL/LH 结构' : '三线止损'}` +
+        '（下一轮巡检生效，只收紧不放松）',
+      )
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '切换移动止损方式失败，请稍后重试')
+    } finally {
+      setTrailModeId(null)
       await fetchData()
     }
   }
@@ -1279,6 +1320,45 @@ export default function TradesPanel() {
       key: 'stop_loss',
       width: 110,
       render: fmtNum,
+    },
+    {
+      // 移动止损方式（2026-10-20）：运行中可下拉切换；已平仓只显示历史方式。
+      // null=上线前旧行，按三线止损理解（与后端巡检默认一致）
+      title: (
+        <Tooltip title="HL/LH 结构：多单出现新 HL 移到该低点、空单出现新 LH 移到该高点；三线：摆动极值 + ATR + 保本夹紧。切换只影响下一轮巡检的计算，且沿用「只收紧不放松」——已收紧的止损不会因切换而放宽">
+          <span>移动止损</span>
+        </Tooltip>
+      ),
+      key: 'trailing_mode',
+      width: 118,
+      render: (_: unknown, rec) => {
+        const mode = rec.trailing_mode || 'three_line'
+        const running = ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(rec.status)
+        if (!running) {
+          // 失败单从未建立仓位与止损方式，不按三线回落展示
+          if (rec.status === 'FAILED') return '-'
+          return (
+            <Tag style={{ marginInlineEnd: 0 }}>
+              {mode === 'hl' ? 'HL 结构' : '三线'}
+            </Tag>
+          )
+        }
+        return (
+          <div onClick={(e) => e.stopPropagation()}>
+            <Select
+              size="small"
+              value={mode}
+              loading={trailModeId === rec.id}
+              style={{ width: 100 }}
+              onChange={(v) => handleTrailModeChange(rec, v as 'hl' | 'three_line')}
+              options={[
+                { value: 'hl', label: 'HL 结构' },
+                { value: 'three_line', label: '三线' },
+              ]}
+            />
+          </div>
+        )
+      },
     },
     {
       // 止损预估亏损：数量 × (止损价 − 开仓价)，运行中止损现值随移动更新

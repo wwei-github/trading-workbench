@@ -490,6 +490,42 @@ def close_market(trade_id: str, db: Session = Depends(get_db)):
     return res
 
 
+@router.post("/{trade_id}/trailing-mode")
+def set_trailing_mode(
+    trade_id: str,
+    mode: str = Query(..., description="hl=HL/LH 结构跟踪；three_line=三线止损"),
+    db: Session = Depends(get_db),
+):
+    """切换运行中单子的移动止损方式（2026-10-20）。
+
+    - hl：多单出现新 HL → 止损移到该 HL 低点；空单出现新 LH → 移到 LH 高点
+    - three_line：摆动极值 + ATR Chandelier + TP1 保本夹紧（原有三线止损）
+    只影响下一轮巡检的跟进计算；当前止损价不因切换立即变动（仍只收紧）。
+    旧记录 trailing_mode=NULL 按 three_line 理解（与巡检默认一致）。
+    """
+    from app.services.trade_engine import TRAIL_MODES, _add_event, _trailing_mode
+
+    try:
+        tid = UUID(trade_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="交易记录不存在")
+    if mode not in TRAIL_MODES:
+        raise HTTPException(status_code=400, detail=f"mode 只支持 {'/'.join(TRAIL_MODES)}")
+    rec = db.get(TradeRecord, tid)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="交易记录不存在")
+    if rec.status not in ("OPENED", "TP1_HIT", "TP2_HIT"):
+        raise HTTPException(status_code=400, detail="仅运行中的单子支持切换移动止损方式")
+    # 原方式按「实际执行口径」归一：NULL/白名单外取值在执行时都回落三线，
+    # 事件若直传旧值会出现「事件显示 HL、实际跑三线」的记录不一致
+    old = _trailing_mode(rec)
+    rec.trailing_mode = mode
+    _add_event(db, rec, "TRAIL_MODE",
+               {"from_mode": old, "to_mode": mode})
+    db.commit()
+    return {"id": str(rec.id), "trailing_mode": rec.trailing_mode}
+
+
 @router.post("/{trade_id}/excluded")
 def set_trade_excluded(
     trade_id: str,

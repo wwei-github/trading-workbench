@@ -314,6 +314,13 @@ export const scanApi = {
           params: { excluded },
         })
         .then((r) => r.data),
+    // 切换移动止损方式（2026-10-20）：hl=HL/LH 结构跟踪 / three_line=三线止损
+    setTrailingMode: (tradeId: string, mode: 'hl' | 'three_line') =>
+      api
+        .post<{ id: string; trailing_mode: string }>(
+          `/trades/${tradeId}/trailing-mode`, null, { params: { mode } },
+        )
+        .then((r) => r.data),
     // 市价平仓（与飞书卡片按钮同源）：同步执行约 2~5s，立即结算落终态
     closeMarket: (tradeId: string) =>
       api
