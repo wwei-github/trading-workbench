@@ -9,7 +9,9 @@
 结算（settle_trades，每小时 :42 巡检）：
     以交易所为真源（持仓量/挂单/已实现盈亏）推断成交事件：
     仓位归零 → 结算收益（正/负值）；外部平仓识别（actualOrderId 单链，
-    2026-10-02）→ exit_reason=manual 不误标止损类；TP1/TP2 成交 → 状态迁移；
+    2026-10-02）→ exit_reason=manual 不误标止损类；TP1/TP2 真成交 → 状态迁移
+    （判定以 algoStatus 终态 FINISHED 为准，不看「单号是否还在挂单列表」——
+    TRIGGERING/EXPIRED/REJECTED/CANCELED 都不是成交，2026-10-20 SQDUSDT 修复）；
     止损挂单消失（被撤/交易所异常）→ 按当前止损价补挂（裸仓保护）；
     TP1 成交 → 止损移至成本价 ± 往返费缓冲（保本，幂等，docs/24 A1''）；
     无 TP2 的单：TP1 止盈 80%，剩余 20% 从 TP1 起跟进止损（2026-10-09 调整）；
@@ -1810,14 +1812,88 @@ def _chandelier_sl(rec: TradeRecord, trader: BinanceTrader, k: float) -> Optiona
         return None
 
 
+_TP_FILLED_STATUS = "FINISHED"  # 币安 algo 条件单终态：已触发且成交
+
+
+def _tp_algo_filled(trader: BinanceTrader, symbol: str,
+                    order_id) -> Optional[bool]:
+    """TP 条件单是否「真成交」（algoStatus 终态 FINISHED = 触发并成交）。
+
+    TRIGGERING（已触发但未成交）、EXPIRED/REJECTED/CANCELED 都不算成交。
+    返回 None 表示查询失败无法判定（调用方回落旧口径，见 _tp_filled_real）。
+    """
+    if not order_id:
+        return False
+    try:
+        d = trader.algo_order_detail(symbol, int(order_id))
+    except Exception as e:
+        logger.debug("TP 条件单状态查询失败 %s #%s: %s", symbol, order_id, e)
+        return None
+    return str(d.get("algoStatus") or "").upper() == _TP_FILLED_STATUS
+
+
+def _tp_filled_real(trader: BinanceTrader, symbol: str, order_id,
+                    open_ids: set) -> bool:
+    """TP 档是否真成交（2026-10-20 SQDUSDT 误标修复）。
+
+    旧口径只看「TP 单号不在挂单列表」→ TRIGGERING/EXPIRED/REJECTED/CANCELED
+    一律被当成交。测试网薄盘使 TP1 卡在 TRIGGERING，叠加止损 closePosition 部分
+    成交把仓位缩到 60%，恰好过 ratio≤0.75 门槛，把一笔止损亏损平仓误标成
+    TP1_HIT（并触发保本移损，掩盖了剩余裸仓，最终逼近强平）。
+
+    新口径：仍挂在挂单列表（未触发）→ 直接判未成交（零额外请求，常态）；已不在
+    列表 → 查 algoStatus 确认 FINISHED 才算成交；查询失败回落旧口径（不在列表即
+    视为成交），避免识别失败阻塞正常结算。
+    """
+    if not order_id or int(order_id) in open_ids:
+        return False
+    filled = _tp_algo_filled(trader, symbol, order_id)
+    return True if filled is None else filled
+
+
+def _sl_algo_rejected(trader: BinanceTrader, symbol: str, order_id) -> bool:
+    """SL 条件单是否被交易所拒单（algoStatus=REJECTED）。
+
+    补挂的 SL 触发时被拒 → 仓位不会平，「现价越过 SL=疑似刚触发、等仓位归零」的
+    等待逻辑失效，必须立即处置，否则裸仓死锁（2026-10-20 SQDUSDT 呆等 6h+）。
+    查询失败/未拒单返回 False（保守，维持原逻辑）。
+    """
+    if not order_id:
+        return False
+    try:
+        d = trader.algo_order_detail(symbol, int(order_id))
+    except Exception:
+        return False
+    return str(d.get("algoStatus") or "").upper() == "REJECTED"
+
+
+def _alert_naked_position(rec: TradeRecord, price: float, sl: float,
+                          reason: str) -> None:
+    """裸仓风险告警（飞书，best-effort，发送失败不阻断巡检）。"""
+    try:
+        from app.services.notify import send_feishu_text
+        send_feishu_text(
+            f"⚠️ 裸仓风险 {rec.symbol} {rec.direction}：{reason}\n"
+            f"现价 {price} / 原止损 {sl}，该仓位已无止损保护，请人工处置。",
+            testnet=bool(rec.testnet),
+        )
+    except Exception as e:
+        logger.warning("裸仓告警发送失败 %s: %s", rec.symbol, e)
+
+
 def _rehang_lost_sl(db: Session, trader: BinanceTrader, rec: TradeRecord,
                     open_ids: set[int]) -> None:
-    """止损挂单存活巡检（docs/07 §8-A2）：SL algo 单消失（手动撤销/交易所异常）时
-    按当前止损价补挂——OPENED/TP1_HIT/TP2_HIT 状态下仓位无 SL 保护只能等强平。
+    """止损挂单存活巡检（docs/07 §8-A2）：SL algo 单消失（手动撤销/交易所异常/
+    触发时被拒）时按当前止损价补挂——OPENED/TP1_HIT/TP2_HIT 状态下仓位无 SL
+    保护只能等强平。
 
     - SL 单仍在挂单列表（或记录无 sl_order_id 的极端情况无价可挂）→ 不动作；
-    - 现价已被止损价越过：疑似 SL 刚触发、持仓量尚未反映，补挂会立即触发/挂空单，
-      跳过本轮，留待仓位归零的结算路径确认。
+    - 现价已被止损价越过且 SL 非「被拒单」：疑似 SL 刚触发、持仓量尚未反映，
+      跳过本轮，留待仓位归零的结算路径确认；
+    - SL 单 algoStatus=REJECTED（触发时被交易所拒，仓位不会平）→ 上述等待逻辑
+      失效，立即处置，避免裸仓死锁（2026-10-20 SQDUSDT：补挂 SL 触发被拒后，
+      每轮都因现价越过 SL 而跳过，裸仓呆等 6h+ 直至逼近强平）；
+    - 补挂抛错（如被卡在 TRIGGERING 的 reduceOnly 条件单阻塞）→ ERROR + 飞书告警。
     """
     raw = rec.raw or {}
     sl_id = raw.get("sl_order_id")
@@ -1827,16 +1903,36 @@ def _rehang_lost_sl(db: Session, trader: BinanceTrader, rec: TradeRecord,
     if cur_sl <= 0:
         return
     price = trader.price(rec.symbol)
-    if _immediate_trigger(cur_sl, price, rec.direction):
+    overshoot = _immediate_trigger(cur_sl, price, rec.direction)
+    sl_dead = _sl_algo_rejected(trader, rec.symbol, sl_id)
+    if overshoot and not sl_dead:
         logger.info(
             "止损单丢失 %s：现价 %s 已越过 SL %s，疑似刚触发，下轮结算确认",
             rec.symbol, price, cur_sl,
         )
         return
-    _replace_sl(db, trader, rec, open_ids,
-                trader.round_price(rec.symbol, cur_sl), reason="sl_rehang")
-    db.commit()
-    logger.warning("止损挂单丢失已补挂 %s：SL=%s（巡检发现挂单消失）", rec.symbol, cur_sl)
+    if overshoot and sl_dead:
+        # SL 触发被拒、现价又已越过 → 原价位补挂会立即触发被拒，就地无法恢复保护
+        logger.error(
+            "止损单被交易所拒单且现价已越过 %s：SL=%s 现价=%s，剩余仓位裸奔，"
+            "原价位无法补挂，等待人工处置", rec.symbol, cur_sl, price,
+        )
+        _alert_naked_position(rec, price, cur_sl,
+                              "止损单触发被拒且现价已越过，原止损价位无法补挂")
+        return
+    try:
+        _replace_sl(db, trader, rec, open_ids,
+                    trader.round_price(rec.symbol, cur_sl), reason="sl_rehang")
+        db.commit()
+        logger.warning("止损挂单丢失已补挂 %s：SL=%s（巡检发现挂单消失）", rec.symbol, cur_sl)
+    except Exception as e:
+        db.rollback()
+        logger.error(
+            "止损补挂失败 %s：SL=%s err=%s（可能被卡在 TRIGGERING 的 reduceOnly "
+            "条件单阻塞，裸仓）", rec.symbol, cur_sl, e,
+        )
+        _alert_naked_position(rec, price, cur_sl, "止损补挂失败（可能被卡在 TRIGGERING 的 reduceOnly 条件单阻塞）")
+        raise
 
 
 def _breakeven_stop_price(rec: TradeRecord, fee_rate: Optional[float] = None) -> float:
@@ -1914,11 +2010,13 @@ def _derive_exit_reason(rec: TradeRecord, fee_rate: Optional[float] = None) -> s
     return "sl"
 
 
-def _zero_pos_exit_reason(rec: TradeRecord, tp1_gone: bool,
+def _zero_pos_exit_reason(rec: TradeRecord, tp1_hit: bool,
                           fee_rate: Optional[float] = None) -> str:
-    """仓位归零时的出场原因：OPENED 状态下 TP1 单已消失，说明 TP1 与 SL 在同一巡检间隔内
-    先后成交（如 75% TP1 后回踩触发 SL）→ tp1_then_sl；其余按状态推断"""
-    if rec.status == "OPENED" and tp1_gone:
+    """仓位归零时的出场原因：OPENED 状态下 TP1 真成交（非「单号消失」），说明 TP1 与 SL
+    在同一巡检间隔内先后成交（如 75% TP1 后回踩触发 SL）→ tp1_then_sl；其余按状态推断。
+
+    tp1_hit 由 _tp_filled_real 判定（真成交，见 2026-10-20 SQDUSDT 误标修复）。"""
+    if rec.status == "OPENED" and tp1_hit:
         return "tp1_then_sl"
     return _derive_exit_reason(rec, fee_rate)
 
@@ -2368,8 +2466,10 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
             pos = pos_map.get(rec.symbol)
             amt = abs(pos["amt"]) if pos else 0.0
             open_ids = rt.open_order_ids(rec.symbol)
-            tp1_gone = raw.get("tp1_order_id") and int(raw["tp1_order_id"]) not in open_ids
-            tp2_gone = raw.get("tp2_order_id") and int(raw["tp2_order_id"]) not in open_ids
+            # TP「真成交」判定（2026-10-20 SQDUSDT 误标修复）：不再只看「单号不在挂单
+            # 列表」——TRIGGERING/EXPIRED/REJECTED/CANCELED 都不算成交（见 _tp_filled_real）
+            tp1_hit = _tp_filled_real(rt, rec.symbol, raw.get("tp1_order_id"), open_ids)
+            tp2_hit = _tp_filled_real(rt, rec.symbol, raw.get("tp2_order_id"), open_ids)
 
             # 仓位归零 → 结算（净盈亏 = 已实现盈亏 − 手续费 − 资金费 − 强平清算，正/负值）
             if qty <= 0 or amt < qty * 0.05:
@@ -2380,7 +2480,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                 rows = rt.income_rows(rec.symbol, since_ms)
                 # 强平识别：逐仓保证金亏光时交易所强制平仓并撤销全部挂单（含 TP），
                 # 会产生 INSURANCE_CLEAR 清算记录——此时 TP1 挂单消失≠TP1 成交，
-                # 不能按 tp1_gone 误判为 tp1_then_sl
+                # 不能按 tp1_hit 误判为 tp1_then_sl
                 insurance_clear = sum(
                     float(r.get("income") or 0)
                     for r in rows if r.get("incomeType") == "INSURANCE_CLEAR"
@@ -2408,7 +2508,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                     })
                     exit_reason = "liquidation"
                 else:
-                    if rec.status == "OPENED" and tp1_gone:
+                    if rec.status == "OPENED" and tp1_hit:
                         # TP1 与 SL 在同一巡检间隔内先后成交（如 75% TP1 后回踩触发 SL）：补记 TP1_FILL
                         _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
                                                          "realized_pnl": round(pnl, 6)})
@@ -2418,7 +2518,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                     if raw.get("exit_override"):
                         exit_reason = raw["exit_override"]
                     else:
-                        exit_reason = _zero_pos_exit_reason(rec, tp1_gone, fee_rate)
+                        exit_reason = _zero_pos_exit_reason(rec, tp1_hit, fee_rate)
                         # 外部平仓识别（2026-10-02 GTCUSDT 案例）：最后一批平仓侧成交
                         # 不在系统单链内 → 交易所网页/App 手动平仓，按 manual 记，
                         # 不再让 bookkeeping 推断误标为止损类出场
@@ -2475,7 +2575,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
             # 止损挂单存活巡检：SL 单被撤/丢失时补挂（裸仓保护，docs/07 §8-A2）
             _rehang_lost_sl(db, rt, rec, open_ids)
             if rec.status == "OPENED":
-                if tp2_gone and ratio <= 0.35:
+                if tp2_hit and ratio <= 0.35:
                     # 同一小时两档止盈都成交：从交易所成交明细按时间序+数量精确拆分
                     # 各档价差盈亏（与常规路径的 _tranche_pnl 书签口径同义，但两档同轮
                     # 成交无法用书签差值区分；TP 条件单触发后换新单号，无法按单号归集）。
@@ -2508,7 +2608,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                     _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
                     db.commit()
                     handled += 1
-                elif tp1_gone and ratio <= 0.75:
+                elif tp1_hit and ratio <= 0.75:
                     realized = _record_realized(db, rt, rec)
                     tranche = _tranche_pnl(rt, rec, raw)
                     _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
@@ -2521,8 +2621,24 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                         _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k)
                     db.commit()
                     handled += 1
+                else:
+                    # 仓位被缩减但 TP 未成交 → 非系统止盈腿的减仓（止损 closePosition 部分
+                    # 成交 / 交易所侧手动减仓）。2026-10-20 SQDUSDT：止损部分成交曾被误标
+                    # TP1_HIT，掩盖了剩余裸仓。此处只记异常事件、保留 OPENED，保护交由止损
+                    # 存活巡检，绝不按「仓位缩小」推断止盈成交。
+                    if ratio <= 0.75 and not raw.get("partial_close_flagged"):
+                        _add_event(db, rec, "PARTIAL_CLOSE_ANOMALY", {
+                            "ratio": round(ratio, 4), "amt": amt, "qty": qty,
+                        })
+                        rec.raw = {**raw, "partial_close_flagged": True}
+                        db.commit()
+                        handled += 1
+                    logger.warning(
+                        "仓位被缩减但未检到止盈成交 %s：剩余比例 %.2f ≤0.75，保留 OPENED"
+                        "（不误标 TP1_HIT），仅执行止损存活保护", rec.symbol, ratio,
+                    )
             elif rec.status == "TP1_HIT":
-                if tp2_gone and ratio <= 0.35:
+                if tp2_hit and ratio <= 0.35:
                     realized = _record_realized(db, rt, rec)
                     tranche = _tranche_pnl(rt, rec, raw)
                     _add_event(db, rec, "TP2_FILL", {"qty": raw.get("qty_tp2"),
