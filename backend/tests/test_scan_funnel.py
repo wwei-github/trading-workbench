@@ -37,6 +37,34 @@ _FAIL_VOTES = {"bull": ["MACD"], "bear": ["RSI"], "bull_n": 1, "bear_n": 1,
 _SHORT_VOTES = {"bull": [], "bear": ["MACD", "RSI"], "bull_n": 0, "bear_n": 2,
                 "net": -2, "voted": 2, "results": {}}
 
+# 4h 状态机态 → 中文标签（前置门/逆势锁判定说明断言用；与原打桩映射一致）
+_HTF_LABELS = {"tangle": "缠绕", "turn_bull": "多头拐头", "turn_bear": "空头拐头",
+               "aligned_bull": "多头排列", "aligned_bear": "空头排列",
+               "macro_cross_bull": "55×144金叉", "macro_cross_bear": "55×144死叉"}
+
+
+def _htf_context_stub(gate, htf_state, htf_dir):
+    """4h 合并入口 htf_context 打桩（2026-10-20 合并）：把旧的 gate_4h 方向
+    (gate) 与 4h 状态机态 (htf_state) 合成一份返回 dict。gate=None ⇒
+    reject_reason 非空（等价旧「gate_4h 返回 None」→ 漏斗 gate_4h 关）；
+    block_both / 逆势方向由状态机态推导（前置门 / STATE_LOCK_CONTRA 逆势锁）。"""
+    from app.services.strategy.technical import STATE_BLOCK_BOTH, STATE_LOCK_CONTRA
+
+    def _stub(k, core=None):
+        st = htf_state
+        st_dir = htf_dir or 0
+        return {
+            "direction": gate[0] if gate else None,
+            "reject_reason": None if gate is not None else "tangle",
+            "block_both": st in STATE_BLOCK_BOTH,
+            "lock_contra_dir": st_dir if st in STATE_LOCK_CONTRA else None,
+            "state": st, "state_label": _HTF_LABELS.get(st, st),
+            "dir": st_dir, "macro_aligned": (st_dir == 1),
+            "evidence": {},
+        }
+
+    return _stub
+
 
 class FakePool:
     """4h 返回非空占位（闸门块执行）或空（跳过闸门块），1h 忽略"""
@@ -53,32 +81,24 @@ def _detect(reject_out, klines=None, *, votes=_PASS_VOTES, gate=("long", {}), ht
             htf_dir=None):
     """打桩装配一次 detect：各桩默认全放行，命中点由参数控制。
     real_trigger=True 时不打桩 detect_trigger（跑真实触发链，测 no_trigger 明细）；
-    htf_state 非 None 时打桩 analyze_htf_background 返回该 4h 状态机态（4h 状态机
-    前置门用：tangle/turn_* 一票否决全部 1h 候选；htf_dir 为该态方向，供
-    STATE_LOCK_CONTRA 逆势锁用，缺省 None=0 不判逆势）"""
+    gate 为 4h 闸门方向（("long"|"short", {...})，None=闸门否决）；htf_state 非 None
+    时合并入口 htf_context 桩返回该 4h 状态机态（4h 状态机前置门用：tangle/turn_*
+    一票否决全部 1h 候选；htf_dir 为该态方向，供 STATE_LOCK_CONTRA 逆势锁用，
+    缺省 None=0 不判逆势）"""
     import app.services.scanner as sm
 
     orig = {
         "analyze_ema": sm.analyze_ema, "classify_volume": sm.classify_volume,
         "compute_indicator_votes": sm.compute_indicator_votes,
-        "gate_4h": sm.gate_4h, "analyze_htf_background": sm.analyze_htf_background,
-        "htf_core": sm.htf_core,
+        "htf_context": sm.htf_context,
         "range_score": sm.range_score, "detect_trigger": sm.detect_trigger,
     }
     sm.analyze_ema = lambda k: None
     sm.classify_volume = lambda k: (1.0, "平量")
     sm.compute_indicator_votes = lambda k, h=None, htf_bg=None: votes
-    # 4h 共享计算核心（2026-10-13）：scanner 先调 htf_core 再透传 core；此处打桩返回
-    # None（等价样本不足），各桩忽略 core 参数即可
-    sm.htf_core = lambda k, fast=21, slow=55: None
-    sm.gate_4h = lambda k, cfg=None, core=None: gate
-    if htf_state is not None:
-        _labels = {"tangle": "缠绕", "turn_bull": "多头拐头", "turn_bear": "空头拐头",
-                   "aligned_bull": "多头排列", "aligned_bear": "空头排列",
-                   "macro_cross_bull": "55×144金叉", "macro_cross_bear": "55×144死叉"}
-        sm.analyze_htf_background = lambda k, fast=21, slow=55, core=None: {
-            "state": htf_state, "state_label": _labels.get(htf_state, htf_state),
-            "dir": htf_dir or 0}
+    # 4h 合并入口桩（2026-10-20）：把旧的 gate_4h 方向 (gate) 与状态机态 (htf_state)
+    # 合成一份 htf_context 返回（scanner 单次调用，不再分别调 gate_4h/analyze/htf_core）
+    sm.htf_context = _htf_context_stub(gate, htf_state, htf_dir)
     sm.range_score = lambda k, gate_ev=None: (rs, [])
     if not real_trigger:
         sm.detect_trigger = lambda *a, **k: trigger

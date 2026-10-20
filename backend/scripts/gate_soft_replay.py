@@ -208,7 +208,7 @@ def _harness_pass(symbol: str, kl_all: list, htf_all: list, flt,
                   soft_votes: bool, soft_flip: bool) -> list[dict]:
     """单币走历史：逐根复刻 detect_indicator_candidate 的编排。
 
-    与生产的唯一差别就是两个闸门可按开关软化；其余（gate_4h/状态机前置门/
+    与生产的唯一差别就是两个闸门可按开关软化；其余（4h 合并入口 htf_context/
     range_score/trigger/白名单/质量分/pending 状态机）与 scanner 逐行同义。
     """
     htf_opens = [k[0] for k in htf_all]
@@ -219,30 +219,25 @@ def _harness_pass(symbol: str, kl_all: list, htf_all: list, flt,
         t_close = kl_all[t][0] + HOUR_MS  # 信号K线收盘时刻
         i = bisect_left(htf_opens, t_close)
         htf = htf_all[:i][-300:] or None
-        htf_core_res = htf_res = gate = None
+        htf_res = None
         if htf:
+            # 4h 合并入口（2026-10-20 用户拍板：原 gate_4h + 状态机合并）
             try:
-                htf_core_res = tech.htf_core(htf)
-            except Exception:
-                htf_core_res = None
-            try:
-                htf_res = tech.analyze_htf_background(htf, core=htf_core_res)
+                htf_res = tech.htf_context(htf)
             except Exception:
                 htf_res = None
-            try:
-                gate = eg.gate_4h(htf, core=htf_core_res)
-            except Exception:
-                gate = None
             else:
-                if gate is None:
-                    # gate_4h 主动否决（异常路径 gate=None 降级放行）
+                if htf_res is None or htf_res.get("reject_reason"):
+                    # 闸门主动否决（异常路径 htf_res=None 降级放行）
                     if pend:
                         pend = None
                     continue
-            if htf_res is not None and htf_res.get("state") in tech.STATE_BLOCK_BOTH:
+            if htf_res is not None and htf_res.get("block_both"):
                 if pend:
                     pend = None
                 continue
+        # 4h 方向权威（原 gate_4h 的 long/short；htf_res=None 异常降级时无方向）
+        gate_dir = htf_res.get("direction") if htf_res is not None else None
 
         votes = tech.compute_indicator_votes(kl, htf_bg=htf_res)
         votes_fail = (not votes) or (_min_same(votes) < tech.DIR_VOTE_MIN)
@@ -259,8 +254,8 @@ def _harness_pass(symbol: str, kl_all: list, htf_all: list, flt,
             direction = 1 if votes["net"] > 0 else -1
         elif soft_votes:
             net_zero_fallback = True
-            if gate is not None:
-                direction = 1 if gate[0] == "long" else -1
+            if gate_dir is not None:
+                direction = 1 if gate_dir == "long" else -1
             else:
                 direction = _slope_dir(kl)
             if direction == 0:
@@ -276,14 +271,15 @@ def _harness_pass(symbol: str, kl_all: list, htf_all: list, flt,
                 pend = None
             continue
 
-        flip_conflict = (gate is not None
-                         and gate[0] != ("long" if direction == 1 else "short"))
+        flip_conflict = (gate_dir is not None
+                         and gate_dir != ("long" if direction == 1 else "short"))
         if flip_conflict and not soft_flip:
             if pend:
                 pend = None
             continue
 
-        rs, _ = eg.range_score(kl, gate_ev=gate[1] if gate else None)
+        rs, _ = eg.range_score(
+            kl, gate_ev=htf_res.get("evidence") if htf_res else None)
         if rs >= eg.RANGE_SCORE_REJECT:
             if pend:
                 pend = None
@@ -291,7 +287,7 @@ def _harness_pass(symbol: str, kl_all: list, htf_all: list, flt,
 
         trigd, pend_op = trig.detect_trigger(
             kl, direction, pend, flt=flt, retest=None, htf=htf,
-            htf_dir=(gate[0] if gate else None))
+            htf_dir=gate_dir)
 
         # 释放标记随 pending 传递（软态新进池的待确认，其确认根不一定复现旗标）
         origin = (votes_fail, flip_conflict, net_zero_fallback)
@@ -339,7 +335,7 @@ def _harness_pass(symbol: str, kl_all: list, htf_all: list, flt,
             "structure_gate": trigd.get("structure_gate", True),
             "net": (votes or {}).get("net"), "voted": (votes or {}).get("voted"),
             "vmax": _min_same(votes) if votes else 0,
-            "gate_dir": gate[0] if gate else None,
+            "gate_dir": gate_dir,
             "votes_fail": bool(vf), "flip_conflict": bool(fc),
             "net_zero_fallback": bool(nz),
             "quality": quality, "vol24": _vol24(kl_all, t),

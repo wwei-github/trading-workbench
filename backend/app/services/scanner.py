@@ -2,9 +2,10 @@
 
 筛选漏斗（指标为主、信号为触发器，EMA 三件套硬门 2026-10-10 二次拍板）：
 1. 宇宙：USDT 永续，24h 成交额 ≥ MIN_VOLUME_24H（流动性门槛）
-2. 4h 趋势闸门 gate_4h 一票否决：EMA144 斜率/缠绕/ADX 三重条件必须同时成立，
+2. 4h 合并入口 htf_context 一票否决（2026-10-20 合并：原 gate_4h 三重否决 +
+   4h 状态机）：EMA144 斜率走平/缠绕/ADX 必须过（detect_tangle 统一缠绕判据），
    否决直接不看（不跑票数不触发不进 AI）；震荡评分卡 ≥3 同为硬门
-   （ema_gate.py，docs/19 §2/§3）。1H 结构门已于 2026-10-12 退役（docs/21
+   （technical.py / ema_gate.py，docs/19 §2/§3）。1H 结构门已于 2026-10-12 退役（docs/21
    O7；策略二资格闸随策略二删除），2026-10-15 再由 trigger 层硬门降级为
    质量分重罚（docs/21 O9）——结构判定不否决信号，只在质量分上体现
 3. 分组：方向票（MACD/布林带/RSI）同向 ≥2 张 → 多头/空头候选（2026-10-15
@@ -42,13 +43,11 @@ from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import volume_ratio
 from app.services.strategy.technical import (
     DIR_VOTE_MIN,
-    STATE_BLOCK_BOTH,
     STATE_LOCK_CONTRA,
     compute_indicator_votes,
     compute_quality_score,
     pullback_stabilize_bonus,
-    analyze_htf_background,
-    htf_core,
+    htf_context,
     HTF_SHORT,
 )
 from app.services.strategy.trigger import (
@@ -60,7 +59,6 @@ from app.services.strategy.trigger import (
 )
 from app.services.strategy.ema_gate import (
     RANGE_SCORE_REJECT,
-    gate_4h,
     range_score,
 )
 
@@ -218,8 +216,8 @@ def detect_indicator_candidate(
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """指标驱动单币检测（Scanner 与 watchlist.refresh 共用同一套逻辑与阈值）。
 
-    流程：4h 趋势闸门 gate_4h 一票否决（走平/缠绕/ADX<20 任一命中直接不看，
-    取代原 ranging 过滤 +htf_res 方向门）→ 单趟指标计算 → 方向票（MACD/布林带/
+    流程：4h 合并入口 htf_context 一票否决（走平/缠绕/ADX 任一命中直接不看，
+    取代原 gate_4h + 状态机前置门）→ 单趟指标计算 → 方向票（MACD/布林带/
     RSI）同向 ≥2 张（2026-10-15 指标拆角色，docs/21 O9）→ 闸门方向一致 →
     震荡评分卡 range_score（≥3 不入场）→ 两段式触发确认（trigger.py）→ 质量分。
     4h 背景复用第一步结果、指标不再双算。
@@ -268,61 +266,55 @@ def detect_indicator_candidate(
     ema = analyze_ema(klines)  # 背景展示用（方向判定不依赖 EMA）
     vol, vol_type = classify_volume(klines)
 
-    # 第一步：4h 趋势闸门 gate_4h（2026-10-10 二次拍板，check_4h_gate 一票否决
-    # 语义落地为筛选硬门，取代原 ranging 过滤 + htf_res 方向门）——整个筛选系统
-    # 最重要的过滤器：只有 4H 趋势明确（EMA144 斜率 ≥0.5%/20根、近10根缠绕
-    # ≤2次、ADX≥20，三者同时成立）才允许 1H 入场，4h 走平或缠绕时 1h 信号再
-    # 漂亮也不做。命中否决 → 直接不看：不跑票数、不触发、不进候选（连 AI 分析
-    # 都不给），活跃 pending 同轮 expire(ranging)（ranging 词义="4h 无明确趋势"，
-    # 涵盖走平与缠绕，死因沿用既有词表）。
+    # 第一步：4h 合并入口 htf_context（2026-10-20 用户拍板：原 gate_4h 三重否决
+    # 与 4h 状态机合并为单入口）——整个筛选系统最重要的过滤器：只有 4H 趋势明确
+    # （EMA144 斜率 ≥0.5%/20根、非缠绕〔detect_tangle：ADX<20 ∨ 21/55间距<0.1% ∨
+    # 21×55锯齿 ∨ 价格×144 穿越>2〕、ADX 可用、方向确定）才允许 1H 入场，4h 走平
+    # 或缠绕时 1h 信号再漂亮也不做。命中否决（reject_reason 非空或 core 不足返回
+    # None）→ 直接不看：不跑票数、不触发、不进候选（连 AI 分析都不给），活跃
+    # pending 同轮 expire(ranging)（ranging 词义="4h 无明确趋势"，涵盖走平与缠绕）。
     # 4h 每轮对全币池拉取（kline 缓存按 4h 桶对齐，实际新请求 ≈ 池子 ÷4 每小时）；
-    # 拉取失败（htf=None）与闸门计算异常降级放行——gate_4h 返回 None=主动否决，
-    # 异常=数据/实现问题，二者区分（原 ranging 过滤同口径）。4h 历史 <200 根
-    # （新币冷静期默认 45 天≈270 根，正常覆盖不到）一并否决。
+    # 拉取失败（htf=None）与计算异常降级放行——正常返回的 None/拒因=主动否决，
+    # 异常=数据/实现问题，二者区分（原 ranging 过滤同口径）。
     try:
         htf = pool.get_klines(symbol, "4h", 300)  # 300 根：EMA144 SMA 种子后递推 155 步，收敛残留 ~12%
     except Exception as e:
         htf = None
         logger.warning("%s 获取4h K线失败（跳过4h票）: %s", symbol, e)
     htf_res = None
-    gate = None
     if htf:
-        # 4h 共享计算核心（2026-10-13 合并）：gate_4h 与 analyze_htf_background 各需
-        # EMA21/55/144 + ADX + ATR，此前同一份 4h 序列被双算；此处只算一次并透传。
-        # core 为 None（样本不足或异常）时二者退回自算，与原行为一致。
+        # 合并入口一次算 core（EMA21/55/144 + ADX + ATR）并产出状态机视图 +
+        # 闸门方向 + 行为矩阵，替代原「core 透传 → analyze + gate 双算」。
         try:
-            htf_core_res = htf_core(htf)
-        except Exception as e:
-            htf_core_res = None
-            logger.warning("%s 4h共享计算失败（降级自算）: %s", symbol, e)
-        try:
-            htf_res = analyze_htf_background(htf, core=htf_core_res)
+            htf_res = htf_context(htf)
         except Exception as e:
             htf_res = None
-            logger.warning("%s 4h背景复算失败（过滤降级放行）: %s", symbol, e)
-        try:
-            gate = gate_4h(htf, core=htf_core_res)
-        except Exception as e:
-            gate = None
-            logger.warning("%s 4h闸门计算异常（降级放行）: %s", symbol, e)
+            logger.warning("%s 4h 上下文计算异常（降级放行）: %s", symbol, e)
         else:
-            # 仅"正常返回 None"= 主动否决；异常路径 gate=None 走下方降级放行，
-            # 不死因归类 ranging（异常=数据/实现问题，与市场状态无关）
-            if gate is None:
+            # 仅"正常返回"时判定主动否决：reject_reason 非空（走平/缠绕/数据/
+            # ADX/方向歧义）或 core 不足返回 None → gate_4h 关卡；异常路径
+            # htf_res=None 走降级放行（异常=数据/实现问题，与市场状态无关）
+            if htf_res is None or htf_res.get("reject_reason"):
                 _reject("gate_4h")
                 return None, ({"op": "expire", "reason": "ranging"} if pending else None)
-        # 4h 状态机前置门（2026-10-13 用户拍板）：4h 状态机双向禁开（tangle 缠绕 /
-        # turn_* 拐头）时，回踩·突破候选均一票否决——与 gate_4h 同属「前置筛选」层
-        # （4h 决定做不做，1h 负责命中与待确认）。命中即直接不看：不跑票数、不触发、
-        # 不进候选，活跃 pending 同轮 expire(htf_state_lock)。异常降级（htf_res=None）
-        # 放行，与 gate_4h 同口径。
-        if htf_res is not None and htf_res.get("state") in STATE_BLOCK_BOTH:
+        # 4h 状态机双向禁开（2026-10-13 用户拍板）：block_both（tangle 缠绕 /
+        # turn_* 拐头）时，回踩·突破候选均一票否决——与闸门同属「前置筛选」层
+        # （4h 决定做不做，1h 负责命中与待确认）。tangle 已由上方 reject_reason
+        # 先行否决（统一判据），此处实际拦 turn_*；命中即直接不看：不跑票数、
+        # 不触发、不进候选，活跃 pending 同轮 expire(htf_state_lock)。异常降级
+        # （htf_res=None）放行，与闸门同口径。
+        if htf_res is not None and htf_res.get("block_both"):
             _reject("htf_state_lock")
             if reject_out is not None:
                 reject_out["detail"] = (
                     f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
                     "双向禁开——回踩/突破候选均不做")
             return None, ({"op": "expire", "reason": "htf_state_lock"} if pending else None)
+
+    # 4h 方向权威（原 gate_4h 的 long/short；合并后即 htf_context.direction）。
+    # htf_res=None（异常降级）时无方向 → 与旧 gate=None 同口径（定向兜底/
+    # 方向一致性关/触点 htf_dir 均跳过）。
+    gate_dir = htf_res.get("direction") if htf_res is not None else None
 
     # 投票单趟计算（2026-10-10 精简；2026-10-15 指标拆角色，docs/21 O9）：
     # 方向票仅 MACD/布林带/RSI 三张（technical.DIR_VOTE_SHORTS），门槛改为
@@ -359,8 +351,8 @@ def detect_indicator_candidate(
     net = votes["net"] if votes else 0
     if net != 0:
         direction = 1 if net > 0 else -1
-    elif gate is not None:
-        direction = 1 if gate[0] == "long" else -1
+    elif gate_dir is not None:
+        direction = 1 if gate_dir == "long" else -1
     else:
         _reject("votes")
         if reject_out is not None:
@@ -379,13 +371,13 @@ def detect_indicator_candidate(
     # 非缺陷：深回撤与 1h 票同向本就是小概率形态。detail 给漏斗可读的方向对撞说明。
     # 方向冲突关（2026-10-18 开关化）：flt.direction_conflict_gate_enabled=False 时
     # 跳过本关——允许逆 4h 闸门方向的候选照常产生（放开深回撤等逆势形态）。
-    if (flt.direction_conflict_gate_enabled and gate is not None
-            and gate[0] != ("long" if direction == 1 else "short")):
+    if (flt.direction_conflict_gate_enabled and gate_dir is not None
+            and gate_dir != ("long" if direction == 1 else "short")):
         _reject("direction_flip")
         if reject_out is not None:
             reject_out["detail"] = (
                 f"定向={'多' if direction == 1 else '空'}头（方向票净差{net:+d}），"
-                f"与4h闸门方向（{'多' if gate[0] == 'long' else '空'}头）相反；"
+                f"与4h闸门方向（{'多' if gate_dir == 'long' else '空'}头）相反；"
                 "深回撤触点常见此冲突（仅插针式可过）")
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
@@ -424,7 +416,8 @@ def detect_indicator_candidate(
     # 自 2026-10-12 结构门退出筛选链后不再被前置门屏蔽、按 1h 实际排列独立计分
     # （旧注「项 1-4 恒 0」随结构门退役失效）。实际杀伤力主要来自项 5-8（1h ADX
     # 预警/布林带收口/价格反复穿越 EMA21/成交量低迷），≥3 即强震荡共识
-    rs, _rs_reasons = range_score(klines, gate_ev=gate[1] if gate else None)
+    rs, _rs_reasons = range_score(
+        klines, gate_ev=htf_res.get("evidence") if htf_res else None)
     if rs >= RANGE_SCORE_REJECT:
         _reject("range_score")
         return None, ({"op": "expire", "reason": "range_score"} if pending else None)
@@ -437,9 +430,9 @@ def detect_indicator_candidate(
     trig_diag: Optional[dict] = {} if reject_out is not None else None
     trig, pending_op = detect_trigger(
         klines, direction, pending, flt=flt, retest=retest, htf=htf,
-        # 4h 方向传给触点层：ema144 深回撤门靠真实 4h 趋势方向判定；gate 降级
-        # （htf 拉取失败/异常 → gate=None）时该触点 fail-closed 不出（2026-10-16 加固）
-        htf_dir=(gate[0] if gate else None),
+        # 4h 方向传给触点层：ema144 深回撤门靠真实 4h 趋势方向判定；闸门降级
+        # （htf 拉取失败/异常 → gate_dir=None）时该触点 fail-closed 不出（2026-10-16 加固）
+        htf_dir=gate_dir,
         diag=trig_diag,
     )
     if trig is not None:

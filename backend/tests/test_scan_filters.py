@@ -350,8 +350,13 @@ def test_candidate_structure_gate_retired(monkeypatch):
     monkeypatch.setattr(scanner_mod, "classify_volume", lambda k: (1.0, "平量"))
     monkeypatch.setattr(scanner_mod, "compute_indicator_votes",
                         lambda k, h=None, htf_bg=None: votes)
-    monkeypatch.setattr(scanner_mod, "gate_4h",
-                        lambda k, cfg=None: ("long", {"slope_pct": 0.01, "wraps": 0, "adx": 25.0}))
+    monkeypatch.setattr(scanner_mod, "htf_context",
+                        lambda k, core=None: {
+                            "direction": "long", "reject_reason": None,
+                            "block_both": False, "lock_contra_dir": None,
+                            "state": "aligned_bull", "state_label": "多头排列",
+                            "dir": 1, "macro_aligned": True, "evidence": {},
+                        })
     monkeypatch.setattr(scanner_mod, "range_score", lambda k, gate_ev=None: (0, []))
 
     class FakePool:
@@ -481,10 +486,15 @@ def test_candidate_whitelist_drops_disallowed_triggers(monkeypatch):
     # EMA 三件套硬门（2026-10-10 二次拍板）打桩放行——本测试只验证白名单语义；
     # 闸门/评分的行为回归见 test_htf_ranging_filter.py（structure_1h 硬门
     # 2026-10-12 退役，docs/21 O7——不再打桩）。
-    # 注意 FakePool 对 4h 返回 []，gate_4h 桩实际不会被调用（htf 空跳过闸门块）；
+    # 注意 FakePool 对 4h 返回 []，htf_context 桩实际不会被调用（htf 空跳过闸门块）；
     # 桩仍给"通过"返回值，防将来池子补 4h 数据时误否决
-    monkeypatch.setattr(scanner_mod, "gate_4h",
-                        lambda k, cfg=None: ("long", {"slope_pct": 0.01, "wraps": 0, "adx": 25.0}))
+    monkeypatch.setattr(scanner_mod, "htf_context",
+                        lambda k, core=None: {
+                            "direction": "long", "reject_reason": None,
+                            "block_both": False, "lock_contra_dir": None,
+                            "state": "aligned_bull", "state_label": "多头排列",
+                            "dir": 1, "macro_aligned": True, "evidence": {},
+                        })
     monkeypatch.setattr(scanner_mod, "range_score", lambda k, gate_ev=None: (0, []))
 
     class FakePool:

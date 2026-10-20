@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """EMA 趋势门单测（docs/19 §2，2026-10-10 融合拍板：影子层退役并入原生触发层）。
 
-- ema_gate：gate_4h 三重否决（斜率走平/缠绕/ADX）与方向判定、structure_1h
-  三线排列 + 快中线发散度 + EMA144 方向（2026-10-11 拍板中慢线发散度退役）；
+- technical.htf_context：4h 合并入口（2026-10-20 由原 gate_4h 三重否决 + 4h 状态机
+  合并）方向判定与趋势健康证据；ema_gate.structure_1h 三线排列 + 快中线发散度 +
+  EMA144 方向（2026-10-11 拍板中慢线发散度退役）；
   K 线格式 [ts, o, h, l, c, v]（与 ExchangePool 一致）；
 - trigger 1H 结构门「降级不否决」（2026-10-12 硬门 → 2026-10-15 软校验，docs/21
   O9）：回踩 1h EMA21 触点仍复校 structure_1h（三线排列 + 快中线发散史 + EMA144
@@ -25,13 +26,11 @@ from app.config import settings  # noqa: E402
 from app.services.strategy import technical as tech  # noqa: E402
 from app.services.strategy import trigger as trig  # noqa: E402
 from app.services.strategy.ema import calc_ema  # noqa: E402
-from app.services.strategy.ema_gate import (  # noqa: E402
-    gate_4h,
-    structure_1h,
-)
+from app.services.strategy.ema_gate import structure_1h  # noqa: E402
 from app.services.strategy.technical import (  # noqa: E402
     analyze_stochastic,
     compute_quality_score,
+    htf_context,
     macd_zero_state,
     pullback_stabilize_bonus,
 )
@@ -51,40 +50,45 @@ def _bars(closes, ts_step, vol=1000.0):
     return out
 
 
-# ── gate_4h：4H EMA144 趋势闸门（三重否决）────────────────────────────────
+# ── htf_context：4h 合并入口（原 gate_4h 三重否决 + 4h 状态机）───────────────
 
 
-def test_gate_4h_uptrend_passes_long():
+def test_htf_context_uptrend_passes_long():
     k4 = _bars([100.0 + 0.8 * i for i in range(300)], H4)
-    g = gate_4h(k4)
-    assert g is not None
-    g_dir, ev = g
-    assert g_dir == "long"
+    ctx = htf_context(k4)
+    assert ctx is not None
+    assert ctx["direction"] == "long"
+    assert ctx["reject_reason"] is None
+    ev = ctx["evidence"]
     assert ev["direction"] == "up"
     assert ev["slope_pct"] >= 0.005
     assert ev["wraps"] == 0
     assert ev["adx"] is not None and ev["adx"] >= 20.0
 
 
-def test_gate_4h_downtrend_passes_short():
+def test_htf_context_downtrend_passes_short():
     k4 = _bars([400.0 - 0.8 * i for i in range(300)], H4)
-    g = gate_4h(k4)
-    assert g is not None and g[0] == "short" and g[1]["direction"] == "down"
+    ctx = htf_context(k4)
+    assert ctx is not None
+    assert ctx["direction"] == "short" and ctx["evidence"]["direction"] == "down"
 
 
-def test_gate_4h_flat_market_rejected():
-    """走平否决：EMA144 近 20 根变化 < 0.5% → None"""
+def test_htf_context_flat_market_rejected():
+    """走平否决（独立拒因 flat）：EMA144 近 20 根变化 < 0.5%"""
     k4 = _bars([100.0 + 0.01 * (i % 5) for i in range(300)], H4)
-    assert gate_4h(k4) is None
+    ctx = htf_context(k4)
+    assert ctx is not None and ctx["reject_reason"] == "flat"
+    assert ctx["direction"] is None
 
 
-def test_gate_4h_insufficient_bars_rejected():
+def test_htf_context_insufficient_bars_rejected():
+    """数据门（MIN_CLOSED_4H）：已收盘根数不足 → htf_context 返回 None"""
     k4 = _bars([100.0 + 0.8 * i for i in range(150)], H4)
-    assert gate_4h(k4) is None
+    assert htf_context(k4) is None
 
 
 # 缠绕否决（wraps>2）无法与 ADX 弱隔离——缠绕序列必然压低 ADX，由
-# test_gate_4h_flat_market_rejected 的"否决并集"行为覆盖，不设专测
+# test_htf_context_flat_market_rejected 的"否决并集"行为覆盖，不设专测
 
 
 # ── structure_1h：三线排列 + 快中线发散度 + EMA144 方向 ────────────────────

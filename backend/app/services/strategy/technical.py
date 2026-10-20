@@ -587,6 +587,19 @@ TURN_CONFIRM_BARS = 2       # 拐头确认：EMA21 斜率连续反向根数（�
                             # 吸收同日衰竭期退役的单根翻向噪声教训）
 TANGLE_CROSS_LOOKBACK = 10  # 缠绕第三道：近 10 根 21×55 交叉 ≥2 次（锯齿）
 
+# ── 4h 闸门常量（2026-10-20 由 ema_gate 迁入）────────────────────────────────
+# 4h 趋势闸门与 4h 状态机合并为 htf_context 单入口（用户拍板）：一份 core、一套
+# 「缠绕」判据（detect_tangle，两处共用）、一个方向权威。原 gate_4h 的三重否决
+# （走平/缠绕/ADX）拆解为：走平=独立拒因 flat；缠绕=并入统一判据；ADX=缠绕第一道。
+MIN_CLOSED_4H = 200         # 4h 数据门（EMA144 斜率回看 -SLOPE_BARS 需更长历史，
+                            # 比 htf_core 的 155 更严；两处统一采用本门）
+SLOPE_BARS = 20             # EMA144 斜率回看根数（4h 闸门与 1h 结构门 144 方向共用）
+SLOPE_FLAT_PCT = 0.005      # 20 根变化幅度/价格 < 0.5% → 走平（独立拒因）
+TANGLE_ADX_MIN = 20.0       # 缠绕第一道：ADX<20 无趋势
+TANGLE_GAP_PCT = 0.001      # 缠绕第二道：|EMA21-EMA55|/price < 0.1% 纠缠
+TANGLE_WRAP_N = 10          # 缠绕第四道：价格×EMA144 穿越回看根数（原 gate WRAP_WINDOW）
+TANGLE_WRAP_MAX = 2         # 缠绕第四道：穿越 >2 次（≥3）→ 震荡（原 gate WRAP_MAX）
+
 STATE_LABELS = {
     "tangle": "缠绕",
     "turn_bull": "多头拐头", "turn_bear": "空头拐头",
@@ -642,13 +655,54 @@ def _sign_changes(f: np.ndarray, m: np.ndarray, n: int) -> int:
     return int(np.sum(d[1:] * d[:-1] < 0))
 
 
+def _wrap_count(closes: np.ndarray, e144: np.ndarray, n: int = TANGLE_WRAP_N) -> int:
+    """近 n 根收盘价在 EMA144 两侧的穿越次数（原 gate_4h 口径，逐根比对）"""
+    if len(closes) <= n:
+        return 0
+    cnt = 0
+    for i in range(len(closes) - n, len(closes)):
+        if (closes[i] - e144[i]) * (closes[i - 1] - e144[i - 1]) < 0:
+            cnt += 1
+    return cnt
+
+
+def detect_tangle(
+    closes: np.ndarray, e21: np.ndarray, e55: np.ndarray, e144: np.ndarray,
+    adx_v: Optional[float],
+) -> tuple[bool, str]:
+    """4h「缠绕」统一判据（2026-10-20 合并，原两套口径取并集，两处共用）：
+
+    1. ADX<20 无趋势（原状态机第一道；原 gate 的独立 ADX 否决并入此道）
+    2. |EMA21-EMA55|/price < 0.1% 纠缠（原状态机第二道）
+    3. 近 10 根 21×55 交叉 ≥2 次（锯齿，原状态机第三道）
+    4. 近 10 根收盘价穿越 EMA144 >2 次（震荡，原 gate_4h 缠绕口径）
+
+    返回 (是否缠绕, 命中证据文本)。ADX 不可用（None）不计入本判据——原状态机
+    对 ADX=None fail-open，gate 的 fail-closed 由调用方（htf_context）另行处理。
+    """
+    price = float(closes[-1])
+    if adx_v is not None and adx_v < TANGLE_ADX_MIN:
+        return True, f"ADX{adx_v:.0f}<20 无趋势"
+    if price > 0 and abs(float(e21[-1]) - float(e55[-1])) / price < TANGLE_GAP_PCT:
+        return True, "21/55间距<0.1% 纠缠"
+    sc = _sign_changes(e21, e55, TANGLE_CROSS_LOOKBACK)
+    if sc >= 2:
+        return True, f"近{TANGLE_CROSS_LOOKBACK}根21×55交叉{sc}次（锯齿）"
+    wraps = _wrap_count(closes, e144)
+    if wraps > TANGLE_WRAP_MAX:
+        return True, f"近{TANGLE_WRAP_N}根价格穿越EMA144 {wraps}次（震荡）"
+    return False, ""
+
+
 def _ema_state(
     closes: np.ndarray, s21: np.ndarray, s55: np.ndarray, s144: np.ndarray,
     adx_v: Optional[float], atr4h: float,
 ) -> tuple[str, list[str], dict]:
     """4h EMA 状态机（11 态，判定优先级即代码顺序，末根已收盘序列）：
 
-    1. tangle 缠绕：ADX<20 ∨ 21/55 间距<0.1% ∨ 近10根21×55交叉≥2次（锯齿）
+    1. tangle 缠绕（detect_tangle 四道合一，2026-10-20 起与 4h 闸门共用同一判据）：
+       ADX<20 ∨ 21/55 间距<0.1% ∨ 近10根21×55交叉≥2次（锯齿）∨ 近10根价格穿越
+       EMA144>2次（震荡）
     2. macro_cross_*：55×144 交叉后 <CROSS_FRESH_BARS 根（严格小于，age=10
        已出初期）——趋势级事件优先定名（深 V 双叉同步时 21 回踩不误判拐头/恢复）
     3. turn_*：仅全排列内 EMA21 斜率连续 TURN_CONFIRM_BARS 根反向（还没
@@ -665,14 +719,10 @@ def _ema_state(
     age_c, dir_c = _htf_cross_age(s21, s55)   # 中周期 21×55
     meta = {"age_c": age_c, "dir_c": dir_c, "age_m": age_m, "dir_m": dir_m}
 
-    # 1. 缠绕（三道合一）
-    if adx_v is not None and adx_v < 20:
-        return "tangle", [f"ADX{adx_v:.0f}<20 无趋势"], meta
-    if price > 0 and abs(float(s21[-1]) - float(s55[-1])) / price < 0.001:
-        return "tangle", ["21/55间距<0.1% 纠缠"], meta
-    sc = _sign_changes(s21, s55, TANGLE_CROSS_LOOKBACK)
-    if sc >= 2:
-        return "tangle", [f"近{TANGLE_CROSS_LOOKBACK}根21×55交叉{sc}次（锯齿）"], meta
+    # 1. 缠绕（四道合一，2026-10-20 与 4h 闸门合并为 detect_tangle 单判据）
+    tangled, t_note = detect_tangle(closes, s21, s55, s144, adx_v)
+    if tangled:
+        return "tangle", [t_note], meta
 
     full_bull = s21[-1] > s55[-1] > s144[-1]
     full_bear = s21[-1] < s55[-1] < s144[-1]
@@ -802,6 +852,15 @@ def analyze_htf_background(
     core = core or htf_core(htf_klines, fast, slow)
     if core is None:
         return None
+    return _htf_state_view(core, fast, slow)
+
+
+def _htf_state_view(core: dict, fast: int = 21, slow: int = 55) -> Optional[dict]:
+    """状态机视图（analyze_htf_background 与 htf_context 共用，单一实现）。
+
+    2026-10-20 抽出：4h 闸门与状态机合并后，两入口共用同一状态装配逻辑，
+    避免「状态判定」出现第二份实现。返回结构与 analyze_htf_background 一致。
+    """
     closes = core["closes"]
     f, m, s144 = core["e21"], core["e55"], core["e144"]
     fn, mn, sn = float(f[-1]), float(m[-1]), float(s144[-1])
@@ -846,6 +905,79 @@ def analyze_htf_background(
         "age_bars": meta["age_c"], "macro_cross_age": meta["age_m"],
         "div": div_min, "detail": detail,
     }
+
+
+def htf_context(htf_klines: list[list], core: Optional[dict] = None) -> Optional[dict]:
+    """4h 合并入口（2026-10-20 用户拍板）：趋势闸门决策 + 背景状态 + 行为矩阵。
+
+    合并前 4h 有两道独立前置门（ema_gate.gate_4h 三重否决 + 状态机双向禁开/锁
+    逆势），各自定义「缠绕」与数据门，且方向双源（价格×EMA144 位置+斜率 vs
+    21/55/144 排列）。合并后：一份 core、一套 detect_tangle 判据、一个入口。
+    原 gate_4h 的价格×EMA144 位置与 EMA144 斜率降为本入口的趋势健康证据；
+    走平(flat) 保留为独立拒因，ADX 并入缠绕判据。
+
+    返回 None = 数据/实现异常（调用方按旧 gate_4h 异常路径降级放行）；
+    否则返回 dict（含 analyze_htf_background 全字段 + 合并字段）：
+    - direction "long"/"short" 或 None（None ⇒ reject_reason 非空）
+    - reject_reason: None|"data"|"flat"|"tangle"|"adx"|"undetermined"
+      （映射漏斗关卡 gate_4h；"adx" 仅表示 ADX 计算不可用的 fail-closed）
+    - block_both: 状态机双向禁开（映射漏斗关卡 htf_state_lock）
+    - lock_contra_dir: STATE_LOCK_CONTRA 时的锁逆势方向（±1），否则 None
+    - evidence: {slope_pct, wraps, adx, close_vs_ema144, direction(up/down)}
+    """
+    core = core or htf_core(htf_klines)
+    if core is None:
+        return None
+    closed, closes = core["closed"], core["closes"]
+    e21, e55, e144 = core["e21"], core["e55"], core["e144"]
+    price = core["price"]
+    adx_v = core["adx"]
+
+    direction: Optional[str] = None
+    reject: Optional[str] = None
+    ev: dict = {}
+    if len(closed) < MIN_CLOSED_4H:
+        reject = "data"
+    elif not np.isfinite(float(e144[-1])) \
+            or not np.isfinite(float(e144[-SLOPE_BARS])):
+        reject = "data"
+    else:
+        slope_pct = abs(float(e144[-1]) - float(e144[-SLOPE_BARS])) / price
+        wraps = _wrap_count(closes, e144)
+        ev = {"slope_pct": round(slope_pct, 5), "wraps": wraps,
+              "adx": round(adx_v, 1) if adx_v is not None else None,
+              "close_vs_ema144": round(price / float(e144[-1]) - 1, 5)}
+        if slope_pct < SLOPE_FLAT_PCT:
+            reject = "flat"                      # 走平（独立拒因）
+        else:
+            tangled, _t_note = detect_tangle(closes, e21, e55, e144, adx_v)
+            if tangled:
+                reject = "tangle"                # 缠绕（含 ADX<20 道）
+            elif adx_v is None:
+                reject = "adx"                   # ADX 不可用 → fail-closed
+            else:
+                up = price > e144[-1] and e144[-1] >= e144[-SLOPE_BARS]
+                down = price < e144[-1] and e144[-1] <= e144[-SLOPE_BARS]
+                if up:
+                    direction = "long"
+                    ev["direction"] = "up"
+                elif down:
+                    direction = "short"
+                    ev["direction"] = "down"
+                else:
+                    reject = "undetermined"      # 位置与斜率不同号（原隐性 None）
+
+    state_view = _htf_state_view(core)
+    out = dict(state_view) if state_view else {}
+    st = out.get("state")
+    out.update({
+        "direction": direction,
+        "reject_reason": reject,
+        "block_both": st in STATE_BLOCK_BOTH,
+        "lock_contra_dir": _STATE_DIR[st] if st in STATE_LOCK_CONTRA else None,
+        "evidence": ev,
+    })
+    return out
 
 
 def enforce_htf_constraint(

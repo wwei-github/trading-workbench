@@ -227,14 +227,15 @@ def test_range_score_pullback_not_glued():
 
 
 def test_htf_core_merge_equivalent():
-    """合并 4h 计算（2026-10-13，用户拍板）：gate_4h / analyze_htf_background
-    传入共享 core 与不传（各自内部自算 htf_core）结果完全一致——去重只省算力、
-    不改行为（EMA 由 ema_series 换成同公式的 calc_ema，ADX 两处本就同源）"""
-    from app.services.strategy.ema_gate import gate_4h
-    from app.services.strategy.technical import analyze_htf_background, htf_core
+    """合并 4h 计算（2026-10-13，用户拍板）：4h 合并入口 htf_context / 状态机
+    analyze_htf_background 传入共享 core 与不传（各自内部自算 htf_core）结果完全
+    一致——去重只省算力、不改行为（EMA 由 ema_series 换成同公式的 calc_ema，
+    ADX 两处本就同源）"""
+    from app.services.strategy.technical import (
+        analyze_htf_background, htf_context, htf_core)
 
     for k4 in (_trending_4h_up(), _ranging_4h()):
         core = htf_core(k4)
         assert core is not None
-        assert gate_4h(k4, core=core) == gate_4h(k4)
+        assert htf_context(k4, core=core) == htf_context(k4)
         assert analyze_htf_background(k4, core=core) == analyze_htf_background(k4)

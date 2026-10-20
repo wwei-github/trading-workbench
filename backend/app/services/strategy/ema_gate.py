@@ -3,15 +3,15 @@
 2026-10-10 融合拍板：影子层退役并入原生触发层（trend_pullback 升级标注）；
 同日二次拍板：三件套提为筛选链硬门（scanner.detect_indicator_candidate，
 一票否决语义，借鉴外部设计 check_4h_gate / check_1h_structure / calc_range_score）：
-- gate_4h：4H EMA144 趋势闸门（三重否决——斜率走平 / 缠绕震荡 / ADX 弱），
-  输出方向 long/short 或 None；
+2026-10-20 合并拍板（用户）：gate_4h 与 4h 状态机合并为 technical.htf_context
+单入口——原 gate_4h 三重否决（走平/缠绕/ADX）拆解为「走平=独立拒因 flat、
+ADX=缠绕第一道、缠绕=detect_tangle 统一判据」，本模块不再持有 4h 闸门。
 - structure_1h：1H 三线排列 + 快中线发散度 + EMA144 方向结构门（2026-10-11
   拍板：中慢线发散度退役为观测注记，长期趋势健康度改由「144 走平或反向
   拒绝」判定），输出结构证据或 None；
 - range_score：震荡评分卡 8 项独立评分，≥3 判震荡不入场。
 
-K 线口径：gate_4h 收原始 4h 序列（尾根未收盘，内部剔除，analyze_adx 同口径）；
-structure_1h 由调用方传已剔尾序列（scanner/trigger 均传 klines[:-1]）；
+K 线口径：structure_1h 由调用方传已剔尾序列（scanner/trigger 均传 klines[:-1]）；
 range_score 收原始 1h 序列（内部自剔尾，项 5 analyze_adx 同口径）。
 """
 from dataclasses import dataclass
@@ -19,15 +19,11 @@ from typing import Optional
 
 import numpy as np
 
-from app.services.strategy.technical import analyze_adx, htf_core
-
-# EMA144 斜率回看根数（4h 闸门与 1h 结构门 144 方向共用窗口）与走平阈值
-# （20 根变化幅度/价格 < 0.5% → 走平）
-SLOPE_BARS = 20
-SLOPE_FLAT_PCT = 0.005
-# 缠绕判定：近 10 根收盘价穿越 EMA144 次数 ≥3 → 震荡拒绝
-WRAP_WINDOW = 10
-WRAP_MAX = 2
+# SLOPE_BARS/SLOPE_FLAT_PCT 已于 2026-10-20 随 4h 闸门合并迁入 technical，
+# 此处从 technical 再导出（trigger 1h 结构门与 4h 闸门共用同一斜率窗口口径）
+from app.services.strategy.technical import (
+    SLOPE_BARS, SLOPE_FLAT_PCT, analyze_adx,
+)
 
 # ── 震荡评分卡常量（docs/19 §3，≥RANGE_SCORE_REJECT 分不入场）──────────────
 RANGE_SCORE_REJECT = 3
@@ -64,69 +60,11 @@ class EmaGateConfig:
     # div_mid_slow 已退役（2026-10-11 拍板）：|EMA55-EMA144|/ATR≥1.0 硬门撤销，
     # 长期趋势健康度改判「排列内 EMA144 走平或沿信号方向」，ms 分离度降级为
     # 证据观测注记（复盘定标留档）；55/144 距离过近仍以 +1 分参与震荡评分卡
-    adx_min: float = 20.0           # 4h ADX 趋势闸门下限
     # 分离史回看根数（2026-10-10 三次拍板）：快中腿按近 N 根已收盘的最大值
     # 判定——深回踩（触 EMA55/144）会把 EMA21/55 间距压缩到不达标，触点时刻
     # 现值误杀深回踩；「这波趋势曾分离过」即可，三线黏着的假趋势整段无分离
     # 史照样被杀（反震荡能力不丢）。半窗口出厂默认，参数定标待实盘证据（docs/19 #15）
     div_lookback: int = 12
-
-
-def gate_4h(k4: list[list], cfg: Optional[EmaGateConfig] = None,
-            core: Optional[dict] = None) -> Optional[tuple[str, dict]]:
-    """4H EMA144 趋势闸门：三重否决（走平/缠绕/ADX）全过才给方向。
-
-    k4：原始 4h K线（尾根未收盘，内部统一剔除——与 analyze_adx 的自剔尾
-    口径一致，避免对已剔除序列再剔一次导致 ADX 慢一拍）。core 为可选的 4h
-    共享计算核心（technical.htf_core）——传入则复用其 EMA144/ADX/收盘价，
-    免去本函数与 analyze_htf_background 双算，缺省时内部自算（向后兼容）。
-    返回 (direction "long"/"short", 证据 dict) 或 None（闸门不过）。
-    证据 direction 语义为 "up"/"down"（4h K 线趋势方向，观测/前端展示口径）。
-    """
-    cfg = cfg or EmaGateConfig()
-    core = core or htf_core(k4)
-    if core is None:
-        return None
-    closed = core["closed"]
-    # 闸门额外数据门：EMA144 斜率回看（-SLOPE_BARS）需更长历史，htf_core 的
-    # 155 根下限不够；各调用方固定拉 200 根=199 已收盘，此处保留 200 根口径
-    if len(closed) < 200:
-        return None
-    c = core["closes"]
-    e144 = core["e144"]
-    if not np.isfinite(e144[-1]) or not np.isfinite(e144[-SLOPE_BARS]):
-        return None
-    price = core["price"]
-    slope_pct = abs(float(e144[-1]) - float(e144[-SLOPE_BARS])) / price
-
-    # 缠绕：近 WRAP_WINDOW 根收盘价在 EMA144 两侧的穿越次数
-    wraps = 0
-    for i in range(len(closed) - WRAP_WINDOW, len(closed)):
-        side_now = c[i] - e144[i]
-        side_prev = c[i - 1] - e144[i - 1]
-        if side_now * side_prev < 0:
-            wraps += 1
-
-    adx_val = core["adx"]  # htf_core 内已按原始序列自剔尾算 ADX，口径一致
-
-    ev = {"slope_pct": round(slope_pct, 5), "wraps": wraps,
-          "adx": round(adx_val, 1) if adx_val is not None else None,
-          "close_vs_ema144": round(price / float(e144[-1]) - 1, 5)}
-
-    if slope_pct < SLOPE_FLAT_PCT:
-        return None  # 走平
-    if wraps > WRAP_MAX:
-        return None  # 缠绕
-    if adx_val is None or adx_val < cfg.adx_min:
-        return None  # 无趋势
-
-    up = price > e144[-1] and e144[-1] >= e144[-SLOPE_BARS]
-    down = price < e144[-1] and e144[-1] <= e144[-SLOPE_BARS]
-    if up:
-        return "long", {**ev, "direction": "up"}
-    if down:
-        return "short", {**ev, "direction": "down"}
-    return None
 
 
 def structure_1h(k1: list[list], direction: str,
