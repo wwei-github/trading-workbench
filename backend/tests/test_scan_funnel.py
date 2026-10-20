@@ -47,8 +47,8 @@ def _htf_context_stub(gate, htf_state, htf_dir):
     """4h 合并入口 htf_context 打桩（2026-10-20 合并）：把旧的 gate_4h 方向
     (gate) 与 4h 状态机态 (htf_state) 合成一份返回 dict。gate=None ⇒
     reject_reason 非空（等价旧「gate_4h 返回 None」→ 漏斗 gate_4h 关）；
-    block_both / 逆势方向由状态机态推导（前置门 / STATE_LOCK_CONTRA 逆势锁）。"""
-    from app.services.strategy.technical import STATE_BLOCK_BOTH, STATE_LOCK_CONTRA
+    block_both 由状态机态推导（前置门）；逆势锁由调用方以 state/dir 判定。"""
+    from app.services.strategy.technical import STATE_BLOCK_BOTH
 
     def _stub(k, core=None):
         st = htf_state
@@ -57,7 +57,6 @@ def _htf_context_stub(gate, htf_state, htf_dir):
             "direction": gate[0] if gate else None,
             "reject_reason": None if gate is not None else "tangle",
             "block_both": st in STATE_BLOCK_BOTH,
-            "lock_contra_dir": st_dir if st in STATE_LOCK_CONTRA else None,
             "state": st, "state_label": _HTF_LABELS.get(st, st),
             "dir": st_dir, "macro_aligned": (st_dir == 1),
             "evidence": {},

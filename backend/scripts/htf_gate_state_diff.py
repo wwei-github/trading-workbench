@@ -17,7 +17,7 @@ P0 合并的验收标准是「决策零变化」：同一 4h 快照上，合并�
      前移到 gate_4h（正是合并要消除的「闸门放行而状态机缠绕」对撞）；
   2. gate 已拒快照的 state 因「缠绕并集」由 aligned_*/recover 变 tangle
      （这些快照过不了闸门，状态永不进入消费面）；
-- 同为放行时，state/dir/锁逆势方向/证据 direction(up/down) 必须完全一致；
+- 同为放行时，state/dir/证据 direction(up/down) 必须完全一致；
 - core 透传等价：htf_context(k4, core) == htf_context(k4)。
 
 退出码：非 0 表示出现非预期 diff（交易决策/方向/放行态状态/证据不一致）。
@@ -37,8 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.strategy import technical as tech       # noqa: E402
 from app.services.strategy.technical import (             # noqa: E402
-    STATE_BLOCK_BOTH, STATE_LOCK_CONTRA, _STATE_DIR, htf_core,
-    analyze_htf_background, htf_context,
+    STATE_BLOCK_BOTH, htf_core, analyze_htf_background, htf_context,
 )
 # 旧 gate_4h 已随合并从 ema_gate 删除；此验收脚本自带冻结参考实现作「旧侧」
 from legacy_gate_4h import legacy_gate_4h                 # noqa: E402
@@ -192,12 +191,6 @@ def main():
                             diffs.append({"symbol": sym, "ts": bars[t][0],
                                           "kind": "state_on_pass",
                                           "old": bg["state"], "new": ctx["state"]})
-                        else:
-                            lo = _STATE_DIR[bg["state"]] \
-                                if bg["state"] in STATE_LOCK_CONTRA else None
-                            if lo != ctx["lock_contra_dir"]:
-                                diffs.append({"symbol": sym, "ts": bars[t][0],
-                                              "kind": "lock_contra"})
                 else:
                     # 同为拒绝（gate_4h 关卡）：state 因并集由 aligned/recover 变
                     # tangle 属预期内（该快照过不了闸门，状态永不进入消费面）

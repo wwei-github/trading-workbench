@@ -292,10 +292,11 @@ def get_kline_client():
 def _btc_trend_label(klines: list) -> Optional[str]:
     """BTC 4h 趋势标签（EMA21/55 排列）：多头/空头/纠缠；数据不足返回 None。
 
-    与 analyze_htf_background 的纠缠阈值同口径（间距 <0.1% 视为纠缠），
+    与 technical.detect_tangle 的纠缠阈值同口径（间距 <TANGLE_GAP_PCT 视为纠缠），
     但不带 ADX 门控与强弱分级——环境摘要只给粗粒度状态。
     """
     from app.services.strategy.ema import calc_ema
+    from app.services.strategy.technical import TANGLE_GAP_PCT
 
     if not klines or len(klines) < 2:
         return None
@@ -308,7 +309,7 @@ def _btc_trend_label(klines: list) -> Optional[str]:
     fn, sn = float(f[-1]), float(s[-1])
     if sn <= 0 or not np.isfinite(fn):
         return None
-    if abs(fn - sn) / sn * 100 < 0.1:
+    if abs(fn - sn) / sn < TANGLE_GAP_PCT:
         return "纠缠"
     return "多头" if fn > sn else "空头"
 

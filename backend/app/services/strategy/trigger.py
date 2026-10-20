@@ -31,8 +31,8 @@
   + 斜率门（近 5 根同向）——走平/错排的慢线是震荡不是回踩
 - ema144 深回撤（2026-10-16 复出并默认启用）：数据门 + 走平/顺势门（1h EMA144
   近 SLOPE_BARS 根变化 ≥0 当 4h 为多，做空镜像；|变化|/EMA 落在 SLOPE_FLAT_PCT
-  容差带内一律视为走平放行）——不叠加排列门；4h 方向由 scanner gate_4h 经
-  htf_dir 传入，4h 数据降级（htf_dir=None）时不出该触点
+  容差带内一律视为走平放行）——不叠加排列门；4h 方向由 scanner
+  htf_context.direction 经 htf_dir 传入，4h 数据降级（htf_dir=None）时不出该触点
 同根多触点命中按优先级标注（横向结构 > 均线；均线取最快）：
 retest > swing > ema21 > ema21_4h > ema55 > ema144
 
@@ -285,8 +285,9 @@ def _detect_ema_touch(
     ② 走平/顺势门：1h EMA144 近 SLOPE_BARS 根变化 ≥0（走平或向上）当 4h 方向为多，
     做空镜像——|变化|/EMA < SLOPE_FLAT_PCT 的容差带内一律视为走平放行；不叠加
     排列门（EMA55>EMA144 在深回撤时先杀）；
-    ③ 4h 上下文门：4h 方向由 scanner gate_4h 经 htf_dir 传入，None（4h 数据不可用/
-    gate 降级）时 fail-closed 不出该触点（防用 1h 方向冒充 4h 方向）
+    ③ 4h 上下文门：4h 方向由 scanner 的 4h 合并入口 htf_context.direction 经
+    htf_dir 传入，None（4h 数据不可用/gate 降级）时 fail-closed 不出该触点
+    （防用 1h 方向冒充 4h 方向）
 
     A3 深回撤语义（2026-10-17 docs/23）：本函数只负责「几何命中」，深回撤
     （ema55/ema144）能否真正产出信号还取决于 scanner 上游的方向票关（③）与方向
@@ -317,7 +318,7 @@ def _detect_ema_touch(
         # 深回撤 144 门（2026-10-16 用户拍板）：4h 趋势明确时，1h EMA144 必须走平
         # 或顺 4h 方向（近 SLOPE_BARS=20 根变化 ≥0，含走平；|变化|/EMA 落在
         # SLOPE_FLAT_PCT 容差带内一律视为走平），做空镜像。4h 方向由 scanner
-        # gate_4h 传入（htf_dir=gate[0]，已强制与多数决方向一致）；htf_dir 为 None
+        # 的 htf_context.direction 传入；htf_dir 为 None
         # 表示 4h 数据不可用/gate 降级——「4h 多时」前提不成立，fail-closed 不出该
         # 触点（2026-10-16 加固：不再用 1h 方向冒充 4h 方向）。不叠加排列门
         # （EMA55>EMA144 在深回撤时先杀，正是 2026-10-10 退役主因）与 5 根严格
@@ -587,7 +588,7 @@ def detect_trigger(
     （docs/22 §3.1；T1 突破触发时由 scanner 记录 breakout_events）。
     htf（可选）：4h 原始K线（尾根未收盘，与 analyze_htf_background 同源序列）；
     None/过短 → ema21_4h 触点静默跳过（4h 数据缺失不阻断 1h 触点体系）。
-    htf_dir（可选）：scanner gate_4h 给出的 4h 方向（"long"/"short"），或 None
+    htf_dir（可选）：scanner htf_context.direction 给出的 4h 方向（"long"/"short"），或 None
     （4h 拉取失败/gate 异常降级）——ema144 深回撤触点据此判 4h 趋势方向，
     None 时 fail-closed 不出该触点（不用 1h 方向冒充 4h）。
     diag（可选，2026-10-13 漏斗「无触发」判定说明）：未触发路径的可选出参——
@@ -744,7 +745,8 @@ def detect_trigger(
     # 不过门不再否决该次回踩——照常产出信号并带 structure_gate=False 证据，
     # 由质量分重罚（technical.STRUCTURE_GATE_PENALTY=-15）体现排序差异；
     # 其余触点（retest/swing/4h EMA21/EMA55）豁免本门（structure_gate=True）。
-    # 4H 全局闸门由 scanner 前置强制（gate_4h 三重否决 + 方向一致性），此处不重复。
+    # 4H 全局闸门由 scanner 前置强制（htf_context 闸门 + 状态机前置门 + 方向一致性），
+    # 此处不重复。
     try:
         struct = structure_1h(klines[:-1], "long" if direction == 1 else "short")
     except Exception:

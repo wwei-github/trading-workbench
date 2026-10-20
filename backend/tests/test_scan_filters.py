@@ -353,7 +353,7 @@ def test_candidate_structure_gate_retired(monkeypatch):
     monkeypatch.setattr(scanner_mod, "htf_context",
                         lambda k, core=None: {
                             "direction": "long", "reject_reason": None,
-                            "block_both": False, "lock_contra_dir": None,
+                            "block_both": False,
                             "state": "aligned_bull", "state_label": "多头排列",
                             "dir": 1, "macro_aligned": True, "evidence": {},
                         })
@@ -491,7 +491,7 @@ def test_candidate_whitelist_drops_disallowed_triggers(monkeypatch):
     monkeypatch.setattr(scanner_mod, "htf_context",
                         lambda k, core=None: {
                             "direction": "long", "reject_reason": None,
-                            "block_both": False, "lock_contra_dir": None,
+                            "block_both": False,
                             "state": "aligned_bull", "state_label": "多头排列",
                             "dir": 1, "macro_aligned": True, "evidence": {},
                         })

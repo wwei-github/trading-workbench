@@ -922,8 +922,8 @@ def htf_context(htf_klines: list[list], core: Optional[dict] = None) -> Optional
     - reject_reason: None|"data"|"flat"|"tangle"|"adx"|"undetermined"
       （映射漏斗关卡 gate_4h；"adx" 仅表示 ADX 计算不可用的 fail-closed）
     - block_both: 状态机双向禁开（映射漏斗关卡 htf_state_lock）
-    - lock_contra_dir: STATE_LOCK_CONTRA 时的锁逆势方向（±1），否则 None
     - evidence: {slope_pct, wraps, adx, close_vs_ema144, direction(up/down)}
+    逆势锁方向不单列：调用方以 state∈STATE_LOCK_CONTRA 判定，方向读 dir。
     """
     core = core or htf_core(htf_klines)
     if core is None:
@@ -974,7 +974,6 @@ def htf_context(htf_klines: list[list], core: Optional[dict] = None) -> Optional
         "direction": direction,
         "reject_reason": reject,
         "block_both": st in STATE_BLOCK_BOTH,
-        "lock_contra_dir": _STATE_DIR[st] if st in STATE_LOCK_CONTRA else None,
         "evidence": ev,
     })
     return out
