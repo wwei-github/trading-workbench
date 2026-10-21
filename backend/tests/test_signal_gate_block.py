@@ -67,6 +67,9 @@ def test_gate_block_breakout_near_anchor_chain():
         block = render_signal_gate_block(st)
         assert "止损锚（突破类专用）" in block
         assert "近锚适用前提" in block          # 仅 RR 不达标才降级
+        # 2026-10-21：4h 方向限制只在筛选层，近锚前提不得再把 4h/趋势状态列为条件
+        assert "4h 背景、" not in block
+        assert "趋势状态" not in block
         assert "近锚资格附加线" in block        # 量比<1 无资格 / RR>4 重估 / 0.3×ATR
         assert 'stop_anchor="near"' in block
         assert "金K窗口" in block

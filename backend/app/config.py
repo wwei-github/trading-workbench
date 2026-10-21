@@ -341,7 +341,9 @@ class Settings(BaseSettings):
     # （状态约束/方向约束），改为只注入 state/macro 数据行，AI 结合结构·量能·方向票
     # 自主判断方向；enforce_htf_constraint 退役为 annotate_htf_phase（仅落 htf_phase
     # 快照，不再双向禁开/锁逆势/过渡态影子 veto）；评分档位 60 不再要求 4h 同侧，
-    # 4h 同向降为 70/85 档加分项；_RULE_TP_BASE 唯一放宽不再附加 4h 宏观同侧条件。
+    # 4h 同向降为 70/85 档加分项；_RULE_TP_BASE 唯一放宽不再附加 4h 宏观同侧条件；
+    # 同步清理残留文案：近锚适用前提删「4h 背景/趋势状态」、放宽前提改「触发起效」、
+    # 公共检查首项改「4h背景（数据参考）」。
     RULE_VERSION: str = "v2026-10-21-2"
 
     # 排除的币种关键字（杠杆代币等）

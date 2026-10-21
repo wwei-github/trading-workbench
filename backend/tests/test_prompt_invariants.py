@@ -176,6 +176,9 @@ def test_ai_prompts_do_not_restrict_direction_by_htf():
         for kw in ("状态约束", "方向约束", "双向禁开新仓", "锁逆势",
                    "程序会强制改判"):
             assert kw not in txt, kw
+        # 公共检查首项只作数据参考，不得再写成方向判断项
+        assert "1. 4h背景（数据参考）" in txt
+        assert "1. 4h方向" not in txt
     # 常量整体退役（防复活）
     assert not hasattr(ai_analyzer, "_RULE_HTF_HARD")
     assert not hasattr(ai_agent, "_RULE_HTF_HARD")
@@ -217,6 +220,9 @@ def test_rr_only_shortfall_fixed_rr_fallback_present():
     assert "(c)" in ai_analyzer._RULE_TP_TAIL_ON
     assert "唯一放宽" in ai_analyzer._RULE_TP_BASE  # 唯一放宽条款在公共段（TP2 开关无关）
     assert "入场价 ± {rr_min}×止损距离" in ai_analyzer._RULE_TP_BASE
+    # 2026-10-21 文案清理：放宽前提用「触发起效」，不得再提「趋势状态」（防 4h 回流）
+    assert "触发起效" in ai_analyzer._RULE_TP_BASE
+    assert "趋势状态" not in ai_analyzer._RULE_TP_BASE
     assert "唯一不达标项" in ai_analyzer._RULE_TP_TAIL_OFF
 
 
@@ -242,7 +248,7 @@ def test_recommendation_tiered_no_interpolation():
         # 2026-10-21 起 4h 同向降为 70 档加分项，60 档不再要求 4h 同侧
         assert "60 = 触发有效 + 方向票同向 ≥1" in txt
         assert "60 = 触点有效 + 金K确认" in txt
-        assert "4h 同向（加分）" in txt
+        assert "4h 同向（升档加分条件）" in txt
 
 
 def test_tier_table_by_trigger_type():
@@ -348,9 +354,11 @@ def test_pullback_1h_reversal_exempt_listed():
     参考，不得据此否决或降分（2026-10-21 起方向由 AI 结合结构与 4h 背景
     自主判断，不再以 4h 为准）"""
     p0 = _p0_system()
-    assert "回踩确认单（trigger_pullback_confirm）：1h 方向票反向或同向不足属回撤常态" in p0
+    assert "回踩确认单（trigger_pullback_confirm）：1h 方向票反向或同向不足" in p0
+    assert "属回撤常态" in p0
     assert "仅作确认度参考（影响质量分），不得据此否决或降分" in p0
-    assert "多空方向结合 4h 背景与结构自主判断" in p0
+    assert "多空方向结合" in p0
+    assert "4h 背景与结构自主判断" in p0
     assert "定向以 4h 为准" not in p0
     # P1 为精简版：同一口径（确认度参考、不计票）
     assert "回踩单方向票仅作确认度参考" in _p1_system()
