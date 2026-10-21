@@ -44,6 +44,7 @@ from app.models.trade import (
 from app.services.binance_trader import BinanceTrader, BinanceTradeError
 from app.services.exchange_pool import ExchangePool
 from app.services.position_advisor import advice_due
+from app.services.score_thresholds import effective_min_recommendation
 from app.services.risk_guard import (
     AI_RR_TOL,
     liquidation_gate_pct,
@@ -1413,15 +1414,17 @@ def try_open_for_analysis(
     # 软熔断只提门槛不停摆（区别于当日亏损硬熔断）。0 连损/开关关闭不生效
     if settings.CONSECUTIVE_LOSS_DERATE:
         losses = _consecutive_losses_today(db, trader.account_key, trader.testnet)
-        need_score = 85 if losses >= 3 else 75 if losses == 2 else 0
-        if need_score and float(a.recommendation or 0) < need_score:
+        # 生效门槛单一事实源（T0-2，2026-10-21）：与 AI 提示词「执行门槛」行
+        # 同一函数；max(静态门槛, 连损档) 保证降速不会反向放宽
+        need_score = effective_min_recommendation(cfg, losses)
+        if float(a.recommendation or 0) < need_score:
             logger.info(
-                "即时开仓跳过 %s：连损 %d 笔降速，评分 %s 低于提升后门槛 %d",
-                a.symbol, losses, a.recommendation, need_score,
+                "即时开仓跳过 %s：连损 %d 笔降速，评分 %s 低于提升后门槛 %s",
+                a.symbol, losses, a.recommendation, f"{need_score:g}",
             )
             _mark_open_block(
                 db, a,
-                f"连损{losses}笔降速：评分门槛提升至{need_score}"
+                f"连损{losses}笔降速：评分门槛提升至{need_score:g}"
                 f"（当前评分 {float(a.recommendation or 0):.0f}）",
             )
             return "blocked"

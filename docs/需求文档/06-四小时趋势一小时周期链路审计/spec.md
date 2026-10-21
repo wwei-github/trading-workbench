@@ -179,3 +179,153 @@
 - 不新增技术指标、不改 `detect_trigger` 的形态判定（无样本支撑）。
 - 不在未做影子验证前调整任何阈值。
 - 不合并跨 `RULE_VERSION` 的统计。
+
+---
+
+## 8. 补充审计（2026-10-21）：币种筛选 与 AI 提示词
+
+> 定位口径：**4h 定方向（做不做/做哪边），1h 找入场（突破 / 回踩）**。
+> 本节只补第 1、2 节未覆盖的两块，不改既有结论；行号对应当前工作区（`RULE_VERSION=v2026-10-21-1`）。
+
+### 8.1 币种筛选（S 系列）
+
+**S1｜4h 门是「状态分类器」，不是「趋势质量选择器」——P0（结构缺陷）**
+
+- 证据：[technical.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/technical.py#L624-L630) `STATE_ALIGNED = ("aligned_bull", "aligned_bear")`；[technical.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/technical.py#L986) `block_both = st not in STATE_ALIGNED`。
+- `STATE_QUALITY` 对 `aligned_bull` / `aligned_bear` 一律 `+10`，与 ADX 强度、EMA144 斜率大小、价格距 EMA144 的乖离**全部无关**。
+- 影响：`aligned_bull` 里「ADX 18 的弱多头」与「ADX 40 的强多头」同分同权；而 `macro_cross_*` / `*_recover` / `bull_dip` / `bear_rally` 被一刀切。反事实重放显示前置门仅通过 24.4%（见 [回踩命中改造方案](file:///Users/wangwei/Documents/github/trading-workbench/docs/需求文档/06-四小时趋势一小时周期链路审计/回踩命中改造方案.md) §1.1），说明门控把「状态」当成了「质量」。
+- 改法：**先只改排序，不改放行**——把 4h 强度分（ADX 三档 + EMA144 斜率分位 + 乖离分位）加入 `compute_quality_score`，用于配额排序；放行面扩展仍按 C1 影子走。
+
+**S2｜质量分与 AI 配额强耦合，回踩被结构性挤死——P0（缺陷）**
+
+- 证据：[technical.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/technical.py#L1489-L1491)：回踩 `50 + same_n*10`（0/1/2/3 → 50/60/70/80），突破 `50 + direction*net*10`（60/70/80）；[ai_tasks.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/tasks/ai_tasks.py#L156-L177) 配额按 `quality_score.desc(), volume_24h.desc()` 取前 N（默认 10）。
+- 矛盾链：健康回踩时 1h 三票反向是常态（提示词 [\_RULE_VOTE](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_analyzer.py#L40-L41) 自己也这么写）→ `same_n` 常为 0~1 → 回踩 50~60 分 → 与突破单混排时恒落后 → 配额先被突破单占满；命中数少时又「全部进 AI」，质量分零作用（第 1.2 节 E2）。
+- 改法（二选一，推荐 a）：
+  - a. **配额按触发类型分池**：`ai_max_per_scan` 拆为突破/回踩各自配额（配置项 `ai_quota_breakout` / `ai_quota_pullback`），回踩池独立排序，不再与突破抢名额；
+  - b. quality_score 先按触发类型做分位归一化（0~1）后再混排。
+- 验收：`scan_results.signal_type='trigger_pullback_confirm'` 进入 AI 的条数占比 ≥30%，且不被突破单挤出。
+
+**S3｜缺少「可执行性」筛选：无价差/深度/波动/防追高——P0（缺口）**
+
+- 证据：[scan_filters.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/scan_filters.py#L67) 的 `candle_max_ema21_dist_pct` 已注明「纯金K下线后无消费方，键保留兼容」——即当前**没有任何防追高/距均线过远的上限**；宇宙层只有 `min_volume_24h` 与 14 天新币冷静期。
+- 后果：高成交额但盘口价差宽、1h ATR% 过小的币会占用 AI 配额与开仓名额；突破单可能在价格已离 EMA21 很远时入场，触及 `1%` 偏离门后转挂 pending。
+- 改法：在宇宙层/触发层新增三项（均来自 `scan_filters`，单一来源）：
+  1. `max_spread_pct`（ticker 的 bid/ask 价差上限，仅在候选进入 AI 前校验，单次批量拉 `bookTicker`）；
+  2. `min_atr_pct_1h` / `max_atr_pct_1h`（1h ATR14/收盘价，剔除「走不动」与「过热」两类）；
+  3. 复活 `candle_max_ema21_dist_pct`，只作用于突破类（回踩天然贴近均线）。
+- 验收：`funnel_json` 新增 `spread` / `atr_band` / `overextended` 三个 reject_stage 计数；影子统计被拦样本的 4h 后验收益。
+
+**S4｜pending 生命周期绑在宇宙池上，抖动即孤儿——P1（缺陷）**
+
+- 证据：[scanner.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/scanner.py#L943-L956) 命中与重复抑制、pending 的维护都在「本轮宇宙池内」进行；`min_volume_24h=3_000_000` 属硬阈值，24h 成交额在阈值附近抖动会让币整轮消失。
+- 后果：T 根触点进 `pullback_pendings`，T+1 该币不在宇宙池 → 无 pending → 次根金K确认断链（与第 8 项「pending 依赖扫描不中断」同源，但触发点更隐蔽）。
+- 改法：pending 池中的 symbol **强制纳入本轮**（跳过 `liquidity` / `new_coin` 两道宇宙门，仍保留 4h 前置门与触发门）；`funnel_json` 增 `pending_forced` 计数。
+
+**S5｜新币冷静期与 4h 数据需求不匹配——P1（浪费+统计污染）**
+
+- 证据：`new_coin_cooldown_days=14`（[scan_filters.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/scan_filters.py#L102)），而 `htf_context` 需要 ≥200 根已收盘 4h（≈33 天），`htf_core` 需 ≥155 根（≈26 天）。
+- 后果：上市 14~33 天的币每轮都通过宇宙门、拉 600 根 4h、再 fail-closed；漏斗统计里混入大量 `data` 拒绝，稀释真实通过率。
+- 改法：`new_coin_cooldown_days` 默认对齐到 `ceil(200 * 4h / 24h) = 34`，或宇宙层改用「已收盘 4h 根数 ≥200」直接判定。
+
+**S6｜重复抑制不看方向、价位与上一单结果——P1（判定过粗）**
+
+- 证据：[scanner.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/scanner.py#L1274) `_suppress_repeat_hits` 的抑制键为 `(symbol, signal_type)`，窗口 `REPEAT_WINDOW_HOURS=3`（[scanner.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/scanner.py#L180)）。
+- 后果：同币反向新信号被吞；刚止损的同向信号在 3 小时内被丢弃，而「止损后二次回踩」往往是更优价位。
+- 改法：抑制键改为 `(symbol, direction, price_bucket)`；并读取最近一笔 `TradeRecord` 的终态——`sl_hit` 后同向信号**不抑制**（改为质量分 -5），`tp_hit` 后同向信号抑制窗口延长。
+
+**S7｜排序次序键与策略目标无关——P2**
+
+- 证据：[ai_tasks.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/tasks/ai_tasks.py#L176) 同分时按 `volume_24h` 降序。
+- 改法：同分次序键换成 `4h 强度分`（S1 的产物）或 `signal_age`，成交额只作为流动性门槛，不参与优先级。
+
+**S8｜配额层无相关性去重——P2**
+
+- 现状：一轮 top-N 可能全是高 BTC beta 的同族币，AI 配额被高度相关标的吃掉，组合层 `SAME_DIRECTION_CAP=0` 又不设限。
+- 改法：配额选择时按 4h 收益相关性做粗聚类（阈值 0.8），每簇最多 2 个；不改判据，只改选中集合。先影子统计簇内相关性。
+
+### 8.2 AI 分析提示词（P 系列）
+
+**P1｜量能事实错误（P0 与 P1 同错，确定性 Bug）**
+
+- 证据：[ai_analyzer.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_analyzer.py#L628-L630) 与 [ai_agent.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_agent.py#L935-L937)：
+
+  ```python
+  vol_desc = signal.get("volume_type") or "—"
+  if signal.get("volume"):
+      vol_desc += f"（{float(signal['volume']):.1f}×20根均量）"
+  ```
+
+- `signal["volume"]` 来自 `classify_volume` 的 `vol = float(klines[-2][5])`（[scanner.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/scanner.py#L143-L154)），是**原始成交量（币/张数）**，不是量比；而量比口径是 `volume_ratio` 的**近 20 根中位量**。
+- 且同一提示词的 [放量加分项](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_analyzer.py#L293) 写「≥近20根中位量 1.2 倍」——同一条消息里两处口径互相矛盾。模型会看到「放量（12345678.0×20根均量）」这类不可能成立的数字。
+- 改法：`signal` 增 `volume_ratio` 字段（直接取 `volume_ratio(klines)`），提示词渲染为 `量能: 缩量（量比 0.62×近20根中位量）`；原始成交量只在需要时标注 `原始量=...`，且不参与判断。
+
+**P2｜评分门槛与执行门槛不一致——P0**
+
+- 证据：[\_RULE_SCORE](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_analyzer.py#L193-L195) 只注入静态 `min_rec`（默认 60）；[trade_engine.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/trade_engine.py#L1414-L1420) 在连损 2/3 笔时把实际门槛提到 75/85。
+- 后果：AI 按「≥60 就会开单」的认知给分，当日连损后 70 分的 suggest 被静默 `blocked`，复盘表现为「AI 判断正确但没成交」，归因失真。
+- 改法：渲染 `_RULE_SCORE` 时传入**当日生效门槛**（`effective_min_rec = max(min_rec, need_score)`）与原因文案（如「今日连损 2 笔，门槛提升至 75」）；`analysis` 固定节增一行「执行门槛」。
+
+**P3｜P0 要求「结合质量分」，但事实包里没有质量分——P0**
+
+- 证据：[\_RULE_HTF_HARD](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_analyzer.py#L25-L28) 与 [\_RULE_SCORE](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_analyzer.py#L185-L188) 多处要求结合质量分；P0 用户消息构造无 `quality_score`，P1 只有 `strength`（[ai_agent.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_agent.py#L947) 附近）。
+- 改法：两管线都注入 `quality_score` 及其构成（`base / 4h_state / vote / penalty` 分项），让模型能解释「为什么这个信号排序靠后」，而不是凭空推断。
+
+**P4｜回踩的评分档位不可达，与回踩定位自相矛盾——P0**
+
+- 证据：[\_RULE_SCORE](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_analyzer.py#L186-L188) 的 70 档要求「方向票同向 ≥2」，85 档要求「4h + 位置 + 量能 + 形态 四项共振」；而 [\_RULE_VOTE](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_analyzer.py#L40-L41) 明确回踩时 1h 反向「属回撤常态，不得作为否决或降分理由」。
+- 后果：健康回踩只能拿 60 档，恰好等于 `min_rec=60`；连损日门槛 75 → 回踩必死。这与 S2（配额饿死）形成双重封杀。
+- 改法：评分档位**按触发类型分表**：
+  - 突破 60/70/85 维持现状；
+  - 回踩：60 = 4h 同侧 + 触点有效 + 金K确认；70 = 再加量能/结构位确认；85 = 回踩后 1h 收回并突破前高（趋势再启动）。
+  - 与 C5（rec 门槛分段：突破 ≥70 / 回踩 ≥60）绑定同一张表，避免两处漂移。
+
+**P5｜4h 状态规则存在三套标准——P1（冗余 + 冲突）**
+
+- 证据：
+  1. 筛选层：仅 `STATE_ALIGNED` 放行（[technical.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/technical.py#L986)）；
+  2. AI 兜底 `enforce_htf_constraint`：仍用旧 `STATE_BLOCK_BOTH`（3 态禁）+ `STATE_LOCK_CONTRA`（锁逆势）；
+  3. 提示词：大段描述 `macro_cross_*` / `*_recover` / `bull_dip` / `bear_rally` 的处置规则。
+- 后果：后两套描述的分支在当前筛选门后**不可达**，只增加 token 与自相矛盾概率；一旦 C1 放松放行面，两层会立刻打架。
+- 改法：提示词的 4h 规则只保留「读程序给出的状态行与约束行」+ `aligned_*` 的处置；`enforce_htf_constraint` 改为与 `scanner` 共用 `STATE_ALIGNED` 与同一常量。
+
+**P6｜指标块标题对回踩是误导——P1**
+
+- 证据：[technical.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/strategy/technical.py#L1281) 固定返回 `"技术指标（方向=方向票多数决）:"`；而回踩定向已改为 4h（2026-10-21 改造）。
+- 改法：`render_indicator_block` 增 `trigger_type` 入参：突破渲染「方向=方向票多数决」，回踩渲染「方向=4h（1h 方向票仅作确认度）」。
+
+**P7｜P0/P1 事实面不一致——P1（漂移）**
+
+| 维度 | P0 `analyze_with_guard` | P1 `analyze_coin_agent` |
+|---|---|---|
+| 市场环境（资金费率/BTC） | 有 | 无（靠工具 `get_market_breadth`） |
+| `quality_score` | 无 | 无（只有 `strength`） |
+| K 线列 | 5 列（OHLCV） | 7 列（含 timestamp/quote_vol） |
+| 止损/止盈规则 | `_RULE_SL` / `compose_rule_tp` | 手工重写（规则 11/12） |
+
+- 改法：抽出共享 `build_signal_facts(signal, klines, htf_klines)`，两管线同源；差异只保留「是否允许工具补充查询」。
+
+**P8｜市场环境缺数据时 fail-open——P1**
+
+- 证据：`_RULE_BTC_ENV` 在无数据时按「未出现急跌」处理，等于给模型一个乐观默认值。
+- 改法：缺数据时显式渲染「BTC 环境：未知（数据缺失）」，并在 `_RULE_BTC_ENV` 中禁止据此加分；`AIAnalysis` 落 `btc_env_missing` 标记，复盘分组。
+
+**P9｜提示词过长且重复——P2**
+
+- 现状：硬约束、评分、止损、止盈在 `AGENT_SYSTEM` 与 P0 系统提示词中各出现一次，且措辞不同（规则 9/11/12 为手工重写）。长提示词的直接代价是延迟（与第 1 项 E3 叠加）与规则冲突概率上升。
+- 改法：合并为 5 段——事实 → 方向 → 位置（止损/止盈/结构锚点）→ 评分 → 禁止事项；P0/P1 共用同一模板，仅「工具能力」段不同。目标 token 降 ≥30%，语义等价性用同一批历史信号离线重放对比。
+
+### 8.3 整改批次（新增 E / F / G）
+
+| 批次 | 内容 | 是否改判据 | 上线方式 |
+|---|---|---|---|
+| **E 提示词事实修复** | P1 量能口径、P2 生效门槛注入、P3 质量分注入、P6 指标块标题、P8 缺数据标注 | 否（只改注入事实） | 可直接上线，观察 1 周 |
+| **F 提示词结构** | P4 评分档位分表、P5 4h 单一权威、P7 共享 facts builder、P9 瘦身 | 是（影响 AI 给分） | A/B + 影子 ≥30 笔 |
+| **G 筛选排序/配额** | S2 分池配额、S1 强度分、S3 可执行性筛选、S4 pending 解耦、S5 冷静期对齐、S6 抑制键、S7 排序键、S8 相关性去重 | 部分（S3/S6 改判据） | 先影子，按 `RULE_VERSION` 分组 |
+
+**统一纪律**：E 批次必须与 F 批次分开提交，避免「事实修正」与「评分口径调整」混在同一 `RULE_VERSION` 里无法归因；G 批次中 S3/S6 属判据改动，必须先影子。
+
+### 8.4 明确不做
+
+- 不放宽 `STATE_ALIGNED` 前置门（C1 影子通过前）。
+- 不为提高回踩命中率而放宽 `range_score` 或 `AI_RR_MIN`（第 3.6 节已列分档方案，需单独影子）。
+- 不在 E 批次里改任何筛选阈值。

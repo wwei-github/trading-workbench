@@ -597,12 +597,15 @@ def detect_indicator_candidate(
     # pattern 透传供看涨吞没上影短加分（2026-10-13 硬门改加分项）；
     # structure_gate 透传 1H 结构门结果（2026-10-15 降级为重罚，不过门照常出信号）
     stabilize = trig.get("stabilize")
+    # 质量分分项（2026-10-21，T0-3/T1-2）：随候选落库，提示词渲染与复盘拆解
+    q_parts: dict = {}
     quality = compute_quality_score(direction, votes, trig["type"], klines=klines,
                                     stabilize=stabilize, pattern=trig.get("pattern"),
                                     golden_combo=bool(trig.get("golden_combo")),
                                     swing_order=flt.swing_order,
                                     structure_gate=bool(trig.get("structure_gate", True)),
-                                    range_penalty=range_penalty)
+                                    range_penalty=range_penalty,
+                                    parts_out=q_parts)
     return {
         "signal_type": trig["type"],
         # 候选产生时刻（2026-10-21 观测 B1）：信号新鲜度起点。扫描是整轮结束后
@@ -627,6 +630,7 @@ def detect_indicator_candidate(
         "volume": vol,
         "volume_type": vol_type,
         "quality_score": quality,
+        "quality_parts": q_parts,
         "votes": _votes_snapshot(votes, stabilize=stabilize),
     }, pending_op
 
@@ -944,6 +948,18 @@ class Scanner:
                 key=lambda x: (x.get("quality_score", 0), x.get("volume_24h", 0)),
                 reverse=True,
             )
+            # 3.1 配额分池与池内排名（2026-10-21，T1-2/T2-4 观测）：回踩与突破
+            # 在同一配额里竞争，回踩因质量分基数低被结构性挤出（spec F4）。
+            # 这里只记录「若按类型分池，每个候选在本池的名次」，不改变实际
+            # 分发顺序（旧分配仍是质量分全局前 N）；复盘据此看回踩分布。
+            _pool_rank: dict[str, int] = {}
+            for _h in hits:
+                _p = ("pullback"
+                      if _h.get("signal_type") == "trigger_pullback_confirm"
+                      else "breakout")
+                _pool_rank[_p] = _pool_rank.get(_p, 0) + 1
+                _h["quota_pool"] = _p
+                _h["quota_rank"] = _pool_rank[_p]
 
             # 4. 重复命中抑制（仅定时扫描）：同 (symbol, signal_type) 在
             #    repeat_window_hours 内已有命中的本轮不落库——持续趋势里 Donchian 突破
@@ -1111,6 +1127,11 @@ class Scanner:
                     volume=h.get("volume", 0),
                     volume_type=h.get("volume_type", "平量"),
                     quality_score=h.get("quality_score"),
+                    # 质量分分项（T0-3/T1-2）：提示词与复盘共用同一份分项
+                    quality_parts=h.get("quality_parts"),
+                    # 配额分池/池内名次（T1-2）：观测回踩是否被结构性挤出
+                    quota_pool=h.get("quota_pool"),
+                    quota_rank=h.get("quota_rank"),
                     votes_json=h.get("votes"),
                     # 信号命中时刻（2026-10-21 观测 B1）：候选产生时点，非本批
                     # 落库时刻；旧命中无该键（历史/手工构造）留 NULL

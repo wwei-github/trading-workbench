@@ -227,19 +227,28 @@ def test_build_messages_injects_market_context(monkeypatch):
 
 
 def test_build_messages_disabled_no_injection(monkeypatch):
-    """开关关闭（conftest 基线）→ 整块不出现"""
+    """开关关闭 → 不请求环境数据，也不应将其标成数据缺失"""
     assert settings.MARKET_CONTEXT_ENABLED is False  # conftest 已关
-    user = _build_messages(_minimal_signal(), _KLINES)[-1]["content"]
+    diag: dict = {}
+    user = _build_messages(_minimal_signal(), _KLINES, diag=diag)[-1]["content"]
     assert "【市场环境】" not in user
+    assert diag["btc_env_missing"] is False
 
 
 def test_build_messages_builder_exception_degrades(monkeypatch):
-    """构建函数抛异常 → 静默降级不注入，不影响消息构造"""
+    """构建函数抛异常 → T0-5 起显式标注「未知」，不再静默省略。
+
+    静默省略会让模型把「无环境事实」当成「环境无风险」而加分；显式未知行
+    同时禁止据此加分/降分，复盘可按 btc_env_missing 分组。
+    """
     monkeypatch.setattr(settings, "MARKET_CONTEXT_ENABLED", True)
 
     def _boom(_client, _symbol):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(ai_analyzer, "build_market_context", _boom)
-    user = _build_messages(_minimal_signal(), _KLINES)[-1]["content"]
-    assert "【市场环境】" not in user
+    diag: dict = {}
+    user = _build_messages(_minimal_signal(), _KLINES, diag=diag)[-1]["content"]
+    assert "BTC 环境: 未知" in user
+    assert "不得据此加分或降分" in user
+    assert diag["btc_env_missing"] is True

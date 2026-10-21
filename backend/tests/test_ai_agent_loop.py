@@ -15,6 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.services.ai_agent as ai_agent  # noqa: E402
+import app.services.ai_analyzer as ai_analyzer  # noqa: E402
 from app.services.ai_agent import _trim_context  # noqa: E402
 from app.services.llm_client import stream_completion  # noqa: E402
 
@@ -119,9 +120,10 @@ def _skip_call(reason: str = "[RR不足]1. 测试理由") -> tuple:
 @pytest.fixture()
 def _stub_pipeline(monkeypatch):
     """重计算桩：只保留循环控制流，屏蔽指标/K线渲染与技能匹配"""
-    monkeypatch.setattr(ai_agent, "analyze_ema", lambda _k: None)
+    # 事实包渲染已收口到 ai_analyzer.build_signal_facts（T3-3），EMA/指标桩打在源头
+    monkeypatch.setattr(ai_analyzer, "analyze_ema", lambda _k: None)
     monkeypatch.setattr(ai_agent, "calc_atr", lambda _k: 2.0)
-    monkeypatch.setattr(ai_agent, "render_indicator_block",
+    monkeypatch.setattr(ai_analyzer, "render_indicator_block",
                         lambda _k, _h=None, **_kw: "")
     monkeypatch.setattr(ai_agent.skill_library, "build_facts", lambda _s, _k: {})
     monkeypatch.setattr(ai_agent.skill_library, "render_index", lambda _f: "")

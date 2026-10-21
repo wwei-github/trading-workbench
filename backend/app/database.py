@@ -781,6 +781,26 @@ def _run_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_trade_reviews_htf_degraded "
             "ON trade_reviews (htf_degraded)"
         ))
+        # BTC 环境事实缺失标记（2026-10-21，T0-5）：市场环境块缺失时提示词显式
+        # 标注「未知」；打标供复盘剔除/分组，默认 FALSE 使存量行按环境可见理解
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS btc_env_missing BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        # 排序可观测（2026-10-21，T1-2）：质量分分项 + AI 配额分池/名次。
+        # 旧行 NULL（只有总分，无法回溯分项）
+        conn.execute(text(
+            "ALTER TABLE scan_results "
+            "ADD COLUMN IF NOT EXISTS quality_parts JSONB"
+        ))
+        conn.execute(text(
+            "ALTER TABLE scan_results "
+            "ADD COLUMN IF NOT EXISTS quota_pool VARCHAR(16)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE scan_results "
+            "ADD COLUMN IF NOT EXISTS quota_rank INTEGER"
+        ))
 
 
 def init_db():

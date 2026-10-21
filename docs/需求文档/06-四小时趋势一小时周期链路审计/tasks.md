@@ -62,3 +62,90 @@
 - [ ] **DOC1** 修正 `docs/需求文档/04-稳定盈利优化路线图.md` §4.1 的 TP 分批口径（50/25 → 代码实际 60/20/20 与 80）
 - [ ] **DOC2** 修正同文档「同向上限 6」与代码默认 0 的漂移，注明「以线上 system_config 为准」
 - [ ] **DOC3** 在 `docs/总览与索引/功能流程/12-交易系统总览.md` 补「执行节拍与信号时效」一节
+
+---
+
+## 批次 E — 提示词事实修复（不改判据，可直接上线）
+
+> 对应 [spec.md §8.2](file:///Users/wangwei/Documents/github/trading-workbench/docs/需求文档/06-四小时趋势一小时周期链路审计/spec.md) P1/P2/P3/P6/P8。必须与批次 F 分开提交，避免与评分口径调整混在同一 `RULE_VERSION`。
+
+- [ ] **E1** 量能口径修正（P1，确定性 Bug）
+  - 文件：`backend/app/tasks/ai_tasks.py`（signal 增 `volume_ratio`）、`backend/app/services/ai_analyzer.py:628-630`、`backend/app/services/ai_agent.py:935-937`
+  - 改法：渲染为 `量能: 缩量（量比 0.62×近20根中位量）`；原始成交量不得标为「×20根均量」，必要时单列 `原始量=...`
+  - 验收：单测断言提示词中不再出现 `×20根均量` 后接原始量；`volume_ratio` 与 `indicators.volume_ratio` 同源
+
+- [ ] **E2** 生效门槛注入（P2）
+  - 文件：`backend/app/services/ai_analyzer.py:193-195`、`backend/app/services/ai_tasks.py`、`backend/app/services/trade_engine.py:1414-1420`
+  - 改法：`_RULE_SCORE` 渲染 `effective_min_rec = max(min_rec, need_score)`，并说明「今日连损 N 笔，门槛提升至 X」；`analysis` 增「执行门槛」行
+  - 验收：连损 2/3 笔的当日提示词门槛分别为 75/85
+
+- [ ] **E3** 质量分注入（P3）
+  - 文件：`backend/app/services/ai_analyzer.py`（P0 用户消息）、`backend/app/services/ai_agent.py`（P1 事实包）
+  - 改法：注入 `quality_score` 与分项构成（base / 4h_state / vote / penalty）
+  - 验收：P0/P1 均能在提示词中读到质量分；不改变 scanner 放行集合
+
+- [ ] **E4** 指标块标题按触发类型（P6）
+  - 文件：`backend/app/services/strategy/technical.py:1281`、调用方 `scanner.py` / `ai_analyzer.py` / `ai_agent.py`
+  - 改法：`render_indicator_block(..., trigger_type=None)`；回踩渲染「方向=4h（1h 方向票仅作确认度）」
+  - 验收：回踩提示词不再出现「方向=方向票多数决」
+
+- [ ] **E5** 市场环境缺失显式标注（P8）
+  - 文件：`backend/app/services/ai_analyzer.py`（`_RULE_BTC_ENV` / `build_market_context`）
+  - 改法：缺数据渲染「BTC 环境：未知（数据缺失）」，禁止据此加分；`AIAnalysis` 落 `btc_env_missing`
+  - 验收：数据缺失场景单测；复盘可按该标记分组
+
+## 批次 F — 提示词结构（A/B + 影子 ≥30 笔）
+
+- [ ] **F1** 评分档位按触发类型分表（P4，与 C5 绑定）
+  - 文件：`backend/app/services/ai_analyzer.py:_RULE_SCORE`
+  - 改法：突破 60/70/85 不变；回踩 60=4h同侧+触点+金K，70=+量能/结构位，85=回踩后收回并突破前高
+  - 验收：回踩 rec 分布不再全部贴 60；与 C5 门槛分段共用一张表
+
+- [ ] **F2** 4h 规则单一权威（P5）
+  - 文件：`ai_analyzer.py` 提示词、`technical.py:enforce_htf_constraint`
+  - 改法：`enforce_htf_constraint` 与 `scanner` 共用 `STATE_ALIGNED`；提示词删除不可达状态分支
+  - 验收：全仓 `STATE_BLOCK_BOTH` 引用清零或仅作历史注释
+
+- [ ] **F3** P0/P1 共享 facts builder（P7）
+  - 文件：`ai_analyzer.py` / `ai_agent.py`
+  - 改法：抽出 `build_signal_facts(...)`，市场环境、质量分、K 线列、止损止盈规则同源
+  - 验收：同一 signal 下两管线事实文本 diff 仅剩「工具能力」段
+
+- [ ] **F4** 提示词合并瘦身（P9）
+  - 改法：合并为 5 段；目标 token 降 ≥30%
+  - 验收：同一批历史信号离线重放，rec/skip 分布无系统性偏移
+
+## 批次 G — 筛选排序 / 配额（先影子）
+
+- [ ] **G1** AI 配额按触发类型分池（S2）
+  - 文件：`backend/app/tasks/ai_tasks.py:156-177`、`backend/app/services/scan_filters.py`
+  - 改法：新增 `ai_quota_breakout` / `ai_quota_pullback`，回踩独立排序
+  - 验收：回踩进入 AI 的条数占比 ≥30%
+
+- [ ] **G2** 4h 强度分入 `quality_score`（S1）
+  - 文件：`backend/app/services/strategy/technical.py:compute_quality_score`
+  - 改法：ADX 三档 + EMA144 斜率分位 + 乖离分位；只影响排序，不改放行
+  - 验收：强弱多头分差可观测；配额命中率对比
+
+- [ ] **G3** 可执行性筛选（S3）
+  - 文件：`backend/app/services/scanner.py` 宇宙层/触发层、`scan_filters.py`
+  - 改法：`max_spread_pct`、`min/max_atr_pct_1h`、复活 `candle_max_ema21_dist_pct`（仅突破）
+  - 验收：`funnel_json` 新增 `spread` / `atr_band` / `overextended` 计数
+
+- [ ] **G4** pending 与宇宙池解耦（S4）
+  - 文件：`backend/app/services/scanner.py`
+  - 改法：pending 中的币强制纳入本轮（跳过 liquidity/new_coin，保留 4h 门）
+  - 验收：`pending_forced` 计数；pending 孤儿率下降
+
+- [ ] **G5** 新币冷静期对齐 4h 数据需求（S5）
+  - 改法：默认 14 → 34 天，或按已收盘 4h 根数 ≥200 判定
+  - 验收：`data` 类拒绝占比下降
+
+- [ ] **G6** 重复抑制键扩展（S6）
+  - 文件：`backend/app/services/scanner.py:1274`
+  - 改法：键加 `direction` + `price_bucket`；读最近 TradeRecord，`sl_hit` 后同向不抑制（-5 分）
+  - 验收：止损后二次回踩的命中数可观测
+
+- [ ] **G7** 排序次序键替换（S7）/ 配额相关性去重（S8）
+  - 改法：同分次序键改 4h 强度分或 signal_age；配额按 4h 收益相关性聚类，每簇 ≤2
+  - 验收：配额簇数、同簇占比统计

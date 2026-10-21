@@ -10,8 +10,13 @@ from app.services import skill_library
 from app.services.llm_client import get_client, parse_llm_json, json_mode_kwargs, stream_completion
 from app.services.market_data import build_market_context, get_kline_client
 from app.services.risk_guard import build_forced_skip, parse_and_validate
+from app.services.score_thresholds import (
+    derate_threshold,
+    static_min_recommendation,
+)
 from app.services.strategy.candlestick import golden_whitelist_labels
 from app.services.strategy.ema import analyze_ema
+from app.services.strategy.indicators import volume_ratio
 from app.services.strategy.technical import render_indicator_block
 from app.services.strategy.trigger import TOUCH_LABELS
 from app.services.strategy.types import POSITION_LABEL_MAP
@@ -20,25 +25,23 @@ logger = logging.getLogger(__name__)
 
 # ── 提示词公共片段：P0/P1 共享的纪律段（改一处两管线同步生效，防文本漂移）──
 # 4h 方向硬约束前置（长文本首部是注意力高区；唯一"程序无法补救只能 skip"的规则）。
-# （2026-10-11 再重构 EMA 状态机 11 态：「过热约束」行改「状态约束」（缠绕/
-# 拐头双向禁开），锁逆势集合扩为宏观交叉/恢复/排列六态，见 docs/17）
-_RULE_HTF_HARD = """0. **方向硬约束（最高优先级，先于一切规则）**：技术指标块出现「状态约束（硬性）」或「方向约束（硬性）」行时必须遵守——
-4h缠绕（无趋势）/多头拐头/空头拐头（排列内 EMA21 连续反向=趋势衰竭警戒）背景双向禁开新仓（long/short 一律 skip，程序会强制改判）；
-4h宏观金叉/死叉初期、多头/空头恢复初期、多头/空头排列（宏观同侧态）仅可顺势（逆势一律 skip，程序会强制改判）；
-4h牛内回调/熊内反弹（宏观逆侧过渡态）无此约束，但仍应结合质量分与打法合理性自评；
-即使 1h 方向票指向反方向也以约束为准（1h 逆宏观同侧态背景信号视为回调噪音）。
-回踩确认单（trigger_pullback_confirm）定向以 4h 为准：以下 1h 侧反向均属回撤的形态本身（回撤越深越明显），**只作确认度参考，不进减分项、不改变评分档位、不作 skip 理由**——① MACD/布林带/RSI 方向票反向或同向不足；② 1h EMA 排列/拐头与 4h 相反；③ SuperTrend/OBV 转反向；④ 回撤缩量（回踩类量比 <1 是加分不是减分）。金K看的是反转形态（做多=看涨吞没/锤形线/启明星/刺透线，做空镜像），不是回撤方向的延续形态。仅当价格结构跌破 4h 关键位（做多时 1h 收盘跌破 4h EMA144 且 4h 不再是排列）才可拒绝。"""
+# 2026-10-21 T3-2：筛选层只放行 STATE_ALIGNED，故只保留可达的两类约束行，
+# 删除宏观交叉/恢复/过渡态分支（它们在前置门后不可达，只会增加 token 与自相矛盾）。
+_RULE_HTF_HARD = """0. **方向硬约束（最高优先级）**：技术指标块只有两种状态行——
+- 「状态约束（硬性）」：4h 非多头/空头排列（缠绕/拐头/交叉/恢复/过渡态），双向禁开新仓，
+  一律 skip（程序会强制改判）。
+- 「方向约束（硬性）」：4h 多头/空头排列，仅可顺该方向开仓，逆势一律 skip（程序会强制改判）。
+1h 方向票反向不改变上述约束。回踩确认单（trigger_pullback_confirm）定向以 4h 为准：
+1h 方向票反向/同向不足、1h EMA 排列/拐头逆向、SuperTrend/OBV 反向、回撤缩量，均属回撤形态本身，
+**只作确认度参考，不进减分项、不改变评分档位、不作 skip 理由**；仅当 1h 收盘跌破 4h 关键位
+（做多时 1h 收盘跌破 4h EMA144 且 4h 不再是多头排列）才可拒绝。"""
 
-_RULE_VOTE = """方向票规则：用户消息"技术指标"块"方向票"行由程序统计
-（仅 MACD/布林带/RSI 三张方向票投多/空/中性，门槛=同向≥2 张；
-突破类候选程序已按此筛过，回踩确认单例外见下）。
-以该行结论为主——即使 1h K线形态或摆动结构与方向票相反，也以方向票结论为准，
-并在 {field} 第一条写明"方向票: 看多N项 vs 看空M项"及各指标依据；
-多空分歧（各 1 项）时自行结合 K线结构与量能判断。SuperTrend/ADX/OBV/4h背景
-不是方向票：SuperTrend/OBV 仅作风险提示、ADX 表趋势强度、4h 方向由硬约束行决定，
-不得当作方向票计数。
-例外：trigger_pullback_confirm 回踩确认单的定向以 4h 硬约束为准，方向票反向或同向不足
-均属回撤常态，仅作确认度参考（同向票数影响质量分），不得作为否决或降分理由。"""
+_RULE_VOTE = """方向票规则：技术指标块"方向票"行由程序按 MACD/布林带/RSI 统计
+（同向 ≥2 张即成立），以该行结论为准；在 {field} 第一条写明"方向票: 看多N项 vs 看空M项"
+及各指标依据，多空分歧时结合 K 线结构与量能判断。SuperTrend/ADX/OBV/4h背景 不计票
+（分别作风险提示/趋势强度；4h 方向以硬约束行为准）。
+例外：trigger_pullback_confirm 的定向以 4h 硬约束为准，方向票反向或同向不足属回撤常态，
+仅作确认度参考（影响质量分），不得据此否决或降分。"""
 
 
 def render_rule_vote(field: str = "analysis") -> str:
@@ -52,17 +55,16 @@ def render_rule_vote(field: str = "analysis") -> str:
 _RULE_EMA = """EMA 排列不构成方向限制：多头排列不禁止做空、空头排列不禁止做多，
 均线仅是趋势背景参考之一（金叉/死叉/拐头是动能转换信号）。"""
 
-_RULE_SL = """止损纪律（结构位优先，金K极值兜底，两锚取更远者；程序不再改写止损价，合理性自行把关）：
-- 优先：做多锚定入场价下方最近摆动低点外 0.3%（建议 0.3%~0.5%），做空锚定上方最近摆动高点外同幅度。
-- 两锚取更远者（防止损落进近期波动区间内被扫损）：金K极值 = 金K窗口（最近 5 根已收盘K线，含信号K/突破K线=事实包 K 线序列最后一根已收盘K线；最后一根未收盘K线不参与）的共同极值——做多取 5 根最低点、做空取 5 根最高点；做多取摆动低点与 5 根最低点中更低者外 0.3%，做空取摆动高点与 5 根最高点中更高者外 0.3%。该极值就是本笔信号的直接失效位（影线极值即最低/最高价，非收盘价）。
-- 距离分档（2026-10-12-5）：最近摆动结构位距入场超过 {far_atr}×ATR（=止盈一距离上限÷盈亏比铁律，超过此线盈亏比数学上不可能达标）时，该位是更大级别趋势的失效位而非本笔信号失效位，不作止损锚——直接降级金K锚：做多严格低于金K窗口最低点至少 0.3%，做空严格高于金K窗口最高点至少 0.3%（此时输出 stop_anchor="near"）；突破类信号按本条降级时，量比 <1 的缩量突破无资格。
-- 兜底（入场价与金K极值间无摆动结构位时用金K锚）：做多严格低于金K窗口最低点至少 0.3%，做空严格高于金K窗口最高点至少 0.3%。
-- 止损宽度无内部纪律上限，不得以「止损过宽」为由 skip——宽止损由固定亏损法自动缩仓
-  消化（止损越远仓位越小，BTWUSDT 等插针极值锚场景本就该宽），pin-bar/极端影线场景
-  按技能减半仓位即可；**但若信号门槛块给出「止损宽度硬上限」（程序硬闸），
-  则以该硬闸为准、超限如实 skip**（2026-10-20）。
-- 但止损**不得过近**：宽度须 ≥ 0.3×ATR（低于噪音级必被扫），也不得低于 0.3%；
-  锚点落在 0.3×ATR 内时把锚外扩到该宽度再报，否则直接 skip（程序按此下限复算打回）。
+_RULE_SL = """止损纪律（结构位优先、金K极值兜底，两锚取更远；程序不改写）：
+- 结构锚：做多锚入场下方最近摆动低点外 0.3%（0.3%~0.5%），做空锚上方摆动高点外同幅。
+- 金K极值 = 金K窗口（最近 5 根已收盘K线，含信号K/突破K，未收盘根不参与）共同极值；
+  做多取摆动低点与 5 根最低点中更低者外 0.3%，做空取更高者外 0.3%。该极值即失效位（影线极值）。
+- 距离分档：最近结构位距入场 > {far_atr}×ATR（=止盈一上限÷盈亏比，超过则盈亏比必不达标）
+  时该位属更大级别、不作止损锚，直接降级金K锚（stop_anchor="near"）；突破类降级需量比≥1。
+- 兜底（与金K极值间无摆动位）：同样用金K锚（多严格低于最低点、空严格高于最高点，≥0.3%）。
+- 止损宽度无内部上限，不得以「止损过宽」为由 skip——宽止损由固定亏损法自动缩仓；
+  门槛块给出「止损宽度硬上限」时以硬闸为准、超限 skip。
+- 止损**不得过近**：宽度 ≥0.3×ATR 且 ≥0.3%；过近时外扩该宽度再报，否则 skip。
   盈亏比不达标先调入场价，仍不达标如实 skip。"""
 
 def render_tp1_cap_desc(rr_min: Optional[float] = None) -> str:
@@ -81,52 +83,84 @@ def render_tp1_cap_desc(rr_min: Optional[float] = None) -> str:
     return f"max({_atr}×ATR, {_rr:g}×止损距离)"
 
 
-_RULE_TP_BASE = """止盈锚定（多空方向不同，必须遵守；程序不再改挂止盈价）：
-- 结构位=摆动高低点（用户消息中"近期摆动结构"）。距现价 ≤1×ATR 的位是正在
-  测试的争夺位、不算止盈目标，止盈一必须挂更远的第一档结构位外侧：
-  做多 = 上方摆动高点下方 0.2%~0.5%（不得越到位上方或贴死位）；
-  做空 = 下方摆动低点上方 0.2%~0.5%（不得越到位下方或贴死位）。
-- 第一档止盈须"够近"：距入场价上限 = {tp1_cap_desc}（与程序复算口径一致）。
-  上限里的 {rr_min}×止损距离 一项保证"入场价 ± {rr_min}×止损距离"兜底价**永远合规、
-  绝不会因超 {tp1_max_atr}×ATR 被打回**——止损宽度 > {far_atr}×ATR 时上限即自动放宽
-  到兜底价。若更远的第一档结构位已越过此上限（强趋势/点位稀疏时常见，会落到 3~4R），
-  说明近端无合适目标——不要跳档硬挂远位凑盈亏比，改用"入场价 ± {rr_min}×止损距离"
-  作止盈一（启用止盈二时该远端结构位可保留为止盈二，见下方兜底条）。
-  **禁止以"兜底价超过 {tp1_max_atr}×ATR 上限"为由 skip。**
-- 禁止跳档凑盈亏比：到第一结构位不足 {rr_min}R 就是空间不足，应直接 skip
-  （程序按盈亏比铁律复算打回）。**唯一放宽**：当盈亏比不达标是**唯一**不达标项
-  （信号方向、4h 背景、趋势状态、量能特征、质量分等其余开单条件必须全部满足）
-  且 4h 背景为「宏观同侧态」——即技术指标块出现「方向约束（硬性）」行的六态
-  （宏观金叉/死叉初期、多头/空头恢复初期、多头/空头排列）——时，允许不 skip，
-  改用"入场价 ± {rr_min}×止损距离"作止盈一（盈亏比恰达标）；
-  缠绕/拐头（出现「状态约束（硬性）」行）与牛内回调/熊内反弹（过渡态）仍一律 skip。"""
+# 质量分分项中文标签（P0/P1 共用；顺序即渲染顺序）
+QUALITY_PART_LABELS = (
+    ("base", "基础"),
+    ("htf", "4h"),
+    ("htf_macro", "逆宏观"),
+    ("adx", "ADX"),
+    ("volume", "量能"),
+    ("shadow", "影线"),
+    ("rsi", "RSI"),
+    ("obv", "OBV"),
+    ("risk_vote", "辅助票"),
+    ("boll", "带宽"),
+    ("zone", "结构密度"),
+    ("stabilize", "企稳"),
+    ("structure_gate", "结构门"),
+    ("range", "震荡"),
+)
+
+
+def render_quality_line(signal: dict) -> str:
+    """质量分事实行（T0-3，2026-10-21）：P0/P1 共用，含分项拆解。
+
+    只陈述程序排序结果，明确不替代 AI 判断——提示词多处要求「结合质量分」，
+    此前事实包里没有该字段，模型只能凭感觉估。
+    """
+    q = signal.get("quality_score")
+    if q is None:
+        return ""
+    try:
+        total = f"{float(q):.0f}"
+    except (TypeError, ValueError):
+        return ""
+    parts = signal.get("quality_parts") or {}
+    detail = []
+    for key, label in QUALITY_PART_LABELS:
+        v = parts.get(key)
+        if v is None:
+            continue
+        try:
+            detail.append(f"{label} {float(v):+.0f}" if key != "base"
+                          else f"{label} {float(v):.0f}")
+        except (TypeError, ValueError):
+            continue
+    suffix = f"（{' / '.join(detail)}）" if detail else ""
+    return f"质量分: {total}/100{suffix}（程序排序用，不替代你的判断）\n"
+
+
+_RULE_TP_BASE = """止盈锚定（必须遵守；程序不改挂止盈价）：
+- 结构位=摆动高低点；距现价 ≤1×ATR 的争夺位不算目标，止盈一挂更远第一档外侧
+  （多=高点下方 0.2%~0.5%，空=低点上方 0.2%~0.5%）。
+- 止盈一距入场上限 = {tp1_cap_desc}（程序复算口径）；其中 {rr_min}×止损距离 一项保证
+  "入场价 ± {rr_min}×止损距离"兜底价永远合规、不因超 {tp1_max_atr}×ATR 被打回。
+  更远结构位越过上限即近端无目标——不跳档硬挂远位，改用兜底价作止盈一
+  （该远端位可留作止盈二）。**禁止以"兜底价超过上限"为由 skip。**
+- 禁止跳档凑盈亏比：到第一结构位不足 {rr_min}R 应直接 skip。**唯一放宽**：盈亏比不达标是
+  **唯一**不达标项（信号方向/4h 背景/趋势状态/量能/质量分等其余条件全部满足）且 4h 为
+  「宏观同侧态」（出现「方向约束（硬性）」行的六态）时，改用"入场价 ± {rr_min}×止损距离"
+  作止盈一；缠绕/拐头（「状态约束（硬性）」行）与过渡态仍一律 skip。"""
 
 # TP2 分批开关（2026-10-08）：关闭时提示词整体剔除止盈二条目——AI 不再产出
 # 第二档止盈价（落库 take_profit_2=0，与出场引擎 80% 口径一致）
-_RULE_TP2_BULLET_ON = """- 止盈二：止盈一锚定档的下一档结构位外侧（做多=更高一档摆动高点下方，
-  做空=更低一档摆动低点上方），留同幅余地，且必须比止盈一更远。
-  止盈二还须与止盈一拉开间距：间距 ≥ max({tp2_gap_atr}×ATR, {tp2_gap_r}×止损距离)
-  ——两档贴得太近会几乎同时触发，分批意义消失（多付一次手续费）。间距不足时
-  直接输出 take_profit_2=0（只留一档），不要硬塞第二档；程序亦会对贴档/反向静默撤档。"""
+_RULE_TP2_BULLET_ON = """- 止盈二：止盈一锚定档的下一档结构位外侧（同向更远一档，留同幅余地），须比止盈一更远；
+  间距 ≥ max({tp2_gap_atr}×ATR, {tp2_gap_r}×止损距离)，不足直接输出 take_profit_2=0
+  （贴档会几乎同时触发）；程序亦会对贴档/反向静默撤档。"""
 
-_RULE_TP2_BULLET_OFF = """- 当前未启用止盈二（TP2 分批止盈已关闭）：只规划止盈一，
-  take_profit_2 一律输出 0，即使前方有更远结构位也不要给出第二档止盈价。"""
+_RULE_TP2_BULLET_OFF = """- 当前未启用止盈二（TP2 已关闭）：只规划止盈一，take_profit_2 一律输出 0。"""
 
 _RULE_TP_TAIL_ON = """- 止盈一兜底，分三种情形：
-  (a) 前方无任何结构位可锚（如创新高突破）：止盈一 = 入场价 ± {rr_min}×止损距离
-      （盈亏比恰达标），止盈二设 0（仅设一档）。
-  (b) 近端无合适结构位、更远的第一档结构位已越过距离上限（上限 = {tp1_cap_desc}）：
-      止盈一 = 入场价 ± {rr_min}×止损距离，止盈二保留
-      锚定该远端结构位外侧（留 0.2%~0.5% 余地），作为趋势跑手档。
-  (c) 近端第一档结构位本身太近、到它不足 {rr_min}R（原应 skip）：仅当盈亏比不达标
-      是唯一不达标项且 4h 为宏观同侧六态（出现「方向约束（硬性）」行）时，止盈一 =
-      入场价 ± {rr_min}×止损距离；更远若存在越上限的结构位则保留为止盈二锚
-      （同 (b) 做法）；否则止盈二设 0；其余情形一律 skip。"""
+  (a) 前方无任何结构位可锚（如创新高突破）：止盈一 = 兜底价，止盈二设 0（仅设一档）。
+  (b) 更远结构位越过上限（上限 = {tp1_cap_desc}）：止盈一 = 兜底价，止盈二保留锚定该远端位
+      （作趋势跑手档）。
+  (c) 近端第一档太近、不足 {rr_min}R（原应 skip）：仅当盈亏比不达标为唯一不达标项且
+      4h 为宏观同侧六态时用兜底价，远位留作止盈二；否则止盈二设 0，其余 skip。"""
 
-_RULE_TP_TAIL_OFF = """- 前方无任何结构位可锚（如创新高突破）、更远的第一档结构位已越过距离上限
-  （上限 = {tp1_cap_desc}）、或近端第一档结构位太近
-  （到它不足 {rr_min}R 且盈亏比不达标为唯一不达标项、4h 为宏观同侧六态）：
-  止盈一 = 入场价 ± {rr_min}×止损距离（盈亏比恰达标）；其余情形一律 skip。"""
+_RULE_TP_TAIL_OFF = """- 前方无结构位可锚（如创新高突破）、更远的第一档结构位已越过上限
+  （上限 = {tp1_cap_desc}）、或近端第一档太近（到它不足 {rr_min}R 且盈亏比不达标为
+  唯一不达标项、4h 为宏观同侧六态）：止盈一 = 入场价 ± {rr_min}×止损距离（恰达标）；
+  其余情形一律 skip。"""
 
 # 兼容名（默认开启版）：外部仅 SYSTEM_PROMPT 槽位引用，经 compose_rule_tp 组装
 _RULE_TP = "\n".join([_RULE_TP_BASE, _RULE_TP2_BULLET_ON, _RULE_TP_TAIL_ON])
@@ -148,33 +182,28 @@ _TP2_FIELD_ON = """第二档止盈价，锚定更前方一档摆动结构位（�
 
 _TP2_FIELD_OFF = """当前未启用止盈二（TP2 分批关闭）：一律输出 0。"""
 
-_RULE_STRUCT = """结构破位回踩打法（structure_break）子形态按行情阶段择一，选择理由写进 {field}：
-1. 123法则（顺势方向的结构反转）：破支撑(1) → 反弹不创新低(2) → 突破反弹高点时入场(3)；
-   仅用于确认顺势方向上的回踩结束（回调结束/回踩企稳），**不得当作抄底/逃顶的逆势反转**；
-   止损放转折点外侧。稳但滞后。
-2. N字结构（趋势延续）：回调不破支撑 → 突破压力 → 回踩不破入场；止损放 N 字中间低点，破即失效。
-共同：1h 结构反转只是 4h 趋势延续的入场确认，方向一律服从 4h 硬约束（逆势一律 skip）；
-震荡市最差（假突破连发），震荡区间行情在筛选层已被前置剔除、不会产生候选。"""
+_RULE_STRUCT = """结构破位回踩打法（structure_break）子形态择一，理由写进 {field}：
+1. 123法则：破支撑(1) → 反弹不创新低(2) → 突破反弹高点入场(3)；仅确认顺势方向的回踩结束，
+   **不得当作抄底/逃顶的逆势反转**；止损放转折点外侧。
+2. N字结构：回调不破支撑 → 突破压力 → 回踩不破入场；止损放 N 字中间低点。
+共同：1h 结构反转只是 4h 趋势延续的入场确认，方向服从 4h 硬约束；震荡市最差
+（假突破连发），震荡区间已在筛选层剔除。"""
 
 
 def render_rule_struct(field: str = "analysis") -> str:
     """结构破位回踩打法片段按落库字段名渲染（P0 field="analysis" / P1 field="reason"）。"""
     return _RULE_STRUCT.format(field=field)
 
-_RULE_DIRECTION = """方向纪律（不再程序强制，无 ±0.3% 贴近要求）：优先只在支撑结构做多、
-只在压力结构做空；现价已离开结构位时不再要求贴近，可按动能顺势给入场价（顺势追势
-入场贴近现价即可），入场是否合理由盈亏比与止损结构把关。"""
+_RULE_DIRECTION = """方向纪律：优先在支撑结构做多、压力结构做空；现价已离开结构位时按动能顺势
+给入场价（贴近现价即可），入场是否合理由盈亏比与止损结构把关。"""
 
 # 回踩触点语义注解（docs/22 触点体系，2026-09-28；2026-10-12 补 ema21_4h；
 # 2026-10-16 ema144 复出并默认启用，门控改「1h EMA144 走平或顺 4h 方向」）
-_RULE_TOUCH = """回踩触点语义（信号块出现"回踩触点"行时程序已验证金K上一根触碰该位企稳）：
-retest=突破回测位（破轨后横向验证，结构意义最强，止盈/止损参考被测轨位）、
-swing=摆动结构位（HL/LH 防守位）、ema21=1h 趋势动态价值区、ema21_4h=4h 大周期
-动态价值区（1h 信号K线影线触及，放大版价值区）、ema55=中深度回撤价值区
-（排列+斜率三道门已程序验证）、ema144=深回撤价值区（数据门+「1h EMA144 走平或
-顺 4h 方向」门已程序验证）。触点启用类型由页面
-「回踩触点」白名单控制；有触点时止损优先锚定触点位：做多放触点位
-下外侧、做空放上外侧（仍按止损纪律两锚取更远者结合金K极值）。"""
+_RULE_TOUCH = """回踩触点语义（出现"回踩触点"行时程序已验证金K上一根触碰该位企稳）：
+retest=突破回测位（结构意义最强）、swing=摆动结构位（HL/LH 防守位）、ema21=1h 动态价值区、
+ema21_4h=4h 大周期价值区、ema55=中深度回撤价值区、ema144=深回撤价值区
+（均已过程序门验证；启用类型由页面白名单控制）。有触点时止损优先锚定触点位
+（做多下方外侧、做空上方外侧），仍按止损纪律两锚取更远者。"""
 
 # ── 评分纪律（2026-10-21，P0/P1 共用）────────────────────────────
 # 系统定位：规则引擎持否决权与仓位权，LLM 只出裁决与参数（docs/12 §一）。
@@ -182,50 +211,74 @@ swing=摆动结构位（HL/LH 防守位）、ema21=1h 趋势动态价值区、em
 # AI 用 58 表达"保守"，程序却按 <60 门槛直接不分发开仓（ai_tasks
 # ._dispatch_immediate_open），且仓位由固定亏损法复算、根本不读评分——语义错位。
 # 改为档位化 + 注入生效门槛：分数 < 门槛即"程序不下单"，禁止用中间分表达犹豫。
+# 评分档位（2026-10-21 T3-1）：按触发类型分表——回踩的 1h 反向是回撤常态，
+# 不能沿用突破的「方向票同向≥2」门槛，否则健康回踩永远只能拿 60 档。
+_SCORE_TIERS = {
+    "breakout": """  60 = 4h 同侧 + 触发有效 + 方向票同向 ≥1
+  70 = 60 档 + 量能达标（量比 ≥1.2）+ 未过度延展（距触发位 ≤1.5×ATR）
+  85 = 70 档 + 突破后首次回踩确认 或 结构位共振""",
+    "pullback": """  60 = 4h 同侧 + 触点有效 + 金K确认
+  70 = 60 档 + 回撤深度合理（前一段 impulse 的 0.236~0.618）且量能未异常放大（量比 <1.5）
+  85 = 70 档 + 回踩后 1h 收盘收回并创段内新高/新低""",
+}
+_PULLBACK_TRIGGERS = ("trigger_pullback_confirm", "trigger_pullback")
+
+
+def _tier_table(trigger_type: Optional[str] = None) -> str:
+    """按触发类型返回评分档位表；未指定时两张都列（预览页/无信号上下文）。"""
+    if trigger_type in _PULLBACK_TRIGGERS:
+        return _SCORE_TIERS["pullback"]
+    if trigger_type:
+        return _SCORE_TIERS["breakout"]
+    return _SCORE_TIERS["breakout"] + "\n" + _SCORE_TIERS["pullback"]
+
+
 _RULE_SCORE = """评分纪律（recommendation 只决定开/不开，不决定仓位）：
-- 分档不内插：60=达标（其余开单条件全部满足，共振项 <2）；70=标准共振
-  （4h 同侧 + 位置/触点/量能/形态 中 ≥2 项同向，且方向票同向 ≥2）；
-  85=强共振（4h 同侧 + 位置 + 量能 + 形态 四项同向、止盈空间有余量）；skip 一律 ≤30。
-- 跨档必须给依据：「决策结论」节逐条写明是哪一项共振成立/失效才允许跨档。
-  **减分项不跨档**：环境风险（BTC 走弱、资金费率拥挤）、1h 反向、RR 恰达标等
-  只在同档内决定取上限还是下限，任何单项都不足以跨档；若它本身足以否决，
-  请直接 skip 并写明依据，不要用"降一点分"表达犹豫。
-- 生效门槛 = {min_rec}：**分数 < {min_rec} 等于程序不下单**，不是"减半仓"、
-  也不是"保守建议"。禁止输出介于档位之间的分数（如 58、62）——要么按档给
-  ≥{min_rec} 的分，要么 skip。
-- 仓位不承载意见：仓位恒由程序按固定亏损法计算（预算={risk_label} ÷ 止损距离），
-  评分不参与。要保守只有两个动作：降档给分（仍 ≥{min_rec} 则照常开单）或 skip。
-- RR 恰达标（含"入场 ± {rr_min}×止损距离"兜底止盈）不是减分项：兜底启用前提是
-  其余开单条件全部满足且 4h 为宏观同侧态，属"空间一般但结构合格"，按 60 档给分。"""
+- 只取 60/70/85 三档，skip 一律 ≤30；禁止输出 58/62 这类中间分。
+- 档位定义（按触发类型）：
+{tier_table}
+- 跨档须给依据（「决策结论」写明哪项共振成立/失效）。**减分项不跨档**：环境风险、
+  1h 反向、RR 恰达标只在同档内定上下限；若它本身足以否决，直接 skip 并写明依据。
+- AI 分析阶段静态门槛 = {min_rec}：**低于该分数不分发开仓**，不是"减半仓"。{threshold_note}
+- 连损软熔断按账号在开仓时单独校验，不等同于上述分析阶段静态门槛。
+- 仓位恒由程序按固定亏损法计算（预算={risk_label} ÷ 止损距离），评分不参与；要保守
+  只有两个动作：降档（仍 ≥{min_rec} 照常开单）或 skip。
+- RR 恰达标（含"入场 ± {rr_min}×止损距离"兜底）不是减分项：其余满足时按 60 档。"""
 
 # ── BTC 环境定位（2026-10-21，P0/P1 共用）────────────────────────
 # BTC 状态行不是闸门（2026-10-13 起急跌仅提示词警示），不得用它做否决——
 # 否则等于绕过已删除的 N-15 单边环境闸门。回踩场景下 BTC 同步 1h 走弱是共因，
 # 与 _RULE_HTF_HARD 的回踩豁免同源，最多降一档。
 _RULE_BTC_ENV = """市场环境定位（BTC 状态行不是闸门，不拦截开单）：
-- 未出现「急跌」字样：BTC 4h 排列与信号不同向、或 1h 近3根回落 → 只写进
-  风险点，不降分、不降档、不作 skip 理由；
-- 出现「BTC 短线急跌」：最多降一档（85→70 / 70→60），不直接否决；
-  降档后低于门槛 → 直接 skip 并标 [环境逆风]，不要给中间分数；
-- 「状态约束（硬性）/方向约束（硬性）」行由 4h 结构决定，与 BTC 状态行无关，
-  按其执行即可。"""
+- 未出现「急跌」：BTC 与信号不同向或 1h 近3根回落 → 只写风险点，不降分、不降档、不作 skip 理由；
+- 出现「BTC 短线急跌」：最多降一档（85→70 / 70→60）；降档后低于门槛 → 直接 skip 并标 [环境逆风]。"""
 
 
 def render_rule_score(
     min_rec: Optional[float] = None, rr_min: Optional[float] = None,
-    risk_label: str = "",
+    risk_label: str = "", consecutive_losses: Optional[int] = None,
+    trigger_type: Optional[str] = None,
 ) -> str:
     """评分纪律片段渲染（P0/P1 同源）：门槛/盈亏比/止损预算三处生效值注入。
 
     min_rec：system_config.min_recommendation 优先、回落
-    TRADING_MIN_RECOMMENDATION（连损降速提门槛时由程序侧另行判定，提示词只写
-    静态门槛——动态档位属执行层，不重复注入避免文本分叉）。
+    TRADING_MIN_RECOMMENDATION。consecutive_losses 仅作跨账号风险提示，不能
+    代表所有账号的门槛；真实连损门槛在每个账号开仓时单独复核。0 表示无已知连损。
     """
-    _min = float(min_rec) if min_rec is not None else float(settings.TRADING_MIN_RECOMMENDATION)
+    _min = float(min_rec) if min_rec is not None else static_min_recommendation()
+    _need = derate_threshold(consecutive_losses or 0)
+    _note = ""
+    if _need:
+        _note = (
+            "\n  连损动态门槛由执行层按账号在开仓时单独校验，不等同于分析阶段静态门槛；"
+            "不要仅因连损推测交易结论或统一 skip。"
+        )
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     return _RULE_SCORE.format(
         min_rec=f"{_min:g}", rr_min=f"{_rr:g}",
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
+        threshold_note=_note,
+        tier_table=_tier_table(trigger_type),
     )
 
 # 信号类型中文对照（结构分类）
@@ -355,51 +408,36 @@ SYSTEM_PROMPT = """你是加密货币合约交易分析师。基于提供的信�
 【最高优先级硬约束】
 {_RULE_HTF_HARD}
 
-字段如下（skip 时为 0/空字符串的字段：direction/trade_type/entry_price/stop_loss/
-take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外，见下）：
-- trade_decision: 是否建议开单，"suggest"（建议开单）或 "skip"（不建议开单）
-- skip_reason: trade_decision="skip" 时必填，必须以类别前缀开头——[RR不足]/[止损过宽]/[环境逆风]/[形态质量]/[结构不清]/[波动极端]/[其他] 之一；前缀后用"1. 2. 3."序号逐条列出不建议开单的主要原因（如：[RR不足]1. 到第一结构位仅0.5R 2. 上方空间不足），最多3条，每条一行，JSON内换行写\\n。suggest 时输出空字符串。
-- direction: 交易方向，"long"（做多）或 "short"（做空）。skip 时为空字符串。
-- trade_type: 开单类型（结构打法归类），suggest 时必填其一：trend_follow（顺势，方向由 EMA 排列或指标共振确立，纯 EMA 排列不是硬门槛）/ structure_break（结构破位回踩，涵盖 123法则·N字结构，见下方打法详解）。skip 时为空字符串。
-- stop_anchor: 止损锚类型："structure"（结构锚）或 "near"（金K窗口极值金K锚）；任何信号类型采用金K极值锚时输出 "near"（距离分档降级或突破类近锚降级链，以止损纪律与程序入场门槛块为准），结构锚输出 "structure"；省略该字段或输出 null 按 structure 理解（禁止输出空字符串）。
-- entry_price: 建议入场价。**只允许现价入场（2026-09-30 二次拍板）**：entry 必须贴近
-  当前价格（顺势追势），**禁止**把入场价放到现价回踩侧（多单低于现价/空单高于现价）——
-  程序对"入场价在现价回踩侧"的建议标记"待回踩"且**不会为其下单**（等于放弃该笔）。
-  若按现价入场 RR 无法达标（追入止损过远、到结构位空间不足等），直接 skip，
-  **不得给出回踩等待计划**（等回踩建议一律被程序丢弃）；现价已显著离开摆动结构位
-  且无合理入场计划时，同样直接 skip。
+字段如下（skip 时 direction/trade_type/entry_price/stop_loss/take_profit_1/take_profit_2/
+risk_reward_ratio/position_pct 为 0/空字符串；skip_reason 除外）：
+- trade_decision: "suggest"（建议开单）或 "skip"（不建议开单）
+- skip_reason: skip 时必填，类别前缀开头——[RR不足]/[止损过宽]/[环境逆风]/[形态质量]/[结构不清]/[波动极端]/[其他]；前缀后按 "1. 2. 3." 列主因（≤3条，JSON 内换行写 \n）。suggest 时为空。
+- direction: "long"（做多）或 "short"（做空）。
+- trade_type: 开单类型，suggest 必填其一：trend_follow（顺势，方向由 EMA 排列或方向票确立，
+  纯排列不是硬门槛）/ structure_break（结构破位回踩，含 123法则·N字结构，见下方打法）。
+- stop_anchor: "structure"（结构锚）或 "near"（金K窗口极值锚）；采用金K极值锚时输出 "near"
+  （距离分档或突破近锚降级），省略/null 按 structure（禁止空字符串）。
+- entry_price: 建议入场价。**只允许现价入场**：必须贴近当前价，**禁止**放到现价回踩侧
+  （多单低于现价/空单高于现价）——程序会标"待回踩"且不下单。现价入场 RR 不达标或已远离
+  结构位 → 直接 skip，**不得给出回踩等待计划**。
 - 方向纪律：{_RULE_DIRECTION}
-- stop_loss: 止损价，做多时低于入场价，做空时高于入场价，基于结构位。
-  三价硬约束（程序强制，违反直接打回浪费重试）：做多必须 SL < 入场 < TP1，做空必须
-  TP1 < 入场 < SL。止损锚定只看入场价不利侧的摆动结构/影线极值——
-  做空绝不允许锚定低点、做多绝不允许锚定高点。
-- take_profit_1: 第一档止盈价，做多=上方摆动高点下方留 0.2%~0.5% 余地，
-  做空=下方摆动低点上方留 0.2%~0.5%。盈亏比铁律（程序按三价复算打回，声称值无效）：
-  RR = |TP1 − 入场| ÷ |入场 − 止损| 必须 ≥ {rr_min}，输出前先自行代入验算
-  （近位争夺位不算止盈目标，细则见下方止盈锚定）。距离上限（程序复算口径）：
-  距入场 ≤ {tp1_cap_desc}；其中 {rr_min}×止损距离 项使"入场 ± {rr_min}×止损距离"
-  兜底价永远合规、不会因超 {tp1_max_atr}×ATR 被打回。超限请改挂更近结构位或直接用兜底价。
+- stop_loss: 止损价（做多低于入场、做空高于入场），基于结构位。三价硬约束（程序强制）：
+  做多 SL < 入场 < TP1，做空 TP1 < 入场 < SL；止损只看入场价不利侧的摆动结构/影线极值。
+- take_profit_1: 第一档止盈价（细则见下方止盈锚定）。RR = |TP1−入场|÷|入场−止损| ≥ {rr_min}，
+  输出前自行验算；距入场上限 = {tp1_cap_desc}，超限改挂更近结构位或直接用兜底价。
 - take_profit_2: {_tp2_field}
-- risk_reward_ratio: take_profit_1 的盈亏比，2位小数（按报价如实复算）。
-- position_pct: 展示用估算值，2位小数。程序会按固定亏损法复算覆盖
-  （单笔止损预算={risk_label}：仓位=预算÷止损距离）——**该字段不承载保守/激进语义**，
-  保留意见用评分档位或 skip 表达，不要用缩仓表达。
-- recommendation: 推荐程度，0-100 整数，**按档给分、不内插**（档位定义与减分纪律见
-  下方「评分纪律」）：60=达标 / 70=标准共振 / 85=强共振；skip 时≤30。
+- risk_reward_ratio: take_profit_1 的盈亏比，2位小数（如实复算）。
+- position_pct: 展示用估算值，2位小数；程序按固定亏损法复算覆盖（单笔止损预算={risk_label}）
+  ——**该字段不承载保守/激进语义**，保留意见用评分档位或 skip 表达。
+- recommendation: 0-100 整数，**分档不内插**（档位定义见下方「评分纪律」），skip 时 ≤30；
   禁止输出介于档位之间的分数（如 58、62）来表达"保守"或"犹豫"。
-- tactic_name: 战法命中名（2026-10-02，仅借鉴标注不影响开单结论）。用户消息出现
-  【战法库判定】块且信号符合其中某个战法时，逐字输出该战法名（禁止改写/自创）；
-  均不符合或无战法清单时输出空字符串。
-- tactic_reason: 战法判定依据，≤60字（引用战法条件逐条对照结论）；未命中输出空字符串。
-- analysis: ≤500字中文推理。**节标题逐字固定**（前端按标题分区展示，改标题即破坏契约）：
-  以「公共检查：」开头逐条列公共项判定（1. 4h方向 2. 方向票 3. 回踩触点
-  4. 形态与量能 5. 风险点——含资金费率拥挤/BTC 大盘急跌等环境风险，无则写"无"），
-  随后「决策结论：」节**按条分行**写满足/不满足什么——每条独占一行，以
-  "1. 2. 3. …"序号逐条列出，最后以单独一行"结论：建议开单/不建议开单"收尾
-  （**禁止**把决策结论写成一行长句或不分条）。
-  每条独占一行（JSON内换行写\\n）。
-  trade_decision="skip" 时 analysis 仍按上述两节完整输出（决策结论节分条写
-  不满足的主因），skip_reason 不必重复 analysis 已有内容。
+- tactic_name: 战法命中名；用户消息出现【战法库判定】且信号符合时逐字输出（禁止自创），否则空。
+- tactic_reason: 战法判定依据，≤60字；未命中为空。
+- analysis: ≤500字。**节标题逐字固定**：「公共检查：」逐条列（1. 4h方向 2. 方向票 3. 回踩触点
+  4. 形态与量能 5. 风险点——含资金费率拥挤/BTC 大盘急跌等环境风险，无则写"无"），随后
+  「决策结论：」按条分行写满足/不满足什么（序号 1. 2. 3.），末行单独写
+  "结论：建议开单/不建议开单"（禁止一行长句）；每条独占一行（JSON 内换行写 \n）。
+  skip 时两节仍完整输出，skip_reason 不必重复 analysis 已有内容。
 
 {_RULE_STRUCT}
 
@@ -419,13 +457,13 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 - {_RULE_VOTE}
 - 入场/止损/止盈的结构位锚定规则不受指标方向影响，仍按上方规则执行。
 
-资金费率与 BTC 状态以用户消息【市场环境】块为准（docs/24 A4）；持仓量/恐贪等其余
-环境数据未提供，勿臆测：仅基于给定的 K 线、量能、均线、摆动结构、技术指标、
-4h 背景与环境块数据进行分析，环境块缺失时按无环境数据处理。"""
+资金费率与 BTC 状态以用户消息【市场环境】块为准；其余环境数据未提供勿臆测，
+环境块缺失时按无环境处理。"""
 
 def render_system_prompt(
     risk_label: Optional[str] = None, rr_min: Optional[float] = None,
     tp2_enabled: bool = True, min_recommendation: Optional[float] = None,
+    consecutive_losses: Optional[int] = None, trigger_type: Optional[str] = None,
 ) -> str:
     """渲染最终生效的 P0 系统提示词（SYSTEM_PROMPT 为带槽位模板）。
 
@@ -433,11 +471,12 @@ def render_system_prompt(
     百分比口径。页面预览与实际调用共用本函数保证同源。
     rr_min（2026-10-02 上页面）：盈亏比铁律下限，system_config.ai_rr_min
     覆盖时由调用方传入；None 回落 env 默认。
-    min_recommendation（2026-10-21）：生效评分门槛，注入「评分纪律」段——
-    分数低于门槛程序不分发开仓，AI 必须知道该门槛才能正确选择档位或 skip
-    （system_config.min_recommendation 覆盖时由调用方传入；None 回落 env）。
+    min_recommendation（2026-10-21）：AI 分析阶段静态评分门槛，低于该值不分发开仓
+    （system_config.min_recommendation 优先；None 回落 env）。执行层连损动态门槛
+    是账号级复核，不是批量分析统一门槛。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时剔除止盈二规则与
-    字段说明，AI 不再产出第二档止盈价（system_config.tp2_enabled，默认关）。"""
+    字段说明，AI 不再产出第二档止盈价（system_config.tp2_enabled，默认关）。
+    consecutive_losses（2026-10-21 T0-2）：已知时只提示动态门槛可能存在，不替代账号级复核。"""
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     _risk_label = risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%"
     return SYSTEM_PROMPT.format(
@@ -457,7 +496,9 @@ def render_system_prompt(
             tp2_gap_r=f"{settings.TP2_MIN_GAP_R:g}",
         ),
         _RULE_TOUCH=_RULE_TOUCH,
-        _RULE_SCORE=render_rule_score(min_recommendation, _rr, _risk_label),
+        _RULE_SCORE=render_rule_score(
+            min_recommendation, _rr, _risk_label, consecutive_losses,
+            trigger_type=trigger_type),
         _RULE_BTC_ENV=_RULE_BTC_ENV,
         _RULE_EMA=_RULE_EMA.replace(chr(10), ' '),
         _RULE_VOTE=render_rule_vote("analysis").replace(chr(10), ' '),
@@ -484,6 +525,7 @@ def analyze_coin(
     tactics_block: str = "", rr_min: Optional[float] = None,
     crash_pct: Optional[float] = None, tp2_enabled: bool = True, flt=None,
     min_recommendation: Optional[float] = None,
+    consecutive_losses: int = 0,
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -516,7 +558,8 @@ def analyze_coin(
                         interval=interval, tactics_block=tactics_block,
                         rr_min=rr_min, crash_pct=crash_pct,
                         tp2_enabled=tp2_enabled, flt=flt,
-                        min_recommendation=min_recommendation),
+                        min_recommendation=min_recommendation,
+                        consecutive_losses=consecutive_losses),
     )
     if not tp2_enabled:
         # TP2 关闭兜底清零（提示词已要求输出 0；防止模型违规输出污染落库记录）
@@ -524,57 +567,54 @@ def analyze_coin(
     return result
 
 
-def _build_messages(
-    signal: dict, klines: list,
-    strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
-    htf_klines: Optional[list] = None,
-    risk_label: str = "",
-    stop_cap_pct: Optional[float] = None,
-    interval: str = "1h",
-    tactics_block: str = "",
-    rr_min: Optional[float] = None,
-    crash_pct: Optional[float] = None,
-    tp2_enabled: bool = True,
-    flt=None,
-    min_recommendation: Optional[float] = None,
-) -> list:
-    """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
+def _fp(v) -> str:
+    """K线价格压缩到定点小数（docs/24 提示词瘦身，P0/P1 共用）。
 
-    risk_label（2026-09-27 止损金额模式）：单笔止损预算文案，注入系统提示词
-    仓位口径说明；空时用默认百分比口径。
-    stop_cap_pct（2026-09-29）：止损宽度硬上限，注入门槛块（None=不限制不注入）。
-    rr_min（2026-10-02 上页面）：盈亏比铁律下限，注入系统提示词（None=env 默认）。
-    crash_pct（2026-10-02 上页面）：BTC 急跌阈值 %，透传市场环境块（None=env 默认）。
-    tp2_enabled（2026-10-08）：TP2 分批止盈开关，注入系统提示词（None 不适用，
-    默认 True）。
-    flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。
-    min_recommendation（2026-10-21）：生效评分门槛，注入「评分纪律」段（None=env 默认）。"""
-    # 取最近 40 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-41:-1]）。
+    %g 会把大价格变成科学计数法（64235→6.424e+04，反直觉且精度错觉），
+    故按价位段动态小数位。各段最差相对误差 ≤0.05%（实测候选池 387 币分布，
+    2026-09-30）：≥1000→1位(0.005%)、≥100→2位、≥1→3位、≥0.001→6位(0.05%)、
+    <0.001→8位——小价位币（NEIRO/MEME/MEW 等 6 个在池币）6 位截断误差
+    可达 0.54%＞摆动锚 0.3% 缓冲，必须加档（8 位时 NEIRO 误差 0.005%）。
+    """
+    v = float(v)
+    if v >= 1000:
+        return f"{v:.1f}"
+    if v >= 100:
+        return f"{v:.2f}"
+    if v >= 1:
+        return f"{v:.3f}"
+    if v >= 0.001:
+        return f"{v:.6f}"
+    return f"{v:.8f}"
+
+
+def build_signal_facts(
+    signal: dict, klines: list,
+    htf_klines: Optional[list] = None,
+    *, stop_cap_pct: Optional[float] = None, flt=None,
+    min_recommendation: Optional[float] = None,
+    consecutive_losses: Optional[int] = None,
+    interval: str = "1h",
+    market_summary: str = "",
+    tactics_block: str = "",
+) -> str:
+    """P0/P1 共享的事实包正文（T3-3，2026-10-21）。
+
+    两条管线此前各写一份事实渲染：字段顺序、量能口径、K线列、是否带 ATR 行
+    全不一致，同一信号喂给模型的"事实"不同——4h 定向 / 1h 入场体系下这是
+    不可接受的偏差。现收敛为单一渲染器，P1 仅在尾部追加工具能力段。
+
+    market_summary 由 P0 传入（单次调用无工具，环境必须预取）；P1 走工具循环
+    按需取，传空串。其余字段两管线完全一致。
+    """
+    # 取最近 40 根已收盘 K 线（klines[-1] 未收盘，用 klines[-41:-1]）。
     # 60→40（2026-09-28）：CSV 是 user 消息 token 大头（60 根 ≈5000+），思考型模型
     # reasoning 时长与输入量正相关；浓缩结论（指标/摆动块）已覆盖形态识别所需，
     # 窗口内 EMA/MACD 等指标块照常现算不受影响
-    recent = klines[-41:-1] if len(klines) >= 41 else klines[:-1]
-
-    # K线价格压缩到定点小数（docs/24 提示词瘦身）：%g 会把大价格变成
-    # 科学计数法（64235→6.424e+04，反直觉且精度错觉），故按价位段动态小数位。
-    # 各段最差相对误差 ≤0.05%（实测候选池 387 币分布，2026-09-30）：
-    # ≥1000→1位(0.005%)、≥100→2位、≥1→3位、≥0.001→6位(0.05%)、
-    # <0.001→8位——小价位币（NEIRO/MEME/MEW 等 6 个在池币）6 位截断误差
-    # 可达 0.54%＞摆动锚 0.3% 缓冲，必须加档（8 位时 NEIRO 误差 0.005%）
-    def _fp(v) -> str:
-        v = float(v)
-        if v >= 1000:
-            return f"{v:.1f}"
-        if v >= 100:
-            return f"{v:.2f}"
-        if v >= 1:
-            return f"{v:.3f}"
-        if v >= 0.001:
-            return f"{v:.6f}"
-        return f"{v:.8f}"
-
+    closed = klines[:-1] if len(klines) >= 2 else klines
+    recent = closed[-40:]
     # 每根K线自带成交量（quote_vol 删除：放量判定看 vol 相对倍数，绝对成交额
-    # 单次管线无行为指向）；timestamp 删绝对时间——K线序列天然等间隔（1h），
+    # 单次管线无行为指向）；timestamp 删绝对时间——K线序列天然等间隔，
     # 模型只需顺序不需钟点，省 10 字符/根
     kline_summary = "\n".join(
         f"{_fp(k[1])},{_fp(k[2])},{_fp(k[3])},{_fp(k[4])},{_fp(k[5])}" for k in recent
@@ -590,20 +630,9 @@ def _build_messages(
         ema_summary = f"均线形态: {ema['state_label']}（{ema['detail']}）\n"
 
     # 技术指标（MACD/布林带/RSI/SuperTrend/ADX/OBV + 4h背景 + 程序化共振结论）
-    indicator_summary = render_indicator_block(klines, htf_klines)
-
-    # 市场环境（docs/24 A4①）：本币资金费率 + BTC 状态摘要，紧跟指标块注入——
-    # 系统提示词要求"勿臆测"，普跌日无环境感知 AI 只能凭本币指标判断；
-    # 开关关闭或任一数据源失败静默降级为不注入（测试/无网路径不受影响）
-    market_summary = ""
-    if settings.MARKET_CONTEXT_ENABLED:
-        try:
-            ctx = build_market_context(get_kline_client(), signal["symbol"],
-                                       crash_pct=crash_pct)
-            if ctx:
-                market_summary = f"【市场环境】\n{ctx}\n"
-        except Exception as e:
-            logger.debug("市场环境块构建失败（不注入）: %s", e)
+    # 标题按触发类型渲染（T0-4）：回踩定向以 4h 为准，不能再写「方向=方向票多数决」
+    indicator_summary = render_indicator_block(
+        klines, htf_klines, trigger_type=signal.get("signal_type"))
 
     # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点，与 Agent 管线同源）
     sw = signal.get("recent_swings") or {}
@@ -624,10 +653,37 @@ def _build_messages(
             )
         swings_summary = "\n".join(sw_lines) + "\n"
 
-    # 量能（放量突破判定依据，volume_ratio 口径：相对近20根已收盘均量的倍数）
+    # 量能（T0-1 修正）：`signal["volume"]` 是原始成交量（币/张数），不是量比；
+    # 量比口径 = 近 20 根已收盘 K 线中位量的倍数（indicators.volume_ratio）。
+    # 此前把原始量渲染成「×20根均量」，与门槛块的「中位量 1.2 倍」自相矛盾。
+    vr = signal.get("volume_ratio")
+    try:
+        vr = float(vr) if vr is not None else float(volume_ratio(klines))
+    except (TypeError, ValueError, IndexError, ZeroDivisionError):
+        vr = None
+
     vol_desc = signal.get("volume_type") or "—"
-    if signal.get("volume"):
-        vol_desc += f"（{float(signal['volume']):.1f}×20根均量）"
+    if vr is not None:
+        vol_desc += f"（量比 {vr:.2f}×近20根中位量）"
+    raw_vol = signal.get("volume")
+    vol_line = f"量能: {vol_desc}\n"
+    if raw_vol:
+        vol_line += f"原始量: {float(raw_vol):,.0f}（币/张数，仅记录，不参与判断）\n"
+
+    # 质量分（T0-3）：含分项拆解
+    quality_line = render_quality_line(signal)
+
+    # 分析阶段静态门槛；账号级连损动态门槛由执行层单独复核
+    _eff_min = (
+        float(min_recommendation) if min_recommendation is not None
+        else static_min_recommendation()
+    )
+    threshold_line = f"AI 分析阶段静态门槛: {_eff_min:g}——低于此分不分发开仓\n"
+    if consecutive_losses is not None and derate_threshold(consecutive_losses):
+        threshold_line += (
+            "连损动态门槛: 部分账号可能提高；实际按账号在开仓时单独复核，"
+            "不要据此统一 skip\n"
+        )
 
     # 回踩触点（docs/22 触点体系）：程序已验证的触碰位类型，触点位价在信号理由中
     touch_ref = signal.get("touch_ref")
@@ -635,25 +691,95 @@ def _build_messages(
     if touch_ref:
         touch_line = f"回踩触点: {TOUCH_LABELS.get(touch_ref, touch_ref)}（{touch_ref}）\n"
 
-    # 市场环境块（market_summary，docs/24 A4①）已拼在指标块与摆动结构之间；
-    # 单次调用管线无工具循环，模型仅凭给定数据分析，环境数据缺失时按无环境处理
-    user_prompt = (
+    breakout = signal.get("breakout_pct")
+    breakout_line = (
+        f"突破幅度: {float(breakout):.2f}%\n" if breakout is not None else ""
+    )
+
+    return (
         f"币种: {signal['symbol']}\n"
         f"信号类型: {SIGNAL_TYPE_LABELS.get(signal['signal_type'], signal['signal_type'])}（{signal['signal_type']}）\n"
         f"当前价格: {signal['current_price']}\n"
-        f"突破幅度: {signal['breakout_pct']:.2f}%\n"
+        f"{breakout_line}"
         f"K线形态: {signal.get('pattern') or '无'}\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
         f"{touch_line}"
         f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt)}"
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
-        f"量能: {vol_desc}\n"
+        f"{vol_line}"
+        f"{quality_line}"
+        f"{threshold_line}"
         f"{ema_summary}"
         f"{indicator_summary}"
         f"{market_summary}"
         f"{swings_summary}"
         f"{tactics_block}"
         f"近{len(recent)}根已收盘{interval} K线(open,high,low,close,vol，等间隔排列，价格按价位段保留小数):\n{kline_summary}"
+    )
+
+
+def _build_messages(
+    signal: dict, klines: list,
+    strategy_prompt: Optional[str] = None, user_input: Optional[str] = None,
+    htf_klines: Optional[list] = None,
+    risk_label: str = "",
+    stop_cap_pct: Optional[float] = None,
+    interval: str = "1h",
+    tactics_block: str = "",
+    rr_min: Optional[float] = None,
+    crash_pct: Optional[float] = None,
+    tp2_enabled: bool = True,
+    flt=None,
+    min_recommendation: Optional[float] = None,
+    consecutive_losses: Optional[int] = None,
+    diag: Optional[dict] = None,
+) -> list:
+    """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
+
+    risk_label（2026-09-27 止损金额模式）：单笔止损预算文案，注入系统提示词
+    仓位口径说明；空时用默认百分比口径。
+    stop_cap_pct（2026-09-29）：止损宽度硬上限，注入门槛块（None=不限制不注入）。
+    rr_min（2026-10-02 上页面）：盈亏比铁律下限，注入系统提示词（None=env 默认）。
+    crash_pct（2026-10-02 上页面）：BTC 急跌阈值 %，透传市场环境块（None=env 默认）。
+    tp2_enabled（2026-10-08）：TP2 分批止盈开关，注入系统提示词（None 不适用，
+    默认 True）。
+    flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。
+    min_recommendation（2026-10-21）：生效评分门槛，注入「评分纪律」段（None=env 默认）。
+
+    2026-10-21（T3-3）：事实包正文由 build_signal_facts 统一渲染，P1 复用同一
+    函数，仅追加工具能力段；本函数只负责 P0 独有的市场环境预取与系统提示词。
+    """
+    # 市场环境（docs/24 A4①）：本币资金费率 + BTC 状态摘要，紧跟指标块注入——
+    # 系统提示词要求"勿臆测"，普跌日无环境感知 AI 只能凭本币指标判断；
+    # 开关关闭或任一数据源失败静默降级为不注入（测试/无网路径不受影响）
+    # T0-5：缺数据不再按「无环境」隐式放行，显式标注未知，禁止据此加分
+    market_summary = ""
+    # Disabled means deliberately not requested, not a data-source failure.
+    _env_missing = False
+    if settings.MARKET_CONTEXT_ENABLED:
+        _env_missing = True
+        try:
+            ctx = build_market_context(get_kline_client(), signal["symbol"],
+                                       crash_pct=crash_pct)
+            if ctx:
+                market_summary = f"【市场环境】\n{ctx}\n"
+                _env_missing = False
+            else:
+                market_summary = "【市场环境】\nBTC 环境: 未知（数据缺失，不得据此加分或降分）\n"
+        except Exception as e:
+            logger.debug("市场环境块构建失败（标注未知）: %s", e)
+            market_summary = "【市场环境】\nBTC 环境: 未知（数据缺失，不得据此加分或降分）\n"
+    if diag is not None:
+        # 仅已启用但取数失败时标缺失；关闭功能不计入数据故障。
+        diag["btc_env_missing"] = _env_missing
+
+    user_prompt = build_signal_facts(
+        signal, klines, htf_klines,
+        stop_cap_pct=stop_cap_pct, flt=flt,
+        min_recommendation=min_recommendation,
+        consecutive_losses=consecutive_losses,
+        interval=interval, market_summary=market_summary,
+        tactics_block=tactics_block,
     )
 
     if user_input:
@@ -664,7 +790,9 @@ def _build_messages(
 
     system_prompt = render_system_prompt(risk_label or None, rr_min=rr_min,
                                          tp2_enabled=tp2_enabled,
-                                         min_recommendation=min_recommendation)
+                                         min_recommendation=min_recommendation,
+                                         consecutive_losses=consecutive_losses,
+                                         trigger_type=signal.get("signal_type"))
     # 技能注入（P0 管线无工具循环，命中技能正文直接进系统提示词；与 Agent 管线共用同一事实判定）
     skill_block = skill_library.render_matched(skill_library.build_facts(signal, klines))
     if skill_block:
@@ -757,6 +885,7 @@ def analyze_with_guard(
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
     crash_pct: Optional[float] = None, tp2_enabled: bool = True, flt=None,
     rr_tol: Optional[float] = None, min_recommendation: Optional[float] = None,
+    consecutive_losses: int = 0,
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -774,12 +903,15 @@ def analyze_with_guard(
     且在风控校验前硬清零 take_profit_2（AI 不产出第二档止盈价）。
     flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。
     min_recommendation（2026-10-21）：生效评分门槛，注入「评分纪律」段（None=env 默认）。"""
+    _diag: dict = {}
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
         htf_klines=htf_klines, risk_label=risk_label, stop_cap_pct=stop_cap_pct,
         interval=interval, tactics_block=tactics_block, rr_min=rr_min,
         crash_pct=crash_pct, tp2_enabled=tp2_enabled, flt=flt,
         min_recommendation=min_recommendation,
+        consecutive_losses=consecutive_losses,
+        diag=_diag,
     )
     client = _get_client()
     _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None
@@ -822,6 +954,7 @@ def analyze_with_guard(
                 signal.get("symbol"), fixed.get("trade_decision"),
                 fixed.get("risk_reward_ratio"),
             )
+            fixed["btc_env_missing"] = bool(_diag.get("btc_env_missing", True))
             return fixed
         last_violations = violations
         logger.warning(
@@ -841,4 +974,6 @@ def analyze_with_guard(
             ),
         })
 
-    return build_forced_skip("AI 输出多次未通过风控校验", last_violations)
+    _forced = build_forced_skip("AI 输出多次未通过风控校验", last_violations)
+    _forced["btc_env_missing"] = bool(_diag.get("btc_env_missing", True))
+    return _forced

@@ -911,7 +911,35 @@ def _htf_state_view(core: dict, fast: int = 21, slow: int = 55) -> Optional[dict
         "macro_aligned": macro_aligned,
         "age_bars": meta["age_c"], "macro_cross_age": meta["age_m"],
         "div": div_min, "detail": detail,
+        # 4h 强度三要素（2026-10-21 T2-6 影子评分用）：ADX、EMA144 斜率分位、
+        # 价格距 EMA144 的 ATR 倍数。只进质量分「影子分项」，不改变现有返回分与排序
+        "adx": round(float(adx_v), 1) if adx_v is not None else None,
+        "price_vs_ema144_atr": (
+            round(abs(float(closes[-1]) - sn) / atr4h, 3) if atr4h > 0 else None
+        ),
+        "slope_pctile": _slope_pctile(s144, float(closes[-1])),
     }
+
+
+def _slope_pctile(e144: np.ndarray, price: float, lookback: int = 200) -> Optional[float]:
+    """EMA144 斜率（相对价格）在近 lookback 根内的分位（0~1，越大越陡）。
+
+    斜率口径与 htf_context 的 slope_pct 同源：|EMA144[t]-EMA144[t-SLOPE_BARS]|/价格。
+    数据不足 20 个有效样本返回 None（不做强度打分，避免短历史噪声）。
+    """
+    n = len(e144)
+    if n < SLOPE_BARS + 2 or price <= 0:
+        return None
+    vals: list[float] = []
+    for i in range(max(SLOPE_BARS, n - lookback), n):
+        a, b = e144[i - SLOPE_BARS], e144[i]
+        if not (np.isfinite(a) and np.isfinite(b)) or a <= 0:
+            continue
+        vals.append(abs(float(b) - float(a)) / price)
+    if len(vals) < 20:
+        return None
+    cur = vals[-1]
+    return round(sum(1 for v in vals if v <= cur) / len(vals), 4)
 
 
 def htf_context(htf_klines: list[list], core: Optional[dict] = None) -> Optional[dict]:
@@ -1047,9 +1075,26 @@ def enforce_htf_constraint(
 
         _label = STATE_LABELS[st]
 
-        # 缠绕/拐头 → 双向禁开（拐头=趋势衰竭警戒，事实发生才禁，替代过热预警）
-        if st in STATE_BLOCK_BOTH:
-            _why = "缠绕无趋势" if st == "tangle" else "排列内拐头，趋势衰竭警戒"
+        # 4h 单一权威（2026-10-21 T3-2）：筛选层只放行 STATE_ALIGNED，兜底约束
+        # 必须用同一常量，否则非 aligned 状态在提示词/兜底里出现第二套口径。
+        # 过渡态 × 回踩确认仍先走影子 A/B 快照（保留 ab_bucket 统计隔离）。
+        if st in STATE_TRANSITION and signal_type == "trigger_pullback_confirm":
+            _v = _veto(f"影子AB：过渡态×回踩确认（4h{_label}）")
+            _v["ab_bucket"] = "transition_pbc"   # 统计隔离标记
+            ai_result["trade_decision"] = "skip"
+            ai_result["skip_reason"] = (
+                f"状态约束：4h{_label}（非多头/空头排列）影子 A/B——回踩确认单程序 veto"
+                "（不入真单，原始建议留档复盘）"
+            )
+            ai_result["veto_original"] = _v
+            return ai_result
+        if st not in STATE_ALIGNED:
+            if st == "tangle":
+                _why = "缠绕无趋势"
+            elif st.startswith("turn_"):
+                _why = "排列内拐头，趋势衰竭警戒"
+            else:
+                _why = "非多头/空头排列，4h 前置门不放行"
             ai_result["trade_decision"] = "skip"
             ai_result["skip_reason"] = (
                 f"状态约束：4h{_label}（{_why}）双向禁开新仓（程序强制 skip）"
@@ -1073,19 +1118,8 @@ def enforce_htf_constraint(
                 )
                 ai_result["veto_original"] = _veto("4h 状态机方向硬约束（宏观同侧）")
             # 同向 → 放行
-        # 影子 A/B（2026-10-20）：过渡态 × 回踩确认 → 程序 veto、不进真单
-        # （只否入场，veto_original 三价快照保留供复盘回放假想表现，见 docstring）
-        if st in STATE_TRANSITION and signal_type == "trigger_pullback_confirm":
-            _v = _veto(f"影子AB：过渡态×回踩确认（4h{_label}）")
-            _v["ab_bucket"] = "transition_pbc"   # 统计隔离标记
-            ai_result["trade_decision"] = "skip"
-            ai_result["skip_reason"] = (
-                f"状态约束：4h{_label}（宏观逆侧过渡态）的回踩确认单暂不进场"
-                "（影子 A/B 观察中，程序强制 skip）"
-            )
-            ai_result["veto_original"] = _v
-            return ai_result
-        # 过渡态非回踩确认（bull_dip/bear_rally 其他信号）→ 放行，质量分逆宏观罚兜底
+        # 过渡态非回踩确认（bull_dip/bear_rally 其他信号）已在上方统一拦截：
+        # 非 aligned 一律双向禁开（2026-10-21 T3-2 单一权威）
     except Exception as e:
         logger.warning("4h方向约束兜底检查失败（放行）: %s", e)
     return ai_result
@@ -1194,11 +1228,15 @@ def _render_atr_line(
 
 def render_indicator_block(
     klines: list[list], htf_klines: Optional[list] = None,
+    trigger_type: Optional[str] = None,
 ) -> str:
     """整块注入文本（含标题、4h 背景与方向票结论行，尾带换行）；无可用指标返回空串。
 
     P0/P1 两条管线共用：插在均线形态之后、摆动结构之前。
     结论行由程序统计（方向票多空张数），提示词按此行执行方向票规则。
+
+    trigger_type（2026-10-21）：回踩确认单的方向由 4h 定向、1h 只决定入场时点，
+    标题改为「方向=4h；1h 方向票=确认度」，避免 LLM 把 1h 方向票当否决项。
     """
     results = _compute_all(klines, htf_klines)
     lines = [
@@ -1240,9 +1278,15 @@ def render_indicator_block(
     # 双向禁开行在前（凌驾锁逆势），宏观同侧态（宏观交叉/恢复/排列）锁逆势，
     # 过渡态（牛内回调/熊内反弹）不锁；程序侧另有 enforce_htf_constraint 兜底
     htf_r = next((r for _, s, r in results if s == HTF_SHORT and r), None)
-    if htf_r and htf_r.get("state") in STATE_BLOCK_BOTH:
+    # 4h 单一权威（T3-2）：筛选与兜底都只放行 STATE_ALIGNED，注入行同口径
+    if htf_r and htf_r.get("state") not in STATE_ALIGNED:
         _st = htf_r["state"]
-        _why = "缠绕无趋势" if _st == "tangle" else "排列内拐头，趋势衰竭警戒"
+        if _st == "tangle":
+            _why = "缠绕无趋势"
+        elif str(_st).startswith("turn_"):
+            _why = "排列内拐头，趋势衰竭警戒"
+        else:
+            _why = "非多头/空头排列，4h 前置门不放行"
         lines.append(
             f"- 状态约束（硬性）: 4h{htf_r['state_label']}（{_why}）"
             " —— 双向禁开新仓，long/short 一律 skip（优先于一切信号）"
@@ -1278,7 +1322,13 @@ def render_indicator_block(
     # 盈亏比取舍提示行已随 trail RR 豁免一并退役（2026-10-11 策略一 ladder-only）；
     # 2026-10-12 策略二/trail 整体删除后：盈亏比不足一律如实 skip，无第三条路
 
-    return "技术指标（方向=方向票多数决）:\n" + "\n".join(lines) + "\n"
+    # 标题按触发类型区分（2026-10-21）：回踩确认单是 4h 定向、1h 定时点，
+    # 1h 方向票只表确认度
+    if trigger_type == "trigger_pullback_confirm":
+        _title = "技术指标（方向=4h；1h 方向票=确认度）:\n"
+    else:
+        _title = "技术指标（方向=方向票多数决）:\n"
+    return _title + "\n".join(lines) + "\n"
 
 
 def compute_indicator_votes(
@@ -1430,6 +1480,7 @@ def compute_quality_score(
     swing_order: int = 3,
     structure_gate: bool = True,
     range_penalty: bool = False,
+    parts_out: Optional[dict] = None,
 ) -> int:
     """候选质量分（0-100）：方向一致性为主，修饰项只影响排序不改变方向。
 
@@ -1445,6 +1496,9 @@ def compute_quality_score(
     可能为 False，其余触点豁免恒 True）。2026-10-15 拍板：结构门由硬门降级为
     质量分重罚（STRUCTURE_GATE_PENALTY）——不过门照常出信号，仅排序落后
     range_penalty: range_score≥1 但触发类型为回踩确认（scanner 降权不拒），-8
+    parts_out（2026-10-21，T0-3）：传入 dict 时填充分项贡献（base/htf/adx/volume/
+    shadow/rsi/obv/risk_vote/boll/zone/stabilize/structure_gate/range），供提示词
+    与复盘展示「质量分 = 基础 + 各项」；不改变返回值与既有调用方
 
     修饰规则（2026-09-17 设计评审定稿；2026-09-24 4h 背景提权；2026-10-11
     再重构 EMA 状态机 11 态：div 强度档与过热/冷却分值矩阵退役，改
@@ -1481,6 +1535,15 @@ def compute_quality_score(
     # votes=None（2026-10-18 方向票关关闭后，指标全不可用且 4h 闸门兜底定向的
     # 罕见路径可达）：按无票处理——空票集、net=0、基础分 50，各修饰项自动跳过
     by_short = dict(votes["results"]) if votes else {}
+    parts: Optional[dict] = {} if parts_out is not None else None
+
+    def _add(key: str, delta: int) -> None:
+        """记分并同步分项（parts 为 None 时零开销，保持既有调用方行为）"""
+        nonlocal score
+        score += delta
+        if parts is not None:
+            parts[key] = parts.get(key, 0) + int(delta)
+
     if trigger_type == "trigger_pullback_confirm":
         # 回踩（2026-10-21 方向职责拆分）：1h 动量逆势是回撤形态本身（越深越反向），
         # 用「同向票数」作基础分、反向票不扣分——否则深回撤候选恒被压到 20 分，
@@ -1489,6 +1552,8 @@ def compute_quality_score(
         score = 50 + same_n * 10  # 0/1/2/3 → 50/60/70/80，与原刻度一致
     else:
         score = 50 + direction * (votes["net"] if votes else 0) * 10  # net∈{1,2,3} → 60/70/80
+    if parts is not None:
+        parts["base"] = int(score)
 
     htf = by_short.get(HTF_SHORT)
     if htf and int(htf.get("dir") or 0):
@@ -1498,14 +1563,14 @@ def compute_quality_score(
         # 存量行）与未知状态走中性兜底 ±5/−8；tangle dir=0 不进此分支
         st = htf.get("state") or htf.get("phase")
         same_mod, counter_mod = STATE_QUALITY.get(st, _STATE_LEGACY_NEUTRAL)
-        score += same_mod if same else counter_mod
+        _add("htf", same_mod if same else counter_mod)
         if htf.get("macro_aligned") is False:
-            score -= 4  # 逆宏观：牛内回调做空/熊内反弹做多一律压分
+            _add("htf_macro", -4)  # 逆宏观：牛内回调做空/熊内反弹做多一律压分
 
     adx = by_short.get("ADX")
     if (trigger_type in ("trigger_breakout", "trigger_trend_breakout")
             and adx and float(adx.get("adx") or 0) >= 25):
-        score += 5
+        _add("adx", 5)
 
     # 放量加分（三类触发统一，2026-09-29）：量比 ≥1.2 +5；缩量/平量不加不减。
     # 阈值与 BREAKOUT_VOL_RATIO 同源（1.2）
@@ -1513,7 +1578,7 @@ def compute_quality_score(
                         "trigger_pullback_confirm") and klines:
         try:
             if volume_ratio(klines) >= 1.2:
-                score += 5
+                _add("volume", 5)
         except (ValueError, TypeError, IndexError, ZeroDivisionError):
             pass  # 量能数据异常只降级该修饰项，不影响基础分
 
@@ -1522,32 +1587,32 @@ def compute_quality_score(
     # decision_shadow_bonus（看涨吞没上影 / 看跌吞没下影 / 星第三根总影线，
     # ≤10% +5、≤20% +3、≤30% +1、>30% 0；pattern 为 None 时返回 0）
     if klines:
-        score += decision_shadow_bonus(pattern, klines)
+        _add("shadow", decision_shadow_bonus(pattern, klines))
 
     rsi = by_short.get("RSI")
     if rsi:
         v = float(rsi.get("rsi") or 50)
         if (direction == 1 and v > 75) or (direction == -1 and v < 25):
-            score -= 8
+            _add("rsi", -8)
 
     obv = by_short.get("OBV")
     if obv:
         st = obv.get("state")
         if (direction == 1 and st == "bear_div") or (direction == -1 and st == "bull_div"):
-            score -= 6
+            _add("obv", -6)
 
     # 辅助票逆向扣分（2026-10-15 拍板，docs/21 O9）：SuperTrend 等滞后指标退出
     # 方向票，仅当方向与候选相反时作风险扣分（同向/中性不加分）
     for _short, _pen in RISK_VOTE_PENALTY.items():
         _r = by_short.get(_short)
         if _r and int(_r.get("dir") or 0) and int(_r["dir"]) != direction:
-            score += _pen
+            _add("risk_vote", _pen)
 
     boll = by_short.get("布林带")
     if trigger_type == "trigger_breakout" and boll:
         rank = boll.get("bw_rank")
         if rank is not None and float(rank) <= 10:
-            score -= 5
+            _add("boll", -5)
 
     # 金K组合价格带结构点密度加分（2026-10-13-6 拍板，-7 改实体重叠口径）：金K确认
     # （单根/组合）的 [min低, max高] 价格带与近 200 根已收盘 1h 摆动高低点K线的
@@ -1559,23 +1624,45 @@ def compute_quality_score(
             n_pts = golden_zone_swing_count(klines, golden_combo,
                                             swing_order=swing_order)
             if n_pts > 0:
-                score += min(n_pts * 3, 12)
+                _add("zone", min(n_pts * 3, 12))
         except (ValueError, TypeError, IndexError, ZeroDivisionError):
             pass  # 摆动点计算异常只降级该修饰项，不影响基础分
 
     # 回踩企稳加分项（docs/19 §3.3 条件2/3，2026-10-10 拍板）：缩量/放量回踩
     # 与 MACD 零轴动量证据，加分不拦截，仅回踩类触发由调用方传入
     if stabilize:
-        score += int(stabilize.get("mod") or 0)
+        _add("stabilize", int(stabilize.get("mod") or 0))
 
     # 1H 结构门重罚（2026-10-15 拍板，docs/21 O9）：门由硬门降级为质量分重罚，
     # 不过门照常出信号、仅排序落后（仅 ema21 触点可能为 False）
     if not structure_gate:
-        score += STRUCTURE_GATE_PENALTY
+        _add("structure_gate", STRUCTURE_GATE_PENALTY)
 
     # 震荡闸门降权（2026-10-21）：回踩命中 range_score 不再否决，改质量分 -8；
     # 突破类仍由 scanner 硬拒，不会带 range_penalty 走到这里
     if range_penalty:
-        score -= 8
+        _add("range", -8)
 
-    return max(0, min(100, int(round(score))))
+    # 4h 强度分（2026-10-21 T2-6，影子）：aligned 只说明排列，不说明趋势强弱与
+    # 剩余空间。按 spec F3 三要素给分，但**只记录不参与排序**——先影子观察
+    # 「强弱 aligned 分差」与配额命中率，样本 ≥30 笔后再决定是否并入正式分。
+    strength = 0
+    if htf and int(htf.get("dir") or 0) == direction:
+        _adx4 = htf.get("adx")
+        if _adx4 is not None:
+            strength += 6 if float(_adx4) >= 30 else (3 if float(_adx4) >= 20 else 0)
+        _pct = htf.get("slope_pctile")
+        if _pct is not None:
+            strength += 5 if float(_pct) >= 0.70 else (3 if float(_pct) >= 0.30 else 0)
+        _dist = htf.get("price_vs_ema144_atr")
+        if _dist is not None:
+            strength += 3 if float(_dist) <= 1.5 else (-4 if float(_dist) > 3 else 0)
+    if parts is not None:
+        parts["htf_strength_shadow"] = int(strength)
+
+    final = max(0, min(100, int(round(score))))
+    if parts is not None:
+        parts["total"] = int(final)
+        parts_out.clear()
+        parts_out.update(parts)
+    return final

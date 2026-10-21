@@ -106,7 +106,8 @@ def test_signal_type_labels_rendered_from_constants():
 
 
 def test_stop_width_discipline_present():
-    for txt in (_p0_system(), ai_agent.AGENT_SYSTEM):
+    # P1 止损纪律由共享渲染器注入（T3-3），查渲染后实文而非模板
+    for txt in (_p0_system(), _p1_system()):
         assert "止损过宽" in txt
         assert "缩仓" in txt
 
@@ -211,7 +212,8 @@ def test_rr_only_shortfall_fixed_rr_fallback_present():
     （渲染层出现「方向约束（硬性）」行）→ 改用『入场价 ± rr_min×止损距离』固定
     1.5R 兜底；并声明缠绕/拐头与过渡态仍 skip（防放宽面被误读为无条件放行）。
     兜底情形 (c)（近端结构位太近）在 TP2 开启版与关闭版均须齐备。"""
-    for txt in (_p0_system(), ai_agent.AGENT_SYSTEM):
+    # P1 的止损/止盈段改由共享渲染器注入（T3-3），渲染后实文才含条款
+    for txt in (_p0_system(), _p1_system()):
         assert "唯一放宽" in txt
         assert "方向约束（硬性）" in txt
         assert "缠绕/拐头" in txt
@@ -221,7 +223,7 @@ def test_rr_only_shortfall_fixed_rr_fallback_present():
     assert "(c)" in ai_analyzer._RULE_TP_TAIL_ON
     assert "唯一放宽" in ai_analyzer._RULE_TP_BASE  # 唯一放宽条款在公共段（TP2 开关无关）
     assert "入场价 ± {rr_min}×止损距离" in ai_analyzer._RULE_TP_BASE
-    assert "入场 ± {rr_min}×止损距离" in ai_agent.AGENT_SYSTEM
+    assert "入场价 ± {rr_min}×止损距离" in ai_analyzer._RULE_TP_BASE
     assert "唯一不达标项" in ai_analyzer._RULE_TP_TAIL_OFF
 
 
@@ -237,32 +239,105 @@ def _p1_system(min_rec=None) -> str:
 
 
 def test_recommendation_tiered_no_interpolation():
-    """P0/P1 均须按档给分（60/70/85），禁止介于档位之间的分数"""
+    """P0/P1 均须按档给分（60/70/85），禁止介于档位之间的分数；
+    T3-1 起档位定义按触发类型分表（突破/回踩各三档）"""
     for txt in (_p0_system(), _p1_system()):
-        assert "分档不内插" in txt
-        assert "禁止输出介于档位之间的分数" in txt
-        assert "60=达标" in txt and "70=标准共振" in txt and "85=强共振" in txt
+        assert "只取 60/70/85 三档" in txt
+        assert "禁止输出 58/62 这类中间分" in txt
+        assert "档位定义（按触发类型）" in txt
+        # 渲染实文须同时含两张表的关键行（预览页无触发类型时两表都列出）
+        assert "60 = 4h 同侧 + 触发有效" in txt
+        assert "60 = 4h 同侧 + 触点有效" in txt
+
+
+def test_tier_table_by_trigger_type():
+    """T3-1：突破/回踩档位表按 signal_type 选择，互不串味"""
+    bo = ai_analyzer.render_system_prompt(trigger_type="trigger_breakout")
+    pb = ai_analyzer.render_system_prompt(trigger_type="trigger_pullback_confirm")
+    assert "触发有效" in bo and "触点有效" not in bo
+    assert "触点有效" in pb and "触发有效" not in pb
 
 
 def test_deduction_items_never_shift_tier():
-    """环境风险/1h 反向/RR 恰达标 只决定档内上下限，不得跨档；
-    若足以否决则直接 skip（不得用降一点分表达犹豫）"""
+    """环境风险/1h 反向/RR 恰达标 只在同档内决定上下限，不得跨档；
+    若足以否决则直接 skip（不得用中间分表达犹豫）"""
     for txt in (_p0_system(), _p1_system()):
         assert "减分项不跨档" in txt
-        assert "任何单项都不足以跨档" in txt
-        assert "不要用" in txt and "降一点分" in txt
+        assert "若它本身足以否决，直接 skip" in txt
+        assert "禁止输出 58/62 这类中间分" in txt
 
 
 def test_min_recommendation_injected_into_both_pipelines():
-    """门槛真实拦截点在程序侧（recommendation < min_rec 不分发），
-    提示词必须注入同一生效值，否则 AI 输出 58 时并不知道等于弃单"""
-    assert "生效门槛 = 75" in ai_analyzer.render_system_prompt(min_recommendation=75)
-    assert "生效门槛 = 75" in ai_agent.render_system_prompt(min_recommendation=75)
-    # 默认渲染回落 env，两个管线口径一致
+    """提示词静态门槛 P0/P1 一致；连损动态门槛仅在可确定时注入"""
+    assert "AI 分析阶段静态门槛 = 75" in ai_analyzer.render_system_prompt(min_recommendation=75)
+    assert "AI 分析阶段静态门槛 = 75" in ai_agent.render_system_prompt(min_recommendation=75)
     from app.config import settings
-    expect = f"生效门槛 = {float(settings.TRADING_MIN_RECOMMENDATION):g}"
+    expect = f"AI 分析阶段静态门槛 = {float(settings.TRADING_MIN_RECOMMENDATION):g}"
     assert expect in _p0_system()
     assert expect in _p1_system()
+
+
+def test_consecutive_loss_threshold_does_not_apply_when_derate_disabled(monkeypatch):
+    """关闭执行层连损降速时，提示词不可继续要求按 75/85 门槛跳过"""
+    from app.config import settings
+    monkeypatch.setattr(settings, "CONSECUTIVE_LOSS_DERATE", False)
+    prompt = ai_analyzer.render_system_prompt(
+        min_recommendation=60, consecutive_losses=3,
+    )
+    assert "AI 分析阶段静态门槛 = 60" in prompt
+    assert "连损动态门槛由执行层按账号在开仓时单独校验" not in prompt
+    assert "程序执行门槛提升至 85" not in prompt
+
+
+def test_volume_facts_render_ratio_and_raw_volume_separately():
+    """原始成交量不得被错误标成量比；两者按独立字段渲染"""
+    from app.services.ai_analyzer import build_signal_facts
+    signal = {
+        "symbol": "TESTUSDT", "signal_type": "trigger_breakout",
+        "current_price": 10, "breakout_pct": 0.5, "volume_type": "放量",
+        "volume": 1234567, "volume_ratio": 1.23,
+    }
+    facts = build_signal_facts(signal, _kl_1h_stub())
+    assert "量能: 放量（量比 1.23×近20根中位量）" in facts
+    assert "原始量: 1,234,567（币/张数，仅记录，不参与判断）" in facts
+    assert "1234567.0×20根均量" not in facts
+
+
+def test_quality_facts_render_score_and_breakdown():
+    """质量分应明确是排序分，且只呈现实际记录到的分项"""
+    from app.services.ai_analyzer import build_signal_facts
+    signal = {
+        "symbol": "TESTUSDT", "signal_type": "trigger_breakout",
+        "current_price": 10, "breakout_pct": 0.5, "quality_score": 68,
+        "quality_parts": {"base": 50, "htf": 10, "volume": 5},
+    }
+    facts = build_signal_facts(signal, _kl_1h_stub())
+    assert "质量分: 68/100（基础 50 / 4h +10 / 量能 +5）（程序排序用，不替代你的判断）" in facts
+
+
+def test_static_prompt_threshold_is_not_mislabeled_as_per_account_dynamic_gate(monkeypatch):
+    """提示词能说明静态门槛，但不能把跨账号连损状态说成所有账号的实效门槛"""
+    prompt = ai_analyzer.render_system_prompt(
+        min_recommendation=60, consecutive_losses=3,
+    )
+    from app.services.ai_analyzer import build_signal_facts
+    from app.config import settings
+    monkeypatch.setattr(settings, "CONSECUTIVE_LOSS_DERATE", True)
+    facts = build_signal_facts(
+        {"symbol": "TESTUSDT", "signal_type": "trigger_breakout",
+         "current_price": 10, "breakout_pct": 0.5},
+        _kl_1h_stub(), min_recommendation=60, consecutive_losses=3,
+    )
+    assert "连损动态门槛: 部分账号可能提高" in facts
+    assert "AI 分析阶段静态门槛: 60" in facts
+    monkeypatch.setattr(settings, "CONSECUTIVE_LOSS_DERATE", False)
+    disabled_facts = build_signal_facts(
+        {"symbol": "TESTUSDT", "signal_type": "trigger_breakout",
+         "current_price": 10, "breakout_pct": 0.5},
+        _kl_1h_stub(), min_recommendation=60, consecutive_losses=3,
+    )
+    assert "连损动态门槛: 部分账号可能提高" not in disabled_facts
+    assert "AI 分析阶段静态门槛 = 85" not in prompt
 
 
 def test_position_field_not_carrying_opinion():

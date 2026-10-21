@@ -34,6 +34,7 @@ from app.services.scan_filters import resolve_scan_filters
 from app.services.llm_client import configure_from, current_concurrency
 from app.services.dual_judge import run_dual_judge
 from app.services.strategy.technical import enforce_htf_constraint, render_indicator_block
+from app.services.strategy.indicators import volume_ratio
 from app.services.exchange_pool import ExchangePool
 from app.services.shadow import tag_oi_conf
 from app.services.risk_guard import is_pullback_wait
@@ -104,7 +105,8 @@ def _build_judge_signal(signal: dict, klines: list, htf_klines: Optional[list]) 
     klines / htf_klines / swings 均为分析现场已有变量；原 signal dict 不被污染。
     """
     judge_signal = dict(signal)
-    judge_signal["indicator_block"] = render_indicator_block(klines, htf_klines)
+    judge_signal["indicator_block"] = render_indicator_block(
+        klines, htf_klines, trigger_type=signal.get("signal_type"))
     sw = signal.get("recent_swings") or {}
     if sw.get("highs") or sw.get("lows"):
         hi = f"{sw['highs'][0]['price']:.6g}" if sw.get("highs") else "—"
@@ -147,6 +149,18 @@ def run_ai_analysis_task(
             close_task(task_id, "skipped", summary="「筛选后自动 AI 分析」开关关闭")
             return
         q = select(ScanResult).where(ScanResult.scan_record_id == UUID(scan_record_id))
+        # 连损降速（docs/24 A3 软熔断）：启用自动交易的账号当日连损任一 ≥2 →
+        # 批量分析配额减半。此最大值不代表每个交易账号的动态开仓门槛；仅作为
+        # 提示词中的一般性说明，具体门槛仍由执行层按账号单独判断。
+        # 手动单币分析不受批量配额上限限制。
+        # 账号/连损解析失败不阻断扫描（按无连损处理）
+        try:
+            losses = 0
+            for acc in auto_trade_accounts(db):
+                losses = max(losses, _consecutive_losses_today(db, acc.key, acc.testnet))
+        except Exception as e:
+            logger.warning("连损查询失败，批量分析配额不降速: %s", e)
+            losses = 0
         if only_scan_result_id:
             q = q.where(ScanResult.id == UUID(only_scan_result_id))
         else:
@@ -154,17 +168,6 @@ def run_ai_analysis_task(
             # 同分按 24h 成交额——控制 LLM 成本；单币重分析不受限。
             # 配额走筛选参数组（scan_filters > env > 默认，2026-09-28）
             quota = resolve_scan_filters(cfg).ai_max_per_scan
-            # 连损降速（docs/24 A3 软熔断）：启用自动交易的账号当日连损任一 ≥2 →
-            # 批量分析配额减半——连损趋势日少开新分析、同步降 LLM 成本与开单频率；
-            # 手动单币分析（only_scan_result_id 非空）不受影响。账号/连损解析
-            # 失败不阻断扫描（按无连损处理）
-            try:
-                losses = 0
-                for acc in auto_trade_accounts(db):
-                    losses = max(losses, _consecutive_losses_today(db, acc.key, acc.testnet))
-            except Exception as e:
-                logger.warning("连损查询失败，批量分析配额不降速: %s", e)
-                losses = 0
             if losses >= 2:
                 derated = max(1, quota // 2)
                 logger.info(
@@ -196,7 +199,7 @@ def run_ai_analysis_task(
 
         force = only_scan_result_id is not None
         jobs = group(
-            run_ai_analysis_single.s(str(r.id), scan_record_id, user_input, force)
+            run_ai_analysis_single.s(str(r.id), scan_record_id, user_input, force, losses)
             for r in results
         )
         if force:
@@ -233,8 +236,13 @@ def run_ai_analysis_task(
 def run_ai_analysis_single(
     self, scan_result_id: str, scan_record_id: str,
     user_input: Optional[str] = None, force: bool = False,
+    consecutive_losses: Optional[int] = None,
 ):
-    """单币种 AI 分析子任务：闸门 → 缓存 → LLM(带校验回炉) → 落库"""
+    """单币种 AI 分析子任务：闸门 → 缓存 → LLM(带校验回炉) → 落库
+
+    consecutive_losses（2026-10-21，T0-2）：跨账号最大连损值，仅用于提示动态门槛
+    可能存在；不得当成所有账号统一门槛，真实门槛按账号在开仓时复核。
+    """
     # 生效 AI 运行参数（模型/端点/超时/并发）每轮重读 DB：先短读 cfg 刷新再取
     # 信号量（避免持 DB 连接等信号量——原顺序为先取信号量后开 session）
     _boot = SessionLocal()
@@ -278,6 +286,11 @@ def run_ai_analysis_single(
             "volume_type": r.volume_type,
             "volume": float(r.volume),
             "volume_24h": float(r.volume_24h),
+            # 质量分（T0-3）：提示词多处要求「结合质量分」，此前事实包里没有
+            "quality_score": (
+                float(r.quality_score) if r.quality_score is not None else None
+            ),
+            "quality_parts": r.quality_parts,
         }
         # 战法库（2026-10-02）：装载活动战法 → 渲染判定块注入用户消息 + 白名单
         # 随 signal 进 risk_guard 闸门（防 LLM 编造战法名）。2026-10-03 删环境
@@ -317,6 +330,13 @@ def run_ai_analysis_single(
         # 刚收盘根（新周期根尚未出现在响应里）→ 幽灵尾根视图（K线摘要/指标块/摆动
         # 结构/current_price 全部对齐扫描口径）；否则原样返回（信号根=上一根已收盘）
         klines = md.screen_klines(klines, cfg.kline_interval, tail_now)
+        # 量比（T0-1）：量比口径 = 近 20 根已收盘 K 线中位量的倍数，与扫描侧
+        # classify_volume / 质量分加分 / 门槛块同一函数；signal["volume"] 仍是
+        # 原始成交量，仅作记录，不得再被渲染成「×20根均量」
+        try:
+            signal["volume_ratio"] = float(volume_ratio(klines))
+        except (TypeError, ValueError, IndexError, ZeroDivisionError):
+            signal["volume_ratio"] = None
         if in_tail:
             # 信号根 = 未走完的近收盘根（H1，2026-10-12）：其收盘/极值未定型，
             # 下游「信号K极值已定型」前提不成立——打标供 risk_guard 放宽近锚硬校验。
@@ -431,6 +451,7 @@ def run_ai_analysis_single(
                 flt=_flt,
                 rr_tol=_rr_tol,
                 min_recommendation=_min_rec,
+                consecutive_losses=consecutive_losses,
             )
         else:
             ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
@@ -453,6 +474,7 @@ def run_ai_analysis_single(
                 tp2_enabled=_tp2_on,
                 flt=_flt,
                 min_recommendation=_min_rec,
+                consecutive_losses=consecutive_losses,
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto；
         # 事实包增厚（docs/24 D3）——指标块 + 摆动结构摘要随 signal 传入（_build_judge_signal）
@@ -564,6 +586,8 @@ def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str,
         "pullback_wait": bool(src.pullback_wait),
         # 4h 数据降级标记（B2）沿用源结论：缓存复用不重新拉 4h，降级态随结论走
         "htf_degraded": bool(getattr(src, "htf_degraded", False)),
+        # BTC 环境缺失标记（T0-5）沿用源结论：缓存复用不重新拉市场环境
+        "btc_env_missing": bool(getattr(src, "btc_env_missing", False)),
     }
     _finish(db, r, symbol, result, fp)
     logger.info("AI 结论沿用: %s ← %s", symbol, src.id)
@@ -663,6 +687,9 @@ def _upsert_ai_analysis(
         # 4h 数据降级标记（2026-10-21 观测 B2）：分析时 4h K线缺失 → True，
         # 复盘据此分组（B3）；latest-wins 重分析按最新一次的事实覆盖
         "htf_degraded": bool(ai_result.get("htf_degraded")),
+        # BTC 环境事实缺失（T0-5）：市场环境块缺失时提示词已标「未知」，
+        # 本列供复盘分组（数据缺失场景的结论质量单独看）
+        "btc_env_missing": bool(ai_result.get("btc_env_missing")),
         # 结论落库时刻（2026-10-21 观测 B1）：created_at 原地更新不刷新，
         # 不能代表完成时刻；本字段每次落库覆写，供复盘算 signal_age_s
         "ai_finished_at": datetime.utcnow(),

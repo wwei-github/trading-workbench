@@ -25,14 +25,15 @@ from app.services.risk_guard import (
     build_forced_skip,
     validate_decision,
 )
-from app.services.strategy.ema import analyze_ema
 from app.services.strategy.indicators import calc_atr
-from app.services.strategy.technical import atr_series, render_indicator_block
-from app.services.strategy.types import POSITION_LABEL_MAP
+from app.services.strategy.technical import atr_series
 from app.services.ai_analyzer import (
     _RULE_HTF_HARD,
     _RULE_BTC_ENV,
+    _RULE_SL,
     SIGNAL_TYPE_LABELS,
+    _RULE_TP_BASE,
+    build_signal_facts,
     render_rule_score,
     render_rule_struct,
     render_rule_vote,
@@ -58,25 +59,39 @@ _TOOL_RESULT_KEEP = 4             # 裁剪时保留原文的最近工具结果�
 _RULE_VOTE_BRIEF = render_rule_vote("reason")
 _RULE_STRUCT_BRIEF = render_rule_struct("reason")
 
+
+def _render_shared_sl_tp(rr_min: float) -> tuple[str, str]:
+    """P1 复用 P0 的止损/止盈纪律段（2026-10-21 T3-3）。
+
+    此前 P1 手写第 11/12 条，与 P0 的 `_RULE_SL` / `compose_rule_tp` 双份维护，
+    改一处漏一处；抽出渲染器后两管线同源，P1 只额外声明「价格用锚点表达」。
+    止盈只取公共段 `_RULE_TP_BASE`：止盈二与三情形兜底已由 P1 专用的
+    `_TP2_RULE_ON/OFF`（锚点语言）完整覆盖，再拼 P0 的 TP2 条目会重复占 token。
+    """
+    far = round(settings.TP1_MAX_ATR / rr_min, 2)
+    sl = _RULE_SL.format(far_atr=far)
+    tp = _RULE_TP_BASE.format(
+        rr_min=rr_min,
+        tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
+        tp1_cap_desc=render_tp1_cap_desc(rr_min),
+    )
+    return sl, tp
+
 # 近锚降级链（docs/23，2026-09-29，仅突破类信号注入；P1 版：锚点用 signal_low/signal_high
 # 表达，stop_anchor 由程序从 stop_ref 推导、无需自报）。近锚只救"万事俱备、只差盈亏比"
 # 的突破单，其余条件任一不满足时无近锚资格
-NEAR_STOP_RULE_AGENT = """11.5 突破类止损近锚降级链：结构锚（摆动前低/前低）优先；按结构锚复算盈亏比 <{rr_min}
-    且调整入场价仍无法达标（本应 skip）时，才降级近锚——stop_ref=signal_low
-    （做多，金K窗口最低价）或 signal_high（做空，金K窗口最高价）+ offset_pct=-0.3，
-    止盈与盈亏比按新锚复算；近锚仍不达标 → skip。硬约束：仅当 skip 的唯一原因是
-    盈亏比不达标（信号方向、4h 背景、趋势状态、量能特征、质量分等其余开单条件
-    必须全部满足）才允许用近锚；量比 <1 的缩量突破无近锚资格；近锚后盈亏比 >4
-    时重新评估或 skip；近锚止损宽度仍须 ≥0.3×ATR。{stop_cap_clause}结构锚止损宽度
-    已超程序硬上限（见信号门槛块）时无近锚资格，直接 skip。程序会校验近锚止损必须
-    贴近金K窗口极值 ±0.5%，偏离过远会被打回。距离分档衔接（2026-10-12-5）：
-    结构锚距入场超过 11 条距离分档线时按 11 条直接降级金K锚，不受本条
-    "RR 唯一不达标"前提约束（量比 <1 无资格同样适用）；本条仅处理结构锚
-    不远但盈亏比仍不达标的场景。"""
+NEAR_STOP_RULE_AGENT = """11.5 突破类止损近锚降级链：结构锚优先；按结构锚复算 RR <{rr_min} 且调入场价仍不达标
+    （本应 skip）时，才降级近锚——stop_ref=signal_low（多）/signal_high（空）
+    + offset_pct=-0.3，止盈按新锚复算；仍不达标 → skip。硬约束：仅当 skip 唯一原因是
+    RR 不达标（其余开单条件全满足）才可用近锚；量比 <1 无资格；近锚后 RR >4 需重估或
+    skip；止损宽度仍须 ≥0.3×ATR。{stop_cap_clause}结构锚宽度已超硬上限时无资格，直接
+    skip。程序校验近锚须贴近金K窗口极值 ±0.5%。结构锚距入场超 11 条分档线时直接降级
+    金K锚（不受"RR 唯一不达标"前提约束）。"""
 
 def render_system_prompt(
     risk_label: str = "", rr_min: Optional[float] = None,
     tp2_enabled: bool = True, min_recommendation: Optional[float] = None,
+    consecutive_losses: Optional[int] = None, trigger_type: Optional[str] = None,
 ) -> str:
     """渲染最终生效的 P1 系统提示词（页面「查看当前生效提示词」与实际调用同源）。
 
@@ -87,13 +102,14 @@ def render_system_prompt(
     由调用方传入；None 回落 env 默认。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时剔除止盈二锚点语义
     （system_config.tp2_enabled，默认关），与实际调用（analyze_coin_agent）同源。
-    min_recommendation（2026-10-21）：生效评分门槛，注入「评分纪律」段
-    （system_config.min_recommendation，None 回落 env）。"""
+    min_recommendation（2026-10-21）：AI 分析阶段静态评分门槛（system_config 优先、None 回落 env）；
+    连损动态门槛仍由执行层按账号单独校验，不作为统一分析门槛。"""
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     _tp1_atr = f"{settings.TP1_MAX_ATR:g}"
     _tp1_r = f"{settings.TP1_MAX_R:g}"
     _far_atr = round(settings.TP1_MAX_ATR / _rr, 2)
     _risk_label = risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%"
+    _sl_agent, _tp_agent = _render_shared_sl_tp(_rr)
     return AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
         rr_min=_rr,
@@ -104,7 +120,11 @@ def render_system_prompt(
         far_atr=_far_atr,
         risk_label=_risk_label,
         _RULE_HTF_HARD=_RULE_HTF_HARD,
-        _RULE_SCORE=render_rule_score(min_recommendation, _rr, _risk_label),
+        _RULE_SCORE=render_rule_score(
+            min_recommendation, _rr, _risk_label,
+            consecutive_losses=consecutive_losses,
+            trigger_type=trigger_type,
+        ),
         _RULE_BTC_ENV=_RULE_BTC_ENV,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
@@ -112,6 +132,8 @@ def render_system_prompt(
             rr_min=_rr,
             stop_cap_clause="止损宽度硬上限值以信号门槛块为准。",
         ),
+        _RULE_SL_AGENT=_sl_agent,
+        _RULE_TP_AGENT=_tp_agent,
         _price_anchor_desc=_PRICE_ANCHOR_ON if tp2_enabled else _PRICE_ANCHOR_OFF,
         _tp_anchor_desc=_TP_ANCHOR_DESC_ON if tp2_enabled else _TP_ANCHOR_DESC_OFF,
         _tp2_rule=(_TP2_RULE_ON if tp2_enabled else _TP2_RULE_OFF).format(
@@ -141,84 +163,35 @@ _REF_DESC = "、".join(LEVEL_REFS)
 
 AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随消息给出，规则如下：
 {_RULE_HTF_HARD}
-1. 程序能算的不让你算——事实包数据直接用；需要补充数据才调用工具，最多 {max_rounds} 轮。
-2. **禁止编造绝对价格**：所有价格必须用结构位锚点表达{_price_anchor_desc}，
-   ref 取值: {_ref_desc}；offset_pct 为相对锚点的百分比偏移（如支撑位下方 0.5×ATR 用负 offset）。
+1. 程序能算的不让你算——事实包直接用；需补充数据才调工具，最多 {max_rounds} 轮。
+2. **禁止编造绝对价格**：价格一律用结构位锚点表达{_price_anchor_desc}，
+   ref 取值: {_ref_desc}；offset_pct 为相对锚点的百分比偏移。
    {_tp_anchor_desc}
-3. 决策必须通过 submit_decision 工具提交，提交后程序会做风控校验：
-   校验不通过时工具会返回违规明细，请按明细修正后重新提交。
-4. **入场价纪律**：当前价格是分析时刻的最新价。**只允许现价入场（2026-09-30 二次拍板）**：
-   entry 用 market 锚（offset 0 附近），**禁止**把入场价放到现价回踩侧（多单低于现价/
-   空单高于现价）——"待回踩"建议程序不会下单（等于放弃该笔）。若按现价入场 RR 无法
-   达标 → 直接 skip（**不得给出回踩等待计划**，等回踩建议一律被程序丢弃）；
-   不要给出既不贴近现价也不贴近结构位的模糊入场价。
-5. 开单类型归类（trade_type，suggest 必填其一）：
-   trend_follow 顺势交易（趋势方向由 EMA 排列或方向票确立，纯 EMA 排列不是硬门槛）/
-   structure_break 结构破位回踩（涵盖 123法则·N字结构，见下方打法详解）。
-6. "可用技能"列表中标注【当前命中】的技能，建议先 load_skill 阅读再决策。
-7. **效率与数据边界（重要）**：事实包只含信号与行情数据（60根K线含每根成交量与成交额/摆动结构/均线形态/ATR/技术指标MACD·布林带·RSI·SuperTrend·ADX·OBV·4h背景），
-   首轮即可直接 submit_decision；资金费率、大盘状态、恐贪指数等环境数据**不在**事实包中，
-   确需时在同一轮一次性批量调用 get_funding / get_market_breadth / get_fear_greed 自行获取
-   （如资金费率极端可 load_skill 阅读 funding-extreme-handling）；不要为用工具而用工具，
-   也不要每轮只查一个工具。
-8. 不要输出不带工具调用的纯文字回复（会浪费一轮）；文字只用于简短说明查询意图，
-   决策一律通过 submit_decision 提交。
-9. 盈亏比铁律 ≥{rr_min}（无豁免）；止损宽度由结构位决定，无内部纪律上限，不得以
-   「止损过宽」为由 skip——宽止损由固定亏损法自动缩仓消化（止损越远仓位越小），
-   但若信号门槛块给出「止损宽度硬上限」（程序硬闸），以该硬闸为准、超限如实 skip
-   （2026-10-20）；
-   止损**不得过近**：宽度须 ≥{sl_min_atr}×ATR（低于噪音级必被扫），也不得低于 0.3%；
-   锚点落在该宽度内时把锚外扩到至少该宽度再报，否则直接 skip（程序按此下限复算打回）；
-   仓位不要自己报，程序按固定亏损法计算，单笔止损预算={risk_label}：仓位 = 预算 ÷ 止损距离
-   （止损越远仓位越小）。
-10. 方向票判定：{_RULE_VOTE_BRIEF}
-    EMA 排列不构成方向限制（多头排列不禁止做空、空头排列不禁止做多）。
-11. 止损锚定（提示词纪律，程序不再改写 stop 值——止损是否合理由你自己把关，
-    程序只复算盈亏比与止损宽度下限）：结构位优先、金K极值兜底、两锚取更远者。做多优先锚定入场价下方
-    最近摆动低点外 0.3%~0.5%，做空锚定上方最近摆动高点外同幅度；入场贴着结构位时
-    止损还须越过金K极值——金K极值 = 金K窗口（最近 5 根已收盘K线，含信号K/突破K线，
-    即事实包 K 线序列最后一根已收盘K线；最后一根未收盘K线不参与）的共同极值：
-    做多取 5 根最低点、做空取 5 根最高点，
-    做多取摆动低点与 5 根最低点中更低者、做空取摆动高点与 5 根最高点中更高者外 0.3%
-    （该极值就是本笔信号的直接失效位；止损在近期波动区间内部必被扫损）；
-    入场价与金K极值间无摆动结构时用金K锚——
-    做多严格低于 5 根最低点（影线极值非收盘价）至少 0.3%，做空相反。
-    距离分档（2026-10-12-5）：最近摆动结构位距入场超过 {far_atr}×ATR
-    （=止盈一距离上限÷盈亏比铁律，超过此线 RR 数学上不可能达标）时，
-    该位是更大级别趋势的失效位而非本笔信号失效位，不作为止损锚——
-    直接降级金K锚：做多 stop_ref=signal_low、做空 stop_ref=signal_high
-    （金K窗口极值外 0.3%）；降级后仍须满足盈亏比铁律与
-    ≥{sl_min_atr}×ATR 宽度下限，不达标 → skip。
+3. 决策必须通过 submit_decision 提交；校验不通过时工具返回违规明细，按明细修正后重提。
+4. **入场价纪律**：只允许现价入场（entry 用 market 锚，offset≈0），**禁止**放到现价
+   回踩侧（多单低于现价/空单高于现价）；RR 不达标 → 直接 skip，**不得给回踩等待计划**。
+5. 开单类型归类（trade_type，suggest 必填其一）：trend_follow 顺势（纯 EMA 排列不是硬门槛）/
+   structure_break 结构破位回踩。
+6. 标注【当前命中】的技能建议先 load_skill 再决策。
+7. **效率与数据边界**：事实包含 40 根已收盘K线/摆动/均线/ATR/指标/4h背景，首轮即可
+   submit_decision；资金费率、大盘、恐贪**不在**包内，确需时同一轮批量调用
+   get_funding / get_market_breadth / get_fear_greed。
+8. 不要输出不带工具调用的纯文字回复；文字只用于简短说明查询意图。
+9. 盈亏比铁律 ≥{rr_min}（无豁免）；止损宽度见第 11 条；仓位由程序按固定亏损法
+   计算（预算 ÷ 止损距离），单笔止损预算={risk_label}。
+10. 方向票以事实包「方向票」行为准（MACD/布林/RSI 同向≥2），reason 第一条写明
+    "方向票: 看多N项 vs 看空M项"；SuperTrend/ADX/OBV/4h背景不计票；回踩单方向票仅作确认度参考。
+11. 止损锚定（P0 同源；stop_ref+offset_pct 落点须满足下式）：
+{_RULE_SL_AGENT}
 {near_stop_rule}
-12. 止盈锚定（提示词纪律，程序不再改挂）：结构位=摆动高低点（事实包"近期摆动结构"）。
-    距现价特别近（≤1×ATR）的位是价格正在
-    测试/突破的"争夺位"，只回答"是否得到支撑/压力/突破"，
-    不算止盈目标；做多止盈一必须挂在更远的第一档结构位（摆动高点）下方 0.2%~0.5%，
-    做空挂在下方第一档结构位（摆动低点）上方 0.2%~0.5%
-    ——不得贴死位或挂在越位一侧（价格常在位附近反弹，越位才触发的止盈大概率落空）。
-    禁止把止盈一挂到更远结构位凑盈亏比：到第一结构位的盈亏比不足 {rr_min} 说明空间不足，
-    应直接 skip（程序只复算盈亏比并按铁律打回）。唯一放宽：当盈亏比不达标是唯一不达标
-    项（其余开单条件全部满足）且 4h 背景为「宏观同侧态」——即出现「方向约束（硬性）」
-    行的六态（宏观金叉/死叉初期、多头/空头恢复初期、多头/空头排列）——时，允许不 skip，
-    改用"入场 ± {rr_min}×止损距离"作止盈一；缠绕/拐头与牛内回调/熊内反弹仍一律 skip。
-    另：第一档止盈须"够近"——距入场上限 = {tp1_cap_desc}（与程序复算口径一致）；
-    上限里的 {rr_min}×止损距离 一项保证"入场 ± {rr_min}×止损距离"兜底价永远合规、
-    绝不会因超 {tp1_max_atr}×ATR 被打回（止损宽度 > {far_atr}×ATR 时上限即放宽到兜底价）。
-    更远的第一档结构位越过此上限时（强趋势/点位稀疏常见，会落到 3~4R）不要跳档硬挂，
-    改用"入场 ± {rr_min}×止损距离"兜底（启用止盈二时该远端结构位保留为止盈二锚，见下条）。
-    **禁止以"兜底价超过 {tp1_max_atr}×ATR 上限"为由 skip。**
-    {_tp2_rule}
-12.5 分析格式（reason 落库展示，前端按固定节标题分区）：按固定节标题两节输出
-    （节标题逐字含冒号），每条独占一行（JSON 字符串内换行写 \n）：
-    「公共检查：」（1. 4h方向 2. 方向票 3. 回踩触点 4. 形态与量能
-    5. 风险点——含资金费率拥挤/BTC 大盘急跌等环境风险，无则写"无"）
-    →「决策结论：」**按条分行**写满足/不满足什么——每条独占一行，以
-    "1. 2. 3. …"序号逐条列出，最后以单独一行"结论：建议开单/不建议开单"收尾
-    （**禁止**写成一行长句或不分条）。
-    skip 时同样两节完整输出（决策结论节分条写不满足的主因）。
-13. 方向纪律（不再程序强制，无 ±0.3% 贴近要求）：优先只在支撑结构做多（摆动低点/
-    近期低点附近）、只在压力结构做空（摆动高点/近期高点附近）；现价已离开结构位时
-    不再要求贴近，按动能与盈亏比自行判断入场（breakout 顺势追突破仍用 market 锚）。
+12. 止盈锚定（P0 同源；tp_ref+offset_pct 落点须满足下式）：
+{_RULE_TP_AGENT}
+{_tp2_rule}
+12.5 分析格式（reason 落库）：两节、标题逐字含冒号、每条独占一行（JSON 内用 \n）：
+    「公共检查：」1. 4h方向 2. 方向票 3. 回踩触点 4. 形态与量能 5. 风险点（无则写"无"）；
+    「决策结论：」分条（1. 2. 3.），末行"结论：建议开单/不建议开单"；skip 同样完整两节。
+13. 方向纪律：优先支撑做多、压力做空；离开结构位时按动能与盈亏比判断
+    （breakout 用 market 锚），不做"待回踩"计划。
 
 {_RULE_SCORE}
 
@@ -235,34 +208,24 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
 _PRICE_ANCHOR_ON = "（entry_ref/stop_ref/tp1_ref/tp2_ref + offset_pct）"
 _PRICE_ANCHOR_OFF = "（entry_ref/stop_ref/tp1_ref + offset_pct）"
 
-_TP_ANCHOR_DESC_ON = """止盈用线外锚点：做多止盈一 tp1_ref=resistance_zone_low（现价上方第一个距现价 >1×ATR
-   的摆动高点，≤1×ATR 的争夺位不算；历史命名）、止盈二 tp2_ref=next_resistance_zone_low
-   （其更远一档的摆动高点）；做空用 support_zone_high / next_support_zone_high
-   （现价下方满足同条件的摆动低点及其更远一档）。止盈 offset 留余地：
-   做多 -0.2~-0.5（位下方），做空 0.2~0.5（位上方）。"""
+_TP_ANCHOR_DESC_ON = """止盈用线外锚点：做多 tp1_ref=resistance_zone_low、止盈二 tp2_ref=next_resistance_zone_low
+   （现价上方 >1×ATR 的第一档及其更远一档摆动高点）；做空用 support_zone_high、
+   止盈二 tp2_ref=next_support_zone_high。offset 留余地：做多 -0.2~-0.5，做空 0.2~0.5。"""
 
-_TP_ANCHOR_DESC_OFF = """止盈用线外锚点：做多止盈一 tp1_ref=resistance_zone_low（现价上方第一个距现价 >1×ATR
-   的摆动高点，≤1×ATR 的争夺位不算；历史命名）；做空用 support_zone_high
-   （现价下方满足同条件的摆动低点）。止盈 offset 留余地：
-   做多 -0.2~-0.5（位下方），做空 0.2~0.5（位上方）。"""
+_TP_ANCHOR_DESC_OFF = """止盈用线外锚点：做多 tp1_ref=resistance_zone_low（现价上方 >1×ATR 的第一档摆动高点）；
+   做空用 support_zone_high。offset 留余地：做多 -0.2~-0.5，做空 0.2~0.5。"""
 
-_TP2_RULE_ON = """止盈二取止盈一锚定档的下一档同类结构位（做多=更高一档摆动高点下方，做空=更低一档
-    摆动低点上方）且必须比止盈一更远。价格创新高/新低、前方无摆动结构位时
-    （如创新高突破），止盈一 = 入场 ± {rr_min}×止损距离、止盈二不设（仅一档）；
-    若近端无合适结构位、第一档结构位距入场超过 {tp1_cap_desc}
-    （结构位存在但过远），止盈一 = 入场 ± {rr_min}×止损距离，止盈二保留锚定该远端
-    结构位（做多 tp2_ref=resistance_zone_low，做空 tp2_ref=support_zone_high，
-    即"止盈一因过远弃用的那一档"），作为趋势跑手档。
-    止盈二还须与止盈一拉开间距：间距 ≥ max({tp2_gap_atr}×ATR, {tp2_gap_r}×止损距离)
-    ——两档贴得太近会几乎同时触发，分批意义消失（多付一次手续费）；间距不足时
-    止盈二不设（仅一档），不要硬塞第二档（程序亦会对贴档/反向的止盈二静默撤档）。
-    盈亏比 ≥{rr_min} 是开单硬性要求（程序复算，不足即打回）。"""
+_TP2_RULE_ON = """止盈二取止盈一锚定档的下一档同类结构位（做多=更高一档摆动高点下方，
+    做空=更低一档摆动低点上方），须比止盈一更远。前方无结构位（如创新高）时
+    止盈二不设（仅一档），止盈一 = 入场 ± {rr_min}×止损距离；第一档结构位存在但
+    距入场超过 {tp1_cap_desc} 时，止盈二保留锚定该远端（做多 tp2_ref=resistance_zone_low，
+    做空 tp2_ref=support_zone_high，即止盈一因过远弃用的那一档，作趋势跑手档）。
+    间距 ≥ max({tp2_gap_atr}×ATR, {tp2_gap_r}×止损距离)，不足/贴档/反向时
+    止盈二不设（仅一档），程序亦会静默撤档。"""
 
-_TP2_RULE_OFF = """当前未启用止盈二（TP2 分批止盈已关闭）：不要提交 tp2_ref/tp2_offset_pct
-    （提交也会被程序置 0），止盈一只挂第一档结构位。价格创新高/新低、前方无摆动
-    结构位时，或第一档结构位距入场超过 {tp1_cap_desc} 时，
-    止盈一 = 入场 ± {rr_min}×止损距离。
-    盈亏比 ≥{rr_min} 是开单硬性要求（程序复算，不足即打回）。"""
+_TP2_RULE_OFF = """当前未启用止盈二（TP2 已关闭）：不要提交 tp2_ref/tp2_offset_pct
+    （提交也会被置 0），止盈一只挂第一档结构位；无结构位或第一档距入场超过
+    {tp1_cap_desc} 时，止盈一 = 入场 ± {rr_min}×止损距离。"""
 
 TOOLS_SCHEMA = [
     {"type": "function", "function": {
@@ -670,6 +633,7 @@ def analyze_coin_agent(
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
     tp2_enabled: bool = True, flt=None,
     rr_tol: Optional[float] = None, min_recommendation: Optional[float] = None,
+    consecutive_losses: Optional[int] = None,
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -689,12 +653,11 @@ def analyze_coin_agent(
     （system_config.tp2_enabled，默认关）。
     flt（2026-10-12）：筛选参数组（resolve_scan_filters(cfg)），透传门槛块
     渲染与页面配置同源；None=env/代码默认。
-    min_recommendation（2026-10-21）：生效评分门槛，注入「评分纪律」段
-    （system_config.min_recommendation，None 回落 env）。"""
+    min_recommendation（2026-10-21）：AI 分析阶段静态评分门槛（system_config 优先、None 回落 env）；
+    连损动态门槛仍由执行层按账号单独校验，不作为统一分析门槛。"""
     client = get_client()
 
     # 布尔事实（技能 use_when 判定）
-    ema = analyze_ema(klines)
     atr = calc_atr(klines) or 0.0
     facts = _build_facts(signal, klines, atr)
 
@@ -706,6 +669,7 @@ def analyze_coin_agent(
     )
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     _tp2_on = bool(tp2_enabled)
+    _sl_agent, _tp_agent = _render_shared_sl_tp(_rr)
     # 近锚降级链仅突破类注入（docs/23）；回踩/其他类槽位留空
     near_stop_rule = (
         NEAR_STOP_RULE_AGENT.format(rr_min=_rr,
@@ -726,11 +690,15 @@ def analyze_coin_agent(
         _RULE_SCORE=render_rule_score(
             min_recommendation, _rr,
             risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
+            consecutive_losses=consecutive_losses,
+            trigger_type=signal.get("signal_type"),
         ),
         _RULE_BTC_ENV=_RULE_BTC_ENV,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
         near_stop_rule=near_stop_rule,
+        _RULE_SL_AGENT=_sl_agent,
+        _RULE_TP_AGENT=_tp_agent,
         _price_anchor_desc=_PRICE_ANCHOR_ON if _tp2_on else _PRICE_ANCHOR_OFF,
         _tp_anchor_desc=_TP_ANCHOR_DESC_ON if _tp2_on else _TP_ANCHOR_DESC_OFF,
         _tp2_rule=(_TP2_RULE_ON if _tp2_on else _TP2_RULE_OFF).format(
@@ -751,9 +719,10 @@ def analyze_coin_agent(
             "===== 自定义策略结束 ====="
         )
 
-    user_msg = _build_user_msg(signal, klines, ema, atr, user_input, htf_klines,
+    user_msg = _build_user_msg(signal, klines, user_input, htf_klines,
                                stop_cap_pct=stop_cap_pct, tactics_block=tactics_block,
-                               flt=flt)
+                               flt=flt, min_recommendation=min_recommendation,
+                               consecutive_losses=consecutive_losses)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user_msg},
@@ -902,56 +871,25 @@ def _build_facts(signal: dict, klines: list, atr: float) -> dict:
 
 
 def _build_user_msg(
-    signal: dict, klines: list, ema: Optional[dict], atr: float,
+    signal: dict, klines: list,
     user_input: Optional[str], htf_klines: Optional[list] = None,
     stop_cap_pct: Optional[float] = None, tactics_block: str = "", flt=None,
+    min_recommendation: Optional[float] = None, consecutive_losses: Optional[int] = None,
 ) -> str:
-    closed = klines[:-1] if len(klines) >= 2 else klines
-    # 40 根与 P0 管线同口径（60→40，2026-09-28 缩 token 提速，见 ai_analyzer._build_messages）
-    recent = closed[-40:]
-    # 每根K线自带成交量与成交额（quote_vol，USDT），不再给汇总口径
-    kline_summary = "\n".join(
-        f"{int(k[0]/1000)},{k[1]},{k[2]},{k[3]},{k[4]},{k[5]},{k[7]}" for k in recent
-    )
-    # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点）——锚点解析的数据源
-    sw = signal.get("recent_swings") or {}
-    swings_section = ""
-    if sw.get("highs") or sw.get("lows"):
-        sw_lines = ["近期摆动结构(收盘价摆动点,新→旧):"]
-        if sw.get("highs"):
-            sw_lines.append(
-                "  高点: " + ", ".join(
-                    f"{h['label']} {h['price']:.6g}（{h['bars_ago']}根前）" for h in sw["highs"]
-                )
-            )
-        if sw.get("lows"):
-            sw_lines.append(
-                "  低点: " + ", ".join(
-                    f"{lv['label']} {lv['price']:.6g}（{lv['bars_ago']}根前）" for lv in sw["lows"]
-                )
-            )
-        swings_section = "\n".join(sw_lines) + "\n"
-    # 量能（放量突破判定依据，classify_volume 口径：相对近20根已收盘均量的倍数）
-    vol_desc = signal.get("volume_type") or "—"
-    if signal.get("volume"):
-        vol_desc += f"（{float(signal['volume']):.1f}×20根均量）"
-    msg = (
-        f"币种: {signal['symbol']}\n"
-        f"信号类型: {SIGNAL_TYPE_LABELS.get(signal['signal_type'], signal['signal_type'])}（{signal['signal_type']}）\n"
-        f"当前价格: {signal['current_price']}\n"
-        f"K线形态: {signal.get('pattern') or '无'}（位置: "
-        f"{POSITION_LABEL_MAP.get(signal.get('position') or '', signal.get('position') or '未知')}）\n"
-        f"信号理由: {signal.get('signal_reason') or ''}\n"
-        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt)}"
-        f"信号强度: {signal.get('strength', '—')}\n"
-        f"量能: {vol_desc}\n"
-        f"ATR(14): {atr:.6g}\n"
-        + (f"均线形态: {ema['state_label']}（{ema['detail']}）\n" if ema else "")
-        + render_indicator_block(klines, htf_klines)
-        + swings_section
-        + tactics_block
-        + f"近{len(recent)}根已收盘K线(timestamp,open,high,low,close,vol,quote_vol_USDT):\n{kline_summary}"
-    )
+    """P1 用户消息（T3-3，2026-10-21）：事实包与 P0 共用 build_signal_facts。
+
+    此前 P1 自渲染一份事实（带 timestamp/quote_vol/单独 ATR 行、字段顺序不同），
+    与 P0 的同一信号事实文本不一致；统一后两管线 diff 仅剩系统提示词的工具
+    能力段。删除 timestamp/quote_vol 与 P0 2026-09-28 的瘦身口径一致
+    （K 线等间隔，顺序即可；量能看量比倍数，绝对成交额无行为指向）。
+    """
+    msg = build_signal_facts(
+        signal, klines, htf_klines,
+        stop_cap_pct=stop_cap_pct, flt=flt,
+        min_recommendation=min_recommendation,
+        consecutive_losses=consecutive_losses,
+        market_summary="",  # P1 走工具循环按需取环境数据
+    ) + tactics_block
     if user_input:
         msg += (
             "\n\n用户补充说明（请结合其内容进行分析）：\n"

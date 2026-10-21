@@ -212,7 +212,9 @@ def _fetch_symbols_binance() -> list[dict]:
     if resp.status_code >= 400:
         raise ExchangeError(f"HTTP {resp.status_code}")
 
-    valid = set()
+    # 最小名义价值（2026-10-21，T1-1/T2-2）：exchangeInfo 一次解析，随符号池
+    # 返回，供「最小可成交性」影子门使用（小仓位被交易所拒单的根因）
+    valid: dict[str, float] = {}
     for s in resp.json().get("symbols", []):
         if s.get("status") != "TRADING":
             continue
@@ -222,7 +224,14 @@ def _fetch_symbols_binance() -> list[dict]:
             continue
         if not _base_ok(s.get("baseAsset", "")):
             continue
-        valid.add(s["symbol"])
+        min_notional = 5.0
+        for f in s.get("filters") or []:
+            if f.get("filterType") == "MIN_NOTIONAL":
+                try:
+                    min_notional = float(f.get("notional") or 5.0)
+                except (TypeError, ValueError):
+                    pass
+        valid[s["symbol"]] = min_notional
 
     resp = c.get("/fapi/v1/ticker/24hr")
     _raise_if_rate_limited(resp)
@@ -241,8 +250,36 @@ def _fetch_symbols_binance() -> list[dict]:
             continue
         if vol <= 0:
             continue
-        out.append({"symbol": sym, "volume_24h": vol, "last_price": price})
+        out.append({
+            "symbol": sym, "volume_24h": vol, "last_price": price,
+            "min_notional": valid[sym],
+        })
     out.sort(key=lambda x: x["volume_24h"], reverse=True)
+    return out
+
+
+def _fetch_book_tickers_binance() -> dict[str, float]:
+    """全市场盘口价差（bps）：{symbol: spread_bps}（2026-10-21，T1-1 影子门）。
+
+    /fapi/v1/ticker/bookTicker 不带 symbol 一次拉全市场，与 exchangeInfo 同源
+    交易所；失败抛 ExchangeError 由调用方降级（影子门缺数据不拦）
+    """
+    c = _get_client("binance")
+    resp = c.get("/fapi/v1/ticker/bookTicker")
+    _raise_if_rate_limited(resp)
+    if resp.status_code >= 400:
+        raise ExchangeError(f"bookTicker HTTP {resp.status_code}")
+    out: dict[str, float] = {}
+    for t in resp.json():
+        try:
+            bid = float(t.get("bidPrice") or 0)
+            ask = float(t.get("askPrice") or 0)
+        except (TypeError, ValueError):
+            continue
+        if bid <= 0 or ask <= 0 or ask < bid:
+            continue
+        mid = (bid + ask) / 2
+        out[str(t.get("symbol"))] = (ask - bid) / mid * 1e4
     return out
 
 

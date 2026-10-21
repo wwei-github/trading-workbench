@@ -53,6 +53,16 @@ class ScanResult(Base):
     volume_type: Mapped[str] = mapped_column(String(16), nullable=False, default="平量", index=True)
     # 指标驱动筛选（2026-09-17）：候选质量分（0-100，AI 配额排序键）与指标票数明细
     quality_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # 质量分分项（2026-10-21，T0-3/T1-2）：{base, htf, adx, volume, ...}，
+    # 供提示词渲染「质量分 68（base 50 / 4h +10 / 方向票 +10 / 减分 -2）」
+    # 与复盘拆解排序依据；旧行 NULL（仅有总分）
+    quality_parts: Mapped[Optional[dict]] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    # AI 配额分池与排名（2026-10-21，T1-2）：quota_pool = breakout / pullback，
+    # quota_rank = 该池内按质量分的名次（1=最优）；旧行 NULL
+    quota_pool: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    quota_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     votes_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     is_repeat: Mapped[bool] = mapped_column(Boolean, default=False)
     # 信号命中时刻（2026-10-21 观测 B1）：候选在指标管线内产生的时刻（=收盘K线
@@ -146,6 +156,12 @@ class AIAnalysis(Base):
     # 缺少大周期背景下产出，复盘按此分组对比（B3）判断降级是否伤质量；
     # 本列上线前的历史行 FALSE（按未降级理解）
     htf_degraded: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    # BTC 环境事实缺失标记（2026-10-21，T0-5）：市场环境块构建失败/开关关闭时
+    # 提示词显式标注「未知、不得据此加分」，本列记录该事实供复盘分组；
+    # 本列上线前的历史行 FALSE（按环境可见理解）
+    btc_env_missing: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
     # AI 结论落库时刻（2026-10-21 观测 B1）：created_at 在 latest-wins 原地更新
