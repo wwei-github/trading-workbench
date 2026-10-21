@@ -102,7 +102,7 @@ def test_gate_block_pullback_touch_object():
     assert "回踩触点" in block
     assert "retest=突破回测位" in block
     assert "ema21_4h=4h 大周期价值区" in block  # 2026-10-09 上线触点补进语义行
-    assert "ema144=1h 深回撤（走平或顺 4h 方向）" in block  # 2026-10-16 复出触点
+    assert "ema144=1h 深回撤（触发条件已由程序校验）" in block  # 2026-10-16 复出触点
     assert "两段式确认" in block
     assert "0.3%" in block  # structure_touch_band_pct 生效值
     # 未配置 pullback_touch_refs → 启用列表回落 DEFAULT_TOUCH_REFS

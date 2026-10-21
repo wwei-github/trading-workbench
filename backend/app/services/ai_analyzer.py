@@ -359,7 +359,7 @@ def render_signal_gate_block(
             lines += [
                 "- 回踩触点: retest=突破回测位 / swing=摆动结构位 / ema21=1h 趋势动态"
                 "价值区 / ema21_4h=4h 大周期价值区 / ema55=中深度回撤/"
-                "ema144=1h 深回撤（走平或顺 4h 方向）",
+                "ema144=1h 深回撤（触发条件已由程序校验）",
                 f"- 当前启用触点: {enabled}"
                 "（优先级 retest>swing>ema21>ema21_4h>ema55>ema144，命中位见信号块「回踩触点」行）",
                 f"- 横向位触碰带宽: 影线可入带（{flt.structure_touch_band_pct:.1f}% 内）且收盘守住位；"
