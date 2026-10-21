@@ -421,19 +421,29 @@ def detect_indicator_candidate(
             return None, pending_op
 
     # 震荡闸门分流：突破硬拒；回踩降权不拒（质量分 -8，见 compute_quality_score）。
-    # 回踩两条路径都必须放行：① 当根/次根金K确认（trig=PULLBACK_CONFIRM）；
+    # 回踩三条路径都必须放行：① 当根/次根金K确认（trig=PULLBACK_CONFIRM）；
     # ② 触碰当根尚无金K、正要进待确认池（trig=None + pending upsert）——
-    #    若在 ② 硬拒，两段式回踩根本进不了池，① 的降权永远不可达。
+    #    若在 ② 硬拒，两段式回踩根本进不了池，① 的降权永远不可达；
+    # ③ 次根确认的等待小时（trig=None + 活跃 pending + trigger 无处置动作）——
+    #    深回撤常伴随 ADX 走低，若在等待根硬杀 pending，T+2 金K 将因无 pending
+    #    无法次根确认（2026-10-21 审查补漏；触发侧 expire〔4h 翻转/窗口耗尽〕
+    #    是趋势/窗口死亡，不属此列，照常终态）。
     if rs >= RANGE_SCORE_REJECT:
         pullback_path = (
             (trig is not None and trig["type"] == PULLBACK_CONFIRM)
-            or (trig is None and bool(pending_op and pending_op.get("op") == "upsert"))
+            or (trig is None and (
+                bool(pending_op and pending_op.get("op") == "upsert")
+                or (pending_op is None and bool(pending))
+            ))
         )
         if pullback_path:
             range_penalty = True
         else:
             _reject("range_score")
-            return None, ({"op": "expire", "reason": "range_score"} if pending else None)
+            # 死因保留：触发侧已有处置动作（expire(direction_flip/window_expired)/
+            # supersede）时原样返回，不用 range_score 覆盖审计死因
+            return None, (pending_op or
+                          ({"op": "expire", "reason": "range_score"} if pending else None))
 
     if trig is not None:
         # T1 突破 → 破轨事件动作（docs/22 §4）：白名单过滤前、类型校验之后记录——

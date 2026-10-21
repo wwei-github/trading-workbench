@@ -176,7 +176,8 @@ def test_structure_gate_no_longer_vetoes():
 
 
 def test_range_score_gate_veto_expires_pending(monkeypatch):
-    """震荡闸门命中（桩强制命中）→ 不产生候选，pending expire(range_score)"""
+    """震荡闸门命中（桩强制命中）→ 不产生候选；pending 窗口已耗尽时触发侧死因
+    （window_expired）原样保留，不被 range_score 覆盖（2026-10-21 死因保留语义）"""
     import app.services.scanner as scanner_mod
 
     monkeypatch.setattr(scanner_mod, "range_score",
@@ -187,7 +188,7 @@ def test_range_score_gate_veto_expires_pending(monkeypatch):
         _FakePool(kl, _trending_4h_up()), "TEST/USDT", kl, pending=pending
     )
     assert cand is None
-    assert op is not None and op["op"] == "expire" and op["reason"] == "range_score"
+    assert op is not None and op["op"] == "expire" and op["reason"] == "window_expired"
 
 
 # ── range_score 闸门本身（2026-10-20 重构：4 项合取）────────────────────

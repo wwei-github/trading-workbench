@@ -325,6 +325,29 @@ def test_range_score_pending_upsert_not_rejected():
     assert op_ok["quality_score"] - op["quality_score"] == 8
 
 
+def test_range_score_waiting_pending_survives():
+    """震荡闸门命中 + 活跃 pending 等待小时（trigger 无处置动作）→ pending 不被
+    expire(range_score) 硬杀。深回撤常伴随 ADX 走低，若等待根被杀，T+2 金K 将因
+    无 pending 无法次根确认（2026-10-21 审查补漏）；funnel 照常落 no_trigger"""
+    rv: dict = {}
+    pend = {"id": 1, "direction": 1, "stage1_candle_open": 1_700_000_000_000,
+            "touch_ref": "ema21"}
+    cand, op = _detect(rv, rs=1, trigger=(None, None), pending=pend)
+    assert cand is None and op is None and rv == {"stage": "no_trigger"}
+
+
+def test_range_score_preserves_trigger_side_expire_reason():
+    """震荡闸门命中 + 触发侧已有终态处置（4h 翻转 expire/direction_flip）→
+    死因原样保留、不被 range_score 覆盖（2026-10-21 审查补漏）"""
+    rv: dict = {}
+    pend = {"id": 1, "direction": 1, "stage1_candle_open": 1_700_000_000_000,
+            "touch_ref": "ema21"}
+    cand, op = _detect(rv, rs=1, pending=pend,
+                       trigger=(None, {"op": "expire", "reason": "direction_flip"}))
+    assert cand is None and op == {"op": "expire", "reason": "direction_flip"}
+    assert rv == {"stage": "range_score"}
+
+
 def test_structure_1h_reason_no_longer_a_stage():
     """structure_1h 关卡 2026-10-15 退役（1H 结构门降级重罚）：trigger 历史遗留的
     expire/structure_1h 死因在 scanner 侧不再单列，落 no_trigger 兜底"""
