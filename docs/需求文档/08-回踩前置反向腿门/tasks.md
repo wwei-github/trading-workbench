@@ -98,3 +98,12 @@
 - [x] conventional commit，建议：
   `feat(strategy): 增加回踩前置反向腿过滤门`
 - [x] 不推送、不触发 CI、不连接服务器。
+
+## T9. 检测修复（2026-10-22 复核）
+
+- [x] 锁定漏洞：腿终点窗口含信号K线时，「1 根反抽/回撤 + 吞没/锤子自身振幅」可凑满 `min_bars`/`min_atr`，APR 类伪回踩仍会漏网。
+- [x] 修复：腿终点窗口改为 `[max(window_start, t-LEG_END_WINDOW_BARS), t-1]`，严格不含信号K线。
+- [x] 回归用例：`_short_reject`/`_long_reject` 的吞没极值改为严格超过反抽/回撤极值（去掉同值并列的掩盖），新增 `test_leg_gate_excludes_signal_candle_from_leg_end`。
+- [x] `test_touch_refs.py` 补 autouse bypass（原实现遗漏；两个 swing 用例此前靠上述漏洞通过）。
+- [x] 定向 167 passed、全量 1142 passed。
+- [x] 同步 spec §4.1/§4.2/§4.3 与 02-信号触发器 §5.7 的窗口口径。

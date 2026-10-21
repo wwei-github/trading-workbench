@@ -129,9 +129,10 @@ RETEST_STRUCT_LOOKBACK_N = 10   # 取摆动点个数（与突破路径同源）
 # 维持 0.70；两常量自即日起各自独立改版
 BREAKOUT_BODY_RANGE_MIN = 0.70   # 实体/K线全长 ≥ 0.70
 
-# 回踩前置反向腿门（2026-10-22）：腿终点在信号K线前 N 根内取极值——
-# 覆盖锤子/吞没的单根反转，也覆盖启明星/黄昏星的星线在信号K线前一根的情形；
-# 避免把很久以前的极值当作本次回踩的腿终点
+# 回踩前置反向腿门（2026-10-22）：腿终点只取信号K线之前的 N 根已收盘K线
+# （不含信号K线本身）——反转K线的自身极值属于反转动作，不算反向腿终点，
+# 否则单根反抽 + 吞没/锤子自身振幅即可凑满门槛（APR 类伪回踩漏网）。
+# N=2 覆盖启明星/黄昏星的星线在信号K线前一根的情形
 LEG_END_WINDOW_BARS = 2
 
 
@@ -278,9 +279,10 @@ def _pullback_leg_gate(
     （前低 → 回踩高点）；只用已收盘K线（klines[:-1]），按 ATR 归一化，避免
     不同币种波动率差异导致门槛失真。触碰根 = 最后一根已收盘K线（klines[-2]）。
 
-    腿终点在 [t-LEG_END_WINDOW_BARS, t] 内取极值（覆盖锤子/吞没的单根反转，
-    也覆盖启明星/黄昏星的星线在 t-1 的情形）；腿起点在终点之前、lookback
-    窗口内取反向极值。返回 (是否通过, 证据字典)；ATR 不可用时 fail-closed。
+    腿终点在 [t-LEG_END_WINDOW_BARS, t-1] 内取极值（严格在信号K线之前——
+    反转K线自身极值不算腿终点，覆盖启明星/黄昏星星线在 t-1 的情形）；腿起点
+    在终点之前、lookback 窗口内取反向极值。返回 (是否通过, 证据字典)；
+    ATR 不可用时 fail-closed。
     """
     if direction not in (1, -1):
         return True, {"bars": 0, "atr_mult": 0.0, "reason": "direction_invalid"}
@@ -304,8 +306,11 @@ def _pullback_leg_gate(
     highs = [float(k[2]) for k in klines[:n_closed]]
     lows = [float(k[3]) for k in klines[:n_closed]]
 
+    if end_start >= t:
+        return False, {**empty, "reason": "no_leg_start"}
+
     if direction == 1:
-        end_idx = min(range(end_start, t + 1), key=lambda i: lows[i])
+        end_idx = min(range(end_start, t), key=lambda i: lows[i])
         if end_idx <= window_start:
             return False, {**empty, "reason": "no_leg_start"}
         start_idx = max(range(window_start, end_idx), key=lambda i: highs[i])
@@ -314,7 +319,7 @@ def _pullback_leg_gate(
         leg_end_price = lows[end_idx]
         amplitude = leg_start_price - leg_end_price
     else:
-        end_idx = max(range(end_start, t + 1), key=lambda i: highs[i])
+        end_idx = max(range(end_start, t), key=lambda i: highs[i])
         if end_idx <= window_start:
             return False, {**empty, "reason": "no_leg_start"}
         start_idx = min(range(window_start, end_idx), key=lambda i: lows[i])

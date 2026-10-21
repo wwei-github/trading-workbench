@@ -57,13 +57,14 @@
 - 只用已收盘K线：`closed = klines[:-1]`；
 - 信号K线索引 `t = len(klines) - 2`（即 `closed` 的最后一根）；
 - 腿的搜索窗口：`[max(0, t - lookback + 1), t]`；
-- 腿的终点搜索窗口：`[max(window_start, t - LEG_END_WINDOW_BARS), t]`，`LEG_END_WINDOW_BARS = 2`；
-  - 覆盖锤子/吞没的单根反转，也覆盖启明星/黄昏星的星线在 `t-1` 的情形；
+- 腿的终点搜索窗口：`[max(window_start, t - LEG_END_WINDOW_BARS), t-1]`，`LEG_END_WINDOW_BARS = 2`；
+  - **严格不含信号K线**（2026-10-22 检测修复）：反转K线自身的极值属于反转动作，不算腿终点——否则「1 根反抽/回撤 + 吞没/锤子自身振幅」即可凑满 `min_bars`/`min_atr`，APR 类伪回踩仍会漏网；
+  - `t-1` 覆盖启明星/黄昏星的星线，`t-2` 覆盖两K形态的起点；
   - 避免把很久以前的极值当作本次回踩的腿终点。
 
 ### 4.2 做多（direction = +1）
 
-1. 在终点窗口内取最低价索引 `end_idx = argmin(low[window_start : t+1])`；
+1. 在终点窗口内取最低价索引 `end_idx = argmin(low[end_start:t])`（严格不含信号K线）；
 2. 在 `[window_start, end_idx)` 内取最高价索引 `start_idx = argmax(high[window_start : end_idx])`；
 3. 腿时长 `bars = end_idx - start_idx`；
 4. 腿幅 `atr_mult = (high[start_idx] - low[end_idx]) / ATR[end_idx]`；
@@ -73,7 +74,7 @@
 
 ### 4.3 做空（direction = -1）
 
-1. 在终点窗口内取最高价索引 `end_idx = argmax(high[window_start : t+1])`；
+1. 在终点窗口内取最高价索引 `end_idx = argmax(high[end_start:t])`（严格不含信号K线）；
 2. 在 `[window_start, end_idx)` 内取最低价索引 `start_idx = argmin(low[window_start : end_idx])`；
 3. 腿时长 `bars = end_idx - start_idx`；
 4. 腿幅 `atr_mult = (high[end_idx] - low[start_idx]) / ATR[end_idx]`；

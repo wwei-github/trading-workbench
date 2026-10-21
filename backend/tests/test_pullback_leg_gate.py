@@ -73,10 +73,14 @@ def _series(extra_closes, extra_highs, extra_lows) -> list[list]:
 
 
 def _short_reject() -> list[list]:
-    """下跌中继：idx56 见低 → idx57 单根反抽到 EMA21 → idx58 看跌吞没。"""
+    """下跌中继：idx56 见低 → idx57 单根反抽到 EMA21 → idx58 看跌吞没。
+
+    idx58 吞没自身高点 100.5 > idx57 高点 100.0：若腿终点把信号K线算进去，
+    会以「idx56 低点 → idx58 高点」凑出 2 根腿（2026-10-22 检测修复的漏洞）。
+    """
     return _series(
         [99.3, 99.4, 99.2, 99.8, 99.2, 99.2],
-        [99.4, 99.5, 99.3, 100.0, 100.0, 99.3],
+        [99.4, 99.5, 99.3, 100.0, 100.5, 99.3],
         [99.2, 99.3, 99.0, 99.1, 98.5, 99.1],
     )
 
@@ -91,11 +95,15 @@ def _short_accept() -> list[list]:
 
 
 def _long_reject() -> list[list]:
-    """上涨中继：idx56 见高 → idx57 单根回撤到 EMA21 → idx58 看涨吞没。"""
+    """上涨中继：idx56 见高 → idx57 单根回撤到 EMA21 → idx58 看涨吞没。
+
+    idx58 吞没自身低点 99.8 < idx57 低点 100.0：腿终点若含信号K线，
+    会以「idx56 高点 → idx58 低点」凑出 2 根腿（做空镜像漏洞）。
+    """
     return _series(
         [100.3, 100.5, 100.7, 100.0, 100.3, 100.3],
         [100.6, 100.8, 101.0, 100.2, 101.2, 100.4],
-        [100.1, 100.3, 100.5, 100.0, 100.0, 100.2],
+        [100.1, 100.3, 100.5, 100.0, 99.8, 100.2],
     )
 
 
@@ -138,6 +146,21 @@ def test_leg_gate_long_reject_one_bar_decline():
     ok, ev = trig._pullback_leg_gate(_long_reject(), 1, _flt())
     assert ok is False
     assert ev["bars"] == 1
+
+
+def test_leg_gate_excludes_signal_candle_from_leg_end():
+    """腿终点严格在信号K线之前：反转K线自身极值不得充当反向腿终点。
+
+    回归 2026-10-22 检测漏洞：idx58 吞没高点/低点远超 idx57 反抽/回撤极值时，
+    旧口径会误判为 2 根腿并放行。
+    """
+    kl_s = _short_reject()
+    ok_s, ev_s = trig._pullback_leg_gate(kl_s, -1, _flt())
+    assert ok_s is False and ev_s["leg_end_idx"] < len(kl_s) - 2
+
+    kl_l = _long_reject()
+    ok_l, ev_l = trig._pullback_leg_gate(kl_l, 1, _flt())
+    assert ok_l is False and ev_l["leg_end_idx"] < len(kl_l) - 2
 
 
 def test_leg_gate_atr_alignment():

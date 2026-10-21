@@ -62,6 +62,20 @@ def _stub_1h_structure_gate(monkeypatch):
                         lambda k1, direction, cfg=None: ({"d21": 1.0}, {"aligned": True}))
 
 
+@pytest.fixture(autouse=True)
+def _bypass_leg_gate(monkeypatch):
+    """回踩前置反向腿门（2026-10-22）打桩放行。
+
+    本文件聚焦触点探测/优先级/白名单，合成夹具不构造真实反向腿（如
+    _swing_uptrend_kl 的回撤全在信号K线自身）——腿门口径与接入在
+    test_pullback_leg_gate.py 专测。
+    """
+    monkeypatch.setattr(
+        trig, "_pullback_leg_gate",
+        lambda klines, direction, flt: (True, {"bars": 3, "atr_mult": 1.0}),
+    )
+
+
 def _klines(closes: list[float], highs: list[float], lows: list[float]) -> list[list]:
     out = []
     prev = closes[0]
