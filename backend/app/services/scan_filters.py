@@ -76,6 +76,12 @@ SCAN_FILTER_KEYS = (
     # 方向过滤开关（2026-10-18）：True=过滤生效（默认，保持现网门槛），false=跳过该检测
     "direction_vote_gate_enabled",      # ② 方向层：方向票关（方向票同向张数不足是否否决候选）
     "direction_conflict_gate_enabled",  # ② 方向层：方向冲突关（定向与 4h 闸门方向相反是否否决）
+    # 回踩前置反向腿门（2026-10-22）：Stage-1 触点之前须存在一段反向腿
+    # （做多=下跌腿、做空=反弹腿），否则不建 pending/不确认；retest 豁免
+    "pullback_leg_gate_enabled",        # ③ 触发层：腿门总开关（false=跳过）
+    "pullback_leg_lookback_bars",       # ③ 触发层：腿搜索回看根数（1h）
+    "pullback_leg_min_bars",            # ③ 触发层：反向腿最少持续根数
+    "pullback_leg_min_atr",             # ③ 触发层：反向腿最小幅度（ATR 倍数）
 )
 # swing_order（摆动点阶数）不在上表：它是 SystemConfig 顶层列（前端「摆动点阶数」
 # 独立提交），resolve 时单独读取并注入 ScanFilters.swing_order（2026-10-12 触发层
@@ -112,6 +118,12 @@ class ScanFilters:
     # ②方向冲突关：定向方向与 4h 闸门方向相反是否否决（scanner 判定链消费）
     direction_vote_gate_enabled: bool = True
     direction_conflict_gate_enabled: bool = True
+    # 回踩前置反向腿门（2026-10-22）：做多要求触点前一段下跌腿、做空要求一段反弹腿；
+    # 默认轻档（2 根 / 0.5 ATR），优先避免过度过滤；retest 触点豁免（trigger 内处理）
+    pullback_leg_gate_enabled: bool = True
+    pullback_leg_lookback_bars: int = 24
+    pullback_leg_min_bars: int = 2
+    pullback_leg_min_atr: float = 0.5
 
 
 def resolve_scan_filters(cfg=None) -> ScanFilters:
@@ -197,5 +209,9 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
             "direction_vote_gate_enabled", settings.DIRECTION_VOTE_GATE_ENABLED),
         direction_conflict_gate_enabled=_bool(
             "direction_conflict_gate_enabled", settings.DIRECTION_CONFLICT_GATE_ENABLED),
+        pullback_leg_gate_enabled=_bool("pullback_leg_gate_enabled", True),
+        pullback_leg_lookback_bars=_int("pullback_leg_lookback_bars", 24, minimum=2),
+        pullback_leg_min_bars=_int("pullback_leg_min_bars", 2),
+        pullback_leg_min_atr=_num("pullback_leg_min_atr", 0.5),
         swing_order=_swing_order(settings.SWING_ORDER),
     )

@@ -538,6 +538,11 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
             # 方向过滤开关（2026-10-18）：前端表单初值/回显（默认 True=过滤生效）
             "direction_vote_gate_enabled": flt.direction_vote_gate_enabled,
             "direction_conflict_gate_enabled": flt.direction_conflict_gate_enabled,
+            # 回踩前置反向腿门（2026-10-22）
+            "pullback_leg_gate_enabled": flt.pullback_leg_gate_enabled,
+            "pullback_leg_lookback_bars": flt.pullback_leg_lookback_bars,
+            "pullback_leg_min_bars": flt.pullback_leg_min_bars,
+            "pullback_leg_min_atr": flt.pullback_leg_min_atr,
         },
     )
 
@@ -557,6 +562,10 @@ _SCAN_FILTER_RANGES: dict[str, tuple[float, float, str]] = {
     "pending_confirm_window_bars": (1, 10, "回踩待确认窗口（已收盘根数，金K须出现在触碰根后 1~N 根内）"),
     "structure_touch_band_pct": (0, 5, "retest/swing 触碰带宽（%，影线可入带收盘须守住）"),
     "ema_touch_min_bars": (50, 1000, "EMA 触点最小已收盘根数（数据门）"),
+    # 回踩前置反向腿门（2026-10-22）
+    "pullback_leg_lookback_bars": (2, 200, "反向腿搜索回看根数（1h）"),
+    "pullback_leg_min_bars": (0, 50, "反向腿最少持续根数"),
+    "pullback_leg_min_atr": (0, 20, "反向腿最小幅度（ATR 倍数，0=不限制幅度）"),
 }
 
 # 布尔开关键（非数值键，PUT 校验走 isinstance(bool)）：2026-10-18 起为集合——
@@ -566,6 +575,7 @@ _BOOL_FILTER_KEYS: tuple[str, ...] = (
     "structure_1h_gate",
     "direction_vote_gate_enabled",
     "direction_conflict_gate_enabled",
+    "pullback_leg_gate_enabled",
 )
 
 

@@ -65,7 +65,7 @@ from app.services.strategy.candlestick import (
 from app.services.strategy.ema import calc_ema
 from app.services.strategy.ema_gate import SLOPE_BARS, SLOPE_FLAT_PCT, structure_1h
 from app.services.strategy.indicators import volume_ratio
-from app.services.strategy.technical import pullback_stabilize_bonus
+from app.services.strategy.technical import atr_series, pullback_stabilize_bonus
 import numpy as np
 
 # 触发类型 = signal_type（AI 提示词 SIGNAL_TYPE_LABELS 已注册同名标签）
@@ -128,6 +128,11 @@ RETEST_STRUCT_LOOKBACK_N = 10   # 取摆动点个数（与突破路径同源）
 # 复合确认证据层）已放宽至 0.60 并解除同步约定——突破K线是触发层最高置信门，
 # 维持 0.70；两常量自即日起各自独立改版
 BREAKOUT_BODY_RANGE_MIN = 0.70   # 实体/K线全长 ≥ 0.70
+
+# 回踩前置反向腿门（2026-10-22）：腿终点在信号K线前 N 根内取极值——
+# 覆盖锤子/吞没的单根反转，也覆盖启明星/黄昏星的星线在信号K线前一根的情形；
+# 避免把很久以前的极值当作本次回踩的腿终点
+LEG_END_WINDOW_BARS = 2
 
 
 def _is_solid_breakout_candle(klines: list[list], direction: int) -> bool:
@@ -262,6 +267,78 @@ def _pullback_volume_note(klines: list[list]) -> str:
     except (IndexError, TypeError, ValueError):
         pass
     return note
+
+
+def _pullback_leg_gate(
+    klines: list[list], direction: int, flt: ScanFilters,
+) -> tuple[bool, dict]:
+    """回踩前置反向腿门（2026-10-22）。
+
+    做多要求触点前存在一段下跌腿（前高 → 回踩低点），做空要求一段反弹腿
+    （前低 → 回踩高点）；只用已收盘K线（klines[:-1]），按 ATR 归一化，避免
+    不同币种波动率差异导致门槛失真。触碰根 = 最后一根已收盘K线（klines[-2]）。
+
+    腿终点在 [t-LEG_END_WINDOW_BARS, t] 内取极值（覆盖锤子/吞没的单根反转，
+    也覆盖启明星/黄昏星的星线在 t-1 的情形）；腿起点在终点之前、lookback
+    窗口内取反向极值。返回 (是否通过, 证据字典)；ATR 不可用时 fail-closed。
+    """
+    if direction not in (1, -1):
+        return True, {"bars": 0, "atr_mult": 0.0, "reason": "direction_invalid"}
+    if flt.pullback_leg_min_bars <= 0 and flt.pullback_leg_min_atr <= 0:
+        return True, {"bars": 0, "atr_mult": 0.0, "reason": "disabled"}
+
+    n_closed = len(klines) - 1
+    t = n_closed - 1
+    lookback = max(2, int(flt.pullback_leg_lookback_bars))
+    window_start = max(0, t - lookback + 1)
+    end_start = max(window_start, t - LEG_END_WINDOW_BARS)
+    empty = {
+        "bars": 0, "atr_mult": 0.0, "leg_start_idx": -1, "leg_end_idx": -1,
+        "leg_start_price": 0.0, "leg_end_price": 0.0, "atr": 0.0,
+    }
+
+    atrs = atr_series(klines, 14)
+    if atrs is None or len(atrs) != n_closed:
+        return False, {**empty, "reason": "atr_unavailable"}
+
+    highs = [float(k[2]) for k in klines[:n_closed]]
+    lows = [float(k[3]) for k in klines[:n_closed]]
+
+    if direction == 1:
+        end_idx = min(range(end_start, t + 1), key=lambda i: lows[i])
+        if end_idx <= window_start:
+            return False, {**empty, "reason": "no_leg_start"}
+        start_idx = max(range(window_start, end_idx), key=lambda i: highs[i])
+        bars = end_idx - start_idx
+        leg_start_price = highs[start_idx]
+        leg_end_price = lows[end_idx]
+        amplitude = leg_start_price - leg_end_price
+    else:
+        end_idx = max(range(end_start, t + 1), key=lambda i: highs[i])
+        if end_idx <= window_start:
+            return False, {**empty, "reason": "no_leg_start"}
+        start_idx = min(range(window_start, end_idx), key=lambda i: lows[i])
+        bars = end_idx - start_idx
+        leg_start_price = lows[start_idx]
+        leg_end_price = highs[end_idx]
+        amplitude = leg_end_price - leg_start_price
+
+    atr = float(atrs[end_idx])
+    if not np.isfinite(atr) or atr <= 0:
+        return False, {**empty, "reason": "atr_unavailable"}
+
+    atr_mult = amplitude / atr
+    evidence = {
+        "bars": bars, "atr_mult": atr_mult,
+        "leg_start_idx": start_idx, "leg_end_idx": end_idx,
+        "leg_start_price": leg_start_price, "leg_end_price": leg_end_price,
+        "atr": atr,
+    }
+    ok = (
+        bars >= max(0, int(flt.pullback_leg_min_bars))
+        and atr_mult >= max(0.0, float(flt.pullback_leg_min_atr))
+    )
+    return ok, evidence
 
 
 def _detect_ema_touch(
@@ -795,6 +872,38 @@ def detect_trigger(
     # 量能注记（docs/25 §3.1）：回踩金K路径补「大量」要素，双口径见 helper
     vol_note = _pullback_volume_note(klines)
 
+    # 回踩前置反向腿门（2026-10-22）：Stage-1 触点前须存在一段反向腿
+    # （做多=下跌腿、做空=反弹腿）；不满足则不建 pending、不当根确认。
+    # retest 豁免：突破回测自带突破事件/结构推导语境，腿可能天然很短。
+    # 门不通过时把 touch_ref 置空，让流程自然落回「无当前触点」分支——
+    # 既有有效 pending 仍可用本根金K确认（其 Stage-1 触点当时已过门）。
+    leg_rejected = False
+    if (
+        touch_ref is not None
+        and touch_ref != TOUCH_RETEST
+        and flt.pullback_leg_gate_enabled
+    ):
+        leg_ok, leg_ev = _pullback_leg_gate(klines, direction, flt)
+        if not leg_ok:
+            if leg_ev.get("reason") == "atr_unavailable":
+                detail = "ATR 不可用，无法验证反向腿"
+            else:
+                leg_word = "下跌腿" if direction == 1 else "反弹腿"
+                detail = (
+                    f"{leg_ev.get('bars', 0)}根/"
+                    f"{leg_ev.get('atr_mult', 0.0):.2f}ATR < 门槛 "
+                    f"{flt.pullback_leg_min_bars}根/"
+                    f"{flt.pullback_leg_min_atr:.2f}ATR"
+                )
+                detail = f"无有效{leg_word}：{detail}"
+            _diag_note(
+                diag,
+                f"回踩{_touch_ref_label(touch_ref, direction)}前{detail}",
+            )
+            touch_ref = None
+            touch_price = None
+            leg_rejected = True
+
     # 行2：当根触碰+金K → 当根确认（比纯形态更强，pending 一律被抢先）。
     # ema21 触点未过 1H 结构门不再否决，改带 structure_gate=False 证据（2026-10-15）
     if touch_ref is not None and golden:
@@ -859,8 +968,9 @@ def detect_trigger(
             _diag_note(diag, _expire_note(pending, direction, flip))
             return None, {"op": "expire",
                           "reason": "direction_flip" if flip else "window_expired"}
-        _diag_note(diag, "金K未触发：本根出现同向金K但无回踩触点/待确认语境"
-                   "（纯金K不触发）")
+        if not leg_rejected:
+            _diag_note(diag, "金K未触发：本根出现同向金K但无回踩触点/待确认语境"
+                       "（纯金K不触发）")
         return None, None
 
     # 行5：触碰但无金K → 不触发，转 pending 待确认（scanner 侧 upsert）。

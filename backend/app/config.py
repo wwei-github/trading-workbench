@@ -344,7 +344,11 @@ class Settings(BaseSettings):
     # 4h 同向降为 70/85 档加分项；_RULE_TP_BASE 唯一放宽不再附加 4h 宏观同侧条件；
     # 同步清理残留文案：近锚适用前提删「4h 背景/趋势状态」、放宽前提改「触发起效」、
     # 公共检查首项改「4h背景（数据参考）」、指标块标题删「方向=4h」。
-    RULE_VERSION: str = "v2026-10-21-2"
+    # v2026-10-22（用户拍板）：回踩 Stage-1 增加前置反向腿硬门——做多要求触点前
+    # 存在下跌腿、做空要求反弹腿（默认 24 根窗口内 ≥2 根且幅度 ≥0.5 ATR），不过门
+    # 不产生回踩确认/不写待确认池，漏斗记「无有效反向腿」；retest 触点豁免；参数经
+    # scan_filters JSONB 可配（pullback_leg_*）。属触发判定变化，故 bump。
+    RULE_VERSION: str = "v2026-10-22"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

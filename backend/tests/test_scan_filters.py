@@ -108,6 +108,44 @@ def test_resolve_null_column_and_none_cfg():
     assert resolve_scan_filters(SimpleNamespace(scan_filters=None)) == resolve_scan_filters(None)
 
 
+def test_resolve_pullback_leg_gate_defaults():
+    """回踩前置反向腿门（2026-10-22）：默认轻档 24/2/0.5，总开关开启。"""
+    flt = resolve_scan_filters(None)
+    assert flt.pullback_leg_gate_enabled is True
+    assert flt.pullback_leg_lookback_bars == 24
+    assert flt.pullback_leg_min_bars == 2
+    assert flt.pullback_leg_min_atr == 0.5
+
+
+def test_resolve_pullback_leg_gate_overrides():
+    cfg = SimpleNamespace(scan_filters={
+        "pullback_leg_gate_enabled": False,
+        "pullback_leg_lookback_bars": 30,
+        "pullback_leg_min_bars": 3,
+        "pullback_leg_min_atr": 0.8,
+    })
+    flt = resolve_scan_filters(cfg)
+    assert flt.pullback_leg_gate_enabled is False
+    assert flt.pullback_leg_lookback_bars == 30
+    assert flt.pullback_leg_min_bars == 3
+    assert flt.pullback_leg_min_atr == 0.8
+
+
+def test_resolve_pullback_leg_gate_invalid_values_fall_back():
+    """非法类型/越下限逐键回落默认（不烧整轮扫描）。"""
+    cfg = SimpleNamespace(scan_filters={
+        "pullback_leg_gate_enabled": "yes",
+        "pullback_leg_lookback_bars": 1,      # 低于下限 2
+        "pullback_leg_min_bars": -1,          # 负数非法
+        "pullback_leg_min_atr": -0.5,         # 负数非法
+    })
+    flt = resolve_scan_filters(cfg)
+    assert flt.pullback_leg_gate_enabled is True
+    assert flt.pullback_leg_lookback_bars == 24
+    assert flt.pullback_leg_min_bars == 2
+    assert flt.pullback_leg_min_atr == 0.5
+
+
 def test_resolve_swing_order_from_top_level_column():
     """摆动点阶数读 SystemConfig 顶层列（非 scan_filters JSONB）：
     2026-10-12 触发层跟随配置，DB > env(settings.SWING_ORDER) > 代码默认"""
