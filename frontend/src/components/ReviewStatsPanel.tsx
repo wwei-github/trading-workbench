@@ -172,19 +172,25 @@ export default function ReviewStatsPanel() {
     },
   ]
 
-  // 规则版本分组表（docs/24 A0）：同版本内对比，legacy=版本标记上线前的旧行
-  const rvColumns: ColumnsType<ReviewGroupStat> = [
+  // 版本分组表（规则版本 / 决策版本共用，审计 7.2 读数地基）：样本量与 95% 区间并列——
+  // 区间跨 50%（胜率）或跨 0（EV）= 样本不足，不能据此判定版本优劣。
+  const versionColumns = (
+    versionTitle: string,
+    dataIndex: 'rule_version' | 'decision_version',
+  ): ColumnsType<ReviewGroupStat> => [
     {
-      title: '规则版本',
-      dataIndex: 'rule_version',
-      key: 'rule_version',
-      render: (v: string) =>
-        v === 'legacy' ? (
+      title: versionTitle,
+      dataIndex,
+      key: dataIndex,
+      render: (v: string | number | null) =>
+        v == null || v === 'legacy' ? (
           <Tooltip title="版本标记上线前的旧行，仅参考">
             <span>
               legacy <QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} />
             </span>
           </Tooltip>
+        ) : dataIndex === 'decision_version' ? (
+          `v${v}`
         ) : (
           v
         ),
@@ -212,12 +218,29 @@ export default function ReviewStatsPanel() {
       render: (v: number) => <Tag color={schemeTag(colorScheme).down}>{v}</Tag>,
     },
     {
-      title: '胜率',
+      title: (
+        <Tooltip title="expired 不计分母；区间为 Wilson 95% 置信区间">
+          胜率
+        </Tooltip>
+      ),
       dataIndex: 'win_rate',
       key: 'win_rate',
       width: 90,
       sorter: (a, b) => a.win_rate - b.win_rate,
       render: (v: number) => renderWinRate(v),
+    },
+    {
+      title: (
+        <Tooltip title="Wilson 95% 置信区间；区间跨 50% = 尚不能判断该组胜率优劣">
+          胜率区间
+        </Tooltip>
+      ),
+      key: 'win_ci',
+      width: 100,
+      render: (_: unknown, g: ReviewGroupStat) =>
+        g.win_rate_ci_low == null || g.win_rate_ci_high == null
+          ? '-'
+          : `${(g.win_rate_ci_low * 100).toFixed(0)}~${(g.win_rate_ci_high * 100).toFixed(0)}%`,
     },
     {
       title: '平均EV(R)',
@@ -227,7 +250,23 @@ export default function ReviewStatsPanel() {
       sorter: (a, b) => (a.ev_r ?? -99) - (b.ev_r ?? -99),
       render: (v: number | null) => renderEv(v),
     },
+    {
+      title: (
+        <Tooltip title="平均 EV 的 95% 置信区间（正态近似）；区间跨 0 = 扣费后正负期望尚不显著">
+          EV 95%CI
+        </Tooltip>
+      ),
+      key: 'ev_ci',
+      width: 120,
+      render: (_: unknown, g: ReviewGroupStat) =>
+        g.ev_r_ci_low == null || g.ev_r_ci_high == null
+          ? '-'
+          : `[${g.ev_r_ci_low.toFixed(2)}, ${g.ev_r_ci_high.toFixed(2)}]`,
+    },
   ]
+
+  const rvColumns = versionColumns('规则版本', 'rule_version')
+  const dvColumns = versionColumns('决策版本', 'decision_version')
 
   const hasData = !!stats && stats.total > 0
 
@@ -487,6 +526,28 @@ export default function ReviewStatsPanel() {
                   rowKey={(g) => `rv-${g.rule_version}`}
                   columns={rvColumns}
                   dataSource={stats!.rule_version_groups}
+                  size="small"
+                  pagination={false}
+                />
+              </Card>
+            )}
+
+            {/* 统一决策版本分组（审计 7.2 地基）：补丁/配置/提示词变更都会递增版本，
+                同版本内对比才有证明力；legacy=版本机制上线前旧行 */}
+            {stats!.decision_version_groups.length > 0 && (
+              <Card
+                size="small"
+                title={
+                  <Tooltip title="统一决策版本（补丁/配置/提示词变更递增）：同版本内对比才有证明力；胜率区间跨 50% 或 EV 区间跨 0 = 样本不足">
+                    <span>决策版本分组 <QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} /></span>
+                  </Tooltip>
+                }
+                styles={{ body: { padding: 0 } }}
+              >
+                <Table<ReviewGroupStat>
+                  rowKey={(g) => `dv-${g.decision_version ?? 'legacy'}`}
+                  columns={dvColumns}
+                  dataSource={stats!.decision_version_groups}
                   size="small"
                   pagination={false}
                 />

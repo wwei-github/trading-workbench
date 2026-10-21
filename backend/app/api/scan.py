@@ -1,6 +1,7 @@
 import copy
 import json
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
@@ -983,16 +984,35 @@ def ack_weekly_breaker(db: Session = Depends(get_db)):
 
 # ===== 复盘统计（docs/04 §10 P2） =====
 
+def _wilson_ci(wins: int, n: int, z: float = 1.96) -> tuple[Optional[float], Optional[float]]:
+    """Wilson 95% 置信区间（小样本比正态近似稳；expired 不进分母）。
+
+    审计 7.2 要求「样本量与不确定性均可报告」：区间宽度就是样本不足的读数，
+    区间跨 0.5 表示尚不能判断该组胜率优劣。
+    """
+    if n <= 0:
+        return None, None
+    p = wins / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return round(max(0.0, center - half), 4), round(min(1.0, center + half), 4)
+
+
 def _agg_stats(rows: list[TradeReview]) -> dict:
     wins = sum(1 for r in rows if r.outcome in ("win_tp1", "win_tp2"))
     losses = sum(1 for r in rows if r.outcome == "loss")
+    decided = wins + losses
+    ci_low, ci_high = _wilson_ci(wins, decided)
     return {
         "total": len(rows),
         "win_tp1": sum(1 for r in rows if r.outcome == "win_tp1"),
         "win_tp2": sum(1 for r in rows if r.outcome == "win_tp2"),
         "loss": losses,
         "expired": sum(1 for r in rows if r.outcome == "expired"),
-        "win_rate": round(wins / (wins + losses), 4) if (wins + losses) else 0.0,
+        "win_rate": round(wins / decided, 4) if decided else 0.0,
+        "win_rate_ci_low": ci_low,
+        "win_rate_ci_high": ci_high,
     }
 
 
@@ -1081,6 +1101,24 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
         vals = [r.ev for r in items if getattr(r, "ev", None) is not None]
         return round(sum(vals) / len(vals), 3) if vals else None
 
+    def _agg_ev_ci(items: list) -> dict:
+        """期望值标准误与 95% 正态近似区间（审计 7.2 不确定性报告）。
+
+        n<2 无法估计方差 → 区间留空，不伪造确定性。
+        """
+        vals = [r.ev for r in items if getattr(r, "ev", None) is not None]
+        n = len(vals)
+        if n < 2:
+            return {}
+        mean = sum(vals) / n
+        var = sum((v - mean) ** 2 for v in vals) / (n - 1)
+        se = math.sqrt(var / n)
+        return {
+            "ev_r_se": round(se, 3),
+            "ev_r_ci_low": round(mean - 1.96 * se, 3),
+            "ev_r_ci_high": round(mean + 1.96 * se, 3),
+        }
+
     def _agg_payoff(items: list) -> Optional[float]:
         """盈亏比（2026-10-21 批次 B3）= 平均盈利 R / 平均亏损 R。
 
@@ -1096,7 +1134,7 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
         return round((sum(wins) / len(wins)) / (sum(losses) / len(losses)), 3)
 
     resp = ReviewStatsResponse(
-        days=days, **_agg_stats(rows), ev_r=_agg_ev(rows), groups=[],
+        days=days, **_agg_stats(rows), ev_r=_agg_ev(rows), **_agg_ev_ci(rows), groups=[],
         # 口径标注（docs/24 A2）：四态口径含"触 TP1 后又止损仍计胜"的美化项，
         # 仅作建议质量参考；考核主指标 = 实盘净胜率（/review/actual，pnl>0/闭仓数）
         win_rate_note=(
@@ -1122,7 +1160,8 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
     ):
         agg = _agg_stats(items)
         resp.groups.append(
-            ReviewGroupStats(signal_type=sig, touch_ref=tref, **agg, ev_r=_agg_ev(items))
+            ReviewGroupStats(signal_type=sig, touch_ref=tref, **agg, ev_r=_agg_ev(items),
+                             **_agg_ev_ci(items))
         )
 
     # 规则版本分组（docs/24 A0）：同版本内对比，legacy=标记上线前旧行；
@@ -1133,8 +1172,28 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
         rv_buckets.setdefault((a.rule_version if a else None) or "legacy", []).append(r)
     for rv, items in sorted(rv_buckets.items(), key=lambda kv: (-len(kv[1]), kv[0])):
         resp.rule_version_groups.append(
-            ReviewGroupStats(rule_version=rv, **_agg_stats(items), ev_r=_agg_ev(items))
+            ReviewGroupStats(rule_version=rv, **_agg_stats(items), ev_r=_agg_ev(items),
+                             **_agg_ev_ci(items))
         )
+
+    # 统一决策版本分组（审计 7.2 地基）：decision_version 覆盖补丁/配置/提示词变更，
+    # 是「同版本内对照」的主分组键；None=版本机制上线前的旧行（与 rule_version 的
+    # legacy 同义）。按版本号倒序，最新在前、旧行垫底。
+    dv_buckets: dict[Optional[int], list[TradeReview]] = {}
+    for r in rows:
+        a = ai_map.get(str(r.ai_analysis_id)) if r.ai_analysis_id else None
+        dv_buckets.setdefault(
+            getattr(a, "decision_version", None) if a else None, []
+        ).append(r)
+    for dv, items in sorted(
+        dv_buckets.items(),
+        key=lambda kv: (kv[0] is not None, kv[0] if kv[0] is not None else -1),
+        reverse=True,
+    ):
+        resp.decision_version_groups.append(ReviewGroupStats(
+            decision_version=dv, **_agg_stats(items),
+            ev_r=_agg_ev(items), **_agg_ev_ci(items),
+        ))
 
     # 4h 数据降级分组（2026-10-21 批次 B3，docs/需求文档/06 §5.3）：分析时 4h
     # K线缺失（AI 层 fail-open，4h 硬约束未生效）的建议单列，与正常组对比
@@ -1149,7 +1208,7 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
             continue
         resp.htf_degraded_groups.append(ReviewGroupStats(
             htf_degraded=flag, **_agg_stats(items),
-            ev_r=_agg_ev(items), payoff=_agg_payoff(items),
+            ev_r=_agg_ev(items), **_agg_ev_ci(items), payoff=_agg_payoff(items),
         ))
 
     # 双评委 veto 闭环统计（docs/24 A5a）：is_veto=True 的回放行是"被否决建议的
@@ -1163,7 +1222,8 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
     ]
     if veto_rows:
         resp.veto_stats = ReviewGroupStats(
-            is_veto=True, **_agg_stats(veto_rows), ev_r=_agg_ev(veto_rows)
+            is_veto=True, **_agg_stats(veto_rows), ev_r=_agg_ev(veto_rows),
+            **_agg_ev_ci(veto_rows),
         )
         passed_rows = [r for r in rows if not getattr(r, "is_veto", False)]
         passed_agg = _agg_stats(passed_rows)
@@ -1184,7 +1244,7 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
         for (bucket, d), items in sorted(shadow_groups.items()):
             resp.shadow_ab.append(ReviewGroupStats(
                 ab_bucket=bucket, direction=d or None, is_veto=True,
-                **_agg_stats(items), ev_r=_agg_ev(items)))
+                **_agg_stats(items), ev_r=_agg_ev(items), **_agg_ev_ci(items)))
         # 对照基线：同信号（回踩确认）通过单，按 4h 过渡态/同侧 × 方向分层
         base_groups: dict[tuple, list[TradeReview]] = {}
         for r in rows:
@@ -1196,7 +1256,7 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
         for (side, d), items in sorted(base_groups.items()):
             resp.shadow_ab.append(ReviewGroupStats(
                 ab_bucket=f"pbc_{side}", direction=d or None, is_veto=False,
-                **_agg_stats(items), ev_r=_agg_ev(items)))
+                **_agg_stats(items), ev_r=_agg_ev(items), **_agg_ev_ci(items)))
         resp.shadow_ab_note = (
             f"影子 A/B（2026-10-20）：过渡态×回踩确认已程序 veto，假想回放 "
             f"{len(shadow_rows)} 笔（is_veto=True）；对照为同信号通过单"

@@ -396,6 +396,7 @@ class ReviewGroupStats(BaseModel):
     ema_state: Optional[str] = None
     htf_phase: Optional[str] = None  # 4h 背景状态（2026-10-20，影子 A/B 分组维度）
     rule_version: Optional[str] = None  # 规则版本分组维度（docs/24 A0，None=非版本组）
+    decision_version: Optional[int] = None  # 统一决策版本分组维度（审计 7.2 地基，None=旧行/非版本组）
     is_veto: Optional[bool] = None  # 双评委否决单回放标记（docs/24 A5a，None=非 veto 维度组）
     direction: Optional[str] = None  # 方向分层维度（2026-10-20 影子 A/B 按 long/short 出）
     ab_bucket: Optional[str] = None  # 影子 A/B 桶标记（transition_pbc / pbc_same_side 等）
@@ -406,7 +407,16 @@ class ReviewGroupStats(BaseModel):
     loss: int = 0
     expired: int = 0
     win_rate: float = 0.0  # (win_tp1+win_tp2)/(win+loss)，expired 不计
+    # 胜率 95% 置信区间（Wilson，审计 7.2「样本量与不确定性可报告」）：
+    # 区间宽 = 样本量不足的直接读数，跨 0.5 = 尚不能判断优劣
+    win_rate_ci_low: Optional[float] = None
+    win_rate_ci_high: Optional[float] = None
     ev_r: Optional[float] = None  # 期望值（R 倍数，含费用假设）
+    # 期望值不确定性（审计 7.2）：均值标准误与 95% 正态近似区间；
+    # 区间跨 0 = 该组扣费后正负期望尚不显著
+    ev_r_se: Optional[float] = None
+    ev_r_ci_low: Optional[float] = None
+    ev_r_ci_high: Optional[float] = None
     # 盈亏比（2026-10-21 批次 B3）：平均盈利 R / 平均亏损 R（回放口径 loss 恒 -1R，
     # 故通常等于平均盈利 R）；扣费前原始 R，与 ev_r 的扣费口径互补
     payoff: Optional[float] = None
@@ -442,6 +452,9 @@ class ReviewStatsResponse(BaseModel):
     groups: list[ReviewGroupStats] = []
     # 规则版本分组（docs/24 A0）：每版本一行，legacy=标记上线前旧行；跨版本不混谈
     rule_version_groups: list[ReviewGroupStats] = []
+    # 统一决策版本分组（审计 7.2 地基）：decision_version 覆盖补丁/配置/提示词变更，
+    # 是同版本前向对照的主分组键；None=版本机制上线前旧行
+    decision_version_groups: list[ReviewGroupStats] = []
     # 双评委 veto 闭环（docs/24 A5a）：被否决建议的假想回放统计（is_veto=True 行），
     # 与整体（=通过单）对比 win_rate/ev_r 验证 veto 是否有正贡献
     veto_stats: Optional[ReviewGroupStats] = None

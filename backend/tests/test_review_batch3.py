@@ -317,6 +317,51 @@ def test_stats_shadow_ab_block(db):
     assert "影子 A/B" in resp.shadow_ab_note
 
 
+def test_stats_decision_version_groups_and_ci(db):
+    """审计 7.2 地基：按统一决策版本分组，并报告胜率/EV 的不确定性区间"""
+    from app.api.scan import review_stats
+
+    def _add(version, outcome, symbol):
+        a = AIAnalysis(
+            scan_result_id=None, symbol=symbol, trade_decision="suggest",
+            direction="long", entry_price=100.0, stop_loss=98.0,
+            take_profit_1=104.0, recommendation=70,
+            decision_version=version,
+            created_at=datetime.utcnow() - timedelta(hours=25),
+        )
+        db.add(a)
+        db.commit()
+        _add_review(db, a, outcome, direction="long")
+
+    _add(3, "win_tp1", "DV3USDT")
+    _add(3, "loss", "DV3USDT")
+    _add(2, "win_tp1", "DV2USDT")
+    _add(None, "loss", "DVLEGACYUSDT")
+
+    resp = review_stats(days=30, db=db)
+    by_ver = {g.decision_version: g for g in resp.decision_version_groups}
+    assert set(by_ver) == {3, 2, None}
+    # 版本号倒序，旧行（None）垫底
+    assert [g.decision_version for g in resp.decision_version_groups] == [3, 2, None]
+
+    g3 = by_ver[3]
+    assert g3.total == 2 and g3.win_tp1 == 1 and g3.loss == 1
+    assert g3.win_rate == pytest.approx(0.5)
+    # Wilson 95%（1/2）≈ [9.45%, 90.55%]
+    assert g3.win_rate_ci_low == pytest.approx(0.0945, abs=0.005)
+    assert g3.win_rate_ci_high == pytest.approx(0.9055, abs=0.005)
+    # 两个样本 → EV 有标准误与区间，且区间包含均值
+    assert g3.ev_r_se is not None and g3.ev_r_se > 0
+    assert g3.ev_r_ci_low < g3.ev_r < g3.ev_r_ci_high
+
+    # 单样本组：EV 无法估计方差 → 区间留空（不伪造确定性）；Wilson 胜率区间仍可算
+    g2 = by_ver[2]
+    assert g2.ev_r_se is None
+    assert g2.ev_r_ci_low is None and g2.ev_r_ci_high is None
+    assert g2.win_rate_ci_low == pytest.approx(0.2068, abs=0.005)
+    assert g2.win_rate_ci_high == 1.0
+
+
 # ── A5c：funnel ──
 
 

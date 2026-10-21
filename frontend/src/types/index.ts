@@ -603,6 +603,7 @@ export interface ReviewGroupStat {
   position: string | null;
   ema_state: string | null;
   rule_version: string | null; // 规则版本分组维度（docs/24 A0，null=非版本组）
+  decision_version?: number | null; // 统一决策版本分组维度（审计 7.2，null=版本机制上线前旧行）
   is_veto: boolean | null; // 双评委否决单回放标记（docs/24 A5a，null=非 veto 组）
   htf_degraded?: boolean | null; // 4h 数据降级分组维度（批次 B3，null=非降级组）
   total: number;
@@ -611,7 +612,12 @@ export interface ReviewGroupStat {
   loss: number;
   expired: number;
   win_rate: number;
+  win_rate_ci_low?: number | null; // 胜率 95% Wilson 区间（审计 7.2）
+  win_rate_ci_high?: number | null;
   ev_r: number | null; // 期望值（R 倍数，含费用假设）
+  ev_r_se?: number | null; // 期望值标准误（审计 7.2）
+  ev_r_ci_low?: number | null; // 期望值 95% 区间（正态近似）
+  ev_r_ci_high?: number | null;
   payoff?: number | null; // 盈亏比 = 平均盈利 R / 平均亏损 R（扣费前原始口径）
 }
 
@@ -638,12 +644,19 @@ export interface ReviewStats {
   loss: number;
   expired: number;
   win_rate: number;
+  win_rate_ci_low?: number | null; // 胜率 95% Wilson 区间（审计 7.2）
+  win_rate_ci_high?: number | null;
   ev_r: number | null;
+  ev_r_se?: number | null; // 期望值标准误（审计 7.2）
+  ev_r_ci_low?: number | null;
+  ev_r_ci_high?: number | null;
   groups: ReviewGroupStat[];
   // 胜率口径说明（docs/24 A2：建议质量口径 vs 实盘净胜率）
   win_rate_note: string;
   // 规则版本分组（docs/24 A0）：每版本一行，legacy=标记上线前的旧行
   rule_version_groups: ReviewGroupStat[];
+  // 统一决策版本分组（审计 7.2 地基）：覆盖补丁/配置/提示词变更，同版本内对照
+  decision_version_groups: ReviewGroupStat[];
   // 双评委否决对比（docs/24 A5a）：被否决建议的假想回放统计 + 对比说明文字
   veto_stats: ReviewGroupStat | null;
   veto_note: string;
