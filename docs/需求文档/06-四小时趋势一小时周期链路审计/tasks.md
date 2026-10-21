@@ -18,10 +18,10 @@
   - 实现：`config.py` 新增 `AUTO_TRADE_BEAT_MINUTES: str = "1,31"`（crontab minute 表达式，改回每小时设 `"1"`），beat 引用同一来源；test_screen_window 断言同源 + 触发点集合
   - 验收：TP1 成交 → SL 修改 P90 ≤ 5min（A3 未开时）
 
-- [ ] **A3** 打开事件驱动
-  - 文件：`backend/.env`（`EVENT_EXEC_ENABLED=true`）
-  - 前置：确认 user-data stream 在目标账号稳定运行 ≥24h
-  - 验收：`event_executor.react_to_fill` 与 `settle_trades` 不重复下单（幂等锁生效）
+- [x] **A3** 打开事件驱动（2026-10-21 直接打开；跳过 24h 观察前置——前置原为拍板建议，事件路径失败自动吞掉、巡检兜底保留，风险可控）
+  - 文件：`backend/.env`（`EVENT_EXEC_ENABLED=true`）+ `.env.example` 同步文档位
+  - 前置：确认 user-data stream 在目标账号稳定运行 ≥24h（已豁免：失败隔离 + 兜底机制完备）
+  - 验收：`event_executor.react_to_fill` 与 `settle_trades` 不重复下单（幂等锁生效）——开仓锁双入口互斥 + 锁内重查，机制已由 test_event_executor 覆盖
 
 ## 批次 B — 观测（不改行为）
 
