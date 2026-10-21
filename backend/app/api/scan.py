@@ -34,6 +34,8 @@ from app.schemas.scan import (
     ReviewLatency,
     ReviewFunnelResponse,
     FunnelStage,
+    LimitFillStats,
+    ProtectionStats,
     ActualReviewResponse,
     AttributionTriggerResponse,
     PatchListResponse,
@@ -54,7 +56,12 @@ from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
 from app.models.scan import PullbackPending, ScanRecord, ScanResult, AIAnalysis, TradeReview
-from app.models.trade import TradeEvent, TradeRecord
+from app.models.trade import (
+    PendingEntryOrder,
+    ProtectionIncident,
+    TradeEvent,
+    TradeRecord,
+)
 from app.models.patch import PromptPatch
 from app.models.system_config import SystemConfig
 
@@ -1351,6 +1358,7 @@ def review_funnel(
     - 盈利 = 已闭仓且 realized_pnl > 0
     """
     cutoff = datetime.utcnow() - timedelta(days=days)
+    from app.api.trades import _account_scope_filter
 
     sig_cnt = db.execute(
         select(func.count()).select_from(ScanResult).where(ScanResult.created_at >= cutoff)
@@ -1394,8 +1402,6 @@ def review_funnel(
             TradeRecord.status != "FAILED",
             TradeRecord.excluded.is_(False),  # 异常单剔除（2026-10-18）：伪单不计入开仓/盈利转化
         ]
-        from app.api.trades import _account_scope_filter
-
         extra = _account_scope_filter(TradeRecord, scope)
         if extra is not None:
             tfilter.append(extra)
@@ -1432,8 +1438,47 @@ def review_funnel(
         for k, v in sorted(reason_map.items(), key=lambda kv: -kv[1])[:3]
     ]
 
+    # 限价入场成交率（审计 7.2「成交率」主指标）：窗口内创建的挂单，pending 未定论
+    # 不计入分母；failed=成交后补挂保护失败并已紧急平仓，属已定论的成交尝试
+    pq = select(PendingEntryOrder).where(PendingEntryOrder.created_at >= cutoff)
+    pfilter = _account_scope_filter(PendingEntryOrder, scope)
+    if pfilter is not None:
+        pq = pq.where(pfilter)
+    pend_rows = db.execute(pq).scalars().all()
+    fill_counts = {"filled": 0, "canceled": 0, "expired": 0, "failed": 0}
+    fill_secs: list[float] = []
+    for r in pend_rows:
+        if r.status in fill_counts:
+            fill_counts[r.status] += 1
+        if r.status == "filled" and r.resolved_at and r.created_at:
+            fill_secs.append((r.resolved_at - r.created_at).total_seconds())
+    decided = sum(fill_counts.values())
+    fill_secs.sort()
+
+    def _fill_pct(p: float) -> Optional[float]:
+        if not fill_secs:
+            return None
+        idx = (len(fill_secs) - 1) * p
+        lo = int(idx)
+        hi = min(lo + 1, len(fill_secs) - 1)
+        return round(fill_secs[lo] + (fill_secs[hi] - fill_secs[lo]) * (idx - lo), 1)
+
+    limit_fill = LimitFillStats(
+        total=len(pend_rows),
+        filled=fill_counts["filled"],
+        canceled=fill_counts["canceled"],
+        expired=fill_counts["expired"],
+        failed=fill_counts["failed"],
+        pending=len(pend_rows) - decided,
+        fill_rate=round(fill_counts["filled"] / decided, 4) if decided else None,
+        p50_fill_s=_fill_pct(0.5),
+        p90_fill_s=_fill_pct(0.9),
+        note="窗口内创建的限价挂单；pending 未定论不计分母；failed=成交后补挂保护失败并已紧急平仓",
+    )
+
     return ReviewFunnelResponse(
         days=days, scope=scope, stages=stages, block_reasons_top=block_top,
+        limit_fill=limit_fill,
     )
 
 
@@ -1459,7 +1504,46 @@ def review_actual(
         import logging
         logging.getLogger(__name__).warning("费用回补失败: %s", e)
 
-    return build_actual_review(db, days, extra_filter=_account_scope_filter(TradeRecord, scope))
+    result = build_actual_review(
+        db, days, extra_filter=_account_scope_filter(TradeRecord, scope)
+    )
+
+    # 异常保护时长（审计 7.2 主指标）：窗口内创建的 protection_incidents；
+    # 未解除的计到当前时刻，衡量账户被封锁的暴露面（保护成功/失败都计）
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    pq = select(ProtectionIncident).where(ProtectionIncident.created_at >= cutoff)
+    pfilter = _account_scope_filter(ProtectionIncident, scope)
+    if pfilter is not None:
+        pq = pq.where(pfilter)
+    incidents = db.execute(pq).scalars().all()
+    now = datetime.utcnow()
+    durations = sorted(
+        max(0.0, ((i.resolved_at or now) - i.created_at).total_seconds() / 3600)
+        for i in incidents
+    )
+    resolved_cnt = sum(1 for i in incidents if i.status == "resolved")
+    manual_cnt = sum(1 for i in incidents if i.status == "manual_review")
+
+    def _dur_pct(p: float) -> Optional[float]:
+        if not durations:
+            return None
+        idx = (len(durations) - 1) * p
+        lo = int(idx)
+        hi = min(lo + 1, len(durations) - 1)
+        return round(durations[lo] + (durations[hi] - durations[lo]) * (idx - lo), 2)
+
+    result["protection"] = {
+        "total": len(incidents),
+        "unresolved": len(incidents) - resolved_cnt - manual_cnt,
+        "manual_review": manual_cnt,
+        "resolved": resolved_cnt,
+        "total_blocked_hours": round(sum(durations), 2),
+        "median_blocked_hours": _dur_pct(0.5),
+        "p90_blocked_hours": _dur_pct(0.9),
+        "max_blocked_hours": round(durations[-1], 2) if durations else None,
+        "note": "窗口内创建的异常保护事故；未解除计到当前时刻；manual_review=状态未知转人工复核（未解除）",
+    }
+    return result
 
 
 @router.post("/review/attribute", response_model=AttributionTriggerResponse)

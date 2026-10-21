@@ -25,7 +25,7 @@ import app.models  # noqa: E402,F401
 from app.config import settings  # noqa: E402
 from app.database import Base  # noqa: E402
 from app.models.scan import AIAnalysis, ScanRecord, ScanResult, TradeReview  # noqa: E402
-from app.models.trade import TradeRecord  # noqa: E402
+from app.models.trade import PendingEntryOrder, ProtectionIncident, TradeRecord  # noqa: E402
 from app.tasks import review_tasks  # noqa: E402
 
 
@@ -469,6 +469,96 @@ def test_funnel_scope_filters_trade_stages(db):
     live = {s.stage: s for s in resp_live.stages}
     assert live["开仓"].count == 0
     assert live["suggest"].count == 1  # 全局级不受 scope 影响
+
+
+def test_funnel_limit_fill_rate_and_scope(db):
+    """审计 7.2「成交率」：限价挂单成交率与成交耗时 P50/P90；
+    pending 未定论不计分母，scope 按账号维度过滤"""
+    from app.api.scan import review_funnel
+
+    now = datetime.utcnow()
+    base = now - timedelta(hours=2)
+
+    def _pend(status: str, secs: int | None, testnet: bool):
+        return PendingEntryOrder(
+            symbol="TESTUSDT", direction="long", status=status,
+            account_key="testnet-1" if testnet else "live-1",
+            testnet=testnet, created_at=base,
+            resolved_at=base + timedelta(seconds=secs) if secs is not None else None,
+        )
+
+    db.add_all([
+        _pend("filled", 60, True),
+        _pend("canceled", 30, True),
+        _pend("pending", None, True),
+        _pend("filled", 120, False),
+        _pend("expired", 30, False),
+        _pend("failed", 30, False),
+    ])
+    db.commit()
+
+    all_fill = review_funnel(days=30, scope="all", db=db).limit_fill
+    assert all_fill.total == 6
+    assert all_fill.filled == 2
+    assert all_fill.canceled == 1
+    assert all_fill.expired == 1
+    assert all_fill.failed == 1
+    assert all_fill.pending == 1
+    assert all_fill.fill_rate == pytest.approx(0.4)  # 2/5，pending 不计分母
+    assert all_fill.p50_fill_s == pytest.approx(90.0)   # 60/120 线性插值
+    assert all_fill.p90_fill_s == pytest.approx(114.0)
+
+    tn = review_funnel(days=30, scope="testnet", db=db).limit_fill
+    assert tn.total == 3
+    assert tn.filled == 1
+    assert tn.canceled == 1
+    assert tn.pending == 1
+    assert tn.fill_rate == pytest.approx(0.5)
+
+
+def test_actual_review_protection_duration(db, monkeypatch):
+    """审计 7.2「异常保护时长」：已解除按时长计入，未解除计到当前时刻；
+    manual_review 单列；scope 过滤账号维度"""
+    from app.api.scan import review_actual
+
+    class _BT:
+        def __init__(self, testnet):
+            self.configured = False
+
+    monkeypatch.setattr("app.services.binance_trader.BinanceTrader", _BT)
+    now = datetime.utcnow()
+
+    def _inc(status: str, hours_ago: float, resolved_hours_ago: float | None,
+             testnet: bool):
+        return ProtectionIncident(
+            account_key="testnet-1" if testnet else "live-1",
+            testnet=testnet, symbol="BTCUSDT", direction="long",
+            reason="sl_place_failed", status=status, qty=1.0,
+            created_at=now - timedelta(hours=hours_ago),
+            resolved_at=(now - timedelta(hours=resolved_hours_ago)
+                         if resolved_hours_ago is not None else None),
+        )
+
+    db.add_all([
+        _inc("resolved", 4, 2, False),       # 2h
+        _inc("pending", 3, None, True),      # 3h（未解除）
+        _inc("manual_review", 1, None, True),  # 1h（未解除）
+    ])
+    db.commit()
+
+    p = review_actual(days=30, scope="all", db=db)["protection"]
+    assert p["total"] == 3
+    assert p["resolved"] == 1
+    assert p["manual_review"] == 1
+    assert p["unresolved"] == 1
+    assert p["total_blocked_hours"] == pytest.approx(6.0, abs=0.01)
+    assert p["median_blocked_hours"] == pytest.approx(2.0, abs=0.01)
+    assert p["p90_blocked_hours"] == pytest.approx(2.8, abs=0.01)
+    assert p["max_blocked_hours"] == pytest.approx(3.0, abs=0.01)
+
+    live = review_actual(days=30, scope="live", db=db)["protection"]
+    assert live["total"] == 1
+    assert live["resolved"] == 1
 
 
 def test_htf_constraint_veto_snapshot():

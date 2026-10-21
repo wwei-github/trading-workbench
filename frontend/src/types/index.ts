@@ -674,6 +674,20 @@ export interface FunnelStage {
   note: string;
 }
 
+// 限价挂单成交率（审计 7.2「成交率」）：pending 未定论，不计入 fill_rate 分母
+export interface LimitFillStats {
+  total: number;
+  filled: number;
+  canceled: number;
+  expired: number;
+  failed: number;
+  pending: number;
+  fill_rate: number | null;
+  p50_fill_s: number | null;
+  p90_fill_s: number | null;
+  note: string;
+}
+
 // 全漏斗转化率（信号命中 → AI 分析 → suggest → 过评委 → 开仓 → 盈利）
 export interface ReviewFunnel {
   days: number;
@@ -681,6 +695,7 @@ export interface ReviewFunnel {
   stages: FunnelStage[];
   // 闸门拦截原因 top3（定位开仓级流失主因）
   block_reasons_top: { reason: string; count: number }[];
+  limit_fill: LimitFillStats | null;
 }
 
 // ===== 实盘归因（复盘重设计 2026-09-18）=====
@@ -705,6 +720,13 @@ export interface ActualOverview {
   attributed: number;
   /** 双网镜像单笔数（同一 AI 决策双网都开了；all 口径非 0，2026-10-04） */
   mirror_trades: number;
+  // 最大回撤与风险超额（审计 7.2 主指标）：回撤为窗口内闭单累计曲线，
+  // R 口径只纳入有 1R 的样本（旧行缺失时留 null）
+  max_drawdown: number;
+  max_drawdown_r: number | null;
+  risk_excess_count: number;
+  risk_excess_total: number;
+  max_loss_r: number | null;
 }
 
 // 实盘分组统计（dim = 开单类型/方向/出场原因/开仓时段/网络/错误标签）
@@ -754,10 +776,24 @@ export interface ActualTradeItem {
   attributed: boolean;
 }
 
+// 异常保护时长（审计 7.2 主指标）：未解除计到当前时刻
+export interface ProtectionStats {
+  total: number;
+  unresolved: number;
+  manual_review: number;
+  resolved: number;
+  total_blocked_hours: number;
+  median_blocked_hours: number | null;
+  p90_blocked_hours: number | null;
+  max_blocked_hours: number | null;
+  note: string;
+}
+
 export interface ActualReview {
   overview: ActualOverview;
   groups: ActualGroupStat[];
   items: ActualTradeItem[];
+  protection: ProtectionStats | null;
 }
 
 export interface AttributionResult {

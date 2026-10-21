@@ -48,6 +48,10 @@ const GROUP_KEY_LABELS: Record<string, string> = {
 const fmtUsd = (v: number | null | undefined) =>
   v == null ? '-' : v.toFixed(2)
 
+// 秒 → 人类可读（限价成交耗时）
+const fmtSec = (v: number | null | undefined) =>
+  v == null ? '-' : v < 60 ? `${v.toFixed(0)}s` : v < 3600 ? `${(v / 60).toFixed(1)}m` : `${(v / 3600).toFixed(1)}h`
+
 /**
  * 实盘归因复盘（复盘重设计主轴）：trade_records 逐笔计划vs实际 +
  * 维度分组归因（开单类型/方向/出场原因/时段/错误标签）+ AI 错误归因结论。
@@ -323,6 +327,61 @@ export default function ReviewActualPanel() {
                 ))}
               </div>
             )}
+            {/* 限价成交率（审计 7.2 主指标）：pending 未定论不计分母 */}
+            {funnel.limit_fill && funnel.limit_fill.total > 0 && (() => {
+              const lf = funnel.limit_fill
+              const decided = lf.filled + lf.canceled + lf.expired + lf.failed
+              return (
+                <div style={{ marginTop: 8, fontSize: 12 }}>
+                  <Tooltip title={lf.note}>
+                    <span>
+                      限价成交率{' '}
+                      <b style={{ color: lf.fill_rate != null && lf.fill_rate < 0.5 ? downColor : upColor }}>
+                        {lf.fill_rate == null ? '-' : `${(lf.fill_rate * 100).toFixed(1)}%`}
+                      </b>
+                      {` （成交 ${lf.filled} / 已定论 ${decided}，待定 ${lf.pending}）`}
+                      {lf.p50_fill_s != null && ` · 成交耗时 P50 ${fmtSec(lf.p50_fill_s)} / P90 ${fmtSec(lf.p90_fill_s)}`}
+                    </span>
+                  </Tooltip>
+                </div>
+              )
+            })()}
+          </Card>
+        )}
+
+        {/* 异常保护时长（审计 7.2 主指标）：独立于已平仓空态，事故本身就是读数 */}
+        {data?.protection && data.protection.total > 0 && (
+          <Card
+            size="small"
+            title={
+              <Tooltip title={data.protection.note}>
+                <span>异常保护 <QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} /></span>
+              </Tooltip>
+            }
+            styles={{ body: { padding: '12px 16px' } }}
+          >
+            <Row gutter={24}>
+              <Col span={6}>
+                <Statistic title="事故数" value={data.protection.total} suffix="起" />
+              </Col>
+              <Col span={6}>
+                <Statistic
+                  title={<Tooltip title="未解除（pending/closing/awaiting_reconcile）/ 状态未知转人工复核">未解除 / 人工</Tooltip>}
+                  value={`${data.protection.unresolved} / ${data.protection.manual_review}`}
+                  valueStyle={{ color: data.protection.unresolved + data.protection.manual_review > 0 ? downColor : undefined }}
+                />
+              </Col>
+              <Col span={6}>
+                <Statistic title="累计封锁" value={data.protection.total_blocked_hours.toFixed(1)} suffix="h" />
+              </Col>
+              <Col span={6}>
+                <Statistic
+                  title={<Tooltip title="单次事故封锁时长 P90 / 最长；未解除计到当前时刻">P90 / 最长</Tooltip>}
+                  value={`${data.protection.p90_blocked_hours ?? '-'} / ${data.protection.max_blocked_hours ?? '-'}`}
+                  suffix="h"
+                />
+              </Col>
+            </Row>
           </Card>
         )}
 
@@ -416,6 +475,37 @@ export default function ReviewActualPanel() {
                   亏超计划 {fmtUsd(ov.plan_gap)} U——主要来自手续费/资金费/滑点（4USDT 案例：费用+资金费吃掉超预算 10%）
                 </div>
               )}
+              {/* 最大回撤与风险超额（审计 7.2 主指标） */}
+              <Row gutter={24} style={{ marginTop: 12 }}>
+                <Col span={6}>
+                  <Statistic
+                    title={<Tooltip title="窗口内闭单累计净盈亏的峰谷差（不含浮盈/划转，跨窗口不可比）">最大回撤</Tooltip>}
+                    value={fmtUsd(ov.max_drawdown)}
+                    suffix="U"
+                    valueStyle={{ color: ov.max_drawdown > 0 ? downColor : undefined }}
+                  />
+                </Col>
+                <Col span={6}>
+                  <Statistic
+                    title={<Tooltip title="以 1R 累计权益的最大回撤；缺失 1R 的旧行不参与">最大回撤 (R)</Tooltip>}
+                    value={ov.max_drawdown_r == null ? '-' : ov.max_drawdown_r.toFixed(2)}
+                  />
+                </Col>
+                <Col span={6}>
+                  <Statistic
+                    title={<Tooltip title="单笔亏损超过 1R 的笔数；超幅合计 = 实际亏损 − 1R">亏穿 1R</Tooltip>}
+                    value={ov.risk_excess_count}
+                    suffix={ov.risk_excess_count > 0 ? `笔 / ${fmtUsd(ov.risk_excess_total)}U` : '笔'}
+                    valueStyle={{ color: ov.risk_excess_count > 0 ? downColor : undefined }}
+                  />
+                </Col>
+                <Col span={6}>
+                  <Statistic
+                    title={<Tooltip title="单笔最大亏损（R），>1 表示亏穿止损（滑点/费用/跳空）">单笔最大亏损</Tooltip>}
+                    value={ov.max_loss_r == null ? '-' : `${ov.max_loss_r.toFixed(2)}R`}
+                  />
+                </Col>
+              </Row>
             </Card>
 
             {/* 双网镜像提示（2026-10-04）：all 口径含同一 AI 决策的双网单，

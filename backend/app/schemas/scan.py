@@ -482,6 +482,24 @@ class FunnelStage(BaseModel):
     note: str = ""
 
 
+class LimitFillStats(BaseModel):
+    """限价入场挂单成交率（审计 7.2「成交率」主指标，2026-10-21）
+
+    只统计窗口内创建的 pending_entry_orders；pending 未定论，不计入成交率分母。
+    """
+
+    total: int = 0
+    filled: int = 0
+    canceled: int = 0
+    expired: int = 0
+    failed: int = 0
+    pending: int = 0
+    fill_rate: Optional[float] = None  # filled/(filled+canceled+expired+failed)
+    p50_fill_s: Optional[float] = None  # 创建→成交耗时 P50（秒）
+    p90_fill_s: Optional[float] = None
+    note: str = ""
+
+
 class ReviewFunnelResponse(BaseModel):
     days: int
     scope: str
@@ -489,6 +507,8 @@ class ReviewFunnelResponse(BaseModel):
     # veto 单不计入漏斗（在 suggest 之后被否决，本质是未建议）；
     # 闸门拦截明细 top3 随附，定位流失主因
     block_reasons_top: list[dict] = []
+    # 限价入场成交率（审计 7.2）：与漏斗同窗口/同 scope
+    limit_fill: Optional[LimitFillStats] = None
 
 
 # ===== 实盘归因统计（复盘重设计 2026-09-18） =====
@@ -511,6 +531,14 @@ class ActualOverview(BaseModel):
     plan_gap: float = 0.0  # 亏超计划的部分（费用/资金费/滑点）
     attributed: int = 0  # 已 AI 归因笔数
     mirror_trades: int = 0  # 双网镜像单笔数（同一 AI 决策双网都开了；all 口径非 0，2026-10-04）
+    # 最大回撤与风险超额（审计 7.2 主指标，2026-10-21）：
+    # 回撤按闭单累计净盈亏峰谷差（窗口内口径，不含浮盈/划转）；R 曲线仅纳入
+    # risk_unit>0 的样本，缺失 1R 的旧行不参与
+    max_drawdown: float = 0.0  # 窗口内闭单权益最大回撤（USDT）
+    max_drawdown_r: Optional[float] = None  # 以 1R 累计权益的最大回撤（R）
+    risk_excess_count: int = 0  # 单笔亏损超过 1R 的笔数
+    risk_excess_total: float = 0.0  # 超 1R 部分合计（USDT）
+    max_loss_r: Optional[float] = None  # 单笔最大亏损（R，>1 = 亏穿止损）
 
 
 class ActualGroupStats(BaseModel):
@@ -551,10 +579,30 @@ class ActualTradeItem(BaseModel):
     attributed: bool = False
 
 
+class ProtectionStats(BaseModel):
+    """异常保护时长（审计 7.2 主指标，2026-10-21）
+
+    口径：窗口内创建的 protection_incidents；未解除的计到当前时刻，
+    保护成功/失败都计入——时长衡量的是账户被封锁的暴露面。
+    """
+
+    total: int = 0
+    unresolved: int = 0  # pending/closing/awaiting_reconcile 未定论
+    manual_review: int = 0  # 已转人工复核（未解除）
+    resolved: int = 0
+    total_blocked_hours: float = 0.0
+    median_blocked_hours: Optional[float] = None
+    p90_blocked_hours: Optional[float] = None
+    max_blocked_hours: Optional[float] = None
+    note: str = ""
+
+
 class ActualReviewResponse(BaseModel):
     overview: ActualOverview
     groups: list[ActualGroupStats] = []
     items: list[ActualTradeItem] = []
+    # 异常保护时长（审计 7.2）：与归因统计同窗口/同 scope
+    protection: Optional[ProtectionStats] = None
 
 
 class AttributionTriggerResponse(BaseModel):

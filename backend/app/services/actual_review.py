@@ -258,10 +258,39 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         for t in trades
     ), 2)
 
+    # 最大回撤与风险超额（审计 7.2 主指标，2026-10-21）：
+    # - 回撤 = closed_at 升序闭单累计净盈亏的峰谷差（窗口内口径，不含浮盈/划转）；
+    #   R 曲线仅纳入 risk_unit>0 的样本，缺失 1R 的旧行不参与，避免曲线被压平
+    # - 风险超额 = 单笔亏损超过 1R 的笔数与超幅（滑点/费用/跳空穿透止损的证据）
+    cum_pnl = peak_pnl = 0.0
+    max_dd = 0.0
+    cum_r = peak_r = 0.0
+    max_dd_r = None
+    risk_excess_count = 0
+    risk_excess_total = 0.0
+    max_loss_r = None
+    for t in trades:
+        pnl = float(t.realized_pnl or 0)
+        cum_pnl += pnl
+        peak_pnl = max(peak_pnl, cum_pnl)
+        max_dd = max(max_dd, peak_pnl - cum_pnl)
+        unit = t.risk_unit
+        if unit <= 0:
+            continue
+        cum_r += pnl / unit
+        peak_r = max(peak_r, cum_r)
+        max_dd_r = max(max_dd_r or 0.0, peak_r - cum_r)
+        loss_r = -pnl / unit
+        if loss_r > 0:
+            max_loss_r = max(max_loss_r or 0.0, loss_r)
+            if loss_r > 1.0:
+                risk_excess_count += 1
+                risk_excess_total += -pnl - unit
+
     # 双网镜像单（2026-10-04）：同一 AI 决策扇出双网的两笔 CLOSED 单，all 口径
     # 下被当独立样本重复计入。返回计数供前端在 all 视图提示「归因结论以正式网
-    # 口径为准」；不做合并剔除——双网执行差异（滑点/费用/成交价）是免费的执行
-    # 质量对照组，且正式网样本本就少
+    # 口径为准」；不做合并剔除——双网执行差异（滑点/费用）是免费的执行质量
+    # 对照组，且正式网样本本就少
     by_analysis: dict = {}
     for t in trades:
         if t.ai_analysis_id:
@@ -284,6 +313,13 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         "attributed": sum(1 for t in trades if t.attributed_at),  # 已归因笔数
         # 双网镜像单笔数（同一 AI 决策双网都开了的 CLOSED 单；仅 all 口径非 0）
         "mirror_trades": mirror_trades,
+        # 最大回撤与风险超额（审计 7.2）：回撤口径为窗口内闭单累计曲线，
+        # 非账户净值（无历史钱包快照），跨窗口不可比
+        "max_drawdown": round(max_dd, 2),
+        "max_drawdown_r": round(max_dd_r, 2) if max_dd_r is not None else None,
+        "risk_excess_count": risk_excess_count,
+        "risk_excess_total": round(risk_excess_total, 2),
+        "max_loss_r": round(max_loss_r, 2) if max_loss_r is not None else None,
     })
 
     # 分组：维度 × 桶
