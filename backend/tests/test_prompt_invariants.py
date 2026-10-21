@@ -202,6 +202,18 @@ def test_render_htf_background_is_data_only():
     assert "macro=同侧" in block
 
 
+def test_indicator_title_does_not_direct_by_htf():
+    """指标块标题也不得把 4h 写成方向来源（2026-10-21 口径收敛）"""
+    kls = _htf_kl(_htf_shape([(140, 0.0), (60, 0.5)]), 2.0)
+    for st in ("trigger_pullback_confirm", "trigger_breakout"):
+        block = render_indicator_block(_kl_1h_stub(), htf_klines=kls, trigger_type=st)
+        assert "方向=4h" not in block, st
+        assert "4h 背景=环境数据" in block, st
+    pb = render_indicator_block(
+        _kl_1h_stub(), htf_klines=kls, trigger_type="trigger_pullback_confirm")
+    assert "方向票=确认度参考" in pb
+
+
 # ── 不变量 10：盈亏比唯一不达标 → 固定 1.5R 放宽（2026-10-14）──────
 
 

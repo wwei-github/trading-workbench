@@ -186,7 +186,7 @@ def render_rule_struct(field: str = "analysis") -> str:
     """结构破位回踩打法片段按落库字段名渲染（P0 field="analysis" / P1 field="reason"）。"""
     return _RULE_STRUCT.format(field=field)
 
-_RULE_DIRECTION = """方向纪律：优先在支撑结构做多、压力结构做空；现价已离开结构位时按动能顺势
+_RULE_DIRECTION = """优先在支撑结构做多、压力结构做空；现价已离开结构位时按动能顺势
 给入场价（贴近现价即可），入场是否合理由盈亏比与止损结构把关。"""
 
 # 回踩触点语义注解（docs/22 触点体系，2026-09-28；2026-10-12 补 ema21_4h；
@@ -407,8 +407,8 @@ risk_reward_ratio/position_pct 为 0/空字符串；skip_reason 除外）：
 - trade_decision: "suggest"（建议开单）或 "skip"（不建议开单）
 - skip_reason: skip 时必填，类别前缀开头——[RR不足]/[止损过宽]/[环境逆风]/[形态质量]/[结构不清]/[波动极端]/[其他]；前缀后按 "1. 2. 3." 列主因（≤3条，JSON 内换行写 \n）。suggest 时为空。
 - direction: "long"（做多）或 "short"（做空）。
-- trade_type: 开单类型，suggest 必填其一：trend_follow（顺势，方向由 EMA 排列或方向票确立，
-  纯排列不是硬门槛）/ structure_break（结构破位回踩，含 123法则·N字结构，见下方打法）。
+- trade_type: 开单类型，suggest 必填其一：trend_follow（顺势，方向以方向票/结构为准，
+  EMA 排列仅趋势背景、不是硬门槛）/ structure_break（结构破位回踩，含 123法则·N字结构，见下方打法）。
 - stop_anchor: "structure"（结构锚）或 "near"（金K窗口极值锚）；采用金K极值锚时输出 "near"
   （距离分档或突破近锚降级），省略/null 按 structure（禁止空字符串）。
 - entry_price: 建议入场价。**只允许现价入场**：必须贴近当前价，**禁止**放到现价回踩侧
@@ -623,7 +623,7 @@ def build_signal_facts(
         ema_summary = f"均线形态: {ema['state_label']}（{ema['detail']}）\n"
 
     # 技术指标（MACD/布林带/RSI/SuperTrend/ADX/OBV + 4h背景 + 程序化共振结论）
-    # 标题按触发类型渲染（T0-4）：回踩定向以 4h 为准，不能再写「方向=方向票多数决」
+    # 标题按触发类型渲染（2026-10-21）：4h 只作环境数据，回踩标注「方向票=确认度参考」
     indicator_summary = render_indicator_block(
         klines, htf_klines, trigger_type=signal.get("signal_type"))
 
