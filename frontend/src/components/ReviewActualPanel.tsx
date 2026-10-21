@@ -494,7 +494,7 @@ export default function ReviewActualPanel() {
                 </Col>
                 <Col span={6}>
                   <Statistic
-                    title={<Tooltip title="单笔亏损超过 1R 的笔数；超幅合计 = 实际亏损 − 1R">亏穿 1R</Tooltip>}
+                    title={<Tooltip title="单笔实际净亏超过计划风险预算（旧行无预算回落 1R）的笔数；超幅合计 = 实际亏损 − 预算">风险超额</Tooltip>}
                     value={ov.risk_excess_count}
                     suffix={ov.risk_excess_count > 0 ? `笔 / ${fmtUsd(ov.risk_excess_total)}U` : '笔'}
                     valueStyle={{ color: ov.risk_excess_count > 0 ? downColor : undefined }}

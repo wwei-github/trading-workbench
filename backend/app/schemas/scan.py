@@ -536,8 +536,8 @@ class ActualOverview(BaseModel):
     # risk_unit>0 的样本，缺失 1R 的旧行不参与
     max_drawdown: float = 0.0  # 窗口内闭单权益最大回撤（USDT）
     max_drawdown_r: Optional[float] = None  # 以 1R 累计权益的最大回撤（R）
-    risk_excess_count: int = 0  # 单笔亏损超过 1R 的笔数
-    risk_excess_total: float = 0.0  # 超 1R 部分合计（USDT）
+    risk_excess_count: int = 0  # 单笔实际亏损超过计划风险预算的笔数（旧行无预算回落 1R）
+    risk_excess_total: float = 0.0  # 超预算部分合计（USDT）
     max_loss_r: Optional[float] = None  # 单笔最大亏损（R，>1 = 亏穿止损）
 
 
