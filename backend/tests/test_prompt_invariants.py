@@ -391,5 +391,9 @@ def test_skill_pullback_no_conflicting_scoring_text():
     txt = p.read_text(encoding="utf-8")
     assert "只在评分上适度保守" not in txt
     assert "不影响评分档位" in txt
-    assert "**4h** EMA 死叉/拐头" in txt
-    assert "1h EMA 死叉/拐头属回撤常态" in txt
+    # 2026-10-21：技能文档也不得再出现 4h 方向硬约束
+    assert "方向约束（硬性）" not in txt
+    assert "缠绕/拐头双向禁开" not in txt
+    assert "4h 背景（state/macro）仅作趋势强弱与风险参考" in txt
+    assert "4h EMA 死叉/拐头仅作风险点记录" in txt
+    assert "不单独降档" in txt
