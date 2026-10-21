@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.models.trade import ProtectionIncident
+from app.models.trade import ProtectionIncident, TradeRecord
 
 logger = logging.getLogger(__name__)
 # 未闭环的事故状态：账号封锁与巡检取数共用同一口径（勿在调用方另写字面量）
@@ -75,20 +75,53 @@ def status_for_close_error(error) -> str:
     return "pending" if any(code in text for code in _RETRYABLE_REJECTIONS) else "manual_review"
 
 
-def _mark_review(row, message):
+def _mark_review(row, message, *, now=None):
+    now = now or datetime.utcnow()
     row.status = "manual_review"
     row.attempt_count = int(row.attempt_count or 0) + 1
     row.last_error = str(message)[:500]
-    row.next_retry_at = datetime.utcnow() + timedelta(minutes=1)
+    # 人工复核是终态等待区：仓位仍在时每小时静默复查一次，避免每分钟重写/重发告警。
+    # 空仓解除不依赖该退避——recover_due_incidents 每轮都会先做空仓判定。
+    row.next_retry_at = now + timedelta(hours=1)
 
 
-def position_matches_generation(row, position):
+def _escalate(db, row, message, *, now=None):
+    """Escalate to manual review; alert only on the first transition."""
+    first = row.status != "manual_review"
+    _mark_review(row, message, now=now)
+    db.commit()
+    if first:
+        _alert(row)
+
+
+def _effective_entry_price(db, row) -> float:
+    """Incident entry price, falling back to the linked TradeRecord when missing.
+
+    Some failure paths persist the incident after the trade row was rolled back,
+    so the incident may carry no entry price. A linked record is a safe fallback;
+    without either value the generation stays unverifiable (manual review).
+    """
+    planned = float(row.entry_price or 0)
+    if planned > 0:
+        return planned
+    if row.trade_record_id:
+        rec = db.get(TradeRecord, row.trade_record_id)
+        if rec is not None and rec.entry_price:
+            return float(rec.entry_price)
+    return 0.0
+
+
+def position_matches_generation(row, position, expected_entry=None):
     """Conservative Binance one-way position match; require same direction and entry.
 
     Positions without a usable exchange entry price are never auto-closed.
+    expected_entry lets callers supply the effective incident entry (e.g. from the
+    linked TradeRecord when the incident row itself has no price).
     """
     entry = float(position.get("entry_price") or 0)
-    planned = float(row.entry_price or 0)
+    planned = float(
+        expected_entry if expected_entry is not None else (row.entry_price or 0)
+    )
     amt = abs(float(position.get("amt") or 0))
     qty = float(row.qty or 0)
     return bool(entry > 0 and planned > 0 and qty > 0
@@ -144,23 +177,51 @@ def position_is_protected(trader, row, position) -> bool:
     return False
 
 
+def _handle_position_read_failure(db, rows, now, exc):
+    """A failed position snapshot must never be read as "flat"."""
+    due_ids = [r.id for r in rows if not r.next_retry_at or r.next_retry_at <= now]
+    for incident_id in due_ids:
+        db.rollback()
+        fresh = db.get(ProtectionIncident, incident_id)
+        if fresh is None:
+            continue
+        if fresh.status == "pending":
+            fresh.last_error = f"持仓/对账读取失败，可重试：{exc}"[:500]
+            fresh.next_retry_at = now + timedelta(minutes=1)
+            db.commit()
+        else:
+            _escalate(db, fresh, f"对账异常：{exc}", now=now)
+
+
 def recover_due_incidents(db, trader, account_key: str, testnet: bool,
                           generation_matches=None, *, now=None):
-    """Reconcile due incidents. Never repeat an uncertain close request.
+    """Reconcile active incidents. Never repeat an uncertain close request.
 
     generation_matches must positively bind the observed exchange position to this
     incident. Absence of a checker is deliberately treated as ambiguous.
+
+    The position snapshot is taken once per account for every active incident:
+    a flat symbol resolves immediately even while a manual-review backoff is
+    still pending, so an externally closed position releases the block without
+    waiting for the hourly retry. Non-flat incidents still honor next_retry_at.
     """
     now = now or datetime.utcnow()
     rows = db.execute(select(ProtectionIncident).where(
         ProtectionIncident.account_key == account_key,
         ProtectionIncident.testnet == testnet,
         ProtectionIncident.status.in_(_ACTIVE),
-        ProtectionIncident.next_retry_at <= now,
     ).order_by(ProtectionIncident.created_at)).scalars().all()
+    if not rows:
+        return 0
+
+    try:
+        positions = trader.positions()
+    except Exception as exc:
+        _handle_position_read_failure(db, rows, now, exc)
+        return len(rows)
+
     for row in rows:
         try:
-            positions = trader.positions()
             pos = positions.get(row.symbol)
             amt = float((pos or {}).get("amt") or 0)
             if not pos or amt == 0:
@@ -188,16 +249,18 @@ def recover_due_incidents(db, trader, account_key: str, testnet: bool,
                 row.last_error = None
                 db.commit()
                 continue
-            matcher = generation_matches or position_matches_generation
-            if not matcher(row, pos):
-                _mark_review(row, "无法确认事故与当前同币仓位的交易世代；未发送平仓请求")
-                db.commit()
-                _alert(row)
+            if row.next_retry_at and row.next_retry_at > now:
+                continue
+            expected = _effective_entry_price(db, row)
+            if generation_matches is not None:
+                matched = generation_matches(row, pos)
+            else:
+                matched = position_matches_generation(row, pos, expected)
+            if not matched:
+                _escalate(db, row, "无法确认事故与当前同币仓位的交易世代；未发送平仓请求", now=now)
                 continue
             if (amt > 0) != (row.direction == "long"):
-                _mark_review(row, "交易所持仓方向与事故记录不符；未发送平仓请求")
-                db.commit()
-                _alert(row)
+                _escalate(db, row, "交易所持仓方向与事故记录不符；未发送平仓请求", now=now)
                 continue
             # 保护已由后续补挂/人工单恢复：无需再平仓，解除账号封锁。
             if position_is_protected(trader, row, pos):
@@ -208,9 +271,7 @@ def recover_due_incidents(db, trader, account_key: str, testnet: bool,
                 logger.warning("保护事故解除 %s：当前仓位已有有效止损保护", row.symbol)
                 continue
             if row.status == "closing":
-                _mark_review(row, "进程在平仓请求期间中断，无法判断请求是否送达；未重发平仓请求")
-                db.commit()
-                _alert(row)
+                _escalate(db, row, "进程在平仓请求期间中断，无法判断请求是否送达；未重发平仓请求", now=now)
                 continue
             if row.status in ("awaiting_reconcile", "manual_review"):
                 if row.status == "manual_review":
@@ -220,9 +281,7 @@ def recover_due_incidents(db, trader, account_key: str, testnet: bool,
                     row.next_retry_at = now + timedelta(hours=1)
                     db.commit()
                     continue
-                _mark_review(row, "存在仓位但事故动作可能已送达或无法证明当前仓位世代；未重发平仓请求")
-                db.commit()
-                _alert(row)
+                _escalate(db, row, "存在仓位但事故动作可能已送达或无法证明当前仓位世代；未重发平仓请求", now=now)
                 continue
             row.status = "closing"
             row.attempt_count = int(row.attempt_count or 0) + 1
@@ -253,9 +312,7 @@ def recover_due_incidents(db, trader, account_key: str, testnet: bool,
                     fresh.next_retry_at = now + timedelta(minutes=1)
                     db.commit()
                 else:
-                    _mark_review(fresh, f"对账异常：{exc}")
-                    db.commit()
-                    _alert(fresh)
+                    _escalate(db, fresh, f"对账异常：{exc}", now=now)
     return len(rows)
 
 

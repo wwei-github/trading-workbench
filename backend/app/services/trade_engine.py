@@ -352,8 +352,17 @@ def _recover_unknown_limit_entry(
     try:
         trader.cancel_all_open_orders(symbol)
     except Exception as cancel_err:
-        # 撤单结果未知：不能假定无残留挂单，交人工复核（巡检会重试撤单）
-        _record(qty_=qty, error=f"entry={entry_err}; cancel={cancel_err}",
+        # 撤单结果未知：不能假定无残留挂单，交人工复核（巡检会重试撤单）。
+        # 若已成交，尽量用交易所实际入场价落事故，避免世代校验拿限价误判。
+        pos_entry = limit_px
+        try:
+            pos = trader.positions().get(symbol)
+            if pos and abs(float(pos.get("amt") or 0)) > 0:
+                pos_entry = float(pos.get("entry_price") or 0) or limit_px
+        except Exception:
+            pass
+        _record(qty_=qty, entry_price=pos_entry,
+                error=f"entry={entry_err}; cancel={cancel_err}",
                 status="manual_review")
         return
     try:
@@ -926,12 +935,21 @@ def _attempt_open(
             else:
                 status = "awaiting_reconcile"
                 error = f"entry={entry_err}; close_ack={close_result}"
+            # 有仓时用交易所实际入场价落事故：响应丢失只能拿到参考价，测试网盘口薄
+            # 时实际成交可能偏离 >0.1%，用参考价会让巡检的世代校验永远对不上。
+            incident_entry = float(price)
+            try:
+                live = trader.positions().get(symbol)
+                if live and abs(float(live.get("amt") or 0)) > 0:
+                    incident_entry = float(live.get("entry_price") or 0) or incident_entry
+            except Exception:
+                pass
             try:
                 create_incident_after_rollback(
                     db, account_key=trader.account_key, testnet=trader.testnet,
                     symbol=symbol, direction=direction,
                     reason="open_entry_submit_unknown", qty=qty,
-                    entry_order_id=None, entry_price=float(price),
+                    entry_order_id=None, entry_price=incident_entry,
                     error=error, status=status,
                 )
             except Exception:
@@ -1212,6 +1230,9 @@ def materialize_pending_entry(
     leverage = int(pe.leverage or 1)
     close_side = _close_side(direction)
     filled_qty_real = 0.0
+    # 成交价在 ③ 读取；先兜底为限价，保证异常路径落事故时仍有可用价格。
+    # rollback 后 pe.filled_price 会被还原为 None，事故必须用局部实际均价。
+    fill_price = float(pe.entry_price or 0)
     try:
         # ② 撤剩余未成交部分（部分成交防护；已全成交/已撤则静默）
         try:
@@ -1331,7 +1352,7 @@ def materialize_pending_entry(
             symbol=symbol, direction=direction,
             reason="pending_materialize_protection_failed", qty=close_qty,
             entry_order_id=pe.limit_order_id,
-            entry_price=pe.filled_price or pe.entry_price,
+            entry_price=fill_price or float(pe.entry_price or 0),
             rollback_session=False,
         )
         try:

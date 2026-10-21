@@ -23,6 +23,12 @@ from app.services.trade_engine import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stub_alert(monkeypatch):
+    """单测不触达真实飞书 webhook；需要断言告警的用例自行覆盖该桩。"""
+    monkeypatch.setattr("app.services.protection_recovery._alert", lambda row: None)
+
+
 @pytest.fixture
 def db_factory():
     engine = create_engine("sqlite:///:memory:")
@@ -157,6 +163,66 @@ def test_manual_review_is_released_when_position_is_gone(db_factory):
     db.refresh(item)
     assert item.status == "resolved"
     assert not has_active_incident(db, "testnet-1", True)
+    db.close()
+
+
+def test_flat_position_releases_before_hourly_backoff(db_factory):
+    """空仓解除不受 manual_review 退避影响：下一轮巡检立即解封。"""
+    db = db_factory()
+    item = incident(db, status="manual_review", attempt_count=3,
+                    next_retry_at=datetime.utcnow() + timedelta(hours=1))
+    trader = SimpleNamespace(positions=lambda: {})
+    recover_due_incidents(db, trader, "testnet-1", True, now=datetime.utcnow())
+    db.refresh(item)
+    assert item.status == "resolved"
+    assert item.resolved_at is not None
+    assert not has_active_incident(db, "testnet-1", True)
+    db.close()
+
+
+def test_generation_falls_back_to_trade_record_entry_price(db_factory):
+    """事故行缺 entry_price 时用关联交易记录兜底，避免永久 manual_review。"""
+    db = db_factory()
+    rec = TradeRecord(id=uuid.uuid4(), symbol="XUSDT", direction="long",
+                      status="OPENED", entry_price=100, qty=2)
+    db.add(rec)
+    db.commit()
+    item = incident(db, entry_price=None, trade_record_id=rec.id)
+    calls = []
+    trader = SimpleNamespace(
+        positions=lambda: {"XUSDT": {"amt": 2, "entry_price": 100}},
+        market_order=lambda *a, **k: calls.append((a, k)) or {"orderId": 9},
+    )
+    recover_due_incidents(db, trader, "testnet-1", True)
+    db.refresh(item)
+    assert calls == [(("XUSDT", "SELL", 2), {"reduce_only": True})]
+    assert item.status == "awaiting_reconcile"
+    db.close()
+
+
+def test_generation_mismatch_alerts_once_and_backs_off_hourly(
+    db_factory, monkeypatch,
+):
+    """世代不匹配仅在首次升级时告警，之后每小时静默复查，不形成告警风暴。"""
+    db = db_factory()
+    alerts = []
+    monkeypatch.setattr("app.services.protection_recovery._alert", alerts.append)
+    due = datetime.utcnow()
+    item = incident(db, next_retry_at=due)
+    trader = SimpleNamespace(
+        positions=lambda: {"XUSDT": {"amt": 2, "entry_price": 105}},
+    )
+    recover_due_incidents(db, trader, "testnet-1", True, now=due)
+    db.refresh(item)
+    assert item.status == "manual_review"
+    assert len(alerts) == 1
+    assert item.next_retry_at > due + timedelta(minutes=30)
+
+    recover_due_incidents(db, trader, "testnet-1", True,
+                          now=due + timedelta(minutes=2))
+    db.refresh(item)
+    assert len(alerts) == 1
+    assert item.status == "manual_review"
     db.close()
 
 
@@ -435,6 +501,28 @@ def test_entry_submit_ack_lost_close_rejected_is_retryable(
     db.close()
 
 
+def test_entry_ack_lost_uses_live_entry_price_for_generation(
+    file_session, opening_settings, monkeypatch,
+):
+    """响应丢失但有仓：事故记录交易所实际入场价，世代校验才可能绑定成功。"""
+
+    class _LostWithPositionTrader(_EntryAckLostTrader):
+        def positions(self):
+            return {"XUSDT": {"amt": 15.0, "entry_price": 101.0}}
+
+    import app.services.protection_recovery as recovery
+    monkeypatch.setattr(recovery, "SessionLocal", file_session)
+    db, cfg, a = _open_fixture(file_session)
+    trader = _LostWithPositionTrader()
+
+    assert _attempt_open(db, trader, cfg, a, 1000.0, {}) == "blocked"
+
+    row = db.query(ProtectionIncident).one()
+    assert row.reason == "open_entry_submit_unknown"
+    assert row.entry_price == 101.0  # 不是参考价 100
+    db.close()
+
+
 def test_entry_submit_explicit_rejection_does_not_create_incident(
     file_session, opening_settings, monkeypatch,
 ):
@@ -535,7 +623,7 @@ def test_limit_entry_ack_lost_cancel_failure_escalates(
     db, cfg, a = _open_fixture(file_session)
     trader = _LimitAckLostTrader(
         cancel_error=TimeoutError("cancel ack lost"),
-        position={"amt": 2, "entry_price": 100.0},
+        position={"amt": 2, "entry_price": 101.0},
     )
 
     assert _attempt_open(db, trader, cfg, a, 1000.0, {}) == "blocked"
@@ -543,6 +631,7 @@ def test_limit_entry_ack_lost_cancel_failure_escalates(
     row = db.query(ProtectionIncident).one()
     assert row.reason == "open_limit_entry_submit_unknown"
     assert row.status == "manual_review"
+    assert row.entry_price == 101.0  # 实际成交价，不是限价 100
     assert "cancel ack lost" in (row.last_error or "")
     assert trader.cancel_all_calls == 1
     db.close()
@@ -604,7 +693,8 @@ class _MaterializeTrader:
         return None
 
     def order(self, symbol, order_id):
-        return {"executedQty": 2.0, "avgPrice": 100.0}
+        # 实际成交价与挂单限价（100）不同：事故必须记录实际均价而非委托价
+        return {"executedQty": 2.0, "avgPrice": 101.0}
 
     def setup_leverage(self, symbol, leverage):
         return None
@@ -649,6 +739,7 @@ def test_pending_materialize_protection_failure_is_durably_recorded(
     row = db.query(ProtectionIncident).one()
     assert row.reason == "pending_materialize_protection_failed"
     assert row.status == "manual_review"  # 超时可能已送达，绝不自动重发
+    assert row.entry_price == 101.0  # 实际成交均价，不是挂单限价
     assert has_active_incident(db, "testnet-1", True)
     db.close()
 
