@@ -1429,6 +1429,7 @@ def compute_quality_score(
     golden_combo: bool = False,
     swing_order: int = 3,
     structure_gate: bool = True,
+    range_penalty: bool = False,
 ) -> int:
     """候选质量分（0-100）：方向一致性为主，修饰项只影响排序不改变方向。
 
@@ -1443,6 +1444,7 @@ def compute_quality_score(
     structure_gate: 1H 结构门结果（trigger 的 structure_gate 证据；仅 ema21 触点
     可能为 False，其余触点豁免恒 True）。2026-10-15 拍板：结构门由硬门降级为
     质量分重罚（STRUCTURE_GATE_PENALTY）——不过门照常出信号，仅排序落后
+    range_penalty: range_score≥1 但触发类型为回踩确认（scanner 降权不拒），-8
 
     修饰规则（2026-09-17 设计评审定稿；2026-09-24 4h 背景提权；2026-10-11
     再重构 EMA 状态机 11 态：div 强度档与过热/冷却分值矩阵退役，改
@@ -1479,7 +1481,14 @@ def compute_quality_score(
     # votes=None（2026-10-18 方向票关关闭后，指标全不可用且 4h 闸门兜底定向的
     # 罕见路径可达）：按无票处理——空票集、net=0、基础分 50，各修饰项自动跳过
     by_short = dict(votes["results"]) if votes else {}
-    score = 50 + direction * (votes["net"] if votes else 0) * 10  # net∈{1,2,3} → 基础 60/70/80
+    if trigger_type == "trigger_pullback_confirm":
+        # 回踩（2026-10-21 方向职责拆分）：1h 动量逆势是回撤形态本身（越深越反向），
+        # 用「同向票数」作基础分、反向票不扣分——否则深回撤候选恒被压到 20 分，
+        # 排序垫底后被 AI 配额挤掉，筛选层的放行等于白做。
+        same_n = (votes["bull_n"] if direction == 1 else votes["bear_n"]) if votes else 0
+        score = 50 + same_n * 10  # 0/1/2/3 → 50/60/70/80，与原刻度一致
+    else:
+        score = 50 + direction * (votes["net"] if votes else 0) * 10  # net∈{1,2,3} → 60/70/80
 
     htf = by_short.get(HTF_SHORT)
     if htf and int(htf.get("dir") or 0):
@@ -1563,5 +1572,10 @@ def compute_quality_score(
     # 不过门照常出信号、仅排序落后（仅 ema21 触点可能为 False）
     if not structure_gate:
         score += STRUCTURE_GATE_PENALTY
+
+    # 震荡闸门降权（2026-10-21）：回踩命中 range_score 不再否决，改质量分 -8；
+    # 突破类仍由 scanner 硬拒，不会带 range_penalty 走到这里
+    if range_penalty:
+        score -= 8
 
     return max(0, min(100, int(round(score))))

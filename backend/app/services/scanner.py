@@ -325,63 +325,25 @@ def detect_indicator_candidate(
     # 消除大量有效回踩死在这一关的问题。net 仍为方向票净差（符号=方向）。
     # 4h 背景复用第一步的 htf_bg，指标不再双算
     votes = compute_indicator_votes(klines, htf_bg=htf_res)
-    # 方向票关（2026-10-18 开关化）：flt.direction_vote_gate_enabled=False 时跳过本关
-    # （不再因同向票不足否决候选），方向照下方派生——即使只 1 张同向票也可定向
-    if flt.direction_vote_gate_enabled and (
-            not votes or max(votes["bull_n"], votes["bear_n"]) < DIR_VOTE_MIN):
-        # 方向票同向不足 → 活跃 pending 方向失守（docs/19 §4.1 前置过期路径）
-        _reject("votes")
-        # 漏斗明细（2026-10-11 用户拍板）：votes 关的判定说明展示全部票
-        # （方向箭头+状态+细节），前端判定说明列优先于静态 hint 渲染；
-        # results 空（无可用指标降级）渲染为空串不写
-        if reject_out is not None and votes:
-            detail = _votes_detail(votes)
-            if detail:
-                reject_out["detail"] = detail
+
+    # 定向（2026-10-21 方向职责拆分，docs/需求文档/06.../回踩命中改造方案 §3.2）：
+    # 4h 定方向，1h 三票只作「确认度」。回踩是趋势内回调，1h 动量在此期间必然反向；
+    # 若仍以净差定向，回踩永远与 4h 方向相反 → 深回撤触点被结构性消灭
+    # （反事实重放：EMA144 924 次几何命中仅存活 1 次）。因此回踩与突破统一按 4h
+    # 方向定向，突破的动量确认后移到「触发之后」按类型分流校验。
+    # 4h 无方向（拉取/计算异常降级）→ fail-closed 直接拒绝，不回落到 1h 定向。
+    if gate_dir is None:
+        _reject("gate_4h")
+        if reject_out is not None:
+            reject_out["detail"] = "4h 方向缺失（数据降级），无趋势依据不出信号"
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
-    # 方向派生（2026-10-17 docs/23 方案 A2 修复「净差为0静默偏置为空头」）：
-    # net≠0 取符号（原口径）；net=0 无多数决依据 → 改由 4h 闸门方向兜底；net=0 且
-    # gate=None（4h 拉取失败/异常降级）→ 无方向依据，直接不出信号（活跃 pending 按
-    # 方向失守过期，与 votes 关同口径）。
-    # 注：net=0 在当前生产链路不可达——方向票仅 MACD/布林带/RSI 三张
-    # （technical.DIR_VOTE_SHORTS），net=0 ⇒ bull_n=bear_n ∈ {0,1} ⇒ max≤1 <
-    # DIR_VOTE_MIN=2，必被上方 votes 关先拒；此路为防御性修复（一旦票表/门槛调整使
-    # net=0 可达，避免原 `else -1` 把中性静默偏置为空头）。
-    # 2026-10-18 开关化：方向票关关闭后 votes=None（指标全不可用）或 net=0 均可达此处，
-    # 一律按无票（net=0）处理 → 4h 闸门方向兜底；闸门也无方向才判无依据不出信号。
-    net = votes["net"] if votes else 0
-    if net != 0:
-        direction = 1 if net > 0 else -1
-    elif gate_dir is not None:
-        direction = 1 if gate_dir == "long" else -1
-    else:
-        _reject("votes")
-        if reject_out is not None:
-            reject_out["detail"] = (
-                "无方向依据（方向票缺失或净差为0，且无4h闸门方向可兜底），无法定向")
-        return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
-
-    # 闸门方向一致性（2026-10-10 二次拍板，取代原 htf_res dir 门）：gate_4h 给出
-    # 的 4h 方向（价格×EMA144 位置+斜率方向）必须与定向一致——gate 在上面已保证
-    # 非 None（htf 拉取失败降级时 gate=None，跳过检查与原降级口径一致）。
-    # 与 4h 冲突的活跃 pending 不可能被确认（金K 方向跟着多数决走），按方向失守过期。
-    # A3 深回撤语义（2026-10-17 docs/23，隐性行为显性化）：本关是深回撤触点
-    # （EMA55/EMA144）的生死线——价格深跌到中期/长期均线几乎必然打翻 1h 方向票
-    # （MACD/布林带/RSI 转空），使定向与 4h 多头闸门相反 → 被本关挡下；「慢速深回撤」
-    # 因此无法穿过，仅「插针式触及」（单根影线插到均线、收盘仍强、1h 票未转向）可过。
-    # 非缺陷：深回撤与 1h 票同向本就是小概率形态。detail 给漏斗可读的方向对撞说明。
-    # 方向冲突关（2026-10-18 开关化）：flt.direction_conflict_gate_enabled=False 时
-    # 跳过本关——允许逆 4h 闸门方向的候选照常产生（放开深回撤等逆势形态）。
-    if (flt.direction_conflict_gate_enabled and gate_dir is not None
-            and gate_dir != ("long" if direction == 1 else "short")):
-        _reject("direction_flip")
-        if reject_out is not None:
-            reject_out["detail"] = (
-                f"定向={'多' if direction == 1 else '空'}头（方向票净差{net:+d}），"
-                f"与4h闸门方向（{'多' if gate_dir == 'long' else '空'}头）相反；"
-                "深回撤触点常见此冲突（仅插针式可过）")
-        return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
+    direction = 1 if gate_dir == "long" else -1
+    same_n = (votes["bull_n"] if direction == 1 else votes["bear_n"]) if votes else 0
+    opp_n = (votes["bear_n"] if direction == 1 else votes["bull_n"]) if votes else 0
+    # 突破用的动量确认：同向票足够=通过；反向票足够=方向对撞（回踩不消费这两个标志）
+    votes_ok = same_n >= DIR_VOTE_MIN
+    votes_flip = opp_n >= DIR_VOTE_MIN
 
     # 4h 状态机逆势锁（2026-10-19 用户拍板）：STATE_LOCK_CONTRA（宏观同侧六态：
     # macro_cross_* / *_recover / aligned_*）时，逆状态的候选一票否决。2026-10-20
@@ -419,11 +381,11 @@ def detect_indicator_candidate(
     # ADX<18 / 波动过度扩张（Donchian 或布林带宽分位 ≥0.8）。判据来自方向感知
     # 近锚止损 PNL 回放：原评分卡放行池净期望 −0.02R（打平偏亏），新判据
     # 全样本 +0.10R 且 train/test 双段为正。详见 ema_gate.range_score
+    # 2026-10-21：只计算不即刻拒绝——回踩确认改为「降权不拒」（深回撤本身就会让
+    # 1h 三线收敛，硬拒等于把深回撤触点二次消灭，重放中 EMA144 通过方向门的 161
+    # 次里 160 次死在本关）；突破类保持硬拒，判定在触发后分流执行。
     rs, _rs_reasons = range_score(
         klines, gate_ev=htf_res.get("evidence") if htf_res else None)
-    if rs >= RANGE_SCORE_REJECT:
-        _reject("range_score")
-        return None, ({"op": "expire", "reason": "range_score"} if pending else None)
 
     # htf 直传触点体系（2026-10-09）：ema21_4h 跨周期触点与第 7 票/闸门共用
     # 同一份 4h 快照，单轮单币不重复拉取
@@ -438,9 +400,44 @@ def detect_indicator_candidate(
         htf_dir=gate_dir,
         diag=trig_diag,
     )
+    # 触发后分流校验（2026-10-21 方向职责拆分）：突破是动量事件，仍要求 1h 三票
+    # 同向（原 votes 关 + 方向冲突关原义保留）；回踩确认不否决——回撤期间票反向
+    # 是形态本身，反向票只进质量分与仓位折扣。
+    range_penalty = False
+    if trig is not None and trig["type"] in (BREAKOUT, TREND_BREAKOUT):
+        if flt.direction_vote_gate_enabled and not votes_ok:
+            _reject("votes")
+            if reject_out is not None and votes:
+                detail = _votes_detail(votes)
+                if detail:
+                    reject_out["detail"] = detail
+            return None, pending_op
+        if flt.direction_conflict_gate_enabled and votes_flip:
+            _reject("direction_flip")
+            if reject_out is not None:
+                reject_out["detail"] = (
+                    f"突破方向={'多' if direction == 1 else '空'}头，但1h方向票"
+                    f"{opp_n}张反向——突破需动量同向")
+            return None, pending_op
+
+    # 震荡闸门分流：突破硬拒；回踩降权不拒（质量分 -8，见 compute_quality_score）。
+    # 回踩两条路径都必须放行：① 当根/次根金K确认（trig=PULLBACK_CONFIRM）；
+    # ② 触碰当根尚无金K、正要进待确认池（trig=None + pending upsert）——
+    #    若在 ② 硬拒，两段式回踩根本进不了池，① 的降权永远不可达。
+    if rs >= RANGE_SCORE_REJECT:
+        pullback_path = (
+            (trig is not None and trig["type"] == PULLBACK_CONFIRM)
+            or (trig is None and bool(pending_op and pending_op.get("op") == "upsert"))
+        )
+        if pullback_path:
+            range_penalty = True
+        else:
+            _reject("range_score")
+            return None, ({"op": "expire", "reason": "range_score"} if pending else None)
+
     if trig is not None:
-        # T1 突破 → 破轨事件动作（docs/22 §4）：白名单过滤前记录——破轨是市场
-        # 事实，触发类型白名单只决定是否产生突破信号，不影响回测触点事实源
+        # T1 突破 → 破轨事件动作（docs/22 §4）：白名单过滤前、类型校验之后记录——
+        # 破轨是市场事实，触发类型白名单只决定是否产生突破信号，不影响回测触点事实源
         if trig["type"] in (BREAKOUT, TREND_BREAKOUT) and event_out is not None:
             event_out.update({
                 "op": "upsert",
@@ -478,6 +475,7 @@ def detect_indicator_candidate(
             pending_op["quality_score"] = compute_quality_score(
                 direction, votes, PULLBACK_CONFIRM, klines=klines, stabilize=_stab,
                 structure_gate=bool(pending_op.get("structure_gate", True)),
+                range_penalty=range_penalty,
             )
             pending_op["votes_json"] = _votes_snapshot(votes, stabilize=_stab)
         elif reject_out is not None:
@@ -504,7 +502,8 @@ def detect_indicator_candidate(
                                     stabilize=stabilize, pattern=trig.get("pattern"),
                                     golden_combo=bool(trig.get("golden_combo")),
                                     swing_order=flt.swing_order,
-                                    structure_gate=bool(trig.get("structure_gate", True)))
+                                    structure_gate=bool(trig.get("structure_gate", True)),
+                                    range_penalty=range_penalty)
     return {
         "signal_type": trig["type"],
         # 现价 = 未收盘K线最新价（仅作入场价差参考）：信号判定（投票/触发/形态/量能）

@@ -439,34 +439,43 @@ def _votes(state=None, phase=None, htf_dir=None, macro=None) -> dict:
                "macro_aligned": _STATE_MACRO[state]}
     return {
         "net": 3,
+        # 2026-10-21 方向职责拆分：回踩质量分改用同向票数作基础分（不再看净差），
+        # 桩快照补齐真实 votes 结构字段（net=3 ⇒ 多头 3 张、空头 0 张）
+        "bull_n": 3, "bear_n": 0,
         "results": {HTF_SHORT: htf, "ADX": None, "RSI": None, "OBV": None},
     }
 
 
 def test_quality_matrix_all_states():
     """11 态质量分矩阵全枚举：同向加 same_mod / 逆向加 counter_mod；
-    tangle dir=0 不进方向分支（无状态分、无宏观罚）"""
+    tangle dir=0 不进方向分支（无状态分、无宏观罚）。
+
+    2026-10-21 方向职责拆分：回踩基础分改为「50 + 同向票数×10」（桩 votes 恒为
+    多头 3 张），不再按 direction×net 计——定向由 4h 决定，1h 反向票不扣基础分。"""
+    def _base(direction: int) -> int:
+        return 50 + (3 if direction == 1 else 0) * 10
+
     for st, (same_mod, counter_mod) in STATE_QUALITY.items():
         d = _STATE_DIR[st]
         if d == 0:
             s = compute_quality_score(1, _votes(st), "trigger_pullback_confirm")
-            assert s == 50 + 1 * 3 * 10, st
+            assert s == _base(1), st
             continue
-        base = 50 + d * 3 * 10
         # 过渡态 macro_aligned=False：同/逆都带逆宏观 -4（排列/交叉态恒 True 不触发）
         extra = -4 if _STATE_MACRO[st] is False else 0
         s_same = compute_quality_score(d, _votes(st), "trigger_pullback_confirm")
-        assert s_same == base + same_mod + extra, st
-        # 逆向：direction=-d，基础分按逆向重算（同 -d 方向的票数乘积）
+        assert s_same == _base(d) + same_mod + extra, st
+        # 逆向：direction=-d，基础分按同向票数重算（桩票恒多头，故仅 d=-1 时有同向票）
         s_counter = compute_quality_score(-d, _votes(st), "trigger_pullback_confirm")
-        assert s_counter == 50 - d * 3 * 10 + counter_mod + extra, st
+        assert s_counter == _base(-d) + counter_mod + extra, st
 
 
 def test_quality_transition_macro_penalty():
     """逆宏观 -4 天然只作用过渡态（macro_aligned=False）：牛内回调做空 /
     熊内反弹做多压分；排列态恒同侧不触发"""
     s_dip = compute_quality_score(-1, _votes("bull_dip"), "trigger_pullback_confirm")
-    assert s_dip == 50 - 1 * 3 * 10 + 5 - 4
+    # 做空方向无同向票（桩 votes 恒多头）→ 基础分 50，不再按 -1×net 扣到 20
+    assert s_dip == 50 + 5 - 4
     s_rally = compute_quality_score(1, _votes("bear_rally"), "trigger_pullback_confirm")
     assert s_rally == 50 + 1 * 3 * 10 + 5 - 4
     s_aligned = compute_quality_score(1, _votes("aligned_bull"), "trigger_pullback_confirm")
@@ -479,7 +488,8 @@ def test_quality_legacy_phase_fallback():
     s = compute_quality_score(1, _votes(phase="strong"), "trigger_pullback_confirm")
     assert s == 50 + 1 * 3 * 10 + 5
     s2 = compute_quality_score(-1, _votes(phase="strong"), "trigger_pullback_confirm")
-    assert s2 == 50 - 1 * 3 * 10 - 8
+    # 做空方向无同向票（桩 votes 恒多头）→ 基础分 50（2026-10-21 回踩新口径）
+    assert s2 == 50 - 8
     s3 = compute_quality_score(
         1, _votes(phase="overheat", macro=False), "trigger_pullback_confirm")
     assert s3 == 50 + 1 * 3 * 10 + 5 - 4   # 旧逆宏观行罚分照旧

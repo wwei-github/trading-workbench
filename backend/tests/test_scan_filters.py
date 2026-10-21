@@ -344,8 +344,8 @@ def test_candidate_structure_gate_retired(monkeypatch):
     s2 资格闸移到 risk_guard 按 trend_pullback 标注判定）"""
     import app.services.scanner as scanner_mod
 
-    votes = {"bull": 5, "bear": 0, "bull_n": 6, "bear_n": 6,
-             "net": 5, "voted": 6, "results": {}}
+    votes = {"bull": ["MACD", "RSI"], "bear": [], "bull_n": 6, "bear_n": 0,
+             "net": 6, "voted": 6, "results": {}}
     monkeypatch.setattr(scanner_mod, "analyze_ema", lambda k: None)
     monkeypatch.setattr(scanner_mod, "classify_volume", lambda k: (1.0, "平量"))
     monkeypatch.setattr(scanner_mod, "compute_indicator_votes",
@@ -361,7 +361,9 @@ def test_candidate_structure_gate_retired(monkeypatch):
 
     class FakePool:
         def get_klines(self, *a, **k):
-            return []
+            # 4h 非空才会调用 htf_context 桩拿到方向（2026-10-21 起 gate_dir
+            # 缺失即 fail-closed gate_4h）
+            return [[1_700_000_000_000, 100.0, 101.0, 99.0, 100.0, 10.0, 10.0]]
 
     breakout = {"type": BREAKOUT, "direction": 1, "position": "resistance",
                 "pattern": None, "breakout_pct": 0.5, "reason": "r"}
@@ -477,8 +479,8 @@ def test_candidate_whitelist_drops_disallowed_triggers(monkeypatch):
     """scanner 白名单：白名单外触发类型不产生候选；pending 处置照常透传"""
     import app.services.scanner as scanner_mod
 
-    votes = {"bull": 5, "bear": 0, "bull_n": 6, "bear_n": 6,
-             "net": 5, "voted": 6, "results": {}}
+    votes = {"bull": ["MACD", "RSI"], "bear": [], "bull_n": 6, "bear_n": 0,
+             "net": 6, "voted": 6, "results": {}}
     monkeypatch.setattr(scanner_mod, "analyze_ema", lambda k: None)
     monkeypatch.setattr(scanner_mod, "classify_volume", lambda k: (1.0, "平量"))
     monkeypatch.setattr(scanner_mod, "compute_indicator_votes",
@@ -486,8 +488,8 @@ def test_candidate_whitelist_drops_disallowed_triggers(monkeypatch):
     # EMA 三件套硬门（2026-10-10 二次拍板）打桩放行——本测试只验证白名单语义；
     # 闸门/评分的行为回归见 test_htf_ranging_filter.py（structure_1h 硬门
     # 2026-10-12 退役，docs/21 O7——不再打桩）。
-    # 注意 FakePool 对 4h 返回 []，htf_context 桩实际不会被调用（htf 空跳过闸门块）；
-    # 桩仍给"通过"返回值，防将来池子补 4h 数据时误否决
+    # FakePool 4h 返回非空占位，htf_context 桩才能给出方向（2026-10-21 起
+    # gate_dir 缺失即 fail-closed gate_4h）
     monkeypatch.setattr(scanner_mod, "htf_context",
                         lambda k, core=None: {
                             "direction": "long", "reject_reason": None,
@@ -499,7 +501,7 @@ def test_candidate_whitelist_drops_disallowed_triggers(monkeypatch):
 
     class FakePool:
         def get_klines(self, *a, **k):
-            return []
+            return [[1_700_000_000_000, 100.0, 101.0, 99.0, 100.0, 10.0, 10.0]]
 
     breakout = {"type": BREAKOUT, "direction": 1, "position": "resistance",
                 "pattern": None, "breakout_pct": 0.5, "reason": "r"}

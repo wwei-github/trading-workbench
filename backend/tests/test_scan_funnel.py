@@ -77,14 +77,15 @@ class FakePool:
 
 
 def _detect(reject_out, klines=None, *, votes=_PASS_VOTES, gate=("long", {}), htf_nonempty=True,
-            rs=0, trigger=None, flt=None, pending=None, real_trigger=False, htf_state=None,
-            htf_dir=None):
+            rs=0, trigger=(None, None), flt=None, pending=None, real_trigger=False,
+            htf_state=None, htf_dir=None):
     """打桩装配一次 detect：各桩默认全放行，命中点由参数控制。
     real_trigger=True 时不打桩 detect_trigger（跑真实触发链，测 no_trigger 明细）；
-    gate 为 4h 闸门方向（("long"|"short", {...})，None=闸门否决）；htf_state 非 None
-    时合并入口 htf_context 桩返回该 4h 状态机态（4h 状态机前置门用：非 aligned_*
-    〔2026-10-20 收紧〕一票否决全部 1h 候选；htf_dir 为该态方向，供 STATE_LOCK_CONTRA 逆势锁用，
-    缺省 None=0 不判逆势）"""
+    gate 为 4h 闸门方向（("long"|"short", {...})，None=闸门否决）；htf_nonempty=False
+    表示 4h 空（gate_dir=None → 2026-10-21 起 fail-closed gate_4h），仅专门测 4h
+    方向缺失的用例使用；htf_state 非 None 时合并入口 htf_context 桩返回该 4h 状态机态
+    （4h 状态机前置门用：非 aligned_*〔2026-10-20 收紧〕一票否决全部 1h 候选；
+    htf_dir 为该态方向，供 STATE_LOCK_CONTRA 逆势锁用，缺省 None=0 不判逆势）"""
     import app.services.scanner as sm
 
     orig = {
@@ -119,14 +120,20 @@ def test_reject_gate_4h():
 
 
 def test_reject_votes():
-    """方向票同向不足（同向 <2 张，2026-10-15 拆角色后门槛）→ stage=votes"""
+    """突破触发 + 方向票同向不足（同向 <2 张，2026-10-15 拆角色后门槛）→
+    stage=votes（2026-10-21 方向职责拆分后：票关只对突破类生效，定向恒取 4h）"""
+    breakout = {"type": "trigger_breakout", "direction": 1, "position": "resistance",
+                "breakout_pct": 0.5, "reason": "r"}
     rv: dict = {}
-    cand, _ = _detect(rv, votes=_FAIL_VOTES, htf_nonempty=False)
+    cand, _ = _detect(rv, votes=_FAIL_VOTES, trigger=(breakout, None))
     assert cand is None and rv == {"stage": "votes"}
 
 
 def test_reject_votes_detail_attached():
-    """votes 拒绝且有票 → reject_out 附 detail（2026-10-11 拍板：判定说明展示全部票）"""
+    """突破触发 + votes 拒绝且有票 → reject_out 附 detail（2026-10-11 拍板：
+    判定说明展示全部票）"""
+    breakout = {"type": "trigger_breakout", "direction": 1, "position": "resistance",
+                "breakout_pct": 0.5, "reason": "r"}
     rv: dict = {}
     votes = {"bull": ["MACD"], "bear": ["KDJ"], "bull_n": 1, "bear_n": 1,
              "net": 0, "voted": 3,
@@ -136,7 +143,7 @@ def test_reject_votes_detail_attached():
                  ("4h背景", {"dir": 0, "state_label": "缠绕"}),
                  ("BBW", {"dir": None}),
              ]}
-    cand, _ = _detect(rv, votes=votes, htf_nonempty=False)
+    cand, _ = _detect(rv, votes=votes, trigger=(breakout, None))
     assert cand is None and rv["stage"] == "votes"
     assert rv["detail"] == ("MACD ▲ 多头（金叉）；KDJ ▼ 空头（死叉）；"
                             "4h背景 — 缠绕；BBW —")
@@ -154,22 +161,24 @@ def test_votes_detail_render():
 
 
 def test_reject_direction_flip():
-    """方向票空头 + 闸门多头 → stage=direction_flip（4h 方向硬门）；2026-10-17 A3
-    起附带方向对撞判定说明（漏斗「判定说明」列展示）"""
+    """突破触发 + 反向票 ≥2（同向票也够、票关先放行）→ stage=direction_flip。
+    2026-10-21 方向职责拆分：定向恒取 4h（多头），1h 反向票只否决突破类动量事件"""
+    breakout = {"type": "trigger_breakout", "direction": 1, "position": "resistance",
+                "breakout_pct": 0.5, "reason": "r"}
+    votes = {"bull": ["MACD", "RSI"], "bear": ["KDJ", "布林带"],
+             "bull_n": 2, "bear_n": 2, "net": 0, "voted": 4, "results": {}}
     rv: dict = {}
-    cand, _ = _detect(rv, votes=_SHORT_VOTES, gate=("long", {}))
+    cand, _ = _detect(rv, votes=votes, gate=("long", {}), trigger=(breakout, None))
     assert cand is None and rv["stage"] == "direction_flip"
-    assert "方向票净差-2" in rv["detail"]
-    assert "与4h闸门方向（多头）相反" in rv["detail"]
+    assert rv["detail"] == "突破方向=多头，但1h方向票2张反向——突破需动量同向"
 
 
 # ── 方向派生 A2 修复（2026-10-17 docs/23）：net=0 不再静默偏置为空头 ──────
 
 def test_net_zero_falls_back_to_gate_direction():
-    """net=0（多空各1）且 gate_4h 多头 → A2 后定向改由闸门方向兜底（=多头），
-    不再恒判空：旧 `else -1` 会把定向置空与闸门冲突而撞 direction_flip，修复后
-    与闸门同向 → 正常进入触发层（stub 无触发 → no_trigger）。票数桩满足 votes 关
-    （max≥2）以隔离被测点（真实 3 票链路 net=0 不可达，见 scanner A2 注释）"""
+    """net=0（多空各 2）且 4h 多头 → 2026-10-21 方向职责拆分后定向恒取 4h（=多头），
+    不再由票数净差派生；stub 无触发 → no_trigger。票数桩满足票关（同向 2 张）
+    以隔离被测点"""
     rv: dict = {}
     votes = {"bull": ["MACD", "RSI"], "bear": ["KDJ", "布林带"],
              "bull_n": 2, "bear_n": 2, "net": 0, "voted": 4, "results": {}}
@@ -178,16 +187,17 @@ def test_net_zero_falls_back_to_gate_direction():
 
 
 def test_net_zero_no_gate_direction_rejects():
-    """net=0 且无 4h 闸门方向（htf 空 → gate=None）→ A2 无方向依据，不出信号，
-    漏斗记 votes 关；活跃 pending 按方向失守过期（防御路径）"""
+    """4h 方向缺失（htf 空 → gate_dir=None）→ fail-closed 直接 gate_4h 拒绝
+    （2026-10-21 方向职责拆分：定向不再看 1h 净差，net=0 无 4h 方向即无趋势依据），
+    活跃 pending 按方向失守过期（expire/direction_flip）"""
     rv: dict = {}
     votes = {"bull": ["MACD", "RSI"], "bear": ["KDJ", "布林带"],
              "bull_n": 2, "bear_n": 2, "net": 0, "voted": 4, "results": {}}
     pend = {"id": 1, "direction": 1, "stage1_candle_open": 1_700_000_000_000,
             "touch_ref": "ema21"}
     cand, op = _detect(rv, votes=votes, htf_nonempty=False, pending=pend)
-    assert cand is None and rv["stage"] == "votes"
-    assert "净差为0" in rv["detail"]
+    assert cand is None and rv["stage"] == "gate_4h"
+    assert rv["detail"] == "4h 方向缺失（数据降级），无趋势依据不出信号"
     assert op == {"op": "expire", "reason": "direction_flip"}
 
 
@@ -195,9 +205,11 @@ def test_net_zero_no_gate_direction_rejects():
 
 
 def test_vote_gate_enabled_still_rejects():
-    """对照：方向票关开启（默认）时同向不足仍否决（保持现网门槛）"""
+    """对照：方向票关开启（默认）时突破触发 + 同向不足仍否决（保持现网门槛）"""
+    breakout = {"type": "trigger_breakout", "direction": 1, "position": "resistance",
+                "breakout_pct": 0.5, "reason": "r"}
     rv: dict = {}
-    cand, _ = _detect(rv, votes=_FAIL_VOTES, htf_nonempty=False, flt=_diag_flt())
+    cand, _ = _detect(rv, votes=_FAIL_VOTES, trigger=(breakout, None), flt=_diag_flt())
     assert cand is None and rv["stage"] == "votes"
 
 
@@ -222,13 +234,13 @@ def test_conflict_gate_disabled_allows_counter_trend():
 
 
 def test_vote_gate_disabled_no_votes_no_gate_rejects():
-    """方向票关关闭但指标全不可用（votes=None）且无 4h 闸门方向 → 无方向依据，
-    仍不出信号（安全兜底，漏斗记 votes 关）"""
+    """方向票关关闭但指标全不可用（votes=None）且无 4h 方向 → 定向无依据，
+    fail-closed 记 gate_4h（2026-10-21 起定向恒取 4h，不再回落到票数/安全兜底）"""
     rv: dict = {}
     flt = _diag_flt(direction_vote_gate_enabled=False)
     cand, _ = _detect(rv, votes=None, htf_nonempty=False, flt=flt)
-    assert cand is None and rv["stage"] == "votes"
-    assert "无方向依据" in rv["detail"]
+    assert cand is None and rv["stage"] == "gate_4h"
+    assert rv["detail"] == "4h 方向缺失（数据降级），无趋势依据不出信号"
 
 
 def test_vote_gate_disabled_no_votes_with_gate_builds_candidate():
@@ -264,37 +276,67 @@ def test_structure_1h_gate_retired_signal_survives():
             "pattern": "hammer", "breakout_pct": 0.5, "reason": "r",
             "touch_ref": "ema21", "structure_gate": False}
     rv: dict = {}
-    cand, _ = _detect(rv, kl, trigger=(trig, None), htf_nonempty=False)
+    cand, _ = _detect(rv, kl, trigger=(trig, None))
     assert cand is not None and rv == {}
     # pending 也不再因结构门 expire（此前结构门否决会顺带过期活跃 pending）
     rv2: dict = {}
     pend = {"id": 1, "direction": 1, "stage1_candle_open": 1_700_000_000_000,
             "touch_ref": "ema21"}
-    cand2, op2 = _detect(rv2, kl, trigger=(None, None), pending=pend,
-                         htf_nonempty=False)
+    cand2, op2 = _detect(rv2, kl, trigger=(None, None), pending=pend)
     assert cand2 is None and op2 is None and rv2 == {"stage": "no_trigger"}
 
 
 def test_reject_range_score():
-    """震荡闸门命中（4 项合取，≥1 即拒）→ stage=range_score"""
+    """震荡闸门命中（4 项合取，≥1）且无触发 → stage=range_score（2026-10-21 起
+    回踩确认触发改为降权不拒，见 test_range_score_pullback_confirm_not_rejected）"""
     rv: dict = {}
-    cand, _ = _detect(rv, rs=1, htf_nonempty=False)
+    cand, _ = _detect(rv, rs=1)
     assert cand is None and rv == {"stage": "range_score"}
+
+
+def test_range_score_pullback_confirm_not_rejected():
+    """震荡闸门命中 + 回踩确认触发 → 不硬拒（深回撤本身会让 1h 三线收敛），
+    候选照常产生、reject_out 不写，仅质量分降权 -8（2026-10-21 回踩降权不拒）"""
+    from app.services.strategy.trigger import PULLBACK_CONFIRM
+
+    kl = [[1_700_000_000_000 + i * 3_600_000, 100.0, 101.0, 99.0, 100.0, 10.0, 10.0]
+          for i in range(12)]
+    trig = {"type": PULLBACK_CONFIRM, "direction": 1, "position": "support",
+            "pattern": "hammer", "breakout_pct": 0.5, "reason": "r",
+            "touch_ref": "ema21", "position_ref": "ema21"}
+    flt = _diag_flt()
+    rv: dict = {}
+    cand, _ = _detect(rv, kl, trigger=(trig, None), flt=flt, rs=1)
+    assert cand is not None and rv == {}
+    # 同一触发下 rs=0 为对照：质量分应高出 8（range_penalty 重罚）
+    cand_ok, _ = _detect({}, kl, trigger=(trig, None), flt=flt, rs=0)
+    assert cand_ok["quality_score"] - cand["quality_score"] == 8
+
+
+def test_range_score_pending_upsert_not_rejected():
+    """震荡闸门命中 + 触碰当根进待确认池（trig=None + pending upsert）→ 不硬拒。
+    两段式回踩在「触碰当根」还没有金K，若此处硬拒就进不了池，后续金K确认的
+    降权分支永远不可达（2026-10-21 回踩降权不拒补漏）"""
+    rv: dict = {}
+    cand, op = _detect(rv, rs=1, trigger=(None, {"op": "upsert", "direction": 1}))
+    assert cand is None and op["op"] == "upsert" and rv == {}
+    # 对照：同一路径 rs=0 质量分高出 8（range_penalty 重罚）
+    _, op_ok = _detect({}, rs=0, trigger=(None, {"op": "upsert", "direction": 1}))
+    assert op_ok["quality_score"] - op["quality_score"] == 8
 
 
 def test_structure_1h_reason_no_longer_a_stage():
     """structure_1h 关卡 2026-10-15 退役（1H 结构门降级重罚）：trigger 历史遗留的
     expire/structure_1h 死因在 scanner 侧不再单列，落 no_trigger 兜底"""
     rv: dict = {}
-    cand, _ = _detect(rv, trigger=(None, {"op": "expire", "reason": "structure_1h"}),
-                      htf_nonempty=False)
+    cand, _ = _detect(rv, trigger=(None, {"op": "expire", "reason": "structure_1h"}))
     assert cand is None and rv == {"stage": "no_trigger"}
 
 
 def test_reject_no_trigger():
     """全门通过但 detect_trigger 无触发且无 pending 处置 → stage=no_trigger"""
     rv: dict = {}
-    cand, _ = _detect(rv, trigger=(None, None), htf_nonempty=False)
+    cand, _ = _detect(rv, trigger=(None, None))
     assert cand is None and rv == {"stage": "no_trigger"}
 
 
@@ -330,7 +372,7 @@ def test_no_trigger_detail_real_trigger():
     """真实触发链无触发（2026-10-13）：no_trigger 关 reject_out 附 detail——
     突破实体门 / 回踩未命中触点 / 本根无金K，分号连接（前端判定说明列拆行）"""
     rv: dict = {}
-    cand, op = _detect(rv, _rising_klines(), flt=_diag_flt(), htf_nonempty=False,
+    cand, op = _detect(rv, _rising_klines(), flt=_diag_flt(),
                        real_trigger=True)
     assert cand is None and op is None
     assert rv["stage"] == "no_trigger"
@@ -350,7 +392,7 @@ def test_no_trigger_detail_pending_expired():
     }
     rv: dict = {}
     cand, op = _detect(rv, kl, flt=_diag_flt(), pending=pending,
-                       htf_nonempty=False, real_trigger=True)
+                       real_trigger=True)
     assert cand is None
     assert op == {"op": "expire", "reason": "window_expired"}
     assert rv["stage"] == "no_trigger"
@@ -373,7 +415,7 @@ def test_reject_trigger_whitelist():
     breakout = {"type": "trigger_breakout", "direction": 1, "position": "resistance",
                 "pattern": None, "breakout_pct": 0.5, "reason": "r"}
     rv: dict = {}
-    cand, _ = _detect(rv, kl, trigger=(breakout, None), flt=flt, htf_nonempty=False)
+    cand, _ = _detect(rv, kl, trigger=(breakout, None), flt=flt)
     assert cand is None and rv == {"stage": "trigger_whitelist"}
     # 白名单含突破 → 候选照常产生，reject_out 不写
     flt2 = ScanFilters(
@@ -382,15 +424,14 @@ def test_reject_trigger_whitelist():
         ai_max_per_scan=10, allowed_triggers=ALL_TRIGGERS,
     )
     rv2: dict = {}
-    cand2, _ = _detect(rv2, kl, trigger=(breakout, None), flt=flt2, htf_nonempty=False)
+    cand2, _ = _detect(rv2, kl, trigger=(breakout, None), flt=flt2)
     assert cand2 is not None and rv2 == {}
 
 
 def test_pending_upsert_not_rejected():
     """触碰无金K进待确认池（upsert）不算被拒：reject_out 不写、pending_op 照常返回"""
     rv: dict = {}
-    cand, op = _detect(rv, trigger=(None, {"op": "upsert", "direction": 1}),
-                       htf_nonempty=False)
+    cand, op = _detect(rv, trigger=(None, {"op": "upsert", "direction": 1}))
     assert cand is None and op["op"] == "upsert" and rv == {}
 
 
@@ -416,7 +457,7 @@ def test_pending_upsert_blocked_by_trigger_whitelist():
     from app.services.scan_filters import TRIGGER_BREAKOUT
     rv: dict = {}
     cand, op = _detect(rv, trigger=(None, {"op": "upsert", "direction": 1}),
-                       flt=_adm_flt((TRIGGER_BREAKOUT,)), htf_nonempty=False)
+                       flt=_adm_flt((TRIGGER_BREAKOUT,)))
     assert cand is None and op is None
     assert rv["stage"] == "trigger_whitelist"
     assert "未在触发类型白名单内" in rv["detail"]
@@ -551,8 +592,7 @@ def test_existing_pending_expire_unaffected_by_admission_gate():
     pend = {"id": 1, "direction": 1, "touch_ref": "ema21",
             "stage1_candle_open": 1_700_000_000_000}
     cand, op = _detect(rv, trigger=(None, {"op": "expire", "reason": "window_expired"}),
-                       flt=_adm_flt((TRIGGER_BREAKOUT,)), pending=pend,
-                       htf_state="tangle", htf_nonempty=False)
+                       flt=_adm_flt((TRIGGER_BREAKOUT,)), pending=pend)
     assert cand is None and op == {"op": "expire", "reason": "window_expired"}
     assert rv["stage"] == "no_trigger"
 

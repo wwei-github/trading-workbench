@@ -141,15 +141,24 @@ def test_htf_fetch_failure_not_filtered():
     assert not (cand is None and op and op.get("op") == "expire")
 
 
-def test_gate_direction_mismatch_expires_pending():
-    """4h 闸门多头 + 1h 多数决空头 → 方向一致性门杀（direction_flip），不进结构门"""
-    kl = _trend_1h(closes_start=300.0, drift=-0.35)  # 1h 稳步下行 → 空头多数决
-    pending = {"id": "x", "direction": -1, "stage1_candle_open": 1_700_000_000_000}
+def test_gate_direction_mismatch_expires_pending(monkeypatch):
+    """2026-10-21 方向职责拆分后：定向恒取 4h（此处多头），1h 空头票不再反向
+    否决回踩/无触发场景。1h 下行无突破触发 → no_trigger；活跃 pending（同向=
+    多头）按确认窗口过期（expire/window_expired），不再产生 direction_flip。
+    range_score 打桩放行以隔离被测点（本下行夹具会命中「波动过度扩张」）"""
+    import app.services.scanner as scanner_mod
+
+    monkeypatch.setattr(scanner_mod, "range_score", lambda k, gate_ev=None: (0, []))
+    kl = _trend_1h(closes_start=300.0, drift=-0.35)  # 1h 稳步下行 → 空头多数票
+    pending = {"id": "x", "direction": 1, "stage1_candle_open": 1_700_000_000_000}
+    rv: dict = {}
     cand, op = detect_indicator_candidate(
-        _FakePool(kl, _trending_4h_up()), "TEST/USDT", kl, pending=pending
+        _FakePool(kl, _trending_4h_up()), "TEST/USDT", kl, pending=pending,
+        reject_out=rv,
     )
     assert cand is None
-    assert op is not None and op["op"] == "expire" and op["reason"] == "direction_flip"
+    assert rv["stage"] == "no_trigger"
+    assert op == {"op": "expire", "reason": "window_expired"}
 
 
 # ── range_score：筛选链硬门（monkeypatch 强制命中）；structure_1h 硬门已退役 ──
