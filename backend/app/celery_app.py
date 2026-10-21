@@ -94,8 +94,7 @@ celery_app.conf.update(
         },
         "pending-entry-sweep": {
             "task": "app.tasks.trade_tasks.watch_pending_entries",
-            # 每分钟：挂单入场兜底（docs/27）——成交落地 + 1 小时未成交撤单清除。
-            # 与 user-data-stream 实时路径（EVENT_EXEC_ENABLED 开时）双入口，幂等
+            # 每分钟：挂单入场兜底及保护事故对账恢复；事故处理与开仓/结算共用账号锁。
             "schedule": crontab(minute="*"),
         },
         "daily-report": {

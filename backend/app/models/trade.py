@@ -15,6 +15,36 @@ from sqlalchemy.dialects.postgresql import UUID
 from app.database import Base
 
 
+class ProtectionIncident(Base):
+    """Durable account-level block for an unresolved unprotected position."""
+
+    __tablename__ = "protection_incidents"
+    __table_args__ = (
+        Index("ix_protection_incident_due", "account_key", "status", "next_retry_at"),
+        Index("ix_protection_incident_symbol", "account_key", "symbol", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_key: Mapped[str] = mapped_column(String(20), nullable=False)
+    testnet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    reason: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    qty: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    entry_qty: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+    trade_record_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    entry_order_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    entry_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+    opened_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_retry_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class TradeRecord(Base):
     """一笔自动交易。同一 AI 分析最多每账号一单（docs/17 P1 扇出）：
     (ai_analysis_id, account_key, testnet) 复合唯一（2026-10-03 由全局 unique

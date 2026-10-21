@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import String, and_, cast, or_, select
+from sqlalchemy import String, and_, cast, func, or_, select
 
 from app.celery_app import celery_app
 from app.config import settings
@@ -26,19 +26,113 @@ from app.services.task_log import close_task, open_task
 logger = logging.getLogger(__name__)
 
 OBSERVATION_HOURS = 24
+REVIEW_BATCH_SIZE = 20
+REVIEW_LOOKBACK_DAYS = 7
+# 到期时刻按 UTC 半小时分片轮转：每轮只取 REVIEW_SHARDS_PER_RUN 个分片，
+# 约 24 小时轮完一圈（48 分片 / 每轮 6 个 × 每 30 分钟一轮）。这样某个分片里
+# 长期取不到行情的坏样本不会把后面的新样本永久挤出队列。
+REVIEW_SHARD_SECONDS = 1800
+REVIEW_SHARD_COUNT = 48
+REVIEW_SHARDS_PER_RUN = 6
+
+
+def _as_utc(value: datetime) -> datetime:
+    """DB timestamps are naive UTC; normalize aware values without local-time conversion."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _due_shard(due: datetime) -> int:
+    """Shard index of a due time: UTC half-hour bucket modulo the shard count."""
+    return int(_as_utc(due).timestamp() // REVIEW_SHARD_SECONDS) % REVIEW_SHARD_COUNT
+
+
+def _review_shard_hours(now: datetime, round_no: int = 0) -> list[int]:
+    """Return the due-time shards covered by one run, newest shard first.
+
+    Shard of a due time is its UTC half-hour bucket modulo REVIEW_SHARD_COUNT.
+    Advancing the run slot by one moves the whole window back by one shard, so
+    REVIEW_SHARD_COUNT consecutive slots visit every shard exactly once.
+    """
+    base = int(_as_utc(now).timestamp() // REVIEW_SHARD_SECONDS) % REVIEW_SHARD_COUNT
+    width = min(REVIEW_SHARDS_PER_RUN, REVIEW_SHARD_COUNT)
+    return [(base - round_no * width - i) % REVIEW_SHARD_COUNT for i in range(width)]
+
+
+def _shard_ranges(shard: int, oldest: datetime, due_before: datetime) -> list[tuple]:
+    """Half-open naive-UTC ranges whose due time falls in ``shard``."""
+    step = REVIEW_SHARD_SECONDS
+    lo = int(_as_utc(oldest).timestamp())
+    hi = int(_as_utc(due_before).timestamp()) + 1
+    ranges = []
+    bucket = lo // step
+    while bucket * step < hi:
+        if bucket % REVIEW_SHARD_COUNT == shard:
+            start = max(bucket * step, lo)
+            end = min((bucket + 1) * step, hi)
+            if start < end:
+                ranges.append((
+                    datetime.utcfromtimestamp(start),
+                    datetime.utcfromtimestamp(end),
+                ))
+        bucket += 1
+    return ranges
+
+
+def _review_window(signal_time: datetime) -> tuple[int, int]:
+    start = _as_utc(signal_time)
+    start_ms = int(start.timestamp() * 1000)
+    return start_ms, start_ms + OBSERVATION_HOURS * 3_600_000
+
+
+def _interval_ms(interval: str) -> int:
+    units = {"m": 60_000, "h": 3_600_000, "d": 86_400_000, "w": 604_800_000}
+    try:
+        return int(interval[:-1]) * units[interval[-1]]
+    except (KeyError, ValueError, TypeError):
+        raise ValueError(f"unsupported kline interval: {interval}")
+
+
+def _expected_window_bars(start_ms: int, end_ms: int, interval: str) -> range:
+    step = _interval_ms(interval)
+    first = start_ms - start_ms % step
+    if first < start_ms:
+        first += step
+    return range(first, end_ms - step + 1, step)
+
+
+def _has_complete_window(bars: list, start_ms: int, end_ms: int, interval: str) -> bool:
+    """Require complete bars wholly inside the 24h window; partial edge bars are excluded."""
+    expected = _expected_window_bars(start_ms, end_ms, interval)
+    by_time = {int(float(k[0])): k for k in bars}
+    return all(ts in by_time for ts in expected)
 
 
 def replay_suggestion(
     direction: str, entry: float, stop: float, tp1: float, tp2: float,
     bars: list,
 ) -> tuple[str, bool, int]:
-    """逐 K 回放。bars: [[ts,o,h,l,c,v,...]] 已收盘、时间升序。
+    """Replay a counterfactual price path, not an actual exchange execution.
 
-    返回 (outcome, tp1_hit, bars_to_exit)；未定论 outcome="open"。
+    Only complete bars are supplied. Entry is considered filled if its price is
+    inside a bar's OHLC range. On the entry bar, a touched stop is a conservative
+    loss; targets are ignored because OHLC cannot prove entry preceded target.
+    For later active bars, stop wins same-bar ambiguity; prior TP1 remains banked.
     """
     tp1_hit = False
+    active = False
     for i, k in enumerate(bars):
         high, low = float(k[2]), float(k[3])
+        if not active:
+            if not low <= entry <= high:
+                continue
+            active = True
+            hit_stop = low <= stop if direction == "long" else high >= stop
+            if hit_stop:
+                return "loss", False, i + 1
+            continue
+
         if direction == "long":
             hit_stop = low <= stop
             hit_tp1 = high >= tp1
@@ -49,7 +143,6 @@ def replay_suggestion(
             hit_tp2 = tp2 > 0 and low <= tp2
 
         if hit_stop:
-            # 同根先到先得无法判定 → 保守 loss；但已落袋 tp1 的仍计 win_tp1
             return ("loss" if not tp1_hit else "win_tp1"), tp1_hit, i + 1
         if hit_tp2:
             return "win_tp2", True, i + 1
@@ -61,21 +154,44 @@ def replay_suggestion(
 
 @celery_app.task(name="app.tasks.review_tasks.run_trade_review_task", max_retries=0)
 def run_trade_review_task():
-    """定时复盘：找观察期结束且未复盘的 suggest 决策，逐 K 回放落库"""
+    """Replay due suggestions/vetoes as a counterfactual price path, not actual fills.
+
+    Only complete candles wholly inside the fixed 24h window are replayed. The
+    partial first candle is intentionally excluded, so this is not full coverage
+    of all prices from the exact signal instant. Missing bars remain pending.
+    """
     db = SessionLocal()
     pool = ExchangePool()
     task_id = ""
     try:
-        now = datetime.utcnow()
-        cutoff = now - timedelta(hours=OBSERVATION_HOURS)
-        # 复盘窗口下界：只处理「新近过期」（24~26h，2h 容错任务缺跑）的建议，
-        # 更早的积压不再回溯复盘——否则历史数据清空（复盘重启）后会被整批回填
-        floor = now - timedelta(hours=OBSERVATION_HOURS + 2)
+        now = datetime.now(timezone.utc)
+        now_naive = now.replace(tzinfo=None)
+        due_before = now_naive - timedelta(hours=OBSERVATION_HOURS)
+        oldest = due_before - timedelta(days=REVIEW_LOOKBACK_DAYS)
+
+        # 超过补偿窗口仍未落盘的行不再请求行情，避免无界补历史；保留计数告警，
+        # 人工可从任务记录中看到积压而不是静默丢弃。
+        aged_pending = db.execute(
+            select(func.count()).select_from(AIAnalysis).outerjoin(
+                TradeReview, TradeReview.ai_analysis_id == AIAnalysis.id
+            ).where(
+                or_(
+                    AIAnalysis.trade_decision == "suggest",
+                    and_(AIAnalysis.trade_decision == "skip",
+                         cast(AIAnalysis.veto_original, String) != "null"),
+                ),
+                func.coalesce(AIAnalysis.ai_finished_at, AIAnalysis.created_at) < oldest,
+                TradeReview.id.is_(None),
+            )
+        ).scalar_one()
+        if aged_pending:
+            logger.warning("有 %d 条待复盘超出 %d 天自动补偿范围，未自动处理",
+                           aged_pending, REVIEW_LOOKBACK_DAYS)
 
         # 回放对象（docs/24 A5a 扩容）：suggest 单 + veto 否决单（trade_decision=skip
         # 但带 veto_original 原始三价快照）——否决单回放"假想表现"，与通过单对比
         # 验证双评委 veto 是否有正贡献（此前每笔 suggest 花 3 次 LLM 调用无效果度量）
-        rows = db.execute(
+        stmt = (
             select(AIAnalysis, ScanResult)
             .join(ScanResult, AIAnalysis.scan_result_id == ScanResult.id)
             .outerjoin(TradeReview, TradeReview.ai_analysis_id == AIAnalysis.id)
@@ -89,11 +205,48 @@ def run_trade_review_task():
                         cast(AIAnalysis.veto_original, String) != "null",
                     ),
                 ),
-                AIAnalysis.created_at <= cutoff,
-                AIAnalysis.created_at >= floor,
+                func.coalesce(AIAnalysis.ai_finished_at, AIAnalysis.created_at) <= due_before,
+                func.coalesce(AIAnalysis.ai_finished_at, AIAnalysis.created_at) >= oldest,
                 TradeReview.id.is_(None),
             )
-        ).all()
+        )
+        count = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+        if not count:
+            return
+        due_expr = func.coalesce(AIAnalysis.ai_finished_at, AIAnalysis.created_at)
+
+        def shard_stmt(shard: int):
+            ranges = _shard_ranges(shard, oldest, due_before)
+            if not ranges:
+                return None
+            return stmt.where(or_(*[
+                and_(due_expr >= a, due_expr < b) for a, b in ranges
+            ])).order_by(due_expr, AIAnalysis.id)
+
+        # 分片内再按游标轮转：先保证每个分片本轮至少拿到一页，预算有剩再回头
+        # 取同分片的下一行——单个分片的坏样本不会挤占其它分片的配额。
+        offsets = {shard: 0 for shard in _review_shard_hours(now)}
+        rows = []
+        remaining = REVIEW_BATCH_SIZE
+        while remaining > 0:
+            progressed = False
+            for shard in list(offsets):
+                if remaining <= 0:
+                    break
+                query = shard_stmt(shard)
+                if query is None:
+                    continue
+                batch = db.execute(
+                    query.offset(offsets[shard]).limit(1)
+                ).all()
+                if not batch:
+                    continue
+                progressed = True
+                rows.extend(batch)
+                offsets[shard] += 1
+                remaining -= 1
+            if not progressed:
+                break
         if not rows:
             return  # 无待复盘不记任务记录（每 30 分钟一次，避免刷屏）
         logger.info("复盘任务：%d 条建议待复盘", len(rows))
@@ -127,22 +280,31 @@ def run_trade_review_task():
                     tp2 = float(a.take_profit_2 or 0)
                     r_rating = a.recommendation
 
-                klines = pool.get_klines(a.symbol, settings.KLINE_INTERVAL, 500)
-                closed = klines[:-1] if len(klines) >= 2 else klines
-                start_ms = int(a.created_at.replace(microsecond=0).timestamp() * 1000)
-                bars = [k for k in closed if int(k[0]) >= start_ms]
+                signal_time = a.ai_finished_at or a.created_at
+                start_ms, end_ms = _review_window(signal_time)
+                interval_ms = _interval_ms(settings.KLINE_INTERVAL)
+                now_ms = int(now.timestamp() * 1000)
+                end_closed_ms = min(end_ms - 1, now_ms - interval_ms)
+                expected = len(_expected_window_bars(start_ms, end_ms, settings.KLINE_INTERVAL))
+                klines = pool.get_klines_range(
+                    a.symbol, settings.KLINE_INTERVAL, expected + 2, end_closed_ms
+                ) or []
+                bars = [k for k in klines
+                        if start_ms <= int(float(k[0])) < end_ms
+                        and int(float(k[0])) + interval_ms <= now_ms]
 
                 if entry <= 0 or stop <= 0 or tp1 <= 0 or not r_direction:
-                    outcome, tp1_hit, nbars = "expired", False, len(bars)
-                elif not bars:
-                    # 数据不足：窗口内先等下一轮；超过复盘窗口（26h）后由查询下界排除
+                    outcome, tp1_hit, nbars = "expired", False, 0
+                elif not _has_complete_window(bars, start_ms, end_ms, settings.KLINE_INTERVAL):
+                    logger.warning("建议复盘数据不完整，保留待补偿: %s window=%s..%s bars=%d/%d",
+                                   a.symbol, start_ms, end_ms, len(bars), expected)
                     continue
                 else:
                     outcome, tp1_hit, nbars = replay_suggestion(
                         r_direction, entry, stop, tp1, tp2, bars
                     )
                     if outcome == "open":
-                        continue  # 理论上不会发生（bars 覆盖 24h），防御
+                        outcome = "expired"
 
                 db.add(TradeReview(
                     ai_analysis_id=UUID(str(a.id)),

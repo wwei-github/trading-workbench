@@ -9,16 +9,18 @@
 - Stage 2：analyze_with_guard（校验回炉）→ 落库
 """
 import hashlib
+import json
 import logging
 import math
 import time
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
 from celery import chord, group
 from redis import Redis
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.celery_app import celery_app
 from app.config import settings
@@ -33,7 +35,7 @@ from app.services.ai_analyzer import analyze_with_guard
 from app.services.scan_filters import resolve_scan_filters
 from app.services.llm_client import configure_from, current_concurrency
 from app.services.dual_judge import run_dual_judge
-from app.services.strategy.technical import enforce_htf_constraint, render_indicator_block
+from app.services.strategy.technical import enforce_htf_constraint, render_indicator_block, htf_context
 from app.services.strategy.indicators import volume_ratio
 from app.services.exchange_pool import ExchangePool
 from app.services.shadow import tag_oi_conf
@@ -83,7 +85,7 @@ def _sem_release(ident: str) -> None:
             pass
 
 
-def compute_fingerprint(signal: dict) -> str:
+def compute_fingerprint(signal: dict, context: Optional[dict] = None) -> str:
     """信号指纹：价格 0.5% 对数分桶 + 信号要素。同指纹在 TTL 内可复用结论"""
     close = float(signal.get("current_price") or 0)
     bucket = round(math.log(close) / 0.005) if close > 0 else 0
@@ -94,8 +96,32 @@ def compute_fingerprint(signal: dict) -> str:
         signal.get("pattern") or "",
         signal.get("touch_ref") or "",  # 触点进指纹（docs/22）：同价位桶不同触点不复用结论
         str(bucket),
+        settings.RULE_VERSION,
+        json.dumps(context or {}, sort_keys=True, separators=(",", ":"), default=str),
     ])
     return hashlib.sha1(raw.encode()).hexdigest()[:40]
+
+
+def build_cache_context(cfg, klines: list, htf_klines: list,
+                        tactics_block: str, consecutive_losses: Optional[int]) -> dict:
+    """绑定已收盘事实与运行配置；未收盘根只通过现价有效性检查参与。"""
+    def digest(value) -> str:
+        raw = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    return {
+        "contract": 2,
+        "config": digest({col.key: getattr(cfg, col.key)
+                          for col in SystemConfig.__table__.columns}),
+        "closed_1h": digest(klines[:-1]),
+        "closed_4h": digest(htf_klines[:-1]),
+        "tactics": digest(tactics_block),
+        "losses": consecutive_losses,
+        "scan_filters": digest(asdict(resolve_scan_filters(cfg))),
+        "defaults": digest({key: value for key, value in settings.model_dump().items()
+                            if key.startswith(("AI_", "TRADING_", "RISK_", "TP1_", "TP2_", "SL_"))
+                            and not any(part in key for part in ("KEY", "TOKEN", "SECRET", "PASSWORD"))}),
+    }
 
 
 def _build_judge_signal(signal: dict, klines: list, htf_klines: Optional[list]) -> dict:
@@ -300,7 +326,7 @@ def run_ai_analysis_single(
         _tactics = tactics_match.load_active_tactics(None)
         tactics_block = tactics_match.render_tactics_block(_tactics)
         signal["tactic_names"] = tactics_match.allowed_names(_tactics)
-        fp = compute_fingerprint(signal)
+        fp = compute_fingerprint(signal)  # 取数后再以完整上下文生成最终指纹
         logger.info(
             "AI 分析开始: %s strength=%s fp=%s", r.symbol, r.strength, fp[:8]
         )
@@ -347,20 +373,6 @@ def run_ai_analysis_single(
         # 扫描到分析之间可能已明显移动——所有锚点换算、入场价校验都以最新价为基准
         if klines:
             signal["current_price"] = float(klines[-1][4])
-        # 4) 指纹缓存：TTL 内同指纹沿用旧结论（手动重分析不短路）；
-        #    价格区已失效（现价越过原止盈一/止损）的旧结论不沿用，重新分析
-        if not force and settings.FINGERPRINT_TTL_MIN > 0:
-            cached = _find_recent(db, r.symbol, fp, settings.FINGERPRINT_TTL_MIN)
-            if cached:
-                if _conclusion_still_valid(cached, signal["current_price"]):
-                    note = "⏱️ 沿用近期同信号结论"
-                    ai_progress.push(r.id, "gate", note=note)
-                    _copy(db, r, r.symbol, cached, fp, note, tp2_enabled=_tp2_on)
-                    ai_progress.push_done(r.id, cached.trade_decision, note)
-                    return
-                note = "⚠️ 同信号旧结论的价格区已失效（现价越过原止盈/止损），重新分析"
-                ai_progress.push(r.id, "gate", note=note)
-
         # ── Stage 2：LLM 分析（P1 Agent 工具循环 / P0 单次调用）+ Risk Guard 校验 ──
         # LLM 长调用（数分钟）期间不持有 DB 连接——任务开头取出的连接可能中途被
         # 网络层掐断（pool_pre_ping 只在取出时探测），落库前换新会话并重取行
@@ -385,6 +397,34 @@ def run_ai_analysis_single(
         # enforce_htf_constraint 直接放行（真 fail-open 点），结论在无大周期
         # 背景下产出；逐行落库供复盘按降级/正常分两组对比（B3）
         htf_degraded = not htf_klines
+        # 先取得当前大周期事实，再构造缓存上下文；缺数或尾窗不复用旧裁决。
+        cache_context = build_cache_context(cfg, klines, htf_klines or [],
+                                            tactics_block, consecutive_losses)
+        fp = compute_fingerprint(signal, cache_context)
+        if (not force and not user_input and not in_tail and not htf_degraded
+                and settings.FINGERPRINT_TTL_MIN > 0):
+            cached = _find_recent(db, r.symbol, fp, settings.FINGERPRINT_TTL_MIN)
+            if cached and _conclusion_still_valid(cached, signal["current_price"]):
+                checked = enforce_htf_constraint({
+                    "trade_decision": cached.trade_decision,
+                    "direction": cached.direction,
+                }, htf_klines, signal_type=signal["signal_type"])
+                try:
+                    current_htf = htf_context(htf_klines)
+                except Exception:
+                    current_htf = None
+                eligible = (bool(current_htf)
+                            and not current_htf.get("reject_reason")
+                            and not current_htf.get("block_both")
+                            and (cached.trade_decision == "skip"
+                                 or current_htf.get("direction") == cached.direction))
+                if eligible and checked.get("trade_decision") == cached.trade_decision:
+                    note = "⏱️ 沿用近期同上下文结论"
+                    ai_progress.push(r.id, "gate", note=note)
+                    _copy(db, r, r.symbol, cached, fp, note, tp2_enabled=_tp2_on,
+                          current_price=signal["current_price"])
+                    ai_progress.push_done(r.id, cached.trade_decision, note)
+                    return
         # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
         # Agent 管线由模型按需调用工具自行获取
         # 止损金额口径（2026-09-27）：与开仓引擎同源的预算模式/金额/文案，
@@ -529,19 +569,20 @@ def _conclusion_still_valid(a: AIAnalysis, current_price: float) -> bool:
     """沿用旧结论前校验价格区仍有效：现价须仍在该方向的 止损~止盈一 区间内。
 
     价格已越过原 TP1/SL 的旧结论没有参考意义（如价格已到止盈位还提示做多）——
-    不再沿用，落入下方正常 LLM 重分析（以当前价重新锚定）。skip 结论或价格
-    数据不全时不拦（无失效可言）。
+    不再沿用，落入正常 LLM 重分析。skip 可复用，suggest 数据不全则拒绝复用。
     """
-    if a.trade_decision != "suggest" or not a.direction:
+    if a.trade_decision == "skip":
         return True
+    if a.trade_decision != "suggest" or a.direction not in ("long", "short"):
+        return False
     try:
         price, sl, tp1 = (
             float(current_price), float(a.stop_loss or 0), float(a.take_profit_1 or 0),
         )
     except (TypeError, ValueError):
-        return True
-    if price <= 0 or sl <= 0 or tp1 <= 0:
-        return True
+        return False
+    if not all(math.isfinite(v) and v > 0 for v in (price, sl, tp1)):
+        return False
     if a.direction == "long":
         return sl < price < tp1
     return sl > price > tp1
@@ -555,7 +596,8 @@ def _find_recent(db, symbol: str, fp: str, ttl_min: int) -> Optional[AIAnalysis]
         .where(
             AIAnalysis.symbol == symbol,
             AIAnalysis.fingerprint == fp,
-            AIAnalysis.created_at >= cutoff,
+            func.coalesce(AIAnalysis.cache_origin_at, AIAnalysis.ai_finished_at,
+                          AIAnalysis.created_at) >= cutoff,
             AIAnalysis.trade_decision.isnot(None),
         )
         .order_by(AIAnalysis.created_at.desc())
@@ -563,7 +605,7 @@ def _find_recent(db, symbol: str, fp: str, ttl_min: int) -> Optional[AIAnalysis]
 
 
 def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str,
-          tp2_enabled: bool = True) -> None:
+          tp2_enabled: bool = True, current_price: Optional[float] = None) -> None:
     """沿用旧结论：复制到新 scan_result_id（analysis 加沿用说明）。
 
     必须提交：前端行级轮询以"分析记录出现"为完成标志，不提交会导致轮询挂满超时。
@@ -581,7 +623,14 @@ def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str,
         "take_profit_1": float(src.take_profit_1 or 0),
         "take_profit_2": float(src.take_profit_2 or 0) if tp2_enabled else 0,
         "risk_reward_ratio": float(src.risk_reward_ratio or 0),
-        "position_pct": float(src.position_pct or 0),
+        "position_pct": float(src.position_pct) if src.position_pct is not None else None,
+        "stop_anchor": src.stop_anchor,
+        "tactic_name": src.tactic_name,
+        "tactic_reason": src.tactic_reason,
+        "htf_phase": src.htf_phase,
+        "veto_original": src.veto_original,
+        "stage_trace": src.stage_trace,
+        "cache_origin_at": src.cache_origin_at or src.ai_finished_at or src.created_at,
         "recommendation": float(src.recommendation or 0),
         "pullback_wait": bool(src.pullback_wait),
         # 4h 数据降级标记（B2）沿用源结论：缓存复用不重新拉 4h，降级态随结论走
@@ -589,6 +638,8 @@ def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str,
         # BTC 环境缺失标记（T0-5）沿用源结论：缓存复用不重新拉市场环境
         "btc_env_missing": bool(getattr(src, "btc_env_missing", False)),
     }
+    result["pullback_wait"] = is_pullback_wait(
+        result, float(r.current_price) if current_price is None else current_price)
     _finish(db, r, symbol, result, fp)
     logger.info("AI 结论沿用: %s ← %s", symbol, src.id)
 
@@ -683,6 +734,7 @@ def _upsert_ai_analysis(
             if bool(ai_result.get("pullback_wait")) else None
         ),
         "fingerprint": fingerprint,
+        "cache_origin_at": ai_result.get("cache_origin_at") or datetime.utcnow(),
         "stage_trace": ai_result.get("stage_trace"),
         # 4h 数据降级标记（2026-10-21 观测 B2）：分析时 4h K线缺失 → True，
         # 复盘据此分组（B3）；latest-wins 重分析按最新一次的事实覆盖

@@ -801,6 +801,10 @@ def _run_migrations(engine):
             "ALTER TABLE scan_results "
             "ADD COLUMN IF NOT EXISTS quota_rank INTEGER"
         ))
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS cache_origin_at TIMESTAMP"
+        ))
 
 
 def init_db():

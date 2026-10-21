@@ -955,10 +955,40 @@ def _attempt_open(
             # 紧急处理：先撤全部挂单再只减仓平仓（reduceOnly：开仓单未成交时会被
             # 交易所拒绝，而不是反向开成裸仓）
             try:
-                trader.cancel_all_algo(symbol)
-                trader.market_order(symbol, close_side, qty, reduce_only=True)
+                # Do not cancel protective orders before a close request: if close fails,
+                # an existing SL is still valuable protection. The incident persists
+                # after the outer rollback and the reconciler decides whether retry is safe.
+                close_result = trader.market_order(symbol, close_side, qty, reduce_only=True)
             except Exception as close_err:
-                logger.error("紧急平仓失败 %s: %s（若开仓单未成交则本无仓位）", symbol, close_err)
+                logger.error("紧急平仓失败 %s: %s", symbol, close_err)
+                from app.services.protection_recovery import (
+                    create_incident_after_rollback, status_for_close_error,
+                )
+                try:
+                    create_incident_after_rollback(
+                        db, account_key=trader.account_key, testnet=trader.testnet,
+                        symbol=symbol, direction=direction,
+                        reason="open_protection_failed", qty=qty,
+                        entry_order_id=entry_order.get("orderId"), entry_price=fill_price,
+                        error=f"protection={place_err}; close={close_err}",
+                        status=status_for_close_error(close_err),
+                    )
+                except Exception:
+                    logger.exception("开仓保护事故无法持久化 %s", symbol)
+            else:
+                # ACK is not proof of flat; block new entries until position reconciliation.
+                from app.services.protection_recovery import create_incident_after_rollback
+                try:
+                    create_incident_after_rollback(
+                        db, account_key=trader.account_key, testnet=trader.testnet,
+                        symbol=symbol, direction=direction,
+                        reason="open_protection_failed", qty=qty,
+                        entry_order_id=entry_order.get("orderId"), entry_price=fill_price,
+                        error=f"protection={place_err}; close_ack={close_result}",
+                        status="awaiting_reconcile",
+                    )
+                except Exception:
+                    logger.exception("开仓平仓待对账事故无法持久化 %s", symbol)
             raise
 
         positions[symbol] = {"amt": qty if direction == "long" else -qty,
@@ -1145,11 +1175,41 @@ def materialize_pending_entry(
         db.rollback()
         logger.error("挂单成交落地失败 %s: %s（紧急平仓防裸仓）", symbol, e)
         close_qty = filled_qty_real if filled_qty_real > 0 else float(pe.qty or 0)
+        incident = dict(
+            account_key=trader.account_key, testnet=trader.testnet,
+            symbol=symbol, direction=direction,
+            reason="pending_materialize_protection_failed", qty=close_qty,
+            entry_order_id=pe.limit_order_id,
+            entry_price=pe.filled_price or pe.entry_price,
+            rollback_session=False,
+        )
         try:
-            trader.cancel_all_algo(symbol)
-            trader.market_order(symbol, close_side, close_qty, reduce_only=True)
+            close_result = trader.market_order(
+                symbol, close_side, close_qty, reduce_only=True)
         except Exception as close_err:
             logger.error("挂单成交后紧急平仓失败 %s: %s", symbol, close_err)
+            from app.services.protection_recovery import (
+                create_incident_after_rollback, status_for_close_error,
+            )
+            try:
+                create_incident_after_rollback(
+                    db, **incident,
+                    error=f"protection={e}; close={close_err}",
+                    status=status_for_close_error(close_err),
+                )
+            except Exception:
+                logger.exception("挂单保护事故无法持久化 %s", symbol)
+        else:
+            # 与市价开仓同口径：ACK 不代表已空仓，落待对账事故由巡检确认
+            from app.services.protection_recovery import create_incident_after_rollback
+            try:
+                create_incident_after_rollback(
+                    db, **incident,
+                    error=f"protection={e}; close_ack={close_result}",
+                    status="awaiting_reconcile",
+                )
+            except Exception:
+                logger.exception("挂单平仓待对账事故无法持久化 %s", symbol)
         try:
             fresh = db.get(PendingEntryOrder, pe_id)
             if fresh is not None:
@@ -1397,6 +1457,11 @@ def try_open_for_analysis(
     if a.created_at and a.created_at < datetime.utcnow() - timedelta(hours=1):
         logger.info("即时开仓跳过 %s：分析已超过 1 小时", a.symbol)
         _mark_open_block(db, a, "分析已超过 1 小时（信号过期）")
+        return "blocked"
+    # 持久保护事故按账号封锁新开仓，避免异常仓位尚未确认时继续增加风险。
+    from app.services.protection_recovery import has_active_incident
+    if has_active_incident(db, trader.account_key, trader.testnet):
+        _mark_open_block(db, a, "账号存在未解决的保护事故，禁止新开仓")
         return "blocked"
     # 该分析在本账号已开过仓（docs/17 P1 扇出：同一 AI 分析允许多账号各开一单，
     # 按账号判断；NULL account_key 旧行按环境回落，与全局口径一致）
@@ -2031,13 +2096,24 @@ def _rehang_lost_sl(db: Session, trader: BinanceTrader, rec: TradeRecord,
         )
         return
     if overshoot and sl_dead:
-        # SL 触发被拒、现价又已越过 → 原价位补挂会立即触发被拒，就地无法恢复保护
-        logger.error(
-            "止损单被交易所拒单且现价已越过 %s：SL=%s 现价=%s，剩余仓位裸奔，"
-            "原价位无法补挂，等待人工处置", rec.symbol, cur_sl, price,
-        )
+        # Route through the durable account incident; no blanket algo cancel before
+        # a confirmed position-specific close.
+        from app.services.protection_recovery import create_incident_after_rollback
+        try:
+            create_incident_after_rollback(
+                db, account_key=trader.account_key or ("testnet-1" if rec.testnet else "live-1"),
+                testnet=rec.testnet, symbol=rec.symbol, direction=rec.direction,
+                reason="sl_rejected_overshot", qty=float(rec.qty or 0),
+                trade_record_id=rec.id,
+                entry_order_id=(raw.get("entry_order_id")),
+                entry_price=float(rec.entry_price or 0) or None,
+                opened_at=rec.opened_at, error=f"SL {sl_id} rejected; price {price} crossed {cur_sl}",
+                status="pending", rollback_session=False,
+            )
+        except Exception:
+            logger.exception("SL拒单事故持久化失败 %s", rec.symbol)
         _alert_naked_position(rec, price, cur_sl,
-                              "止损单触发被拒且现价已越过，原止损价位无法补挂")
+                              "止损单触发被拒且现价已越过，已进入保护事故恢复队列")
         return
     try:
         _replace_sl(db, trader, rec, open_ids,

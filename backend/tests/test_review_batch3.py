@@ -77,13 +77,13 @@ def review_env(db, monkeypatch):
     monkeypatch.setattr(review_tasks, "SessionLocal", sessionmaker(bind=engine))
 
     class _FakePool:
-        def get_klines(self, symbol, interval, window):
-            # 24 根已收盘 + 1 根未收盘（任务里 [:-1] 截掉）；从 26h 前起每小时
-            # 一根，分析 created_at=25h 前 → 首根被 start_ms 过滤，第二根
-            #（25h 前）low 97.5 ≤ sl 98 先触止损 → 回放 loss
+        def get_klines_range(self, symbol, interval, limit, end_time_ms):
+            # Exactly 24 closed hourly bars ending at the fixed observation end.
+            end_open = end_time_ms - end_time_ms % 3_600_000
             return [
-                _kline(h - 26, high=105.0 if h == 3 else 101.0, low=97.5, close=100.0)
-                for h in range(25)
+                [end_open - (23 - h) * 3_600_000, 100.0,
+                 105.0 if h == 3 else 101.0, 97.5, 100.0, 1000.0]
+                for h in range(24)
             ]
 
     monkeypatch.setattr(review_tasks, "ExchangePool", _FakePool)

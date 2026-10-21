@@ -624,14 +624,26 @@ def watch_pending_entries():
             select(PendingEntryOrder).where(PendingEntryOrder.status == "pending")
         ).scalars().all()
         cfg = db.get(SystemConfig, 1)
+        from app.models.trade import ProtectionIncident
+        from app.services.protection_recovery import ACTIVE_STATUSES
+        incidents = db.execute(select(ProtectionIncident.account_key, ProtectionIncident.testnet)
+            .where(ProtectionIncident.status.in_(ACTIVE_STATUSES))
+            .distinct()).all()
         # 按账号分组（account_key 空旧行按环境回落，与全局账号口径一致）
         by_acc: dict = {}
         for pe in rows:
             key = pe.account_key or ("testnet-1" if pe.testnet else "live-1")
             by_acc.setdefault(key, []).append(pe.id)
+        # 事故以落库的 testnet 为准对账：账号若已从注册表移除，BinanceTrader(key)
+        # 会回落到其它账号，届时用 trader.testnet 查事故将永远查不到（账号锁死）
+        incident_envs: dict = {}
+        for account_key, testnet in incidents:
+            key = account_key or ("testnet-1" if testnet else "live-1")
+            by_acc.setdefault(key, [])
+            incident_envs.setdefault(key, set()).add(bool(testnet))
     finally:
         db.close()
-    if not rows:
+    if not by_acc:
         return
 
     r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
@@ -641,6 +653,12 @@ def watch_pending_entries():
         if not trader.configured:
             logger.warning("挂单巡检跳过账号 %s：缺少币安 API 凭据", key)
             continue
+        if trader.account_key != key:
+            # 回落到其它账号时绝不能继续：positions()/平仓会落到错误账号，
+            # 同 symbol 同量级的仓位可能被误平
+            logger.error("挂单巡检跳过账号 %s：账号不在注册表，构造已回落 %s",
+                         key, trader.account_key)
+            continue
         ident = uuid4().hex
         if not _acquire_open_lock(r, ident, wait_s=2, ttl_s=_OPEN_LOCK_TTL_S, account=key):
             logger.info("挂单巡检等锁超时（%s），本轮跳过", key)
@@ -648,6 +666,13 @@ def watch_pending_entries():
         try:
             db = SessionLocal()
             try:
+                try:
+                    from app.services.protection_recovery import recover_due_incidents
+                    for env in sorted(incident_envs.get(key) or {trader.testnet}):
+                        recover_due_incidents(db, trader, key, env)
+                except Exception:
+                    db.rollback()
+                    logger.exception("保护事故恢复异常 account=%s", key)
                 for pe_id in pe_ids:
                     try:
                         _expire_or_materialize(db, trader, pe_id, cfg, now)

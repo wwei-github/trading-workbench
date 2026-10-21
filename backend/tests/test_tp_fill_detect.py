@@ -118,19 +118,28 @@ def test_sl_not_rejected_or_query_fail_is_false():
 
 # ---------- _rehang_lost_sl：裸仓兜底 ----------
 
-def test_rehang_sl_rejected_overshoot_escalates(monkeypatch):
-    """SL 触发被拒 + 现价已越过 → 不呆等，升级告警，不尝试原地补挂"""
+def test_rehang_sl_rejected_overshoot_creates_recovery_incident(monkeypatch):
+    """SL 触发被拒 + 现价已越过 → 纳入持久恢复闭环，不只发告警"""
     record = _rec(stop_loss=0.01826)
     rt = FakeTrader(
         algo_details={1000000247129410: {"algoStatus": "REJECTED"}},
         price=0.01860,  # 空单：现价 0.01860 ≥ SL 0.01826 → 越过
     )
+    rt.account_key = "testnet-1"
     called = {}
 
     def _boom(*a, **k):
         called["rehang"] = True
 
     alerts = []
+    incidents = []
+    from app.services import protection_recovery
+    monkeypatch.setattr(protection_recovery, "create_incident_after_rollback",
+                        lambda db, **kw: incidents.append(kw))
+    record.id = "trade-1"
+    record.qty = 1.25
+    record.entry_price = 0.01818
+    record.opened_at = None
     monkeypatch.setattr(te, "_replace_sl", _boom)
     monkeypatch.setattr(te, "_alert_naked_position",
                         lambda rec, price, sl, reason: alerts.append(reason))
@@ -139,7 +148,10 @@ def test_rehang_sl_rejected_overshoot_escalates(monkeypatch):
                     rt, record, set())
 
     assert called == {}  # 现价越过原价位无法补挂，不应尝试
-    assert alerts and "被拒" in alerts[0]
+    assert incidents and incidents[0]["reason"] == "sl_rejected_overshot"
+    assert incidents[0]["trade_record_id"] == "trade-1"
+    assert incidents[0]["rollback_session"] is False
+    assert alerts and "已进入保护事故" in alerts[0]
 
 
 def test_rehang_sl_overshoot_not_rejected_skips(monkeypatch):
