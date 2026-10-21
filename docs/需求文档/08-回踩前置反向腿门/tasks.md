@@ -94,7 +94,7 @@
 
 ## T8. 本地提交
 
-- [ ] 仅 stage 本次改动文件。
-- [ ] conventional commit，建议：
+- [x] 仅 stage 本次改动文件。
+- [x] conventional commit，建议：
   `feat(strategy): 增加回踩前置反向腿过滤门`
-- [ ] 不推送、不触发 CI、不连接服务器。
+- [x] 不推送、不触发 CI、不连接服务器。
