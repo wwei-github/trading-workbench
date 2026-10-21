@@ -181,7 +181,8 @@ def run_dual_judge(
             )
             # veto 闭环（docs/24 A5a）：原始建议三价随 skip 快照落库，
             # 复盘任务据此回放"被否决建议的假想表现"，对比通过单验证 veto 贡献；
-            # source 标记否决来源（dual_judge / htf_constraint），便于分组对比
+            # source 标记否决来源（当前仅 dual_judge；历史行另有 htf_constraint，
+            # 该来源 2026-10-21 随 AI 层方向兜底退役），便于分组对比
             skipped["veto_original"] = {
                 "source": "dual_judge",
                 "direction": decision.get("direction"),

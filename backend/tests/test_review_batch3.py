@@ -563,17 +563,15 @@ def test_actual_review_protection_duration(db, monkeypatch):
     assert live["resolved"] == 1
 
 
-def test_htf_constraint_veto_snapshot():
-    """4h 硬约束程序否决单也带 veto_original 快照（A5a 闭环补全）：
-    宏观同侧排列态背景 suggest 逆势被强制 skip 时快照原始三价，
-    source=htf_constraint；合规方向 / 非 suggest 原样返回"""
-    from app.services.strategy.technical import enforce_htf_constraint
+def test_annotate_htf_phase_does_not_veto_direction():
+    """2026-10-21 用户拍板：4h 方向限制只保留在筛选层（scanner 前置门）。
+    AI 出结果后仅落 htf_phase 快照，不再因 4h 排列强制 skip 或改判方向
+    （原 enforce_htf_constraint 退役）；非 suggest / 无 4h 数据不落快照。"""
+    from app.services.strategy.technical import annotate_htf_phase
 
     def _htf_klines(state):
         # analyze_htf_background 要求 ≥155 已收盘根（EMA144 种子+余量）。
-        # 盘整基座后缓涨的形态（140 根横盘 + 60 根缓涨/缓跌）落多头/空头
-        # 排列稳态（宏观同侧锁逆势档）——稳态线性趋势或 fresh 交叉会落
-        # 双向禁开/宏观交叉分支，锁逆势断言需稳态排列
+        # 盘整基座后缓涨/缓跌落多头/空头排列稳态（macro 同侧）。
         out, p = [], 100.0
         drift = 0.5 if state == "bullish" else -0.5
         for n, d in ((140, 0.0), (60, drift)):
@@ -585,25 +583,25 @@ def test_htf_constraint_veto_snapshot():
             for i, c in enumerate(out)
         ]
 
-    # 多头排列背景 + AI 开空 → 强制 skip + 快照 + htf_phase stash
+    # 多头排列背景 + AI 开空 → 原样放行 + htf_phase 快照，无否决痕迹
     d = {"trade_decision": "suggest", "direction": "short",
          "entry_price": 99.0, "stop_loss": 101.0, "take_profit_1": 95.0,
          "recommendation": 66}
-    out = enforce_htf_constraint(d, _htf_klines("bullish"))
-    assert out["trade_decision"] == "skip"
+    out = annotate_htf_phase(d, _htf_klines("bullish"))
+    assert out is d
+    assert out["trade_decision"] == "suggest"
+    assert out["direction"] == "short"
+    assert out["entry_price"] == 99.0 and out["stop_loss"] == 101.0
     assert out["htf_phase"] == "aligned_bull"
-    v = out["veto_original"]
-    assert v["source"] == "htf_constraint"
-    assert v["direction"] == "short"
-    assert v["entry_price"] == 99.0 and v["stop_loss"] == 101.0
+    assert "veto_original" not in out
 
-    # 方向合规（多头排列顺势开多）→ 原样放行、无快照，htf_phase 照常 stash
-    d2 = {"trade_decision": "suggest", "direction": "long",
-          "entry_price": 99.0, "stop_loss": 97.0, "take_profit_1": 103.0}
-    out2 = enforce_htf_constraint(d2, _htf_klines("bullish"))
-    assert out2["trade_decision"] == "suggest"
-    assert out2["htf_phase"] == "aligned_bull"
-    assert "veto_original" not in out2
+    # 非 suggest / 无 4h 数据 → 原样返回、不落快照
+    d2 = {"trade_decision": "skip", "direction": "long"}
+    out2 = annotate_htf_phase(d2, _htf_klines("bullish"))
+    assert out2 is d2 and "htf_phase" not in out2
+    d3 = {"trade_decision": "suggest", "direction": "long"}
+    out3 = annotate_htf_phase(d3, None)
+    assert out3 is d3 and "htf_phase" not in out3
 
 
 # ── A5b：actual_review 分组维度 ──

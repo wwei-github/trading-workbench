@@ -336,7 +336,13 @@ class Settings(BaseSettings):
     # 属程序判定变化（新增否决），故单独 bump。
     # v2026-10-21-1：4h 取数窗口 300→600 根（EMA144 种子残留 11%→<0.2%，斜率/
     # 走平判定稳定）+ 4h 末根已收盘竞态兜底（状态不再滞后一根），判定输入变化故 bump。
-    RULE_VERSION: str = "v2026-10-21-1"
+    # v2026-10-21-2（用户拍板）：4h 方向配对职责收敛到筛选层——「多头排列+做多 /
+    # 空头排列+做空」只作 scanner 选币逻辑；P0/P1 提示词删除 _RULE_HTF_HARD 硬约束
+    # （状态约束/方向约束），改为只注入 state/macro 数据行，AI 结合结构·量能·方向票
+    # 自主判断方向；enforce_htf_constraint 退役为 annotate_htf_phase（仅落 htf_phase
+    # 快照，不再双向禁开/锁逆势/过渡态影子 veto）；评分档位 60 不再要求 4h 同侧，
+    # 4h 同向降为 70/85 档加分项；_RULE_TP_BASE 唯一放宽不再附加 4h 宏观同侧条件。
+    RULE_VERSION: str = "v2026-10-21-2"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

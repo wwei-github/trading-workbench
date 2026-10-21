@@ -8,10 +8,12 @@ TURN_CONFIRM_BARS 根反向）→ *_recover 恢复初期（宏观同侧的 21×5
 → aligned_* 排列稳态 → bull_dip/bear_rally 过渡态（宏观逆侧，21×55 关系
 定名）。完备分割，无第五种落点。
 
-锁单矩阵：tangle/turn_* 双向禁开；macro_cross_*/recover/aligned_* 锁逆势
-（宏观对齐被状态机自然吸收，不再独立分支）；过渡态放行（质量分逆宏观
--4 兜底）。质量分查 STATE_QUALITY（同向加分, 逆向减分）；退役旧档
-（weak/medium/strong/extreme/exhausted/overheat/cooling 存量行）走中性兜底。
+锁单矩阵（仅 scanner 前置门）：tangle/turn_* 双向禁开；macro_cross_*/recover/
+aligned_* 锁逆势（宏观对齐被状态机自然吸收，不再独立分支）；过渡态放行
+（质量分逆宏观 -4 兜底）。2026-10-21 起 AI 提示词与 AI 层程序兜底都不再
+注入方向限制，只落 htf_phase 快照。质量分查 STATE_QUALITY（同向加分,
+逆向减分）；退役旧档（weak/medium/strong/extreme/exhausted/overheat/cooling
+存量行）走中性兜底。
 
 夹具均经参数扫描定标（11/11 命中后固化为常量）：
 - 缠绕：横盘（间距道）/ 正弦锯齿（ADX 道）
@@ -27,19 +29,16 @@ from app.services.strategy.ema import calc_ema
 from app.services.strategy.technical import (
     CROSS_FRESH_BARS,
     HTF_SHORT,
-    STATE_BLOCK_BOTH,
     STATE_LABELS,
     STATE_ALIGNED,
-    STATE_LOCK_CONTRA,
     STATE_QUALITY,
-    STATE_TRANSITION,
     _STATE_DIR,
     _STATE_MACRO,
     _ema_state,
     _htf_cross_age,
     analyze_htf_background,
+    annotate_htf_phase,
     compute_quality_score,
-    enforce_htf_constraint,
     render_indicator_block,
 )
 
@@ -330,95 +329,33 @@ def test_cross_age_ignores_nan_seed_boundary():
     assert age is None and d == 1
 
 
-# ── 硬约束锁单矩阵（常量驱动全枚举）─────────────────────────────
+# ── 4h 状态快照（2026-10-21：AI 层不再做方向否决）────────────────
 
 
-def test_enforce_block_both_matrix():
-    """缠绕/拐头（STATE_BLOCK_BOTH 3 态）× 开多/开空 → 一律 skip：
-    skip_reason 带状态约束语义与原因、htf_phase stash 状态 key、veto 快照"""
-    for st in STATE_BLOCK_BOTH:
-        _why = "缠绕无趋势" if st == "tangle" else "排列内拐头，趋势衰竭警戒"
+def test_annotate_htf_phase_never_vetoes_direction():
+    """任意 4h 状态 × 任意方向：只写 htf_phase，decision/三价保持原样，
+    不再产生 veto_original（方向限制只保留在 scanner 前置门）"""
+    for st, kls in _STATE_FIXTURES.items():
         for direction in ("long", "short"):
-            d = {"trade_decision": "suggest", "direction": direction}
-            out = enforce_htf_constraint(d, _STATE_FIXTURES[st])
-            assert out["trade_decision"] == "skip", (st, direction)
-            assert "状态约束：4h" in out["skip_reason"], (st, direction)
-            assert _why in out["skip_reason"], (st, direction)
-            assert "双向禁开新仓" in out["skip_reason"]
-            assert out["htf_phase"] == st
-            assert out["veto_original"]["source"] == "htf_constraint"
+            d = {"trade_decision": "suggest", "direction": direction,
+                 "entry_price": 100, "stop_loss": 98, "take_profit_1": 104}
+            out = annotate_htf_phase(d, kls)
+            assert out is d
+            assert out["trade_decision"] == "suggest", (st, direction)
+            assert out["direction"] == direction
+            assert out["entry_price"] == 100 and out["stop_loss"] == 98
+            assert out.get("htf_phase") == st, (st, direction)
+            assert "veto_original" not in out
 
 
-def test_enforce_non_aligned_blocks_both_directions():
-    """T3-2 单一权威（2026-10-21）：只放行 STATE_ALIGNED——
-    宏观交叉/恢复/过渡态等非排列态不再"锁逆势放顺势"，一律双向禁开
-    （筛选层前置门已拦截，这里只做兜底，防止漏网信号真单）"""
-    for st in STATE_LOCK_CONTRA:
-        if st in STATE_ALIGNED:
-            continue   # 排列态是唯一放行集合，由 test_enforce_aligned_allows 覆盖
-        for direction in ("long", "short"):
-            out = enforce_htf_constraint(
-                {"trade_decision": "suggest", "direction": direction},
-                _STATE_FIXTURES[st])
-            assert out["trade_decision"] == "skip", (st, direction)
-            assert "状态约束：4h" in out["skip_reason"], (st, direction)
-            assert "双向禁开新仓" in out["skip_reason"]
-            assert out["htf_phase"] == st
-            assert out["veto_original"]["source"] == "htf_constraint"
-
-
-def test_enforce_transition_blocks_both_directions():
-    """过渡态（bull_dip/bear_rally）同样双向禁开（非回踩确认）；
-    回踩确认走影子 A/B，见 test_enforce_transition_pbc_shadow_veto"""
-    for st in ("bull_dip", "bear_rally"):
-        for direction in ("long", "short"):
-            out = enforce_htf_constraint(
-                {"trade_decision": "suggest", "direction": direction},
-                _STATE_FIXTURES[st])
-            assert out["trade_decision"] == "skip", (st, direction)
-            assert "状态约束：4h" in out["skip_reason"]
-            assert out["htf_phase"] == st
-
-
-def test_enforce_transition_pbc_shadow_veto():
-    """影子 A/B（2026-10-20）：过渡态 × 回踩确认 → 程序 veto 不进真单；
-    veto_original 三价快照保留 + ab_bucket 标记；非回踩确认仍放行。"""
-    for st in STATE_TRANSITION:
-        d = {"trade_decision": "suggest", "direction": "long", "entry_price": 100,
-             "stop_loss": 98, "take_profit_1": 104, "take_profit_2": 108,
-             "risk_reward_ratio": 2.0, "recommendation": 70}
-        out = enforce_htf_constraint(
-            d, _STATE_FIXTURES[st], "trigger_pullback_confirm")
-        assert out["trade_decision"] == "skip", st
-        assert out["htf_phase"] == st
-        assert "回踩确认" in out["skip_reason"] and "影子 A/B" in out["skip_reason"]
-        v = out["veto_original"]
-        assert v["source"] == "htf_constraint" and v["ab_bucket"] == "transition_pbc"
-        assert v["entry_price"] == 100 and v["stop_loss"] == 98
-        assert v["take_profit_1"] == 104 and v["recommendation"] == 70
-
-
-def test_enforce_transition_non_pbc_blocked():
-    """过渡态非回踩确认信号（突破型）与缺 signal_type 的调用一律禁开——
-    缺省不再退回"过渡态放行"的旧口径（T3-2 单一权威）"""
-    for st in STATE_TRANSITION:
-        for sig in ("trigger_breakout", "trigger_trend_breakout", None):
-            out = enforce_htf_constraint(
-                {"trade_decision": "suggest", "direction": "long"},
-                _STATE_FIXTURES[st], sig)
-            assert out["trade_decision"] == "skip", (st, sig)
-            assert "状态约束：4h" in out["skip_reason"]
-            assert out["htf_phase"] == st
-
-
-def test_enforce_passthrough_no_htf_or_not_suggest():
+def test_annotate_htf_phase_passthrough_no_htf_or_not_suggest():
     """非 suggest / 无 4h 数据原样返回，不 stash htf_phase"""
     d = {"trade_decision": "skip", "direction": "long"}
-    assert enforce_htf_constraint(d, _ALIGNED_BULL) is d
+    assert annotate_htf_phase(d, _ALIGNED_BULL) is d
     assert "htf_phase" not in d
     d2 = {"trade_decision": "suggest", "direction": "long"}
-    assert enforce_htf_constraint(d2, None) is d2
-    assert enforce_htf_constraint(d2, []) is d2
+    assert annotate_htf_phase(d2, None) is d2
+    assert annotate_htf_phase(d2, []) is d2
     assert "htf_phase" not in d2
 
 
@@ -492,36 +429,21 @@ def test_quality_legacy_phase_fallback():
     assert s3 == 50 + 1 * 3 * 10 + 5 - 4   # 旧逆宏观行罚分照旧
 
 
-# ── 渲染行（状态约束 / 方向约束 / 结构化行）──────────────────────
+# ── 渲染行（4h 背景仅数据）──────────────────────────────────────
 
 
-def test_render_state_constraint_line():
-    """禁开态（tangle/turn_*）渲染「状态约束（硬性）」双向禁开行 +
-    结构化行标注宏观未评估；不渲染方向约束行"""
-    for st in ("tangle", "turn_bull"):
+def test_render_htf_background_is_data_only():
+    """4h 背景只渲染 state/macro 数据行；任何状态都不再出现
+    「状态约束/方向约束（硬性）」或「双向禁开」文案"""
+    for st in ("tangle", "turn_bull", "aligned_bull", "bull_dip"):
         block = render_indicator_block(
             _kl_1h_flat(), htf_klines=_STATE_FIXTURES[st])
-        assert "状态约束（硬性）" in block, st
-        assert "双向禁开新仓" in block, st
-        assert "方向约束（硬性）" not in block, st
-        assert f"- 4h背景: state={st}（双向禁开，宏观对齐未评估）" in block, st
+        assert "状态约束" not in block, st
+        assert "方向约束" not in block, st
+        assert "双向禁开" not in block, st
+        assert f"state={st}" in block, st
         assert "phase=" not in block   # phase 键已退役
-
-
-def test_render_direction_constraint_line():
-    """宏观同侧态（aligned_bull）渲染「方向约束（硬性）」仅可 long 行 +
-    结构化行 macro=同侧；不渲染状态约束行"""
     block = render_indicator_block(_kl_1h_flat(), htf_klines=_ALIGNED_BULL)
-    assert "方向约束（硬性）" in block
-    assert "仅可 long，开空一律 skip" in block
-    assert "状态约束（硬性）" not in block
-    assert "- 4h背景: state=aligned_bull macro=同侧" in block
-
-
-def test_render_transition_state_constraint_line():
-    """过渡态（bull_dip）T3-2 起同样渲染「状态约束（硬性）」双向禁开行——
-    筛选层只放行 STATE_ALIGNED，回踩确认的过渡态影子 A/B 在程序侧处理"""
+    assert "macro=同侧" in block
     block = render_indicator_block(_kl_1h_flat(), htf_klines=_BULL_DIP)
-    assert "状态约束（硬性）" in block
-    assert "双向禁开新仓" in block
-    assert "- 4h背景: state=bull_dip macro=逆侧" in block
+    assert "macro=逆侧" in block

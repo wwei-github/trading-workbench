@@ -28,7 +28,6 @@ from app.services.risk_guard import (
 from app.services.strategy.indicators import calc_atr
 from app.services.strategy.technical import atr_series
 from app.services.ai_analyzer import (
-    _RULE_HTF_HARD,
     _RULE_BTC_ENV,
     _RULE_SL,
     SIGNAL_TYPE_LABELS,
@@ -119,7 +118,6 @@ def render_system_prompt(
         tp1_cap_desc=render_tp1_cap_desc(_rr),
         far_atr=_far_atr,
         risk_label=_risk_label,
-        _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_SCORE=render_rule_score(
             min_recommendation, _rr, _risk_label,
             consecutive_losses=consecutive_losses,
@@ -162,7 +160,7 @@ LEVEL_REFS = (
 _REF_DESC = "、".join(LEVEL_REFS)
 
 AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随消息给出，规则如下：
-{_RULE_HTF_HARD}
+4h 背景以事实包数据行给出（state/macro），仅作趋势强弱与风险参考，不限制多空方向。
 1. 程序能算的不让你算——事实包直接用；需补充数据才调工具，最多 {max_rounds} 轮。
 2. **禁止编造绝对价格**：价格一律用结构位锚点表达{_price_anchor_desc}，
    ref 取值: {_ref_desc}；offset_pct 为相对锚点的百分比偏移。
@@ -686,7 +684,6 @@ def analyze_coin_agent(
         tp1_cap_desc=render_tp1_cap_desc(_rr),
         far_atr=round(settings.TP1_MAX_ATR / _rr, 2),
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
-        _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_SCORE=render_rule_score(
             min_recommendation, _rr,
             risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",

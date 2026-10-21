@@ -443,8 +443,9 @@ def detect_indicator_candidate(
     # 是方向冲突关的盲区，本关补齐。命中即直接不看：不触发、不进候选，活跃
     # pending 同轮 expire(htf_state_lock)。
     # 目的：4h 死叉/空头排列时不再产出看涨金K（看涨吞没/刺透等）候选——
-    # 金K方向只跟 1h 方向票走，此前 4h 排列不参与，逆势金K会落到命中列表，
-    # 仅在 AI 层 enforce_htf_constraint 兜底。异常降级（htf_res=None）放行，与
+    # 金K方向只跟 1h 方向票走，此前 4h 排列不参与，逆势金K会落到命中列表。
+    # 2026-10-21 起 AI 层不再做方向兜底，本前置门是唯一 4h 方向限制。
+    # 异常降级（htf_res=None）放行，与
     # gate_4h / STATE_BLOCK_BOTH 同口径。过渡态 bull_dip/bear_rally 已在 block_both
     # 层被拦（2026-10-20 前置门收紧），不再到达本关。
     if (htf_res is not None and htf_res.get("state") in STATE_LOCK_CONTRA):

@@ -620,7 +620,7 @@ STATE_TRANSITION = ("bull_dip", "bear_rally")             # 宏观逆侧过渡�
 # 状态（turn_* 拐头 / macro_cross_* 交叉初期 / *_recover 恢复初期 / bull_dip·
 # bear_rally 过渡态）一律拦下，映射漏斗关卡 htf_state_lock（tangle 仍由
 # reject_reason 先行否决，映射 gate_4h）。STATE_BLOCK_BOTH 保留原义（tangle/turn_*），
-# 仅供 AI 层 enforce_htf_constraint 使用，不参与前置门。
+# 仅供历史回放脚本按旧口径分组，不参与前置门（2026-10-21 AI 层兜底退役后无调用方）。
 STATE_ALIGNED = ("aligned_bull", "aligned_bear")
 
 # 质量分（同向加分, 逆向减分）：tangle/turn 双向禁开后仅扫描侧排序兜底；
@@ -1017,111 +1017,23 @@ def htf_context(htf_klines: list[list], core: Optional[dict] = None) -> Optional
     return out
 
 
-def enforce_htf_constraint(
-    ai_result: dict, htf_klines: Optional[list], signal_type: Optional[str] = None,
-) -> dict:
-    """4h 状态机硬约束的程序化兜底（原地修改并返回 ai_result）。
+def annotate_htf_phase(ai_result: dict, htf_klines: Optional[list]) -> dict:
+    """4h 状态快照（原地写入 ai_result["htf_phase"]，不做任何方向否决）。
 
-    锁单矩阵（2026-10-11 再重构为 EMA 状态机 11 态，docs/17）：
-    - tangle 缠绕 / turn_* 拐头 → 双向禁开（缠绕无趋势 / 排列内 EMA21 连续
-      反向=趋势衰竭警戒；只管开仓，持仓出场不受影响——出场引擎独立运行，
-      「闸门管进、持仓管出」）；
-    - macro_cross_* / *_recover / aligned_*（宏观同侧态）→ 锁逆势
-      （宏观对齐由状态机自然吸收，无需另查 EMA55 vs 144）；
-    - bull_dip / bear_rally（宏观逆侧过渡态）→ 放行，质量分兜底；但回踩
-      确认单（signal_type=trigger_pullback_confirm）例外，程序 veto 转
-      影子 A/B（见下「影子 A/B」段）。
-    LLM 可能无视 prompt 注入的约束行，开单前程序把关。无 4h 数据或非
-    suggest 时原样返回；suggest 且有 4h 数据时顺带 stash htf_phase（=状态
-    key），供 AIAnalysis / 复盘「4h趋势期」维度落库。
-
-    影子 A/B（2026-10-20，用户拍板）：过渡态 × 回踩确认 → 程序 veto、不进真单。
-    决策假设（2026-10-20 正式网复盘，仅正式网、已剔除测试网异常单）：逆宏观回踩
-    缺乏趋势跟随赖以盈利的肥尾、期望为负，而同侧背景同信号盈利。
-    入库快照口径复核（trade_records.ai_snapshot->>'htf_phase'，该列 2026-10-09 起
-    写入）：该组合 n=3（均值 −0.334R、最佳 +1.07R）、同侧对照 n=186（long 81 均
-    −0.165R / short 105 均 +0.128R，方向差异 t≈1.4、p≈0.16 不显著）——样本远不足
-    以单独判读，仅作影子观察。原注释所引「74 笔均值 −0.29R / 最佳 +2.4R，同侧
-    +0.16R / 最佳 +6.3R」无留存脚本、无法按上述快照列复现（疑为对历史 K 线回溯
-    重算 4h 状态），判读前应补可复现口径。
-    本分支只否决入场，veto_original 三价快照仍保留，由复盘任务
-    （run_trade_review_task）回放假想表现，与同侧通过单逐日对比，构成样本外
-    影子 A/B（ab_bucket 标记供统计隔离）。
+    2026-10-21 用户拍板：4h 方向配对只保留在筛选层（scanner 前置门），
+    AI 提示词与出结果后的程序层都不再限制开单方向——原
+    enforce_htf_constraint 的双向禁开、锁逆势与过渡态影子 veto 全部移除。
+    此处仅保留 htf_phase 落库，供 AIAnalysis / 复盘「4h趋势期」维度统计。
+    无 4h 数据或非 suggest 时原样返回（与历史落库范围一致）。
     """
     try:
         if not htf_klines or ai_result.get("trade_decision") != "suggest":
             return ai_result
         htf = analyze_htf_background(htf_klines)
-        if not htf:
-            return ai_result
-        st = htf["state"]
-        ai_result["htf_phase"] = st
-        direction = (ai_result.get("direction") or "").lower()
-
-        def _veto(reason: str) -> dict:
-            # veto 闭环（docs/24 A5a）：程序否决的 suggest 同样快照原始建议，
-            # 复盘回放假想表现，验证 4h 硬约束的贡献（键名与 dual_judge 对齐）
-            return {
-                "source": "htf_constraint",
-                "direction": ai_result.get("direction"),
-                "entry_price": ai_result.get("entry_price"),
-                "stop_loss": ai_result.get("stop_loss"),
-                "take_profit_1": ai_result.get("take_profit_1"),
-                "take_profit_2": ai_result.get("take_profit_2"),
-                "risk_reward_ratio": ai_result.get("risk_reward_ratio"),
-                "recommendation": ai_result.get("recommendation"),
-                "reason": reason,
-            }
-
-        _label = STATE_LABELS[st]
-
-        # 4h 单一权威（2026-10-21 T3-2）：筛选层只放行 STATE_ALIGNED，兜底约束
-        # 必须用同一常量，否则非 aligned 状态在提示词/兜底里出现第二套口径。
-        # 过渡态 × 回踩确认仍先走影子 A/B 快照（保留 ab_bucket 统计隔离）。
-        if st in STATE_TRANSITION and signal_type == "trigger_pullback_confirm":
-            _v = _veto(f"影子AB：过渡态×回踩确认（4h{_label}）")
-            _v["ab_bucket"] = "transition_pbc"   # 统计隔离标记
-            ai_result["trade_decision"] = "skip"
-            ai_result["skip_reason"] = (
-                f"状态约束：4h{_label}（非多头/空头排列）影子 A/B——回踩确认单程序 veto"
-                "（不入真单，原始建议留档复盘）"
-            )
-            ai_result["veto_original"] = _v
-            return ai_result
-        if st not in STATE_ALIGNED:
-            if st == "tangle":
-                _why = "缠绕无趋势"
-            elif st.startswith("turn_"):
-                _why = "排列内拐头，趋势衰竭警戒"
-            else:
-                _why = "非多头/空头排列，4h 前置门不放行"
-            ai_result["trade_decision"] = "skip"
-            ai_result["skip_reason"] = (
-                f"状态约束：4h{_label}（{_why}）双向禁开新仓（程序强制 skip）"
-            )
-            ai_result["veto_original"] = _veto(f"4h{_label}双向禁开闸（{_why}）")
-            return ai_result
-
-        # 宏观同侧态 → 锁逆势（排列/交叉方向即 4h 方向）
-        if st in STATE_LOCK_CONTRA:
-            htf_dir = int(htf["dir"])
-            if direction == "short" and htf_dir == 1:
-                ai_result["trade_decision"] = "skip"
-                ai_result["skip_reason"] = (
-                    f"方向约束：4h{_label}背景禁止开空（程序强制 skip）"
-                )
-                ai_result["veto_original"] = _veto("4h 状态机方向硬约束（宏观同侧）")
-            elif direction == "long" and htf_dir == -1:
-                ai_result["trade_decision"] = "skip"
-                ai_result["skip_reason"] = (
-                    f"方向约束：4h{_label}背景禁止开多（程序强制 skip）"
-                )
-                ai_result["veto_original"] = _veto("4h 状态机方向硬约束（宏观同侧）")
-            # 同向 → 放行
-        # 过渡态非回踩确认（bull_dip/bear_rally 其他信号）已在上方统一拦截：
-        # 非 aligned 一律双向禁开（2026-10-21 T3-2 单一权威）
+        if htf:
+            ai_result["htf_phase"] = htf["state"]
     except Exception as e:
-        logger.warning("4h方向约束兜底检查失败（放行）: %s", e)
+        logger.warning("4h 状态快照失败（忽略）: %s", e)
     return ai_result
 
 
@@ -1274,48 +1186,22 @@ def render_indicator_block(
         + f" → {_verdict}；SuperTrend/ADX/OBV/4h背景不计方向票（仅强度/量价/风险提示）"
     )
 
-    # 4h 状态机硬约束行（2026-10-11 再重构 EMA 状态机 11 态）：缠绕/拐头
-    # 双向禁开行在前（凌驾锁逆势），宏观同侧态（宏观交叉/恢复/排列）锁逆势，
-    # 过渡态（牛内回调/熊内反弹）不锁；程序侧另有 enforce_htf_constraint 兜底
+    # 4h 背景仅作数据注入（2026-10-21 用户拍板）：方向配对只保留在筛选层，
+    # 提示词不再出现「状态约束/方向约束」硬性行；state/macro 供 AI 自行判断。
+    # state/macro 以机器可读键值对注入——detail 字符串会被 LLM 误读，
+    # 关键字段不再只依赖散文渲染。tangle/turn 宏观对齐未评估（None），
+    # 不输出 macro 键（None 渲染成「macro=逆侧」会向 LLM 注入错误事实）。
     htf_r = next((r for _, s, r in results if s == HTF_SHORT and r), None)
-    # 4h 单一权威（T3-2）：筛选与兜底都只放行 STATE_ALIGNED，注入行同口径
-    if htf_r and htf_r.get("state") not in STATE_ALIGNED:
-        _st = htf_r["state"]
-        if _st == "tangle":
-            _why = "缠绕无趋势"
-        elif str(_st).startswith("turn_"):
-            _why = "排列内拐头，趋势衰竭警戒"
-        else:
-            _why = "非多头/空头排列，4h 前置门不放行"
-        lines.append(
-            f"- 状态约束（硬性）: 4h{htf_r['state_label']}（{_why}）"
-            " —— 双向禁开新仓，long/short 一律 skip（优先于一切信号）"
-        )
-    elif htf_r and htf_r.get("state") in STATE_LOCK_CONTRA:
-        if htf_r.get("dir") == 1:
-            lines.append(
-                f"- 方向约束（硬性）: 4h{htf_r['state_label']}（宏观同侧）"
-                " —— 仅可 long，开空一律 skip（优先于方向票，细则见系统提示词硬约束）"
-            )
-        else:
-            lines.append(
-                f"- 方向约束（硬性）: 4h{htf_r['state_label']}（宏观同侧）"
-                " —— 仅可 short，开多一律 skip（优先于方向票，细则见系统提示词硬约束）"
-            )
-
-    # 4h 背景结构化行（2026-10-10 C7，docs/20）：state/macro 以机器
-    # 可读键值对注入——detail 字符串会被 LLM 误读，关键字段不再只依赖散文
-    # 渲染。tangle/turn 宏观对齐未评估（None），不输出 macro 键（None 渲染成
-    # 「macro=逆侧」会向 LLM 注入错误事实，同 2026-10-11 ranging 修复口径）
     if htf_r:
         ma = htf_r.get("macro_aligned")
+        _label = htf_r.get("state_label") or htf_r["state"]
         if ma is None:
             lines.append(
-                f"- 4h背景: state={htf_r['state']}（双向禁开，宏观对齐未评估）"
+                f"- 4h背景: state={htf_r['state']}（{_label}，宏观对齐未评估）"
             )
         else:
             lines.append(
-                f"- 4h背景: state={htf_r['state']}"
+                f"- 4h背景: state={htf_r['state']}（{_label}）"
                 f" macro={'同侧' if ma else '逆侧'}"
             )
 

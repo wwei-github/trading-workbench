@@ -81,8 +81,8 @@ def test_tradeoff_hint_retired():
     assert "盈亏比取舍" not in block
 
 
-# ── 不变量 2（2026-10-11 退役）：「动能同向」定义随衰竭期/MACD 动能判定
-# 整链删除，_RULE_HTF_HARD 不再含该段，技术层不再产出「仍同向」注记 ──
+# ── 不变量 2（2026-10-11 退役，2026-10-21 删除 _RULE_HTF_HARD）：「动能同向」
+# 定义随衰竭期/MACD 动能判定整链删除，技术层不再产出「仍同向」注记 ──
 
 
 # ── 不变量 3：金K白名单单一来源（B4）────────────────────────────
@@ -146,7 +146,10 @@ def test_htf_structured_line_absent_without_htf():
     assert "- 4h背景: state=" not in block
 
 
-# ── 不变量 9：4h 状态机硬约束文案三要素（2026-10-11 再重构）──────
+# ── 不变量 9：4h 方向职责只在筛选层（2026-10-21 用户拍板）─────────
+# 背景：4h 多头排列+做多 / 空头排列+做空 是 scanner 的选币逻辑，不是 AI
+# 的开单限制。提示词只注入 4h 数据行（state/macro），AI 结合结构、量能、
+# 方向票自主判断；原 _RULE_HTF_HARD（双向禁开/锁逆势/程序强制改判）已删除。
 
 
 def _htf_kl(closes, wick):
@@ -165,64 +168,54 @@ def _htf_shape(seg):
     return (out + [out[-1]] * 300)[:200]
 
 
-def test_htf_hard_rule_covers_state_and_direction():
-    """_RULE_HTF_HARD 必须同时覆盖：缠绕/拐头双向禁开（状态约束）与宏观同侧
-    态锁逆势（方向约束），且声明程序会强制改判（LLM 无视注入行时程序侧
-    兜底语义不缺失）。P0 系统提示词为填充后实文；
-    P1 AGENT_SYSTEM 为模板（常量经 render 填充），查常量文本+注入占位符"""
-    rule = ai_agent._RULE_HTF_HARD
-    assert "「状态约束（硬性）」" in rule
-    assert "「方向约束（硬性）」" in rule
-    assert "双向禁开新仓" in rule
-    assert "程序会强制改判" in rule
-    assert "{_RULE_HTF_HARD}" in ai_agent.AGENT_SYSTEM  # P1 注入点不缺失
-    for txt in (_p0_system(),):
-        assert "「状态约束（硬性）」" in txt
-        assert "双向禁开新仓" in txt
+def test_ai_prompts_do_not_restrict_direction_by_htf():
+    """P0/P1 均须声明 4h 仅作数据参考，且不得再出现方向硬约束文案"""
+    for txt in (_p0_system(), _p1_system()):
+        assert "仅作趋势强弱与风险参考" in txt
+        assert "不限制多空方向" in txt
+        for kw in ("状态约束", "方向约束", "双向禁开新仓", "锁逆势",
+                   "程序会强制改判"):
+            assert kw not in txt, kw
+    # 常量整体退役（防复活）
+    assert not hasattr(ai_analyzer, "_RULE_HTF_HARD")
+    assert not hasattr(ai_agent, "_RULE_HTF_HARD")
 
 
-def test_state_constraint_line_rendered():
-    """渲染层：禁开态（缠绕/拐头）4h 背景必须注入「状态约束（硬性）」行
-    （双向禁开、优先于一切信号），且不再渲染「方向约束」行"""
-    out, p = [], 100.0
-    for n, d in ((140, 0.0), (40, 0.5), (10, -1.5)):  # 多头排列内拐头
-        out += [p + d * i for i in range(n)]
-        p += d * n
-    block = render_indicator_block(_kl_1h_stub(), htf_klines=_htf_kl(out, 2.0))
-    assert "状态约束（硬性）" in block
-    assert "双向禁开新仓" in block
-    assert "方向约束（硬性）" not in block
-
-
-def test_direction_constraint_line_rendered_for_strong_aligned():
-    """渲染层：宏观同侧排列（多头排列锁逆势态）注入「方向约束（硬性）」
-    锁逆势行——夹具用盘整基座起势形态（趋势老到无 fresh 交叉，落排列
-    稳态而非宏观交叉/拐头）"""
-    closes = _htf_shape([(140, 0.0), (60, 0.5)])
-    block = render_indicator_block(_kl_1h_stub(), htf_klines=_htf_kl(closes, 2.5))
-    assert "方向约束（硬性）" in block
-    assert "状态约束（硬性）" not in block
+def test_render_htf_background_is_data_only():
+    """渲染层：任何 4h 状态都只注入数据行，不注入状态/方向约束行"""
+    cases = {
+        "turn_bull": ((140, 0.0), (40, 0.5), (10, -1.5)),   # 多头排列内拐头
+        "aligned_bull": ((140, 0.0), (60, 0.5)),           # 多头排列稳态
+        "flat": ((200, 0.002),),                           # 横盘缠绕
+    }
+    for name, seg in cases.items():
+        block = render_indicator_block(
+            _kl_1h_stub(), htf_klines=_htf_kl(_htf_shape(seg), 2.0))
+        assert "- 4h背景: state=" in block, name
+        for kw in ("状态约束", "方向约束", "双向禁开新仓", "锁逆势", "phase="):
+            assert kw not in block, (name, kw)
+    block = render_indicator_block(
+        _kl_1h_stub(), htf_klines=_htf_kl(_htf_shape([(140, 0.0), (60, 0.5)]), 2.5))
+    assert "macro=同侧" in block
 
 
 # ── 不变量 10：盈亏比唯一不达标 → 固定 1.5R 放宽（2026-10-14）──────
 
 
 def test_rr_only_shortfall_fixed_rr_fallback_present():
-    """P0/P1 提示词必须含『唯一放宽』条款：盈亏比为唯一不达标项 ∧ 4h 宏观同侧六态
-    （渲染层出现「方向约束（硬性）」行）→ 改用『入场价 ± rr_min×止损距离』固定
-    1.5R 兜底；并声明缠绕/拐头与过渡态仍 skip（防放宽面被误读为无条件放行）。
-    兜底情形 (c)（近端结构位太近）在 TP2 开启版与关闭版均须齐备。"""
+    """P0/P1 提示词必须含『唯一放宽』条款：盈亏比为唯一不达标项 → 改用
+    『入场价 ± rr_min×止损距离』固定 1.5R 兜底。2026-10-21 起该放宽不再
+    附加 4h 宏观同侧条件（方向限制只保留在筛选层）。兜底情形 (c)（近端
+    结构位太近）在 TP2 开启版与关闭版均须齐备。"""
     # P1 的止损/止盈段改由共享渲染器注入（T3-3），渲染后实文才含条款
     for txt in (_p0_system(), _p1_system()):
         assert "唯一放宽" in txt
-        assert "方向约束（硬性）" in txt
-        assert "缠绕/拐头" in txt
     p0 = _p0_system()
+    assert "唯一不达标项" in p0
     assert "止盈一兜底" in p0               # 三情形兜底段已注入渲染后实文
     assert "×止损距离" in p0                 # 渲染后 {rr_min} 已填为 1.5
     assert "(c)" in ai_analyzer._RULE_TP_TAIL_ON
     assert "唯一放宽" in ai_analyzer._RULE_TP_BASE  # 唯一放宽条款在公共段（TP2 开关无关）
-    assert "入场价 ± {rr_min}×止损距离" in ai_analyzer._RULE_TP_BASE
     assert "入场价 ± {rr_min}×止损距离" in ai_analyzer._RULE_TP_BASE
     assert "唯一不达标项" in ai_analyzer._RULE_TP_TAIL_OFF
 
@@ -245,9 +238,11 @@ def test_recommendation_tiered_no_interpolation():
         assert "只取 60/70/85 三档" in txt
         assert "禁止输出 58/62 这类中间分" in txt
         assert "档位定义（按触发类型）" in txt
-        # 渲染实文须同时含两张表的关键行（预览页无触发类型时两表都列出）
-        assert "60 = 4h 同侧 + 触发有效" in txt
-        assert "60 = 4h 同侧 + 触点有效" in txt
+        # 渲染实文须同时含两张表的关键行（预览页无触发类型时两表都列出）；
+        # 2026-10-21 起 4h 同向降为 70 档加分项，60 档不再要求 4h 同侧
+        assert "60 = 触发有效 + 方向票同向 ≥1" in txt
+        assert "60 = 触点有效 + 金K确认" in txt
+        assert "4h 同向（加分）" in txt
 
 
 def test_tier_table_by_trigger_type():
@@ -349,15 +344,16 @@ def test_position_field_not_carrying_opinion():
 
 
 def test_pullback_1h_reversal_exempt_listed():
-    """回踩确认单的 1h 反向属回撤形态本身：MACD/BOLL/RSI、1h EMA、
-    SuperTrend/OBV、缩量 四类全部豁免（不进减分项/不改档/不作 skip 理由）"""
+    """回踩确认单的 1h 反向属回撤形态本身：方向票反向/同向不足只作确认度
+    参考，不得据此否决或降分（2026-10-21 起方向由 AI 结合结构与 4h 背景
+    自主判断，不再以 4h 为准）"""
     p0 = _p0_system()
-    assert "回踩确认单（trigger_pullback_confirm）定向以 4h 为准" in p0
-    for kw in ("MACD/布林带/RSI", "1h EMA 排列/拐头", "SuperTrend/OBV", "回撤缩量"):
-        assert kw in p0, kw
-    assert "只作确认度参考，不进减分项、不改变评分档位、不作 skip 理由" in p0
-    assert "只作确认度参考，不进减分项、不改变评分档位、不作 skip 理由" \
-        in ai_agent._RULE_HTF_HARD
+    assert "回踩确认单（trigger_pullback_confirm）：1h 方向票反向或同向不足属回撤常态" in p0
+    assert "仅作确认度参考（影响质量分），不得据此否决或降分" in p0
+    assert "多空方向结合 4h 背景与结构自主判断" in p0
+    assert "定向以 4h 为准" not in p0
+    # P1 为精简版：同一口径（确认度参考、不计票）
+    assert "回踩单方向票仅作确认度参考" in _p1_system()
 
 
 def test_btc_env_not_a_gate_leveled():

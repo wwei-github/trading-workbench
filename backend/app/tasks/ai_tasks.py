@@ -35,7 +35,7 @@ from app.services.ai_analyzer import analyze_with_guard
 from app.services.scan_filters import resolve_scan_filters
 from app.services.llm_client import configure_from, current_concurrency
 from app.services.dual_judge import run_dual_judge
-from app.services.strategy.technical import enforce_htf_constraint, render_indicator_block, htf_context
+from app.services.strategy.technical import annotate_htf_phase, render_indicator_block, htf_context
 from app.services.strategy.indicators import volume_ratio
 from app.services.exchange_pool import ExchangePool
 from app.services.shadow import tag_oi_conf
@@ -397,8 +397,8 @@ def run_ai_analysis_single(
             htf_klines = None
             logger.warning("AI 分析 %s 获取4h K线失败，跳过4h背景: %s", r.symbol, e)
         # 4h 数据降级标记（2026-10-21 观测 B2）：4h K线缺失/拉取失败时
-        # enforce_htf_constraint 直接放行（真 fail-open 点），结论在无大周期
-        # 背景下产出；逐行落库供复盘按降级/正常分两组对比（B3）
+        # 仅记录降级（不做方向否决），结论在无大周期背景下产出；
+        # 逐行落库供复盘按降级/正常分两组对比（B3）
         htf_degraded = not htf_klines
         # 4h 状态快照时刻（T1）：参与状态计算的最后一根已收盘 4h 收盘时间；
         # 开仓前按此刻复核陈旧度（跨周期禁开）。尾窗场景封顶到当前时刻。
@@ -411,20 +411,18 @@ def run_ai_analysis_single(
                 and settings.FINGERPRINT_TTL_MIN > 0):
             cached = _find_recent(db, r.symbol, fp, settings.FINGERPRINT_TTL_MIN)
             if cached and _conclusion_still_valid(cached, signal["current_price"]):
-                checked = enforce_htf_constraint({
-                    "trade_decision": cached.trade_decision,
-                    "direction": cached.direction,
-                }, htf_klines, signal_type=signal["signal_type"])
                 try:
                     current_htf = htf_context(htf_klines)
                 except Exception:
                     current_htf = None
+                # 缓存有效性仍按当前 4h 状态做陈旧性校验（数据变化则重新分析），
+                # 但不再对 AI 方向做强制改判。
                 eligible = (bool(current_htf)
                             and not current_htf.get("reject_reason")
                             and not current_htf.get("block_both")
                             and (cached.trade_decision == "skip"
                                  or current_htf.get("direction") == cached.direction))
-                if eligible and checked.get("trade_decision") == cached.trade_decision:
+                if eligible:
                     note = "⏱️ 沿用近期同上下文结论"
                     ai_progress.push(r.id, "gate", note=note)
                     _copy(db, r, r.symbol, cached, fp, note, tp2_enabled=_tp2_on,
@@ -531,10 +529,9 @@ def run_ai_analysis_single(
             ai_result = run_dual_judge(
                 ai_result, _build_judge_signal(signal, klines, htf_klines),
             )
-        # 4h 状态机硬约束兜底（2026-10-11 再重构 EMA 状态机 11 态：缠绕/拐头双向禁开，宏观交叉/恢复/排列锁逆势，过渡放行）：LLM 无视 prompt 时程序强制 skip
-        # signal_type 透传（2026-10-20 影子 A/B）：过渡态 × 回踩确认 → 程序 veto 转影子
-        ai_result = enforce_htf_constraint(
-            ai_result, htf_klines, signal.get("signal_type"))
+        # 4h 状态快照落库（2026-10-21 用户拍板：方向限制只保留在筛选层，
+        # AI 出结果后不再做双向禁开/锁逆势的程序改判）
+        ai_result = annotate_htf_phase(ai_result, htf_klines)
         # Narrator 已下线（提速）：submit_decision 的 reason 直接承载完整分点分析
         # （工具 schema 强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返
         # 待回踩判定（2026-09-15）：入场在现价回踩侧的建议仅展示标识、不下单

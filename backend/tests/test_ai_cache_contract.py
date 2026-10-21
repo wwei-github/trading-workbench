@@ -128,7 +128,7 @@ def test_single_task_reuses_only_identical_context(db, monkeypatch):
     monkeypatch.setattr(ai_tasks, "_sem_release", lambda ident: None)
     monkeypatch.setattr(ai_tasks.md, "in_forming_tail", lambda *args: False)
     monkeypatch.setattr(ai_tasks.md, "screen_klines", lambda bars, *args: bars)
-    monkeypatch.setattr(ai_tasks, "enforce_htf_constraint", lambda result, *args, **kw: result)
+    monkeypatch.setattr(ai_tasks, "annotate_htf_phase", lambda result, *args, **kw: result)
     monkeypatch.setattr(ai_tasks, "htf_context", lambda bars: {
         "direction": "long", "reject_reason": None, "block_both": False})
     for name in ("push_start", "push", "push_done"):

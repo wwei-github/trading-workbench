@@ -138,9 +138,9 @@ class AIAnalysis(Base):
     # EMA 状态机 11 态）：tangle/turn_bull/turn_bear/macro_cross_bull/
     # macro_cross_bear/bull_recover/bear_recover/aligned_bull/aligned_bear/
     # bull_dip/bear_rally（weak/medium/strong/extreme/exhausted/overheat/
-    # cooling=退役旧档，复盘归「未知」）。分析时由 enforce_htf_constraint
-    # stash 落库；仅 suggest 且有 4h 数据时有值，无 4h 数据 NULL=未知，
-    # 复盘「4h趋势期」维度按此分组
+    # cooling=退役旧档，复盘归「未知」）。分析时由 annotate_htf_phase
+    # stash 落库（2026-10-21 起仅快照、不做方向否决）；仅 suggest 且有 4h
+    # 数据时有值，无 4h 数据 NULL=未知，复盘「4h趋势期」维度按此分组
     htf_phase: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     # 止盈模式（历史字段：2026-10-12 策略二/trail 删除后停写，新行 NULL）：
     # 2026-10-10 docs/19 §3.4 两派哲学落地，2026-10-11 起由 entry_strategy 程序
@@ -154,9 +154,9 @@ class AIAnalysis(Base):
     strategy2_decision: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     strategy2_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # 4h 数据降级标记（2026-10-21 观测 B2）：分析时 4h K线缺失/拉取失败 → True。
-    # 该路径下 4h 硬约束无法生效（enforce_htf_constraint 直接放行），结论在
-    # 缺少大周期背景下产出，复盘按此分组对比（B3）判断降级是否伤质量；
-    # 本列上线前的历史行 FALSE（按未降级理解）
+    # 该路径下 AI 只拿到降级提示（2026-10-21 起 AI 层不做方向兜底，无 4h 数据
+    # 也不强制 skip），结论在缺少大周期背景下产出，复盘按此分组对比（B3）判断
+    # 降级是否伤质量；本列上线前的历史行 FALSE（按未降级理解）
     htf_degraded: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )

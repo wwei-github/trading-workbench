@@ -51,7 +51,7 @@ from app.services.decision_version import bump_decision_version
 from app.services.risk_guard import is_pullback_wait
 from app.services.skill_library import list_skills
 from app.services.strategy import recent_swings, swing_annotations
-from app.services.strategy.technical import STATE_TRANSITION, enforce_htf_constraint
+from app.services.strategy.technical import STATE_TRANSITION, annotate_htf_phase
 from app.api.watchlist import normalize_symbol
 from app.tasks.scan_tasks import run_scan_task
 from app.tasks.ai_tasks import run_ai_analysis_task
@@ -2150,10 +2150,9 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
                     signal["signal_type"] = PULLBACK_CONFIRM
             except Exception:
                 pass  # 检测异常不阻断手动分析主流程（退回 manual_search 语义）
-        # 4h 状态机硬约束兜底（2026-10-11 再重构 EMA 状态机 11 态：缠绕/拐头双向禁开，宏观交叉/恢复/排列锁逆势，过渡放行）
-        # signal_type 透传（2026-10-20 影子 A/B）：过渡态 × 回踩确认 → 程序 veto 转影子
-        ai_result = enforce_htf_constraint(
-            ai_result, htf_klines, signal.get("signal_type"))
+        # 4h 状态快照落库（2026-10-21 用户拍板：方向限制只保留在筛选层，
+        # AI 出结果后不再做双向禁开/锁逆势的程序改判）
+        ai_result = annotate_htf_phase(ai_result, htf_klines)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI 分析失败: {e}")
 
