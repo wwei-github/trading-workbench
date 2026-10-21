@@ -43,8 +43,8 @@ const MANIFEST_OUT = join(OUT, '.build-manifest.json')
 
 // —— 模块定义（顺序即侧栏顺序；dir 为 docs/ 下的一级目录）——
 // section=main 的模块按业务主链路顺序排列（侧栏加 ①~⑥ 序号），section=aux 的归入「辅助模块」。
-// 配对模块：目录下固定 `功能流程/` 与 `技术实现/` 两个性质子目录。
-// flat 模块（需求文档）：目录下直接平铺 NN-*.md，nature = req。
+// 功能模块：目录下直接平铺 NN-*.md（业务规则 + 技术实现已合并为单文档），nature = doc。
+// flat 模块（需求文档）：同样平铺 NN-*.md，nature = req。
 const MODULES = [
   // 业务主链路：扫描 → 信号 → AI 决策 → 交易执行 → 风控 → 复盘
   { id: 'scan',     name: '扫描与筛选', dir: '扫描与筛选', section: 'main' },
@@ -60,11 +60,6 @@ const MODULES = [
   { id: 'frontend', name: '前端与查询', dir: '前端与查询', section: 'aux' },
   { id: 'infra',    name: '基建与通知', dir: '基建与通知', section: 'aux' },
   { id: 'req',      name: '需求与路线', dir: '需求文档',   flat: true, section: 'aux' },
-]
-// 配对模块的两个性质子目录（flat 模块不用）；short 为侧栏行内切换按钮的短名
-const NATURES = [
-  { n: 'flow', label: '功能流程', short: '流程', dir: '功能流程', prefix: 'flow' },
-  { n: 'tech', label: '技术实现', short: '技术', dir: '技术实现', prefix: 'tech' },
 ]
 // 根目录两篇（nature = overview，归入 overview 模块）
 const ROOT_DOCS = [
@@ -119,20 +114,16 @@ function collect() {
         })
       }
     } else {
-      for (const n of NATURES) {
-        const sub = join(abs, n.dir)
-        if (!existsSync(sub)) continue
-        const files = readdirSync(sub).filter((f) => f.endsWith('.md')).sort()
-        for (const f of files) {
-          const p = parseName(f)
-          const md = readFileSync(join(sub, f), 'utf8')
-          list.push({
-            id: `${n.prefix}-${p.num || sha(f)}`,
-            group: m.id, docKey: p.num || f.replace(/\.md$/, ''), docName: p.name,
-            nature: n.n, label: n.label, short: n.short, path: `${m.dir}/${n.dir}/${f}`, md,
-            title: firstHeading(md) || p.name,
-          })
-        }
+      const files = readdirSync(abs).filter((f) => f.endsWith('.md')).sort()
+      for (const f of files) {
+        const p = parseName(f)
+        const md = readFileSync(join(abs, f), 'utf8')
+        list.push({
+          id: `doc-${p.num || sha(f)}`,
+          group: m.id, docKey: p.num || f.replace(/\.md$/, ''), docName: p.name,
+          nature: 'doc', label: '功能文档', short: '文档', path: `${m.dir}/${f}`, md,
+          title: firstHeading(md) || p.name,
+        })
       }
     }
   }

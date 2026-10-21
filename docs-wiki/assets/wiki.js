@@ -100,8 +100,8 @@
     return loads[id];
   }
 
-  /* ---------- 侧边导航（模块 → 文档；文档行内联「流程 / 技术」切换） ---------- */
-  var navRows = [];      // 文档行（一篇文档一行，含该篇的全部性质）
+  /* ---------- 侧边导航（模块 → 文档；每篇为合并后的单文档） ---------- */
+  var navRows = [];      // 文档行（一篇文档一行）
   var closedGroups = {};  // 已收起的模块
 
   function docRowLabel(d) {
@@ -115,8 +115,8 @@
     return a < b ? -1 : a > b ? 1 : 0;
   }
 
-  // 同一篇文档的两种性质排序（功能流程在前、技术实现在后）
-  var NATURE_ORDER = ['flow', 'tech', 'overview', 'req'];
+  // 同一 docKey 下多篇时的排序（兼容历史双文档：功能流程在前、技术实现在后）
+  var NATURE_ORDER = ['doc', 'flow', 'tech', 'overview', 'req'];
   function cmpNature(a, b) {
     var ia = NATURE_ORDER.indexOf(a), ib = NATURE_ORDER.indexOf(b);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
@@ -143,7 +143,7 @@
     return a;
   }
 
-  // 文档行：名称 + 行内性质切换（同一篇的功能流程 / 技术实现是两个独立文件）
+  // 文档行：名称（仅当同一 docKey 下存在多篇时才渲染行内切换）
   function makeDocRow(docs) {
     var row = document.createElement('div');
     row.className = 'doc-row';

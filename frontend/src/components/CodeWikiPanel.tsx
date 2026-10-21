@@ -106,10 +106,10 @@ function resolvePath(curPath: string, href: string): string {
 }
 
 // ── 侧栏：模块按业务分区展示（主链路带序号），模块内按 docKey 归档，
-//    文档行内联「流程 / 技术」切换（同一篇的两种性质各占一个文档文件）──
+//    每篇为业务规则 + 技术实现合并后的单文档（同一 docKey 多篇时才显示切换）──
 const SECTION_NAME: Record<string, string> = { main: '业务主链路', aux: '辅助模块' }
-// 同一篇文档的两种性质排序（功能流程在前、技术实现在后）
-const NATURE_ORDER = ['flow', 'tech', 'overview', 'req']
+// 同一 docKey 下多篇时的排序（兼容历史双文档：功能流程在前、技术实现在后）
+const NATURE_ORDER = ['doc', 'flow', 'tech', 'overview', 'req']
 const cmpNature = (a: string, b: string): number => {
   const ia = NATURE_ORDER.indexOf(a)
   const ib = NATURE_ORDER.indexOf(b)
@@ -604,7 +604,7 @@ export default function CodeWikiPanel() {
             const section = g.section ?? 'aux'
             // 分区标题：该分区第一个可见模块之前出现
             const newSection = i === 0 || visibleGroups[i - 1].group.section !== section
-            // 模块内按 docKey 归档（数字升序、非数字排后），每个 docKey 即「一篇文档」的两种性质
+            // 模块内按 docKey 归档（数字升序、非数字排后），每个 docKey 即一篇文档
             const docMap = new Map<string, DocMeta[]>()
             for (const d of items) {
               const arr = docMap.get(d.docKey)
@@ -626,7 +626,7 @@ export default function CodeWikiPanel() {
                   </div>
                   {!closed && keys.map((key) => {
                     const docs = docMap.get(key)!.slice().sort((a, b) => cmpNature(a.nature, b.nature))
-                    // 行内性质按钮高亮当前篇；点击文档名打开该行当前选中的性质（默认功能流程）
+                    // 同一 docKey 多篇时行内按钮高亮当前篇；点击文档名打开当前选中的一篇
                     const chosen = docs.find((d) => d.id === currentId) ?? docs[0]
                     return (
                       <div
