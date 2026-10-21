@@ -601,6 +601,7 @@ export interface ReviewGroupStat {
   ema_state: string | null;
   rule_version: string | null; // 规则版本分组维度（docs/24 A0，null=非版本组）
   is_veto: boolean | null; // 双评委否决单回放标记（docs/24 A5a，null=非 veto 组）
+  htf_degraded?: boolean | null; // 4h 数据降级分组维度（批次 B3，null=非降级组）
   total: number;
   win_tp1: number;
   win_tp2: number;
@@ -608,6 +609,21 @@ export interface ReviewGroupStat {
   expired: number;
   win_rate: number;
   ev_r: number | null; // 期望值（R 倍数，含费用假设）
+  payoff?: number | null; // 盈亏比 = 平均盈利 R / 平均亏损 R（扣费前原始口径）
+}
+
+// 单段时延分位（批次 B1）
+export interface LatencyMetric {
+  samples: number;
+  p50_s: number | null;
+  p90_s: number | null;
+}
+
+// 三段执行时延：信号命中 → AI 结论 → 首次开仓（近 7 天窗口）
+export interface ReviewLatency {
+  signal_age_s: LatencyMetric;
+  ai_to_open_s: LatencyMetric;
+  signal_to_open_s: LatencyMetric;
 }
 
 // 复盘统计汇总（expired 不计入胜率分母）
@@ -628,6 +644,10 @@ export interface ReviewStats {
   // 双评委否决对比（docs/24 A5a）：被否决建议的假想回放统计 + 对比说明文字
   veto_stats: ReviewGroupStat | null;
   veto_note: string;
+  // 信号时效（批次 B1）：signal→AI、AI→开仓、signal→开仓 三段 P50/P90（近 7 天）
+  latency: ReviewLatency | null;
+  // 4h 数据降级分组（批次 B3）：正常/降级两组对比
+  htf_degraded_groups: ReviewGroupStat[];
 }
 
 // 全漏斗阶段（docs/24 A5c）：conversion = 相对上一级转化率，首级为 null

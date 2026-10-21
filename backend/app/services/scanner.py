@@ -213,6 +213,7 @@ def detect_indicator_candidate(
     retest: Optional[dict] = None,
     event_out: Optional[dict] = None,
     reject_out: Optional[dict] = None,
+    now: Optional[datetime] = None,
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """指标驱动单币检测（Scanner 与 watchlist.refresh 共用同一套逻辑与阈值）。
 
@@ -242,6 +243,9 @@ def detect_indicator_candidate(
       votes 关附 "detail"（全票明细）、htf_state_lock / no_trigger /
       trigger_whitelist 关附 "detail"（2026-10-13）——前端判定说明列渲染，
       其余关卡不写。
+    now: 本轮数据基准时刻（生产传 scan_now）；仅用于 4h 末根已收盘竞态兜底
+      （整点取数时新 4h 根可能尚未出现、末根实为刚收盘根）。None 时不做该
+      兜底——测试/回放的历史切片保持「末根=未收盘根」语义。
     返回 (候选 dict, pending_op) 二元组：
     - 候选 dict（signal_type/touch_ref/quality_score/votes 及展示字段），每币至多 1 个；
       无候选（方向票不足/无触发）为 None
@@ -274,28 +278,50 @@ def detect_indicator_candidate(
     # None）→ 直接不看：不跑票数、不触发、不进候选（连 AI 分析都不给），活跃
     # pending 同轮 expire(ranging)（ranging 词义="4h 无明确趋势"，涵盖走平与缠绕）。
     # 4h 每轮对全币池拉取（kline 缓存按 4h 桶对齐，实际新请求 ≈ 池子 ÷4 每小时）；
-    # 拉取失败（htf=None）与计算异常降级放行——正常返回的 None/拒因=主动否决，
-    # 异常=数据/实现问题，二者区分（原 ranging 过滤同口径）。
+    # 拉取失败/计算异常/数据不足一律 fail-closed（方向关拒绝），不再降级放行——
+    # 「数据缺失」与「市场状态否决」通过 degraded 标记区分，不混淆复盘口径。
+    # 4h 数据降级标记（2026-10-21 观测 B2）：把「数据缺失」类拒绝（拉取失败/空数据/
+    # 计算异常/拒因为 data·adx）与「市场状态」类拒绝（flat/tangle/undetermined）
+    # 分开。方向职责拆分后 4h 无方向一律 fail-closed（不再降级放行），标记随
+    # 漏斗落 funnel_json，供按天统计数据源降级占比（spec §5.3，>1% 需排查数据源）
+    htf_degraded = False
     try:
-        htf = pool.get_klines(symbol, "4h", 300)  # 300 根：EMA144 SMA 种子后递推 155 步，收敛残留 ~12%
+        # 600 根：EMA144 的 SMA 种子在 300 根时仍残留约 11% 权重（20 根斜率误差
+        # 可达走平阈值 0.5% 的 1/3），600 根后残留 <0.2%，斜率判定才稳定
+        htf = pool.get_klines(symbol, "4h", 600)
     except Exception as e:
         htf = None
+        htf_degraded = True
         logger.warning("%s 获取4h K线失败（跳过4h票）: %s", symbol, e)
     htf_res = None
     if htf:
+        # 4h 末根竞态兜底（与 1h 同口径）：整点取数时新 4h 根可能尚未出现在响应
+        # 里、末根实为刚收盘根——补幽灵尾根，避免 htf_core 剔掉它导致 4h 状态
+        # 整体滞后一根（4 小时）。now 由调用方传入；None 时不处理，保持测试/回放
+        # 历史切片的「末根=未收盘」语义不变。
+        if now is not None:
+            htf = md.screen_klines(htf, "4h", now)
         # 合并入口一次算 core（EMA21/55/144 + ADX + ATR）并产出状态机视图 +
         # 闸门方向 + 行为矩阵，替代原「core 透传 → analyze + gate 双算」。
         try:
             htf_res = htf_context(htf)
         except Exception as e:
             htf_res = None
-            logger.warning("%s 4h 上下文计算异常（降级放行）: %s", symbol, e)
+            htf_degraded = True
+            logger.warning("%s 4h 上下文计算异常（按数据降级处理）: %s", symbol, e)
         else:
             # 仅"正常返回"时判定主动否决：reject_reason 非空（走平/缠绕/数据/
-            # ADX/方向歧义）或 core 不足返回 None → gate_4h 关卡；异常路径
-            # htf_res=None 走降级放行（异常=数据/实现问题，与市场状态无关）
+            # ADX/方向歧义）或 core 不足返回 None → gate_4h 关卡；其中 data/adx
+            # 与 core 不足属数据降级（计入 htf_degraded），走平/缠绕/方向歧义属
+            # 市场状态（不计降级）
             if htf_res is None or htf_res.get("reject_reason"):
+                htf_degraded = (
+                    htf_res is None
+                    or htf_res.get("reject_reason") in ("data", "adx")
+                )
                 _reject("gate_4h")
+                if htf_degraded and reject_out is not None:
+                    reject_out["degraded"] = True
                 return None, ({"op": "expire", "reason": "ranging"} if pending else None)
         # 4h 状态机双向禁开（2026-10-20 用户拍板收紧：前置门仅放行多头/空头
         # 排列 aligned_*）：block_both（非 aligned_*）时，回踩·突破候选均一票
@@ -303,8 +329,8 @@ def detect_indicator_candidate(
         # tangle 已由上方 reject_reason 先行否决（统一判据），此处实际拦 turn_*
         # 拐头、macro_cross_*/*_recover（趋势刚交叉/恢复、尚未完全排列）与
         # bull_dip/bear_rally 过渡态；命中即直接不看：不跑票数、不触发、不进候选，
-        # 活跃 pending 同轮 expire(htf_state_lock)。异常降级（htf_res=None）放行，
-        # 与闸门同口径。
+        # 活跃 pending 同轮 expire(htf_state_lock)。异常/数据不足（htf_res=None）
+        # 不在此判，由下方方向关 fail-closed 收口。
         if htf_res is not None and htf_res.get("block_both"):
             _reject("htf_state_lock")
             if reject_out is not None:
@@ -312,10 +338,13 @@ def detect_indicator_candidate(
                         f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
                         "非多头/空头排列——回踩/突破候选均不做")
             return None, ({"op": "expire", "reason": "htf_state_lock"} if pending else None)
+    else:
+        # 4h K线为空（数据源返回空/不足）：与拉取失败同口径，计入数据降级
+        htf_degraded = True
 
     # 4h 方向权威（原 gate_4h 的 long/short；合并后即 htf_context.direction）。
-    # htf_res=None（异常降级）时无方向 → 与旧 gate=None 同口径（定向兜底/
-    # 方向一致性关/触点 htf_dir 均跳过）。
+    # htf_res=None（数据降级）时无方向 → 方向职责拆分后 fail-closed，不回落到
+    # 1h 定向（见下方 gate_dir 分支）
     gate_dir = htf_res.get("direction") if htf_res is not None else None
 
     # 投票单趟计算（2026-10-10 精简；2026-10-15 指标拆角色，docs/21 O9）：
@@ -336,6 +365,8 @@ def detect_indicator_candidate(
         _reject("gate_4h")
         if reject_out is not None:
             reject_out["detail"] = "4h 方向缺失（数据降级），无趋势依据不出信号"
+            if htf_degraded:
+                reject_out["degraded"] = True
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
     direction = 1 if gate_dir == "long" else -1
@@ -516,6 +547,9 @@ def detect_indicator_candidate(
                                     range_penalty=range_penalty)
     return {
         "signal_type": trig["type"],
+        # 候选产生时刻（2026-10-21 观测 B1）：信号新鲜度起点。扫描是整轮结束后
+        # 批量落库（ScanResult.created_at 混入整轮耗时），故逐币在此取时刻
+        "detected_at": datetime.utcnow(),
         # 现价 = 未收盘K线最新价（仅作入场价差参考）：信号判定（投票/触发/形态/量能）
         # 全部基于「信号K线」= klines[-2]。非尾窗下它是最后一根已收盘K线（与扫描
         # 时刻在小时内的位置无关，同根K线同结果）；尾窗幽灵视图下它是近收盘未走完
@@ -637,6 +671,9 @@ class Scanner:
             # 原因，2026-10-13；其余关卡无）
             funnel_rejects: dict[str, str] = {}
             funnel_details: dict[str, str] = {}
+            # 4h 数据降级币种（2026-10-21 观测 B2）：指标管线旁路标记，扫描结束
+            # 汇总进 funnel_json，按天统计降级占比（spec §5.3）
+            htf_degraded_symbols: set[str] = set()
 
             def _drop(rows: list[dict], keep, stage: str) -> list[dict]:
                 """预过滤关卡拆分：保留侧照常流转，剔除侧记入漏斗"""
@@ -750,11 +787,14 @@ class Scanner:
                     cand, pop = detect_indicator_candidate(
                         self.pool, symbol, klines, pending=pendings.get(symbol),
                         flt=flt, retest=retests.get(symbol), event_out=ev_out,
-                        reject_out=rv_out,
+                        reject_out=rv_out, now=scan_now,
                     )
                     # 破轨事件动作（T1 触发记录 / 回测触点确认消费）
                     if ev_out.get("op"):
                         event_ops[symbol] = ev_out
+                    # 4h 数据降级标记（B2）：4h K线缺失/计算异常/数据类拒因
+                    if rv_out.get("degraded"):
+                        htf_degraded_symbols.add(symbol)
                     if pop:
                         if pop.get("op") == "confirm" and cand:
                             pop["confirm_pattern"] = cand.get("pattern")
@@ -917,6 +957,10 @@ class Scanner:
                 "stages": stages,              # 关卡代码 → 被拒数
                 "rejects": funnel_rejects,     # symbol → 关卡代码（全量明细）
                 "details": funnel_details,     # symbol → 判定说明（votes 票明细/no_trigger 未触发原因）
+                # 4h 数据降级（2026-10-21 观测 B2）：本币池/命中数可比出占比，
+                # 按天汇总（spec §5.3）>1% 需排查数据源
+                "htf_degraded": len(htf_degraded_symbols),
+                "htf_degraded_symbols": sorted(htf_degraded_symbols),
             }
 
             logger.info(
@@ -977,6 +1021,9 @@ class Scanner:
                     volume_type=h.get("volume_type", "平量"),
                     quality_score=h.get("quality_score"),
                     votes_json=h.get("votes"),
+                    # 信号命中时刻（2026-10-21 观测 B1）：候选产生时点，非本批
+                    # 落库时刻；旧命中无该键（历史/手工构造）留 NULL
+                    signal_created_at=h.get("detected_at"),
                 )
                 sdb.add(row)
                 rows.append(row)

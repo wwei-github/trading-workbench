@@ -158,6 +158,9 @@ def run_trade_review_task():
                     # 4h 背景状态快照（2026-10-20）：影子 A/B 与「4h趋势期」维度用；
                     # 与 ab_bucket 同在复盘行上，/review/stats 可直接分组无需回查分析行
                     htf_phase=getattr(a, "htf_phase", None),
+                    # 4h 数据降级快照（2026-10-21 观测 B3）：分析时无 4h 背景的
+                    # 建议单列统计，与正常组对比判断降级是否伤质量
+                    htf_degraded=bool(getattr(a, "htf_degraded", False)),
                     ab_bucket=(veto.get("ab_bucket") if veto else None),
                     recommendation=float(r_rating) if r_rating is not None else None,
                     is_veto=bool(veto),

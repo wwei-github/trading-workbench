@@ -159,6 +159,8 @@ def refresh_watchlist(symbol: str, db: Session = Depends(get_db)):
             cand, pending_op = detect_indicator_candidate(
                 pool, target, klines, pending=pend,
                 flt=resolve_scan_filters(cfg),
+                # 4h 末根竞态兜底基准（与定时扫描同口径）
+                now=datetime.utcnow(),
             )
         except Exception as e:
             logger.warning("关注刷新 %s 信号判定失败（按无命中处理）: %s", target, e)
@@ -225,6 +227,9 @@ def refresh_watchlist(symbol: str, db: Session = Depends(get_db)):
                 quality_score=sig.get("quality_score"),
                 votes_json=sig.get("votes"),
                 is_repeat=is_repeat,
+                # 信号命中时刻（2026-10-21 观测 B1）：与定时扫描同口径，
+                # 取候选产生时刻而非落库时刻
+                signal_created_at=sig.get("detected_at"),
             )
             for sig in signals
         ]

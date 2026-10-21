@@ -334,7 +334,9 @@ class Settings(BaseSettings):
     # 最佳 +6.3R」无留存脚本、无法按上述快照列复现（疑为对历史 K 线回溯重算 4h 状态），
     # 判读前应补可复现口径。
     # 属程序判定变化（新增否决），故单独 bump。
-    RULE_VERSION: str = "v2026-10-20-4"
+    # v2026-10-21-1：4h 取数窗口 300→600 根（EMA144 种子残留 11%→<0.2%，斜率/
+    # 走平判定稳定）+ 4h 末根已收盘竞态兜底（状态不再滞后一根），判定输入变化故 bump。
+    RULE_VERSION: str = "v2026-10-21-1"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

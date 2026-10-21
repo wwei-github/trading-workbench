@@ -19,13 +19,21 @@ import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
 import { useScanStore } from '../stores/scanStore'
 import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
-import type { ReviewGroupStat, ReviewStats } from '../types'
+import type { LatencyMetric, ReviewGroupStat, ReviewStats } from '../types'
 import { SIGNAL_TYPE_MAP } from '../constants/labels'
 
 /**
  * 复盘统计页：AI 建议开单 24h 后逐K回放定论的汇总统计。
  * 胜率口径：expired（超时）不计入胜率分母。
  */
+
+// 时延表行（批次 B1）
+interface LatencyRow {
+  key: string
+  label: string
+  hint: string
+  metric: LatencyMetric
+}
 export default function ReviewStatsPanel() {
   // 统计窗口天数（默认 30 天）
   const [days, setDays] = useState<7 | 30 | 90>(30)
@@ -223,6 +231,112 @@ export default function ReviewStatsPanel() {
 
   const hasData = !!stats && stats.total > 0
 
+  // 时延展示（批次 B1）：秒 → 人类可读
+  const fmtSec = (v: number | null) =>
+    v == null ? '-' : v < 60 ? `${v.toFixed(1)}s` : v < 3600 ? `${(v / 60).toFixed(1)}m` : `${(v / 3600).toFixed(1)}h`
+
+  const latencyRows: LatencyRow[] =
+    stats?.latency
+      ? [
+          {
+            key: 'signal_age',
+            label: '信号 → AI 结论',
+            hint: 'signal_created_at → ai_finished_at；目标 P90 ≤ 5 分钟',
+            metric: stats.latency.signal_age_s,
+          },
+          {
+            key: 'ai_open',
+            label: 'AI 结论 → 开仓',
+            hint: 'ai_finished_at → 首次 opened_at（含风控/评委耗时）',
+            metric: stats.latency.ai_to_open_s,
+          },
+          {
+            key: 'signal_open',
+            label: '信号 → 开仓',
+            hint: 'signal_created_at → 首次 opened_at（端到端）',
+            metric: stats.latency.signal_to_open_s,
+          },
+        ]
+      : []
+
+  const latencyColumns: ColumnsType<LatencyRow> = [
+    {
+      title: '阶段',
+      key: 'label',
+      render: (_: unknown, r: LatencyRow) => (
+        <Tooltip title={r.hint}>
+          <span>{r.label}</span>
+        </Tooltip>
+      ),
+    },
+    { title: '样本', key: 'samples', width: 80, render: (_: unknown, r: LatencyRow) => r.metric.samples },
+    { title: 'P50', key: 'p50', width: 100, render: (_: unknown, r: LatencyRow) => fmtSec(r.metric.p50_s) },
+    {
+      title: 'P90',
+      key: 'p90',
+      width: 100,
+      render: (_: unknown, r: LatencyRow) => {
+        // signal→AI 目标 P90 ≤ 5min，超限标红提示链路慢
+        const bad = r.key === 'signal_age' && r.metric.p90_s != null && r.metric.p90_s > 300
+        return (
+          <span style={{ color: bad ? SCHEME_UP_DOWN[colorScheme].down : undefined, fontWeight: bad ? 600 : undefined }}>
+            {fmtSec(r.metric.p90_s)}
+          </span>
+        )
+      },
+    },
+  ]
+
+  // 4h 数据降级对比表（批次 B3）：降级 = 分析时 4h K线缺失，硬约束未生效
+  const hdColumns: ColumnsType<ReviewGroupStat> = [
+    {
+      title: '4h 数据',
+      key: 'htf_degraded',
+      render: (_: unknown, g: ReviewGroupStat) =>
+        g.htf_degraded ? (
+          <Tooltip title="分析时 4h K线缺失：4h 硬约束未生效（fail-open），信号仅凭 1h 判断">
+            <Tag color="warning">降级（无 4h）</Tag>
+          </Tooltip>
+        ) : (
+          <Tag color="success">正常</Tag>
+        ),
+    },
+    {
+      title: '样本',
+      dataIndex: 'total',
+      key: 'total',
+      width: 70,
+      sorter: (a, b) => a.total - b.total,
+    },
+    {
+      title: '胜率',
+      dataIndex: 'win_rate',
+      key: 'win_rate',
+      width: 90,
+      sorter: (a, b) => a.win_rate - b.win_rate,
+      render: (v: number) => renderWinRate(v),
+    },
+    {
+      title: '期望值',
+      dataIndex: 'ev_r',
+      key: 'ev_r',
+      width: 90,
+      sorter: (a, b) => (a.ev_r ?? -99) - (b.ev_r ?? -99),
+      render: (v: number | null) => renderEv(v),
+    },
+    {
+      title: (
+        <Tooltip title="盈亏比 = 平均盈利 R / 平均亏损 R（扣费前原始 R；回放口径亏损恒 -1R，故通常等于平均盈利 R）">
+          盈亏比
+        </Tooltip>
+      ),
+      dataIndex: 'payoff',
+      key: 'payoff',
+      width: 90,
+      render: (v: number | null) => (v == null ? '-' : `${v.toFixed(2)}`),
+    },
+  ]
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {/* 顶部：统计窗口切换 + 刷新 */}
@@ -305,6 +419,27 @@ export default function ReviewStatsPanel() {
               </Col>
             </Row>
 
+            {/* 信号时效（批次 B1）：三段时延 P50/P90，近 7 天窗口 */}
+            {latencyRows.length > 0 && (
+              <Card
+                size="small"
+                title={
+                  <Tooltip title="signal_created_at → ai_finished_at → opened_at 三段时延，取近 7 天样本；P90 是关键路径验收口径（signal_age ≤ 5min）">
+                    <span>信号时效 <QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} /></span>
+                  </Tooltip>
+                }
+                styles={{ body: { padding: 0 } }}
+              >
+                <Table<LatencyRow>
+                  rowKey="key"
+                  size="small"
+                  pagination={false}
+                  dataSource={latencyRows}
+                  columns={latencyColumns}
+                />
+              </Card>
+            )}
+
             {/* 胜率口径说明（docs/24 A2）：建议质量口径 vs 实盘净胜率主考核口径 */}
             {stats!.win_rate_note && (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -352,6 +487,27 @@ export default function ReviewStatsPanel() {
                   rowKey={(g) => `rv-${g.rule_version}`}
                   columns={rvColumns}
                   dataSource={stats!.rule_version_groups}
+                  size="small"
+                  pagination={false}
+                />
+              </Card>
+            )}
+
+            {/* 4h 数据降级对比（批次 B3）：正常 vs 无 4h 两组，判断 fail-open 点质量 */}
+            {stats!.htf_degraded_groups.length > 0 && (
+              <Card
+                size="small"
+                title={
+                  <Tooltip title="分析时 4h K线缺失 = 4h 硬约束未生效（AI 层 fail-open）。降级组胜率/期望显著更低 → 该放行点应收紧为 fail-closed 或降级折价仓位">
+                    <span>4h 数据降级对比 <QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} /></span>
+                  </Tooltip>
+                }
+                styles={{ body: { padding: 0 } }}
+              >
+                <Table<ReviewGroupStat>
+                  rowKey={(g) => `hd-${g.htf_degraded ? 'degraded' : 'normal'}`}
+                  columns={hdColumns}
+                  dataSource={stats!.htf_degraded_groups}
                   size="small"
                   pagination={false}
                 />

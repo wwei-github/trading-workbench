@@ -15,6 +15,7 @@ voted≥5），使过滤命中点唯一落在被测闸门处；票崩夹具（1h
 4h 闸门先于票数。1h 夹具须 ≥201 根（结构门/评分卡的 EMA144 种子门槛）。
 """
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -139,6 +140,38 @@ def test_htf_fetch_failure_not_filtered():
     cand, op = detect_indicator_candidate(_BrokenPool(), "TEST/USDT", kl)
     # 候选可能因无触发为 None，但不得被闸门挡住 —— 与趋势对照组同判
     assert not (cand is None and op and op.get("op") == "expire")
+
+
+def test_htf_4h_close_race_uses_ghost_tail(monkeypatch):
+    """4h 末根已收盘竞态（整点取数新 4h 根尚未出现）：补幽灵尾根后再算状态，
+    避免 htf_core 剔掉刚收盘根、4h 状态整体滞后一根（4 小时）。
+    传入 now 才启用兜底；未收盘/未传 now 保持原样（测试/回放历史切片语义）。"""
+    import app.services.scanner as scanner_mod
+
+    seen: dict = {}
+
+    def _stub_context(htf):
+        seen["n"] = len(htf)
+        # 提前返回：只需验证送入 htf_context 的序列长度
+        return {"reject_reason": "flat", "direction": None, "block_both": True,
+                "state": "tangle", "state_label": "缠绕"}
+
+    monkeypatch.setattr(scanner_mod, "htf_context", _stub_context)
+    kl4 = _trending_4h_up()
+    last_close = kl4[-1][0] + 4 * 3_600_000
+    # 结尾根已收盘、新根未出现（竞态窗口）
+    race_now = datetime.utcfromtimestamp(last_close / 1000) + timedelta(seconds=1)
+    detect_indicator_candidate(
+        _FakePool(_trend_1h(), kl4), "TEST/USDT", _trend_1h(), now=race_now,
+    )
+    assert seen["n"] == len(kl4) + 1
+
+    # 末根未收盘（距收盘 1 分钟）→ 不补幽灵根
+    detect_indicator_candidate(
+        _FakePool(_trend_1h(), kl4), "TEST/USDT", _trend_1h(),
+        now=datetime.utcfromtimestamp(last_close / 1000) - timedelta(minutes=1),
+    )
+    assert seen["n"] == len(kl4)
 
 
 def test_gate_direction_mismatch_expires_pending(monkeypatch):

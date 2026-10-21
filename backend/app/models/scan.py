@@ -55,6 +55,12 @@ class ScanResult(Base):
     quality_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     votes_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     is_repeat: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 信号命中时刻（2026-10-21 观测 B1）：候选在指标管线内产生的时刻（=收盘K线
+    # 可判定时刻），与 created_at（批量落库时刻）区分——扫描是整轮结束后批量
+    # 插入，created_at 混入了本轮扫描耗时，不能代表信号新鲜度。复盘按
+    # signal_created_at → ai_finished_at → opened_at 三段计算执行时延；
+    # 本列上线前的历史行 NULL（按 created_at 理解）
+    signal_created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_record: Mapped[ScanRecord] = relationship(back_populates="results")
@@ -135,6 +141,17 @@ class AIAnalysis(Base):
     # 前端分区展示结论徽标曾取结构化字段
     strategy2_decision: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     strategy2_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # 4h 数据降级标记（2026-10-21 观测 B2）：分析时 4h K线缺失/拉取失败 → True。
+    # 该路径下 4h 硬约束无法生效（enforce_htf_constraint 直接放行），结论在
+    # 缺少大周期背景下产出，复盘按此分组对比（B3）判断降级是否伤质量；
+    # 本列上线前的历史行 FALSE（按未降级理解）
+    htf_degraded: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    # AI 结论落库时刻（2026-10-21 观测 B1）：created_at 在 latest-wins 原地更新
+    # 时不刷新（沿用首次分析时刻），不能作为完成时刻；本列每次落库覆写。
+    # 本列上线前的历史行 NULL（按 created_at 理解）
+    ai_finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_result: Mapped["ScanResult"] = relationship(back_populates="ai_analysis")
@@ -199,6 +216,12 @@ class TradeReview(Base):
     # 影子 A/B 桶标记（2026-10-20）：过渡态×回踩确认 veto 行='transition_pbc'，
     # 统计隔离用（该组不并入双评委 veto 组，见 api/scan.py review_stats）；普通行 NULL
     ab_bucket: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    # 4h 数据降级快照（2026-10-21 观测 B3）：= AIAnalysis.htf_degraded（分析时
+    # 4h K线缺失/拉取失败）。降级建议在无大周期背景下产出，复盘按此分两组
+    # 对比胜率/期望/盈亏比；本列上线前的历史行 FALSE（按未降级理解）
+    htf_degraded: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False, index=True
+    )
 
     checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

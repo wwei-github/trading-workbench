@@ -25,14 +25,20 @@
 
 ## 批次 B — 观测（不改行为）
 
-- [ ] **B1** 三段时间戳
+- [x] **B1** 三段时间戳（2026-10-21 完成）
   - `ScanResult` / `AIAnalysis` / `TradeRecord` 分别落 `signal_created_at`、`ai_finished_at`、`opened_at`，复盘输出 `signal_age_s`
-- [ ] **B2** `htf_degraded` 标记
+  - 实现：`ScanResult.created_at` 是批量落库时间、`AIAnalysis.created_at` 原地更新不刷新，故新增两列——候选产生时打 `detected_at`（scanner / watchlist 两条入口）写入 `signal_created_at`；`_upsert_ai_analysis` 每次写入覆写 `ai_finished_at`；`TradeRecord.opened_at` 复用现有列。`/review/stats` 内嵌 `latency` 三段（`signal_age_s` / `ai_to_open_s` / `signal_to_open_s`），取近 7 天、P50/P90 线性插值、负值对剔除；前端「信号时效」卡片，`signal_age_s` 的 P90 > 300s 标红
+  - 验证：`test_obs_batch_b.py::test_latency_three_segments`（正负值剔除、P50/P90 口径）
+- [x] **B2** `htf_degraded` 标记（2026-10-21 完成；口径修正）
   - 文件：`backend/app/services/scanner.py` → `detect_indicator_candidate` 的 4h 降级分支
   - 落库：`ScanResult`（或 `funnel_json`），不影响放行
-- [ ] **B3** 复盘按 `htf_degraded` 分组
+  - 实现：**口径修正**——方向职责拆分（`eb244c3`）后 4h 无方向已 fail-closed，「4h 降级仍放行」的路径不存在，故落点改为两处：① scanner 层四类数据缺失（拉取异常 / 空 K 线 / `htf_context` 异常 / `reject_reason ∈ data·adx`）标记 `reject_out["degraded"]`，汇总进 `funnel_json.htf_degraded` + `htf_degraded_symbols`（纯数据质量统计，不参与放行）；② AI 层 `htf_klines` 缺失仍可出 suggest，是真正存活的 fail-open 点，落 `AIAnalysis.htf_degraded`（缓存沿用随结论走）
+  - 验证：`test_obs_batch_b.py` 的 4h 拉取失败 / data 拒绝 / tangle 拒绝（不标降级）/ AI 层缺失 四组用例
+- [x] **B3** 复盘按 `htf_degraded` 分组（2026-10-21 完成）
   - 文件：`backend/app/services/trade_review.py`（或对应复盘服务）
   - 输出：两组胜率/期望/盈亏比
+  - 实现：`review_tasks` 生成 `TradeReview` 时快照 `htf_degraded = AIAnalysis.htf_degraded`；`/review/stats` 输出 `htf_degraded_groups`（False / True 两组，各含样本、胜率、期望值 `ev_r`、盈亏比 `payoff`）。`payoff` = 平均盈利原始 R / 平均亏损原始 R，用扣费前 `r_mult`（`_agg_payoff`），与扣费后的 `ev_r` 口径区分；前端「4h 数据降级对比」表格
+  - 验证：`test_obs_batch_b.py::test_stats_htf_degraded_groups_and_payoff`
 
 ## 批次 C — 判据（影子验证后上线）
 

@@ -28,6 +28,8 @@ from app.schemas.scan import (
     AccountBrief,
     ReviewGroupStats,
     ReviewStatsResponse,
+    LatencyMetric,
+    ReviewLatency,
     ReviewFunnelResponse,
     FunnelStage,
     ActualReviewResponse,
@@ -1050,14 +1052,30 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
         else:
             return None
         cost_pct = 0.001 + 0.0003 * max(1, (rev.bars_to_exit or 1) // 8)  # 往返手续费 + 资金费(0.03%/8h)
+        rev.r_mult = r_mult  # 未扣费原始 R（盈亏比口径，2026-10-21 批次 B3）
         return round(r_mult - cost_pct / (stop_dist / entry), 3)
 
     for rev in all_rows:
+        rev.r_mult = None
         rev.ev = _ev_r(rev)  # 非映射属性，分组聚合用（veto 行也要算，供 veto 组聚合）
 
     def _agg_ev(items: list) -> Optional[float]:
         vals = [r.ev for r in items if getattr(r, "ev", None) is not None]
         return round(sum(vals) / len(vals), 3) if vals else None
+
+    def _agg_payoff(items: list) -> Optional[float]:
+        """盈亏比（2026-10-21 批次 B3）= 平均盈利 R / 平均亏损 R。
+
+        用扣费前原始 R（r_mult）：回放口径 loss 恒 -1R，故通常等于平均盈利 R；
+        与 ev_r（含费用假设）互补——payoff 看形态，ev_r 看净收益。
+        """
+        wins = [r.r_mult for r in items
+                if getattr(r, "r_mult", None) is not None and r.r_mult > 0]
+        losses = [-r.r_mult for r in items
+                  if getattr(r, "r_mult", None) is not None and r.r_mult < 0]
+        if not wins or not losses:
+            return None
+        return round((sum(wins) / len(wins)) / (sum(losses) / len(losses)), 3)
 
     resp = ReviewStatsResponse(
         days=days, **_agg_stats(rows), ev_r=_agg_ev(rows), groups=[],
@@ -1099,6 +1117,22 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
         resp.rule_version_groups.append(
             ReviewGroupStats(rule_version=rv, **_agg_stats(items), ev_r=_agg_ev(items))
         )
+
+    # 4h 数据降级分组（2026-10-21 批次 B3，docs/需求文档/06 §5.3）：分析时 4h
+    # K线缺失（AI 层 fail-open，4h 硬约束未生效）的建议单列，与正常组对比
+    # 胜率/期望/盈亏比——降级组显著更差说明该 fail-open 点应改 fail-closed，
+    # 或按降级折价仓位。veto 回放行不混入（与主统计同口径）
+    hd_buckets: dict[bool, list[TradeReview]] = {}
+    for r in rows:
+        hd_buckets.setdefault(bool(getattr(r, "htf_degraded", False)), []).append(r)
+    for flag in (False, True):
+        items = hd_buckets.get(flag)
+        if not items:
+            continue
+        resp.htf_degraded_groups.append(ReviewGroupStats(
+            htf_degraded=flag, **_agg_stats(items),
+            ev_r=_agg_ev(items), payoff=_agg_payoff(items),
+        ))
 
     # 双评委 veto 闭环统计（docs/24 A5a）：is_veto=True 的回放行是"被否决建议的
     # 假想表现"，与整体统计（=通过单，veto 行不混入）对比——若 veto 组假想
@@ -1151,6 +1185,73 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
             "（is_veto=False，按 4h 过渡态/同侧 × long/short 分层）。"
             "假想侧 ev_r 明显低于同侧对照 = veto 正确；反之需回退。"
         )
+
+    # 信号时效（2026-10-21 批次 B1，docs/需求文档/06 §5.1）：三段时延的 P50/P90。
+    # 取近 7 天（时效是运行态指标，长窗口无信息增益且拖慢接口）；三段全为
+    # naive UTC，负值（时钟回拨/异常沿用）剔除。signal_created_at / ai_finished_at
+    # 为本批次新增列，历史行 NULL 自然不计。
+    lat_cutoff = datetime.utcnow() - timedelta(days=min(days, 7))
+
+    def _pct(sorted_vals: list[float], p: float) -> float:
+        """线性插值分位（与 numpy 默认口径一致，避免为此引依赖）"""
+        if len(sorted_vals) == 1:
+            return sorted_vals[0]
+        k = (len(sorted_vals) - 1) * p
+        lo = int(k)
+        hi = min(lo + 1, len(sorted_vals) - 1)
+        return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (k - lo)
+
+    def _metric(pairs: list) -> LatencyMetric:
+        vals = sorted(
+            (b - a).total_seconds() for a, b in pairs
+            if a is not None and b is not None and b >= a
+        )
+        if not vals:
+            return LatencyMetric()
+        return LatencyMetric(
+            samples=len(vals),
+            p50_s=round(_pct(vals, 0.5), 1),
+            p90_s=round(_pct(vals, 0.9), 1),
+        )
+
+    sig_ai = db.execute(
+        select(ScanResult.signal_created_at, AIAnalysis.ai_finished_at)
+        .select_from(AIAnalysis)
+        .join(ScanResult, AIAnalysis.scan_result_id == ScanResult.id)
+        .where(
+            AIAnalysis.ai_finished_at.isnot(None),
+            AIAnalysis.ai_finished_at >= lat_cutoff,
+            ScanResult.signal_created_at.isnot(None),
+        )
+    ).all()
+    ai_open = db.execute(
+        select(AIAnalysis.ai_finished_at, func.min(TradeRecord.opened_at))
+        .select_from(TradeRecord)
+        .join(AIAnalysis, TradeRecord.ai_analysis_id == AIAnalysis.id)
+        .where(
+            TradeRecord.opened_at.isnot(None),
+            TradeRecord.opened_at >= lat_cutoff,
+            AIAnalysis.ai_finished_at.isnot(None),
+        )
+        .group_by(AIAnalysis.id, AIAnalysis.ai_finished_at)
+    ).all()
+    sig_open = db.execute(
+        select(ScanResult.signal_created_at, func.min(TradeRecord.opened_at))
+        .select_from(TradeRecord)
+        .join(AIAnalysis, TradeRecord.ai_analysis_id == AIAnalysis.id)
+        .join(ScanResult, AIAnalysis.scan_result_id == ScanResult.id)
+        .where(
+            TradeRecord.opened_at.isnot(None),
+            TradeRecord.opened_at >= lat_cutoff,
+            ScanResult.signal_created_at.isnot(None),
+        )
+        .group_by(ScanResult.id, ScanResult.signal_created_at)
+    ).all()
+    resp.latency = ReviewLatency(
+        signal_age_s=_metric(sig_ai),
+        ai_to_open_s=_metric(ai_open),
+        signal_to_open_s=_metric(sig_open),
+    )
     return resp
 
 
@@ -1812,7 +1913,10 @@ def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
 
     # 4h 高周期 K 线（大方向背景注入）；失败只降级为无 4h 行，不中断分析
     try:
-        htf_klines = pool.get_klines(symbol, "4h", 300)  # 300 根：EMA144 收敛残留 ~12%（docs/17 §6）
+        # 600 根：EMA144 种子残留 <0.2%（与扫描/AI 分析取数窗口同口径）
+        htf_klines = pool.get_klines(symbol, "4h", 600)
+        # 4h 末根已收盘竞态兜底（与扫描同口径）
+        htf_klines = md.screen_klines(htf_klines, "4h", _tail_now)
     except Exception:
         htf_klines = None
 

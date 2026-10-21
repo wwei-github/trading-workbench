@@ -350,12 +350,21 @@ def run_ai_analysis_single(
         # 近期摆动结构（HH/LH/HL/LL，高低点各 20 个）随事实包给 AI，与图表标注同源；
         # 分析时刻现算（现价已更新），锚点解析（ai_agent）与风控锚定共用
         signal["recent_swings"] = recent_swings(klines, order=cfg.swing_order, n=20)
-        # 4h 高周期 K 线（大方向背景注入，300 根）；失败只降级为无 4h 行，不中断分析
+        # 4h 高周期 K 线（大方向背景注入，600 根）；失败只降级为无 4h 行，不中断分析
         try:
-            htf_klines = pool.get_klines(r.symbol, "4h", 300)  # 300 根：EMA144 收敛残留 ~12%（docs/17 §6）
+            # 600 根：EMA144 的 SMA 种子残留从 300 根的 ~11% 降到 <0.2%，
+            # 4h 斜率/走平判定才稳定（与 scanner 取数窗口同口径）
+            htf_klines = pool.get_klines(r.symbol, "4h", 600)
+            # 4h 末根已收盘竞态兜底（与扫描同口径）：整点取数时新 4h 根可能尚未
+            # 出现在响应里，补幽灵尾根避免状态滞后一根（4 小时）
+            htf_klines = md.screen_klines(htf_klines, "4h", tail_now)
         except Exception as e:
             htf_klines = None
             logger.warning("AI 分析 %s 获取4h K线失败，跳过4h背景: %s", r.symbol, e)
+        # 4h 数据降级标记（2026-10-21 观测 B2）：4h K线缺失/拉取失败时
+        # enforce_htf_constraint 直接放行（真 fail-open 点），结论在无大周期
+        # 背景下产出；逐行落库供复盘按降级/正常分两组对比（B3）
+        htf_degraded = not htf_klines
         # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
         # Agent 管线由模型按需调用工具自行获取
         # 止损金额口径（2026-09-27）：与开仓引擎同源的预算模式/金额/文案，
@@ -384,6 +393,13 @@ def run_ai_analysis_single(
             else None
         )
         _risk_pct = _risk_amount if _risk_mode == "pct" else None
+        # 评分门槛（2026-10-21）：注入提示词「评分纪律」段，让 AI 知道低于门槛
+        # 等于程序不下单（此前的分发点门槛只存在于程序侧，AI 会输出 58 这类中间分
+        # 表达"保守"，实际效果是隐性弃单）
+        _min_rec = (
+            float(cfg.min_recommendation) if cfg.min_recommendation is not None
+            else float(settings.TRADING_MIN_RECOMMENDATION)
+        )
         _crash_pct = (
             float(cfg.btc_crash_pause_pct) if cfg.btc_crash_pause_pct is not None
             else None
@@ -414,6 +430,7 @@ def run_ai_analysis_single(
                 tp2_enabled=_tp2_on,
                 flt=_flt,
                 rr_tol=_rr_tol,
+                min_recommendation=_min_rec,
             )
         else:
             ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
@@ -435,6 +452,7 @@ def run_ai_analysis_single(
                 tactics_block=tactics_block,
                 tp2_enabled=_tp2_on,
                 flt=_flt,
+                min_recommendation=_min_rec,
             )
         # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto；
         # 事实包增厚（docs/24 D3）——指标块 + 摆动结构摘要随 signal 传入（_build_judge_signal）
@@ -452,6 +470,8 @@ def run_ai_analysis_single(
         # （工具 schema 强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返
         # 待回踩判定（2026-09-15）：入场在现价回踩侧的建议仅展示标识、不下单
         ai_result["pullback_wait"] = is_pullback_wait(ai_result, signal.get("current_price"))
+        # 4h 数据降级标记（B2）：随结论落库（AIAnalysis.htf_degraded）
+        ai_result["htf_degraded"] = htf_degraded
         _finish(db, r, r.symbol, ai_result, fp)
         ai_progress.push_done(
             r.id, ai_result.get("trade_decision"),
@@ -542,6 +562,8 @@ def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str,
         "position_pct": float(src.position_pct or 0),
         "recommendation": float(src.recommendation or 0),
         "pullback_wait": bool(src.pullback_wait),
+        # 4h 数据降级标记（B2）沿用源结论：缓存复用不重新拉 4h，降级态随结论走
+        "htf_degraded": bool(getattr(src, "htf_degraded", False)),
     }
     _finish(db, r, symbol, result, fp)
     logger.info("AI 结论沿用: %s ← %s", symbol, src.id)
@@ -638,6 +660,12 @@ def _upsert_ai_analysis(
         ),
         "fingerprint": fingerprint,
         "stage_trace": ai_result.get("stage_trace"),
+        # 4h 数据降级标记（2026-10-21 观测 B2）：分析时 4h K线缺失 → True，
+        # 复盘据此分组（B3）；latest-wins 重分析按最新一次的事实覆盖
+        "htf_degraded": bool(ai_result.get("htf_degraded")),
+        # 结论落库时刻（2026-10-21 观测 B1）：created_at 原地更新不刷新，
+        # 不能代表完成时刻；本字段每次落库覆写，供复盘算 signal_age_s
+        "ai_finished_at": datetime.utcnow(),
     }
     existing = db.execute(
         select(AIAnalysis).where(AIAnalysis.scan_result_id == scan_result_id)

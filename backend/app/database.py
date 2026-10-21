@@ -754,6 +754,33 @@ def _run_migrations(engine):
             "ALTER TABLE system_config DROP COLUMN IF EXISTS scan_profile_s1_enabled"))
         conn.execute(text(
             "ALTER TABLE system_config DROP COLUMN IF EXISTS scan_profile_s2_enabled"))
+        # 链路观测三段时间戳（2026-10-21 批次 B1，docs/需求文档/06 §5.1）：
+        # signal_created_at=候选产生时刻（批量落库前）、ai_finished_at=AI 结论
+        # 落库时刻（latest-wins 原地更新也刷新）、opened_at 已在 trade_records；
+        # 三者相减得 signal_age_s / ai→open，复盘按 P50/P90 输出执行时延
+        conn.execute(text(
+            "ALTER TABLE scan_results "
+            "ADD COLUMN IF NOT EXISTS signal_created_at TIMESTAMP"
+        ))
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS ai_finished_at TIMESTAMP"
+        ))
+        # 4h 数据降级标记（2026-10-21 批次 B2/B3，docs/需求文档/06 §5.3）：
+        # AI 层 4h K线缺失/拉取失败时结论仍会产出（fail-open 点），打标供复盘
+        # 分组对比；默认 FALSE 使存量行按「未降级」理解
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS htf_degraded BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        conn.execute(text(
+            "ALTER TABLE trade_reviews "
+            "ADD COLUMN IF NOT EXISTS htf_degraded BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_trade_reviews_htf_degraded "
+            "ON trade_reviews (htf_degraded)"
+        ))
 
 
 def init_db():

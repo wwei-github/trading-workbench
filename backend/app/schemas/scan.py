@@ -399,6 +399,7 @@ class ReviewGroupStats(BaseModel):
     is_veto: Optional[bool] = None  # 双评委否决单回放标记（docs/24 A5a，None=非 veto 维度组）
     direction: Optional[str] = None  # 方向分层维度（2026-10-20 影子 A/B 按 long/short 出）
     ab_bucket: Optional[str] = None  # 影子 A/B 桶标记（transition_pbc / pbc_same_side 等）
+    htf_degraded: Optional[bool] = None  # 4h 数据降级分组维度（2026-10-21 批次 B3）
     total: int
     win_tp1: int = 0
     win_tp2: int = 0
@@ -406,6 +407,25 @@ class ReviewGroupStats(BaseModel):
     expired: int = 0
     win_rate: float = 0.0  # (win_tp1+win_tp2)/(win+loss)，expired 不计
     ev_r: Optional[float] = None  # 期望值（R 倍数，含费用假设）
+    # 盈亏比（2026-10-21 批次 B3）：平均盈利 R / 平均亏损 R（回放口径 loss 恒 -1R，
+    # 故通常等于平均盈利 R）；扣费前原始 R，与 ev_r 的扣费口径互补
+    payoff: Optional[float] = None
+
+
+class LatencyMetric(BaseModel):
+    """执行时延分位（2026-10-21 批次 B1，docs/需求文档/06 §5.1）"""
+
+    samples: int = 0
+    p50_s: Optional[float] = None
+    p90_s: Optional[float] = None
+
+
+class ReviewLatency(BaseModel):
+    """三段时延：信号命中 → AI 结论 → 首次开仓（目标 P90 signal_age ≤ 5min）"""
+
+    signal_age_s: LatencyMetric = LatencyMetric()      # signal_created_at → ai_finished_at
+    ai_to_open_s: LatencyMetric = LatencyMetric()      # ai_finished_at → opened_at
+    signal_to_open_s: LatencyMetric = LatencyMetric()  # signal_created_at → opened_at
 
 
 class ReviewStatsResponse(BaseModel):
@@ -431,6 +451,12 @@ class ReviewStatsResponse(BaseModel):
     # 污染「评委是否错杀」判读）；方向分层用于决定是否收窄为单方向 veto
     shadow_ab: list[ReviewGroupStats] = []
     shadow_ab_note: str = ""
+    # 信号时效（2026-10-21 批次 B1）：三段 P50/P90；窗口取近 7 天（时效是运行态
+    # 指标，无需长历史，也避免大窗口扫描全表）
+    latency: Optional[ReviewLatency] = None
+    # 4h 数据降级分组（2026-10-21 批次 B3）：htf_degraded=False/True 两组，
+    # 对比胜率/期望/盈亏比判断「无 4h 背景的建议」质量是否显著更差
+    htf_degraded_groups: list[ReviewGroupStats] = []
 
 
 # ===== 全漏斗转化率（docs/24 A5c） =====
