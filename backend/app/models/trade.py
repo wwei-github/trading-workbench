@@ -118,7 +118,7 @@ class TradeRecord(Base):
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     realized_pnl: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)  # 正/负值 USDT（运行中=已止盈部分，结算后=全程净额）
     unrealized_pnl: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)  # 浮动盈亏快照（docs/16，运行中每小时整点巡检刷新，终态 0）
-    pnl_pct: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)  # 相对止损金额 %（运行中 = (已实现+浮动)/risk_amount，docs/16）
+    pnl_pct: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)  # 相对 1R %（运行中 = (已实现+浮动)/risk_unit，docs/16）
     exit_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     # sl / tp1_then_sl / tp1_trail / trail_sl / breakeven_sl / manual / error
     # 实盘归因（复盘重设计 2026-09-18）：结算时的费用拆分 + AI 错误归因结论

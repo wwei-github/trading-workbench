@@ -777,7 +777,7 @@ export interface TradeReconciliation {
     qty_total: number | null;
     qty_tp1: number | null;
     qty_tp2: number | null;
-    risk_amount: number | null;
+    risk_unit: number | null; // 1R = 成交后初始风险（旧行回落 risk_amount）
     rr1: number | null;
   };
   actual: {

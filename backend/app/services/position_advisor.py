@@ -282,7 +282,7 @@ def build_facts(db: Session, rec) -> dict:
             "leverage": rec.leverage,
             "remaining_ratio": remaining_ratio,
             "tp1_hit": rec.status != "OPENED",  # false=第一档止盈从未触发（滞留判定依据）
-            "risk_amount": risk or None,
+            "risk_unit": risk or None,
             "realized_pnl": realized,
             "unrealized_pnl": unrealized,
             "total_pnl": round(realized + unrealized, 6),

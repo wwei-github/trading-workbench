@@ -387,6 +387,73 @@ def test_open_protection_failure_close_ack_waits_for_reconcile(
     db.close()
 
 
+# ---------- 故障注入：入场单已提交但响应丢失（审计 7.3） ----------
+
+
+class _EntryAckLostTrader(_OpeningTrader):
+    """市价入场单提交抛超时（订单可能已送达），reduceOnly 平仓走基类逻辑。"""
+
+    def market_order(self, symbol, side, qty, reduce_only=False):
+        if not reduce_only:
+            raise TimeoutError("entry order ack lost")
+        return super().market_order(symbol, side, qty, reduce_only=True)
+
+
+def test_entry_submit_ack_lost_records_reconcile_incident(
+    file_session, opening_settings, monkeypatch,
+):
+    """响应丢失：立即按最坏情况平仓并落事故，ACCEPT 后等对账、绝不重发。"""
+    import app.services.protection_recovery as recovery
+    monkeypatch.setattr(recovery, "SessionLocal", file_session)
+    db, cfg, a = _open_fixture(file_session)
+    trader = _EntryAckLostTrader()
+
+    assert _attempt_open(db, trader, cfg, a, 1000.0, {}) == "blocked"
+
+    row = db.query(ProtectionIncident).one()
+    assert row.reason == "open_entry_submit_unknown"
+    assert row.status == "awaiting_reconcile"  # ACK 不等于空仓，巡检对账后才释放
+    assert row.entry_order_id is None  # 响应丢失时没有 orderId
+    assert "ack lost" in (row.last_error or "")
+    db.close()
+
+
+def test_entry_submit_ack_lost_close_rejected_is_retryable(
+    file_session, opening_settings, monkeypatch,
+):
+    """平仓被明确拒绝（无仓/不可减仓）→ pending，巡检确认无仓后自动解除。"""
+    import app.services.protection_recovery as recovery
+    monkeypatch.setattr(recovery, "SessionLocal", file_session)
+    db, cfg, a = _open_fixture(file_session)
+    trader = _EntryAckLostTrader(
+        close_error=RuntimeError("-2022 ReduceOnly Order is rejected"))
+
+    assert _attempt_open(db, trader, cfg, a, 1000.0, {}) == "blocked"
+
+    row = db.query(ProtectionIncident).one()
+    assert row.status == "pending"
+    db.close()
+
+
+def test_entry_submit_explicit_rejection_does_not_create_incident(
+    file_session, opening_settings, monkeypatch,
+):
+    """交易所明确拒单（含错误码）说明未送达，不建事故、不误封锁账号。"""
+
+    class _RejectedTrader(_OpeningTrader):
+        def market_order(self, symbol, side, qty, reduce_only=False):
+            raise RuntimeError("Margin is insufficient (-2019)")
+
+    import app.services.protection_recovery as recovery
+    monkeypatch.setattr(recovery, "SessionLocal", file_session)
+    db, cfg, a = _open_fixture(file_session)
+    trader = _RejectedTrader()
+
+    assert _attempt_open(db, trader, cfg, a, 1000.0, {}) == "blocked"
+    assert db.query(ProtectionIncident).count() == 0
+    db.close()
+
+
 class _MaterializeTrader:
     """挂单落地替身：成交确认后 SL 挂失败，紧急平仓超时。"""
 

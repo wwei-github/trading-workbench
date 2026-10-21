@@ -2139,7 +2139,7 @@ export default function TradesPanel() {
                   ]}
                 />
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  计划来源：{reconData.plan.source === 'ai_snapshot' ? 'AI 快照' : '记录现值'} · 单笔风险 {fmtNum(reconData.plan.risk_amount)} USDT · RR1 {fmtNum(reconData.plan.rr1)}
+                  计划来源：{reconData.plan.source === 'ai_snapshot' ? 'AI 快照' : '记录现值'} · 单笔风险（1R）{fmtNum(reconData.plan.risk_unit)} USDT · RR1 {fmtNum(reconData.plan.rr1)}
                 </Typography.Text>
               </div>
 
@@ -2203,8 +2203,8 @@ export default function TradesPanel() {
                     <Statistic
                       title={<Tooltip title="总泄漏 − 上列可解释项之和；|值|偏大提示可能有未入账成本">未解释R</Tooltip>}
                       value={
-                        reconData.leakage.summary.unexplained_usdt != null && reconData.plan.risk_amount
-                          ? (reconData.leakage.summary.unexplained_usdt / reconData.plan.risk_amount).toFixed(2)
+                        reconData.leakage.summary.unexplained_usdt != null && reconData.plan.risk_unit
+                          ? (reconData.leakage.summary.unexplained_usdt / reconData.plan.risk_unit).toFixed(2)
                           : '-'
                       }
                     />

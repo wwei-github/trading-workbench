@@ -10,7 +10,7 @@ c) 资金费（换算为成本口径：交易所 funding_total 负 = 支付 → 
 d) SL 穿价成本（保本/移动 SL 成交价相对触发价，取 SL_FILL 事件明细）
 e) TP1 滑点（TP1 实际成交均价 vs 计划 TP1；成交均价由分档价差盈亏反推）
 
-每项输出 USDT 与 R 双口径（R = 金额 / risk_amount），并给出 tp1_then_sl 理论 R
+每项输出 USDT 与 R 双口径（R = 金额 / risk_unit，即成交后初始风险），并给出 tp1_then_sl 理论 R
 （tp1 档位占比 × RR1 + 余档按保本 0）与实际 R 对照：总泄漏 = 理论 − 实际，
 covered = a~e 可得项之和，unexplained = 总泄漏 − covered（偏差大时在 gaps 提示）。
 
@@ -316,7 +316,7 @@ def reconcile_trade(db: Session, rec: TradeRecord, trader: Optional[BinanceTrade
             "qty_total": qty_total,
             "qty_tp1": qty_tp1,
             "qty_tp2": qty_tp2,
-            "risk_amount": risk,
+            "risk_unit": risk,
             "rr1": round(rr1, 4) if rr1 is not None else None,
         },
         "actual": {

@@ -21,6 +21,7 @@
 """
 import logging
 import math
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_DOWN, Decimal
@@ -831,7 +832,39 @@ def _attempt_open(
                 f"（{int(settings.PENDING_ENTRY_TTL_MINUTES)} 分钟未成交自动撤销）",
             )
             return "pending"
-        entry_order = trader.market_order(symbol, side, qty)
+        # 入场单提交（2026-10-21 审计 7.3）：响应丢失 ≠ 未成交。超时/断连时订单
+        # 可能已送达并成交，而此刻还没有 orderId、也没有 TradeRecord/SL——若直接
+        # 外抛，交易所侧会留下无保护的裸仓。按最坏情况处理：立即 reduceOnly 平仓
+        # （无仓会被拒、有仓归零），并持久化事故交巡检对账释放账号封锁。
+        # 消息含币安错误码（-1xxx/-2xxx/-4xxx）说明是明确拒单、未送达，走原路径。
+        try:
+            entry_order = trader.market_order(symbol, side, qty)
+        except Exception as entry_err:
+            if re.search(r"(?<!\d)-\d{4}(?!\d)", str(entry_err)):
+                raise
+            from app.services.protection_recovery import (
+                create_incident_after_rollback, status_for_close_error,
+            )
+            try:
+                close_result = trader.market_order(
+                    symbol, close_side, qty, reduce_only=True)
+            except Exception as close_err:
+                status = status_for_close_error(close_err)
+                error = f"entry={entry_err}; close={close_err}"
+            else:
+                status = "awaiting_reconcile"
+                error = f"entry={entry_err}; close_ack={close_result}"
+            try:
+                create_incident_after_rollback(
+                    db, account_key=trader.account_key, testnet=trader.testnet,
+                    symbol=symbol, direction=direction,
+                    reason="open_entry_submit_unknown", qty=qty,
+                    entry_order_id=None, entry_price=float(price),
+                    error=error, status=status,
+                )
+            except Exception:
+                logger.exception("入场单响应丢失事故无法持久化 %s", symbol)
+            raise
         # 成交回报：下单响应为 ACK 不含均价，市价单即时成交后查实际成交价/量。
         # 滑点 = 成交价对参考价的偏离（testnet 盘口薄，深吃单可达 0.5%+）；
         # 查询失败按参考价记账，不阻断挂 SL/TP（保护块兜底仍在）
