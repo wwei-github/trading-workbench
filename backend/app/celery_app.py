@@ -66,7 +66,7 @@ celery_app.conf.update(
         "trade-review": {
             "task": "app.tasks.review_tasks.run_trade_review_task",
             # 每小时整点（2026-09-24 定档）：处理超 24h 的 AI 建议决策。
-            # 2026-10-20 起与结算巡检（:01）同为每小时节奏，本任务仍留在 :00
+            # 结算巡检 2026-10-21 起为 30min 节奏（:01/:31，docs/06 A2），本任务仍留 :00
             "schedule": crontab(minute=0),
         },
         "ai-attribution": {
@@ -83,11 +83,14 @@ celery_app.conf.update(
         },
         "auto-trade": {
             "task": "app.tasks.trade_tasks.run_auto_trade_task",
-            # 每小时 :01 巡检（2026-10-20 由每半小时改回每小时）：结算/巡检在跑仓位、
-            # 自动导入手动持仓、AI 持仓诊断；开仓唯一通道 = 分析后即时开仓。
-            # :01 而非 :00——等 1h K 线收盘且交易所已落定，避免整点边界上
+            # 30min 巡检（docs/06 A2，2026-10-21 由每小时 :01 恢复 :01/:31）：
+            # 结算/巡检在跑仓位、自动导入手动持仓、AI 持仓诊断；开仓唯一通道 =
+            # 分析后即时开仓，每轮批量分析完成后另有链式触发一次（ai_tasks chord
+            # 回调，docs/06 A1）。分钟数走单一来源 settings.AUTO_TRADE_BEAT_MINUTES，
+            # 改回每小时节奏把该值设为 "1"。
+            # :01/:31 而非 :00/:30——等 1h K 线收盘且交易所已落定，避免整点边界上
             # 拉到「上一根仍在形成」的快照导致结构/极值少一根
-            "schedule": crontab(minute=1),
+            "schedule": crontab(minute=settings.AUTO_TRADE_BEAT_MINUTES),
         },
         "pending-entry-sweep": {
             "task": "app.tasks.trade_tasks.watch_pending_entries",

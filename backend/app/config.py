@@ -87,10 +87,16 @@ class Settings(BaseSettings):
     TP2_QTY_PCT: float = 20.0
     TP1_QTY_PCT_NO_TP2: float = 80.0
     # P-09 事件驱动执行开关（2026-10-07，docs/16）：user-data-stream 成交事件
-    # 秒级触发现有结算链路 + mark price 盈亏快照；False=纯定时巡检（现为每小时）
+    # 秒级触发现有结算链路 + mark price 盈亏快照；False=纯定时巡检（现为 30min）
     # 定时巡检永久保留兜底，本开关只控制事件流是否叠加；默认关——部署后
     # 先在测试网账号验证（系统日志看「事件触发结算」）再放开正式网
     EVENT_EXEC_ENABLED: bool = False
+    # 结算巡检节拍（docs/06 A2，2026-10-21）：恢复 30min（:01/:31）——移保本/HL
+    # 移损是程序侧动作、只随巡检频率执行，每小时节奏（2026-10-20 改回）把
+    # TP1 成交→移保本的保护时延拉到最长 60min，等于回退 P-09 保护效果
+    # （归因：浮盈回撤占亏损 42%）。事件驱动（EVENT_EXEC_ENABLED）打开后
+    # 本节拍降级为兜底。crontab minute 表达式：默认 "1,31"=每半小时；改回每小时用 "1"
+    AUTO_TRADE_BEAT_MINUTES: str = "1,31"
     # 挂单入场流程（2026-10-17，docs/27）：现价盈亏比复算不足时，不再拦下不开单，
     # 改为在 AI 入场价挂 GTC 限价单等待成交（1 小时内未成交自动撤销）。
     # False=回退旧行为（现价 RR 不足即拦下）；TTL 为挂单存活分钟数

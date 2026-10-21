@@ -398,6 +398,18 @@ class _FakeGroup:
         pass
 
 
+class _FakeChord:
+    """chord 替身：记录 (header, body)，不真正派发（docs/06 A1 链式触发）"""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, header):
+        def _bind(body):
+            self.calls.append((header, body))
+        return _bind
+
+
 def _run_dispatch(monkeypatch, wire_sessions, scan_type, tag_calls):
     """造 1 条 ScanResult + 对应 scan_type 的 ScanRecord，跑一次批量分发"""
     from app.tasks import ai_tasks
@@ -419,6 +431,7 @@ def _run_dispatch(monkeypatch, wire_sessions, scan_type, tag_calls):
 
     dispatched = _FakeGroup()
     monkeypatch.setattr(ai_tasks, "group", dispatched)
+    monkeypatch.setattr(ai_tasks, "chord", _FakeChord())
     ai_tasks.run_ai_analysis_task(str(rec_id))
     return dispatched
 
@@ -443,5 +456,9 @@ def test_ai_dispatch_manual_and_single_not_tagged(wire_sessions, monkeypatch):
     s.close()
     dispatched = _FakeGroup()
     monkeypatch.setattr(ai_tasks, "group", dispatched)
+    chained = _FakeChord()
+    monkeypatch.setattr(ai_tasks, "chord", chained)
     ai_tasks.run_ai_analysis_task(str(sr.scan_record_id), only_scan_result_id=str(sr.id))
     assert tag_calls == []  # 手动批量 + 单币重分析两条路径都没打标
+    # docs/06 A1 回归口径：手动单币重分析（force=True）不得触发链式执行
+    assert chained.calls == []

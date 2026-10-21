@@ -5,15 +5,17 @@
 
 ## 批次 A — 执行层（不改开单判据）
 
-- [ ] **A1** 分析完成后链式触发执行
+- [x] **A1** 分析完成后链式触发执行（2026-10-21 完成）
   - 文件：`backend/app/tasks/ai_tasks.py` → `run_ai_analysis_task`
   - 改法：`group.apply_async()` 后不再直接关任务；改为在全部子任务完成后派发一次 `run_auto_trade_task.delay()`（`chord` 回调，或对每个子任务 `on_success` 汇总计数，全部结束再触发一次）
+  - 实现：批量路径改 `chord(jobs)(run_auto_trade_task.si())`——全部子任务结束后派发一次结算巡检；force 手动单币路径保持裸 `apply_async()` 不链式
   - 验收：`ScanRecord.started_at → TradeRecord.opened_at` 的 P90 ≤ 5min；同一轮扫描只触发 1 次执行
-  - 回归：手动单币重分析（`force=True`）路径不得触发执行
+  - 回归：手动单币重分析（`force=True`）路径不得触发执行（test_shadow_batch2 断言覆盖）
 
-- [ ] **A2** 巡检恢复为 30min
+- [x] **A2** 巡检恢复为 30min（2026-10-21 完成）
   - 文件：`backend/app/celery_app.py`（`auto-trade` beat）
   - 改法：`crontab(minute="1,31")`，或配置化 `AUTO_TRADE_BEAT_MINUTES`
+  - 实现：`config.py` 新增 `AUTO_TRADE_BEAT_MINUTES: str = "1,31"`（crontab minute 表达式，改回每小时设 `"1"`），beat 引用同一来源；test_screen_window 断言同源 + 触发点集合
   - 验收：TP1 成交 → SL 修改 P90 ≤ 5min（A3 未开时）
 
 - [ ] **A3** 打开事件驱动

@@ -57,6 +57,19 @@ def test_beat_minute_drives_tail_width():
     assert 0 <= FORMING_TAIL_MINUTES < 60
 
 
+def test_auto_trade_beat_30min():
+    """结算巡检 30min 节奏（docs/06 A2）：beat minute 与 AUTO_TRADE_BEAT_MINUTES
+    同源且为分钟级多点触发——单点即每小时节奏，保护时延（TP1 成交→移保本）
+    会被拉到最长 60min（2026-10-20 回退教训）"""
+    from app.celery_app import celery_app
+    from app.config import settings
+
+    sched = celery_app.conf.beat_schedule["auto-trade"]["schedule"]
+    assert sched._orig_minute == settings.AUTO_TRADE_BEAT_MINUTES
+    # "1,31" → 触发点集合 {1, 31}：半小时节奏；若改回单点（如 "1"）须有明确拍板
+    assert sched.minute == {1, 31}
+
+
 # ── screen_klines 幽灵尾根（尾窗 ∨ 末根已收盘）──
 
 def _tail_on(monkeypatch, minutes=5):

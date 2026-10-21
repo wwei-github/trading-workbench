@@ -241,8 +241,21 @@ def test_ai_dispatch_completed(wire_sessions, monkeypatch, db_engine):
         def apply_async(self):
             pass
 
+    class _FakeChord:
+        """chord 替身：记录 (header, body)，不真正派发（docs/06 A1 链式触发）"""
+
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, header):
+            def _bind(body):
+                self.calls.append((header, body))
+            return _bind
+
     dispatched = _FakeGroup()
+    chained = _FakeChord()
     monkeypatch.setattr(ai_tasks, "group", dispatched)
+    monkeypatch.setattr(ai_tasks, "chord", chained)
 
     ai_tasks.run_ai_analysis_task(str(sr_id))
 
@@ -250,3 +263,10 @@ def test_ai_dispatch_completed(wire_sessions, monkeypatch, db_engine):
     assert rec.task_name == "AI 分析分发" and rec.status == "completed"
     assert "已分发 1 个" in rec.summary
     assert dispatched.jobs  # group 替身被调用（分发动作发生）
+    # docs/06 A1：批量路径走 chord 链式触发（header=分析 group），body 指向
+    # run_auto_trade_task——全部子任务结束后派发一次结算巡检；不再裸 apply_async
+    assert len(chained.calls) == 1
+    header, body = chained.calls[0]
+    assert header is dispatched
+    assert body.task == "app.tasks.trade_tasks.run_auto_trade_task"
+    assert body.immutable

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
-from celery import group
+from celery import chord, group
 from redis import Redis
 from sqlalchemy import select
 
@@ -199,7 +199,20 @@ def run_ai_analysis_task(
             run_ai_analysis_single.s(str(r.id), scan_record_id, user_input, force)
             for r in results
         )
-        jobs.apply_async()
+        if force:
+            # 手动单币重分析：用户在场主动触发，不链式执行（docs/06 A1 回归口径）
+            jobs.apply_async()
+        else:
+            # 批量分析完成后链式触发一次结算巡检（docs/06 A1/E3）：chord 回调在
+            # 全部子任务结束后派发 run_auto_trade_task——本轮新开单立即获得首轮
+            # 结算/巡检（SL 补挂/TP1 推进/保本移损），不再等下一个整点 :01。
+            # 同一轮扫描只触发 1 次；子任务硬失败致 chord 未触发时由 30min 节拍
+            # （AUTO_TRADE_BEAT_MINUTES，docs/06 A2）兜底，巡检幂等多触发无副作用
+            chord(jobs)(
+                celery_app.signature(
+                    "app.tasks.trade_tasks.run_auto_trade_task", immutable=True,
+                )
+            )
         logger.info("已分发 %d 个 AI 分析子任务 #%s", len(results), scan_record_id)
         close_task(
             task_id, "completed",
