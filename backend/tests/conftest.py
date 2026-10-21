@@ -19,3 +19,12 @@ from app.config import settings  # noqa: E402
 def _no_market_context(monkeypatch):
     """默认关闭市场环境注入：单测不触网；相关用例自行显式开启"""
     monkeypatch.setattr(settings, "MARKET_CONTEXT_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
+def _no_ai_dispatch(monkeypatch):
+    """默认关闭 AI 诊断派发：本地 .env 若配置 AI_API_KEY，refresh_mark_pnl 会真实
+    调用 run_position_advice.delay → Celery 连 Redis（Docker 主机名在本机可能被
+    代理解析成不可达地址），用例表现为卡死数分钟。需要派发的用例自行显式开启
+    并桩掉 .delay。"""
+    monkeypatch.setattr(settings, "AI_API_KEY", "")
