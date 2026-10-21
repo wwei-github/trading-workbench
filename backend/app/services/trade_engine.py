@@ -60,8 +60,10 @@ from app.services.strategy.swing import find_swing_points
 
 logger = logging.getLogger(__name__)
 
-# 移动止损方式（2026-10-20）：hl=HL/LH 结构跟踪（新开单默认）；
-# three_line=三线止损（摆动极值 + ATR Chandelier + TP1 保本夹紧）
+# 移动止损方式（2026-10-20 引入；2026-10-21 起新开单默认 three_line，
+# hl 保留、可经 /trades/{id}/trailing-mode 切换）
+# three_line=三线止损（摆动极值 + ATR Chandelier + TP1 保本夹紧）；
+# hl=HL/LH 结构跟踪
 TRAIL_MODE_HL = "hl"
 TRAIL_MODE_THREE_LINE = "three_line"
 TRAIL_MODES = (TRAIL_MODE_HL, TRAIL_MODE_THREE_LINE)
@@ -903,7 +905,7 @@ def _attempt_open(
                 stop_loss=sl,
                 tp1=rec_tp1,  # tp1 恒为挂档止盈价（2026-10-12 起无纯跟踪单）
                 tp2=tp2 if tp2_order else 0,
-                trailing_mode=TRAIL_MODE_HL,  # 新开单默认 HL/LH 结构移动止损（2026-10-20）
+                trailing_mode=TRAIL_MODE_THREE_LINE,  # 新开单默认三线止损（2026-10-21 拍板改回；HL/LH 保留可切换）
                 status="OPENED",
                 opened_at=now,
                 raw={
@@ -1102,7 +1104,7 @@ def materialize_pending_entry(
             stop_loss=sl,
             tp1=tp1,
             tp2=tp2 if tp2_order else 0,
-            trailing_mode=TRAIL_MODE_HL,  # 新开单默认 HL/LH 结构移动止损（2026-10-20）
+            trailing_mode=TRAIL_MODE_THREE_LINE,  # 挂单成交落库同默认三线止损（2026-10-21）
             status="OPENED",
             opened_at=now,
             raw={
@@ -1803,10 +1805,10 @@ def _move_sl_trailing(db: Session, trader: BinanceTrader, rec: TradeRecord,
     （旧 SL 仍有效保护：仓位存在即旧 SL 未触发），避免交易所 -2021 拒单导致
     整轮结算回滚重试。
 
-    - hl（新开单默认）：HL/LH 结构腿——多单移到最近已确认 HL 低点，空单移到
-      LH 高点；不再叠加 ATR 腿与 3 根极值腿
-    - three_line（存量默认/可手动切回）：摆动腿（最近3根已收盘K线极值）+
+    - three_line（新开单默认，2026-10-21 拍板改回）：摆动腿（最近3根已收盘K线极值）+
       ATR 腿（Chandelier，atr_k None/0 关闭）取更紧者（docs/13 #5）
+    - hl（可手动切换）：HL/LH 结构腿——多单移到最近已确认 HL 低点，空单移到
+      LH 高点；不再叠加 ATR 腿与 3 根极值腿
     两模式聚合后统一只收紧 + TP1 保本夹紧。
     """
     cur = float(rec.stop_loss or 0)
@@ -3335,7 +3337,7 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
         stop_loss=stop_loss,
         tp1=tp1,
         tp2=tp2 if tp2_order else 0,
-        trailing_mode=TRAIL_MODE_HL,  # 接管单同样默认 HL/LH 结构移动止损（2026-10-20）
+        trailing_mode=TRAIL_MODE_THREE_LINE,  # 接管单同默认三线止损（2026-10-21 拍板改回；HL/LH 保留可切换）
         status="OPENED",
         opened_at=now,
         raw={

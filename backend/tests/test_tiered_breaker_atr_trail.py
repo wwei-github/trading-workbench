@@ -563,7 +563,7 @@ def test_move_sl_swing_only_when_k_zero(monkeypatch):
     assert captured["sl"] == 103.0
 
 
-# ── HL/LH 结构跟进（2026-10-20 新默认） ─────────────────────────────
+# ── HL/LH 结构跟进（2026-10-20 引入；2026-10-21 起默认改回三线，hl 保留可切换） ──
 
 
 def _bars(lows: list[float], highs: list[float] | None = None) -> list[list]:

@@ -641,8 +641,9 @@ def _run_migrations(engine):
         conn.execute(text(
             "ALTER TABLE trade_records ADD COLUMN IF NOT EXISTS beta NUMERIC(10, 4)"
         ))
-        # 移动止损方式（2026-10-20）：hl=HL/LH 结构跟踪（新开单默认）；
-        # three_line=三线止损。NULL=旧行，运行期按 three_line 理解
+        # 移动止损方式（2026-10-20 引入；2026-10-21 起新开单默认改回 three_line，
+        # hl 保留可切换）：hl=HL/LH 结构跟踪；three_line=三线止损。
+        # NULL=旧行，运行期按 three_line 理解
         conn.execute(text(
             "ALTER TABLE trade_records ADD COLUMN IF NOT EXISTS trailing_mode VARCHAR(16)"
         ))

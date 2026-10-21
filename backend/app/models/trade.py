@@ -65,8 +65,9 @@ class TradeRecord(Base):
     tp1: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
     tp2: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
 
-    # 移动止损方式（2026-10-20）：hl=HL/LH 结构跟踪（新开单默认）；
-    # three_line=三线止损（摆动极值 + ATR Chandelier + TP1 保本夹紧）。
+    # 移动止损方式（2026-10-20 引入；2026-10-21 起新开单默认改回 three_line，
+    # hl 保留、可经 /trades/{id}/trailing-mode 切换）：
+    # hl=HL/LH 结构跟踪；three_line=三线止损（摆动极值 + ATR Chandelier + TP1 保本夹紧）。
     # NULL=上线前的旧行，按 three_line 理解（保持存量单既有行为）
     trailing_mode: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
