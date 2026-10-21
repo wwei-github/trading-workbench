@@ -73,6 +73,12 @@ def test_snap_recommendation_low_score_not_promoted():
     assert snap_recommendation(59) == (60.0, 59.0)
 
 
+@pytest.mark.parametrize("raw", [float("nan"), float("inf"), float("-inf"), "nan", "inf"])
+def test_snap_recommendation_non_finite_is_zero(raw):
+    """非有限分不得归一到 60/85 档（NaN 比较恒 False 会穿过所有 < 闸门）"""
+    assert snap_recommendation(raw) == (0.0, 0.0)
+
+
 @pytest.mark.parametrize("raw", [0, 30, 45, 49])
 def test_low_score_suggest_becomes_explicit_skip(raw):
     """suggest 原始分 < 归一门槛 → 显式 skip（不留连续低分给静态门槛静默拦截）"""
@@ -105,6 +111,39 @@ def test_score_at_floor_still_suggests():
     assert fixed["trade_decision"] == "suggest"
     assert fixed["recommendation"] == 60.0
     assert fixed["recommendation_raw"] == 50.0
+
+
+@pytest.mark.parametrize("raw", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_suggest_becomes_explicit_skip(raw):
+    """NaN/±Infinity 评分按 0 处理 → 显式 skip，不得归一成可开单档位"""
+    ok, violations, fixed = validate_decision(
+        normalize_raw({
+            "trade_decision": "suggest", "direction": "long",
+            "trade_type": "trend_follow", "entry_price": 100,
+            "stop_loss": 98, "take_profit_1": 104, "recommendation": raw,
+        }),
+        {"symbol": "NONFINITEUSDT"}, [],
+    )
+    assert ok and not violations
+    assert fixed["trade_decision"] == "skip"
+    assert fixed["skip_reason"].startswith("[评分不足]")
+    assert fixed["recommendation"] == 0.0
+    assert fixed["recommendation_raw"] == 0.0
+
+
+@pytest.mark.parametrize("raw", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_skip_score_is_sanitized(raw):
+    """skip 分支同样不得把非有限分写进 NUMERIC 字段"""
+    ok, violations, fixed = validate_decision(
+        normalize_raw({
+            "trade_decision": "skip", "skip_reason": "结构不佳，等待回踩",
+            "recommendation": raw,
+        }),
+        {"symbol": "NONFINITEUSDT"}, [],
+    )
+    assert ok and not violations
+    assert fixed["recommendation"] == 0.0
+    assert fixed["recommendation_raw"] == 0.0
 
 
 # ── 4h 快照时刻与时效 ────────────────────────────────────────────────

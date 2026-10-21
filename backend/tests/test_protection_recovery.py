@@ -11,6 +11,7 @@ from app.database import Base
 from app.models.scan import AIAnalysis
 from app.models.system_config import SystemConfig
 from app.models.trade import PendingEntryOrder, ProtectionIncident, TradeRecord
+from app.services.binance_trader import BinanceTradeError, BinanceTrader
 from app.services.protection_recovery import (
     create_incident_after_rollback,
     has_active_incident,
@@ -777,3 +778,52 @@ def test_pending_materialize_close_ack_waits_for_reconcile(
     assert row.status == "awaiting_reconcile"  # ACK 不等于空仓，交巡检对账
     assert has_active_incident(db, "testnet-1", True)
     db.close()
+
+
+# ── 撤单错误语义（真实 BinanceTrader 方法，_req 替身，不触网）────────────
+
+
+class _CancelReqTrader(BinanceTrader):
+    """只替换 _req：构造时给定异常 → 撤单请求抛该异常，否则返回成功。"""
+
+    def __init__(self, error=None):
+        self.error = error
+        self.calls = []
+
+    def _req(self, method, path, params=None):
+        self.calls.append((method, path, params))
+        if self.error is not None:
+            raise self.error
+        return {}
+
+
+@pytest.mark.parametrize("error", [
+    BinanceTradeError('{"code": -2011, "msg": "Unknown order sent."}'),
+    BinanceTradeError('{"code": -2013, "msg": "Order does not exist."}'),
+])
+def test_cancel_treats_missing_order_codes_as_idempotent(error):
+    """已成交/已撤销/不存在（-2011/-2013）按幂等成功忽略"""
+    trader = _CancelReqTrader(error)
+    trader.cancel_regular_order("XUSDT", 123)
+    trader.cancel_all_open_orders("XUSDT")
+    assert trader.calls == [
+        ("DELETE", "/fapi/v1/order", {"symbol": "XUSDT", "orderId": 123}),
+        ("DELETE", "/fapi/v1/allOpenOrders", {"symbol": "XUSDT"}),
+    ]
+
+
+@pytest.mark.parametrize("error", [
+    BinanceTradeError(
+        '{"code": -1000, "msg": "An unknown error occurred while processing the request."}'),
+    BinanceTradeError(
+        '{"code": -1007, "msg": "Timeout waiting for response from backend server. '
+        'Send status unknown; execution status unknown."}'),
+    TimeoutError("read timed out"),
+])
+def test_cancel_propagates_unknown_status(error):
+    """状态未知 ≠ 已撤：必须外抛，恢复路径据此落 manual_review（审计 7.3）"""
+    trader = _CancelReqTrader(error)
+    with pytest.raises(type(error)):
+        trader.cancel_regular_order("XUSDT", 123)
+    with pytest.raises(type(error)):
+        trader.cancel_all_open_orders("XUSDT")

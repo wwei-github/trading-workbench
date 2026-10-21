@@ -460,14 +460,16 @@ class BinanceTrader:
     def cancel_regular_order(self, symbol: str, order_id: int) -> None:
         """撤销**普通**订单（限价单；与 algo 条件单的 cancel_order 区分）。
 
-        已成交/已撤销/不存在的忽略（-2011/-2013，幂等撤单）。
+        只有「已成交/已撤销/不存在」（-2011/-2013）按幂等成功忽略；-1000/-1007
+        等状态未知错误必须外抛——撤单可能未送达，吞掉会让调用方误判「已无挂单/
+        无成交」，留下孤儿挂单或裸仓（调用方随后都会复查成交，可安全承接异常）。
         """
         try:
             self._req("DELETE", "/fapi/v1/order",
                       {"symbol": symbol, "orderId": int(order_id)})
         except BinanceTradeError as e:
             msg = str(e)
-            if "-2011" in msg or "-2013" in msg or "unknown" in msg.lower() or "not exist" in msg.lower():
+            if "-2011" in msg or "-2013" in msg:
                 return
             raise
 
@@ -477,12 +479,15 @@ class BinanceTrader:
         入场限价单提交后响应丢失（超时/断连）时没有 orderId 可精确撤单，只能
         按 symbol 全撤；开仓闸门保证本账号同币无其他系统挂单。无挂单/已成交
         时币安返回成功或 -2011/-2013，均视为幂等成功。
+
+        -1000/-1007 等「状态未知」错误绝不当成功（此前按 "unknown" 宽匹配吞掉
+        会漏判残留挂单）：外抛给恢复路径，由 trade_engine 升级为 manual_review。
         """
         try:
             self._req("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
         except BinanceTradeError as e:
             msg = str(e)
-            if "-2011" in msg or "-2013" in msg or "unknown" in msg.lower() or "not exist" in msg.lower():
+            if "-2011" in msg or "-2013" in msg:
                 return
             raise
 

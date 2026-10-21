@@ -39,6 +39,7 @@ ETHUSDT 空单反向止损（SL=2373 < 入场 2391.89）靠 abs() 口径的 RR �
 保证金可用性——交易所侧最后一道防线。
 """
 import logging
+import math
 from typing import Literal, Optional
 
 import numpy as np
@@ -71,13 +72,24 @@ SKIP_RECOMMENDATION_CAP = 30.0
 RECOMMENDATION_SNAP_FLOOR = 50.0
 
 
-def snap_recommendation(raw) -> tuple[float, float]:
-    """连续分 → (最近档位, 原始分)。越界先钳制 0~100；非数值按 0 处理。"""
+def _finite_score(raw, default: float = 0.0) -> float:
+    """评分数值安全化：非数值/非有限值（NaN、±Infinity）一律按 default。
+
+    Python json.loads 接受 NaN/Infinity 字面量、Pydantic 默认 allow_inf_nan=True，
+    LLM 输出可能带非有限分。NaN 与任何数比较均为 False，若直接进入闸门会被当成
+    「未低于门槛」放行并归一到 60 档；Infinity 还会越过 NUMERIC 落库范围。故在
+    评分入口统一归零（缺省值语义）。
+    """
     try:
         value = float(raw)
     except (TypeError, ValueError):
-        value = 0.0
-    value = round(min(max(value, 0.0), 100.0), 2)
+        return default
+    return value if math.isfinite(value) else default
+
+
+def snap_recommendation(raw) -> tuple[float, float]:
+    """连续分 → (最近档位, 原始分)。越界先钳制 0~100；非数值/非有限值按 0 处理。"""
+    value = round(min(max(_finite_score(raw), 0.0), 100.0), 2)
     # 低于归一门槛不向上归一：避免缺省/低分（0、30 等）被放大成可开单的 60 档
     if value < RECOMMENDATION_SNAP_FLOOR:
         return value, value
@@ -280,7 +292,9 @@ def validate_decision(
     # 显式改判 skip，而不是保留连续低分让下游静态门槛静默拦截。覆盖 30~50 的
     # 中间分与 ≤30 的越界低分；原始分保留在 recommendation_raw 供校准统计。
     if d.trade_decision == "suggest":
-        _raw_score = float(d.recommendation or 0)
+        # 非有限值（NaN/±Infinity）按 0 处理：NaN 的 < 比较恒 False，不归零就会
+        # 直接穿过本闸门并在 snap_recommendation 里归一到 60/85 档
+        _raw_score = _finite_score(d.recommendation)
         if _raw_score < RECOMMENDATION_SNAP_FLOOR:
             return True, [], {
                 "trade_decision": "skip",
@@ -318,8 +332,8 @@ def validate_decision(
             "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
             "take_profit_2": 0, "risk_reward_ratio": 0,
             "position_pct": 0,
-            "recommendation": min(d.recommendation, SKIP_RECOMMENDATION_CAP),
-            "recommendation_raw": float(d.recommendation or 0),
+            "recommendation": min(_finite_score(d.recommendation), SKIP_RECOMMENDATION_CAP),
+            "recommendation_raw": _finite_score(d.recommendation),
         }
 
     # ── suggest 基本项 ──
