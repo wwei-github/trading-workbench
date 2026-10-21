@@ -201,11 +201,11 @@ export default function ReviewActualPanel() {
         v ? <Tag color={v === 'liquidation' ? 'red' : v === 'sl' ? 'volcano' : 'green'}>{EXIT_REASON_MAP[v] || v}</Tag> : '-',
     },
     {
-      title: (<Tooltip title="AI 计划单笔最大亏损（risk_amount）vs 实际净盈亏">计划→实际</Tooltip>),
+      title: (<Tooltip title="AI 计划单笔最大亏损（planned_risk，旧行回落 risk_amount）vs 实际净盈亏">计划→实际</Tooltip>),
       key: 'plan_actual', width: 140,
       render: (_: unknown, t: ActualTradeItem) => (
         <Space size={4}>
-          <span style={{ color: '#999' }}>-{fmtUsd(t.risk_amount)}</span>
+          <span style={{ color: '#999' }}>-{fmtUsd(t.planned_risk ?? t.risk_amount)}</span>
           <span>→</span>
           <span style={{ color: pnlColor(t.realized_pnl), fontWeight: 600 }}>{fmtUsd(t.realized_pnl)}</span>
         </Space>

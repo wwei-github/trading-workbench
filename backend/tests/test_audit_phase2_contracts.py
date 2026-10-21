@@ -30,7 +30,9 @@ from app.services.market_data import (  # noqa: E402
     htf_snapshot_time,
 )
 from app.services.patch_service import apply_patch, rollback_patch  # noqa: E402
-from app.services.risk_guard import snap_recommendation  # noqa: E402
+from app.services.risk_guard import (  # noqa: E402
+    normalize_raw, snap_recommendation, validate_decision,
+)
 from app.services.trade_engine import (  # noqa: E402
     _ai_snapshot, _remaining_risk, try_open_for_analysis,
 )
@@ -69,6 +71,40 @@ def test_snap_recommendation_low_score_not_promoted():
     assert snap_recommendation(49) == (49.0, 49.0)
     assert snap_recommendation(50) == (60.0, 50.0)
     assert snap_recommendation(59) == (60.0, 59.0)
+
+
+@pytest.mark.parametrize("raw", [0, 30, 45, 49])
+def test_low_score_suggest_becomes_explicit_skip(raw):
+    """suggest 原始分 < 归一门槛 → 显式 skip（不留连续低分给静态门槛静默拦截）"""
+    ok, violations, fixed = validate_decision(
+        normalize_raw({
+            "trade_decision": "suggest", "direction": "long",
+            "trade_type": "trend_follow", "entry_price": 100,
+            "stop_loss": 98, "take_profit_1": 104, "recommendation": raw,
+        }),
+        {"symbol": "LOWUSDT"}, [],
+    )
+    assert ok and not violations
+    assert fixed["trade_decision"] == "skip"
+    assert fixed["skip_reason"].startswith("[评分不足]")
+    assert fixed["recommendation"] == min(raw, 30.0)
+    assert fixed["recommendation_raw"] == float(raw)
+
+
+def test_score_at_floor_still_suggests():
+    """50 分达归一门槛 → 归一到 60 档，仍按 suggest 进入后续校验"""
+    ok, violations, fixed = validate_decision(
+        normalize_raw({
+            "trade_decision": "suggest", "direction": "long",
+            "trade_type": "trend_follow", "entry_price": 100,
+            "stop_loss": 98, "take_profit_1": 104, "recommendation": 50,
+        }),
+        {"symbol": "FLOORUSDT"}, [],
+    )
+    assert ok and not violations
+    assert fixed["trade_decision"] == "suggest"
+    assert fixed["recommendation"] == 60.0
+    assert fixed["recommendation_raw"] == 50.0
 
 
 # ── 4h 快照时刻与时效 ────────────────────────────────────────────────

@@ -453,7 +453,10 @@ export interface TradeRecord {
   notional: number | null
   leverage: number
   margin_used: number | null
-  risk_amount: number | null
+  risk_amount: number | null // 兼容旧行：成交后初始风险（新行=initial_risk）
+  planned_risk?: number | null // 下单前计划风险（参考价/限价口径）
+  initial_risk?: number | null // 成交后初始风险（实际成交价，即 1R）
+  remaining_risk?: number | null // 当前剩余风险（随 TP/减仓/移损更新）
   risk_budget_mode?: string | null // 开仓时止损金额模式快照：pct/fixed（null=旧行按 pct 理解）
   stop_loss: number | null
   tp1: number | null
@@ -720,6 +723,9 @@ export interface ActualTradeItem {
   realized_pnl: number | null;
   pnl_pct: number | null;
   risk_amount: number | null;
+  planned_risk: number | null; // 下单前计划风险（旧行回落 risk_amount）
+  initial_risk: number | null; // 成交后初始风险（即 1R）
+  remaining_risk: number | null; // 当前剩余风险
   fee_total: number | null;
   funding_total: number | null;
   recommendation: number | null;

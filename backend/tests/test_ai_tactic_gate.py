@@ -98,7 +98,7 @@ def test_validate_decision_tactic_gate():
     ok_d = TradeDecision(
         trade_decision="suggest", direction="long", trade_type="trend_follow",
         entry_price=101.0, stop_loss=99.0, take_profit_1=104.0,
-        tactic_name="EMA20回踩做多", tactic_reason="回踩企稳",
+        recommendation=70, tactic_name="EMA20回踩做多", tactic_reason="回踩企稳",
     )
     ok, _, fixed = validate_decision(ok_d, _gate_signal(), [])
     assert ok and fixed["tactic_name"] == "EMA20回踩做多"
@@ -108,7 +108,7 @@ def test_validate_decision_tactic_gate():
     bad_d = TradeDecision(
         trade_decision="suggest", direction="long", trade_type="trend_follow",
         entry_price=101.0, stop_loss=99.0, take_profit_1=104.0,
-        tactic_name="不存在的战法", tactic_reason="编造",
+        recommendation=70, tactic_name="不存在的战法", tactic_reason="编造",
     )
     ok2, _, fixed2 = validate_decision(bad_d, _gate_signal(), [])
     assert ok2 and fixed2["tactic_name"] is None and fixed2["tactic_reason"] is None
@@ -125,7 +125,7 @@ def test_validate_decision_tactic_gate():
     plain = TradeDecision(
         trade_decision="suggest", direction="long", trade_type="trend_follow",
         entry_price=101.0, stop_loss=99.0, take_profit_1=104.0,
-        tactic_name="EMA20回踩做多",
+        recommendation=70, tactic_name="EMA20回踩做多",
     )
     ok4, _, fixed4 = validate_decision(plain, {"symbol": "X"}, [])
     assert ok4 and fixed4["tactic_name"] is None

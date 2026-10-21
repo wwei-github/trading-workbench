@@ -65,6 +65,9 @@ RECOMMENDATION_TIERS = (60.0, 70.0, 85.0)
 SKIP_RECOMMENDATION_CAP = 30.0
 # 归一门槛：≥50 才向 60 档靠拢（58→60 是审计确认的典型场景）；更低分保持原值，
 # 避免缺省 0/低分被放大成可开单的 60 档。
+# 2026-10-21 补口：suggest 但原始分 < 门槛（30~50 连续分，及 ≤30 的越界低分）
+# 在 validate_decision 里显式改判 skip——否则低分会以 suggest 落库，再被静态
+# 门槛静默拦掉，成为审计 5.2 所说的「隐藏弃单」。
 RECOMMENDATION_SNAP_FLOOR = 50.0
 
 
@@ -272,6 +275,31 @@ def validate_decision(
     不再有 s2 资格闸/优先级改标——出场恒为 ladder，RR 铁律无豁免。
     """
     violations: list[str] = []
+
+    # ── 评分硬校验（2026-10-21 第二阶段补口）：suggest 的原始分低于归一门槛时
+    # 显式改判 skip，而不是保留连续低分让下游静态门槛静默拦截。覆盖 30~50 的
+    # 中间分与 ≤30 的越界低分；原始分保留在 recommendation_raw 供校准统计。
+    if d.trade_decision == "suggest":
+        _raw_score = float(d.recommendation or 0)
+        if _raw_score < RECOMMENDATION_SNAP_FLOOR:
+            return True, [], {
+                "trade_decision": "skip",
+                "skip_reason": (
+                    f"[评分不足] 原始分 {_raw_score:g} 低于归一门槛 "
+                    f"{RECOMMENDATION_SNAP_FLOOR:g}，不足以进入分数档位"
+                ),
+                "direction": None,
+                "trade_type": None,
+                "analysis": d.analysis or "",
+                "tactic_name": None,
+                "tactic_reason": None,
+                "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
+                "take_profit_2": 0, "risk_reward_ratio": 0,
+                "position_pct": 0,
+                "recommendation": min(_raw_score, SKIP_RECOMMENDATION_CAP),
+                "recommendation_raw": _raw_score,
+            }
+
     tactic_name, tactic_reason = _tactic_gate(d, signal)
 
     # ── skip：只要求理由非空（recommendation 超标仅修正，不浪费重试）──

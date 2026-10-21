@@ -145,6 +145,9 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   tp1: '止盈一',
   tp2: '止盈二',
   risk_amount: '止损金额',
+  planned_risk: '计划风险',
+  initial_risk: '初始风险',
+  remaining_risk: '剩余风险',
   entry_order_id: '开仓单ID',
   sl_order_id: '止损单ID',
   real_entry_price: '实际入场价',
@@ -1223,16 +1226,17 @@ export default function TradesPanel() {
       },
     },
     {
-      // 盈亏比（R）：净盈亏 ÷ 计划风险额（risk_amount），按结算后全程净额算；
-      // 在跑单/未结算显示 -（TP1 半程利润算 R 会虚高，与概览口径一致）
+      // 盈亏比（R）：净盈亏 ÷ 成交后初始风险（initial_risk，旧行回落 risk_amount），
+      // 与后端 /trades 的 risk_unit 口径一致；在跑单/未结算显示 -
       title: '盈亏比',
       key: 'r_multiple',
       width: 80,
       render: (_: unknown, rec) => {
-        if (rec.status !== 'CLOSED' || !rec.risk_amount || rec.realized_pnl == null) {
+        const riskUnit = rec.initial_risk ?? rec.risk_amount
+        if (rec.status !== 'CLOSED' || !riskUnit || rec.realized_pnl == null) {
           return <span style={{ color: '#999' }}>-</span>
         }
-        const r = rec.realized_pnl / rec.risk_amount
+        const r = rec.realized_pnl / riskUnit
         return (
           <span style={{ color: schemeValueColor(r, colorScheme), fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
             {r > 0 ? '+' : ''}{r.toFixed(2)}R
