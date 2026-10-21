@@ -39,6 +39,11 @@ class PromptPatch(Base):
     evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
     # 合入前基线（apply 时快照）：{heat, ev_per_trade, win_rate, pass_rate, window}
     metrics_before_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 合入前来源值（2026-10-21 T5）：param 类记录合入前的自定义值
+    # {"param_key":..., "param_value": 旧值或 None, "decision_version": 旧版本}；
+    # 回滚恢复到该值，而非一律回落 NULL/默认。旧补丁无本快照（空 dict）时
+    # 保持原行为（回落默认），无法还原更早的自定义值
+    before_value_json: Mapped[dict] = mapped_column(JSON, default=dict)
     # 评估结果明细：{after: {...}, before: {...}, checks: [...]}
     metrics_after_json: Mapped[dict] = mapped_column(JSON, default=dict)
     # 三态判定：pending(评估中) / valid / invalid / worse（恶化告警）

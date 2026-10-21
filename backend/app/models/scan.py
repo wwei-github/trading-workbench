@@ -166,6 +166,18 @@ class AIAnalysis(Base):
     btc_env_missing: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    # 4h 状态快照时刻（2026-10-21 第二阶段 T1）：参与状态计算的最后一根已收盘
+    # 4h 的收盘时间。开仓前复核陈旧度（>4h15m 禁开），缺数由 htf_degraded 覆盖；
+    # NULL=本列上线前旧行（开仓复核按兼容放行，安全口径不变）
+    htf_as_of: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # 评分原始值（2026-10-21 第二阶段 T2，方案 A）：recommendation 已归一到
+    # 60/70/85 档位；本列保留模型原始分供档位校准分析，NULL=本列上线前旧行
+    recommendation_raw: Mapped[Optional[float]] = mapped_column(
+        Numeric(5, 2), nullable=True
+    )
+    # 统一决策版本（2026-10-21 第二阶段 T5）：分析时 system_config.decision_version
+    # 快照（补丁/配置/提示词变更都会递增），复盘按版本分组；NULL=本列上线前旧行
+    decision_version: Mapped[Optional[int]] = mapped_column(nullable=True)
     # AI 结论落库时刻（2026-10-21 观测 B1）：created_at 在 latest-wins 原地更新
     # 时不刷新（沿用首次分析时刻），不能作为完成时刻；本列每次落库覆写。
     # 本列上线前的历史行 NULL（按 created_at 理解）

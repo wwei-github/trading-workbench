@@ -7,7 +7,10 @@ AI 错误归因发现某错误标签高频出现（近7天热度 ≥0.5 且样�
 关键约束：
 - 系统自带提示词（SYSTEM_PROMPT / AGENT_SYSTEM 代码常量）永不改动；
   提示词补丁是「覆盖规则」段（带 patch 标记注释），追加在 strategy_prompt 尾部
-- 回滚统一走 DB：提示词删标记段 / 参数恢复 NULL（默认语义），即时生效
+- 回滚统一走 DB：提示词删标记段 / 参数恢复合入前的来源值（旧补丁无快照
+  才回落 NULL=默认语义），即时生效
+- 合入与回滚在同一事务内递增 system_config.decision_version（2026-10-21 T5），
+  决策快照与缓存指纹按版本分组
 - 同标签 14 天冷却；同标签存在 draft/active 补丁时不重复生成
 - 「行情异常」「无明显错误」非规则性标签，不参与补丁触发
 """
@@ -26,6 +29,7 @@ from app.models.scan import AIAnalysis
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.ai_attribution import ERROR_TAGS
+from app.services.decision_version import bump_decision_version
 from app.services.llm_client import configure_from, current_model, get_client, parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -304,25 +308,35 @@ def apply_patch(db: Session, patch_id: str) -> PromptPatch:
         raise ValueError(f"仅 draft 可合入（当前 {patch.status}）")
     cfg = _get_cfg(db)
 
+    # 合入前来源值快照（T5）：param 类回滚时恢复到这里的旧值；prompt 类回滚
+    # 走标记段删除（等价于恢复追加前文本），仅留存长度供审计
+    before: dict = {"decision_version": int(cfg.decision_version or 0)}
     if patch.kind == "prompt":
+        before["strategy_prompt_len"] = len(cfg.strategy_prompt or "")
         marker = f"<!-- patch:{patch.target_tag}:{patch.id[:8]} -->"
         seg = f"\n\n{marker}\n{patch.new_text}"
         cfg.strategy_prompt = (cfg.strategy_prompt or "") + seg
     else:  # param
+        old = getattr(cfg, patch.param_key, None)
+        before["param_key"] = patch.param_key
+        before["param_value"] = None if old is None else float(old)
         setattr(cfg, patch.param_key, float(patch.param_value))
+    patch.before_value_json = before
 
     patch.status = "active"
     patch.verdict = "pending"
     patch.applied_at = datetime.utcnow()
     patch.metrics_before_json = window_stats(db, days=7)
+    bump_decision_version(cfg)
     db.commit()
     db.refresh(patch)
-    logger.info("补丁合入：%s %s（%s）", patch.target_tag, patch.kind, patch.id[:8])
+    logger.info("补丁合入：%s %s（%s，决策版本 %s）",
+                patch.target_tag, patch.kind, patch.id[:8], cfg.decision_version)
     return patch
 
 
 def rollback_patch(db: Session, patch_id: str) -> PromptPatch:
-    """回滚：提示词删除标记段 / 参数恢复 NULL（默认语义）。即时生效。"""
+    """回滚：提示词删除标记段 / 参数恢复合入前来源值。即时生效，版本递增。"""
     patch = db.get(PromptPatch, patch_id)
     if not patch:
         raise ValueError("补丁不存在")
@@ -341,13 +355,19 @@ def rollback_patch(db: Session, patch_id: str) -> PromptPatch:
             nxt = MARKER_RE.search(text, idx + len(marker))
             end = nxt.start() if nxt else len(text)
             cfg.strategy_prompt = (text[:idx] + text[end:]).strip()
-    else:  # param → 恢复默认（NULL=不限制/内置默认）
-        setattr(cfg, patch.param_key, None)
+    else:  # param → 恢复合入前来源值（T5）；旧补丁无快照才回落 NULL/默认
+        before = patch.before_value_json or {}
+        if "param_value" in before:
+            setattr(cfg, patch.param_key, before.get("param_value"))
+        else:
+            setattr(cfg, patch.param_key, None)
 
     patch.status = "rolled_back"
+    bump_decision_version(cfg)
     db.commit()
     db.refresh(patch)
-    logger.info("补丁回滚：%s %s（%s）", patch.target_tag, patch.kind, patch.id[:8])
+    logger.info("补丁回滚：%s %s（%s，决策版本 %s）",
+                patch.target_tag, patch.kind, patch.id[:8], cfg.decision_version)
     return patch
 
 

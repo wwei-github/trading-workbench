@@ -271,8 +271,10 @@ def refresh_mark_pnl(account_key: str, symbol: str, mark_price: float) -> bool:
         total = float(rec.realized_pnl or 0) + unrealized
         if total > float(rec.peak_total_pnl or 0):
             rec.peak_total_pnl = round(total, 6)
-        if rec.risk_amount and float(rec.risk_amount) > 0:
-            rec.pnl_pct = round(total / float(rec.risk_amount) * 100, 2)
+        # 1R 分母用成交后初始风险（旧行回落 risk_amount），与巡检同公式
+        _ru = rec.risk_unit
+        if _ru > 0:
+            rec.pnl_pct = round(total / _ru * 100, 2)
         warn = liquidation_warning(rec, mark_price)
         db.commit()
         # N-17（2026-10-08）：快照刷新后做诊断触发判定——60s 粒度采样，

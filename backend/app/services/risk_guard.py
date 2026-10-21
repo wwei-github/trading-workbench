@@ -59,6 +59,29 @@ TRADE_TYPE_LABELS = {
 }
 TRADE_TYPES = tuple(TRADE_TYPE_LABELS)
 
+# 评分档位（2026-10-21 第二阶段 T2，方案 A）：提示词只允许 60/70/85 三档，
+# 程序不再接受连续分——归一到最近档位，原始分另存 recommendation_raw 供校准。
+RECOMMENDATION_TIERS = (60.0, 70.0, 85.0)
+SKIP_RECOMMENDATION_CAP = 30.0
+# 归一门槛：≥50 才向 60 档靠拢（58→60 是审计确认的典型场景）；更低分保持原值，
+# 避免缺省 0/低分被放大成可开单的 60 档。
+RECOMMENDATION_SNAP_FLOOR = 50.0
+
+
+def snap_recommendation(raw) -> tuple[float, float]:
+    """连续分 → (最近档位, 原始分)。越界先钳制 0~100；非数值按 0 处理。"""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 0.0
+    value = round(min(max(value, 0.0), 100.0), 2)
+    # 低于归一门槛不向上归一：避免缺省/低分（0、30 等）被放大成可开单的 60 档
+    if value < RECOMMENDATION_SNAP_FLOOR:
+        return value, value
+    tier = min(RECOMMENDATION_TIERS, key=lambda t: (abs(value - t), t))
+    return tier, value
+
+
 # 合并/下线前的历史类型（旧分析/旧交易快照仍可能携带，仅作展示，不再接受 AI 新输出）
 LEGACY_TRADE_TYPE_LABELS = {
     "rule_123": "123法则（已并入结构破位回踩）",
@@ -267,7 +290,8 @@ def validate_decision(
             "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
             "take_profit_2": 0, "risk_reward_ratio": 0,
             "position_pct": 0,
-            "recommendation": min(d.recommendation, 30),
+            "recommendation": min(d.recommendation, SKIP_RECOMMENDATION_CAP),
+            "recommendation_raw": float(d.recommendation or 0),
         }
 
     # ── suggest 基本项 ──
@@ -483,6 +507,7 @@ def validate_decision(
         else:
             _rp = float(risk_pct) if risk_pct is not None else float(settings.RISK_BUDGET_PCT)
             position_pct = round(_rp / stop_pct, 2)
+    rec_tier, rec_raw = snap_recommendation(d.recommendation)
     fixed = {
         "trade_decision": "suggest",
         "skip_reason": "",
@@ -501,7 +526,9 @@ def validate_decision(
         "take_profit_2": round(_tp2, 8),
         "risk_reward_ratio": round(rr, 2),
         "position_pct": position_pct,
-        "recommendation": float(min(max(d.recommendation, 50), 100)),
+        # 档位硬校验（T2）：执行链只出现 60/70/85；原始连续分保留供校准
+        "recommendation": rec_tier,
+        "recommendation_raw": rec_raw,
     }
     return True, [], fixed
 
@@ -519,7 +546,7 @@ def build_forced_skip(reason: str, violations: Optional[list[str]] = None) -> di
         "analysis": "1. 该信号未通过程序风控校验，已自动跳过，未消耗人工判断成本。",
         "entry_price": 0, "stop_loss": 0, "take_profit_1": 0,
         "take_profit_2": 0, "risk_reward_ratio": 0,
-        "position_pct": 0, "recommendation": 10,
+        "position_pct": 0, "recommendation": 10, "recommendation_raw": 10,
     }
 
 

@@ -252,7 +252,11 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
     overview = _agg(trades)
     total_fee = round(sum(t.fee_total or 0 for t in trades), 2)
     total_funding = round(sum(t.funding_total or 0 for t in trades), 2)
-    planned_risk = round(sum(float(t.risk_amount or 0) for t in trades), 2)
+    # 计划风险口径：planned_risk（旧行回落 risk_amount），与成交滑点后的 1R 分离
+    planned_risk = round(sum(
+        float(t.planned_risk if t.planned_risk is not None else (t.risk_amount or 0))
+        for t in trades
+    ), 2)
 
     # 双网镜像单（2026-10-04）：同一 AI 决策扇出双网的两笔 CLOSED 单，all 口径
     # 下被当独立样本重复计入。返回计数供前端在 all 视图提示「归因结论以正式网
@@ -307,6 +311,12 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         # 规则版本（docs/24 A0）：同版本内分组对比，legacy=标记上线前旧行；
         # 历史跨版本混合成绩不具证明力（docs/24 修订 v2）
         ("规则版本", lambda t: t.rule_version or "legacy"),
+        # 统一决策版本（T5）：配置/补丁/提示词变更切点，同一版本内对比；
+        # legacy=本列上线前旧行（规则来源无法回溯）
+        ("决策版本", lambda t: (
+            f"v{(t.ai_snapshot or {}).get('decision_version')}"
+            if (t.ai_snapshot or {}).get("decision_version") is not None
+            else "legacy")),
     ):
         buckets: dict[str, list] = {}
         for t in trades:
@@ -386,6 +396,10 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         "realized_pnl": float(t.realized_pnl) if t.realized_pnl is not None else None,
         "pnl_pct": float(t.pnl_pct) if t.pnl_pct is not None else None,
         "risk_amount": float(t.risk_amount) if t.risk_amount is not None else None,
+        "planned_risk": float(t.planned_risk) if t.planned_risk is not None else None,
+        "initial_risk": float(t.initial_risk) if t.initial_risk is not None else None,
+        "remaining_risk": (float(t.remaining_risk)
+                           if t.remaining_risk is not None else None),
         "fee_total": float(t.fee_total) if t.fee_total is not None else None,
         "funding_total": float(t.funding_total) if t.funding_total is not None else None,
         "recommendation": (t.ai_snapshot or {}).get("recommendation"),
@@ -404,6 +418,8 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         "htf_phase": (t.ai_snapshot or {}).get("htf_phase"),
         # 规则版本（docs/24 A0）：逐笔规则集快照，legacy=标记上线前旧行
         "rule_version": t.rule_version or "legacy",
+        # 统一决策版本（T5）：逐笔决策切点，legacy=本列上线前旧行
+        "decision_version": (t.ai_snapshot or {}).get("decision_version"),
         "opened_at": t.opened_at.isoformat() if t.opened_at else None,
         "closed_at": t.closed_at.isoformat() if t.closed_at else None,
         "hold_hours": _hold_hours(t),

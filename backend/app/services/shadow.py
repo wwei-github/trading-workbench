@@ -371,7 +371,8 @@ def _tag_rec70(db, rec) -> bool:
     if rec_val < REC70_MIN_REC:
         return False
     pnl = float(rec.realized_pnl or 0)
-    risk = float(rec.risk_amount or 0)
+    # 1R = 成交后初始风险；测试替身/旧对象无 risk_unit 属性时回落 risk_amount
+    risk = getattr(rec, "risk_unit", None) or float(rec.risk_amount or 0)
     value = {
         "recommendation": rec_val,
         "bucket": "rec60_69" if rec_val < REC70_NEW_REC else "rec70plus",
@@ -553,7 +554,7 @@ def compute_reentry_precond(klines: list[list], rec) -> Optional[dict]:
             hours_to_reentry = round((int(k[0]) - closed_ms) / 3_600_000, 1)
             break
     real_r = None
-    risk = float(rec.risk_amount or 0)
+    risk = getattr(rec, "risk_unit", None) or float(rec.risk_amount or 0)
     if risk > 0:
         real_r = round(float(rec.realized_pnl or 0) / risk, 4)
     return {

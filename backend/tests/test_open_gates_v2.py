@@ -89,13 +89,19 @@ def _closed(db, pnl, closed_at, account_key="testnet-1", testnet=True):
     return rec
 
 
-def _running(db, direction="long", risk=40.0, status="OPENED", symbol=None):
-    """在跑单记录（热度/同向计数数据源）"""
+def _running(db, direction="long", risk=40.0, status="OPENED", symbol=None,
+             remaining=None, beta=None):
+    """在跑单记录（热度/同向计数数据源）
+
+    remaining=None 表示旧行（未迁移/测试未显式给出）——热度回落 risk_amount；
+    remaining 显式给出用于验证 T4「按剩余风险而非开仓风险」口径。
+    """
     rec = TradeRecord(
         symbol=symbol or f"BBB{uuid.uuid4().hex[:6]}USDT",
         direction=direction, status=status,
         account_key="testnet-1", testnet=True,
         opened_at=datetime.utcnow(), risk_amount=risk,
+        initial_risk=risk, remaining_risk=remaining, beta=beta,
     )
     db.add(rec)
     db.commit()
@@ -279,7 +285,36 @@ def test_heat_cap_within_limit_passes(db):
     _running(db, risk=1.0)
     a = _make_analysis(db, rec=90)
     assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) == "blocked"
-    assert "组合热度" not in (a.open_block_reason or "")
+    assert "组合热度超限" not in (a.open_block_reason or "")
+
+
+def test_heat_uses_remaining_risk_after_partial_tp(db):
+    """T4：TP 后剩余风险缩小 → 不再按开仓时 risk_amount 误拦。
+
+    4 笔开仓风险各 40（旧口径 160+30 > 150 必拦），剩余风险已缩到 1
+    （新口径 4+30 = 34 ≤ 150）→ 热度闸门放行。
+    """
+    for _ in range(4):
+        _running(db, risk=40.0, status="TP1_HIT", remaining=1.0)
+    a = _make_analysis(db, rec=90)
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) == "blocked"
+    assert "组合热度超限" not in (a.open_block_reason or "")
+
+
+def test_heat_btc_exposure_applies_beta(db):
+    """T4：BTC 因子暴露 = 剩余风险 × β；β=2 的 70 → 140 + 本单 30 > 150 拦截"""
+    _running(db, risk=70.0, remaining=70.0, beta=2.0)
+    a = _make_analysis(db, rec=90)
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) == "blocked"
+    assert "组合热度超限" in (a.open_block_reason or "")
+
+
+def test_heat_btc_exposure_beta_missing_falls_back_to_one(db):
+    """T4：β 缺失按 1.0（70 + 30 = 100 ≤ 150 放行），不得因 None 崩溃或放大"""
+    _running(db, risk=70.0, remaining=70.0, beta=None)
+    a = _make_analysis(db, rec=90)
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) == "blocked"
+    assert "组合热度超限" not in (a.open_block_reason or "")
 
 
 def test_direction_cap_blocks(db, monkeypatch):

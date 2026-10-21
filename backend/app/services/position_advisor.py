@@ -86,6 +86,18 @@ ADVICE_SYSTEM = """你是期货交易系统的持仓风控顾问。一笔在跑�
 不要输出其他内容。"""
 
 
+def _risk_unit(rec) -> float:
+    """1R 口径（T3，2026-10-21）：优先 TradeRecord.risk_unit（成交后初始风险），
+    旧行/测试替身无该属性时回落 risk_amount。"""
+    value = getattr(rec, "risk_unit", None)
+    if value is None:
+        value = getattr(rec, "risk_amount", None)
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def advice_due(rec, total: float, now: datetime) -> bool:
     """自动诊断触发判定（docs/16 §3.1 + 2026-09-26 扩展）。
 
@@ -98,7 +110,7 @@ def advice_due(rec, total: float, now: datetime) -> bool:
     if not settings.AI_API_KEY:
         return False
     last = rec.ai_advice_at
-    risk = float(rec.risk_amount or 0)
+    risk = _risk_unit(rec)
     # ── 浮亏触发 ──
     if total < 0:
         if last is None:
@@ -220,7 +232,7 @@ def build_facts(db: Session, rec) -> dict:
 
     realized = float(rec.realized_pnl or 0)
     unrealized = float(rec.unrealized_pnl or 0)
-    risk = float(rec.risk_amount or 0)
+    risk = _risk_unit(rec)
     total = realized + unrealized
     peak = float(rec.peak_total_pnl or 0)
 
@@ -304,7 +316,7 @@ def tighten_candidate(facts: dict, rec) -> "float | None":
     price = (facts.get("position_now") or {}).get("current_price")
     klines = facts.get("klines_recent") or []
     old_sl = float(rec.stop_loss or 0)
-    risk = float(rec.risk_amount or 0)
+    risk = _risk_unit(rec)
     if not atr or not price or len(klines) < TIGHTEN_CAND_LOW_N + 1 \
             or old_sl <= 0 or risk <= 0:
         return None
@@ -382,7 +394,7 @@ def diagnose_trade(db: Session, rec) -> "dict | None":
     prev_action = (rec.ai_advice or {}).get("action")
     stale = is_stale_hold(rec)
     # 事件触发路由（与 build_facts facts.diagnosis_trigger 同源）
-    _risk = float(rec.risk_amount or 0)
+    _risk = _risk_unit(rec)
     _peak = float(rec.peak_total_pnl or 0)
     if stale:
         trigger_label = "stale_no_tp1"
@@ -635,7 +647,7 @@ def _auto_tighten(db: Session, rec, cand: float, atr: float, advice: dict) -> bo
                         rec.symbol, cand, price, TIGHTEN_NOISE_ATR, atr)
             return False
         from app.services.event_executor import remaining_qty
-        risk = float(rec.risk_amount or 0)
+        risk = _risk_unit(rec)
         remaining = remaining_qty(rec)
         improve = ((cand - old_sl) if long else (old_sl - cand)) * remaining
         if risk <= 0 or improve < risk * TIGHTEN_MIN_IMPROVE_R:
@@ -687,7 +699,7 @@ def _notify_tighten_result(rec, old_sl: float, new_sl: float, price: float,
             return
         side = "多" if rec.direction == "long" else "空"
         entry = float(rec.entry_price or 0)
-        risk = float(rec.risk_amount or 0)
+        risk = _risk_unit(rec)
         from app.services.event_executor import remaining_qty
         remaining = remaining_qty(rec)
         loss_new = (entry - new_sl) * remaining if rec.direction == "long" \

@@ -628,18 +628,18 @@ def fund_analytics(
     fee_total = round(sum(float(r.fee_total or 0) for r in rows), 2)
     funding_total = round(sum(float(r.funding_total or 0) for r in rows), 2)
     win_rs = [
-        float(r.realized_pnl) / float(r.risk_amount)
+        float(r.realized_pnl) / r.risk_unit
         for r in rows
-        if (r.realized_pnl or 0) > 0 and r.risk_amount and float(r.risk_amount) > 0
+        if (r.realized_pnl or 0) > 0 and r.risk_unit > 0
     ]
     avg_win_r = round(sum(win_rs) / len(win_rs), 2) if win_rs else None
     # 全部已结算单的 R 均值（2026-10-12，交易记录页「平均盈亏比」用）：口径同
-    # 列表「盈亏比」列（净盈亏 ÷ 计划风险额），含止盈/止损全部出场——avg_win_r
-    # 仅计盈利单偏乐观；净盈亏未知或 risk_amount 缺失的行算不出 R，剔除
+    # 列表「盈亏比」列（净盈亏 ÷ 1R = 成交后初始风险），含止盈/止损全部出场——
+    # avg_win_r 仅计盈利单偏乐观；净盈亏未知或 1R 缺失的行算不出 R，剔除
     all_rs = [
-        float(r.realized_pnl) / float(r.risk_amount)
+        float(r.realized_pnl) / r.risk_unit
         for r in rows
-        if r.realized_pnl is not None and r.risk_amount and float(r.risk_amount) > 0
+        if r.realized_pnl is not None and r.risk_unit > 0
     ]
     avg_r = round(sum(all_rs) / len(all_rs), 2) if all_rs else None
 

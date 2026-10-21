@@ -86,7 +86,17 @@ class TradeRecord(Base):
     leverage: Mapped[int] = mapped_column(Integer, default=20)
     margin_mode: Mapped[str] = mapped_column(String(12), default="isolated")
     margin_used: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)
-    risk_amount: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)  # 止损金额（USDT）
+    # 风险口径拆分（2026-10-21 第二阶段 T3）：
+    # planned_risk=下单前按参考价/限价计算的计划风险；initial_risk=成交后按实际
+    # 成交均价与初始止损计算（滑点后的真实 1R，复盘/R 统计以此为准）；
+    # remaining_risk=当前剩余仓相对当前止损的风险（只计亏损方向，TP/减仓/移损同步）；
+    # risk_amount 保留读取兼容（旧行回填三列，新行仍写入 initial_risk 兼容旧消费方）。
+    # 已实现净收益沿用 realized_pnl（交易所 income 口径，已含手续费/资金费/强平清算，
+    # 即计划中的 realized_net，不新增重复列）。
+    risk_amount: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)  # 止损金额（USDT，兼容旧口径）
+    planned_risk: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)  # 下单前计划风险（参考价/限价口径）
+    initial_risk: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)  # 成交后初始风险（实际成交价口径，即 1R）
+    remaining_risk: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)  # 当前剩余风险（剩余仓×入场至当前止损距离）
     risk_budget_mode: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)  # 开仓时止损金额模式快照：pct/fixed（NULL=旧行，按 pct 理解；2026-09-27）
     beta: Mapped[Optional[float]] = mapped_column(Numeric(10, 4), nullable=True)  # 开仓时对 BTC 的日收益回归 β 快照（docs/13 #1 组合热度 β 加权；NULL=旧行/β 不可得，按 1.0 计）
 
@@ -147,6 +157,22 @@ class TradeRecord(Base):
     def fail_reason(self) -> Optional[str]:
         """开仓失败原因（仅 FAILED 记录写入 raw.fail_reason，API 经 TradeOut 透出）"""
         return (self.raw or {}).get("fail_reason")
+
+    @property
+    def risk_unit(self) -> float:
+        """1R 基准：成交后初始风险优先，旧行回落 risk_amount（0=不可用）。
+
+        复盘 R 倍数、pnl_pct、黑名单超预算判定统一用本属性，避免同一字段
+        同时承担计划/成交/剩余三种口径（2026-10-21 第二阶段 T3）。
+        """
+        for v in (self.initial_risk, self.risk_amount):
+            try:
+                f = float(v or 0)
+            except (TypeError, ValueError):
+                f = 0.0
+            if f > 0:
+                return f
+        return 0.0
 
     @property
     def tp_mode(self) -> Optional[str]:

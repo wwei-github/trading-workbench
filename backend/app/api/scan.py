@@ -2,6 +2,7 @@ import copy
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -43,6 +44,7 @@ from app.services import market_data as md
 from app.services.scanner import classify_volume
 from app.services.trade_engine import breaker_status_by_net
 from app.services.ai_analyzer import analyze_coin
+from app.services.decision_version import bump_decision_version
 from app.services.risk_guard import is_pullback_wait
 from app.services.skill_library import list_skills
 from app.services.strategy import recent_swings, swing_annotations
@@ -87,6 +89,16 @@ def _audit_fmt_value(key: str, v) -> str:
         return s if len(s) <= 120 else s[:117] + "..."
     s = str(v)
     return s if len(s) <= 80 else s[:77] + "..."
+
+
+def _config_value_changed(old, new) -> bool:
+    """配置值是否实际变化（T5 决策版本递增判定）。数值列从库读出是 Decimal、
+    请求赋值是 float/int——按 float 比较避免同值因类型不同被误判为变更。"""
+    if isinstance(old, bool) or isinstance(new, bool):
+        return bool(old) != bool(new)
+    if isinstance(old, (int, float, Decimal)) and isinstance(new, (int, float, Decimal)):
+        return float(old) != float(new)
+    return old != new
 
 
 @router.post("", response_model=ScanTriggerResponse)
@@ -916,6 +928,12 @@ def update_system_config(
             _merge_scan_filters(cfg.scan_filters, body.scan_filters)
             if body.scan_filters is not None else None
         )
+
+    # 统一决策版本（T5）：有实际变化的配置项才递增，与本次变更同一事务提交；
+    # 决策快照/缓存指纹据此分组。仅审计/确认类字段（ACK 时间等）不经过本端点
+    if any(_config_value_changed(v, getattr(cfg, k, None))
+           for k, v in _audit_before.items()):
+        bump_decision_version(cfg)
 
     db.commit()
     db.refresh(cfg)

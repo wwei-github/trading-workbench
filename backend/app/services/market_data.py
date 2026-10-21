@@ -115,6 +115,62 @@ def screen_klines(klines: list, interval: str, now: Optional[datetime] = None) -
     return klines
 
 
+# 4h 状态快照时效契约（2026-10-21 第二阶段 T1）：分析落库时记录状态对应的
+# 最后一根已收盘 4h 的收盘时刻；开仓前复核陈旧度，跨周期禁开。
+HTF_INTERVAL_MS = 4 * 3600 * 1000
+HTF_MAX_STALE_SECONDS = 4 * 3600 + 900   # 4h 周期 + 15min 数据落地容差
+
+
+def htf_snapshot_time(htf_klines: list, now: Optional[datetime] = None) -> Optional[datetime]:
+    """4h 状态快照时刻 = 参与状态计算的最后一根 K 线收盘时间（UTC naive）。
+
+    与 htf_core 同口径用 [:-1] 剔除尾根（screen_klines 可能在末尾追加幽灵根）。
+    now 传 aware/naive 均可，用于封顶未收盘/尾窗场景；None=不封顶。
+    返回 None=数据不足，调用方按缺数处理。
+    """
+    if not htf_klines or len(htf_klines) < 2:
+        return None
+    try:
+        close_ms = float(htf_klines[-2][0]) + HTF_INTERVAL_MS
+    except (IndexError, TypeError, ValueError):
+        return None
+    try:
+        as_of = datetime.fromtimestamp(
+            close_ms / 1000, tz=timezone.utc
+        ).replace(tzinfo=None)
+    except (OverflowError, OSError, ValueError):
+        return None
+    if now is not None:
+        now_utc = now.astimezone(timezone.utc).replace(tzinfo=None) if now.tzinfo else now
+        as_of = min(as_of, now_utc)
+    return as_of
+
+
+def htf_open_block_reason(htf_degraded: bool, htf_as_of: Optional[datetime],
+                          now: Optional[datetime] = None) -> Optional[str]:
+    """开仓前 4h 资格复核：返回拦截原因，None=通过。
+
+    缺数（分析时降级）一律禁开；状态时刻距今超过 4h15m 禁开（信号已跨 4h
+    周期，方向上可能已反转）。htf_as_of 为 None 的历史行（本列上线前）保持
+    兼容放行——新分析的缺数已由 htf_degraded 覆盖。
+    """
+    if htf_degraded:
+        return "4h 数据缺失/降级，禁止新开仓（结论缺少大周期背景）"
+    if htf_as_of is None:
+        return None
+    now_utc = now or datetime.utcnow()
+    if now_utc.tzinfo is not None:
+        now_utc = now_utc.astimezone(timezone.utc).replace(tzinfo=None)
+    try:
+        age = (now_utc - htf_as_of).total_seconds()
+    except TypeError:
+        return "4h 状态时间戳异常，禁止新开仓"
+    if age > HTF_MAX_STALE_SECONDS:
+        return (f"4h 状态已陈旧（{age / 3600:.1f}h > "
+                f"{HTF_MAX_STALE_SECONDS / 3600:.1f}h），禁止新开仓")
+    return None
+
+
 def _futures_client() -> httpx.Client:
     return httpx.Client(
         base_url=settings.BINANCE_FUTURES_URL,

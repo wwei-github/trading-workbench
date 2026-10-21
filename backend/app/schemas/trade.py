@@ -38,6 +38,9 @@ class TradeOut(BaseModel):
     leverage: int
     margin_used: Optional[float] = None
     risk_amount: Optional[float] = None
+    planned_risk: Optional[float] = None   # 下单前计划风险（参考价/限价口径）
+    initial_risk: Optional[float] = None   # 成交后初始风险（实际成交价，即 1R）
+    remaining_risk: Optional[float] = None  # 当前剩余风险（随 TP/减仓/移损更新）
     risk_budget_mode: Optional[str] = None  # 开仓时止损金额模式快照：pct/fixed（NULL=旧行按 pct 理解）
     stop_loss: Optional[float] = None
     tp1: Optional[float] = None

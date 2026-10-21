@@ -206,6 +206,14 @@ def _ai_snapshot(a: AIAnalysis) -> dict:
         "risk_reward_ratio": _num(a.risk_reward_ratio),
         "position_pct": _num(a.position_pct),
         "recommendation": _num(a.recommendation),
+        # 评分原始值（T2）：档位归一的原始分随快照自持，复盘可比较档位与实际表现
+        "recommendation_raw": _num(getattr(a, "recommendation_raw", None)),
+        # 统一决策版本（T5）：配置/补丁/提示词变更切点随快照自持，复盘按版本分组；
+        # 本列上线前的旧行 None（归「legacy」）
+        "decision_version": getattr(a, "decision_version", None),
+        # 4h 快照时刻与降级标记（T1）：交易记录自持，事后可判断开仓时的 4h 时效
+        "htf_as_of": a.htf_as_of.isoformat() if getattr(a, "htf_as_of", None) else None,
+        "htf_degraded": bool(getattr(a, "htf_degraded", False)),
         # 止损锚类型（docs/23）：structure/near，交易记录随快照自持，复盘分组用
         "stop_anchor": a.stop_anchor,
         # 战法命中标注（2026-10-02，仅借鉴）：随快照自持，删战法不断链，复盘分组用
@@ -292,6 +300,25 @@ def _pending_reserved(db: Session, account_key: Optional[str], testnet: bool) ->
         )
     ).one()
     return int(n or 0), float(margin or 0.0)
+
+
+def _remaining_risk(rec: TradeRecord, qty: Optional[float] = None) -> Optional[float]:
+    """当前剩余风险 = 剩余数量 × 入场价到当前止损的亏损距离（USDT）。
+
+    qty 缺省按分批结构推导（与 event_executor.remaining_qty 同源）；结算路径
+    传入交易所实际剩余量（amt），手动减仓/部分止损成交同样能反映。止损已在
+    盈利侧（含保本缓冲）时按 0 计——已锁定的利润不是当前风险。
+    """
+    entry = float(rec.entry_price or 0)
+    sl = float(rec.stop_loss or 0)
+    if entry <= 0 or sl <= 0:
+        return None
+    if qty is None:
+        from app.services.event_executor import remaining_qty
+        qty = remaining_qty(rec)
+    qty = max(float(qty or 0), 0.0)
+    per_unit = (entry - sl) if rec.direction == "long" else (sl - entry)
+    return round(max(per_unit, 0.0) * qty, 4)
 
 
 def _attempt_open(
@@ -900,7 +927,12 @@ def _attempt_open(
                 leverage=leverage,
                 margin_mode="isolated",
                 margin_used=round(qty * fill_price / leverage, 4),
-                risk_amount=round(risk_amount, 4),
+                # 三口径（2026-10-21 T3）：risk_amount 兼容列写成交初始风险（旧消费方
+                # 的 1R 口径），计划口径与剩余口径分列；滑点超预算不再污染 R 分母
+                risk_amount=round(actual_risk, 4),
+                planned_risk=round(risk_amount, 4),
+                initial_risk=round(actual_risk, 4),
+                remaining_risk=round(actual_risk, 4),
                 risk_budget_mode=(cfg.risk_budget_mode or "pct"),  # 开仓时刻模式快照（追溯口径）
                 beta=(round(beta, 4) if beta is not None else None),  # 开仓时 β 快照（docs/13 #1 热度加权；None=不可得按 1.0 计）
                 stop_loss=sl,
@@ -928,7 +960,10 @@ def _attempt_open(
             db.flush()
             _add_event(db, rec, "OPEN", {
                 "price": price, "qty": qty, "stop_loss": sl, "tp1": tp1, "tp2": tp2,
-                "risk_amount": round(risk_amount, 4), "entry_order_id": entry_order["orderId"],
+                "risk_amount": round(actual_risk, 4), "entry_order_id": entry_order["orderId"],
+                "planned_risk": round(risk_amount, 4),
+                "initial_risk": round(actual_risk, 4),
+                "remaining_risk": round(actual_risk, 4),
                 "fill_price": fill_price, "slippage_pct": round(slippage_pct, 3),
                 "actual_risk": round(actual_risk, 4),
             })
@@ -1108,6 +1143,12 @@ def materialize_pending_entry(
                 symbol, close_side, qty_tp2, trader.round_price(symbol, tp2))
         # ⑤ 建 TradeRecord（口径镜像 _attempt_open 的市价开仓）
         now = datetime.utcnow()
+        # 三口径：挂单的计划风险在挂单时按限价算（pe.risk_amount），成交后按
+        # 实际均价重算初始风险；未成交前计划值不受成交滑点影响
+        initial_risk = round(qty * abs(fill_price - sl), 4)
+        planned_risk = (
+            round(float(pe.risk_amount), 4) if pe.risk_amount is not None else initial_risk
+        )
         rec = TradeRecord(
             symbol=symbol,
             direction=direction,
@@ -1129,7 +1170,10 @@ def materialize_pending_entry(
             leverage=leverage,
             margin_mode="isolated",
             margin_used=round(qty * fill_price / leverage, 4),
-            risk_amount=round(qty * abs(fill_price - sl), 4),
+            risk_amount=initial_risk,
+            planned_risk=planned_risk,
+            initial_risk=initial_risk,
+            remaining_risk=initial_risk,
             risk_budget_mode=raw.get("risk_budget_mode") or (cfg.risk_budget_mode or "pct"),
             beta=raw.get("beta"),
             stop_loss=sl,
@@ -1155,7 +1199,9 @@ def materialize_pending_entry(
         db.flush()
         _add_event(db, rec, "OPEN", {
             "price": fill_price, "qty": qty, "stop_loss": sl, "tp1": tp1, "tp2": tp2,
-            "risk_amount": round(qty * abs(fill_price - sl), 4),
+            "risk_amount": initial_risk,
+            "planned_risk": planned_risk, "initial_risk": initial_risk,
+            "remaining_risk": initial_risk,
             "entry_order_id": pe.limit_order_id, "source": "pending_limit",
         })
         # ⑥ 回写 pending
@@ -1454,6 +1500,18 @@ def try_open_for_analysis(
     )
     if not analysis_open_eligible(a, min_rec):
         return "blocked"
+    # 4h 资格与时效复核（2026-10-21 第二阶段 T1）：扫描/分析到实际开仓之间
+    # 可能跨越 4h 收盘——缺数（htf_degraded）或状态快照陈旧一律禁开，
+    # 写明确原因供前端与复盘（旧行 htf_as_of=NULL 按兼容放行）。
+    from app.services.market_data import htf_open_block_reason
+    htf_block = htf_open_block_reason(
+        bool(getattr(a, "htf_degraded", False)),
+        getattr(a, "htf_as_of", None),
+        datetime.utcnow(),
+    )
+    if htf_block:
+        _mark_open_block(db, a, htf_block)
+        return "blocked"
     if a.created_at and a.created_at < datetime.utcnow() - timedelta(hours=1):
         logger.info("即时开仓跳过 %s：分析已超过 1 小时", a.symbol)
         _mark_open_block(db, a, "分析已超过 1 小时（信号过期）")
@@ -1608,12 +1666,36 @@ def try_open_for_analysis(
     beta_new = beta_raw if beta_raw is not None else 1.0
     if heat_cap > 0 or same_cap > 0:
         running = db.execute(
-            select(TradeRecord.risk_amount, TradeRecord.direction,
-                   TradeRecord.symbol, TradeRecord.beta).where(
+            select(TradeRecord.remaining_risk, TradeRecord.risk_amount,
+                   TradeRecord.direction, TradeRecord.symbol, TradeRecord.beta).where(
                 TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")),
                 _adopt_acc_cond(trader),
             )
         ).all()
+        # 组合风险分列口径（2026-10-21 第二阶段 T4）：闸门用 remaining_risk（TP/移损
+        # 后的当前暴露），不再用开仓时的 historical risk_amount。旧行 remaining_risk
+        # 为空时回落 risk_amount（迁移已回填；双保险）。三个指标各司其职：
+        # ① 总止损风险=Σ剩余风险（不按 β 加权）；② 方向集中度=同向单数与同向风险；
+        # ③ BTC 因子暴露=Σ剩余风险×β（相关性重复计数，闸门依据）
+        rows_risk = [
+            (float(rem if rem is not None else (risk or 0)), d, s, b)
+            for rem, risk, d, s, b in running
+        ]
+        total_stop_risk = sum(r for r, _d, _s, _b in rows_risk)
+        btc_exposure = sum(
+            r * (float(b) if b is not None else 1.0)
+            for r, _d, _s, b in rows_risk
+        )
+        direction_risk: dict[str, float] = {}
+        for r, d, _s, _b in rows_risk:
+            direction_risk[d] = direction_risk.get(d, 0.0) + r
+        same_n = sum(1 for _r, d, _s, _b in rows_risk if d == a.direction)
+        same_risk = direction_risk.get(a.direction, 0.0)
+        # 原口径对照（仅日志）：开仓时 risk_amount 的 β 加权合计
+        heat_used_orig = sum(
+            float(risk or 0) * (float(b) if b is not None else 1.0)
+            for _rem, risk, _d, _s, b in running
+        )
         # 本单预估止损金额：与 _attempt_open 同源的固定亏损预算口径（金额模式取
         # 固定值 / 比例模式取基数×比例，含近锚折价）；实际风险在下单时按数量
         # 取整只会更低，闸门用预算值预检不放大放行
@@ -1628,35 +1710,33 @@ def try_open_for_analysis(
             )
             est_risk = _capital_base(wallet) * _rp / 100
         est_risk = _near_discounted_budget(est_risk, a.stop_anchor, factor=near_factor)
-        # ① 热度（2026-10-04 β 加权，docs/13 #1）：在跑单止损合计与本单预估均按
-        #    β 加权——山寨与 BTC 相关性 0.7~0.9，同向单实际是同一 BTC 敞口的
-        #    多份拷贝，「单笔合规、组合隐性集中」。β 缺失（旧行/查询失败）按 1.0
-        #    = 原口径。双口径日志（docs/13 验证要求）：加权值与原值差进日志，
-        #    影子观察期比对误拦率，稳定后原口径日志移除。0=关闭
+        # ① BTC 因子暴露闸门（2026-10-04 β 加权，docs/13 #1）：山寨与 BTC 相关性
+        #    0.7~0.9，同向单实际是同一 BTC 敞口的多份拷贝，「单笔合规、组合隐性
+        #    集中」。β 缺失（旧行/查询失败）按 1.0。input 已切换为 remaining_risk。
+        #    0=关闭
         if heat_cap > 0:
-            heat_used = sum(
-                float(r or 0) * (float(b) if b is not None else 1.0)
-                for r, _d, _s, b in running
-            )
-            heat_used_orig = sum(float(r or 0) for r, _d, _s, _b in running)
             est_risk_eff = est_risk * beta_new
-            if heat_used + est_risk_eff > wallet * heat_cap:
+            if btc_exposure + est_risk_eff > wallet * heat_cap:
                 logger.info(
-                    "即时开仓跳过 %s：组合热度超限（β加权：在跑 %.2f + 本单 %.2f×β%.2f"
-                    " > 钱包 %.2f × %.0f%%；原口径：在跑 %.2f + 本单 %.2f）",
-                    a.symbol, heat_used, est_risk, beta_new, wallet,
-                    heat_cap * 100, heat_used_orig, est_risk,
+                    "即时开仓跳过 %s：组合热度超限（β加权·剩余风险：在跑 %.2f + 本单 %.2f×β%.2f"
+                    " > 钱包 %.2f × %.0f%%；总止损风险 %.2f；同向 %s %.2f；"
+                    "原口径（risk_amount×β）%.2f）",
+                    a.symbol, btc_exposure, est_risk, beta_new, wallet,
+                    heat_cap * 100, total_stop_risk, a.direction, same_risk,
+                    heat_used_orig,
                 )
                 _mark_open_block(
                     db, a,
-                    f"组合热度超限（β加权）：在跑 {heat_used:.2f} + 本单 "
-                    f"{est_risk_eff:.2f} > 钱包 {wallet:.2f} × {heat_cap * 100:.0f}%",
+                    f"组合热度超限（β加权）：在跑 {btc_exposure:.2f} + 本单 "
+                    f"{est_risk_eff:.2f} > 钱包 {wallet:.2f} × {heat_cap * 100:.0f}%"
+                    f"（总止损风险 {total_stop_risk:.2f}，"
+                    f"{a.direction} 同向 {same_risk:.2f}）",
                 )
                 return "blocked"
         # ② 同向：同 direction 在跑单数 ≥ 同向上限 → 拦截。
-        #    全市场同涨同跌（趋势同震）时同向单几乎同损——方向集中度上限（0=不限）
+        #    全市场同涨同跌（趋势同震）时同向单几乎同损——方向集中度上限（0=不限）。
+        #    同向剩余风险 same_risk 进日志/拒绝原因，作为集中度的金额口径对照
         if same_cap > 0:
-            same_n = sum(1 for _r, d, _s, _b in running if d == a.direction)
             if same_n >= same_cap:
                 logger.info(
                     "即时开仓跳过 %s：同向（%s）在跑 %d 单已达上限 %d",
@@ -1665,7 +1745,8 @@ def try_open_for_analysis(
                 _mark_open_block(
                     db, a,
                     f"同向持仓达上限：{a.direction} 方向在跑 {same_n} 单 ≥ {same_cap}"
-                    + ("（周减速减半）" if week_derate else ""),
+                    + ("（周减速减半）" if week_derate else "")
+                    + f"（同向剩余风险 {same_risk:.2f}）",
                 )
                 return "blocked"
     # 当日亏损熔断（2026-09-27 正式网复盘）：UTC 日本账号已平仓净亏 ≤ -阈值
@@ -1942,6 +2023,8 @@ def _replace_sl(db: Session, trader: BinanceTrader, rec: TradeRecord,
         sl_order = trader.stop_market_close(rec.symbol, close_side, new_sl)
     old_sl = float(rec.stop_loss or 0)
     rec.stop_loss = new_sl
+    # 移损同步剩余风险（保本/跟进后暴露应下降；盈利侧止损按 0 计）
+    rec.remaining_risk = _remaining_risk(rec)
     # 必须赋新 dict：rec.raw = 原对象 会被 SQLAlchemy 判定无变化而丢库
     # （实测历史单 raw.sl_order_id 全部停留在开仓时旧值，docs/07 §8-A2）
     new_id = sl_order.get("algoId") or sl_order.get("orderId")
@@ -2302,10 +2385,11 @@ def _record_realized(db: Session, trader: BinanceTrader, rec: TradeRecord) -> fl
     since_ms = int(rec.opened_at.replace(tzinfo=timezone.utc).timestamp() * 1000) - 5_000
     pnl = round(trader.realized_pnl_since(rec.symbol, since_ms), 6)
     rec.realized_pnl = pnl
-    # 运行中收益率为全程口径：(已实现 + 浮动) / risk_amount（docs/16）
+    # 运行中收益率为全程口径：(已实现 + 浮动) / 初始风险（成交后 1R，docs/16）
+    _ru = rec.risk_unit
     rec.pnl_pct = round(
-        (pnl + float(rec.unrealized_pnl or 0)) / float(rec.risk_amount or 1) * 100, 2
-    ) if rec.risk_amount else None
+        (pnl + float(rec.unrealized_pnl or 0)) / _ru * 100, 2
+    ) if _ru > 0 else None
     return pnl
 
 
@@ -2373,9 +2457,11 @@ def close_market_now(db: Session, trader: BinanceTrader, rec: TradeRecord,
     rec.funding_total = round(sum(float(r.get("income") or 0) for r in rows
                                   if r.get("incomeType") == "FUNDING_FEE"), 6)
     rec.unrealized_pnl = 0  # 终态无浮动（docs/16）
+    rec.remaining_risk = 0  # 终态无剩余风险
     pnl = round(trader.sum_income(rows, trader.INCOME_KEEP), 6)
     rec.realized_pnl = pnl
-    rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
+    _ru = rec.risk_unit
+    rec.pnl_pct = round(pnl / _ru * 100, 2) if _ru > 0 else None
     rec.status = "CLOSED"
     rec.closed_at = datetime.utcnow()
     rec.exit_reason = exit_reason
@@ -2695,9 +2781,11 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                 rec.fee_total = round(fee_total, 6)
                 rec.funding_total = round(funding_total, 6)
                 rec.unrealized_pnl = 0  # 终态无浮动（docs/16）
+                rec.remaining_risk = 0  # 终态无剩余风险
                 pnl = round(rt.sum_income(rows, rt.INCOME_KEEP), 6)
                 rec.realized_pnl = pnl
-                rec.pnl_pct = round(pnl / float(rec.risk_amount or 1) * 100, 2) if rec.risk_amount else None
+                _ru = rec.risk_unit
+                rec.pnl_pct = round(pnl / _ru * 100, 2) if _ru > 0 else None
                 if insurance_clear != 0:
                     _add_event(db, rec, "LIQUIDATION", {
                         "qty": qty, "insurance_clear": round(insurance_clear, 6),
@@ -2739,7 +2827,8 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                 # （≥1.2 倍）或强平 → 自动拉黑冷却 30 天。失败不阻断结算
                 try:
                     from app.services.blacklist_service import register_settle
-                    register_settle(db, rec.symbol, rec.risk_amount,
+                    # 超预算判定按「计划风险」口径（滑点后的 initial_risk 不作为预算基准）
+                    register_settle(db, rec.symbol, rec.planned_risk or rec.risk_amount,
                                     rec.realized_pnl, rec.exit_reason or "")
                     db.commit()
                 except Exception as e:
@@ -2748,6 +2837,8 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                 continue
 
             ratio = amt / qty
+            # 剩余风险随交易所实际剩余量刷新（覆盖 TP 分批、手动减仓与部分止损成交）
+            rec.remaining_risk = _remaining_risk(rec, qty=amt)
             # 浮动盈亏快照 + 全程收益率（docs/16）：复用本轮已拉取的仓位数据，
             # 零额外交易所请求；交易所为真相
             unrealized = float(pos.get("unrealized_pnl") or 0)
@@ -2760,8 +2851,10 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
             # 盈亏峰值跟踪（2026-09-26）：浮盈回撤 ≥0.6R 触发诊断的参照（position_advisor）
             if total_pnl > float(rec.peak_total_pnl or 0):
                 rec.peak_total_pnl = round(total_pnl, 6)
-            if rec.risk_amount and float(rec.risk_amount) > 0:
-                rec.pnl_pct = round(total_pnl / float(rec.risk_amount) * 100, 2)
+            # 全程收益率分母 = 成交后初始风险（滑点后的真实 1R）
+            _ru = rec.risk_unit
+            if _ru > 0:
+                rec.pnl_pct = round(total_pnl / _ru * 100, 2)
             # 浮亏在跑单 AI 持仓诊断触发判定（冷却/恶化规则见 position_advisor）；
             # 仅收集，锁外由调用方派发子任务执行。双网所有权：有在跑正式网
             # 孪生的测试网单跳过（跟随镜像）
@@ -3392,6 +3485,8 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
     now = datetime.utcnow()
     notional = qty * entry
     margin_used = float(pos.get("initial_margin") or 0)
+    # 接管无下单计划，三口径按接管时刻风险回填（后续 TP/移损同步 remaining_risk）
+    adopt_risk = round(abs(entry - stop_loss) * qty, 4)
     rec = TradeRecord(
         symbol=symbol,
         direction=direction,
@@ -3408,7 +3503,10 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
         leverage=max(1, round(notional / margin_used)) if margin_used > 0 else 1,
         margin_mode="isolated",
         margin_used=round(margin_used, 4),
-        risk_amount=round(abs(entry - stop_loss) * qty, 4),  # 实际风险 = 止损距离 × 数量
+        risk_amount=adopt_risk,  # 实际风险 = 止损距离 × 数量（接入即初始风险）
+        planned_risk=adopt_risk,
+        initial_risk=adopt_risk,
+        remaining_risk=adopt_risk,
         risk_budget_mode=(
             (_adopt_cfg.risk_budget_mode or "pct")
             if _adopt_cfg is not None else "pct"
@@ -3436,7 +3534,9 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
     _add_event(db, rec, "OPEN", {
         "adopted": True, "price": price_now, "qty": qty,
         "stop_loss": stop_loss, "tp1": tp1, "tp2": tp2 if tp2_order else 0,
-        "risk_amount": round(abs(entry - stop_loss) * qty, 4),
+        "risk_amount": adopt_risk,
+        "planned_risk": adopt_risk, "initial_risk": adopt_risk,
+        "remaining_risk": adopt_risk,
         "entry_price": entry,
         "note": "手动持仓导入（管理范围自接管时点起）",
     })

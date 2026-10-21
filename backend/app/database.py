@@ -805,6 +805,65 @@ def _run_migrations(engine):
             "ALTER TABLE ai_analyses "
             "ADD COLUMN IF NOT EXISTS cache_origin_at TIMESTAMP"
         ))
+        # 4h 状态快照时刻 + 评分原始值（2026-10-21 第二阶段 T1/T2）：
+        # 前者供开仓前时效复核（>4h15m 禁开），后者保留模型连续分供档位校准
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS htf_as_of TIMESTAMP"
+        ))
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS recommendation_raw NUMERIC(5, 2)"
+        ))
+        # 风险字段口径拆分（2026-10-21 第二阶段 T3）：planned/initial/remaining 三列。
+        # 旧行按 risk_amount 回填（无更早口径可还原）；终态单剩余风险=0，在跑单
+        # 暂按原风险，下一轮结算巡检按实际剩余量与当前止损重算。risk_amount 保留
+        # 读取兼容期，新行继续写 initial_risk 等值防旧消费方读到空值。
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS planned_risk NUMERIC(20, 4)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS initial_risk NUMERIC(20, 4)"
+        ))
+        conn.execute(text(
+            "ALTER TABLE trade_records "
+            "ADD COLUMN IF NOT EXISTS remaining_risk NUMERIC(20, 4)"
+        ))
+        conn.execute(text(
+            "UPDATE trade_records SET planned_risk = risk_amount "
+            "WHERE planned_risk IS NULL AND risk_amount IS NOT NULL"
+        ))
+        conn.execute(text(
+            "UPDATE trade_records SET initial_risk = risk_amount "
+            "WHERE initial_risk IS NULL AND risk_amount IS NOT NULL"
+        ))
+        conn.execute(text(
+            "UPDATE trade_records SET remaining_risk = CASE "
+            "WHEN status IN ('OPENED', 'TP1_HIT', 'TP2_HIT') THEN risk_amount ELSE 0 "
+            "END WHERE remaining_risk IS NULL"
+        ))
+        # 统一决策版本（2026-10-21 第二阶段 T5，审计 7.1）：配置/补丁/提示词变更
+        # 在同一事务内递增；AI 分析与交易快照携带版本，复盘与缓存按版本分组。
+        # 存量行 decision_version=0（上线前原始版本）、ai_analyses 旧行 NULL
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS decision_version INTEGER NOT NULL DEFAULT 0"
+        ))
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS decision_version_at TIMESTAMP"
+        ))
+        conn.execute(text(
+            "ALTER TABLE ai_analyses "
+            "ADD COLUMN IF NOT EXISTS decision_version INTEGER"
+        ))
+        # 补丁合入前来源值（T5）：回滚恢复到合入前自定义值，而非一律回落默认
+        conn.execute(text(
+            "ALTER TABLE prompt_patches "
+            "ADD COLUMN IF NOT EXISTS before_value_json JSONB"
+        ))
 
 
 def init_db():

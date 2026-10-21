@@ -230,7 +230,7 @@ def test_rr_only_shortfall_fixed_rr_fallback_present():
 # ── 不变量 11：评分分档纪律 + 门槛注入（2026-10-21 止血批）──────────
 # 背景：AI 曾以「1h 三指标偏空 + BTC 逆风 + RR 仅达标」为由给出 58 分，
 # 58 < 分发门槛 60 等于隐性弃单，但提示词未注入门槛、且允许线性内插——
-# 分数退化成语气量表。以下断言锁定：分档不内插、减分项不跨档、
+# 分数退化成语气量表。以下断言锁定：分档不内插、减分项不单独跨档、
 # 门槛必须注入（AI 才知道 58 等于程序不下单）、仓位不承载意见。
 
 
@@ -259,11 +259,11 @@ def test_tier_table_by_trigger_type():
 
 
 def test_deduction_items_never_shift_tier():
-    """环境风险/1h 反向/RR 恰达标 只在同档内决定上下限，不得跨档；
-    若足以否决则直接 skip（不得用中间分表达犹豫）"""
+    """1h 反向/RR 恰达标 只作档内风险说明，不得单独跨档（环境逆风按环境规则
+    最多降一档）；若足以否决则直接 skip（不得用中间分表达犹豫）"""
     for txt in (_p0_system(), _p1_system()):
-        assert "减分项不跨档" in txt
-        assert "若它本身足以否决，直接 skip" in txt
+        assert "减分项不单独跨档" in txt
+        assert "若减分项本身足以否决" in txt
         assert "禁止输出 58/62 这类中间分" in txt
 
 

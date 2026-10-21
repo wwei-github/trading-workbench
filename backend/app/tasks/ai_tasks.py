@@ -42,6 +42,7 @@ from app.services.shadow import tag_oi_conf
 from app.services.risk_guard import is_pullback_wait
 from app.services.strategy import recent_swings
 from app.services.account_registry import auto_trade_accounts
+from app.services.decision_version import current_decision_version
 from app.services.trade_engine import _consecutive_losses_today
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,8 @@ def build_cache_context(cfg, klines: list, htf_klines: list,
 
     return {
         "contract": 2,
+        # 统一决策版本（T5）：补丁/配置/提示词变更递增，跨版本不命中缓存
+        "decision_version": int(cfg.decision_version or 0),
         "config": digest({col.key: getattr(cfg, col.key)
                           for col in SystemConfig.__table__.columns}),
         "closed_1h": digest(klines[:-1]),
@@ -397,6 +400,9 @@ def run_ai_analysis_single(
         # enforce_htf_constraint 直接放行（真 fail-open 点），结论在无大周期
         # 背景下产出；逐行落库供复盘按降级/正常分两组对比（B3）
         htf_degraded = not htf_klines
+        # 4h 状态快照时刻（T1）：参与状态计算的最后一根已收盘 4h 收盘时间；
+        # 开仓前按此刻复核陈旧度（跨周期禁开）。尾窗场景封顶到当前时刻。
+        htf_as_of = md.htf_snapshot_time(htf_klines, tail_now)
         # 先取得当前大周期事实，再构造缓存上下文；缺数或尾窗不复用旧裁决。
         cache_context = build_cache_context(cfg, klines, htf_klines or [],
                                             tactics_block, consecutive_losses)
@@ -422,7 +428,8 @@ def run_ai_analysis_single(
                     note = "⏱️ 沿用近期同上下文结论"
                     ai_progress.push(r.id, "gate", note=note)
                     _copy(db, r, r.symbol, cached, fp, note, tp2_enabled=_tp2_on,
-                          current_price=signal["current_price"])
+                          current_price=signal["current_price"],
+                          htf_as_of=htf_as_of)
                     ai_progress.push_done(r.id, cached.trade_decision, note)
                     return
         # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
@@ -534,6 +541,8 @@ def run_ai_analysis_single(
         ai_result["pullback_wait"] = is_pullback_wait(ai_result, signal.get("current_price"))
         # 4h 数据降级标记（B2）：随结论落库（AIAnalysis.htf_degraded）
         ai_result["htf_degraded"] = htf_degraded
+        # 4h 状态快照时刻（T1）：缺数时为 None，开仓前由 htf_degraded 拦截
+        ai_result["htf_as_of"] = htf_as_of
         _finish(db, r, r.symbol, ai_result, fp)
         ai_progress.push_done(
             r.id, ai_result.get("trade_decision"),
@@ -605,7 +614,8 @@ def _find_recent(db, symbol: str, fp: str, ttl_min: int) -> Optional[AIAnalysis]
 
 
 def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str,
-          tp2_enabled: bool = True, current_price: Optional[float] = None) -> None:
+          tp2_enabled: bool = True, current_price: Optional[float] = None,
+          htf_as_of: Optional[datetime] = None) -> None:
     """沿用旧结论：复制到新 scan_result_id（analysis 加沿用说明）。
 
     必须提交：前端行级轮询以"分析记录出现"为完成标志，不提交会导致轮询挂满超时。
@@ -632,9 +642,17 @@ def _copy(db, r: ScanResult, symbol: str, src: AIAnalysis, fp: str, note: str,
         "stage_trace": src.stage_trace,
         "cache_origin_at": src.cache_origin_at or src.ai_finished_at or src.created_at,
         "recommendation": float(src.recommendation or 0),
+        # 评分原始值（T2）：随档位一起沿用，校准分析不因缓存断链
+        "recommendation_raw": (
+            float(src.recommendation_raw) if getattr(src, "recommendation_raw", None) is not None
+            else float(src.recommendation or 0)
+        ),
         "pullback_wait": bool(src.pullback_wait),
         # 4h 数据降级标记（B2）沿用源结论：缓存复用不重新拉 4h，降级态随结论走
         "htf_degraded": bool(getattr(src, "htf_degraded", False)),
+        # 4h 快照时刻（T1）：缓存命中意味着当前 4h 已收盘上下文与源结论一致
+        # （指纹含已收盘 4h 摘要），用本次取数时刻续期，避免复用单被时效闸误杀
+        "htf_as_of": htf_as_of,
         # BTC 环境缺失标记（T0-5）沿用源结论：缓存复用不重新拉市场环境
         "btc_env_missing": bool(getattr(src, "btc_env_missing", False)),
     }
@@ -711,11 +729,15 @@ def _upsert_ai_analysis(
         "risk_reward_ratio": ai_result.get("risk_reward_ratio"),
         "position_pct": ai_result.get("position_pct"),
         "recommendation": ai_result.get("recommendation"),
+        # 评分原始值（T2 方案 A）：档位归一的原始分独立落库，供校准与弃单复盘
+        "recommendation_raw": ai_result.get("recommendation_raw"),
         # 止损锚类型（docs/23）：suggest 时由 risk_guard fixed dict 保证有值
         # （None→structure），skip 行为 None（旧行同样按 structure 理解）
         "stop_anchor": ai_result.get("stop_anchor"),
         # 规则版本快照（docs/24 A0）：复盘统计按版本分组，跨版本不混谈
         "rule_version": settings.RULE_VERSION,
+        # 统一决策版本（T5）：配置/补丁/提示词变更的统一切点，复盘按版本分组
+        "decision_version": current_decision_version(db),
         # 双评委 veto 原始建议快照（docs/24 A5a）：仅 veto 强制 skip 携带；
         # latest-wins 重分析后 None 覆盖旧值，不残留
         "veto_original": ai_result.get("veto_original"),
@@ -739,6 +761,8 @@ def _upsert_ai_analysis(
         # 4h 数据降级标记（2026-10-21 观测 B2）：分析时 4h K线缺失 → True，
         # 复盘据此分组（B3）；latest-wins 重分析按最新一次的事实覆盖
         "htf_degraded": bool(ai_result.get("htf_degraded")),
+        # 4h 状态快照时刻（T1）：开仓前时效复核用；缺数时 None
+        "htf_as_of": ai_result.get("htf_as_of"),
         # BTC 环境事实缺失（T0-5）：市场环境块缺失时提示词已标「未知」，
         # 本列供复盘分组（数据缺失场景的结论质量单独看）
         "btc_env_missing": bool(ai_result.get("btc_env_missing")),

@@ -133,9 +133,11 @@ def reconcile_trade(db: Session, rec: TradeRecord, trader: Optional[BinanceTrade
     snap = rec.ai_snapshot or {}
     raw = rec.raw or {}
     sign = _dir_sign(rec.direction)
-    risk = _f(rec.risk_amount)
+    # R 口径 = 成交后初始风险（滑点后的真实 1R），旧行回落 risk_amount；
+    # 计划风险另由 planned_risk 单列（T3 口径拆分）
+    risk = _f(rec.initial_risk) or _f(rec.risk_amount)
     if risk is None or risk <= 0:
-        gaps.append("缺失 risk_amount，无法换算 R 口径")
+        gaps.append("缺失 initial_risk / risk_amount，无法换算 R 口径")
 
     # ── plan：计划三价（AI 快照优先，缺则回落记录现值）+ 计划分批数量 ──
     plan_entry = _pick(snap.get("entry_price"), rec.entry_price)

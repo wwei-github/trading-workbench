@@ -257,6 +257,13 @@ def test_review_snapshots_htf_degraded(db, monkeypatch):
             return [[ts + h * 3_600_000, 100.0, 101.0, 97.5, 100.0, 1000.0]
                     for h in range(25)]
 
+        def get_klines_range(self, symbol, interval, limit, end_time_ms):
+            # 小时对齐：复盘窗口按整点校验完整性（_expected_window_bars）
+            last = end_time_ms - end_time_ms % 3_600_000
+            return [[last - (limit - 1 - h) * 3_600_000,
+                     100.0, 101.0, 97.5, 100.0, 1000.0]
+                    for h in range(limit)]
+
     monkeypatch.setattr(review_tasks, "ExchangePool", _FakePool)
     monkeypatch.setattr(review_tasks, "open_task", lambda **kw: "tid")
     monkeypatch.setattr(review_tasks, "close_task", lambda *a, **kw: None)

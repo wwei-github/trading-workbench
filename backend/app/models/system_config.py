@@ -13,6 +13,16 @@ class SystemConfig(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, default=1)  # 固定 id=1
 
+    # 统一决策版本（2026-10-21 第二阶段 T5，审计 7.1）：补丁合入/配置变更/
+    # 提示词变更在同一事务内 +1（回滚同样递增）。AI 决策快照、交易快照与缓存
+    # 指纹携带该版本，复盘按版本分组；只增不减，0=本列上线前的原始版本
+    decision_version: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    decision_version_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+
     # AI 分析开关
     ai_analysis_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # Agent 管线开关：开=工具循环+锚点+技能（docs/04 P1），关=单次调用+校验回炉（P0）
