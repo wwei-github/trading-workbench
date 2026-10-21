@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import String, cast, delete, desc, select, update, func
+from sqlalchemy import String, cast, delete, desc, or_, select, update, func
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -1439,7 +1439,8 @@ def review_funnel(
     ]
 
     # 限价入场成交率（审计 7.2「成交率」主指标）：窗口内创建的挂单，pending 未定论
-    # 不计入分母；failed=成交后补挂保护失败并已紧急平仓，属已定论的成交尝试
+    # 不计入分母；failed=订单已成交、但成交后落库/保护失败并已紧急平仓，成交口径
+    # 应算成交（另以 failed 单列保护失败率），只有 canceled/expired 才是未成交
     pq = select(PendingEntryOrder).where(PendingEntryOrder.created_at >= cutoff)
     pfilter = _account_scope_filter(PendingEntryOrder, scope)
     if pfilter is not None:
@@ -1453,6 +1454,7 @@ def review_funnel(
         if r.status == "filled" and r.resolved_at and r.created_at:
             fill_secs.append((r.resolved_at - r.created_at).total_seconds())
     decided = sum(fill_counts.values())
+    filled_total = fill_counts["filled"] + fill_counts["failed"]
     fill_secs.sort()
 
     def _fill_pct(p: float) -> Optional[float]:
@@ -1470,10 +1472,10 @@ def review_funnel(
         expired=fill_counts["expired"],
         failed=fill_counts["failed"],
         pending=len(pend_rows) - decided,
-        fill_rate=round(fill_counts["filled"] / decided, 4) if decided else None,
+        fill_rate=round(filled_total / decided, 4) if decided else None,
         p50_fill_s=_fill_pct(0.5),
         p90_fill_s=_fill_pct(0.9),
-        note="窗口内创建的限价挂单；pending 未定论不计分母；failed=成交后补挂保护失败并已紧急平仓",
+        note="窗口内创建的限价挂单；pending 未定论不计分母；failed=已成交但保护失败并紧急平仓，计入成交但单列",
     )
 
     return ReviewFunnelResponse(
@@ -1509,9 +1511,14 @@ def review_actual(
     )
 
     # 异常保护时长（审计 7.2 主指标）：窗口内创建的 protection_incidents；
-    # 未解除的计到当前时刻，衡量账户被封锁的暴露面（保护成功/失败都计）
+    # 未解除的计到当前时刻，衡量账户被封锁的暴露面（保护成功/失败都计）。
+    # 未解除事故不受窗口限制——窗口外创建但至今卡住的事故正是最需要暴露的风险
     cutoff = datetime.utcnow() - timedelta(days=days)
-    pq = select(ProtectionIncident).where(ProtectionIncident.created_at >= cutoff)
+    _open_states = ("pending", "closing", "awaiting_reconcile", "manual_review")
+    pq = select(ProtectionIncident).where(or_(
+        ProtectionIncident.created_at >= cutoff,
+        ProtectionIncident.status.in_(_open_states),
+    ))
     pfilter = _account_scope_filter(ProtectionIncident, scope)
     if pfilter is not None:
         pq = pq.where(pfilter)
@@ -1541,7 +1548,7 @@ def review_actual(
         "median_blocked_hours": _dur_pct(0.5),
         "p90_blocked_hours": _dur_pct(0.9),
         "max_blocked_hours": round(durations[-1], 2) if durations else None,
-        "note": "窗口内创建的异常保护事故；未解除计到当前时刻；manual_review=状态未知转人工复核（未解除）",
+        "note": "窗口内创建的事故 + 全部未解除事故；未解除计到当前时刻；manual_review=状态未知转人工复核（未解除）",
     }
     return result
 

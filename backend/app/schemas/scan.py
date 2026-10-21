@@ -494,7 +494,7 @@ class LimitFillStats(BaseModel):
     expired: int = 0
     failed: int = 0
     pending: int = 0
-    fill_rate: Optional[float] = None  # filled/(filled+canceled+expired+failed)
+    fill_rate: Optional[float] = None  # (filled+failed)/已定论；failed=已成交但保护失败
     p50_fill_s: Optional[float] = None  # 创建→成交耗时 P50（秒）
     p90_fill_s: Optional[float] = None
     note: str = ""

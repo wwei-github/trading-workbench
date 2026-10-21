@@ -339,7 +339,8 @@ export default function ReviewActualPanel() {
                       <b style={{ color: lf.fill_rate != null && lf.fill_rate < 0.5 ? downColor : upColor }}>
                         {lf.fill_rate == null ? '-' : `${(lf.fill_rate * 100).toFixed(1)}%`}
                       </b>
-                      {` （成交 ${lf.filled} / 已定论 ${decided}，待定 ${lf.pending}）`}
+                      {` （成交 ${lf.filled + lf.failed} / 已定论 ${decided}，待定 ${lf.pending}）`}
+                      {lf.failed > 0 && ` · 保护失败 ${lf.failed}`}
                       {lf.p50_fill_s != null && ` · 成交耗时 P50 ${fmtSec(lf.p50_fill_s)} / P90 ${fmtSec(lf.p90_fill_s)}`}
                     </span>
                   </Tooltip>

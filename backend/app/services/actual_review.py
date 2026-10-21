@@ -261,7 +261,8 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
     # 最大回撤与风险超额（审计 7.2 主指标，2026-10-21）：
     # - 回撤 = closed_at 升序闭单累计净盈亏的峰谷差（窗口内口径，不含浮盈/划转）；
     #   R 曲线仅纳入 risk_unit>0 的样本，缺失 1R 的旧行不参与，避免曲线被压平
-    # - 风险超额 = 单笔亏损超过 1R 的笔数与超幅（滑点/费用/跳空穿透止损的证据）
+    # - 风险超额按计划风险预算（planned_risk，旧行回落 1R）判定：1R 是成交后价格
+    #   风险、不含费用，若直接拿 −pnl>1R 判定，每笔正常止损都会因手续费被判超额
     cum_pnl = peak_pnl = 0.0
     max_dd = 0.0
     cum_r = peak_r = 0.0
@@ -280,12 +281,14 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         cum_r += pnl / unit
         peak_r = max(peak_r, cum_r)
         max_dd_r = max(max_dd_r or 0.0, peak_r - cum_r)
-        loss_r = -pnl / unit
-        if loss_r > 0:
-            max_loss_r = max(max_loss_r or 0.0, loss_r)
-            if loss_r > 1.0:
+        loss = -pnl
+        if loss > 0:
+            max_loss_r = max(max_loss_r or 0.0, loss / unit)
+            planned = float(t.planned_risk or 0)
+            budget = planned if planned > 0 else unit
+            if loss > budget:
                 risk_excess_count += 1
-                risk_excess_total += -pnl - unit
+                risk_excess_total += loss - budget
 
     # 双网镜像单（2026-10-04）：同一 AI 决策扇出双网的两笔 CLOSED 单，all 口径
     # 下被当独立样本重复计入。返回计数供前端在 all 视图提示「归因结论以正式网

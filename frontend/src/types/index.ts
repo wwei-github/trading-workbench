@@ -682,7 +682,7 @@ export interface LimitFillStats {
   expired: number;
   failed: number;
   pending: number;
-  fill_rate: number | null;
+  fill_rate: number | null; // (filled+failed)/已定论；failed=已成交但保护失败
   p50_fill_s: number | null;
   p90_fill_s: number | null;
   note: string;

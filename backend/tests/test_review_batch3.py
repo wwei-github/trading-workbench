@@ -473,7 +473,7 @@ def test_funnel_scope_filters_trade_stages(db):
 
 def test_funnel_limit_fill_rate_and_scope(db):
     """审计 7.2「成交率」：限价挂单成交率与成交耗时 P50/P90；
-    pending 未定论不计分母，scope 按账号维度过滤"""
+    pending 未定论不计分母，failed（成交后保护失败）计入成交，scope 按账号过滤"""
     from app.api.scan import review_funnel
 
     now = datetime.utcnow()
@@ -504,7 +504,7 @@ def test_funnel_limit_fill_rate_and_scope(db):
     assert all_fill.expired == 1
     assert all_fill.failed == 1
     assert all_fill.pending == 1
-    assert all_fill.fill_rate == pytest.approx(0.4)  # 2/5，pending 不计分母
+    assert all_fill.fill_rate == pytest.approx(0.6)  # (filled+failed)/5，pending 不计分母
     assert all_fill.p50_fill_s == pytest.approx(90.0)   # 60/120 线性插值
     assert all_fill.p90_fill_s == pytest.approx(114.0)
 
@@ -518,7 +518,7 @@ def test_funnel_limit_fill_rate_and_scope(db):
 
 def test_actual_review_protection_duration(db, monkeypatch):
     """审计 7.2「异常保护时长」：已解除按时长计入，未解除计到当前时刻；
-    manual_review 单列；scope 过滤账号维度"""
+    未解除事故不受窗口限制（窗口外卡死更要暴露）；manual_review 单列；scope 过滤"""
     from app.api.scan import review_actual
 
     class _BT:
@@ -543,18 +543,20 @@ def test_actual_review_protection_duration(db, monkeypatch):
         _inc("resolved", 4, 2, False),       # 2h
         _inc("pending", 3, None, True),      # 3h（未解除）
         _inc("manual_review", 1, None, True),  # 1h（未解除）
+        _inc("pending", 24 * 40, None, True),  # 窗口外仍未解除：必须计入
+        _inc("resolved", 24 * 40, 24 * 39, False),  # 窗口外已解除：不计
     ])
     db.commit()
 
     p = review_actual(days=30, scope="all", db=db)["protection"]
-    assert p["total"] == 3
+    assert p["total"] == 4
     assert p["resolved"] == 1
     assert p["manual_review"] == 1
-    assert p["unresolved"] == 1
-    assert p["total_blocked_hours"] == pytest.approx(6.0, abs=0.01)
-    assert p["median_blocked_hours"] == pytest.approx(2.0, abs=0.01)
-    assert p["p90_blocked_hours"] == pytest.approx(2.8, abs=0.01)
-    assert p["max_blocked_hours"] == pytest.approx(3.0, abs=0.01)
+    assert p["unresolved"] == 2
+    assert p["total_blocked_hours"] == pytest.approx(966.0, abs=0.2)
+    assert p["median_blocked_hours"] == pytest.approx(2.5, abs=0.01)
+    assert p["p90_blocked_hours"] == pytest.approx(672.9, abs=0.2)
+    assert p["max_blocked_hours"] == pytest.approx(960.0, abs=0.2)
 
     live = review_actual(days=30, scope="live", db=db)["protection"]
     assert live["total"] == 1

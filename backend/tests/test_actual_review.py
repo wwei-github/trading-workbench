@@ -82,36 +82,37 @@ def test_excluded_trade_not_counted_in_review(db):
     assert result["overview"]["pnl"] == pytest.approx(10.0)
 
 
-def _closed(hours_ago: float, pnl: float, risk: float | None = None):
-    """指定 closed_at 的已平仓单；risk=initial_risk（1R 口径）"""
+def _closed(hours_ago: float, pnl: float, risk: float | None = None,
+            planned: float | None = None):
+    """指定 closed_at 的已平仓单；risk=initial_risk（1R 口径），planned=计划风险预算"""
     now = datetime.utcnow()
     return TradeRecord(
         symbol="BTCUSDT", direction="long", status="CLOSED", exit_reason="sl",
         testnet=False, account_key="live-1",
         opened_at=now - timedelta(hours=hours_ago + 1),
         closed_at=now - timedelta(hours=hours_ago),
-        realized_pnl=pnl, initial_risk=risk,
+        realized_pnl=pnl, initial_risk=risk, planned_risk=planned,
         ai_snapshot={"risk_reward_ratio": 2.0},
     )
 
 
 def test_max_drawdown_and_risk_excess(db):
-    """审计 7.2 主指标：闭单累计曲线最大回撤（USDT/R）与单笔亏穿 1R 统计。
-    权益曲线 +10 → -12 → -20（1R=10）：
-    USDT 回撤 = 10 - (-22) = 32；R 回撤 = 1 - (-2.2) = 3.2；
-    亏穿 1R 两笔（-1.2R/-2.0R），超幅合计 (12-10)+(20-10)=12U，单笔最大亏损 2.0R。
+    """审计 7.2 主指标：闭单累计曲线最大回撤（USDT/R）与风险超额。
+    权益 +10 → -11 → -20：USDT 回撤 = 10 - (-21) = 31；R 回撤 = 1 - (-2.1) = 3.1。
+    风险超额按计划预算判定：-11 在 12U 预算内不算超额（尽管 1.1R），
+    -20 超 10U 预算 10U；单笔最大亏损 2.0R。
     """
     db.add_all([
-        _closed(5, 10.0, risk=10.0),
-        _closed(3, -12.0, risk=10.0),
-        _closed(1, -20.0, risk=10.0),
+        _closed(5, 10.0, risk=10.0, planned=10.0),
+        _closed(3, -11.0, risk=10.0, planned=12.0),
+        _closed(1, -20.0, risk=10.0, planned=10.0),
     ])
     db.commit()
     ov = build_actual_review(db, days=7)["overview"]
-    assert ov["max_drawdown"] == pytest.approx(32.0)
-    assert ov["max_drawdown_r"] == pytest.approx(3.2)
-    assert ov["risk_excess_count"] == 2
-    assert ov["risk_excess_total"] == pytest.approx(12.0)
+    assert ov["max_drawdown"] == pytest.approx(31.0)
+    assert ov["max_drawdown_r"] == pytest.approx(3.1)
+    assert ov["risk_excess_count"] == 1
+    assert ov["risk_excess_total"] == pytest.approx(10.0)
     assert ov["max_loss_r"] == pytest.approx(2.0)
 
 
