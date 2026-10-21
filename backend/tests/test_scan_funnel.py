@@ -113,10 +113,34 @@ def _detect(reject_out, klines=None, *, votes=_PASS_VOTES, gate=("long", {}), ht
 
 
 def test_reject_gate_4h():
-    """gate_4h 主动否决（返回 None）→ stage=gate_4h"""
+    """gate_4h 主动否决（返回 None）→ stage=gate_4h + 4h 证据快照"""
     rv: dict = {}
     cand, _ = _detect(rv, gate=None)
-    assert cand is None and rv == {"stage": "gate_4h"}
+    assert cand is None and rv["stage"] == "gate_4h"
+    # 2026-10-21 第 2 步：gate_4h 附 htf 证据（市场状态类死因，不计降级）
+    assert rv["htf"]["reject_reason"] == "tangle"
+    assert rv["htf"]["degraded"] is False
+    assert "degraded" not in rv
+
+
+def test_reject_gate_4h_degraded_evidence():
+    """4h 数据不可用（空）→ gate_4h 方向缺失分支：degraded + reject_reason=missing"""
+    rv: dict = {}
+    cand, _ = _detect(rv, htf_nonempty=False)
+    assert cand is None and rv["stage"] == "gate_4h"
+    assert rv["degraded"] is True
+    assert rv["htf"]["reject_reason"] == "missing"
+    assert rv["htf"]["degraded"] is True
+
+
+def test_reject_htf_state_lock_evidence():
+    """4h 状态机逆势锁 → stage=htf_state_lock + htf 证据（state/dir 供反事实方向）"""
+    rv: dict = {}
+    cand, _ = _detect(rv, gate=("short", {}), htf_state="aligned_bull", htf_dir=1)
+    assert cand is None and rv["stage"] == "htf_state_lock"
+    assert rv["htf"]["state"] == "aligned_bull"
+    assert rv["htf"]["dir"] == 1
+    assert rv["htf"]["reject_reason"] is None
 
 
 def test_reject_votes():
@@ -689,7 +713,11 @@ def test_reject_real_pipeline_gate_4h():
     rv: dict = {}
     cand, _ = detect_indicator_candidate(
         Pool({"1h": kl_1h, "4h": kl_4h}), "TEST/USDT", kl_1h, reject_out=rv)
-    assert cand is None and rv == {"stage": "gate_4h"}
+    assert cand is None and rv["stage"] == "gate_4h"
+    # 真实 4h 走平 → 市场状态类死因（非降级）；证据随漏斗落库
+    assert rv["htf"]["reject_reason"] in ("flat", "tangle", "undetermined")
+    assert rv["htf"]["degraded"] is False
+    assert "degraded" not in rv
 
 
 # ── 落库：_update_scan_status 挂 funnel_json ─────────────────────────
@@ -746,3 +774,75 @@ def test_update_scan_status_funnel_absent_param(db):
     db.expire_all()
     rec2 = db.get(ScanRecord, rec.id)
     assert rec2.status == "completed" and rec2.funnel_json is None
+
+
+# ── 4h 证据聚合与被拦信号影子（2026-10-21 第 2 步）───────────────────
+
+
+def test_htf_funnel_aggregates_states_and_reasons():
+    """漏斗聚合：状态分布不分关卡，gate_4h 死因区分降级/市场状态"""
+    ev = {
+        "A": {"stage": "gate_4h", "state": None, "reject_reason": "missing",
+              "degraded": True},
+        "B": {"stage": "gate_4h", "state": "tangle", "reject_reason": "tangle",
+              "degraded": False},
+        "C": {"stage": "gate_4h", "state": "aligned_bull", "reject_reason": "flat",
+              "degraded": False},
+        "D": {"stage": "htf_state_lock", "state": "turn_bear", "reject_reason": None,
+              "degraded": False},
+    }
+    out = scanner_mod._htf_funnel(ev)
+    assert out["htf_states"] == {
+        "none": 1, "tangle": 1, "aligned_bull": 1, "turn_bear": 1}
+    # htf_state_lock 不计入死因分布
+    assert out["gate_4h_reasons"] == {"degraded": 1, "tangle": 1, "flat": 1}
+    assert scanner_mod._htf_funnel({}) == {"htf_states": {}, "gate_4h_reasons": {}}
+
+
+@pytest.fixture()
+def shadow_db(monkeypatch):
+    from app.models.shadow import ShadowMark
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine, tables=[ShadowMark.__table__])
+    monkeypatch.setattr(scanner_mod, "SessionLocal", lambda: Session(bind=engine))
+    yield Session(bind=engine)
+
+
+def test_save_blocked_shadows_writes_and_idempotent(shadow_db):
+    """被拦快照落 shadow_marks：定时扫描写、ref_id 确定性（重跑幂等）"""
+    from app.models.shadow import ShadowMark
+
+    scan_id = uuid.uuid4()
+    blocked = {"BTCUSDT": {"stage": "gate_4h", "htf": {"state": "tangle"},
+                           "detail": None, "signal_bar_open_ms": 1,
+                           "close": 100.0}}
+    assert Scanner._save_blocked_shadows(scan_id, blocked) == 1
+    # 重跑同轮同币：uuid5 相同 → 撞唯一约束被吞，不重复写
+    assert Scanner._save_blocked_shadows(scan_id, blocked) == 0
+
+    rows = shadow_db.query(ShadowMark).all()
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.feature_key == "htf_blocked"
+    assert r.ref_type == "blocked_scan"
+    assert r.symbol == "BTCUSDT"
+    assert r.ref_id == uuid.uuid5(
+        scanner_mod.NAMESPACE_URL, f"htf_blocked:{scan_id}:BTCUSDT")
+    assert r.value_json["htf"]["state"] == "tangle"
+    assert r.decision_json["stage"] == "gate_4h"
+
+
+def test_save_blocked_shadows_skips_manual_and_empty(shadow_db):
+    """手动扫描不写（与既有影子打标口径一致）；空集合直接返回 0"""
+    from app.models.shadow import ShadowMark
+
+    blocked = {"ETHUSDT": {"stage": "htf_state_lock", "htf": {"state": "turn_bull"},
+                           "detail": "d", "signal_bar_open_ms": 2, "close": 1.0}}
+    assert Scanner._save_blocked_shadows(uuid.uuid4(), blocked, scan_type="manual") == 0
+    assert Scanner._save_blocked_shadows(uuid.uuid4(), {}) == 0
+    assert shadow_db.query(ShadowMark).count() == 0

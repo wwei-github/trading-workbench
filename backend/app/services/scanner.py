@@ -24,7 +24,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -206,6 +206,57 @@ def _votes_detail(votes: dict) -> str:
     return "；".join(parts)
 
 
+def _htf_snapshot(res: Optional[dict], degraded: bool = False) -> dict:
+    """4h 前置门否决证据快照（2026-10-21 第 2 步：漏斗证据 + 被拦信号影子）。
+
+    `gate_4h` 关卡承载两种语义不同的死因——数据降级（拉取失败/空数据/计算
+    异常/拒因 data·adx）与市场状态（flat/tangle/undetermined）——关卡代码
+    不变（前端关卡表稳定），靠 reject_reason + degraded 区分复盘口径。
+    `htf_state_lock`（block_both / 逆势锁）reject_reason 恒空，靠 state 说明
+    拦在哪个状态；dir 提供反事实方向（被拦信号若放行的方向依据）。
+    res=None（4h 数据不可用）时 reject_reason 记 "missing" 并标降级。
+    """
+    if res is None:
+        return {
+            "state": None, "state_label": None, "reject_reason": "missing",
+            "direction": None, "dir": 0, "evidence": {}, "degraded": True,
+        }
+    ev = res.get("evidence") or {}
+    return {
+        "state": res.get("state"),
+        "state_label": res.get("state_label"),
+        "reject_reason": res.get("reject_reason"),
+        "direction": res.get("direction"),
+        "dir": int(res.get("dir") or 0),
+        "evidence": {
+            "slope_pct": ev.get("slope_pct"),
+            "wraps": ev.get("wraps"),
+            "adx": ev.get("adx"),
+            "close_vs_ema144": ev.get("close_vs_ema144"),
+        },
+        "degraded": bool(degraded),
+    }
+
+
+def _htf_funnel(evidence: dict[str, dict]) -> dict:
+    """4h 关卡证据聚合（2026-10-21 第 2 步）：关卡 × 状态 / 死因分布。
+
+    htf_states：被 4h 前置门拦下的 4h 状态分布（含 "none"=状态机不可用）；
+    gate_4h_reasons：gate_4h 死因分布——degraded=数据降级，其余为市场状态
+    （flat/tangle/undetermined/adx/missing），复盘据此分离「数据源问题」与
+    「4h 无趋势」。htf_state_lock 无 reject_reason，不计入该分布。
+    """
+    states: dict[str, int] = {}
+    reasons: dict[str, int] = {}
+    for ev in evidence.values():
+        st = ev.get("state") or "none"
+        states[st] = states.get(st, 0) + 1
+        if ev.get("stage") == "gate_4h":
+            rr = "degraded" if ev.get("degraded") else (ev.get("reject_reason") or "unknown")
+            reasons[rr] = reasons.get(rr, 0) + 1
+    return {"htf_states": states, "gate_4h_reasons": reasons}
+
+
 def detect_indicator_candidate(
     pool: ExchangePool, symbol: str, klines: list[list],
     pending: Optional[dict] = None,
@@ -242,7 +293,9 @@ def detect_indicator_candidate(
       no_trigger / trigger_whitelist。
       votes 关附 "detail"（全票明细）、htf_state_lock / no_trigger /
       trigger_whitelist 关附 "detail"（2026-10-13）——前端判定说明列渲染，
-      其余关卡不写。
+      其余关卡不写。gate_4h / htf_state_lock 另附 "htf"（4h 证据快照，
+      2026-10-21 第 2 步：state / reject_reason / 斜率·缠绕·ADX 等），
+      供漏斗聚合与被拦信号影子落库。
     now: 本轮数据基准时刻（生产传 scan_now）；仅用于 4h 末根已收盘竞态兜底
       （整点取数时新 4h 根可能尚未出现、末根实为刚收盘根）。None 时不做该
       兜底——测试/回放的历史切片保持「末根=未收盘根」语义。
@@ -320,8 +373,10 @@ def detect_indicator_candidate(
                     or htf_res.get("reject_reason") in ("data", "adx")
                 )
                 _reject("gate_4h")
-                if htf_degraded and reject_out is not None:
-                    reject_out["degraded"] = True
+                if reject_out is not None:
+                    if htf_degraded:
+                        reject_out["degraded"] = True
+                    reject_out["htf"] = _htf_snapshot(htf_res, htf_degraded)
                 return None, ({"op": "expire", "reason": "ranging"} if pending else None)
         # 4h 状态机双向禁开（2026-10-20 用户拍板收紧：前置门仅放行多头/空头
         # 排列 aligned_*）：block_both（非 aligned_*）时，回踩·突破候选均一票
@@ -337,6 +392,7 @@ def detect_indicator_candidate(
                 reject_out["detail"] = (
                         f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
                         "非多头/空头排列——回踩/突破候选均不做")
+                reject_out["htf"] = _htf_snapshot(htf_res)
             return None, ({"op": "expire", "reason": "htf_state_lock"} if pending else None)
     else:
         # 4h K线为空（数据源返回空/不足）：与拉取失败同口径，计入数据降级
@@ -367,6 +423,7 @@ def detect_indicator_candidate(
             reject_out["detail"] = "4h 方向缺失（数据降级），无趋势依据不出信号"
             if htf_degraded:
                 reject_out["degraded"] = True
+            reject_out["htf"] = _htf_snapshot(htf_res, htf_degraded)
         return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
 
     direction = 1 if gate_dir == "long" else -1
@@ -399,6 +456,7 @@ def detect_indicator_candidate(
                     f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
                     f"（宏观同侧）锁逆势——仅可{'多' if st_dir > 0 else '空'}头，"
                     f"当前定向={'多' if direction == 1 else '空'}头")
+                reject_out["htf"] = _htf_snapshot(htf_res)
             return None, ({"op": "expire", "reason": "htf_state_lock"} if pending else None)
 
     # 第二步：1H 结构门——不在筛选链（2026-10-12，docs/21 O7 退役筛选链硬门）：
@@ -674,6 +732,12 @@ class Scanner:
             # 4h 数据降级币种（2026-10-21 观测 B2）：指标管线旁路标记，扫描结束
             # 汇总进 funnel_json，按天统计降级占比（spec §5.3）
             htf_degraded_symbols: set[str] = set()
+            # 4h 前置门证据（2026-10-21 第 2 步）：symbol → {stage, state, ...}，
+            # 扫描结束聚合成状态分布/死因分布进 funnel_json
+            htf_evidence: dict[str, dict] = {}
+            # 被 4h 前置门拦下的候选快照（第 2 步）：仅定时扫描落 shadow_marks，
+            # 供第 3 步反事实回放评估「仅放行 aligned」是否划算
+            blocked_shadows: dict[str, dict] = {}
 
             def _drop(rows: list[dict], keep, stage: str) -> list[dict]:
                 """预过滤关卡拆分：保留侧照常流转，剔除侧记入漏斗"""
@@ -816,6 +880,24 @@ class Scanner:
                             funnel_rejects[symbol] = rv_out["stage"]
                             if rv_out.get("detail"):
                                 funnel_details[symbol] = rv_out["detail"]
+                            # 4h 前置门证据 + 被拦快照（第 2 步）：只收
+                            # gate_4h / htf_state_lock 两关（其余关卡与 4h 无关）。
+                            # 快照记信号根（klines[-2]，已收盘）开盘时间与收盘价；
+                            # scanner 层无入场/止损/TP，收益估值留待第 3 步按
+                            # 前瞻收益口径回放
+                            htf_ev = rv_out.get("htf")
+                            if htf_ev and rv_out["stage"] in (
+                                    "gate_4h", "htf_state_lock"):
+                                htf_evidence[symbol] = {
+                                    "stage": rv_out["stage"], **htf_ev}
+                                if len(klines) >= 2:
+                                    blocked_shadows[symbol] = {
+                                        "stage": rv_out["stage"],
+                                        "htf": htf_ev,
+                                        "detail": rv_out.get("detail"),
+                                        "signal_bar_open_ms": int(klines[-2][0]),
+                                        "close": float(klines[-2][4]),
+                                    }
                         return symbol, [], False
                     cand["symbol"] = symbol
                     # 影子打标（docs/14）：特征计算挂在此处（klines 在手），
@@ -879,6 +961,11 @@ class Scanner:
 
             # 5. 写入结果（用独立 session，避免长时间扫描后主 session 连接失效）
             result_ids = self._save_results(scan_record_id, new_hits, scan_type=record.scan_type)
+
+            # 5.1 被 4h 前置门拦下的候选快照（2026-10-21 第 2 步）：仅定时扫描，
+            # 供第 3 步反事实回放；失败只记日志不影响扫描与 AI 链路
+            self._save_blocked_shadows(
+                scan_record_id, blocked_shadows, scan_type=record.scan_type)
 
             # 5.2 筛选命中飞书通知（2026-09-28，仅定时扫描——手动扫描用户在场，
             # 不推送）。new_hits 已过重复命中抑制，只在真新命中时提醒；
@@ -961,6 +1048,10 @@ class Scanner:
                 # 按天汇总（spec §5.3）>1% 需排查数据源
                 "htf_degraded": len(htf_degraded_symbols),
                 "htf_degraded_symbols": sorted(htf_degraded_symbols),
+                # 4h 前置门证据与被拦快照（2026-10-21 第 2 步）：拦在哪个 4h
+                # 状态/什么死因（data 降级 vs 市场无趋势），复盘分离两类口径
+                "htf_evidence": htf_evidence,
+                **_htf_funnel(htf_evidence),
             }
 
             logger.info(
@@ -1061,6 +1152,50 @@ class Scanner:
         finally:
             sdb.close()
         return result_ids
+
+    @staticmethod
+    def _save_blocked_shadows(
+        scan_record_id: UUID,
+        blocked: dict[str, dict],
+        scan_type: str = "scheduled",
+    ) -> int:
+        """被 4h 前置门拦下的候选快照落 shadow_marks（2026-10-21 第 2 步）。
+
+        与 _save_results 的影子打标同口径：仅定时扫描（手动扫描用户在场，非
+        观察总体）；独立 session、逐笔 commit，异常全吞——影子绝不拖累扫描结果。
+        不注册进 shadow.SHADOW_FEATURES：该表是第 3 步反事实回放的数据集，
+        不参与 build_report 的 scan_result 归因链（未注册的 key 不会出现在报告，
+        避免被误记为 no_analysis）。
+
+        ref_id 用确定性 uuid5(scan_record_id, symbol)：同一轮同一币唯一，重跑
+        幂等（重复插入撞唯一约束后 rollback 忽略）。返回成功写入笔数。
+        """
+        if not blocked or scan_type != "scheduled":
+            return 0
+        sdb = SessionLocal()
+        n = 0
+        try:
+            for symbol, snap in blocked.items():
+                try:
+                    sdb.add(ShadowMark(
+                        feature_key="htf_blocked",
+                        ref_type="blocked_scan",
+                        ref_id=uuid5(
+                            NAMESPACE_URL, f"htf_blocked:{scan_record_id}:{symbol}"),
+                        symbol=symbol,
+                        value_json=snap,
+                        decision_json={"stage": snap.get("stage"), "scan_type": scan_type},
+                    ))
+                    sdb.commit()
+                    n += 1
+                except Exception as e:
+                    sdb.rollback()
+                    logger.debug("被拦信号影子落库失败 %s: %s", symbol, e)
+            if n:
+                logger.info("写入 %d 条被拦信号影子 #%s", n, scan_record_id)
+        finally:
+            sdb.close()
+        return n
 
     @staticmethod
     def _update_scan_status(
