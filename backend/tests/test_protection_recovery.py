@@ -454,6 +454,146 @@ def test_entry_submit_explicit_rejection_does_not_create_incident(
     db.close()
 
 
+# ---------- 故障注入：限价入场单已提交但响应丢失（审计 7.3） ----------
+
+
+@pytest.fixture
+def limit_entry_settings(opening_settings, monkeypatch):
+    """进入挂单入场分支：现价 RR 退化到 ai_rr_min-容差以下，且挂单开关开启。"""
+    from app.config import settings
+    monkeypatch.setattr(settings, "PENDING_ENTRY_ENABLED", True)
+
+
+class _LimitAckLostTrader(_OpeningTrader):
+    """限价入场单提交抛超时（可能已挂出/已成交），可配置撤单结果与残余仓位。"""
+
+    def __init__(self, cancel_error=None, position=None, close_error=None):
+        super().__init__(close_error=close_error)
+        self.cancel_error = cancel_error
+        self.position = position
+        self.cancel_all_calls = 0
+
+    def price(self, symbol):
+        return 100.5  # rr_now = 1.4 < 1.5-0.05，进入挂单分支
+
+    def limit_order(self, symbol, side, qty, price, time_in_force="GTC"):
+        raise TimeoutError("limit order ack lost")
+
+    def cancel_all_open_orders(self, symbol):
+        self.cancel_all_calls += 1
+        if self.cancel_error is not None:
+            raise self.cancel_error
+
+    def positions(self):
+        return {"XUSDT": dict(self.position)} if self.position else {}
+
+
+def test_limit_entry_ack_lost_cancels_stray_order(
+    file_session, limit_entry_settings, monkeypatch,
+):
+    """未成交：撤掉可能挂出的限价单即可，不建事故、不封锁账号。"""
+    import app.services.protection_recovery as recovery
+    monkeypatch.setattr(recovery, "SessionLocal", file_session)
+    db, cfg, a = _open_fixture(file_session)
+    trader = _LimitAckLostTrader()
+
+    assert _attempt_open(db, trader, cfg, a, 1000.0, {}) == "blocked"
+
+    assert trader.cancel_all_calls == 1
+    assert db.query(ProtectionIncident).count() == 0
+    db.close()
+
+
+def test_limit_entry_ack_lost_filled_position_is_flattened(
+    file_session, limit_entry_settings, monkeypatch,
+):
+    """已成交：立即 reduceOnly 平仓并落事故对账，不留无保护仓位。"""
+    import app.services.protection_recovery as recovery
+    monkeypatch.setattr(recovery, "SessionLocal", file_session)
+    db, cfg, a = _open_fixture(file_session)
+    trader = _LimitAckLostTrader(position={"amt": 2, "entry_price": 100.0})
+
+    assert _attempt_open(db, trader, cfg, a, 1000.0, {}) == "blocked"
+
+    row = db.query(ProtectionIncident).one()
+    assert row.reason == "open_limit_entry_submit_unknown"
+    assert row.status == "awaiting_reconcile"
+    assert row.qty == 2
+    assert row.entry_price == 100
+    assert row.entry_order_id is None
+    assert "close_ack" in (row.last_error or "")
+    assert trader.cancel_all_calls == 1
+    db.close()
+
+
+def test_limit_entry_ack_lost_cancel_failure_escalates(
+    file_session, limit_entry_settings, monkeypatch,
+):
+    """撤单结果未知：无法排除悬挂单，交人工复核并由巡检重试撤单。"""
+    import app.services.protection_recovery as recovery
+    monkeypatch.setattr(recovery, "SessionLocal", file_session)
+    db, cfg, a = _open_fixture(file_session)
+    trader = _LimitAckLostTrader(
+        cancel_error=TimeoutError("cancel ack lost"),
+        position={"amt": 2, "entry_price": 100.0},
+    )
+
+    assert _attempt_open(db, trader, cfg, a, 1000.0, {}) == "blocked"
+
+    row = db.query(ProtectionIncident).one()
+    assert row.reason == "open_limit_entry_submit_unknown"
+    assert row.status == "manual_review"
+    assert "cancel ack lost" in (row.last_error or "")
+    assert trader.cancel_all_calls == 1
+    db.close()
+
+
+def test_limit_entry_explicit_rejection_does_not_cancel(
+    file_session, limit_entry_settings, monkeypatch,
+):
+    """明确拒单（含错误码）说明限价单未送达，不撤单、不建事故。"""
+
+    class _RejectedLimitTrader(_LimitAckLostTrader):
+        def limit_order(self, symbol, side, qty, price, time_in_force="GTC"):
+            raise RuntimeError("Order would immediately trigger (-2021)")
+
+    import app.services.protection_recovery as recovery
+    monkeypatch.setattr(recovery, "SessionLocal", file_session)
+    db, cfg, a = _open_fixture(file_session)
+    trader = _RejectedLimitTrader()
+
+    assert _attempt_open(db, trader, cfg, a, 1000.0, {}) == "blocked"
+    assert trader.cancel_all_calls == 0
+    assert db.query(ProtectionIncident).count() == 0
+    db.close()
+
+
+def test_limit_unknown_incident_waits_for_cancel_confirmation(db_factory):
+    """空仓也不等于闭环：撤单确认成功后才解除封锁。"""
+    db = db_factory()
+    item = incident(db, reason="open_limit_entry_submit_unknown")
+    calls = []
+
+    def fail_cancel(symbol):
+        raise TimeoutError("cancel ack lost")
+
+    trader = SimpleNamespace(positions=lambda: {},
+                             cancel_all_open_orders=fail_cancel)
+    recover_due_incidents(db, trader, "testnet-1", True)
+    db.refresh(item)
+    assert item.status == "manual_review"
+    assert has_active_incident(db, "testnet-1", True)
+
+    trader.cancel_all_open_orders = lambda symbol: calls.append(symbol)
+    recover_due_incidents(db, trader, "testnet-1", True,
+                          now=datetime.utcnow() + timedelta(hours=2))
+    db.refresh(item)
+    assert calls == ["XUSDT"]
+    assert item.status == "resolved"
+    assert not has_active_incident(db, "testnet-1", True)
+    db.close()
+
+
 class _MaterializeTrader:
     """挂单落地替身：成交确认后 SL 挂失败，紧急平仓超时。"""
 

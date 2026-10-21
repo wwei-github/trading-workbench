@@ -166,6 +166,23 @@ def recover_due_incidents(db, trader, account_key: str, testnet: bool,
             if not pos or amt == 0:
                 # Do not cancel algo orders here: an account may already have a later
                 # same-symbol position whose protection must not be removed.
+                # 限价入场响应丢失（无 orderId）的残留普通挂单同理不能默认已消失：
+                # 撤单确认成功后才算闭环，失败则保持封锁并下轮重试。
+                if row.reason == "open_limit_entry_submit_unknown":
+                    # 人工复核退避期内不重复撤单，避免每分钟打交易所/刷告警
+                    if row.next_retry_at and row.next_retry_at > now:
+                        continue
+                    try:
+                        trader.cancel_all_open_orders(row.symbol)
+                    except Exception as cancel_exc:
+                        first = row.status != "manual_review"
+                        _mark_review(
+                            row, f"撤单复核失败，无法确认无残留挂单：{cancel_exc}")
+                        row.next_retry_at = now + timedelta(hours=1)
+                        db.commit()
+                        if first:
+                            _alert(row)
+                        continue
                 row.status = "resolved"
                 row.resolved_at = now
                 row.last_error = None

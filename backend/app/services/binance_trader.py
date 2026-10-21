@@ -471,6 +471,21 @@ class BinanceTrader:
                 return
             raise
 
+    def cancel_all_open_orders(self, symbol: str) -> None:
+        """撤销该 symbol 全部普通挂单（响应丢失兜底，审计 7.3）。
+
+        入场限价单提交后响应丢失（超时/断连）时没有 orderId 可精确撤单，只能
+        按 symbol 全撤；开仓闸门保证本账号同币无其他系统挂单。无挂单/已成交
+        时币安返回成功或 -2011/-2013，均视为幂等成功。
+        """
+        try:
+            self._req("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
+        except BinanceTradeError as e:
+            msg = str(e)
+            if "-2011" in msg or "-2013" in msg or "unknown" in msg.lower() or "not exist" in msg.lower():
+                return
+            raise
+
     def _algo_place(self, params: dict, tries: int = 3, delay: float = 0.4) -> dict:
         """提交条件单（algo）：对 -4509 短退避重试后原样抛出。
 

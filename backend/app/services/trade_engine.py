@@ -322,6 +322,69 @@ def _remaining_risk(rec: TradeRecord, qty: Optional[float] = None) -> Optional[f
     return round(max(per_unit, 0.0) * qty, 4)
 
 
+def _recover_unknown_limit_entry(
+    db: Session, trader: BinanceTrader, symbol: str, direction: str,
+    qty: float, limit_px: float, entry_err: Exception,
+) -> None:
+    """限价入场单提交响应丢失后的最坏情况收敛（2026-10-21 审计 7.3）。
+
+    限价单与市价单不同：响应丢失时既可能没送达，也可能挂着未成交，甚至已成交。
+    没有 orderId 只能按 symbol 全撤普通挂单（开仓闸门保证本账号同币无其他系统
+    挂单），再核对是否已成交——有仓立即 reduceOnly 平掉并落事故交巡检对账，
+    绝不留无保护仓位或悬挂单。撤单结果未知时按人工复核处理，巡检每轮重试撤单。
+    """
+    from app.services.protection_recovery import (
+        create_incident_after_rollback, status_for_close_error,
+    )
+    reason = "open_limit_entry_submit_unknown"
+
+    def _record(*, qty_, error, status, entry_price=limit_px):
+        try:
+            create_incident_after_rollback(
+                db, account_key=trader.account_key, testnet=trader.testnet,
+                symbol=symbol, direction=direction, reason=reason,
+                qty=qty_, entry_order_id=None, entry_price=entry_price,
+                error=error, status=status,
+            )
+        except Exception:
+            logger.exception("限价单响应丢失事故无法持久化 %s", symbol)
+
+    try:
+        trader.cancel_all_open_orders(symbol)
+    except Exception as cancel_err:
+        # 撤单结果未知：不能假定无残留挂单，交人工复核（巡检会重试撤单）
+        _record(qty_=qty, error=f"entry={entry_err}; cancel={cancel_err}",
+                status="manual_review")
+        return
+    try:
+        pos = trader.positions().get(symbol)
+    except Exception as pos_err:
+        # 挂单已确认撤掉，仅成交与否未知；巡检按仓位核对，无仓即解除
+        _record(qty_=qty, error=f"entry={entry_err}; positions={pos_err}",
+                status="pending")
+        return
+    amt = abs(float((pos or {}).get("amt") or 0))
+    if amt <= 0:
+        return  # 未成交且撤单成功：无残留，直接按原错误外抛
+    pos_entry = float((pos or {}).get("entry_price") or 0) or limit_px
+    same_side = (float((pos or {}).get("amt") or 0) > 0) == (direction == "long")
+    if not same_side or amt > qty * 1.001:
+        # 方向不符或数量超过本单（疑似并发人工仓）：不自动平，交人工
+        _record(qty_=amt, entry_price=pos_entry,
+                error=f"entry={entry_err}; position={pos}", status="manual_review")
+        return
+    close_side = "SELL" if direction == "long" else "BUY"
+    try:
+        close_result = trader.market_order(symbol, close_side, amt, reduce_only=True)
+    except Exception as close_err:
+        status = status_for_close_error(close_err)
+        error = f"entry={entry_err}; close={close_err}"
+    else:
+        status = "awaiting_reconcile"
+        error = f"entry={entry_err}; close_ack={close_result}"
+    _record(qty_=amt, entry_price=pos_entry, error=error, status=status)
+
+
 def _attempt_open(
     db: Session, trader: BinanceTrader, cfg: SystemConfig,
     a: AIAnalysis,
@@ -788,7 +851,16 @@ def _attempt_open(
                     f"入场价 {entry_ai} 取整后 {limit_px} 不在现价 {price} 的正确侧，放弃挂单",
                 )
                 return "blocked"
-            order = trader.limit_order(symbol, side, qty, limit_px)
+            try:
+                order = trader.limit_order(symbol, side, qty, limit_px)
+            except Exception as entry_err:
+                # 响应丢失（超时/断连）≠ 未挂出：撤残留挂单并按最坏情况核对成交，
+                # 明确拒单（含币安错误码）意味着未送达，走原路径直接外抛。
+                if re.search(r"(?<!\d)-\d{4}(?!\d)", str(entry_err)):
+                    raise
+                _recover_unknown_limit_entry(
+                    db, trader, symbol, direction, qty, limit_px, entry_err)
+                raise
             pe = PendingEntryOrder(
                 symbol=symbol, direction=direction,
                 scan_result_id=a.scan_result_id, ai_analysis_id=a.id,
