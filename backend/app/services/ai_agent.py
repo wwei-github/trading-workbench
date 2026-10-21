@@ -31,7 +31,9 @@ from app.services.strategy.technical import atr_series, render_indicator_block
 from app.services.strategy.types import POSITION_LABEL_MAP
 from app.services.ai_analyzer import (
     _RULE_HTF_HARD,
+    _RULE_BTC_ENV,
     SIGNAL_TYPE_LABELS,
+    render_rule_score,
     render_rule_struct,
     render_rule_vote,
     render_signal_gate_block,
@@ -74,7 +76,7 @@ NEAR_STOP_RULE_AGENT = """11.5 突破类止损近锚降级链：结构锚（摆�
 
 def render_system_prompt(
     risk_label: str = "", rr_min: Optional[float] = None,
-    tp2_enabled: bool = True,
+    tp2_enabled: bool = True, min_recommendation: Optional[float] = None,
 ) -> str:
     """渲染最终生效的 P1 系统提示词（页面「查看当前生效提示词」与实际调用同源）。
 
@@ -84,11 +86,14 @@ def render_system_prompt(
     rr_min（2026-10-02 上页面）：盈亏比铁律下限，system_config.ai_rr_min 覆盖时
     由调用方传入；None 回落 env 默认。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时剔除止盈二锚点语义
-    （system_config.tp2_enabled，默认关），与实际调用（analyze_coin_agent）同源。"""
+    （system_config.tp2_enabled，默认关），与实际调用（analyze_coin_agent）同源。
+    min_recommendation（2026-10-21）：生效评分门槛，注入「评分纪律」段
+    （system_config.min_recommendation，None 回落 env）。"""
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
     _tp1_atr = f"{settings.TP1_MAX_ATR:g}"
     _tp1_r = f"{settings.TP1_MAX_R:g}"
     _far_atr = round(settings.TP1_MAX_ATR / _rr, 2)
+    _risk_label = risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%"
     return AGENT_SYSTEM.format(
         max_rounds=MAX_ROUNDS, _ref_desc=_REF_DESC,
         rr_min=_rr,
@@ -97,8 +102,10 @@ def render_system_prompt(
         tp1_max_r=_tp1_r,
         tp1_cap_desc=render_tp1_cap_desc(_rr),
         far_atr=_far_atr,
-        risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
+        risk_label=_risk_label,
         _RULE_HTF_HARD=_RULE_HTF_HARD,
+        _RULE_SCORE=render_rule_score(min_recommendation, _rr, _risk_label),
+        _RULE_BTC_ENV=_RULE_BTC_ENV,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
         near_stop_rule=NEAR_STOP_RULE_AGENT.format(
@@ -213,6 +220,10 @@ AGENT_SYSTEM = """你是加密货币合约交易决策 Agent。事实包已随�
     近期低点附近）、只在压力结构做空（摆动高点/近期高点附近）；现价已离开结构位时
     不再要求贴近，按动能与盈亏比自行判断入场（breakout 顺势追突破仍用 market 锚）。
 
+{_RULE_SCORE}
+
+{_RULE_BTC_ENV}
+
 {_RULE_STRUCT_BRIEF}
 
 {skill_index}"""
@@ -308,7 +319,7 @@ TOOLS_SCHEMA = [
             "tp2_ref": {"type": "string", "enum": list(LEVEL_REFS),
                         "description": "止盈2锚点（可选）：做多=next_resistance_zone_low（下一档压力线），做空=next_support_zone_high（下一档支撑线）"},
             "tp2_offset_pct": {"type": "number", "description": "止盈2相对锚点偏移%，同止盈1留余地"},
-            "recommendation": {"type": "integer", "description": "推荐程度 0-100，skip≤30，suggest≥50"},
+            "recommendation": {"type": "integer", "description": "推荐度档位（不内插）：skip≤30 / 60=达标 / 70=标准共振 / 85=强共振；低于生效门槛=程序不下单；禁止用 50-59 表达保守（细则见系统提示词「评分纪律」）"},
             "tactic_name": {"type": "string",
                             "description": "战法命中名（仅借鉴标注）：用户消息出现【战法库判定】块且信号符合某战法时逐字输出该名，均不符合输出空字符串"},
             "tactic_reason": {"type": "string", "description": "战法判定依据 ≤60字；未命中输出空字符串"},
@@ -658,7 +669,7 @@ def analyze_coin_agent(
     stop_cap_pct: Optional[float] = None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
     tp2_enabled: bool = True, flt=None,
-    rr_tol: Optional[float] = None,
+    rr_tol: Optional[float] = None, min_recommendation: Optional[float] = None,
 ) -> dict:
     """Agent 循环入口：返回与 Risk Guard 相同结构的决策 dict（可直接落库）。
 
@@ -677,7 +688,9 @@ def analyze_coin_agent(
     submit_decision 工具 schema 隐藏 tp2_* 参数、提交的 tp2 硬清零
     （system_config.tp2_enabled，默认关）。
     flt（2026-10-12）：筛选参数组（resolve_scan_filters(cfg)），透传门槛块
-    渲染与页面配置同源；None=env/代码默认。"""
+    渲染与页面配置同源；None=env/代码默认。
+    min_recommendation（2026-10-21）：生效评分门槛，注入「评分纪律」段
+    （system_config.min_recommendation，None 回落 env）。"""
     client = get_client()
 
     # 布尔事实（技能 use_when 判定）
@@ -710,6 +723,11 @@ def analyze_coin_agent(
         far_atr=round(settings.TP1_MAX_ATR / _rr, 2),
         risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
         _RULE_HTF_HARD=_RULE_HTF_HARD,
+        _RULE_SCORE=render_rule_score(
+            min_recommendation, _rr,
+            risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
+        ),
+        _RULE_BTC_ENV=_RULE_BTC_ENV,
         _RULE_VOTE_BRIEF=_RULE_VOTE_BRIEF,
         _RULE_STRUCT_BRIEF=_RULE_STRUCT_BRIEF,
         near_stop_rule=near_stop_rule,

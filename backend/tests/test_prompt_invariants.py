@@ -223,3 +223,82 @@ def test_rr_only_shortfall_fixed_rr_fallback_present():
     assert "入场价 ± {rr_min}×止损距离" in ai_analyzer._RULE_TP_BASE
     assert "入场 ± {rr_min}×止损距离" in ai_agent.AGENT_SYSTEM
     assert "唯一不达标项" in ai_analyzer._RULE_TP_TAIL_OFF
+
+
+# ── 不变量 11：评分分档纪律 + 门槛注入（2026-10-21 止血批）──────────
+# 背景：AI 曾以「1h 三指标偏空 + BTC 逆风 + RR 仅达标」为由给出 58 分，
+# 58 < 分发门槛 60 等于隐性弃单，但提示词未注入门槛、且允许线性内插——
+# 分数退化成语气量表。以下断言锁定：分档不内插、减分项不跨档、
+# 门槛必须注入（AI 才知道 58 等于程序不下单）、仓位不承载意见。
+
+
+def _p1_system(min_rec=None) -> str:
+    return ai_agent.render_system_prompt(min_recommendation=min_rec)
+
+
+def test_recommendation_tiered_no_interpolation():
+    """P0/P1 均须按档给分（60/70/85），禁止介于档位之间的分数"""
+    for txt in (_p0_system(), _p1_system()):
+        assert "分档不内插" in txt
+        assert "禁止输出介于档位之间的分数" in txt
+        assert "60=达标" in txt and "70=标准共振" in txt and "85=强共振" in txt
+
+
+def test_deduction_items_never_shift_tier():
+    """环境风险/1h 反向/RR 恰达标 只决定档内上下限，不得跨档；
+    若足以否决则直接 skip（不得用降一点分表达犹豫）"""
+    for txt in (_p0_system(), _p1_system()):
+        assert "减分项不跨档" in txt
+        assert "任何单项都不足以跨档" in txt
+        assert "不要用" in txt and "降一点分" in txt
+
+
+def test_min_recommendation_injected_into_both_pipelines():
+    """门槛真实拦截点在程序侧（recommendation < min_rec 不分发），
+    提示词必须注入同一生效值，否则 AI 输出 58 时并不知道等于弃单"""
+    assert "生效门槛 = 75" in ai_analyzer.render_system_prompt(min_recommendation=75)
+    assert "生效门槛 = 75" in ai_agent.render_system_prompt(min_recommendation=75)
+    # 默认渲染回落 env，两个管线口径一致
+    from app.config import settings
+    expect = f"生效门槛 = {float(settings.TRADING_MIN_RECOMMENDATION):g}"
+    assert expect in _p0_system()
+    assert expect in _p1_system()
+
+
+def test_position_field_not_carrying_opinion():
+    """仓位由程序按固定亏损法复算，评分不参与——P0 字段说明不得再暗示
+    可用缩仓表达保守"""
+    p0 = _p0_system()
+    assert "不承载保守/激进语义" in p0
+    assert "仓位恒由程序按固定亏损法计算" in p0
+
+
+def test_pullback_1h_reversal_exempt_listed():
+    """回踩确认单的 1h 反向属回撤形态本身：MACD/BOLL/RSI、1h EMA、
+    SuperTrend/OBV、缩量 四类全部豁免（不进减分项/不改档/不作 skip 理由）"""
+    p0 = _p0_system()
+    assert "回踩确认单（trigger_pullback_confirm）定向以 4h 为准" in p0
+    for kw in ("MACD/布林带/RSI", "1h EMA 排列/拐头", "SuperTrend/OBV", "回撤缩量"):
+        assert kw in p0, kw
+    assert "只作确认度参考，不进减分项、不改变评分档位、不作 skip 理由" in p0
+    assert "只作确认度参考，不进减分项、不改变评分档位、不作 skip 理由" \
+        in ai_agent._RULE_HTF_HARD
+
+
+def test_btc_env_not_a_gate_leveled():
+    """BTC 状态行不是闸门：无「急跌」不得降分降档；有「急跌」最多降一档"""
+    for txt in (_p0_system(), _p1_system()):
+        assert "BTC 状态行不是闸门" in txt
+        assert "不降分、不降档、不作 skip 理由" in txt
+        assert "最多降一档" in txt
+
+
+def test_skill_pullback_no_conflicting_scoring_text():
+    """技能文档不得再教「1h EMA 矛盾 → 评分保守」，与主提示词冲突"""
+    from pathlib import Path
+    p = Path(ai_analyzer.__file__).resolve().parents[2] / "skills" / "trend-pullback" / "SKILL.md"
+    txt = p.read_text(encoding="utf-8")
+    assert "只在评分上适度保守" not in txt
+    assert "不影响评分档位" in txt
+    assert "**4h** EMA 死叉/拐头" in txt
+    assert "1h EMA 死叉/拐头属回撤常态" in txt

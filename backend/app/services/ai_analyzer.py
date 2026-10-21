@@ -27,7 +27,7 @@ _RULE_HTF_HARD = """0. **方向硬约束（最高优先级，先于一切规则�
 4h宏观金叉/死叉初期、多头/空头恢复初期、多头/空头排列（宏观同侧态）仅可顺势（逆势一律 skip，程序会强制改判）；
 4h牛内回调/熊内反弹（宏观逆侧过渡态）无此约束，但仍应结合质量分与打法合理性自评；
 即使 1h 方向票指向反方向也以约束为准（1h 逆宏观同侧态背景信号视为回调噪音）。
-回踩确认单（trigger_pullback_confirm）定向以 4h 为准：1h MACD/布林带/RSI 在回撤期间转反向是形态本身（回撤越深越明显），不得据此降低推荐分或 skip；金K看的是反转形态（做多=看涨吞没/锤形线/启明星/刺透线，做空镜像），不是回撤方向的延续形态。仅当价格结构跌破 4h 关键位（做多时 1h 收盘跌破 4h EMA144 且 4h 不再是排列）才可拒绝。"""
+回踩确认单（trigger_pullback_confirm）定向以 4h 为准：以下 1h 侧反向均属回撤的形态本身（回撤越深越明显），**只作确认度参考，不进减分项、不改变评分档位、不作 skip 理由**——① MACD/布林带/RSI 方向票反向或同向不足；② 1h EMA 排列/拐头与 4h 相反；③ SuperTrend/OBV 转反向；④ 回撤缩量（回踩类量比 <1 是加分不是减分）。金K看的是反转形态（做多=看涨吞没/锤形线/启明星/刺透线，做空镜像），不是回撤方向的延续形态。仅当价格结构跌破 4h 关键位（做多时 1h 收盘跌破 4h EMA144 且 4h 不再是排列）才可拒绝。"""
 
 _RULE_VOTE = """方向票规则：用户消息"技术指标"块"方向票"行由程序统计
 （仅 MACD/布林带/RSI 三张方向票投多/空/中性，门槛=同向≥2 张；
@@ -175,6 +175,58 @@ swing=摆动结构位（HL/LH 防守位）、ema21=1h 趋势动态价值区、em
 顺 4h 方向」门已程序验证）。触点启用类型由页面
 「回踩触点」白名单控制；有触点时止损优先锚定触点位：做多放触点位
 下外侧、做空放上外侧（仍按止损纪律两锚取更远者结合金K极值）。"""
+
+# ── 评分纪律（2026-10-21，P0/P1 共用）────────────────────────────
+# 系统定位：规则引擎持否决权与仓位权，LLM 只出裁决与参数（docs/12 §一）。
+# 原锚点「50=仅勉强达标…中间分数线性内插」把 recommendation 变成语气量表：
+# AI 用 58 表达"保守"，程序却按 <60 门槛直接不分发开仓（ai_tasks
+# ._dispatch_immediate_open），且仓位由固定亏损法复算、根本不读评分——语义错位。
+# 改为档位化 + 注入生效门槛：分数 < 门槛即"程序不下单"，禁止用中间分表达犹豫。
+_RULE_SCORE = """评分纪律（recommendation 只决定开/不开，不决定仓位）：
+- 分档不内插：60=达标（其余开单条件全部满足，共振项 <2）；70=标准共振
+  （4h 同侧 + 位置/触点/量能/形态 中 ≥2 项同向，且方向票同向 ≥2）；
+  85=强共振（4h 同侧 + 位置 + 量能 + 形态 四项同向、止盈空间有余量）；skip 一律 ≤30。
+- 跨档必须给依据：「决策结论」节逐条写明是哪一项共振成立/失效才允许跨档。
+  **减分项不跨档**：环境风险（BTC 走弱、资金费率拥挤）、1h 反向、RR 恰达标等
+  只在同档内决定取上限还是下限，任何单项都不足以跨档；若它本身足以否决，
+  请直接 skip 并写明依据，不要用"降一点分"表达犹豫。
+- 生效门槛 = {min_rec}：**分数 < {min_rec} 等于程序不下单**，不是"减半仓"、
+  也不是"保守建议"。禁止输出介于档位之间的分数（如 58、62）——要么按档给
+  ≥{min_rec} 的分，要么 skip。
+- 仓位不承载意见：仓位恒由程序按固定亏损法计算（预算={risk_label} ÷ 止损距离），
+  评分不参与。要保守只有两个动作：降档给分（仍 ≥{min_rec} 则照常开单）或 skip。
+- RR 恰达标（含"入场 ± {rr_min}×止损距离"兜底止盈）不是减分项：兜底启用前提是
+  其余开单条件全部满足且 4h 为宏观同侧态，属"空间一般但结构合格"，按 60 档给分。"""
+
+# ── BTC 环境定位（2026-10-21，P0/P1 共用）────────────────────────
+# BTC 状态行不是闸门（2026-10-13 起急跌仅提示词警示），不得用它做否决——
+# 否则等于绕过已删除的 N-15 单边环境闸门。回踩场景下 BTC 同步 1h 走弱是共因，
+# 与 _RULE_HTF_HARD 的回踩豁免同源，最多降一档。
+_RULE_BTC_ENV = """市场环境定位（BTC 状态行不是闸门，不拦截开单）：
+- 未出现「急跌」字样：BTC 4h 排列与信号不同向、或 1h 近3根回落 → 只写进
+  风险点，不降分、不降档、不作 skip 理由；
+- 出现「BTC 短线急跌」：最多降一档（85→70 / 70→60），不直接否决；
+  降档后低于门槛 → 直接 skip 并标 [环境逆风]，不要给中间分数；
+- 「状态约束（硬性）/方向约束（硬性）」行由 4h 结构决定，与 BTC 状态行无关，
+  按其执行即可。"""
+
+
+def render_rule_score(
+    min_rec: Optional[float] = None, rr_min: Optional[float] = None,
+    risk_label: str = "",
+) -> str:
+    """评分纪律片段渲染（P0/P1 同源）：门槛/盈亏比/止损预算三处生效值注入。
+
+    min_rec：system_config.min_recommendation 优先、回落
+    TRADING_MIN_RECOMMENDATION（连损降速提门槛时由程序侧另行判定，提示词只写
+    静态门槛——动态档位属执行层，不重复注入避免文本分叉）。
+    """
+    _min = float(min_rec) if min_rec is not None else float(settings.TRADING_MIN_RECOMMENDATION)
+    _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
+    return _RULE_SCORE.format(
+        min_rec=f"{_min:g}", rr_min=f"{_rr:g}",
+        risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
+    )
 
 # 信号类型中文对照（结构分类）
 SIGNAL_TYPE_LABELS = {
@@ -329,11 +381,12 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
   兜底价永远合规、不会因超 {tp1_max_atr}×ATR 被打回。超限请改挂更近结构位或直接用兜底价。
 - take_profit_2: {_tp2_field}
 - risk_reward_ratio: take_profit_1 的盈亏比，2位小数（按报价如实复算）。
-- position_pct: 建议名义仓位占账户资金百分比，2位小数。程序会按固定亏损复算覆盖
-  （单笔止损预算={risk_label}：仓位=预算÷止损距离），此处报估算值即可。
-- recommendation: 推荐程度，0-100的整数。skip 时≤30，suggest 时≥50。锚点（评分需可区分强度）：
-  50=仅勉强达标（单一条件满足，无共振）；70=多重共振（趋势+位置/量能两项以上同向）；
-  85+=强信号（趋势+位置+盈亏比三重共振）。中间分数线性内插。
+- position_pct: 展示用估算值，2位小数。程序会按固定亏损法复算覆盖
+  （单笔止损预算={risk_label}：仓位=预算÷止损距离）——**该字段不承载保守/激进语义**，
+  保留意见用评分档位或 skip 表达，不要用缩仓表达。
+- recommendation: 推荐程度，0-100 整数，**按档给分、不内插**（档位定义与减分纪律见
+  下方「评分纪律」）：60=达标 / 70=标准共振 / 85=强共振；skip 时≤30。
+  禁止输出介于档位之间的分数（如 58、62）来表达"保守"或"犹豫"。
 - tactic_name: 战法命中名（2026-10-02，仅借鉴标注不影响开单结论）。用户消息出现
   【战法库判定】块且信号符合其中某个战法时，逐字输出该战法名（禁止改写/自创）；
   均不符合或无战法清单时输出空字符串。
@@ -356,6 +409,10 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 
 {_RULE_TOUCH}
 
+{_RULE_SCORE}
+
+{_RULE_BTC_ENV}
+
 所有价格为数值，单位 USDT。
 均线与指标纪律：
 - {_RULE_EMA}
@@ -368,7 +425,7 @@ take_profit_1/take_profit_2/risk_reward_ratio/position_pct；skip_reason 除外�
 
 def render_system_prompt(
     risk_label: Optional[str] = None, rr_min: Optional[float] = None,
-    tp2_enabled: bool = True,
+    tp2_enabled: bool = True, min_recommendation: Optional[float] = None,
 ) -> str:
     """渲染最终生效的 P0 系统提示词（SYSTEM_PROMPT 为带槽位模板）。
 
@@ -376,9 +433,13 @@ def render_system_prompt(
     百分比口径。页面预览与实际调用共用本函数保证同源。
     rr_min（2026-10-02 上页面）：盈亏比铁律下限，system_config.ai_rr_min
     覆盖时由调用方传入；None 回落 env 默认。
+    min_recommendation（2026-10-21）：生效评分门槛，注入「评分纪律」段——
+    分数低于门槛程序不分发开仓，AI 必须知道该门槛才能正确选择档位或 skip
+    （system_config.min_recommendation 覆盖时由调用方传入；None 回落 env）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时剔除止盈二规则与
     字段说明，AI 不再产出第二档止盈价（system_config.tp2_enabled，默认关）。"""
     _rr = float(rr_min) if rr_min is not None else float(settings.AI_RR_MIN)
+    _risk_label = risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%"
     return SYSTEM_PROMPT.format(
         _RULE_HTF_HARD=_RULE_HTF_HARD,
         _RULE_DIRECTION=_RULE_DIRECTION.replace(chr(10), ' '),
@@ -396,6 +457,8 @@ def render_system_prompt(
             tp2_gap_r=f"{settings.TP2_MIN_GAP_R:g}",
         ),
         _RULE_TOUCH=_RULE_TOUCH,
+        _RULE_SCORE=render_rule_score(min_recommendation, _rr, _risk_label),
+        _RULE_BTC_ENV=_RULE_BTC_ENV,
         _RULE_EMA=_RULE_EMA.replace(chr(10), ' '),
         _RULE_VOTE=render_rule_vote("analysis").replace(chr(10), ' '),
         _tp2_field=_TP2_FIELD_ON if tp2_enabled else _TP2_FIELD_OFF,
@@ -403,7 +466,7 @@ def render_system_prompt(
         tp1_max_atr=f"{settings.TP1_MAX_ATR:g}",
         tp1_max_r=f"{settings.TP1_MAX_R:g}",
         tp1_cap_desc=render_tp1_cap_desc(_rr),
-        risk_label=risk_label or f"账户风险基数 × {settings.RISK_BUDGET_PCT:g}%",
+        risk_label=_risk_label,
     )  # 模板槽位均为纯名称：表达式在渲染前预处理（f-string 时代的 .format 内嵌已移除）
 
 
@@ -420,6 +483,7 @@ def analyze_coin(
     stop_cap_pct: Optional[float] = None, interval: str = "1h",
     tactics_block: str = "", rr_min: Optional[float] = None,
     crash_pct: Optional[float] = None, tp2_enabled: bool = True, flt=None,
+    min_recommendation: Optional[float] = None,
 ) -> dict:
     """对单个币种进行 AI 分析（单次调用，返回原始 JSON dict）。
 
@@ -441,6 +505,8 @@ def analyze_coin(
     关闭时提示词剔除止盈二条目且输出硬清零（AI 不产出第二档止盈价）
     flt: 筛选参数组（resolve_scan_filters(cfg)，2026-10-12）——门槛块阈值/
     触点启用列表读它渲染，None=env/代码默认
+    min_recommendation（2026-10-21）：生效评分门槛（下方开仓分发门槛同源），
+    注入「评分纪律」段；None=env 默认
     """
     client = _get_client()
     result = _call_llm(
@@ -449,7 +515,8 @@ def analyze_coin(
                         risk_label=risk_label, stop_cap_pct=stop_cap_pct,
                         interval=interval, tactics_block=tactics_block,
                         rr_min=rr_min, crash_pct=crash_pct,
-                        tp2_enabled=tp2_enabled, flt=flt),
+                        tp2_enabled=tp2_enabled, flt=flt,
+                        min_recommendation=min_recommendation),
     )
     if not tp2_enabled:
         # TP2 关闭兜底清零（提示词已要求输出 0；防止模型违规输出污染落库记录）
@@ -469,6 +536,7 @@ def _build_messages(
     crash_pct: Optional[float] = None,
     tp2_enabled: bool = True,
     flt=None,
+    min_recommendation: Optional[float] = None,
 ) -> list:
     """构造 LLM messages（analyze_coin / analyze_with_guard 共用）。
 
@@ -479,7 +547,8 @@ def _build_messages(
     crash_pct（2026-10-02 上页面）：BTC 急跌阈值 %，透传市场环境块（None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关，注入系统提示词（None 不适用，
     默认 True）。
-    flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。"""
+    flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。
+    min_recommendation（2026-10-21）：生效评分门槛，注入「评分纪律」段（None=env 默认）。"""
     # 取最近 40 根已收盘 K 线摘要（klines[-1] 未收盘，用 klines[-41:-1]）。
     # 60→40（2026-09-28）：CSV 是 user 消息 token 大头（60 根 ≈5000+），思考型模型
     # reasoning 时长与输入量正相关；浓缩结论（指标/摆动块）已覆盖形态识别所需，
@@ -594,7 +663,8 @@ def _build_messages(
         )
 
     system_prompt = render_system_prompt(risk_label or None, rr_min=rr_min,
-                                         tp2_enabled=tp2_enabled)
+                                         tp2_enabled=tp2_enabled,
+                                         min_recommendation=min_recommendation)
     # 技能注入（P0 管线无工具循环，命中技能正文直接进系统提示词；与 Agent 管线共用同一事实判定）
     skill_block = skill_library.render_matched(skill_library.build_facts(signal, klines))
     if skill_block:
@@ -686,7 +756,7 @@ def analyze_with_guard(
     progress_id=None, tactics_block: str = "",
     rr_min: Optional[float] = None, risk_pct: Optional[float] = None,
     crash_pct: Optional[float] = None, tp2_enabled: bool = True, flt=None,
-    rr_tol: Optional[float] = None,
+    rr_tol: Optional[float] = None, min_recommendation: Optional[float] = None,
 ) -> dict:
     """带 Risk Guard 的分析入口：校验失败把违规明细反馈给模型重试（≤2 次），耗尽后强制 skip。
 
@@ -702,12 +772,14 @@ def analyze_with_guard(
     rr_tol（2026-10-14）：RR 铁律/TP1 上限容差（cfg.ai_rr_tol 透传，None=env 默认）。
     tp2_enabled（2026-10-08）：TP2 分批止盈开关——关闭时提示词剔除止盈二条目，
     且在风控校验前硬清零 take_profit_2（AI 不产出第二档止盈价）。
-    flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。"""
+    flt（2026-10-12）：筛选参数组，透传门槛块渲染（None=env/代码默认）。
+    min_recommendation（2026-10-21）：生效评分门槛，注入「评分纪律」段（None=env 默认）。"""
     prompt_messages = _build_messages(
         signal, klines, strategy_prompt=strategy_prompt, user_input=user_input,
         htf_klines=htf_klines, risk_label=risk_label, stop_cap_pct=stop_cap_pct,
         interval=interval, tactics_block=tactics_block, rr_min=rr_min,
         crash_pct=crash_pct, tp2_enabled=tp2_enabled, flt=flt,
+        min_recommendation=min_recommendation,
     )
     client = _get_client()
     _risk_budget = risk_amount if risk_mode == "fixed" and risk_amount > 0 else None
