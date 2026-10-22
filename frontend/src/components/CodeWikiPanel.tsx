@@ -211,6 +211,10 @@ function loadMermaid(): Promise<MermaidInstance> {
     mermaidLoader = import('mermaid').then(({ default: mermaid }) => {
       mermaid.initialize({ startOnLoad: false, theme: 'neutral' })
       return mermaid
+    }).catch((e) => {
+      // 失败不缓存：发版换 hash / 网络抖动后，下一次挂载可重新尝试
+      mermaidLoader = null
+      throw e
     })
   }
   return mermaidLoader
@@ -224,6 +228,10 @@ function enqueueMermaidRender(task: () => Promise<void>): Promise<void> {
 }
 
 let mermaidSeq = 0
+
+// 发版后旧页面引用旧 hash chunk 的典型报错（Chrome/Safari/Firefox 文案不一）
+const CHUNK_LOAD_ERROR_RE =
+  /dynamically imported module|Importing a module script failed|error loading dynamically imported module/i
 
 // ── 全屏缩放查看：克隆已渲染的 SVG（脱离页面的 max-width 限制），按 viewBox 取原始尺寸 ──
 interface ZoomImage {
@@ -402,9 +410,25 @@ function MermaidBlock({ code }: { code: string }) {
   }
 
   if (error) {
+    const chunkLoadFailed = CHUNK_LOAD_ERROR_RE.test(error)
     return (
       <div className="code-wiki-mermaid">
-        <Text type="danger" style={{ fontSize: 12 }}>mermaid 渲染失败：{error}</Text>
+        {chunkLoadFailed ? (
+          <>
+            <Text type="danger" style={{ fontSize: 12 }}>
+              图表组件加载失败：页面版本可能已更新，刷新后可恢复
+            </Text>
+            <Button
+              size="small"
+              onClick={() => window.location.reload()}
+              style={{ margin: '4px 0' }}
+            >
+              刷新页面
+            </Button>
+          </>
+        ) : (
+          <Text type="danger" style={{ fontSize: 12 }}>mermaid 渲染失败：{error}</Text>
+        )}
         <pre>{code}</pre>
       </div>
     )
