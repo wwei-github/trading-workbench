@@ -57,6 +57,8 @@ health_check() {
     # 2. 后端 API（backend 8082 直连）——backend/all 或纯前端部署都查（frontend 依赖 backend）
     if ! curl -sf -o /dev/null --max-time 10 http://localhost:8082/api/scans/config; then
         error "后端 API /api/scans/config 探活失败"
+        # 崩溃瞬间容器在重启循环，日志是唯一根因线索（2026-10-22 init_db 事故 CI 全程无 traceback）
+        compose logs backend --since 5m 2>/dev/null | tail -40 || true
         failed=1
     fi
 
@@ -186,12 +188,18 @@ cmd_deploy() {
 
 rollback_services() {
     local target_sha="$1"; shift
-    local services=("$@")
+    # 调用方有两种传法：cmd_deploy 传空格分隔的服务串（"backend celery_worker
+    # celery_beat frontend"），cmd_rollback 传多个独立参数。统一按空白切分成
+    # 数组——2026-10-22 回滚事故：原样存入数组会展开成单个含空格的服务名，
+    # compose 报 "no such service: backend celery_worker celery_beat frontend"，
+    # 自动回滚失效、线上停在重启循环。
+    local -a services
+    read -r -a services <<< "$*"
     step "回滚容器到 $target_sha ..."
     # 与 up 一致（2026-10-18）：仅前端服务时 --no-deps，否则会连带拉起 backend，
     # 而 :$target_sha 的 backend 镜像未必存在，会让回滚本身失败、容器停在半启动态
     local dep_flag=""
-    if [ "$*" == "frontend" ]; then dep_flag="--no-deps"; fi
+    if [ "${services[*]}" == "frontend" ]; then dep_flag="--no-deps"; fi
     if IMAGE_TAG="$target_sha" compose up -d --no-build $dep_flag "${services[@]}"; then
         info "已回滚到 $target_sha"
         echo "ROLLED_BACK_TO=$target_sha"
