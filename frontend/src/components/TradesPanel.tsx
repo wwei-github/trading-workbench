@@ -471,6 +471,16 @@ export default function TradesPanel() {
     }
   }, [scope, resolveAcctKey])
 
+  // 手动刷新节流（2026-10-22）：交易所 IP 限频封禁期间连点会放大请求量、
+  // 延长滚动封禁窗口；2s 内重复点击直接忽略（操作后的自动刷新不受影响）
+  const lastRefreshRef = useRef(0)
+  const handleManualRefresh = useCallback(() => {
+    const now = Date.now()
+    if (now - lastRefreshRef.current < 2000) return
+    lastRefreshRef.current = now
+    fetchData()
+  }, [fetchData])
+
   // 仅初始加载 + 范围切换时重拉，不做轮询：数据源 = 每小时第 10 分结算巡检（按小时变动），
   // 手动点「刷新」按钮即可获取最新数据
   useEffect(() => {
@@ -1596,7 +1606,7 @@ export default function TradesPanel() {
               导入持仓
             </Button>
           </Tooltip>
-          <Button icon={<ReloadOutlined />} onClick={fetchData}>
+          <Button icon={<ReloadOutlined />} onClick={handleManualRefresh}>
             刷新
           </Button>
         </Space>
@@ -1704,6 +1714,20 @@ export default function TradesPanel() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: group.accent }} />
               <span style={{ fontSize: 13, fontWeight: 600, color: 'rgba(0,0,0,0.88)' }}>{group.title}</span>
+              {group.title.startsWith('账户资金') && acct && (acct.stale || !acct.available) && (
+                <span
+                  title={acct.detail}
+                  style={{
+                    fontSize: 11,
+                    color: acct.stale ? '#fa8c16' : '#ff4d4f',
+                    maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}
+                >
+                  {acct.stale
+                    ? `交易所限频，显示 ${Math.round(acct.stale_age_sec ?? 0)} 秒前数据`
+                    : (acct.detail || '交易所查询失败')}
+                </span>
+              )}
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: `repeat(${group.cols ?? 5}, minmax(84px, 1fr))`, gap: '4px 12px' }}>
               {group.items.map((it) => (

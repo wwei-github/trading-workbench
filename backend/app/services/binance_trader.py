@@ -8,6 +8,7 @@
 import hashlib
 import hmac
 import logging
+import re
 import time
 import urllib.parse
 from decimal import ROUND_DOWN, Decimal
@@ -25,6 +26,38 @@ _TEST_BASE = "https://testnet.binancefuture.com"
 
 class BinanceTradeError(Exception):
     """币安交易接口错误（含 HTTP 非 2xx 与返回码错误）"""
+
+
+class BinanceIpBanned(BinanceTradeError):
+    """出口 IP 限频封禁（418/-1003）期内的快速失败：不发起网络请求。
+
+    2026-10-22 账户概览 available=false 个案：测试网对出口 IP 返回
+    "banned until <ms>"，继续请求会延长滚动封禁窗口。调用方按普通
+    BinanceTradeError 捕获即可（本类是子类）。
+    """
+
+
+# 出口 IP 封禁解除时间（进程内，按 base 分桶；epoch 秒）。
+# 扫到一次 418/-1003 后在该时刻前直接抛 BinanceIpBanned，避免每个调用方
+#（账户概览/熔断/挂单巡检/结算）轮番打交易所把封禁越拖越久。
+_ip_ban_until: dict[str, float] = {}
+# 响应体解析不到 banned until 时的兜底退避（币安 418 通常给明确时间戳）
+IP_BAN_DEFAULT_SECONDS = 60.0
+
+_BAN_UNTIL_RE = re.compile(r"banned until (\d{13})")
+
+
+def _ban_until_of(resp: httpx.Response) -> float:
+    """从 418/-1003 响应体解析 "banned until <ms>"，解析不到给默认退避。"""
+    try:
+        payload = resp.json()
+        msg = str((payload or {}).get("msg") or "")
+    except Exception:
+        msg = resp.text or ""
+    m = _BAN_UNTIL_RE.search(msg)
+    if m:
+        return int(m.group(1)) / 1000.0
+    return time.time() + IP_BAN_DEFAULT_SECONDS
 
 
 def _brief_body(resp: httpx.Response, limit: int = 160) -> str:
@@ -115,7 +148,25 @@ class BinanceTrader:
 
     # ── 基础请求 ──────────────────────────────────────────────
 
+    def _ensure_not_banned(self) -> None:
+        """封禁期内快速失败（2026-10-22）：所有出站请求共用——listenKey 等
+        不签名接口直用 _client，不走 _req，必须单独调用本方法"""
+        until = _ip_ban_until.get(self.base, 0.0)
+        if until > time.time():
+            raise BinanceIpBanned(
+                f"{self.base} IP 限频封禁中，约 {int(until - time.time())} 秒后恢复")
+
+    def _raise_http_error(self, path: str, resp: httpx.Response) -> None:
+        """非 2xx 统一处理：418/429/-1003 记录封禁窗口后抛 BinanceIpBanned"""
+        body = _brief_body(resp)
+        if resp.status_code in (418, 429) or "-1003" in body:
+            _ip_ban_until[self.base] = _ban_until_of(resp)
+            raise BinanceIpBanned(f"{path} {resp.status_code}: {body}")
+        raise BinanceTradeError(f"{path} {resp.status_code}: {body}")
+
     def _req(self, method: str, path: str, params: Optional[dict] = None) -> Union[dict, list]:
+        # 封禁期内快速失败：不发请求，避免延长交易所的滚动封禁
+        self._ensure_not_banned()
         params = dict(params or {})
         params.setdefault("recvWindow", 10000)
         params["timestamp"] = int(time.time() * 1000)
@@ -126,7 +177,9 @@ class BinanceTrader:
             headers={"X-MBX-APIKEY": self.key},
         )
         if resp.status_code >= 400:
-            raise BinanceTradeError(f"{path} {resp.status_code}: {_brief_body(resp)}")
+            # 418（IP ban）与 429（rate limit）统一记封禁窗口；-1003 也可能
+            # 走 403/400，按响应体兜住
+            self._raise_http_error(path, resp)
         return resp.json()
 
     @property
@@ -138,10 +191,11 @@ class BinanceTrader:
 
     def create_listen_key(self) -> str:
         """创建 user-data-stream listenKey（POST /fapi/v1/listenKey，weight 1）"""
+        self._ensure_not_banned()
         resp = self._client.post(
             f"{self.base}/fapi/v1/listenKey", headers={"X-MBX-APIKEY": self.key})
         if resp.status_code >= 400:
-            raise BinanceTradeError(f"listenKey 创建失败 {resp.status_code}: {_brief_body(resp)}")
+            self._raise_http_error("/fapi/v1/listenKey", resp)
         lk = (resp.json() or {}).get("listenKey") or ""
         if not lk:
             raise BinanceTradeError("listenKey 创建失败：响应缺 listenKey")
@@ -149,15 +203,17 @@ class BinanceTrader:
 
     def keepalive_listen_key(self, listen_key: str) -> None:
         """续约 listenKey（PUT，weight 1；有效期 60 分钟，调用方按 30 分钟节奏续）"""
+        self._ensure_not_banned()
         resp = self._client.put(
             f"{self.base}/fapi/v1/listenKey", params={"listenKey": listen_key},
             headers={"X-MBX-APIKEY": self.key})
         if resp.status_code >= 400:
-            raise BinanceTradeError(f"listenKey 续约失败 {resp.status_code}: {_brief_body(resp)}")
+            self._raise_http_error("/fapi/v1/listenKey", resp)
 
     def close_listen_key(self, listen_key: str) -> None:
         """关闭 listenKey（DELETE；尽力而为，失败只记日志）"""
         try:
+            self._ensure_not_banned()
             self._client.delete(
                 f"{self.base}/fapi/v1/listenKey", params={"listenKey": listen_key},
                 headers={"X-MBX-APIKEY": self.key})

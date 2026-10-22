@@ -106,6 +106,9 @@ export interface AccountSummary {
   profit_rate?: number | null; // 收益率% = 总收益 ÷ 本金（本金=总资金−总收益）
   today_realized?: number; // 今日已实现盈亏（北京自然日闭单口径）
   today_pnl_pct?: number | null; // 今日盈亏%（已实现+未实现）÷ 期初钱包（当前钱包−今日已实现）
+  stale?: boolean; // true=交易所查询失败，展示的是上次成功快照
+  stale_age_sec?: number; // 快照距今秒数（stale=true 时）
+  detail?: string; // 失败原因（交易所限频倒计时等，available=false 或 stale 时）
 }
 
 export interface ListResponse<T> {

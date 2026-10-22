@@ -1,6 +1,8 @@
 """交易记录 API（docs/06）：列表 + 操作历史 + 复盘K线；资金分析聚合接口见 docs/14"""
 import logging
 import math
+import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID, uuid4
@@ -33,6 +35,23 @@ from app.services.strategy import swing_annotations
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/trades", tags=["trades"])
+
+# 账户资金概览成功快照（2026-10-22，测试网 IP 限频个案）：交易所 418/-1003
+# 或抖动时，接口不再退化成一具空壳（只有 4 个字段、available=false）——
+# TTL 内直接复用；TTL 外查询失败则回退最近一次成功快照并标 stale + detail。
+# 同时抑制「连点刷新」对测试网出口 IP 的重复请求（封禁是滚动窗口，越打越久）。
+ACCOUNT_SUMMARY_TTL_SEC = 15.0
+_account_summary_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _summary_error_detail(e: Exception) -> str:
+    """账户概览失败原因（前端透出）：限频封禁给可读倒计时，其余截断原文。"""
+    text = str(e) or e.__class__.__name__
+    m = re.search(r"banned until (\d{13})", text)
+    if m:
+        remain = max(0, int(int(m.group(1)) / 1000 - time.time()))
+        return f"交易所限频封禁，约 {remain} 秒后恢复"
+    return text[:120]
 
 
 def _account_scope_filter(model, scope: str):
@@ -87,7 +106,9 @@ def account_summary(
     2026-10-22 异常持仓剔除：本账号已标记 excluded 的在跑单币种（如测试网
     BTCDOMUSDT）不计入未实现盈亏与保证金余额/今日盈亏；钱包余额是交易所
     balance（现金，本就不含浮动盈亏），保持原值。
-    请求失败返回 available=False 前端降级显示「--」，不阻塞页面"""
+    2026-10-22 限频韧性：成功快照缓存 15s（ACCOUNT_SUMMARY_TTL_SEC）；查询失败
+    且有快照时返回旧数据并标 stale/detail，无快照才 available=False + detail，
+    前端据此降级显示「--」并提示限频，不阻塞页面"""
     from app.services.binance_trader import BinanceTrader
     from app.services import account_registry as reg
 
@@ -100,6 +121,11 @@ def account_summary(
     testnet = acc.testnet if acc else True
     out: dict = {"testnet": testnet, "account_key": acc_key,
                  "account_name": acc.name if acc else acc_key, "available": False}
+    # TTL 内直接复用成功快照（固定从成功时刻起算，避免连点刷新无限续期）
+    now_ts = time.time()
+    cached_at, cached = _account_summary_cache.get(acc_key, (0.0, {}))
+    if cached and now_ts - cached_at < ACCOUNT_SUMMARY_TTL_SEC:
+        return {**cached, "stale": False}
     # 账号口径：account_key 精确匹配，NULL 旧行按 testnet 布尔回落
     acc_cond = or_(
         TradeRecord.account_key == acc_key,
@@ -157,8 +183,25 @@ def account_summary(
             today_realized=round(float(today_realized), 2),
             today_pnl_pct=round(today_pnl / opening_wallet * 100, 2) if opening_wallet > 0 else None,
         )
+        out["stale"] = False
+        _account_summary_cache[acc_key] = (time.time(), dict(out))
     except Exception as e:
         logger.warning("账户资金概览获取失败（testnet=%s）：%s", testnet, e)
+        # 并发穿透：本请求开始后可能已有另一请求写入成功快照，重读一次再回退
+        latest_at, latest = _account_summary_cache.get(acc_key, (0.0, {}))
+        if latest_at > cached_at:
+            cached_at, cached = latest_at, latest
+        detail = _summary_error_detail(e)
+        if cached:
+            # 有历史成功快照：保留数字并标 stale（available 保持 True，
+            # 否则前端把整块降级成 "--"，把「限频」误报成「账户不可用」）
+            out.update({
+                **cached, "available": True, "stale": True,
+                "stale_age_sec": int(max(0.0, now_ts - cached_at)),
+                "detail": detail,
+            })
+        else:
+            out["detail"] = detail
     return out
 
 

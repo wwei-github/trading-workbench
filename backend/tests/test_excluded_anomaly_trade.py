@@ -27,6 +27,16 @@ from app.models.system_config import SystemConfig  # noqa: E402
 from app.models.trade import TradeRecord  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _clear_account_summary_cache():
+    """账户概览成功快照缓存（2026-10-22）在用例间隔离：同账号多次调用会命中
+    TTL 缓存，导致后置用例拿到前一用例的模拟持仓"""
+    from app.api import trades as _trades
+    _trades._account_summary_cache.clear()
+    yield
+    _trades._account_summary_cache.clear()
+
+
 @pytest.fixture()
 def db():
     engine = create_engine("sqlite:///:memory:")
