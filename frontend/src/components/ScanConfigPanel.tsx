@@ -93,6 +93,11 @@ export default function ScanConfigPanel() {
         pullback_touch_refs: eff.pullback_touch_refs ?? DEFAULT_TOUCH_VALUES,
         direction_vote_gate_enabled: eff.direction_vote_gate_enabled ?? true,
         direction_conflict_gate_enabled: eff.direction_conflict_gate_enabled ?? true,
+        // 回踩前置反向腿门（只读展示，不参与提交）
+        pullback_leg_gate_enabled: eff.pullback_leg_gate_enabled ?? true,
+        pullback_leg_lookback_bars: eff.pullback_leg_lookback_bars ?? 24,
+        pullback_leg_min_bars: eff.pullback_leg_min_bars ?? 2,
+        pullback_leg_min_atr: eff.pullback_leg_min_atr ?? 0.5,
         ai_analysis_enabled: aiConfig.ai_analysis_enabled ?? false,
         strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
         ai_pipeline_enabled: aiConfig.ai_pipeline_enabled ?? true,
@@ -193,6 +198,10 @@ export default function ScanConfigPanel() {
         pullback_touch_refs: eff.pullback_touch_refs ?? DEFAULT_TOUCH_VALUES,
         direction_vote_gate_enabled: eff.direction_vote_gate_enabled ?? true,
         direction_conflict_gate_enabled: eff.direction_conflict_gate_enabled ?? true,
+        pullback_leg_gate_enabled: eff.pullback_leg_gate_enabled ?? true,
+        pullback_leg_lookback_bars: eff.pullback_leg_lookback_bars ?? 24,
+        pullback_leg_min_bars: eff.pullback_leg_min_bars ?? 2,
+        pullback_leg_min_atr: eff.pullback_leg_min_atr ?? 0.5,
       })
       message.success('筛选参数已恢复默认')
     } catch (e: any) {
@@ -317,6 +326,49 @@ export default function ScanConfigPanel() {
           <Button size="small" icon={<UndoOutlined />} onClick={handleResetFilters} loading={saving} style={{ marginBottom: 16 }}>
             恢复默认
           </Button>
+          </ConfigSection>
+
+          {/* 回踩前置反向腿门（2026-10-22 上线）：后端已生效参数，仅展示、禁止在弹窗内修改 */}
+          <ConfigSection title="回踩反向腿门（只读）" hint="后端策略参数，已生效；仅供查看，弹窗内不可修改">
+          <Row gutter={16}>
+            <Col span={6}>
+              <Form.Item
+                label="反向腿门"
+                name="pullback_leg_gate_enabled"
+                valuePropName="checked"
+                tooltip="回踩前必须有 1 小时级别的同向反转腿；关闭后回踩只认触点 + 金K。只读"
+              >
+                <Switch disabled checkedChildren="开" unCheckedChildren="关" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="腿回看根数"
+                name="pullback_leg_lookback_bars"
+                tooltip="反向腿搜索回看根数（1h）。只读"
+              >
+                <InputNumber disabled min={2} max={200} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="腿最少根数"
+                name="pullback_leg_min_bars"
+                tooltip="反向腿最少持续根数。只读"
+              >
+                <InputNumber disabled min={0} max={50} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="腿最小幅度（ATR）"
+                name="pullback_leg_min_atr"
+                tooltip="反向腿最小幅度（ATR 倍数，0=不限制）。只读"
+              >
+                <InputNumber disabled min={0} max={20} step={0.1} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
           </ConfigSection>
 
           {/* 方向过滤开关（2026-10-18）：扫描链两道方向硬过滤的启停；默认开=保持现网门槛 */}
