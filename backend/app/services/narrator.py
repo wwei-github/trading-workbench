@@ -1,6 +1,6 @@
-"""Narrator：决策定稿后的叙述生成（docs/04 §5 P1 叙述分离）
+"""Narrator：决策定稿后的叙述生成（docs/04 §5 叙述分离）
 
-- 决策 JSON 由 Agent 循环产出（不含叙述，token 省、结构稳）
+- 决策 JSON 由 AI 分析产出（不含叙述，token 省、结构稳）
 - suggest 决策由本模块生成 ≤300 字中文叙述（轻量调用）；失败回退模板拼接
 - skip 决策不调 LLM（skip_reason 已是结构化理由，前端直接展示）
 """
@@ -52,7 +52,7 @@ def generate_narrative(
         if tt:
             facts.append(f"开单类型: {tt}（叙述中体现该打法的逻辑）")
         if agent_reason:
-            facts.append(f"Agent 核心依据: {agent_reason}")
+            facts.append(f"AI 核心依据: {agent_reason}")
         f = (market_facts or {}).get("funding")
         if f:
             facts.append(f"资金费率 {f['funding_rate_pct']}%")

@@ -216,7 +216,6 @@ export interface KlineData {
 
 export interface SystemConfig {
   ai_analysis_enabled: boolean;
-  ai_pipeline_enabled: boolean;
   ai_configured: boolean;
   strategy_prompt_enabled: boolean;
   strategy_prompt: string;
@@ -228,7 +227,6 @@ export interface SystemConfig {
   swing_order: number;
   pullback_tolerance: number;
   fib_enabled?: boolean; // 斐波那契位开关（二期）
-  dual_judge_enabled?: boolean; // 双评委辩论：对 suggest 决策做多空辩论复核
   max_open_trades?: number; // 自动交易：同时在跑单子上限
   trading_min_free_pct?: number; // 开仓最低可用余额占钱包比例（0~1，原 70% 规则）
   // 止损金额模式（2026-09-27）：pct=风险基数分档×3%（默认）/ fixed=固定 USDT 金额
@@ -425,7 +423,6 @@ export interface PatchListResponse {
 
 export interface PromptView {
   system_prompt: string
-  agent_system: string
   user_custom: string
   patch_segments: {
     marker: string
@@ -873,7 +870,7 @@ export interface SkillInfo {
   body?: string;
 }
 
-// Agent 工具循环轨迹（stage_trace 为 null 表示单次调用管线生成）
+// 历史工具循环轨迹（P1 已下线；stage_trace 为 null 表示单次调用管线生成）
 export interface StageTrace {
   rounds: number
   tool_calls: number
@@ -887,7 +884,6 @@ export interface AiProgressEvent {
   t: 'start' | 'gate' | 'round' | 'tool' | 'llm' | 'done' | 'error'
   ts: number
   symbol?: string
-  pipeline?: string
   round?: number
   tools?: string[]
   tool?: string

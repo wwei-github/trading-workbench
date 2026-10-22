@@ -101,12 +101,6 @@ def test_p0_prompt_fixed_label():
     assert "账户风险基数 × 3%" in render_system_prompt()
 
 
-def test_p1_prompt_fixed_label():
-    from app.services.ai_agent import render_system_prompt
-    p = render_system_prompt("固定 5 USDT")
-    assert "单笔止损预算=固定 5 USDT" in p and "预算 ÷ 止损距离" in p
-
-
 # ── 盈亏比铁律下限页面覆盖（2026-10-02 system_config.ai_rr_min）──────
 
 def test_rr_min_override_tightens():

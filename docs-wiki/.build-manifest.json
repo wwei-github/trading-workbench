@@ -3,11 +3,11 @@
   "builder": "de14b1604930b911",
   "docs": {
     "doc-map": {
-      "hash": "8f9f9702f743eafd",
+      "hash": "b8874a2436583ca4",
       "path": "00-文档地图.md"
     },
     "code-wiki": {
-      "hash": "f3b40b00f5cbb33d",
+      "hash": "b16b1a340b9972ea",
       "path": "CODE_WIKI.md"
     },
     "doc-01": {
@@ -27,7 +27,7 @@
       "path": "信号与形态/13-4H背景排列强度判定.md"
     },
     "doc-03": {
-      "hash": "a66e1a974d6e6a05",
+      "hash": "21e6e3e4c9b529c7",
       "path": "AI决策/03-AI分析.md"
     },
     "doc-04": {
@@ -35,15 +35,15 @@
       "path": "交易执行/04-交易执行与多账号.md"
     },
     "doc-05": {
-      "hash": "11c5e22a98570c98",
+      "hash": "089e6382dd1a5a55",
       "path": "风控/05-风控体系.md"
     },
     "doc-06": {
-      "hash": "f9cc4aff96e43b24",
+      "hash": "d1bf18ba3b5a0e48",
       "path": "复盘归因/06-复盘归因.md"
     },
     "doc-12": {
-      "hash": "1518cc06a2f5d160",
+      "hash": "bd836e851f6c2aa1",
       "path": "总览与索引/12-交易系统总览.md"
     },
     "doc-07": {
@@ -51,11 +51,11 @@
       "path": "现货屯币/07-现货屯币.md"
     },
     "doc-10": {
-      "hash": "37c4c0ec43f0ceef",
+      "hash": "f81fc46317f25bc6",
       "path": "战法/10-战法模块.md"
     },
     "doc-08": {
-      "hash": "60d9d3896efa5ca0",
+      "hash": "38144cb88e8cbfa8",
       "path": "前端与查询/08-前端界面.md"
     },
     "doc-14": {
@@ -63,7 +63,7 @@
       "path": "前端与查询/14-命中历史查询.md"
     },
     "doc-09": {
-      "hash": "d5e68cec4a41e879",
+      "hash": "3803788b6a02c509",
       "path": "基建与通知/09-基建与通知.md"
     },
     "req-01": {

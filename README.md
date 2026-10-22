@@ -56,7 +56,6 @@ trading-workbench/
 │   │   │   ├── scanner.py          # Indicator-vote screening orchestrator
 │   │   │   ├── strategy/           # Indicators, swing detection, triggers
 │   │   │   ├── ai_analyzer.py      # P0 pipeline + prompt builder
-│   │   │   ├── ai_agent.py         # P1 agent pipeline
 │   │   │   ├── risk_guard.py       # RR iron rule + direction-price consistency
 │   │   │   ├── trade_engine.py     # Order placement, SL/TP management, settlement
 │   │   │   ├── binance_trader.py   # Binance futures trading client
@@ -208,7 +207,7 @@ Released under the [MIT License](./LICENSE). © 2026 Trading Workbench contribut
 - **指标驱动筛选管线** — 每小时（等 1h K 线收盘后）扫描全量 USDT-M 永续合约，7 个技术指标各投方向票：MACD(12,26,9)、布林带(20,2)、RSI(14)、SuperTrend(10,3)、ADX(14)、OBV(20)、4h EMA21/55 背景。多数决（谁多以谁为主，平票回退 K 线量能）定方向；4h K 线两阶段拉取控制请求成本。
 - **触发双确认** — 候选需要「方向 + 触发」双确认：T1 Donchian(20) 通道突破 / T2 12 种黄金 K 线形态在关键位匹配 / T3 回踩 EMA21 企稳。只有方向、没有触发的币进观察池不落库，下轮全量重算。
 - **质量分配额** — 通过双确认的候选按 0-100 质量分排序（票差 + 修饰项：4h 同向加分、突破伴随 ADX 强趋势加分、超买超卖追入扣分、OBV 背离扣分），只有前 N 名（`AI_MAX_PER_SCAN`，默认 10）进入 AI 分析。
-- **AI 交易分析** — 把 K 线 + 指标票数 + 摆动结构发给 OpenAI 兼容 LLM，返回结构化交易计划（方向、入场、止损、TP1/TP2、盈亏比、仓位）。双管线：P0 单次调用 + 程序风控复核（盈亏比 ≥1.5 铁律、方向-价格一致性），P1 Agent 工具调用管线；可选双评委辩论。按价格分桶指纹缓存复用。
+- **AI 交易分析** — 把 K 线 + 指标票数 + 摆动结构发给 OpenAI 兼容 LLM，返回结构化交易计划（方向、入场、止损、TP1/TP2、盈亏比、仓位）。P0 单次调用管线 + 程序风控复核（盈亏比 ≥1.5 铁律、方向-价格一致性）。按价格分桶指纹缓存复用。
 - **自动交易（可选）** — 配置币安 API Key 后，推荐度过门槛的 suggest 结论可自动执行：逐仓 + 可配杠杆，固定风险预算仓位（止损距离 × 仓位 = 固定 % 账户资金），止损挂 MARK_PRICE 触发价，分批止盈（有 TP2：50%/25%；无 TP2：TP1 一次 75%），TP1 后保本 + 剩余 25% 尾仓按 3 根 K 线高低点跟踪止损，每小时结算巡检。
 - **风控闸门** — 强平保证金闸门（按币种真实杠杆档位 MMR 计算，杜绝小币「强平先于止损」的单子）、方向-价格可挂性复核、可用余额下限、在跑上限、最低推荐度门槛。
 - **交易记录与复盘回放** — 每笔订单全生命周期事件时间线（OPEN / TP1_FILL / TP2_FILL / SL_MOVE / SL_FILL / SETTLE），净盈亏含手续费与资金费，K 线复盘弹窗展示入场/止损/止盈区域与现止损（跟踪移动后）位置。
@@ -241,7 +240,6 @@ trading-workbench/
 │   │   │   ├── scanner.py          # 指标投票筛选编排
 │   │   │   ├── strategy/           # 指标、摆动点、触发器
 │   │   │   ├── ai_analyzer.py      # P0 管线 + 提示词构建
-│   │   │   ├── ai_agent.py         # P1 Agent 管线
 │   │   │   ├── risk_guard.py       # 盈亏比铁律 + 方向价格一致性
 │   │   │   ├── trade_engine.py     # 下单、止损止盈管理、结算
 │   │   │   ├── binance_trader.py   # 币安合约交易客户端
@@ -357,7 +355,7 @@ npm run dev          # Vite 开发服务器，访问 http://localhost:5173
 | `TRADING_MIN_RECOMMENDATION` | `60.0` | 开单最低推荐度 |
 | `TRADING_LEVERAGE` | `20` | 逐仓杠杆 |
 
-大部分运行时开关（AI 开关、P0/P1 管线、双评委、打法开关、扫描参数、交易闸门参数）存于 `system_config` 表，可在前端界面修改。数据库结构变更由启动时的幂等迁移 `_run_migrations` 自动应用。
+大部分运行时开关（AI 开关、打法开关、扫描参数、交易闸门参数）存于 `system_config` 表，可在前端界面修改。数据库结构变更由启动时的幂等迁移 `_run_migrations` 自动应用。
 
 ### 服务与端口（Docker）
 

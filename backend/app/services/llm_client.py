@@ -1,7 +1,7 @@
 """共享 LLM 客户端（OpenAI 兼容接口）与 JSON 输出解析工具
 
 模块级单例复用 httpx 连接池：每次分析新建客户端会重复 TLS 握手（100~500ms/次），
-Agent 循环 + 双评委多处建连，统一收口到这里。
+多处 LLM 调用统一收口到这里。
 - timeout：防网关偶发挂起把整轮分析拖死（AI_CALL_TIMEOUT_S）
 - max_retries=1：SDK 默认重试 2 次，超时场景最坏 3×timeout（实测出现过 87s 挂死）；
   收窄为 1 次兼顾瞬时抖动容错
@@ -86,8 +86,8 @@ class StreamResult(NamedTuple):
     """stream_completion 的返回：拼接正文 + 延迟观测（首 token / 总耗时）+ 聚合工具调用
 
     tool_calls（2026-10-16）：流式 tool_call 增量按 index 聚合后的 OpenAI 消息形状
-    列表（每项 {"id","type","function":{"name","arguments"}}），供 Agent 工具循环
-    直接回填 assistant 消息。P0（单次调用）与双评委不传 tools，该字段恒为空元组，
+    列表（每项 {"id","type","function":{"name","arguments"}}），供带 tools 的调用方
+    直接回填 assistant 消息。P0（单次调用）不传 tools，该字段恒为空元组，
     属纯新增字段，调用方按 4 个位置参数构造即向后兼容。
     """
     content: str

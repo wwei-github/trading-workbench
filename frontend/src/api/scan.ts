@@ -150,7 +150,7 @@ export const scanApi = {
   promptView: () =>
     api.get<PromptView>('/scans/review/prompt-view').then((r) => r.data),
 
-  // Agent 工具循环轨迹（404 = 分析记录不存在；stage_trace 为 null = 单次调用管线生成）
+  // 历史工具循环轨迹（P1 已下线；404 = 分析记录不存在；stage_trace 为 null = 单次调用管线生成）
   aiTrace: (analysisId: string) =>
     api
       .get<{ analysis_id: string; stage_trace: StageTrace | null }>(

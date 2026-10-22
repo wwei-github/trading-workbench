@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Modal, Form, Input, InputNumber, Select, Switch, Checkbox, message, Button, Spin, Tooltip, Row, Col } from 'antd'
-import { SettingOutlined, RobotOutlined, FileTextOutlined, ApiOutlined, UndoOutlined } from '@ant-design/icons'
+import { SettingOutlined, RobotOutlined, FileTextOutlined, UndoOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import ConfigSection from './ConfigSection'
 import type { SystemConfig } from '../types'
@@ -50,8 +50,8 @@ const FILTER_FIELDS: { name: string; label: string; min: number; max: number; st
     tooltip: '单次扫描批量 AI 分析的币种上限，按质量分/24h成交额取前N（控制 LLM 成本）' },
 ]
 
-/** 策略配置弹窗：扫描策略 + AI 分析/策略/Agent 开关 + AI 实验功能。
- *  （2026-09-20 工具栏的 AI/策略/Agent 三个快捷开关收敛至此；交易参数见
+/** 策略配置弹窗：扫描策略 + AI 分析/策略开关。
+ *  （2026-09-20 工具栏的 AI/策略快捷开关收敛至此；交易参数见
  *  TradingConfigPanel，环境/自动交易开关见 SystemConfigPanel） */
 export default function ScanConfigPanel() {
   const [open, setOpen] = useState(false)
@@ -100,8 +100,6 @@ export default function ScanConfigPanel() {
         pullback_leg_min_atr: eff.pullback_leg_min_atr ?? 0.5,
         ai_analysis_enabled: aiConfig.ai_analysis_enabled ?? false,
         strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
-        ai_pipeline_enabled: aiConfig.ai_pipeline_enabled ?? true,
-        dual_judge_enabled: aiConfig.dual_judge_enabled ?? true,
         // AI 运行时参数：库内原始值（null=未定制，留空即回落 env 默认）
         ai_model: aiConfig.ai_model ?? undefined,
         ai_base_url: aiConfig.ai_base_url ?? undefined,
@@ -130,8 +128,6 @@ export default function ScanConfigPanel() {
         swing_order: values.swing_order,
         ai_analysis_enabled: values.ai_analysis_enabled,
         strategy_prompt_enabled: values.strategy_prompt_enabled,
-        ai_pipeline_enabled: values.ai_pipeline_enabled,
-        dual_judge_enabled: values.dual_judge_enabled,
         // AI 运行时参数：空串/未填 → null（后端回落 env 默认）
         ai_model: (values.ai_model ?? '').trim() || null,
         ai_base_url: (values.ai_base_url ?? '').trim() || null,
@@ -434,30 +430,6 @@ export default function ScanConfigPanel() {
                   <Switch />
                 </Form.Item>
               </Tooltip>
-            </Col>
-            <Col span={6}>
-              <Form.Item
-                label={
-                  <span>
-                    <ApiOutlined style={{ marginRight: 6 }} />Agent 管线
-                  </span>
-                }
-                name="ai_pipeline_enabled"
-                valuePropName="checked"
-                tooltip="开启：工具循环 + 结构位锚点 + 技能库；关闭：单次调用 + 校验回炉"
-              >
-                <Switch disabled={!aiConfigured} />
-              </Form.Item>
-            </Col>
-            <Col span={6}>
-              <Form.Item
-                label="双评委辩论"
-                name="dual_judge_enabled"
-                valuePropName="checked"
-                tooltip="对'建议开单'的决策做多空辩论复核，裁判可否决（额外LLM调用，仅Agent/单次管线的suggest决策生效）"
-              >
-                <Switch />
-              </Form.Item>
             </Col>
           </Row>
           </ConfigSection>

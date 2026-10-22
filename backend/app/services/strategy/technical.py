@@ -1,6 +1,6 @@
 """技术指标包：MACD / 布林带 / RSI / SuperTrend / ADX / OBV / 4h 背景
 
-AI 分析两条管线共用注入（P0 ai_analyzer._build_messages 与 P1 ai_agent._build_user_msg）：
+AI 分析注入（ai_analyzer._build_messages）：
 方向按「方向票」多数决（2026-09-17 起；2026-10-15 指标拆角色，docs/21 O9）：
 仅 MACD/布林带/RSI 三张方向票计方向，同向 ≥2 张即定向，不再强制"以 K 线为准"；
 票数统计由程序完成，注入文本中的"方向票"行直接给结论。

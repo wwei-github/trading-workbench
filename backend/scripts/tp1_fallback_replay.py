@@ -5,7 +5,7 @@
     cap = max(min(TP1_MAX_ATR×ATR, TP1_MAX_R×止损距离), rr_min×止损距离)
 误读成"≤2×ATR 的绝对硬上限"，据此把合法的"入场±rr_min×止损距离"兜底价判为越限并
 skip（多笔 skip_reason 甚至写"程序复算必打回/程序不允许/没有合规止盈档"）。提示词已
-改为与程序复算口径一致（ai_analyzer.render_tp1_cap_desc / ai_agent，RULE_VERSION
+改为与程序复算口径一致（ai_analyzer.render_tp1_cap_desc，RULE_VERSION
 v2026-10-19）。
 
 本脚本做**确定性回放**（不调用 LLM），对 9 笔逐笔验证两点：

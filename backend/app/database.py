@@ -101,19 +101,10 @@ def _run_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_ai_analyses_fingerprint "
             "ON ai_analyses (fingerprint)"
         ))
-        # Feature 7: Agent 管线开关（docs/04 P1）
-        conn.execute(text("""
-            ALTER TABLE system_config
-              ADD COLUMN IF NOT EXISTS ai_pipeline_enabled BOOLEAN NOT NULL DEFAULT FALSE
-        """))
-        # Feature 8: P2 闭环——AI trace + 双评委开关（docs/04 P2）
+        # Feature 8: AI trace（docs/04 P2）
         conn.execute(text("""
             ALTER TABLE ai_analyses
               ADD COLUMN IF NOT EXISTS stage_trace JSON
-        """))
-        conn.execute(text("""
-            ALTER TABLE system_config
-              ADD COLUMN IF NOT EXISTS dual_judge_enabled BOOLEAN NOT NULL DEFAULT FALSE
         """))
         # Feature 11: 移除复盘记忆注入功能，清理残留列
         conn.execute(text("""
@@ -600,7 +591,6 @@ def _run_migrations(engine):
             "(id, ai_analysis_enabled, kline_interval, kline_window, "
             " breakout_threshold, r_squared_threshold, repeat_window_hours, "
             " swing_order, pullback_tolerance, notes, "
-            " ai_pipeline_enabled, dual_judge_enabled, "
             " strategy_prompt_enabled, strategy_prompt, fib_enabled, "
             " max_open_trades, "
             " strategy_trend_follow_enabled, strategy_structure_break_enabled, "
@@ -612,7 +602,6 @@ def _run_migrations(engine):
             "VALUES (1, false, :kline_interval, :kline_window, "
             " :breakout_threshold, :r_squared_threshold, :repeat_window_hours, "
             " :swing_order, :pullback_tolerance, '系统运行时配置', "
-            " false, true, "
             " false, '', false, "
             " 5, "
             " true, false, "

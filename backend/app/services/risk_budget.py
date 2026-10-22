@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """单笔固定亏损预算统一解析（2026-09-27 止损金额模式）。
 
-两管线（P0 ai_analyzer / P1 ai_agent）与开仓引擎（trade_engine）共用同一
+AI 分析（P0 ai_analyzer）与开仓引擎（trade_engine）共用同一
 system_config 口径，防止提示词/校验/下单三处预算分叉：
 - pct（默认）：风险基数（钱包首位取整，见 trade_engine._capital_base）×
   RISK_BUDGET_PCT%（3%）——「风险预算占基数百分比」口径

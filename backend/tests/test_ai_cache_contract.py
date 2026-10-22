@@ -116,7 +116,7 @@ def test_cache_context_changes_with_closed_candles_and_current_rules():
 
 def test_single_task_reuses_only_identical_context(db, monkeypatch):
     from app.config import settings
-    cfg = SystemConfig(id=1, ai_analysis_enabled=True, dual_judge_enabled=False,
+    cfg = SystemConfig(id=1, ai_analysis_enabled=True,
                        kline_interval="1h", min_recommendation=60)
     db.add(cfg)
     target = _signal(db)

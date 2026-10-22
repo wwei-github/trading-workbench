@@ -198,8 +198,6 @@ class SystemConfigOut(BaseModel):
     # AI 分析
     ai_analysis_enabled: bool
     ai_configured: bool  # 后端是否已配置 AI_API_KEY（不返回 key 本身）
-    ai_pipeline_enabled: bool = False  # Agent 管线开关
-    dual_judge_enabled: bool = True  # 双评委辩论（P2，2026-09-15 起默认开）
     tp2_enabled: bool = False  # TP2 分批止盈开关（2026-10-08 默认关：仅 TP1 80%+剩余跟进）
 
     # 自定义策略提示词
@@ -308,8 +306,6 @@ class AccountBrief(BaseModel):
 class SystemConfigUpdate(BaseModel):
     # AI 分析开关
     ai_analysis_enabled: Optional[bool] = None
-    ai_pipeline_enabled: Optional[bool] = None
-    dual_judge_enabled: Optional[bool] = None
     tp2_enabled: Optional[bool] = None
 
     # 自定义策略提示词

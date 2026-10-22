@@ -7,9 +7,7 @@
    打回；structure 不校验；2026-10-12-5 起校验与落库均扩展至全信号类型
 2. fixed dict 落库：near 全信号类型有效（须通过一致性校验）；
    缺省/非法值回退 structure
-3. ai_agent._handle_submit：stop_ref=signal_low/signal_high → 程序推导
-   stop_anchor=near（不依赖 AI 自报）
-4. 止损宽度下限豁免仍限突破类 near（非突破类金K锚不豁免）
+3. 止损宽度下限豁免仍限突破类 near（非突破类金K锚不豁免）
 """
 import sys
 from pathlib import Path
@@ -19,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest  # noqa: E402
 
 from app.config import settings  # noqa: E402
-from app.services.ai_agent import _handle_submit  # noqa: E402
 from app.services.risk_guard import (  # noqa: E402
     TradeDecision,
     normalize_raw,
@@ -289,39 +286,6 @@ def test_normalize_raw_empty_anchor_to_none():
         "take_profit_1": "105", "recommendation": "60",
     })
     assert d.stop_anchor is None  # 曾在此抛 ValidationError
-
-
-# ── Agent 管线：stop_ref → stop_anchor 程序推导 ───────────────────────
-
-
-def _submit_args(stop_ref, stop_offset=-0.3):
-    return {
-        "trade_decision": "suggest", "direction": "long",
-        "trade_type": "trend_follow",
-        "entry_ref": "market", "entry_offset_pct": 0,
-        "stop_ref": stop_ref, "stop_offset_pct": stop_offset,
-        "tp1_ref": "resistance_zone_low", "tp1_offset_pct": 0,
-        "recommendation": 70,
-        "reason": "1. r",
-    }
-
-
-def test_agent_signal_low_ref_derives_near():
-    """stop_ref=signal_low → stop_anchor=near（程序推导，非 AI 自报）"""
-    done, _, fixed = _handle_submit(
-        _submit_args("signal_low"), _signal(), _klines(),
-    )
-    assert done
-    assert fixed["stop_anchor"] == "near"
-
-
-def test_agent_structure_ref_derives_structure():
-    """stop_ref=结构锚 → stop_anchor=structure；近锚校验不触发"""
-    done, _, fixed = _handle_submit(
-        _submit_args("support", stop_offset=-0.3), _signal(), _klines(),
-    )
-    assert done
-    assert fixed["stop_anchor"] == "structure"
 
 
 # ── 近锚单风险折价（trade_engine 开仓侧）──────────────────────────────

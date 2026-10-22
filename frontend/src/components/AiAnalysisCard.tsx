@@ -370,7 +370,7 @@ function PriceCard({
   )
 }
 
-/** Agent 运行轨迹弹窗：打开时拉取工具循环 trace，ThoughtChain 逐轮展示 */
+/** 分析轨迹弹窗：打开时拉取历史 stage_trace，ThoughtChain 逐轮展示 */
 function TraceModal({ open, onClose, ai }: { open: boolean; onClose: () => void; ai: AIAnalysis }) {
   const [loading, setLoading] = useState(false)
   const [trace, setTrace] = useState<StageTrace | null | undefined>(undefined)
@@ -390,7 +390,7 @@ function TraceModal({ open, onClose, ai }: { open: boolean; onClose: () => void;
 
   return (
     <Modal
-      title="Agent 运行轨迹"
+      title="分析轨迹"
       open={open}
       onCancel={onClose}
       footer={null}
@@ -480,7 +480,7 @@ export default function AiAnalysisCard({ ai }: Props) {
   const bannerColor = SCHEME_UP_DOWN[colorScheme][isSkip ? 'down' : 'up']
   // analysis 两节解析（公共检查/决策结论；旧行「合并结论」兼容）：格式漂移返回 null 回退平铺
   const sections = parseAnalysisSections(ai.analysis)
-  // 运行轨迹弹窗开关（仅 Agent 生成的分析可查看）
+  // 运行轨迹弹窗开关（仅历史 P1 分析有工具循环数据可查看）
   const [traceOpen, setTraceOpen] = useState(false)
 
   const tradeTypeCfg = ai.trade_type ? TRADE_TYPE_MAP[ai.trade_type] : undefined

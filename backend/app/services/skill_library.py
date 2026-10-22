@@ -1,11 +1,11 @@
 """技能库（docs/04 §6 Skills 机制）：可插拔领域能力包的索引/加载/命中标注
 
 - backend/skills/<name>/SKILL.md，frontmatter 手写解析（name/description/use_when/version）
-- 索引段随 Agent 系统提示词渲染，逐条标注布尔事实命中状态
-- load_skill 工具按需加载正文（超长截断），渐进式披露控制 token
+- 索引段随 P0 系统提示词渲染，逐条标注布尔事实命中状态
+- 命中技能的正文注入系统提示词（超长截断），控制 token
 
-维护约定（2026-10-10 B6，docs/20 §六-6）：SKILL.md 仅服务 P1 Agent 管线；修改
-系统提示词纪律（ai_analyzer/ai_agent）时须同步检查全部 SKILL.md 是否冲突，
+维护约定（2026-10-10 B6，docs/20 §六-6）：修改系统提示词纪律
+（ai_analyzer）时须同步检查全部 SKILL.md 是否冲突，
 冲突时以系统提示词为准修技能（先例：trend-pullback 盈亏比取舍）。
 另：use_when 必须引用生产 signal_type（trigger_*），沿用遗留类型
 （uptrend/range_bound/trend_reversal 等）会导致技能永不命中——2026-10-20 据此
@@ -130,8 +130,7 @@ _TOTAL_MAX = 6000
 def render_matched(facts: dict) -> str:
     """渲染命中技能的正文块（无工具循环的 P0 管线直接注入系统提示词用）。
 
-    命中即注入（Agent 管线的"按需 load_skill"在此不可用）；多条命中按
-    技能名顺序拼接，超预算截断。无命中返回空串。
+    命中即注入；多条命中按技能名顺序拼接，超预算截断。无命中返回空串。
     """
     parts: list[str] = []
     used = 0

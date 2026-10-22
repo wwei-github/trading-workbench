@@ -82,7 +82,7 @@ flowchart TB
         direction TB
         API["API 路由层（9 组路由器）"]
         SCHEMA["Pydantic Schemas"]
-        SVC["服务层 Services<br/>scanner · strategy/* · ai_analyzer · ai_agent · risk_guard<br/>trade_engine · binance_trader · actual_review · ai_attribution<br/>spot_* · shadow · feishu_bot · exchange_pool"]
+        SVC["服务层 Services<br/>scanner · strategy/* · ai_analyzer · risk_guard<br/>trade_engine · binance_trader · actual_review · ai_attribution<br/>spot_* · shadow · feishu_bot · exchange_pool"]
         API --> SCHEMA --> SVC
     end
 
@@ -134,7 +134,6 @@ trading-workbench/
 │   │   │   ├── strategies/       # 可插拔策略（golden_k_ai 等）
 │   │   │   ├── scanner.py        # 扫描编排器
 │   │   │   ├── ai_analyzer.py    # P0 AI 分析管线
-│   │   │   ├── ai_agent.py       # P1 Agent 工具调用管线
 │   │   │   ├── risk_guard.py     # 风控闸门
 │   │   │   ├── trade_engine.py   # 交易执行引擎
 │   │   │   ├── binance_trader.py # 币安合约交易客户端
@@ -331,14 +330,6 @@ FastAPI 应用入口：
 - 系统提示词纪律段（`_RULE_VOTE` / `_RULE_SL` / `_RULE_TP`；4h 背景仅注入数据行，不做方向限制）
 - 调用 LLM → `parse_and_validate`（Pydantic `TradeDecision` 契约 + RR 铁律复算）
 - 指纹缓存（`fingerprint`，价格分桶）
-
-#### [ai_agent.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/ai_agent.py)
-
-**P1 Agent 工具调用管线**：多轮工具循环（stage_trace 记录），可选双评委辩论。
-
-#### [dual_judge.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/dual_judge.py)
-
-双评委辩论：对 suggest 决策做多空辩论复核，veto 强制 skip 前快照 `veto_original` 供复盘对比。
 
 #### [risk_guard.py](file:///Users/wangwei/Documents/github/trading-workbench/backend/app/services/risk_guard.py)
 
@@ -670,17 +661,16 @@ sequenceDiagram
     Task->>DB: 满仓判定 → 分发 AI 分析任务
 ```
 
-### 10.2 AI 分析管线（P0 / P1）
+### 10.2 AI 分析管线（P0）
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant Task as ai_tasks.run_ai_analysis_task
-    participant AA as ai_analyzer (P0) / ai_agent (P1)
+    participant AA as ai_analyzer (P0)
     participant MD as market_data
     participant LLM as llm_client (OpenAI)
     participant RG as risk_guard
-    participant DJ as dual_judge
     participant DB as PostgreSQL
 
     Task->>AA: 按配额 AI_MAX_PER_SCAN 逐币分析
@@ -690,10 +680,6 @@ sequenceDiagram
     AA->>AA: parse_and_validate（Pydantic 契约 + 指纹缓存）
     AA->>RG: RR 铁律复算（≥ AI_RR_MIN 1.5）+ 方向价格一致性
     RG-->>AA: 通过 / build_forced_skip
-    opt 启用双评委
-        AA->>DJ: 多空辩论复核
-        DJ-->>AA: veto 则快照 veto_original
-    end
     AA->>DB: 写入 ai_analyses（快照 RULE_VERSION）
     Task->>Task: 触发 run_auto_trade_task（delay）
 ```
@@ -948,11 +934,9 @@ flowchart LR
     SH["shadow（打标）"]
     AIT["ai_tasks"]
     AA["ai_analyzer (P0)"]
-    AG["ai_agent (P1)"]
     LLM["llm_client (OpenAI)"]
     SK["skill_library"]
     RG["risk_guard"]
-    DJ["dual_judge（可选）"]
     TRT["trade_tasks"]
     TE["trade_engine"]
     BT["binance_trader"]
@@ -967,12 +951,10 @@ flowchart LR
     SC --> SH
     SC --> AIT
     AIT --> AA
-    AIT --> AG
     AA --> LLM
     AA --> SK
     AA --> MD
     AA --> RG
-    AA --> DJ
     AA --> TRT
     TRT --> TE
     TE --> BT
@@ -1077,7 +1059,7 @@ npm run dev          # http://localhost:5173
 
 ### 运行时配置（system_config 表，页面可改）
 
-大部分开关运行时化：AI 开关、P0/P1 管线、双评委、TP2 开关、分批比例、双网自动交易开关、扫描参数组、风控参数（熔断/盈亏比/杠杆/费率/近锚折价/组合热度/同向上限）、周/月回撤阈值、ATR 跟进倍数、筛选参数组等。DB 值为 NULL 时回落 env 默认。
+大部分开关运行时化：AI 开关、TP2 开关、分批比例、双网自动交易开关、扫描参数组、风控参数（熔断/盈亏比/杠杆/费率/近锚折价/组合热度/同向上限）、周/月回撤阈值、ATR 跟进倍数、筛选参数组等。DB 值为 NULL 时回落 env 默认。
 
 ---
 
@@ -1102,7 +1084,7 @@ npm run dev          # http://localhost:5173
 |---|---|---|
 | [01 · 币种筛选与扫描](扫描与筛选/01-币种筛选与扫描.md) | `docs/扫描与筛选/01-币种筛选与扫描.md` | 币池构建、B/C/D 三层过滤、`detect_indicator_candidate` 六步判定链、待确认池状态机；扫描编排器模块依赖、`scan_*` 五表结构、筛选漏斗与 pending 状态机 |
 | [02 · 信号触发器](信号与形态/02-信号触发器.md) | `docs/信号与形态/02-信号触发器.md` | T1a 结构突破 + T1b 趋势突破 + 回踩两段式、触点体系、金K 白名单与质量门；触发器决策矩阵时序、算法常量、pending 生命周期、触发类型白名单 |
-| [03 · AI分析](AI决策/03-AI分析.md) | `docs/AI决策/03-AI分析.md` | 上下文构建、提示词纪律段、输出契约与程序复核、双评委、流式进度；AI P0/P1 双管线时序、Pydantic 契约、4h 约束与 veto 回炉状态 |
+| [03 · AI分析](AI决策/03-AI分析.md) | `docs/AI决策/03-AI分析.md` | 上下文构建、提示词纪律段、输出契约与程序复核、流式进度；P0 单次调用管线时序、Pydantic 契约与 4h 背景数据、历史 veto 统计 |
 | [04 · 交易执行与多账号](交易执行/04-交易执行与多账号.md) | `docs/交易执行/04-交易执行与多账号.md` | 14 道下单闸门、市价开仓挂 SL/TP、半小时结算巡检、当日亏损熔断、多账号扇出；开仓/结算巡检时序、持仓状态机、挂单入场 |
 | [05 · 风控体系](风控/05-风控体系.md) | `docs/风控/05-风控体系.md` | AI 建议程序复核、组合热度/同向/连损、普跌警示、黑名单；风控闸门公式与常量、黑名单生命周期状态机、连损/热度/熔断口径 |
 | [06 · 复盘归因](复盘归因/06-复盘归因.md) | `docs/复盘归因/06-复盘归因.md` | 实盘归因统计、AI 错误归因、补丁三态评估、`RULE_VERSION` 分组隔离；复盘归因闭环时序、补丁三态状态机、逐笔 R 泄漏对账分解 |

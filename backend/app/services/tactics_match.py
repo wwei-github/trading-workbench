@@ -1,7 +1,7 @@
 """战法匹配服务（2026-10-02）：活动战法装载 + 提示词块渲染 + 白名单。
 
 战法仅作借鉴参考：分析任务先把活动战法渲染成【战法库判定】块传给
-ai_analyzer/ai_agent 注入用户消息，AI 判定命中后输出 tactic_name/tactic_reason，
+ai_analyzer 注入用户消息，AI 判定命中后输出 tactic_name/tactic_reason，
 risk_guard 按白名单闸门防幻觉（不在本次注入清单内的名字直接清空）。
 
 DB 访问只在装载时短暂持有会话（LLM 长调用不持连接，与 ai_tasks 惯例一致）。

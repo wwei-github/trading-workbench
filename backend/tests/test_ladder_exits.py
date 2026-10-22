@@ -5,8 +5,7 @@
 1. _derive_exit_reason：ladder 单 OPENED（无 TP1 成交）→ sl；
 2. adopt_position：有止盈位 → ladder 接管（挂 TP1、raw 记挂单 id、不再写 tp_mode 快照）；
    无止盈位（tp1=0）→ 拒绝接管（trail 纯跟踪接管随策略二退役）；
-3. auto_adopt_positions：仅 SL 无 TP1 的手动单跳过不进册；
-4. _handle_submit：ladder 恒态（无 tp_mode 分支）tp2 锚点正常解析落库。
+3. auto_adopt_positions：仅 SL 无 TP1 的手动单跳过不进册。
 
 sqlite 内存库夹具镜像 test_auto_tighten.py；trader 桩化。
 """
@@ -23,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.services.trade_engine as te  # noqa: E402
 from app.models.trade import TradeEvent, TradeRecord  # noqa: E402
-from app.services.ai_agent import _handle_submit  # noqa: E402
 
 FEE = 0.0005  # 保本价 = 成本 ± 往返费缓冲：entry 100 → be = 100.1
 
@@ -119,30 +117,7 @@ def test_exit_ladder_opened_is_sl(db):
     assert te._derive_exit_reason(rec, fee_rate=FEE) == "sl"
 
 
-# ── 2. _handle_submit：tp2 锚点解析（ladder 恒态） ───────────────
-
-
-def _submit_args():
-    return {
-        "trade_decision": "suggest", "direction": "long",
-        "trade_type": "trend_follow",
-        "entry_ref": "market", "entry_offset_pct": 0,
-        "stop_ref": "market", "stop_offset_pct": -2,
-        "tp1_ref": "market", "tp1_offset_pct": 4,
-        "tp2_ref": "market", "tp2_offset_pct": 8,
-        "recommendation": 80,
-    }
-
-
-def test_submit_ladder_keeps_tp2():
-    """ladder 恒态（2026-10-12 策略二退役后无 tp_mode 分支）：tp2 锚点正常解析落库"""
-    done, _, fixed = _handle_submit(_submit_args(), {"current_price": 100.0}, [])
-    assert done
-    assert fixed["take_profit_2"] == pytest.approx(108.0)  # market +8%
-    assert "tp_mode" not in fixed
-
-
-# ── 3. 导入持仓：有止盈位 → ladder 接管；无止盈位拒收 ────────────
+# ── 2. 导入持仓：有止盈位 → ladder 接管；无止盈位拒收 ────────────
 
 
 def test_adopt_with_tp1_ladder_unchanged(db):

@@ -6,7 +6,6 @@
 2. normalize_raw：空串归 None、超长截断
 3. _tactic_gate / validate_decision：白名单内带出、清单外清空、skip 路径同样携带
 4. 提示词注入：_build_messages 战法块进用户消息；无战法不注入
-5. ai_agent TOOLS_SCHEMA submit_decision 含战法字段
 
 不调 LLM 不触网。
 """
@@ -22,7 +21,6 @@ from app.services.risk_guard import (  # noqa: E402
     normalize_raw,
     validate_decision,
 )
-from app.services import ai_agent  # noqa: E402
 
 
 _TACTICS = [
@@ -145,11 +143,3 @@ def test_build_messages_injects_tactics_block():
     assert user.index("【战法库判定】") < user.index("已收盘")
     msgs2 = _build_messages(signal, klines, tactics_block="")
     assert "【战法库判定】" not in msgs2[1]["content"]
-
-
-def test_agent_schema_has_tactic_fields():
-    """Agent 管线 submit_decision schema 含战法字段（P1/P0 契约一致）"""
-    submit = next(t for t in ai_agent.TOOLS_SCHEMA
-                  if t["function"]["name"] == "submit_decision")
-    props = submit["function"]["parameters"]["properties"]
-    assert "tactic_name" in props and "tactic_reason" in props

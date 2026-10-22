@@ -23,9 +23,7 @@ interface Props {
 function describeEvent(ev: AiProgressEvent): { text: string; color?: string } {
   switch (ev.t) {
     case 'start':
-      return {
-        text: `开始分析（${ev.pipeline === 'agent' ? 'Agent 管线' : '单次调用'}）`,
-      }
+      return { text: '开始分析' }
     case 'gate':
       return { text: `⚡ ${ev.note || '规则闸门'}`, color: '#faad14' }
     case 'round':

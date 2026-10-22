@@ -439,8 +439,6 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
     flt = resolve_scan_filters(cfg)
     return SystemConfigOut(
         ai_analysis_enabled=cfg.ai_analysis_enabled,
-        ai_pipeline_enabled=cfg.ai_pipeline_enabled,
-        dual_judge_enabled=cfg.dual_judge_enabled,
         tp2_enabled=cfg.tp2_enabled,
         ai_configured=bool(settings.AI_API_KEY),
         strategy_prompt_enabled=cfg.strategy_prompt_enabled,
@@ -675,10 +673,6 @@ def update_system_config(
                 detail="后端未配置 AI_API_KEY，无法开启 AI 分析",
             )
         cfg.ai_analysis_enabled = body.ai_analysis_enabled
-    if body.ai_pipeline_enabled is not None:
-        cfg.ai_pipeline_enabled = body.ai_pipeline_enabled
-    if body.dual_judge_enabled is not None:
-        cfg.dual_judge_enabled = body.dual_judge_enabled
     if body.tp2_enabled is not None:
         cfg.tp2_enabled = body.tp2_enabled
 

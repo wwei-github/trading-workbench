@@ -51,8 +51,8 @@ def clear(scan_result_id) -> None:
         pass
 
 
-def push_start(scan_result_id: UUID, symbol: str, pipeline: str) -> None:
-    push(scan_result_id, "start", symbol=symbol, pipeline=pipeline)
+def push_start(scan_result_id: UUID, symbol: str) -> None:
+    push(scan_result_id, "start", symbol=symbol)
 
 
 def push_done(scan_result_id, decision: Optional[str], note: str = "") -> None:

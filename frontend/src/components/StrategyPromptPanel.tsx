@@ -56,7 +56,7 @@ function SkillsTab() {
     // 页签面板高度 100%（index.css 已让 tabpane 撑满），列表内部滚动，防被 content-holder 裁切
     <div style={{ height: '100%', overflow: 'auto' }}>
       <Text type="secondary" style={{ fontSize: 12 }}>
-        技能是可插拔的交易打法文件，AI Agent 决策时按触发条件按需加载（只读）
+        技能是可插拔的交易打法文件，AI 决策时按触发条件按需加载（只读）
       </Text>
       <Spin spinning={loading}>
         {skills.length === 0 && !loading ? (

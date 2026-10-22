@@ -11,7 +11,7 @@ gap_min = max(TP2_MIN_GAP_ATR×ATR14, TP2_MIN_GAP_R×止损距离, 2×TAKER_FEE_
 - 空头方向对称
 - 两腿配置都为 0 → 整条保护失效（含手续费地板）
 - ATR 不可算（无 K 线）→ ATR 腿置 0，R 腿仍生效
-- P0/P1 提示词注入间距纪律与阈值
+- P0 提示词注入间距纪律与阈值
 """
 import sys
 from pathlib import Path
@@ -155,11 +155,3 @@ def test_p0_prompt_injects_gap_thresholds():
     p = p0()
     assert "间距 ≥ max(0.5×ATR, 0.5×止损距离)" in p
     assert "直接输出 take_profit_2=0" in p
-
-
-def test_agent_prompt_injects_gap_thresholds():
-    from app.services.ai_agent import render_system_prompt as p1
-
-    p = p1(tp2_enabled=True)
-    assert "间距 ≥ max(0.5×ATR, 0.5×止损距离)" in p
-    assert "止盈二不设（仅一档）" in p

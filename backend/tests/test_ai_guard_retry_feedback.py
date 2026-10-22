@@ -14,7 +14,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.services.ai_analyzer as ai_analyzer  # noqa: E402
-import app.services.dual_judge as dual_judge  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.services.llm_client import json_mode_kwargs  # noqa: E402
 
@@ -199,66 +198,5 @@ def test_parse_failure_exhausted_forces_skip(monkeypatch, _stub_build_messages):
         )
 
 
-def _suggest_decision():
-    """双评委用例共用的 suggest 决策（三价齐备）"""
-    return {
-        "trade_decision": "suggest", "direction": "long", "symbol": "TESTUSDT",
-        "entry_price": 100.0, "stop_loss": 98.0, "take_profit_1": 104.0,
-        "take_profit_2": 0, "risk_reward_ratio": 2.0, "position_pct": 5.0,
-        "recommendation": 70, "analysis": "测试",
-    }
 
-
-def test_dual_judge_json_mode_only_on_judge_call(monkeypatch):
-    """JSON 模式只挂裁判调用（多空评委输出论据正文，不能强制 JSON）"""
-    monkeypatch.setattr(settings, "LLM_JSON_MODE", True)
-    client = _FakeClient(["多头论据", "空头论据", '{"verdict": "keep", "reason": "ok"}'])
-    monkeypatch.setattr(dual_judge, "get_client", lambda: client)
-
-    out = dual_judge.run_dual_judge(_suggest_decision(), {"symbol": "TESTUSDT"})
-    assert out == _suggest_decision()  # keep 原样返回
-    assert len(client.calls) == 3
-    assert "response_format" not in client.calls[0]["kwargs"]
-    assert "response_format" not in client.calls[1]["kwargs"]
-    assert client.calls[2]["kwargs"].get("response_format") == {"type": "json_object"}
-
-
-def test_dual_judge_judge_parse_failure_feedback_retry(monkeypatch):
-    """裁判解析失败：反馈回炉重试，第2次可解析则按裁决执行（veto 仍生效）"""
-    # 多头 / 空头 / 裁判(空内容→解析失败) / 裁判(合法 JSON)
-    client = _FakeClient(["多头论据", "空头论据", "", '{"verdict": "veto", "reason": "风险过高"}'])
-    monkeypatch.setattr(dual_judge, "get_client", lambda: client)
-
-    out = dual_judge.run_dual_judge(_suggest_decision(), {"symbol": "TESTUSDT"})
-
-    assert len(client.calls) == 4  # 第2次裁判调用 = 反馈重试
-    msgs = client.calls[3]["messages"]
-    assert len([
-        m for m in msgs
-        if "上一次输出 JSON 解析失败" in (m.get("content") or "")
-    ]) == 1
-    # 空内容无原文可回放，不得出现空 assistant 消息
-    assert not any(
-        m.get("role") == "assistant" and not (m.get("content") or "").strip()
-        for m in msgs
-    )
-    assert out["trade_decision"] == "skip"
-    assert "风险过高" in out["skip_reason"]
-
-
-def test_dual_judge_judge_parse_failure_exhausted_keeps(monkeypatch):
-    """裁判 3 次均不可解析 → 降级 keep（原样返回决策，不转 forced skip）"""
-    client = _FakeClient(["多头论据", "空头论据", "不是JSON", "不是JSON", "不是JSON"])
-    monkeypatch.setattr(dual_judge, "get_client", lambda: client)
-
-    decision = _suggest_decision()
-    out = dual_judge.run_dual_judge(decision, {"symbol": "TESTUSDT"})
-
-    assert len(client.calls) == 5  # 2 次初始评委 + 3 次裁判
-    assert out == decision
-    # 非空原文以 assistant 回放，模型看着原文改错（docs/24 D2 同模式）
-    assert any(
-        m.get("role") == "assistant" and m.get("content") == "不是JSON"
-        for m in client.calls[4]["messages"]
-    )
 

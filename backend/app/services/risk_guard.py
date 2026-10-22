@@ -1,6 +1,6 @@
 """Risk Guard：AI 决策的确定性校验器（docs/04 §4 Stage 4 / §5.6）
 
-校验链（2026-09-15 收缩为 RR 铁律 + 双评委辩论复核；2026-10-12 增止损宽度下限与
+校验链（2026-09-15 收缩为可行性铁律；2026-10-12 增止损宽度下限与
 止盈一距离上限）：
 - Schema 强约束（Pydantic）+ suggest 基本项（方向/开单类型/三价为正）
 - **RR 铁律**：按 AI 给的三价复算盈亏比 ≥ AI_RR_MIN(1.5) − AI_RR_TOL(0.02)，
@@ -381,8 +381,7 @@ def validate_decision(
     elif d.stop_anchor == "near" and len(klines) >= 2:
         # 金K窗口（2026-10-12-8 恢复窗口口径）：最近 5 根已收盘K线的共同极值——
         # 做多=5 根最低点、做空=5 根最高点（klines[-6:-1]，含信号K线 klines[-2]；
-        # klines[-1] 未收盘不参与），与 ai_agent._resolve_price 的
-        # signal_low/signal_high 解析同口径
+        # klines[-1] 未收盘不参与）
         window = klines[max(0, len(klines) - 6):len(klines) - 1]
         lows: list = []
         highs: list = []

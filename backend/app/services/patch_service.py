@@ -5,7 +5,7 @@ AI 错误归因发现某错误标签高频出现（近7天热度 ≥0.5 且样�
 → 每日评估三态（有效/无效/恶化）→ 页面一键回滚。
 
 关键约束：
-- 系统自带提示词（SYSTEM_PROMPT / AGENT_SYSTEM 代码常量）永不改动；
+- 系统自带提示词（SYSTEM_PROMPT 代码常量）永不改动；
   提示词补丁是「覆盖规则」段（带 patch 标记注释），追加在 strategy_prompt 尾部
 - 回滚统一走 DB：提示词删标记段 / 参数恢复合入前的来源值（旧补丁无快照
   才回落 NULL=默认语义），即时生效
@@ -471,7 +471,6 @@ def run_evaluate(db: Session) -> list[PromptPatch]:
 
 def build_prompt_view(db: Session) -> dict:
     """三层拼装：系统自带（代码常量只读）/ 用户自定义 / 补丁覆盖段。"""
-    from app.services.ai_agent import render_system_prompt
     from app.services.ai_analyzer import render_system_prompt as render_p0_prompt
     from app.services.risk_budget import resolve_risk_budget
 
@@ -510,9 +509,6 @@ def build_prompt_view(db: Session) -> dict:
         "system_prompt": render_p0_prompt(risk_label, rr_min=rr_min,
                                           tp2_enabled=bool(cfg.tp2_enabled),
                                           min_recommendation=min_rec),
-        "agent_system": render_system_prompt(risk_label, rr_min=rr_min,
-                                             tp2_enabled=bool(cfg.tp2_enabled),
-                                             min_recommendation=min_rec),
         "user_custom": custom_head,
         "patch_segments": segments,
         "params": {

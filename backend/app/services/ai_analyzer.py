@@ -627,7 +627,7 @@ def build_signal_facts(
     indicator_summary = render_indicator_block(
         klines, htf_klines, trigger_type=signal.get("signal_type"))
 
-    # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点，与 Agent 管线同源）
+    # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点）
     sw = signal.get("recent_swings") or {}
     swings_summary = ""
     if sw.get("highs") or sw.get("lows"):
@@ -786,7 +786,7 @@ def _build_messages(
                                          min_recommendation=min_recommendation,
                                          consecutive_losses=consecutive_losses,
                                          trigger_type=signal.get("signal_type"))
-    # 技能注入（P0 管线无工具循环，命中技能正文直接进系统提示词；与 Agent 管线共用同一事实判定）
+    # 技能注入（命中技能正文直接进系统提示词；事实判定由 skill_library 统一产出）
     skill_block = skill_library.render_matched(skill_library.build_facts(signal, klines))
     if skill_block:
         system_prompt += (

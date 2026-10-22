@@ -204,7 +204,7 @@ export default function WatchlistPanel() {
     stopPolling(symbol);
     setRowState(symbol, { loading: true, error: null });
     let attempts = 0;
-    // Agent 管线单次分析可达 2~5 分钟，放宽到 10 分钟
+    // 单次 AI 分析可达 2~5 分钟，放宽到 10 分钟
     const maxAttempts = 200; // 200 次 × 3 秒 = 600 秒
     pollTimersRef.current[symbol] = setInterval(async () => {
       attempts++;

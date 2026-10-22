@@ -30,12 +30,10 @@ from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services import ai_progress
 from app.services import market_data as md
-from app.services.ai_agent import analyze_coin_agent
 from app.services.ai_analyzer import analyze_with_guard
 from app.services.scan_filters import resolve_scan_filters
 from app.services.llm_client import configure_from, current_concurrency
-from app.services.dual_judge import run_dual_judge
-from app.services.strategy.technical import annotate_htf_phase, render_indicator_block, htf_context
+from app.services.strategy.technical import annotate_htf_phase, htf_context
 from app.services.strategy.indicators import volume_ratio
 from app.services.exchange_pool import ExchangePool
 from app.services.shadow import tag_oi_conf
@@ -125,23 +123,6 @@ def build_cache_context(cfg, klines: list, htf_klines: list,
                             if key.startswith(("AI_", "TRADING_", "RISK_", "TP1_", "TP2_", "SL_"))
                             and not any(part in key for part in ("KEY", "TOKEN", "SECRET", "PASSWORD"))}),
     }
-
-
-def _build_judge_signal(signal: dict, klines: list, htf_klines: Optional[list]) -> dict:
-    """双评委事实包增厚（docs/24 D3）：把调用现场已有的技术指标块与摆动结构摘要
-    注入 signal 副本传给 run_dual_judge——评委用数据核对三价与结构位矛盾
-    （止损落在摆动区间内部、止盈近于争夺位）。零额外计算成本：
-    klines / htf_klines / swings 均为分析现场已有变量；原 signal dict 不被污染。
-    """
-    judge_signal = dict(signal)
-    judge_signal["indicator_block"] = render_indicator_block(
-        klines, htf_klines, trigger_type=signal.get("signal_type"))
-    sw = signal.get("recent_swings") or {}
-    if sw.get("highs") or sw.get("lows"):
-        hi = f"{sw['highs'][0]['price']:.6g}" if sw.get("highs") else "—"
-        lo = f"{sw['lows'][0]['price']:.6g}" if sw.get("lows") else "—"
-        judge_signal["structure_summary"] = f"最近摆动高点 {hi} / 低点 {lo}"
-    return judge_signal
 
 
 @celery_app.task(name="app.tasks.ai_tasks.run_ai_analysis_task", bind=True, max_retries=3)
@@ -334,7 +315,7 @@ def run_ai_analysis_single(
             "AI 分析开始: %s strength=%s fp=%s", r.symbol, r.strength, fp[:8]
         )
         # 进度事件：start（前端流式展示分析过程）
-        ai_progress.push_start(r.id, r.symbol, "agent")
+        ai_progress.push_start(r.id, r.symbol)
 
         # ── 程序侧 skip 闸门已全部移除（2026-09-15 拍板）：强度/陈旧/振幅熔断不再拦截，
         #    选中的币种一律交真实 AI 分析，跳过与否由 AI 自己决定 ──
@@ -376,14 +357,14 @@ def run_ai_analysis_single(
         # 扫描到分析之间可能已明显移动——所有锚点换算、入场价校验都以最新价为基准
         if klines:
             signal["current_price"] = float(klines[-1][4])
-        # ── Stage 2：LLM 分析（P1 Agent 工具循环 / P0 单次调用）+ Risk Guard 校验 ──
+        # ── Stage 2：LLM 分析（P0 单次调用）+ Risk Guard 校验 ──
         # LLM 长调用（数分钟）期间不持有 DB 连接——任务开头取出的连接可能中途被
         # 网络层掐断（pool_pre_ping 只在取出时探测），落库前换新会话并重取行
         db.close()
         db = SessionLocal()
         r = db.get(ScanResult, r.id)
         # 近期摆动结构（HH/LH/HL/LL，高低点各 20 个）随事实包给 AI，与图表标注同源；
-        # 分析时刻现算（现价已更新），锚点解析（ai_agent）与风控锚定共用
+        # 分析时刻现算（现价已更新），风控锚定使用同一结构
         signal["recent_swings"] = recent_swings(klines, order=cfg.swing_order, n=20)
         # 4h 高周期 K 线（大方向背景注入，600 根）；失败只降级为无 4h 行，不中断分析
         try:
@@ -430,19 +411,17 @@ def run_ai_analysis_single(
                           htf_as_of=htf_as_of)
                     ai_progress.push_done(r.id, cached.trade_decision, note)
                     return
-        # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净，
-        # Agent 管线由模型按需调用工具自行获取
+        # 市场环境（资金费率/大盘/恐贪）不再预取注入——保持数据契约干净
         # 止损金额口径（2026-09-27）：与开仓引擎同源的预算模式/金额/文案，
-        # 传给两管线统一提示词与仓位复算（risk_budget.resolve）
+        # 传给提示词与仓位复算（risk_budget.resolve）
         from app.services.risk_budget import resolve_risk_budget
         _risk_mode, _risk_amount, _risk_label = resolve_risk_budget(cfg)
         # 止损宽度硬上限透传（2026-09-29）：max_stop_pct 补丁参数注入门槛块，
         # AI 定止损前自验不超限，避免"AI 建议开单→程序宽度闸弃单"的无效调用
         _stop_cap = float(cfg.max_stop_pct) if cfg.max_stop_pct is not None else None
         # 风控参数上页面（2026-10-02）：RR 铁律 / BTC 急跌阈值按 cfg 覆盖优先、
-        # NULL 回落 env，透传进两管线（提示词 + Risk Guard 同源）；
-        # crash_pct 仅 P0 单次调用管线消费（Agent 管线不预注入市场环境，
-        # 由模型按需调工具；2026-10-13 起急跌仅作提示词警示，开仓引擎侧硬闸已移除）
+        # NULL 回落 env，透传进提示词与 Risk Guard（同源）；
+        # 2026-10-13 起急跌仅作提示词警示，开仓引擎侧硬闸已移除
         # 风险比例单一来源（2026-10-02 复查）：pct 模式下 resolver 的 amount 即
         # 生效比例（cfg.risk_pct ?? RISK_BUDGET_PCT），直接派生保证提示词 label
         # 与 Risk Guard 仓位复算同口径（TRADING_RISK_PCT 仅开仓引擎 est_risk 用，
@@ -472,68 +451,34 @@ def run_ai_analysis_single(
         # 筛选参数组（2026-10-12）：门槛块阈值/触点启用列表读页面配置生效值，
         # 与扫描侧 resolve 同源——页面改筛选配置后 AI 提示词口径同步跟上
         _flt = resolve_scan_filters(cfg)
-        # 管线选择：批量（每小时扫描自动触发/手动全量）固定走 P0 单次调用管线，
-        # 不受「AI 管线」开关影响；仅手动单币重分析（force）跟随开关走 Agent 管线
-        if cfg.ai_pipeline_enabled and force:
-            def _cb(ev: dict) -> None:
-                ai_progress.push(r.id, ev.pop("t"), **ev)
-
-            ai_result = analyze_coin_agent(
-                signal, klines,
-                strategy_prompt=strategy_prompt,
-                user_input=user_input,
-                pool=pool,
-                progress_cb=_cb,
-                htf_klines=htf_klines,
-                risk_mode=_risk_mode,
-                risk_amount=_risk_amount,
-                risk_label=_risk_label,
-                stop_cap_pct=_stop_cap,
-                rr_min=_rr_min,
-                risk_pct=_risk_pct,
-                tactics_block=tactics_block,
-                tp2_enabled=_tp2_on,
-                flt=_flt,
-                rr_tol=_rr_tol,
-                min_recommendation=_min_rec,
-                consecutive_losses=consecutive_losses,
-            )
-        else:
-            ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
-            ai_result = analyze_with_guard(
-                signal, klines,
-                strategy_prompt=strategy_prompt,
-                user_input=user_input,
-                htf_klines=htf_klines,
-                risk_mode=_risk_mode,
-                risk_amount=_risk_amount,
-                risk_label=_risk_label,
-                stop_cap_pct=_stop_cap,
-                rr_min=_rr_min,
-                risk_pct=_risk_pct,
-                crash_pct=_crash_pct,
-                rr_tol=_rr_tol,
-                interval=cfg.kline_interval,
-                progress_id=r.id,  # 方案 B 轻量进度：流式增量计数推 "llm" 事件（≥2s 节流）
-                tactics_block=tactics_block,
-                tp2_enabled=_tp2_on,
-                flt=_flt,
-                min_recommendation=_min_rec,
-                consecutive_losses=consecutive_losses,
-            )
-        # 双评委辩论复核（P2，默认关）：仅对 suggest 决策，只能 keep / veto；
-        # 事实包增厚（docs/24 D3）——指标块 + 摆动结构摘要随 signal 传入（_build_judge_signal）
-        if cfg.dual_judge_enabled:
-            if ai_result.get("trade_decision") == "suggest":
-                ai_progress.push(r.id, "gate", note="⚖️ 双评委辩论复核中…")
-            ai_result = run_dual_judge(
-                ai_result, _build_judge_signal(signal, klines, htf_klines),
-            )
+        # 管线：P0 单次调用 + 校验回炉（批量与手动单币重分析同一条路径）
+        ai_progress.push(r.id, "round", round=0, tools=[], note="单次调用管线思考中…")
+        ai_result = analyze_with_guard(
+            signal, klines,
+            strategy_prompt=strategy_prompt,
+            user_input=user_input,
+            htf_klines=htf_klines,
+            risk_mode=_risk_mode,
+            risk_amount=_risk_amount,
+            risk_label=_risk_label,
+            stop_cap_pct=_stop_cap,
+            rr_min=_rr_min,
+            risk_pct=_risk_pct,
+            crash_pct=_crash_pct,
+            rr_tol=_rr_tol,
+            interval=cfg.kline_interval,
+            progress_id=r.id,  # 方案 B 轻量进度：流式增量计数推 "llm" 事件（≥2s 节流）
+            tactics_block=tactics_block,
+            tp2_enabled=_tp2_on,
+            flt=_flt,
+            min_recommendation=_min_rec,
+            consecutive_losses=consecutive_losses,
+        )
         # 4h 状态快照落库（2026-10-21 用户拍板：方向限制只保留在筛选层，
         # AI 出结果后不再做双向禁开/锁逆势的程序改判）
         ai_result = annotate_htf_phase(ai_result, htf_klines)
-        # Narrator 已下线（提速）：submit_decision 的 reason 直接承载完整分点分析
-        # （工具 schema 强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返
+        # Narrator 已下线（提速）：输出 reason 直接承载完整分点分析
+        # （提示词强约束"1. 2. 3."每条一行），落库即 analysis，省一次 LLM 往返
         # 待回踩判定（2026-09-15）：入场在现价回踩侧的建议仅展示标识、不下单
         ai_result["pullback_wait"] = is_pullback_wait(ai_result, signal.get("current_price"))
         # 4h 数据降级标记（B2）：随结论落库（AIAnalysis.htf_degraded）
@@ -735,7 +680,7 @@ def _upsert_ai_analysis(
         "rule_version": settings.RULE_VERSION,
         # 统一决策版本（T5）：配置/补丁/提示词变更的统一切点，复盘按版本分组
         "decision_version": current_decision_version(db),
-        # 双评委 veto 原始建议快照（docs/24 A5a）：仅 veto 强制 skip 携带；
+        # 历史双评委 veto 原始建议快照（docs/24 A5a；该功能已下线，字段保留恒为 None）；
         # latest-wins 重分析后 None 覆盖旧值，不残留
         "veto_original": ai_result.get("veto_original"),
         # 战法命中标注（2026-10-02）：白名单闸门后的值（清单外已清空）；
