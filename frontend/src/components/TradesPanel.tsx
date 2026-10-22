@@ -1148,7 +1148,7 @@ export default function TradesPanel() {
         const s = statusMeta(rec)
         // 异常单标记（2026-10-18）：与状态标签同行显示，一眼看出该单已被剔除口径
         const exclTag = rec.excluded ? (
-          <Tooltip title="已标记为异常单（人工认定，如测试网伪盈亏）：不计入资金分析/复盘统计、不触发熔断、不进飞书日报；行保留可审计，可在操作列取消">
+          <Tooltip title="已标记为异常单（人工认定，仅测试网单，如伪盈亏）：不计入资金分析/复盘统计、不触发熔断、不进飞书日报；在跑单同时不计入账户概览与「运行中」；行保留可审计，可在操作列取消">
             <Tag color="red" style={{ marginInlineStart: 6, marginInlineEnd: 0 }}>异常</Tag>
           </Tooltip>
         ) : null

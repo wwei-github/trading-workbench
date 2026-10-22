@@ -567,6 +567,11 @@ def set_trade_excluded(
     rec = db.get(TradeRecord, tid)
     if rec is None:
         raise HTTPException(status_code=404, detail="交易记录不存在")
+    # 仅测试网可标记：伪盈亏来自测试网模拟撮合，且页面也只在 testnet 行展示入口；
+    # 服务端补闸门防 curl/脚本误标正式网单、污染真实统计（2026-10-22）。
+    # 取消标记不限制（历史误标的正式网行必须能恢复）
+    if excluded and not rec.testnet:
+        raise HTTPException(status_code=400, detail="异常单标记仅支持测试网记录")
     rec.excluded = excluded
     rec.excluded_at = datetime.utcnow() if excluded else None
     db.commit()
