@@ -943,6 +943,7 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
             symbol={selectedRecord.symbol}
             limit={500}
             ai={selectedAi}
+            scanResultId={selectedRecord.id}
           />
         )}
       </div>

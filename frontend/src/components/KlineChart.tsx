@@ -620,6 +620,7 @@ function drawHitMarks(
 
 // 有效命中行（外部显式传入单条 / 自动拉取最近 3 天列表 统一结构）
 interface EffHit {
+  id: string | null // 命中对应 scan_result.id（自动拉取时有值；用于与实际单归属比对）
   hitTime: string | null
   touchTime: string | null
   direction: 1 | -1 | 0
@@ -642,11 +643,14 @@ interface Props {
   hitDirection?: 1 | -1 | 0 // 命中方向（1 多 / -1 空 / 0 未知）
   tradeOverlay?: HitHistoryTrade | null // 关联开单（时间裁剪区间）
   hitSignalType?: string | null // 命中信号类型（出点类型，追加在「命中」标签后）
+  // 当前扫描结果 id（扫描模式）：该命中已有实际成交单时抑制 AI 计划线，
+  // 只保留实际单覆盖层，避免同一笔在图上出现「做多」「开多」两组入场线
+  scanResultId?: string
 }
 
 export default function KlineChart({
   symbol, tradeId, limit = 500, ai, refreshKey = 0,
-  hitTime, touchTime, hitDirection = 0, tradeOverlay, hitSignalType,
+  hitTime, touchTime, hitDirection = 0, tradeOverlay, hitSignalType, scanResultId,
 }: Props) {
   const colorScheme = useScanStore((s) => s.colorScheme)
   const isReplay = !!tradeId
@@ -690,6 +694,7 @@ export default function KlineChart({
   const effHits: EffHit[] = useMemo(() => {
     if (externalHit) {
       return [{
+        id: null,
         hitTime: hitTime ?? null,
         touchTime: touchTime ?? null,
         direction: hitDirection,
@@ -698,6 +703,7 @@ export default function KlineChart({
       }]
     }
     return autoHits.map((h) => ({
+      id: h.id ?? null,
       hitTime: h.created_at ?? null,
       touchTime: h.stage1_candle_open ?? null,
       direction: (h.direction ?? 0) as 1 | -1 | 0,
@@ -705,6 +711,13 @@ export default function KlineChart({
       signalType: h.signal_type ?? null,
     }))
   }, [externalHit, hitTime, touchTime, hitDirection, tradeOverlay, hitSignalType, autoHits])
+
+  // 同一扫描结果已开单时，AI 建议线（做多/止损/止盈）与实际成交线（开多/止损/止盈）
+  // 是同一次决策的两个阶段，图上只保留实际成交数据（2026-10-22 用户拍板）
+  const suppressAiPlan = useMemo(
+    () => !!scanResultId && effHits.some((h) => h.id === scanResultId && !!h.trade),
+    [scanResultId, effHits],
+  )
 
   // 拉取 K 线（数据源/周期/refreshKey 变化重拉；首拉整块 loading，
   // 有数据时旧图保留平滑替换）
@@ -893,7 +906,7 @@ export default function KlineChart({
         // 可视起点：复盘缺省「最近约 130 根」；命中历史由 overlayFrom 把左沿
         // 收到命中/触碰K线附近（保证标注入镜），其余扫描场景同缺省
         from={overlayFrom}
-        ai={isReplay ? undefined : ai}
+        ai={isReplay || suppressAiPlan ? undefined : ai}
         // 复盘=事件箭头；命中历史走 SVG 图形标注（见 drawOverlay）
         extraMarkers={isReplay ? extraMarkers : undefined}
         drawOverlay={isReplay || effHits.length > 0 ? drawZones : undefined}
