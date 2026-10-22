@@ -84,7 +84,8 @@ export default function ScanConfigPanel() {
       const eff = aiConfig.scan_filters_effective || {}
       setFiltersSnapshot({ ...eff })
       form.setFieldsValue({
-        kline_window: aiConfig.kline_window,
+        // 库内历史值可能低于扫描取数下限（旧默认 240），按实际生效口径展示为 300
+        kline_window: Math.max(300, aiConfig.kline_window ?? 300),
         repeat_window_hours: aiConfig.repeat_window_hours,
         swing_order: aiConfig.swing_order,
         ...FILTER_FIELDS.reduce((acc, f) => ({ ...acc, [f.name]: eff[f.name] }), {}),
