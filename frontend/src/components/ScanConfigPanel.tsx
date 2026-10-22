@@ -42,8 +42,6 @@ const FILTER_FIELDS: { name: string; label: string; min: number; max: number; st
     tooltip: '上市未满 N 天的合约不进扫描：新币盘口深度极不稳定，开仓滑点达标≠止损出场不滑爆（NIGHT 案例：出场滑点 1.98%，实亏达计划风险 2.34 倍）；0=关闭' },
   { name: 'breakout_threshold', label: '最小突破幅度（比例）', min: 0, max: 0.05, step: 0.001,
     tooltip: '收盘须越过突破位（结构前高/前低或 Donchian 轨）此幅度才算突破（0.002=0.2%），毛边突破不算；0=关闭' },
-  { name: 'breakout_vol_ratio', label: '突破量比门槛', min: 0, max: 10, step: 0.1,
-    tooltip: '信号K线成交量 ≥ 近20根均量的此倍数才确认放量突破' },
   { name: 'breakout_max_pct', label: '突破幅度上限（%）', min: 0, max: 20, step: 0.5,
     tooltip: '越过突破位超过此幅度视为追高，不产生突破触发（正式网复盘：大幅突破追入负期望）；0=关闭' },
   { name: 'breakout_channel_bars', label: 'Donchian通道根数', min: 5, max: 200,
@@ -230,20 +228,9 @@ export default function ScanConfigPanel() {
                 label="K线周期"
                 name="kline_interval"
                 rules={[{ required: true }]}
-                tooltip="K线的时间周期"
+                tooltip="扫描按整点小时级调度，K线周期固定 1h（其他周期与待确认窗口、回踩触点时效口径不兼容）"
               >
-                <Select
-                  options={[
-                    { value: '1m', label: '1分钟' },
-                    { value: '5m', label: '5分钟' },
-                    { value: '15m', label: '15分钟' },
-                    { value: '30m', label: '30分钟' },
-                    { value: '1h', label: '1小时' },
-                    { value: '2h', label: '2小时' },
-                    { value: '4h', label: '4小时' },
-                    { value: '1d', label: '1天' },
-                  ]}
-                />
+                <Select options={[{ value: '1h', label: '1小时' }]} />
               </Form.Item>
             </Col>
             <Col span={6}>
@@ -251,9 +238,9 @@ export default function ScanConfigPanel() {
                 label="K线数量"
                 name="kline_window"
                 rules={[{ required: true }]}
-                tooltip="每次扫描获取的K线根数"
+                tooltip="每次扫描获取的K线根数；后端扫描取数下限为 300 根，低于 300 按 300 取"
               >
-                <InputNumber min={30} max={1500} style={{ width: '100%' }} />
+                <InputNumber min={300} max={1500} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={6}>
@@ -323,7 +310,7 @@ export default function ScanConfigPanel() {
                 当前「触发类型白名单」未勾选「回踩金K确认」，触点白名单不生效
               </span>
             )}
-            tooltip="回踩金K确认触发只认勾选的触点：触碰后当根/次根出现同向金K才触发。回踩 EMA21 须先通过 1H 结构门（三线排列 + 快中线发散史 + EMA144 方向），不过则本次回踩不成立；其余触点不受结构门约束。默认仅三条均线（EMA21/EMA21(4h)/EMA55；ema144 已退役；EMA55 另受排列+分离史结构门自筛）；横向结构触点（突破回测位/摆动结构位）语义强但依赖破轨/摆动质量，按需勾选。全部不勾回落默认三条均线"
+            tooltip="回踩金K确认只认勾选的触点：触碰后当根/次根出现同向金K才触发。默认六触点全开（突破回测位/摆动结构位/EMA21/EMA21(4h)/EMA55/EMA144；EMA144 已复出并默认启用）。EMA21 的 1H 结构门（三线排列 + 快中线发散史 + EMA144 方向）自 2026-10-15 起不再否决，未过门仅质量分 -15；其余触点不受结构门约束。所有触点命中后还须通过回踩前置反向腿门（scan_filters 内配置）。全部不勾回落默认六触点"
           >
             <Checkbox.Group options={TOUCH_REF_OPTIONS} disabled={!pullbackEnabled} />
           </Form.Item>
