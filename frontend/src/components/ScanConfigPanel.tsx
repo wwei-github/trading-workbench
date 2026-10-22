@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, Input, InputNumber, Select, Switch, Checkbox, message, Button, Spin, Tooltip, Row, Col } from 'antd'
+import { Modal, Form, Input, InputNumber, Switch, Checkbox, message, Button, Spin, Tooltip, Row, Col } from 'antd'
 import { SettingOutlined, RobotOutlined, FileTextOutlined, UndoOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import ConfigSection from './ConfigSection'
@@ -84,7 +84,6 @@ export default function ScanConfigPanel() {
       const eff = aiConfig.scan_filters_effective || {}
       setFiltersSnapshot({ ...eff })
       form.setFieldsValue({
-        kline_interval: aiConfig.kline_interval,
         kline_window: aiConfig.kline_window,
         repeat_window_hours: aiConfig.repeat_window_hours,
         swing_order: aiConfig.swing_order,
@@ -122,7 +121,8 @@ export default function ScanConfigPanel() {
       const values = await form.validateFields()
       setSaving(true)
       const data: Partial<SystemConfig> = {
-        kline_interval: values.kline_interval,
+        // 周期固定 1h（整点小时级调度）；保存时归一化，兼容库内历史非 1h 值
+        kline_interval: '1h',
         kline_window: values.kline_window,
         repeat_window_hours: values.repeat_window_hours,
         swing_order: values.swing_order,
@@ -226,19 +226,9 @@ export default function ScanConfigPanel() {
         <Spin spinning={loading}>
         <div style={{ maxHeight: '64vh', overflowY: 'auto', paddingInlineEnd: 4 }}>
         <Form form={form} layout="vertical" className="config-modal-form">
-          <ConfigSection title="扫描基础" hint="K线周期/根数、重复命中窗口与摆动点阶数" first>
+          <ConfigSection title="扫描基础" hint="K线周期固定 1 小时；K线根数、重复命中窗口与摆动点阶数" first>
           <Row gutter={16}>
-            <Col span={6}>
-              <Form.Item
-                label="K线周期"
-                name="kline_interval"
-                rules={[{ required: true }]}
-                tooltip="扫描按整点小时级调度，K线周期固定 1h（其他周期与待确认窗口、回踩触点时效口径不兼容）"
-              >
-                <Select options={[{ value: '1h', label: '1小时' }]} />
-              </Form.Item>
-            </Col>
-            <Col span={6}>
+            <Col span={8}>
               <Form.Item
                 label="K线数量"
                 name="kline_window"
@@ -248,7 +238,7 @@ export default function ScanConfigPanel() {
                 <InputNumber min={300} max={1500} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-            <Col span={6}>
+            <Col span={8}>
               <Form.Item
                 label="重复命中窗口（小时）"
                 name="repeat_window_hours"
@@ -258,7 +248,7 @@ export default function ScanConfigPanel() {
                 <InputNumber min={1} max={168} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-            <Col span={6}>
+            <Col span={8}>
               <Form.Item
                 label="摆动点阶数"
                 name="swing_order"
