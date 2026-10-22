@@ -9,7 +9,8 @@
 - 做多：触点之前必须存在一段**下跌腿**，之后出现看涨金K；
 - 做空：触点之前必须存在一段**反弹腿**，之后出现看跌金K；
 - 不满足：不产生 `trigger_pullback_confirm`、不写 `PullbackPending`，漏斗记录具体死因；
-- `retest` 触点豁免（突破回测自带突破事件与结构语境，避免误杀刚复出的突破回测路径）。
+- 全部触点同口径（2026-10-22-2 起 `retest` 不再豁免：突破回测不天然等价于回踩）；
+- 腿必须单边（单调）：腿区间内部不得出现比终点更深的反向极值（>0.5 ATR），防宽幅震荡里的陈旧半截腿（ARIAUSDT.P 个案）。
 
 ## 1. 背景与现状
 
@@ -41,6 +42,7 @@
 3. 门槛可配置、可一键停用，默认值保持宽松，优先避免过度过滤。
 4. 不通过时写入漏斗诊断，便于复盘和前端「判定说明」定位。
 5. 补齐单测，保证原两段式决策矩阵与触点体系行为不回归。
+6. （2026-10-22-2 增补）腿门覆盖 `retest` 触点；增加单调性校验，剔除宽幅震荡中的陈旧腿。
 
 ## 3. 非目标
 
@@ -68,7 +70,8 @@
 2. 在 `[window_start, end_idx)` 内取最高价索引 `start_idx = argmax(high[window_start : end_idx])`；
 3. 腿时长 `bars = end_idx - start_idx`；
 4. 腿幅 `atr_mult = (high[start_idx] - low[end_idx]) / ATR[end_idx]`；
-5. 通过条件：`bars >= pullback_leg_min_bars` 且 `atr_mult >= pullback_leg_min_atr`。
+5. **单调性校验**（2026-10-22-2）：腿区间内部 `[start_idx+1, end_idx)` 的最低价不得比 `low[end_idx]` 再低出 `LEG_OVERSHOOT_ATR × ATR`（默认 0.5 ATR）；
+6. 通过条件：`bars >= pullback_leg_min_bars` 且 `atr_mult >= pullback_leg_min_atr` 且单调性校验通过。
 
 语义：从段内前高下跌到回踩低点，形成一段下跌腿；随后金K确认反转。
 
@@ -78,7 +81,8 @@
 2. 在 `[window_start, end_idx)` 内取最低价索引 `start_idx = argmin(low[window_start : end_idx])`；
 3. 腿时长 `bars = end_idx - start_idx`；
 4. 腿幅 `atr_mult = (high[end_idx] - low[start_idx]) / ATR[end_idx]`；
-5. 通过条件同做多。
+5. **单调性校验**（2026-10-22-2）：腿区间内部的最高价不得比 `high[end_idx]` 再高出 `LEG_OVERSHOOT_ATR × ATR`；
+6. 通过条件同做多。
 
 语义：从段内前低反弹到回踩高点，形成一段反弹腿；随后看跌金K确认反转。
 
@@ -86,14 +90,15 @@
 
 - `atrs = atr_series(klines, 14)`，要求 `len(atrs) == len(klines) - 1`；
 - `ATR[end_idx]` 必须存在且 `> 0`；
-- ATR 不可用或长度不对：**fail-closed**，本次不产生回踩确认/不建 pending，诊断写「ATR 不可用，无法验证反向腿」；
+- ATR 不可用或长度不对：**fail-closed**，本次不产生回踩确认/不建 pending，诊断写「无有效{下跌腿|反弹腿}：ATR 不可用，无法验证」；
+- 非单调腿：fail-closed，诊断写「无有效{下跌腿|反弹腿}：腿内出现{更低低点|更高高点}（超出 X.XXATR > 容差 0.50ATR，非单边腿）」；
 - 不做任何未来数据引用；不使用 `klines[-1]`（未收盘根）。
 
 ### 4.5 豁免与停用
 
-- `touch_ref == TOUCH_RETEST`：跳过腿门；
 - `pullback_leg_gate_enabled = false`：跳过腿门（生产回滚开关）；
-- `pullback_leg_min_bars = 0` 且 `pullback_leg_min_atr = 0`：等价于腿门关闭（兼容用，推荐使用显式开关）。
+- `pullback_leg_min_bars = 0` 且 `pullback_leg_min_atr = 0`：等价于腿门关闭（兼容用，推荐使用显式开关），单调性校验一并停用；
+- 2026-10-22-2 起**无触点豁免**：`retest` 与其余触点同口径过门。
 
 ## 5. 实现改动
 
@@ -125,6 +130,8 @@ from app.services.strategy.technical import atr_series, pullback_stabilize_bonus
 
 # 腿终点搜索窗口：覆盖单K反转与三K形态（启明星/黄昏星的星线）
 LEG_END_WINDOW_BARS = 2
+# 腿单调性容差（2026-10-22-2，ARIA 个案）：内部反向极值比终点深出 >0.5 ATR 即拒绝
+LEG_OVERSHOOT_ATR = 0.5
 ```
 
 #### 新增 helper
@@ -151,6 +158,7 @@ def _pullback_leg_gate(
     "leg_start_price": float,
     "leg_end_price": float,
     "atr": float,
+    "overshoot_atr": float,   # 腿内反向极值超出终点的幅度（ATR 倍数，2026-10-22-2）
 }
 ```
 
@@ -162,19 +170,14 @@ def _pullback_leg_gate(
 
 ```python
 leg_rejected = False
-if (
-    touch_ref is not None
-    and touch_ref != TOUCH_RETEST
-    and flt.pullback_leg_gate_enabled
-):
+if touch_ref is not None and flt.pullback_leg_gate_enabled:
     leg_ok, leg_ev = _pullback_leg_gate(klines, direction, flt)
     if not leg_ok:
         leg_word = "下跌腿" if direction == 1 else "反弹腿"
+        # 分支文案：atr_unavailable / non_monotonic / bars+atr_mult
         _diag_note(
             diag,
-            f"回踩{_touch_ref_label(touch_ref, direction)}前无有效{leg_word}："
-            f"{leg_ev.get('bars', 0)}根/{leg_ev.get('atr_mult', 0.0):.2f}ATR "
-            f"< 门槛 {flt.pullback_leg_min_bars}根/{flt.pullback_leg_min_atr:.2f}ATR",
+            f"回踩{_touch_ref_label(touch_ref, direction)}前无有效{leg_word}：…",
         )
         touch_ref = None
         touch_price = None
@@ -184,7 +187,7 @@ if (
 行为要求：
 
 1. **行 2**：`touch_ref` 被置空后不再走当根确认；
-2. **行 3**：若存在方向相同且仍在窗口内的有效 pending，仍允许用本根金K确认该 pending（pending 的 Stage-1 触点当时已过腿门）；
+2. **行 3**：确认既有有效 pending 前，以确认根之前的K线**复校腿门**（2026-10-22-2，ARIA 个案）——Stage-1 建池时过门不代表确认时语境仍有效；复校不过则本根不确认、pending 保持等待（窗口耗尽后自然过期），诊断写「待确认未确认：确认根前无有效{下跌腿|反弹腿}：…」；
 3. **行 3 的通用诊断**：当 `leg_rejected=True` 时，不再追加「金K未触发：本根出现同向金K但无回踩触点/待确认语境（纯金K不触发）」，避免与腿门死因重复；
 4. **行 5**：`touch_ref` 被置空后不再 upsert pending；
 5. **行 6/7**：按无触碰处理，既有 pending 的窗口计时与方向失效逻辑保持不变；
@@ -208,18 +211,21 @@ if (
 2. `test_leg_gate_accepts_short_after_rebound`：3 根反弹且幅度 ≥0.5 ATR + 看跌吞没 → `trigger_pullback_confirm`；
 3. `test_leg_gate_rejects_long_without_decline`：上涨中继、1 根回撤 + 看涨吞没 → 无触发、无 upsert；
 4. `test_leg_gate_accepts_long_after_decline`：3 根下跌且幅度 ≥0.5 ATR + 看涨吞没 → `trigger_pullback_confirm`；
-5. `test_leg_gate_exempts_retest`：将 helper 打成拒绝，retest 触点仍触发（验证豁免分支）；
-6. `test_leg_gate_disabled_switch`：`pullback_leg_gate_enabled=False` 时平坦K线可正常 upsert/确认；
-7. `test_leg_gate_zero_thresholds_disabled`：`min_bars=0` 且 `min_atr=0` 时通过；
-8. `test_leg_gate_atr_alignment`：构造已知 ATR 序列，断言 `ATR[end_idx]` 与信号K线口径一致；
-9. `test_leg_gate_no_lookahead`：改动未收盘根 `klines[-1]` 不改变判定结果。
+5. `test_leg_gate_rejects_non_monotonic_{short,long}_leg`：腿内出现比终点更深的反向极值（>0.5 ATR）→ 非单调拒绝（2026-10-22-2，ARIA 个案）；
+6. `test_trigger_retest_requires_leg_gate` / `test_trigger_retest_confirms_with_valid_leg`：retest 无有效反向腿不确认、有真实反向腿照常确认（不再豁免）；
+7. `test_trigger_row3_confirm_rechecks_leg_context`：Stage-1 建池时腿门通过，但确认根前价格连涨、腿内出现更低低点 → 本根不确认、pending 不处置，诊断含「待确认未确认」「更低低点」（2026-10-22-2，ARIA 个案）；
+8. `test_trigger_row3_confirm_with_valid_leg_context`：确认根前腿门复校通过 → 照常 `trigger_pullback_confirm` + `{"op":"confirm"}`（复校不等于封杀次根确认）；
+9. `test_leg_gate_disabled_switch`：`pullback_leg_gate_enabled=False` 时平坦K线可正常 upsert/确认；
+10. `test_leg_gate_zero_thresholds_disabled`：`min_bars=0` 且 `min_atr=0` 时通过；
+11. `test_leg_gate_atr_alignment`：构造已知 ATR 序列，断言 `ATR[end_idx]` 与信号K线口径一致；
+12. `test_leg_gate_no_lookahead`：改动未收盘根 `klines[-1]` 不改变判定结果。
 
 夹具复用：新文件内复制 `_klines`、`_ema21_of`、`_set_signal_candle` 的最小实现（约 30 行），避免跨测试文件导入与改动既有夹具。
 
 ### 6.2 调整既有测试
 
 - `backend/tests/test_trigger_two_stage.py`：新增 autouse fixture，将 `trig._pullback_leg_gate` 打成 `lambda *a, **k: (True, {"bars": 3, "atr_mult": 1.0})`，隔离矩阵逻辑；矩阵用例语义不变。
-- `backend/tests/test_touch_refs.py`：非 retest 触点用例使用平坦夹具，预期受腿门影响；加同样的 autouse bypass，并新增/保留一个「retest 豁免」用例，在该用例内显式把 helper 打成拒绝，断言仍触发。
+- `backend/tests/test_touch_refs.py`：非 retest 触点用例使用平坦夹具，预期受腿门影响；加同样的 autouse bypass（2026-10-22-2 起 retest 不再豁免，该文件全部 detect_trigger 路径统一 bypass，retest 过门行为在 test_pullback_leg_gate.py 专测）。
 - `backend/tests/test_scan_funnel.py`、`backend/tests/test_strategies.py`：运行全量测试后，对因平坦夹具导致回踩用例失败的，加同样 bypass；不得为了通过测试而放宽生产默认值。
 - `backend/tests/test_scan_filters.py`：新增默认值与覆盖解析断言。
 
@@ -236,7 +242,7 @@ cd /Users/wangwei/Documents/github/trading-workbench/backend
 - 新增用例全部通过；
 - 全量测试 0 failed；
 - 平坦夹具下的既有矩阵/触点用例通过（通过显式 bypass，而非修改生产默认值）；
-- retest 用例在 helper 被打成拒绝时仍能触发。
+- retest 用例：无有效反向腿时不触发，有真实反向腿时照常触发（2026-10-22-2 起不再豁免）。
 
 ## 7. 文档同步
 
@@ -250,10 +256,11 @@ cd /Users/wangwei/Documents/github/trading-workbench/backend
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| 过度过滤有效回踩 | 信号数下降 | 默认仅 2 根/0.5 ATR；`retest` 豁免；可配置；一键停用 |
+| 过度过滤有效回踩 | 信号数下降 | 默认仅 2 根/0.5 ATR；可配置；一键停用（2026-10-22-2 起 retest 同口径，快速回测单可能减少） |
 | 浅幅多根反弹漏过 | APR 类伪信号仍可能出现 | 可将 `pullback_leg_min_atr` 提高到 0.8~1.0；先观察漏斗死因分布 |
+| 宽幅震荡陈旧腿伪装回踩 | 上涨后的回测位金K被误命中（ARIA 个案） | 单调性校验 0.5 ATR；超容差拒绝并记「非单边腿」 |
 | ATR 口径错位 | 门槛失真 | 单测锁定 `atr_series` 与已收盘K线对齐；fail-closed |
-| 旧 pending 未过门 | 部署后 4 根窗口内少量旧 pending 可确认 | 窗口最长 4 根，自动过期；无需迁移 |
+| 旧 pending 未过门 | 部署后少量旧 pending 可能按旧语境确认 | 2026-10-22-2 起行3 确认侧以确认根之前K线复校腿门，不过则本根不确认、pending 保持等待；窗口最长 4 根，自动过期；无需迁移 |
 | 配置误填 | 腿门异常 | `_bool/_int/_num` 容错；数值下限；非法值回落默认 |
 
 回滚：
@@ -271,7 +278,7 @@ cd /Users/wangwei/Documents/github/trading-workbench/backend
 
 1. **过滤强度：硬过滤**——不满足反向腿不产生回踩确认、不写待确认池，漏斗记录死因。
 2. **默认阈值：轻档**——`lookback=24`、`min_bars=2`、`min_atr=0.5`，优先避免过度过滤。
-3. **适用范围：除 retest 外全部触点**——EMA21/EMA21(4h)/EMA55/EMA144/摆动结构位均过腿门；`retest` 豁免。
+3. **适用范围：全部触点**——EMA21/EMA21(4h)/EMA55/EMA144/摆动结构位/`retest` 均过腿门（2026-10-22-2 修订：retest 不再豁免，ARIA 个案）。
 4. **不改前端/数据库/AI 提示词**：参数走既有 `scan_filters` JSONB。
 5. **测试隔离**：既有矩阵/触点测试通过显式 bypass 隔离腿门，不修改生产默认值。
 

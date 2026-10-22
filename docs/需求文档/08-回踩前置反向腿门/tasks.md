@@ -44,7 +44,7 @@
   - [x] `touch_ref = None`、`touch_price = None`、`leg_rejected = True`；
   - [x] 行 2 不再当根确认；
   - [x] 行 5 不再 upsert pending；
-  - [x] 行 3 仍可用本根金K确认既有有效 pending；
+  - [x] 行3 当时仍可用本根金K确认既有有效 pending（2026-10-22-2 已由 T11 收紧为确认侧复校）；
   - [x] 行 3 通用诊断在 `leg_rejected=True` 时抑制；
   - [x] 行 1 突破路径不受影响。
 
@@ -107,3 +107,24 @@
 - [x] `test_touch_refs.py` 补 autouse bypass（原实现遗漏；两个 swing 用例此前靠上述漏洞通过）。
 - [x] 定向 167 passed、全量 1142 passed。
 - [x] 同步 spec §4.1/§4.2/§4.3 与 02-信号触发器 §5.7 的窗口口径。
+
+## T10. ARIA 复盘收紧（2026-10-22-2）
+
+- [x] 定位：ARIAUSDT.P 上涨后的 retest 看涨吞没由 pending@retest 行3 确认命中——retest 豁免腿门 + 腿门未校验单调性（腿内低点比终点低约 2.6 ATR）。
+- [x] `trigger.py`：移除 retest 豁免（全部触点同口径过门）。
+- [x] `trigger.py`：新增 `LEG_OVERSHOOT_ATR = 0.5`，`_pullback_leg_gate` 增加单调性校验，返回 `reason="non_monotonic"` + `overshoot_atr`。
+- [x] 诊断文案：新增「腿内出现更低低点/更高高点（超出 X.XXATR > 容差 0.50ATR，非单边腿）」。
+- [x] `config.py`：`RULE_VERSION = "v2026-10-22-2"`。
+- [x] 测试：非单调多/空回归夹具 + helper 断言；retest 无腿不确认 / 有真实腿照常确认。
+- [x] 同步 spec、02-信号触发器 §5.1/§5.3/§5.7/历史、`scan_filters.py` 注释。
+- [x] 定向 + 全量测试通过；本地 conventional commit（不推送）。
+
+## T11. 行3 确认侧腿门复校（2026-10-22-2 补丁）
+
+- [x] 定位：ARIA 真实K线逐根回放中，retest 豁免移除 + 单调性校验后，旧 pending（10-21 20:00 建池）仍在 10-22 00:00 按 Stage-1 语境确认——确认侧未复校腿门。
+- [x] `trigger.py` 行3 有效 pending 分支：确认前用当前K线重跑 `_pullback_leg_gate`；不过则 `return None, None`（本根不确认、pending 保持等待），诊断写「待确认未确认：确认根前无有效{下跌腿|反弹腿}：…」。
+- [x] 提取 `_leg_reject_detail` 共用触点侧/确认侧拒绝文案。
+- [x] 回归用例：`_long_pending_then_rally`（拒绝）+ `_long_pending_then_confirm`（通过），62/60 根夹具确保 signal=60/58、anchor=56/57、elapsed≤4。
+- [x] 定向 174 passed、全量 1149 passed；ARIA 600 根逐根回放确认 2026-10-22 00:00 UTC 不再触发。
+- [x] 同步 spec §5.2/§6.1/§8、02-信号触发器 §5.3/§5.7/历史、`config.py` 版本注释。
+- [x] 本地 conventional commit（不推送）。

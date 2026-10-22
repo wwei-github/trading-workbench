@@ -77,7 +77,8 @@ SCAN_FILTER_KEYS = (
     "direction_vote_gate_enabled",      # ② 方向层：方向票关（方向票同向张数不足是否否决候选）
     "direction_conflict_gate_enabled",  # ② 方向层：方向冲突关（定向与 4h 闸门方向相反是否否决）
     # 回踩前置反向腿门（2026-10-22）：Stage-1 触点之前须存在一段反向腿
-    # （做多=下跌腿、做空=反弹腿），否则不建 pending/不确认；retest 豁免
+    # （做多=下跌腿、做空=反弹腿），否则不建 pending/不确认；retest 同样适用
+    # （2026-10-22-2，ARIA 个案：突破回测不天然等价于回踩）
     "pullback_leg_gate_enabled",        # ③ 触发层：腿门总开关（false=跳过）
     "pullback_leg_lookback_bars",       # ③ 触发层：腿搜索回看根数（1h）
     "pullback_leg_min_bars",            # ③ 触发层：反向腿最少持续根数
@@ -119,7 +120,8 @@ class ScanFilters:
     direction_vote_gate_enabled: bool = True
     direction_conflict_gate_enabled: bool = True
     # 回踩前置反向腿门（2026-10-22）：做多要求触点前一段下跌腿、做空要求一段反弹腿；
-    # 默认轻档（2 根 / 0.5 ATR），优先避免过度过滤；retest 触点豁免（trigger 内处理）
+    # 默认轻档（2 根 / 0.5 ATR），优先避免过度过滤；腿须单边（内部反向极值不得比
+    # 终点深出 0.5 ATR，2026-10-22-2）；retest 触点同样适用（trigger 内处理）
     pullback_leg_gate_enabled: bool = True
     pullback_leg_lookback_bars: int = 24
     pullback_leg_min_bars: int = 2

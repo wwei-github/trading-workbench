@@ -135,6 +135,13 @@ BREAKOUT_BODY_RANGE_MIN = 0.70   # 实体/K线全长 ≥ 0.70
 # N=2 覆盖启明星/黄昏星的星线在信号K线前一根的情形
 LEG_END_WINDOW_BARS = 2
 
+# 腿单调性容差（2026-10-22-2，ARIA 个案）：腿区间内部不得出现比腿终点更深的反向
+# 极值（做多=更低低点、做空=更高高点）——否则只是宽幅震荡里的「陈旧腿」：起点之后
+# 价格已先反向走得更远再收回，终点并非这段腿的真实极值（ARIA 腿内出现比终点低约
+# 2.6 ATR 的低点仍被当作下跌腿，导致上涨后的 retest 看涨吞没被命中）。0.5 ATR 容差
+# 吸收毛刺与近似双底/双顶。
+LEG_OVERSHOOT_ATR = 0.5
+
 
 def _is_solid_breakout_candle(klines: list[list], direction: int) -> bool:
     """突破K线必须为顺向长实体，影线可有但要短（2026-09-30-2 口径）。
@@ -281,8 +288,9 @@ def _pullback_leg_gate(
 
     腿终点在 [t-LEG_END_WINDOW_BARS, t-1] 内取极值（严格在信号K线之前——
     反转K线自身极值不算腿终点，覆盖启明星/黄昏星星线在 t-1 的情形）；腿起点
-    在终点之前、lookback 窗口内取反向极值。返回 (是否通过, 证据字典)；
-    ATR 不可用时 fail-closed。
+    在终点之前、lookback 窗口内取反向极值；腿区间内部若出现比终点更深的反向
+    极值（超出 LEG_OVERSHOOT_ATR）则视为非单边/陈旧腿拒绝。返回 (是否通过,
+    证据字典)；ATR 不可用时 fail-closed。
     """
     if direction not in (1, -1):
         return True, {"bars": 0, "atr_mult": 0.0, "reason": "direction_invalid"}
@@ -332,18 +340,49 @@ def _pullback_leg_gate(
     if not np.isfinite(atr) or atr <= 0:
         return False, {**empty, "reason": "atr_unavailable"}
 
+    # 非单调/陈旧腿校验（2026-10-22-2）：腿区间内部（不含起点与终点）不得出现比
+    # 终点更深的反向极值，否则终点不是这段腿的真实极值（宽幅震荡里的半截腿）。
+    if direction == 1:
+        interior_low = min(lows[start_idx + 1:end_idx], default=leg_end_price)
+        overshoot_atr = (leg_end_price - interior_low) / atr
+    else:
+        interior_high = max(highs[start_idx + 1:end_idx], default=leg_end_price)
+        overshoot_atr = (interior_high - leg_end_price) / atr
+
     atr_mult = amplitude / atr
     evidence = {
         "bars": bars, "atr_mult": atr_mult,
         "leg_start_idx": start_idx, "leg_end_idx": end_idx,
         "leg_start_price": leg_start_price, "leg_end_price": leg_end_price,
-        "atr": atr,
+        "atr": atr, "overshoot_atr": overshoot_atr,
     }
+    if overshoot_atr > LEG_OVERSHOOT_ATR:
+        return False, {**evidence, "reason": "non_monotonic"}
     ok = (
         bars >= max(0, int(flt.pullback_leg_min_bars))
         and atr_mult >= max(0.0, float(flt.pullback_leg_min_atr))
     )
     return ok, evidence
+
+
+def _leg_reject_detail(leg_ev: dict, direction: int, flt: ScanFilters) -> str:
+    """腿门拒绝原因文案（行2/行5 触点侧与行3 确认侧共用；leg_word 随方向化）。"""
+    leg_word = "下跌腿" if direction == 1 else "反弹腿"
+    if leg_ev.get("reason") == "atr_unavailable":
+        return f"无有效{leg_word}：ATR 不可用，无法验证"
+    if leg_ev.get("reason") == "non_monotonic":
+        extreme_word = "更低低点" if direction == 1 else "更高高点"
+        return (
+            f"无有效{leg_word}：腿内出现{extreme_word}"
+            f"（超出 {leg_ev.get('overshoot_atr', 0.0):.2f}ATR > 容差 "
+            f"{LEG_OVERSHOOT_ATR:.2f}ATR，非单边腿）"
+        )
+    return (
+        f"无有效{leg_word}：{leg_ev.get('bars', 0)}根/"
+        f"{leg_ev.get('atr_mult', 0.0):.2f}ATR < 门槛 "
+        f"{flt.pullback_leg_min_bars}根/"
+        f"{flt.pullback_leg_min_atr:.2f}ATR"
+    )
 
 
 def _detect_ema_touch(
@@ -879,31 +918,19 @@ def detect_trigger(
 
     # 回踩前置反向腿门（2026-10-22）：Stage-1 触点前须存在一段反向腿
     # （做多=下跌腿、做空=反弹腿）；不满足则不建 pending、不当根确认。
-    # retest 豁免：突破回测自带突破事件/结构推导语境，腿可能天然很短。
-    # 门不通过时把 touch_ref 置空，让流程自然落回「无当前触点」分支——
-    # 既有有效 pending 仍可用本根金K确认（其 Stage-1 触点当时已过门）。
+    # 2026-10-22-2：retest 不再豁免——ARIA 个案证明「上涨后的回测位看涨吞没」
+    # 同样会被误命中；突破回测不天然等价于回踩，必须同样存在前置反向腿。
+    # 门不通过时把 touch_ref 置空，让流程自然落回「无当前触点」分支。
+    # 行3 确认侧另以当前K线复校腿门（2026-10-22-2，ARIA 个案：pending 建立后价格
+    # 已连涨远离触点，旧口径仍按 Stage-1 语境确认 → 上涨末端的金K被误判为回踩）。
     leg_rejected = False
-    if (
-        touch_ref is not None
-        and touch_ref != TOUCH_RETEST
-        and flt.pullback_leg_gate_enabled
-    ):
+    if touch_ref is not None and flt.pullback_leg_gate_enabled:
         leg_ok, leg_ev = _pullback_leg_gate(klines, direction, flt)
         if not leg_ok:
-            if leg_ev.get("reason") == "atr_unavailable":
-                detail = "ATR 不可用，无法验证反向腿"
-            else:
-                leg_word = "下跌腿" if direction == 1 else "反弹腿"
-                detail = (
-                    f"{leg_ev.get('bars', 0)}根/"
-                    f"{leg_ev.get('atr_mult', 0.0):.2f}ATR < 门槛 "
-                    f"{flt.pullback_leg_min_bars}根/"
-                    f"{flt.pullback_leg_min_atr:.2f}ATR"
-                )
-                detail = f"无有效{leg_word}：{detail}"
             _diag_note(
                 diag,
-                f"回踩{_touch_ref_label(touch_ref, direction)}前{detail}",
+                f"回踩{_touch_ref_label(touch_ref, direction)}前"
+                f"{_leg_reject_detail(leg_ev, direction, flt)}",
             )
             touch_ref = None
             touch_price = None
@@ -942,6 +969,19 @@ def detect_trigger(
     # 2026-09-27）随之整体失效，配置键保留向后兼容；活跃 pending 照常终态处置。
     if touch_ref is None and golden:
         if pending_valid and pending and pending.get("direction") == direction:
+            # 行3 确认侧腿门复校（2026-10-22-2）：以确认根之前的K线重新度量反向腿——
+            # Stage-1 建池时过门不代表确认时语境仍有效（ARIA：pending 建立后价格
+            # 连涨 4 根远离触点，上涨末端的金K按旧口径仍被当作回踩确认）。
+            # 不通过则本根不确认、pending 保持等待（确认窗口耗尽后自然过期）。
+            if flt.pullback_leg_gate_enabled:
+                leg_ok, leg_ev = _pullback_leg_gate(klines, direction, flt)
+                if not leg_ok:
+                    _diag_note(
+                        diag,
+                        "待确认未确认：确认根前"
+                        + _leg_reject_detail(leg_ev, direction, flt),
+                    )
+                    return None, None
             p_ref = pending.get("touch_ref")
             # ema21 触点同样受 1H 结构门约束，但 2026-10-15 起复校只重罚不失效
             # （降级不否决，docs/21 O9）：结构不过照常确认，带 structure_gate=False
