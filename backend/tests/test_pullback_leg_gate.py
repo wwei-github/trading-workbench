@@ -4,6 +4,7 @@
 - 做多/做空：无反向腿拒绝、有反向腿放行；
 - Stage-1 触碰无金K：腿门不过不建 pending；
 - 非单调/陈旧腿拒绝（2026-10-22-2，ARIA 个案）；
+- 陈旧腿重锚最近一段（2026-10-22-3，MAGMA 个案）；
 - retest 不豁免（同样须过腿门）；
 - 行3 确认侧以确认根前K线复校腿门（2026-10-22-2）；
 - 总开关/零阈值停用；
@@ -145,6 +146,21 @@ def _long_non_monotonic() -> list[list]:
     )
 
 
+def _long_v_recovery_retest() -> list[list]:
+    """MAGMA 个案复现（2026-10-22-3）：更早的高点 101.5 → 深跌见底 98.4 →
+    V 型反弹到最近高点 100.8 → 回踩至 99.5 后收出锤形线。
+
+    旧口径取回看窗绝对最高点 101.5 作腿起点，会把早已走完的 98.4 算进
+    「本次回踩腿」并以非单调拒绝；以 98.4 为分界重锚后，腿 100.8→99.5
+    单边下移（3 根、约 1.7 ATR），应放行。
+    """
+    return _series(
+        [100.6, 101.2, 99.0, 99.4, 100.0, 100.5, 100.2, 100.0, 99.9, 100.3, 100.3],
+        [100.9, 101.5, 99.4, 99.8, 100.3, 100.8, 100.5, 100.3, 100.2, 100.4, 100.6],
+        [100.2, 100.8, 98.4, 99.0, 99.6, 100.2, 99.9, 99.7, 99.5, 99.0, 100.1],
+    )
+
+
 def _long_pending_then_rally() -> list[list]:
     """ARIA 型行3 反例：idx56 回踩 EMA21 建 pending（前置下跌腿 idx50→55），
     idx57-59 连涨远离触点，idx60 看涨吞没且不再触碰触点。
@@ -250,6 +266,21 @@ def test_leg_gate_rejects_non_monotonic_long_leg():
     assert ev["overshoot_atr"] > trig.LEG_OVERSHOOT_ATR
 
 
+def test_leg_gate_reanchors_stale_leg_at_recent_start():
+    """MAGMA 个案（2026-10-22-3）：腿内更深低点发生在更早时，以该低点为分界
+    重锚最近一段腿（100.8 → 99.5，3 根、单调），而不是用窗口绝对最高点 101.5。
+    """
+    kl = _long_v_recovery_retest()
+    ok, ev = trig._pullback_leg_gate(kl, 1, _flt())
+    assert ok is True
+    assert ev["leg_start_idx"] == 59
+    assert ev["leg_start_price"] == pytest.approx(100.8)
+    assert ev["leg_end_idx"] == 62
+    assert ev["bars"] == 3
+    assert ev["atr_mult"] >= 0.5
+    assert ev["overshoot_atr"] <= trig.LEG_OVERSHOOT_ATR
+
+
 def test_leg_gate_atr_alignment():
     """腿幅分母 = 腿终点那根已收盘K线的 ATR，与 atr_series 对齐。"""
     kl = _short_accept()
@@ -309,6 +340,16 @@ def test_trigger_rejects_long_without_decline():
 def test_trigger_accepts_long_after_decline():
     with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
         t, op = trig.detect_trigger(_long_accept(), 1, flt=_flt())
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["touch_ref"] == TOUCH_EMA21
+    assert op is None
+
+
+def test_trigger_accepts_long_after_v_recovery_retest():
+    """MAGMA 复现（2026-10-22-3）：V 型反弹后回踩，锤形线在重锚后的单边腿
+    末端当根确认（旧口径会因腿内含更早低点而误拒）。"""
+    with patch.object(trig, "detect_all_patterns", return_value=GOLDEN_LONG):
+        t, op = trig.detect_trigger(_long_v_recovery_retest(), 1, flt=_flt())
     assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
     assert t["touch_ref"] == TOUCH_EMA21
     assert op is None

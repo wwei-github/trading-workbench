@@ -277,6 +277,42 @@ def _pullback_volume_note(klines: list[list]) -> str:
     return note
 
 
+def _reanchor_stale_leg(
+    highs: list[float], lows: list[float], start_idx: int, end_idx: int,
+    direction: int, atr: float,
+) -> Optional[tuple[int, int, float, float, float]]:
+    """陈旧腿重锚（2026-10-22-3，MAGMA 个案）。
+
+    腿区间内部出现比终点更深的反向极值，说明当前起点之前还夹着上一段行情；
+    以该内部极值为分界，从其后重新取反向极值作为最近一段腿的起点（只重锚
+    一轮；重锚后腿内若仍有更早的陈旧极值，按非单调拒绝，避免级联放宽）。
+    返回 (新起点, bars, 起点价, 腿幅, 新 overshoot)；内部极值紧邻腿终点、
+    无法重锚时返回 None。
+    """
+    if direction == 1:
+        ext_idx = min(range(start_idx + 1, end_idx), key=lambda i: lows[i])
+        if ext_idx + 1 >= end_idx:
+            return None
+        new_start = max(range(ext_idx + 1, end_idx), key=lambda i: highs[i])
+        new_amp = highs[new_start] - lows[end_idx]
+        new_over = (
+            lows[end_idx]
+            - min(lows[new_start + 1:end_idx], default=lows[end_idx])
+        ) / atr
+        return new_start, end_idx - new_start, highs[new_start], new_amp, new_over
+
+    ext_idx = max(range(start_idx + 1, end_idx), key=lambda i: highs[i])
+    if ext_idx + 1 >= end_idx:
+        return None
+    new_start = min(range(ext_idx + 1, end_idx), key=lambda i: lows[i])
+    new_amp = highs[end_idx] - lows[new_start]
+    new_over = (
+        max(highs[new_start + 1:end_idx], default=highs[end_idx])
+        - highs[end_idx]
+    ) / atr
+    return new_start, end_idx - new_start, lows[new_start], new_amp, new_over
+
+
 def _pullback_leg_gate(
     klines: list[list], direction: int, flt: ScanFilters,
 ) -> tuple[bool, dict]:
@@ -288,9 +324,10 @@ def _pullback_leg_gate(
 
     腿终点在 [t-LEG_END_WINDOW_BARS, t-1] 内取极值（严格在信号K线之前——
     反转K线自身极值不算腿终点，覆盖启明星/黄昏星星线在 t-1 的情形）；腿起点
-    在终点之前、lookback 窗口内取反向极值；腿区间内部若出现比终点更深的反向
-    极值（超出 LEG_OVERSHOOT_ATR）则视为非单边/陈旧腿拒绝。返回 (是否通过,
-    证据字典)；ATR 不可用时 fail-closed。
+    默认取终点之前、lookback 窗口内的反向极值。腿区间内部若出现比终点更深的
+    反向极值（超出 LEG_OVERSHOOT_ATR），先尝试以该极值为分界重锚最近一段腿
+    （MAGMA 个案：更早的高点不属于本次回踩）；重锚后仍不满足单边/门槛则拒绝。
+    返回 (是否通过, 证据字典)；ATR 不可用时 fail-closed。
     """
     if direction not in (1, -1):
         return True, {"bars": 0, "atr_mult": 0.0, "reason": "direction_invalid"}
@@ -357,6 +394,23 @@ def _pullback_leg_gate(
         "atr": atr, "overshoot_atr": overshoot_atr,
     }
     if overshoot_atr > LEG_OVERSHOOT_ATR:
+        # 2026-10-22-3（MAGMA 个案）：腿内更深极值若发生在更早，说明默认起点
+        # 之前还夹着上一段行情；以该极值为分界重锚最近一段腿，重锚后满足
+        # 单边+门槛才放行，否则维持非单调拒绝。
+        anchor = _reanchor_stale_leg(highs, lows, start_idx, end_idx, direction, atr)
+        if anchor is not None:
+            ns, nb, nsp, namp, nover = anchor
+            if (
+                nover <= LEG_OVERSHOOT_ATR
+                and nb >= max(0, int(flt.pullback_leg_min_bars))
+                and namp / atr >= max(0.0, float(flt.pullback_leg_min_atr))
+            ):
+                return True, {
+                    "bars": nb, "atr_mult": namp / atr,
+                    "leg_start_idx": ns, "leg_end_idx": end_idx,
+                    "leg_start_price": nsp, "leg_end_price": leg_end_price,
+                    "atr": atr, "overshoot_atr": nover,
+                }
         return False, {**evidence, "reason": "non_monotonic"}
     ok = (
         bars >= max(0, int(flt.pullback_leg_min_bars))
