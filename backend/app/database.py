@@ -475,6 +475,19 @@ def _run_migrations(engine):
             "ALTER TABLE system_config "
             "ADD COLUMN IF NOT EXISTS scan_filters JSONB"
         ))
+        # 类型对齐（2026-10-22）：全新库由 create_all 按模型 JSON 建成 json，
+        # 上面的 ADD COLUMN IF NOT EXISTS 对已存在列 no-op，不会改成 jsonb；
+        # 下方 jsonb 运算符迁移（@> / <@ / jsonb_set）在 json 列上直接报
+        # UndefinedFunction，init_db 失败 → backend/celery 全部重启。显式对齐。
+        _scan_filters_type = conn.execute(text(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name = 'system_config' AND column_name = 'scan_filters'"
+        )).scalar()
+        if _scan_filters_type == "json":
+            conn.execute(text(
+                "ALTER TABLE system_config "
+                "ALTER COLUMN scan_filters TYPE JSONB USING scan_filters::jsonb"
+            ))
         # 筛选漏斗（2026-10-11）：每轮扫描的关卡计数+被拒币种明细（symbol→关卡），
         # 前端「筛选漏斗」Tab 展示卡在哪一步；旧行/异常轮次 NULL
         conn.execute(text(
@@ -579,6 +592,23 @@ def _run_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_trade_reviews_touch_ref "
             "ON trade_reviews (touch_ref)"
         ))
+        # 下线列默认值补齐（2026-10-22 生产事故）：ai_pipeline_enabled /
+        # dual_judge_enabled 已停用，种子 INSERT 不再写入（96a0beb）；但生产库
+        # 建库时 create_all 按旧模型已建出这两列（NOT NULL 且无 server_default，
+        # 当时的 ADD COLUMN IF NOT EXISTS 因列已存在而 no-op）。PG 的 NOT NULL
+        # 校验先于 ON CONFLICT 判定——行已存在也会 NotNullViolation，init_db 整体
+        # 失败 → backend(uvicorn exit 3)/worker/beat(celery exit 2) 全部重启。
+        # 给存量列补默认值后裸 INSERT 才可正常走冲突跳过；列保留不 DROP（项目惯例）。
+        _legacy_bool_cols = conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'system_config' "
+            "  AND is_nullable = 'NO' AND column_default IS NULL "
+            "  AND column_name IN ('ai_pipeline_enabled', 'dual_judge_enabled')"
+        )).scalars().all()
+        for _col in _legacy_bool_cols:
+            conn.execute(text(
+                f"ALTER TABLE system_config ALTER COLUMN {_col} SET DEFAULT FALSE"
+            ))
         # 确保系统配置表有默认行（初始值从 env 注入）。
         # 注意必须包含所有 NOT NULL 列：全新库由 create_all 建表，模型列只有
         # Python 端 default 没有 server_default，漏列的裸 INSERT 会 NotNullViolation
