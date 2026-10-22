@@ -18,7 +18,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.models  # noqa: E402,F401
-from app.api.trades import fund_analytics  # noqa: E402
+from app.api.trades import _sum_unrealized, fund_analytics  # noqa: E402
 from app.database import Base  # noqa: E402
 from app.models.system_config import SystemConfig  # noqa: E402
 from app.models.trade import TradeRecord  # noqa: E402
@@ -84,3 +84,18 @@ def test_cancel_mark_restores_counting(db):
     fake.excluded = False
     db.commit()
     assert _summary(db).closed == 2
+
+
+def test_sum_unrealized_excludes_marked_open_symbol():
+    """账户概览浮动盈亏：在跑异常单币种剔除（2026-10-22 扩展到未平仓单）。
+
+    测试网 BTCDOMUSDT 异常持仓 +528.27 不得计入保证金余额/未实现盈亏/今日盈亏；
+    同账号其余持仓照常合计。空集合=对照组，确认过滤非空转。
+    """
+    positions = {
+        "BTCDOMUSDT": {"unrealized_pnl": 528.27},
+        "BTCUSDT": {"unrealized_pnl": -3.0},
+        "ETHUSDT": {"unrealized_pnl": None},
+    }
+    assert _sum_unrealized(positions, {"BTCDOMUSDT"}) == pytest.approx(-3.0)
+    assert _sum_unrealized(positions, set()) == pytest.approx(525.27)

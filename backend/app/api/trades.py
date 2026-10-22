@@ -54,6 +54,23 @@ def _account_scope_filter(model, scope: str):
     raise HTTPException(status_code=400, detail=f"scope 只支持 live/testnet/all 或账号 key（未知：{scope}）")
 
 
+_RUNNING_STATUSES = ("OPENED", "TP1_HIT", "TP2_HIT")
+
+
+def _sum_unrealized(positions: dict[str, dict], excluded_symbols: set[str]) -> float:
+    """在跑持仓浮动盈亏合计（异常单符号剔除，2026-10-22）。
+
+    excluded_symbols = 本账号已标记 excluded 的在跑单币种（如测试网 BTCDOMUSDT
+    异常持仓）：不计入账户概览的未实现盈亏/保证金余额/今日盈亏，交易统计的
+    「运行中」同口径剔除；仓位本身仍在交易所并继续受止损管理，仅展示口径剔除。
+    """
+    return sum(
+        float(p.get("unrealized_pnl") or 0)
+        for sym, p in positions.items()
+        if sym not in excluded_symbols
+    )
+
+
 @router.get("/account-summary")
 def account_summary(
     account_key: Optional[str] = Query(None, description="账号 key；缺省 testnet-1（安全默认）"),
@@ -67,6 +84,9 @@ def account_summary(
     ÷ 期初钱包（当前钱包−今日已实现，忽略日内划转，近似自洽）。
     收益统计按账号 account_key 过滤（NULL 旧行按 testnet 回落）。
     2026-10-03 删环境切换：账号由前端 scope 显式解析传入，缺省 testnet-1。
+    2026-10-22 异常持仓剔除：本账号已标记 excluded 的在跑单币种（如测试网
+    BTCDOMUSDT）不计入未实现盈亏与保证金余额/今日盈亏；钱包余额是交易所
+    balance（现金，本就不含浮动盈亏），保持原值。
     请求失败返回 available=False 前端降级显示「--」，不阻塞页面"""
     from app.services.binance_trader import BinanceTrader
     from app.services import account_registry as reg
@@ -80,14 +100,23 @@ def account_summary(
     testnet = acc.testnet if acc else True
     out: dict = {"testnet": testnet, "account_key": acc_key,
                  "account_name": acc.name if acc else acc_key, "available": False}
+    # 账号口径：account_key 精确匹配，NULL 旧行按 testnet 布尔回落
+    acc_cond = or_(
+        TradeRecord.account_key == acc_key,
+        and_(TradeRecord.account_key.is_(None), TradeRecord.testnet == testnet),
+    )
     try:
         trader = BinanceTrader(acc_key)
         wallet = trader.wallet_balance()          # 1 请求：wallet + available
         positions = trader.positions()            # 1 请求：未实现盈亏
-        unrealized = 0.0
-        for p in positions.values():
-            up = float(p.get("unrealized_pnl") or 0)
-            unrealized += up
+        excluded_symbols = set(db.execute(
+            select(TradeRecord.symbol).where(
+                acc_cond,
+                TradeRecord.status.in_(_RUNNING_STATUSES),
+                TradeRecord.excluded.is_(True),   # 异常单剔除（2026-10-22 扩展到在跑单）
+            )
+        ).scalars().all())
+        unrealized = _sum_unrealized(positions, excluded_symbols)
         margin_balance = wallet["wallet"] + unrealized
         # 北京当日 00:00 → UTC 边界（北京 = UTC+8）
         day_start_utc = (
@@ -95,11 +124,6 @@ def account_summary(
                 hour=0, minute=0, second=0, microsecond=0
             )
             - timedelta(hours=8)
-        )
-        # 账号口径：account_key 精确匹配，NULL 旧行按 testnet 布尔回落
-        acc_cond = or_(
-            TradeRecord.account_key == acc_key,
-            and_(TradeRecord.account_key.is_(None), TradeRecord.testnet == testnet),
         )
         today_realized = db.execute(
             select(func.coalesce(func.sum(TradeRecord.realized_pnl), 0.0)).where(

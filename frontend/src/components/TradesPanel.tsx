@@ -584,11 +584,14 @@ export default function TradesPanel() {
   }, [scopeRows, statusFilter])
 
   // 概览统计：在跑（三态，从当前范围列表算，按网拆分显示 2026-10-04）；
+  // 异常单（excluded）在跑单不计入「运行中」（2026-10-22，与账户概览浮动盈亏同口径）；
   // 其余取自 analytics 接口（closed/wins/win_rate/net_pnl 与资金分析页同源）；
   // avg_r = 全部已结算单 R 均值（含止盈止损，2026-10-12 取代仅计盈利单的 avg_win_r）；
   // avgWinR = 仅盈利单 R 均值，与 avg_r 并列展示（亏损单已剔除，偏乐观，勿与 avg_r 混用）
   const stats = useMemo(() => {
-    const runningRows = scopeRows.filter((r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status))
+    const runningRows = scopeRows.filter(
+      (r) => ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(r.status) && !r.excluded,
+    )
     const running = runningRows.length
     // 按网拆分（行数据自带 testnet 标记）：scope 选了单账号时只有一网有数，
     // 交易统计「运行中」退回纯数字显示
@@ -1464,8 +1467,8 @@ export default function TradesPanel() {
                 title={rec.excluded ? `取消 ${rec.symbol} 的异常单标记？` : `标记 ${rec.symbol} 为异常单？`}
                 description={
                   rec.excluded
-                    ? '取消后该单重新计入资金分析/复盘统计、熔断闸门与飞书日报'
-                    : '标记后该单不计入资金分析/复盘统计、不触发熔断、不进飞书日报；行保留可审计'
+                    ? '取消后该单重新计入资金分析/复盘统计、熔断闸门与飞书日报（在跑单同时恢复计入账户概览与「运行中」）'
+                    : '标记后该单不计入资金分析/复盘统计、不触发熔断、不进飞书日报；在跑单同时不计入账户概览浮动盈亏与「运行中」；行保留可审计'
                 }
                 okText={rec.excluded ? '取消标记' : '标记异常'}
                 okButtonProps={{ danger: !rec.excluded }}
