@@ -145,15 +145,19 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
     [watchlist],
   );
 
-  // 展开行：同时控制左侧 AI 分析折叠和右侧图表
+  // 展开行（行首图标）控制左侧 AI 分析；图表选中态独立保存——点击行只切换
+  // 右侧图表，不改变展开态，也不会因收起明细而清空图表（2026-10-23）
   const [expandedRowKeys, setExpandedRowKeys] = useState<string[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // 展开态只保留仍存在的行（2026-10-17：取消默认展开第一行，改为点击行才展开）
+  // 展开态/选中态只保留仍存在的行（2026-10-17：取消默认展开第一行，改为点击行才展开）
   useEffect(() => {
+    const ids = new Set(results.map((r) => r.id));
     setExpandedRowKeys((prev) => {
-      const stillValid = prev.filter((id) => results.some((r) => r.id === id));
+      const stillValid = prev.filter((id) => ids.has(id));
       return stillValid.length === prev.length ? prev : stillValid;
     });
+    setSelectedId((prev) => (prev && ids.has(prev) ? prev : null));
   }, [results]);
 
   // 按 scan_result_id 索引 AI 分析
@@ -165,9 +169,11 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
     return m;
   }, [aiAnalyses]);
 
-  // 图表跟随展开的行
+  // 图表跟随点击选中的行（无选中时回落到当前展开行）
   const selectedRecord =
-    results.find((r) => expandedRowKeys.includes(r.id)) || null;
+    results.find((r) => r.id === selectedId) ||
+    results.find((r) => expandedRowKeys.includes(r.id)) ||
+    null;
   const selectedAi = selectedRecord ? aiMap[selectedRecord.id] : undefined;
 
   // 每行的 AI 补充说明输入（scanResultId -> 输入内容）
@@ -895,6 +901,17 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
             position: ['bottomRight'],
           }}
           locale={{ emptyText: <Empty description="暂无命中币种" /> }}
+          onRow={(record) => ({
+            onClick: () => {
+              // 拖选文本时不切图（827980a 的误触问题，展开仍只由行首图标控制）
+              if (window.getSelection()?.toString()) return;
+              setSelectedId(record.id);
+            },
+            style: { cursor: "pointer" },
+          })}
+          rowClassName={(record) =>
+            record.id === selectedRecord?.id ? "ant-table-row-selected" : ""
+          }
           expandable={{
             expandedRowKeys,
             onExpand: (expanded, record) => {
