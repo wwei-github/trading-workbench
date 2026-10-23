@@ -361,6 +361,11 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
                 okCount += 1;
                 pendingCnt += 1;
                 results.push(`${t.net}已挂单等待入场（${res.account_key}）`);
+              } else if (res.trade_id) {
+                // 去重闸门（2026-10-23）：opened=false 但反查到本账号交易记录，
+                // 说明该分析已经开过单，不是风控拦截——不该显示「闸门未过」
+                okCount += 1;
+                results.push(`${t.net}已开过该单（${res.account_key}，未重复下单）`);
               } else {
                 results.push(`${t.net}未开：${res.block_reason || "闸门未过"}`);
               }
