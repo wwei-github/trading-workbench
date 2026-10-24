@@ -633,6 +633,7 @@ interface Props {
   symbol?: string // 扫描模式：实时K线 + AI 仓位标注
   tradeId?: string // 复盘模式：开单前200根 + 持仓全程 + 事件/区域标注
   limit?: number // 扫描模式拉取根数（默认 500）
+  defaultInterval?: '1h' | '4h' | '1d' // 扫描模式缺省周期（默认 1h；关注页用 1d 看日K）
   ai?: AIAnalysis // 扫描模式 AI 仓位标注
   // 变化时强制重新拉取 K 线（关注列表手动刷新用）
   refreshKey?: number
@@ -649,7 +650,7 @@ interface Props {
 }
 
 export default function KlineChart({
-  symbol, tradeId, limit = 500, ai, refreshKey = 0,
+  symbol, tradeId, limit = 500, defaultInterval = '1h', ai, refreshKey = 0,
   hitTime, touchTime, hitDirection = 0, tradeOverlay, hitSignalType, scanResultId,
 }: Props) {
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -660,10 +661,14 @@ export default function KlineChart({
   // 「更新」按钮进行中状态
   const [updating, setUpdating] = useState(false)
   // 周期切换：reqInterval 为拉取周期（复盘模式 null=跟随服务端默认
-  // cfg.kline_interval，可配非 1h/4h；扫描模式固定 '1h' 起步），serverInterval
-  // 为服务端实际返回档位。两者分离：首拉固化 serverInterval 不触发重拉
-  const [reqInterval, setReqInterval] = useState<string | null>(isReplay ? null : '1h')
-  const [serverInterval, setServerInterval] = useState<string>('1h')
+  // cfg.kline_interval，可配非 1h/4h；扫描模式由 defaultInterval 指定，默认 '1h'），
+  // serverInterval 为服务端实际返回档位。两者分离：首拉固化 serverInterval 不触发重拉
+  const [reqInterval, setReqInterval] = useState<string | null>(
+    isReplay ? null : defaultInterval,
+  )
+  const [serverInterval, setServerInterval] = useState<string>(
+    isReplay ? '1h' : defaultInterval,
+  )
 
   // 自动命中历史（2026-10-16）：所有扫描模式（symbol）K线图缺省显示该币最近
   // 3 天命中/触碰标注；外部已显式传入（HitHistoryPanel 指定行）时以传入为准，

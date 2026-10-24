@@ -1,7 +1,7 @@
 /**
  * 关注页（2026-10-25 改版）：去掉左侧关注表格，改为「币种切换栏 + 铺满的 K 线图」。
  * - 币种来自后端 watchlist（启动时种子 BTC/ETH/BNB/OKB/SOL，只补缺失、不删用户已有）
- * - 图表拉 1000 根：Vegas 慢隧道 EMA676 需要 ≥676 根 K 线才有值
+ * - 图表默认日K（1d），拉 1000 根：Vegas 慢隧道 EMA676 需要 ≥676 根 K 线才有值
  * - 刷新 = 重拉关注列表；删除当前 = 取消关注该币并自动切到剩余第一个
  */
 import { useEffect, useState } from "react";
@@ -128,7 +128,7 @@ export default function WatchlistPanel() {
       {/* 图表铺满剩余空间 */}
       <div style={{ flex: 1, minHeight: 0 }}>
         {selectedSymbol ? (
-          <KlineChart symbol={selectedSymbol} limit={1000} />
+          <KlineChart symbol={selectedSymbol} limit={1000} defaultInterval="1d" />
         ) : (
           <Empty
             description={
