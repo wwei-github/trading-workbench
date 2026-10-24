@@ -74,23 +74,32 @@ const VOL_DEF: ChartIndicatorDef = {
   order: -3,
 }
 
-// ── 宿主特例 2：EMA/MA 多周期族 ─────────────────────────────────────
+// ── 宿主特例 2：EMA/MA/Vegas 多周期族 ───────────────────────────────
 // 插件 EMA/SMA 单实例只出 plot0 一条线；多周期 = 多次 calculate 合并
 // （plot0_0/1/2…）+ 合成 plotConfig，线宽收细（主图多线叠加不抢眼）
 const MA_COLORS = ['#f0b90b', '#00bcd4', '#ff9800', '#b39ddb', '#ef5350']
 
 function compositeMA(
   registryId: string,
-  def: { id: string; name: string; prefix: string; defaults: number[]; order: number },
+  def: {
+    id: string
+    name: string
+    prefix: string
+    defaults: number[]
+    order: number
+    // 线色/参数标题可覆盖（Vegas 四线语义化配色用）
+    colors?: string[]
+    titles?: string[]
+  },
 ): ChartIndicatorDef {
   const entry = indicatorRegistry.find((e) => e.id === registryId)!
   const inputConfig: InputConfig[] = def.defaults.map((p, i) => ({
     id: `length${i + 1}`,
     type: 'int',
-    title: `周期${i + 1}`,
+    title: def.titles?.[i] ?? `周期${i + 1}`,
     defval: p,
     min: 1,
-    max: 500,
+    max: 1000,
   }))
   const defaultInputs: Record<string, unknown> = Object.fromEntries(
     def.defaults.map((p, i) => [`length${i + 1}`, p]),
@@ -119,7 +128,7 @@ function compositeMA(
       plotConfig: def.defaults.map((_p, i) => ({
         id: `plot0_${i}`,
         title: `${def.prefix}${lengthAt(inputs, i)}`,
-        color: MA_COLORS[i % MA_COLORS.length],
+        color: def.colors?.[i] ?? MA_COLORS[i % MA_COLORS.length],
         style: 'line' as const,
         lineWidth: 1,
       })),
@@ -145,11 +154,22 @@ const MA_MULTI = compositeMA('sma', {
   defaults: [5, 10, 30, 60],
   order: -1,
 })
+// Vegas 双 EMA 隧道（与后端 Vegas 策略同参）：快隧道 EMA144/169、慢隧道 EMA576/676。
+// 慢隧道需 676 根 K 线才有值——调用方拉取根数应 ≥1000（关注页图表已按此配置）
+const VEGAS = compositeMA('ema', {
+  id: 'vegas',
+  name: 'Vegas 通道',
+  prefix: 'EMA',
+  defaults: [144, 169, 576, 676],
+  colors: ['#f0b90b', '#ff9800', '#26a69a', '#42a5f5'],
+  titles: ['快线 EMA144', '快线 EMA169', '慢线 EMA576', '慢线 EMA676'],
+  order: -4,
+})
 
 // 宿主特例（先定 id），registry 条目按原始下标定 order；
 // 过滤掉与宿主特例同 id 的 registry 条目——ALL_INDICATORS 是数组，
 // 存在重复 id 会导致 INDICATOR_MAP 覆盖 + 面板重复 React key
-const HOST_DEFS: ChartIndicatorDef[] = [VOL_DEF, EMA_MULTI, MA_MULTI]
+const HOST_DEFS: ChartIndicatorDef[] = [VEGAS, VOL_DEF, EMA_MULTI, MA_MULTI]
 const HOST_IDS = new Set(HOST_DEFS.map((d) => d.id))
 const REGISTRY_DEFS: ChartIndicatorDef[] = indicatorRegistry
   .map((e, i) => fromRegistry(e, i))
@@ -163,11 +183,15 @@ const INDICATOR_MAP = new Map(ALL_INDICATORS.map((d) => [d.id, d]))
 export const getIndicator = (id: string): ChartIndicatorDef | undefined => INDICATOR_MAP.get(id)
 
 // 默认开启：EMA 多周期族（与后端趋势判断周期一致）+ VOL
+// Vegas 不默认开启：慢隧道需 ≥676 根 K 线，其他页面图表只拉 500 根会缺两条慢线
 export const DEFAULT_ENABLED_IDS = ['host-ema-multi', 'vol']
 
-// ── 常用指标（原 16 项保留 + VWAP/SuperTrend 高频项）──────────────────
+// ── 常用指标：最常用的 EMA / MACD / 成交量 / Vegas 置顶，其余为原常用白名单 ──
 export const COMMON_IDS = [
   'host-ema-multi',
+  'macd',
+  'vol',
+  'vegas',
   'host-ma-multi',
   'bb',
   'keltner',
@@ -175,8 +199,6 @@ export const COMMON_IDS = [
   'parabolic-sar',
   'supertrend',
   'vwap',
-  'vol',
-  'macd',
   'kdj',
   'rsi',
   'williams-r',

@@ -1,561 +1,144 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Table,
-  Tag,
-  Tooltip,
-  Empty,
-  Button,
-  Typography,
-  message,
-  Popconfirm,
-} from "antd";
-import {
-  CopyOutlined,
-  DeleteOutlined,
-  ReloadOutlined,
-  SyncOutlined,
-  StarFilled,
-} from "@ant-design/icons";
-import type { ColumnsType } from "antd/es/table";
+/**
+ * 关注页（2026-10-25 改版）：去掉左侧关注表格，改为「币种切换栏 + 铺满的 K 线图」。
+ * - 币种来自后端 watchlist（启动时种子 BTC/ETH/BNB/OKB/SOL，只补缺失、不删用户已有）
+ * - 图表拉 1000 根：Vegas 慢隧道 EMA676 需要 ≥676 根 K 线才有值
+ * - 刷新 = 重拉关注列表；删除当前 = 取消关注该币并自动切到剩余第一个
+ */
+import { useEffect, useState } from "react";
+import { Button, Empty, Popconfirm, Space, Typography, message } from "antd";
+import { DeleteOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useScanStore } from "../stores/scanStore";
-import { scanApi } from "../api/scan";
-import { copyText } from "../utils/clipboard";
-import {
-  SIGNAL_TYPE_MAP,
-  SIGNAL_TYPE_FILTERS,
-  POSITION_FILTERS,
-  PATTERN_FILTERS,
-  EMA_STATE_FILTERS,
-  emaStateTag,
-  patternStyle,
-  positionTag,
-} from "../constants/labels";
 import KlineChart from "./KlineChart";
-import AiExpandContent from "./AiExpandContent";
-import type { AIAnalysis, ScanResult, WatchlistItem } from "../types";
 
 const { Text } = Typography;
 
-interface WatchRow extends WatchlistItem {
-  price: number | null;
-  volume_24h: number | null;
-  scan: ScanResult | null;
-}
-
-const fmtVol = (v: number) => {
-  if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
-  if (v >= 1e6) return (v / 1e6).toFixed(2) + "M";
-  if (v >= 1e3) return (v / 1e3).toFixed(1) + "K";
-  return v.toFixed(0);
-};
-
-const fmtPrice = (v: number) =>
-  v < 1 ? v.toFixed(6) : v < 100 ? v.toFixed(4) : v.toFixed(2);
+// 展示名：BTCUSDT → BTC/USDT（非 USDT 计价原样保留）
+const shortName = (symbol: string) => `${symbol.replace(/USDT$/, "")}/USDT`;
 
 export default function WatchlistPanel() {
-  const {
-    watchlist,
-    fetchWatchlist,
-    removeFromWatchlist,
-    results,
-    loading,
-    fetchResults,
-    aiConfig,
-  } = useScanStore();
-  const colorScheme = useScanStore((s) => s.colorScheme);
+  const watchlist = useScanStore((s) => s.watchlist);
+  const fetchWatchlist = useScanStore((s) => s.fetchWatchlist);
+  const removeFromWatchlist = useScanStore((s) => s.removeFromWatchlist);
 
-  const [quotes, setQuotes] = useState<
-    Record<string, { price: number; volume_24h: number }>
-  >({});
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
-  // 折叠行（单开，与扫描结果一致）
-  const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
 
-  // ===== K 线手动刷新 =====
-  const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
-  // 每币种的图表重拉计数（刷新成功后 +1，触发 KlineChart 重新拉数据）
-  const [refreshKeys, setRefreshKeys] = useState<Record<string, number>>({});
-  // 手动刷新重跑信号判定后覆盖显示的最新信号（优先级高于全量扫描 results）
-  const [refreshedScans, setRefreshedScans] = useState<Record<string, ScanResult>>({});
-
-  // ===== AI 分析（按币种管理，与扫描结果行展开布局一致） =====
-  const aiEnabled = !!aiConfig?.ai_analysis_enabled;
-  const [aiMap, setAiMap] = useState<Record<string, AIAnalysis>>({});
-  const [analyzing, setAnalyzing] = useState<
-    Record<string, { loading: boolean; error: string | null }>
-  >({});
-  const [userInputs, setUserInputs] = useState<Record<string, string>>({});
-  const pollTimersRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
-
-  const loadData = async () => {
-    fetchWatchlist();
-    scanApi.watchlist
-      .quotes()
-      .then((d) => {
-        const m: Record<string, { price: number; volume_24h: number }> = {};
-        for (const it of d.items) m[it.symbol] = it;
-        setQuotes(m);
-      })
-      .catch(() => undefined);
-    // 最新扫描结果（信号信息），为空时才拉取
-    if (results.length === 0) fetchResults().catch(() => undefined);
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      await fetchWatchlist();
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
-    loadData();
+    void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 组件卸载时清理 AI 轮询计时器
+  // 选中态跟随列表：默认选第一个；当前币种被删除后回落到剩余第一个
   useEffect(() => {
-    const timers = pollTimersRef.current;
-    return () => {
-      for (const id of Object.keys(timers)) {
-        clearInterval(timers[id]);
-        delete timers[id];
-      }
-    };
-  }, []);
-
-  // 组装行数据：行情 + 信号信息
-  // 优先级：手动刷新重跑的信号 > 当前全量扫描结果 > 后端嵌入的最近扫描结果
-  const rows: WatchRow[] = useMemo(
-    () =>
-      watchlist.map((w) => ({
-        ...w,
-        price: quotes[w.symbol]?.price ?? null,
-        volume_24h: quotes[w.symbol]?.volume_24h ?? null,
-        scan:
-          refreshedScans[w.symbol] ||
-          results.find((r) => r.symbol === w.symbol) ||
-          w.latest_scan ||
-          null,
-      })),
-    [watchlist, quotes, results, refreshedScans],
-  );
-
-  const handleDelete = async (symbol: string) => {
-    try {
-      await removeFromWatchlist(symbol);
-      message.success(`已删除 ${symbol}`);
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail || "删除失败");
-    }
-  };
-
-  const handleCopySymbol = async (e: React.MouseEvent, symbol: string) => {
-    e.stopPropagation();
-    const text = symbol + ".P";
-    // navigator.clipboard 在 http 非 localhost 下为 undefined，copyText 内降级 execCommand
-    if (await copyText(text)) {
-      message.success(`已复制: ${text}`);
-    } else {
-      message.error("复制失败（浏览器未授权剪贴板）");
-    }
-  };
-
-  // ===== K 线手动刷新：强制拉最新 K 线 + 重跑信号判定 =====
-  const handleRefresh = async (e: React.MouseEvent, symbol: string) => {
-    e.stopPropagation();
-    setRefreshing((prev) => ({ ...prev, [symbol]: true }));
-    try {
-      const d = await scanApi.watchlist.refresh(symbol);
-      setRefreshKeys((prev) => ({ ...prev, [symbol]: (prev[symbol] ?? 0) + 1 }));
-      if (d.hit && d.latest_scan) {
-        // 重跑命中：覆盖显示最新信号（类型/位置/EMA/形态随刷新更新）
-        setRefreshedScans((prev) => ({ ...prev, [symbol]: d.latest_scan! }));
-        const st = SIGNAL_TYPE_MAP[d.latest_scan.signal_type];
-        message.success(
-          `${symbol} 已更新：命中「${st?.label ?? d.latest_scan.signal_type}」（K线${d.kline_count}根）`,
-        );
-      } else {
-        // 未命中：不动原有命中记录，是否删除由用户决定
-        message.info(`${symbol} 已更新：当前未命中信号（保留原显示，K线${d.kline_count}根）`);
-      }
-    } catch (err: any) {
-      message.error(err?.response?.data?.detail || "刷新失败");
-    } finally {
-      setRefreshing((prev) => ({ ...prev, [symbol]: false }));
-    }
-  };
-
-  // ===== AI 分析 =====
-  const stopPolling = (symbol: string) => {
-    if (pollTimersRef.current[symbol]) {
-      clearInterval(pollTimersRef.current[symbol]);
-      delete pollTimersRef.current[symbol];
-    }
-  };
-
-  const setRowState = (
-    symbol: string,
-    state: { loading: boolean; error: string | null },
-  ) => {
-    setAnalyzing((prev) => ({ ...prev, [symbol]: state }));
-  };
-
-  // 触发后轮询：进度事件（Redis）判定分析进程结束（done/error）立即停止，
-  // 兜底每 5 轮查一次结果列表（进度事件丢失时仍能拿到结果）
-  const startPolling = (
-    symbol: string,
-    scanRecordId: string,
-    scanResultId: string,
-  ) => {
-    stopPolling(symbol);
-    setRowState(symbol, { loading: true, error: null });
-    let attempts = 0;
-    // 单次 AI 分析可达 2~5 分钟，放宽到 10 分钟
-    const maxAttempts = 200; // 200 次 × 3 秒 = 600 秒
-    pollTimersRef.current[symbol] = setInterval(async () => {
-      attempts++;
-      try {
-        const prog = await scanApi.aiProgress(scanResultId).catch(() => null);
-        const errEv = prog?.events.find((e) => e.t === "error");
-        if (errEv || prog?.status === "done") {
-          stopPolling(symbol);
-          if (errEv) {
-            setRowState(symbol, {
-              loading: false,
-              error: errEv.note || "AI 分析失败",
-            });
-          } else {
-            const d = await scanApi.aiAnalyses(scanRecordId);
-            const found = d.items.find((a) => a.scan_result_id === scanResultId);
-            if (found) setAiMap((prev) => ({ ...prev, [symbol]: found }));
-            setRowState(symbol, { loading: false, error: null });
-          }
-          return;
-        }
-        if (attempts % 5 === 0) {
-          const d = await scanApi.aiAnalyses(scanRecordId);
-          const found = d.items.find((a) => a.scan_result_id === scanResultId);
-          if (found) {
-            setAiMap((prev) => ({ ...prev, [symbol]: found }));
-            stopPolling(symbol);
-            setRowState(symbol, { loading: false, error: null });
-            return;
-          }
-        }
-        if (attempts >= maxAttempts) {
-          stopPolling(symbol);
-          setRowState(symbol, { loading: false, error: "AI 分析超时，请重试" });
-        }
-      } catch {
-        // 忽略轮询错误
-      }
-    }, 3000);
-  };
-
-  // 触发分析：有扫描结果走异步任务 + 轮询；无扫描结果走同步手动分析
-  const handleAnalyze = async (r: WatchRow) => {
-    if (!r.scan?.id || !r.scan?.scan_record_id) {
-      // 从未被扫描命中过：走手动搜索的同步分析（拉最新 K 线 + AI）
-      setRowState(r.symbol, { loading: true, error: null });
-      try {
-        const ai = await scanApi.analyzeCoin(r.symbol);
-        setAiMap((prev) => ({ ...prev, [r.symbol]: ai }));
-        setRowState(r.symbol, { loading: false, error: null });
-      } catch (e: any) {
-        setRowState(r.symbol, {
-          loading: false,
-          error: e?.response?.data?.detail || "AI 分析失败",
-        });
-      }
+    if (!watchlist.length) {
+      setSelectedSymbol(null);
       return;
     }
+    if (!selectedSymbol || !watchlist.some((w) => w.symbol === selectedSymbol)) {
+      setSelectedSymbol(watchlist[0].symbol);
+    }
+  }, [watchlist, selectedSymbol]);
 
-    const scanRecordId = r.scan.scan_record_id;
-    const scanResultId = r.scan.id;
+  const handleDelete = async () => {
+    if (!selectedSymbol) return;
+    setDeleting(true);
     try {
-      await scanApi.triggerAi(scanRecordId, scanResultId, userInputs[r.symbol]?.trim() || undefined);
-      startPolling(r.symbol, scanRecordId, scanResultId);
+      await removeFromWatchlist(selectedSymbol);
+      message.success(`已取消关注 ${selectedSymbol}`);
     } catch (e: any) {
-      setRowState(r.symbol, {
-        loading: false,
-        error: e?.response?.data?.detail || "触发 AI 分析失败",
-      });
+      message.error(e?.response?.data?.detail || "删除失败");
+    } finally {
+      setDeleting(false);
     }
   };
-
-  // 展开某行（显式单开）：选中图表 + 首次展开时预加载该币种已有的 AI 分析
-  const expandRow = (symbol: string) => {
-    setSelectedSymbol(symbol);
-    setExpandedKeys([symbol]);
-    if (!aiMap[symbol]) {
-      const scan = rows.find((r) => r.symbol === symbol)?.scan;
-      if (scan?.id && scan?.scan_record_id) {
-        scanApi
-          .aiAnalyses(scan.scan_record_id)
-          .then((d) => {
-            const found = d.items.find((a) => a.scan_result_id === scan.id);
-            if (found) setAiMap((prev) => ({ ...prev, [symbol]: found }));
-          })
-          .catch(() => undefined);
-      }
-    }
-  };
-
-  // 行点击：已展开则折叠，否则展开（显式判断，避免与展开图标双触发）
-  const handleRowClick = (symbol: string) => {
-    if (expandedKeys.includes(symbol)) {
-      setExpandedKeys([]);
-    } else {
-      expandRow(symbol);
-    }
-  };
-
-  const columns: ColumnsType<WatchRow> = [
-    {
-      title: "币种",
-      dataIndex: "symbol",
-      key: "symbol",
-      render: (v: string) => (
-        <span>
-          <StarFilled style={{ color: "#faad14", marginRight: 4 }} />
-          <strong>{v.replace("USDT", "")}/USDT</strong>
-          <Button
-            type="text"
-            size="small"
-            icon={<CopyOutlined />}
-            onClick={(e) => handleCopySymbol(e, v)}
-            style={{ marginLeft: 2, padding: "0 4px" }}
-          />
-        </span>
-      ),
-    },
-    {
-      title: "信号类型",
-      key: "signal_type",
-      filters: SIGNAL_TYPE_FILTERS,
-      filterMultiple: false,
-      onFilter: (value, r) => r.scan?.signal_type === value,
-      render: (_: unknown, r: WatchRow) => {
-        const v = r.scan?.signal_type;
-        if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const cfg = SIGNAL_TYPE_MAP[v] || { label: v, color: "default" };
-        // 触发原因挂信号类型悬停（突破/回踩行无 K线形态，原因只在这里可见）
-        return (
-          <Tooltip title={r.scan?.signal_reason || undefined}>
-            <Tag color={cfg.color}>{cfg.label}</Tag>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      title: "质量分",
-      key: "quality_score",
-      render: (_: unknown, r: WatchRow) => {
-        const v = r.scan?.quality_score;
-        if (v == null) return <span style={{ color: "#999" }}>-</span>;
-        const votes = r.scan?.votes_json;
-        const detail = votes
-          ? `方向票：多${votes.bull_n} vs 空${votes.bear_n}（净${votes.net > 0 ? "+" : ""}${votes.net} / 已投${votes.voted}）`
-            + (votes.bull.length ? `\n看多：${votes.bull.join("、")}` : "")
-            + (votes.bear.length ? `\n看空：${votes.bear.join("、")}` : "")
-          : undefined;
-        const color = v >= 75 ? "green" : v >= 60 ? "gold" : "default";
-        return (
-          <Tooltip title={detail}>
-            <Tag color={color} style={{ marginInlineEnd: 0, cursor: "default" }}>
-              {v}
-            </Tag>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      title: "位置",
-      key: "position",
-      filters: POSITION_FILTERS,
-      filterMultiple: false,
-      onFilter: (value, r) => r.scan?.position === value,
-      render: (_: unknown, r: WatchRow) => {
-        const v = r.scan?.position;
-        if (!v) return <span style={{ color: "#999" }}>-</span>;
-        // position 即形态/突破方向派生的角色
-        const { label, color } = positionTag(v);
-        return <Tag color={color}>{label}</Tag>;
-      },
-    },
-    {
-      title: "EMA",
-      key: "ema_state",
-      filters: EMA_STATE_FILTERS,
-      filterMultiple: false,
-      onFilter: (value, r) => r.scan?.ema_state === value,
-      render: (_: unknown, r: WatchRow) => {
-        const v = r.scan?.ema_state;
-        if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const cfg = emaStateTag(v, colorScheme);
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
-      },
-    },
-    {
-      title: "K线形态",
-      key: "pattern",
-      filters: PATTERN_FILTERS,
-      filterMultiple: false,
-      onFilter: (value, r) => r.scan?.pattern === value,
-      render: (_: unknown, r: WatchRow) => {
-        const v = r.scan?.pattern;
-        if (!v) return <span style={{ color: "#999" }}>-</span>;
-        const { label, color } = patternStyle(v, colorScheme);
-        return (
-          <Tooltip title={r.scan?.signal_reason || undefined}>
-            <Tag color={color}>{label}</Tag>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      title: "当前价格",
-      key: "price",
-      render: (_: unknown, r: WatchRow) =>
-        r.price != null ? fmtPrice(r.price) : "-",
-    },
-    {
-      title: "24h成交额",
-      dataIndex: "volume_24h",
-      key: "volume_24h",
-      sorter: (a, b) => (a.volume_24h ?? 0) - (b.volume_24h ?? 0),
-      render: (_: unknown, r: WatchRow) =>
-        r.volume_24h != null ? fmtVol(r.volume_24h) : "-",
-    },
-    {
-      title: "K线量能",
-      key: "volume_type",
-      render: (_: unknown, r: WatchRow) => {
-        const v = r.scan?.volume_type;
-        if (!v) return "-";
-        const colorMap: Record<string, string> = {
-          倍量: "red",
-          放量: "orange",
-          平量: "default",
-          缩量: "blue",
-          地量: "gray",
-        };
-        return <Tag color={colorMap[v] || "default"}>{v}</Tag>;
-      },
-    },
-    {
-      title: "操作",
-      key: "action",
-      width: 130,
-      render: (_: unknown, r: WatchRow) => (
-        <span onClick={(e) => e.stopPropagation()}>
-          <Tooltip title="拉取最新K线并缓存">
-            <Button
-              type="link"
-              size="small"
-              icon={<SyncOutlined spin={!!refreshing[r.symbol]} />}
-              loading={refreshing[r.symbol]}
-              onClick={(e) => handleRefresh(e, r.symbol)}>
-              更新
-            </Button>
-          </Tooltip>
-          <Popconfirm
-            title="确认删除该关注？"
-            onConfirm={(e) => {
-              e?.stopPropagation();
-              handleDelete(r.symbol);
-            }}
-            onCancel={(e) => e?.stopPropagation()}>
-            <Button
-              type="link"
-              danger
-              size="small"
-              icon={<DeleteOutlined />}
-              onClick={(e) => e.stopPropagation()}>
-              删除
-            </Button>
-          </Popconfirm>
-        </span>
-      ),
-    },
-  ];
 
   return (
-    <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
-      {/* 左侧：关注列表（与扫描结果同布局，行可折叠看 AI 分析） */}
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        overflow: "hidden",
+      }}>
+      {/* 顶部：币种切换 + 刷新 / 删除当前（单行，不挤占图表高度） */}
       <div
         style={{
-          flex: "0 0 55%",
           display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          paddingRight: 8,
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 8,
+          flexShrink: 0,
         }}>
-        <div style={{ marginBottom: 8, flexShrink: 0 }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 4,
+            flex: 1,
+            minWidth: 0,
+            overflowX: "auto",
+            paddingBottom: 2,
+          }}>
+          {watchlist.map((w) => (
+            <Button
+              key={w.symbol}
+              size="small"
+              type={w.symbol === selectedSymbol ? "primary" : "default"}
+              onClick={() => setSelectedSymbol(w.symbol)}
+              style={{ flexShrink: 0 }}>
+              {shortName(w.symbol)}
+            </Button>
+          ))}
+        </div>
+        <Space size={6} style={{ flexShrink: 0 }}>
           <Button
+            size="small"
             icon={<ReloadOutlined />}
-            onClick={loadData}
-            loading={loading}>
+            loading={loading}
+            onClick={refresh}>
             刷新
           </Button>
-          <Text type="secondary" style={{ marginLeft: 12 }}>
-            在"扫描结果"中点击币种旁的 ★ 即可加入关注；点击行展开 AI 分析
-          </Text>
-        </div>
-        <Table
-          rowKey="symbol"
-          className="result-table"
-          columns={columns}
-          dataSource={rows}
-          size="small"
-          pagination={false}
-          locale={{ emptyText: <Empty description="暂无关注币种" /> }}
-          onRow={(record) => ({
-            onClick: () => handleRowClick(record.symbol),
-            style: { cursor: "pointer" },
-          })}
-          rowClassName={(record) =>
-            record.symbol === selectedSymbol ? "ant-table-row-selected" : ""
-          }
-          expandable={{
-            expandedRowKeys: expandedKeys,
-            onExpand: (expanded, record) => {
-              if (expanded) handleRowClick(record.symbol);
-              else
-                setExpandedKeys((prev) =>
-                  prev.filter((s) => s !== record.symbol),
-                );
-            },
-            expandedRowRender: (record: WatchRow) => (
-              <AiExpandContent
-                aiEnabled={aiEnabled}
-                ai={aiMap[record.symbol]}
-                loading={!!analyzing[record.symbol]?.loading}
-                error={analyzing[record.symbol]?.error}
-                scanResultId={record.scan?.id}
-                userInput={userInputs[record.symbol] ?? ""}
-                onUserInput={(v) =>
-                  setUserInputs((m) => ({ ...m, [record.symbol]: v }))
-                }
-                onTrigger={() => handleAnalyze(record)}
-              />
-            ),
-            rowExpandable: () => true,
-          }}
-        />
+          <Popconfirm
+            title={`取消关注 ${selectedSymbol ?? ""}？`}
+            okText="删除"
+            cancelText="取消"
+            disabled={!selectedSymbol}
+            onConfirm={handleDelete}>
+            <Button
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              disabled={!selectedSymbol}
+              loading={deleting}>
+              删除当前
+            </Button>
+          </Popconfirm>
+        </Space>
       </div>
 
-      {/* 右侧：K线图（与扫描结果同布局） */}
-      <div
-        style={{
-          flex: "1 1 45%",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          paddingLeft: 8,
-          borderLeft: "1px solid #f0f0f0",
-        }}>
-        {!selectedSymbol ? (
-          <Empty description="点击一行查看图表" style={{ marginTop: 80 }} />
+      {/* 图表铺满剩余空间 */}
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {selectedSymbol ? (
+          <KlineChart symbol={selectedSymbol} limit={1000} />
         ) : (
-          <KlineChart
-            symbol={selectedSymbol}
-            limit={500}
-            refreshKey={refreshKeys[selectedSymbol] ?? 0}
+          <Empty
+            description={
+              <Text type="secondary">
+                {loading
+                  ? "加载关注列表…"
+                  : "暂无关注币种，可在「扫描结果」中点击 ★ 添加"}
+              </Text>
+            }
+            style={{ marginTop: 80 }}
           />
         )}
       </div>

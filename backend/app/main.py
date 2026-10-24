@@ -17,8 +17,9 @@ from app.api import (
     trades_router,
     watchlist_router,
 )
+from app.api.watchlist import seed_default_watchlist
 from app.config import settings
-from app.database import init_db
+from app.database import SessionLocal, init_db
 from app.services.feishu_bot import start_card_listener
 from app.services.log_sink import attach_db_log_sink
 
@@ -34,6 +35,14 @@ logger = logging.getLogger("app.api")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # 默认关注种子（BTC/ETH/BNB/OKB/SOL）：幂等补入，不覆盖用户已有列表
+    db = SessionLocal()
+    try:
+        seed_default_watchlist(db)
+    except Exception:
+        logger.exception("默认关注初始化失败（不影响启动）")
+    finally:
+        db.close()
     start_card_listener()  # 飞书卡片回调长连接（自建应用，未配置自动跳过）
     # P-09 事件驱动执行（docs/16）：user-data-stream + mark price 长连接，
     # EVENT_EXEC_ENABLED 开关控制（默认关）；失败吞掉不影响主服务，巡检兜底

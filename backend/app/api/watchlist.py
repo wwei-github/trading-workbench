@@ -24,6 +24,31 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
+# 默认关注（首次启动初始化）：关注页只保留图表，直接切换这几个主流币即可看图。
+# 顺序即页面展示顺序（列表按 created_at 倒序，故种子时间按倒序写入）。
+DEFAULT_WATCHLIST_SYMBOLS = ("BTCUSDT", "ETHUSDT", "BNBUSDT", "OKBUSDT", "SOLUSDT")
+
+
+def seed_default_watchlist(db: Session) -> int:
+    """幂等补入默认关注币种：只补缺失项，不删用户已有币种。
+
+    返回新增数量；已有同名币种（用户手动关注过）保持原样与原有排序。
+    """
+    existing = set(db.execute(select(Watchlist.symbol)).scalars().all())
+    now = datetime.utcnow()
+    added: list[str] = []
+    for i, symbol in enumerate(DEFAULT_WATCHLIST_SYMBOLS):
+        if symbol in existing:
+            continue
+        # 微秒级递减：BTC 最新 → SOL 最旧，与列表倒序一致
+        ts = now - timedelta(microseconds=i)
+        db.add(Watchlist(symbol=symbol, created_at=ts, updated_at=ts))
+        added.append(symbol)
+    if added:
+        db.commit()
+        logger.info("默认关注已补入 %d 个币种: %s", len(added), ", ".join(added))
+    return len(added)
+
 
 def normalize_symbol(raw: str) -> str:
     """规范币种输入：去空格转大写，未带 USDT 后缀时自动补全"""
