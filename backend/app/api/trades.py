@@ -132,9 +132,9 @@ def account_summary(
         and_(TradeRecord.account_key.is_(None), TradeRecord.testnet == testnet),
     )
     try:
-        trader = BinanceTrader(acc_key)
-        wallet = trader.wallet_balance()          # 1 请求：wallet + available
-        positions = trader.positions()            # 1 请求：未实现盈亏
+        # DB 先查完并释放连接，再做交易所 REST（2026-10-24）：account-summary 是
+        # 刷新链路里唯一走网络的端点，wallet_balance/positions 各 15s 超时，
+        # 期间一直持有池化连接会挤占列表/统计等纯 DB 请求（默认池 5+10）。
         excluded_symbols = set(db.execute(
             select(TradeRecord.symbol).where(
                 acc_cond,
@@ -142,8 +142,6 @@ def account_summary(
                 TradeRecord.excluded.is_(True),   # 异常单剔除（2026-10-22 扩展到在跑单）
             )
         ).scalars().all())
-        unrealized = _sum_unrealized(positions, excluded_symbols)
-        margin_balance = wallet["wallet"] + unrealized
         # 北京当日 00:00 → UTC 边界（北京 = UTC+8）
         day_start_utc = (
             (datetime.utcnow() + timedelta(hours=8)).replace(
@@ -166,6 +164,12 @@ def account_summary(
                 acc_cond,
             )
         ).scalar_one()
+        db.close()   # 归还连接（get_db 的 finally close 幂等）；此后不再使用 db
+        trader = BinanceTrader(acc_key)
+        wallet = trader.wallet_balance()          # 1 请求：wallet + available
+        positions = trader.positions()            # 1 请求：未实现盈亏
+        unrealized = _sum_unrealized(positions, excluded_symbols)
+        margin_balance = wallet["wallet"] + unrealized
         profit = float(realized) + unrealized
         principal = margin_balance - profit
         # 今日盈亏（已实现+未实现浮动）÷ 期初钱包 ≈ 当前钱包 − 今日已实现

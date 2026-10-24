@@ -441,11 +441,26 @@ export default function TradesPanel() {
     const seq = ++seqRef.current
     setLoading(true)
     const acctKey = resolveAcctKey(scope)
+    // 账户概览独立请求（2026-10-24）：account-summary 内含两次交易所 REST
+    // （各 15s 超时），并入 Promise.all 会让列表/统计被交易所抖动一起拖住；
+    // 拆出后仅概览区延迟刷新，失败静默（保留上次值/降级显示），不影响列表
+    scanApi.trades.accountSummary(acctKey)
+      .then((acctData) => {
+        if (seq !== seqRef.current) return
+        // 账户概览为我们显式请求的账号实时数据：key 不匹配（含缺省回落
+        // testnet-1）或交易所查询失败时丢弃/降级，不串数
+        const expectKey = acctKey ?? 'testnet-1'
+        const acctMatch =
+          acctData && acctData.available ? acctData.account_key === expectKey : false
+        if (acctMatch || (acctData && !acctData.available)) {
+          setAcct(acctData)
+        }
+      })
+      .catch(() => {})
     try {
-      const [list, analytics, acctData, pendings] = await Promise.all([
+      const [list, analytics, pendings] = await Promise.all([
         scanApi.trades.list(undefined, 500, scope),
         scanApi.trades.analytics({ scope }),
-        scanApi.trades.accountSummary(acctKey).catch(() => null),
         // 挂单历史一次拉全（status='' 不过滤）：挂单中/已成交/已取消三类由前端筛选；
         // 活跃挂单必是最新创建，300 条上限足以覆盖（在跑单数有上限）
         scanApi.trades.pendingEntries('', 300, scope).catch(() => [] as PendingEntry[]),
@@ -454,16 +469,6 @@ export default function TradesPanel() {
       setRows(list)
       setPendingRows(pendings)
       setSummary(analytics.summary)
-      // 账户概览为我们显式请求的账号实时数据：key 不匹配（含缺省回落 testnet-1）
-      // 或交易所查询失败时丢弃/降级，不串数
-      const expectKey = acctKey ?? 'testnet-1'
-      const acctMatch =
-        acctData && acctData.available ? acctData.account_key === expectKey : false
-      if (acctMatch) {
-        setAcct(acctData)
-      } else if (acctData && !acctData.available) {
-        setAcct(acctData)
-      }
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '获取交易记录失败')
     } finally {

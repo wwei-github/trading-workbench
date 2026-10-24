@@ -34,6 +34,18 @@ services:
     image: trading-workbench-backend:${IMAGE_TAG:-latest}
     env_file:
       - ./backend/.env
+    environment:
+      # 生产默认关闭 DEBUG（2026-10-24）：config.py 的 DEBUG 默认 True，线上 .env
+      # 未显式设置，导致 httpx/websockets 的 DEBUG 日志每秒写 20+ 行（容器日志
+      # 已积到 344MB）。environment 优先级高于 env_file，本地需要时用
+      # DEBUG=true docker compose up 覆盖
+      DEBUG: "${DEBUG:-false}"
+    logging:
+      # 日志轮转（2026-10-24）：json-file 默认无上限，单个容器日志已达 344MB
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     ports:
       - "8082:8000"
     depends_on:
@@ -51,6 +63,13 @@ services:
     # 并发 10：LLM 信号量 LLM_CONCURRENCY=8 + 预留 2 空位给即时开仓等短任务，
     # 不至于排在分钟级分析任务后面失去时效（任务以 LLM 网络等待为主，I/O 型）
     command: celery -A celery_worker.celery_app worker --loglevel=info --concurrency=10
+    environment:
+      DEBUG: "${DEBUG:-false}"   # 生产默认 INFO 日志（同 backend）
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     depends_on:
       db:
         condition: service_healthy
@@ -64,6 +83,13 @@ services:
     env_file:
       - ./backend/.env
     command: celery -A celery_worker.celery_app beat --loglevel=info -s /var/lib/celery/beat-schedule
+    environment:
+      DEBUG: "${DEBUG:-false}"   # 生产默认 INFO 日志（同 backend）
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     # schedule 文件持久化（2026-10-13）：默认容器内路径随容器重建丢失 last_run_at，
     # 结构盯盘等周期任务会漏跑；挂到 named volume 后重建保留，错过的整点按
     # crontab 语义补发一次
