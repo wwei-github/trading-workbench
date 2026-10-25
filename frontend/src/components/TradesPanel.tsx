@@ -1036,6 +1036,104 @@ export default function TradesPanel() {
       ),
     },
     {
+      title: '操作',
+      key: 'blacklist',
+      // 2026-10-18：新增「标记/取消异常」按钮（对账/拉黑并存），列宽 160→210
+      // 2026-10-25：从表格最右移至币种之后（去掉 fixed right，随列顺序展示）
+      width: 210,
+      render: (_: unknown, rec) => {
+        const inBl = blacklistSet.has(rec.symbol)
+        const running = ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(rec.status)
+        return (
+          <Space size={0} onClick={(e) => e.stopPropagation()}>
+            {running && (
+              <>
+                <Button
+                  size="small"
+                  type="link"
+                  loading={advisingId === rec.id}
+                  onClick={() => handleAdvice(rec)}
+                >
+                  重诊
+                </Button>
+                <Button
+                  size="small"
+                  type="link"
+                  danger
+                  loading={closingId === rec.id}
+                  onClick={() => handleCloseMarket(rec)}
+                >
+                  市价平仓
+                </Button>
+              </>
+            )}
+            {rec.status === 'CLOSED' && (
+              <Tooltip title="R 泄漏对账：计划 vs 实际 vs 泄漏分解（docs/24 A1）">
+                <Button size="small" type="link" onClick={() => openReconciliation(rec)}>
+                  对账
+                </Button>
+              </Tooltip>
+            )}
+            {/* 异常单标记（2026-10-18）：只在测试网单上提供——伪盈亏来自测试网
+                模拟撮合（如 HYPEUSDT 一笔 -2330.51）。标记后该单全链路剔除
+                （统计/复盘/熔断/日报），行保留可审计，可取消 */}
+            {rec.testnet && (
+              <Popconfirm
+                title={rec.excluded ? `取消 ${rec.symbol} 的异常单标记？` : `标记 ${rec.symbol} 为异常单？`}
+                description={
+                  rec.excluded
+                    ? '取消后该单重新计入资金分析/复盘统计、熔断闸门与飞书日报（在跑单同时恢复计入账户概览与「运行中」）'
+                    : '标记后该单不计入资金分析/复盘统计、不触发熔断、不进飞书日报；在跑单同时不计入账户概览浮动盈亏与「运行中」；行保留可审计'
+                }
+                okText={rec.excluded ? '取消标记' : '标记异常'}
+                okButtonProps={{ danger: !rec.excluded }}
+                cancelText="返回"
+                onConfirm={() => handleToggleExcluded(rec)}
+              >
+                <Button
+                  size="small"
+                  type="link"
+                  danger={!rec.excluded}
+                  loading={excludingId === rec.id}
+                >
+                  {rec.excluded ? '取消异常' : '标记异常'}
+                </Button>
+              </Popconfirm>
+            )}
+            {inBl ? (
+              <Popconfirm
+                title="移出黑名单？"
+                description="该币种将重新进入扫描候选池"
+                okText="移出"
+                cancelText="取消"
+                onConfirm={() => handleBlacklistRemove(rec.symbol)}
+              >
+                <Tooltip title="已在黑名单中，点击移出">
+                  <Button size="small" type="link" danger>
+                    移出
+                  </Button>
+                </Tooltip>
+              </Popconfirm>
+            ) : (
+              <Tooltip title="加入黑名单后，扫描将过滤该币种">
+                <Button
+                  size="small"
+                  type="link"
+                  icon={<StopOutlined />}
+                  onClick={() => {
+                    setBlTarget(rec)
+                    setBlReason('')
+                  }}
+                >
+                  拉黑
+                </Button>
+              </Tooltip>
+            )}
+          </Space>
+        )
+      },
+    },
+    {
       title: '环境',
       dataIndex: 'testnet',
       key: 'testnet',
@@ -1434,104 +1532,6 @@ export default function TradesPanel() {
       key: 'closed_at',
       width: 150,
       render: fmtTime,
-    },
-    {
-      title: '操作',
-      key: 'blacklist',
-      // 2026-10-18：新增「标记/取消异常」按钮（对账/拉黑并存），列宽 160→210
-      width: 210,
-      fixed: 'right',
-      render: (_: unknown, rec) => {
-        const inBl = blacklistSet.has(rec.symbol)
-        const running = ['OPENED', 'TP1_HIT', 'TP2_HIT'].includes(rec.status)
-        return (
-          <Space size={0} onClick={(e) => e.stopPropagation()}>
-            {running && (
-              <>
-                <Button
-                  size="small"
-                  type="link"
-                  loading={advisingId === rec.id}
-                  onClick={() => handleAdvice(rec)}
-                >
-                  重诊
-                </Button>
-                <Button
-                  size="small"
-                  type="link"
-                  danger
-                  loading={closingId === rec.id}
-                  onClick={() => handleCloseMarket(rec)}
-                >
-                  市价平仓
-                </Button>
-              </>
-            )}
-            {rec.status === 'CLOSED' && (
-              <Tooltip title="R 泄漏对账：计划 vs 实际 vs 泄漏分解（docs/24 A1）">
-                <Button size="small" type="link" onClick={() => openReconciliation(rec)}>
-                  对账
-                </Button>
-              </Tooltip>
-            )}
-            {/* 异常单标记（2026-10-18）：只在测试网单上提供——伪盈亏来自测试网
-                模拟撮合（如 HYPEUSDT 一笔 -2330.51）。标记后该单全链路剔除
-                （统计/复盘/熔断/日报），行保留可审计，可取消 */}
-            {rec.testnet && (
-              <Popconfirm
-                title={rec.excluded ? `取消 ${rec.symbol} 的异常单标记？` : `标记 ${rec.symbol} 为异常单？`}
-                description={
-                  rec.excluded
-                    ? '取消后该单重新计入资金分析/复盘统计、熔断闸门与飞书日报（在跑单同时恢复计入账户概览与「运行中」）'
-                    : '标记后该单不计入资金分析/复盘统计、不触发熔断、不进飞书日报；在跑单同时不计入账户概览浮动盈亏与「运行中」；行保留可审计'
-                }
-                okText={rec.excluded ? '取消标记' : '标记异常'}
-                okButtonProps={{ danger: !rec.excluded }}
-                cancelText="返回"
-                onConfirm={() => handleToggleExcluded(rec)}
-              >
-                <Button
-                  size="small"
-                  type="link"
-                  danger={!rec.excluded}
-                  loading={excludingId === rec.id}
-                >
-                  {rec.excluded ? '取消异常' : '标记异常'}
-                </Button>
-              </Popconfirm>
-            )}
-            {inBl ? (
-              <Popconfirm
-                title="移出黑名单？"
-                description="该币种将重新进入扫描候选池"
-                okText="移出"
-                cancelText="取消"
-                onConfirm={() => handleBlacklistRemove(rec.symbol)}
-              >
-                <Tooltip title="已在黑名单中，点击移出">
-                  <Button size="small" type="link" danger>
-                    移出
-                  </Button>
-                </Tooltip>
-              </Popconfirm>
-            ) : (
-              <Tooltip title="加入黑名单后，扫描将过滤该币种">
-                <Button
-                  size="small"
-                  type="link"
-                  icon={<StopOutlined />}
-                  onClick={() => {
-                    setBlTarget(rec)
-                    setBlReason('')
-                  }}
-                >
-                  拉黑
-                </Button>
-              </Tooltip>
-            )}
-          </Space>
-        )
-      },
     },
   ]
 
