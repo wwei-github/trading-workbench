@@ -185,13 +185,24 @@ export function tailHasGap(
   return fresh[0].time > lastPrev + INTERVAL_SEC[interval] * 1000
 }
 
-/** 尾部刷新合并（带断层保护）：有断层时只保留新页，避免图上出现时间断层 */
+/**
+ * 尾部新页是否「倒退」：返回页最新一根早于已有最新一根。
+ * 触发场景：后端所有交易所失败时降级返回旧缓存（allow_stale），前端不能把它
+ * 当成新数据合并/落盘，否则图上最新 K 线会回退，旧数据还会被标成刚刷新。
+ */
+export function tailRegressed(prev: Kline[], fresh: Kline[]): boolean {
+  if (!prev.length || !fresh.length) return false
+  return fresh[fresh.length - 1].time < prev[prev.length - 1].time
+}
+
+/** 尾部刷新合并（带断层/倒退保护）：有断层时只保留新页，倒退页直接丢弃 */
 export function mergeTailFresh(
   prev: Kline[],
   fresh: Kline[],
   interval: KlineInterval,
 ): Kline[] {
   if (!fresh.length) return prev
+  if (tailRegressed(prev, fresh)) return prev
   if (tailHasGap(prev, fresh, interval)) return dedupeSorted(fresh)
   return mergeTailBars(prev, fresh)
 }
@@ -367,6 +378,10 @@ async function writeMetaAndBars(
   )
 
   const prev = (await req(ms.get(key))) as CacheMeta | undefined
+  // 尾部新页最新一根倒退（后端降级返回旧缓存）：整页丢弃且不更新 tailFetchedAt，
+  // 避免把旧数据标成「刚刷新」让前端在 TTL 内不再重试
+  const regressed = mode === 'tail' && !!prev && prev.count > 0 && last < prev.newest
+  if (regressed) return
   // 尾部刷新且与缓存尾端不连续：旧段整体丢弃（与 mergeTailFresh 同一口径），
   // 只保留本次新页；noMore 复位，允许左滑按连续页重新拉回历史
   const gap =
@@ -385,10 +400,13 @@ async function writeMetaAndBars(
 
   for (const b of bars) ks.put({ symbol, interval, ...b })
 
+  // prev.count=0 时其 oldest 是占位值（空页 meta 可能写成 MAX_SAFE_INTEGER），
+  // 不能沿用，否则 orphanOlder 会把后续所有历史页误判为孤立而拒绝落库
+  const prevOldest =
+    prev && prev.count > 0 ? prev.oldest : Number.MAX_SAFE_INTEGER
   const meta: CacheMeta = {
     key,
-    oldest:
-      mode === 'older' ? Math.min(prev?.oldest ?? first, first) : gap ? first : (prev?.oldest ?? first),
+    oldest: gap ? first : Math.min(prevOldest, first),
     newest: gap ? last : Math.max(prev?.newest ?? last, last),
     count: 0, // 下面按实际总数重算，避免重叠段把计数算重
     noMore: mode === 'older' ? !hasMore : gap ? false : (prev?.noMore ?? false),

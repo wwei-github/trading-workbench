@@ -28,6 +28,7 @@ import {
   saveOlder,
   saveTail,
   tailHasGap,
+  tailRegressed,
   type KlineInterval,
 } from '../utils/klineDb'
 import { fmtPrice, pctDelta, rrRatio } from './klineShared'
@@ -843,6 +844,12 @@ export default function KlineChart({
           const liveSame =
             !!live && live.symbol === sym && live.interval === iv && live.klines.length > 0
           const base = liveSame ? live.klines : cached
+          // 后端所有交易所失败时会降级返回旧缓存：最新一根倒退，丢弃本次刷新
+          // （不落盘、不更新新鲜度，避免图上回退且旧数据被标成刚刷新）
+          if (liveSame && tailRegressed(base, fresh.klines)) {
+            setError(null)
+            return
+          }
           if (liveSame && tailHasGap(base, fresh.klines, iv)) noMoreRef.current = false
           const merged = mergeTailFresh(base, fresh.klines, iv)
           // 头部未变（用户已翻出的更早历史仍保留）时保持视口；否则回最新视图
@@ -979,6 +986,8 @@ export default function KlineChart({
         const live = dataRef.current as KlineData | null
         const liveSame =
           !!live && live.symbol === symbol && live.interval === iv && live.klines.length > 0
+        // 同上：倒退回旧缓存的响应不应用、不落盘
+        if (liveSame && tailRegressed(live.klines, fresh.klines)) return
         if (liveSame && tailHasGap(live.klines, fresh.klines, iv)) {
           noMoreRef.current = false
         }

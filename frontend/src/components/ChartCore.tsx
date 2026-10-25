@@ -444,6 +444,9 @@ export default function ChartCore({
   useEffect(() => {
     onReachLeftRef.current = onReachLeft
   }, [onReachLeft])
+  // 上一次真正应用的数据引用：prependCount 只对「新数据」生效一次，避免
+  // from/标记变化让同一批数据重复平移视口（表现为左滑跳双倍）
+  const lastAppliedDataRef = useRef<unknown>(null)
 
   // 初始化图表（chartKey 变化重建；水印/兜底高度随用法固定，不入依赖）
   useEffect(() => {
@@ -605,14 +608,19 @@ export default function ChartCore({
       close: k.close,
     }))
     // 视口保持（2026-10-25）：左滑 prepend 时整体右移新增根数；尾部刷新但头部
-    // 未变时（keepViewport）原地不动。两者都跳过 corridor，避免跳回最新视图
-    const prevRange =
-      keepViewport || prependCount > 0 ? chart.timeScale().getVisibleLogicalRange() : null
+    // 未变时（keepViewport）原地不动。两者都跳过 corridor，避免跳回最新视图。
+    // prependCount/keepViewport 只对「新数据」生效一次：依赖里的 from/标记变化
+    // 会让本 effect 重跑，此时不能再平移同一批数据
+    const dataChanged = lastAppliedDataRef.current !== data
+    lastAppliedDataRef.current = data
+    const shift = dataChanged ? prependCount : 0
+    const hold = dataChanged && keepViewport
+    const prevRange = hold || shift > 0 ? chart.timeScale().getVisibleLogicalRange() : null
     series.setData(candleData)
     if (prevRange) {
       chart.timeScale().setVisibleLogicalRange({
-        from: prevRange.from + prependCount,
-        to: prevRange.to + prependCount,
+        from: prevRange.from + shift,
+        to: prevRange.to + shift,
       })
     } else {
       // 切周期/更新后一律回到「最新K线靠右 + 预留走廊」视图（约最近 130 根）：
