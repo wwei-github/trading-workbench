@@ -215,6 +215,8 @@ export interface KlineData {
   interval: string;
   klines: Kline[];
   swings?: { highs: SwingPoint[]; lows: SwingPoint[] };
+  // 历史翻页（2026-10-25）：true=还可能有更早数据；空页由前端置 false
+  has_more?: boolean;
 }
 
 export interface SystemConfig {

@@ -97,6 +97,13 @@ interface Props {
   interval?: string
   onIntervalChange?: (v: string) => void
   intervalOptions?: { label: string; value: string }[]
+  // 左滑到可视区左沿时回调（2026-10-25 关注页历史翻页）；父组件负责加载与去重
+  onReachLeft?: () => void
+  // 本次 data 变化在头部新增的根数：>0 时保持当前视口，不回最新视图
+  prependCount?: number
+  // 保持当前视口不再套 corridor 视图（尾部刷新但头部未变时用；prependCount=0
+  // 表示原地不动）。周期切换/首次加载/断层重建时必须为 false
+  keepViewport?: boolean
   // 容器无高度时的兜底高度
   height: number
 }
@@ -386,7 +393,8 @@ function TvButton({ active, className, style, ...rest }: TvButtonProps) {
 export default function ChartCore({
   chartKey, watermark, label, data, from,
   ai, extraMarkers, drawOverlay, headerExtra, onUpdate, updating,
-  interval, onIntervalChange, intervalOptions, height,
+  interval, onIntervalChange, intervalOptions, onReachLeft, prependCount = 0,
+  keepViewport = false, height,
 }: Props) {
   // 全局涨跌配色（切换入口在页面顶部）/ 技术指标（store 共享，切换后所有图表同步生效）
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -431,6 +439,11 @@ export default function ChartCore({
   )
   // 图例数据：null 表示未悬浮 → 显示最新一根 K 线
   const [legend, setLegend] = useState<LegendData | null>(null)
+  // 左沿回调走 ref：图表实例只建一次，避免回调身份变化导致重复订阅
+  const onReachLeftRef = useRef(onReachLeft)
+  useEffect(() => {
+    onReachLeftRef.current = onReachLeft
+  }, [onReachLeft])
 
   // 初始化图表（chartKey 变化重建；水印/兜底高度随用法固定，不入依赖）
   useEffect(() => {
@@ -531,6 +544,19 @@ export default function ChartCore({
     }
     chart.subscribeCrosshairMove(handleCrosshair)
 
+    // 左滑触发历史翻页（2026-10-25）：可视区左沿进入前 15 根时回调一次，
+    // 600ms 内不重复触发；父组件用 loading/noMore 守卫，避免并发请求。
+    let lastLeftAt = 0
+    const handleVisibleRange = (range: { from: number; to: number } | null) => {
+      if (!range || !onReachLeftRef.current) return
+      if (range.from > 15) return
+      const now = Date.now()
+      if (now - lastLeftAt < 600) return
+      lastLeftAt = now
+      onReachLeftRef.current()
+    }
+    chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRange)
+
     // 自适应容器宽高
     const resize = () => {
       if (container && chartRef.current) {
@@ -546,6 +572,7 @@ export default function ChartCore({
     return () => {
       ro.disconnect()
       chart.unsubscribeCrosshairMove(handleCrosshair)
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRange)
       dmRef.current?.destroy()
       dmRef.current = null
       setActiveTool(null)
@@ -577,12 +604,23 @@ export default function ChartCore({
       low: k.low,
       close: k.close,
     }))
+    // 视口保持（2026-10-25）：左滑 prepend 时整体右移新增根数；尾部刷新但头部
+    // 未变时（keepViewport）原地不动。两者都跳过 corridor，避免跳回最新视图
+    const prevRange =
+      keepViewport || prependCount > 0 ? chart.timeScale().getVisibleLogicalRange() : null
     series.setData(candleData)
-    // 切周期/更新后一律回到「最新K线靠右 + 预留走廊」视图（约最近 130 根）：
-    // 走廊空位（rightOffset ≈110px）保证止盈止损价格标签不遮挡K线与价格轴；
-    // 不做旧视口时间锚定——恢复范围右沿贴最后一根K线（零边距）会顶掉走廊
-    const f = from ?? Math.max(0, candleData.length - 130)
-    applyCorridorView(chart, containerRef.current?.clientWidth, candleData.length, f)
+    if (prevRange) {
+      chart.timeScale().setVisibleLogicalRange({
+        from: prevRange.from + prependCount,
+        to: prevRange.to + prependCount,
+      })
+    } else {
+      // 切周期/更新后一律回到「最新K线靠右 + 预留走廊」视图（约最近 130 根）：
+      // 走廊空位（rightOffset ≈110px）保证止盈止损价格标签不遮挡K线与价格轴；
+      // 不做旧视口时间锚定——恢复范围右沿贴最后一根K线（零边距）会顶掉走廊
+      const f = from ?? Math.max(0, candleData.length - 130)
+      applyCorridorView(chart, containerRef.current?.clientWidth, candleData.length, f)
+    }
     // 完整 OHLCV 已由 useMemo 派生（candlePoints），指标/图例同提交更新
     setLegend(null)
 
@@ -618,7 +656,7 @@ export default function ChartCore({
 
     // extraMarkers 由父组件 useMemo 保证引用稳定
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, chartKey, from, extraMarkers])
+  }, [data, chartKey, from, extraMarkers, prependCount, keepViewport])
 
   // 渲染技术指标：插件 registry 全量驱动（lightweight-charts-indicators + IndicatorRenderer），
   // 计算与画线全部插件内建（Pine v6 口径）；VOL 仍为宿主直绘（成交量刻度插件不支持）。

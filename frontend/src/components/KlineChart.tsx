@@ -11,12 +11,25 @@
  * 交互统一（同 2026-10-08 复盘图口径）：切周期不清旧数据不整块 loading，
  * 旧图保留、新数据到达后 ChartCore 原地替换；仅首拉（无数据）整块反馈。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Empty, Spin } from 'antd'
 import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts'
 import { scanApi } from '../api/scan'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { SCHEME_UP_DOWN } from '../utils/scheme'
+import {
+  INTERVAL_SEC,
+  getMeta,
+  isTailFresh,
+  loadLatest,
+  loadOlder,
+  mergeOlderBars,
+  mergeTailFresh,
+  saveOlder,
+  saveTail,
+  tailHasGap,
+  type KlineInterval,
+} from '../utils/klineDb'
 import { fmtPrice, pctDelta, rrRatio } from './klineShared'
 import { dayjs } from '../utils/dayjs'
 import ChartCore, { type OverlayCtx } from './ChartCore'
@@ -647,17 +660,49 @@ interface Props {
   // 当前扫描结果 id（扫描模式）：该命中已有实际成交单时抑制 AI 计划线，
   // 只保留实际单覆盖层，避免同一笔在图上出现「做多」「开多」两组入场线
   scanResultId?: string
+  // 历史缓存（2026-10-25 关注页）：开启后走 IndexedDB 缓存优先 + 左滑历史翻页。
+  // 仅扫描模式有效；复盘模式（tradeId）仍走原有一次拉取
+  cacheHistory?: boolean
+  // 左滑每页根数（缓存不足时请求更早一页）
+  pageSize?: number
 }
 
 export default function KlineChart({
   symbol, tradeId, limit = 500, defaultInterval = '1h', ai, refreshKey = 0,
   hitTime, touchTime, hitDirection = 0, tradeOverlay, hitSignalType, scanResultId,
+  cacheHistory = false, pageSize = 1000,
 }: Props) {
   const colorScheme = useScanStore((s) => s.colorScheme)
   const isReplay = !!tradeId
   const [data, setData] = useState<KlineData | TradeKlineData | null>(null)
+  // 左滑 prepend 根数（与 data 同批更新）：ChartCore 据此保持视口不跳回最新
+  const [prependCount, setPrependCount] = useState(0)
+  // 尾部刷新但头部未变：保持视口原地不动（不套 corridor）
+  const [keepViewport, setKeepViewport] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // 缓存模式：数据源/周期变化用 epoch 失效在途请求，防止旧响应覆盖新周期
+  const dataRef = useRef<KlineData | TradeKlineData | null>(null)
+  const epochRef = useRef(0)
+  const loadingMoreRef = useRef(false)
+  const noMoreRef = useRef(false)
+  // 更新 data 与 dataRef（同一批 setState：ChartCore 一次 render 同时拿到
+  // 新数据与 prependCount，不会出现「新数据 + 旧 prepend」的错位帧）
+  const applyData = useCallback(
+    (
+      next: KlineData | TradeKlineData | null,
+      prepend = 0,
+      keep = prepend > 0,
+    ) => {
+      dataRef.current = next
+      setData(next)
+      setPrependCount(prepend)
+      setKeepViewport(keep)
+    },
+    [],
+  )
+  // 是否启用历史缓存（仅扫描模式）
+  const cacheOn = !isReplay && !!symbol && cacheHistory
   // 「更新」按钮进行中状态
   const [updating, setUpdating] = useState(false)
   // 周期切换：reqInterval 为拉取周期（复盘模式 null=跟随服务端默认
@@ -669,6 +714,8 @@ export default function KlineChart({
   const [serverInterval, setServerInterval] = useState<string>(
     isReplay ? '1h' : defaultInterval,
   )
+  // 缓存键周期（仅缓存模式使用；扫描模式下拉档位固定 1h/4h/1d）
+  const cacheInterval = (reqInterval ?? defaultInterval) as KlineInterval
 
   // 自动命中历史（2026-10-16）：所有扫描模式（symbol）K线图缺省显示该币最近
   // 3 天命中/触碰标注；外部已显式传入（HitHistoryPanel 指定行）时以传入为准，
@@ -727,6 +774,7 @@ export default function KlineChart({
   // 拉取 K 线（数据源/周期/refreshKey 变化重拉；首拉整块 loading，
   // 有数据时旧图保留平滑替换）
   useEffect(() => {
+    if (cacheOn) return // 缓存模式由下方专用 effect 负责
     let cancelled = false
     setLoading(true)
     const req = isReplay
@@ -735,7 +783,7 @@ export default function KlineChart({
     req
       .then((d) => {
         if (!cancelled) {
-          setData(d)
+          applyData(d)
           setError(null)
           setServerInterval(d.interval)
         }
@@ -750,31 +798,209 @@ export default function KlineChart({
     return () => {
       cancelled = true
     }
-  }, [isReplay, symbol, tradeId, limit, refreshKey, reqInterval])
+  }, [cacheOn, isReplay, symbol, tradeId, limit, refreshKey, reqInterval, applyData])
+
+  // 缓存模式（关注页）：缓存优先立即出图 → 后台刷新尾部并合并/落盘；
+  // epoch 序号在币种/周期/刷新变化时作废在途响应，避免串图
+  useEffect(() => {
+    if (!cacheOn || !symbol) return
+    const sym = symbol
+    const iv = cacheInterval
+    const epoch = ++epochRef.current
+    let cancelled = false
+    loadingMoreRef.current = false
+    noMoreRef.current = false
+    setLoading(true)
+
+    const run = async () => {
+      // 1) 缓存优先：先给已有历史（可能为空），首屏立即渲染
+      let cached: Kline[] = []
+      let meta: Awaited<ReturnType<typeof getMeta>> = null
+      try {
+        cached = await loadLatest(sym, iv, limit)
+        meta = await getMeta(sym, iv)
+      } catch {
+        /* 缓存不可用：直接走网络 */
+      }
+      if (cancelled || epoch !== epochRef.current) return
+      noMoreRef.current = !!meta?.noMore
+      if (cached.length) {
+        applyData({ symbol: sym, interval: iv, klines: cached })
+        setServerInterval(iv)
+        // 尾部仍新鲜（60s/10min 内）就不闪刷新提示
+        setLoading(!isTailFresh(meta, iv))
+      }
+
+      // 2) 尾部刷新：新页为权威，覆盖未收盘根，更早历史保留
+      try {
+        const fresh = await scanApi.klines(sym, limit, false, iv)
+        if (cancelled || epoch !== epochRef.current) return
+        if (fresh.klines.length) {
+          // 以当前展示数据为基准合并（用户可能已在等网络时左滑加载了更早历史），
+          // 尾部新页权威覆盖；有断层则丢弃旧段并复位 noMore（允许重新翻历史）。
+          // live 必须与当前 symbol/interval 同源，否则（切周期瞬间）会混入异周期数据
+          const live = dataRef.current as KlineData | null
+          const liveSame =
+            !!live && live.symbol === sym && live.interval === iv && live.klines.length > 0
+          const base = liveSame ? live.klines : cached
+          if (liveSame && tailHasGap(base, fresh.klines, iv)) noMoreRef.current = false
+          const merged = mergeTailFresh(base, fresh.klines, iv)
+          // 头部未变（用户已翻出的更早历史仍保留）时保持视口；否则回最新视图
+          const headKept = liveSame && merged[0]?.time === live.klines[0].time
+          applyData(
+            {
+              symbol: fresh.symbol,
+              interval: fresh.interval,
+              klines: merged,
+              swings: fresh.swings,
+            },
+            0,
+            headKept,
+          )
+          setServerInterval(fresh.interval)
+          void saveTail(sym, iv, fresh.klines)
+        } else if (!cached.length) {
+          applyData({ symbol: fresh.symbol, interval: fresh.interval, klines: [] })
+        }
+        setError(null)
+      } catch (e: any) {
+        if (!cancelled && epoch === epochRef.current) {
+          setError(e?.response?.data?.detail || 'K线数据获取失败')
+        }
+      } finally {
+        if (!cancelled && epoch === epochRef.current) setLoading(false)
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [cacheOn, symbol, limit, refreshKey, reqInterval, cacheInterval, applyData])
 
   // 数据源切换（换币/换单）：立即清旧数据防串图（周期切换不清，旧图平滑替换）
   useEffect(() => {
-    setData(null)
+    applyData(null)
     setError(null)
-  }, [symbol, tradeId])
+    noMoreRef.current = false
+    loadingMoreRef.current = false
+  }, [symbol, tradeId, applyData])
+
+  // 左滑到左沿：缓存优先取更早一页；缓存不足再按 end_time 请求交易所历史页。
+  // 只接受与当前最早一根严格相邻的页（差一个周期），有缺口即停止，避免图上串段
+  const handleReachLeft = useCallback(async () => {
+    if (!cacheOn || !symbol) return
+    if (loadingMoreRef.current || noMoreRef.current) return
+    const live = dataRef.current as KlineData | null
+    // 只对当前 symbol/interval 的同源数据翻页（切周期瞬间旧图仍在，不能混用）
+    if (!live || live.symbol !== symbol || live.interval !== cacheInterval || !live.klines.length) {
+      return
+    }
+    const sym = symbol
+    const iv = cacheInterval
+    const epoch = epochRef.current
+    const oldestMs = live.klines[0].time
+    const stepMs = INTERVAL_SEC[iv] * 1000
+    loadingMoreRef.current = true
+    try {
+      const cachedOlder = await loadOlder(sym, iv, oldestMs, pageSize)
+      if (epoch !== epochRef.current) return
+      if (cachedOlder.length) {
+        const lastCached = cachedOlder[cachedOlder.length - 1].time
+        if (lastCached + stepMs === oldestMs) {
+          const cur = dataRef.current as KlineData | null
+          // 等缓存期间可能发生尾部断层重建（头部变了）：本页已不连续，丢弃
+          if (!cur || cur.symbol !== sym || cur.interval !== iv || cur.klines[0].time !== oldestMs) {
+            return
+          }
+          applyData(
+            { ...cur, klines: mergeOlderBars(cur.klines, cachedOlder) },
+            cachedOlder.length,
+          )
+          return
+        }
+        // 缓存段与当前最早一根不连续：忽略该段，继续走交易所拉正确的一页
+      }
+
+      const meta = await getMeta(sym, iv)
+      if (epoch !== epochRef.current) return
+      if (meta?.noMore) {
+        noMoreRef.current = true
+        return
+      }
+
+      const resp = await scanApi.klinesBefore(sym, pageSize, oldestMs - 1, iv)
+      if (epoch !== epochRef.current) return
+      const before = resp.klines.filter((k) => k.time < oldestMs)
+      if (!before.length) {
+        noMoreRef.current = true
+        void saveOlder(sym, iv, [], false)
+        return
+      }
+      const lastNew = before[before.length - 1].time
+      if (lastNew + stepMs !== oldestMs) {
+        noMoreRef.current = true
+        return
+      }
+      const cur = dataRef.current as KlineData | null
+      // 等网络期间可能发生尾部断层重建（头部变了）：本页已不连续，丢弃不写缓存
+      if (!cur || cur.symbol !== sym || cur.interval !== iv || cur.klines[0].time !== oldestMs) {
+        return
+      }
+      applyData(
+        { ...cur, klines: mergeOlderBars(cur.klines, before) },
+        before.length,
+      )
+      // 交易所明确没有更早数据 → 本会话直接停；否则允许继续左滑
+      if (resp.has_more === false) noMoreRef.current = true
+      void saveOlder(sym, iv, before, resp.has_more !== false)
+    } catch (e: any) {
+      if (epoch === epochRef.current) {
+        setError(e?.response?.data?.detail || '更早K线获取失败')
+      }
+    } finally {
+      loadingMoreRef.current = false
+    }
+  }, [cacheOn, symbol, cacheInterval, pageSize, applyData])
 
   // 「更新」按钮：扫描模式=跳过缓存直连交易所拉最新K线；复盘模式=重拉
-  // （在跑单的持仓区间会延长）
+  // （在跑单的持仓区间会延长）。缓存模式下只刷新尾部，已加载的更早历史保留
   const handleUpdate = useCallback(async () => {
     setUpdating(true)
     try {
-      const d = isReplay
-        ? await scanApi.trades.klines(tradeId!, reqInterval ?? undefined)
-        : await scanApi.klines(symbol!, limit, true, reqInterval as '1h' | '4h' | '1d')
-      setData(d)
-      setServerInterval(d.interval)
+      if (isReplay) {
+        const d = await scanApi.trades.klines(tradeId!, reqInterval ?? undefined)
+        applyData(d)
+        setServerInterval(d.interval)
+      } else if (cacheOn) {
+        const iv = cacheInterval
+        const epoch = epochRef.current
+        const fresh = await scanApi.klines(symbol!, limit, true, iv)
+        if (epoch !== epochRef.current) return // 期间切了币种/周期：丢弃旧响应
+        const live = dataRef.current as KlineData | null
+        const liveSame =
+          !!live && live.symbol === symbol && live.interval === iv && live.klines.length > 0
+        if (liveSame && tailHasGap(live.klines, fresh.klines, iv)) {
+          noMoreRef.current = false
+        }
+        const merged = liveSame
+          ? mergeTailFresh(live.klines, fresh.klines, iv)
+          : fresh.klines
+        const headKept = liveSame && merged[0]?.time === live.klines[0].time
+        applyData({ ...fresh, klines: merged }, 0, headKept)
+        setServerInterval(fresh.interval)
+        void saveTail(symbol!, iv, fresh.klines)
+      } else {
+        const d = await scanApi.klines(symbol!, limit, true, reqInterval as '1h' | '4h' | '1d')
+        applyData(d)
+        setServerInterval(d.interval)
+      }
       setError(null)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'K线更新失败')
     } finally {
       setUpdating(false)
     }
-  }, [isReplay, symbol, tradeId, limit, reqInterval])
+  }, [isReplay, cacheOn, symbol, tradeId, limit, reqInterval, cacheInterval, applyData])
 
   // ── 复盘模式派生件（仅 tradeId 模式计算）────────────────────────────
   const replayData = isReplay ? (data as TradeKlineData | null) : null
@@ -921,6 +1147,9 @@ export default function KlineChart({
         interval={serverInterval}
         onIntervalChange={(v) => setReqInterval(v)}
         intervalOptions={intervalOptions}
+        onReachLeft={cacheOn ? handleReachLeft : undefined}
+        prependCount={cacheOn ? prependCount : 0}
+        keepViewport={cacheOn ? keepViewport : false}
       />
       {/* 切周期/更新重拉中：旧图保留，右上角轻量反馈（不遮工具栏与价格轴） */}
       {loading && (

@@ -60,6 +60,21 @@ export const scanApi = {
       })
       .then((r) => r.data),
 
+  // 历史翻页（2026-10-25 关注页 IndexedDB 缓存）：end_time 毫秒，返回截至该时刻的
+  // 最近 limit 根；has_more=false 或空页表示已到最早一根
+  klinesBefore: (
+    symbol: string,
+    limit: number,
+    endTimeMs: number,
+    interval: '1h' | '4h' | '1d',
+  ) =>
+    api
+      .get<KlineData>(`/scans/klines/${symbol}`, {
+        params: { limit, end_time: endTimeMs, interval },
+        timeout: 30000,
+      })
+      .then((r) => r.data),
+
   getConfig: () => api.get<SystemConfig>('/scans/config').then((r) => r.data),
 
   updateConfig: (data: Partial<SystemConfig>) =>

@@ -1,16 +1,32 @@
 /**
  * 关注页（2026-10-25 改版）：去掉左侧关注表格，改为「币种切换栏 + 铺满的 K 线图」。
  * - 币种来自后端 watchlist（启动时种子 BTC/ETH/BNB/OKB/SOL，只补缺失、不删用户已有）
- * - 图表默认日K（1d），拉 1000 根：Vegas 慢隧道 EMA676 需要 ≥676 根 K 线才有值
+ * - 图表默认日K（1d），首屏 1500 根：Vegas 慢隧道 EMA676 需要 ≥676 根 K 线；
+ *   开启 IndexedDB 缓存（1h/4h/1d），左滑到左沿继续加载更早历史
+ * - 后台低并发预缓存前 5 个关注币 × 1h/4h/1d（新鲜项按 meta 跳过）
  * - 刷新 = 重拉关注列表；删除当前 = 取消关注该币并自动切到剩余第一个
  */
 import { useEffect, useState } from "react";
 import { Button, Empty, Popconfirm, Space, Typography, message } from "antd";
 import { DeleteOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useScanStore } from "../stores/scanStore";
+import { scanApi } from "../api/scan";
+import {
+  getMeta,
+  isTailFresh,
+  saveTail,
+  type KlineInterval,
+} from "../utils/klineDb";
 import KlineChart from "./KlineChart";
 
 const { Text } = Typography;
+
+// 首屏/预缓存根数（Vegas EMA676 需要 ≥676 根）
+const PRELOAD_LIMIT = 1500;
+// 预缓存周期与并发（低并发避免抢占交易所与后端配额）
+const PRELOAD_INTERVALS: KlineInterval[] = ["1h", "4h", "1d"];
+const PRELOAD_SYMBOLS = 5;
+const PRELOAD_CONCURRENCY = 2;
 
 // 展示名：BTCUSDT → BTC/USDT（非 USDT 计价原样保留）
 const shortName = (symbol: string) => `${symbol.replace(/USDT$/, "")}/USDT`;
@@ -37,6 +53,40 @@ export default function WatchlistPanel() {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 后台预缓存（关注页首屏之外）：前 5 个关注币 × 1h/4h/1d，低并发；
+  // meta 尾端新鲜（1h/4h 60s、1d 10min）直接跳过，避免重复请求
+  useEffect(() => {
+    if (!watchlist.length) return;
+    let cancelled = false;
+    const tasks = watchlist
+      .slice(0, PRELOAD_SYMBOLS)
+      .flatMap((w) => PRELOAD_INTERVALS.map((iv) => ({ symbol: w.symbol, iv })));
+    const run = async () => {
+      const queue = [...tasks];
+      const worker = async () => {
+        while (!cancelled) {
+          const t = queue.shift();
+          if (!t) return;
+          try {
+            const meta = await getMeta(t.symbol, t.iv);
+            if (isTailFresh(meta, t.iv)) continue;
+            const d = await scanApi.klines(t.symbol, PRELOAD_LIMIT, false, t.iv);
+            if (d.klines.length) await saveTail(t.symbol, t.iv, d.klines);
+          } catch {
+            /* 预缓存失败不影响看图（打开时还会再拉一次） */
+          }
+        }
+      };
+      await Promise.all(
+        Array.from({ length: PRELOAD_CONCURRENCY }, () => worker()),
+      );
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [watchlist]);
 
   // 选中态跟随列表：默认选第一个；当前币种被删除后回落到剩余第一个
   useEffect(() => {
@@ -128,7 +178,13 @@ export default function WatchlistPanel() {
       {/* 图表铺满剩余空间 */}
       <div style={{ flex: 1, minHeight: 0 }}>
         {selectedSymbol ? (
-          <KlineChart symbol={selectedSymbol} limit={1000} defaultInterval="1d" />
+          <KlineChart
+            symbol={selectedSymbol}
+            limit={PRELOAD_LIMIT}
+            defaultInterval="1d"
+            cacheHistory
+            pageSize={1000}
+          />
         ) : (
           <Empty
             description={
