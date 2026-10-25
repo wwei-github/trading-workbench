@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 import app.api.trades as trades_api
-from app.api.trades import OpenFromAnalysisRequest, open_from_analysis
+from app.api.trades import OpenFromAnalysisRequest, open_availability, open_from_analysis
 from app.services.account_registry import Account
 
 ANALYSIS_ID = uuid.uuid4()
@@ -252,3 +252,45 @@ def test_prelock_exception_returns_structured_error(_patch_http, _patch_common,
     with pytest.raises(_HTTPException) as ei:
         open_from_analysis(_payload())
     assert ei.value.status_code == 500
+
+
+def test_open_availability_marks_unlisted_net(monkeypatch):
+    """2026-10-25：双网上架探测——测试网未上架返回 false（前端据此禁选）"""
+    from app.services import account_registry as reg
+    import app.services.binance_trader as bt
+
+    monkeypatch.setattr(reg, "live_accounts", lambda: [SimpleNamespace(key="live-1")])
+    monkeypatch.setattr(reg, "testnet_accounts", lambda: [SimpleNamespace(key="testnet-1")])
+
+    class _FakeTrader:
+        def __init__(self, key=None):
+            self.key = key
+
+        def listed_symbols(self):
+            return {"BTCUSDT"} if self.key == "live-1" else {"ETHUSDT"}
+
+    monkeypatch.setattr(bt, "BinanceTrader", _FakeTrader)
+    assert open_availability("btcusdt") == {
+        "symbol": "BTCUSDT", "live": True, "testnet": False,
+    }
+
+
+def test_open_availability_unknown_on_fetch_failure(monkeypatch):
+    """exchangeInfo 拉取失败返回空集合 ⇒ null（未知），前端不禁选、开仓闸门兜底"""
+    from app.services import account_registry as reg
+    import app.services.binance_trader as bt
+
+    monkeypatch.setattr(reg, "live_accounts", lambda: [SimpleNamespace(key="live-1")])
+    monkeypatch.setattr(reg, "testnet_accounts", lambda: [])
+
+    class _FakeTrader:
+        def __init__(self, key=None):
+            self.key = key
+
+        def listed_symbols(self):
+            return set()
+
+    monkeypatch.setattr(bt, "BinanceTrader", _FakeTrader)
+    assert open_availability("BTCUSDT") == {
+        "symbol": "BTCUSDT", "live": None, "testnet": None,
+    }

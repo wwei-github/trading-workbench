@@ -401,6 +401,32 @@ _OPEN_ERR_STATUS = {"invalid": 400, "not_found": 404, "bad_request": 400,
                     "conflict": 409, "error": 500}
 
 
+@router.get("/open-availability")
+def open_availability(symbol: str):
+    """手动开单前探测双网是否上架该合约（2026-10-25）。
+
+    测试网未上架是「不可能开单」的确定性错误（ARX/PUMP 案例：-1121 或空
+    ticker），前端据此在开单弹窗直接禁选该网，避免无意义的失败重试。
+    复用 BinanceTrader.listed_symbols 的 24h 进程内缓存（exchangeInfo 同源）。
+    返回 null 表示未知（该网无账号或 exchangeInfo 拉取失败），前端不禁选，
+    仍由开仓闸门权威兜底。
+    """
+    from app.services import account_registry as reg
+    from app.services.binance_trader import BinanceTrader
+
+    sym = (symbol or "").strip().upper()
+    out: dict = {"symbol": sym, "live": None, "testnet": None}
+    if not sym:
+        return out
+    for net, accs in (("live", reg.live_accounts()), ("testnet", reg.testnet_accounts())):
+        if not accs:
+            continue
+        listed = BinanceTrader(accs[0].key).listed_symbols()
+        if listed:
+            out[net] = sym in listed
+    return out
+
+
 @router.post("/open-from-analysis")
 def open_from_analysis(payload: OpenFromAnalysisRequest):
     """手动开单（2026-09-27 扫描结果表「开单」按钮）：对指定 AI 分析立即走一次

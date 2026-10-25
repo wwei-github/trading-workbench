@@ -287,6 +287,15 @@ export const scanApi = {
           '/trades/inspect-now', null, { timeout: 15000 },
         )
         .then((r) => r.data),
+    // 手动开单前双网合约上架探测（2026-10-25）：未上架的网在弹窗禁选；
+    // null=未知（无账号/拉取失败），不禁选，由开仓闸门兜底
+    openAvailability: (symbol: string) =>
+      api
+        .get<{ symbol: string; live: boolean | null; testnet: boolean | null }>(
+          '/trades/open-availability',
+          { params: { symbol }, timeout: 20000 },
+        )
+        .then((r) => r.data),
     // 扫描结果表「开单」按钮（2026-09-27）：对 AI 分析立即走完整开仓闸门；
     // 2026-10-03 删环境切换：accountKey 必传（前端弹窗选账号），后端不猜网。
     // opened=false 为闸门拦截（业务结果），block_reason 给前端提示

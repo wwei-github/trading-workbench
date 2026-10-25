@@ -259,17 +259,18 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
   // 行级 loading 防连点（scanResultId -> true）
   const [openLoadingMap, setOpenLoadingMap] = useState<Record<string, boolean>>({});
 
-  // 手动开单网络勾选（2026-10-10 改版）：两个复选框按网选单（每网内部取该网
-  // 第一个已配置账号下单），替代原 Radio 选账号。已开单的网禁选并标注，
-  // 另一网默认选中（测试网已开 → 默认勾正式网）；两网都没开 → 只勾测试网
-  //（实盘安全基线，同旧默认 testnet-1）。ref 收集勾选——Modal.confirm 命令式
-  // 弹窗不响应组件级 state
+  // 手动开单网络勾选（2026-10-10 改版 / 2026-10-25 调整）：两个复选框按网
+  // 选单（每网内部取该网第一个已配置账号下单），替代原 Radio 选账号。已开单的
+  // 网禁选并标注；点击时先探测双网是否上架该合约，未上架的网直接禁选（如测试网
+  // 未上架 → -1121/空 ticker，属确定性不可能开单，禁选避免无意义失败）。
+  // 默认勾正式网（手动点击是对实盘的明确意图）；正式网已开/未上架/无账号时回落
+  // 测试网。ref 收集勾选——Modal.confirm 命令式弹窗不响应组件级 state
   const openNetsRef = useRef<{ testnet: boolean; live: boolean }>({
     testnet: false,
     live: false,
   });
 
-  const handleOpenTrade = (record: ScanResult) => {
+  const handleOpenTrade = async (record: ScanResult) => {
     const ai = aiMap[record.id];
     if (!ai) return;
     const dirLabel = ai.direction === "long" ? "开多" : "开空";
@@ -279,17 +280,38 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
     const nets = tradeMap[ai.id]?.nets ?? [];
     const testnetOpened = nets.includes(true);
     const liveOpened = nets.includes(false);
-    const init = { testnet: !testnetOpened, live: testnetOpened && !liveOpened };
+
+    // 双网上架探测（2026-10-25）：null=未知（无账号/拉取失败）不禁选，
+    // 仍由后端开仓闸门权威兜底
+    setOpenLoadingMap((m) => ({ ...m, [record.id]: true }));
+    let listed: { testnet: boolean | null; live: boolean | null } = {
+      testnet: null,
+      live: null,
+    };
+    try {
+      listed = await scanApi.trades.openAvailability(record.symbol);
+    } catch {
+      /* 探测失败不禁选 */
+    } finally {
+      setOpenLoadingMap((m) => ({ ...m, [record.id]: false }));
+    }
+    const testnetDisabled = testnetOpened || !testnetAcc || listed.testnet === false;
+    const liveDisabled = liveOpened || !liveAcc || listed.live === false;
+    const init = {
+      testnet: liveDisabled && !testnetDisabled,
+      live: !liveDisabled,
+    };
     openNetsRef.current = { ...init };
     const netCheckbox = (
       net: "testnet" | "live",
       tag: string,
       acc: { key: string; name: string } | undefined,
       opened: boolean,
+      unavailable: boolean,
     ) => (
       <Checkbox
         defaultChecked={init[net]}
-        disabled={opened || !acc}
+        disabled={opened || !acc || unavailable}
         onChange={(e) => {
           openNetsRef.current[net] = e.target.checked;
         }}
@@ -306,6 +328,9 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           <span style={{ color: "#fa8c16" }}>无已配置账号</span>
         )}
         {opened && <span style={{ color: "#999", marginLeft: 4 }}>（已开单，禁选）</span>}
+        {!opened && acc && unavailable && (
+          <span style={{ color: "#999", marginLeft: 4 }}>（未上架该合约，禁选）</span>
+        )}
       </Checkbox>
     );
     Modal.confirm({
@@ -320,8 +345,8 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
               <div style={{ color: "#fa8c16" }}>账号清单未加载，请先打开「系统配置」确认服务器 .env 已配置账号</div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {netCheckbox("testnet", "测试网", testnetAcc, testnetOpened)}
-                {netCheckbox("live", "正式网", liveAcc, liveOpened)}
+                {netCheckbox("testnet", "测试网", testnetAcc, testnetOpened, listed.testnet === false)}
+                {netCheckbox("live", "正式网", liveAcc, liveOpened, listed.live === false)}
               </div>
             )}
           </div>
@@ -342,9 +367,9 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       cancelText: "取消",
       onOk: async () => {
         const targets: Array<{ net: string; accKey: string }> = [];
-        if (openNetsRef.current.testnet && testnetAcc)
+        if (openNetsRef.current.testnet && testnetAcc && listed.testnet !== false)
           targets.push({ net: "测试网", accKey: testnetAcc.key });
-        if (openNetsRef.current.live && liveAcc)
+        if (openNetsRef.current.live && liveAcc && listed.live !== false)
           targets.push({ net: "正式网", accKey: liveAcc.key });
         if (targets.length === 0) {
           message.warning("请至少勾选一个可开单的网络");
