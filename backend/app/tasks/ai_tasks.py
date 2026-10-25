@@ -171,9 +171,34 @@ def run_ai_analysis_task(
         except Exception as e:
             logger.warning("连损查询失败，批量分析配额不降速: %s", e)
             losses = 0
+        skipped_live = 0
         if only_scan_result_id:
             q = q.where(ScanResult.id == UUID(only_scan_result_id))
         else:
+            # 正式网已有在跑单的币种直接跳过 AI 分析（2026-10-25）：同币在正式网
+            # 已有持仓/管理中的单子（OPENED/TP1_HIT/TP2_HIT），新分析不可能再
+            # 开一单（开仓闸门按账号同币拦截），只消耗 LLM 配额——在配额排序前
+            # 剔除，把名额让给其他新命中。手动单币重分析（only_scan_result_id）
+            # 由用户主动触发，不受此限。
+            live_running = set(db.execute(
+                select(TradeRecord.symbol).where(
+                    TradeRecord.testnet.is_(False),
+                    TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")),
+                ).distinct()
+            ).scalars().all())
+            if live_running:
+                skipped_live = db.execute(
+                    select(func.count()).select_from(ScanResult).where(
+                        ScanResult.scan_record_id == UUID(scan_record_id),
+                        ScanResult.symbol.in_(live_running),
+                    )
+                ).scalar_one()
+                q = q.where(ScanResult.symbol.notin_(live_running))
+                if skipped_live:
+                    logger.info(
+                        "正式网在跑币种跳过 AI 分析 %d 个（%s） #%s",
+                        skipped_live, ",".join(sorted(live_running)), scan_record_id,
+                    )
             # 批量：按质量分降序（指标驱动筛选的排序键，旧数据无分排后）、
             # 同分按 24h 成交额——控制 LLM 成本；单币重分析不受限。
             # 配额走筛选参数组（scan_filters > env > 默认，2026-09-28）
@@ -191,8 +216,18 @@ def run_ai_analysis_task(
             ).limit(quota)
         results = db.execute(q).scalars().all()
         if not results:
-            logger.info("无可分析的扫描结果 #%s", scan_record_id)
-            close_task(task_id, "skipped", summary="无可分析的扫描结果")
+            if skipped_live:
+                logger.info(
+                    "新命中币种均已在正式网在跑，跳过 AI 分析 %d 个 #%s",
+                    skipped_live, scan_record_id,
+                )
+                close_task(
+                    task_id, "skipped",
+                    summary=f"新命中 {skipped_live} 个均已在正式网在跑，跳过 AI 分析",
+                )
+            else:
+                logger.info("无可分析的扫描结果 #%s", scan_record_id)
+                close_task(task_id, "skipped", summary="无可分析的扫描结果")
             return
 
         # 影子 oi_conf 打标（docs/14 CARD-02，AI 侧）：仅定时扫描批量路径——
@@ -227,11 +262,15 @@ def run_ai_analysis_task(
                 )
             )
         logger.info("已分发 %d 个 AI 分析子任务 #%s", len(results), scan_record_id)
+        live_skip_note = f"，正式网在跑跳过 {skipped_live} 个" if skipped_live else ""
         close_task(
             task_id, "completed",
-            summary=f"已分发 {len(results)} 个分析子任务"
+            summary=f"已分发 {len(results)} 个分析子任务" + live_skip_note
                     + ("（手动单币重分析）" if force else f"（扫描 #{scan_record_id[:8]}）"),
-            detail={"scan_record_id": scan_record_id, "dispatched": len(results), "force": force},
+            detail={
+                "scan_record_id": scan_record_id, "dispatched": len(results),
+                "force": force, "live_running_skipped": skipped_live,
+            },
         )
     except Exception as e:
         close_task(task_id, "failed", error=str(e))
