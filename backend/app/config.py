@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     BREAKOUT_THRESHOLD: float = 0.002  # 最小突破幅度：收盘须越过 Donchian 轨 0.2%（毛边突破不算）
     R_SQUARED_THRESHOLD: float = 0.5
     REPEAT_WINDOW_HOURS: int = 3
+    # 组合确认滞后告警线（%，2026-10-26，docs/11）：回踩金K「前根形态+当根趋势K」
+    # 组合确认会比当根确认晚一根K线，入场价随之漂移。本例 REZUSDT 漂移 1.59%、
+    # 止损不变，等于白让 1.59% 成本。取 0.8（<半根 1h 典型振幅）避免噪声告警
+    COMBO_LAG_WARN_PCT: float = 0.8
     SWING_ORDER: int = 3
     BREAKOUT_CHANNEL_BARS: int = 20  # Donchian 通道突破的回看根数（收盘破 N 根高低轨 + 长实体）
     BREAKOUT_VOL_RATIO: float = 1.2  # 放量加分门槛：信号K线量 ≥ 近20根中位量的1.2倍（加分项不卡死）

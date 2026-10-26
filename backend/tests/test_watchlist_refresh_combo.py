@@ -9,7 +9,7 @@
 sqlite 的行。
 """
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -52,6 +52,9 @@ def test_refresh_persists_combo_columns(client, monkeypatch):
     from app.api import watchlist as wl
 
     ts = datetime(2026, 10, 26, 8, 0)
+    # 形态根早于信号根一格（2026-10-26，docs/11 §4.1 判据：entry_lag_pct 非空
+    # ⇔ 形态根 < 信号根）。T2 夹具曾让两根重合却带滞后，自相矛盾
+    pattern_ts = ts - timedelta(hours=2)
     now = datetime.utcnow()
     db.add(Watchlist(symbol="REZUSDT", created_at=now, updated_at=now))
     db.commit()
@@ -78,7 +81,7 @@ def test_refresh_persists_combo_columns(client, monkeypatch):
         "breakout_pct": 0.5,
         "pattern": "hammer",
         "golden_combo": True,
-        "pattern_candle_open": ts,
+        "pattern_candle_open": pattern_ts,
         "entry_lag_pct": 1.588,
         "detected_at": ts,
     }, None))
@@ -90,5 +93,5 @@ def test_refresh_persists_combo_columns(client, monkeypatch):
         select(ScanResult).where(ScanResult.symbol == "REZUSDT")
     ).scalars().one()
     assert row.golden_combo is True
-    assert row.pattern_candle_open == ts
+    assert row.pattern_candle_open == pattern_ts
     assert float(row.entry_lag_pct) == pytest.approx(1.588)

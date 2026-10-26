@@ -2018,6 +2018,13 @@ def hit_history(
             "signal_candle_open": bar_open.isoformat() if bar_open else None,
             "signal_type": r.signal_type,
             "pattern": r.pattern,
+            # 组合确认展示口径（2026-10-26，docs/11）：形态真实所在K线 + 确认滞后；
+            # entry_lag_warn 由后端单点判定，前端只渲染不重算阈值
+            "golden_combo": bool(r.golden_combo),
+            "pattern_candle_open": r.pattern_candle_open.isoformat() if r.pattern_candle_open else None,
+            "entry_lag_pct": float(r.entry_lag_pct) if r.entry_lag_pct is not None else None,
+            "entry_lag_warn": (r.entry_lag_pct is not None
+                               and float(r.entry_lag_pct) >= settings.COMBO_LAG_WARN_PCT),
             "touch_ref": r.touch_ref,
             "position_ref": r.position_ref,
             "quality_score": r.quality_score,

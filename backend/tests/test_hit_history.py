@@ -13,6 +13,7 @@ sqlite 内存库 + dependency_overrides 注入会话，不触真库不触网。
    突破族 resistance→多/support→空；旧/未知行回退 votes_json.net 符号）
 7. 信号K线开盘时间派生（signal_created_at 所在整点 - 1h；尾窗内取所在整点）
 8. 服务端分页
+9. 组合确认展示口径（docs/11 T3）：hit-history 四字段 + 阈值单点判定
 """
 import sys
 from datetime import datetime, timedelta
@@ -279,3 +280,82 @@ def test_combo_columns_persist(client):
     assert plain.golden_combo is False
     assert plain.pattern_candle_open is None
     assert plain.entry_lag_pct is None
+
+
+def test_save_results_transmits_combo_columns(client, monkeypatch):
+    """docs/11 T3：Scanner._save_results 三列透传（T2 曾漏参 → 静默降级成单形态，
+    不报错只能靠断言挡住；与 test_obs_batch_b.py 同法，桩只打 session 边界）"""
+    import app.services.scanner as scanner_mod
+    from app.services.scanner import Scanner
+
+    _http, db = client
+    monkeypatch.setattr(scanner_mod, "SessionLocal", sessionmaker(bind=db.bind))
+    rec = ScanRecord(scan_type="scheduled")
+    db.add(rec)
+    db.commit()
+
+    ts = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    Scanner._save_results(rec.id, [
+        {"symbol": "REZUSDT", "signal_type": "trigger_pullback_confirm",
+         "current_price": 100.0, "breakout_pct": 1.0, "pattern": "hammer",
+         "golden_combo": True, "pattern_candle_open": ts - timedelta(hours=2),
+         "entry_lag_pct": 1.588, "detected_at": ts},
+        {"symbol": "BTCUSDT", "signal_type": "trigger_pullback_confirm",
+         "current_price": 100.0, "breakout_pct": 1.0, "pattern": "hammer",
+         "detected_at": ts - timedelta(minutes=1)},
+    ])
+
+    rows = {r.symbol: r for r in db.query(ScanResult).all()}
+    assert rows["REZUSDT"].golden_combo is True
+    assert rows["REZUSDT"].pattern_candle_open == ts - timedelta(hours=2)
+    assert float(rows["REZUSDT"].entry_lag_pct) == pytest.approx(1.588)
+    # 非组合行（无组合键）：默认 False/None，不回填猜测值
+    assert rows["BTCUSDT"].golden_combo is False
+    assert rows["BTCUSDT"].pattern_candle_open is None
+    assert rows["BTCUSDT"].entry_lag_pct is None
+
+
+def test_entry_lag_warn_threshold(client):
+    """docs/11：滞后 ≥ COMBO_LAG_WARN_PCT(0.8%) 才告警；负值（更便宜）不告警"""
+    http, db = client
+    rec = ScanRecord(scan_type="scheduled")
+    db.add(rec)
+    db.flush()
+    ts = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    for i, lag in enumerate((1.59, 0.79, -2.0)):
+        r = _mk_result(db, rec.id, f"LAG{i}USDT", ts - timedelta(minutes=i))
+        r.signal_created_at = ts - timedelta(minutes=i)
+        r.golden_combo = True
+        # 形态根须早于信号根（2026-10-26，docs/11 §4.1：entry_lag_pct 非空 ⇔
+        # pattern_candle_open < signal_candle_open）。tasks.md 原稿 hours=1 时
+        # 形态根与派生的信号根（detected_at 整点 - 1h）重合却带滞后，同 B 夹具
+        r.pattern_candle_open = ts - timedelta(minutes=i, hours=2)
+        r.entry_lag_pct = lag
+    db.commit()
+    res = http.get("/api/scans/hit-history", params={
+        "start": (ts - timedelta(days=1)).isoformat() + "Z",
+        "end": (ts + timedelta(minutes=1)).isoformat() + "Z",
+    }).json()
+    warn = {it["symbol"]: it["entry_lag_warn"] for it in res["items"]}
+    assert warn == {"LAG0USDT": True, "LAG1USDT": False, "LAG2USDT": False}
+    # 响应字段存在性 + 原值透传（2026-10-26 口径修正：落库断言在 T2，这里只验 API 层）
+    by_sym = {it["symbol"]: it for it in res["items"]}
+    assert by_sym["LAG0USDT"]["golden_combo"] is True
+    assert by_sym["LAG0USDT"]["entry_lag_pct"] == pytest.approx(1.59)
+    assert by_sym["LAG0USDT"]["pattern_candle_open"] == (
+        ts - timedelta(hours=2)).isoformat()
+
+
+def test_combo_fields_fallback_for_legacy_rows(client, seeded):
+    """docs/11 §6.2：旧行（三列 NULL/False）API 回退为 False/None/None/False，
+    与现状完全一致——旧行没有 klines 快照，不能猜测也不误标「前根」"""
+    http, _ = client
+    now = datetime.utcnow()
+    res = http.get("/api/scans/hit-history", params={
+        "start": (now - timedelta(days=30)).isoformat() + "Z"}).json()
+    assert res["total"] == 3
+    for it in res["items"]:
+        assert it["golden_combo"] is False
+        assert it["pattern_candle_open"] is None
+        assert it["entry_lag_pct"] is None
+        assert it["entry_lag_warn"] is False
