@@ -1244,14 +1244,28 @@ def materialize_pending_entry(
         od = trader.order(symbol, int(pe.limit_order_id))
         qty = float(od.get("executedQty") or 0)
         fill_price = float(od.get("avgPrice") or 0) or float(pe.entry_price or 0)
-        filled_qty_real = qty
         if qty <= 0:
-            pe.status = "canceled"
-            pe.resolve_reason = "no_fill"
-            pe.resolved_at = datetime.utcnow()
-            db.commit()
-            logger.info("挂单 %s：撤单后无成交，标记 canceled", symbol)
-            return None
+            # 2026-10-26：币安订单查询存在瞬时不一致（MORPHOUSDT live-1 实例：
+            # 已 FILLED 99.9 的订单在撤余量后被复读为 0 成交）。单次复读不足以
+            # 判定无成交——用持仓交叉验证：同向有仓即按实际持仓量落地，避免把
+            # 已成交单标成 no_fill、留下无 SL/TP/无 TradeRecord 的裸仓。
+            pos = trader.positions().get(symbol) or {}
+            amt = float(pos.get("amt") or 0)
+            if amt != 0 and (amt > 0) == (direction == "long"):
+                qty = abs(amt)
+                fill_price = float(pos.get("entry_price") or 0) or fill_price
+                logger.warning(
+                    "挂单 %s：订单复读 0 成交但持仓 %s，按持仓量落地（防裸仓）",
+                    symbol, amt,
+                )
+            else:
+                pe.status = "canceled"
+                pe.resolve_reason = "no_fill"
+                pe.resolved_at = datetime.utcnow()
+                db.commit()
+                logger.info("挂单 %s：撤单后无成交，标记 canceled", symbol)
+                return None
+        filled_qty_real = qty
         # ④ 设杠杆 + 补挂 SL/TP（与市价开仓同口径）
         a = db.get(AIAnalysis, pe.ai_analysis_id) if pe.ai_analysis_id else None
         trader.setup_leverage(symbol, leverage)

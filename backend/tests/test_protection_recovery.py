@@ -780,6 +780,107 @@ def test_pending_materialize_close_ack_waits_for_reconcile(
     db.close()
 
 
+class _StaleOrderTrader:
+    """订单复读 0 成交、但交易所持仓仍在（MORPHOUSDT live-1 2026-10-26 实例）。
+
+    materialize 只能把「复读 0 + 无持仓」当无成交；有同向持仓时必须按持仓量
+    落地，否则会留下无 SL/TP、无 TradeRecord 的裸仓。
+    """
+
+    account_key = "live-1"
+    testnet = False
+
+    def __init__(self, position_amt: float = 0.0):
+        self.position_amt = position_amt
+        self.tp_calls = []
+
+    def cancel_regular_order(self, symbol, order_id):
+        return None
+
+    def order(self, symbol, order_id):
+        return {"executedQty": "0.0", "avgPrice": "0.0"}
+
+    def positions(self):
+        if self.position_amt == 0:
+            return {}
+        return {"XUSDT": {"amt": self.position_amt, "initial_margin": 10.0,
+                          "entry_price": 101.0, "unrealized_pnl": 0.0,
+                          "liquidation_price": 0.0}}
+
+    def setup_leverage(self, symbol, leverage):
+        return None
+
+    def filters(self, symbol):
+        return {"step": 0.001, "tick": 0.01, "min_qty": 0.001,
+                "min_notional": 5.0, "max_qty": 1e6, "market_max_qty": 1e6}
+
+    def round_qty(self, symbol, qty):
+        return round(qty, 3)
+
+    def round_price(self, symbol, price):
+        return round(price, 2)
+
+    def stop_market_close(self, symbol, side, stop_price):
+        return {"algoId": 1}
+
+    def take_profit_reduce(self, symbol, side, qty, price):
+        self.tp_calls.append((side, qty, price))
+        return {"algoId": 2}
+
+    def market_order(self, symbol, side, qty, reduce_only=False):
+        return {"orderId": 3}
+
+
+def _pending_short(db):
+    pe = PendingEntryOrder(
+        symbol="XUSDT", direction="short", account_key="live-1", testnet=False,
+        entry_price=100, stop_loss=104, tp1=94, tp2=0, qty=2, leverage=10,
+        margin_used=20, risk_amount=8, limit_order_id="11", status="pending",
+        expires_at=datetime.utcnow() + timedelta(hours=1),
+    )
+    db.add(pe)
+    db.commit()
+    return pe
+
+
+def test_pending_materialize_falls_back_to_position_on_zero_fill(file_session):
+    """订单复读 0 成交但持仓同向 → 按持仓量落地，绝不标 no_fill。"""
+    db = file_session()
+    cfg = SystemConfig(id=1)
+    db.add(cfg)
+    pe = _pending_short(db)
+
+    rid = materialize_pending_entry(db, _StaleOrderTrader(position_amt=-2.0), pe, cfg)
+    assert rid is not None
+    db.expire_all()
+    row = db.get(PendingEntryOrder, pe.id)
+    assert row.status == "filled"
+    assert row.resolve_reason is None
+    assert float(row.filled_qty) == 2.0
+    assert row.trade_record_id == rid
+    rec = db.get(TradeRecord, rid)
+    assert rec.status == "OPENED"
+    assert float(rec.qty) == 2.0
+    assert float(rec.entry_price) == 101.0  # 持仓成交均价，不是复读的 0
+    db.close()
+
+
+def test_pending_materialize_no_fill_without_position(file_session):
+    """复读 0 成交且无同向持仓 → 维持原语义：canceled/no_fill。"""
+    db = file_session()
+    cfg = SystemConfig(id=1)
+    db.add(cfg)
+    pe = _pending_short(db)
+
+    assert materialize_pending_entry(db, _StaleOrderTrader(), pe, cfg) is None
+    db.expire_all()
+    row = db.get(PendingEntryOrder, pe.id)
+    assert row.status == "canceled"
+    assert row.resolve_reason == "no_fill"
+    assert db.query(TradeRecord).count() == 0
+    db.close()
+
+
 # ── 撤单错误语义（真实 BinanceTrader 方法，_req 替身，不触网）────────────
 
 

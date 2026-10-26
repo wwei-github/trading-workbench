@@ -96,11 +96,23 @@ function statusMeta(rec: TradeRecord): { label: string; color: string } {
 }
 
 // 挂单三类视图的展示元信息（2026-10-17 交易记录挂单历史）：pending=挂单中；
-// filled=已成交；canceled（手动撤）/expired（超时自动撤）/failed（落地失败）归「已取消」
+// filled=已成交；canceled/expired/failed 归「已取消」
 const PEND_GROUP_META: Record<'open' | 'filled' | 'closed', { label: string; color: string }> = {
   open: { label: '挂单中', color: 'orange' },
   filled: { label: '已成交', color: 'green' },
   closed: { label: '已取消', color: 'default' },
+}
+
+// 了结原因细分文案（2026-10-26）：此前 canceled 一律显示「手动撤销」，而
+// no_fill（系统撤余量后复读无成交）/exchange_canceled（交易所侧撤单）等
+// 非手动路径会被误读成用户操作。只有 reason=manual 才是点「撤销」。
+const PEND_RESOLVE_DETAIL: Record<string, string> = {
+  manual: '·手动撤销',
+  no_fill: '·未成交撤单',
+  exchange_canceled: '·交易所撤销',
+  exchange_rejected: '·交易所拒绝',
+  exchange_expired: '·交易所过期',
+  ttl: '·超时撤销',
 }
 
 // 出场原因映射（资金分析页复用）
@@ -1833,13 +1845,16 @@ export default function TradesPanel() {
               },
               {
                 title: '状态', dataIndex: 'status', key: 'status', width: 130,
-                render: (s: PendingEntry['status']) => {
+                render: (s: PendingEntry['status'], r: PendingEntry) => {
                   const meta = PEND_GROUP_META[pendGroup(s)]
-                  const detail = s === 'pending' ? ''
-                    : s === 'filled' ? ''
-                    : s === 'expired' ? '·超时撤销'
-                    : s === 'failed' ? '·落地失败'
-                    : '·手动撤销'
+                  const detail = s === 'pending' || s === 'filled'
+                    ? ''
+                    : s === 'failed'
+                      ? '·落地失败'
+                      : s === 'expired'
+                        ? '·超时撤销'
+                        // canceled：按 resolve_reason 细分，未知原因回退「已撤销」
+                        : PEND_RESOLVE_DETAIL[r.resolve_reason ?? ''] || '·已撤销'
                   return (
                     <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>
                       {meta.label}{detail}
