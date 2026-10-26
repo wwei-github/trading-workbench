@@ -468,7 +468,7 @@ Props 侧：`hitGoldenCombo?: boolean`、`hitPatternCandleOpen?: string | null`�
 - [ ] 类型检查 + 构建
 
 ```bash
-cd frontend && npx tsc --noEmit && npm run build
+cd frontend && npm run build   # build = tsc && vite build，类型错即失败
 ```
 
 - [ ] 提交
@@ -526,7 +526,7 @@ git commit -m "feat(11): 图表命中主标标(前根)+形态根弱色副标"
 - [ ] 类型检查 + 构建
 
 ```bash
-cd frontend && npx tsc --noEmit && npm run build
+cd frontend && npm run build   # build = tsc && vite build，类型错即失败
 ```
 
 - [ ] 提交
@@ -561,7 +561,7 @@ node scripts/build_docs_wiki.mjs --quiet
 
 ```bash
 cd backend && python -m pytest tests/test_trigger_two_stage.py tests/test_hit_history.py tests/test_scan_hit_card.py -q
-cd ../frontend && npx tsc --noEmit && npm run build
+cd ../frontend && npm run build
 cd .. && node scripts/build_docs_wiki.mjs --quiet
 ```
 
