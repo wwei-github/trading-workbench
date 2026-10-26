@@ -55,6 +55,10 @@ const TOUCH_MARK_COLOR = '#722ed1'
 // 2026-10-16：命中侧背景再淡化（0.35→0.20），避免底色过深压住K线
 const HIT_MARK_FILL = 'rgba(22, 119, 255, 0.20)'
 const TOUCH_MARK_FILL = 'rgba(114, 46, 209, 0.35)'
+// 形态根副标（2026-10-26，docs/11）：组合确认时 pattern 在信号根的前一根，
+// 用中性灰弱色，避免与蓝色主标、紫色触碰标抢注意力
+const PATTERN_MARK_COLOR = '#8b93a7'
+const PATTERN_MARK_FILL = 'rgba(139,147,167,0.10)'
 
 // ── 复盘模式部件（仅 tradeId 模式使用）────────────────────────────────
 
@@ -407,7 +411,7 @@ const MARK_ARROW = 6 // 导引线箭头半宽（px）
 
 function drawHitMarks(
   klines: Kline[],
-  marks: Array<{ ms: number; color: string; fill: string; label: string; kind: 'hit' | 'touch'; preferBelow: boolean }>,
+  marks: Array<{ ms: number; color: string; fill: string; label: string; kind: 'hit' | 'touch' | 'pattern'; preferBelow: boolean }>,
   ctx: OverlayCtx,
 ) {
   const { chart, series, svg, container } = ctx
@@ -426,7 +430,7 @@ function drawHitMarks(
   type MarkGeom = {
     color: string
     label: string
-    kind: 'hit' | 'touch'
+    kind: 'hit' | 'touch' | 'pattern'
     cx: number
     yTop: number
     yBot: number
@@ -476,7 +480,7 @@ function drawHitMarks(
     fillRect.setAttribute('fill', m.fill)
     svg.appendChild(fillRect)
 
-    if (m.kind === 'touch') {
+    if (m.kind === 'touch' || m.kind === 'pattern') {
       // 感应框：虚线圆角框（圈住触碰K线）
       const r = el('rect')
       r.setAttribute('x', String(x0))
@@ -602,8 +606,8 @@ function drawHitMarks(
       e.setAttribute('stroke-linecap', 'round')
       return e
     }
-    if (kind === 'touch') {
-      // 脉冲：同心圆环
+    if (kind === 'touch' || kind === 'pattern') {
+      // 脉冲：同心圆环（形态根副标复用触碰几何，颜色已随 mark 弱化，2026-10-26 docs/11）
       const c1 = icon('circle')
       c1.setAttribute('cx', String(bcx)); c1.setAttribute('cy', String(badgeCy)); c1.setAttribute('r', '4.6')
       svg.appendChild(c1)
@@ -642,6 +646,8 @@ interface EffHit {
   trade: HitHistoryTrade | null
   signalType: string | null
   pattern: string | null // 金K形态（回踩确认路径；图注追加在「回踩金K确认」后）
+  goldenCombo: boolean // 组合确认（仅留痕；渲染判据用 patternCandleOpen）
+  patternCandleOpen: string | null // pattern 真实所在K线开盘时间（缺省=同信号根）
 }
 
 interface Props {
@@ -662,6 +668,10 @@ interface Props {
   tradeOverlay?: HitHistoryTrade | null // 关联开单（时间裁剪区间）
   hitSignalType?: string | null // 命中信号类型（出点类型，追加在「命中」标签后）
   hitPattern?: string | null // 金K形态（追加在信号类型后，如 回踩金K确认·看涨吞没）
+  // 组合确认口径（2026-10-26，docs/11）：形态真实所在K线开盘时间与「是否组合路径」
+  // 的留痕字段；是否加(前根)/画副标由制图侧比较两根K映射后的位置派生
+  hitGoldenCombo?: boolean
+  hitPatternCandleOpen?: string | null
   // 当前扫描结果 id（扫描模式）：该命中已有实际成交单时抑制 AI 计划线，
   // 只保留实际单覆盖层，避免同一笔在图上出现「做多」「开多」两组入场线
   scanResultId?: string
@@ -674,7 +684,8 @@ interface Props {
 
 export default function KlineChart({
   symbol, tradeId, limit = 500, defaultInterval = '1h', ai, refreshKey = 0,
-  hitTime, signalCandleOpen, touchTime, hitDirection = 0, tradeOverlay, hitSignalType, hitPattern, scanResultId,
+  hitTime, signalCandleOpen, touchTime, hitDirection = 0, tradeOverlay, hitSignalType, hitPattern,
+  hitGoldenCombo = false, hitPatternCandleOpen = null, scanResultId,
   cacheHistory = false, pageSize = 1000,
 }: Props) {
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -759,6 +770,8 @@ export default function KlineChart({
         trade: tradeOverlay ?? null,
         signalType: hitSignalType ?? null,
         pattern: hitPattern ?? null,
+        goldenCombo: hitGoldenCombo ?? false,
+        patternCandleOpen: hitPatternCandleOpen ?? null,
       }]
     }
     return autoHits.map((h) => ({
@@ -770,8 +783,10 @@ export default function KlineChart({
       trade: h.trade ?? null,
       signalType: h.signal_type ?? null,
       pattern: h.pattern ?? null,
+      goldenCombo: h.golden_combo ?? false,
+      patternCandleOpen: h.pattern_candle_open ?? null,
     }))
-  }, [externalHit, hitTime, signalCandleOpen, touchTime, hitDirection, tradeOverlay, hitSignalType, hitPattern, autoHits])
+  }, [externalHit, hitTime, signalCandleOpen, touchTime, hitDirection, tradeOverlay, hitSignalType, hitPattern, hitGoldenCombo, hitPatternCandleOpen, autoHits])
 
   // 同一扫描结果已开单时，AI 建议线（做多/止损/止盈）与实际成交线（开多/止损/止盈）
   // 是同一次决策的两个阶段，图上只保留实际成交数据（2026-10-22 用户拍板）
@@ -1060,11 +1075,13 @@ export default function KlineChart({
   }, [replayData, isLong, colorScheme])
 
   // 命中历史可视起点（2026-10-15）：命中/触碰较早时把可视窗口左沿收到其附近，
-  // 保证标注入镜；命中在最近约 130 根内则维持默认窗口（取两者的更靠前者）
+  // 保证标注入镜；命中在最近约 130 根内则维持默认窗口（取两者的更靠前者）。
+  // 2026-10-26（docs/11）：形态根早于命中根，一并并入候选时间集，
+  // 否则副标可能落在左沿之外（窗口按最早者收边，不会把主标推出视野）
   const overlayFrom = useMemo(() => {
     if (isReplay || !klines.length || !effHits.length) return undefined
     const cands = effHits
-      .flatMap((h) => [h.hitTime, h.touchTime])
+      .flatMap((h) => [h.hitTime, h.touchTime, h.patternCandleOpen])
       .filter((v): v is string => !!v)
       .map(utcMs)
     if (!cands.length) return undefined
@@ -1090,7 +1107,7 @@ export default function KlineChart({
       for (const h of effHits) {
         if (h.trade) drawHitOverlay(klines, h.trade, colorScheme, ctx)
       }
-      const marks: Array<{ ms: number; color: string; fill: string; label: string; kind: 'hit' | 'touch'; preferBelow: boolean }> = []
+      const marks: Array<{ ms: number; color: string; fill: string; label: string; kind: 'hit' | 'touch' | 'pattern'; preferBelow: boolean }> = []
       const ivMs = INTERVAL_MS[serverInterval] ?? INTERVAL_MS['1h']
       for (const h of effHits) {
         // 命中方向：1 多（上涨）→ K线下方； -1 空（下跌）→ K线上方
@@ -1100,7 +1117,6 @@ export default function KlineChart({
         const sigLabel = h.signalType ? (SIGNAL_TYPE_MAP[h.signalType]?.label ?? h.signalType) : ''
         const patternLabel = h.pattern ? patternStyle(h.pattern).label : ''
         const parts = [sigLabel, patternLabel].filter(Boolean)
-        const hitLabel = parts.length ? `命中 · ${parts.join('·')}` : '命中'
         // 命中锚定（2026-10-16；2026-10-26 优先用后端 signal_candle_open）：
         // 信号K线=扫描周期最后一根已收盘K线，开盘时间由后端按扫描时刻派生；
         // 老接口无该字段时回退「hitTime 所在小时开口 - 1h」。
@@ -1111,9 +1127,27 @@ export default function KlineChart({
           : h.hitTime
             ? Math.floor(utcMs(h.hitTime) / SCAN_INTERVAL_MS) * SCAN_INTERVAL_MS - SCAN_INTERVAL_MS
             : null
+        // 组合确认（2026-10-26，docs/11）：(前根) 与形态根副标由「两根K是否真的
+        // 不同」派生，不看 goldenCombo——4h/1d 图两根常落同一根，映射后相等则只留主标
+        const pSlotMs = h.patternCandleOpen
+          ? Math.floor(utcMs(h.patternCandleOpen) / ivMs) * ivMs
+          : null
+        const onPrev = pSlotMs != null && sigMs != null && pSlotMs < Math.floor(sigMs / ivMs) * ivMs
+        const hitLabel = parts.length
+          ? `命中 · ${parts.join('·')}${onPrev ? '(前根)' : ''}`
+          : '命中'
         if (sigMs != null) {
           const anchorMs = Math.floor(sigMs / ivMs) * ivMs
           marks.push({ ms: anchorMs, color: HIT_MARK_COLOR, fill: HIT_MARK_FILL, label: hitLabel, kind: 'hit', preferBelow })
+        }
+        // 形态根副标（2026-10-26，docs/11）：主标仍锚信号根（执行时刻不偏移），
+        // 另在形态真实所在K线画弱色副标；同几何走 kind='pattern'（颜色/填充随 mark 传入）
+        if (onPrev && pSlotMs != null) {
+          marks.push({
+            ms: pSlotMs, color: PATTERN_MARK_COLOR, fill: PATTERN_MARK_FILL,
+            label: patternLabel ? `形态根·${patternLabel}` : '形态根',
+            kind: 'pattern', preferBelow,
+          })
         }
         if (h.touchTime) marks.push({ ms: utcMs(h.touchTime), color: TOUCH_MARK_COLOR, fill: TOUCH_MARK_FILL, label: '触碰', kind: 'touch', preferBelow })
       }

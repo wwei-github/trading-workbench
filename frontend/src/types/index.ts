@@ -374,6 +374,12 @@ export interface HitHistoryItem {
   signal_candle_open: string | null // 信号K线开盘时间（扫描周期 1h 最后一根已收盘根）
   signal_type: string
   pattern: string | null
+  // 组合确认口径（2026-10-26，docs/11）：pattern 真实所在K线与确认滞后；
+  // golden_combo 仅留痕，展示与否看 pattern_candle_open 是否早于 signal_candle_open
+  golden_combo: boolean
+  pattern_candle_open: string | null
+  entry_lag_pct: number | null
+  entry_lag_warn: boolean
   touch_ref: string | null // 回踩触点（仅回踩路径）
   position_ref: string | null
   quality_score: number | null
