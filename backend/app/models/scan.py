@@ -43,8 +43,8 @@ class ScanResult(Base):
     signal_reason: Mapped[str] = mapped_column(String(128), nullable=True)
     strength: Mapped[Optional[float]] = mapped_column(Numeric(6, 4), nullable=True)  # 信号强度 0-1
     ema_state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)  # 均线形态状态
-    # 信号位置（形态/突破方向派生：看涨形态/向上突破=resistance、看跌形态/向下突破=support；
-    # 历史行为关键位角色口径，2026-09-14 关键位功能移除后不再产生关键位明细）
+    # 信号位置（trigger.py 形态/突破方向派生：看涨形态/回踩企稳=support、
+    # 向上突破/反抽受阻=resistance；历史行为关键位角色口径，2026-09-14 关键位功能移除后不再产生关键位明细）
     position: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     touch_ref: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # 回踩触点（docs/22：retest/swing/ema21/55/144）
     position_ref: Mapped[Optional[str]] = mapped_column(String(48), nullable=True)  # 命中位置文案（回踩触点位/突破前高前低轨，前端「位置」列；旧行 NULL）

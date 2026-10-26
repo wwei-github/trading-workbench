@@ -374,7 +374,7 @@ export interface HitHistoryItem {
   position_ref: string | null
   quality_score: number | null
   is_repeat: boolean
-  direction: 1 | -1 | 0 // 命中方向（position 优先 → votes_json.net → trend_slope）
+  direction: 1 | -1 | 0 // 命中方向（信号族+position 派生 → votes_json.net → trend_slope）
   stage1_candle_open: string | null // 触碰K线开盘时间（仅回踩路径有）
   trade: HitHistoryTrade | null
 }

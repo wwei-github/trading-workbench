@@ -9,8 +9,9 @@ sqlite 内存库 + dependency_overrides 注入会话，不触真库不触网。
 3. 币种精确匹配
 4. 触碰K线反查（pullback_pendings.confirmed_scan_result_id）
 5. 开单关联（trade_records.scan_result_id，正式网主单优先）
-6. 方向派生（position 优先：support→多/resistance→空；旧行回退 votes_json.net 符号）
-7. 信号K线开盘时间派生（signal_created_at 所在整点 - 1h）
+6. 方向派生（信号族 + position：回踩族 support→多/resistance→空，
+   突破族 resistance→多/support→空；旧/未知行回退 votes_json.net 符号）
+7. 信号K线开盘时间派生（signal_created_at 所在整点 - 1h；尾窗内取所在整点）
 8. 服务端分页
 """
 import sys
@@ -202,6 +203,12 @@ def test_direction_prefers_position_and_signal_candle_open(client):
     bull.signal_created_at = ts - timedelta(minutes=1)
     # 旧行：position 为空 → 回退 votes.net
     legacy = _mk_result(db, rec.id, "BBBUSDT", ts - timedelta(minutes=2), net=-4)
+    # 突破族 position 方向相反：resistance=向上突破(多)、support=向下突破(空)，
+    # 即使方向票反向也以 position 为准
+    bo = _mk_result(db, rec.id, "ETHUSDT", ts - timedelta(minutes=3), net=-5)
+    bo.signal_type, bo.position = "trigger_breakout", "resistance"
+    tb = _mk_result(db, rec.id, "SOLUSDT", ts - timedelta(minutes=4), net=5)
+    tb.signal_type, tb.position = "trigger_trend_breakout", "support"
     db.commit()
 
     res = http.get("/api/scans/hit-history", params={
@@ -213,9 +220,24 @@ def test_direction_prefers_position_and_signal_candle_open(client):
     assert by_id[str(bear.id)]["direction"] == -1
     assert by_id[str(bull.id)]["direction"] == 1
     assert by_id[str(legacy.id)]["direction"] == -1
+    assert by_id[str(bo.id)]["direction"] == 1
+    assert by_id[str(tb.id)]["direction"] == -1
     # 信号K线 = 扫描时刻所在整点 - 1h（最后一根已收盘根）
     assert by_id[str(bear.id)]["signal_candle_open"] == (ts - timedelta(hours=1)).isoformat()
     assert by_id[str(bull.id)]["signal_candle_open"] == (ts - timedelta(hours=2)).isoformat()
+
+
+def test_signal_candle_open_tail_window(monkeypatch):
+    """尾窗内（SCAN_BEAT_MINUTE 非 0）近收盘根被视作信号根：信号K线=所在整点根"""
+    from app.api import scan as scan_api
+
+    r = ScanResult(signal_type="trigger_breakout", position="resistance")
+    ts = datetime(2026, 10, 26, 9, 57, 30)
+    r.signal_created_at = ts
+    # 默认 beat 整点：尾窗关闭，信号根=上一根已收盘根
+    assert scan_api._signal_candle_open(r) == datetime(2026, 10, 26, 8, 0)
+    monkeypatch.setattr(scan_api.md, "in_forming_tail", lambda interval, now=None: True)
+    assert scan_api._signal_candle_open(r) == datetime(2026, 10, 26, 9, 0)
 
 
 def test_pagination(client, seeded):
