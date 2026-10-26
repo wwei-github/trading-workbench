@@ -274,7 +274,10 @@ if (onPrev) {
 
 ## 6. 测试
 
-### 6.1 新增 `backend/tests/test_combo_display.py`
+### 6.1 `backend/tests/test_trigger_two_stage.py`（复用既有 `_kl/_base/_hammer_at/_trend_candle_at/_shooting_star_at` 夹具，不另起文件）
+
+在 `test_hammer_plus_trend_candle_confirms` / `test_double_shooting_star_confirms_short`
+等既有用例上追加断言，并给 `resolve_golden_evidence` 直测区补 `offset` 断言：
 
 | 用例 | 断言 |
 |---|---|
@@ -283,15 +286,16 @@ if (onPrev) {
 | 规则3 组合（前根锤 + 当根趋势K） | `golden["offset"] == -3`；`golden_combo is True`；`pattern_candle_open == klines[-3] 开盘`；`entry_lag_pct ≈ 1.588` |
 | 空头镜像（前根流星 + 当根阴趋势K） | `entry_lag_pct` 在入场对空单不利时为正（信号收盘低于形态收盘 → `-1 × 负值 = 正`） |
 
-### 6.2 调整既有测试
+### 6.2 既有测试文件
 
-- `backend/tests/test_trigger_two_stage.py:871+`：`resolve_golden_evidence` 直测增 `offset` 断言（不动原断言）。
-- `backend/tests/test_hit_history.py`：增字段存在性 + 旧行（三列 NULL）回退断言（`golden_combo=False`、其余 `None`、`entry_lag_warn=False`）。
+- `backend/tests/test_hit_history.py`：增三字段存在性 + 旧行（三列 NULL）回退断言
+  （`golden_combo=False`、其余 `None`、`entry_lag_warn=False`）+ 组合行 `entry_lag_warn` 触发断言。
+- `backend/tests/test_scan_hit_card.py`：`entry_lag_pct` 非空时列文案带 `(前根)`，为空时不带。
 
 ### 6.3 验收命令
 
 ```bash
-cd backend && python -m pytest tests/test_combo_display.py tests/test_trigger_two_stage.py tests/test_hit_history.py -q
+cd backend && python -m pytest tests/test_trigger_two_stage.py tests/test_hit_history.py tests/test_scan_hit_card.py -q
 cd frontend && npx tsc --noEmit && npm run build
 node scripts/build_docs_wiki.mjs --quiet
 ```
