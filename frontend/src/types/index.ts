@@ -221,6 +221,11 @@ export interface KlineData {
 
 export interface SystemConfig {
   ai_analysis_enabled: boolean;
+  // AI 分析暂停时段（2026-10-26，北京时间整点）：开启后每天 [start, end) 内跳过
+  // 筛选后的自动 AI 分析；start > end 为跨零点；手动单币分析不受限
+  ai_pause_enabled?: boolean;
+  ai_pause_start_hour?: number | null;
+  ai_pause_end_hour?: number | null;
   ai_configured: boolean;
   strategy_prompt_enabled: boolean;
   strategy_prompt: string;

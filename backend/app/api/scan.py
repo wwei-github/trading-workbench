@@ -367,12 +367,21 @@ def trigger_ai_analysis(
 ):
     """触发 AI 分析（全量或单币）"""
     cfg = _get_system_config(db)
-    # 手动单币重分析（scan_result_id 非空）不受「筛选后自动 AI 分析」开关限制，
-    # 仅要求已配置 API_KEY；无 scan_result_id 的全量触发仍受开关约束（批量自动分析语义）
+    # 手动单币重分析（scan_result_id 非空）不受「筛选后自动 AI 分析」开关与暂停时段
+    # 限制，仅要求已配置 API_KEY；无 scan_result_id 的全量触发仍受二者约束（批量自动分析语义）
     if not settings.AI_API_KEY or (
         not body.scan_result_id and not cfg.ai_analysis_enabled
     ):
         raise HTTPException(status_code=403, detail="AI 分析未启用或未配置 API Key")
+    # AI 分析暂停时段（2026-10-26）：每天固定北京时间整点区间内不跑批量分析；
+    # 手动单币分析不受限（与开关同语义）
+    if not body.scan_result_id:
+        from app.services.ai_pause import is_ai_paused, pause_window_label
+        if is_ai_paused(cfg):
+            raise HTTPException(
+                status_code=403,
+                detail=f"当前处于 AI 分析暂停时段（北京时间 {pause_window_label(cfg)}）",
+            )
 
     record = db.get(ScanRecord, scan_id)
     if not record:
@@ -439,6 +448,9 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
     flt = resolve_scan_filters(cfg)
     return SystemConfigOut(
         ai_analysis_enabled=cfg.ai_analysis_enabled,
+        ai_pause_enabled=bool(cfg.ai_pause_enabled),
+        ai_pause_start_hour=cfg.ai_pause_start_hour,
+        ai_pause_end_hour=cfg.ai_pause_end_hour,
         tp2_enabled=cfg.tp2_enabled,
         ai_configured=bool(settings.AI_API_KEY),
         strategy_prompt_enabled=cfg.strategy_prompt_enabled,
@@ -673,6 +685,41 @@ def update_system_config(
                 detail="后端未配置 AI_API_KEY，无法开启 AI 分析",
             )
         cfg.ai_analysis_enabled = body.ai_analysis_enabled
+    # AI 分析暂停时段（2026-10-26）：开关 + 北京时间整点区间 [start, end)
+    # 先算后写：校验 400 时不得留下未提交的半改状态（同 session 复用/回滚边界）
+    pause_enabled = (
+        body.ai_pause_enabled if body.ai_pause_enabled is not None
+        else bool(cfg.ai_pause_enabled)
+    )
+    pause_start = cfg.ai_pause_start_hour
+    if "ai_pause_start_hour" in body.model_fields_set:
+        pause_start = body.ai_pause_start_hour
+        if pause_start is not None and not (0 <= pause_start <= 23):
+            raise HTTPException(status_code=400, detail="ai_pause_start_hour 需在 0~23 整点之间")
+    pause_end = cfg.ai_pause_end_hour
+    if "ai_pause_end_hour" in body.model_fields_set:
+        pause_end = body.ai_pause_end_hour
+        if pause_end is not None and not (0 <= pause_end <= 23):
+            raise HTTPException(status_code=400, detail="ai_pause_end_hour 需在 0~23 整点之间")
+    if pause_enabled:
+        # 开启态必须给出有效区间：缺小时或起止相同（空区间）时拒绝保存，
+        # 避免「开关打开但从不生效」的静默失效（消费侧相等按未配置处理）
+        if pause_start is None or pause_end is None:
+            raise HTTPException(
+                status_code=400,
+                detail="开启 AI 分析暂停时段需同时设置开始与结束整点",
+            )
+        if pause_start == pause_end:
+            raise HTTPException(
+                status_code=400,
+                detail="AI 分析暂停时段的开始与结束整点不能相同",
+            )
+    if body.ai_pause_enabled is not None:
+        cfg.ai_pause_enabled = body.ai_pause_enabled
+    if "ai_pause_start_hour" in body.model_fields_set:
+        cfg.ai_pause_start_hour = pause_start
+    if "ai_pause_end_hour" in body.model_fields_set:
+        cfg.ai_pause_end_hour = pause_end
     if body.tp2_enabled is not None:
         cfg.tp2_enabled = body.tp2_enabled
 

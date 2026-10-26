@@ -204,6 +204,39 @@ def test_ai_dispatch_skipped_without_key(wire_sessions, monkeypatch):
     assert "未配置 API Key" in rec.summary
 
 
+def test_ai_dispatch_skipped_in_pause_window(wire_sessions, monkeypatch):
+    """AI 分析暂停时段（2026-10-26）：当前北京时间落在区间 → skipped +
+    时段文案，且不派发任何子任务。窗口按当前整点 +2h 构造，规避跨整点抖动。"""
+    import uuid as _uuid
+    from datetime import timedelta, timezone
+
+    from app.tasks import ai_tasks
+
+    monkeypatch.setattr(settings, "AI_API_KEY", "test-key")
+    bj_hour = datetime.now(timezone(timedelta(hours=8))).hour
+
+    s = wire_sessions()
+    cfg = s.get(SystemConfig, 1)
+    cfg.ai_analysis_enabled = True
+    cfg.ai_pause_enabled = True
+    cfg.ai_pause_start_hour = bj_hour
+    cfg.ai_pause_end_hour = (bj_hour + 2) % 24
+    s.commit()
+    s.close()
+
+    def _no_dispatch(*args, **kwargs):
+        raise AssertionError("暂停时段不应派发子任务")
+
+    monkeypatch.setattr(ai_tasks, "group", _no_dispatch)
+    monkeypatch.setattr(ai_tasks, "chord", _no_dispatch)
+
+    ai_tasks.run_ai_analysis_task(str(_uuid.uuid4()))
+
+    rec = _latest_record(wire_sessions)
+    assert rec.task_type == "ai" and rec.status == "skipped"
+    assert "暂停时段" in rec.summary and "北京时间" in rec.summary
+
+
 def test_ai_dispatch_completed(wire_sessions, monkeypatch, db_engine):
     """分发成功：completed + 「已分发 N 个分析子任务」summary"""
     import uuid as _uuid

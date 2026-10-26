@@ -31,6 +31,7 @@ from app.models.trade import TradeRecord
 from app.services import ai_progress
 from app.services import market_data as md
 from app.services.ai_analyzer import analyze_with_guard
+from app.services.ai_pause import is_ai_paused, pause_window_label
 from app.services.scan_filters import resolve_scan_filters
 from app.services.llm_client import configure_from, current_concurrency
 from app.services.strategy.technical import annotate_htf_phase, htf_context
@@ -157,6 +158,19 @@ def run_ai_analysis_task(
             # 不受限。交易开关（trading_enabled）只管自动成交，不再拦分析
             logger.info("筛选后自动 AI 分析开关关闭，批量分析跳过 #%s", scan_record_id)
             close_task(task_id, "skipped", summary="「筛选后自动 AI 分析」开关关闭")
+            return
+        if only_scan_result_id is None and is_ai_paused(cfg):
+            # AI 分析暂停时段（2026-10-26）：每天固定北京时间整点区间内不跑批量
+            # 分析（省 LLM 成本）；手动单币重分析不受限（与上面的开关同语义）
+            label = pause_window_label(cfg)
+            logger.info(
+                "处于 AI 分析暂停时段（北京时间 %s），批量分析跳过 #%s",
+                label, scan_record_id,
+            )
+            close_task(
+                task_id, "skipped",
+                summary=f"AI 分析暂停时段（北京时间 {label}），跳过本轮",
+            )
             return
         q = select(ScanResult).where(ScanResult.scan_record_id == UUID(scan_record_id))
         # 连损降速（docs/24 A3 软熔断）：启用自动交易的账号当日连损任一 ≥2 →
@@ -313,6 +327,11 @@ def run_ai_analysis_single(
             # 手动单币重分析（force = only_scan_result_id 非空）不受限。
             # 此前这里静默 return 且不写进度事件 → 前端「等待分析任务开始」卡死
             logger.info("筛选后自动 AI 分析开关关闭，批量分析子任务跳过 %s", r.symbol)
+            return
+        if not force and is_ai_paused(cfg):
+            # AI 分析暂停时段（2026-10-26）：分发后跨入暂停时段的子任务同样跳过，
+            # 与父任务闸门同口径；手动单币重分析（force）不受限
+            logger.info("处于 AI 分析暂停时段，批量分析子任务跳过 %s", r.symbol)
             return
 
         strategy_prompt = (

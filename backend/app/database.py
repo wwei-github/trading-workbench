@@ -883,6 +883,15 @@ def _run_migrations(engine):
             "ALTER TABLE prompt_patches "
             "ADD COLUMN IF NOT EXISTS before_value_json JSONB"
         ))
+        # AI 分析暂停时段（2026-10-26）：每天固定整点区间内跳过筛选后的自动 AI
+        # 分析（北京时间）。三列均可空：NULL=未配置（不暂停），老库加列无需回填；
+        # 语义与消费方见 services/ai_pause.py
+        conn.execute(text("""
+            ALTER TABLE system_config
+              ADD COLUMN IF NOT EXISTS ai_pause_enabled BOOLEAN,
+              ADD COLUMN IF NOT EXISTS ai_pause_start_hour INTEGER,
+              ADD COLUMN IF NOT EXISTS ai_pause_end_hour INTEGER
+        """))
 
 
 def init_db():

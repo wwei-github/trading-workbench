@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Modal, Form, Input, InputNumber, Switch, Checkbox, message, Button, Spin, Tooltip, Row, Col } from 'antd'
+import { Modal, Form, Input, InputNumber, Switch, Checkbox, message, Button, Spin, Tooltip, Row, Col, Select } from 'antd'
 import { SettingOutlined, RobotOutlined, FileTextOutlined, UndoOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import ConfigSection from './ConfigSection'
@@ -50,6 +50,12 @@ const FILTER_FIELDS: { name: string; label: string; min: number; max: number; st
     tooltip: '单次扫描批量 AI 分析的币种上限，按质量分/24h成交额取前N（控制 LLM 成本）' },
 ]
 
+/** AI 分析暂停时段的小时选项（整点，00:00 ~ 23:00） */
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, h) => ({
+  value: h,
+  label: `${String(h).padStart(2, '0')}:00`,
+}))
+
 /** 策略配置弹窗：扫描策略 + AI 分析/策略开关。
  *  （2026-09-20 工具栏的 AI/策略快捷开关收敛至此；交易参数见
  *  TradingConfigPanel，环境/自动交易开关见 SystemConfigPanel） */
@@ -68,6 +74,8 @@ export default function ScanConfigPanel() {
   const watchedTriggers: string[] | undefined = Form.useWatch('allowed_triggers', form)
   const pullbackEnabled = (watchedTriggers ?? ALL_TRIGGER_VALUES)
     .some((t) => PULLBACK_TRIGGER_VALUES.includes(t))
+  // AI 分析暂停开关 → 驱动起止整点下拉的置灰
+  const pauseEnabled: boolean | undefined = Form.useWatch('ai_pause_enabled', form)
 
   // 每次打开 Modal 时，从后端拉取最新配置数据
   useEffect(() => {
@@ -99,6 +107,10 @@ export default function ScanConfigPanel() {
         pullback_leg_min_bars: eff.pullback_leg_min_bars ?? 2,
         pullback_leg_min_atr: eff.pullback_leg_min_atr ?? 0.5,
         ai_analysis_enabled: aiConfig.ai_analysis_enabled ?? false,
+        // 暂停时段：库内 NULL 时给默认 00:00-08:00（仅表单初值，开关关闭不生效）
+        ai_pause_enabled: aiConfig.ai_pause_enabled ?? false,
+        ai_pause_start_hour: aiConfig.ai_pause_start_hour ?? 0,
+        ai_pause_end_hour: aiConfig.ai_pause_end_hour ?? 8,
         strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
         // AI 运行时参数：库内原始值（null=未定制，留空即回落 env 默认）
         ai_model: aiConfig.ai_model ?? undefined,
@@ -120,6 +132,12 @@ export default function ScanConfigPanel() {
   const handleSave = async () => {
     try {
       const values = await form.validateFields()
+      // 暂停时段开启时起止整点不能相同（否则是空区间/全天二义，后端同样 400）
+      if (values.ai_pause_enabled
+        && values.ai_pause_start_hour === values.ai_pause_end_hour) {
+        message.error('暂停时段的开始与结束不能相同')
+        return
+      }
       setSaving(true)
       const data: Partial<SystemConfig> = {
         // 周期固定 1h（整点小时级调度）；保存时归一化，兼容库内历史非 1h 值
@@ -128,6 +146,10 @@ export default function ScanConfigPanel() {
         repeat_window_hours: values.repeat_window_hours,
         swing_order: values.swing_order,
         ai_analysis_enabled: values.ai_analysis_enabled,
+        // AI 分析暂停时段（北京时间整点，[开始, 结束)；开始>结束 表示跨零点）
+        ai_pause_enabled: values.ai_pause_enabled ?? false,
+        ai_pause_start_hour: values.ai_pause_start_hour,
+        ai_pause_end_hour: values.ai_pause_end_hour,
         strategy_prompt_enabled: values.strategy_prompt_enabled,
         // AI 运行时参数：空串/未填 → null（后端回落 env 默认）
         ai_model: (values.ai_model ?? '').trim() || null,
@@ -385,7 +407,7 @@ export default function ScanConfigPanel() {
           </ConfigSection>
 
           {/* AI 分析开关区（原工具栏快捷开关，2026-09-20 收敛至此）；四列排布 */}
-          <ConfigSection title="AI 分析" hint="开关保存后即时生效">
+          <ConfigSection title="AI 分析" hint="开关保存后即时生效；暂停时段仅拦「筛选后自动分析」，手动单币分析不受限">
           <Row gutter={16}>
             <Col span={6}>
               <Form.Item
@@ -421,6 +443,52 @@ export default function ScanConfigPanel() {
                   <Switch />
                 </Form.Item>
               </Tooltip>
+            </Col>
+          </Row>
+          {/* 暂停时段（2026-10-26）：每天北京时间 [开始, 结束) 整点内跳过筛选后的自动
+              AI 分析；开始 > 结束 表示跨零点（如 22:00 → 06:00） */}
+          <Row gutter={16}>
+            <Col span={6}>
+              <Form.Item
+                label="AI 分析暂停时段"
+                name="ai_pause_enabled"
+                valuePropName="checked"
+                tooltip={aiConfigured
+                  ? '开启后每天在所选北京时间整点区间内跳过「筛选后自动 AI 分析」（扫描与自动交易巡检照常）；手动单币分析不受影响'
+                  : '后端未配置 AI_API_KEY，无法使用 AI 分析'}
+              >
+                <Switch
+                  disabled={!aiConfigured}
+                  checkedChildren="开"
+                  unCheckedChildren="关"
+                />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="开始整点"
+                name="ai_pause_start_hour"
+                tooltip="暂停起始整点（含），北京时间"
+              >
+                <Select
+                  options={HOUR_OPTIONS}
+                  style={{ width: '100%' }}
+                  disabled={!aiConfigured || !pauseEnabled}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="结束整点"
+                name="ai_pause_end_hour"
+                tooltip="暂停结束整点（不含），北京时间；小于开始整点表示跨零点，如 22 → 6 即 22:00-次日 06:00"
+              >
+                <Select
+                  options={HOUR_OPTIONS}
+                  style={{ width: '100%' }}
+                  disabled={!aiConfigured || !pauseEnabled}
+                />
+              </Form.Item>
             </Col>
           </Row>
           </ConfigSection>

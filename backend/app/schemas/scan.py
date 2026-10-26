@@ -199,6 +199,11 @@ class SystemConfigOut(BaseModel):
     ai_analysis_enabled: bool
     ai_configured: bool  # 后端是否已配置 AI_API_KEY（不返回 key 本身）
     tp2_enabled: bool = False  # TP2 分批止盈开关（2026-10-08 默认关：仅 TP1 80%+剩余跟进）
+    # AI 分析暂停时段（2026-10-26，北京时间整点）：开启后每天 [start, end) 内跳过
+    # 筛选后的自动 AI 分析；start > end 为跨零点，NULL/相等=未配置（不暂停）
+    ai_pause_enabled: bool = False
+    ai_pause_start_hour: Optional[int] = None
+    ai_pause_end_hour: Optional[int] = None
 
     # 自定义策略提示词
     strategy_prompt_enabled: bool
@@ -306,6 +311,10 @@ class AccountBrief(BaseModel):
 class SystemConfigUpdate(BaseModel):
     # AI 分析开关
     ai_analysis_enabled: Optional[bool] = None
+    # AI 分析暂停时段（2026-10-26）：开关 + 北京时间整点区间 [start, end)
+    ai_pause_enabled: Optional[bool] = None
+    ai_pause_start_hour: Optional[int] = None
+    ai_pause_end_hour: Optional[int] = None
     tp2_enabled: Optional[bool] = None
 
     # 自定义策略提示词

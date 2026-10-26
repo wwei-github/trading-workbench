@@ -26,6 +26,14 @@ class SystemConfig(Base):
     # AI 分析开关
     ai_analysis_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # AI 分析暂停时段（2026-10-26，配置页）：开启后每天在 [start, end) 整点区间内
+    # 跳过「筛选后自动 AI 分析」（北京时间；只拦批量/自动，手动单币重分析不受限）。
+    # 列语义：start < end 为同日区间，start > end 为跨零点（如 22→6）；
+    # NULL/未开启/start == end 均视为不暂停（空区间），防误配成全天停摆。
+    ai_pause_enabled: Mapped[Optional[bool]] = mapped_column(nullable=True, default=None)
+    ai_pause_start_hour: Mapped[Optional[int]] = mapped_column(nullable=True, default=None)
+    ai_pause_end_hour: Mapped[Optional[int]] = mapped_column(nullable=True, default=None)
+
     # 自定义策略提示词（MD 格式，AI 分析时可选携带）
     strategy_prompt_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     strategy_prompt: Mapped[str] = mapped_column(Text, default="")
