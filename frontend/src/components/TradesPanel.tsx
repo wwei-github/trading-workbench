@@ -56,7 +56,7 @@ import { bj } from '../utils/dayjs'
 import { SCHEME_UP_DOWN, schemeTag, schemeValueColor } from '../utils/scheme'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import AiAnalysisCard from './AiAnalysisCard'
-import KlineChart from './KlineChart' // 统一K线图组件（tradeId 复盘模式）
+import KlineChart from './KlineChart' // 统一K线图组件（tradeId 复盘 / symbol 实时双模式）
 import ScopeSelector, { scopeIsTestnet } from './ScopeSelector'
 import type { AccountSummary, FundAnalytics, PendingEntry, TradeEvent, TradeRecord, TradeReconciliation } from '../types'
 import { ADVICE_ACTION_META } from '../types'
@@ -523,6 +523,8 @@ export default function TradesPanel() {
   }
   // 复盘K线弹窗（点击币种名打开）
   const [replayTrade, setReplayTrade] = useState<TradeRecord | null>(null)
+  // 挂单K线弹窗（2026-10-26）：挂单尚未成交、无 TradeRecord，按 symbol 走实时K线模式
+  const [pendingChart, setPendingChart] = useState<PendingEntry | null>(null)
 
   // R 泄漏对账弹窗（docs/24 A1）：已平仓行「对账」按钮打开，计划 vs 实际 vs 泄漏分解
   const [reconTrade, setReconTrade] = useState<TradeRecord | null>(null)
@@ -826,6 +828,18 @@ export default function TradesPanel() {
   // 使挂单区呈现「挂单中 / 已成交 / 已取消」三类视图
   const pendGroup = (s: PendingEntry['status']): 'open' | 'filled' | 'closed' =>
     s === 'pending' ? 'open' : s === 'filled' ? 'filled' : 'closed'
+  // 挂单状态文案（2026-10-26）：canceled 按 resolve_reason 细分；表格列与K线弹窗共用
+  const pendStatusText = (r: PendingEntry): string => {
+    const label = PEND_GROUP_META[pendGroup(r.status)].label
+    const detail = r.status === 'pending' || r.status === 'filled'
+      ? ''
+      : r.status === 'failed'
+        ? '·落地失败'
+        : r.status === 'expired'
+          ? '·超时撤销'
+          : PEND_RESOLVE_DETAIL[r.resolve_reason ?? ''] || '·已撤销'
+    return `${label}${detail}`
+  }
   const pendCounts = useMemo(() => {
     const c = { open: 0, filled: 0, closed: 0 }
     for (const r of pendingRows) c[pendGroup(r.status)] += 1
@@ -1819,7 +1833,16 @@ export default function TradesPanel() {
             columns={[
               {
                 title: '币种', dataIndex: 'symbol', key: 'symbol', width: 110,
-                render: (v: string) => <span style={{ fontWeight: 600 }}>{v}</span>,
+                render: (v: string, r: PendingEntry) => (
+                  <Tooltip title="点击查看最新K线">
+                    <a
+                      onClick={() => setPendingChart(r)}
+                      style={{ fontWeight: 600, cursor: 'pointer' }}
+                    >
+                      {v}
+                    </a>
+                  </Tooltip>
+                ),
               },
               {
                 title: '方向', dataIndex: 'direction', key: 'direction', width: 80,
@@ -1845,22 +1868,11 @@ export default function TradesPanel() {
               },
               {
                 title: '状态', dataIndex: 'status', key: 'status', width: 130,
-                render: (s: PendingEntry['status'], r: PendingEntry) => {
-                  const meta = PEND_GROUP_META[pendGroup(s)]
-                  const detail = s === 'pending' || s === 'filled'
-                    ? ''
-                    : s === 'failed'
-                      ? '·落地失败'
-                      : s === 'expired'
-                        ? '·超时撤销'
-                        // canceled：按 resolve_reason 细分，未知原因回退「已撤销」
-                        : PEND_RESOLVE_DETAIL[r.resolve_reason ?? ''] || '·已撤销'
-                  return (
-                    <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>
-                      {meta.label}{detail}
-                    </Tag>
-                  )
-                },
+                render: (s: PendingEntry['status'], r: PendingEntry) => (
+                  <Tag color={PEND_GROUP_META[pendGroup(s)].color} style={{ marginInlineEnd: 0 }}>
+                    {pendStatusText(r)}
+                  </Tag>
+                ),
               },
               {
                 title: '时间', key: 'time', width: 110,
@@ -2138,6 +2150,38 @@ export default function TradesPanel() {
         {replayTrade && (
           <div style={{ height: 700 }}>
             <KlineChart tradeId={replayTrade.id} />
+          </div>
+        )}
+      </Modal>
+
+      {/* 挂单K线弹窗（2026-10-26）：挂单未成交时无 TradeRecord，走 symbol 实时K线模式；
+          标题带挂单计划（挂单价/止损/TP1），成交后可再从「查看交易」进复盘模式 */}
+      <Modal
+        open={!!pendingChart}
+        onCancel={() => setPendingChart(null)}
+        width={1400}
+        footer={null}
+        destroyOnClose
+        title={
+          pendingChart && (
+            <Space size={6} wrap>
+              <span style={{ fontWeight: 600 }}>{pendingChart.symbol}</span>
+              <Tag color={pendingChart.direction === 'long' ? schemeTag(colorScheme).up : schemeTag(colorScheme).down} style={{ marginInlineEnd: 0 }}>
+                {pendingChart.direction === 'long' ? '多' : '空'}
+              </Tag>
+              <Tag color={PEND_GROUP_META[pendGroup(pendingChart.status)].color} style={{ marginInlineEnd: 0 }}>
+                {pendStatusText(pendingChart)}
+              </Tag>
+              <span style={{ fontSize: 12, color: '#999', fontWeight: 400 }}>
+                挂单 {pendPrice(pendingChart.entry_price)} · 止损 {pendPrice(pendingChart.stop_loss)} · TP1 {pendPrice(pendingChart.tp1)}
+              </span>
+            </Space>
+          )
+        }
+      >
+        {pendingChart && (
+          <div style={{ height: 700 }}>
+            <KlineChart symbol={pendingChart.symbol} limit={500} />
           </div>
         )}
       </Modal>
