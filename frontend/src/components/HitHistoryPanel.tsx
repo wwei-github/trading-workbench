@@ -141,11 +141,22 @@ export default function HitHistoryPanel() {
       },
     },
     {
-      title: '形态', dataIndex: 'pattern', key: 'pattern', width: 110,
-      render: (v: string | null) => {
+      // 组合确认（2026-10-26，docs/11）：回踩金K走「前根形态+当根趋势K」时 pattern 落在
+      // 信号根的前一根，加 `前根·` 前缀才不会让人误读成「这根信号K是锤形线」。
+      // 判据用 entry_lag_pct != null（⇔ 形态根早于信号根，spec §4.3 等价判据），
+      // 不读 golden_combo：双流星 golden_combo=True 但形态就在信号根上，不该标前根。
+      // 列宽 110→130 容纳前缀；万一仍溢出，用 tooltip 给全称。
+      title: '形态', dataIndex: 'pattern', key: 'pattern', width: 130,
+      render: (v: string | null, r) => {
         if (!v) return <Text type="secondary">-</Text>
         const s = patternStyle(v, colorScheme)
-        return <Tag color={s.color}>{s.label}</Tag>
+        const isPrev = r.entry_lag_pct != null
+        if (!isPrev) return <Tag color={s.color}>{s.label}</Tag>
+        return (
+          <Tooltip title={`${s.label}（形态在信号K线前一根，组合确认）`}>
+            <Tag color={s.color}>{`前根·${s.label}`}</Tag>
+          </Tooltip>
+        )
       },
     },
     {
@@ -279,6 +290,11 @@ export default function HitHistoryPanel() {
                 tradeOverlay={detail.trade}
                 hitSignalType={detail.signal_type}
                 hitPattern={detail.pattern}
+                // 组合确认（2026-10-26，docs/11）：只传 hitPattern 时图表拿不到形态根，
+                // 画不出 `(前根)` 主标与形态根副标；这里把后端两个事实原样透传，
+                // 是否标前根由 KlineChart 比较两根K是否真的不同决定（不看 golden_combo）。
+                hitGoldenCombo={detail.golden_combo}
+                hitPatternCandleOpen={detail.pattern_candle_open}
               />
             </div>
             <Space size="small" style={{ marginTop: 8, fontSize: 12, color: '#8b93a7' }}>
@@ -296,6 +312,19 @@ export default function HitHistoryPanel() {
                 <span>
                   <Tag color="#722ed1">触碰</Tag>
                   {bj(detail.stage1_candle_open).format('YYYY-MM-DD HH:mm')}
+                </span>
+              )}
+              {/* 组合确认（2026-10-26，docs/11）：形态在哪根、确认晚一根的代价显式化。
+                  只有形态根早于信号根（entry_lag_pct != null）才出现；滞后可能为 0，
+                  必须用 != null 判空而不是真值判断，否则 0.00% 会被吞掉。
+                  ⚠ 与警示色只读后端 entry_lag_warn（阈值 0.8% 后端单点判定），前端不重算。 */}
+              {detail.pattern_candle_open && detail.entry_lag_pct != null && (
+                <span>
+                  <Tag color="#8b93a7">形态K</Tag>
+                  {bj(detail.pattern_candle_open).format('YYYY-MM-DD HH:mm')}
+                  <Text type={detail.entry_lag_warn ? 'warning' : 'secondary'}>
+                    {` · 确认滞后 ${detail.entry_lag_pct > 0 ? '+' : ''}${detail.entry_lag_pct.toFixed(2)}%${detail.entry_lag_warn ? ' ⚠' : ''}`}
+                  </Text>
                 </span>
               )}
             </Space>
