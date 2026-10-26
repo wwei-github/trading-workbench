@@ -285,6 +285,9 @@ class SystemConfigOut(BaseModel):
     # AI 运行时参数（2026-10-14 上页面，策略配置弹窗）：库内原始值 nullable
     # （NULL=未定制，回落 env）；*_effective=实际生效值（DB>env>代码默认），前端占位/提示用
     ai_model: Optional[str] = None                # AI 模型名（NULL=回落 env AI_MODEL）
+    # AI API Key（2026-10-26）：只回传是否已配置 + 脱敏预览，永不回传明文
+    ai_api_key_set: bool = False
+    ai_api_key_masked: str = ""
     ai_base_url: Optional[str] = None             # AI 接口端点（NULL=回落 env AI_BASE_URL）
     llm_concurrency: Optional[int] = None         # LLM 并发上限（NULL=回落 env LLM_CONCURRENCY）
     ai_call_timeout_s: Optional[int] = None       # 单次调用超时秒（NULL=回落 env AI_CALL_TIMEOUT_S）
@@ -292,6 +295,8 @@ class SystemConfigOut(BaseModel):
     ai_base_url_effective: str = ""
     llm_concurrency_effective: int = 0
     ai_call_timeout_s_effective: int = 0
+    # 弹窗凭证对是否生效（2026-10-26）：db=Key+端点都已配置，env=缺一整体回落 env
+    ai_api_pair_source: str = "env"
 
     class Config:
         from_attributes = True
@@ -387,6 +392,9 @@ class SystemConfigUpdate(BaseModel):
 
     # AI 运行时参数（2026-10-14 上页面；传 null=恢复 env 默认，范围/格式校验见 api/scan.py）
     ai_model: Optional[str] = None
+    # AI API Key（2026-10-26）：不传=保持库内原值；传 null/空串=清除（回落 env）；
+    # 与 ai_base_url 必须同时配置才生效，缺一整体回落 env
+    ai_api_key: Optional[str] = None
     ai_base_url: Optional[str] = None
     llm_concurrency: Optional[int] = None
     ai_call_timeout_s: Optional[int] = None

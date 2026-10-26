@@ -28,3 +28,9 @@ def _no_ai_dispatch(monkeypatch):
     代理解析成不可达地址），用例表现为卡死数分钟。需要派发的用例自行显式开启
     并桩掉 .delay。"""
     monkeypatch.setattr(settings, "AI_API_KEY", "")
+    # 运行时凭证覆盖一并复位（2026-10-26 Key 上页面）：上一用例 configure_from
+    # 写入页面 Key 后，本用例 current_api_key() 会读残留覆盖、绕过上面的 env 关闭
+    from app.services import llm_client
+
+    monkeypatch.setattr(llm_client, "_runtime", {})
+    monkeypatch.setattr(llm_client, "_client_key", ())

@@ -68,6 +68,9 @@ export default function ScanConfigPanel() {
   // （后端 PUT 对 scan_filters 做键级合并——提交键覆盖、未提交键保留库内旧值，
   //  故不会把 env 派生值固化进 DB，也不会丢掉先前定制的键）
   const [filtersSnapshot, setFiltersSnapshot] = useState<Record<string, unknown>>({})
+  // AI API Key 编辑标记（2026-10-26）：接口不回传明文，输入框默认留空。
+  // 只有用户实际动过该输入才提交（留空不修改库内已存 Key；手动清空=清除回退 env）
+  const [apiKeyTouched, setApiKeyTouched] = useState(false)
   const { aiConfig, updateConfig, fetchConfig } = useScanStore()
 
   // 触发类型白名单实时值 → 驱动回踩触点白名单的置灰（未勾选任何回踩类时该白名单不生效）
@@ -114,10 +117,13 @@ export default function ScanConfigPanel() {
         strategy_prompt_enabled: aiConfig.strategy_prompt_enabled ?? false,
         // AI 运行时参数：库内原始值（null=未定制，留空即回落 env 默认）
         ai_model: aiConfig.ai_model ?? undefined,
+        // API Key 明文永不回传：字段恒为空，占位显示已配置/未配置状态
+        ai_api_key: undefined,
         ai_base_url: aiConfig.ai_base_url ?? undefined,
         llm_concurrency: aiConfig.llm_concurrency ?? undefined,
         ai_call_timeout_s: aiConfig.ai_call_timeout_s ?? undefined,
       })
+      setApiKeyTouched(false)
     }
   }, [open, aiConfig, form])
 
@@ -128,6 +134,15 @@ export default function ScanConfigPanel() {
   const aiBaseUrlEff = aiConfig?.ai_base_url_effective ?? ''
   const aiConcurrencyEff = aiConfig?.llm_concurrency_effective ?? 0
   const aiTimeoutEff = aiConfig?.ai_call_timeout_s_effective ?? 0
+  // 凭证对状态（2026-10-26）：Key 与端点成对配置才用页面值，缺一整体回落 .env
+  const aiApiKeySet = !!aiConfig?.ai_api_key_set
+  const aiApiKeyMasked = aiConfig?.ai_api_key_masked ?? ''
+  const aiPairSource = aiConfig?.ai_api_pair_source ?? 'env'
+  const aiApiHint = aiPairSource === 'db'
+    ? '当前生效：弹窗配置的 Key + 端点'
+    : aiApiKeySet
+      ? 'Key 与端点未成对配置 → 当前整对使用 .env 默认'
+      : '当前生效：后端 .env 默认'
 
   const handleSave = async () => {
     try {
@@ -156,6 +171,10 @@ export default function ScanConfigPanel() {
         ai_base_url: (values.ai_base_url ?? '').trim() || null,
         llm_concurrency: values.llm_concurrency ?? null,
         ai_call_timeout_s: values.ai_call_timeout_s ?? null,
+      }
+      // API Key 仅在本次实际编辑过才提交（未动=保留库内原值；清空=清除回落 env）
+      if (apiKeyTouched) {
+        data.ai_api_key = (values.ai_api_key ?? '').trim() || null
       }
       // 筛选参数组：逐键比对快照，仅提交有改动的键（后端键级合并：未提交键保留
       // 库内旧值，故不会把 env 派生值固化进 DB、也不会丢先前定制键）；
@@ -418,9 +437,9 @@ export default function ScanConfigPanel() {
                 }
                 name="ai_analysis_enabled"
                 valuePropName="checked"
-                tooltip={aiConfigured ? '开启后扫描命中币种自动触发 AI 分析（独立于自动交易开关；手动单币分析不受影响）' : '后端未配置 AI_API_KEY，无法使用 AI 分析'}
+                tooltip={aiConfigured ? '开启后扫描命中币种自动触发 AI 分析（独立于自动交易开关；手动单币分析不受影响）' : '尚未配置 AI API Key：可在下方「AI 运行时参数」填写 Key 与端点后开启'}
               >
-                <Switch disabled={!aiConfigured} />
+                <Switch />
               </Form.Item>
             </Col>
             <Col span={6}>
@@ -455,10 +474,9 @@ export default function ScanConfigPanel() {
                 valuePropName="checked"
                 tooltip={aiConfigured
                   ? '开启后每天在所选北京时间整点区间内跳过「筛选后自动 AI 分析」（扫描与自动交易巡检照常）；手动单币分析不受影响'
-                  : '后端未配置 AI_API_KEY，无法使用 AI 分析'}
+                  : '尚未配置 AI API Key：可在下方「AI 运行时参数」填写 Key 与端点后开启'}
               >
                 <Switch
-                  disabled={!aiConfigured}
                   checkedChildren="开"
                   unCheckedChildren="关"
                 />
@@ -473,7 +491,7 @@ export default function ScanConfigPanel() {
                 <Select
                   options={HOUR_OPTIONS}
                   style={{ width: '100%' }}
-                  disabled={!aiConfigured || !pauseEnabled}
+                  disabled={!pauseEnabled}
                 />
               </Form.Item>
             </Col>
@@ -486,7 +504,7 @@ export default function ScanConfigPanel() {
                 <Select
                   options={HOUR_OPTIONS}
                   style={{ width: '100%' }}
-                  disabled={!aiConfigured || !pauseEnabled}
+                  disabled={!pauseEnabled}
                 />
               </Form.Item>
             </Col>
@@ -494,28 +512,47 @@ export default function ScanConfigPanel() {
           </ConfigSection>
 
           {/* AI 运行时参数（2026-10-14）：模型名/端点/并发/超时取自 .env，可在此覆盖；
-              留空=回落 .env 默认（占位显示当前生效值）。密钥仍在后端 .env，不上页面 */}
-          <ConfigSection title="AI 运行时参数" hint="留空 = 用后端 .env 默认（占位显示当前生效值）；密钥仅存服务器 .env">
+              留空=回落 .env 默认（占位显示当前生效值）。API Key（2026-10-26）同样上页面，
+              但必须与接口端点成对配置才生效——只配一项时整对回落 .env */}
+          <ConfigSection title="AI 运行时参数" hint={`留空 = 用后端 .env 默认（占位显示当前生效值）；Key 与端点需成对配置才生效。${aiApiHint}`}>
           <Row gutter={16}>
-            <Col span={6}>
+            <Col span={8}>
+              <Form.Item
+                label="AI API Key"
+                name="ai_api_key"
+                tooltip={`${aiApiKeySet ? `库内已配置（${aiApiKeyMasked}），留空不修改；` : ''}与「AI 接口端点」同时配置才生效，只配一项则整对回落 .env 默认；清空并保存 = 清除库内 Key`}
+              >
+                <Input.Password
+                  autoComplete="new-password"
+                  allowClear
+                  placeholder={aiApiKeySet
+                    ? `已配置：${aiApiKeyMasked}（留空不修改）`
+                    : '留空 = 用后端 .env 默认'}
+                  onChange={() => setApiKeyTouched(true)}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item
+                label="AI 接口端点"
+                name="ai_base_url"
+                tooltip={`当前生效：${aiBaseUrlEff || '—'}（留空=用后端 .env 默认；须 http(s):// 前缀；与 API Key 成对才生效）`}
+              >
+                <Input placeholder={aiBaseUrlEff} allowClear />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
               <Form.Item
                 label="AI 模型名称"
                 name="ai_model"
                 tooltip={`当前生效：${aiModelEff || '—'}（留空=用后端 .env 默认；改后即生效）`}
               >
-                <Input placeholder={aiModelEff} allowClear disabled={!aiConfigured} />
+                <Input placeholder={aiModelEff} allowClear />
               </Form.Item>
             </Col>
-            <Col span={6}>
-              <Form.Item
-                label="AI 接口端点"
-                name="ai_base_url"
-                tooltip={`当前生效：${aiBaseUrlEff || '—'}（留空=用后端 .env 默认；须 http(s):// 前缀）`}
-              >
-                <Input placeholder={aiBaseUrlEff} allowClear disabled={!aiConfigured} />
-              </Form.Item>
-            </Col>
-            <Col span={6}>
+          </Row>
+          <Row gutter={16}>
+            <Col span={8}>
               <Form.Item
                 label="LLM 并发上限"
                 name="llm_concurrency"
@@ -523,11 +560,11 @@ export default function ScanConfigPanel() {
               >
                 <InputNumber
                   min={1} max={64} style={{ width: '100%' }}
-                  placeholder={String(aiConcurrencyEff)} disabled={!aiConfigured}
+                  placeholder={String(aiConcurrencyEff)}
                 />
               </Form.Item>
             </Col>
-            <Col span={6}>
+            <Col span={8}>
               <Form.Item
                 label="AI 调用超时（秒）"
                 name="ai_call_timeout_s"
@@ -535,7 +572,7 @@ export default function ScanConfigPanel() {
               >
                 <InputNumber
                   min={5} max={3600} style={{ width: '100%' }}
-                  placeholder={String(aiTimeoutEff)} disabled={!aiConfigured}
+                  placeholder={String(aiTimeoutEff)}
                 />
               </Form.Item>
             </Col>

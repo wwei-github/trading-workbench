@@ -24,14 +24,38 @@ logger = logging.getLogger(__name__)
 
 # Optional 写法兼容 Python 3.9（PEP 604 的 X | Y 运行时求值需 3.10+）
 _client: Optional[OpenAI] = None
-# 已建客户端的 (base_url, timeout) 指纹：不一致即重建（模型名不参与，调用侧逐次传）
+# 已建客户端的 (api_key, base_url, timeout) 指纹：不一致即重建（模型名不参与，调用侧逐次传）
 _client_key: tuple = ()
 
 # ── AI 运行时参数覆盖（2026-10-14 上页面）──
-# system_config 的 ai_model/ai_base_url/llm_concurrency/ai_call_timeout_s
+# system_config 的 ai_model/ai_api_key/ai_base_url/llm_concurrency/ai_call_timeout_s
 # （列 NULL=回落 env）。各 LLM 任务入口调 configure_from(cfg) 每轮重读 DB 刷新；
 # 未调用时全部回落 env（老路径零改动）。进程内模块级——celery worker 各自持有一份。
 _runtime: dict = {}
+
+
+def resolve_credentials(cfg) -> tuple:
+    """生效凭证对解析（2026-10-26 页面 Key 上页面）：返回 (api_key, base_url)。
+
+    规则：页面 ai_api_key 与 ai_base_url **成对**配置才生效（两者都非空）；
+    缺一（含 cfg 为 None）整体回落 env（AI_API_KEY/AI_BASE_URL）——
+    避免「页面 Key 配了、端点没配」把请求打到 env 端点上用错凭证。
+    """
+    db_key = str(getattr(cfg, "ai_api_key", "") or "").strip() if cfg is not None else ""
+    db_url = str(getattr(cfg, "ai_base_url", "") or "").strip() if cfg is not None else ""
+    if db_key and db_url:
+        return db_key, db_url
+    return settings.AI_API_KEY, settings.AI_BASE_URL
+
+
+def mask_api_key(key: str) -> str:
+    """Key 脱敏预览：只留头 3 尾 4（前后端展示与审计日志共用，绝不回传/记录明文）。"""
+    k = (key or "").strip()
+    if not k:
+        return ""
+    if len(k) <= 8:
+        return "*" * len(k)
+    return f"{k[:3]}{'*' * 6}{k[-4:]}"
 
 
 def configure_from(cfg=None) -> None:
@@ -40,9 +64,15 @@ def configure_from(cfg=None) -> None:
     cfg 为 None（未读到配置）时清空覆盖、全部回落 env，避免串用上一轮的旧值。
     """
     _runtime["model"] = (getattr(cfg, "ai_model", None) or "") if cfg is not None else ""
-    _runtime["base_url"] = (getattr(cfg, "ai_base_url", None) or "") if cfg is not None else ""
+    _runtime["cred"] = resolve_credentials(cfg)
     _runtime["concurrency"] = getattr(cfg, "llm_concurrency", None) if cfg is not None else None
     _runtime["timeout"] = getattr(cfg, "ai_call_timeout_s", None) if cfg is not None else None
+
+
+def current_api_key() -> str:
+    """生效 API Key（页面 Key+端点成对配置 > env）"""
+    cred = _runtime.get("cred")
+    return cred[0] if cred else settings.AI_API_KEY
 
 
 def current_model() -> str:
@@ -51,8 +81,9 @@ def current_model() -> str:
 
 
 def current_base_url() -> str:
-    """生效接口端点（DB > env）"""
-    return _runtime.get("base_url") or settings.AI_BASE_URL
+    """生效接口端点（页面 Key+端点成对配置 > env）"""
+    cred = _runtime.get("cred")
+    return cred[1] if cred else settings.AI_BASE_URL
 
 
 def current_timeout() -> int:
@@ -69,13 +100,13 @@ def current_concurrency() -> int:
 
 def get_client() -> OpenAI:
     global _client, _client_key
-    key = (current_base_url(), current_timeout())
+    # key/base_url/timeout 参与鉴权与连接池策略，任一变更即重建（否则运行时改动不生效）
+    key = (current_api_key(), current_base_url(), current_timeout())
     if _client is None or _client_key != key:
-        # base_url/timeout 参与连接池与超时策略，变更即重建（否则运行时改动不生效）
         _client = OpenAI(
-            api_key=settings.AI_API_KEY,
-            base_url=key[0],
-            timeout=key[1],
+            api_key=key[0],
+            base_url=key[1],
+            timeout=key[2],
             max_retries=1,
         )
         _client_key = key

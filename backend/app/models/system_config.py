@@ -164,7 +164,12 @@ class SystemConfig(Base):
     # 调 configure_from(cfg) 每轮重读 DB 刷新 —— 改保存即生效。
     # AI 模型名（NULL=回落 env AI_MODEL，默认 gpt-4o-mini）
     ai_model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, default=None)
-    # AI 接口端点 base_url（NULL=回落 env AI_BASE_URL；须 http(s):// 前缀）
+    # AI API Key（2026-10-26 上页面）：与 ai_base_url 成对配置才生效——缺一整体
+    # 回落 env（AI_API_KEY/AI_BASE_URL），避免「页面 key 配了但端点没配」打到错网关。
+    # 接口永不回传明文，仅回传是否已配置与脱敏预览；NULL/空=未定制
+    ai_api_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, default=None)
+    # AI 接口端点 base_url（NULL=回落 env AI_BASE_URL；须 http(s):// 前缀；
+    # 生效条件=与 ai_api_key 成对配置，见上）
     ai_base_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, default=None)
     # LLM 并发上限（NULL=回落 env LLM_CONCURRENCY，默认 4；Redis 信号量阈值）
     llm_concurrency: Mapped[Optional[int]] = mapped_column(nullable=True, default=None)

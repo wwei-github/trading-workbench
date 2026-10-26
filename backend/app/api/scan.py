@@ -48,6 +48,7 @@ from app.services.scanner import classify_volume
 from app.services.trade_engine import breaker_status_by_net
 from app.services.ai_analyzer import analyze_coin
 from app.services.decision_version import bump_decision_version
+from app.services.llm_client import mask_api_key, resolve_credentials
 from app.services.risk_guard import is_pullback_wait
 from app.services.skill_library import list_skills
 from app.services.strategy import recent_swings, swing_annotations
@@ -78,6 +79,9 @@ def _audit_fmt_value(key: str, v) -> str:
         return "开" if v else "关"
     if key == "strategy_prompt":
         return f"<策略提示词 {len(str(v))} 字>"
+    if key == "ai_api_key":
+        # 密钥绝不入审计日志（只记是否已配置）
+        return "已设置" if v else "未设置"
     if key == "ai_base_url":
         # URL userinfo（https://key:secret@host）可能携带网关凭证，审计只留主机位
         try:
@@ -368,8 +372,9 @@ def trigger_ai_analysis(
     """触发 AI 分析（全量或单币）"""
     cfg = _get_system_config(db)
     # 手动单币重分析（scan_result_id 非空）不受「筛选后自动 AI 分析」开关与暂停时段
-    # 限制，仅要求已配置 API_KEY；无 scan_result_id 的全量触发仍受二者约束（批量自动分析语义）
-    if not settings.AI_API_KEY or (
+    # 限制，仅要求已配置凭证（页面 Key+端点成对 或 env）；无 scan_result_id 的全量
+    # 触发仍受二者约束（批量自动分析语义）
+    if not resolve_credentials(cfg)[0] or (
         not body.scan_result_id and not cfg.ai_analysis_enabled
     ):
         raise HTTPException(status_code=403, detail="AI 分析未启用或未配置 API Key")
@@ -446,13 +451,16 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
     )
     from app.services.scan_filters import resolve_scan_filters
     flt = resolve_scan_filters(cfg)
+    # 生效凭证对（2026-10-26）：页面 Key+端点成对配置才生效，缺一整体回落 env
+    _api_key, _api_base = resolve_credentials(cfg)
+    _pair_db = bool((cfg.ai_api_key or "").strip()) and bool((cfg.ai_base_url or "").strip())
     return SystemConfigOut(
         ai_analysis_enabled=cfg.ai_analysis_enabled,
         ai_pause_enabled=bool(cfg.ai_pause_enabled),
         ai_pause_start_hour=cfg.ai_pause_start_hour,
         ai_pause_end_hour=cfg.ai_pause_end_hour,
         tp2_enabled=cfg.tp2_enabled,
-        ai_configured=bool(settings.AI_API_KEY),
+        ai_configured=bool(_api_key),
         strategy_prompt_enabled=cfg.strategy_prompt_enabled,
         strategy_prompt=cfg.strategy_prompt or "",
         kline_interval=cfg.kline_interval,
@@ -516,11 +524,14 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
                             if cfg.tp1_qty_pct_no_tp2 is not None else None),
         live_initial_capital=float(cfg.live_initial_capital or 0),
         ai_model=cfg.ai_model,
+        ai_api_key_set=bool((cfg.ai_api_key or "").strip()),
+        ai_api_key_masked=mask_api_key(cfg.ai_api_key or ""),
         ai_base_url=cfg.ai_base_url,
         llm_concurrency=cfg.llm_concurrency,
         ai_call_timeout_s=cfg.ai_call_timeout_s,
         ai_model_effective=cfg.ai_model or settings.AI_MODEL,
-        ai_base_url_effective=cfg.ai_base_url or settings.AI_BASE_URL,
+        ai_api_pair_source="db" if _pair_db else "env",
+        ai_base_url_effective=_api_base,
         llm_concurrency_effective=(cfg.llm_concurrency
                                    if cfg.llm_concurrency is not None
                                    else settings.LLM_CONCURRENCY),
@@ -677,14 +688,9 @@ def update_system_config(
     ):
         _audit_before["current_account_key"] = copy.deepcopy(cfg.current_account_key)
 
-    # AI 开关
-    if body.ai_analysis_enabled is not None:
-        if body.ai_analysis_enabled and not settings.AI_API_KEY:
-            raise HTTPException(
-                status_code=400,
-                detail="后端未配置 AI_API_KEY，无法开启 AI 分析",
-            )
-        cfg.ai_analysis_enabled = body.ai_analysis_enabled
+    # AI 开关：开启门槛=有效凭证存在（页面 Key+端点成对，或 env）。
+    # 因同一次请求可能同时提交凭证，本块延后到「AI 运行时参数」之后统一校验
+    # （见下方 ai_analysis_enabled 处理）；此处不动。
     # AI 分析暂停时段（2026-10-26）：开关 + 北京时间整点区间 [start, end)
     # 先算后写：校验 400 时不得留下未提交的半改状态（同 session 复用/回滚边界）
     pause_enabled = (
@@ -955,12 +961,19 @@ def update_system_config(
         cfg.live_initial_capital = v if v is not None else 0
 
     # AI 运行时参数（2026-10-14 上页面）：显式传 null/空串=恢复 env 默认；
-    # 模型名/端点/并发/超时（消费侧 llm_client.current_* 生效）
+    # 模型名/端点/并发/超时（消费侧 llm_client.current_* 生效）。
+    # AI API Key（2026-10-26）与端点成对生效：两者都配置才用页面凭证，
+    # 缺一整体回落 env（resolve_credentials 消费侧同口径）
     if "ai_model" in body.model_fields_set:
         v = (body.ai_model or "").strip() or None
         if v is not None and len(v) > 64:
             raise HTTPException(status_code=400, detail="ai_model 长度需 ≤ 64")
         cfg.ai_model = v
+    if "ai_api_key" in body.model_fields_set:
+        v = (body.ai_api_key or "").strip() or None
+        if v is not None and len(v) > 255:
+            raise HTTPException(status_code=400, detail="ai_api_key 长度需 ≤ 255")
+        cfg.ai_api_key = v
     if "ai_base_url" in body.model_fields_set:
         v = (body.ai_base_url or "").strip() or None
         if v is not None and not (v.startswith("http://") or v.startswith("https://")):
@@ -968,6 +981,14 @@ def update_system_config(
         if v is not None and len(v) > 255:
             raise HTTPException(status_code=400, detail="ai_base_url 长度需 ≤ 255")
         cfg.ai_base_url = v
+    # AI 开关（延后至此：本次提交的凭证已写入 cfg，同请求「先配凭证再开开关」可过）
+    if body.ai_analysis_enabled is not None:
+        if body.ai_analysis_enabled and not resolve_credentials(cfg)[0]:
+            raise HTTPException(
+                status_code=400,
+                detail="AI 未配置（.env 与页面的 AI API Key 均为空），无法开启 AI 分析",
+            )
+        cfg.ai_analysis_enabled = body.ai_analysis_enabled
     if "llm_concurrency" in body.model_fields_set:
         v = body.llm_concurrency
         if v is not None and not (1 <= v <= 64):
@@ -1612,7 +1633,7 @@ def review_attribute(body: dict, db: Session = Depends(get_db)):
     from app.services.exchange_pool import AllExchangesFailed
     from app.tasks.review_tasks import run_ai_attribution
 
-    if not settings.AI_API_KEY:
+    if not resolve_credentials(_get_system_config(db))[0]:
         raise HTTPException(status_code=400, detail="AI 未配置（AI_API_KEY 为空）")
 
     trade_id = body.get("trade_id")
@@ -1728,7 +1749,7 @@ def review_patch_trigger(db: Session = Depends(get_db)):
     """手动触发一次补丁草稿生成（立即调 LLM，不等每日定时）；
     未生成时返回 skips 明细（卡在样本/热度/已有草稿/冷却哪一关）"""
     from app.services.patch_service import run_trigger
-    if not settings.AI_API_KEY:
+    if not resolve_credentials(_get_system_config(db))[0]:
         raise HTTPException(status_code=400, detail="AI 未配置（AI_API_KEY 为空）")
     result = run_trigger(db)
     return {"created": len(result["drafts"]), "skips": result["skips"],
@@ -2155,8 +2176,8 @@ def get_klines(
 def analyze_symbol(body: ManualAnalyzeRequest, db: Session = Depends(get_db)):
     """手动分析任意币种（搜索币种页签）：拉取 K 线后同步调用 AI，返回结构化建议"""
     cfg = _get_system_config(db)
-    # 手动分析不受「筛选后自动 AI 分析」开关限制，仅要求已配置 API_KEY
-    if not settings.AI_API_KEY:
+    # 手动分析不受「筛选后自动 AI 分析」开关限制，仅要求已配置凭证
+    if not resolve_credentials(cfg)[0]:
         raise HTTPException(status_code=403, detail="未配置 AI API Key，无法分析")
 
     symbol = normalize_symbol(body.symbol)

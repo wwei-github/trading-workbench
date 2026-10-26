@@ -44,6 +44,7 @@ from app.models.trade import (
 )
 from app.services.binance_trader import BinanceTrader, BinanceTradeError
 from app.services.exchange_pool import ExchangePool
+from app.services.llm_client import configure_from
 from app.services.position_advisor import advice_due
 from app.services.score_thresholds import effective_min_recommendation
 from app.services.risk_guard import (
@@ -2809,6 +2810,9 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
     孤儿清扫兜底不碰测试网主账号，防误撤测试网 App 手动单的挂单。
     """
     cfg = db.get(SystemConfig, 1)
+    # 生效 AI 凭证读页面配置（2026-10-26：Key+端点成对才生效，缺一整体回落
+    # env）——巡检路径 advice_due 的 current_api_key() 依赖本进程 runtime
+    configure_from(cfg)
     interval = cfg.kline_interval if cfg else "1h"
     # 保本止损费率口径（2026-10-02 上页面）：system_config.taker_fee_rate 可页面
     # 覆盖，NULL=env 默认（_breakeven_stop_price 内回落）；一轮巡检取值一致

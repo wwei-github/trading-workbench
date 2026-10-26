@@ -42,7 +42,7 @@ from app.config import settings
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeEvent, TradeRecord
 from app.services.event_executor import remaining_qty
-from app.services.llm_client import current_model, get_client, parse_llm_json
+from app.services.llm_client import current_api_key, current_model, get_client, parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +106,11 @@ def advice_due(rec, total: float, now: datetime) -> bool:
     浮盈回撤：峰值（peak_total_pnl）回撤 ≥0.6R（2026-09-26，修复浮盈回吐盲区；
     复用 3h 冷却防回撤平台期反复触发，诊断后基线切换为当前值由恶化规则接管）。
     滞留：持仓 ≥24h 且从未触发 TP1（status 仍 OPENED），首诊后每 24h 复诊。
+
+    凭证闸门（2026-10-26）用进程内生效 Key（任务入口 configure_from 后为页面
+    Key+端点成对，否则 env）；未调用 configure_from 的调用方等价于 env 口径。
     """
-    if not settings.AI_API_KEY:
+    if not current_api_key():
         return False
     last = rec.ai_advice_at
     risk = _risk_unit(rec)
@@ -344,11 +347,11 @@ def tighten_candidate(facts: dict, rec) -> "float | None":
 def diagnose_trade(db: Session, rec) -> "dict | None":
     """单笔诊断：事实包 → LLM → 词表校验 → 落库（ai_advice + AI_ADVICE 事件）→ 推送。
 
-    手动 API 与定时子任务共用。调用方须保证：rec 为在跑状态、AI_API_KEY 已配置。
+    手动 API 与定时子任务共用。调用方须保证：rec 为在跑状态、AI 凭证已配置。
     失败抛异常（调用方决定记日志/报错），不落半截数据。
     返回 None = 竞态丢弃：LLM 执行期间（1~18 分钟）仓位已平仓结算/被清理，
     结论陈旧不落库（2026-09-26 竞态守卫）。"""
-    if not settings.AI_API_KEY:
+    if not current_api_key():
         raise ValueError("AI 未配置（AI_API_KEY 为空）")
     client = get_client()
     facts = build_facts(db, rec)

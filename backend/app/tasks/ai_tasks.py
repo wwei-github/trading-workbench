@@ -33,7 +33,7 @@ from app.services import market_data as md
 from app.services.ai_analyzer import analyze_with_guard
 from app.services.ai_pause import is_ai_paused, pause_window_label
 from app.services.scan_filters import resolve_scan_filters
-from app.services.llm_client import configure_from, current_concurrency
+from app.services.llm_client import configure_from, current_concurrency, resolve_credentials
 from app.services.strategy.technical import annotate_htf_phase, htf_context
 from app.services.strategy.indicators import volume_ratio
 from app.services.exchange_pool import ExchangePool
@@ -148,7 +148,7 @@ def run_ai_analysis_task(
     )
     try:
         cfg = db.get(SystemConfig, 1)
-        if not cfg or not settings.AI_API_KEY:
+        if not resolve_credentials(cfg)[0]:
             logger.warning("AI 分析未启用（未配置 API Key），跳过")
             close_task(task_id, "skipped", summary="AI 未启用（未配置 API Key）")
             return
@@ -320,7 +320,7 @@ def run_ai_analysis_single(
         if r is None:
             return
         cfg = db.get(SystemConfig, 1)
-        if not cfg or not settings.AI_API_KEY:
+        if not resolve_credentials(cfg)[0]:
             return
         if not cfg.ai_analysis_enabled and not force:
             # 「筛选后自动 AI 分析」开关只拦批量自动分析（与父任务闸门口径一致）；

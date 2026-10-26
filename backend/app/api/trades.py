@@ -888,11 +888,12 @@ def run_advice(trade_id: str, db: Session = Depends(get_db)):
     诊断同链路（run_position_advice，锁外 celery 执行）；任务不做冷却判断，
     手动派发天然无视冷却。前端提交后轮询列表对比 ai_advice_at 获取结果。
     """
-    from app.config import settings
+    from app.services.llm_client import resolve_credentials
     from app.tasks.trade_tasks import run_position_advice
 
     rec = _load_running_trade(trade_id, db)
-    if not settings.AI_API_KEY:
+    # 凭证闸门（2026-10-26）：页面 Key+端点成对配置或 env 任一可用即可派发
+    if not resolve_credentials(db.get(SystemConfig, 1))[0]:
         raise HTTPException(status_code=400, detail="AI 未配置（AI_API_KEY 为空）")
     run_position_advice.delay(str(rec.id))
     return {"queued": True, "symbol": rec.symbol}

@@ -23,8 +23,10 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import SessionLocal
+from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.binance_trader import BinanceTrader
+from app.services.llm_client import configure_from, current_api_key
 from app.services.trade_locks import OPEN_LOCK_TTL_S, acquire_open_lock, release_open_lock
 
 logger = logging.getLogger(__name__)
@@ -287,7 +289,12 @@ def refresh_mark_pnl(account_key: str, symbol: str, mark_price: float) -> bool:
             from app.services.position_advisor import (
                 advice_due, has_running_live_twin,
             )
-            if settings.AI_API_KEY and advice_due(rec, total, datetime.utcnow()) \
+            # 生效凭证读页面配置（2026-10-26：页面 Key+端点成对配置才生效，
+            # 缺一整体回落 env）——避免巡检/WS 路径在 configure_from 未调用
+            # 时误用 env 实测凭证。
+            cfg_sys = db.get(SystemConfig, 1)
+            configure_from(cfg_sys)
+            if current_api_key() and advice_due(rec, total, datetime.utcnow()) \
                     and _cooldown_ok(f"advice:{rec.id}", ADVICE_DISPATCH_COOLDOWN_S) \
                     and not has_running_live_twin(db, rec):
                 # 双网分析所有权（2026-10-08）：测试网单有在跑正式网孪生 → 不独立

@@ -19,7 +19,7 @@ from app.models.scan import AIAnalysis, ScanResult, TradeReview
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
 from app.services.exchange_pool import ExchangePool
-from app.services.llm_client import configure_from
+from app.services.llm_client import configure_from, resolve_credentials
 from app.services.shadow import tag_trade_close
 from app.services.task_log import close_task, open_task
 
@@ -516,13 +516,14 @@ def run_ai_attribution_task():
     finally:
         db.close()
 
-    if not settings.AI_API_KEY:
-        return  # AI 未配置，静默跳过
     db = SessionLocal()
     pool = ExchangePool()
     trader = None
     task_id = ""
     try:
+        # 凭证闸门（2026-10-26）：页面 Key+端点成对配置或 env 任一可用即执行
+        if not resolve_credentials(db.get(SystemConfig, 1))[0]:
+            return  # AI 未配置，静默跳过
         # 费用回补先行（归因事实包需要 fee/funding）；双网各补各的
         # （2026-10-03 双网同开：归因队列不再按当前环境过滤——否则另一网的
         # 平仓单会一直积压，要等手动切环境才能归因）
@@ -566,12 +567,12 @@ def run_ai_attribution_task():
 @celery_app.task(name="app.tasks.review_tasks.run_patch_trigger_task", max_retries=0)
 def run_patch_trigger_task():
     """每日触发：标签热度检查 → AI 生成补丁草稿（待人工确认合入）"""
-    if not settings.AI_API_KEY:
-        return
     db = SessionLocal()
     task_id = ""
     try:
         from app.services.patch_service import run_trigger
+        if not resolve_credentials(db.get(SystemConfig, 1))[0]:
+            return  # AI 未配置（页面 Key+端点成对 或 env），静默跳过
         task_id = open_task(task_type="review", task_name="补丁触发", trigger="scheduled")
         result = run_trigger(db)
         drafts = result["drafts"]

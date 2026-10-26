@@ -274,10 +274,12 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS ai_rr_tol NUMERIC(10, 6)
         """))
         # AI 运行时参数上页面（2026-10-14，策略配置弹窗）：模型名/端点/并发/超时
-        # 全部 nullable（NULL=回落 config.py env 默认）
+        # 全部 nullable（NULL=回落 config.py env 默认）；
+        # ai_api_key（2026-10-26）：与 ai_base_url 成对配置才生效，缺一整体回落 env
         conn.execute(text("""
             ALTER TABLE system_config
               ADD COLUMN IF NOT EXISTS ai_model VARCHAR(64),
+              ADD COLUMN IF NOT EXISTS ai_api_key VARCHAR(255),
               ADD COLUMN IF NOT EXISTS ai_base_url VARCHAR(255),
               ADD COLUMN IF NOT EXISTS llm_concurrency INTEGER,
               ADD COLUMN IF NOT EXISTS ai_call_timeout_s INTEGER

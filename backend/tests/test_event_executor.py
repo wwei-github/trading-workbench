@@ -35,8 +35,12 @@ ACC = "testnet-1"
 def db(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     from app.database import Base
+    from app.models.system_config import SystemConfig
 
-    Base.metadata.create_all(bind=engine, tables=[TradeRecord.__table__])
+    # system_config 表：refresh_mark_pnl 派发前读页面 AI 凭证（2026-10-26）
+    Base.metadata.create_all(
+        bind=engine, tables=[TradeRecord.__table__, SystemConfig.__table__],
+    )
     monkeypatch.setattr(ee, "SessionLocal", lambda: Session(bind=engine))
     ee.reset_cooldowns()
     return Session(bind=engine)

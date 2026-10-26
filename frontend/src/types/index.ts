@@ -290,6 +290,9 @@ export interface SystemConfig {
   // AI 运行时参数（2026-10-14 上页面，策略配置弹窗）：库内原始值 null=回落 env；
   // *_effective=实际生效值（DB>env>代码默认），前端作占位/提示用
   ai_model?: string | null;
+  ai_api_key?: string | null;          // 仅提交用：非空=设置，null=清除，不传=保持
+  ai_api_key_set?: boolean;
+  ai_api_key_masked?: string;
   ai_base_url?: string | null;
   llm_concurrency?: number | null;
   ai_call_timeout_s?: number | null;
@@ -297,6 +300,7 @@ export interface SystemConfig {
   ai_base_url_effective?: string;
   llm_concurrency_effective?: number;
   ai_call_timeout_s_effective?: number;
+  ai_api_pair_source?: string;         // 'db' | 'env' 标识凭证对来源
 }
 
 // 账号注册表条目（docs/17）：key 稳定标识（testnet-1/live-N），只读不回传凭据
