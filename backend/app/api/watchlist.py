@@ -242,6 +242,11 @@ def refresh_watchlist(symbol: str, db: Session = Depends(get_db)):
                 trend_slope=sig.get("trend_slope", 0),
                 r_squared=sig.get("r_squared", 0),
                 pattern=sig.get("pattern"),
+                # 组合确认口径（2026-10-26，docs/11）：关注列表「立即扫描」与定时扫描同源
+                # （detect_indicator_candidate 已带三键），不传会把组合确认静默降级成单形态
+                golden_combo=bool(sig.get("golden_combo")),
+                pattern_candle_open=sig.get("pattern_candle_open"),
+                entry_lag_pct=sig.get("entry_lag_pct"),
                 signal_reason=sig.get("signal_reason"),
                 strength=sig.get("strength"),
                 ema_state=sig.get("ema_state"),
