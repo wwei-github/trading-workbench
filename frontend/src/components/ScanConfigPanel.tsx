@@ -137,10 +137,11 @@ export default function ScanConfigPanel() {
   // 凭证对状态（2026-10-26）：Key 与端点成对配置才用页面值，缺一整体回落 .env
   const aiApiKeySet = !!aiConfig?.ai_api_key_set
   const aiApiKeyMasked = aiConfig?.ai_api_key_masked ?? ''
+  const aiBaseUrlSet = !!(aiConfig?.ai_base_url ?? '').trim()
   const aiPairSource = aiConfig?.ai_api_pair_source ?? 'env'
   const aiApiHint = aiPairSource === 'db'
     ? '当前生效：弹窗配置的 Key + 端点'
-    : aiApiKeySet
+    : (aiApiKeySet || aiBaseUrlSet)
       ? 'Key 与端点未成对配置 → 当前整对使用 .env 默认'
       : '当前生效：后端 .env 默认'
 
