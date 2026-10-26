@@ -9,8 +9,9 @@ sqlite 内存库 + dependency_overrides 注入会话，不触真库不触网。
 3. 币种精确匹配
 4. 触碰K线反查（pullback_pendings.confirmed_scan_result_id）
 5. 开单关联（trade_records.scan_result_id，正式网主单优先）
-6. 方向派生（votes_json.net 符号）
-7. 服务端分页
+6. 方向派生（position 优先：support→多/resistance→空；旧行回退 votes_json.net 符号）
+7. 信号K线开盘时间派生（signal_created_at 所在整点 - 1h）
+8. 服务端分页
 """
 import sys
 from datetime import datetime, timedelta
@@ -179,8 +180,46 @@ def test_touch_and_trade_association(client, seeded):
     assert repeat["trade"] is None
 
 
+def test_direction_prefers_position_and_signal_candle_open(client):
+    """方向派生 position 优先（逆方向票也按 position）+ 信号K线开盘时间派生
+
+    回归线上 RENDERUSDT 空信号被 votes.net 标成看多的问题（2026-10-26）：
+    信号根 09:00–10:00（北京）看跌吞没、position=resistance，但 1h 方向票净票为正。
+    """
+    http, db = client
+    rec = ScanRecord(scan_type="scheduled")
+    db.add(rec)
+    db.flush()
+    ts = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+
+    # resistance + 方向票偏多（net=2）→ 仍看空
+    bear = _mk_result(db, rec.id, "RENDERUSDT", ts, net=2)
+    bear.position = "resistance"
+    bear.signal_created_at = ts
+    # support + 方向票偏空（net=-4）→ 看多
+    bull = _mk_result(db, rec.id, "AAAUSDT", ts - timedelta(minutes=1), net=-4)
+    bull.position = "support"
+    bull.signal_created_at = ts - timedelta(minutes=1)
+    # 旧行：position 为空 → 回退 votes.net
+    legacy = _mk_result(db, rec.id, "BBBUSDT", ts - timedelta(minutes=2), net=-4)
+    db.commit()
+
+    res = http.get("/api/scans/hit-history", params={
+        "start": (ts - timedelta(days=1)).isoformat() + "Z",
+        "end": (ts + timedelta(minutes=1)).isoformat() + "Z",
+    }).json()
+    by_id = {it["id"]: it for it in res["items"]}
+
+    assert by_id[str(bear.id)]["direction"] == -1
+    assert by_id[str(bull.id)]["direction"] == 1
+    assert by_id[str(legacy.id)]["direction"] == -1
+    # 信号K线 = 扫描时刻所在整点 - 1h（最后一根已收盘根）
+    assert by_id[str(bear.id)]["signal_candle_open"] == (ts - timedelta(hours=1)).isoformat()
+    assert by_id[str(bull.id)]["signal_candle_open"] == (ts - timedelta(hours=2)).isoformat()
+
+
 def test_pagination(client, seeded):
-    """服务端分页：page_size=1 单页一条、total 为满足条件总数"""
+    """服务端分页：total 不受分页影响，两页各返回 1 条且不重复"""
     http, _ = client
     res = http.get("/api/scans/hit-history", params={
         "start": (datetime.utcnow() - timedelta(days=30)).isoformat() + "Z",

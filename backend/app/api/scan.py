@@ -1825,14 +1825,33 @@ def _naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
 
 
 def _hit_direction(r: ScanResult) -> int:
-    """命中方向派生：方向票（MACD/布林带/RSI）净票符号 → 趋势斜率符号兜底
-    （与前端 ResultTable.touchLabel 同口径）；1 多 / -1 空 / 0 未知"""
+    """命中方向派生：信号位置 position（support/resistance，形态/突破方向派生）优先
+    → 旧行回退方向票净票 → 趋势斜率；1 多 / -1 空 / 0 未知
+
+    回踩确认本身是逆 1h 方向票的（如回踩摆动高点时 MACD/布林带仍偏多），
+    用 votes.net 判方向会把空信号误标成看多，故 position 有值时以它为准
+    （2026-10-26）。"""
+    pos = (r.position or "").strip().lower()
+    if pos == "support":
+        return 1
+    if pos == "resistance":
+        return -1
     votes = r.votes_json or {}
     net = votes.get("net")
     if isinstance(net, (int, float)) and net != 0:
         return 1 if net > 0 else -1
     slope = float(r.trend_slope or 0)
     return 1 if slope > 0 else -1 if slope < 0 else 0
+
+
+def _signal_candle_open(r: ScanResult) -> Optional[datetime]:
+    """信号K线开盘时间（UTC naive）：扫描周期固定 1h、beat 整点，
+    信号根 = 扫描时刻所在整点 - 1h（最后一根已收盘根，与前端图标注锚定同口径）。
+    扫描时刻优先 signal_created_at（候选产生时刻），旧行回退 created_at。"""
+    ts = r.signal_created_at or r.created_at
+    if ts is None:
+        return None
+    return ts.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
 
 
 def _nz(v) -> Optional[float]:
@@ -1956,10 +1975,12 @@ def hit_history(
     for r in rows:
         s1 = pend_map.get(r.id)
         t = trade_map.get(r.id)
+        bar_open = _signal_candle_open(r)
         items.append({
             "id": str(r.id),
             "symbol": r.symbol,
             "created_at": r.created_at.isoformat() if r.created_at else None,
+            "signal_candle_open": bar_open.isoformat() if bar_open else None,
             "signal_type": r.signal_type,
             "pattern": r.pattern,
             "touch_ref": r.touch_ref,

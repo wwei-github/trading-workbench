@@ -366,14 +366,15 @@ export interface HitHistoryTrade {
 export interface HitHistoryItem {
   id: string
   symbol: string
-  created_at: string // 命中时刻（UTC，前端 bj() 转北京）
+  created_at: string // 扫描落库时刻（UTC，前端 bj() 转北京）
+  signal_candle_open: string | null // 信号K线开盘时间（扫描周期 1h 最后一根已收盘根）
   signal_type: string
   pattern: string | null
   touch_ref: string | null // 回踩触点（仅回踩路径）
   position_ref: string | null
   quality_score: number | null
   is_repeat: boolean
-  direction: 1 | -1 | 0 // 命中方向（votes_json.net 符号 → trend_slope 符号兜底）
+  direction: 1 | -1 | 0 // 命中方向（position 优先 → votes_json.net → trend_slope）
   stage1_candle_open: string | null // 触碰K线开盘时间（仅回踩路径有）
   trade: HitHistoryTrade | null
 }

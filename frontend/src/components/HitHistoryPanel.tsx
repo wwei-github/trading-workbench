@@ -110,13 +110,19 @@ export default function HitHistoryPanel() {
     {
       title: '币种', dataIndex: 'symbol', key: 'symbol', width: 130,
       render: (v: string, r) => (
-        <Tooltip title="点击查看最新K线（标注命中K线）">
+        <Tooltip title="点击查看信号K线（标注命中/触碰）">
           <Link strong onClick={() => setDetail(r)}>{v}</Link>
         </Tooltip>
       ),
     },
     {
-      title: '命中时间', dataIndex: 'created_at', key: 'created_at', width: 120,
+      title: '信号K线', dataIndex: 'signal_candle_open', key: 'signal_candle_open', width: 120,
+      render: (v: string | null) => (
+        v ? bj(v).format('MM-DD HH:mm') : <Text type="secondary">-</Text>
+      ),
+    },
+    {
+      title: '扫描时间', dataIndex: 'created_at', key: 'created_at', width: 120,
       render: (v: string) => bj(v).format('MM-DD HH:mm'),
     },
     {
@@ -231,7 +237,7 @@ export default function HitHistoryPanel() {
             columns={columns}
             dataSource={items}
             size="small"
-            scroll={{ x: 1080 }}
+            scroll={{ x: 1200 }}
             pagination={{
               current: page,
               pageSize,
@@ -248,7 +254,13 @@ export default function HitHistoryPanel() {
       </div>
       <Modal
         open={!!detail}
-        title={detail ? `${detail.symbol} 命中K线（最新K线）` : ''}
+        title={
+          detail
+            ? detail.signal_candle_open
+              ? `${detail.symbol} 信号K线（${bj(detail.signal_candle_open).format('MM-DD HH:mm')}–${bj(detail.signal_candle_open).add(1, 'hour').format('HH:mm')}）`
+              : `${detail.symbol} 命中K线（最新K线）`
+            : ''
+        }
         footer={null}
         width={1200}
         destroyOnClose
@@ -261,6 +273,7 @@ export default function HitHistoryPanel() {
                 symbol={detail.symbol}
                 limit={limit}
                 hitTime={detail.created_at}
+                signalCandleOpen={detail.signal_candle_open}
                 touchTime={detail.stage1_candle_open}
                 hitDirection={detail.direction}
                 tradeOverlay={detail.trade}
@@ -270,7 +283,13 @@ export default function HitHistoryPanel() {
             </div>
             <Space size="small" style={{ marginTop: 8, fontSize: 12, color: '#8b93a7' }}>
               <span>
-                <Tag color="#1677ff">命中</Tag>
+                <Tag color="#1677ff">信号K线</Tag>
+                {detail.signal_candle_open
+                  ? `${bj(detail.signal_candle_open).format('YYYY-MM-DD HH:mm')}–${bj(detail.signal_candle_open).add(1, 'hour').format('HH:mm')}`
+                  : '-'}
+              </span>
+              <span>
+                <Tag color="default">扫描</Tag>
                 {bj(detail.created_at).format('YYYY-MM-DD HH:mm')}
               </span>
               {detail.stage1_candle_open && (

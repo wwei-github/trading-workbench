@@ -636,6 +636,7 @@ function drawHitMarks(
 interface EffHit {
   id: string | null // 命中对应 scan_result.id（自动拉取时有值；用于与实际单归属比对）
   hitTime: string | null
+  signalCandleOpen: string | null // 信号K线开盘时间（后端派生；缺省回退 hitTime 换算）
   touchTime: string | null
   direction: 1 | -1 | 0
   trade: HitHistoryTrade | null
@@ -654,7 +655,8 @@ interface Props {
   refreshKey?: number
   // 命中历史（2026-10-15，docs/22）：扫描模式下追加命中/触碰K线 marker
   // 与时间裁剪的开单区间；hitDirection 决定 marker 位于K线上方还是下方
-  hitTime?: string | null // 命中K线时刻（ScanResult.created_at）
+  hitTime?: string | null // 扫描落库时刻（ScanResult.created_at）
+  signalCandleOpen?: string | null // 信号K线开盘时间（后端派生，优先用于图标注锚定）
   touchTime?: string | null // 触碰K线时刻（回踩路径 stage1_candle_open）
   hitDirection?: 1 | -1 | 0 // 命中方向（1 多 / -1 空 / 0 未知）
   tradeOverlay?: HitHistoryTrade | null // 关联开单（时间裁剪区间）
@@ -672,7 +674,7 @@ interface Props {
 
 export default function KlineChart({
   symbol, tradeId, limit = 500, defaultInterval = '1h', ai, refreshKey = 0,
-  hitTime, touchTime, hitDirection = 0, tradeOverlay, hitSignalType, hitPattern, scanResultId,
+  hitTime, signalCandleOpen, touchTime, hitDirection = 0, tradeOverlay, hitSignalType, hitPattern, scanResultId,
   cacheHistory = false, pageSize = 1000,
 }: Props) {
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -751,6 +753,7 @@ export default function KlineChart({
       return [{
         id: null,
         hitTime: hitTime ?? null,
+        signalCandleOpen: signalCandleOpen ?? null,
         touchTime: touchTime ?? null,
         direction: hitDirection,
         trade: tradeOverlay ?? null,
@@ -761,13 +764,14 @@ export default function KlineChart({
     return autoHits.map((h) => ({
       id: h.id ?? null,
       hitTime: h.created_at ?? null,
+      signalCandleOpen: h.signal_candle_open ?? null,
       touchTime: h.stage1_candle_open ?? null,
       direction: (h.direction ?? 0) as 1 | -1 | 0,
       trade: h.trade ?? null,
       signalType: h.signal_type ?? null,
       pattern: h.pattern ?? null,
     }))
-  }, [externalHit, hitTime, touchTime, hitDirection, tradeOverlay, hitSignalType, hitPattern, autoHits])
+  }, [externalHit, hitTime, signalCandleOpen, touchTime, hitDirection, tradeOverlay, hitSignalType, hitPattern, autoHits])
 
   // 同一扫描结果已开单时，AI 建议线（做多/止损/止盈）与实际成交线（开多/止损/止盈）
   // 是同一次决策的两个阶段，图上只保留实际成交数据（2026-10-22 用户拍板）
@@ -1097,12 +1101,17 @@ export default function KlineChart({
         const patternLabel = h.pattern ? patternStyle(h.pattern).label : ''
         const parts = [sigLabel, patternLabel].filter(Boolean)
         const hitLabel = parts.length ? `命中 · ${parts.join('·')}` : '命中'
-        // 命中锚定（2026-10-16）：hitTime=扫描发现时刻，扫描周期固定 1h，
-        // 信号K线=扫描周期最后一根已收盘K线（开口=hitTime 所在小时开口-1h）；
+        // 命中锚定（2026-10-16；2026-10-26 优先用后端 signal_candle_open）：
+        // 信号K线=扫描周期最后一根已收盘K线，开盘时间由后端按扫描时刻派生；
+        // 老接口无该字段时回退「hitTime 所在小时开口 - 1h」。
         // 再映射到当前图表周期：取「包含信号时刻」的周期K线——1h 图=已收盘信号根；
         // 4h/1d 图=包含它的那根（可能未收盘，照样标注）
-        if (h.hitTime) {
-          const sigMs = Math.floor(utcMs(h.hitTime) / SCAN_INTERVAL_MS) * SCAN_INTERVAL_MS - SCAN_INTERVAL_MS
+        const sigMs = h.signalCandleOpen
+          ? utcMs(h.signalCandleOpen)
+          : h.hitTime
+            ? Math.floor(utcMs(h.hitTime) / SCAN_INTERVAL_MS) * SCAN_INTERVAL_MS - SCAN_INTERVAL_MS
+            : null
+        if (sigMs != null) {
           const anchorMs = Math.floor(sigMs / ivMs) * ivMs
           marks.push({ ms: anchorMs, color: HIT_MARK_COLOR, fill: HIT_MARK_FILL, label: hitLabel, kind: 'hit', preferBelow })
         }
