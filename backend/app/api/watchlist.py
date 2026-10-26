@@ -17,6 +17,7 @@ from app.schemas.scan import (
 )
 from app.services.binance_client import BinanceClient
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
+from app.services import market_data as md
 from app.services.scanner import Scanner, _get_scan_config, detect_indicator_candidate
 from app.services.scan_filters import resolve_scan_filters
 
@@ -169,11 +170,21 @@ def refresh_watchlist(symbol: str, db: Session = Depends(get_db)):
     cfg = _get_scan_config(db)
     interval = cfg.kline_interval
 
+    # 尾窗/整点竞态基准时刻（2026-10-26，docs/11 I-1）：与定时扫描同口径，只取一次
+    # 时钟——screen_klines 与 trigger 共用同一基准，避免跨整点时视图与判定错位
+    _tail_now = datetime.utcnow()
+
     pool = ExchangePool()
     try:
         klines = pool.get_klines(target, interval, 500, force_refresh=True)
     except AllExchangesFailed as e:
         raise HTTPException(status_code=503, detail=f"K线刷新失败（{e.summary}）")
+
+    # 幽灵尾根视图（2026-10-11-4；2026-10-13 扩整点竞态；2026-10-26 docs/11 I-1）：
+    # 本入口是最后一条不 screen 就把 klines 喂 trigger 的路径——竞态下末根实为已
+    # 收盘根时，trigger 判的根会比 _signal_candle_open 早一根，落库的
+    # pattern_candle_open / entry_lag_pct 与图表锚点整体错位一根。正常时原样返回
+    klines = md.screen_klines(klines, interval, _tail_now)
 
     # 信号判定：与扫描器 scan_one 完全同一套方向票多数决+两段式触发确认逻辑（每币至多 1 个候选）
     signals: list[dict] = []
@@ -184,8 +195,8 @@ def refresh_watchlist(symbol: str, db: Session = Depends(get_db)):
             cand, pending_op = detect_indicator_candidate(
                 pool, target, klines, pending=pend,
                 flt=resolve_scan_filters(cfg),
-                # 4h 末根竞态兜底基准（与定时扫描同口径）
-                now=datetime.utcnow(),
+                # 4h 末根竞态兜底基准（与定时扫描同口径）；与 screen 同一时刻
+                now=_tail_now,
             )
         except Exception as e:
             logger.warning("关注刷新 %s 信号判定失败（按无命中处理）: %s", target, e)

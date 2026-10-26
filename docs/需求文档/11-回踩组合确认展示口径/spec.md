@@ -48,7 +48,7 @@
 - `patterns` 由 `detect_all_patterns(klines, idx=-2)` 产出，`golden` 命中哪条规则在函数内是已知的（只差没往外传）。
 - `klines[-3][0]` 即形态根开盘时间，`klines[-3][4]` 即形态根收盘价——漂移 % 无需额外数据源。
 - `backend/app/database.py:23` 有幂等 `_run_migrations`（`ADD COLUMN IF NOT EXISTS`）惯例，加列零停机、零数据迁移。
-- 响应式派生在 `backend/app/services/scanner.py:609-640` 的 `_eval_symbol` 返回 dict 中统一组织，落库与卡片共用同一份 dict。
+- 响应式派生在 `backend/app/services/scanner.py:609-640` 的 `detect_indicator_candidate` 返回 dict 中统一组织，落库与卡片共用同一份 dict。
 
 ## 2. 目标
 
@@ -190,7 +190,7 @@ conn.execute(text(
 
 三处：
 
-1. `_eval_symbol` 返回 dict（:609-640）增 `"golden_combo": bool(trig.get("golden_combo"))`、`"pattern_candle_open": trig.get("pattern_candle_open")`、`"entry_lag_pct": trig.get("entry_lag_pct")`。
+1. `detect_indicator_candidate` 返回 dict（:609-640）增 `"golden_combo": bool(trig.get("golden_combo"))`、`"pattern_candle_open": trig.get("pattern_candle_open")`、`"entry_lag_pct": trig.get("entry_lag_pct")`。
 2. `_save_results`（:1112）`ScanResult(...)` 增同名三参。
 3. `_scan_hit_card`（:89-95）形态文案：形态早于信号根时追加 `(前根)`（用 `entry_lag_pct`
    等价判据，卡片 dict 里没有 `signal_candle_open`）：

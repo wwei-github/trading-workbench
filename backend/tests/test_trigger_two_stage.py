@@ -891,6 +891,42 @@ def test_single_pattern_trigger_has_no_lag():
     assert t["entry_lag_pct"] is None
 
 
+def test_pending_next_candle_confirm_combo_fields():
+    """docs/11 D2：pending 次根确认（行3，`_ev` 走 golden_note 分支）也须产出三键。
+
+    场景：首轮 -3 前根锤形线（链上 pending anchor=-3）；次根 -2 为同向趋势K
+    → 规则3 组合确认（行3，无触碰 + 有效 pending）。形态真实落在前根，故
+    pattern_candle_open 指 -3 开盘、entry_lag_pct 由两根收盘算出（多头信号根
+    收盘更低 = 对本次交易有利 = 负值）。行2/行3 的返回块是逐字复制的两份，这
+    里锁定行3 那份（行2 由 test_combo_trigger_reports_pattern_anchor_and_lag 覆盖）。
+    """
+    kl = _kl(*_base())
+    _hammer_at(kl, -3)
+    _trend_candle_at(kl, -2, direction=1)
+    # 触点白名单清空：趋势K low 贴着 EMA21，默认白名单会命中 ema21 触点走行2
+    # 「当根确认」，与本用例「无触碰 → 次根确认」的行3 意图冲突
+    flt = trig.ScanFilters(
+        min_volume_24h=3_000_000, breakout_channel_bars=20,
+        breakout_threshold=0.002, breakout_vol_ratio=1.2,
+        breakout_max_pct=1.5, candle_max_ema21_dist_pct=1.5,
+        ai_max_per_scan=10, pullback_touch_refs=(),
+    )
+    t, op = trig.detect_trigger(
+        kl, 1, pending=_pending(kl, direction=1, anchor_idx=-3), flt=flt)
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert op == {"op": "confirm"}
+    # 行3 判别：无当根触点（行2 会带 touch_ref），且 reason 走「本根…确认」的
+    # golden_note 原文（前根锤形线+当根趋势K）+ 触点占位标签
+    assert t["touch_ref"] is None
+    assert "前根锤形线+当根趋势K确认" in t["reason"]
+    assert "回踩触点企稳·" in t["reason"]
+    # 三键：形态根 = 前根开盘时间；滞后 = 形态收盘 → 信号收盘的方向归一漂移
+    assert t["golden_combo"] is True
+    assert t["pattern_candle_open"] == datetime.utcfromtimestamp(float(kl[-3][0]) / 1000)
+    assert t["entry_lag_pct"] == round((float(kl[-2][4]) / float(kl[-3][4]) - 1) * 100, 4)
+    assert t["entry_lag_pct"] < 0
+
+
 # ── resolve_golden_evidence 裁决函数直测（规则1/2/3 与否决路径）────────────
 
 def test_resolve_direct_pass_for_composite_pattern():

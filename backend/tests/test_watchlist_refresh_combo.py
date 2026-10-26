@@ -95,3 +95,65 @@ def test_refresh_persists_combo_columns(client, monkeypatch):
     assert row.golden_combo is True
     assert row.pattern_candle_open == pattern_ts
     assert float(row.entry_lag_pct) == pytest.approx(1.588)
+
+
+def test_refresh_screens_klines_before_trigger(client, monkeypatch):
+    """docs/11 I-1（2026-10-26）：立即扫描与定时扫描同口径，先 screen 再判信号。
+
+    本入口曾是全仓唯一不调 `market_data.screen_klines` 就把 klines 喂给 trigger
+    的路径：竞态下末根实为已收盘根时，trigger 判的根会比 `_signal_candle_open`
+    早一根，落库的 `pattern_candle_open` / `entry_lag_pct` 整体错位一根。
+    """
+    http, db = client
+    from app.api import watchlist as wl
+    from app.services import market_data as md
+    from app.services.scanner import _get_scan_config
+
+    now = datetime.utcnow()
+    db.add(Watchlist(symbol="REZUSDT", created_at=now, updated_at=now))
+    db.commit()
+
+    raw = [[0, 100.0, 101.0, 99.0, 100.5, 1.0],
+           [3600000, 100.5, 101.5, 100.0, 101.0, 1.0]]
+
+    class _FakePool:
+        def get_klines(self, symbol, interval, limit, force_refresh=False):
+            return raw
+
+    class _FakeBinance:
+        def get_24h_tickers(self):
+            return [{"symbol": "REZUSDT", "quoteVolume": "12345"}]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(wl, "ExchangePool", _FakePool)
+    monkeypatch.setattr(wl, "BinanceClient", _FakeBinance)
+    monkeypatch.setattr(wl.Scanner, "_prefetch_pendings", staticmethod(lambda symbols: {}))
+
+    screened = []
+    seen = {}
+
+    def _fake_screen(klines, interval, now=None):
+        screened.append((klines, interval, now))
+        return klines
+
+    def _fake_detect(pool, symbol, klines, **kwargs):
+        seen["now"] = kwargs.get("now")
+        seen["klines"] = klines
+        return None, None
+
+    monkeypatch.setattr(md, "screen_klines", _fake_screen)
+    monkeypatch.setattr(wl, "detect_indicator_candidate", _fake_detect)
+
+    res = http.post("/api/watchlist/REZUSDT/refresh")
+    assert res.status_code == 200, res.text
+
+    assert len(screened) == 1, "立即扫描必须先调一次 screen_klines"
+    klines_arg, interval_arg, now_arg = screened[0]
+    assert klines_arg is raw
+    assert interval_arg == _get_scan_config(db).kline_interval
+    assert isinstance(now_arg, datetime)
+    # screen 与 trigger 共用同一基准时刻（不重读时钟，scanner.py 同口径）
+    assert seen["now"] is now_arg
+    assert seen["klines"] is raw

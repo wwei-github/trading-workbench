@@ -346,6 +346,29 @@ def test_entry_lag_warn_threshold(client):
         ts - timedelta(hours=2)).isoformat()
 
 
+def test_entry_lag_warn_exact_threshold(client):
+    """docs/11：恰等于阈值 0.8 也告警（判据 >=，不是 >）——边界值单独钉住"""
+    http, db = client
+    rec = ScanRecord(scan_type="scheduled")
+    db.add(rec)
+    db.flush()
+    ts = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    r = _mk_result(db, rec.id, "LAGEDGEUSDT", ts)
+    r.signal_created_at = ts
+    r.golden_combo = True
+    # 形态根须早于信号根（同 test_entry_lag_warn_threshold 的 §4.1 判据）
+    r.pattern_candle_open = ts - timedelta(hours=2)
+    r.entry_lag_pct = 0.8
+    db.commit()
+    res = http.get("/api/scans/hit-history", params={
+        "start": (ts - timedelta(days=1)).isoformat() + "Z",
+        "end": (ts + timedelta(minutes=1)).isoformat() + "Z",
+    }).json()
+    item = {it["symbol"]: it for it in res["items"]}["LAGEDGEUSDT"]
+    assert item["entry_lag_pct"] == pytest.approx(0.8)
+    assert item["entry_lag_warn"] is True
+
+
 def test_combo_fields_fallback_for_legacy_rows(client, seeded):
     """docs/11 §6.2：旧行（三列 NULL/False）API 回退为 False/None/None/False，
     与现状完全一致——旧行没有 klines 快照，不能猜测也不误标「前根」"""
