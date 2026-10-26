@@ -760,6 +760,8 @@ def resolve_golden_evidence(klines: list[list], wanted: str,
     返回 (golden, note)：
     - golden：确认证据形态 dict（pattern/direction），None=无有效证据
     - note：组合说明（""=单形态直接确认），trigger 层拼进触发 reason
+    - golden 含 offset（证据K线相对下标：-2 当根 / -3 前根），供 trigger
+      定位形态K线（docs/11 组合展示口径，2026-10-26）
 
     裁决顺序：
     0. 金K候选先按 wanted 方向过滤再取首个——同形双报倒锤/流星 strength
@@ -787,20 +789,21 @@ def resolve_golden_evidence(klines: list[list], wanted: str,
     if golden is None and cand:
         golden = cand[0]
 
-    # 规则1：非单影线金K直接确认
+    # 规则1：非单影线金K直接确认（证据在当根，offset=-2）
     if golden and golden["pattern"] not in SINGLE_SHADOW_PATTERNS:
-        return golden, ""
+        return {**golden, "offset": -2}, ""
 
     direction = 1 if wanted == "bullish" else -1
 
-    # 规则2：当根流星 → 双流星组合确认（2026-10-01 起单影线复合仅剩流星线）
+    # 规则2：当根流星 → 双流星组合确认（2026-10-01 起单影线复合仅剩流星线）；
+    # 证据形态（流星）在当根，offset=-2，前根流星只是组合成立条件
     if golden:
         try:
             prev = detect_shooting_star(klines, -3)
         except Exception:
             prev = None
         if prev:
-            return golden, "双流星组合"
+            return {**golden, "offset": -2}, "双流星组合"
         return None, ""  # 单流星不确认
 
     # 规则3：当根趋势K + 前根锤/流星 → 组合确认
@@ -817,8 +820,10 @@ def resolve_golden_evidence(klines: list[list], wanted: str,
         prev = None
     if prev and prev["direction"] == wanted:
         label = PATTERN_LABEL_MAP.get(prev["pattern"], prev["pattern"])
+        # 规则3 的形态真身在前根（当根只是趋势K），offset=-3——下游据此把
+        # 形态根画在信号根之前（docs/11）
         return ({"pattern": prev["pattern"], "direction": wanted,
-                 "strength": prev["strength"]},
+                 "strength": prev["strength"], "offset": -3},
                 f"前根{label}+当根趋势K")
     return None, ""
 

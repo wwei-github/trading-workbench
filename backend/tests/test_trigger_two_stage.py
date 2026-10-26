@@ -868,6 +868,29 @@ def test_shooting_star_plus_trend_candle_confirms_short():
     assert "前根流星线+当根趋势K" in t["reason"]
 
 
+# ── 回踩组合确认展示口径（2026-10-26，docs/11）：形态K线锚点与滞后 ──────────
+
+def test_combo_trigger_reports_pattern_anchor_and_lag():
+    kl = _kl(*_base())
+    _hammer_at(kl, -3)
+    _trend_candle_at(kl, -2, direction=1)
+    t, _op = trig.detect_trigger(kl, 1)
+    assert t["golden_combo"] is True
+    assert t["pattern_candle_open"] == datetime.utcfromtimestamp(float(kl[-3][0]) / 1000)
+    expect = (float(kl[-2][4]) / float(kl[-3][4]) - 1) * 100  # 多头：收盘更低=更便宜=负
+    assert t["entry_lag_pct"] == pytest.approx(expect, abs=1e-4)
+    assert t["entry_lag_pct"] < 0
+
+
+def test_single_pattern_trigger_has_no_lag():
+    kl = _kl(*_base())
+    _hammer_at(kl, -2)          # 当根锤形直通（规则1，offset=-2）
+    t, _op = trig.detect_trigger(kl, 1)
+    assert t is not None and t["golden_combo"] is False
+    assert t["pattern_candle_open"] == datetime.utcfromtimestamp(float(kl[-2][0]) / 1000)
+    assert t["entry_lag_pct"] is None
+
+
 # ── resolve_golden_evidence 裁决函数直测（规则1/2/3 与否决路径）────────────
 
 def test_resolve_direct_pass_for_composite_pattern():
@@ -968,6 +991,27 @@ def test_resolve_direct_confirm_beats_single_shadow_in_dual_report():
         {"pattern": "morning_star", "direction": "bullish", "strength": 0.6},
     ])
     assert golden4 is not None and golden4["pattern"] == "hammer"
+
+
+def test_resolve_rule_offsets():
+    """docs/11：三条规则各自标注证据K线相对下标，供下游定位形态根"""
+    kl = _kl(*_base())
+    g1, n1 = trig.resolve_golden_evidence(
+        kl, "bullish", [{"pattern": "bullish_engulfing", "direction": "bullish"}])
+    assert (g1["offset"], n1) == (-2, "")
+    kl2 = _kl(*_base())
+    _shooting_star_at(kl2, -3)
+    _shooting_star_at(kl2, -2)
+    g2, n2 = trig.resolve_golden_evidence(
+        kl2, "bearish", [{"pattern": "shooting_star", "direction": "bearish"}])
+    assert (g2["offset"], n2) == (-2, "双流星组合")
+    kl3 = _kl(*_base())
+    _hammer_at(kl3, -3)
+    _trend_candle_at(kl3, -2, direction=1)
+    g3, n3 = trig.resolve_golden_evidence(
+        kl3, "bullish", [{"pattern": "trend_candle", "direction": "bullish"}])
+    assert (g3["offset"], g3["pattern"]) == (-3, "hammer")
+    assert n3 == "前根锤形线+当根趋势K"
 
 
 # ── 回踩金K量能注记（2026-09-30 docs/25 §3.1：补齐知识库「大量」要素）──────

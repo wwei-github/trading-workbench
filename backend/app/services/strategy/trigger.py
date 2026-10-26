@@ -1000,6 +1000,15 @@ def detect_trigger(
         # 企稳加分项（docs/19 §3.3 条件2/3，2026-10-10 拍板：加分不拦截）：
         # 当根确认时触碰根即金K根，量能已由放量加分评估，volume_semantics=False
         _stab = pullback_stabilize_bonus(klines, direction, -2, volume_semantics=False)
+        # 组合确认口径（2026-10-26，docs/11）：pattern 落在信号根之前时，把形态真实
+        # 所在K线与确认滞后一起送出去；形态在当根（offset=-2）时 pattern_candle_open
+        # 就是信号根，滞后无意义置 None
+        _pat_off = golden.get("offset", -2)
+        _pattern_open = datetime.utcfromtimestamp(float(klines[_pat_off][0]) / 1000)
+        _lag = None
+        if _pat_off == -3:
+            _lag = round(
+                direction * (float(klines[-2][4]) / float(klines[_pat_off][4]) - 1) * 100, 4)
         return {
             "type": PULLBACK_CONFIRM,
             "direction": direction,
@@ -1012,6 +1021,8 @@ def detect_trigger(
             # 组合金K标志（2026-10-13-6）：供质量分算「金K组合价格带结构点密度」
             # 时决定价格带是否并入前根（True=组合两根包络，False=单根）
             "golden_combo": bool(golden_note),
+            # 形态真实所在K线开盘时间 + 确认滞后（docs/11，仅 offset=-3 非空）
+            "pattern_candle_open": _pattern_open, "entry_lag_pct": _lag,
             "reason": f"指标同向·回踩{touch_label}({touch_price:.6g})企稳且{_ev}"
                       f"{vol_note}{struct_note}",
         }, _close_op(pending, direction, "same_candle_confirm")
@@ -1049,6 +1060,15 @@ def detect_trigger(
             # 企稳加分项：触碰根 = 金K 之前 pending_elapsed 根（klines[-2-elapsed]，
             # 即 pending 的 Stage-1 根），量能语义照常评估
             _stab = pullback_stabilize_bonus(klines, direction, -2 - pending_elapsed)
+            # 组合确认口径（2026-10-26，docs/11）：pattern 落在信号根之前时，把形态真实
+            # 所在K线与确认滞后一起送出去；形态在当根（offset=-2）时 pattern_candle_open
+            # 就是信号根，滞后无意义置 None
+            _pat_off = golden.get("offset", -2)
+            _pattern_open = datetime.utcfromtimestamp(float(klines[_pat_off][0]) / 1000)
+            _lag = None
+            if _pat_off == -3:
+                _lag = round(
+                    direction * (float(klines[-2][4]) / float(klines[_pat_off][4]) - 1) * 100, 4)
             return {
                 "type": PULLBACK_CONFIRM,
                 "direction": direction,
@@ -1060,6 +1080,8 @@ def detect_trigger(
                 "structure_gate": p_structure_gate,
                 # 组合金K标志（2026-10-13-6）：质量分算金K组合价格带结构点密度用
                 "golden_combo": bool(golden_note),
+                # 形态真实所在K线开盘时间 + 确认滞后（docs/11，仅 offset=-3 非空）
+                "pattern_candle_open": _pattern_open, "entry_lag_pct": _lag,
                 "reason": f"指标同向·回踩{p_label}企稳·{_ev}{vol_note}{p_struct_note}",
             }, {"op": "confirm"}
         if pending:
