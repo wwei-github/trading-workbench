@@ -90,6 +90,12 @@ def _scan_hit_card(new_hits: list[dict]) -> dict:
         sig = TRIGGER_FAMILY.get(h.get("signal_type") or "", "未知信号")
         if h.get("pattern"):
             sig += f"·{PATTERN_LABEL_MAP.get(h['pattern'], h['pattern'])}"
+            # 组合确认（2026-10-26，docs/11）：形态在信号根的前一根，卡片 dict 无
+            # signal_candle_open，用等价判据 entry_lag_pct 非空（构造上只有形态早于
+            # 信号根才算滞后）；不看 golden_combo——双流星 golden_combo=True 但形态
+            # 就在信号根，不该标 (前根)
+            if h.get("entry_lag_pct") is not None:
+                sig += "(前根)"
         rows.append({
             "tag": "column_set",
             "flex_mode": "trisect",

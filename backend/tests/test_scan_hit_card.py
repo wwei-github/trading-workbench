@@ -56,6 +56,29 @@ def test_card_unknown_signal_and_pattern_fallback():
     assert row2["columns"][1]["elements"][0]["content"] == "回踩金K确认·unknown_pattern"
 
 
+def test_card_marks_prev_bar_pattern():
+    """docs/11：形态在信号根之前时形态名带 (前根)；单形态不带"""
+    card = _scan_hit_card([
+        {**_hit("REZUSDT", "trigger_pullback_confirm", "hammer", 82),
+         "golden_combo": True, "entry_lag_pct": 1.588},
+        {**_hit("BTCUSDT", "trigger_pullback_confirm", "hammer", 70),
+         "golden_combo": False, "entry_lag_pct": None},
+    ])
+    assert card["elements"][0]["columns"][1]["elements"][0]["content"] == "回踩金K确认·锤形线(前根)"
+    assert card["elements"][1]["columns"][1]["elements"][0]["content"] == "回踩金K确认·锤形线"
+
+
+def test_card_same_bar_combo_not_marked():
+    """docs/11 §4.1：golden_combo 只留痕不参与渲染——双流星组合的形态就在
+    信号根上（entry_lag_pct 为空），不该标 (前根)；判据只看滞后而非组合标记"""
+    card = _scan_hit_card([
+        {**_hit("ETHUSDT", "trigger_pullback_confirm", "shooting_star", 78),
+         "golden_combo": True, "entry_lag_pct": None},
+    ])
+    assert (card["elements"][0]["columns"][1]["elements"][0]["content"]
+            == "回踩金K确认·流星线")
+
+
 def test_card_truncates_over_8_with_note():
     """超过 8 条：正文只列前 8（标题仍报总数），脚注给总命中数"""
     hits = [_hit(f"SYM{i}USDT", "trigger_breakout", None, 60 + i) for i in range(10)]
