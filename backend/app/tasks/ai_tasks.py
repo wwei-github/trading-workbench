@@ -148,11 +148,14 @@ def run_ai_analysis_task(
     )
     try:
         cfg = db.get(SystemConfig, 1)
-        if not resolve_credentials(cfg)[0]:
-            logger.warning("AI 分析未启用（未配置 API Key），跳过")
-            close_task(task_id, "skipped", summary="AI 未启用（未配置 API Key）")
+        # cfg 缺失（老库未初始化）不得继续：下游大量读取 cfg 字段会 AttributeError。
+        # 2026-10-26 凭证改判 resolve_credentials 后，env 有 Key 时此分支不再必然
+        # 提前返回，故显式保留空配置守卫。
+        if not cfg or not resolve_credentials(cfg)[0]:
+            logger.warning("AI 分析未启用（系统配置缺失或未配置 API Key），跳过")
+            close_task(task_id, "skipped", summary="AI 未启用（系统配置缺失或未配置 API Key）")
             return
-        if cfg and not cfg.ai_analysis_enabled and only_scan_result_id is None:
+        if not cfg.ai_analysis_enabled and only_scan_result_id is None:
             # 「筛选后自动 AI 分析」开关（2026-09-28 与交易开关解耦）：仅拦截
             # 扫描链路的批量自动分析；手动单币重分析（only_scan_result_id 非空）
             # 不受限。交易开关（trading_enabled）只管自动成交，不再拦分析
@@ -320,7 +323,8 @@ def run_ai_analysis_single(
         if r is None:
             return
         cfg = db.get(SystemConfig, 1)
-        if not resolve_credentials(cfg)[0]:
+        # 同父任务：cfg 缺失时下游直接读字段会 AttributeError（2026-10-26 守卫）
+        if not cfg or not resolve_credentials(cfg)[0]:
             return
         if not cfg.ai_analysis_enabled and not force:
             # 「筛选后自动 AI 分析」开关只拦批量自动分析（与父任务闸门口径一致）；
