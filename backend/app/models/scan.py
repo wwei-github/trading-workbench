@@ -71,6 +71,15 @@ class ScanResult(Base):
     # signal_created_at → ai_finished_at → opened_at 三段计算执行时延；
     # 本列上线前的历史行 NULL（按 created_at 理解）
     signal_created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # 组合确认口径（2026-10-26，docs/11）：回踩金K走「前根形态+当根趋势K」时
+    # pattern 落在信号根的前一根。golden_combo 标记组合路径（规则2 双流星 /
+    # 规则3 前根+趋势K，仅留痕）；pattern_candle_open 指向 pattern 真实所在K线
+    # （有 pattern 即落，形态在当根时=信号根）；entry_lag_pct = 形态收盘→信号
+    # 收盘的方向归一漂移（正=对本次交易不利），仅形态早于信号根时计算。旧行
+    # golden_combo=FALSE、其余 NULL
+    golden_combo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pattern_candle_open: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    entry_lag_pct: Mapped[Optional[float]] = mapped_column(Numeric(10, 4), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     scan_record: Mapped[ScanRecord] = relationship(back_populates="results")

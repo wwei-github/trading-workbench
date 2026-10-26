@@ -622,6 +622,12 @@ def detect_indicator_candidate(
         "trend_slope": 0.0,
         "r_squared": 0.0,
         "pattern": trig.get("pattern"),
+        # 组合确认口径（2026-10-26，docs/11）：一律按 trigger 字段透传，不按
+        # 规则号/note 猜测——规则2 双流星形态在 -2（无 entry_lag_pct），规则3
+        # 前根形态才在 -3，而 -3 也可能来自「当根触碰确认」
+        "golden_combo": bool(trig.get("golden_combo")),
+        "pattern_candle_open": trig.get("pattern_candle_open"),
+        "entry_lag_pct": trig.get("entry_lag_pct"),
         "signal_reason": trig["reason"][:120],
         "position": trig["position"],
         "touch_ref": trig.get("touch_ref"),
@@ -1118,6 +1124,11 @@ class Scanner:
                     trend_slope=h.get("trend_slope", 0),
                     r_squared=h.get("r_squared", 0),
                     pattern=h.get("pattern"),
+                    # 组合确认三项（2026-10-26，docs/11）：字段透传落库，形态
+                    # 所在K线与漂移供 T3 的展示口径判定（旧行/无该键默认 False/None）
+                    golden_combo=bool(h.get("golden_combo")),
+                    pattern_candle_open=h.get("pattern_candle_open"),
+                    entry_lag_pct=h.get("entry_lag_pct"),
                     signal_reason=h.get("signal_reason"),
                     strength=h.get("strength"),
                     ema_state=h.get("ema_state"),

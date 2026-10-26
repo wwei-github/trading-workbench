@@ -894,6 +894,17 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS ai_pause_start_hour INTEGER,
               ADD COLUMN IF NOT EXISTS ai_pause_end_hour INTEGER
         """))
+        # scan_results 组合确认三列（2026-10-26，docs/11）：旧行 golden_combo=FALSE、
+        # pattern_candle_open/entry_lag_pct NULL，前端据此回退到「单形态、锚信号根」
+        conn.execute(text(
+            "ALTER TABLE scan_results "
+            "ADD COLUMN IF NOT EXISTS golden_combo BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text(
+            "ALTER TABLE scan_results "
+            "ADD COLUMN IF NOT EXISTS pattern_candle_open TIMESTAMP"))
+        conn.execute(text(
+            "ALTER TABLE scan_results "
+            "ADD COLUMN IF NOT EXISTS entry_lag_pct NUMERIC(10,4)"))
 
 
 def init_db():

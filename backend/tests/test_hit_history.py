@@ -255,3 +255,27 @@ def test_pagination(client, seeded):
         "page": 2, "page_size": 1}).json()
     assert len(res2["items"]) == 1
     assert res2["items"][0]["id"] != res["items"][0]["id"]
+
+
+def test_combo_columns_persist(client):
+    """docs/11：组合确认三列可写可读；非组合行恒为 False/None（API 断言见 T3）"""
+    _http, db = client
+    rec = ScanRecord(scan_type="scheduled")
+    db.add(rec)
+    db.flush()
+    ts = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    combo = _mk_result(db, rec.id, "REZUSDT", ts)
+    combo.signal_created_at = ts
+    combo.golden_combo = True
+    combo.pattern_candle_open = ts - timedelta(hours=2)
+    combo.entry_lag_pct = 1.588
+    plain = _mk_result(db, rec.id, "BTCUSDT", ts - timedelta(minutes=1))
+    db.commit()
+    db.refresh(combo)
+    db.refresh(plain)
+    assert combo.golden_combo is True
+    assert combo.pattern_candle_open == ts - timedelta(hours=2)
+    assert float(combo.entry_lag_pct) == pytest.approx(1.588)
+    assert plain.golden_combo is False
+    assert plain.pattern_candle_open is None
+    assert plain.entry_lag_pct is None
