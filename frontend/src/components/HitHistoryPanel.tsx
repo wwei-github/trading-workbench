@@ -265,6 +265,7 @@ export default function HitHistoryPanel() {
                 hitDirection={detail.direction}
                 tradeOverlay={detail.trade}
                 hitSignalType={detail.signal_type}
+                hitPattern={detail.pattern}
               />
             </div>
             <Space size="small" style={{ marginTop: 8, fontSize: 12, color: '#8b93a7' }}>

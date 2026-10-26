@@ -34,7 +34,7 @@ import {
 import { fmtPrice, pctDelta, rrRatio } from './klineShared'
 import { dayjs } from '../utils/dayjs'
 import ChartCore, { type OverlayCtx } from './ChartCore'
-import { SIGNAL_TYPE_MAP } from '../constants/labels'
+import { SIGNAL_TYPE_MAP, patternStyle } from '../constants/labels'
 import type { AIAnalysis, HitHistoryItem, HitHistoryTrade, Kline, KlineData, TradeKlineData, TradeKlineEvent } from '../types'
 
 const CHART_HEIGHT = 560 // 容器无高度时的兜底值（各挂载点容器均有自身高度）
@@ -640,6 +640,7 @@ interface EffHit {
   direction: 1 | -1 | 0
   trade: HitHistoryTrade | null
   signalType: string | null
+  pattern: string | null // 金K形态（回踩确认路径；图注追加在「回踩金K确认」后）
 }
 
 interface Props {
@@ -658,6 +659,7 @@ interface Props {
   hitDirection?: 1 | -1 | 0 // 命中方向（1 多 / -1 空 / 0 未知）
   tradeOverlay?: HitHistoryTrade | null // 关联开单（时间裁剪区间）
   hitSignalType?: string | null // 命中信号类型（出点类型，追加在「命中」标签后）
+  hitPattern?: string | null // 金K形态（追加在信号类型后，如 回踩金K确认·看涨吞没）
   // 当前扫描结果 id（扫描模式）：该命中已有实际成交单时抑制 AI 计划线，
   // 只保留实际单覆盖层，避免同一笔在图上出现「做多」「开多」两组入场线
   scanResultId?: string
@@ -670,7 +672,7 @@ interface Props {
 
 export default function KlineChart({
   symbol, tradeId, limit = 500, defaultInterval = '1h', ai, refreshKey = 0,
-  hitTime, touchTime, hitDirection = 0, tradeOverlay, hitSignalType, scanResultId,
+  hitTime, touchTime, hitDirection = 0, tradeOverlay, hitSignalType, hitPattern, scanResultId,
   cacheHistory = false, pageSize = 1000,
 }: Props) {
   const colorScheme = useScanStore((s) => s.colorScheme)
@@ -753,6 +755,7 @@ export default function KlineChart({
         direction: hitDirection,
         trade: tradeOverlay ?? null,
         signalType: hitSignalType ?? null,
+        pattern: hitPattern ?? null,
       }]
     }
     return autoHits.map((h) => ({
@@ -762,8 +765,9 @@ export default function KlineChart({
       direction: (h.direction ?? 0) as 1 | -1 | 0,
       trade: h.trade ?? null,
       signalType: h.signal_type ?? null,
+      pattern: h.pattern ?? null,
     }))
-  }, [externalHit, hitTime, touchTime, hitDirection, tradeOverlay, hitSignalType, autoHits])
+  }, [externalHit, hitTime, touchTime, hitDirection, tradeOverlay, hitSignalType, hitPattern, autoHits])
 
   // 同一扫描结果已开单时，AI 建议线（做多/止损/止盈）与实际成交线（开多/止损/止盈）
   // 是同一次决策的两个阶段，图上只保留实际成交数据（2026-10-22 用户拍板）
@@ -1087,9 +1091,12 @@ export default function KlineChart({
       for (const h of effHits) {
         // 命中方向：1 多（上涨）→ K线下方； -1 空（下跌）→ K线上方
         const preferBelow = h.direction >= 0
-        // 命中标签后追加信号类型（出点类型，2026-10-16）
+        // 命中标签后追加信号类型（出点类型，2026-10-16）；回踩金K确认再追加
+        // 具体金K形态（2026-10-26，如「回踩金K确认·看涨吞没」，与飞书命中卡片同口径）
         const sigLabel = h.signalType ? (SIGNAL_TYPE_MAP[h.signalType]?.label ?? h.signalType) : ''
-        const hitLabel = sigLabel ? `命中 · ${sigLabel}` : '命中'
+        const patternLabel = h.pattern ? patternStyle(h.pattern).label : ''
+        const parts = [sigLabel, patternLabel].filter(Boolean)
+        const hitLabel = parts.length ? `命中 · ${parts.join('·')}` : '命中'
         // 命中锚定（2026-10-16）：hitTime=扫描发现时刻，扫描周期固定 1h，
         // 信号K线=扫描周期最后一根已收盘K线（开口=hitTime 所在小时开口-1h）；
         // 再映射到当前图表周期：取「包含信号时刻」的周期K线——1h 图=已收盘信号根；
