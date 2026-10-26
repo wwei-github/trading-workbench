@@ -147,10 +147,14 @@ git commit -m "feat(11): 金K证据带 offset，触发返回形态K线与确认�
 
 - [ ] 写失败测试（放 `backend/tests/test_hit_history.py` 末尾，`_mk_result` 已能构造行）
 
+> 2026-10-26 口径修正：本任务只验**落库层**（DB 写入/读取），API 响应字段
+> （`golden_combo`/`pattern_candle_open`/`entry_lag_pct`/`entry_lag_warn`）属于 T3，
+> 断言放在 T3 的 `test_entry_lag_warn_threshold`，保证两个任务各自能独立变绿。
+
 ```python
 def test_combo_columns_persist(client):
-    """docs/11：组合确认三列可写可读；非组合行恒为 False/None"""
-    http, db = client
+    """docs/11：组合确认三列可写可读；非组合行恒为 False/None（API 断言见 T3）"""
+    _http, db = client
     rec = ScanRecord(scan_type="scheduled")
     db.add(rec)
     db.flush()
@@ -161,19 +165,15 @@ def test_combo_columns_persist(client):
     combo.pattern_candle_open = ts - timedelta(hours=2)
     combo.entry_lag_pct = 1.588
     plain = _mk_result(db, rec.id, "BTCUSDT", ts - timedelta(minutes=1))
-    plain.signal_created_at = ts - timedelta(minutes=1)
     db.commit()
-    res = http.get("/api/scans/hit-history", params={
-        "start": (ts - timedelta(days=1)).isoformat() + "Z",
-        "end": (ts + timedelta(minutes=1)).isoformat() + "Z",
-    }).json()
-    by_sym = {it["symbol"]: it for it in res["items"]}
-    assert by_sym["REZUSDT"]["golden_combo"] is True
-    assert by_sym["REZUSDT"]["pattern_candle_open"] == (ts - timedelta(hours=2)).isoformat()
-    assert by_sym["REZUSDT"]["entry_lag_pct"] == pytest.approx(1.588)
-    assert by_sym["BTCUSDT"]["golden_combo"] is False
-    assert by_sym["BTCUSDT"]["pattern_candle_open"] is None
-    assert by_sym["BTCUSDT"]["entry_lag_pct"] is None
+    db.refresh(combo)
+    db.refresh(plain)
+    assert combo.golden_combo is True
+    assert combo.pattern_candle_open == ts - timedelta(hours=2)
+    assert float(combo.entry_lag_pct) == pytest.approx(1.588)
+    assert plain.golden_combo is False
+    assert plain.pattern_candle_open is None
+    assert plain.entry_lag_pct is None
 ```
 
 - [ ] 跑测试确认失败
@@ -285,6 +285,12 @@ def test_entry_lag_warn_threshold(client):
     }).json()
     warn = {it["symbol"]: it["entry_lag_warn"] for it in res["items"]}
     assert warn == {"LAG0USDT": True, "LAG1USDT": False, "LAG2USDT": False}
+    # 响应字段存在性 + 原值透传（2026-10-26 口径修正：落库断言在 T2，这里只验 API 层）
+    by_sym = {it["symbol"]: it for it in res["items"]}
+    assert by_sym["LAG0USDT"]["golden_combo"] is True
+    assert by_sym["LAG0USDT"]["entry_lag_pct"] == pytest.approx(1.59)
+    assert by_sym["LAG0USDT"]["pattern_candle_open"] == (
+        ts - timedelta(hours=1)).isoformat()
 ```
 
 - [ ] 跑测试确认失败：`python -m pytest tests/test_hit_history.py -q -k lag_warn` → `KeyError: 'entry_lag_warn'`
