@@ -1181,6 +1181,10 @@ def _attempt_open(
                     # 入场诊断快照（O1，2026-10-27）：pos/room_r/stop_atr/planned_rr/
                     # quality_total/range_flag 等，归因时免重新拉 K 线重算
                     "entry_diag": (entry_diag or None),
+                    # 市价路径的快照就是在成交时算的（ref_price=现价），故与挂单落地
+                    # 重算同源，统一标 placement；挂单落地重算成功的标 fill（见
+                    # materialize_pending_entry），两者便于事后区分"算于下单还是成交"。
+                    "entry_diag_source": ("placement" if entry_diag else None),
                 },
             )
             db.add(rec)
