@@ -905,6 +905,11 @@ def _run_migrations(engine):
         conn.execute(text(
             "ALTER TABLE scan_results "
             "ADD COLUMN IF NOT EXISTS entry_lag_pct NUMERIC(10,4)"))
+        # 测试网总开关（2026-10-27）：默认 TRUE 保持现状；关闭后仅停合约测试网
+        # 新增活动，存量结算/保护照常（语义见 models/system_config.py）
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS testnet_enabled BOOLEAN NOT NULL DEFAULT TRUE"))
 
 
 def init_db():

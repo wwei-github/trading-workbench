@@ -452,6 +452,10 @@ def _mirror_advice_to_testnet(db: Session, live_rec, advice: dict,
     主流程与其余孪生单。"""
     if live_rec.testnet or not live_rec.ai_analysis_id:
         return
+    # 测试网总开关（2026-10-27）：关闭后不再向测试网孪生镜像建议/执行 tighten
+    from app.services.account_registry import testnet_enabled
+    if not testnet_enabled(db):
+        return
     twins = db.execute(
         select(TradeRecord).where(
             TradeRecord.ai_analysis_id == live_rec.ai_analysis_id,

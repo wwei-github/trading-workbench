@@ -22,6 +22,7 @@ export default function ScanStatus() {
   const { status, fetchStatus } = useScanStore()
   const last = status?.last_scan
   const tnTrading = status?.trading_enabled_testnet ?? false
+  const tnEnabled = status?.testnet_enabled ?? true // 测试网总开关（总闸关=仅停新增，存量照常结算）
   const liveTrading = status?.trading_enabled_live ?? false
   const lb = status?.loss_breaker
   const [acking, setAcking] = useState(false)
@@ -131,12 +132,19 @@ export default function ScanStatus() {
               title={
                 `自动成交开关（双网独立，可同时开启）：测试网${tnTrading ? '已开启' : '已关闭'}` +
                 ` / 正式网${liveTrading ? '已开启' : '已关闭'}（AI 分析后自动开单，正式网为实盘）。` +
-                `仅控自动开新单；手动开单、AI 分析、结算巡检均不受限。在「系统配置」弹窗中可切换。`
+                (tnEnabled
+                  ? `仅控自动开新单；手动开单、AI 分析、结算巡检均不受限。在「系统配置」弹窗中可切换。`
+                  : `测试网总开关已关闭：测试网合约停止全部新增（自动/手动开单、外部仓接管、` +
+                    `飞书通知、自动持仓诊断与镜像），存量持仓结算/保护/挂单巡检照常，` +
+                    `历史数据只读可查、统计默认切正式网。在「系统配置」弹窗中可重新开启。`)
               }
             >
               <span>
-                <Tag color={tnTrading ? 'orange' : 'default'} style={{ fontSize: 14, marginInlineEnd: 6 }}>
-                  测 {tnTrading ? '运行中' : '关'}
+                <Tag
+                  color={tnEnabled && tnTrading ? 'orange' : 'default'}
+                  style={{ fontSize: 14, marginInlineEnd: 6 }}
+                >
+                  测 {!tnEnabled ? '总闸关' : tnTrading ? '运行中' : '关'}
                 </Tag>
                 <Tag color={liveTrading ? 'volcano' : 'default'} style={{ fontSize: 14, marginInlineEnd: 0 }}>
                   正 {liveTrading ? '运行中' : '关'}

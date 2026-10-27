@@ -49,6 +49,10 @@ def testnet_notify_enabled() -> bool:
         cfg = db.get(SystemConfig, 1)
         if cfg is None:
             return True
+        # 测试网总开关（2026-10-27）：关闭时一律不推送测试网标注单据，
+        # 且优先于分开关（总闸关闭后分开关不生效）
+        if getattr(cfg, "testnet_enabled", True) is False:
+            return False
         return bool(cfg.feishu_testnet_notify_enabled)
     except Exception:
         logger.warning("读取测试网飞书通知开关失败，按「开」处理", exc_info=True)

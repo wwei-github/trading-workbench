@@ -116,9 +116,15 @@ def account_summary(
     if account_key and acc is None:
         raise HTTPException(status_code=400, detail=f"账号 {account_key} 不在注册表中（检查服务器 .env）")
     if acc is None:
-        acc = (reg.testnet_accounts() or reg.live_accounts() or [None])[0]
-    acc_key = acc.key if acc else "testnet-1"
-    testnet = acc.testnet if acc else True
+        # 测试网总开关（2026-10-27）：关闭后默认账号切正式网；测试网历史
+        # 仍可通过显式 account_key/scope 只读查看
+        if reg.testnet_enabled(db):
+            acc = (reg.testnet_accounts() or reg.live_accounts() or [None])[0]
+        else:
+            acc = (reg.live_accounts() or [None])[0]
+    tn_default = reg.testnet_enabled(db)
+    acc_key = acc.key if acc else ("testnet-1" if tn_default else "live-1")
+    testnet = acc.testnet if acc else tn_default
     out: dict = {"testnet": testnet, "account_key": acc_key,
                  "account_name": acc.name if acc else acc_key, "available": False}
     # TTL 内直接复用成功快照（固定从成功时刻起算，避免连点刷新无限续期）

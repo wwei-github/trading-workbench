@@ -70,6 +70,14 @@ class SystemConfig(Base):
     trading_enabled_testnet: Mapped[bool] = mapped_column(Boolean, default=True)
     trading_enabled_live: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # 测试网总开关（2026-10-27）：True=现状（测试网分开关各自生效）；False=仅停
+    # 合约测试网「新增」活动（自动/手动开单、外部持仓自动接管、测试网飞书通知、
+    # 测试网结算拉黑正式网、自动持仓诊断与 live→testnet 镜像）；存量持仓结算、
+    # 保护单恢复、挂单巡检、事件流照常（避免交易所侧出现无主单）。历史数据
+    # 只读展示保留，统计默认切 live。现货测试网独立（spot_trading_testnet），
+    # 不受本开关影响。缺行/读库异常按 True 兜底，升级后行为不变。
+    testnet_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
     # 测试网飞书通知开关（2026-10-15）：开=测试网合约单据相关卡片照常推送；
     # 关=发送层（feishu_bot._post_message 调用点）拦截所有标注 testnet=True 的
     # 卡片/文本，静默丢弃（不重试、不计失败）。仅覆盖「合约测试网单据」相关

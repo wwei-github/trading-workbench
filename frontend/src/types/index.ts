@@ -70,6 +70,9 @@ export interface ScanStatus {
   // 交易运行状态（2026-09-20 顶部一览；2026-10-03 双网独立开关，统计双网合计）
   trading_enabled_testnet: boolean;
   trading_enabled_live: boolean;
+  /** 测试网总开关（2026-10-27）：false=仅停测试网合约新增（开单/接管/通知/诊断镜像），
+   *  存量结算与保护照常；历史数据只读展示保留，统计默认切 live */
+  testnet_enabled: boolean;
   open_trades: number;
   /** 其中已进入止盈止损阶段的（TP1_HIT/TP2_HIT，止损已移保本，不占上限名额） */
   open_tp_hit: number;
@@ -271,6 +274,9 @@ export interface SystemConfig {
   tp1_qty_pct_no_tp2?: number | null; // 无 TP2 时 TP1 一次止盈比例 %（NULL=默认 80）
   // 自动交易开关（2026-09-20 由 env 迁移进 DB，页面「系统配置」弹窗可改；
   // 2026-10-03 总开关拆分为双网独立开关可同时开启；同日删环境切换）
+  // 测试网总开关（2026-10-27，默认开）：关=仅停合约测试网新增（开单/接管/通知/
+  // 诊断镜像），存量结算与保护照常；现货测试网独立不受影响；统计默认切 live
+  testnet_enabled?: boolean;
   trading_enabled_testnet?: boolean; // 测试网自动交易（默认开）
   trading_enabled_live?: boolean; // 正式网自动交易（默认关，实盘安全基线）
   // 测试网飞书通知开关（2026-10-15，默认开）：关=不推送合约测试网单据相关

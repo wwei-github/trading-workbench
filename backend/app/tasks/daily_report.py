@@ -145,6 +145,11 @@ def _notify_daily_report_body(task_id: str) -> dict:
     # 测试网是模拟撮合且仓位大数倍，混网合计会淹没真钱表现。
     db = SessionLocal()
     try:
+        from app.models.system_config import SystemConfig
+        cfg = db.get(SystemConfig, 1)
+        # 测试网总开关（2026-10-27）：关闭后日报只展示正式网统计（测试网历史
+        # 仍可在页面只读查看；日报属主动统计推送，默认切 live）
+        tn_on = True if cfg is None else getattr(cfg, "testnet_enabled", True) is not False
         live = _env_day_stats(db, day_start, day_end, is_testnet=False)
         testnet = _env_day_stats(db, day_start, day_end, is_testnet=True)
     finally:
@@ -223,14 +228,17 @@ def _notify_daily_report_body(task_id: str) -> dict:
             {"tag": "div", "text": {"tag": "lark_md", "content": "**💼 交易统计**"}},
             {"tag": "div", "text": {"tag": "lark_md", "content": "**正式网**"}},
             {"tag": "div", "fields": _stat_fields(live)},
-            {"tag": "div", "text": {"tag": "lark_md", "content": "**测试网**"}},
-            {"tag": "div", "fields": _stat_fields(testnet)},
+            *([
+                {"tag": "div", "text": {"tag": "lark_md", "content": "**测试网**"}},
+                {"tag": "div", "fields": _stat_fields(testnet)},
+            ] if tn_on else []),
             {"tag": "hr"},
             # ── 收益区：分网净收益，各占一行加粗突出 ──
             {"tag": "div", "text": {"tag": "lark_md",
              "content": (f"💰 **净收益**\n"
-                         f"**正式网**　{_net_str(live['net'])}\n"
-                         f"**测试网**　{_net_str(testnet['net'])}")}},
+                         f"**正式网**　{_net_str(live['net'])}"
+                         + (f"\n**测试网**　{_net_str(testnet['net'])}"
+                            if tn_on else ""))}},
             *([
                 {"tag": "hr"},
                 {"tag": "div", "text": {"tag": "lark_md",
@@ -238,7 +246,8 @@ def _notify_daily_report_body(task_id: str) -> dict:
             ] if shadow_lines else []),
             # ── 口径脚注（小字灰显）──
             {"tag": "note", "elements": [{"tag": "plain_text",
-             "content": ("统计范围 = 正式网 / 测试网分列 · 胜率 = 止盈笔数 ÷ 该网全部已闭单 · "
+             "content": ("统计范围 = " + ("正式网 / 测试网分列" if tn_on else "正式网（测试网总开关已关闭）")
+                         + " · 胜率 = 止盈笔数 ÷ 该网全部已闭单 · "
                          "净收益只计已闭单（含手续费/资金费），在跑单浮动盈亏不计")}]},
         ],
     }
@@ -254,11 +263,13 @@ def _notify_daily_report_body(task_id: str) -> dict:
             f"【正式网】止盈 {live['win']} / 止损 {live['loss']} / "
             f"胜率 {_win_rate(live)}（{live['total_win']}/{live['total_closed']}）",
             f"【正式网】净收益 {_net_str(live['net'])}",
-            f"【测试网】开单 {testnet['opened']}（在跑 {testnet['running']} · "
-            f"失败 {testnet['failed']}）/ 闭单 {testnet['closed']}",
-            f"【测试网】止盈 {testnet['win']} / 止损 {testnet['loss']} / "
-            f"胜率 {_win_rate(testnet)}（{testnet['total_win']}/{testnet['total_closed']}）",
-            f"【测试网】净收益 {_net_str(testnet['net'])}",
+            *([
+                f"【测试网】开单 {testnet['opened']}（在跑 {testnet['running']} · "
+                f"失败 {testnet['failed']}）/ 闭单 {testnet['closed']}",
+                f"【测试网】止盈 {testnet['win']} / 止损 {testnet['loss']} / "
+                f"胜率 {_win_rate(testnet)}（{testnet['total_win']}/{testnet['total_closed']}）",
+                f"【测试网】净收益 {_net_str(testnet['net'])}",
+            ] if tn_on else []),
             *(["", "🔬 影子实验（只统计不决策）", *shadow_lines] if shadow_lines else []),
         ])
         ok = send_feishu_text(text)
