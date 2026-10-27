@@ -1115,6 +1115,11 @@ class Scanner:
                 "errors": error_count,
                 "candidates": len(new_hits),   # 产生候选（进 AI 分析）数
                 "pending_pool": pending_pool_n,
+                # 复合金K确认数（docs/16 §12.4/§13，2026-10-27）：14 天 3,330 条
+                # 命中里 golden_combo=True 只有 1 条，离线复算却证明规则可达
+                # （30 币 × 10,200 根 → 24 次复合、直通 3,927 次，占 0.6%）。
+                # 落计数是为了分清"规则太窄"和"写库漏了"，不再靠猜。
+                "combo_confirm": sum(1 for h in new_hits if h.get("golden_combo")),
                 "stages": stages,              # 关卡代码 → 被拒数
                 "rejects": funnel_rejects,     # symbol → 关卡代码（全量明细）
                 "details": funnel_details,     # symbol → 判定说明（votes 票明细/no_trigger 未触发原因）

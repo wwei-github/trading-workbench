@@ -3253,7 +3253,8 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                     if not (rec.testnet and not tn_on):
                         # 超预算判定按「计划风险」口径（滑点后的 initial_risk 不作为预算基准）
                         register_settle(db, rec.symbol, rec.planned_risk or rec.risk_amount,
-                                        rec.realized_pnl, rec.exit_reason or "")
+                                        rec.realized_pnl, rec.exit_reason or "",
+                                        trade_id=rec.id)
                         db.commit()
                 except Exception as e:
                     db.rollback()
