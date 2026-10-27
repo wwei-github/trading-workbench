@@ -23,7 +23,8 @@
 
 - 文件：`backend/app/services/trade_engine.py`
 - 实施：`try_open_for_analysis` 的 heat/同向统计追加同账号活跃挂单 `risk_amount`（排除本分析自身）；新增 `_pending_gate_breaches`，`materialize_pending_entry` 落地时复核热度/同向/当日熔断，越线记 `GATE_BREACH` 事件 + warning，保护单照挂（复核异常降级跳过，不阻断保护单）。
-- 测试：`test_heat_cap_counts_active_pending`、`test_direction_cap_counts_active_pending`、`test_pending_materialize_records_gate_breach`。
+- 复核口径复用开仓侧 `_effective_caps` / `_week_derate_stats`（周减速时同向上限同步减半）；只读复核包 `db.begin_nested()` SAVEPOINT，查询级错误不会污染事务、不会间接触发外层紧急平仓。
+- 测试：`test_heat_cap_counts_active_pending`、`test_direction_cap_counts_active_pending`、`test_pending_materialize_records_gate_breach`、`test_pending_materialize_within_caps_writes_no_breach`、`test_pending_gate_review_failure_does_not_block_protection`、`test_pending_gate_review_applies_week_derate`。
 
 ## P2
 

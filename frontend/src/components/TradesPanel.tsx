@@ -131,6 +131,7 @@ export const EXIT_REASON_MAP: Record<string, string> = {
 // 操作历史事件元数据：中文标签 / 主题色 / 时间线圆点图标
 const EVENT_META: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
   OPEN: { label: '开仓', color: '#1677ff', icon: <RocketOutlined /> },
+  GATE_BREACH: { label: '开仓闸门越线', color: '#fa8c16', icon: <WarningOutlined /> },
   TP1_FILL: { label: 'TP1 止盈成交', color: '#52c41a', icon: <CheckCircleOutlined /> },
   TP2_FILL: { label: 'TP2 止盈成交', color: '#52c41a', icon: <CheckCircleOutlined /> },
   SL_MOVE: { label: '止损移动', color: '#fa8c16', icon: <SwapOutlined /> },
@@ -160,6 +161,9 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   planned_risk: '计划风险',
   initial_risk: '初始风险',
   remaining_risk: '剩余风险',
+  // 挂单成交落地闸门复核越线（2026-10-27 F3）
+  reasons: '越线原因',
+  source: '来源',
   entry_order_id: '开仓单ID',
   sl_order_id: '止损单ID',
   real_entry_price: '实际入场价',
@@ -281,6 +285,7 @@ function detailValue(k: string, v: unknown, scheme: ColorScheme): React.ReactNod
   if (k === 'from_mode' || k === 'to_mode') {
     return v === 'hl' ? 'HL/LH 结构' : v === 'three_line' ? '三线' : String(v)
   }
+  if (k === 'reasons' && Array.isArray(v)) return v.join('；')
   // 入场 ATR（1d/22）快照：按价格量级格式化
   if (k === 'entry_atr' && v != null && !Number.isNaN(Number(v))) {
     const n = Number(v)

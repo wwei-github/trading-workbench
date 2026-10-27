@@ -19,7 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -775,3 +775,57 @@ def test_pending_materialize_records_gate_breach(db):
         TradeEvent.event_type == "GATE_BREACH").one()
     assert "组合热度超限" in ev.detail["reasons"][0]
     assert db.get(TradeRecord, rid).status == "OPENED"
+
+
+def test_pending_materialize_within_caps_writes_no_breach(db):
+    """复核通过（10 万钱包、无在跑单）→ 正常落地且不写 GATE_BREACH"""
+    cfg = db.get(SystemConfig, 1)
+    pe = _pending_row(db, risk=8.0)
+    pe.raw = {"wallet": 100000.0, "beta": 1.0}
+    db.commit()
+    rid = materialize_pending_entry(db, _GateTrader(), pe, cfg)
+    assert rid is not None
+    assert db.get(TradeRecord, rid).status == "OPENED"
+    assert db.query(TradeEvent).filter(
+        TradeEvent.trade_record_id == rid,
+        TradeEvent.event_type == "GATE_BREACH").count() == 0
+
+
+def test_pending_gate_review_failure_does_not_block_protection(db, monkeypatch):
+    """复核查询报错（如未跑迁移）由 SAVEPOINT 隔离：仓位照常落地、可提交、
+    不写越线事件——不得因复核失败触发外层紧急平仓"""
+    import app.services.trade_engine as te
+    cfg = db.get(SystemConfig, 1)
+    pe = _pending_row(db, risk=8.0)
+    pe.raw = {"wallet": 1000.0, "beta": 1.0}
+    db.commit()
+
+    def _boom(*args, **kwargs):
+        db.execute(text("SELECT * FROM table_that_does_not_exist"))
+
+    monkeypatch.setattr(te, "_pending_gate_breaches", _boom)
+    rid = materialize_pending_entry(db, _GateTrader(), pe, cfg)
+    assert rid is not None
+    assert db.get(TradeRecord, rid).status == "OPENED"
+    assert db.query(TradeEvent).filter(
+        TradeEvent.trade_record_id == rid,
+        TradeEvent.event_type == "GATE_BREACH").count() == 0
+
+
+def test_pending_gate_review_applies_week_derate(db, monkeypatch):
+    """周减速生效时同向上限减半：在跑 long 1 + 本单 1 = 2 > 1 → 越线留痕"""
+    now = datetime.utcnow()
+    week_start = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    _closed(db, -200.0, week_start + (now - week_start) / 2)  # 周净亏 ≥ 1000×15%
+    monkeypatch.setattr(settings, "SAME_DIRECTION_CAP", 2)
+    _running(db, direction="long", risk=1.0)
+    cfg = db.get(SystemConfig, 1)
+    pe = _pending_row(db, risk=4.0, direction="long")
+    pe.raw = {"wallet": 1000.0, "beta": 1.0}
+    db.commit()
+    rid = materialize_pending_entry(db, _GateTrader(), pe, cfg)
+    ev = db.query(TradeEvent).filter(
+        TradeEvent.trade_record_id == rid,
+        TradeEvent.event_type == "GATE_BREACH").one()
+    assert any("同向持仓达上限" in r and "2 单 > 1" in r for r in ev.detail["reasons"])

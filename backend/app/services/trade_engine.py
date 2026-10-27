@@ -1263,10 +1263,10 @@ def _pending_gate_breaches(
     for r_amt, d, r_raw in others:
         b = (r_raw or {}).get("beta")
         rows.append((float(r_amt or 0), d, float(b) if b is not None else 1.0))
-    heat_cap = (
-        float(cfg.portfolio_heat_cap) if cfg.portfolio_heat_cap is not None
-        else float(settings.PORTFOLIO_HEAT_CAP)
-    )
+    heat_cap, same_cap = _effective_caps(cfg)
+    if same_cap > 0 and _week_derate_stats(
+            db, pe.account_key, pe.testnet, cfg, wallet) is not None:
+        same_cap = max(1, same_cap // 2)  # 周减速：同向上限减半（至少 1），与开仓同口径
     if heat_cap > 0:
         btc_exposure = sum(
             r * (float(b) if b is not None else 1.0) for r, _d, b in rows
@@ -1277,10 +1277,6 @@ def _pending_gate_breaches(
                 f"组合热度超限（β加权）：在跑+挂单 {btc_exposure:.2f} + 本单 "
                 f"{add:.2f} > 钱包 {wallet:.2f} × {heat_cap * 100:.0f}%"
             )
-    same_cap = (
-        int(cfg.same_direction_cap) if cfg.same_direction_cap is not None
-        else int(settings.SAME_DIRECTION_CAP)
-    )
     if same_cap > 0:
         same_n = sum(1 for _r, d, _b in rows if d == pe.direction) + 1
         if same_n > same_cap:
@@ -1404,11 +1400,14 @@ def materialize_pending_entry(
         )
         # 闸门复核（2026-10-27 F3）：挂单存续期间组合热度/同向/日熔断可能已被
         # 其它成交推过线。成交已发生不能回退，保护单照挂，只留越线痕迹供归因。
+        # SAVEPOINT 隔离只读复核（2026-10-27 review）：查询级错误（如未跑迁移）
+        # 只回滚保存点，避免事务被标记失败后 commit 报错、进而触发外层紧急平仓；
+        # 复核失败降级为不复核，绝不阻断保护单挂出。
         try:
-            gate_breaches = _pending_gate_breaches(
-                db, pe, cfg, initial_risk, float(raw.get("wallet") or 0))
+            with db.begin_nested():
+                gate_breaches = _pending_gate_breaches(
+                    db, pe, cfg, initial_risk, float(raw.get("wallet") or 0))
         except Exception as e:
-            # 复核失败不得阻断保护单挂出（旧行/字段缺失时降级为不复核）
             logger.warning("挂单成交落地 %s：闸门复核失败（跳过）: %s", symbol, e)
             gate_breaches = []
         if gate_breaches:
@@ -1586,6 +1585,55 @@ def _daily_loss_cap(wallet: float, pct: Optional[float] = None) -> float:
     None 回落 env 默认。"""
     _pct = settings.DAILY_LOSS_STOP_PCT if pct is None else float(pct)
     return _capital_base(wallet) * _pct / 100.0
+
+
+def _effective_caps(cfg: Optional[SystemConfig]) -> tuple[float, int]:
+    """组合热度/同向上限的生效值（2026-10-27 抽出，开仓与挂单落地复核共用）。
+
+    cfg 覆盖优先、NULL 回落 env——单一事实源，避免两处解析口径漂移。
+    """
+    heat_cap = (
+        float(cfg.portfolio_heat_cap)
+        if cfg is not None and cfg.portfolio_heat_cap is not None
+        else float(settings.PORTFOLIO_HEAT_CAP)
+    )
+    same_cap = (
+        int(cfg.same_direction_cap)
+        if cfg is not None and cfg.same_direction_cap is not None
+        else int(settings.SAME_DIRECTION_CAP)
+    )
+    return heat_cap, same_cap
+
+
+def _week_derate_stats(
+    db: Session, account_key: Optional[str], testnet: bool,
+    cfg: Optional[SystemConfig], wallet: float,
+) -> Optional[tuple[float, float, float]]:
+    """周回撤减速是否生效（2026-10-27 抽出，开仓与挂单落地复核共用）。
+
+    UTC 周已平仓净亏达「风险基数 × weekly_dd_stop_pct」且本 UTC 周未人工
+    确认时生效。生效返回 (week_pnl, week_cap, week_pct)，未生效返回 None。
+    开仓侧据此把在跑/同向上限减半，挂单成交复核用同一口径，避免漏判半档上限。
+    """
+    week_pct = (
+        float(cfg.weekly_dd_stop_pct)
+        if cfg is not None and cfg.weekly_dd_stop_pct is not None
+        else float(settings.WEEKLY_DD_STOP_PCT)
+    )
+    if week_pct <= 0:
+        return None
+    now_utc = datetime.utcnow()
+    week_start = (now_utc - timedelta(days=now_utc.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0)  # UTC 周一 0 点
+    week_pnl = _closed_pnl_since(db, account_key, testnet, week_start)
+    week_cap = _capital_base(wallet) * week_pct / 100.0
+    if week_pnl > -week_cap:
+        return None
+    acked = (cfg is not None and cfg.weekly_breaker_ack_at is not None
+             and cfg.weekly_breaker_ack_at >= week_start)
+    if acked:
+        return None
+    return week_pnl, week_cap, week_pct
 
 
 # 钱包余额缓存（熔断状态卡片用）：account_key → (wallet, ts)，5 分钟 TTL——
@@ -1841,30 +1889,17 @@ def try_open_for_analysis(
     # 本请求的单数上限与同向上限减半（floor，至少 1）。软减速不拦开仓；
     # 确认在当前 UTC 周内 = 本周放行，下周一 0 点自动重新武装。
     # （wallet 提前取：减半后的上限在下方单数/同向闸门即需生效）
-    now_utc = datetime.utcnow()
-    week_pct = (
-        float(cfg.weekly_dd_stop_pct) if cfg.weekly_dd_stop_pct is not None
-        else float(settings.WEEKLY_DD_STOP_PCT)
-    )
-    week_derate = False
-    if week_pct > 0:
-        week_start = (now_utc - timedelta(days=now_utc.weekday())).replace(
-            hour=0, minute=0, second=0, microsecond=0)  # UTC 周一 0 点
-        week_pnl = _closed_pnl_since(db, trader.account_key, trader.testnet, week_start)
-        week_cap = _capital_base(wallet) * week_pct / 100.0
-        if week_pnl <= -week_cap:
-            # 周减速人工复盘确认（2026-10-07，对称月熔断）：确认时刻在当前 UTC 周
-            # 内 = 本周已复盘放行（上限恢复常规），下周一自动重新武装
-            acked = (cfg.weekly_breaker_ack_at is not None
-                     and cfg.weekly_breaker_ack_at >= week_start)
-            if not acked:
-                week_derate = True
-                logger.warning(
-                    "周度回撤减速 %s（%s）：UTC 周已平仓净亏 %.2f ≤ -%.0f 阈值"
-                    "（风险基数 × %.0f%%）——本周剩余时间在跑上限/同向上限减半"
-                    "（软减速不拦开仓；「确认复盘」可恢复，周一 0 点自动恢复）",
-                    a.symbol, trader.account_key, week_pnl, week_cap, week_pct,
-                )
+    now_utc = datetime.utcnow()  # 月熔断等其他闸门共用
+    week_stats = _week_derate_stats(db, trader.account_key, trader.testnet, cfg, wallet)
+    week_derate = week_stats is not None
+    if week_stats is not None:
+        week_pnl, week_cap, week_pct = week_stats
+        logger.warning(
+            "周度回撤减速 %s（%s）：UTC 周已平仓净亏 %.2f ≤ -%.0f 阈值"
+            "（风险基数 × %.0f%%）——本周剩余时间在跑上限/同向上限减半"
+            "（软减速不拦开仓；「确认复盘」可恢复，周一 0 点自动恢复）",
+            a.symbol, trader.account_key, week_pnl, week_cap, week_pct,
+        )
     # 单数上限（0 = 不限单数，仅靠余额风控兜底）；已开始移动止损的单子
     # （TP1_HIT 止损已移保本 / TP2_HIT 仅剩跟进仓）风险已锁定，不占名额（2026-09-25）
     # 测试网不受最大持仓限制（2026-10-15 用户拍板）：模拟环境用于多开观察策略
@@ -1915,14 +1950,7 @@ def try_open_for_analysis(
     # 全状态集合（OPENED/TP1_HIT/TP2_HIT）计——TP1_HIT/TP2_HIT 止损已上移不占
     # 单数名额，但剩余仓的风险敞口与方向集中度仍然真实存在
     # （2026-10-02 上页面：heat_cap/same_cap/risk_pct 均按 cfg 覆盖优先、NULL 回落 env）
-    heat_cap = (
-        float(cfg.portfolio_heat_cap) if cfg.portfolio_heat_cap is not None
-        else float(settings.PORTFOLIO_HEAT_CAP)
-    )
-    same_cap = (
-        int(cfg.same_direction_cap) if cfg.same_direction_cap is not None
-        else int(settings.SAME_DIRECTION_CAP)
-    )
+    heat_cap, same_cap = _effective_caps(cfg)
     if week_derate and same_cap > 0:
         same_cap = max(1, same_cap // 2)  # 周减速：同向上限减半（至少 1）
     near_factor = (
