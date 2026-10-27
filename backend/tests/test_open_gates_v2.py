@@ -29,13 +29,18 @@ from app.config import settings  # noqa: E402
 from app.database import Base  # noqa: E402
 from app.models.scan import AIAnalysis  # noqa: E402
 from app.models.system_config import SystemConfig  # noqa: E402
-from app.models.trade import TradeRecord  # noqa: E402
+from app.models.trade import PendingEntryOrder, TradeEvent, TradeRecord  # noqa: E402
 from app.services.trade_engine import (  # noqa: E402
+    _adaptive_leverage,
     _attempt_open,
     _breakeven_stop_price,
+    _capital_base,
     _consecutive_losses_today,
+    _cost_adjusted_stop_pct,
+    _daily_loss_cap,
     _derive_exit_reason,
     _move_sl_breakeven,
+    materialize_pending_entry,
     try_open_for_analysis,
 )
 
@@ -415,14 +420,15 @@ def test_open_margin_required_includes_taker_fee():
 
 
 def _fee_gate_fixture(db, monkeypatch):
-    """固定杠杆（打桩 _adaptive_leverage=20）+ 固定金额风险 40 → 名义 2000、数量 20，
+    """固定杠杆（打桩 _adaptive_leverage=20）+ 固定金额风险 41.98 →
+    有效止损距离 0.02099（2% + 双边费）下名义 2000、数量 20，
     保证金需求恒为 101（初始 100 + 手续费 1），便于按 available 精确切边界"""
     import app.services.trade_engine as te
     monkeypatch.setattr(te, "_adaptive_leverage", lambda *a, **k: 20)
     a = _make_analysis(db, rec=90)
     cfg = db.get(SystemConfig, 1)
     cfg.risk_budget_mode = "fixed"
-    cfg.risk_fixed_amount = 40.0
+    cfg.risk_fixed_amount = 41.98
     db.commit()
     return a, cfg
 
@@ -633,3 +639,139 @@ def test_rr_shortfall_places_limit_pending(db):
     assert pe.entry_price == pytest.approx(100.0)
     assert pe.limit_order_id == "77"
     assert "挂单" in (a.open_block_reason or "")
+
+
+# ── F1：成本感知仓位计价（2026-10-27） ───────────────────────────────
+
+
+def test_capital_base_never_exceeds_wallet():
+    """F2：风险基数不超过本金——50 → 50（旧口径 100）、99.99 → 99.99，
+    ≥100 的档位行为不变（100→100、999.99→900、4800→4000、5200→5000）"""
+    assert _capital_base(50.0) == pytest.approx(50.0)
+    assert _capital_base(99.99) == pytest.approx(99.99)
+    assert _capital_base(100.0) == pytest.approx(100.0)
+    assert _capital_base(999.99) == pytest.approx(900.0)
+    assert _capital_base(4800.0) == pytest.approx(4000.0)
+    assert _capital_base(5200.0) == pytest.approx(5000.0)
+    assert _daily_loss_cap(50.0, pct=9.0) == pytest.approx(4.5)
+
+
+def test_cost_adjusted_stop_pct_includes_round_trip_fee():
+    """F1：有效止损距离 = 价格距离 + fee×(ref+sl)，多空同式"""
+    eff = _cost_adjusted_stop_pct(100.0, 99.5, fee_rate=0.0005)
+    assert eff == pytest.approx((0.5 + 0.0005 * 199.5) / 100.0)
+    # 空单（止损在上方）距离相同，费用基数 ref+sl 略大（200.5 vs 199.5）
+    short_eff = _cost_adjusted_stop_pct(100.0, 100.5, fee_rate=0.0005)
+    assert short_eff == pytest.approx((0.5 + 0.0005 * 200.5) / 100.0)
+    # 多空差异仅来自费用基数（ref+sl 相差一个止损距离，约 5e-6）
+    assert short_eff == pytest.approx(eff, abs=1e-5)
+    assert _cost_adjusted_stop_pct(0.0, 99.0) == 0.0
+
+
+def test_pending_sizing_uses_cost_adjusted_distance(db):
+    """F1：挂单仓位按含费距离计算（30/0.02099/100≈14.29，旧口径 15），
+    且强平闸门计入滑点余量 → 杠杆低于上限 20×"""
+    a = _make_analysis(db, rec=90)
+    trader = _PendingTrader()
+    cfg = db.get(SystemConfig, 1)
+    assert _attempt_open(db, trader, cfg, a, 1000.0, {}, force_market=True) == "pending"
+    pe = db.query(PendingEntryOrder).filter(
+        PendingEntryOrder.ai_analysis_id == a.id).one()
+    stop_eff = _cost_adjusted_stop_pct(100.0, 98.0)
+    assert float(pe.qty) == pytest.approx(round(30.0 / stop_eff / 100.0, 3))
+    assert float(pe.qty) < 15.0  # 旧口径 30/2%/100 = 15
+    # 杠杆闸门按「含费距离 + 最大滑点」判强平距离：3.8% 止损在 20×（闸门 4.0%）内放行，
+    # 叠加 0.3% 滑点余量后 4.1% 越线 → 降到 19×（不含滑点会误判为 20× 安全）
+    assert _adaptive_leverage(0.038, 0.005, 0.005, 20) == 20
+    assert _adaptive_leverage(0.038 + 0.003, 0.005, 0.005, 20) == 19
+
+
+# ── F3：活跃挂单纳入组合闸门 + 成交落地复核（2026-10-27） ─────────────
+
+
+def _pending_row(db, risk=40.0, direction="long", beta=None,
+                 ai_analysis_id=None, symbol=None):
+    pe = PendingEntryOrder(
+        symbol=symbol or f"PPP{uuid.uuid4().hex[:6]}USDT",
+        direction=direction, account_key="testnet-1", testnet=True,
+        entry_price=100.0, stop_loss=98.0, tp1=104.0, tp2=0.0,
+        qty=2.0, leverage=10, margin_used=20.0, risk_amount=risk,
+        limit_order_id="11", status="pending",
+        expires_at=datetime.utcnow() + timedelta(hours=1),
+        raw={"beta": beta},
+    )
+    db.add(pe)
+    db.commit()
+    return pe
+
+
+def test_heat_cap_counts_active_pending(db):
+    """在跑 100 + 挂单 60 + 本单预估 30 = 190 > 1000×15% → 热度拦截。
+    只算在跑时 100+30=130 ≤ 150 会放行。"""
+    _running(db, risk=100.0)
+    _pending_row(db, risk=60.0)
+    a = _make_analysis(db, rec=90)
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) == "blocked"
+    assert "组合热度超限" in (a.open_block_reason or "")
+
+
+def test_direction_cap_counts_active_pending(db, monkeypatch):
+    """在跑 long 1 + 挂单 long 1 = 2 ≥ 同向上限 2 → 拦截"""
+    monkeypatch.setattr(settings, "SAME_DIRECTION_CAP", 2)
+    _running(db, direction="long", risk=1.0)
+    _pending_row(db, direction="long", risk=1.0)
+    a = _make_analysis(db, rec=90, direction="long")
+    assert try_open_for_analysis(db, _FakeTrader(wallet=1000.0), a.id) == "blocked"
+    assert "同向持仓达上限" in (a.open_block_reason or "")
+
+
+class _GateTrader:
+    """挂单成交落地替身：成交/保护单全成功，用于验证 GATE_BREACH 留痕"""
+
+    account_key = "testnet-1"
+    testnet = True
+
+    def cancel_regular_order(self, symbol, order_id):
+        return None
+
+    def order(self, symbol, order_id):
+        return {"executedQty": 2.0, "avgPrice": 100.0}
+
+    def setup_leverage(self, symbol, leverage):
+        return None
+
+    def filters(self, symbol):
+        return {"step": 0.001, "tick": 0.01, "min_qty": 0.001,
+                "min_notional": 5.0, "max_qty": 1e6, "market_max_qty": 1e6}
+
+    def round_qty(self, symbol, qty):
+        return round(qty, 3)
+
+    def round_price(self, symbol, price):
+        return round(price, 2)
+
+    def stop_market_close(self, symbol, side, stop_price):
+        return {"algoId": 1}
+
+    def take_profit_reduce(self, symbol, side, qty, price):
+        return {"algoId": 2}
+
+    def market_order(self, symbol, side, qty, reduce_only=False):
+        return {"orderId": 3}
+
+
+def test_pending_materialize_records_gate_breach(db):
+    """挂单成交时组合热度已越线 → 保护单照挂，落 GATE_BREACH 事件供归因"""
+    from app.models.system_config import SystemConfig as _SC
+    cfg = db.get(_SC, 1)
+    _running(db, risk=200.0)  # 200 + 本单 4 = 204 > 1000×15% = 150
+    pe = _pending_row(db, risk=8.0)
+    pe.raw = {"wallet": 1000.0, "beta": 1.0}
+    db.commit()
+    rid = materialize_pending_entry(db, _GateTrader(), pe, cfg)
+    assert rid is not None
+    ev = db.query(TradeEvent).filter(
+        TradeEvent.trade_record_id == rid,
+        TradeEvent.event_type == "GATE_BREACH").one()
+    assert "组合热度超限" in ev.detail["reasons"][0]
+    assert db.get(TradeRecord, rid).status == "OPENED"

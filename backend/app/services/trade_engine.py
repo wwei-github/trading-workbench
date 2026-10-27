@@ -73,15 +73,17 @@ TRAIL_MODES = (TRAIL_MODE_HL, TRAIL_MODE_THREE_LINE)
 
 
 def _capital_base(wallet: float) -> float:
-    """风险基数：按钱包余额首位数取整，下限 100、上限 5000（2026-09-21 拍板）：
-    首位 digit = int(wallet / 10^n)，基数 = digit × 10^n，超 5000 封顶、
-    不足 100 按 100 兜底。
-    例：4800 → 4000、980 → 900、65 → 100、5200/15000 → 5000"""
+    """风险基数：按钱包余额首位数取整，上限 5000，且不超过本金（2026-10-27 修正）：
+    首位 digit = int(wallet / 10^n)，基数 = digit × 10^n，超 5000 封顶；
+    不足 100 时不再强制抬到 100，而是取钱包本金——
+    旧口径 50 U 账户基数 100，单笔风险 3 U = 权益 6%，日熔断 9 U = 权益 18%。
+    例：4800 → 4000、980 → 900、100 → 100、50 → 50、5 → 5、5200/15000 → 5000"""
     if wallet <= 0:
         return 0.0
     magnitude = 10 ** int(math.log10(wallet))
     digit = int(wallet / magnitude)
-    return float(min(max(digit * magnitude, 100), 5000))
+    base = float(min(max(digit * magnitude, 100), 5000))
+    return float(min(base, wallet))
 
 
 def _adaptive_leverage(stop_pct: float, mmr: float, buffer: float,
@@ -114,6 +116,21 @@ def _open_margin_required(qty: float, price: float, leverage: int,
     notional = qty * price
     fee = notional * (settings.TAKER_FEE_RATE if fee_rate is None else fee_rate)
     return notional / leverage + fee
+
+
+def _cost_adjusted_stop_pct(ref_price: float, stop_loss: float,
+                            fee_rate: Optional[float] = None) -> float:
+    """计入双边 taker 费后的有效止损距离占比（2026-10-27 F1）。
+
+    触止损时实际亏损 = 价格距离 + 入场费 + 出场费 ≈ qty × (|ref−sl| + fee×(ref+sl))，
+    因此固定亏损法的计价分母须含往返费，否则窄止损单实际亏损显著超预算
+    （0.5% 止损 + 0.05% taker ≈ 1.20×；再叠加止损滑点更高）。
+    risk_amount 仍按价格风险记录，保持组合热度/复盘 R 的既有语义。
+    """
+    _fee = settings.TAKER_FEE_RATE if fee_rate is None else float(fee_rate)
+    if ref_price <= 0:
+        return 0.0
+    return (abs(ref_price - stop_loss) + _fee * (ref_price + stop_loss)) / ref_price
 
 
 def _add_event(db: Session, rec: TradeRecord, event_type: str, detail: Optional[dict] = None) -> None:
@@ -602,6 +619,10 @@ def _attempt_open(
             logger.info("开仓放弃 %s：止损距离为 0（sl=%s，基准价 %s）", symbol, sl, ref_price)
             _mark_open_block(db, a, f"止损距离为 0（sl={sl}，基准价 {ref_price}），无法计算仓位")
             return "blocked"
+        # 成本感知计价（2026-10-27 F1）：折旧前的分母只含价格距离，触止损时还要付
+        # 双边 taker 费——按含费距离定仓位，实际止损亏损才回到风险预算
+        fee_rate = float(settings.TAKER_FEE_RATE)
+        stop_pct_eff = _cost_adjusted_stop_pct(ref_price, sl, fee_rate)
         # 止损宽度硬上限（docs/12 §10 规则补丁参数 max_stop_pct）：
         # 「止损过宽」标签的补丁落点——AI 复盘产出建议值写入 system_config，
         # NULL=不限制（默认）。策略性闸门，先于强平可行性闸门执行
@@ -631,6 +652,14 @@ def _attempt_open(
             float(cfg.liq_gate_buffer)
             if cfg.liq_gate_buffer is not None else LIQ_GATE_BUFFER
         )
+        # 滑点上限（补丁参数 max_slippage_pct，NULL=默认 0.3%）：既用于盘口滑点闸门，
+        # 也作为强平闸门的余量——止损触发后是市价成交，只比纯止损距离会在极端行情
+        # 下「强平先于止损」（2026-10-27 F1）
+        slip_max = (
+            float(cfg.max_slippage_pct)
+            if getattr(cfg, "max_slippage_pct", None) is not None else MAX_SLIPPAGE_PCT
+        )
+        lever_stop_pct = stop_pct_eff + max(slip_max, 0.0)
         mmr_1 = trader.bracket_mmr(symbol)
         mmr_eff = mmr_1 if mmr_1 is not None else LIQ_GATE_MMR_FALLBACK
         # 限制层（2026-09-18）：动态杠杆下限，页面补丁参数 min_adapt_leverage 可覆盖
@@ -640,7 +669,7 @@ def _attempt_open(
             int(cfg.min_adapt_leverage)
             if cfg.min_adapt_leverage is not None else settings.TRADING_LEVERAGE_MIN
         )
-        leverage = _adaptive_leverage(stop_pct, mmr_eff, liq_buf, lev_cap=lev_cap)
+        leverage = _adaptive_leverage(lever_stop_pct, mmr_eff, liq_buf, lev_cap=lev_cap)
         if leverage < lev_min:
             liq_gate_min = liquidation_gate_pct(leverage=lev_min, mmr=mmr_eff, buffer=liq_buf)
             logger.info(
@@ -676,7 +705,7 @@ def _attempt_open(
             risk_budget = _capital_base(wallet) * risk_pct / 100
         risk_budget = _near_discounted_budget(risk_budget, a.stop_anchor,
                                               factor=near_factor)
-        notional = risk_budget / stop_pct
+        notional = risk_budget / stop_pct_eff
         # 复验按名义所在档位精确取（2026-09-18 -2027 修复）：MMR / 档位最大杠杆 /
         # 档位名义上限。杠杆超档位 initialLeverage 会被交易所拒单（-2027 Exceeded
         # the maximum allowable position at current leverage——固定 20× 且名义落
@@ -704,7 +733,7 @@ def _attempt_open(
         if lev_max is not None and leverage > lev_max:
             cap_reason = f"名义 {notional:.0f} 档位最大杠杆 {lev_max}×"
             leverage = lev_max
-        lev_exact = _adaptive_leverage(stop_pct, mmr_exact, liq_buf, lev_cap=lev_cap)
+        lev_exact = _adaptive_leverage(lever_stop_pct, mmr_exact, liq_buf, lev_cap=lev_cap)
         if lev_exact < leverage:
             cap_reason = f"精确档维持保证金率 {mmr_exact * 100:.2f}% 的强平闸门"
             leverage = lev_exact
@@ -772,10 +801,6 @@ def _attempt_open(
         # 预期滑点超 max_slippage_pct（补丁参数，NULL=默认 0.3%）放弃——簿薄的小币
         # 吃单会撑宽止损距离、实际风险超预算（0.637% 滑点 → 风险多 17%）。成交额
         # 门槛拦不住这类币（拉盘时 24h 成交额照样过线）。簿异常 None 不阻断
-        slip_max = (
-            float(cfg.max_slippage_pct)
-            if getattr(cfg, "max_slippage_pct", None) is not None else MAX_SLIPPAGE_PCT
-        )
         if order_mode == "market" and slip_max > 0:
             est_slip = trader.market_slippage_estimate(
                 symbol, "BUY" if direction == "long" else "SELL", qty
@@ -1191,6 +1216,93 @@ def _attempt_open(
         return "blocked"
 
 
+def _pending_gate_breaches(
+    db: Session, pe: PendingEntryOrder, cfg: SystemConfig,
+    risk_amount: float, wallet: float,
+) -> list[str]:
+    """挂单成交落地时的开仓闸门复核（2026-10-27 F3）。
+
+    挂单存续期间组合热度/同向集中度/当日熔断可能已被其它成交推过线。
+    成交已发生，无法回退；本函数只返回越线原因，调用方记 GATE_BREACH 事件
+    + warning，保护单仍照常挂出（绝不留裸仓）。wallet 取挂单创建时快照，
+    缺失（旧行）则不复核。
+    """
+    if wallet <= 0 or risk_amount <= 0:
+        return []
+    reasons: list[str] = []
+    acc_cond = or_(
+        TradeRecord.account_key == pe.account_key,
+        and_(TradeRecord.account_key.is_(None), TradeRecord.testnet == pe.testnet),
+    )
+    pend_cond = or_(
+        PendingEntryOrder.account_key == pe.account_key,
+        and_(PendingEntryOrder.account_key.is_(None), PendingEntryOrder.testnet == pe.testnet),
+    )
+    beta = (pe.raw or {}).get("beta")
+    beta_new = float(beta) if beta is not None else 1.0
+    running = db.execute(
+        select(TradeRecord.remaining_risk, TradeRecord.risk_amount,
+               TradeRecord.direction, TradeRecord.beta).where(
+            TradeRecord.status.in_(("OPENED", "TP1_HIT", "TP2_HIT")),
+            acc_cond,
+        )
+    ).all()
+    rows = [
+        (float(rem if rem is not None else (risk or 0)), d, b)
+        for rem, risk, d, b in running
+    ]
+    # 其它活跃挂单（排除本单）同样占用额度，与开仓闸门口径一致
+    others = db.execute(
+        select(PendingEntryOrder.risk_amount, PendingEntryOrder.direction,
+               PendingEntryOrder.raw).where(
+            PendingEntryOrder.status == _PENDING_ACTIVE,
+            PendingEntryOrder.id != pe.id,
+            pend_cond,
+        )
+    ).all()
+    for r_amt, d, r_raw in others:
+        b = (r_raw or {}).get("beta")
+        rows.append((float(r_amt or 0), d, float(b) if b is not None else 1.0))
+    heat_cap = (
+        float(cfg.portfolio_heat_cap) if cfg.portfolio_heat_cap is not None
+        else float(settings.PORTFOLIO_HEAT_CAP)
+    )
+    if heat_cap > 0:
+        btc_exposure = sum(
+            r * (float(b) if b is not None else 1.0) for r, _d, b in rows
+        )
+        add = risk_amount * beta_new
+        if btc_exposure + add > wallet * heat_cap:
+            reasons.append(
+                f"组合热度超限（β加权）：在跑+挂单 {btc_exposure:.2f} + 本单 "
+                f"{add:.2f} > 钱包 {wallet:.2f} × {heat_cap * 100:.0f}%"
+            )
+    same_cap = (
+        int(cfg.same_direction_cap) if cfg.same_direction_cap is not None
+        else int(settings.SAME_DIRECTION_CAP)
+    )
+    if same_cap > 0:
+        same_n = sum(1 for _r, d, _b in rows if d == pe.direction) + 1
+        if same_n > same_cap:
+            reasons.append(
+                f"同向持仓达上限：{pe.direction} 方向含本单 {same_n} 单 > {same_cap}"
+            )
+    loss_enabled = (
+        bool(cfg.daily_loss_stop_enabled) if cfg.daily_loss_stop_enabled is not None
+        else settings.DAILY_LOSS_STOP_ENABLED
+    )
+    loss_pct = (
+        float(cfg.daily_loss_stop_pct) if cfg.daily_loss_stop_pct is not None
+        else float(settings.DAILY_LOSS_STOP_PCT)
+    )
+    if loss_enabled and loss_pct > 0:
+        day_pnl = _daily_closed_pnl(db, pe.account_key, pe.testnet)
+        loss_cap = _daily_loss_cap(wallet, pct=loss_pct)
+        if day_pnl <= -loss_cap:
+            reasons.append(f"当日亏损熔断：已平仓净亏 {day_pnl:.2f} ≤ -{loss_cap:.0f}")
+    return reasons
+
+
 def materialize_pending_entry(
     db: Session, trader: BinanceTrader, pe: PendingEntryOrder, cfg: SystemConfig,
 ) -> Optional[UUID]:
@@ -1290,6 +1402,20 @@ def materialize_pending_entry(
         planned_risk = (
             round(float(pe.risk_amount), 4) if pe.risk_amount is not None else initial_risk
         )
+        # 闸门复核（2026-10-27 F3）：挂单存续期间组合热度/同向/日熔断可能已被
+        # 其它成交推过线。成交已发生不能回退，保护单照挂，只留越线痕迹供归因。
+        try:
+            gate_breaches = _pending_gate_breaches(
+                db, pe, cfg, initial_risk, float(raw.get("wallet") or 0))
+        except Exception as e:
+            # 复核失败不得阻断保护单挂出（旧行/字段缺失时降级为不复核）
+            logger.warning("挂单成交落地 %s：闸门复核失败（跳过）: %s", symbol, e)
+            gate_breaches = []
+        if gate_breaches:
+            logger.warning(
+                "挂单成交落地 %s：开仓闸门越线（%s）——保护单照常挂出",
+                symbol, "；".join(gate_breaches),
+            )
         rec = TradeRecord(
             symbol=symbol,
             direction=direction,
@@ -1345,6 +1471,10 @@ def materialize_pending_entry(
             "remaining_risk": initial_risk,
             "entry_order_id": pe.limit_order_id, "source": "pending_limit",
         })
+        if gate_breaches:
+            _add_event(db, rec, "GATE_BREACH", {
+                "reasons": gate_breaches, "source": "pending_limit",
+            })
         # ⑥ 回写 pending
         pe.status = "filled"
         pe.filled_price = fill_price
@@ -1827,6 +1957,17 @@ def try_open_for_analysis(
             (float(rem if rem is not None else (risk or 0)), d, s, b)
             for rem, risk, d, s, b in running
         ]
+        # 活跃挂单同样占用组合风险额度（2026-10-27 F3）：挂单成交前不建
+        # TradeRecord，但交易所侧已锁定敞口；不并入会让多条挂单同时穿透
+        # 热度/同向上限。排除本分析自身的挂单（重复触发幂等，不自我拦截）。
+        for _pe in _active_pendings(db, trader.account_key, trader.testnet):
+            if _pe.ai_analysis_id == a.id:
+                continue
+            _pe_beta = (_pe.raw or {}).get("beta")
+            rows_risk.append((
+                float(_pe.risk_amount or 0), _pe.direction, _pe.symbol,
+                float(_pe_beta) if _pe_beta is not None else 1.0,
+            ))
         total_stop_risk = sum(r for r, _d, _s, _b in rows_risk)
         btc_exposure = sum(
             r * (float(b) if b is not None else 1.0)

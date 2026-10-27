@@ -85,7 +85,7 @@ def test_loss_cap_scales_with_wallet():
     assert _daily_loss_cap(2000.0) == pytest.approx(180.0)  # 基数 2000 × 9%
     assert _daily_loss_cap(5000.0) == pytest.approx(450.0)  # 基数 5000 封顶 × 9%
     assert _daily_loss_cap(5200.0) == pytest.approx(450.0)  # 超上限回落基数 5000
-    assert _daily_loss_cap(65.0) == pytest.approx(9.0)      # 低于下限回落基数 100
+    assert _daily_loss_cap(65.0) == pytest.approx(5.85)     # <100 取本金 65（旧口径抬到 100 → 9.0，占权益 13.8%）
     assert _daily_loss_cap(4800.0) == pytest.approx(360.0)  # 首位取整 4000 × 9%
     assert _daily_loss_cap(0.0) == pytest.approx(0.0)
 
