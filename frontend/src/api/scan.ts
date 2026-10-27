@@ -311,6 +311,24 @@ export const scanApi = {
           { params: { symbol }, timeout: 20000 },
         )
         .then((r) => r.data),
+    // 手动开单前的入场位置预览（docs/15 §20，2026-10-27）：B1 只拦自动开仓，
+    // 手动单 force_market 会跳过它；本接口把 pos 提前给确认弹窗，让「在信号 K
+    // 下半部进场」成为知情选择。pos/blocked 为 null 表示算不出（不阻断开单）。
+    entryPreview: (symbol: string, direction: string) =>
+      api
+        .get<{
+          symbol: string;
+          direction: string;
+          pos: number | null;
+          pos_min: number;
+          blocked: boolean | null;
+          price: number | null;
+          bar_low: number | null;
+          bar_high: number | null;
+          bar_open_ms: number | null;
+          note: string | null;
+        }>('/trades/entry-preview', { params: { symbol, direction }, timeout: 20000 })
+        .then((r) => r.data),
     // 扫描结果表「开单」按钮（2026-09-27）：对 AI 分析立即走完整开仓闸门；
     // 2026-10-03 删环境切换：accountKey 必传（前端弹窗选账号），后端不猜网。
     // opened=false 为闸门拦截（业务结果），block_reason 给前端提示

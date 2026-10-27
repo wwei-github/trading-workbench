@@ -288,8 +288,21 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       testnet: null,
       live: null,
     };
+    // 入场位置预览（docs/15 §20，2026-10-27）：B1 只拦自动开仓，手动单按设计
+    // 跳过它；把 pos 提前显示，让「在信号 K 下半部进场」变成知情选择
+    let preview: {
+      pos: number | null;
+      pos_min: number;
+      blocked: boolean | null;
+      note: string | null;
+    } | null = null;
     try {
-      listed = await scanApi.trades.openAvailability(record.symbol);
+      const [l, p] = await Promise.all([
+        scanApi.trades.openAvailability(record.symbol),
+        scanApi.trades.entryPreview(record.symbol, ai.direction ?? "long").catch(() => null),
+      ]);
+      listed = l;
+      preview = p;
     } catch {
       /* 探测失败不禁选 */
     } finally {
@@ -339,6 +352,16 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
         <div style={{ fontSize: 12, lineHeight: 1.9 }}>
           <div>入场价：{ai.entry_price}　止损：{ai.stop_loss}　止盈一：{ai.take_profit_1}</div>
           <div>推荐度：{Math.round(ai.recommendation ?? 0)}</div>
+          {preview && preview.pos !== null && (
+            <div style={{ color: preview.blocked ? "#cf1322" : "#595959" }}>
+              入场位置：{preview.pos.toFixed(2)}
+              {preview.pos_min > 0 && `（B1 门槛 ${preview.pos_min}）`}
+              {preview.blocked && "　⚠️ 低于门槛，自动开仓会被拦下；手动开单不拦，请自行判断"}
+              {preview.note && (
+                <div style={{ marginTop: 2, fontSize: 11, color: "#8c8c8c" }}>{preview.note}</div>
+              )}
+            </div>
+          )}
           <div style={{ marginTop: 8 }}>
             <div style={{ fontWeight: 600, marginBottom: 4 }}>开单网络（正式网为实盘，请确认）</div>
             {accs.length === 0 ? (

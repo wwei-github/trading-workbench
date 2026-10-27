@@ -438,6 +438,69 @@ def open_availability(symbol: str):
     return out
 
 
+# 入场位置区间的历史表现（docs/需求文档/15 §0.5 第 ② 行，2026-10-27 复算）：
+# 正式网 2026-10-25~27 共 56 笔，pos<0.60 的 34 笔胜率 17.6%、合计 −14.30R；
+# pos≥0.60 的 22 笔胜率 63.6%、合计 +18.42R。数字固定在此仅用于弹窗提示
+# （不参与任何计算），改口径时随 docs/15 一并更新。
+_POS_BUCKET_NOTE = (
+    "2026-10-25~27 正式网同区间 34 笔，胜率 17.6%、合计 −14.30R；"
+    "pos≥{min} 的 22 笔 63.6%、+18.42R"
+)
+
+
+@router.get("/entry-preview")
+def entry_preview(symbol: str, direction: str = "long", db: Session = Depends(get_db)):
+    """手动开单前的入场位置预览（docs/需求文档/15 §20，2026-10-27）。
+
+    B1（`ENTRY_POS_MIN_RATIO`）只作用在自动开仓链路上；手动开单走
+    `force_market=True` 按设计跳过它（2026-10-27 ELSAUSDT 案例：pos=0.31 仍开单）。
+    双网自动开单都关闭时，实盘每一笔都是手动单，B1 因此永远不会拦任何单。
+
+    本端点把同一口径的 `pos`（成交价在信号 K 的位置）提前给出，让"要不要在信号 K
+    下半部进场"变成弹窗里的知情选择，而不是靠拦截。算不出来一律返回 null，
+    前端按"无预览"处理，绝不影响开单主链路。
+    """
+    from app.config import settings
+    from app.services import entry_diagnostics as ed
+
+    sym = (symbol or "").strip().upper()
+    cfg = db.get(SystemConfig, 1)
+    interval = (cfg.kline_interval if cfg else None) or "1h"
+    pos_min = float(getattr(settings, "ENTRY_POS_MIN_RATIO", 0.0) or 0.0)
+
+    out: dict = {
+        "symbol": sym, "direction": direction, "pos": None, "pos_min": pos_min,
+        "blocked": None, "price": None, "bar_low": None, "bar_high": None,
+        "bar_open_ms": None, "note": None,
+    }
+    if not sym:
+        return out
+
+    pool = ExchangePool()
+    try:
+        klines = pool.get_klines(sym, interval, 60, allow_stale=True)
+    except AllExchangesFailed as e:
+        logger.warning("入场位置预览拉取 K 线失败 %s：%s", sym, e.summary)
+        return out
+    if not klines:
+        return out
+
+    bars = ed.closed_bars(klines)
+    price = float(klines[-1][4]) if klines else None
+    pos = ed.bar_position(klines, price)
+    out["price"] = price
+    out["pos"] = pos
+    if bars:
+        out["bar_low"] = float(bars[-1][3])
+        out["bar_high"] = float(bars[-1][2])
+        out["bar_open_ms"] = int(bars[-1][0])
+    if pos is not None and pos_min > 0:
+        out["blocked"] = pos < pos_min
+        if pos < pos_min:
+            out["note"] = f"入场位置 {pos:.2f} 低于门槛 {pos_min:g}：" + _POS_BUCKET_NOTE.format(min=pos_min)
+    return out
+
+
 @router.post("/open-from-analysis")
 def open_from_analysis(payload: OpenFromAnalysisRequest):
     """手动开单（2026-09-27 扫描结果表「开单」按钮）：对指定 AI 分析立即走一次
