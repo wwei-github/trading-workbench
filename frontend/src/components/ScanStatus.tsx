@@ -130,7 +130,8 @@ export default function ScanStatus() {
           valueRender={() => (
             <Tooltip
               title={
-                `自动成交开关（双网独立，可同时开启）：测试网${tnTrading ? '已开启' : '已关闭'}` +
+                `自动成交开关（双网独立，可同时开启）：测试网` +
+                (tnEnabled ? (tnTrading ? '已开启' : '已关闭') : '总闸已关闭') +
                 ` / 正式网${liveTrading ? '已开启' : '已关闭'}（AI 分析后自动开单，正式网为实盘）。` +
                 (tnEnabled
                   ? `仅控自动开新单；手动开单、AI 分析、结算巡检均不受限。在「系统配置」弹窗中可切换。`

@@ -92,7 +92,7 @@ def _sum_unrealized(positions: dict[str, dict], excluded_symbols: set[str]) -> f
 
 @router.get("/account-summary")
 def account_summary(
-    account_key: Optional[str] = Query(None, description="账号 key；缺省 testnet-1（安全默认）"),
+    account_key: Optional[str] = Query(None, description="账号 key；缺省按测试网总开关取默认账号"),
     db: Session = Depends(get_db),
 ):
     """指定账号合约账户资金概览（docs/06 账户维度补充 + docs/17 多账号）：
@@ -102,7 +102,9 @@ def account_summary(
     today_realized=当日闭单已实现盈亏；today_pnl_pct=（今日已实现+未实现）
     ÷ 期初钱包（当前钱包−今日已实现，忽略日内划转，近似自洽）。
     收益统计按账号 account_key 过滤（NULL 旧行按 testnet 回落）。
-    2026-10-03 删环境切换：账号由前端 scope 显式解析传入，缺省 testnet-1。
+    2026-10-03 删环境切换：账号由前端 scope 显式解析传入。
+    2026-10-27 测试网总开关：缺省账号测试网优先；总闸关闭后切正式网（无正式网
+    账号时回落测试网只读展示）。
     2026-10-22 异常持仓剔除：本账号已标记 excluded 的在跑单币种（如测试网
     BTCDOMUSDT）不计入未实现盈亏与保证金余额/今日盈亏；钱包余额是交易所
     balance（现金，本就不含浮动盈亏），保持原值。
@@ -115,16 +117,18 @@ def account_summary(
     acc = reg.get_account(account_key) if account_key else None
     if account_key and acc is None:
         raise HTTPException(status_code=400, detail=f"账号 {account_key} 不在注册表中（检查服务器 .env）")
+    tn_on = reg.testnet_enabled(db)
     if acc is None:
         # 测试网总开关（2026-10-27）：关闭后默认账号切正式网；测试网历史
-        # 仍可通过显式 account_key/scope 只读查看
-        if reg.testnet_enabled(db):
+        # 仍可通过显式 account_key/scope 只读查看。无正式网账号时回落测试网
+        # ——避免 acc_key 空指 live-1 被 BinanceTrader 内部回落到测试网账号、
+        # 却按正式网口径统计（钱包与收益错标）
+        if tn_on:
             acc = (reg.testnet_accounts() or reg.live_accounts() or [None])[0]
         else:
-            acc = (reg.live_accounts() or [None])[0]
-    tn_default = reg.testnet_enabled(db)
-    acc_key = acc.key if acc else ("testnet-1" if tn_default else "live-1")
-    testnet = acc.testnet if acc else tn_default
+            acc = (reg.live_accounts() or reg.testnet_accounts() or [None])[0]
+    acc_key = acc.key if acc else "testnet-1"
+    testnet = acc.testnet if acc else True
     out: dict = {"testnet": testnet, "account_key": acc_key,
                  "account_name": acc.name if acc else acc_key, "available": False}
     # TTL 内直接复用成功快照（固定从成功时刻起算，避免连点刷新无限续期）

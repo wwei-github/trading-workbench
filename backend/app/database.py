@@ -189,6 +189,15 @@ def _run_migrations(engine):
             "ADD COLUMN IF NOT EXISTS feishu_testnet_notify_enabled "
             "BOOLEAN NOT NULL DEFAULT TRUE"
         ))
+        # 测试网总开关（2026-10-27，默认开）：默认 TRUE 保持现状；关闭后仅停
+        # 合约测试网新增活动，存量结算/保护照常（语义见 models/system_config.py）。
+        # 同样必须在下方裸 INSERT 之前补列，否则 INSERT 引用不存在的列会炸
+        # （旧库有行也救不了：PG 在冲突判定前先校验目标列清单）
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS testnet_enabled "
+            "BOOLEAN NOT NULL DEFAULT TRUE"
+        ))
         # 双网同开的 DB 防重（2026-10-03）：ai_analysis_id 全局 unique 会挡住
         # 同一 AI 分析在两网各开一单（应用层防重本就按账号，docs/17 P1）——
         # 改复合唯一 (ai_analysis_id, account_key, testnet)。旧行 account_key
@@ -629,6 +638,7 @@ def _run_migrations(engine):
             " strategy_range_edge_enabled, trading_min_free_pct, "
             " trading_enabled, "
             " trading_enabled_testnet, trading_enabled_live, "
+            " testnet_enabled, "
             " risk_budget_mode, risk_fixed_amount, spot_trading_testnet, "
             " live_initial_capital, tp2_enabled, feishu_testnet_notify_enabled) "
             "VALUES (1, false, :kline_interval, :kline_window, "
@@ -640,6 +650,7 @@ def _run_migrations(engine):
             " true, 0.5, "
             " :trading_enabled, "
             " :trading_enabled_testnet, :trading_enabled_live, "
+            " true, "
             " 'pct', 3, true, "
             " 0, false, true) "
             "ON CONFLICT (id) DO NOTHING"
@@ -905,11 +916,6 @@ def _run_migrations(engine):
         conn.execute(text(
             "ALTER TABLE scan_results "
             "ADD COLUMN IF NOT EXISTS entry_lag_pct NUMERIC(10,4)"))
-        # 测试网总开关（2026-10-27）：默认 TRUE 保持现状；关闭后仅停合约测试网
-        # 新增活动，存量结算/保护照常（语义见 models/system_config.py）
-        conn.execute(text(
-            "ALTER TABLE system_config "
-            "ADD COLUMN IF NOT EXISTS testnet_enabled BOOLEAN NOT NULL DEFAULT TRUE"))
 
 
 def init_db():
