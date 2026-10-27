@@ -3508,15 +3508,23 @@ def notify_open_cards(trade_ids: list[str]) -> int:
     return sent
 
 
-def _live_off_card(a: AIAnalysis, img_key: str = "", open_account_key: str = "") -> dict:
-    """正式网自动开单关闭提醒卡片（2026-10-09）：价格栅格复用开仓卡片风格，
-    橙色头区分（蓝=开仓成功、橙=实盘错过达标信号）。
+def _live_off_card(
+    a: AIAnalysis, img_key: str = "", open_account_key: str = "",
+    both_off: bool = False,
+) -> dict:
+    """自动开单关闭提醒卡片（2026-10-09）：价格栅格复用开仓卡片风格，
+    橙色头区分（蓝=开仓成功、橙=达标信号错过开仓）。
 
     2026-10-15 增强：内嵌服务端渲染的 K 线图（img_key 非空时挂 img 元素，
     K线 + EMA21/55/144 + 入场/止损/止盈计划线，图由 kline_chart 画、feishu_bot
     上传）；正式网仅一个启用账号且配了按钮令牌时附「开单」按钮（回调走
     feishu_bot._exec_open_live → manual_open_from_analysis，与网页开单同源）。
     两者任一不可用都退化为原纯文字卡片。
+
+    2026-10-27：both_off=True 表示**双网自动交易全关**（此前这种状态在
+    ai_tasks._dispatch_immediate_open 直接 return，达标信号连提醒都没有，
+    18:00 那批 9 条 suggest 静默丢失）。文案随之改为「双网均关」，按钮仍
+    只指向正式网单账号——测试网自动开单本就不该由卡片代劳。
     """
     def _col(title: str, value: str) -> dict:
         return {"tag": "column", "width": "weighted", "weight": 1,
@@ -3527,8 +3535,11 @@ def _live_off_card(a: AIAnalysis, img_key: str = "", open_account_key: str = "")
     recmd = f"{float(a.recommendation):.0f} 分" if a.recommendation is not None else "—"
     rr = f"{float(a.risk_reward_ratio):.1f}" if a.risk_reward_ratio else "—"
     elements: list = [
-        {"tag": "div", "text": {"tag": "lark_md", "content":
-         "该信号已达标可开单，但**正式网自动开单开关关闭**，本次未开实盘单（测试网照常）。"}},
+        {"tag": "div", "text": {"tag": "lark_md", "content": (
+            "该信号已达标可开单，但**双网自动开单均已关闭**，本次未下任何单。"
+            if both_off else
+            "该信号已达标可开单，但**正式网自动开单开关关闭**，本次未开实盘单（测试网照常）。"
+        )}},
     ]
     if img_key:
         elements.append({
@@ -3560,11 +3571,16 @@ def _live_off_card(a: AIAnalysis, img_key: str = "", open_account_key: str = "")
         }]})
     elements.append({"tag": "note", "elements": [{"tag": "plain_text",
      "content": (f"战法 {a.tactic_name} · " if a.tactic_name else "")
-     + "如需实盘可在扫描结果/交易记录手动开单，或开启正式网自动开单"}]})
+     + ("如需开单可在扫描结果/交易记录手动开单，或开启任一网络的自动开单"
+        if both_off else
+        "如需实盘可在扫描结果/交易记录手动开单，或开启正式网自动开单")}]})
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"⚠️ 正式网未开单 · {a.symbol}"},
+            "title": {"tag": "plain_text", "content": (
+                f"⚠️ 可开单未下单（双网均关）· {a.symbol}" if both_off
+                else f"⚠️ 正式网未开单 · {a.symbol}"
+            )},
             "template": "orange",
         },
         "elements": elements,
@@ -3600,14 +3616,41 @@ def _live_off_img_key(a: AIAnalysis, cfg) -> str:
         return ""
 
 
-def notify_live_auto_open_off(db: Session, cfg, analysis_id: str) -> None:
-    """正式网自动开单开关关闭 → 达标信号错过实盘开仓，飞书提醒（2026-10-09）。
+def _off_card_suppressed(symbol: str, direction: str) -> bool:
+    """「双网全关·可开单」卡片按 (币种, 方向, UTC 日) 去重（2026-10-27）。
+
+    双网全关时每轮扫描都可能有 5~10 条达标建议，逐条推会变成整点刷屏；
+    同一币种同一方向在一个 UTC 日内只提醒一次。Redis 不可用/异常时**放行**
+    （宁可多一条，也不能因为缓存故障把提醒整体吞掉）。
+    """
+    try:
+        from datetime import datetime as _dt
+
+        from redis import Redis
+
+        key = f"feishu:off_card:{symbol}:{direction}:{_dt.utcnow():%Y%m%d}"
+        r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        # SET NX：第一次写入成功=本日首推；已存在=今天推过，跳过
+        return not bool(r.set(key, "1", nx=True, ex=86400))
+    except Exception:
+        logger.warning("可开单提醒去重缓存不可用，放行推送 symbol=%s", symbol, exc_info=True)
+        return False
+
+
+def notify_live_auto_open_off(
+    db: Session, cfg, analysis_id: str, both_off: bool = False,
+) -> None:
+    """自动开单开关关闭 → 达标信号错过开仓，飞书提醒（2026-10-09）。
 
     「可以开单」口径 = 开仓资格快速过滤（analysis_open_eligible，与开仓闸门
     同源；评分门槛分发层已过，此处复验防门槛中途上调）。不含账号维度闸门
-    ——正式网开关关着本就没跑到账号闸门那一步，无法也不必预判其结果。
+    ——自动开单关着本就没跑到账号闸门那一步，无法也不必预判其结果。
     该分析正式网任一账号已有成交（含此前提醒后手动开的单）则不提醒。
     每条分析至多随任务分发提醒一次；发送失败仅记日志不影响开仓扇出。
+
+    both_off=True（2026-10-27）：双网自动交易全关时由 ai_tasks.
+    _dispatch_immediate_open 在提前返回前调用——此前这种状态直接 return，
+    达标信号连提醒都没有（18:00 那批 9 条 suggest 静默丢失）。
 
     2026-10-15：卡片内嵌 K 线图（K线 + EMA 均线 + 开单计划线，见 kline_chart）
     并在正式网仅一个启用账号时附「开单」按钮（点击 → feishu_bot._exec_open_live）。
@@ -3642,10 +3685,19 @@ def notify_live_auto_open_off(db: Session, cfg, analysis_id: str) -> None:
         from app.services.account_registry import live_enabled_accounts
         live_accs = live_enabled_accounts(db)
         open_acc = live_accs[0].key if len(live_accs) == 1 else ""
+        # 双网全关态整点批量推送，按 (币种, 方向, UTC 日) 去重防刷屏
+        if both_off and _off_card_suppressed(a.symbol, a.direction or ""):
+            logger.info("可开单提醒今日已推送，跳过 symbol=%s analysis=%s", a.symbol, analysis_id)
+            return
         img_key = _live_off_img_key(a, cfg)
-        if send_app_card(_live_off_card(a, img_key=img_key, open_account_key=open_acc)):
-            logger.info("已发送正式网开关关闭提醒 analysis=%s symbol=%s 图=%s 按钮=%s",
-                        analysis_id, a.symbol, bool(img_key), open_acc or "无")
+        if send_app_card(_live_off_card(
+            a, img_key=img_key, open_account_key=open_acc, both_off=both_off,
+        )):
+            logger.info(
+                "已发送%s提醒 analysis=%s symbol=%s 图=%s 按钮=%s",
+                "双网自动开单全关" if both_off else "正式网开关关闭",
+                analysis_id, a.symbol, bool(img_key), open_acc or "无",
+            )
     except Exception:
         logger.exception("正式网开关关闭提醒异常 analysis=%s", analysis_id)
 

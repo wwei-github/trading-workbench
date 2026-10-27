@@ -33,9 +33,10 @@
 | ③ | **观测层**：下次归因不再手算 | **O1** | 落 `pos`/`room`/`stop_atr`/`entry_path`/`quality_total`/`range_flag`/`shadow`/`planned_rr` | 本次归因重算 3 轮；`ai_snapshot->>'tp1'` 56/56 全空 | 无收益，降成本 | 无需回退（只写字段） |
 | ④ | **等待路径** | A4（**已否决**，见 §13） | 原计划 `pullback_market_pct` 0.01 → 0.04 | 复核：真实限价挂单成交 23 笔 -2.78R（胜率 34.8%，与市价 36.4% 无本质差异）；A1 之后关掉该路径只多 **+0.60R**，却砍掉 ARIA/BIO/AXS/BTR 四笔 **+4.92R** | **不做** | — |
 | ⑤ | **震荡否决** | A5（**已否决**，见 §13） | 原计划 `range` 扣分改否决 | 带标记 11 笔 -6.79R，但这些单基本都是 `pos<0.6`，已被 B1 覆盖 | A1+B1 后增量 **+0.22R** | — |
-| ⑥ | **明确不改** | — | 止损宽度、room 全局闸、ER/regime、评分门槛、同向上限、当日熔断、入场偏离闸 | 见 §5 / §10 / §12 | — | — |
-| ⑦ | **触点层**：回踩碰哪根线才算数 | **A2**（§16） | `pullback_touch_deny_long=ema21`（方向禁用表：多头禁 21EMA，空头保留） | 多×ema21 44 笔 -16.67R（早/近/现规则三期全负，跨 37 币）；空×ema21 +8.17R（近段转正 +13.18 / 现规则 +14.11） | 全期 **+24.69R → +41.36R**（287 笔，avg +0.077 → +0.145）；现规则 94 笔 +29.59 → **85 笔 +36.53** | `backend/.env` 该行置空 + 重启三容器（L0 同级） |
-| ⑧ | **触点定价层**：结构位取哪个价 | **A3**（§17） | `SWING_LEVEL_SOURCE=extreme`：swing 位价改用摆动K线自身 high/low（旧口径=收盘价） | swing 124 笔回放：位价与真极值偏移 <0.3% 的 46 笔 **+22.65R**，≥0.3% 的 60 笔 **-14.83R**；多头 14 笔 +13.99R（+0.999R/笔）对 33 笔 -13.65R（-0.414R/笔） | 多头 swing 的结构位从"伪支撑"回到真支撑（in-sample，待 7 天验证） | `backend/.env` 该行删/置 `close` + 重启三容器（L0 同级） |
+| ⑥ | **触点层**：回踩碰哪根线才算数 | **A2**（§16） | `pullback_touch_deny_long=ema21`（方向禁用表：多头禁 21EMA，空头保留） | 多×ema21 44 笔 -16.67R（早/近/现规则三期全负，跨 37 币）；空×ema21 +8.17R（近段转正 +13.18 / 现规则 +14.11） | 全期 **+24.69R → +41.36R**（287 笔，avg +0.077 → +0.145）；现规则 94 笔 +29.59 → **85 笔 +36.53** | `backend/.env` 该行置空 + 重启三容器（L0 同级） |
+| ⑦ | **触点定价层**：结构位取哪个价 | **A3**（§17） | `SWING_LEVEL_SOURCE=extreme`：swing 位价改用摆动K线自身 high/low（旧口径=收盘价） | swing 124 笔回放：位价与真极值偏移 <0.3% 的 46 笔 **+22.65R**，≥0.3% 的 60 笔 **-14.83R**；多头 14 笔 +13.99R（+0.999R/笔）对 33 笔 -13.65R（-0.414R/笔） | 多头 swing 的结构位从"伪支撑"回到真支撑（in-sample，待 7 天验证） | `backend/.env` 该行删/置 `close` + 重启三容器（L0 同级） |
+| ⑧ | **通知层**：可开单要让人知道 | **A6**（§18） | 双网自动交易全关时，达标信号仍推飞书橙卡（复用「错过信号」卡 + 每币每方向每日去重） | 双关期 `_dispatch_immediate_open` 直接 return，10:00 UTC 那批 9 条 suggest（60/70 分）**零通知**，`trade_events` 无任何开仓尝试 | 达标即可见（此前 0→每天最多「币种数×2」张） | `scripts/release.sh rollback`（L1） |
+| ⑨ | **明确不改** | — | 止损宽度、room 全局闸、ER/regime、评分门槛、同向上限、当日熔断、入场偏离闸 | 见 §5 / §10 / §12 | — | — |
 
 **效果阶梯（in-sample，逐步叠加；本段数字 2026-10-27 复核更正，见 §13）**：56 笔 **+4.12R** →（A1）37 笔 **+11.63R** →（+B1 全路径）21 笔 66.7% **+19.38R**。A1 与 B1 嵌套，不可相加。其中 10-26 从 **-9.95R** 收敛到 **-0.08R**——包的作用是掐掉坏日，不是放大好日。
 
@@ -850,3 +851,122 @@ GROUP BY 1 ORDER BY 1;
 | 10:28 | 实盘 K 线口径对照（BTC/ETH/SOL/DOGE，`_detect_swing_touch` 两种口径各跑一次） | `BTCUSDT` close=None → **extreme 79684.8**；`ETHUSDT` 2305.36 → **2301.39**（偏移 0.17%）；`SOLUSDT` close=None → **extreme 99.86**；`DOGEUSDT` 0.07706 → **0.07688**（偏移 0.23%） |
 
 > 这张表同时说明**为什么这个改动不能只看代码对不对**：位价下移 0.2% 会让一批"收盘跌破伪位、但仍在真支撑之上"的信号从"不出触点"变成"出触点"——它是**信号集变化**，不是评分微调，所以 §17.5 必须按"多头 swing 的 avg R 与占比"双指标看 7 天。
+
+---
+
+## 18. 达标信号在"双网自动交易全关"时不推飞书（2026-10-27）
+
+### 18.1 现象
+
+18:00（北京）= 10:00 UTC 那轮 AI 分析里，9 条结论是 `trade_decision='suggest'`、评分 60/70，页面显示"可开单"，但**飞书一条通知都没有**：
+
+| 时间（UTC） | 币种 | 方向 | 评分 |
+|---|---|---|---|
+| 10:00 | AVAXUSDT / HEMIUSDT | short | 70 |
+| 10:01 | FILUSDT / GRTUSDT / NEIROUSDT | short | 60 / 70 / 60 |
+| 10:02 | EIGENUSDT / LTCUSDT / GALAUSDT / LITUSDT | short | 60 / 60 / 70 / 60 |
+
+### 18.2 根因：不是飞书坏了，是开仓任务根本没被分发
+
+`app/tasks/ai_tasks.py:_dispatch_immediate_open` 的第一段判断：
+
+```python
+if cfg is None or not ((cfg.trading_enabled_testnet and testnet_enabled is not False)
+                       or cfg.trading_enabled_live):
+    return          # ← 双网全关：任务不创建，后面所有飞书逻辑都不执行
+```
+
+当前 `system_config`：`trading_enabled_live=f`、`trading_enabled_testnet=f` → **双关**。
+
+排查证据（全部实测）：
+
+| 检查项 | 结果 |
+|---|---|
+| `celery_worker` 近 3h 日志 grep `即时开仓跳过\|已发送正式网开关关闭提醒\|开仓卡片` | **0 条** |
+| `trade_events` 近 2h | 只有 `OPEN DODOXUSDT 10:22`（手动开单）、`AI_ADVICE`、`TP1_FILL`、`SL_MOVE`；那 9 条**没有任何开仓尝试/拦截事件** |
+| 那 9 条的 `ai_analyses.open_block_reason` | 全空 → 不是被 A1/B1/仓位闸拦，是没进闸门 |
+| `feishu_bot.configured()` | **True**；app_logs 有"飞书卡片回调长连接连接中" → 通道正常 |
+
+代码里与开仓相关的飞书推送只有两条间接路径，双关时两条都不会走：
+
+| 路径 | 触发条件 | 双关时 |
+|---|---|---|
+| 蓝色开仓卡 `notify_open_cards` | 自动开仓成功 | 不会开 → 不发 |
+| 橙色"错过达标信号"卡 `notify_live_auto_open_off` | `trading_enabled_live=f` **且测试网开着** | 被上面 `return` 短路 |
+
+**附带发现**：手动开单（页面/飞书按钮 → `trade_tasks.manual_open_from_analysis`）**不发开仓卡**——10:22 DODOXUSDT 手动开的单没有任何通知。飞书按钮路径本身有"结果卡片"回执，网页路径有页面回执，所以这条**不补**（见 §18.7）。
+
+### 18.3 修法：双关时也推"可开单"卡（复用既有橙卡）
+
+`app/tasks/ai_tasks.py`：把双关早退改为"早退前先提醒"，判定口径与开仓闸门同源（`analysis_open_eligible`：`suggest` + 方向合法 + 三价齐 + 评分达门槛），并带"该分析已有正式网成交则不提醒"的去重：
+
+```python
+auto_open_on = cfg is not None and (
+    (cfg.trading_enabled_testnet and getattr(cfg, "testnet_enabled", True) is not False)
+    or cfg.trading_enabled_live
+)
+if not auto_open_on:
+    if cfg is not None:
+        from app.services.trade_engine import notify_live_auto_open_off
+        notify_live_auto_open_off(db, cfg, str(a.id), both_off=True)
+    return
+```
+
+`app/services/trade_engine.py`：
+
+| 改动 | 说明 |
+|---|---|
+| `_live_off_card(..., both_off=False)` | 标题 `⚠️ 可开单未下单（双网均关）· SYMBOL`；正文"**双网自动开单均已关闭**，本次未下任何单"；脚注引导"或开启任一网络的自动开单"。既有"仅正式网关"路径文案**保持不变** |
+| `notify_live_auto_open_off(..., both_off=False)` | 透传文案开关；日志区分"双网自动开单全关"/"正式网开关关闭" |
+| `_off_card_suppressed(symbol, direction)` | 双关态每轮扫描可产 5~10 条达标建议，逐条推会整点刷屏 → 按 **(币种, 方向, UTC 日)** 用 Redis `SET NX EX 86400` 去重；Redis 异常时**放行**（宁多一条不吞提醒） |
+
+卡片保留 K 线图（EMA21/55/144 + 开单计划线）与"开单 · 正式网 `<account_key>`"按钮（仅正式网单启用账号时挂，点击与网页开单同源）。
+
+### 18.4 测试
+
+`backend/tests/test_dispatch_notify_both_off.py`（7 条，全绿）：
+
+| 断言 | 覆盖点 |
+|---|---|
+| 双关 + 达标 → 发卡且**不**分发开仓任务 | 主路径 |
+| 测试网分开关开、测试网总开关关 → 等效双关，仍发卡 | `testnet_enabled` 总闸口径 |
+| 正式网开 → 分发、不发"双网均关"卡 | 既有路径不被改坏 |
+| 评分低于门槛 / `skip` → 不发卡不分发 | 不得误报 |
+| 同币同向当日已推 → 跳过 | 去重 |
+| `both_off=False` 时文案仍为"正式网未开单" | 文案不回退 |
+
+全量：`pytest tests/` → **1224 passed**（1217 + 7）。
+
+### 18.5 上线与回退
+
+无新增环境变量、无 DB 迁移、无开关——改动只在"双关"这条此前无任何输出的分支上生效。
+
+| 级别 | 动作 | 影响面 |
+|---|---|---|
+| L0 | 无需操作（改动自生效） | — |
+| L1 | `scripts/release.sh rollback`（默认回 `PREV_SHA`） | 回到"双关静默"，其余行为不变 |
+| L2 | 想**保留卡片但降噪**：把 `recommendation` 门槛调到 70（`system_config.min_recommendation=70`） | 只推 70 分档 |
+| L3 | 想彻底静音：`docker compose stop celery_beat`（分析本身也停） | 停分析，不止停通知 |
+
+### 18.6 验证与判读
+
+```sql
+-- ① 是否已推送（进程日志）
+-- docker logs --since 2h trading-workbench-celery_worker-1 | grep "双网自动开单全关提醒"
+
+-- ② 去重键是否在写（每个币种每方向每日一条）
+-- docker exec trading-workbench-redis-1 redis-cli --scan --pattern 'feishu:off_card:*'
+
+-- ③ 双关期达标信号数 vs 实推卡数（预期 卡数 ≤ 币种×方向 的去重数）
+SELECT date_trunc('hour', created_at) h, count(*) FILTER (WHERE trade_decision='suggest') n
+FROM ai_analyses
+WHERE created_at > now() - interval '6 hours'
+GROUP BY 1 ORDER BY 1;
+```
+
+判读：下一轮整点分析应看到"双网自动开单全关提醒"日志与飞书橙卡；同币同向第二次出现只留 `可开单提醒今日已推送，跳过` 日志、不再发卡。
+
+### 18.7 明确不做
+
+- **手动开单补发开仓卡**：飞书按钮路径已有结果卡片、网页路径有页面回执，重复推送收益低。
+- **每轮扫描合并成一张多币汇总卡**：需要改卡片结构与批量取图，留待真有刷屏反馈再做（当前去重已把量压到"每币每日一条"）。

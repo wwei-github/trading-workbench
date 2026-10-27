@@ -681,10 +681,19 @@ def _dispatch_immediate_open(a: AIAnalysis) -> None:
         # 双网独立开关（2026-10-03）：任一网开启即分发，具体扇出哪些账号
         # 由 open_trade_for_analysis 按 auto_trade_accounts 逐网判定；
         # 测试网总开关（2026-10-27）关闭时测试网分开关不生效
-        if cfg is None or not (
+        auto_open_on = cfg is not None and (
             (cfg.trading_enabled_testnet and getattr(cfg, "testnet_enabled", True) is not False)
             or cfg.trading_enabled_live
-        ):
+        )
+        if not auto_open_on:
+            # 双网自动交易全关：没有可扇出的账号，不派发开仓任务；但达标信号
+            # 仍要提醒——2026-10-27 之前这里直接 return，18:00 那批 9 条
+            # suggest 一条飞书都没有，用户无从得知「AI 说了可以开单」。
+            # 复用 notify_live_auto_open_off（自带三价齐/评分门槛/已成交去重），
+            # 它自己吞异常只记日志，不阻断本任务。
+            if cfg is not None:
+                from app.services.trade_engine import notify_live_auto_open_off
+                notify_live_auto_open_off(db, cfg, str(a.id), both_off=True)
             return
         min_rec = (
             float(cfg.min_recommendation) if cfg.min_recommendation is not None
