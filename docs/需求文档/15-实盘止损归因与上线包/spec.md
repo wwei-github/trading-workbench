@@ -490,3 +490,51 @@ docker compose start celery_beat celery_worker   # 恢复
 
 **处置**：A1 仍然执行（下线突破类），但理由改写为"证据不足以承担 19 笔 -7.47R 的近两周实测亏损"，而非"确认其期望为负"。
 **备选（未上，待评估）**：把突破类改为**降仓保留**（按信号族的 risk factor，如 0.3×），用仓位而非禁用处理"2 笔定生死"的问题——这样 10-09 那种 +6.34R 的机会不至于完全放弃。该方案需新增按信号族的风险系数（代码约 30 行 + 一个配置键），与"最小改动"原则冲突，故本轮不做，仅登记。
+
+---
+
+## 15. 上线执行记录（2026-10-27，均为 UTC）
+
+### 15.1 时间线
+
+| 时间 | 动作 | 对象 | 验证结果 |
+|---|---|---|---|
+| 08:46 | `git push origin main` | `f29a639` | Actions run `40475854116` 触发 |
+| 08:47 | CI 自动 `deploy backend f29a639` | backend / celery_worker / celery_beat | 三容器 `Up`、镜像 tag `f29a639`、`/api/scans/config` = 200、beat 无 Traceback；frontend 保持 `87d0f20`（scope=backend） |
+| 08:47 | 确认新代码默认关闭 | `settings` | `ENTRY_POS_MIN_RATIO=0.0`、`ENTRY_DIAG_ENABLED=False` → 部署本身不改行为 |
+| 08:48 | **A1 生效** | `system_config.scan_filters.allowed_triggers` | DB 与 API 均返回 `["trigger_pullback_confirm"]` |
+| 08:49 | **B1 生效** | `backend/.env` 第 62 行 `ENTRY_POS_MIN_RATIO=0.6` + 重启三容器 | 容器内读回 `0.6`；三容器 `Up`；api=200 |
+
+服务器 `.deploy_state`：`PREV_SHA=87d0f20` / `LAST_SHA=f29a639`。
+
+### 15.2 当前生产行为
+
+- 只做**回踩确认**单（`trigger_pullback_confirm`）；突破类与趋势突破类不再扫描。
+- 开仓前多一道位置闸：成交价必须在信号 K（最近一根已收盘 1h K）的**上 40%**（`pos≥0.6`）才放行，市价与挂单两条路径都拦；`force_market` 手动开单只告警不拦。
+- 每笔开仓/挂单在 `trade_records.raw.entry_diag` 落诊断：`pos` / `room_r` / `stop_atr` / `planned_rr` / `quality_total` / `range_flag` / `entry_path` / `bar_time`，挂单成交的标 `entry_diag_source=fill`（按成交价重算），否则 `placement`。
+- **无自动熔断**（§10 第 9 条），急停靠 §8-L4。
+
+### 15.3 三步回退（按速度快慢，互不牵连）
+
+| 想退掉 | 命令 | 影响 |
+|---|---|---|
+| 只退 B1（最常用） | 服务器 `backend/.env` 改 `ENTRY_POS_MIN_RATIO=0` → `IMAGE_TAG=f29a639 docker compose up -d --no-build --force-recreate backend celery_worker celery_beat` | 回到"回踩单全开"，代码与 A1 不动，诊断照旧落库 |
+| 只退 A1 | 页面「扫描配置」勾回 `trigger_breakout` + `trigger_trend_breakout`，或 §8-L1 的 SQL | 恢复全信号族，B1 仍在（对所有信号生效） |
+| 退代码 | `bash scripts/release.sh rollback` | 回 `87d0f20`，连诊断落库一起消失 |
+
+### 15.4 上线后 24h 必查（三条）
+
+```sql
+-- ① A1 是否生效：应为 0 行
+SELECT signal_type, count(*) FROM scan_results
+WHERE created_at > now() - interval '24 hours'
+  AND coalesce(signal_type,'') NOT LIKE '%pullback_confirm%' GROUP BY 1;
+-- ② B1 是否在动：被拦的单子（落在 ai_analyses.open_block_reason，不是 trade_records）
+SELECT count(*) FROM ai_analyses
+WHERE created_at > now() - interval '24 hours' AND open_block_reason LIKE '%入场位置%';
+-- ③ 诊断是否落库：应基本非空
+SELECT count(*) FILTER (WHERE raw->'entry_diag'->>'pos' IS NOT NULL) AS with_pos, count(*)
+FROM trade_records WHERE opened_at > now() - interval '24 hours';
+```
+
+日志侧：`docker logs --since 24h trading-workbench-celery_worker-1 | grep -E "入场位置|entry_pos"`；若 `_entry_snapshot` 刷 warning（K 线拉取失败）→ 先置 `ENTRY_POS_MIN_RATIO=0` 再查网络（§8 回退判据第 4 条）。
