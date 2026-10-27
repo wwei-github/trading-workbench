@@ -34,7 +34,7 @@ def _closed_closes(klines: list[list]) -> np.ndarray:
 def _macd_series(
     klines: list[list], fast: int = 12, slow: int = 26, signal: int = 9,
 ) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarray]]:
-    """MACD 序列内部计算（analyze_macd / analyze_macd_div 共用）。
+    """MACD 序列内部计算（analyze_macd 专用）。
 
     返回 (dif, dea, hist) 数组——尾部与已收盘K线逐根对齐（截断只影响序列头部），
     数据不足（已收盘 < slow+signal+10）返回 None。
@@ -106,54 +106,6 @@ def analyze_macd(
         "dir": 1 if state in ("golden_cross", "bullish")
         else -1 if state in ("death_cross", "bearish") else 0,
         "detail": ", ".join(parts),
-    }
-
-
-def analyze_macd_div(
-    klines: list[list], fast: int = 12, slow: int = 26, signal: int = 9,
-    half: int = 12,
-) -> Optional[dict]:
-    """MACD 背离（docs/14 CARD-04，缠论盘整背驰可取子集）：近 2*half 根已收盘
-    K线前后半段比较。
-
-    - diverge_bear：后半段价格新高（max high 抬升）而 MACD 柱峰值衰减——
-      价新高动能不跟随，多头信号质量差
-    - diverge_bull：后半段价格新低（min low 下移）而柱低谷抬升——空头信号质量差
-    - confirm：其余（与 cvd_div 桶语义对齐）
-    数据不足（MACD 序列未成形或柱序列不足 2*half 根）返回 None。
-    """
-    closed = klines[:-1] if len(klines) >= 2 else klines
-    if len(closed) < 2 * half:
-        return None
-    series = _macd_series(klines, fast, slow, signal)
-    if series is None:
-        return None
-    _dif, _dea, hist = series
-    if len(hist) < 2 * half:
-        return None
-    # 柱序列尾部与已收盘K线尾部逐根对齐，取末 2*half 根比较前后半段
-    closed = closed[-2 * half:]
-    hist = hist[-2 * half:]
-    high = np.array([float(k[2]) for k in closed], dtype=float)
-    low = np.array([float(k[3]) for k in closed], dtype=float)
-
-    hi1, hi2 = float(high[:half].max()), float(high[half:].max())
-    lo1, lo2 = float(low[:half].min()), float(low[half:].min())
-    p1, p2 = float(hist[:half].max()), float(hist[half:].max())
-    v1, v2 = float(hist[:half].min()), float(hist[half:].min())
-
-    if hi2 > hi1 and p2 < p1:
-        bucket = "diverge_bear"
-    elif lo2 < lo1 and v2 > v1:
-        bucket = "diverge_bull"
-    else:
-        bucket = "confirm"
-    return {
-        "price_high_chg_pct": round((hi2 / hi1 - 1) * 100, 3) if hi1 > 0 else None,
-        "price_low_chg_pct": round((lo2 / lo1 - 1) * 100, 3) if lo1 > 0 else None,
-        "hist_peak_delta": round(p2 - p1, 8),
-        "hist_trough_delta": round(v2 - v1, 8),
-        "bucket": bucket,
     }
 
 
@@ -1064,6 +1016,11 @@ RISK_VOTE_PENALTY = {"SuperTrend": -6}   # 辅助票逆向扣分（质量分，�
 # 重罚（-15，量级≈两个 4h 逆向档）——不过门照常出信号，但排序显著落后，
 # 让 AI/配额优先取结构合规信号
 STRUCTURE_GATE_PENALTY = -15
+# 趋势质量折价（CARD-10 升格，2026-10-27 开庭，docs/14 §十一）：24 根已收盘 1h
+# 收盘价最小二乘 R²<0.4 → 震荡段（假信号重灾区），质量分 -5（仅排序、不进闸门）。
+# r2_mid（0.4~0.7）影子读数最高（非单调），故 r2_high/r2_mid 均不加分，只做单向折价。
+R2_LOW_MAX = 0.4
+R2_LOW_PENALTY = -5
 
 
 def _compute_all(
@@ -1418,6 +1375,8 @@ def compute_quality_score(
     - OBV 顶背离做多 / 底背离做空 -6（量价背离）
     - 突破触发且布林带宽分位 ≤10 -5（带宽收窄的突破易假）
     - 1H 结构门未过（structure_gate=False）−STRUCTURE_GATE_PENALTY
+    - 震荡段折价（2026-10-27 CARD-10 升格，docs/14 §十一）：24 根已收盘 1h R²<0.4
+      → −5（排序层，不进闸门；r2_high/r2_mid 不加分）
     """
     # votes=None（2026-10-18 方向票关关闭后，指标全不可用且 4h 闸门兜底定向的
     # 罕见路径可达）：按无票处理——空票集、net=0、基础分 50，各修饰项自动跳过
@@ -1529,6 +1488,21 @@ def compute_quality_score(
     # 突破类仍由 scanner 硬拒，不会带 range_penalty 走到这里
     if range_penalty:
         _add("range", -8)
+
+    # 趋势质量折价（CARD-10 升格，2026-10-27 开庭）：24 根已收盘 1h 收盘价
+    # 最小二乘 R²<0.4 → 震荡段折价 -5（排序层，不进闸门；与影子卡同引擎）。
+    # r2_high/r2_mid 不加分（r2_mid 读数最高，非单调）。
+    if klines and len(klines) >= 25:
+        try:
+            from app.services.strategy.swing import linear_regression
+            _closed = klines[:-1][-24:]
+            _closes = np.array([float(k[4]) for k in _closed], dtype=float)
+            _slope, _icpt, _r2 = linear_regression(
+                np.arange(len(_closes)), _closes)
+            if float(_r2) < R2_LOW_MAX:
+                _add("r2_low", R2_LOW_PENALTY)
+        except (ValueError, TypeError, IndexError, ZeroDivisionError):
+            pass  # 折价项异常只降级该排序项，不影响基础分
 
     # 4h 强度分（2026-10-21 T2-6，影子）：aligned 只说明排列，不说明趋势强弱与
     # 剩余空间。按 spec F3 三要素给分，但**只记录不参与排序**——先影子观察

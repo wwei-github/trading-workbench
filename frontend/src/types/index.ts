@@ -1005,6 +1005,13 @@ export interface ShadowReentryStat {
   structure_ok_n: number // 结构完好笔数（占比 = structure_ok_n / n）
 }
 
+// 分族读数（2026-10-27 CARD-08 开庭延期）：按触点族拆分的 baseline + 分桶
+// （swing = 标准卡主判定族，retest = 仅观察列；shape 同主报告）
+export interface ShadowFamilyReport {
+  baseline: { n: number; counted?: number; win_rate?: number | null; avg_r?: number | null }
+  buckets: ShadowBucketStat[]
+}
+
 // 单特征影子评估报告（baseline = 全部桶合计）
 export interface ShadowFeatureReport {
   feature: string
@@ -1016,6 +1023,8 @@ export interface ShadowFeatureReport {
     & { n: number; counted?: number; win_rate?: number | null; avg_r?: number | null }
     & Partial<ShadowReentryStat>
   buckets: (ShadowBucketStat & Partial<ShadowReentryStat>)[]
+  // 仅 CARD-08：按 value_json.touch_ref 分族的读数（既有 buckets 仍为混合聚合）
+  family_buckets?: Record<string, ShadowFamilyReport>
   // 测试网对照组（分层统计，不进判定）：ReentryStat 字段仅 CARD-07 有值，
   // counted/win_rate/avg_r 仅 CARD-09 有值
   testnet_baseline?: Partial<ShadowReentryStat>

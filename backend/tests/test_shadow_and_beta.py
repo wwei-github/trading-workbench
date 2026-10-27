@@ -560,7 +560,7 @@ def _fake_report():
              {"bucket": "diverge_bear", "n": 34, "counted": 24, "win_rate": 0.29},
              {"bucket": "diverge_bull", "n": 26, "counted": 6, "win_rate": None},
          ]},
-        {"feature": "macd_div", "name": "MACD 背离", "card": "CARD-04", "min_sample": 60,
+        {"feature": "r2_slope", "name": "趋势质量", "card": "CARD-10", "min_sample": 120,
          "sufficient": False,
          "baseline": {"n": 0, "counted": 0, "win_rate": None},
          "buckets": []},
@@ -572,7 +572,7 @@ def test_shadow_report_lines_format(monkeypatch):
     monkeypatch.setattr(shadow_tasks, "build_report_safe",
                         lambda db, window_days=30: _fake_report())
     lines = shadow_tasks.shadow_report_lines()
-    assert len(lines) == 1  # macd_div 无样本不占版面
+    assert len(lines) == 1  # r2_slope 无样本不占版面
     line = lines[0]
     assert "CVD 背离" in line and "✅ 达标" in line
     assert "基线 41%（n=210）" in line

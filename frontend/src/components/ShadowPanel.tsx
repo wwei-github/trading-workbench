@@ -208,6 +208,21 @@ function FeatureCard({ report }: { report: ShadowFeatureReport }) {
         scroll={{ y: 240 }}
         locale={{ emptyText: <Empty description="该特征暂无影子标记" /> }}
       />
+      {/* CARD-08 分族读数（2026-10-27 开庭延期）：标准卡主判定 = swing 族，
+          retest 仅观察列；既有上表仍为混合聚合（向后兼容） */}
+      {report.family_buckets && Object.keys(report.family_buckets).length > 0 && (
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+          分族读数：
+          {Object.entries(report.family_buckets).map(([fam, f]) => (
+            <span key={fam}>
+              {' '}{fam === 'swing' ? 'swing（主判定）' : fam === 'retest' ? 'retest（观察）' : fam}
+              {' '}n={f.baseline.n}
+              {f.buckets.length > 0 && ` · ${f.buckets.map((b) =>
+                `${BUCKET_META[b.bucket] || b.bucket} ${pct(b.win_rate)}（n=${b.n}）`).join(' · ')}`}
+            </span>
+          ))}
+        </Text>
+      )}
     </Card>
   )
 }
@@ -260,6 +275,11 @@ function ReentryFeatureCard({ report }: { report: ShadowFeatureReport }) {
           </Tooltip>
           <SufficiencyTag report={report} count={base.n} />
           <SeqTag seq={report.sequential} />
+          {/* 2026-10-27 开庭：本卡 2026-10-19 已裁决（SPRT 早停落锁 h1），
+              面板三态里的「可开庭」仅为样本口径，不再构成新裁决信号 */}
+          <Tooltip title="2026-10-19 已按 docs/14 §八 裁决：SPRT 早停落锁 h1（LLR 2.9036 > 上界 2.7726），进 #12 预注册回放前需回放样本 n≥60；本卡不再重复裁决">
+            <Tag>已裁决 2026-10-19 · 回放待 n≥60</Tag>
+          </Tooltip>
         </Space>
       }
       extra={<Text type="secondary" style={{ fontSize: 12 }}>近 {report.window_days} 天 · 正式网</Text>}

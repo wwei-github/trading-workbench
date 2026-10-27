@@ -244,3 +244,50 @@ def test_pending_window_cap_24h():
                  "stage1_candle_open": stage1},
         pool=_FakePool(_sweep_bars()))
     assert r and r["window_h"] <= shadow_mod.SWEEP_WIN_MAX_H
+
+
+# ── build_report 分族读数（2026-10-27 开庭延期：swing 主判定 / retest 观察）──
+
+def test_build_report_family_buckets_split():
+    """同一特征下 swing/retest 混合标记：family_buckets 按 touch_ref 隔离
+    （swing 不含 retest 标记、retest 不含 swing 标记），既有 buckets 仍混合聚合。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    import app.models  # noqa: F401  确保全部模型注册进 Base.metadata
+    from app.database import Base
+    from app.models.scan import ScanResult
+    from app.models.shadow import ShadowMark
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    db = Session(bind=engine)
+    for fam, bucket in (("swing", "sweep_reclaim"), ("swing", "no_sweep"),
+                        ("retest", "sweep_open")):
+        sr = ScanResult(
+            scan_record_id=uuid.uuid4(), symbol="TESTUSDT",
+            signal_type="trigger_pullback_confirm", current_price=100.0,
+            breakout_pct=0.0, trend_slope=0.0, r_squared=0.0,
+        )
+        db.add(sr)
+        db.commit()
+        db.add(ShadowMark(
+            feature_key="sweep_reclaim", ref_type="scan_result", ref_id=sr.id,
+            symbol="TESTUSDT", value_json={"bucket": bucket, "touch_ref": fam},
+            decision_json={"stage": "scan_hit"},
+        ))
+    db.commit()
+
+    rep = next(r for r in shadow_mod.build_report(db, window_days=30)
+               if r["feature"] == "sweep_reclaim")
+    # 既有 buckets 不变：三族混合聚合
+    assert {b["bucket"]: b["n"] for b in rep["buckets"]} == {
+        "no_sweep": 1, "sweep_open": 1, "sweep_reclaim": 1}
+    fam = rep["family_buckets"]
+    assert set(fam) == {"swing", "retest"}
+    assert fam["swing"]["baseline"]["n"] == 2
+    assert {b["bucket"] for b in fam["swing"]["buckets"]} == {
+        "no_sweep", "sweep_reclaim"}
+    assert fam["retest"]["baseline"]["n"] == 1
+    assert [b["bucket"] for b in fam["retest"]["buckets"]] == ["sweep_open"]
+    db.close()

@@ -540,21 +540,6 @@ class ExchangePool:
                 continue
         raise AllExchangesFailed("；".join(errors) or "未知错误")
 
-    def get_open_interest(self, symbol: str) -> float:
-        """币安 USDT 永续当前持仓量（币本位数量，/fapi/v1/openInterest 公开端点）。
-
-        仅供影子 oi_conf 打标（docs/14 CARD-02）：OI 是币安特有口径，OKX/Bitget
-        的 OI 定义（张/币/含不含自盘）不一致，不做多所故障转移——混用会污染
-        快照环的 24h 前值可比性。失败抛异常由调用方吞掉（影子铁律）。
-        """
-        resp = _get_client("binance").get(
-            "/fapi/v1/openInterest", params={"symbol": symbol}
-        )
-        _raise_if_rate_limited(resp)
-        if resp.status_code >= 400:
-            raise ExchangeError(f"openInterest HTTP {resp.status_code}")
-        return float(resp.json()["openInterest"])
-
 
 def exchange_status() -> str:
     """当前各交易所状态摘要（运维/报错展示用）"""

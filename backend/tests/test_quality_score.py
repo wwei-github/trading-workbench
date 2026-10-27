@@ -274,7 +274,9 @@ def test_quality_score_golden_zone_only_for_pullback_confirm():
 
 
 def test_quality_score_golden_zone_cap_12():
-    """带内点多时封顶 +12：正弦锯齿全峰谷落入宽带 → 80 + 12 = 92"""
+    """带内点多时封顶 +12：正弦锯齿全峰谷落入宽带 → 80 + 12 = 92
+    （2026-10-27 CARD-10 升格后：收盘价恒 100 → R²=0 < 0.4 触发弱趋势折价 -5，
+    实际 80 + 12 − 5 = 87）"""
     import math
     n = 40
     kl = []
@@ -288,4 +290,55 @@ def test_quality_score_golden_zone_cap_12():
     from app.services.strategy.technical import golden_zone_swing_count
     assert golden_zone_swing_count(kl) >= 4
     assert compute_quality_score(1, _votes(), "trigger_pullback_confirm",
-                                 klines=kl, pattern="hammer") == 92
+                                 klines=kl, pattern="hammer") == 87
+
+
+# ── 趋势质量折价（CARD-10 升格，2026-10-27 开庭）────────────────────────────
+
+
+def _r2_klines(closes: list[float]) -> list[list]:
+    """24 根已收盘 + 1 根未收盘；收盘价序列由入参给定（量恒定 → 量比 1.0）"""
+    kl = [[i, c, c, c, c, 10.0, 10.0] for i, c in enumerate(closes)]
+    kl.append([len(closes), closes[-1], closes[-1], closes[-1], closes[-1],
+               10.0, 10.0])
+    return kl
+
+
+def test_r2_low_discount_applied_and_partial():
+    """R²<0.4（锯齿震荡）→ 质量分 -5，且分项记 r2_low=-5；基线 80 → 75"""
+    closes = [100.0, 110.0] * 12  # 24 根交替 → 回归斜率≈0、R²≈0
+    parts: dict = {}
+    score = compute_quality_score(1, _votes(), "trigger_candlestick",
+                                  klines=_r2_klines(closes), parts_out=parts)
+    assert score == 75
+    assert parts["r2_low"] == -5
+    assert parts["total"] == 75
+
+
+def test_r2_high_no_bonus():
+    """强趋势 R²≥0.7 不加分（r2_mid 读数最高，非单调；只做单向折价）→ 80"""
+    closes = [100.0 + 0.5 * i for i in range(24)]  # 完美直线 → R²=1
+    parts: dict = {}
+    score = compute_quality_score(1, _votes(), "trigger_candlestick",
+                                  klines=_r2_klines(closes), parts_out=parts)
+    assert score == 80
+    assert "r2_low" not in parts
+
+
+def test_r2_discount_requires_enough_klines():
+    """不足 25 根（23 已收盘）→ 不计算、不折价；防止短样本误罚"""
+    closes = [100.0, 110.0] * 12
+    kl = _r2_klines(closes)[:-2]  # 23 根已收盘
+    parts: dict = {}
+    assert compute_quality_score(1, _votes(), "trigger_candlestick",
+                                 klines=kl, parts_out=parts) == 80
+    assert "r2_low" not in parts
+
+
+def test_r2_low_discount_clamped():
+    """折价后总分仍在 0~100：无票基础分 50 + 震荡折价 → 45"""
+    closes = [100.0, 110.0] * 12
+    score = compute_quality_score(1, _votes(0), "trigger_candlestick",
+                                  klines=_r2_klines(closes))
+    assert score == 45
+    assert 0 <= score <= 100

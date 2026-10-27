@@ -58,27 +58,6 @@ def compute_cvd_div(klines: list[list]) -> Optional[dict]:
     }
 
 
-def compute_macd_div(klines: list[list]) -> Optional[dict]:
-    """CARD-04 macd_div：MACD 背离（缠论盘整背驰可取子集）。
-
-    口径（technical.analyze_macd_div）：近 24 根已收盘K线前后半段比较——
-    - diverge_bear：后半段价格新高而 MACD 柱峰值衰减（多头信号质量差）
-    - diverge_bull：后半段价格新低而柱低谷抬升（空头信号质量差）
-    - confirm：其余（与 cvd_div 桶语义对齐）
-    样本不足（MACD 柱序列不足 24 根）返回 None。
-    """
-    from app.services.strategy.technical import analyze_macd_div
-    return analyze_macd_div(klines)
-
-
-def compute_oi_conf_scan_stub(klines: list[list]) -> None:
-    """oi_conf 扫描侧占位：该特征需要 symbol 维度的 OI 快照环与网络请求，
-    无法从单币 klines 现算——扫描循环对本特征恒得 None 不打标；
-    实际打标由 tag_oi_conf 在 AI 配额段（tasks/ai_tasks.py）执行。
-    注册表占位仅为让评估报告（build_report）自动覆盖该特征元数据。"""
-    return None
-
-
 def compute_r2_slope(klines: list[list]) -> Optional[dict]:
     """CARD-10 r2_slope：趋势质量（R²/slope，docs/16 S-10，2026-10-08 立卡）。
 
@@ -146,10 +125,6 @@ SHADOW_FEATURES: dict[str, ShadowFeature] = {
         # → 前向窗口重置为 v2026-10-13-8（旧版本/历史 NULL 行出窗）
         ShadowFeature("cvd_div", "CVD 背离（订单流免费子集）", "CARD-01", compute_cvd_div, 80,
                       since_rule_version="v2026-10-13-8"),
-        # 跨版本不混算（同上，2026-10-13）：候选池重构后前向窗口重置为当前版本
-        ShadowFeature("macd_div", "MACD 背离（缠论背驰子集）", "CARD-04", compute_macd_div, 60,
-                      since_rule_version="v2026-10-13-8"),
-        ShadowFeature("oi_conf", "OI 确认度（24h ΔOI）", "CARD-02", compute_oi_conf_scan_stub, 60),
         # 趋势质量（docs/16 S-10，CARD-10，2026-10-08 立卡）：r²/slope 影子侧
         # 自算（ScanResult.r_squared 历史门槛废弃时置 0 恒空）。min_sample=120
         # 为展示口径（判定桶 r2_high/r2_low 各 ≥60，r2_mid 不进判定——真实
@@ -178,158 +153,12 @@ COURT_DATES: dict[str, Optional[str]] = {
     "CARD-01": "2026-10-27",  # 打标上线 10-04 + 14 天；2026-10-19 顺延——10-13 前向
                               # 窗口重置（since_rule_version=v2026-10-13-8），时间锁自
                               # 重置日重算（10-13 + 14 天），同 CARD-09 顺延先例（docs/14 §十一）
-    "CARD-02": "2026-10-21",  # 打标上线 10-05 + 14 天；2026-10-19 顺延——10-07 修复
-                              # Redis 环缺陷后观察期实际自 10-07 重新起算（docs/13 #4），
-                              # 时间锁自 10-07 重算（10-07 + 14 天），同 CARD-01/04 顺延先例
-    "CARD-04": "2026-10-27",  # 打标上线 10-05 + 14 天；2026-10-19 顺延——同 CARD-01
-                              # （10-13 窗口重置后自重置日重算），见 docs/14 §十一
     "CARD-07": None,          # SPRT 早停通道，跨界即终局（落锁后仍走 §八）
     "CARD-08": "2026-10-21",  # 锁定 10-07 + 14 天
     "CARD-09": "2026-11-08",  # REC70_START(10-11) + 28 天（评估仅计 closed_at ≥ REC70_START；
                               # 10-11 随 EMA 状态机重构重置窗口，锁定期顺延 1 天）
     "CARD-10": "2026-10-22",  # 锁定 10-08 + 14 天
 }
-
-
-# ── oi_conf（CARD-02，AI 侧，docs/14 §十清单4）──────────────────────────
-
-OI_CONF_ENABLED = True  # 代码开关（§九：特征启停改代码不进配置页；紧急置 False 停打）
-
-# 24h OI 快照环：Redis zset（key=shadow:oi:{symbol}，score=ts，member="ts|oi"）。
-# 只在 AI 配额轮追加（每小时 ≤ 配额数个 symbol）；保留 48h / 48 条供跨日 24h 前值
-# 比较。必须跨进程共享——worker --concurrency=10 的 prefork 子进程各持独立内存，
-# 进程内环会让同一币种 24h 前后的快照几乎必然落进不同子进程 → 永远凑不出前值
-# （2026-10-06 修复：上线以来零打标的根因）。broker 同实例，前缀隔离不冲突。
-_OI_RING: dict[str, list[tuple[float, float]]] = {}  # 测试替身用 dict 环（测试 monkeypatch 环函数）
-_OI_RING_TTL_S = 48 * 3600
-_OI_RING_MAXLEN = 48
-# 24h 前值容差窗口：定时扫描每小时一轮，取距 now-24h 最近的快照，
-# 落在 [18h, 30h] 内才有效（漏扫几轮仍可比，节奏漂移过大不可比）
-_OI_PREV_WINDOW_S = (18 * 3600, 30 * 3600)
-
-_oi_redis_client = None
-
-
-def _oi_redis():
-    """惰性单例 Redis 客户端（broker 同实例）。子进程首次打标时才建立连接，
-    不存在 fork 继承 socket 问题（对比 engine.dispose 的 fork 教训）。"""
-    global _oi_redis_client
-    if _oi_redis_client is None:
-        import redis
-
-        from app.config import settings
-
-        _oi_redis_client = redis.Redis.from_url(
-            settings.CELERY_BROKER_URL, decode_responses=True)
-    return _oi_redis_client
-
-
-def _ring_add(sym: str, ts: float, oi: float) -> None:
-    """快照入环：zadd + TTL 清理 + 条数上限，pipeline 原子执行。"""
-    rds = _oi_redis()
-    key = f"shadow:oi:{sym}"
-    pipe = rds.pipeline()
-    pipe.zadd(key, {f"{ts:.6f}|{oi:.12g}": ts})
-    pipe.zremrangebyscore(key, "-inf", ts - _OI_RING_TTL_S)
-    pipe.zremrangebyrank(key, 0, -(_OI_RING_MAXLEN + 1))
-    pipe.execute()
-
-
-def _ring_window(sym: str, lo: float, hi: float) -> list[tuple[float, float]]:
-    """取环内 [lo, hi] 时间窗快照 [(ts, oi), ...]，ts 升序。"""
-    out = _oi_redis().zrangebyscore(f"shadow:oi:{sym}", lo, hi, withscores=True)
-    return [(float(m.split("|")[0]), float(m.split("|")[1])) for m, _s in out]
-
-
-def tag_oi_conf(scan_results: list) -> int:
-    """AI 配额段 oi_conf 打标（CARD-02）：候选逐币拉当前 OI 快照入环，
-    环内有 18~30h 前值才计算 ΔOI 分桶落 shadow_marks，否则只存快照不打标。
-
-    分桶（CARD-02 预注册）：ΔOI 24h 符号——增=新钱入场 confirm、
-    减=回补/去杠杆 diverge；信号方向（votes net 符号）只进 value_json，
-    供评估期四象限细分，不参与分桶。幂等：uq_shadow_mark 重复打标覆盖。
-    请求预算：每轮 ≤ len(候选)（配额默认 10）个只读请求（docs/14 §四）。
-    任何异常全吞（影子铁律），返回实际落标数。
-    """
-    if not OI_CONF_ENABLED or not scan_results:
-        return 0
-    import time
-
-    from sqlalchemy import select
-
-    from app.database import SessionLocal
-    from app.models.shadow import ShadowMark
-    from app.services.exchange_pool import ExchangePool
-
-    pool = ExchangePool()
-    now = time.time()
-    oi_now_map: dict[str, float] = {}
-    for r in scan_results:
-        if r.symbol in oi_now_map:
-            continue
-        try:
-            oi_now_map[r.symbol] = pool.get_open_interest(r.symbol)
-        except Exception as e:
-            logger.debug("oi_conf OI 拉取失败（不打标）%s: %s", r.symbol, e)
-    if not oi_now_map:
-        return 0
-
-    tagged = 0
-    db = SessionLocal()
-    try:
-        for r in scan_results:
-            sym = r.symbol
-            if sym not in oi_now_map:
-                continue
-            oi_now = oi_now_map[sym]
-            lo, hi = now - _OI_PREV_WINDOW_S[1], now - _OI_PREV_WINDOW_S[0]
-            window = _ring_window(sym, lo, hi)
-            prev = (
-                min(window, key=lambda p: abs(p[0] - (now - 86400)))
-                if window else None
-            )
-            # 快照入环（无论是否打标），TTL 清理与条数上限在环函数内消化
-            _ring_add(sym, now, oi_now)
-
-            if prev is None or prev[1] <= 0:
-                continue  # 无 24h 前值：先存快照，本轮不打标
-            oi_chg_pct = (oi_now - prev[1]) / prev[1] * 100
-            votes = r.votes_json if isinstance(r.votes_json, dict) else {}
-            net = votes.get("net") or 0
-            value = {
-                "oi_now": round(oi_now, 8), "oi_prev": round(prev[1], 8),
-                "oi_chg_pct": round(oi_chg_pct, 3),
-                "direction": "long" if net > 0 else "short" if net < 0 else None,
-                "bucket": "confirm" if oi_chg_pct > 0 else "diverge",
-            }
-            decision = {
-                "stage": "ai_quota", "signal_type": r.signal_type,
-                "breakout_pct": float(r.breakout_pct or 0),
-            }
-            existing = db.execute(
-                select(ShadowMark).where(
-                    ShadowMark.feature_key == "oi_conf",
-                    ShadowMark.ref_type == "scan_result",
-                    ShadowMark.ref_id == r.id,
-                )
-            ).scalars().first()
-            if existing:
-                existing.value_json = value
-                existing.decision_json = decision
-            else:
-                db.add(ShadowMark(
-                    feature_key="oi_conf", ref_type="scan_result", ref_id=r.id,
-                    symbol=sym, value_json=value, decision_json=decision,
-                ))
-            tagged += 1
-        db.commit()
-        return tagged
-    except Exception as e:
-        db.rollback()
-        logger.debug("oi_conf 影子打标落库失败（忽略）: %s", e)
-        return 0
-    finally:
-        db.close()
 
 
 # ── 评分门槛前向对照（CARD-09，docs/14 §七，2026-10-07 预注册锁定）────────
@@ -1029,13 +858,22 @@ def build_report(db, window_days: int = 30) -> list[dict]:
                     _scan_prices(direction, entry, stop, tp1, tp2,
                                  veto_original, is_veto), outcome, bars)
         buckets: dict[str, list] = {}
+        # CARD-08 分族读数（2026-10-27 开庭延期，docs/14 §七）：标准卡主判定为
+        # swing 族，retest 仅观察列——报告按 value_json.touch_ref 另出 family_buckets，
+        # 既有混合 buckets 保持不变（向后兼容）。
+        family_rows: dict[str, list] = {}
         for m in marks:
             # 归一：宿主缺失（ScanResult 被清）→ no_analysis；有 AIAnalysis
             # 无 TradeReview → pending（未到 24h，下轮再看）
             outcome = outcome_map.get(m.ref_id)
             label = "no_analysis" if m.ref_id not in outcome_map else (outcome or "pending")
             b = (m.value_json or {}).get("bucket", "unknown")
-            buckets.setdefault(b, []).append((b, label, r_map.get(m.ref_id)))
+            row = (b, label, r_map.get(m.ref_id))
+            buckets.setdefault(b, []).append(row)
+            if feat.card == "CARD-08":
+                fam = (m.value_json or {}).get("touch_ref")
+                if fam in ("swing", "retest"):
+                    family_rows.setdefault(fam, []).append(row)
         bucket_out = [
             {"bucket": b, **_bucket_stats(rows)}
             for b, rows in sorted(buckets.items())
@@ -1043,7 +881,21 @@ def build_report(db, window_days: int = 30) -> list[dict]:
         for item in bucket_out:
             if item["n"] < 30:
                 item["insufficient"] = True
-        out.append({
+        family_out: dict = {}
+        for fam, rows in sorted(family_rows.items()):
+            f_buckets: dict[str, list] = {}
+            for row in rows:
+                f_buckets.setdefault(row[0], []).append(row)
+            f_bucket_out = [
+                {"bucket": b, **_bucket_stats(rs)}
+                for b, rs in sorted(f_buckets.items())
+            ]
+            for item in f_bucket_out:
+                if item["n"] < 30:
+                    item["insufficient"] = True
+            family_out[fam] = {"baseline": _bucket_stats(rows),
+                               "buckets": f_bucket_out}
+        report = {
             "feature": key, "name": feat.name, "card": feat.card,
             "min_sample": feat.min_sample,
             "window_days": window_days,
@@ -1054,7 +906,10 @@ def build_report(db, window_days: int = 30) -> list[dict]:
             # counted 口径，各卡真实判据含**分桶**门槛（CARD-01 n≥80/桶、CARD-10 判定桶
             # 各≥60）——绿灯只保证够开庭样本，判定仍须人工核对 §七 卡文本
             "sufficient": _bucket_stats([r for rows in buckets.values() for r in rows])["counted"] >= feat.min_sample,
-        })
+        }
+        if feat.card == "CARD-08":
+            report["family_buckets"] = family_out
+        out.append(report)
     # 开庭日期感知（2026-10-10）：每卡带预注册开庭日（docs/14 §七 时间锁），
     # 前端据此三态——样本不足=观察中 / 达标未到期=达标·开庭待期 / 到期=可开庭。
     # 统一在出口注入，五条组装分支免逐个接线

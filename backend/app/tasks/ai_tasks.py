@@ -37,7 +37,6 @@ from app.services.llm_client import configure_from, current_concurrency, resolve
 from app.services.strategy.technical import annotate_htf_phase, htf_context
 from app.services.strategy.indicators import volume_ratio
 from app.services.exchange_pool import ExchangePool
-from app.services.shadow import tag_oi_conf
 from app.services.risk_guard import is_pullback_wait
 from app.services.strategy import recent_swings
 from app.services.account_registry import auto_trade_accounts
@@ -246,18 +245,6 @@ def run_ai_analysis_task(
                 logger.info("无可分析的扫描结果 #%s", scan_record_id)
                 close_task(task_id, "skipped", summary="无可分析的扫描结果")
             return
-
-        # 影子 oi_conf 打标（docs/14 CARD-02，AI 侧）：仅定时扫描批量路径——
-        # 手动扫描/手动单币重分析用户在场，不进观察总体（与扫描侧仅 scheduled
-        # 口径一致）。候选逐币拉 OI 快照 → 有 24h 前值才分桶落标；影子异常
-        # 全吞（docs/14 铁律），不影响分析分发
-        if only_scan_result_id is None:
-            try:
-                rec = db.get(ScanRecord, UUID(scan_record_id))
-                if rec is not None and rec.scan_type == "scheduled":
-                    tag_oi_conf(list(results))
-            except Exception as e:
-                logger.debug("oi_conf 影子打标失败（忽略）: %s", e)
 
         force = only_scan_result_id is not None
         jobs = group(

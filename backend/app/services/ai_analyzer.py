@@ -92,6 +92,7 @@ QUALITY_PART_LABELS = (
     ("stabilize", "企稳"),
     ("structure_gate", "结构门"),
     ("range", "震荡"),
+    ("r2_low", "弱趋势"),
 )
 
 
