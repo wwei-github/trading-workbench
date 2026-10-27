@@ -9,6 +9,7 @@ CARD-02 oi_conf / CARD-04 macd_div 已于 2026-10-27 开庭判 FAIL 关闭并删
 """
 import json
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -66,3 +67,58 @@ def test_r2_slope_registry_entry():
     v = f.compute(_mk_klines([100.0 + i for i in range(24)]))
     assert v is not None and set(v) == {"r2", "slope_pct", "bucket"}
     json.dumps(v)
+
+
+def test_build_report_signal_type_buckets_split():
+    """CARD-10 分信号类型读数（2026-10-27 风险复核 R1-A）：breakout / pullback
+    各自 baseline + 分桶隔离；宿主被清的标记单列 unknown；既有混合 buckets 不变。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    import app.models  # noqa: F401  确保全部模型注册进 Base.metadata
+    from app.database import Base
+    from app.models.scan import ScanResult
+    from app.models.shadow import ShadowMark
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    db = Session(bind=engine)
+    cases = [
+        ("trigger_breakout", "r2_high"),
+        ("trigger_breakout", "r2_low"),
+        ("trigger_pullback_confirm", "r2_high"),
+        ("trigger_pullback_confirm", "r2_low"),
+    ]
+    for sig, bucket in cases:
+        sr = ScanResult(
+            scan_record_id=uuid.uuid4(), symbol="TESTUSDT",
+            signal_type=sig, current_price=100.0, breakout_pct=0.0,
+            trend_slope=0.0, r_squared=0.0,
+        )
+        db.add(sr)
+        db.commit()
+        db.add(ShadowMark(
+            feature_key="r2_slope", ref_type="scan_result", ref_id=sr.id,
+            symbol="TESTUSDT", value_json={"bucket": bucket},
+            decision_json={"stage": "scan_hit"},
+        ))
+    # 宿主已被清（ScanResult 不存在）→ signal_type 取不到，归 unknown
+    db.add(ShadowMark(
+        feature_key="r2_slope", ref_type="scan_result", ref_id=uuid.uuid4(),
+        symbol="TESTUSDT", value_json={"bucket": "r2_low"},
+        decision_json={"stage": "scan_hit"},
+    ))
+    db.commit()
+
+    rep = next(r for r in shadow_mod.build_report(db, window_days=30)
+               if r["feature"] == "r2_slope")
+    assert {b["bucket"]: b["n"] for b in rep["buckets"]} == {
+        "r2_high": 2, "r2_low": 3}
+    st = rep["signal_type_buckets"]
+    assert set(st) == {"trigger_breakout", "trigger_pullback_confirm", "unknown"}
+    assert st["trigger_breakout"]["baseline"]["n"] == 2
+    assert {b["bucket"] for b in st["trigger_breakout"]["buckets"]} == {
+        "r2_high", "r2_low"}
+    assert st["trigger_pullback_confirm"]["baseline"]["n"] == 2
+    assert [b["bucket"] for b in st["unknown"]["buckets"]] == ["r2_low"]
+    db.close()

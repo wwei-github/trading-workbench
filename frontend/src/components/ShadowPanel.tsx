@@ -33,6 +33,14 @@ const BUCKET_META: Record<string, string> = {
 }
 const CONTROL_BUCKETS = new Set(['confirm']) // 对照桶（非信号桶）
 
+// 信号类型中文标签（CARD-10 分类型读数，2026-10-27 风险复核 R1-A；unknown 回退原文）
+const SIGNAL_TYPE_META: Record<string, string> = {
+  trigger_breakout: '突破',
+  trigger_trend_breakout: '趋势突破',
+  trigger_pullback_confirm: '回踩确认',
+  unknown: '未知（宿主已清）',
+}
+
 // 标准卡含 avg_r 判定项的卡（avg R 列仅这些卡渲染）：
 // CARD-09 = trade_record 宿主真实盈亏 R；CARD-01/10 = scan_result 宿主建议回放
 // ev_r（预注册 2026-10-19，详见 docs/14 §十一 遗留问题 1 收口）
@@ -218,6 +226,21 @@ function FeatureCard({ report }: { report: ShadowFeatureReport }) {
               {' '}{fam === 'swing' ? 'swing（主判定）' : fam === 'retest' ? 'retest（观察）' : fam}
               {' '}n={f.baseline.n}
               {f.buckets.length > 0 && ` · ${f.buckets.map((b) =>
+                `${BUCKET_META[b.bucket] || b.bucket} ${pct(b.win_rate)}（n=${b.n}）`).join(' · ')}`}
+            </span>
+          ))}
+        </Text>
+      )}
+      {/* CARD-10 分信号类型读数（2026-10-27 风险复核 R1-A）：核对 r2_low 折价
+          是否该限定突破类——仅读数，不影响判定；上表仍为混合聚合 */}
+      {report.signal_type_buckets && Object.keys(report.signal_type_buckets).length > 0 && (
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+          分信号类型读数：
+          {Object.entries(report.signal_type_buckets).map(([sig, s]) => (
+            <span key={sig}>
+              {' '}{SIGNAL_TYPE_META[sig] || sig}
+              {' '}n={s.baseline.n}
+              {s.buckets.length > 0 && ` · ${s.buckets.map((b) =>
                 `${BUCKET_META[b.bucket] || b.bucket} ${pct(b.win_rate)}（n=${b.n}）`).join(' · ')}`}
             </span>
           ))}

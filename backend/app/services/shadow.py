@@ -580,6 +580,28 @@ def _bucket_stats(rows: list) -> dict:
     }
 
 
+def _grouped_bucket_out(groups: dict[str, list]) -> dict:
+    """分组读数（触点族 / 信号类型，2026-10-27）：每组 baseline + 分桶统计。
+
+    形状同主报告 buckets；n<30 的桶标 insufficient。调用方保留既有混合
+    buckets 原样（向后兼容），本函数只产附加读数、不影响 sufficient。
+    """
+    out: dict = {}
+    for name, rows in sorted(groups.items()):
+        sub: dict[str, list] = {}
+        for row in rows:
+            sub.setdefault(row[0], []).append(row)
+        items = [
+            {"bucket": b, **_bucket_stats(rs)}
+            for b, rs in sorted(sub.items())
+        ]
+        for item in items:
+            if item["n"] < 30:
+                item["insufficient"] = True
+        out[name] = {"baseline": _bucket_stats(rows), "buckets": items}
+    return out
+
+
 def _reentry_stats(rows: list) -> dict:
     """再入场前置卡（CARD-07，docs/13 #12）统计：n / continued / cont_rate。
 
@@ -842,16 +864,22 @@ def build_report(db, window_days: int = 30) -> list[dict]:
                    AIAnalysis.direction, AIAnalysis.entry_price,
                    AIAnalysis.stop_loss, AIAnalysis.take_profit_1,
                    AIAnalysis.take_profit_2, AIAnalysis.veto_original,
-                   TradeReview.is_veto, TradeReview.bars_to_exit)
+                   TradeReview.is_veto, TradeReview.bars_to_exit,
+                   ScanResult.signal_type)
             .outerjoin(AIAnalysis, AIAnalysis.scan_result_id == ScanResult.id)
             .outerjoin(TradeReview, TradeReview.ai_analysis_id == AIAnalysis.id)
             .where(ScanResult.id.in_(ref_ids))
         ).all()
         outcome_map: dict = {}
         r_map: dict = {}
+        # CARD-10 分信号类型读数（2026-10-27 风险复核 R1-A）：宿主 ScanResult
+        # 的 signal_type 取自已落库结果，历史 marks 同样适用（不依赖打标快照）
+        sig_map: dict = {}
         for (sr_id, _ai_id, outcome, direction, entry, stop, tp1, tp2,
-             veto_original, is_veto, bars) in sr_rows:
+             veto_original, is_veto, bars, sr_signal_type) in sr_rows:
             # 同一 scan_result 理论一条 AIAnalysis（唯一约束），outerjoin 重复行取首个非空
+            if sr_id not in sig_map:
+                sig_map[sr_id] = sr_signal_type
             if sr_id not in outcome_map or outcome_map[sr_id] is None:
                 outcome_map[sr_id] = outcome
                 r_map[sr_id] = _scan_replay_r(
@@ -862,6 +890,9 @@ def build_report(db, window_days: int = 30) -> list[dict]:
         # swing 族，retest 仅观察列——报告按 value_json.touch_ref 另出 family_buckets，
         # 既有混合 buckets 保持不变（向后兼容）。
         family_rows: dict[str, list] = {}
+        # CARD-10 分信号类型读数（2026-10-27 风险复核 R1-A）：折价是否应限定
+        # 突破类需先看回踩/突破各自读数——仅报告层附加，不改生产判定。
+        sig_rows: dict[str, list] = {}
         for m in marks:
             # 归一：宿主缺失（ScanResult 被清）→ no_analysis；有 AIAnalysis
             # 无 TradeReview → pending（未到 24h，下轮再看）
@@ -874,6 +905,9 @@ def build_report(db, window_days: int = 30) -> list[dict]:
                 fam = (m.value_json or {}).get("touch_ref")
                 if fam in ("swing", "retest"):
                     family_rows.setdefault(fam, []).append(row)
+            elif feat.card == "CARD-10":
+                # 宿主被清时无法取 signal_type → unknown 单列，不混入判定组
+                sig_rows.setdefault(sig_map.get(m.ref_id) or "unknown", []).append(row)
         bucket_out = [
             {"bucket": b, **_bucket_stats(rows)}
             for b, rows in sorted(buckets.items())
@@ -881,20 +915,7 @@ def build_report(db, window_days: int = 30) -> list[dict]:
         for item in bucket_out:
             if item["n"] < 30:
                 item["insufficient"] = True
-        family_out: dict = {}
-        for fam, rows in sorted(family_rows.items()):
-            f_buckets: dict[str, list] = {}
-            for row in rows:
-                f_buckets.setdefault(row[0], []).append(row)
-            f_bucket_out = [
-                {"bucket": b, **_bucket_stats(rs)}
-                for b, rs in sorted(f_buckets.items())
-            ]
-            for item in f_bucket_out:
-                if item["n"] < 30:
-                    item["insufficient"] = True
-            family_out[fam] = {"baseline": _bucket_stats(rows),
-                               "buckets": f_bucket_out}
+        family_out = _grouped_bucket_out(family_rows)
         report = {
             "feature": key, "name": feat.name, "card": feat.card,
             "min_sample": feat.min_sample,
@@ -909,6 +930,8 @@ def build_report(db, window_days: int = 30) -> list[dict]:
         }
         if feat.card == "CARD-08":
             report["family_buckets"] = family_out
+        elif feat.card == "CARD-10":
+            report["signal_type_buckets"] = _grouped_bucket_out(sig_rows)
         out.append(report)
     # 开庭日期感知（2026-10-10）：每卡带预注册开庭日（docs/14 §七 时间锁），
     # 前端据此三态——样本不足=观察中 / 达标未到期=达标·开庭待期 / 到期=可开庭。

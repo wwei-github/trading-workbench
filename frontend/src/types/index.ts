@@ -1025,6 +1025,9 @@ export interface ShadowFeatureReport {
   buckets: (ShadowBucketStat & Partial<ShadowReentryStat>)[]
   // 仅 CARD-08：按 value_json.touch_ref 分族的读数（既有 buckets 仍为混合聚合）
   family_buckets?: Record<string, ShadowFamilyReport>
+  // 仅 CARD-10：按宿主 ScanResult.signal_type 分组的读数（2026-10-27 风险复核
+  // R1-A，仅报告层；既有 buckets 仍为混合聚合）
+  signal_type_buckets?: Record<string, ShadowFamilyReport>
   // 测试网对照组（分层统计，不进判定）：ReentryStat 字段仅 CARD-07 有值，
   // counted/win_rate/avg_r 仅 CARD-09 有值
   testnet_baseline?: Partial<ShadowReentryStat>
