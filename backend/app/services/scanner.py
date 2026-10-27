@@ -680,6 +680,26 @@ def _votes_snapshot(votes: Optional[dict], stabilize: Optional[dict] = None) -> 
     return snap
 
 
+def apply_quality_floor(hits: list[dict], floor: float) -> tuple[list[dict], list[str]]:
+    """质量分下限过滤（2026-10-27，docs/16 §5.1 P0-1）。
+
+    只做"是否成为候选"这一步：被剔除的命中不再进 AI 配额排序与开单池，
+    但 pending 的 upsert 与命中历史展示不受影响（它们是触点事实，不是候选）。
+    `quality_score` 缺失按 0 处理（旧数据无分=最低分，与排序口径一致）。
+    返回 (保留列表, 被剔除的 symbol 列表)。
+    """
+    if floor <= 0 or not hits:
+        return hits, []
+    kept: list[dict] = []
+    dropped: list[str] = []
+    for h in hits:
+        if float(h.get("quality_score") or 0) < floor:
+            dropped.append(str(h.get("symbol") or ""))
+        else:
+            kept.append(h)
+    return kept, dropped
+
+
 class Scanner:
     """扫描编排器（同步 + 线程池并发）"""
 
@@ -955,6 +975,19 @@ class Scanner:
                     for sig in signals:
                         sig["volume_24h"] = volume_map.get(symbol, 0)
                         hits.append({"symbol": symbol, **sig})
+
+            # 2.9 质量分下限（2026-10-27，docs/16 §5.1 P0-1）：低于下限的命中不进
+            #     候选池。只影响「能否成为候选（进 AI / 开单池）」，不影响 pending
+            #     的 upsert 与命中历史展示。计数写 funnel_rejects，前端「筛选漏斗」
+            #     可直接看到被拦数量；0=关闭（默认，零行为变化）。
+            _before_floor = len(hits)
+            hits, _floor_dropped = apply_quality_floor(hits, flt.quality_floor)
+            if _floor_dropped:
+                for _sym in _floor_dropped:
+                    funnel_rejects.setdefault(_sym, "quality_floor")
+                logger.info("质量分下限 %.0f 拦截 #%s：%d/%d 条候选被剔除",
+                            flt.quality_floor, scan_record_id, len(_floor_dropped),
+                            _before_floor)
 
             # 3. 按质量分降序（同分按 24h 成交额）——AI 配额按此顺序取前 N
             hits.sort(

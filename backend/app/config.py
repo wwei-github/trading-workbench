@@ -462,6 +462,18 @@ class Settings(BaseSettings):
     FINGERPRINT_TTL_MIN: int = 60     # 指纹缓存复用窗口（分钟，0.3% 价格分桶）
     AI_MAX_PER_SCAN: int = 10         # 单次扫描批量 AI 分析上限（按24h成交额取前N）
     MIN_VOLUME_24H: float = 3_000_000  # 扫描候选池 24h 成交额下限（USDT），低于此不进扫描
+    # 质量分下限（2026-10-27，docs/16 §5.1 P0-1）：候选命中质量分低于该值的不进
+    # 候选池（0=不过滤）。依据（正式网 14 天、已平仓样本）：<70 46 笔 -0.056R/笔、
+    # 70-79 31 笔 -0.050R/笔、80-89 40 笔 +0.260R/笔、90+ 145 笔 +0.218R/笔——
+    # 分水岭在 80。注意：该关联建立在「已开单」样本上（存在选择偏差），上线后需按
+    # docs/16 §5.1 的判读 SQL 复核，未改善即回置 0。
+    QUALITY_FLOOR: float = 0.0
+    # 单币 AI 冷却（2026-10-27，docs/16 §5.3 P0-3）：同一币种当日（UTC）已被 AI
+    # skip 达到 N 次、且历史推荐分均值 < M 时，本轮不再送 AI（0=关闭）。
+    # 依据：MAGMAUSDT 14 天被分析 14 次、skip 10 次、均分 34；SOPH 17/9、Q 13/9。
+    # 手动单币重分析（only_scan_result_id）不受此限。
+    AI_REANALYZE_SKIP_LIMIT: int = 2
+    AI_REANALYZE_MIN_REC: float = 50.0
     NEW_COIN_COOLDOWN_DAYS: int = 14   # 新币冷静期（天）：上市未满 N 天不进扫描（0=关闭），
                                        # scan_filters.new_coin_cooldown_days 可覆盖
 

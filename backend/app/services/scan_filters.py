@@ -66,6 +66,7 @@ SCAN_FILTER_KEYS = (
     "breakout_max_pct",           # ③ 触发层：突破幅度上限（防追高，0=关闭）
     "candle_max_ema21_dist_pct",  # ③ 触发层：悬空金K距 EMA21 上限（纯金K下线后无消费方，键保留兼容）
     "ai_max_per_scan",            # ④ 配额层：单轮扫描 AI 分析上限
+    "quality_floor",              # ④ 配额层：候选命中质量分下限（2026-10-27 docs/16 P0-1）
     "allowed_triggers",           # ③ 触发层：触发类型白名单（2026-09-28）
     "pullback_touch_refs",        # ③ 触发层：回踩触点白名单（2026-09-28 docs/22）
     "pullback_touch_deny_long",   # ③ 触发层：多头方向触点禁用表（2026-10-27 docs/15 §16）
@@ -100,6 +101,9 @@ class ScanFilters:
     breakout_max_pct: float
     candle_max_ema21_dist_pct: float
     ai_max_per_scan: int
+    # 质量分下限（2026-10-27，docs/16 §5.1 P0-1）：低于该值的候选命中直接不进
+    # 候选池（0=不过滤）。依据见 config.QUALITY_FLOOR 注释。
+    quality_floor: float = 0.0
     allowed_triggers: tuple = ALL_TRIGGERS
     pullback_touch_refs: tuple = DEFAULT_TOUCH_REFS
     # 回踩触点「方向禁用表」（2026-10-27，docs/15 §16）：命中的触点只在对应方向
@@ -232,6 +236,7 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
         breakout_max_pct=_num("breakout_max_pct", settings.BREAKOUT_MAX_PCT),
         candle_max_ema21_dist_pct=_num("candle_max_ema21_dist_pct", settings.CANDLE_MAX_EMA21_DIST_PCT),
         ai_max_per_scan=_int("ai_max_per_scan", settings.AI_MAX_PER_SCAN, minimum=1),
+        quality_floor=_num("quality_floor", float(settings.QUALITY_FLOOR), minimum=0.0),
         allowed_triggers=_triggers("allowed_triggers"),
         pullback_touch_refs=_touch_refs("pullback_touch_refs"),
         pullback_touch_deny_long=_deny_refs(

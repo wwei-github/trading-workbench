@@ -22,6 +22,21 @@ def _no_market_context(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_exchange_info(monkeypatch):
+    """默认不触网：exchangeInfo 派生集合（listed_symbols / onboard_dates）返回空。
+
+    两者在实现里都是「空即放行」（拉取失败不阻断扫描/开单），空集合等价于关闭
+    这两道过滤，单测保持封闭性。2026-10-27 起 AI 分发前新增「不可交易合约」过滤
+    （docs/16 §5.2 P0-2），若不拦截会让既有用例隐式触网 binance exchangeInfo。
+    需要真实上架集合的用例自行 monkeypatch 覆盖（见 test_ai_dispatch_filters.py）。
+    """
+    from app.services import binance_trader as _bt
+
+    monkeypatch.setattr(_bt.BinanceTrader, "listed_symbols", lambda self: set())
+    monkeypatch.setattr(_bt.BinanceTrader, "onboard_dates", lambda self: {})
+
+
+@pytest.fixture(autouse=True)
 def _no_ai_dispatch(monkeypatch):
     """默认关闭 AI 诊断派发：本地 .env 若配置 AI_API_KEY，refresh_mark_pnl 会真实
     调用 run_position_advice.delay → Celery 连 Redis（Docker 主机名在本机可能被

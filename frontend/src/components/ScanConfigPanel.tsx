@@ -48,6 +48,10 @@ const FILTER_FIELDS: { name: string; label: string; min: number; max: number; st
     tooltip: '趋势突破触发（trigger_trend_breakout）的回看窗口根数（收盘破 N 根高低轨；结构突破不受此影响）' },
   { name: 'ai_max_per_scan', label: 'AI单轮分析上限（个）', min: 1, max: 50,
     tooltip: '单次扫描批量 AI 分析的币种上限，按质量分/24h成交额取前N（控制 LLM 成本）' },
+  { name: 'quality_floor', label: '质量分下限（0=不过滤）', min: 0, max: 110,
+    tooltip: '候选命中质量分低于该值的不进候选池（不进 AI 分析、不可开单）；'
+      + '正式网 14 天已平仓样本：<80 两档均为负（-0.05R/笔左右），80-89 +0.26R、90+ +0.22R，'
+      + '分水岭在 80。只影响是否成为候选，pending 与命中历史照常记录' },
 ]
 
 /** AI 分析暂停时段的小时选项（整点，00:00 ~ 23:00） */

@@ -125,6 +125,82 @@ def build_cache_context(cfg, klines: list, htf_klines: list,
     }
 
 
+def _filter_ai_targets(db, results):
+    """批量 AI 分析前的两道过滤（docs/16 §5.2 P0-2、§5.3 P0-3）。
+
+    1) 不可交易合约（P0-2）：正式网与测试网都不在 exchangeInfo 里 → 分析结果注定
+       开不了单（14 天 82 次「下单环境未上架该合约」，占 suggest 8%）。任一环境有
+       上架就保留（用户可能手动在另一环境开）。exchangeInfo 拉取失败返回空集合，
+       此时不做任何过滤（放行不阻断扫描链）。
+    2) 单币冷却（P0-3）：同币当日（UTC）已被 AI skip 达 N 次、且历史推荐分均值 < M
+       → 本轮不再送 AI，把配额让给新命中。依据：MAGMAUSDT 14 天被分析 14 次、
+       skip 10 次、均分 34。N=0 关闭。
+
+    只作用于批量自动分析；手动单币重分析由调用方绕过本函数。
+    返回 (kept, unlisted_n, cooldown_n)。
+    """
+    import datetime as _dt
+
+    kept = list(results)
+
+    # 1) 不可交易合约
+    unlisted_ids: set = set()
+    try:
+        from app.services.binance_trader import BinanceTrader
+
+        listed: set[str] = set()
+        for is_test in (False, True):
+            try:
+                listed |= BinanceTrader(is_test).listed_symbols() or set()
+            except Exception as e:  # 单环境失败不影响另一环境的上架判定
+                logger.warning("listed_symbols(testnet=%s) 失败，跳过该环境判定: %s",
+                               is_test, e)
+        if listed:
+            for r in kept:
+                if r.symbol not in listed:
+                    unlisted_ids.add(r.id)
+            if unlisted_ids:
+                names = sorted({r.symbol for r in kept if r.id in unlisted_ids})
+                logger.info("未上架合约跳过 AI 分析 %d 个：%s",
+                            len(unlisted_ids), ",".join(names))
+                kept = [r for r in kept if r.id not in unlisted_ids]
+    except Exception as e:
+        logger.warning("不可交易合约过滤失败（跳过该过滤）: %s", e)
+
+    # 2) 单币冷却（DB 判定，天然持久，不引 Redis）
+    cooled_ids: set = set()
+    skip_limit = int(getattr(settings, "AI_REANALYZE_SKIP_LIMIT", 0) or 0)
+    min_rec = float(getattr(settings, "AI_REANALYZE_MIN_REC", 0.0) or 0.0)
+    if skip_limit > 0 and kept:
+        try:
+            day_start = _dt.datetime.utcnow().replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            rows = db.execute(
+                select(
+                    AIAnalysis.symbol,
+                    func.count().filter(AIAnalysis.trade_decision == "skip"),
+                    func.avg(AIAnalysis.recommendation),
+                ).where(
+                    AIAnalysis.created_at >= day_start,
+                    AIAnalysis.symbol.in_(sorted({r.symbol for r in kept})),
+                ).group_by(AIAnalysis.symbol)
+            ).all()
+            stats = {sym: (int(sk or 0), float(avg or 0.0)) for sym, sk, avg in rows}
+            for r in kept:
+                sk, avg = stats.get(r.symbol, (0, 0.0))
+                if sk >= skip_limit and avg < min_rec:
+                    cooled_ids.add(r.id)
+            if cooled_ids:
+                names = sorted({r.symbol for r in kept if r.id in cooled_ids})
+                logger.info("单币冷却跳过 AI 分析 %d 个（今日 skip≥%d 且均分<%.0f）：%s",
+                            len(cooled_ids), skip_limit, min_rec, ",".join(names))
+                kept = [r for r in kept if r.id not in cooled_ids]
+        except Exception as e:
+            logger.warning("单币冷却查询失败（跳过该过滤）: %s", e)
+
+    return kept, len(unlisted_ids), len(cooled_ids)
+
+
 @celery_app.task(name="app.tasks.ai_tasks.run_ai_analysis_task", bind=True, max_retries=3)
 def run_ai_analysis_task(
     self, scan_record_id: str, only_scan_result_id: Optional[str] = None,
@@ -231,6 +307,15 @@ def run_ai_analysis_task(
                 ScanResult.volume_24h.desc(),
             ).limit(quota)
         results = db.execute(q).scalars().all()
+
+        # 4.5 批量分析与开单前的两道过滤（2026-10-27，docs/16 §5.2/§5.3）：
+        #     不可交易合约 + 单币冷却。手动单币重分析（only_scan_result_id）不受限——
+        #     用户主动点的那一个必须被分析。过滤后为空则按「无可分析」收尾，
+        #     与真实无命中区分（summary 写明被谁过滤），便于看板判读。
+        skipped_unlisted = 0
+        skipped_cooldown = 0
+        if results and only_scan_result_id is None:
+            results, skipped_unlisted, skipped_cooldown = _filter_ai_targets(db, results)
         if not results:
             if skipped_live:
                 logger.info(
@@ -240,6 +325,16 @@ def run_ai_analysis_task(
                 close_task(
                     task_id, "skipped",
                     summary=f"新命中 {skipped_live} 个均已在正式网在跑，跳过 AI 分析",
+                )
+            elif skipped_unlisted or skipped_cooldown:
+                logger.info(
+                    "命中均已过滤跳过 #%s（未上架 %d / 单币冷却 %d）",
+                    scan_record_id, skipped_unlisted, skipped_cooldown,
+                )
+                close_task(
+                    task_id, "skipped",
+                    summary=f"命中均已过滤跳过（未上架 {skipped_unlisted} / 冷却 "
+                            f"{skipped_cooldown}）",
                 )
             else:
                 logger.info("无可分析的扫描结果 #%s", scan_record_id)
@@ -267,6 +362,10 @@ def run_ai_analysis_task(
             )
         logger.info("已分发 %d 个 AI 分析子任务 #%s", len(results), scan_record_id)
         live_skip_note = f"，正式网在跑跳过 {skipped_live} 个" if skipped_live else ""
+        if skipped_unlisted:
+            live_skip_note += f"，未上架跳过 {skipped_unlisted} 个"
+        if skipped_cooldown:
+            live_skip_note += f"，单币冷却跳过 {skipped_cooldown} 个"
         close_task(
             task_id, "completed",
             summary=f"已分发 {len(results)} 个分析子任务" + live_skip_note
@@ -274,6 +373,8 @@ def run_ai_analysis_task(
             detail={
                 "scan_record_id": scan_record_id, "dispatched": len(results),
                 "force": force, "live_running_skipped": skipped_live,
+                "unlisted_skipped": skipped_unlisted,
+                "cooldown_skipped": skipped_cooldown,
             },
         )
     except Exception as e:

@@ -560,6 +560,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
             "breakout_max_pct": flt.breakout_max_pct,
             "candle_max_ema21_dist_pct": flt.candle_max_ema21_dist_pct,
             "ai_max_per_scan": flt.ai_max_per_scan,
+            "quality_floor": flt.quality_floor,
             "allowed_triggers": list(flt.allowed_triggers),
             # 回踩触点体系（docs/22）：启用触点白名单 + 触点参数
             "pullback_touch_refs": list(flt.pullback_touch_refs),
@@ -593,6 +594,7 @@ _SCAN_FILTER_RANGES: dict[str, tuple[float, float, str]] = {
     "breakout_max_pct": (0, 20, "突破幅度上限（%，防追高，0=关闭）"),
     "candle_max_ema21_dist_pct": (0, 20, "悬空金K距 EMA21 上限（%，0=关闭）"),
     "ai_max_per_scan": (1, 50, "单轮扫描 AI 分析上限（个）"),
+    "quality_floor": (0, 110, "候选质量分下限（0=不过滤）"),
     # 回踩触点体系（docs/22）
     "retest_window_bars": (0, 500, "突破回测触点有效窗口（已收盘根数，0=关闭 retest 触点）"),
     "pending_confirm_window_bars": (1, 10, "回踩待确认窗口（已收盘根数，金K须出现在触碰根后 1~N 根内）"),
