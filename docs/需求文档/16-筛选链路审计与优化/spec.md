@@ -874,3 +874,82 @@ GROUP BY 1 ORDER BY 2 DESC;
 - 生产 4h 放行白名单仍是 `STATE_ALIGNED = ("aligned_bull", "aligned_bear")`，`bull_dip`/`bear_rally` 全部走 `htf_state_lock` 拒绝
 - 因此 **`bull_dip` 的真实成交组在当前配置下恒为 0**，上表第二行只能靠 `shadow_marks` 的拦截量来衡量"要不要放"
 - `htf_phase` 列自 2026-10-10 起有值，更早的行是 NULL（分组时会落到「(未记录)」桶，判读时忽略该桶）
+
+---
+
+## 16. P1-1 加深：完整链路回放（2026-10-27，结论：不可用）
+
+### 16.1 做了什么
+
+在 §15 的粗模型（动量票 + 1.33ATR/1.5R）之上，把真实触发链路串进回放：`_detect_retest` / `_detect_swing_touch` / `_detect_ema_touch(21/55/144)` + `_pullback_leg_gate` + `resolve_golden_evidence`，脚本 `/tmp/p11_full.py`。
+
+**对照组**（可信度检验）：取近 10 天线上真实产出的 `trigger_pullback_confirm` 信号 **620 条**（40 个高频币），用同一套函数重放，看能否复现线上信号。
+
+### 16.2 结论：复现率不够，回放不可用于决策
+
+| 检验 | 结果 |
+|---|---|
+| 触点复现（`bar = floor(signal_created_at) - 1h`，禁用表按历史默认不生效） | **66.7%**（8 币子样本 132 条中 88 条） |
+| 触点复现（`bar = floor(signal_created_at)`，即错一小时） | 45.5% |
+| 完整信号复现 | **2.4%**（620 条中 15 条） |
+
+三条已知原因：
+
+1. **retest 的事件派生路径无法复现**：线上 `retest` 来自扫描器的 `breakout_events` 状态机快照，回放只能用结构推导兜底（`_structural_retest_level`），两者命中集合差很多。而 `retest` 在 331 笔样本里是**期望最高**的触点（+33.07R）。
+2. **`ema21_4h` 无法复现**：需要 4h K 线，回放只喂 1h。
+3. **历史信号用的是历史配置**：现在多头禁用 `ema21`，10-17~10-27 的信号当时是允许的；按现配置回放必然漏掉多×ema21 那一批。
+
+**因此 §15 的 `+0.025R` 仍是当前唯一可用的数字口径**（粗、但复现性不依赖这些环节）。本节的价值是**划清边界**：想让"完整链路回放"成为可信工具，必须先让线上**落盘输入**，而不是事后从 Binance 重取。
+
+### 16.3 若要做成可信回放，缺的是三样数据（不是代码）
+
+| 缺口 | 现状 | 代价 |
+|---|---|---|
+| 每次扫描的 K 线快照 | 只有实时拉取，无落盘 | 每轮 518 币 × 1h×240 根 ≈ 30MB/轮，需采样或只存信号币 |
+| `breakout_events` 历史序列 | 只有"当前活跃"快照 | 每次状态变更落一条事件日志（已有 `scan_records` 可挂） |
+| 4h 上下文快照 | 只存 `htf` 摘要（状态/斜率/ADX），不存 4h K 线 | 只存状态机输出即可（`_detect_htf_ema21_touch` 需要 4h EMA21 值，可在扫描时一起落） |
+
+**建议**：若后续确实要靠回放做参数决策，优先落"被 4h 门拦下的 bar 的触点/金K解析结果"（在 `shadow_marks.value_json` 里加 `touch_ref`/`golden` 两个字段即可），这样下次不用重算链路，直接按 group 统计——成本约 20 行代码，远低于快照方案。
+
+### 16.4 本次加深顺带得到的下限数据（仅供参考，不作决策）
+
+在"完整链路会出信号"的 289 条被拦 bar 上（占 6,041 条的 4.8%）：均 R −0.113R、胜率 36.3%（96 TP / 178 SL / 15 超时）。因复现率不足，该数字**系统性偏向**能被回放检出的触点（swing 146 / retest 122 / ema21 25 / ema55 5），不代表全部被拦信号。
+
+---
+
+## 17. 开关启用记录（2026-10-27 20:00 UTC）
+
+| 开关 | 值 | 方式 | 回退 |
+|---|---|---|---|
+| `QUALITY_FLOOR`（P0-1） | **80** | `system_config.scan_filters.quality_floor = 80`（DB，下轮扫描即生效） | 页面改 0 或 SQL `jsonb_set(...,'{quality_floor}','0')` |
+| `BLACKLIST_REPEAT_STOP_N`（P2-4） | **2**（窗口 14 天 / 冷却 14 天） | 服务器 `backend/.env` + `IMAGE_TAG=ccd738a docker compose up -d --no-build --force-recreate backend celery_worker celery_beat` | 改回 0 后同一条命令 |
+
+验证（生产容器内实测）：
+```
+REPEAT_STOP_N= 2 days= 14 cool= 14 pos= 0.6
+/api/scans/config → quality_floor 80.0 ; allowed_triggers ['trigger_pullback_confirm']
+```
+
+**观察期**：
+- `QUALITY_FLOOR=80`：看 7 天候选量（预期从 ~9.6/轮 降到 ~5/轮）与 `scan_records.funnel_json.stages.quality_floor` 计数；若单日成交 <2 笔且 `quality_floor` 拦截 >70% 候选 → 降回 70 或 0。
+- `REPEAT_STOP_N=2`：看 `blacklist` 表是否新增 `origin='auto'` 且理由含"第 2 次止损出场"；若 7 天内新增 >5 个 → 阈值偏松（改为 3）。
+
+---
+
+## 18. 手动开单入场位置提示（方案 B，2026-10-27）
+
+**问题**：`ENTRY_POS_MIN_RATIO=0.6`（B1）只拦自动开仓；手动开单 `force_market=True` 按设计跳过。双网自动开仓都关闭时，实盘每笔都是手动单 → **B1 实际不拦任何单**（`ELSAUSDT` 案例：pos=0.31 仍开单）。
+
+**做法**：不改变"人做最终决定"的语义，把同一个 `pos` 提前显示在开单确认弹窗里。
+
+- 后端 `GET /api/trades/entry-preview?symbol=&direction=`（`backend/app/api/trades.py`）：复用 `entry_diagnostics.bar_position` 与 `closed_bars`，返回 `pos / pos_min / blocked / price / bar_low / bar_high / bar_open_ms / note`；算不出全部返回 `null`，绝不影响开单主链路。
+- 前端 `frontend/src/components/ResultTable.tsx`：与 `openAvailability` 并行拉取；弹窗新增「入场位置」一行，低于门槛时红色提示「自动开仓会被拦下，手动开单不拦，请自行判断」，并附该区间的实测区间数据。
+- 测试 `backend/tests/test_entry_preview.py` 6 条（算数/超阈/未超/开关关/空K线/拉取失败）。
+
+**生产验证**（ccd738a）：
+```json
+{"symbol":"ELSAUSDT","pos":0.2968,"pos_min":0.6,"blocked":true,
+ "note":"入场位置 0.30 低于门槛 0.6：2026-10-25~27 正式网同区间 34 笔，胜率 17.6%、合计 −14.30R；pos≥0.6 的 22 笔 63.6%、+18.42R"}
+```
+
+**注意**：飞书卡片「开单」按钮路径**没有**这个提示（卡片在点击前发出，无法预知当时的 pos）。若需要，可在卡片里嵌一句"当前 pos 见页面"或改成点击后二次确认——未做。
