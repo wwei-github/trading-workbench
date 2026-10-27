@@ -107,6 +107,20 @@ class Settings(BaseSettings):
     PENDING_ENTRY_ENABLED: bool = True
     PENDING_ENTRY_TTL_MINUTES: int = 60
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
+    # 入场位置闸（docs/需求文档/15-实盘止损归因与上线包 B1，2026-10-27）：
+    # 成交价在信号 K（最后一根已收盘 1h K）中的相对位置 pos=(price−low)/(high−low)
+    # 低于该值不开仓。实测正式网 56 笔：pos≥0.6 的 22 笔 63.6% 胜 +18.42R，
+    # pos<0.6 的 34 笔 17.6% 胜 −14.30R；市价（15 笔 +15.48 / 18 笔 −8.59）与
+    # 挂单（7 笔 +2.94 / 16 笔 −5.72）两条路径同向，故两路径都拦。
+    # 0 = 关闭（旧行为）；取不到 K 线（诊断失败）时放行，不因诊断故障停单。
+    # 手动开单（force_market）是用户对当下的明确意图，跳过本闸并记日志。
+    ENTRY_POS_MIN_RATIO: float = 0.0
+    # 入场诊断快照（同包 O1）：开仓/挂单落地时把 pos/room_r/stop_atr/planned_rr/
+    # quality_total/range_flag 等写进 trade_records.raw，后续归因免重新拉 K 线。
+    # 默认关：本项要额外拉一次 1h K 线，只有在 ENTRY_POS_MIN_RATIO>0 时才被顺带
+    # 触发（扫描侧同一份快照两用），单独打开等于是纯观测开销。
+    # 关掉/打不开时主链路照常下单，诊断降级为无。
+    ENTRY_DIAG_ENABLED: bool = False
     # 规则版本标记（docs/24 A0，2026-09-29）：随规则集变更递增（改 trigger/risk_guard/
     # 提示词纪律/分批比例均算改版），开仓与分析落库时快照到 trade_records/ai_analyses；
     # 复盘/归因按版本分组对比，跨版本混谈从机制上杜绝（NULL=上线前旧行按 legacy 理解）。

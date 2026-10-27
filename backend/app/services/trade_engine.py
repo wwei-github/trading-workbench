@@ -412,6 +412,44 @@ def _recover_unknown_limit_entry(
     _record(qty_=amt, entry_price=pos_entry, error=error, status=status)
 
 
+def _entry_snapshot(
+    cfg: SystemConfig, a: AIAnalysis, *,
+    price: float, stop_loss: float, direction: str, tp1: float,
+    entry_path: str,
+) -> dict:
+    """入场诊断快照（docs/需求文档/15-实盘止损归因与上线包 B1+O1，2026-10-27）。
+
+    一次 1h K 线请求同时喂两个消费方：① pos 闸（成交价落在信号 K 的位置）；
+    ② O1 诊断落库（pos/room_r/stop_atr/planned_rr/quality_total/range_flag）。
+
+    任何失败（交易所瞬断/ATR 样本不足/字段缺失）都返回 {}，由调用方按
+    "无诊断"处理：诊断是观测手段，绝不能因为观测故障阻断真实开仓。
+    """
+    try:
+        from app.services.entry_diagnostics import snapshot
+        from app.services.exchange_pool import ExchangePool
+
+        interval = (getattr(cfg, "kline_interval", None)
+                    or getattr(settings, "KLINE_INTERVAL", None) or "1h")
+        klines = ExchangePool().get_klines(a.symbol, interval, 60, allow_stale=True)
+        scan = getattr(a, "scan_result", None)
+        return snapshot(
+            klines=klines,
+            price=float(price),
+            stop_loss=float(stop_loss),
+            direction=direction,
+            tp1=float(tp1),
+            entry_price=(float(a.entry_price) if a.entry_price is not None else None),
+            entry_path=entry_path,
+            quality_parts=(scan.quality_parts if scan is not None else None),
+            signal_type=(scan.signal_type if scan is not None else None),
+            interval=interval,
+        )
+    except Exception:  # noqa: BLE001 - 诊断失败降级，不影响开仓主链路
+        logger.warning("入场诊断快照失败 %s（按无诊断继续开仓）", a.symbol, exc_info=True)
+        return {}
+
+
 def _attempt_open(
     db: Session, trader: BinanceTrader, cfg: SystemConfig,
     a: AIAnalysis,
@@ -610,6 +648,41 @@ def _attempt_open(
                     "开仓 %s：盈亏比按现价复算 %.2f 落在容差带 [%.2f, %.2f)，容差放行",
                     symbol, rr_now, rr_min - rr_tol, rr_min,
                 )
+        # 入场位置闸 + 诊断快照（docs/需求文档/15 B1/O1，2026-10-27）：pos =
+        # (成交价−low)/(high−low) 在信号 K（最后一根已收盘 1h K）中的相对位置。
+        # 正式网 56 笔实测：pos≥0.6 的 22 笔 63.6% 胜 +18.42R；pos<0.6 的 34 笔
+        # 17.6% 胜 −14.30R。市价路径（15 笔 +15.48 / 18 笔 −8.59）与挂单路径
+        # （7 笔 +2.94 / 16 笔 −5.72）同向，故两条路径出手前都拦——挂单模式用
+        # 限价（=AI 入场价）算 pos，市价模式用现价算。位于 RR/仓位闸之后：
+        # 前面那些闸门不通过的单子不必为此多花一次 K 线请求。
+        pos_min = float(getattr(settings, "ENTRY_POS_MIN_RATIO", 0.0) or 0.0)
+        entry_path = "limit" if order_mode == "limit" else "market"
+        entry_diag: dict = {}
+        if pos_min > 0 or bool(getattr(settings, "ENTRY_DIAG_ENABLED", False)):
+            entry_diag = _entry_snapshot(
+                cfg, a, price=float(ref_price), stop_loss=sl,
+                direction=direction, tp1=tp1, entry_path=entry_path,
+            )
+        pos_now = entry_diag.get("pos")
+        if pos_min > 0 and pos_now is not None and float(pos_now) < pos_min:
+            if force_market:
+                logger.info(
+                    "开仓 %s：入场位置 pos=%.2f < %.2f，手动开单按用户意图放行（entry_pos 闸）",
+                    symbol, float(pos_now), pos_min,
+                )
+            else:
+                logger.info(
+                    "开仓跳过 %s：入场位置 pos=%.2f < %.2f（成交价贴信号 K 低端，"
+                    "路径 %s，入场价 %s，stop_dist %s）",
+                    symbol, float(pos_now), pos_min, entry_path,
+                    ref_price, entry_diag.get("stop_dist"),
+                )
+                _mark_open_block(
+                    db, a,
+                    f"入场位置 pos={float(pos_now):.2f} < {pos_min:g}（成交价落在信号 K "
+                    f"下半部，做多贴低点/做空贴高点），entry_pos 闸拦截",
+                )
+                return "blocked"
         # 固定亏损仓位：基数分档 × 3% ÷ 止损距离（基准价 ref_price：市价模式=现价，
         # 挂单模式=AI 入场价——成交口径即限价，见上 RR 闸门）
         stop_pct = abs(ref_price - sl) / ref_price
@@ -914,6 +987,8 @@ def _attempt_open(
                     "beta": (round(beta, 4) if beta is not None else None),
                     "ai_snapshot": _ai_snapshot(a),
                     "entry_order_id": str(order["orderId"]),
+                    # 入场诊断快照（O1）：挂单期即落，成交落地时随 trade_records 带走
+                    "entry_diag": (entry_diag or None),
                 },
             )
             try:
@@ -1103,6 +1178,9 @@ def _attempt_open(
                     # 价差盈亏书签（REALIZED_PNL 累计，仅价差不含费用）：
                     # TP1/TP2 成交事件用"当前累计 − 书签"算本档盈亏
                     "realized_bookmark": 0,
+                    # 入场诊断快照（O1，2026-10-27）：pos/room_r/stop_atr/planned_rr/
+                    # quality_total/range_flag 等，归因时免重新拉 K 线重算
+                    "entry_diag": (entry_diag or None),
                 },
             )
             db.add(rec)
@@ -1415,6 +1493,20 @@ def materialize_pending_entry(
                 "挂单成交落地 %s：开仓闸门越线（%s）——保护单照常挂出",
                 symbol, "；".join(gate_breaches),
             )
+        # 入场诊断（O1，2026-10-27）：成交时按真实成交价重算 pos——信号 K 可能
+        # 已换根，挂单期快照的位置就过期了；重算失败才沿用挂单期快照
+        entry_diag_fresh = False
+        entry_diag: dict = dict(raw.get("entry_diag") or {})
+        if a is not None:
+            _recomputed = _entry_snapshot(
+                cfg, a, price=float(fill_price), stop_loss=sl,
+                direction=direction, tp1=tp1, entry_path="limit",
+            )
+            if _recomputed:
+                entry_diag = _recomputed
+                entry_diag_fresh = True
+        if entry_diag:
+            entry_diag["filled_price"] = float(fill_price)
         rec = TradeRecord(
             symbol=symbol,
             direction=direction,
@@ -1459,6 +1551,10 @@ def materialize_pending_entry(
                 "wallet": raw.get("wallet"),
                 "realized_bookmark": 0,
                 "pending_entry_id": str(pe_id),
+                # 入场诊断（O1，2026-10-27）：成交时按真实成交价重算 pos（信号 K 可能
+                # 已换根，挂单期快照的位置就过期了）；重算不出来才沿用挂单期快照
+                "entry_diag": (entry_diag or None),
+                "entry_diag_source": ("fill" if entry_diag_fresh else "placement"),
             },
         )
         db.add(rec)
