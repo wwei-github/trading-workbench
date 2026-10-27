@@ -718,3 +718,15 @@ GROUP BY 1, 2 ORDER BY 4 DESC;
 ```
 
 **判读线**：① 上线后 7 天多头 ema21 = 0 行；② 多头笔数不应低于上线前的 **70%**（低于即"误伤过重"，回退或改方案 C 降权）；③ 空×ema21 7 天 ΣR 仍 ≥ 0（若转负说明"21EMA 两侧都无效"，应升级为全局收窄而不是方向禁用）。
+
+### 16.10 上线记录（2026-10-27，UTC）
+
+| 时间 | 动作 | 结果 |
+|---|---|---|
+| 09:31 | push `02df984`（方向禁用表 + §16） | CI `deploy backend` **success**，三容器 `02df984` Up，PREV=`83200e1` |
+| 09:40 | `backend/.env` 追加 `PULLBACK_TOUCH_DENY_LONG=ema21`；`IMAGE_TAG=02df984 docker compose up -d --no-build --force-recreate backend celery_worker celery_beat` | 容器内 `settings.PULLBACK_TOUCH_DENY_LONG='ema21'` |
+| 09:40 | 发现冲突：`pullback_touch_refs` 已是 5 类（**无 ema21**），与方案 A"空头保留"冲突。审计日志显示 06:27Z 有一次 `scan_filters` 写入（页面侧），最后一次 `touch_ref=ema21` 扫描行在 07:00Z | 报用户拍板 |
+| 09:44 | 用户选"恢复 ema21，只禁多头" | `UPDATE system_config SET scan_filters = jsonb_set(...,'{pullback_touch_refs}','["retest","swing","ema21","ema21_4h","ema55","ema144"]')` |
+| 09:45 | `/api/scans/config` 复核 | base=6 类；`deny_long=['ema21']`、`deny_short=[]`；**多头生效 5 类（无 ema21）、空头生效 6 类（含 ema21）** ✅ |
+
+> 教训（写进流程）：**上线前先核对"生效值"，而不是只核对"我改了哪一行"**。本次的坑是——我改的是禁用表，但白名单上一小时被另一处改过，两个配置叠加后的实际集合才是真相。凡是"白名单 ∩ 禁用表"这类交集口径，验证必须打印**最终生效集合**（上面的 `多头生效触点 / 空头生效触点` 两行）。
