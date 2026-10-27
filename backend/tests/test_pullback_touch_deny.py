@@ -188,3 +188,52 @@ def test_api_rejects_unknown_touch():
 def test_api_rejects_non_list():
     with pytest.raises(HTTPException):
         _validate_scan_filters({"pullback_touch_deny_long": "ema21"})
+
+
+# ── 存量 pending 复核（2026-10-27：禁用后不得再从待确认漏进来） ─────────────
+def _pending_for(idx: int, direction: str = "long", touch_ref: str = TOUCH_EMA21) -> dict:
+    from datetime import datetime as _dt
+    ts = _flat_klines()[idx][0]
+    return {
+        "id": 1, "direction": direction, "touch_ref": touch_ref,
+        "stage1_candle_open": _dt.utcfromtimestamp(ts / 1000),
+    }
+
+
+def _hammer() -> list[dict]:
+    return [{"pattern": "hammer", "strength": 3, "offset": -2,
+             "direction": "bullish"}]
+
+
+def test_pending_with_denied_ref_not_confirmed():
+    """多头禁 ema21 后，既有 ema21 pending 不能再确认（否则最多漏 4 根）。"""
+    flt = _flt(pullback_touch_deny_long=(TOUCH_EMA21,),
+               pullback_leg_gate_enabled=False)
+    with patch.object(trig, "detect_all_patterns", return_value=_hammer()):
+        t, _op = trig.detect_trigger(
+            _flat_klines(), 1, pending=_pending_for(-3), flt=flt)
+    assert t is None
+
+
+def test_pending_with_allowed_ref_still_confirms():
+    """对照组：不禁用时同一 pending 正常确认（保证上面那条不是被别的门拦下）。"""
+    flt = _flt(pullback_touch_deny_short=(TOUCH_SWING,),
+               pullback_leg_gate_enabled=False)
+    with patch.object(trig, "detect_all_patterns", return_value=_hammer()):
+        t, _op = trig.detect_trigger(
+            _flat_klines(), 1, pending=_pending_for(-3), flt=flt)
+    assert t is not None and t["type"] == trig.PULLBACK_CONFIRM
+    assert t["touch_ref"] == TOUCH_EMA21
+
+
+def test_pending_short_ema21_still_confirms_under_long_deny():
+    """空头侧保留：多禁 ema21 不影响空头的 ema21 pending。"""
+    flt = _flt(pullback_touch_deny_long=(TOUCH_EMA21,),
+               pullback_leg_gate_enabled=False)
+    bear = [{"pattern": "bearish_engulfing", "strength": 3, "offset": -2,
+             "direction": "bearish"}]
+    with patch.object(trig, "detect_all_patterns", return_value=bear):
+        t, _op = trig.detect_trigger(
+            _flat_klines(), -1,
+            pending=_pending_for(-3, direction="short"), flt=flt)
+    assert t is not None and t["touch_ref"] == TOUCH_EMA21

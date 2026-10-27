@@ -1050,6 +1050,16 @@ def detect_trigger(
                     )
                     return None, None
             p_ref = pending.get("touch_ref")
+            # 触点被禁用/移出白名单后，存量 pending 不得再确认（2026-10-27，docs/15 §16）：
+            # 否则「触碰后 N 根内确认」会把已关闭的触点漏进来最多 N 根（N 默认 4 小时）。
+            # 用方向生效集合判定——多头禁 ema21 时，空头侧的 ema21 pending 照常确认。
+            if p_ref and p_ref not in flt.touch_refs_for(direction):
+                _diag_note(
+                    diag,
+                    f"待确认未确认：触点 {TOUCH_LABELS.get(p_ref, p_ref)}（{p_ref}）"
+                    "已不在当前该方向的启用触点集合",
+                )
+                return None, None
             # ema21 触点同样受 1H 结构门约束，但 2026-10-15 起复校只重罚不失效
             # （降级不否决，docs/21 O9）：结构不过照常确认，带 structure_gate=False
             p_structure_gate = True

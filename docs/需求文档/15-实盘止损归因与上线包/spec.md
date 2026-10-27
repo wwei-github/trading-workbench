@@ -653,7 +653,22 @@ FROM trade_records WHERE opened_at > now() - interval '24 hours';
 | `backend/app/services/strategy/trigger.py` | 触点探测改用 `refs = flt.touch_refs_for(direction)`；漏斗 diag 的"启用触点"文案同步 |
 | `backend/app/api/scan.py` | /config 回显两键；写入校验（允许空列表=不禁用、拒绝未知名、400） |
 | `backend/app/services/ai_analyzer.py` | AI 提示词按方向渲染"当前启用触点"（避免让模型拿被禁触点找依据） |
-| `backend/tests/test_pullback_touch_deny.py` | 16 条：`touch_refs_for` 五例、`resolve_scan_filters` 四例、`detect_trigger` 接线三例（多头不探测 21、空头仍探测）、API 校验四例 |
+| `backend/app/services/strategy/trigger.py`（行3） | 存量 pending 复核：确认根前若其 `touch_ref` 已不在该方向的生效集合 → 不确认（见 16.7.1） |
+| `backend/tests/test_pullback_touch_deny.py` | 19 条：`touch_refs_for` 五例、`resolve_scan_filters` 四例、`detect_trigger` 接线三例、API 校验四例、存量 pending 三例 |
+
+#### 16.7.1 上线当晚补的缺口：存量 pending 会绕过禁用表
+
+改完禁用表后复查代码才发现：**"触碰后 N 根内确认"路径（行3）不复核触点是否仍在启用集合**。也就是说关掉某个触点后，此前已建立 pending 的币仍可能在最多 `pending_confirm_window_bars`（默认 4）根内确认下单——等于禁用要延迟 4 小时才彻底生效，且旧 pending 的 `touch_ref` 会写进新单的 `scan_results`，复盘时看着像"禁了还在出"。
+
+修复（`trigger.py` 行3 分支，`p_ref = pending.get("touch_ref")` 之后）：
+
+```python
+if p_ref and p_ref not in flt.touch_refs_for(direction):
+    _diag_note(diag, f"待确认未确认：触点 …已不在当前该方向的启用触点集合")
+    return None, None          # 本根不确认，pending 留到窗口耗尽自然过期
+```
+
+用**方向生效集合**判定，所以"多头禁 ema21"不影响空头的 ema21 pending（测试 `test_pending_short_ema21_still_confirms_under_long_deny` 覆盖）。三条测试分别覆盖：被禁的 pending 不确认、未禁的同一 pending 照常确认（对照组，防止把"没确认"误归因于别的门）、空头侧不受影响。
 
 ### 16.8 上线与回退
 
