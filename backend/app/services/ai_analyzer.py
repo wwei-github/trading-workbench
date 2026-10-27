@@ -52,7 +52,7 @@ _RULE_SL = """止损纪律（结构位优先、金K极值兜底，两锚取更�
 - 结构锚：做多锚入场下方最近摆动低点外 0.4%（0.4%~0.6%），做空锚上方摆动高点外同幅。
 - 金K极值 = 金K窗口（最近 5 根已收盘K线，含信号K/突破K，未收盘根不参与）共同极值；
   做多取摆动低点与 5 根最低点中更低者外 0.4%，做空取更高者外 0.4%。该极值即失效位（影线极值）。
-- 距离分档：最近结构位距入场 > {far_atr}×ATR（=止盈一上限÷盈亏比，超过则盈亏比必不达标）
+- 距离分档：最近结构位距入场 > {far_atr}×ATR（止损锚分档阈值，与止盈上限独立；超过即视为更大级别）
   时该位属更大级别、不作止损锚，直接降级金K锚（stop_anchor="near"）；突破类降级需量比≥1。
 - 兜底（与金K极值间无摆动位）：同样用金K锚（多严格低于最低点、空严格高于最高点，≥0.4%）。
 - 止损宽度无内部上限，不得以「止损过宽」为由 skip——宽止损由固定亏损法自动缩仓；
@@ -483,7 +483,9 @@ def render_system_prompt(
     return SYSTEM_PROMPT.format(
         _RULE_DIRECTION=_RULE_DIRECTION.replace(chr(10), ' '),
         _RULE_STRUCT=render_rule_struct("analysis"),
-        _RULE_SL=_RULE_SL.format(far_atr=round(settings.TP1_MAX_ATR / _rr, 2)),
+        # 止损锚分档阈值走独立键（2026-10-28，docs/16 §20）：原来用
+        # TP1_MAX_ATR÷rr_min 现算，放宽止盈上限会顺带放宽止损锚
+        _RULE_SL=_RULE_SL.format(far_atr=round(settings.STOP_ANCHOR_MAX_ATR, 2)),
         # _RULE_TP 值内含 {rr_min}/{tp1_max_atr}/{tp1_max_r}/{tp2_gap_atr}/{tp2_gap_r}
         # 字面占位（format 不递归替换值），须渲染前显式替换
         _RULE_TP=compose_rule_tp(tp2_enabled).format(
