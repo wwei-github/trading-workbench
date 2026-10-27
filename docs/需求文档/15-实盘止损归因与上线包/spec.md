@@ -832,10 +832,21 @@ WHERE t.testnet=false AND t.signal_type='trigger_pullback_confirm'
 GROUP BY 1 ORDER BY 1;
 ```
 
-判据：①口径确为 `extreme`；②多头 swing 的 avg R 从 −0.09（全期 47 笔 +0.34R）转向 ≥0；③若信号量骤降（swing 从 26% 掉到 <15%）说明极值口径让触碰更难满足，需评估是否放宽 `STRUCTURE_TOUCH_BAND_PCT`（0.3% → 0.5%）。
+判据：①口径确为 `extreme`；②多头 swing 的 avg R 从 −0.09（全期 47 笔 +0.34R）转向 ≥0；③**信号量方向待观察**——极值口径让位价下移（多头）/上移（空头），"收盘守位"更容易满足而"影线入带"更难，净效果实测是**解锁**（见 §17.7 的 BTC/SOL 例：旧口径 None、新口径命中）。若 swing 占比从 26% 涨到 >40% 需警惕触点变滥，届时用 `STRUCTURE_TOUCH_BAND_PCT` 0.3% → 0.2% 收紧。
 
 ### 17.6 明确不做
 
 - 破位校验、band ATR 归一、结构位年龄闸：§17.2 数据不支持或非单调。
 - `ema55` / `ema144`：14 天覆盖率 2.1% / 1.3%、质量分最低（70.8 / 58.8）、期望 −1.53R / +0.46R → 不优化，保留观察。
 - 全局改 `recent_swings` 默认口径：风险外溢到 retest / AI 事实包 / 图表标注，不做。
+
+### 17.7 上线记录（2026-10-27）
+
+| 时间（UTC） | 动作 | 结果 |
+|---|---|---|
+| 10:20 | push `90a6f7b`（口径参数 + §17 + 13 条测试） | 全量 `pytest tests/` **1217 passed**；CI `deploy backend`（run 40488051208）**success** |
+| 10:25 | 部署后默认值复核 | `.deploy_state` PREV=`a75e589`/LAST=`90a6f7b`；三容器 `90a6f7b` Up；容器内 `SWING_LEVEL_SOURCE='close'`（行为不变） |
+| 10:26 | `backend/.env` 追加 `SWING_LEVEL_SOURCE=extreme` + `IMAGE_TAG=90a6f7b docker compose up -d --no-build --force-recreate backend celery_worker celery_beat` | 容器内 `SWING_LEVEL_SOURCE='extreme'`、`ENTRY_POS_MIN_RATIO=0.6`、`PULLBACK_TOUCH_DENY_LONG='ema21'`；api=200 |
+| 10:28 | 实盘 K 线口径对照（BTC/ETH/SOL/DOGE，`_detect_swing_touch` 两种口径各跑一次） | `BTCUSDT` close=None → **extreme 79684.8**；`ETHUSDT` 2305.36 → **2301.39**（偏移 0.17%）；`SOLUSDT` close=None → **extreme 99.86**；`DOGEUSDT` 0.07706 → **0.07688**（偏移 0.23%） |
+
+> 这张表同时说明**为什么这个改动不能只看代码对不对**：位价下移 0.2% 会让一批"收盘跌破伪位、但仍在真支撑之上"的信号从"不出触点"变成"出触点"——它是**信号集变化**，不是评分微调，所以 §17.5 必须按"多头 swing 的 avg R 与占比"双指标看 7 天。
