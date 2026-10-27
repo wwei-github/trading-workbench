@@ -1161,7 +1161,7 @@ TP1 设在 1.5R 的本意不是最大化期望，而是**先落袋一半、把�
 | `funnel` | 当日扫描轮数、币池、扫描数、errors，以及 `funnel_json.stages` / `htf_states` 的**累加**（关卡分布就是漏斗真相） |
 | `candidates` | 命中条数、按信号族、按触点、均质量分 |
 | `ai` | AI 分析条数与 `suggest/skip` 分布 |
-| `trades` | 已平仓（正式网、`pnl_pct` 非空、`risk_amount>1`）的总量/胜率/ΣR、按信号族/触点/出场原因/方向，以及 `stop_atr`/`pos`/`room_r`/`entry_path` 四个分档；附当日最差五笔 |
+| `trades` | **按 `closed_at` 归入当天**（当日结算口径，与"按开仓日归因"不是同一件事——同一批单在两种口径下会落到不同日期）的已平仓（正式网、`pnl_pct` 非空、`risk_amount>1`）总量/胜率/ΣR、按信号族/触点/出场原因/方向，以及 `stop_atr`/`pos`/`room_r`/`entry_path` 四个分档；附当日最差五笔 |
 | `blocked_probe` | 被 4h 门拦下的候选里，真实触点数、同向金K数、两者同时成立数（D1 落库的 `probe` 字段），即"4h 门的真实代价" |
 | `logs` | 当日 `app_logs` 各级别条数（异常面） |
 
