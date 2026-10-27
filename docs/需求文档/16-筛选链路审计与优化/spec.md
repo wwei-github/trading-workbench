@@ -909,7 +909,7 @@ GROUP BY 1 ORDER BY 2 DESC;
 | `breakout_events` 历史序列 | 只有"当前活跃"快照 | 每次状态变更落一条事件日志（已有 `scan_records` 可挂） |
 | 4h 上下文快照 | 只存 `htf` 摘要（状态/斜率/ADX），不存 4h K 线 | 只存状态机输出即可（`_detect_htf_ema21_touch` 需要 4h EMA21 值，可在扫描时一起落） |
 
-**建议**：若后续确实要靠回放做参数决策，优先落"被 4h 门拦下的 bar 的触点/金K解析结果"（在 `shadow_marks.value_json` 里加 `touch_ref`/`golden` 两个字段即可），这样下次不用重算链路，直接按 group 统计——成本约 20 行代码，远低于快照方案。
+**建议**：若后续确实要靠回放做参数决策，优先落"被 4h 门拦下的 bar 的触点/金K解析结果"（在 `shadow_marks.value_json` 里加 `touch_ref`/`golden` 两个字段即可），这样下次不用重算链路，直接按 group 统计——成本约 20 行代码，远低于快照方案。**（2026-10-27 已实施，见 §19）**
 
 ### 16.4 本次加深顺带得到的下限数据（仅供参考，不作决策）
 
@@ -953,3 +953,37 @@ REPEAT_STOP_N= 2 days= 14 cool= 14 pos= 0.6
 ```
 
 **注意**：飞书卡片「开单」按钮路径**没有**这个提示（卡片在点击前发出，无法预知当时的 pos）。若需要，可在卡片里嵌一句"当前 pos 见页面"或改成点击后二次确认——未做。
+
+---
+
+## 19. D1 实施：被拦候选当场落触点/金K解析（2026-10-27）
+
+### 19.1 为什么必须先做这个
+
+§16 已证明：完整链路回放的复现率只有 2.4%，根因不是代码写错，而是**被拦候选的输入没落盘**——`shadow_marks` 只有 4h 证据（state / reject_reason / slope / ADX），触点和金K要在事后按 1h K 重算，而 `retest` 的事件派生路径、`ema21_4h` 的 4h K 线都重建不出来。
+
+### 19.2 改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `backend/app/services/strategy/trigger.py` | ① 把 `evaluate_pullback_trigger` 内联的触点探测抽成 `_probe_touches(klines, direction, flt, *, retest, htf, htf_dir, diag)`（逐行等价，真实信号与被拦候选共用同一套判定）② 新增 `probe_blocked_context(klines, flt, retest=None) -> dict`：用 `compute_indicator_votes` 复算方向票取符号当方向（`\|net\|<1` 时不猜，留 None），再跑 `_probe_touches` + `resolve_golden_evidence`，返回 `{votes_net, touch_ref, touch_price, golden{pattern,offset,note}}`；异常全吞 |
+| `backend/app/services/scanner.py` | `blocked_shadows[symbol]` 快照新增 `"probe": _blocked_probe(klines, flt, retests.get(symbol))`；`_blocked_probe` 是容错包装（异常返回 `{}`），保证影子/诊断绝不中断扫描主循环 |
+
+开销：每轮约 42 个被拦币 × （票数 2ms + 触点 3ms + 形态 5ms）≈ 0.5 秒，相对扫描均值 14.8s 可忽略。
+
+### 19.3 口径边界（写清楚免得后续误读）
+
+- **方向是复算的**，不是线上当时的候选方向（4h 门先于票数，线上没有那个方向）。所以 `probe.votes_net` 与真实信号的 `votes_json.net` 可能不同，回放时以 `probe` 为准。
+- **触点走同一套禁用表**：`flt.touch_refs_for(direction)` 生效，即多头被禁的 `ema21` 不会出现在被拦候选里——这保证了"被拦候选"与"真实信号"的候选池口径一致。
+- **白名单全禁时回落通用白名单**（防停摆语义），因此会出现"白名单明明只配了 ema21、却标出 ema21"的情况，属设计。
+
+### 19.4 测试
+
+`backend/tests/test_blocked_probe.py` **9 条**：`net=0` 不猜方向、`net<0` 走 bearish、触点与位价落库、无触点留 None、金K只留三字段、异常返回结构完整 dict、禁用表在其他触点存在时生效、全禁回落、空头侧不受多头禁用影响。全量 `pytest tests/` **1303 passed**。
+实盘口径抽查（ETHUSDT 240 根 1h）：`{"votes_net": 3, "touch_ref": "swing", "touch_price": 2317.48, "golden": {"pattern": "piercing_line", "offset": -2}}`。
+
+### 19.5 下一步（D1 之后才有意义的事）
+
+1. 攒 2~3 天数据后，用 `shadow_marks.value_json->'probe'->>'touch_ref'` 直接分组统计被拦候选的触点分布——**不再需要重算链路**。
+2. 届时可以回答 §15 没能回答的问题：被 `gate_4h` 拦下的那批，`touch_ref` 分布是否与真实信号一致；若某类触点（如 retest）被 4h 门系统性拦掉，那 P2-1（band 归一）就该排到 P2-3 前面。
+3. 真正的"可信回放"仍缺 `breakout_events` 历史序列与 4h K 线快照，但触点/金K这一层现在已经不再是瓶颈。

@@ -244,6 +244,20 @@ def _htf_snapshot(res: Optional[dict], degraded: bool = False) -> dict:
     }
 
 
+def _blocked_probe(klines: list[list], flt, retest=None) -> dict:
+    """被 4h 门拦下的候选补「触点/金K」解析（2026-10-27，docs/16 §16.3 D1）。
+
+    只是 `trigger.probe_blocked_context` 的容错包装：任何异常都返回空 dict，
+    影子快照绝不因为诊断计算失败而中断（调用方在扫描主循环里）。
+    """
+    try:
+        from app.services.strategy.trigger import probe_blocked_context
+        return probe_blocked_context(klines, flt, retest=retest) or {}
+    except Exception as e:  # noqa: BLE001 - 诊断数据
+        logger.debug("被拦候选触点/金K解析失败 %s", e)
+        return {}
+
+
 def _htf_funnel(evidence: dict[str, dict]) -> dict:
     """4h 关卡证据聚合（2026-10-21 第 2 步）：关卡 × 状态 / 死因分布。
 
@@ -946,6 +960,12 @@ class Scanner:
                                         "detail": rv_out.get("detail"),
                                         "signal_bar_open_ms": int(klines[-2][0]),
                                         "close": float(klines[-2][4]),
+                                        # 触点/金K解析（2026-10-27，docs/16 §16.3 D1）：
+                                        # 4h 门先于触点探测，不补这一步，反事实回放
+                                        # 只能事后重算链路（实测复现率 2.4%）。这里用
+                                        # 与真实信号同一套探测口径当场算，随快照落库。
+                                        "probe": _blocked_probe(
+                                            klines, flt, retests.get(symbol)),
                                     }
                         return symbol, [], False
                     cand["symbol"] = symbol

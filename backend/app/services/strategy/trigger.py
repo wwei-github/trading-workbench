@@ -43,6 +43,7 @@ pending_confirm_window_bars，默认 4；N=1 即旧「恰好下一根」口径�
 position 语义（docs/09 方向派生口径，2026-09-28 关键位移除后回归）：
 看涨形态/回踩企稳=support、向上突破/反抽受阻=resistance。
 """
+import logging
 from datetime import datetime
 from typing import Optional, Tuple
 
@@ -66,8 +67,12 @@ from app.services.strategy.candlestick import (
 from app.services.strategy.ema import calc_ema
 from app.services.strategy.ema_gate import SLOPE_BARS, SLOPE_FLAT_PCT, structure_1h
 from app.services.strategy.indicators import volume_ratio
-from app.services.strategy.technical import atr_series, pullback_stabilize_bonus
+from app.services.strategy.technical import (
+    atr_series, compute_indicator_votes, pullback_stabilize_bonus,
+)
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # 触发类型 = signal_type（AI 提示词 SIGNAL_TYPE_LABELS 已注册同名标签）
 BREAKOUT = "trigger_breakout"                  # 结构突破：越过未破摆动前高/前低
@@ -187,6 +192,92 @@ def _diag_stage(diag: Optional[dict], code: str) -> None:
     """
     if diag is not None and not diag.get("stage"):
         diag["stage"] = code
+
+
+def _probe_touches(
+    klines: list[list], direction: int, flt, *,
+    retest: Optional[dict] = None,
+    htf: Optional[list] = None,
+    htf_dir: Optional[int] = None,
+    diag: Optional[dict] = None,
+) -> dict[str, float]:
+    """探测启用触点，返回 {ref: 位价}（2026-10-27 抽出，docs/16 §16.3 D1）。
+
+    原先是 `evaluate_pullback_trigger` 内联的一段，抽出来是为了让"被 4h 门拦下的
+    候选"也能复用同一套探测口径——反事实回放要求被拦快照与真实信号走**同一条**
+    触点判定路径，否则两边不可比。
+    行为与原内联版逐行一致：顺序 retest → swing → ema21 → ema55 → ema144 →
+    ema21_4h，方向禁用表由 `flt.touch_refs_for(direction)` 生效。
+    """
+    touches: dict[str, float] = {}
+    refs = flt.touch_refs_for(direction)
+    if TOUCH_RETEST in refs:
+        p = _detect_retest(klines, direction, retest,
+                           flt.retest_window_bars, flt.structure_touch_band_pct,
+                           order=flt.swing_order)
+        if p is not None:
+            touches[TOUCH_RETEST] = p
+    if TOUCH_SWING in refs:
+        p = _detect_swing_touch(
+            klines, direction, flt.structure_touch_band_pct, flt.swing_order,
+            diag=diag)
+        if p is not None:
+            touches[TOUCH_SWING] = p
+    for ref, period in ((TOUCH_EMA21, 21), (TOUCH_EMA55, 55), (TOUCH_EMA144, 144)):
+        if ref in refs:
+            p = _detect_ema_touch(klines, direction, period, flt, htf_dir=htf_dir)
+            if p is not None:
+                touches[ref] = p
+    if TOUCH_EMA21_4H in refs and htf:
+        p = _detect_htf_ema21_touch(klines, htf, direction)
+        if p is not None:
+            touches[TOUCH_EMA21_4H] = p
+    return touches
+
+
+def probe_blocked_context(
+    klines: list[list], flt, retest: Optional[dict] = None,
+) -> dict:
+    """被 4h 门拦下的候选：补「触点 / 金K」解析结果（2026-10-27，docs/16 §16.3 D1）。
+
+    为什么需要：4h 前置门在触点探测**之前**就把候选拦掉，`shadow_marks` 只存到
+    4h 证据（state / reject_reason / 斜率·ADX），于是"这根本来会不会出回踩信号"
+    只能事后按历史 K 线重算——而重算的复现率仅 2.4%（docs/16 §16.2：retest 的
+    事件派生路径与 ema21_4h 的 4h K 线无法从 1h K 重建）。把解析结果当场落库，
+    下次直接按 group 统计。
+
+    方向取值：被拦候选没有方向票结果（4h 门先于票数），这里用
+    `compute_indicator_votes` 复算一次取符号——与真实信号同一套方向票口径。
+    `|net| < 1` 时不猜方向，触点与金K 均留 None（回放侧按"方向未知"剔除）。
+
+    任何异常都吞掉返回已算出的部分——影子/诊断绝不拖累扫描。
+    返回 {votes_net, touch_ref, touch_price, golden}。
+    """
+    out: dict = {"votes_net": None, "touch_ref": None,
+                 "touch_price": None, "golden": None}
+    try:
+        net = int((compute_indicator_votes(klines) or {}).get("net") or 0)
+        out["votes_net"] = net
+        if abs(net) < 1:
+            return out
+        direction = 1 if net > 0 else -1
+        touches = _probe_touches(klines, direction, flt, retest=retest)
+        ref = next((r for r in TOUCH_ORDER if r in touches), None)
+        out["touch_ref"] = ref
+        out["touch_price"] = touches.get(ref) if ref else None
+        wanted = "bullish" if direction == 1 else "bearish"
+        golden, note = resolve_golden_evidence(
+            klines, wanted, detect_all_patterns(klines, idx=-2))
+        if golden:
+            out["golden"] = {
+                "pattern": golden.get("pattern"),
+                "offset": golden.get("offset"),
+                "note": note or "",
+            }
+        return out
+    except Exception:  # noqa: BLE001 - 诊断数据，绝不影响扫描
+        logger.debug("被拦候选触点/金K解析异常（忽略）", exc_info=True)
+        return out
 
 
 def _pending_touch_label(pending: dict, direction: int) -> str:
@@ -960,29 +1051,9 @@ def detect_trigger(
     # （横向结构语义强于均线；均线取最快——最早确认、止损最紧）
     # 方向禁用表（2026-10-27，docs/15 §16）在此生效：多头侧默认禁用 ema21
     # （多×ema21 44 笔 -16.67R 三期皆负），空头侧保留（+8.17R 转正）。
-    touches: dict[str, float] = {}
+    touches = _probe_touches(
+        klines, direction, flt, retest=retest, htf=htf, htf_dir=htf_dir, diag=diag)
     refs = flt.touch_refs_for(direction)
-    if TOUCH_RETEST in refs:
-        p = _detect_retest(klines, direction, retest,
-                           flt.retest_window_bars, flt.structure_touch_band_pct,
-                           order=flt.swing_order)
-        if p is not None:
-            touches[TOUCH_RETEST] = p
-    if TOUCH_SWING in refs:
-        p = _detect_swing_touch(
-            klines, direction, flt.structure_touch_band_pct, flt.swing_order,
-            diag=diag)
-        if p is not None:
-            touches[TOUCH_SWING] = p
-    for ref, period in ((TOUCH_EMA21, 21), (TOUCH_EMA55, 55), (TOUCH_EMA144, 144)):
-        if ref in refs:
-            p = _detect_ema_touch(klines, direction, period, flt, htf_dir=htf_dir)
-            if p is not None:
-                touches[ref] = p
-    if TOUCH_EMA21_4H in refs and htf:
-        p = _detect_htf_ema21_touch(klines, htf, direction)
-        if p is not None:
-            touches[TOUCH_EMA21_4H] = p
     touch_ref = next((r for r in TOUCH_ORDER if r in touches), None)
     touch_price = touches.get(touch_ref) if touch_ref else None
     touch_label = TOUCH_LABELS.get(touch_ref, "") if touch_ref else None
