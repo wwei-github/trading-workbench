@@ -29,6 +29,15 @@ export interface ScanResult {
   volume: number;
   volume_type: string;
   quality_score: number | null; // 指标驱动筛选：候选质量分 0-100（AI 配额排序键）
+  // 命中标注（2026-10-27，docs/15 §19）：扫描结果右图只标"这一行"，后端按
+  // services/hit_ref 统一口径下发；golden_combo/pattern_candle_open/entry_lag_pct
+  // 为库列直取，signal_candle_open/stage1_candle_open/direction 为派生值。
+  golden_combo?: boolean | null; // 组合确认（前根金K + 当根趋势K）
+  pattern_candle_open?: string | null; // 形态真实所在K线
+  entry_lag_pct?: number | null; // 确认滞后（不利方向为正，%）
+  signal_candle_open?: string | null; // 信号K线开盘
+  stage1_candle_open?: string | null; // 回踩触碰K线（非回踩为空）
+  direction?: number | null; // 命中方向 1 多 / -1 空 / 0 未知
   votes_json: { // 方向票明细（2026-10-15 拆角色：仅 MACD/布林带/RSI 三张方向票计方向，
                   // 门槛同向≥2；SuperTrend/ADX/OBV/4h背景不计方向票，docs/21 O9）
     bull: string[]; // 方向票看多指标名
@@ -615,6 +624,9 @@ export interface TradeKlineData {
   closed_at: string | null
   klines: Kline[]
   swings?: { highs: SwingPoint[]; lows: SwingPoint[] } // 摆动结构标注（与扫描图同源）
+  // 这次交易的命中标注（2026-10-27，docs/15 §19）：复盘图要画「信号K线 → 触碰
+  // K线 → 开仓 → 出场」完整链路，字段与命中历史 item 同源（后端 hit_ref）。
+  hit?: HitHistoryItem | null
   events: TradeKlineEvent[]
 }
 

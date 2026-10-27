@@ -94,7 +94,9 @@ export default function PendingPoolPanel() {
   const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState<StatusFilter>('pending')
   // 弹窗展示的币种 K 线（null=关闭）；所有 tab 的币种名称均点击可看
-  const [klineSymbol, setKlineSymbol] = useState<string | null>(null)
+  // 选中行整行保留（2026-10-27，docs/15 §19）：图上只标「这一笔」的命中
+  // （信号K = pending 建立时刻、触碰K = Stage-1），不再显示该币全部命中历史
+  const [klineRow, setKlineRow] = useState<PullbackPendingItem | null>(null)
   const colorScheme = useScanStore((s) => s.colorScheme)
 
   const fetchData = useCallback(async () => {
@@ -131,9 +133,9 @@ export default function PendingPoolPanel() {
   const columns: ColumnsType<PullbackPendingItem> = [
     {
       title: '币种', dataIndex: 'symbol', key: 'symbol', width: 130,
-      render: (v: string) => (
-        <Tooltip title="点击查看最新K线">
-          <Link strong onClick={() => setKlineSymbol(v)}>{v}</Link>
+      render: (v: string, r) => (
+        <Tooltip title="点击查看该笔待确认的命中K线">
+          <Link strong onClick={() => setKlineRow(r)}>{v}</Link>
         </Tooltip>
       ),
     },
@@ -277,16 +279,23 @@ export default function PendingPoolPanel() {
             </Spin>
           </div>
           <Modal
-            open={!!klineSymbol}
-            title={klineSymbol ? `${klineSymbol} 最新K线` : ''}
+            open={!!klineRow}
+            title={klineRow ? `${klineRow.symbol} 这次待确认的命中K线` : ''}
             footer={null}
             width={1200}
             destroyOnClose
-            onCancel={() => setKlineSymbol(null)}
+            onCancel={() => setKlineRow(null)}
           >
-            {klineSymbol && (
+            {klineRow && (
               <div style={{ height: 640 }}>
-                <KlineChart symbol={klineSymbol} limit={500} />
+                <KlineChart
+                  symbol={klineRow.symbol}
+                  limit={500}
+                  hitTime={klineRow.created_at}
+                  touchTime={klineRow.stage1_candle_open}
+                  hitDirection={klineRow.direction}
+                  hitSignalType="trigger_pullback_confirm"
+                />
               </div>
             )}
           </Modal>

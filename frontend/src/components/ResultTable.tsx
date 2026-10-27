@@ -983,6 +983,16 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
             limit={500}
             ai={selectedAi}
             scanResultId={selectedRecord.id}
+            // 命中标注（2026-10-27，docs/15 §19）：只标「这一行」的命中——
+            // 信号K / 触碰K / 形态根，不再显示该币最近全部命中历史
+            hitTime={selectedRecord.created_at}
+            signalCandleOpen={selectedRecord.signal_candle_open ?? null}
+            touchTime={selectedRecord.stage1_candle_open ?? null}
+            hitDirection={(selectedRecord.direction ?? 0) as 1 | -1 | 0}
+            hitSignalType={selectedRecord.signal_type}
+            hitPattern={selectedRecord.pattern}
+            hitGoldenCombo={!!selectedRecord.golden_combo}
+            hitPatternCandleOpen={selectedRecord.pattern_candle_open ?? null}
           />
         )}
       </div>

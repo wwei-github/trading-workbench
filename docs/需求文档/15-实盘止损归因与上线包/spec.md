@@ -36,7 +36,8 @@
 | ⑥ | **触点层**：回踩碰哪根线才算数 | **A2**（§16） | `pullback_touch_deny_long=ema21`（方向禁用表：多头禁 21EMA，空头保留） | 多×ema21 44 笔 -16.67R（早/近/现规则三期全负，跨 37 币）；空×ema21 +8.17R（近段转正 +13.18 / 现规则 +14.11） | 全期 **+24.69R → +41.36R**（287 笔，avg +0.077 → +0.145）；现规则 94 笔 +29.59 → **85 笔 +36.53** | `backend/.env` 该行置空 + 重启三容器（L0 同级） |
 | ⑦ | **触点定价层**：结构位取哪个价 | **A3**（§17） | `SWING_LEVEL_SOURCE=extreme`：swing 位价改用摆动K线自身 high/low（旧口径=收盘价） | swing 124 笔回放：位价与真极值偏移 <0.3% 的 46 笔 **+22.65R**，≥0.3% 的 60 笔 **-14.83R**；多头 14 笔 +13.99R（+0.999R/笔）对 33 笔 -13.65R（-0.414R/笔） | 多头 swing 的结构位从"伪支撑"回到真支撑（in-sample，待 7 天验证） | `backend/.env` 该行删/置 `close` + 重启三容器（L0 同级） |
 | ⑧ | **通知层**：可开单要让人知道 | **A6**（§18） | 双网自动交易全关时，达标信号仍推飞书橙卡（复用「错过信号」卡 + 每币每方向每日去重） | 双关期 `_dispatch_immediate_open` 直接 return，10:00 UTC 那批 9 条 suggest（60/70 分）**零通知**，`trade_events` 无任何开仓尝试 | 达标即可见（此前 0→每天最多「币种数×2」张） | `scripts/release.sh rollback`（L1） |
-| ⑨ | **明确不改** | — | 止损宽度、room 全局闸、ER/regime、评分门槛、同向上限、当日熔断、入场偏离闸 | 见 §5 / §10 / §12 | — | — |
+| ⑨ | **展示层**：命中标注该标哪一笔 | **A7**（§19） | 有单笔语境的三处（扫描结果行 / 交易复盘 / 待确认池）只标「这一笔」的命中；无单笔语境处（关注/搜索/漏斗/挂单预览）收紧到 24h、最多 5 条 | 扫描结果图原先把该币 3 天最多 20 条全画上、选中行自己的命中反而没标；交易复盘图 `isReplay` 时一条不画 | 图上从「20 条噪音」/「0 条」变成「1 条正确」 | 只回前端 `scripts/release.sh rollback <上一版前端 sha>`（L0） |
+| ⑩ | **明确不改** | — | 止损宽度、room 全局闸、ER/regime、评分门槛、同向上限、当日熔断、入场偏离闸 | 见 §5 / §10 / §12 | — | — |
 
 **效果阶梯（in-sample，逐步叠加；本段数字 2026-10-27 复核更正，见 §13）**：56 笔 **+4.12R** →（A1）37 笔 **+11.63R** →（+B1 全路径）21 笔 66.7% **+19.38R**。A1 与 B1 嵌套，不可相加。其中 10-26 从 **-9.95R** 收敛到 **-0.08R**——包的作用是掐掉坏日，不是放大好日。
 
@@ -970,3 +971,74 @@ GROUP BY 1 ORDER BY 1;
 
 - **手动开单补发开仓卡**：飞书按钮路径已有结果卡片、网页路径有页面回执，重复推送收益低。
 - **每轮扫描合并成一张多币汇总卡**：需要改卡片结构与批量取图，留待真有刷屏反馈再做（当前去重已把量压到"每币每日一条"）。
+
+---
+
+## 19. 命中标注归属：有单笔语境的地方只标"这一笔"（2026-10-27）
+
+### 19.1 现象与根因
+
+用户反馈两句，指向同一个缺失：
+
+1. **扫描结果右图**：选中一行，图上却把该币**最近 3 天、最多 20 条**命中/触碰/形态根全画上（`KlineChart` 在 `symbol` 模式自动拉 `hit-history`），选中行自己的命中反而没被精确标注（`scanResultId` 只用于抑制 AI 计划线）。
+2. **交易记录复盘图**：`isReplay` 时 `drawZones` 直接 `return`，**一条命中都不画**，只剩 OPEN/TP1/TP2/SL 事件箭头——看不到"这笔单是从哪次命中来的"。
+
+共同点：**后端没有"按 `scan_result_id` 提供单条命中"的通道**。信号K线派生、方向派生、触碰K线反查这些口径原本只活在 `GET /scans/hit-history` 里（`api/scan.py:_signal_candle_open` / `_hit_direction` / `pend_map`），扫描结果行与交易复盘两头都拿不到，只能退化成"全量"或者"空白"。
+
+### 19.2 归属原则
+
+按**有没有单笔语境**分层，而不是按页面重要性：
+
+| 位置 | 应该显示 | 理由 |
+|---|---|---|
+| 扫描结果右图 | 选中行**这一条**：信号K主标（`命中 · 回踩金K确认·看涨吞没(前根)`）+ 形态根副标 + 触碰K标 + 该命中的开单区间 | 这一行就是"本次命中"，别的命中与它无关 |
+| 交易记录复盘图 | 这笔交易来源命中的**同一套标注** + 现有成交事件 | 复盘要看「信号K → 开仓 → 出场」完整链路 |
+| 待确认池选中行 | 该 pending 的 Stage-1 触碰 + pending 建立时刻 | 同属"一笔"语境 |
+| 关注页 / 搜索页 / 漏斗 / 挂单预览 | 该币**最近 24h、最多 5 条** | 无单笔语境，看近期信号分布；3 天/20 条会糊满屏幕 |
+| 命中历史 tab | 全量可筛选列表 | "全部历史"的正当归属地 |
+
+### 19.3 实现
+
+**后端**
+| 文件 | 改动 |
+|---|---|
+| `backend/app/services/hit_ref.py` | 新增：`signal_candle_open()` / `hit_direction()` / `stage1_map()` / `entry_lag_warn()` / `payload()` / `payload_for()`，把命中口径收成一份（原 `api/scan.py` 私有实现迁出，行为不变） |
+| `backend/app/api/scan.py` | `_hit_direction` / `_signal_candle_open` 改为薄壳委托 `hit_ref`；`_get_results` 用 `model_copy(update=...)` 给每行补 `signal_candle_open` / `stage1_candle_open` / `direction` / `golden_combo` |
+| `backend/app/schemas/scan.py` | `ScanResultOut` 增 `golden_combo` / `pattern_candle_open` / `entry_lag_pct` / `signal_candle_open` / `stage1_candle_open` / `direction` |
+| `backend/app/api/trades.py` | `/trades/{id}/klines` 增 `"hit": hit_ref.payload_for(db, rec.scan_result_id)`（无 scan_result 或旧行 → null） |
+
+**前端**
+| 文件 | 改动 |
+|---|---|
+| `frontend/src/types/index.ts` | `ScanResult` 增 6 个命中字段；`TradeKlineData` 增 `hit?: HitHistoryItem \| null` |
+| `frontend/src/components/KlineChart.tsx` | ① `replayHit` = 复盘模式下接口下发的 `data.hit`，纳入 `externalHit` / `effHits`（只画一条）② `drawZones` 复盘分支改为"先画成交价格带、再叠加命中标注"③ 自动拉取收紧为 **24h / 5 条** ④ `overlayFrom` 在复盘有 hit 时也收左沿，保证信号K入镜 |
+| `frontend/src/components/ResultTable.tsx` | 选中行透传 `hitTime` / `signalCandleOpen` / `touchTime` / `hitDirection` / `hitSignalType` / `hitPattern` / `hitGoldenCombo` / `hitPatternCandleOpen` |
+| `frontend/src/components/PendingPoolPanel.tsx` | `klineSymbol: string` → `klineRow: PullbackPendingItem`，图示该笔 pending 的命中（`hitTime=created_at`、`touchTime=stage1_candle_open`、`hitSignalType=trigger_pullback_confirm`） |
+
+### 19.4 测试
+
+| 用例 | 覆盖 |
+|---|---|
+| `tests/test_hit_ref.py`（新增 17 条） | 信号K归属（尾窗=该整点根 / 非尾窗=上一根 / `signal_created_at` 优先 / 无时间戳）、方向派生（position 四象限优先 → votes.net → slope → 0）、`stage1_map`（空入参不查库 / 读到行）、`entry_lag_warn` 阈值、`payload` 形状、`payload_for(None)`、`ScanResultOut.model_validate + model_copy(update=...)` |
+
+全量：**1241 passed**（1224 + 17）。前端 `npx tsc --noEmit` 与 `npm run build` 均通过。
+
+### 19.5 回退
+
+| 层级 | 动作 | 时长 |
+|---|---|---|
+| L0 | 仅回退前端：`scripts/release.sh rollback <上一版前端 sha>` | 分钟级 |
+| L1 | 前后端一起回：`scripts/release.sh rollback`（默认 `PREV_SHA`） | 分钟级 |
+| L2 | 只想恢复"全量命中标注"观感：把 `KlineChart.tsx:743` 的 `page_size: 5` / `subtract(1,'day')` 改回 `20` / `3`（重新构建前端） | 需发版 |
+
+后端新增字段是**纯加法**（无 schema 迁移、无写库变化），旧前端读新后端不会报错，可只回前端。
+
+### 19.6 判读
+
+上线后打开任意一笔正式网交易的复盘图，应看到：命中主标（含信号类型与形态、必要时 `(前根)`）→ 形态根副标 → 触碰标 → 成交带 → OPEN 箭头。扫描结果页选中一行，图中**只有 1 条**命中标注（4h/1d 图上可能压成同一根）。
+
+### 19.7 明确不做
+
+- **命中历史列表加图内筛选器**：列表本身可筛（币种/时间/是否重复），图内再筛收益低。
+- **把"最近 3 天全量"保留成可选开关**：多一个状态多一处口径漂移；真要查全量用"命中历史" tab。
+- **手动开单/挂单预览也用单条命中**：挂单预览的"看该币近期"语义尚未被用户否定，本轮不动。

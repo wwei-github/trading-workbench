@@ -733,17 +733,23 @@ export default function KlineChart({
   // 缓存键周期（仅缓存模式使用；扫描模式下拉档位固定 1h/4h/1d）
   const cacheInterval = (reqInterval ?? defaultInterval) as KlineInterval
 
-  // 自动命中历史（2026-10-16）：所有扫描模式（symbol）K线图缺省显示该币最近
-  // 3 天命中/触碰标注；外部已显式传入（HitHistoryPanel 指定行）时以传入为准，
-  // 不再重复拉取；复盘模式（tradeId）已由事件箭头承载，不再叠加
+  // 自动命中历史（2026-10-16；2026-10-27 收紧）：只在"没有单笔语境"的扫描模式
+  // （关注页/搜索页/漏斗/挂单预览）显示该币**最近 24h、最多 5 条**命中标注——
+  // 3 天/20 条会一屏糊满标注（用户反馈）。有单笔语境的三处（扫描结果行、
+  // 交易复盘、待确认池选中行）改为显式传入"这一笔"，不再走自动拉取。
   const [autoHits, setAutoHits] = useState<HitHistoryItem[]>([])
-  const externalHit = !!(hitTime || touchTime)
+  // 复盘模式：命中来自接口随交易下发的 hit（docs/15 §19），与扫描结果同口径
+  const replayHit = useMemo(
+    () => (isReplay ? ((data as TradeKlineData | null)?.hit ?? null) : null),
+    [isReplay, data],
+  )
+  const externalHit = !!(hitTime || touchTime || replayHit)
   useEffect(() => {
     if (isReplay || !symbol || externalHit) return
     let cancelled = false
-    const start = dayjs.utc().subtract(3, 'day').toISOString()
+    const start = dayjs.utc().subtract(1, 'day').toISOString()
     scanApi
-      .hitHistory({ symbol, start, page: 1, page_size: 20, sort_by: 'created_at', order: 'desc' })
+      .hitHistory({ symbol, start, page: 1, page_size: 5, sort_by: 'created_at', order: 'desc' })
       .then((r) => {
         if (!cancelled) setAutoHits(r.items ?? [])
       })
@@ -760,6 +766,21 @@ export default function KlineChart({
 
   // 有效命中列表：外部显式传入（单条）优先，否则取自动拉取的最近 3 天列表
   const effHits: EffHit[] = useMemo(() => {
+    if (replayHit) {
+      // 复盘：只标这一笔的命中（信号K / 触碰K / 形态根），成交区间由复盘自身画
+      return [{
+        id: replayHit.id ?? null,
+        hitTime: replayHit.created_at ?? null,
+        signalCandleOpen: replayHit.signal_candle_open ?? null,
+        touchTime: replayHit.stage1_candle_open ?? null,
+        direction: (replayHit.direction ?? 0) as 1 | -1 | 0,
+        trade: null,
+        signalType: replayHit.signal_type ?? null,
+        pattern: replayHit.pattern ?? null,
+        goldenCombo: replayHit.golden_combo ?? false,
+        patternCandleOpen: replayHit.pattern_candle_open ?? null,
+      }]
+    }
     if (externalHit) {
       return [{
         id: null,
@@ -786,7 +807,7 @@ export default function KlineChart({
       goldenCombo: h.golden_combo ?? false,
       patternCandleOpen: h.pattern_candle_open ?? null,
     }))
-  }, [externalHit, hitTime, signalCandleOpen, touchTime, hitDirection, tradeOverlay, hitSignalType, hitPattern, hitGoldenCombo, hitPatternCandleOpen, autoHits])
+  }, [replayHit, externalHit, hitTime, signalCandleOpen, touchTime, hitDirection, tradeOverlay, hitSignalType, hitPattern, hitGoldenCombo, hitPatternCandleOpen, autoHits])
 
   // 同一扫描结果已开单时，AI 建议线（做多/止损/止盈）与实际成交线（开多/止损/止盈）
   // 是同一次决策的两个阶段，图上只保留实际成交数据（2026-10-22 用户拍板）
@@ -1079,7 +1100,8 @@ export default function KlineChart({
   // 2026-10-26（docs/11）：形态根早于命中根，一并并入候选时间集，
   // 否则副标可能落在左沿之外（窗口按最早者收边，不会把主标推出视野）
   const overlayFrom = useMemo(() => {
-    if (isReplay || !klines.length || !effHits.length) return undefined
+    // 复盘（有 hit）也收左沿：保证信号K/形态根在可视区内
+    if ((isReplay && !replayHit) || !klines.length || !effHits.length) return undefined
     const cands = effHits
       .flatMap((h) => [h.hitTime, h.touchTime, h.patternCandleOpen])
       .filter((v): v is string => !!v)
@@ -1092,20 +1114,21 @@ export default function KlineChart({
       else break
     }
     return Math.min(Math.max(0, klines.length - 130), Math.max(0, idx - 5))
-  }, [isReplay, klines, effHits])
+  }, [isReplay, replayHit, klines, effHits])
 
   // 区域覆盖层回调（ChartCore 每帧在空白 SVG 上调用）：
   // 复盘模式=全区间价格带；命中历史=时间裁剪的开单区间 + 命中/触碰图形化标注
   const drawZones = useCallback(
     (ctx: OverlayCtx) => {
-      if (replayData) {
-        drawReplayZones(replayData, colorScheme, ctx)
-        return
-      }
+      // 复盘：先画成交区间价格带，再叠加"这一笔"的命中标注（2026-10-27，docs/15 §19）
+      if (replayData) drawReplayZones(replayData, colorScheme, ctx)
       if (!klines.length) return
-      // 每条命中的关联开单区间（多条命中可能多个区间）
-      for (const h of effHits) {
-        if (h.trade) drawHitOverlay(klines, h.trade, colorScheme, ctx)
+      // 每条命中的关联开单区间（多条命中可能多个区间）；复盘模式由 drawReplayZones
+      // 自己画成交带，这里不再重复画（replayHit.trade 恒为 null）
+      if (!replayData) {
+        for (const h of effHits) {
+          if (h.trade) drawHitOverlay(klines, h.trade, colorScheme, ctx)
+        }
       }
       const marks: Array<{ ms: number; color: string; fill: string; label: string; kind: 'hit' | 'touch' | 'pattern'; preferBelow: boolean }> = []
       const ivMs = INTERVAL_MS[serverInterval] ?? INTERVAL_MS['1h']

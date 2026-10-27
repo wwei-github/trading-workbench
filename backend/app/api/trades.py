@@ -31,6 +31,7 @@ from app.schemas.trade import (
 from app.services.binance_client import _INTERVAL_MINUTES
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services.strategy import swing_annotations
+from app.services import hit_ref
 
 logger = logging.getLogger(__name__)
 
@@ -1033,6 +1034,9 @@ def trade_klines(
             for e in evts
             if e.event_type in ("OPEN", "TP1_FILL", "TP2_FILL", "SL_FILL")
         ],
+        # 这次交易的命中标注（2026-10-27，docs/15 §19）：复盘图要画「信号K线 →
+        # 触碰K线 → 开仓 → 出场」的完整链路，命中口径与扫描结果页同源（hit_ref）。
+        "hit": hit_ref.payload_for(db, rec.scan_result_id) if rec.scan_result_id else None,
     }
 
 

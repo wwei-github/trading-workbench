@@ -44,6 +44,7 @@ from app.schemas.scan import (
 )
 from app.services.exchange_pool import ExchangePool, AllExchangesFailed
 from app.services import market_data as md
+from app.services import hit_ref
 from app.services.scanner import classify_volume
 from app.services.trade_engine import breaker_status_by_net
 from app.services.ai_analyzer import analyze_coin
@@ -329,10 +330,19 @@ def _get_results(
         .scalars()
         .all()
     )
-    return ScanResultListResponse(
-        items=[ScanResultOut.model_validate(i) for i in items],
-        total=total,
-    )
+    # 命中标注派生字段（2026-10-27，docs/15 §19）：扫描结果右图只标当前行，
+    # 故把「信号K线/触碰K线/方向」按 hit_ref 统一口径算好随行下发。
+    stage1 = hit_ref.stage1_map(db, [i.id for i in items])
+    out = []
+    for i in items:
+        obj = ScanResultOut.model_validate(i)
+        out.append(obj.model_copy(update={
+            "signal_candle_open": hit_ref.signal_candle_open(i),
+            "stage1_candle_open": stage1.get(i.id),
+            "direction": hit_ref.hit_direction(i),
+            "golden_combo": bool(i.golden_combo),
+        }))
+    return ScanResultListResponse(items=out, total=total)
 
 
 # ===== AI 分析端点 =====
@@ -1891,35 +1901,13 @@ _POS_LONG_BY_TYPE = {
 
 
 def _hit_direction(r: ScanResult) -> int:
-    """命中方向派生：信号族 + position（trigger.py 方向派生口径）→
-    旧/未知行回退方向票净票 → 趋势斜率；1 多 / -1 空 / 0 未知
-
-    回踩确认本身是逆 1h 方向票的（如回踩摆动高点时 MACD/布林带仍偏多），
-    用 votes.net 判方向会把空信号误标成看多，故 position 有值时以它为准；
-    突破族 position=resistance 表示「向上突破」，方向为多（2026-10-26）。"""
-    pos = (r.position or "").strip().lower()
-    long_pos = _POS_LONG_BY_TYPE.get((r.signal_type or "").strip().lower())
-    if long_pos and pos in ("support", "resistance"):
-        return 1 if pos == long_pos else -1
-    votes = r.votes_json or {}
-    net = votes.get("net")
-    if isinstance(net, (int, float)) and net != 0:
-        return 1 if net > 0 else -1
-    slope = float(r.trend_slope or 0)
-    return 1 if slope > 0 else -1 if slope < 0 else 0
+    """命中方向（2026-10-27 迁至 services/hit_ref，此处保留薄壳以免改动调用点）"""
+    return hit_ref.hit_direction(r)
 
 
 def _signal_candle_open(r: ScanResult) -> Optional[datetime]:
-    """信号K线开盘时间（UTC naive）：扫描周期固定 1h（配置页保存时归一化 1h），
-    信号根 = 扫描时刻所在整点；尾窗内近收盘未收盘根被 screen_klines 视作信号根
-    （幽灵尾根），此时信号根就是该整点根，其余情形 = 上一根已收盘根。
-    扫描时刻优先 signal_created_at（候选产生时刻），旧行回退 created_at。
-    ts 为 UTC naive，in_forming_tail 只取时分秒，无需 tz 转换。"""
-    ts = r.signal_created_at or r.created_at
-    if ts is None:
-        return None
-    bar = ts.replace(minute=0, second=0, microsecond=0)
-    return bar if md.in_forming_tail("1h", ts) else bar - timedelta(hours=1)
+    """信号K线开盘时间（2026-10-27 迁至 services/hit_ref，薄壳保留）"""
+    return hit_ref.signal_candle_open(r)
 
 
 def _nz(v) -> Optional[float]:

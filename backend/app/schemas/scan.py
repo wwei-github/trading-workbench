@@ -41,6 +41,16 @@ class ScanResultOut(BaseModel):
     votes_json: Optional[dict] = None  # 指标票数明细 {bull, bear, bull_n, bear_n, net, voted}
     is_repeat: bool
     created_at: datetime
+    # 命中标注（2026-10-27，docs/15 §19）：扫描结果右图只标"这一行"，故下发同一套
+    # 派生口径（services/hit_ref）。golden_combo/pattern_candle_open/entry_lag_pct
+    # 在库列由 ORM 直取；signal_candle_open/stage1_candle_open/direction 由
+    # _get_results 计算填入（model_copy(update=...)）。
+    golden_combo: Optional[bool] = None  # 组合确认（前根金K + 当根趋势K）
+    pattern_candle_open: Optional[datetime] = None  # 形态真实所在K线
+    entry_lag_pct: Optional[float] = None  # 确认滞后（不利方向为正，%）
+    signal_candle_open: Optional[datetime] = None  # 信号K线开盘（派生）
+    stage1_candle_open: Optional[datetime] = None  # 回踩触碰K线（派生，非回踩为空）
+    direction: Optional[int] = None  # 命中方向 1/-1/0（派生）
 
     class Config:
         from_attributes = True
