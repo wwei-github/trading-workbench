@@ -71,7 +71,8 @@ def test_near_anchor_exempt():
     """近锚（突破类 stop_anchor=near）：止损刻意贴金K窗口极值、低于下限也放行"""
     sig_low = 99.85  # 金K窗口（近5根）共同最低价
     anchor = sig_low * (1 - NEAR_ANCHOR_BUFFER)
-    d = _dec(stop=round(anchor, 6), tp1=100.8, anchor="near")
+    # TP1=101.2：缓冲 0.3%→0.4% 后止损距离略宽（≈0.55），RR≈2.2 仍达标
+    d = _dec(stop=round(anchor, 6), tp1=101.2, anchor="near")
     ok, v, _ = validate_decision(
         d, _signal(signal_type="trigger_breakout"), _klines(sig_low=sig_low),
     )
