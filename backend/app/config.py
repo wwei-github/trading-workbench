@@ -69,6 +69,15 @@ class Settings(BaseSettings):
     # DB system_config.scan_filters 同名键优先，见 scan_filters.resolve_scan_filters
     PULLBACK_TOUCH_DENY_LONG: str = ""
     PULLBACK_TOUCH_DENY_SHORT: str = ""
+    # 摆动结构位价口径（2026-10-27，docs/15 §17）：close=收盘价摆动点（旧口径，
+    # 与 AI 事实包/K线标注同源）；extreme=按摆动K线自身的 high/low 定价（真极值）。
+    # 仅 swing 触点消费；retest 与图表/AI 标注仍用 close，避免风险外溢。
+    # 依据：正式网 swing 成交 124 笔回放（106 笔复现）——位价与真极值偏移
+    # <0.3% 的 46 笔 +22.65R，≥0.3% 的 60 笔 -14.83R；按方向拆开是多头
+    # 14 笔 +13.99R（+0.999R/笔）对 33 笔 -13.65R（-0.414R/笔），空头几乎无差。
+    # 机制：多头收盘价口径把支撑位记在实体边缘（高于真低点 0.3~0.8%），止损贴
+    # 伪位下方，价格去测真支撑时先被扫。改 extreme 后位价回落，触发点与止损同移。
+    SWING_LEVEL_SOURCE: str = "close"
     # 1h 结构门开关：已于 2026-10-12 退役（docs/21 O7）。字段保留向后兼容，
     # scanner 不再消费，scan_filters.structure_1h_gate 同理（同退役先例）
     STRUCTURE_1H_GATE: bool = True

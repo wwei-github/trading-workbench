@@ -16,19 +16,35 @@ from app.services.strategy.swing import find_swing_points, merge_swings
 __all__ = ["recent_swings", "swing_annotations"]
 
 
-def recent_swings(klines: list[list], order: int = 3, n: int = 2) -> dict:
+def recent_swings(
+    klines: list[list], order: int = 3, n: int = 2, price_source: str = "close",
+) -> dict:
     """最近 n 个已确认摆动高点/低点，附 HH/LH/HL/LL 结构分类。
 
-    收盘价摆动点，两侧各 order 根确认。
-    返回: {"highs": [{"label","price","bars_ago"}...新→旧], "lows": [...]}
+    默认收盘价摆动点，两侧各 order 根确认（与 AI 事实包/K线标注同源）。
+    price_source="extreme" 时改用摆动K线自身的 high/low 归一（真极值口径，
+    仅回踩 swing 触点消费，2026-10-27 docs/15 §17）——两者确认逻辑完全相同，
+    差别只在「结构位价格取自哪一列」。
+
+    返回: {"highs": [{"label","price","bars_ago","extreme"}...新→旧], "lows": [...]}
     分类规则与 Pine 结构标签一致：高点 HH(高于前高点)/LH(低于)，无前参照为 H；
     低点 HL(高于前低点)/LL(低于)，无前参照为 L。bars_ago 以最新一根（含未收盘）为 0。
+    extreme 为该摆动K线自身的 high（高点序列）/ low（低点序列），供调用方做
+    位价偏移诊断（|price-extreme|/extreme）。
     """
-    closes = np.array([float(k[4]) for k in klines], dtype=float)
-    if len(closes) < 2 * order + 1:
+    use_extreme = (price_source or "close").strip().lower() == "extreme"
+    # 真极值恒抽出（extreme 列是诊断口径，与 price 取哪一列无关）
+    hs = np.array([float(k[2]) for k in klines], dtype=float)
+    ls = np.array([float(k[3]) for k in klines], dtype=float)
+    if use_extreme:
+        highs, lows = hs, ls
+    else:
+        closes = np.array([float(k[4]) for k in klines], dtype=float)
+        highs = lows = closes
+    if len(highs) < 2 * order + 1:
         return {"highs": [], "lows": []}
-    high_idx, low_idx = find_swing_points(closes, closes, order)
-    swings = merge_swings(high_idx, low_idx, closes, closes)
+    high_idx, low_idx = find_swing_points(highs, lows, order)
+    swings = merge_swings(high_idx, low_idx, highs, lows)
     n_bars = len(klines)
 
     def _build(seq: list[tuple[int, str, float]], kind: str) -> list[dict]:
@@ -42,7 +58,9 @@ def recent_swings(klines: list[list], order: int = 3, n: int = 2) -> dict:
                 label = "H" if prev is None else ("HH" if price > prev else "LH")
             else:
                 label = "L" if prev is None else ("HL" if price > prev else "LL")
-            out.append({"label": label, "price": price, "bars_ago": n_bars - 1 - idx})
+            ext = float(hs[idx]) if kind == "H" else float(ls[idx])
+            out.append({"label": label, "price": price, "bars_ago": n_bars - 1 - idx,
+                        "extreme": ext})
         return out
 
     return {

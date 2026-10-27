@@ -35,6 +35,7 @@
 | ⑤ | **震荡否决** | A5（**已否决**，见 §13） | 原计划 `range` 扣分改否决 | 带标记 11 笔 -6.79R，但这些单基本都是 `pos<0.6`，已被 B1 覆盖 | A1+B1 后增量 **+0.22R** | — |
 | ⑥ | **明确不改** | — | 止损宽度、room 全局闸、ER/regime、评分门槛、同向上限、当日熔断、入场偏离闸 | 见 §5 / §10 / §12 | — | — |
 | ⑦ | **触点层**：回踩碰哪根线才算数 | **A2**（§16） | `pullback_touch_deny_long=ema21`（方向禁用表：多头禁 21EMA，空头保留） | 多×ema21 44 笔 -16.67R（早/近/现规则三期全负，跨 37 币）；空×ema21 +8.17R（近段转正 +13.18 / 现规则 +14.11） | 全期 **+24.69R → +41.36R**（287 笔，avg +0.077 → +0.145）；现规则 94 笔 +29.59 → **85 笔 +36.53** | `backend/.env` 该行置空 + 重启三容器（L0 同级） |
+| ⑧ | **触点定价层**：结构位取哪个价 | **A3**（§17） | `SWING_LEVEL_SOURCE=extreme`：swing 位价改用摆动K线自身 high/low（旧口径=收盘价） | swing 124 笔回放：位价与真极值偏移 <0.3% 的 46 笔 **+22.65R**，≥0.3% 的 60 笔 **-14.83R**；多头 14 笔 +13.99R（+0.999R/笔）对 33 笔 -13.65R（-0.414R/笔） | 多头 swing 的结构位从"伪支撑"回到真支撑（in-sample，待 7 天验证） | `backend/.env` 该行删/置 `close` + 重启三容器（L0 同级） |
 
 **效果阶梯（in-sample，逐步叠加；本段数字 2026-10-27 复核更正，见 §13）**：56 笔 **+4.12R** →（A1）37 笔 **+11.63R** →（+B1 全路径）21 笔 66.7% **+19.38R**。A1 与 B1 嵌套，不可相加。其中 10-26 从 **-9.95R** 收敛到 **-0.08R**——包的作用是掐掉坏日，不是放大好日。
 
@@ -747,3 +748,94 @@ GROUP BY 1, 2 ORDER BY 4 DESC;
 | 09:45 | `/api/scans/config` 复核 | base=6 类；`deny_long=['ema21']`、`deny_short=[]`；**多头生效 5 类（无 ema21）、空头生效 6 类（含 ema21）** ✅ |
 
 > 教训（写进流程）：**上线前先核对"生效值"，而不是只核对"我改了哪一行"**。本次的坑是——我改的是禁用表，但白名单上一小时被另一处改过，两个配置叠加后的实际集合才是真相。凡是"白名单 ∩ 禁用表"这类交集口径，验证必须打印**最终生效集合**（上面的 `多头生效触点 / 空头生效触点` 两行）。
+
+---
+
+## 17. 摆动结构位定价口径（2026-10-27）：A3 = 位价改用真极值
+
+### 17.1 问题：结构位取的是收盘价
+
+`recent_swings`（`backend/app/services/strategy/__init__.py:19`）原先把收盘价同时当作 highs 与 lows 传入探测器：
+
+```python
+closes = np.array([float(k[4]) for k in klines])
+high_idx, low_idx = find_swing_points(closes, closes, order)   # highs/lows 都传 closes
+swings = merge_swings(high_idx, low_idx, closes, closes)       # price = closes[i]
+```
+
+于是"摆动低点"= **收盘价的局部极小值**，而触点判定却是 `low ≤ lvl×(1+band)`（影线入带）+ `close ≥ lvl`（收盘守位）——**位价用收盘、触碰用影线，混了口径**。对多头意味着：支撑位被记在实体边缘（高于真低点 0.3~0.8%），止损贴在"伪位"下方，价格去测真支撑时先被扫掉。
+
+### 17.2 证据：124 笔回放的偏移分档
+
+回放方式：取正式网 `touch_ref=swing` 成交 124 笔，用 `opened_at` 当根及之前 60 根 1h K 复刻同一套判定（`find_swing_points(order=3)` → `recent_swings(n=3)` → `bars_ago ≤ 40` → 前 3 个候选 → `low ≤ lvl×(1+0.3%)` 且 `close ≥ lvl`），**106 笔复现成功（85%，其余差异来自 K 线窗口长度与判定时点）**。偏移 = |位价 − 该摆动K线自身极值| / 极值：
+
+| 偏移 | n | 胜率 | ΣR | 单笔 |
+|---|---|---|---|---|
+| <0.1% | 15 | 60.0% | +8.34 | **+0.556R** |
+| 0.1–0.3% | 31 | 48.4% | +14.31 | **+0.462R** |
+| 0.3–0.8% | 47 | 29.8% | −8.77 | **−0.187R** |
+| ≥0.8% | 13 | 23.1% | −6.06 | **−0.466R** |
+
+合计：**偏移 <0.3% 的 46 笔 +22.65R，≥0.3% 的 60 笔 −14.83R**。按方向拆开，效应几乎全在多头：
+
+| 组 | n | 胜率 | ΣR | 单笔 |
+|---|---|---|---|---|
+| **多 × 偏移<0.3%** | 14 | 71.4% | **+13.99** | **+0.999R** |
+| **多 × 偏移≥0.3%** | 33 | 21.2% | **−13.65** | **−0.414R** |
+| 空 × 偏移<0.3% | 32 | 43.8% | +8.66 | +0.271R |
+| 空 × 偏移≥0.3% | 27 | 37.0% | −1.18 | −0.044R |
+
+→ 多头 swing 里 **33/47（70%）踩在"伪结构位"上**，期望 −0.414R/笔，正好是半笔满损。这也解释了 §16 的多头亏点：`swing` 全期多 −4.41R / 空 +10.02R，与"多×ema21 −16.67R"是同一个病根——**多头在拿非结构位当支点**。
+
+同时排除的三个候选解释（同批回放）：
+- **"已破位应剔除"**：位完好 69 笔 **+0.030R/笔** vs 已破位 37 笔 **+0.155R/笔**（多头已破 +0.312 反而最好）→ **不成立，不加破位校验**。
+- **band 0.3% 未 ATR 归一**：触及深度 <0.05% 39 笔 +0.237 / 0.05–0.15% 14 笔 −0.358 / 0.15–0.3% 9 笔 +0.118 / >0.3% 穿透 44 笔 +0.058 → 非单调，无闸门价值。
+- **结构位年龄**：≤6 根 −0.069 / 7–15 根 +0.252 / 16–30 根 −0.190 / 31–40 根 +0.610 → 非单调。
+
+### 17.3 实现
+
+| 文件 | 变更 |
+|---|---|
+| `backend/app/config.py` | 新增 `SWING_LEVEL_SOURCE: str = "close"`（`close`/`extreme`，默认 `close`＝行为不变，上线由 `backend/.env` 打开） |
+| `backend/app/services/strategy/__init__.py` | `recent_swings(..., price_source="close")`：`extreme` 时 highs/lows 取 `k[2]`/`k[3]`，确认与合并逻辑完全不动；返回项新增 `"extreme"`（恒为真极值，供诊断） |
+| `backend/app/services/strategy/trigger.py` | `_detect_swing_touch(..., diag=None)` 读 `settings.SWING_LEVEL_SOURCE`（容错大小写/空格、未知值回落 `close`）；命中时向 `diag` 写「摆动触点命中：HL 位价 …（口径 extreme，与摆动K线极值偏移 0.42%）」 |
+| `backend/tests/test_swing_level_source.py` | 新增 13 条：两种口径的 `price`/`extreme`、close 口径在"收盘远离低点"时不出触点而 extreme 口径出、大小写容错、diag 偏移文本 |
+
+**只改 swing 触点，不动 retest**：`recent_swings` 同时被 retest 结构位（`_structural_retest_level`）、`_unbroken_pivot_level`（突破确认）、AI 事实包（`ai_tasks.py:417`）、扫描图标注（`scan.py:2271`）共用。全局改会同时改掉 retest 的回测位与提示词措辞（retest 是最大赢家 +33.07R），故用参数隔离——retest 与图表/AI 标注继续走 `close`。
+
+### 17.4 上线与回退
+
+```bash
+# 打开（代码部署后）
+echo 'SWING_LEVEL_SOURCE=extreme' >> /home/ubuntu/github/trading-workbench/backend/.env
+cd /home/ubuntu/github/trading-workbench && IMAGE_TAG=$(grep LAST_SHA .deploy_state | cut -d= -f2) \
+  docker compose up -d --no-build --force-recreate backend celery_worker celery_beat
+docker exec trading-workbench-backend-1 python -c "from app.config import settings; print(settings.SWING_LEVEL_SOURCE)"
+```
+
+回退（L0 同级，分钟级）：把 `SWING_LEVEL_SOURCE` 改回 `close` 或删掉该行，再执行同一条 `--force-recreate` 命令 —— **无代码回滚需求**。
+
+### 17.5 判读（7 天）
+
+```sql
+-- ① 口径是否真的生效：命中日志里的"口径"字样
+SELECT count(*) FROM trade_events WHERE created_at > now() - interval '7 days'
+  AND payload::text LIKE '%摆动触点命中%';
+
+-- ② swing 多头是否改善（touch_ref 在 scan_results 上）
+SELECT (t.opened_at AT TIME ZONE 'UTC')::date d, count(*) n,
+       round(100.0*count(*) FILTER (WHERE t.pnl_pct>0)/count(*),1) win,
+       round(sum(t.pnl_pct/100)::numeric,2) R
+FROM trade_records t JOIN scan_results s ON s.id = t.scan_result_id
+WHERE t.testnet=false AND t.signal_type='trigger_pullback_confirm'
+  AND t.pnl_pct IS NOT NULL AND t.direction='long' AND s.touch_ref='swing'
+GROUP BY 1 ORDER BY 1;
+```
+
+判据：①口径确为 `extreme`；②多头 swing 的 avg R 从 −0.09（全期 47 笔 +0.34R）转向 ≥0；③若信号量骤降（swing 从 26% 掉到 <15%）说明极值口径让触碰更难满足，需评估是否放宽 `STRUCTURE_TOUCH_BAND_PCT`（0.3% → 0.5%）。
+
+### 17.6 明确不做
+
+- 破位校验、band ATR 归一、结构位年龄闸：§17.2 数据不支持或非单调。
+- `ema55` / `ema144`：14 天覆盖率 2.1% / 1.3%、质量分最低（70.8 / 58.8）、期望 −1.53R / +0.46R → 不优化，保留观察。
+- 全局改 `recent_swings` 默认口径：风险外溢到 retest / AI 事实包 / 图表标注，不做。

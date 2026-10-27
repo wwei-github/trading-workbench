@@ -46,6 +46,7 @@ position 语义（docs/09 方向派生口径，2026-09-28 关键位移除后回�
 from datetime import datetime
 from typing import Optional, Tuple
 
+from app.config import settings
 from app.services.scan_filters import (
     TOUCH_EMA144,
     TOUCH_EMA21,
@@ -673,6 +674,7 @@ def _detect_retest(
 
 def _detect_swing_touch(
     klines: list[list], direction: int, band_pct: float, order: int,
+    diag: Optional[dict] = None,
 ) -> Optional[float]:
     """摆动结构位触碰（docs/22 §3.2）。
 
@@ -681,16 +683,23 @@ def _detect_swing_touch(
     多头只认 HL（更高低点，结构延续防守位），空头只认 LH——
     LL/HH 不构成回踩结构（是接刀/追高）。
 
+    位价口径由 `settings.SWING_LEVEL_SOURCE` 决定（2026-10-27 docs/15 §17）：
+    close=收盘价（旧口径）/extreme=摆动K线自身 high/low（真极值）。仅本触点消费，
+    retest 与图表/AI 标注不受影响。
+
     候选口径（2026-10-16 用户拍板需求②）：取最近 SWING_TOUCH_CANDIDATES=3 个
     同向结构位——最近 1 个可能因当前窗口 merge_swings 合并而消失（不稳），
     第 2 个是常规防守位，第 3 个兜底；按新→旧顺序返回最先满足「影线入带 +
     收盘守位」者的位价。时效门 bars_ago ≤ SWING_MAX_BARS_AGO。命中返回位价。
     """
-    sw = recent_swings(klines, order=order, n=SWING_TOUCH_SCAN_N)
+    src = (getattr(settings, "SWING_LEVEL_SOURCE", "close") or "close").strip().lower()
+    if src not in ("close", "extreme"):
+        src = "close"
+    sw = recent_swings(klines, order=order, n=SWING_TOUCH_SCAN_N, price_source=src)
     seq = sw["lows"] if direction == 1 else sw["highs"]
     want = "HL" if direction == 1 else "LH"
     levels = [
-        float(p["price"]) for p in seq
+        p for p in seq
         if p["label"] == want and p["bars_ago"] <= SWING_MAX_BARS_AGO
     ][:SWING_TOUCH_CANDIDATES]
     if not levels:
@@ -699,14 +708,20 @@ def _detect_swing_touch(
     close_last = float(klines[-2][4])
     high_last = float(klines[-2][2])
     low_last = float(klines[-2][3])
-    for lvl in levels:
+    for cand in levels:
+        lvl = float(cand["price"])
         if lvl <= 0:
             continue
-        if direction == 1:
-            if low_last <= lvl * (1 + band) and close_last >= lvl:
-                return lvl
-        elif high_last >= lvl * (1 - band) and close_last <= lvl:
-            return lvl
+        hit = (low_last <= lvl * (1 + band) and close_last >= lvl) if direction == 1 \
+            else (high_last >= lvl * (1 - band) and close_last <= lvl)
+        if not hit:
+            continue
+        ext = cand.get("extreme")
+        if diag is not None and ext:
+            off = abs(lvl - float(ext)) / float(ext) * 100
+            _diag_note(diag, f"摆动触点命中：{want} 位价 {lvl:.6g}"
+                              f"（口径 {src}，与摆动K线极值偏移 {off:.2f}%）")
+        return lvl
     return None
 
 
@@ -941,7 +956,8 @@ def detect_trigger(
             touches[TOUCH_RETEST] = p
     if TOUCH_SWING in refs:
         p = _detect_swing_touch(
-            klines, direction, flt.structure_touch_band_pct, flt.swing_order)
+            klines, direction, flt.structure_touch_band_pct, flt.swing_order,
+            diag=diag)
         if p is not None:
             touches[TOUCH_SWING] = p
     for ref, period in ((TOUCH_EMA21, 21), (TOUCH_EMA55, 55), (TOUCH_EMA144, 144)):
