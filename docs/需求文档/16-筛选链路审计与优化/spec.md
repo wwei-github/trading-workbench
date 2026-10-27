@@ -550,7 +550,7 @@ group by 1 order by 2 desc;
 | 上一版 | `e0d1112`（回滚目标） |
 | CI | run `40518838429` **success**（scope=all） |
 | 容器 | backend / celery_worker / celery_beat / frontend 全部 `6962ba9` Up |
-| 部署时间 | 2026-10-27 14:35 UTC |
+| 部署时间 | 2026-10-27 14:15 UTC（容器 StartedAt 14:14:56Z，CI 完成 14:15:50Z） |
 | 容器内实证 | `detect_trigger` 合成样本：无触点 → `stage=no_touch`；K 线不足 → `stage=insufficient_bars`（细分链路在位） |
 | 回滚 | `scripts/release.sh rollback`（回 `e0d1112`） |
 
