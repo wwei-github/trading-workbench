@@ -544,4 +544,14 @@ group by 1 order by 2 desc;
 
 ### 11.4 上线记录
 
-（部署完成后回填：commit / CI run / `.deploy_state` / 容器镜像）
+| 项 | 值 |
+|---|---|
+| commit | `6962ba9 feat(scan): 漏斗 no_trigger 细分为 8 类关卡（docs/16 批次 2 P1-3）` |
+| 上一版 | `e0d1112`（回滚目标） |
+| CI | run `40518838429` **success**（scope=all） |
+| 容器 | backend / celery_worker / celery_beat / frontend 全部 `6962ba9` Up |
+| 部署时间 | 2026-10-27 14:35 UTC |
+| 容器内实证 | `detect_trigger` 合成样本：无触点 → `stage=no_touch`；K 线不足 → `stage=insufficient_bars`（细分链路在位） |
+| 回滚 | `scripts/release.sh rollback`（回 `e0d1112`） |
+
+**首个真实验证点**：15:00 UTC 整点扫描。届时 `scan_records.funnel_json.stages` 里 `no_trigger` 应消失，取而代之是 `no_touch` / `leg_gate` / `pending_waiting` / `window_expired` 等；前端「筛选漏斗」与待确认池「无触发」页签按族展示。部署前最后一轮（14:00 UTC）的对照基线：`no_trigger=24`、`gate_4h=123`、`htf_state_lock=41`、`range_score=17`。
