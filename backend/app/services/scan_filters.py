@@ -68,6 +68,8 @@ SCAN_FILTER_KEYS = (
     "ai_max_per_scan",            # ④ 配额层：单轮扫描 AI 分析上限
     "allowed_triggers",           # ③ 触发层：触发类型白名单（2026-09-28）
     "pullback_touch_refs",        # ③ 触发层：回踩触点白名单（2026-09-28 docs/22）
+    "pullback_touch_deny_long",   # ③ 触发层：多头方向触点禁用表（2026-10-27 docs/15 §16）
+    "pullback_touch_deny_short",  # ③ 触发层：空头方向触点禁用表（2026-10-27 docs/15 §16）
     "retest_window_bars",         # ③ 触发层：突破回测有效窗口（根，0=关闭 retest）
     "pending_confirm_window_bars",  # ③ 触发层：回踩待确认窗口（根，金K须出现在触碰根后 1..N 根内）
     "structure_touch_band_pct",   # ③ 触发层：retest/swing 横向位触碰带宽（%）
@@ -100,6 +102,12 @@ class ScanFilters:
     ai_max_per_scan: int
     allowed_triggers: tuple = ALL_TRIGGERS
     pullback_touch_refs: tuple = DEFAULT_TOUCH_REFS
+    # 回踩触点「方向禁用表」（2026-10-27，docs/15 §16）：命中的触点只在对应方向
+    # 不被采纳，另一方向与其余触点照旧。空=不禁用。多头侧禁用 ema21 的依据见
+    # config.PULLBACK_TOUCH_DENY_LONG 注释（多头×ema21 44 笔 -16.67R 三期皆负，
+    # 空头×ema21 +8.17R 转正——同一根均线在两侧的信息量不同，不能全局收窄）
+    pullback_touch_deny_long: tuple = ()
+    pullback_touch_deny_short: tuple = ()
     retest_window_bars: int = 24
     # 回踩待确认窗口（2026-10-13-10）：触碰根后 1..N 根已收盘K线内出现同向金K即确认；
     # 2026-10-14 默认 3→4（实测金K迟到 1 根是待确认池最大卡点，放宽约多覆盖 30% 迟到确认）
@@ -126,6 +134,19 @@ class ScanFilters:
     pullback_leg_lookback_bars: int = 24
     pullback_leg_min_bars: int = 2
     pullback_leg_min_atr: float = 0.5
+
+    def touch_refs_for(self, direction: int) -> tuple:
+        """按方向取生效触点白名单（2026-10-27，docs/15 §16）。
+
+        方向禁用表命中的触点在该方向被剔除，其余照旧；若禁用表把白名单清空
+        则回落通用白名单——静默空转会让回踩管线整体停摆，比多出几个信号更难
+        排查（与 `_touch_refs` 全空回落默认同一口径）。
+        """
+        deny = self.pullback_touch_deny_long if direction > 0 else self.pullback_touch_deny_short
+        if not deny:
+            return self.pullback_touch_refs
+        kept = tuple(r for r in self.pullback_touch_refs if r not in deny)
+        return kept or self.pullback_touch_refs
 
 
 def resolve_scan_filters(cfg=None) -> ScanFilters:
@@ -174,6 +195,18 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
                         if t in ALL_TOUCH_REFS and t not in RETIRED_TOUCH_REFS)
         return allowed or DEFAULT_TOUCH_REFS
 
+    def _deny_refs(key: str, default_csv: str) -> tuple:
+        """方向触点禁用表（docs/15 §16）：DB list 优先，缺键回落 env 逗号分隔串。
+
+        非法项静默丢弃（禁用表是「减法」配置，多写一个不存在的名字不该让整轮
+        扫描失败）；空表=不禁用，这是默认状态。
+        """
+        v = raw.get(key)
+        if isinstance(v, list):
+            return tuple(t for t in v if t in ALL_TOUCH_REFS)
+        parts = tuple(p.strip() for p in str(default_csv or "").split(","))
+        return tuple(p for p in parts if p in ALL_TOUCH_REFS)
+
     def _bool(key: str, default: bool) -> bool:
         """布尔开关：仅接受真布尔（DB JSONB 天然存布尔）；字符串/数字等
         非法类型按缺失回落默认——不让一条坏配置静默改变门行为。"""
@@ -201,6 +234,10 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
         ai_max_per_scan=_int("ai_max_per_scan", settings.AI_MAX_PER_SCAN, minimum=1),
         allowed_triggers=_triggers("allowed_triggers"),
         pullback_touch_refs=_touch_refs("pullback_touch_refs"),
+        pullback_touch_deny_long=_deny_refs(
+            "pullback_touch_deny_long", settings.PULLBACK_TOUCH_DENY_LONG),
+        pullback_touch_deny_short=_deny_refs(
+            "pullback_touch_deny_short", settings.PULLBACK_TOUCH_DENY_SHORT),
         retest_window_bars=_int("retest_window_bars", settings.RETEST_WINDOW_BARS),
         pending_confirm_window_bars=_int(
             "pending_confirm_window_bars", settings.PENDING_CONFIRM_WINDOW_BARS, minimum=1),

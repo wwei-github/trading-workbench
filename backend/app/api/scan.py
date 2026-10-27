@@ -553,6 +553,9 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
             "allowed_triggers": list(flt.allowed_triggers),
             # 回踩触点体系（docs/22）：启用触点白名单 + 触点参数
             "pullback_touch_refs": list(flt.pullback_touch_refs),
+            # 方向触点禁用表（2026-10-27，docs/15 §16）：多头/空头各自不采纳的触点
+            "pullback_touch_deny_long": list(flt.pullback_touch_deny_long),
+            "pullback_touch_deny_short": list(flt.pullback_touch_deny_short),
             "retest_window_bars": flt.retest_window_bars,
             "pending_confirm_window_bars": flt.pending_confirm_window_bars,
             "structure_touch_band_pct": flt.structure_touch_band_pct,
@@ -606,8 +609,9 @@ def _validate_scan_filters(raw: dict) -> dict:
     """筛选参数组校验：未知键拒绝（防拼错静默失效）、范围越界 400、数值化清洗。
     合法但缺省的键不补齐——由调用方 `_merge_scan_filters` 与库内旧值做键级合并
     （合并后仍缺的键回落 env）。非数值键：allowed_triggers / pullback_touch_refs
-    （非空合法类型列表）、布尔开关（_BOOL_FILTER_KEYS，2026-10-11 起 structure_1h_gate，
-    2026-10-18 起方向过滤两开关）。"""
+    （非空合法类型列表）、pullback_touch_deny_long/short（合法触点列表，可空，
+    2026-10-27 docs/15 §16）、布尔开关（_BOOL_FILTER_KEYS，2026-10-11 起
+    structure_1h_gate，2026-10-18 起方向过滤两开关）。"""
     from app.services.scan_filters import ALL_TRIGGERS, ALL_TOUCH_REFS
 
     out: dict = {}
@@ -633,6 +637,17 @@ def _validate_scan_filters(raw: dict) -> dict:
                 raise HTTPException(
                     status_code=400,
                     detail="scan_filters.pullback_touch_refs 需为非空触点类型列表"
+                           f"（合法值: {', '.join(ALL_TOUCH_REFS)}）",
+                )
+            out[k] = v
+        elif k in ("pullback_touch_deny_long", "pullback_touch_deny_short"):
+            # 方向禁用表（2026-10-27，docs/15 §16）：允许空列表（=不禁用），
+            # 非法触点名拒绝（防拼错静默失效——禁用表写错会静默「没禁住」）
+            if (not isinstance(v, list)
+                    or not all(t in ALL_TOUCH_REFS for t in v)):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"scan_filters.{k} 需为触点类型列表（可为空=不禁用）"
                            f"（合法值: {', '.join(ALL_TOUCH_REFS)}）",
                 )
             out[k] = v

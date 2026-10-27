@@ -34,6 +34,7 @@
 | ④ | **等待路径** | A4（**已否决**，见 §13） | 原计划 `pullback_market_pct` 0.01 → 0.04 | 复核：真实限价挂单成交 23 笔 -2.78R（胜率 34.8%，与市价 36.4% 无本质差异）；A1 之后关掉该路径只多 **+0.60R**，却砍掉 ARIA/BIO/AXS/BTR 四笔 **+4.92R** | **不做** | — |
 | ⑤ | **震荡否决** | A5（**已否决**，见 §13） | 原计划 `range` 扣分改否决 | 带标记 11 笔 -6.79R，但这些单基本都是 `pos<0.6`，已被 B1 覆盖 | A1+B1 后增量 **+0.22R** | — |
 | ⑥ | **明确不改** | — | 止损宽度、room 全局闸、ER/regime、评分门槛、同向上限、当日熔断、入场偏离闸 | 见 §5 / §10 / §12 | — | — |
+| ⑦ | **触点层**：回踩碰哪根线才算数 | **A2**（§16） | `pullback_touch_deny_long=ema21`（方向禁用表：多头禁 21EMA，空头保留） | 多×ema21 44 笔 -16.67R（早/近/现规则三期全负，跨 37 币）；空×ema21 +8.17R（近段转正 +13.18 / 现规则 +14.11） | 全期 **+24.69R → +41.36R**（287 笔，avg +0.077 → +0.145）；现规则 94 笔 +29.59 → **85 笔 +36.53** | `backend/.env` 该行置空 + 重启三容器（L0 同级） |
 
 **效果阶梯（in-sample，逐步叠加；本段数字 2026-10-27 复核更正，见 §13）**：56 笔 **+4.12R** →（A1）37 笔 **+11.63R** →（+B1 全路径）21 笔 66.7% **+19.38R**。A1 与 B1 嵌套，不可相加。其中 10-26 从 **-9.95R** 收敛到 **-0.08R**——包的作用是掐掉坏日，不是放大好日。
 
@@ -562,3 +563,158 @@ FROM trade_records WHERE opened_at > now() - interval '24 hours';
 日志侧：`docker logs --since 24h trading-workbench-celery_worker-1 | grep -E "入场位置|entry_pos"`；若 `_entry_snapshot` 刷 warning（K 线拉取失败）→ 先置 `ENTRY_POS_MIN_RATIO=0` 再查网络（§8 回退判据第 4 条）。
 
 > 与 §9 的关系：§9 是 7 天窗口的验收表（胜率、`sl` 占比、单笔期望），本小节只是**头 24 小时的三类即时健康检查**（闸门在不在动、样本有没有被饿死、诊断有没有落库），两者不重复。
+
+---
+
+## 16. 回踩金K 触点复核（2026-10-27，331 笔）：新增"方向触点禁用表"
+
+### 16.1 问题
+
+用户问："检查回踩金K 逻辑，从多种币种的情况分析，逻辑是否合适，是否要剔除不合理的回踩，怎么剔除。"
+
+要回答的是三件事：**回踩这套逻辑本身合不合适**（不是这两天的行情问题）、**哪一类回踩该剔除**（能定位到可执行的粒度）、**怎么剔**（改配置还是改代码、怎么回退）。
+
+### 16.2 样本与方法
+
+| 项 | 值 |
+|---|---|
+| 范围 | 正式网 `signal_type='trigger_pullback_confirm'`，`opened_at` 2026-10-02 ~ 10-27（系统首批回踩单起的全部历史） |
+| 样本 | **331 笔**，覆盖 **208 个币种**，每币均值 1.59 笔（最高 12 笔），胜率 39.0%，ΣR **+24.69** |
+| 口径 | R = `pnl_pct/100`；`risk_amount>1`；已平仓 |
+| 分组 | 触点（`scan_results.touch_ref`）× 方向 × 金K形态 × 止损宽度 × 4h 背景 × 放量，逐组 n/胜率/ΣR |
+| 稳定性 | 每组再切三段：早（10-02~10-18）/ 近（10-19~10-27）/ 现规则（`v2026-10-22-2`+`v2026-10-27`）——**只在三段里同向的组合才采信** |
+| 导出 | `\copy` 出 331 行（`/tmp/pb.csv`），另含 4h 版本的 `/tmp/pb2.csv`（325 笔） |
+
+> 为什么必须切三段：前两天出问题的窗口只有 56 笔，任何一档都容易被单笔主导。331 笔 + 三段稳定性 + 208 个币种分散，是这次敢动触发层的唯一理由。
+
+### 16.3 结论一：病灶是"多头碰 21EMA"这一个组合，不是"回踩"整体
+
+**触点 × 方向（全期）**
+
+| 触点 | 方向 | n | 胜率 | ΣR | 早 | 近 | 现规则 |
+|---|---|---|---|---|---|---|---|
+| retest（突破回测位） | 空 | 48 | 58.3% | **+24.49** | +11.53 | +12.96 | +17.50 |
+| retest | 多 | 33 | 45.5% | +8.59 | +6.57 | +2.01 | +2.38 |
+| swing（摆动结构位） | 空 | 68 | — | +10.02 | +17.25 | **-7.23** | +0.28 |
+| swing | 多 | 57 | — | -4.41 | -14.30 | +9.89 | +6.55 |
+| **ema21（1h 趋势动态）** | **多** | **44** | **22.7%** | **-16.67** | **-6.09** | **-10.58** | **-6.94** |
+| ema21 | 空 | 42 | 45.2% | +8.17 | -5.01 | +13.18 | +14.11 |
+| ema21_4h | 多 | 14 | — | +0.04 | — | +1.09 | -2.33 |
+| ema21_4h | 空 | 10 | — | -4.46 | — | +0.42 | -4.88 |
+| ema55 / ema144 | 两侧 | 9 / 6 | 22.2% / 33.3% | -1.53 / +0.46 | — | — | — |
+
+（各触点合计 331 笔；同根多触点时 trigger 只标优先级最高的一个，所以这是"主触点"口径。）
+
+**为什么"多×ema21 -16.67R"不是运气**：
+
+1. **样本不薄**：44 笔，是 331 笔里第三大的组合；
+2. **分散**：跨 37 个币种，**没有任何单币超过 3 笔**，不存在"一个币崩了拖垮整体"；
+3. **三段同负**：-6.09 / -10.58 / -6.94，三期都亏，且现规则（腿门 + 4h 证据生效后）**仍是 -6.94R / 9 笔全亏**；
+4. **单笔均匀**：8 胜 36 亏，单笔多在 -0.5R ~ -1.3R，是"稳定小亏"的形态（慢性失血），不是"偶发大亏"。
+
+**同一根均线，为什么空头侧要留**：空×ema21 全期 +8.17R，且近段（+13.18）、现规则（+14.11）都为正——**下游证据说趋势空头信号的 21EMA 反弹是有效压力位**。所以不能把 ema21 从白名单里删掉（那是全局收窄，会把空头侧的 +14R 一起砍掉），只能**按方向禁用**。
+
+**机制（假设，待回放验证）**：均线不是结构位。上升趋势里价格"碰到 21EMA"是高频噪声、信息量接近零，且止损只能贴均线下方（没有结构位可依），回踩一失败就被扫；下跌趋势里反弹到 21EMA 是动态压力，失败率天然高，金K确认因此有真实含义。**同一根线在压力侧有效、在支撑侧无效**，这是"多头贴均线买"这种打法的常见失效点。
+
+### 16.4 结论二：形态层与止损层都不是病灶（已排除）
+
+| 假设 | 数据 | 裁定 |
+|---|---|---|
+| 锤形线/启明星（多头反转）该剔 | 多×锤/启明星全期 -19.17R，但**近段 +2.10、现规则 +2.55**（已转正） | **不剔**（剔了是拟合历史） |
+| 多头反包类也不好 | 多×反包/刺透 89 笔 +5.49R | 不剔 |
+| 止损太窄被打 | 全期：<0.8% 8 笔 +5.86、0.8–1.2% 41 笔 **+24.39**、1.2–1.8% 108 笔 +3.01、1.8–2.5% 80 笔 +2.80、>2.5% 94 笔 **-11.37**；多×ema21 止损中位 **2.11%** | **反向**：窄的赚、宽的亏；多×ema21 本身不窄 |
+| 放量是坏信号 | 全局 83 笔 -6.86R；但拆开：ema21×放量 -3.86、ema21_4h×放量 -6.05、**retest×放量 +1.80、swing×放量 +3.86** | 只在均线触点成立，可作下一批的补充闸 |
+
+### 16.5 结论三：复合金K 在正式数据里从未生效（数据事实）
+
+`scan_results.golden_combo` **331/331 全为 False**，`entry_lag_pct` 全为空。
+
+即"当根流星必须双流星""前根锤 + 当根趋势K"这两条复合路径，在正式网 331 笔回踩单里**一次都没触发过**。这是"看代码以为有、实际没有"的典型：要么条件太严（趋势K 要求 `body/rng ≥ 0.60` + 前根必须是锤/流星），要么写库漏了。**已在 §10 记为待核实项**，本轮不动它——它不是本次亏损的原因（这批单靠"直通"路径就已经进场了）。
+
+### 16.6 方案
+
+| 方案 | 内容 | 增量 | 成本 | 裁定 |
+|---|---|---|---|---|
+| **A. 方向触点禁用表** | 多头禁 `ema21`，空头保留；配置化 | **+16.67R（全期）**，现规则窗口 +6.94R | 小（已完成，纯过滤） | **✅ 本轮上线** |
+| B. 均线触点须结构共振 | 均线触点成立时再要求前 20~40 根存在 HL/LH 等结构 | 未知（可能再剔一部分） | 中（需 replay 回放工具验证，否则纯拍脑袋） | 下一批 |
+| C. 多头 ema21 降权 0.5 | 不禁用，只把风险减半 | 约 +8R | 中（引擎目前无"按信号子类调仓"机制要新加） | 暂不做（B 之后再看） |
+| — 全局收窄 `pullback_touch_refs` | 从白名单里去掉 ema21 | 负 | 小 | ❌ 会砍掉空头侧 +14.11R |
+| — 剔 hammer/morning_star | — | 拟合历史 | 小 | ❌ |
+| — 加"最窄止损"闸 | — | 反向 | 小 | ❌ |
+
+**A 的取舍**：唯一确定正增量、可逆、零误伤空头侧。代价是"多头贴 21EMA 买"这类单彻底不再出——本该如此，它在三期里都是负期望。
+
+### 16.7 实现（已在 `main`）
+
+| 文件 | 变更 |
+|---|---|
+| `backend/app/config.py` | 新增 `PULLBACK_TOUCH_DENY_LONG` / `PULLBACK_TOUCH_DENY_SHORT`（逗号分隔触点名，空=不禁用），注释载明依据 |
+| `backend/app/services/scan_filters.py` | `ScanFilters` 增两字段；新增 `touch_refs_for(direction)`（全禁时回落通用白名单，防管线停摆）；新增 `_deny_refs()` 解析（DB list 优先、env CSV 兜底、非法项静默丢弃）；`resolve_scan_filters` 接线 |
+| `backend/app/services/strategy/trigger.py` | 触点探测改用 `refs = flt.touch_refs_for(direction)`；漏斗 diag 的"启用触点"文案同步 |
+| `backend/app/api/scan.py` | /config 回显两键；写入校验（允许空列表=不禁用、拒绝未知名、400） |
+| `backend/app/services/ai_analyzer.py` | AI 提示词按方向渲染"当前启用触点"（避免让模型拿被禁触点找依据） |
+| `backend/tests/test_pullback_touch_deny.py` | 16 条：`touch_refs_for` 五例、`resolve_scan_filters` 四例、`detect_trigger` 接线三例（多头不探测 21、空头仍探测）、API 校验四例 |
+
+### 16.8 上线与回退
+
+**上线（两步，分钟级）**
+
+```bash
+# ① 代码：镜像必须已包含 f29a639 之后的提交（touch_refs_for 等）
+ssh root@43.129.220.237 'cd /home/ubuntu/github/trading-workbench && grep -n LAST_SHA .deploy_state'
+
+# ② 配置：在 backend/.env 追加（注意是 backend/.env，不是 .env）
+grep -q '^PULLBACK_TOUCH_DENY_LONG=' backend/.env \
+  && sed -i 's/^PULLBACK_TOUCH_DENY_LONG=.*/PULLBACK_TOUCH_DENY_LONG=ema21/' backend/.env \
+  || echo 'PULLBACK_TOUCH_DENY_LONG=ema21' >> backend/.env
+
+# ③ 重启三容器（IMAGE_TAG 必须显式传，否则回落 latest）
+IMAGE_TAG=$(grep LAST_SHA .deploy_state | cut -d= -f2) \
+  docker compose up -d --no-build --force-recreate backend celery_worker celery_beat
+
+# ④ 验证生效值
+docker exec trading-workbench-backend-1 \
+  python -c "from app.config import settings; print(settings.PULLBACK_TOUCH_DENY_LONG)"
+curl -s localhost:8082/api/scans/config | python3 -m json.tool | grep -A3 touch_deny
+```
+
+**回退（L0 同级，分钟级）**
+
+```bash
+ssh root@43.129.220.237 'cd /home/ubuntu/github/trading-workbench \
+  && sed -i "s/^PULLBACK_TOUCH_DENY_LONG=.*/PULLBACK_TOUCH_DENY_LONG=/' backend/.env \
+  && IMAGE_TAG=$(grep LAST_SHA .deploy_state | cut -d= -f2) docker compose up -d --no-build --force-recreate backend celery_worker celery_beat'
+```
+
+不想动服务器时，也可走 DB 覆盖（优先级高于 env）：把 `system_config.scan_filters` 的 `pullback_touch_deny_long` 写成 `[]` 即"不禁用"，页面/API 改完立即生效，无需重启。
+
+### 16.9 上线后判读（7 天）
+
+```sql
+-- ① 多头 ema21 是否真的不再出现（应为 0）
+SELECT count(*) FROM scan_results s
+JOIN ai_analyses a ON a.scan_result_id = s.id
+WHERE s.created_at > now() - interval '7 days'
+  AND s.touch_ref = 'ema21' AND s.direction = 'long';
+
+-- ② 多头回踩整体是否被饿死（对比上线前 7 天日均笔数）
+SELECT date_trunc('day', opened_at)::date AS d,
+       count(*) FILTER (WHERE direction = 'long')  AS 多头笔数,
+       count(*) FILTER (WHERE direction = 'short') AS 空头笔数,
+       round(sum(pnl_pct)/100, 2) AS sum_r
+FROM trade_records
+WHERE opened_at > now() - interval '14 days' AND testnet = false
+  AND signal_type = 'trigger_pullback_confirm' AND pnl_pct IS NOT NULL
+GROUP BY 1 ORDER BY 1 DESC;
+
+-- ③ 空头 ema21 有没有被误伤（应保持正期望）
+SELECT s.touch_ref, t.direction, count(*) AS n,
+       round(avg(CASE WHEN t.pnl_pct > 0 THEN 1 ELSE 0 END) * 100, 1) AS 胜率,
+       round(sum(t.pnl_pct)/100, 2) AS sum_r
+FROM trade_records t JOIN scan_results s ON s.id = t.scan_result_id
+WHERE t.opened_at > now() - interval '14 days' AND t.testnet = false
+  AND t.signal_type = 'trigger_pullback_confirm' AND t.pnl_pct IS NOT NULL
+GROUP BY 1, 2 ORDER BY 4 DESC;
+```
+
+**判读线**：① 上线后 7 天多头 ema21 = 0 行；② 多头笔数不应低于上线前的 **70%**（低于即"误伤过重"，回退或改方案 C 降权）；③ 空×ema21 7 天 ΣR 仍 ≥ 0（若转负说明"21EMA 两侧都无效"，应升级为全局收窄而不是方向禁用）。

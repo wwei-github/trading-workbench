@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     PENDING_CONFIRM_WINDOW_BARS: int = 4
     STRUCTURE_TOUCH_BAND_PCT: float = 0.3  # retest/swing 横向位触碰带宽（%，影线可入带收盘须守住）
     EMA_TOUCH_MIN_BARS: int = 200  # EMA 触碰最小已收盘根数（数据门，EMA144 收敛兜底）
+    # 回踩触点「方向禁用表」（2026-10-27，docs/15 §16）：逗号分隔的触点名，命中的
+    # 触点在该方向不被采纳（其余触点照旧）。空=不禁用。
+    # 依据：正式网回踩单 331 笔复核（10-02~10-27）——多头×ema21 触点 44 笔
+    # -16.67R（早段 -6.09 / 近段 -10.58 / 现规则 -6.94，三期皆负，跨 37 个币种），
+    # 而空头×ema21 42 笔 +8.17R（近段 +13.18 / 现规则 +14.11，转正）→ 均线触点
+    # 在多头侧是「假支撑」，空头侧是「真压力」，不能一刀切收窄全局白名单。
+    # DB system_config.scan_filters 同名键优先，见 scan_filters.resolve_scan_filters
+    PULLBACK_TOUCH_DENY_LONG: str = ""
+    PULLBACK_TOUCH_DENY_SHORT: str = ""
     # 1h 结构门开关：已于 2026-10-12 退役（docs/21 O7）。字段保留向后兼容，
     # scanner 不再消费，scan_filters.structure_1h_gate 同理（同退役先例）
     STRUCTURE_1H_GATE: bool = True

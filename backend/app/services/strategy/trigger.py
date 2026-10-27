@@ -929,8 +929,10 @@ def detect_trigger(
 
     # 并行探测启用触点（docs/22 §3）：命中收集为 {ref: 位价}，标注取最高优先
     # （横向结构语义强于均线；均线取最快——最早确认、止损最紧）
+    # 方向禁用表（2026-10-27，docs/15 §16）在此生效：多头侧默认禁用 ema21
+    # （多×ema21 44 笔 -16.67R 三期皆负），空头侧保留（+8.17R 转正）。
     touches: dict[str, float] = {}
-    refs = flt.pullback_touch_refs
+    refs = flt.touch_refs_for(direction)
     if TOUCH_RETEST in refs:
         p = _detect_retest(klines, direction, retest,
                            flt.retest_window_bars, flt.structure_touch_band_pct,
@@ -956,7 +958,7 @@ def detect_trigger(
     touch_label = TOUCH_LABELS.get(touch_ref, "") if touch_ref else None
     # 未触发原因：本根未命中任何启用触点（诊断采集，见 diag 参数说明）
     if diag is not None and touch_ref is None:
-        enabled = "、".join(TOUCH_LABELS.get(r, r) for r in flt.pullback_touch_refs)
+        enabled = "、".join(TOUCH_LABELS.get(r, r) for r in refs)
         _diag_note(diag, "回踩路径未过：未命中任何启用触点"
                    + (f"（{enabled}）" if enabled else ""))
     # 1H 结构门结果（2026-10-15 降级不否决）：仅 ema21 触点可能为 False，

@@ -312,6 +312,7 @@ SIGNAL_TYPE_LABELS = {
 
 def render_signal_gate_block(
     signal_type: str, stop_cap_pct: Optional[float] = None, flt=None,
+    direction: Optional[str] = None,
 ) -> str:
     """触发器入场门槛说明（2026-09-28 动态化；2026-10-12 接线真实配置）：
     阈值读 scan_filters 生效值，消除与页面筛选配置的文本分叉（此前 0.2%/1.2×
@@ -354,9 +355,14 @@ def render_signal_gate_block(
             # 2026-09-28 docs/22 触点体系：具体命中位看信号块"回踩触点"行
             # （trigger 按优先级只标一个）；2026-10-12：语义补 ema21_4h
             # （2026-10-09 上线的 4h 大周期价值区）；2026-10-16 ema144 复出
-            # （改判门控后默认启用），启用类型读页面白名单生效值
+            # （改判门控后默认启用），启用类型读页面白名单生效值。
+            # 2026-10-27（docs/15 §16）：按方向渲染——多头/空头各有禁用表，
+            # 把被禁的触点写进提示词会让模型按不存在的触点找依据
+            _refs = flt.pullback_touch_refs
+            if direction in ("long", "short"):
+                _refs = flt.touch_refs_for(1 if direction == "long" else -1)
             enabled = "、".join(
-                f"{TOUCH_LABELS.get(r, r)}（{r}）" for r in flt.pullback_touch_refs)
+                f"{TOUCH_LABELS.get(r, r)}（{r}）" for r in _refs)
             lines += [
                 "- 回踩触点: retest=突破回测位 / swing=摆动结构位 / ema21=1h 趋势动态"
                 "价值区 / ema21_4h=4h 大周期价值区 / ema55=中深度回撤/"
@@ -698,7 +704,7 @@ def build_signal_facts(
         f"K线形态: {signal.get('pattern') or '无'}\n"
         f"信号理由: {signal.get('signal_reason') or ''}\n"
         f"{touch_line}"
-        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt)}"
+        f"{render_signal_gate_block(signal['signal_type'], stop_cap_pct=stop_cap_pct, flt=flt, direction=signal.get('direction'))}"
         f"形态出现位置: {position_label or signal.get('position') or '未知'}\n"
         f"{vol_line}"
         f"{quality_line}"
