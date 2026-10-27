@@ -1138,3 +1138,65 @@ TP1 设在 1.5R 的本意不是最大化期望，而是**先落袋一半、把�
 
 纯展示层加法，不参与任何决策：`_live_off_pos` 返回 `None` 即回到旧卡片形态；
 整批回退走 `scripts/release.sh rollback`（镜像回上一版）。
+
+## 21. D6：每日归因快照（2026-10-28）
+
+### 21.1 为什么做这个
+
+这一整轮的每条结论（4h 门砍没砍利润、pos 闸有没有用、质量分下限该不该开、
+止损锚与止盈上限的耦合）都是**临时写脚本从生产库现算**的：脚本散在 `/tmp`、
+口径各写一遍、彼此还打架。最典型的一次是把"延迟成交"用 `opened_at` 分钟数
+代理，得出"延迟单 5.9% 胜率"的结论，后来用 `limit_order_id` 一核就翻案了。
+
+结论不可复算 = 结论不可信。所以每天固定一个时点，用**同一套口径**算一遍、
+**原样落库**，把"当时的数字"冻住。
+
+### 21.2 快照里有什么
+
+`backend/app/services/attribution.py::build_snapshot(db, day)`（UTC 日窗口
+`[当天 00:00, 次日 00:00)`）返回：
+
+| 块 | 内容 |
+|---|---|
+| `funnel` | 当日扫描轮数、币池、扫描数、errors，以及 `funnel_json.stages` / `htf_states` 的**累加**（关卡分布就是漏斗真相） |
+| `candidates` | 命中条数、按信号族、按触点、均质量分 |
+| `ai` | AI 分析条数与 `suggest/skip` 分布 |
+| `trades` | 已平仓（正式网、`pnl_pct` 非空、`risk_amount>1`）的总量/胜率/ΣR、按信号族/触点/出场原因/方向，以及 `stop_atr`/`pos`/`room_r`/`entry_path` 四个分档；附当日最差五笔 |
+| `blocked_probe` | 被 4h 门拦下的候选里，真实触点数、同向金K数、两者同时成立数（D1 落库的 `probe` 字段），即"4h 门的真实代价" |
+| `logs` | 当日 `app_logs` 各级别条数（异常面） |
+
+分档口径写死在模块顶部常量（`STOP_ATR_BUCKETS` / `POS_BUCKETS` / `ROOM_BUCKETS`），
+并与 `tests/test_attribution.py` 的断言绑定——**改口径必须同时改文档与测试**。
+
+### 21.3 落库与推送
+
+- 任务：`app/tasks/attribution_tasks.py::run_daily_attribution_task`，`task_type="review"`、
+  `task_name="每日归因快照"`，`detail` = 整份快照 JSON（`task_records` 已有 `detail JSON`
+  列，**无需迁移**），`summary` = `2026-10-27：平仓 21 笔 ΣR -9.95 胜率 19.0%`
+- 调度：`celery_app.beat_schedule["daily-attribution"]`，**每日 08:10 北京**
+  （错开 08:00 shadow-evaluate、08:05 daily-report、08:08 spot-daily-check）
+- 飞书：`format_card(snap)` 一张卡，头部颜色按 ΣR 红/绿/灰，正文六行以内
+  （平仓与 ΣR、漏斗一行、被拦候选真实触达率、最差三笔、ERROR 数）
+- 补跑：`run_daily_attribution_task(day="2026-10-26")`
+
+### 21.4 设计约束（为什么这么写）
+
+1. **只读**：业务表一行不写，唯一写入是 `task_records` 那一行；
+2. **分档在 Python**：不写 `CASE WHEN` 瀑布，口径才能被单测固定；
+3. **单块失败不拖垮整份**：`funnel/candidates/ai/trades/blocked_probe/logs` 各自
+   `try/except`，失败置 `None`——半份快照比没有快照有用；
+4. **不参与决策**：快照只统计，不写任何开关、不发任何交易指令。
+
+### 21.5 测试
+
+`backend/tests/test_attribution.py` 9 条：分档左闭右开边界（`1.0` 落在
+`1-1.5ATR`、`0.6` 落在 `pos≥0.6`）、`summarize_r` 的 None 剔除与"0 不算赢"、
+`group_by` 跳过 None 键、UTC 半开窗口、卡片红/绿/灰三态与缺块容错。
+
+全量 `pytest tests/` **1322 passed**（1313 + 9）。
+
+### 21.6 回退
+
+`celery_app.beat_schedule` 删掉 `daily-attribution` 一项即停止（改配置需重建
+celery_beat，`IMAGE_TAG=<sha> docker compose up -d --no-build --force-recreate celery_beat`）；
+已落库的历史快照留在 `task_records` 里不受影响，不删数据。
