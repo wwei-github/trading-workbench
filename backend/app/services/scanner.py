@@ -251,6 +251,12 @@ def _htf_funnel(evidence: dict[str, dict]) -> dict:
     gate_4h_reasons：gate_4h 死因分布——degraded=数据降级，其余为市场状态
     （flat/tangle/undetermined/adx/missing），复盘据此分离「数据源问题」与
     「4h 无趋势」。htf_state_lock 无 reject_reason，不计入该分布。
+
+    ⚠ 口径（2026-10-27，docs/16 §2 L0-4 更正）：这里的分母是**被 4h 门拦下**的
+    币次，与 `ai_analyses.htf_phase`（分母=已出 suggest 的候选，走同一
+    `analyze_htf_background` 状态机）不是同一总体——前者以 tangle/flat 为主，
+    后者以 aligned_* 为主，属幸存者差异而非两套算法。对比两者前必须先对齐分母，
+    否则会得出「4h 看多 99 个 vs 4 个」的假矛盾。
     """
     states: dict[str, int] = {}
     reasons: dict[str, int] = {}
@@ -594,7 +600,13 @@ def detect_indicator_candidate(
             else:
                 # 无触发明细（2026-10-13）：trigger 侧采集的卡点文本段，分号连接
                 # 供前端判定说明列拆行；无采集内容（旧路径）不写 detail
-                _reject("no_trigger")
+                # 关卡代码细分（2026-10-27，docs/16 §6.3 P1-3）：trigger 侧把
+                # 未触发原因归一到 diag["stage"]（no_touch / leg_gate /
+                # golden_no_context / pending_waiting / window_expired /
+                # pending_flip / insufficient_bars / no_golden），这里直接作为
+                # 关卡代码落库——漏斗按类计数，不再全部塌进 no_trigger。
+                _stage = (trig_diag or {}).get("stage") or "no_trigger"
+                _reject(str(_stage))
                 reasons = trig_diag.get("reasons") if trig_diag else None
                 if reasons:
                     reject_out["detail"] = "；".join(reasons)

@@ -176,6 +176,19 @@ def _diag_note(diag: Optional[dict], text: str) -> None:
         diag.setdefault("reasons", []).append(text)
 
 
+def _diag_stage(diag: Optional[dict], code: str) -> None:
+    """未触发「关卡代码」采集（2026-10-27，docs/16 §6.3 P1-3）。
+
+    `no_trigger` 单一标签把四类完全不同的原因混在一起（无触点 / 腿门不过 /
+    有金K无语境 / 待确认窗口耗尽），导致"该修触点、修金K、还是修腿门"无法回答。
+    这里在同一个 diag 上带一个归一化 stage 代码，scanner 直接用它做 `_reject()`，
+    前端「筛选漏斗」按关卡分别计数；`reasons` 文本保持原样供判定说明列。
+    同一个 diag 只记第一次（最上游）的原因，避免下游分支覆盖上游卡点。
+    """
+    if diag is not None and not diag.get("stage"):
+        diag["stage"] = code
+
+
 def _pending_touch_label(pending: dict, direction: int) -> str:
     """pending 触点方向化标签（失效原因文案用；缺省「触点」）"""
     ref = pending.get("touch_ref")
@@ -803,6 +816,7 @@ def detect_trigger(
     n = len(klines)
     if n < 30 or direction not in (1, -1):
         _diag_note(diag, "触发判定未跑：K线不足30根")
+        _diag_stage(diag, "insufficient_bars")
         return None, None
     close_last = float(klines[-2][4])
     # position 按方向派生（2026-09-28 关键位移除后回到 docs/09 原始口径）：
@@ -977,6 +991,10 @@ def detect_trigger(
         enabled = "、".join(TOUCH_LABELS.get(r, r) for r in refs)
         _diag_note(diag, "回踩路径未过：未命中任何启用触点"
                    + (f"（{enabled}）" if enabled else ""))
+        # 有活跃 pending 时不记 no_touch：此刻的卡点是「等确认/窗口状态」，
+        # 由下游 pending_waiting / window_expired / pending_flip 覆盖式记录
+        if not pending:
+            _diag_stage(diag, "no_touch")
     # 1H 结构门结果（2026-10-15 降级不否决）：仅 ema21 触点可能为 False，
     # 其余触点豁免（True）。False 时照常出信号，由质量分重罚体现（-15）。
     structure_gate = True
@@ -1004,6 +1022,7 @@ def detect_trigger(
                 f"回踩{_touch_ref_label(touch_ref, direction)}前"
                 f"{_leg_reject_detail(leg_ev, direction, flt)}",
             )
+            _diag_stage(diag, "leg_gate")
             touch_ref = None
             touch_price = None
             leg_rejected = True
@@ -1120,6 +1139,7 @@ def detect_trigger(
         if not leg_rejected:
             _diag_note(diag, "金K未触发：本根出现同向金K但无回踩触点/待确认语境"
                        "（纯金K不触发）")
+            _diag_stage(diag, "golden_no_context")
         return None, None
 
     # 行5：触碰但无金K → 不触发，转 pending 待确认（scanner 侧 upsert）。
@@ -1138,12 +1158,16 @@ def detect_trigger(
     if pending:
         if pending.get("direction") != direction:
             _diag_note(diag, _expire_note(pending, direction, True))
+            _diag_stage(diag, "pending_flip")
             return None, {"op": "expire", "reason": "direction_flip"}
         if pending_valid and pending_elapsed < win:
             # 窗口未满：保持等待，本轮不对 pending 下任何处置（待确认池继续显示）
             _diag_note(diag, f"待确认等待中：本根无同向金K，确认窗口还剩 {win - pending_elapsed} 根")
+            _diag_stage(diag, "pending_waiting")
             return None, None
         _diag_note(diag, _expire_note(pending, direction, False))
+        _diag_stage(diag, "window_expired")
         return None, {"op": "expire", "reason": "window_expired"}
     _diag_note(diag, "本根无同向金K")
+    _diag_stage(diag, "no_golden")
     return None, None

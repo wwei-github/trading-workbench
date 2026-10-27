@@ -84,7 +84,7 @@
 | L0-1 | **没有回放/反事实工具**，阈值改动只能实盘试 | 33,637 条 `htf_blocked` 快照躺着未评估 | 每个优化都是一次实盘实验 |
 | L0-2 | 影子特征只采不判 | `cvd_div` 3,269 / `r2_slope` 3,269 / `macd_div` 3,185 / `sweep_reclaim` 1,342 / `oi_conf` 331 / `rec70_shadow` 614 / `be_retrace` 173，无任何评估闭环 | 存储成本 + 误以为"在观测" |
 | L0-3 | `is_repeat` 恒 False，抑制量不可见 | 14 天 3,330 条全 False；30 天日志"重复命中抑制" **0 次** | `REPEAT_WINDOW_HOURS=3` 从未生效，字段形同虚设 |
-| L0-4 | **两套 4h 口径并存** | 漏斗 `htf_states`：`aligned_bear` 189 / `aligned_bull` 4；`ai_analyses.htf_phase`（同期开单）：`aligned_bull` 99 / `aligned_bear` 152 | 看板与复盘自相矛盾 |
+| L0-4 | ~~两套 4h 口径并存~~ → **更正：非缺陷，是不同的分母** | 两者都来自同一个 `analyze_htf_background` 状态机，但漏斗 `htf_states` 的分母是**被 4h 门拦下**的币次（以 `tangle`/`flat` 为主：`aligned_bear` 189 / `aligned_bull` 4），`ai_analyses.htf_phase` 的分母是**已出 suggest 的候选**（以排列为主：`aligned_bull` 99 / `aligned_bear` 152）。属幸存者差异 | 只看原始数字会误判为"算法打架"；已加代码注释与本章口径说明，禁止跨分母对比 |
 
 ### L1 准入门
 
@@ -167,7 +167,7 @@
 | **P1-1** | 4h 门反事实回放 | L0-1/L2 | 判断 `tangle` 门是否划算 | 素材 33,637 条 | 1 个离线脚本 | 只读 |
 | **P1-2** | 配额按池分配 | L6-1/L6-3 | 回踩被结构性挤出、48% 饿死 | A（机制清楚） | 40 行 | 改回全局 limit |
 | **P1-3** | `no_trigger` 细分漏斗 | L4-5 | 改哪层靠猜 | 机制清楚 | 25 行 | 删细分键 |
-| **P1-4** | 统一两套 4h 口径 | L0-4 | 看板/复盘自相矛盾 | A（189:4 vs 99:152） | 命名 + 前端文案 | 改回 |
+| ~~P1-4~~ | ~~统一两套 4h 口径~~ → 降级为文档项 | L0-4 | 复核后确认是分母不同而非算法冲突 | A（同源函数） | 注释 + 文档 | — |
 | **P2-1** | 摆动 band 改 ATR 归一 | L4-4 | 高波动币门虚设、低波动币永不入带 | C（需回放定 k） | 20 行 | 改回 0.3 |
 | **P2-2** | 复合金K 路径处置 | L4-2 | 1/3,330 的死路径 | A（计数确凿） | 删 60 行 或 排查 | 恢复 |
 | **P2-3** | 止损锚 / TP 上限冲突 | L7-3 | 宽结构币反复回炉后必 skip | B（skip 文本，n≈20） | 参数或前置判定 | 改回 |
@@ -326,15 +326,15 @@ select t.k stage, sum(t.v::int) n from scan_records s, jsonb_each_text(s.funnel_
 where s.created_at > now()-interval '7 days' group by 1 order by 2 desc;
 ```
 
-### 6.4 P1-4 统一两套 4h 口径
+### 6.4 P1-4 4h 口径说明（复核后降级，不改代码）
 
-**处理什么**：漏斗 `htf_states`（状态机：`aligned_bull` 4 / `aligned_bear` 189）与 `ai_analyses.htf_phase`（AI 提示词相位：`aligned_bull` 99 / `aligned_bear` 152）用词重叠、含义不同，导致"4h 是多是空"看两个表会得出相反结论。
+**复核结论（2026-10-27）**：漏斗 `htf_states` 与 `ai_analyses.htf_phase` **来自同一个函数** `technical.analyze_htf_background`，词表相同；差异纯粹来自分母——前者统计**被 4h 门拦下**的币次（`gate_4h` + `htf_state_lock`，天然以 `tangle`/`flat` 为主），后者只统计**已出 suggest** 的候选（天然以排列态为主）。
 
-**实现**（二选一，建议 A）
-- **A. 改名**：AI 层相位统一加前缀 `ai_`（`ai_aligned_bull` 等），前端与文档同步；状态机保持原名。
-- B. 合并：让 AI 层直接读状态机的 `state`，删掉提示词里的独立相位推断。
+所以**没有两套算法，也不需要改名**（改名会让 4 个月历史数据对不上，收益为零）。要做的是把口径写清楚：
 
-改完在看板与 `docs/10-反转阶段状态标注` 里补一句口径说明。
+- 已在 `backend/app/services/scanner.py::_htf_funnel` docstring 写入该口径与"禁止跨分母对比"的提示；
+- 本章 §2 L0-4 与 §3 表格同步更正；
+- 若将来要在看板同时展示两者，必须各带标签（"被拦下" vs "已分析"），不得合并成一个饼图。
 
 ---
 
@@ -354,7 +354,7 @@ where s.created_at > now()-interval '7 days' group by 1 order by 2 desc;
 | 批次 | 内容 | 时间 | 判读指标 | 停手条件 |
 |---|---|---|---|---|
 | 批次 1 | P0-1 + P0-2 + P0-3（可一次部署，全部默认关闭，逐项开启） | 部署当天 | 命中数/天、送 AI 数/轮、avg(R)、开单率 | P0-1 命中 <5/天 → 降到 75 或关 |
-| 批次 2 | P1-3 + P1-4（纯观测） | +2 天 | 漏斗四类计数、看板口径一致 | 无 |
+| 批次 2 | P1-3（漏斗细分，已实现）+ P1-4（口径说明，文档项） | 已上线 | 漏斗各族计数、`no_trigger` 占比变化 | 无 |
 | 批次 3 | P1-2 配额分池 | +3 天 | 两池各拿到的分析数、回踩命中占比 | 回踩 avg(R) 未改善 → 回退 |
 | 批次 4 | P1-1 回放脚本 + 报告 | +5 天 | tangle/flat 组前瞻期望 | 无（只读） |
 | 批次 5 | 按回放结论选 P2 单项 | +7 天 | 单项上线后 7 天 avg(R) | 任一指标恶化 → 回退 |
@@ -500,3 +500,48 @@ group by 1 order by 1;
 **当日冷却预演**（部署时点的数据）：符合条件的仅 `JCTUSDT`（今日 skip 2 次、均分 25）与 `NMRUSDT`（2 次、均分 25）——量级很小，符合"只砍反复被拒的币"的设计意图；若某天出现大量冷却，说明行情本身在反复否决策略，需看 §8 的停手条件。
 
 **首批验证点**：下一个整点扫描（14:00 UTC）的 worker 日志应出现 `未上架合约跳过 AI 分析 N 个` 与/或 `单币冷却跳过 AI 分析 N 个`，任务 detail 里带 `unlisted_skipped` / `cooldown_skipped`。
+
+---
+
+## 11. 实施记录（批次 2：P1-3 漏斗细分 / P1-4 口径更正）
+
+### 11.1 P1-3 `no_trigger` 细分（已实现）
+
+**问题**：21,920 次 `no_trigger` 拒绝塌在一个标签里，无法区分"无触点 / 腿门不过 / 有金K无语境 / 待确认超窗"，导致改哪一层只能靠猜。
+
+**实现**
+
+| 文件 | 改动 |
+|---|---|
+| `backend/app/services/strategy/trigger.py` | 新增 `_diag_stage(diag, code)`（**首个写入者生效**，避免下游覆盖上游卡点）；在 8 个决策点写归一化代码：`insufficient_bars` / `no_touch` / `leg_gate` / `golden_no_context` / `pending_waiting` / `window_expired` / `pending_flip` / `no_golden`。**有活跃 pending 时不写 `no_touch`**——此刻卡点是窗口状态，交给下游分支记录 |
+| `backend/app/services/scanner.py` | 无触发分支的 `_reject("no_trigger")` 改为 `_reject(diag["stage"] or "no_trigger")`，关卡代码直接落 `funnel_rejects` → `funnel_json.stages` 自动按类计数；`detail` 文本原样保留 |
+| `frontend/src/components/FunnelPanel.tsx` | `FUNNEL_STAGES` 增 8 个细分关卡（含中文标签/颜色/悬停说明），旧 `no_trigger` 标注为"旧轮次汇总"；新增 `NO_TRIGGER_FAMILY` 关卡族，待确认池「无触发」页签按**族**过滤（否则拆分后页签会看起来变空） |
+| `backend/tests/test_no_trigger_stage.py` | 新增 10 条：各分支 stage 代码、`_diag_stage` 首写生效、`diag=None` 静默、触点成立但无金K **不算被拒**（走 upsert） |
+
+**兼容性**：旧轮次数据仍是 `no_trigger`，前端按族过滤后历史轮次照常可见；`stages` 里新增键不影响既有读取方（无 schema 变更）。
+
+**判读（7 天）**
+```sql
+select t.k stage, sum(t.v::int) n
+from scan_records s, jsonb_each_text(s.funnel_json->'stages') t(k,v)
+where s.funnel_json is not null and s.created_at > now()-interval '7 days'
+group by 1 order by 2 desc;
+```
+预期：`no_trigger` 归零（历史轮次除外），被 `no_touch` / `leg_gate` / `window_expired` 等取代。若 `leg_gate` 占比过高（>25%），说明反向腿门在收紧候选，需回到 §6.1 的回放框架评估；若 `window_expired` 占绝对多数，说明 Stage-1 触点噪声大（与 7.4% 确认率一致），优先考虑收窄触点而不是加金K条件。
+
+### 11.2 P1-4 4h 口径（复核后降级为文档项）
+
+复核发现两个统计**同源**（`technical.analyze_htf_background`），差异只在分母：漏斗统计被门拦下的（tangle/flat 为主），`ai_analyses.htf_phase` 只统计已出 suggest 的（排列态为主）。**不改代码、不改名**，仅：
+
+- `backend/app/services/scanner.py::_htf_funnel` docstring 写明分母与"禁止跨分母对比"；
+- §2 L0-4 / §3 P1-4 两处更正（原文的"看板与复盘自相矛盾"是误判）。
+
+### 11.3 测试与上线
+
+- 新增 10 条；因细分改变了 3 条既有断言（`test_scan_funnel` ×2、`test_htf_ranging_filter` ×1 从 `no_trigger` 改为细分代码），属**有意的行为变更**，已在断言处注明日期与依据。
+- 全量 `pytest tests/` **1272 passed**；前端 `tsc --noEmit` 通过。
+- 上线记录见 §11.4（部署后回填）。
+
+### 11.4 上线记录
+
+（部署完成后回填：commit / CI run / `.deploy_state` / 容器镜像）

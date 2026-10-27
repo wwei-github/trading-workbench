@@ -190,7 +190,8 @@ def test_gate_direction_mismatch_expires_pending(monkeypatch):
         reject_out=rv,
     )
     assert cand is None
-    assert rv["stage"] == "no_trigger"
+    # 2026-10-27（docs/16 §6.3 P1-3）：待确认超窗细分为 window_expired
+    assert rv["stage"] == "window_expired"
     assert op == {"op": "expire", "reason": "window_expired"}
 
 

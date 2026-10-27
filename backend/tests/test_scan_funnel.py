@@ -422,7 +422,8 @@ def test_no_trigger_detail_real_trigger():
     cand, op = _detect(rv, _rising_klines(), flt=_diag_flt(),
                        real_trigger=True)
     assert cand is None and op is None
-    assert rv["stage"] == "no_trigger"
+    # 2026-10-27（docs/16 §6.3 P1-3）：无 pending 时的「未命中触点」落细分关卡 no_touch
+    assert rv["stage"] == "no_touch"
     assert "实体占比9.1%<70%" in rv["detail"]
     assert "未命中任何启用触点（EMA21）" in rv["detail"]
     assert rv["detail"].endswith("本根无同向金K")
@@ -442,7 +443,8 @@ def test_no_trigger_detail_pending_expired():
                        real_trigger=True)
     assert cand is None
     assert op == {"op": "expire", "reason": "window_expired"}
-    assert rv["stage"] == "no_trigger"
+    # 2026-10-27（docs/16 §6.3 P1-3）：待确认超窗从 no_trigger 里拆出
+    assert rv["stage"] == "window_expired"
     assert "待确认失效：回踩摆动低点后确认窗口内未出现同向金K" in rv["detail"]
 
 
