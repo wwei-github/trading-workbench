@@ -3511,7 +3511,7 @@ def notify_open_cards(trade_ids: list[str]) -> int:
 
 def _live_off_card(
     a: AIAnalysis, img_key: str = "", open_account_key: str = "",
-    both_off: bool = False,
+    both_off: bool = False, pos: Optional[float] = None, pos_min: float = 0.0,
 ) -> dict:
     """自动开单关闭提醒卡片（2026-10-09）：价格栅格复用开仓卡片风格，
     橙色头区分（蓝=开仓成功、橙=达标信号错过开仓）。
@@ -3526,6 +3526,11 @@ def _live_off_card(
     ai_tasks._dispatch_immediate_open 直接 return，达标信号连提醒都没有，
     18:00 那批 9 条 suggest 静默丢失）。文案随之改为「双网均关」，按钮仍
     只指向正式网单账号——测试网自动开单本就不该由卡片代劳。
+
+    2026-10-28（docs/16 §18.5 D4）：补「入场位置 pos」一行。双网全关时每笔都是
+    手动单，而手动单 force_market=True 按设计跳过 entry_pos 闸——ELSAUSDT 就是
+    pos=0.31 一路放行（§14.3）。卡片是用户点「开单」前唯一看到的界面，必须把
+    「这一单自动开仓会被拦」提前告知，否则用户在不知情下开了一笔系统本不认的单。
     """
     def _col(title: str, value: str) -> dict:
         return {"tag": "column", "width": "weighted", "weight": 1,
@@ -3560,6 +3565,14 @@ def _live_off_card(
             _col("止盈 TP2", _fmt_price(float(a.take_profit_2)) if a.take_profit_2 else "—"),
         ]},
     ]
+    if pos is not None:
+        _below = pos_min > 0 and pos < pos_min
+        _txt = (f"入场位置 **pos {pos:.2f}**"
+                + (f"（低于自动开仓门槛 {pos_min:.2f}，**自动开仓会被拦下**；"
+                   "手动开单不会被拦）" if _below
+                   else (f"（≥ 门槛 {pos_min:.2f}）" if pos_min > 0 else "")))
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": (
+            f"<font color='red'>{_txt}</font>" if _below else _txt)}})
     # 「开单」按钮：正式网仅一个启用账号（多账号群聊里点一下不知道开哪个，不给
     # 误开实盘的机会）且配了回调令牌时才挂；点击 → open_live 回调分支
     if open_account_key and settings.FEISHU_ACTION_TOKEN:
@@ -3615,6 +3628,30 @@ def _live_off_img_key(a: AIAnalysis, cfg) -> str:
     except Exception:
         logger.exception("正式网未开单卡片 K 线图渲染/上传失败（降级纯文字卡）")
         return ""
+
+
+def _live_off_pos(a: AIAnalysis, cfg) -> tuple[Optional[float], float]:
+    """卡片上的「入场位置 pos 与其门槛」（2026-10-28，D4）。
+
+    返回 (pos, pos_min)。pos 为 None 表示算不出来（K 线拉取失败、币价异常、
+    信号价落在区间外），此时卡片不显示该行——宁可少一行，也不猜。
+    pos_min 取 settings.ENTRY_POS_MIN_RATIO（0=闸门关闭，卡片只报数值不报结论）。
+    """
+    try:
+        from app.services.entry_diagnostics import bar_position, closed_bars
+        from app.services.exchange_pool import ExchangePool
+
+        pos_min = float(getattr(settings, "ENTRY_POS_MIN_RATIO", 0.0) or 0.0)
+        price = float(a.entry_price or 0)
+        if price <= 0:
+            return None, pos_min
+        interval = (getattr(cfg, "kline_interval", None) or "1h") if cfg is not None else "1h"
+        klines = ExchangePool().get_klines(a.symbol, interval, 60, allow_stale=True)
+        pos = bar_position(closed_bars(klines), price)
+        return (round(pos, 4) if pos is not None else None), pos_min
+    except Exception:
+        logger.warning("卡片入场位置计算失败（省略该行） symbol=%s", a.symbol, exc_info=True)
+        return None, 0.0
 
 
 def _off_card_suppressed(symbol: str, direction: str) -> bool:
@@ -3691,8 +3728,10 @@ def notify_live_auto_open_off(
             logger.info("可开单提醒今日已推送，跳过 symbol=%s analysis=%s", a.symbol, analysis_id)
             return
         img_key = _live_off_img_key(a, cfg)
+        _pos, _pos_min = _live_off_pos(a, cfg)
         if send_app_card(_live_off_card(
             a, img_key=img_key, open_account_key=open_acc, both_off=both_off,
+            pos=_pos, pos_min=_pos_min,
         )):
             logger.info(
                 "已发送%s提醒 analysis=%s symbol=%s 图=%s 按钮=%s",

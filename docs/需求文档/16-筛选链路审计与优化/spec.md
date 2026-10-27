@@ -1100,3 +1100,41 @@ TP1 设在 1.5R 的本意不是最大化期望，而是**先落袋一半、把�
 前提是先有 7 天以上、含 `tp1_trail`/`trail_sl` 分档 R 分布的验收数据。
 
 回退：解耦本身是纯重构，`STOP_ANCHOR_MAX_ATR` 默认 1.33 与旧值等价，无需回退。
+
+## 18.5 D4：飞书卡片补「入场位置 pos」（2026-10-28）
+
+### 18.5.1 为什么非补不可
+
+§14.3 的 ELSAUSDT 时间线暴露了一个闭环缺口：双网自动交易全关时，**每一笔都是手动单**，
+而手动单走 `force_market=True`，**按设计跳过 `entry_pos` 闸**（日志原文：
+`入场位置 pos=0.31 < 0.60，手动开单按用户意图放行（entry_pos 闸）`）。
+
+也就是说 B1 上线后，实际拦到的单是 **0 笔**——闸门只在自动开仓路径生效。
+用户在飞书卡片上点「开单」时，看到的只有方向/评分/盈亏比/三价，**不知道这一单
+如果走自动开仓是会被拦下的**。这不是 bug，但会让 B1 的数据彻底失真：将来复盘
+"pos 闸有没有用"时，手里的样本全是"用户手动决定开的单"。
+
+### 18.5.2 做法
+
+| 位置 | 变更 |
+|---|---|
+| `backend/app/services/trade_engine.py` 新增 `_live_off_pos(a, cfg)` | 拉 60 根当周期 K 线 → `closed_bars()` 去掉未收盘根 → `bar_position()`；返回 `(pos, pos_min)`，`pos_min` 取 `settings.ENTRY_POS_MIN_RATIO`；任何异常返回 `(None, 0.0)` 且只 warning |
+| `_live_off_card(...)` 新增参数 `pos: Optional[float] = None, pos_min: float = 0.0` | 在价格四列之后插一行：低于门槛时 `<font color='red'>入场位置 **pos 0.31**（低于自动开仓门槛 0.60，**自动开仓会被拦下**；手动开单不会被拦）</font>`；不低于门槛时只报数值与门槛；`pos is None` 时整行省略 |
+| `notify_live_auto_open_off` | 调 `_live_off_pos` 并透传给卡片 |
+
+不加这行的代价：用户在不知情下开了一笔系统本不认的单；加了之后，卡片本身就是
+「这一单的自动开仓判决书」。
+
+### 18.5.3 测试与验证
+
+`backend/tests/test_off_card_pos.py` 6 条：低于门槛显示红色行、≥门槛显示灰行、
+`pos=None` 整行省略、闸门关闭（`pos_min=0`）只报数值不给结论、`_live_off_pos`
+在 K 线拉取异常时返回 `(None, pos_min)`、已收盘根过滤正确（未收盘根 88 的价格
+不应参与 `bar_position`）、`pos` 取四位小数。
+
+全量 `pytest tests/` **1313 passed**（1307 + 6）。
+
+### 18.5.4 回退
+
+纯展示层加法，不参与任何决策：`_live_off_pos` 返回 `None` 即回到旧卡片形态；
+整批回退走 `scripts/release.sh rollback`（镜像回上一版）。
