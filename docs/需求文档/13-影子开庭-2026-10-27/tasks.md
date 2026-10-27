@@ -47,9 +47,9 @@
 
 ## T6 全量验证与本地提交
 
-- [ ] `cd backend && python -m pytest -q`（全量）
-- [ ] `cd frontend && npx tsc --noEmit`
-- [ ] `git add` 仅本次涉及文件；`git commit`（conventional commits，例如 `feat(shadow): r2_low quality discount + close oi_conf/macd_div cards`）
+- [x] `cd backend && python -m pytest -q`（全量）
+- [x] `cd frontend && npx tsc --noEmit`
+- [x] `git add` 仅本次涉及文件；`git commit`（conventional commits，例如 `feat(shadow): r2_low quality discount + close oi_conf/macd_div cards`）
 - 验收：提交成功、未推送；`git status` 无本次遗留未暂存文件。
 
 ## 遗留（不在本次执行）
