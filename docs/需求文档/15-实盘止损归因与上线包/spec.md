@@ -742,6 +742,8 @@ GROUP BY 1, 2 ORDER BY 4 DESC;
 | 09:40 | `backend/.env` 追加 `PULLBACK_TOUCH_DENY_LONG=ema21`；`IMAGE_TAG=02df984 docker compose up -d --no-build --force-recreate backend celery_worker celery_beat` | 容器内 `settings.PULLBACK_TOUCH_DENY_LONG='ema21'` |
 | 09:40 | 发现冲突：`pullback_touch_refs` 已是 5 类（**无 ema21**），与方案 A"空头保留"冲突。审计日志显示 06:27Z 有一次 `scan_filters` 写入（页面侧），最后一次 `touch_ref=ema21` 扫描行在 07:00Z | 报用户拍板 |
 | 09:44 | 用户选"恢复 ema21，只禁多头" | `UPDATE system_config SET scan_filters = jsonb_set(...,'{pullback_touch_refs}','["retest","swing","ema21","ema21_4h","ema55","ema144"]')` |
+| 09:47 | push `a75e589`（存量 pending 复核，§16.7.1） | CI `deploy backend` **success**，三容器 `a75e589` Up，PREV=`02df984` |
+| 09:49 | 生产复核 | `.env` 有 `PULLBACK_TOUCH_DENY_LONG=ema21`（1 处）；容器内 `deny_long=ema21`、`touch_refs_for(1)` = 5 类（无 ema21） |
 | 09:45 | `/api/scans/config` 复核 | base=6 类；`deny_long=['ema21']`、`deny_short=[]`；**多头生效 5 类（无 ema21）、空头生效 6 类（含 ema21）** ✅ |
 
 > 教训（写进流程）：**上线前先核对"生效值"，而不是只核对"我改了哪一行"**。本次的坑是——我改的是禁用表，但白名单上一小时被另一处改过，两个配置叠加后的实际集合才是真相。凡是"白名单 ∩ 禁用表"这类交集口径，验证必须打印**最终生效集合**（上面的 `多头生效触点 / 空头生效触点` 两行）。
