@@ -23,6 +23,12 @@ _MESSAGE_MAX_LEN = 4000
 
 # 现货域 logger 前缀：INFO 即落库（现货日志 Tab 数据源）
 _SPOT_LOGGER_PREFIX = "app.spot"
+# INFO 即落库的其它 logger 前缀（2026-10-27）：扫描链路的诊断全是 INFO
+# （「扫描完成」「重复命中抑制」「质量分下限拦截」「写入 N 条结果」），而默认口径
+# 只放行 WARNING+，导致这些行既不进 app_logs、worker 容器 stdout 也看不到 →
+# 「这一轮为什么只出 N 条候选」只能靠 funnel_json 计数反推，无法排查。
+# 该 logger 每轮只有 6~8 条汇总行（逐币日志是 warning/debug），量级可控。
+_INFO_LOGGER_PREFIXES = ("app.spot", "app.services.scanner")
 
 _attached = False
 
@@ -31,14 +37,15 @@ class _AppLoggerFilter(logging.Filter):
     """只放行本应用日志器（app.*），框架与第三方库的日志不落库。
 
     级别分域：handler 挂 INFO 级，这里二次把关——
-    - app.spot.*：INFO 即放行（现货域全程可观测）
+    - `_INFO_LOGGER_PREFIXES`（现货域 + 扫描链路）：INFO 即放行
+      （现货全程可观测；扫描每轮 6~8 条汇总行，是排查"这轮为何没出候选"的唯一眼睛）
     - 其余 app.*：仅 WARNING 及以上（与历史口径一致，防止 INFO 刷库）
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         if not record.name.startswith("app"):
             return False
-        if record.name.startswith(_SPOT_LOGGER_PREFIX):
+        if record.name.startswith(_INFO_LOGGER_PREFIXES):
             return True
         return record.levelno >= logging.WARNING
 

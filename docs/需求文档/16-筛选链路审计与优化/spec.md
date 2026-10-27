@@ -83,7 +83,7 @@
 |---|---|---|---|
 | L0-1 | **没有回放/反事实工具**，阈值改动只能实盘试 | 33,637 条 `htf_blocked` 快照躺着未评估 | 每个优化都是一次实盘实验 |
 | L0-2 | 影子特征只采不判 | `cvd_div` 3,269 / `r2_slope` 3,269 / `macd_div` 3,185 / `sweep_reclaim` 1,342 / `oi_conf` 331 / `rec70_shadow` 614 / `be_retrace` 173，无任何评估闭环 | 存储成本 + 误以为"在观测" |
-| L0-3 | `is_repeat` 恒 False，抑制量不可见 | 14 天 3,330 条全 False；30 天日志"重复命中抑制" **0 次** | `REPEAT_WINDOW_HOURS=3` 从未生效，字段形同虚设 |
+| L0-3 | ~~`is_repeat` 恒 False，抑制从未生效~~ → **更正：抑制器正常，只是当前无重复可抑**；真问题在日志不可见 | `is_repeat` 14 天 3,330 条全 False、日志"重复命中抑制" 0 次；但复核发现近 6 天同币同信号 3h 内重复 **0 条**，14 天内的 58 条重复**全部落在 10-21 之前**（突破类还开着、Donchian 每小时创新高时） | 抑制器按设计工作；0 次日志的真因是 **扫描 INFO 不落库**（见 §12.1） |
 | L0-4 | ~~两套 4h 口径并存~~ → **更正：非缺陷，是不同的分母** | 两者都来自同一个 `analyze_htf_background` 状态机，但漏斗 `htf_states` 的分母是**被 4h 门拦下**的币次（以 `tangle`/`flat` 为主：`aligned_bear` 189 / `aligned_bull` 4），`ai_analyses.htf_phase` 的分母是**已出 suggest 的候选**（以排列为主：`aligned_bull` 99 / `aligned_bear` 152）。属幸存者差异 | 只看原始数字会误判为"算法打架"；已加代码注释与本章口径说明，禁止跨分母对比 |
 
 ### L1 准入门
@@ -555,3 +555,51 @@ group by 1 order by 2 desc;
 | 回滚 | `scripts/release.sh rollback`（回 `e0d1112`） |
 
 **首个真实验证点**：15:00 UTC 整点扫描。届时 `scan_records.funnel_json.stages` 里 `no_trigger` 应消失，取而代之是 `no_touch` / `leg_gate` / `pending_waiting` / `window_expired` 等；前端「筛选漏斗」与待确认池「无触发」页签按族展示。部署前最后一轮（14:00 UTC）的对照基线：`no_trigger=24`、`gate_4h=123`、`htf_state_lock=41`、`range_score=17`。
+
+---
+
+## 12. 观测缺口与更正记录（2026-10-27 事后复核）
+
+本轮审计有两条结论在后续复核中被推翻。写在这里是为了让后人不重复踩：**"日志里没有"不等于"代码没跑"**。
+
+### 12.1 扫描链路日志此前完全不落库（已修）
+
+**事实**：`backend/app/services/log_sink.py::_AppLoggerFilter` 只放行 **WARNING 及以上**（`app.spot.*` 是唯一例外）。而 `scanner.py` 的 13 处 `logger.info` 全是诊断汇总行：
+
+| 日志 | 内容 |
+|---|---|
+| `扫描完成 #%s: 扫描%d个, 命中%d个（抑制重复%d个）` | 每轮总账 |
+| `重复命中抑制 #%s: %d 条已在 %dh 内命中过` | 抑制器是否工作 |
+| `质量分下限 %.0f 拦截 #%s: %d/%d` | P0-1 效果 |
+| `写入 %d 条扫描结果 #%s` / `写入 %d 条被拦信号影子` | 落库量 |
+| `定时扫描后跳过本轮 AI 分析 #%s` | 满仓跳过 |
+
+**实测佐证**（修复前）：
+- `app_logs` 近 2 天 5,320 条中「扫描完成」= **0**、「重复命中抑制」全库 = **0**
+- worker / beat / backend 三个容器 3 小时日志里出现「扫描」= **0**（worker 只有 1 条 celery 内部的 `run_scan_task received`）
+- 而 `scan_records` 每小时都在新增 → **扫描在跑，过程不可见**
+
+**后果**：任何"这轮为什么只出 3 条候选""抑制器有没有生效""质量分下限拦了多少"的问题，都只能靠 `funnel_json` 的计数反推，看不到过程，也无法判断是"没触发"还是"触发后被拦"。
+
+**修复**：`log_sink` 新增 `_INFO_LOGGER_PREFIXES = ("app.spot", "app.services.scanner")`，扫描 INFO 与现货域一样直接落库。量级：每轮 6~8 条汇总行（逐币日志本就是 warning/debug），约 +150 条/天。测试 `backend/tests/test_log_sink_filter.py` 6 条覆盖：框架日志不落库、普通 `app.*` 仅 WARNING+、`app.spot` 与 `app.services.scanner` INFO 放行、同前缀兄弟 logger 不被顺带放行。
+
+### 12.2 更正一：重复命中抑制**没有**失效
+
+原文判定："`REPEAT_WINDOW_HOURS=3` 从未生效，字段形同虚设"。
+
+复核：
+- 近 **6 天**：同 `(symbol, signal_type)` 在 3h 内重复的行数 = **0**（窗口内无重复可抑）
+- 近 14 天：反事实统计有 **58 行**会被抑制，但**全部落在 10-21 之前**——那是突破类还开着的时候（Donchian 突破每小时都在创新高），也正是 `_suppress_repeat_hits` 注释里写明的存在理由
+- A1 下线突破类、A2 禁用多头 ema21 之后，回踩确认要求"新触点 + 新金K"，同一币种同一信号 3h 内再出现几乎不可能
+
+结论：**抑制器按设计工作，当前处于空闲状态**；`is_repeat` 恒 False 属正常（被抑制的行压根不会落库，字段留给"同轮内重复"等其它场景）。日志 0 次的真因是 §12.1 的级别过滤，与抑制器无关。
+
+### 12.3 更正二：4h"两套口径"是同源不同分母
+
+原文判定："漏斗 `htf_states` 与 `ai_analyses.htf_phase` 两套口径并存、看板与复盘自相矛盾"。
+
+复核：两者都出自 `technical.analyze_htf_background` 的 `state`，词表相同；差异纯来自分母——漏斗统计**被 4h 门拦下**的币次（`tangle`/`flat` 为主），`htf_phase` 只统计**已出 suggest** 的候选（排列态为主）。属幸存者差异，**不是两套算法**。已降级为文档项（§6.4），并在 `scanner._htf_funnel` docstring 写明"禁止跨分母对比"。
+
+### 12.4 仍未解释的一项
+
+`golden_combo=True` 在 3,330 条命中里只有 **1 条**、`entry_lag_pct` 只有 1 条非空（L4-2 / P2-2）。这项**尚未**结论：既可能是复合条件（前根锤/流星 + 当根趋势K 同向且 `body/rng≥0.60`）确实极罕见，也可能是 `resolve_golden_evidence` 的复合分支没被走到。查法见 §7 P2-2——用历史 K 线离线跑一遍即可判定，不需要回放工具。
