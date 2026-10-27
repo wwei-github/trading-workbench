@@ -484,4 +484,19 @@ group by 1 order by 1;
 
 ### 10.4 上线记录
 
-（部署完成后回填：commit / CI run / `.deploy_state` / 容器镜像 / 容器内 `settings` 实测值）
+| 项 | 值 |
+|---|---|
+| commit | `e0d1112 feat(scan): 质量分下限 + AI 前剔除不可交易合约 + 单币冷却（docs/16 批次 1）` |
+| 上一版 | `afda1f7`（`.deploy_state` `PREV_SHA`，回滚目标） |
+| CI | run `40511277567` **success**（scope=all，前端一并重建） |
+| 容器 | backend / celery_worker / celery_beat / frontend 全部 `e0d1112` Up |
+| 部署时间 | 2026-10-27 13:20 UTC |
+| 实测开关 | `settings.QUALITY_FLOOR=0.0`（关）、`settings.AI_REANALYZE_SKIP_LIMIT=2`、`settings.AI_REANALYZE_MIN_REC=50.0` |
+| API 生效值 | `/api/scans/config` → `scan_filters_effective.quality_floor = 0.0`、`ai_max_per_scan = 10` |
+| 回滚 | `cd /home/ubuntu/github/trading-workbench && scripts/release.sh rollback`（回 `afda1f7`） |
+
+**当前生效范围**：P0-2（剔除两网都未上架的合约）与 P0-3（单币冷却 2 次 / 均分 50）**已开**；P0-1（质量分下限）**保持关闭**，等 §1.2 的选择偏差在实盘再验证一轮后由使用者决定是否设 80。
+
+**当日冷却预演**（部署时点的数据）：符合条件的仅 `JCTUSDT`（今日 skip 2 次、均分 25）与 `NMRUSDT`（2 次、均分 25）——量级很小，符合"只砍反复被拒的币"的设计意图；若某天出现大量冷却，说明行情本身在反复否决策略，需看 §8 的停手条件。
+
+**首批验证点**：下一个整点扫描（14:00 UTC）的 worker 日志应出现 `未上架合约跳过 AI 分析 N 个` 与/或 `单币冷却跳过 AI 分析 N 个`，任务 detail 里带 `unlisted_skipped` / `cooldown_skipped`。
