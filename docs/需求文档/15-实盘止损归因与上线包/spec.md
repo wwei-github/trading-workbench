@@ -522,7 +522,7 @@ docker compose start celery_beat celery_worker   # 恢复
 | 只退 A1 | 页面「扫描配置」勾回 `trigger_breakout` + `trigger_trend_breakout`，或 §8-L1 的 SQL | 恢复全信号族，B1 仍在（对所有信号生效） |
 | 退代码 | `bash scripts/release.sh rollback` | 回 `87d0f20`，连诊断落库一起消失 |
 
-### 15.4 上线后 24h 必查（三条）
+### 15.4 上线后 24h 必查（四条）
 
 ```sql
 -- ① A1 是否生效：应为 0 行
@@ -532,9 +532,17 @@ WHERE created_at > now() - interval '24 hours'
 -- ② B1 是否在动：被拦的单子（落在 ai_analyses.open_block_reason，不是 trade_records）
 SELECT count(*) FROM ai_analyses
 WHERE created_at > now() - interval '24 hours' AND open_block_reason LIKE '%入场位置%';
--- ③ 诊断是否落库：应基本非空
+-- ③ 样本有没有被饿死：按小时看开仓笔数（<5 笔/日即触发 §8 回退判据 1）
+SELECT to_char(date_trunc('hour', opened_at), 'MM-DD HH24') AS h,
+       count(*) AS 开仓笔数, count(DISTINCT symbol) AS 币种数
+FROM trade_records
+WHERE opened_at > now() - interval '24 hours' AND testnet = false
+GROUP BY 1 ORDER BY 1 DESC;
+-- ④ 诊断是否落库：应基本非空
 SELECT count(*) FILTER (WHERE raw->'entry_diag'->>'pos' IS NOT NULL) AS with_pos, count(*)
 FROM trade_records WHERE opened_at > now() - interval '24 hours';
 ```
 
 日志侧：`docker logs --since 24h trading-workbench-celery_worker-1 | grep -E "入场位置|entry_pos"`；若 `_entry_snapshot` 刷 warning（K 线拉取失败）→ 先置 `ENTRY_POS_MIN_RATIO=0` 再查网络（§8 回退判据第 4 条）。
+
+> 与 §9 的关系：§9 是 7 天窗口的验收表（胜率、`sl` 占比、单笔期望），本小节只是**头 24 小时的三类即时健康检查**（闸门在不在动、样本有没有被饿死、诊断有没有落库），两者不重复。
