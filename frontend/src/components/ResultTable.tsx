@@ -43,6 +43,39 @@ const TRADE_STATUS_LABEL: Record<string, string> = {
   FAILED: "开单失败",
 };
 
+// 质量分分项标签（与后端 ai_analyzer.QUALITY_PART_LABELS 同源同序，2026-10-28）：
+// 前端质量分悬停展示分项拆解；box_atr/box_overlap 等观测键不在表内，不渲染
+const QUALITY_PART_LABELS: [string, string][] = [
+  ["base", "基础"],
+  ["htf", "4h"],
+  ["htf_macro", "逆宏观"],
+  ["adx", "ADX"],
+  ["volume", "量能"],
+  ["shadow", "影线"],
+  ["rsi", "RSI"],
+  ["obv", "OBV"],
+  ["risk_vote", "辅助票"],
+  ["boll", "带宽"],
+  ["zone", "结构密度"],
+  ["stabilize", "企稳"],
+  ["structure_gate", "结构门"],
+  ["range", "震荡"],
+  ["r2_low", "弱趋势"],
+  ["box", "箱体"],
+];
+
+// 分项拆解行："质量分拆解：基础 80 / 4h +10 / 震荡 -8 / 箱体 -15"（无分项返回 null）
+function qualityPartsLine(parts?: Record<string, number> | null): string | null {
+  if (!parts) return null;
+  const segs: string[] = [];
+  for (const [key, label] of QUALITY_PART_LABELS) {
+    const v = parts[key];
+    if (typeof v !== "number") continue;
+    segs.push(key === "base" ? `${label} ${v}` : `${label} ${v > 0 ? "+" : ""}${v}`);
+  }
+  return segs.length ? `质量分拆解：${segs.join(" / ")}` : null;
+}
+
 // 回踩触点（docs/22 触点体系，与后端 trigger.TOUCH_LABELS 同源）：
 // 颜色/悬停说明固定，展示文案由 touchLabel 按方向生成（EMA21 / 前高回测 / 摆动低点…）
 const TOUCH_TAG_MAP: Record<string, { color: string; tip: string }> = {
@@ -587,10 +620,15 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
           ? `方向票：多${votes.bull_n} vs 空${votes.bear_n}（净${votes.net > 0 ? "+" : ""}${votes.net} / 已投${votes.voted}）`
             + (votes.bull.length ? `\n看多：${votes.bull.join("、")}` : "")
             + (votes.bear.length ? `\n看空：${votes.bear.join("、")}` : "")
-          : undefined;
+          : null;
+        // 分项拆解（2026-10-28）：质量分悬停展示程序扣/加分项（含箱体 -15）
+        const text = [qualityPartsLine(record.quality_parts), detail]
+          .filter(Boolean).join("\n");
         const color = v >= 75 ? "green" : v >= 60 ? "gold" : "default";
         return (
-          <Tooltip title={detail}>
+          <Tooltip
+            title={<div style={{ whiteSpace: "pre-line" }}>{text}</div>}
+          >
             <Tag color={color} style={{ marginInlineEnd: 0, cursor: "default" }}>
               {v}
             </Tag>

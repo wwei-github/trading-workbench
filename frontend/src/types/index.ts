@@ -29,6 +29,8 @@ export interface ScanResult {
   volume: number;
   volume_type: string;
   quality_score: number | null; // 指标驱动筛选：候选质量分 0-100（AI 配额排序键）
+  quality_parts?: Record<string, number> | null; // 质量分分项拆解（base/htf/.../box；
+                                                  // box_atr/box_overlap 为观测键，不参与 total）
   // 命中标注（2026-10-27，docs/15 §19）：扫描结果右图只标"这一行"，后端按
   // services/hit_ref 统一口径下发；golden_combo/pattern_candle_open/entry_lag_pct
   // 为库列直取，signal_candle_open/stage1_candle_open/direction 为派生值。

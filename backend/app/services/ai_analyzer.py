@@ -93,6 +93,7 @@ QUALITY_PART_LABELS = (
     ("structure_gate", "结构门"),
     ("range", "震荡"),
     ("r2_low", "弱趋势"),
+    ("box", "箱体"),
 )
 
 

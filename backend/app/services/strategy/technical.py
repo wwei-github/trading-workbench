@@ -1021,6 +1021,17 @@ STRUCTURE_GATE_PENALTY = -15
 # r2_mid（0.4~0.7）影子读数最高（非单调），故 r2_high/r2_mid 均不加分，只做单向折价。
 R2_LOW_MAX = 0.4
 R2_LOW_PENALTY = -5
+# 回踩箱体折价（2026-10-28）：最近 PULLBACK_BOX_BARS 根已收盘 1h 的箱体宽度
+# （最高−最低，/ATR14）低于 PULLBACK_BOX_ATR_MAX 且相邻 K 线实体平均重叠率
+# ≥PULLBACK_BOX_OVERLAP_MIN → 判为「窄幅上下震荡、实体相互重叠」的箱体，回踩
+# 确认 -15。动机：UAIUSDT 20 根 1h 箱体（2.91 ATR / 重叠 0.85）在震荡闸门只
+# 命中 ADX<18 一项，回踩路径仅 -8，质量分仍有 72；本项补「箱体几何」这一维。
+# 仅回踩确认消费：突破类已由 range_score 硬拒，不重复计入。
+PULLBACK_BOX_BARS = 20
+PULLBACK_BOX_ATR_MAX = 3.0
+PULLBACK_BOX_OVERLAP_MIN = 0.6
+PULLBACK_BOX_MIN_PAIRS = 5
+PULLBACK_BOX_PENALTY = -15
 
 
 def _compute_all(
@@ -1315,6 +1326,68 @@ def golden_zone_swing_count(
     return cnt
 
 
+def pullback_box_evidence(klines: Optional[list],
+                          bars: int = PULLBACK_BOX_BARS) -> Optional[dict]:
+    """回踩箱体几何证据（最近 bars 根已收盘 1h；2026-10-28）。
+
+    判据（同时满足才算箱体）：
+    - 箱体宽度 / ATR14 < PULLBACK_BOX_ATR_MAX（ATR 归一化，跨品种可比）；
+    - 相邻 K 线实体平均重叠率 ≥ PULLBACK_BOX_OVERLAP_MIN——
+      重叠 = 两根实体区间交集长度 / 较短实体长度；零实体（十字/一字）跳过，
+      有效相邻对不足 PULLBACK_BOX_MIN_PAIRS 视为样本不足不判。
+
+    返回 {"atr_mult": 宽度/ATR, "overlap": 平均重叠率} 或 None。
+    """
+    if not klines:
+        return None
+    closed = klines[:-1] if len(klines) >= 2 else klines
+    if len(closed) < bars or len(closed) < 15:  # ATR14 需 15 根
+        return None
+    try:
+        seg = closed[-bars:]
+        highs = np.array([float(k[2]) for k in seg], dtype=float)
+        lows = np.array([float(k[3]) for k in seg], dtype=float)
+        opens = np.array([float(k[1]) for k in seg], dtype=float)
+        closes = np.array([float(k[4]) for k in seg], dtype=float)
+        h_all = np.array([float(k[2]) for k in closed], dtype=float)
+        l_all = np.array([float(k[3]) for k in closed], dtype=float)
+        c_all = np.array([float(k[4]) for k in closed], dtype=float)
+    except (TypeError, ValueError, IndexError):
+        return None
+    tr = np.maximum(h_all[1:] - l_all[1:],
+                    np.maximum(np.abs(h_all[1:] - c_all[:-1]),
+                               np.abs(l_all[1:] - c_all[:-1])))
+    atr = float(tr[-14:].mean()) if len(tr) >= 14 else 0.0
+    if atr <= 0 or not np.isfinite(atr):
+        return None
+
+    width = float(highs.max() - lows.min()) / atr
+    # 坏 OHLC（high<low）会让宽度为负、天然通过「<上限」判定 → 假箱体；
+    # 非有限值同理。与 entry_diagnostics.bar_position 的 high<=low 校验同口径。
+    if not np.isfinite(width) or width <= 0:
+        return None
+
+    overlaps: list[float] = []
+    for i in range(1, len(seg)):
+        b1_hi, b1_lo = max(opens[i - 1], closes[i - 1]), min(opens[i - 1], closes[i - 1])
+        b2_hi, b2_lo = max(opens[i], closes[i]), min(opens[i], closes[i])
+        short = min(b1_hi - b1_lo, b2_hi - b2_lo)
+        if short <= 0:
+            continue
+        ov = min(b1_hi, b2_hi) - max(b1_lo, b2_lo)
+        if ov > 0:
+            overlaps.append(ov / short)
+        else:
+            overlaps.append(0.0)
+    if len(overlaps) < PULLBACK_BOX_MIN_PAIRS:
+        return None
+    overlap = float(np.mean(overlaps))
+
+    if width < PULLBACK_BOX_ATR_MAX and overlap >= PULLBACK_BOX_OVERLAP_MIN:
+        return {"atr_mult": round(width, 2), "overlap": round(overlap, 2)}
+    return None
+
+
 def compute_quality_score(
     direction: int, votes: dict, trigger_type: str,
     klines: Optional[list] = None,
@@ -1341,8 +1414,9 @@ def compute_quality_score(
     质量分重罚（STRUCTURE_GATE_PENALTY）——不过门照常出信号，仅排序落后
     range_penalty: range_score≥1 但触发类型为回踩确认（scanner 降权不拒），-8
     parts_out（2026-10-21，T0-3）：传入 dict 时填充分项贡献（base/htf/adx/volume/
-    shadow/rsi/obv/risk_vote/boll/zone/stabilize/structure_gate/range），供提示词
-    与复盘展示「质量分 = 基础 + 各项」；不改变返回值与既有调用方
+    shadow/rsi/obv/risk_vote/boll/zone/stabilize/structure_gate/range/r2_low/box；
+    另有 box_atr/box_overlap 为箱体几何观测键，不计分），供提示词与复盘展示
+    「质量分 = 基础 + 各项」；不改变返回值与既有调用方
 
     修饰规则（2026-09-17 设计评审定稿；2026-09-24 4h 背景提权；2026-10-11
     再重构 EMA 状态机 11 态：div 强度档与过热/冷却分值矩阵退役，改
@@ -1377,6 +1451,8 @@ def compute_quality_score(
     - 1H 结构门未过（structure_gate=False）−STRUCTURE_GATE_PENALTY
     - 震荡段折价（2026-10-27 CARD-10 升格，docs/14 §十一）：24 根已收盘 1h R²<0.4
       → −5（排序层，不进闸门；r2_high/r2_mid 不加分）
+    - 回踩箱体折价（2026-10-28）：最近 20 根已收盘 1h 箱宽<3×ATR14 且相邻实体
+      平均重叠率≥0.6 → −15（仅回踩确认；突破类已由 range_score 硬拒）
     """
     # votes=None（2026-10-18 方向票关关闭后，指标全不可用且 4h 闸门兜底定向的
     # 罕见路径可达）：按无票处理——空票集、net=0、基础分 50，各修饰项自动跳过
@@ -1503,6 +1579,17 @@ def compute_quality_score(
                 _add("r2_low", R2_LOW_PENALTY)
         except (ValueError, TypeError, IndexError, ZeroDivisionError):
             pass  # 折价项异常只降级该排序项，不影响基础分
+
+    # 回踩箱体折价（2026-10-28）：窄幅箱体 + 实体相互重叠 = 没有结构推进，
+    # 回踩确认 -15；突破类已在 scanner 的 range_score 硬拒，不重复计入。
+    # box_atr / box_overlap 仅落分项供复盘校准阈值，不参与 total 计算。
+    if trigger_type == "trigger_pullback_confirm" and klines:
+        box = pullback_box_evidence(klines)
+        if box:
+            _add("box", PULLBACK_BOX_PENALTY)
+            if parts is not None:
+                parts["box_atr"] = box["atr_mult"]
+                parts["box_overlap"] = box["overlap"]
 
     # 4h 强度分（2026-10-21 T2-6，影子）：aligned 只说明排列，不说明趋势强弱与
     # 剩余空间。按 spec F3 三要素给分，但**只记录不参与排序**——先影子观察

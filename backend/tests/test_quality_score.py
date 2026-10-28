@@ -342,3 +342,96 @@ def test_r2_low_discount_clamped():
                                   klines=_r2_klines(closes))
     assert score == 45
     assert 0 <= score <= 100
+
+
+# ── 回踩箱体折价（2026-10-28）──────────────────────────────────────────────
+
+
+def _box_klines(n: int = 20, base: float = 100.0,
+                amp: float = 0.2, rng: float = 0.5) -> list[list]:
+    """n 根已收盘 + 1 未收盘：实体在同一区间交替、箱宽 = 2×rng = ATR14。
+
+    箱宽/ATR=1、实体重叠率=1；总根数 <25，不触发 R² 弱趋势折价，
+    便于单独断言箱体折价。
+    """
+    kl = []
+    for i in range(n):
+        o = base + (amp if i % 2 == 0 else -amp)
+        c = base - (amp if i % 2 == 0 else -amp)
+        kl.append([i, o, base + rng, base - rng, c, 100.0, 100.0])
+    kl.append([n, base, base + rng, base - rng, base, 100.0, 100.0])
+    return kl
+
+
+def _trend_klines(n: int = 20, start: float = 100.0,
+                  step: float = 1.0) -> list[list]:
+    """n 根已收盘 + 1 未收盘：稳步上行、相邻实体不重叠、箱宽远大于 3×ATR"""
+    kl = []
+    for i in range(n):
+        o = start + i * step
+        kl.append([i, o, o + step, o - 0.1, o + step * 0.8, 100.0, 100.0])
+    nxt = start + n * step
+    kl.append([n, nxt, nxt + step, nxt - 0.1, nxt + step * 0.8, 100.0, 100.0])
+    return kl
+
+
+def _wide_overlap_klines(n: int = 20, start: float = 100.0,
+                         step: float = 0.4) -> list[list]:
+    """实体高度重叠但整体漂移、箱宽 > 3×ATR——验证宽度门单独生效"""
+    kl = []
+    for i in range(n):
+        b = start + i * step
+        kl.append([i, b - 0.5, b + 0.6, b - 0.6, b + 0.5, 100.0, 100.0])
+    b = start + n * step
+    kl.append([n, b - 0.5, b + 0.6, b - 0.6, b + 0.5, 100.0, 100.0])
+    return kl
+
+
+def test_pullback_box_evidence_geometry():
+    """窄箱 + 高重叠 → 命中；趋势（不重叠）/ 宽箱（宽度不达）→ None"""
+    from app.services.strategy.technical import pullback_box_evidence
+    ev = pullback_box_evidence(_box_klines())
+    assert ev is not None
+    assert ev["atr_mult"] == 1.0
+    assert ev["overlap"] == 1.0
+    assert pullback_box_evidence(_trend_klines()) is None
+    assert pullback_box_evidence(_wide_overlap_klines()) is None
+
+
+def test_pullback_box_discount_applied():
+    """回踩确认命中箱体 → -15，分项记 box/box_atr/box_overlap：80 - 15 = 65"""
+    parts: dict = {}
+    score = compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                  klines=_box_klines(), parts_out=parts)
+    assert score == 65
+    assert parts["box"] == -15
+    assert parts["box_atr"] == 1.0
+    assert parts["box_overlap"] == 1.0
+    assert parts["total"] == 65
+
+
+def test_pullback_box_only_for_pullback_confirm():
+    """突破类不消费箱体折价（已由 range_score 硬拒）：同序列仍 80"""
+    parts: dict = {}
+    score = compute_quality_score(1, _votes(), "trigger_breakout",
+                                  klines=_box_klines(), parts_out=parts)
+    assert score == 80
+    assert "box" not in parts
+
+
+def test_pullback_box_requires_enough_bars():
+    """不足 20 根已收盘 → 不判箱体（避免短样本误罚）"""
+    parts: dict = {}
+    score = compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                  klines=_box_klines(10), parts_out=parts)
+    assert score == 80
+    assert "box" not in parts
+
+
+def test_pullback_box_rejects_inverted_ohlc():
+    """坏 OHLC（high<low）宽度为负、天然满足「<上限」——必须拒绝，不得判箱体"""
+    from app.services.strategy.technical import pullback_box_evidence
+    bad = [[i, 100.0, 99.0, 101.0, 100.2, 100.0, 100.0] for i in range(20)]
+    bad.append([20, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0])
+    assert pullback_box_evidence(bad) is None
+

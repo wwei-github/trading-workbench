@@ -38,6 +38,9 @@ class ScanResultOut(BaseModel):
     volume: float
     volume_type: str
     quality_score: Optional[int] = None  # 指标驱动筛选：候选质量分 0-100（AI 配额排序键）
+    # 质量分分项拆解（2026-10-28）：与 AI 提示词同一份 parts（base/htf/.../box），
+    # 前端质量分悬停展示；box_atr/box_overlap 等观测键不参与 total
+    quality_parts: Optional[dict] = None
     votes_json: Optional[dict] = None  # 指标票数明细 {bull, bear, bull_n, bear_n, net, voted}
     is_repeat: bool
     created_at: datetime
