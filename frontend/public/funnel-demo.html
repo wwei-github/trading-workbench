@@ -358,7 +358,7 @@ kpis(document.getElementById('kpis-D'));
      sub:`缠绕 ${reasonSplit.tangle||0} · 走平 ${reasonSplit.flat||0} · 未定 ${reasonSplit.undetermined||0}${reasonSplit.degraded?` · 降级 ${reasonSplit.degraded}`:''}`,
      keys:['gate_4h']},
     {name:'拐头锁', n:stages.htf_state_lock||0, color:'#f76b15',
-     sub:`turn_bear ${htfStates.turn_bear||0} · turn_bull ${htfStates.turn_bull||0} · 其余 ${Math.max(0,(htfStates.turn_bear||0)+(htfStates.turn_bull||0)?0:0)}`,
+     sub:`turn_bear ${htfStates.turn_bear||0} · turn_bull ${htfStates.turn_bull||0} · 其他状态 ${Math.max(0,(stages.htf_state_lock||0)-(htfStates.turn_bear||0)-(htfStates.turn_bull||0))}`,
      keys:['htf_state_lock']},
     {name:'待确认', n:g(['pending_waiting','window_expired','pending_flip']), color:'#12a594',
      sub:`等待中 ${stages.pending_waiting||0} · 超窗 ${stages.window_expired||0} · 反向 ${stages.pending_flip||0}`,

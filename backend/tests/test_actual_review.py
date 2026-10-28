@@ -35,13 +35,13 @@ def db():
     session.close()
 
 
-def _rec(rr, pnl=1.0):
+def _rec(rr, pnl=1.0, signal_type=None, pattern=None):
     now = datetime.utcnow()
     return TradeRecord(
         symbol="GTCUSDT", direction="long", status="CLOSED",
         exit_reason="sl", testnet=False, account_key="live-1",
         opened_at=now - timedelta(hours=3), closed_at=now - timedelta(hours=1),
-        realized_pnl=pnl,
+        realized_pnl=pnl, signal_type=signal_type, pattern=pattern,
         ai_snapshot={"risk_reward_ratio": rr} if rr is not None else None,
     )
 
@@ -126,3 +126,44 @@ def test_risk_metrics_skip_rows_without_1r(db):
     assert ov["risk_excess_count"] == 0
     assert ov["risk_excess_total"] == pytest.approx(0.0)
     assert ov["max_loss_r"] is None
+
+
+def _dim_groups(result: dict, dim: str) -> dict:
+    return {g["key"]: g for g in result["groups"] if g["dim"] == dim}
+
+
+def test_golden_pattern_only_active_eight(db):
+    """P1-1：金K形态只列现役 8 种（0 笔也占行）；已下线 4 种的历史行
+    归入「未记录」，不再各占一行恒 0"""
+    from app.services.actual_review import GOLDEN_PATTERN_ORDER
+    from app.services.strategy.candlestick import PATTERN_LABEL_MAP
+
+    db.add_all([
+        _rec(2.0, signal_type="trigger_pullback_confirm", pattern="hammer"),
+        # 已下线形态（2026-10-09 白名单收缩）→ 并入未记录
+        _rec(2.0, signal_type="trigger_pullback_confirm", pattern="bullish_harami"),
+        _rec(2.0, signal_type="trigger_pullback_confirm"),
+    ])
+    db.commit()
+    pats = _dim_groups(build_actual_review(db, days=7), "金K形态")
+
+    assert len(GOLDEN_PATTERN_ORDER) == 8
+    assert {PATTERN_LABEL_MAP.get(p, p) for p in GOLDEN_PATTERN_ORDER} <= set(pats)
+    assert pats["未记录"]["count"] == 2  # NULL + 已下线形态
+    assert PATTERN_LABEL_MAP["bullish_harami"] not in pats
+
+
+def test_signal_family_legacy_flag(db):
+    """P1-2：全为已下线触发类型的信号族标 legacy（前端折叠）；
+    混合族（含仍活跃类型）不标，避免把新行一起藏掉"""
+    db.add_all([
+        _rec(2.0, signal_type="trigger_candlestick"),
+        _rec(2.0, signal_type="trigger_pullback_confirm"),
+        # 旧管线别名与活跃类型同族 → 混合族不折叠
+        _rec(2.0, signal_type="uptrend_pullback"),
+    ])
+    db.commit()
+    fams = _dim_groups(build_actual_review(db, days=7), "信号类型")
+
+    assert fams["同向形态"]["legacy"] is True
+    assert fams["回踩金K确认"]["legacy"] is False

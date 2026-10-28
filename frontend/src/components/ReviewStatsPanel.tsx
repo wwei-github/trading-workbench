@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Button,
   Card,
+  Checkbox,
   Col,
   Empty,
   Radio,
@@ -49,6 +50,8 @@ export default function ReviewStatsPanel() {
   const [stats, setStats] = useState<ReviewStats | null>(null)
   const [loading, setLoading] = useState(false)
   const [diagDim, setDiagDim] = useState<ReviewEntryDiagGroup['diag_dim']>('pos')
+  // 已下线触发类型（P1-2）：仅历史行会出现，默认折叠避免表格噪音
+  const [showLegacy, setShowLegacy] = useState(false)
 
   const fetchData = useCallback(async (d: number) => {
     setLoading(true)
@@ -134,7 +137,12 @@ export default function ReviewStatsPanel() {
     {
       title: '分组',
       key: 'group',
-      render: (_: unknown, g: ReviewGroupStat) => renderDim(g).value,
+      render: (_: unknown, g: ReviewGroupStat) => (
+        <span>
+          {renderDim(g).value}
+          {g.legacy && <Tag style={{ marginLeft: 6 }}>历史</Tag>}
+        </span>
+      ),
     },
     {
       title: '总数',
@@ -742,6 +750,14 @@ export default function ReviewStatsPanel() {
                   </span>
                 </Tooltip>
               }
+              extra={
+                <Checkbox
+                  checked={showLegacy}
+                  onChange={(e) => setShowLegacy(e.target.checked)}
+                >
+                  <span style={{ fontSize: 12 }}>显示历史信号</span>
+                </Checkbox>
+              }
               styles={{ body: { padding: 0 } }}
             >
               <Table<ReviewGroupStat>
@@ -749,7 +765,7 @@ export default function ReviewStatsPanel() {
                   `${g.signal_type ?? ''}-${g.touch_ref ?? ''}-${g.position ?? ''}-${g.ema_state ?? ''}`
                 }
                 columns={columns}
-                dataSource={stats!.groups}
+                dataSource={stats!.groups.filter((g) => showLegacy || !g.legacy)}
                 size="small"
                 scroll={{ y: 320 }}
                 pagination={false}

@@ -419,6 +419,7 @@ class SystemConfigUpdate(BaseModel):
 
 class ReviewGroupStats(BaseModel):
     signal_type: Optional[str] = None
+    legacy: bool = False  # 已下线触发类型（P1-2）：仅历史行会出现，前端默认折叠
     touch_ref: Optional[str] = None  # 回踩触点（docs/22：分组维度，None=无触点行）
     position: Optional[str] = None
     ema_state: Optional[str] = None

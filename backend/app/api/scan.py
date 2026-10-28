@@ -1270,7 +1270,7 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
     # TRIGGER_FAMILY 键集与实盘归因共用同源常量，作为触发器白名单防两处漂移；
     # 2026-09-28 docs/22 触点体系：组键扩为 (signal_type, touch_ref)——同触发类型
     # 不同触点位的回放行为分开统计（无触点行 touch_ref=None 单独成组）
-    from app.services.actual_review import TRIGGER_FAMILY
+    from app.services.actual_review import TRIGGER_FAMILY, TRIGGER_LEGACY
 
     buckets: dict[tuple[str, Optional[str]], list[TradeReview]] = {}
     for r in rows:
@@ -1283,8 +1283,12 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
     ):
         agg = _agg_stats(items)
         resp.groups.append(
-            ReviewGroupStats(signal_type=sig, touch_ref=tref, **agg, ev_r=_agg_ev(items),
-                             **_agg_ev_ci(items))
+            ReviewGroupStats(
+                signal_type=sig, touch_ref=tref, **agg,
+                # P1-2：已下线触发类型（仅历史行）标记 legacy，前端默认折叠
+                legacy=sig in TRIGGER_LEGACY,
+                ev_r=_agg_ev(items), **_agg_ev_ci(items),
+            )
         )
 
     # 规则版本分组（docs/24 A0）：同版本内对比，legacy=标记上线前旧行；

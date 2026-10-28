@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import {
   Button,
   Card,
+  Checkbox,
   Col,
   Empty,
   Alert,
@@ -132,9 +133,17 @@ export default function ReviewActualPanel() {
   // ── 分组表 ──
   // 排序状态：点排序后维度列合并自动失效（排序顺序会打乱维度分组顺序）
   const [groupSorted, setGroupSorted] = useState(false)
+  // 已下线触发类型（P1-2）：仅历史行会出现，默认折叠避免表格噪音
+  const [showLegacySignal, setShowLegacySignal] = useState(false)
+  const visibleGroups = useMemo(
+    () => (data?.groups ?? []).filter(
+      (g) => showLegacySignal || !(g.dim === '信号类型' && g.legacy),
+    ),
+    [data, showLegacySignal],
+  )
   // 维度列合并单元格：后端 groups 已按维度连续输出，同维度首行 rowSpan=组内行数，其余 0
   const dimSpans = useMemo(() => {
-    const groups = data?.groups ?? []
+    const groups = visibleGroups
     if (groupSorted) return {}
     const spans: Record<string, number> = {}
     let i = 0
@@ -146,14 +155,19 @@ export default function ReviewActualPanel() {
       i = j
     }
     return spans
-  }, [data, groupSorted])
+  }, [visibleGroups, groupSorted])
 
   const groupColumns: ColumnsType<ActualGroupStat> = [
     {
       title: '维度', dataIndex: 'dim', width: 90,
       onCell: (g: ActualGroupStat) => ({ rowSpan: dimSpans[`${g.dim}-${g.key}`] ?? 1 }),
     },
-    { title: '分组', dataIndex: 'key', render: (v: string) => GROUP_KEY_LABELS[v] || EXIT_REASON_MAP[v] || v },
+    { title: '分组', dataIndex: 'key', render: (v: string, g: ActualGroupStat) => (
+        <span>
+          {GROUP_KEY_LABELS[v] || EXIT_REASON_MAP[v] || v}
+          {g.legacy && <Tag style={{ marginLeft: 6 }}>历史</Tag>}
+        </span>
+      ) },
     {
       title: '笔数', dataIndex: 'count', width: 70,
       sorter: (a, b) => a.count - b.count,
@@ -527,12 +541,20 @@ export default function ReviewActualPanel() {
                   <span>分组归因 <QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} /></span>
                 </Tooltip>
               }
+              extra={
+                <Checkbox
+                  checked={showLegacySignal}
+                  onChange={(e) => setShowLegacySignal(e.target.checked)}
+                >
+                  <span style={{ fontSize: 12 }}>显示历史信号</span>
+                </Checkbox>
+              }
               styles={{ body: { padding: 0 } }}
             >
               <Table<ActualGroupStat>
                 rowKey={(g) => `${g.dim}-${g.key}`}
                 columns={groupColumns}
-                dataSource={data!.groups}
+                dataSource={visibleGroups}
                 size="small"
                 scroll={{ y: 240 }}
                 pagination={false}

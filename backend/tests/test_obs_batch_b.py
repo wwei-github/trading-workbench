@@ -239,11 +239,11 @@ def test_upsert_writes_htf_degraded(db):
 
 
 def _add_review(db, a, outcome, htf_degraded=False, entry_diag=None,
-                mfe_r=None, mae_r=None):
+                mfe_r=None, mae_r=None, signal_type="trigger_breakout"):
     db.add(TradeReview(
         ai_analysis_id=a.id, symbol=a.symbol, direction="long",
         outcome=outcome, tp1_hit=outcome.startswith("win"), bars_to_exit=5,
-        signal_type="trigger_breakout", htf_degraded=htf_degraded,
+        signal_type=signal_type, htf_degraded=htf_degraded,
         entry_diag=entry_diag, mfe_r=mfe_r, mae_r=mae_r,
     ))
     db.commit()
@@ -391,3 +391,19 @@ def test_stats_mfe_mae_excursions(db):
     assert len(pos_hi) == 1
     assert pos_hi[0].mfe_r_avg == pytest.approx(2.0)
     assert pos_hi[0].mae_r_avg == pytest.approx(-0.2)
+
+
+def test_stats_legacy_trigger_flag(db):
+    """/review/stats 标记已下线触发类型（P1-2）：前端据此默认折叠历史信号组"""
+    from app.api.scan import review_stats
+
+    now = datetime.utcnow() - timedelta(hours=2)
+    _, a1, _ = _mk_chain(db, "LEG1USDT", ai_finished=now)
+    _add_review(db, a1, "loss", signal_type="trigger_candlestick")
+    _, a2, _ = _mk_chain(db, "LEG2USDT", ai_finished=now)
+    _add_review(db, a2, "win_tp1", signal_type="trigger_pullback_confirm")
+
+    resp = review_stats(days=30, db=db)
+    by_sig = {g.signal_type: g for g in resp.groups}
+    assert by_sig["trigger_candlestick"].legacy is True
+    assert by_sig["trigger_pullback_confirm"].legacy is False

@@ -635,6 +635,7 @@ export interface TradeKlineData {
 // 单个维度分组的复盘统计（groups 数组每个元素只有一个维度字段非空）
 export interface ReviewGroupStat {
   signal_type: string | null;
+  legacy?: boolean; // 已下线触发类型（仅历史行）——前端默认折叠，展开显示「历史」
   touch_ref: string | null; // 回踩触点（docs/22：与 signal_type 联合分组，null=无触点行）
   position: string | null;
   ema_state: string | null;
@@ -795,6 +796,7 @@ export interface ActualOverview {
 export interface ActualGroupStat {
   dim: string;
   key: string;
+  legacy?: boolean; // 信号类型维度：该族全为已下线触发类型（仅历史行）
   count: number;
   wins: number;
   losses: number;

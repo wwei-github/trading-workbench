@@ -28,14 +28,13 @@ logger = logging.getLogger(__name__)
 # 开仓时段桶（北京时间，4h 一档）：交易记录 opened_at 为 UTC
 HOUR_BUCKETS = [(0, 4), (4, 8), (8, 12), (12, 16), (16, 20), (20, 24)]
 
-# 金K形态分组固定顺序（2026-10-01-3 完整 12 金K：看涨 6 + 看跌 6，与
-# GOLDEN_PATTERNS 同源同序——2026-10-09 白名单收缩到 8 种后本表保留 12 种，
-# 历史扫描结果仍按旧形态分组）；展示名取 PATTERN_LABEL_MAP，防两处漂移
+# 金K形态分组固定顺序（2026-10-28 P1-1）：只列现役白名单 8 种（与
+# candlestick.GOLDEN_PATTERNS 同源）；已下线的 4 种（bullish_harami /
+# dragonfly_doji / bearish_harami / gravestone_doji）历史行不再各占一行恒 0，
+# 统一按 pattern 兜底并入「未记录」。展示名取 PATTERN_LABEL_MAP，防两处漂移
 GOLDEN_PATTERN_ORDER = (
-    "hammer", "bullish_engulfing", "morning_star",
-    "piercing_line", "bullish_harami", "dragonfly_doji",
-    "shooting_star", "bearish_engulfing", "evening_star",
-    "dark_cloud_cover", "bearish_harami", "gravestone_doji",
+    "hammer", "bullish_engulfing", "morning_star", "piercing_line",
+    "shooting_star", "bearish_engulfing", "evening_star", "dark_cloud_cover",
 )
 
 # 结算费用回补单轮上限（防一次性拉爆交易所限额；未补完的下轮统计继续）
@@ -109,6 +108,14 @@ TRIGGER_FAMILY = {
     "uptrend_pullback": "回踩金K确认",  # 旧管线·上涨回调
     "trigger_candlestick": "同向形态",  # 2026-09-29 纯金K下线，仅历史行
 }
+
+# 已下线触发类型（2026-10-28 P1-2）：仅历史行会出现，前端默认折叠。
+# 纯金K 09-29 下线、趋势回踩 10-12 合并进回踩确认、旧管线别名不再产生新行；
+# 与 scan_filters 常量注释同源，新增下线类型时两处同步
+TRIGGER_LEGACY = frozenset({
+    "trigger_pullback", "trigger_candlestick", "trigger_trend_pullback",
+    "breakout", "uptrend_pullback", "downtrend_breakout",
+})
 
 
 def _signal_family_of(rec: TradeRecord) -> str:
@@ -330,8 +337,10 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
 
     def push(dim: str, key: str, bucket: list):
         if not bucket:
-            return
-        groups.append({"dim": dim, "key": key, **_agg(bucket)})
+            return None
+        group = {"dim": dim, "key": key, **_agg(bucket)}
+        groups.append(group)
+        return group
 
     for dim, keyfn in (
         ("开单类型", _trade_type_of),
@@ -361,7 +370,13 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         for t in trades:
             buckets.setdefault(keyfn(t), []).append(t)
         for key, bucket in sorted(buckets.items()):
-            push(dim, key, bucket)
+            group = push(dim, key, bucket)
+            if dim == "信号类型" and group is not None:
+                # P1-2：该族成员全是已下线触发类型才标 legacy（混合族仍有新行，
+                # 不能折叠）；前端默认隐藏，展开后显示「历史」标识
+                group["legacy"] = all(
+                    (t.signal_type or "") in TRIGGER_LEGACY for t in bucket
+                )
 
     # 有序分桶维度（docs/24 A5b/D4）：按桶的自然顺序输出而非字典序
     for dim, keyfn, order in (
@@ -401,9 +416,8 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         if key in rr_buckets:
             push("RR擦边", key, rr_buckets[key])
 
-    # 金K形态维度（2026-10-01-3 用户拍板）：完整 12 金K全量列出（0 笔也占行，
-    # 12 维度齐全便于横向对比各形态样本）；突破类无金K形态、旧行 pattern 为
-    # NULL → 「未记录」兜底行排最后
+    # 金K形态维度（2026-10-28 P1-1）：只列现役 8 种金K（0 笔也占行便于横向对比）；
+    # 已下线 4 种形态的历史行与 pattern=NULL 行一起并入「未记录」，不再各占一行
     pat_buckets: dict[str, list] = {}
     for t in trades:
         pat_buckets.setdefault(t.pattern or "未记录", []).append(t)
@@ -411,8 +425,10 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         groups.append({"dim": "金K形态",
                        "key": PATTERN_LABEL_MAP.get(p, p),
                        **_agg(pat_buckets.pop(p, []))})
-    for key, bucket in sorted(pat_buckets.items()):
-        push("金K形态", key, bucket)
+    fallback = pat_buckets.pop("未记录", [])
+    for bucket in pat_buckets.values():
+        fallback.extend(bucket)
+    push("金K形态", "未记录", fallback)
 
     # 错误标签维度：一笔多标签拆行（仅统计已归因的）
     tag_buckets: dict[str, list] = {}
