@@ -27,6 +27,9 @@ export const FUNNEL_STAGES: { key: string; label: string; color: string; hint: s
   { key: 'insufficient_bars', label: 'K线不足', color: 'default', hint: '已收盘 K 线不足 30 根，触发判定未跑（新币/数据缺失）' },
   { key: 'no_golden', label: '无确认金K', color: 'purple', hint: '本根无同向金K，且无待确认语境' },
   { key: 'trigger_whitelist', label: '触发白名单外', color: 'purple', hint: '触发类型不在白名单（筛选配置）' },
+  // 质量分下限（2026-10-28）：最后一道准入，候选已过全部关卡但分数不足；
+  // 不是结构/趋势问题，明细里展示 raw_candidates 的分项与箱体几何。
+  { key: 'quality_floor', label: '质量分下限', color: 'orange', hint: '质量分低于筛选配置下限，不进候选池与 AI（不影响待确认池 upsert 与命中历史）' },
 ]
 /** 「无触发」关卡族（2026-10-27 docs/16 §6.3）：漏斗把 no_trigger 拆成 8 类之后，
  *  待确认池的「无触发」页签仍要一次看到这一族全部币种（否则拆分后页签会看起来空了）。

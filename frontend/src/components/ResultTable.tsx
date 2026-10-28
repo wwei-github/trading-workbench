@@ -64,8 +64,9 @@ const QUALITY_PART_LABELS: [string, string][] = [
   ["box", "箱体"],
 ];
 
-// 分项拆解行："质量分拆解：基础 80 / 4h +10 / 震荡 -8 / 箱体 -15"（无分项返回 null）
-function qualityPartsLine(parts?: Record<string, number> | null): string | null {
+// 分项拆解："基础 80 / 4h +10 / 震荡 -8 / 箱体 -15"（无分项返回 null）。
+// 导出供漏斗 Tab 复用（质量分下限拒因明细，2026-10-28），标签表只维护这一份。
+export function qualityPartsSummary(parts?: Record<string, number> | null): string | null {
   if (!parts) return null;
   const segs: string[] = [];
   for (const [key, label] of QUALITY_PART_LABELS) {
@@ -73,7 +74,12 @@ function qualityPartsLine(parts?: Record<string, number> | null): string | null 
     if (typeof v !== "number") continue;
     segs.push(key === "base" ? `${label} ${v}` : `${label} ${v > 0 ? "+" : ""}${v}`);
   }
-  return segs.length ? `质量分拆解：${segs.join(" / ")}` : null;
+  return segs.length ? segs.join(" / ") : null;
+}
+
+function qualityPartsLine(parts?: Record<string, number> | null): string | null {
+  const segs = qualityPartsSummary(parts);
+  return segs ? `质量分拆解：${segs}` : null;
 }
 
 // 回踩触点（docs/22 触点体系，与后端 trigger.TOUCH_LABELS 同源）：

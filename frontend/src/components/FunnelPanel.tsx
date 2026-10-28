@@ -16,6 +16,7 @@ import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
 import { useScanStore } from '../stores/scanStore'
+import { qualityPartsSummary } from './ResultTable'
 import KlineChart from './KlineChart'
 import type { FunnelData } from '../types'
 
@@ -99,25 +100,50 @@ export default function FunnelPanel({ initialStage }: { initialStage?: string } 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isScanning])
 
+  // 质量分下限被拦候选的原始快照（symbol → score/parts，漏斗落库前快照）
+  const rawBySymbol = useMemo(() => {
+    const m = new Map<string, { score?: number | null; parts?: Record<string, unknown> }>()
+    for (const c of data?.raw_candidates ?? []) {
+      if (c.symbol) m.set(c.symbol, c)
+    }
+    return m
+  }, [data])
+
   // 被拒明细摊平为列表：按关卡逻辑序排列，同关卡内按币种字母序
   const rows: FunnelRow[] = useMemo(() => {
     if (!data) return []
     return Object.entries(data.rejects)
       .map(([symbol, stage]) => {
         const m = STAGE_META[stage]
+        let detail = data.details?.[symbol]
+        // 质量分下限（2026-10-28）：被砍候选不落 scan_results，用 raw_candidates
+        // 快照补判定说明——差多少分、哪个分项拖的、箱体几何（宽度/实体重叠）
+        const raw = stage === 'quality_floor' ? rawBySymbol.get(symbol) : undefined
+        if (!detail && raw) {
+          const parts = raw.parts as Record<string, number> | undefined
+          const segs = qualityPartsSummary(parts)
+          const geo = parts && typeof parts.box_atr === 'number'
+            ? `箱体几何：箱宽 ${parts.box_atr}×ATR14 / 相邻实体平均重叠 ${typeof parts.box_overlap === 'number' ? parts.box_overlap : '—'}`
+            : ''
+          detail = [
+            `质量分 ${raw.score ?? '—'}（低于下限）`,
+            segs ? `分项：${segs}` : '',
+            geo,
+          ].filter(Boolean).join('；')
+        }
         return {
           symbol,
           stage,
           label: m?.label ?? stage,
           color: m?.color ?? 'default',
           hint: m?.hint ?? '',
-          detail: data.details?.[symbol],
+          detail,
         }
       })
       .sort((a, b) =>
         (STAGE_ORDER[a.stage] ?? 99) - (STAGE_ORDER[b.stage] ?? 99)
         || a.symbol.localeCompare(b.symbol))
-  }, [data])
+  }, [data, rawBySymbol])
 
   // 各关卡计数（概览统计块 + 关卡筛选下拉共用）
   const stageCounts = useMemo(() => {
