@@ -118,9 +118,8 @@ def _has_complete_window(bars: list, start_ms: int, end_ms: int, interval: str) 
 class ReplayResult(NamedTuple):
     """回放结论 + 持仓期偏移（17-复盘审计 P1-3）。
 
-    mfe_r / mae_r 为 signed R 倍数：有利方向为正、不利方向为负
-    （MAE ≤ 0；MFE 可为负 = 入场后从未朝有利方向走）。risk=|entry-stop|≤0
-    或入场未成交时为 None。
+    mfe_r / mae_r 为 signed R 倍数：有利方向为正、不利方向为负。入场根必含
+    入场价，故 MFE ≥ 0、MAE ≤ 0。risk=|entry-stop|≤0 或入场未成交时为 None。
     """
 
     outcome: str
@@ -131,12 +130,13 @@ class ReplayResult(NamedTuple):
 
 
 def _excursions(
-    direction: str, entry: float, stop: float, bars: list, first: int, last: int,
+    direction: str, entry: float, stop: float, bars: list,
+    first: int | None, last: int | None,
 ) -> tuple[float | None, float | None]:
     """持仓区间 [first, last] 的最大有利/不利偏移（signed R）。
 
     区间含入场根与出场根：OHLC 无法确定根内先后，入场根整根计入，故极端值
-    属上界口径（MAE 可能略高估）。
+    属上界口径（MFE/MAE 均可能略高估）。
     """
     risk = abs(entry - stop)
     if risk <= 0 or first is None or last < first:
