@@ -105,6 +105,36 @@
     border-radius:8px;padding:9px 11px}
   .fade{position:fixed;inset:0;background:rgba(15,18,22,.22);opacity:0;pointer-events:none;transition:opacity .18s;z-index:55}
   .fade.on{opacity:1;pointer-events:auto}
+
+  /* ===== 组合方案 C+E + D 常驻 ===== */
+  .comb{position:relative}
+  .stick{position:sticky;top:0;z-index:30;background:var(--bg);padding:6px 0 10px;margin:-6px 0 4px;
+    border-bottom:1px solid transparent;transition:box-shadow .15s,border-color .15s}
+  .stick.on{box-shadow:0 8px 18px -12px rgba(31,35,41,.35);border-bottom-color:var(--line)}
+  .stickin{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 16px}
+  .kpirow{display:flex;align-items:flex-end;gap:22px;flex-wrap:wrap}
+  .kpirow .kpi b{font-size:19px}
+  .kpirow .who{margin-left:auto;text-align:right;font-size:12px;color:var(--sub);line-height:1.45}
+  .stackrow{display:flex;align-items:center;gap:12px;margin-top:11px}
+  .stackrow .stack{flex:1}
+  .oneline{margin-top:9px;font-size:12.5px;color:#5b6470;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .oneline b{color:var(--text)}
+  .oneline .lk{cursor:pointer;color:var(--blue);font-size:12px}
+  .boards{display:none;margin-top:11px;border-top:1px dashed var(--line);padding-top:10px}
+  .boards.on{display:block}
+  .boards table{font-size:12.5px}
+  .cards6{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:6px}
+  @media(max-width:1080px){.cards6{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:680px){.cards6{grid-template-columns:1fr}}
+  .trendwrap{margin-top:16px}
+  .trendhd{display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap}
+  .trendhd h3{font-size:13px;margin:0}
+  .badge{font-size:11.5px;padding:1px 7px;border-radius:5px;background:#eef1f5;color:#4a5158}
+  .badge.on{background:#fff4e5;color:#a35a00}
+  .backbtn{border:0;background:#eef1f5;border-radius:6px;padding:3px 9px;font-size:12px;cursor:pointer;display:none}
+  .backbtn.on{display:inline-block}
+  .col.sel .seg2{outline:1.5px solid #1f2329;outline-offset:1px}
+  .srch{width:100%;border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:12.5px;margin-bottom:8px}
 </style>
 </head>
 <body>
@@ -113,7 +143,8 @@
   <div class="hint">数据：正式网 2026-10-28 02:00 UTC（北京 10:00）那一轮真实扫描，518 池 / 290 进管线 / 0 候选 / 14 待确认。五个方案都用同一份 <code>funnel_json</code>，只是呈现方式不同 —— 选一个（或组合）我再落到组件里。</div>
 
   <div class="tabs">
-    <button class="tab on" data-p="A">A · 关卡瀑布表</button>
+    <button class="tab on" data-p="F">★ 组合 · C+E（D 常驻顶部）</button>
+    <button class="tab" data-p="A">A · 关卡瀑布表</button>
     <button class="tab" data-p="B">B · 阶梯漏斗</button>
     <button class="tab" data-p="C">C · 关卡卡片矩阵</button>
     <button class="tab" data-p="D">D · 堆叠条 + 原因榜</button>
@@ -121,7 +152,7 @@
   </div>
 
   <!-- ============================ A ============================ -->
-  <section class="panel on" id="p-A">
+  <section class="panel" id="p-A">
     <div class="card">
       <h2>关卡瀑布表 <span class="tag">最省空间 · 可展开下钻</span></h2>
       <p class="desc">按关卡逻辑序排列，零值关卡自动隐藏；点任意一行展开该关全部币种与判定说明。</p>
@@ -183,6 +214,40 @@
       <div class="note">数据里 02:00 之后的轮次还不存在，用空白占位；真实的组件会按 <code>created_at</code> 补齐 24 个整点槽位。</div>
     </div>
   </section>
+  <!-- ============================ F：组合方案 ============================ -->
+  <section class="panel on" id="p-F">
+    <div class="comb">
+      <div class="stick" id="stickF">
+        <div class="stickin">
+          <div class="kpirow" id="kpiF"></div>
+          <div class="stackrow"><div class="stack" id="stackF"></div></div>
+          <div class="oneline" id="oneF"></div>
+          <div class="boards" id="boardsF">
+            <table><thead><tr><th style="width:44px">#</th><th>关卡</th>
+              <th class="num" style="width:70px">拦截</th><th>构成与示例</th></tr></thead>
+              <tbody id="boardsBody"></tbody></table>
+          </div>
+        </div>
+      </div>
+
+      <div class="cards6" id="grid-F"></div>
+      <div class="note">点卡片或堆叠条任一色段 → 右侧抽屉列出该关全部币种与判定说明；按拦截数降序，零值关卡不展示。</div>
+
+      <div class="trendwrap card" style="margin-top:16px">
+        <div class="trendhd">
+          <h3>最近 24 轮 · 关卡构成与命中</h3>
+          <span class="badge" id="roundBadge">当前看：最新一轮</span>
+          <button class="backbtn" id="backLatest">回到最新</button>
+          <span style="margin-left:auto;font-size:12px;color:var(--sub)">柱高 = 该轮被该关拦掉的币数（上限 140）· 柱顶 = 命中数</span>
+        </div>
+        <div class="trend" id="trendF"></div>
+        <div id="hitF" style="display:flex;gap:3px;margin-top:6px"></div>
+        <div class="xaxis" id="xaxisF"></div>
+        <div class="legend" id="legendF" style="margin-top:12px"></div>
+      </div>
+    </div>
+  </section>
+
 </div>
 
 <div class="tip" id="tip"></div>
@@ -190,7 +255,7 @@
 <aside class="drawer" id="drawer">
   <div class="hd"><b id="drTitle"></b><span class="tag" id="drCount"></span>
     <button class="close" id="drClose">关闭</button></div>
-  <div class="bd" id="drBody"></div>
+  <div class="bd"><input class="srch" id="drSearch" placeholder="搜索币种…"><div id="drBody"></div></div>
 </aside>
 
 <script>
@@ -502,16 +567,167 @@ kpis(document.getElementById('kpis-D'));
     + `<span style="margin-left:auto;color:var(--sub)">柱高 = 该轮被该关拦掉的币数（上限 ${MAX}）</span>`;
 })();
 
+
+/* ============================ F：C+E 组合 + D 常驻顶部 ============================ */
+(function(){
+  const SERIES = [
+    ['10-27 03',19,96,58,34,22,18],['10-27 04',4,101,60,30,20,16],
+    ['10-27 05',7,104,62,28,19,15],['10-27 06',1,108,63,26,18,14],
+    ['10-27 07',30,106,61,27,17,16],['10-27 08',3,110,64,25,18,14],
+    ['10-27 09',13,112,66,24,18,15],['10-27 10',21,114,68,23,17,16],
+    ['10-27 11',4,116,69,22,18,15],['10-27 12',10,115,70,21,18,14],
+    ['10-27 13',3,115,71,20,19,13],['10-27 14',59,113,72,19,19,12],
+    ['10-27 15',1,118,73,18,20,13],['10-27 16',1,120,74,17,20,14],
+    ['10-27 17',1,119,73,18,19,15],['10-27 18',2,118,72,19,19,16],
+    ['10-27 19',0,111,41,19,21,25],['10-27 20',1,113,72,10,17,17],
+    ['10-27 21',3,114,71,13,15,12],['10-27 22',1,115,71,15,16,9],
+    ['10-27 23',1,115,71,17,14,26],['10-28 00',0,123,82,13,19,15],
+    ['10-28 01',0,124,82,13,19,21],['10-28 02',0,126,82,11,19,26],
+  ];
+  const MAXB = 140;
+  const SEGS = [
+    {name:'池过滤', n:(stages.liquidity||0)+(stages.new_coin||0)+(stages.risk_tier||0)+(stages.blacklist||0), color:'#9aa3ad', keys:['liquidity','new_coin','risk_tier','blacklist']},
+    {name:'4h 背景门', n:stages.gate_4h||0, color:'#e5484d', keys:['gate_4h']},
+    {name:'拐头锁', n:stages.htf_state_lock||0, color:'#f76b15', keys:['htf_state_lock']},
+    {name:'触发层', n:(stages.no_touch||0)+(stages.leg_gate||0)+(stages.golden_no_context||0)+(stages.no_golden||0)+(stages.insufficient_bars||0), color:'#3b82f6',
+      keys:['no_touch','leg_gate','golden_no_context','no_golden','insufficient_bars']},
+    {name:'待确认', n:(stages.pending_waiting||0)+(stages.window_expired||0)+(stages.pending_flip||0), color:'#12a594',
+      keys:['pending_waiting','window_expired','pending_flip']},
+    {name:'震荡计分', n:stages.range_score||0, color:'#f5a524', keys:['range_score']},
+    {name:'方向/白名单', n:(stages.votes||0)+(stages.direction_flip||0)+(stages.trigger_whitelist||0), color:'#8b5cf6',
+      keys:['votes','direction_flip','trigger_whitelist']},
+    {name:'质量分', n:stages.quality_floor||0, color:'#6b7480', keys:['quality_floor']},
+  ].filter(x=>x.n>0);
+  const TOTAL = SEGS.reduce((a,x)=>a+x.n,0) || 1;
+  const subText = (name)=> name==='4h 背景门' ? `缠绕 ${reasonSplit.tangle||0} / 走平 ${reasonSplit.flat||0} / 未定 ${reasonSplit.undetermined||0}`
+    : name==='拐头锁' ? `turn_bear ${htfStates.turn_bear||0} 个币拐头向下`
+    : name==='池过滤' ? `成交额 ${stages.liquidity||0} · 黑名单 ${stages.blacklist||0}（未进管线）`
+    : name==='触发层' ? `无触点 ${stages.no_touch||0} · 腿门 ${stages.leg_gate||0}`
+    : name==='待确认' ? `等待中 ${stages.pending_waiting||0} · 超窗 ${stages.window_expired||0}`
+    : name==='震荡计分' ? 'range_score 扣分后拒'
+    : name==='方向/白名单' ? `方向票 ${stages.votes||0} · 翻转 ${stages.direction_flip||0}`
+    : '候选质量分 < 80 被剔';
+
+  document.getElementById('kpiF').innerHTML = `
+    <div class="kpi"><b>${fmt(universe)}</b><span>币池</span></div>
+    <div class="kpi"><b>${fmt(scanned)}</b><span>进管线</span></div>
+    <div class="kpi"><b style="color:${candidates?'#30a46c':'#e5484d'}">${fmt(candidates)}</b><span>出候选</span></div>
+    <div class="kpi"><b>14</b><span>待确认池</span></div>
+    <div class="who">2026-10-28 02:00 UTC（北京 10:00）<br>
+      <span style="color:#a35a00">较上一轮：4h门 124→126 · 拐头锁 82→82 · 命中 0→0</span></div>`;
+
+  const stack = document.getElementById('stackF');
+  stack.style.height = '26px';
+  stack.innerHTML = SEGS.map((sg,i)=>{
+    const w = sg.n/TOTAL*100;
+    return `<div class="seg" style="width:${w}%;background:${sg.color}" data-i="${i}">
+      ${w>8?`<div class="seglab">${sg.n}</div>`:''}</div>`;
+  }).join('');
+
+  const top = SEGS.slice().sort((a,b)=>b.n-a.n);
+  document.getElementById('oneF').innerHTML = `
+    <span>主要卡点：</span><b>${top[0].name} ${top[0].n}</b>
+    <span style="color:var(--sub)">（${subText(top[0].name)}）</span>
+    <span>·</span><b>${top[1].name} ${top[1].n}</b>
+    <span style="color:var(--sub)">占进管线 ${pct(top[1].n,scanned)}</span>
+    <span class="lk" id="toggleBoards">展开原因榜 ▾</span>`;
+
+  document.getElementById('boardsBody').innerHTML = top.slice(0,5).map((sg,i)=>{
+    const coins = sg.keys.flatMap(k=>coinsOf(k));
+    const ex = coins.slice(0,3).map(c=>`<span class="chip">${c.replace('USDT','')}</span>`).join('');
+    return `<tr><td class="num" style="color:var(--sub)">${i+1}</td>
+      <td><span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:${sg.color};margin-right:7px"></span>${sg.name}</td>
+      <td class="num" style="font-weight:600">${fmt(sg.n)}</td>
+      <td><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span style="color:#5b6470;font-size:12.5px">${subText(sg.name)}</span><div class="chips">${ex}</div></div></td></tr>`;
+  }).join('');
+  document.getElementById('toggleBoards').onclick = ()=>{
+    const b = document.getElementById('boardsF'); b.classList.toggle('on');
+    document.getElementById('toggleBoards').textContent = b.classList.contains('on') ? '收起原因榜 ▴' : '展开原因榜 ▾';
+  };
+
+  const stick = document.getElementById('stickF');
+  const onScroll = ()=> stick.classList.toggle('on', stick.getBoundingClientRect().top <= 1 && window.scrollY > 40);
+  window.addEventListener('scroll', onScroll, {passive:true}); onScroll();
+
+  stack.querySelectorAll('.seg').forEach(el=>{
+    const sg = SEGS[+el.dataset.i];
+    el.addEventListener('mouseenter',e=>showTip(e,`${sg.name}：拦 ${sg.n}（占进管线 ${pct(sg.n,scanned)}）<br><span style="opacity:.75">点击看全部币种</span>`));
+    el.addEventListener('mousemove',moveTip);
+    el.addEventListener('mouseleave',hideTip);
+    el.addEventListener('click',()=>openDrawer(sg.name, sg.n, sg.keys.flatMap(k=>coinsOf(k))));
+  });
+
+  const grid = document.getElementById('grid-F');
+  top.forEach(sg=>{
+    const coins = sg.keys.flatMap(k=>coinsOf(k));
+    const share = Math.round(sg.n/TOTAL*100);
+    const ex = coins.slice(0,3).map(c=>`<span class="chip">${c.replace('USDT','')}</span>`).join('');
+    const card = document.createElement('div');
+    card.className = 'scard';
+    card.innerHTML = `<div class="top">
+        <div class="donut" style="background:conic-gradient(${sg.color} ${share*3.6}deg,#eef0f3 0)"><span>${share}%</span></div>
+        <div style="flex:1">
+          <div class="nm">${sg.name}</div><div class="ct">${fmt(sg.n)}</div>
+          <div class="sub">${subText(sg.name)}</div>
+        </div></div>
+      <div class="chips" style="margin-top:8px">${ex}${coins.length>3?`<span class="chip" style="background:#fff;color:#8a9199">+${coins.length-3}</span>`:''}</div>`;
+    card.onclick = ()=>openDrawer(sg.name, sg.n, coins);
+    grid.appendChild(card);
+  });
+
+  const SEGD = [[2,'#e5484d','4h 背景门'],[3,'#f76b15','拐头锁'],[4,'#3b82f6','触发层'],[5,'#f5a524','震荡计分'],[6,'#12a594','待确认']];
+  const trend = document.getElementById('trendF');
+  trend.innerHTML = SERIES.map(r=>{
+    const bars = SEGD.map(([i,c])=>`<div class="seg2" style="height:${Math.max(1,r[i]/MAXB*100)}%;background:${c}"></div>`).join('');
+    return `<div class="col">${bars}</div>`;
+  }).join('');
+  document.getElementById('hitF').innerHTML = SERIES.map(r=>
+    `<div style="flex:1;text-align:center;font-size:10px;color:${r[1]?'#4a5158':'#c8ced6'}">${r[1]||'·'}</div>`).join('');
+  document.getElementById('xaxisF').innerHTML = SERIES.map((r,i)=>`<div>${i%4===0?r[0].slice(-5):''}</div>`).join('');
+  document.getElementById('legendF').innerHTML = SEGD.map(([,c,n])=>`<span><i style="background:${c}"></i>${n}</span>`).join('');
+
+  trend.querySelectorAll('.col').forEach((col,i)=>{
+    const r = SERIES[i];
+    col.addEventListener('mouseenter',e=>showTip(e,`<b>${r[0]}</b> · 命中 <b style="color:${r[1]?'#30a46c':'#e5484d'}">${r[1]}</b><br>4h门 ${r[2]} · 拐头锁 ${r[3]}<br>触发层 ${r[4]} · 震荡 ${r[5]} · 待确认 ${r[6]}`));
+    col.addEventListener('mousemove',moveTip);
+    col.addEventListener('mouseleave',hideTip);
+    col.addEventListener('click',()=>{
+      trend.querySelectorAll('.col').forEach(c=>c.classList.remove('sel'));
+      col.classList.add('sel');
+      const bg = document.getElementById('roundBadge');
+      bg.textContent = `历史轮次：${r[0]}`; bg.classList.add('on');
+      document.getElementById('backLatest').classList.add('on');
+    });
+  });
+  document.getElementById('backLatest').onclick = ()=>{
+    trend.querySelectorAll('.col').forEach(c=>c.classList.remove('sel'));
+    const bg = document.getElementById('roundBadge');
+    bg.textContent = '当前看：最新一轮'; bg.classList.remove('on');
+    document.getElementById('backLatest').classList.remove('on');
+  };
+})();
+
 /* ---------- 抽屉 / 提示 ---------- */
+let DR_COINS=[];
+function renderDrawer(coins){
+  document.getElementById('drBody').innerHTML = coins.length
+    ? coins.map(c=>`<div class="dr"><span class="sym">${c}</span><span class="tx">${(details[c]||'该币在池过滤阶段被剔除，未进指标管线')}</span></div>`).join('')
+    : `<div style="color:var(--sub);padding:12px 0">没有匹配的币种</div>`;
+}
 function openDrawer(title,n,coins){
+  DR_COINS = coins;
   document.getElementById('drTitle').textContent = title;
   document.getElementById('drCount').textContent = `${n} 个币`;
-  document.getElementById('drBody').innerHTML = coins.length
-    ? coins.map(c=>`<div class="dr"><span class="sym">${c}</span><span class="tx">${(details[c]||'—')}</span></div>`).join('')
-    : `<div style="color:var(--sub);padding:12px 0">该关卡本轮没有被拒币种</div>`;
+  document.getElementById('drSearch').value = '';
+  renderDrawer(coins);
   document.getElementById('drawer').classList.add('on');
   document.getElementById('fade').classList.add('on');
 }
+document.getElementById('drSearch').oninput = (e)=>{
+  const q = e.target.value.trim().toUpperCase();
+  renderDrawer(q ? DR_COINS.filter(c=>c.includes(q)) : DR_COINS);
+};
 document.getElementById('drClose').onclick = closeDrawer;
 document.getElementById('fade').onclick = closeDrawer;
 function closeDrawer(){
