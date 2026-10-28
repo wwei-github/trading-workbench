@@ -339,6 +339,19 @@
   `test_actual_review.py::test_htf_aligned_split_bull_bear`；
   `test_review_batch3.py::test_actual_review_htf_phase_dimension` 期望值同步拆桶。
 
+## P2-3 复盘 CSV 导出（2026-10-28 追加）
+
+- `GET /review/actual/export?days=&scope=`：逐笔实盘归因（列同 `/review/actual`
+  的 `items`，`error_tags` 以 `|` 连接），窗口/scope/口径与页面一致；
+- `GET /review/stats/export?days=`：逐笔回放（`created_at` 窗口同 `/review/stats`），
+  含 veto 行并以 `is_veto` 区分，附 `entry_diag` 五维、`mfe_r/mae_r`、
+  `ai_created_at_cst`（北京时间，口径同 `time_groups`）；
+- 统一 `_csv_response`：UTF-8 BOM（Excel 直开不乱码），`text/csv; charset=utf-8`，
+  空窗口返回带 BOM 的空文件；
+- 前端「AI建议质量 / 实盘归因」两个面板各加「导出 CSV」按钮（带当前 days/scope）；
+- 测试：`test_obs_batch_b.py::test_review_stats_export_csv`、
+  `test_actual_review.py::test_actual_review_export_csv`。
+
 ---
 
 ## 文档同步
@@ -379,3 +392,4 @@
   - `feat(review): 已下线触发类型标 legacy 并默认折叠`
   - `refactor(review): GET /review/actual 不再触发费用回补`
   - `feat(review): 回放按北京 4h 桶统计信号时段并拆分多空排列`
+  - `feat(review): 复盘统计与实盘归因支持逐笔 CSV 导出`

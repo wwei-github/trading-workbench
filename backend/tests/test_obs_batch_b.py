@@ -469,5 +469,7 @@ def test_review_stats_export_csv(db):
     assert rows["CSV2USDT"]["ai_created_at_cst"] != ""
 
     # 空窗口：仍返回带 BOM 的空文件，不报错
-    empty = review_stats_export(days=1, db=db)
+    db.query(TradeReview).delete()
+    db.commit()
+    empty = review_stats_export(days=30, db=db)
     assert empty.body.decode("utf-8-sig").strip() == ""

@@ -182,3 +182,20 @@ def test_htf_aligned_split_bull_bear(db):
     assert buckets["排列·多"]["count"] == 1
     assert buckets["排列·空"]["count"] == 1
     assert "排列" not in buckets  # 旧的合并桶不再输出
+
+
+def test_actual_review_export_csv(db):
+    """P2-3（M-6）：实盘归因逐笔 CSV（列同 items），窗口/scope 与 /review/actual 一致。"""
+    from app.api.scan import review_actual_export
+
+    db.add_all([_rec(2.0, pnl=5.0), _rec(2.0, pnl=-3.0)])
+    db.commit()
+
+    resp = review_actual_export(days=7, scope="all", db=db)
+    assert "review-actual-7d-all.csv" in resp.headers["content-disposition"]
+    lines = resp.body.decode("utf-8-sig").strip().splitlines()
+    assert len(lines) == 3  # 表头 + 2 笔
+    head = lines[0].split(",")
+    for col in ("symbol", "direction", "realized_pnl", "exit_reason", "error_tags"):
+        assert col in head
+    assert len(lines[1].split(",")) == len(head)

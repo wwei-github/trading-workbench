@@ -62,10 +62,17 @@
 - [x] 前端新增「信号时段（北京 4h）」卡片
 - [x] `test_stats_time_groups_beijing_buckets` / `test_htf_aligned_split_bull_bear`；旧 4h 维度断言同步拆桶
 
+## P2-3 复盘 CSV 导出
+
+- [x] `GET /review/actual/export`（逐笔，列同 items）与 `GET /review/stats/export`（逐笔回放）
+- [x] 统一 `_csv_response`：UTF-8 BOM、`text/csv`、空窗口友好
+- [x] 两个面板各加「导出 CSV」按钮（带当前 days/scope）
+- [x] `test_review_stats_export_csv` / `test_actual_review_export_csv`
+
 ## 文档与验证
 
 - [x] `docs/复盘归因/06-复盘归因.md` 流程图、门槛、常量表、五态语义、`entry_diag`、API 契约、配置项同步
 - [x] 定向 pytest（review_replay / attribution / patch_trigger_threshold / obs_batch_b / actual_review）通过
-- [x] 后端全量 pytest 通过（1341 passed）
+- [x] 后端全量 pytest 通过（1343 passed）
 - [x] 前端 `npx tsc --noEmit` 通过
 - [x] `git status` 仅包含本次相关文件
