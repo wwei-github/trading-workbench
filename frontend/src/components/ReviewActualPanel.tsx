@@ -298,7 +298,21 @@ export default function ReviewActualPanel() {
           </Space>
         </Col>
         <Col>
-          <Button icon={<ReloadOutlined />} onClick={() => fetchData(days, scope)}>刷新</Button>
+          <Space>
+            {/* 逐笔 CSV（P2-3）：离线核对/分享，窗口与 scope 同当前统计 */}
+            <Button
+              size="small"
+              onClick={() =>
+                window.open(
+                  `/api/scans/review/actual/export?days=${days}&scope=${scope}`,
+                  '_blank',
+                )
+              }
+            >
+              导出 CSV
+            </Button>
+            <Button icon={<ReloadOutlined />} onClick={() => fetchData(days, scope)}>刷新</Button>
+          </Space>
         </Col>
       </Row>
 

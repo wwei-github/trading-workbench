@@ -417,6 +417,24 @@ export interface FunnelData {
   details?: Record<string, string>; // symbol → 判定说明文本（votes 票明细 / no_trigger 未触发原因，2026-10-13；分号分隔）
 }
 
+/** 逐轮漏斗快照（2026-10-28，docs/需求文档/18「最新筛选」时序区）
+ *  数据源 GET /api/scans/funnels?hours=24 —— 只含时序需要的字段，
+ *  不含 rejects/details（下钻抽屉走单轮 /scans/{id}/funnel）。 */
+export interface FunnelSnapshot {
+  scan_id: string;
+  created_at: string | null;
+  hit_count: number;
+  universe: number;
+  scanned: number;
+  errors: number;
+  candidates: number;
+  pending_pool: number;
+  stages: Record<string, number>;
+  htf_states: Record<string, number>;
+  gate_4h_reasons: Record<string, number>;
+}
+
+
 // ===== 规则补丁（docs/12 §10）=====
 
 export type PatchStatus = 'draft' | 'active' | 'valid' | 'invalid' | 'rolled_back'

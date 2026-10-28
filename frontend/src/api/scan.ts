@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, FunnelData, HitHistoryItem, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PendingEntry, PromptView, PullbackPendingItem, PurgeStats, ReviewFunnel, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, TradeReconciliation, TransferStats, WatchlistItem } from '../types'
+import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, FunnelData, FunnelSnapshot, HitHistoryItem, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PendingEntry, PromptView, PullbackPendingItem, PurgeStats, ReviewFunnel, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, TradeReconciliation, TransferStats, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -15,6 +15,12 @@ export const scanApi = {
   // 筛选漏斗明细（2026-10-11）：该轮各关卡被拒计数 + symbol→关卡映射；funnel=null（旧行/异常轮次）
   funnel: (scanId: string) =>
     api.get<{ scan_id: string; funnel: FunnelData | null }>(`/scans/${scanId}/funnel`).then((r) => r.data),
+  // 逐轮漏斗快照（2026-10-28，docs/18）：一次拉近 N 小时各轮的关卡计数与命中数，
+  // 供「最新筛选」时序区画 24 根柱（避免 24 次单轮请求）
+  funnels: (hours = 24) =>
+    api.get<{ hours: number; count: number; items: FunnelSnapshot[] }>('/scans/funnels', {
+      params: { hours },
+    }).then((r) => r.data),
   list: (page = 1, pageSize = 20) =>
     api
       .get<ListResponse<ScanRecord>>('/scans', { params: { page, page_size: pageSize } })

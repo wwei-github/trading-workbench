@@ -1,4 +1,6 @@
 import copy
+import csv
+import io
 import json
 import logging
 import math
@@ -6,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import String, cast, delete, desc, or_, select, update, func
 from sqlalchemy.orm import Session
 
@@ -219,6 +221,59 @@ def scan_results(
         signal_type=signal_type, position=position, pattern=pattern,
         ema_state=ema_state,
     )
+
+
+@router.get("/funnels")
+def scan_funnels(
+    hours: int = Query(24, ge=1, le=168),
+    db: Session = Depends(get_db),
+):
+    """近 N 小时逐轮漏斗快照（2026-10-28，docs/需求文档/18 最新筛选）。
+
+    用途：「最新筛选」Tab 底部时序区要一次画 24 根柱（每轮各关卡拦截数 +
+    该轮命中数）。逐轮调 `/scans/{id}/funnel` 会发 24 次请求，故批量。
+    只回时序需要的字段，**不回 rejects/details**（体积大，仅下钻抽屉需要，
+    仍走单轮接口）。
+    """
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    rows = db.execute(
+        select(
+            ScanRecord.id,
+            ScanRecord.created_at,
+            ScanRecord.funnel_json,
+        )
+        .where(ScanRecord.created_at >= cutoff)
+        .order_by(ScanRecord.created_at.asc())
+        .limit(200)
+    ).all()
+
+    ids = [r[0] for r in rows]
+    hits: dict = {}
+    if ids:
+        hit_rows = db.execute(
+            select(ScanResult.scan_record_id, func.count())
+            .where(ScanResult.scan_record_id.in_(ids))
+            .group_by(ScanResult.scan_record_id)
+        ).all()
+        hits = {sid: int(n) for sid, n in hit_rows if sid}
+
+    items = []
+    for sid, created_at, funnel in rows:
+        f = funnel or {}
+        items.append({
+            "scan_id": str(sid),
+            "created_at": created_at.isoformat() if created_at else None,
+            "hit_count": hits.get(sid, 0),
+            "universe": f.get("universe", 0),
+            "scanned": f.get("scanned", 0),
+            "errors": f.get("errors", 0),
+            "candidates": f.get("candidates", 0),
+            "pending_pool": f.get("pending_pool", 0),
+            "stages": f.get("stages") or {},
+            "htf_states": f.get("htf_states") or {},
+            "gate_4h_reasons": f.get("gate_4h_reasons") or {},
+        })
+    return {"hours": hours, "count": len(items), "items": items}
 
 
 @router.get("/{scan_id}/funnel")
@@ -1139,6 +1194,86 @@ def _agg_stats(rows: list[TradeReview]) -> dict:
     }
 
 
+def _csv_response(rows: list[dict], filename: str) -> Response:
+    """逐笔 dict 列表导出 CSV（P2-3，M-6：离线核对/分享通道）。
+
+    UTF-8 BOM 前缀保证 Excel 直接打开中文不乱码；列顺序取首行键序；
+    列表值（error_tags）按 | 连接，None 落空串。
+    """
+    buf = io.StringIO()
+    if rows:
+        w = csv.DictWriter(buf, fieldnames=list(rows[0].keys()), extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow({
+                k: "|".join(map(str, v)) if isinstance(v, (list, tuple))
+                else ("" if v is None else v)
+                for k, v in r.items()
+            })
+    return Response(
+        content="\ufeff" + buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/review/stats/export")
+def review_stats_export(
+    days: int = Query(30, ge=1, le=180), db: Session = Depends(get_db)
+):
+    """AI 建议回放逐笔 CSV（P2-3）：窗口口径同 /review/stats（created_at）。
+
+    含 veto 行并用 is_veto 列区分，便于离线自行筛选（页面主统计仍排除 veto）。
+    """
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    revs = db.execute(
+        select(TradeReview).where(TradeReview.created_at >= cutoff)
+    ).scalars().all()
+    ai_map: dict = {}
+    ai_ids = [r.ai_analysis_id for r in revs if r.ai_analysis_id]
+    if ai_ids:
+        for a in db.execute(
+            select(AIAnalysis).where(AIAnalysis.id.in_(ai_ids))
+        ).scalars().all():
+            ai_map[str(a.id)] = a
+
+    def _f(v):
+        return float(v) if isinstance(v, Decimal) else v
+
+    rows = []
+    for r in revs:
+        a = ai_map.get(str(r.ai_analysis_id)) if r.ai_analysis_id else None
+        cst = (a.created_at + timedelta(hours=8)) if a and a.created_at else None
+        diag = r.entry_diag or {}
+        rows.append({
+            "symbol": r.symbol,
+            "direction": r.direction,
+            "outcome": r.outcome,
+            "tp1_hit": bool(r.tp1_hit),
+            "bars_to_exit": r.bars_to_exit,
+            "signal_type": r.signal_type,
+            "touch_ref": r.touch_ref,
+            "htf_phase": r.htf_phase,
+            "ema_state": r.ema_state,
+            "recommendation": _f(r.recommendation),
+            "is_veto": bool(r.is_veto),
+            "ab_bucket": r.ab_bucket,
+            "htf_degraded": bool(r.htf_degraded),
+            "pos": diag.get("pos"),
+            "stop_atr": diag.get("stop_atr"),
+            "room_r": diag.get("room_r"),
+            "planned_rr": diag.get("planned_rr"),
+            "quality_score": diag.get("quality_score"),
+            "mfe_r": _f(r.mfe_r),
+            "mae_r": _f(r.mae_r),
+            # 分析/决策时间（北京时间），口径同 /review/stats 的 time_groups
+            "ai_created_at_cst": cst.isoformat() if cst else None,
+            "checked_at": r.checked_at.isoformat() if r.checked_at else None,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
+    return _csv_response(rows, f"review-stats-{days}d.csv")
+
+
 @router.get("/review/stats", response_model=ReviewStatsResponse)
 def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_db)):
     """AI 建议复盘统计：整体 + 按触发器（原始 signal_type）分组胜率 + 期望值(R)
@@ -1686,6 +1821,27 @@ def review_funnel(
         days=days, scope=scope, stages=stages, block_reasons_top=block_top,
         limit_fill=limit_fill,
     )
+
+
+@router.get("/review/actual/export")
+def review_actual_export(
+    days: int = Query(30, ge=1, le=180),
+    scope: str = Query("all", description="live/testnet/all 或账号 key（docs/17）"),
+    db: Session = Depends(get_db),
+):
+    """实盘归因逐笔 CSV（P2-3）：与 /review/actual 同窗口、同 scope、同口径。"""
+    from app.api.trades import _account_scope_filter
+    from app.services.actual_review import build_actual_review
+
+    # 测试网总开关口径同 /review/actual（关闭后 all 切 live）
+    if scope == "all":
+        from app.services.account_registry import testnet_enabled
+        if not testnet_enabled(db):
+            scope = "live"
+    result = build_actual_review(
+        db, days, extra_filter=_account_scope_filter(TradeRecord, scope)
+    )
+    return _csv_response(result["items"], f"review-actual-{days}d-{scope}.csv")
 
 
 @router.get("/review/actual", response_model=ActualReviewResponse)

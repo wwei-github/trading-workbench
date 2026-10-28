@@ -7,6 +7,7 @@ import {
   Empty,
   Radio,
   Row,
+  Space,
   Spin,
   Statistic,
   Table,
@@ -677,9 +678,20 @@ export default function ReviewStatsPanel() {
           />
         </Col>
         <Col>
-          <Button icon={<ReloadOutlined />} onClick={() => fetchData(days)}>
-            刷新
-          </Button>
+          <Space>
+            {/* 逐笔 CSV（P2-3）：离线核对/分享，窗口同当前统计 */}
+            <Button
+              size="small"
+              onClick={() =>
+                window.open(`/api/scans/review/stats/export?days=${days}`, '_blank')
+              }
+            >
+              导出 CSV
+            </Button>
+            <Button icon={<ReloadOutlined />} onClick={() => fetchData(days)}>
+              刷新
+            </Button>
+          </Space>
         </Col>
       </Row>
 

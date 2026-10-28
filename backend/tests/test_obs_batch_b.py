@@ -439,3 +439,35 @@ def test_stats_time_groups_beijing_buckets(db):
     assert by["北京 08-12 时"].ev_r is not None  # 有 AI 三价，可算净期望
     assert by["未知"].total == 1
     assert by["未知"].win_rate == 0.0  # censored 不进分母
+
+
+def test_review_stats_export_csv(db):
+    """P2-3（M-6）：回放逐笔 CSV，UTF-8 BOM + 表头 + 每行一笔；窗口同 /review/stats。"""
+    from app.api.scan import review_stats_export
+
+    _, a1, _ = _mk_chain(db, "CSV1USDT", ai_finished=datetime(2026, 1, 5, 3, 0))
+    _add_review(db, a1, "win_tp1", entry_diag={"pos": 0.7}, mfe_r=2.1, mae_r=-0.4)
+    _, a2, _ = _mk_chain(db, "CSV2USDT")
+    _add_review(db, a2, "loss")
+
+    resp = review_stats_export(days=30, db=db)
+    assert resp.headers["content-disposition"] == (
+        'attachment; filename="review-stats-30d.csv"'
+    )
+    # 解码 utf-8-sig 即验证 BOM 存在（Excel 中文不乱码）
+    lines = resp.body.decode("utf-8-sig").strip().splitlines()
+    assert len(lines) == 3
+    head = lines[0].split(",")
+    for col in ("symbol", "outcome", "mfe_r", "ai_created_at_cst"):
+        assert col in head
+    rows = {r.split(",")[0]: dict(zip(head, r.split(","))) for r in lines[1:]}
+    assert rows["CSV1USDT"]["outcome"] == "win_tp1"
+    assert rows["CSV1USDT"]["pos"] == "0.7"
+    assert rows["CSV1USDT"]["mfe_r"] == "2.1"
+    # UTC 03:00 → 北京时间（口径同 time_groups）
+    assert rows["CSV1USDT"]["ai_created_at_cst"].startswith("2026-01-05T11:00:00")
+    assert rows["CSV2USDT"]["ai_created_at_cst"] != ""
+
+    # 空窗口：仍返回带 BOM 的空文件，不报错
+    empty = review_stats_export(days=1, db=db)
+    assert empty.body.decode("utf-8-sig").strip() == ""
