@@ -12,9 +12,6 @@ import type { AccountBrief, PurgeStats, SystemConfig } from '../types'
  *    各账号独立过闸门下单）；测试网恒为 testnet-1 单账号
  *  - 自动交易开关：测试网/正式网各自独立、可同时开启——同一 AI 分析
  *    双网各开一单（镜像跟单）；测试网默认开、正式网默认关
- *  - 测试网总开关（2026-10-27，默认开）：关=仅停合约测试网「新增」（自动/手动
- *    开单、外部仓接管、飞书通知、自动持仓诊断与镜像）；存量结算/保护/挂单巡检
- *    照常；现货测试网独立；历史只读可查、统计默认切 live
  *  - 凭据只在服务器 .env 配置（安全不入库），页面仅展示账号清单与配置状态
  *  - 危险操作（2026-10-04 自交易记录页迁入）：一键清空测试网数据，
  *    预检→弹窗二次确认（含在跑单警告）→执行删除 */
@@ -23,7 +20,6 @@ export default function SystemConfigPanel() {
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
   const [liveKeys, setLiveKeys] = useState<string[]>([]) // 正式网启用自动交易的账号集合
-  const [tnEnabled, setTnEnabled] = useState(true)      // 测试网总开关（默认开；关=仅停合约测试网新增）
   const [tnTrading, setTnTrading] = useState(true)      // 测试网自动交易（默认开）
   const [liveTrading, setLiveTrading] = useState(false) // 正式网自动交易（默认关）
   const [tnNotify, setTnNotify] = useState(true)        // 测试网飞书通知（默认开）
@@ -46,7 +42,6 @@ export default function SystemConfigPanel() {
         ? aiConfig.live_trading_keys
         : [accs.find((a) => !a.testnet && a.configured)?.key || 'live-1']
       setLiveKeys(keys)
-      setTnEnabled(aiConfig.testnet_enabled ?? true)
       setTnTrading(aiConfig.trading_enabled_testnet ?? true)
       setLiveTrading(aiConfig.trading_enabled_live ?? false)
       setTnNotify(aiConfig.feishu_testnet_notify_enabled ?? true)
@@ -88,7 +83,6 @@ export default function SystemConfigPanel() {
     try {
       setSaving(true)
       await updateConfig({
-        testnet_enabled: tnEnabled,
         trading_enabled_testnet: tnTrading,
         trading_enabled_live: liveTrading,
         live_trading_keys: liveKeys, // 后端保存时联动维护主账号 current_account_key
@@ -180,39 +174,6 @@ export default function SystemConfigPanel() {
           )}
           </ConfigSection>
 
-          <ConfigSection title="测试网总开关" hint="仅合约测试网；现货测试网开关独立">
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              padding: '8px 12px',
-              border: '1px solid #f0f0f0',
-              borderRadius: 8,
-              background: tnEnabled ? '#fff' : '#fffbe6',
-              marginBottom: 8,
-            }}
-          >
-            <Space size={8}>
-              <Tag color="orange" style={{ marginInlineEnd: 0 }}>测试网</Tag>
-              <span>合约测试网总开关</span>
-            </Space>
-            <Switch
-              checked={tnEnabled}
-              onChange={(v) => setTnEnabled(v)}
-              checkedChildren="启用"
-              unCheckedChildren="关闭"
-            />
-          </div>
-          <div style={{ color: '#999', fontSize: 12, lineHeight: 1.7, marginBottom: 16 }}>
-            关闭后测试网合约只停「新增」：自动/手动开单、外部持仓自动接管、测试网飞书通知、
-            自动持仓诊断与 live→testnet 镜像全部停止；存量持仓的结算、保护单恢复、挂单巡检
-            与事件流照常运行（避免交易所侧留下无主单），测试网爆亏也不再拉黑正式网币种。
-            历史交易/统计保留只读查看，复盘、日报、账户概览等统计默认切正式网（显式选
-            测试网 scope 仍可查看）。现货测试网独立开关，不受本开关影响。默认启用，与现有行为一致。
-          </div>
-          </ConfigSection>
-
           <ConfigSection title="自动成交开关" hint="AI 分析后自动开单，双网独立">
           <div
             style={{
@@ -232,7 +193,6 @@ export default function SystemConfigPanel() {
             </Space>
             <Switch
               checked={tnTrading}
-              disabled={!tnEnabled}
               onChange={(v) => setTnTrading(v)}
               checkedChildren="开"
               unCheckedChildren="关"
@@ -266,7 +226,6 @@ export default function SystemConfigPanel() {
             （镜像跟单，各账号独立过风控闸门）。正式网默认关闭（实盘安全基线）。
             仅控制每小时 AI 分析完成后是否自动开新单；关闭后手动「开单」按钮、AI 分析
             （由策略配置「筛选后自动 AI 分析」独立控制）、结算巡检、复盘、日报均不受影响。
-            测试网总开关关闭时，测试网自动成交开关置灰、不再生效（正式网不受影响）。
           </div>
 
           <Alert
@@ -296,7 +255,6 @@ export default function SystemConfigPanel() {
             </Space>
             <Switch
               checked={tnNotify}
-              disabled={!tnEnabled}
               onChange={(v) => setTnNotify(v)}
               checkedChildren="开"
               unCheckedChildren="关"

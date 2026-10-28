@@ -75,11 +75,11 @@ def dispatched(monkeypatch):
     return calls
 
 
-def _cfg(db, *, live: bool, testnet: bool, testnet_enabled: bool = True,
+def _cfg(db, *, live: bool, testnet: bool,
          min_rec=None) -> SystemConfig:
     cfg = SystemConfig(
         id=1, trading_enabled_live=live, trading_enabled_testnet=testnet,
-        testnet_enabled=testnet_enabled, min_recommendation=min_rec,
+        min_recommendation=min_rec,
     )
     db.add(cfg)
     db.commit()
@@ -111,21 +111,6 @@ def test_both_off_sends_card_and_skips_dispatch(db, sent_cards, dispatched, monk
     assert "TESTUSDT" in title
     body = sent_cards[0]["elements"][0]["text"]["content"]
     assert "双网自动开单均已关闭" in body
-
-
-def test_testnet_switch_off_by_master_still_counts_as_both_off(
-    db, sent_cards, dispatched, monkeypatch
-):
-    """测试网分开关开着、但测试网总开关关 → 等效双网全关，同样要提醒。"""
-    _cfg(db, live=False, testnet=True, testnet_enabled=False)
-    monkeypatch.setattr(ai_tasks, "SessionLocal", lambda: _NoCloseSession(db))
-    a = _analysis(db)
-
-    ai_tasks._dispatch_immediate_open(a)
-
-    assert dispatched == []
-    assert len(sent_cards) == 1
-    assert "双网均关" in sent_cards[0]["header"]["title"]["content"]
 
 
 def test_live_on_dispatches_without_both_off_card(db, sent_cards, dispatched, monkeypatch):

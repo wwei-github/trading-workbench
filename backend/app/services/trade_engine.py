@@ -1911,11 +1911,6 @@ def try_open_for_analysis(
     cfg = db.get(SystemConfig, 1)
     if not cfg:
         return "blocked"
-    # 测试网总开关（2026-10-27）：关闭后仅停新增，直接进引擎的开单路径一并拦截
-    # （自动扇出已被 auto_trade_accounts 过滤，此处防手动/脚本/测试绕过）
-    if trader.testnet and getattr(cfg, "testnet_enabled", True) is False:
-        _mark_open_block(db, a, "测试网已关闭（系统配置「测试网总开关」），禁止新开测试网单")
-        return "blocked"
     # 开仓资格快速过滤（suggest / 方向 / 三价 / 评分门槛 / 1 小时内）
     # 评分门槛（2026-10-02 上页面）：cfg.min_recommendation 覆盖时优先，NULL 回落 env
     min_rec = (
@@ -3101,8 +3096,6 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
     # 生效 AI 凭证读页面配置（2026-10-26：Key+端点成对才生效，缺一整体回落
     # env）——巡检路径 advice_due 的 current_api_key() 依赖本进程 runtime
     configure_from(cfg)
-    # 测试网总开关（2026-10-27）：关闭时停测试网新增活动，但存量结算/保护照常
-    tn_on = getattr(cfg, "testnet_enabled", True) is not False
     interval = cfg.kline_interval if cfg else "1h"
     # 保本止损费率口径（2026-10-02 上页面）：system_config.taker_fee_rate 可页面
     # 覆盖，NULL=env 默认（_breakeven_stop_price 内回落）；一轮巡检取值一致
@@ -3247,15 +3240,11 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                 # （≥1.2 倍）或强平 → 自动拉黑冷却 30 天。失败不阻断结算
                 try:
                     from app.services.blacklist_service import register_settle
-                    # 测试网总开关（2026-10-27）：测试网结算不再拉黑正式网
-                    # （黑名单按 symbol 全局生效，不区分网络）；存量测试网单
-                    # 仍正常结算，只是不参与全局拉黑判断
-                    if not (rec.testnet and not tn_on):
-                        # 超预算判定按「计划风险」口径（滑点后的 initial_risk 不作为预算基准）
-                        register_settle(db, rec.symbol, rec.planned_risk or rec.risk_amount,
-                                        rec.realized_pnl, rec.exit_reason or "",
-                                        trade_id=rec.id)
-                        db.commit()
+                    # 超预算判定按「计划风险」口径（滑点后的 initial_risk 不作为预算基准）
+                    register_settle(db, rec.symbol, rec.planned_risk or rec.risk_amount,
+                                    rec.realized_pnl, rec.exit_reason or "",
+                                    trade_id=rec.id)
+                    db.commit()
                 except Exception as e:
                     db.rollback()
                     logger.warning("黑名单登记失败 %s: %s", rec.symbol, e)
@@ -3284,7 +3273,6 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
             # 仅收集，锁外由调用方派发子任务执行。双网所有权：有在跑正式网
             # 孪生的测试网单跳过（跟随镜像）
             if advice_due(rec, total_pnl, now) \
-                    and (not rec.testnet or tn_on) \
                     and not (rec.testnet
                              and rec.ai_analysis_id in live_analysis_ids):
                 advice_ids.append(str(rec.id))
@@ -4075,12 +4063,6 @@ def auto_adopt_positions(db: Session, trader: BinanceTrader) -> list[str]:
     调用。返回新导入的 symbol 列表。
     """
     out: list[str] = []
-    # 测试网总开关（2026-10-27）：关闭后不再自动接管外部手动仓（新增活动），
-    # 已在册存量持仓继续结算/保护
-    cfg = db.get(SystemConfig, 1)
-    if trader.testnet and cfg is not None and \
-            getattr(cfg, "testnet_enabled", True) is False:
-        return out
     for row in list_adoptable_positions(db, trader):
         if row["tracked"]:
             continue

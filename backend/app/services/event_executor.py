@@ -294,12 +294,7 @@ def refresh_mark_pnl(account_key: str, symbol: str, mark_price: float) -> bool:
             # 时误用 env 实测凭证。
             cfg_sys = db.get(SystemConfig, 1)
             configure_from(cfg_sys)
-            # 测试网总开关（2026-10-27）：关闭后测试网单不再自动派发诊断
-            # （手动「诊断」按钮仍可用；存量结算/保护不受影响）
-            from app.services.account_registry import testnet_enabled
-            tn_on = testnet_enabled(db)
             if current_api_key() and advice_due(rec, total, datetime.utcnow()) \
-                    and (not rec.testnet or tn_on) \
                     and _cooldown_ok(f"advice:{rec.id}", ADVICE_DISPATCH_COOLDOWN_S) \
                     and not has_running_live_twin(db, rec):
                 # 双网分析所有权（2026-10-08）：测试网单有在跑正式网孪生 → 不独立

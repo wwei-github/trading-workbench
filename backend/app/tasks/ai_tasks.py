@@ -780,11 +780,9 @@ def _dispatch_immediate_open(a: AIAnalysis) -> None:
     try:
         cfg = db.get(SystemConfig, 1)
         # 双网独立开关（2026-10-03）：任一网开启即分发，具体扇出哪些账号
-        # 由 open_trade_for_analysis 按 auto_trade_accounts 逐网判定；
-        # 测试网总开关（2026-10-27）关闭时测试网分开关不生效
+        # 由 open_trade_for_analysis 按 auto_trade_accounts 逐网判定
         auto_open_on = cfg is not None and (
-            (cfg.trading_enabled_testnet and getattr(cfg, "testnet_enabled", True) is not False)
-            or cfg.trading_enabled_live
+            cfg.trading_enabled_testnet or cfg.trading_enabled_live
         )
         if not auto_open_on:
             # 双网自动交易全关：没有可扇出的账号，不派发开仓任务；但达标信号

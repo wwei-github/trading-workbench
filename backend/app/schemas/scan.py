@@ -90,7 +90,6 @@ class ScanStatusResponse(BaseModel):
     # 同日删环境切换，在跑单统计为双网合计）
     trading_enabled_testnet: bool = False  # 测试网自动交易开关
     trading_enabled_live: bool = False     # 正式网自动交易开关
-    testnet_enabled: bool = True           # 测试网总开关（关=停测试网新增活动）
     open_trades: int = 0          # 在跑单数（双网合计，OPENED/TP1_HIT/TP2_HIT 三状态）
     open_tp_hit: int = 0          # 其中已进入止盈止损阶段的（TP1_HIT/TP2_HIT，止损已移保本，不占上限名额）
     open_trades_testnet: int = 0  # 在跑 OPENED 按网计数（2026-10-04 拆分显示；满仓跳过判定=任一网达上限）
@@ -247,9 +246,6 @@ class SystemConfigOut(BaseModel):
     # 拆分为双网独立开关可同时开启——同一 AI 分析双网各开一单；同日删环境切换）
     trading_enabled_testnet: bool = True   # 测试网自动交易（默认开）
     trading_enabled_live: bool = False     # 正式网自动交易（默认关，实盘安全基线）
-    # 测试网总开关（2026-10-27，默认开）：关=停合约测试网新增活动；存量结算/
-    # 保护照常，历史只读展示保留，统计默认 live；现货不受影响
-    testnet_enabled: bool = True
     # 测试网飞书通知开关（2026-10-15，默认开）：关=不推送「合约测试网单据」相关
     # 卡片/文本（开仓卡/持仓预警/AI 持仓建议/止损收紧/滞留复诊/未上架文本）；
     # 扫描命中卡、满仓跳过卡、结构监控、日报、现货三卡、按钮回执不受控
@@ -365,7 +361,6 @@ class SystemConfigUpdate(BaseModel):
     # 自动交易开关（2026-10-03 拆分双网独立开关，语义见 SystemConfigOut）
     trading_enabled_testnet: Optional[bool] = None
     trading_enabled_live: Optional[bool] = None
-    testnet_enabled: Optional[bool] = None
     # 测试网飞书通知开关（2026-10-15，语义见 SystemConfigOut）
     feishu_testnet_notify_enabled: Optional[bool] = None
     # 当前正式网主账号（docs/17）：需为注册表内 live 账号（仅前端展示/默认 scope）

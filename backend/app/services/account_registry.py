@@ -135,28 +135,6 @@ def live_enabled_accounts(db) -> list["Account"]:
     return accs or live_accounts()
 
 
-def testnet_enabled(db) -> bool:
-    """合约测试网总开关（system_config.testnet_enabled，2026-10-27）。
-
-    True（默认）=现状；False=只停测试网「新增」活动：自动/手动开单、外部持仓
-    自动接管、测试网通知、结算拉黑、自动持仓诊断与 live→testnet 镜像。
-    存量持仓结算、保护单恢复、挂单巡检、事件流照常（避免交易所侧无主单）。
-    现货测试网独立（spot_trading_testnet），不受本开关影响。
-    缺行/读库异常按 True 兜底，升级后行为不变。
-    """
-    from app.models.system_config import SystemConfig
-
-    try:
-        cfg = db.get(SystemConfig, 1)
-    except Exception:
-        logger.warning("读取测试网总开关失败，按「开」兜底", exc_info=True)
-        return True
-    if cfg is None:
-        return True
-    # None（数据库列尚未落值）按默认开处理
-    return getattr(cfg, "testnet_enabled", True) is not False
-
-
 def managed_accounts(db) -> list["Account"]:
     """双网管理清单（2026-10-03 删环境切换）：测试网账号 + 正式网启用账号，
     去重保持顺序。手动单接管/导入持仓/结算巡检等「管理行为」一律覆盖两网
@@ -182,8 +160,7 @@ def auto_trade_accounts(db) -> list["Account"]:
     if cfg is None:
         return []
     accs: list[Account] = []
-    # 测试网总开关（2026-10-27）是上层闸门：关闭时即使分开关仍为开也不扇出
-    if cfg.trading_enabled_testnet and getattr(cfg, "testnet_enabled", True) is not False:
+    if cfg.trading_enabled_testnet:
         accs.extend(a for a in testnet_accounts() if a not in accs)
     if cfg.trading_enabled_live:
         accs.extend(a for a in live_enabled_accounts(db) if a not in accs)

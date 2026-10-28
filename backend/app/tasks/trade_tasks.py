@@ -162,11 +162,6 @@ def manual_open_from_analysis(analysis_id: str, account_key: str) -> dict:
         if acc is None:
             return {"ok": False, "code": "bad_request",
                     "error": f"账号 {account_key} 不在注册表中（检查服务器 .env）"}
-        # 测试网总开关（2026-10-27）：关闭后仅停新增，手动开单同样拒绝测试网账号；
-        # 存量持仓的结算/保护不受影响
-        if acc.testnet and not reg.testnet_enabled(db):
-            return {"ok": False, "code": "bad_request",
-                    "error": "测试网已关闭（系统配置「测试网总开关」），仅允许正式网开单"}
         trader = BinanceTrader(acc.key)
         if not trader.configured:
             return {"ok": False, "code": "bad_request", "error": "当前账号未配置 API 凭据"}
@@ -439,8 +434,7 @@ def open_trade_for_analysis(analysis_id: str):
     try:
         cfg = db.get(SystemConfig, 1)
         if cfg is None or not (
-            (cfg.trading_enabled_testnet and getattr(cfg, "testnet_enabled", True) is not False)
-            or cfg.trading_enabled_live
+            cfg.trading_enabled_testnet or cfg.trading_enabled_live
         ):
             logger.info("即时开仓跳过：双网自动交易开关均关闭（analysis=%s）", analysis_id)
             return

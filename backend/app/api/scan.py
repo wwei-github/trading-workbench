@@ -322,7 +322,6 @@ def scan_status(db: Session = Depends(get_db)):
         config=config,
         trading_enabled_testnet=cfg.trading_enabled_testnet,
         trading_enabled_live=cfg.trading_enabled_live,
-        testnet_enabled=cfg.testnet_enabled is not False,
         # 2026-10-03 删环境切换：在跑单统计为双网合计（明细按记录自带 testnet 区分）
         open_trades=db.execute(
             select(func.count()).select_from(TradeRecord).where(
@@ -546,7 +545,6 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         risk_fixed_amount=float(cfg.risk_fixed_amount if cfg.risk_fixed_amount is not None else 3.0),
         trading_enabled_testnet=cfg.trading_enabled_testnet,
         trading_enabled_live=cfg.trading_enabled_live,
-        testnet_enabled=cfg.testnet_enabled is not False,
         feishu_testnet_notify_enabled=bool(cfg.feishu_testnet_notify_enabled),
         current_account_key=cfg.current_account_key,
         live_trading_keys=parse_live_keys(cfg.live_trading_keys),
@@ -879,9 +877,6 @@ def update_system_config(
         if seen and cfg.current_account_key not in {a.key for a in seen}:
             cfg.current_account_key = seen[0].key
     # 双网自动交易开关（2026-10-03 拆分）：独立判定、可同时开启
-    # 测试网总开关（2026-10-27）：上层闸门，关闭时 testnet 分开关保留原值但不生效
-    if body.testnet_enabled is not None:
-        cfg.testnet_enabled = body.testnet_enabled
     if body.trading_enabled_testnet is not None:
         cfg.trading_enabled_testnet = body.trading_enabled_testnet
     if body.trading_enabled_live is not None:
@@ -1693,12 +1688,6 @@ def review_funnel(
     """
     cutoff = datetime.utcnow() - timedelta(days=days)
     from app.api.trades import _account_scope_filter
-    # 测试网总开关（2026-10-27）：关闭后统计默认切 live；显式 scope=testnet
-    # 仍可按历史只读查看
-    if scope == "all":
-        from app.services.account_registry import testnet_enabled
-        if not testnet_enabled(db):
-            scope = "live"
 
     sig_cnt = db.execute(
         select(func.count()).select_from(ScanResult).where(ScanResult.created_at >= cutoff)
@@ -1834,11 +1823,6 @@ def review_actual_export(
     from app.api.trades import _account_scope_filter
     from app.services.actual_review import build_actual_review
 
-    # 测试网总开关口径同 /review/actual（关闭后 all 切 live）
-    if scope == "all":
-        from app.services.account_registry import testnet_enabled
-        if not testnet_enabled(db):
-            scope = "live"
     result = build_actual_review(
         db, days, extra_filter=_account_scope_filter(TradeRecord, scope)
     )
@@ -1860,13 +1844,6 @@ def review_actual(
     """实盘归因统计（复盘主轴）：trade_records 总览 + 分组 + 逐笔计划vs实际 + AI 错误标签"""
     from app.api.trades import _account_scope_filter
     from app.services.actual_review import build_actual_review
-
-    # 测试网总开关（2026-10-27）：关闭后统计默认切 live；显式 scope=testnet
-    # 仍可按历史只读查看
-    if scope == "all":
-        from app.services.account_registry import testnet_enabled
-        if not testnet_enabled(db):
-            scope = "live"
 
     # 费用回补（P2-1）：GET 只读，不再在首屏写库；存量平仓单由定时归因任务
     # （run_ai_attribution_task 内 backfill_costs，双网 limit=ATTRIBUTION_BATCH）
