@@ -700,16 +700,19 @@ def test_actual_review_htf_phase_dimension(db):
 
 
 def test_actual_review_golden_pattern_groups(db):
-    """金K形态 12 维度全量列出（0 笔也占行，2026-10-01-3 用户拍板）；
-    突破类/旧行 pattern NULL → 未记录兜底；组内聚合正确"""
+    """金K形态只列现役 8 种（P1-1，2026-10-28）：0 笔也占行；
+    已下线 4 种形态与 pattern NULL 一并归「未记录」，不再各占一行恒 0"""
     from app.services.actual_review import build_actual_review
+    from app.services.strategy.candlestick import PATTERN_LABEL_MAP
 
     w = _closed_rec({})  # 锤形线赢单
     w.pattern = "hammer"
     w.realized_pnl = 20.0
     l = _closed_rec({})  # 流星线亏单
     l.pattern = "shooting_star"
-    db.add_all([w, l, _closed_rec({})])  # 第三笔无形态（突破类）
+    retired = _closed_rec({})  # 已下线形态（2026-10-09 白名单收缩）
+    retired.pattern = "bullish_harami"
+    db.add_all([w, l, retired, _closed_rec({})])  # 第四笔无形态（突破类）
     db.commit()
 
     out = build_actual_review(db, days=30)
@@ -717,11 +720,13 @@ def test_actual_review_golden_pattern_groups(db):
     for g in out["groups"]:
         dims.setdefault(g["dim"], []).append((g["key"], g["count"]))
     pats = dims["金K形态"]
-    assert len(pats) == 13  # 12 金K + 未记录
-    assert pats[0] == ("锤形线", 1)                       # 固定顺序：看涨 6 打头
-    assert ("看涨吞没", 0) in pats and ("墓碑十字", 0) in pats  # 0 笔也占行
+    assert len(pats) == 9  # 8 现役金K + 未记录
+    assert pats[0] == ("锤形线", 1)                       # 固定顺序：看涨打头
+    assert ("看涨吞没", 0) in pats                        # 0 笔也占行
     d = dict(pats)
-    assert d["流星线"] == 1 and d["未记录"] == 1
+    assert d["流星线"] == 1
+    assert d["未记录"] == 2  # 已下线形态 + NULL 兜底
+    assert PATTERN_LABEL_MAP["bullish_harami"] not in d
     hammer = next(g for g in out["groups"]
                   if g["dim"] == "金K形态" and g["key"] == "锤形线")
     assert hammer["wins"] == 1 and hammer["pnl"] == 20.0
