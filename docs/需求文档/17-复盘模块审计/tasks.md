@@ -296,6 +296,27 @@
 
 ---
 
+## P1-1 金K形态白名单收窄（2026-10-28 追加）
+
+- `backend/app/services/actual_review.py`：`GOLDEN_PATTERN_ORDER` 由 12 收到现役 8；
+- 已下线 4 种（`bullish_harami / dragonfly_doji / bearish_harami /
+  gravestone_doji`）历史行与 `pattern=NULL` 一并并入「未记录」，不再各占一行恒 0；
+- 测试：`test_actual_review.py::test_golden_pattern_only_active_eight`；
+  `test_review_batch3.py::test_actual_review_golden_pattern_groups` 由 13 行改 9 行
+  （8 现役 + 未记录）。
+
+## P1-2 触发族 legacy 标记与折叠（2026-10-28 追加）
+
+- `actual_review.py` 新增 `TRIGGER_LEGACY`（6 个已下线类型）；
+- `/review/stats` 的 `ReviewGroupStats.legacy` 与实盘归因「信号类型」组 `legacy`
+  同源判定：该组/族全为下线类型才标 true（混合族仍有新行，不折叠）；
+- 前端建议统计与实盘归因两个面板各加「显示历史信号」勾选：默认折叠，
+  展开后分组名带「历史」标签；
+- 测试：`test_actual_review.py::test_signal_family_legacy_flag`、
+  `test_obs_batch_b.py::test_stats_legacy_trigger_flag`。
+
+---
+
 ## 文档同步
 
 `docs/复盘归因/06-复盘归因.md`：
@@ -328,3 +349,5 @@
   - `feat(review): 回放落入场诊断并按五维分档统计`
   - `feat(review): 观察窗口可配置并拆分 censored/expired`
   - `feat(review): 补丁触发改为热度或绝对笔数双阈值`
+  - `feat(review): 金K形态只列现役 8 种`
+  - `feat(review): 已下线触发类型标 legacy 并默认折叠`

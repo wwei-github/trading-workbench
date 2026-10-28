@@ -37,10 +37,21 @@
 - [x] 前端汇总卡 + 「持仓偏移（MFE/MAE）」按结局表 + 入场诊断分档 MFE/MAE 列
 - [x] `test_stats_mfe_mae_excursions` 覆盖均值、分位与 NULL 不计入
 
+## P1-1 金K形态白名单收窄
+
+- [x] `GOLDEN_PATTERN_ORDER` 12 → 现役 8；已下线 4 种历史行并入「未记录」
+- [x] `test_golden_pattern_only_active_eight` + 既有 13 行断言改 9 行
+
+## P1-2 触发族 legacy 折叠
+
+- [x] `TRIGGER_LEGACY` 标 6 个已下线类型；组/族全为下线类型才标 `legacy`
+- [x] 建议统计/实盘归因面板默认折叠，可勾选展开并显示「历史」
+- [x] `test_signal_family_legacy_flag` / `test_stats_legacy_trigger_flag`
+
 ## 文档与验证
 
 - [x] `docs/复盘归因/06-复盘归因.md` 流程图、门槛、常量表、五态语义、`entry_diag`、API 契约、配置项同步
-- [x] 定向 pytest（review_replay / attribution / patch_trigger_threshold / obs_batch_b）通过
-- [x] 后端全量 pytest 通过（1330 passed）
+- [x] 定向 pytest（review_replay / attribution / patch_trigger_threshold / obs_batch_b / actual_review）通过
+- [x] 后端全量 pytest 通过（1334 passed）
 - [x] 前端 `npx tsc --noEmit` 通过
 - [x] `git status` 仅包含本次相关文件
