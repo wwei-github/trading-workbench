@@ -1,10 +1,13 @@
 """AI 建议复盘任务（docs/04 §4 Stage 6 / P2）
 
-对 suggest 决策在 24h 观察期后做一次 1h K 线逐根回放：
+对 suggest 决策在观察期（默认 24h，settings.REVIEW_OBSERVATION_HOURS 可配）后做一次
+1h K 线逐根回放：
 - 先触止损 → loss；先触 tp2 → win_tp2；触 tp1（后又触止损）→ win_tp1
 - 同一根 K 线同时触碰止损与止盈 → 保守计 loss
-- 观察期内未触任何价位 → expired
-统计维度快照（signal_type/position/ema_state）随复盘落库，供分组胜率统计。
+- 观察期内未触任何价位 → censored（右删失，不代表行情结论）
+- 计划三价/方向缺失或无效 → expired（数据缺失）
+统计维度快照（signal_type/position/ema_state）随复盘落库，供分组胜率统计；
+回放时点同时落入场诊断 entry_diag（pos/room_r/stop_atr/planned_rr/quality_score）。
 """
 import logging
 from datetime import datetime, timedelta, timezone
@@ -18,6 +21,7 @@ from app.database import SessionLocal
 from app.models.scan import AIAnalysis, ScanResult, TradeReview
 from app.models.system_config import SystemConfig
 from app.models.trade import TradeRecord
+from app.services import entry_diagnostics
 from app.services.exchange_pool import ExchangePool
 from app.services.llm_client import configure_from, resolve_credentials
 from app.services.shadow import tag_trade_close
@@ -25,7 +29,6 @@ from app.services.task_log import close_task, open_task
 
 logger = logging.getLogger(__name__)
 
-OBSERVATION_HOURS = 24
 REVIEW_BATCH_SIZE = 20
 REVIEW_LOOKBACK_DAYS = 7
 # 到期时刻按 UTC 半小时分片轮转：每轮只取 REVIEW_SHARDS_PER_RUN 个分片，
@@ -80,10 +83,11 @@ def _shard_ranges(shard: int, oldest: datetime, due_before: datetime) -> list[tu
     return ranges
 
 
-def _review_window(signal_time: datetime) -> tuple[int, int]:
+def _review_window(signal_time: datetime, hours: int | None = None) -> tuple[int, int]:
     start = _as_utc(signal_time)
     start_ms = int(start.timestamp() * 1000)
-    return start_ms, start_ms + OBSERVATION_HOURS * 3_600_000
+    window_hours = hours if hours is not None else settings.REVIEW_OBSERVATION_HOURS
+    return start_ms, start_ms + int(window_hours) * 3_600_000
 
 
 def _interval_ms(interval: str) -> int:
@@ -103,7 +107,7 @@ def _expected_window_bars(start_ms: int, end_ms: int, interval: str) -> range:
 
 
 def _has_complete_window(bars: list, start_ms: int, end_ms: int, interval: str) -> bool:
-    """Require complete bars wholly inside the 24h window; partial edge bars are excluded."""
+    """Require complete bars wholly inside the observation window; partial edge bars are excluded."""
     expected = _expected_window_bars(start_ms, end_ms, interval)
     by_time = {int(float(k[0])): k for k in bars}
     return all(ts in by_time for ts in expected)
@@ -156,9 +160,10 @@ def replay_suggestion(
 def run_trade_review_task():
     """Replay due suggestions/vetoes as a counterfactual price path, not actual fills.
 
-    Only complete candles wholly inside the fixed 24h window are replayed. The
-    partial first candle is intentionally excluded, so this is not full coverage
-    of all prices from the exact signal instant. Missing bars remain pending.
+    Only complete candles wholly inside the observation window (default 24h,
+    configurable) are replayed. The partial first candle is intentionally
+    excluded, so this is not full coverage of all prices from the exact signal
+    instant. Missing bars remain pending.
     """
     db = SessionLocal()
     pool = ExchangePool()
@@ -166,7 +171,8 @@ def run_trade_review_task():
     try:
         now = datetime.now(timezone.utc)
         now_naive = now.replace(tzinfo=None)
-        due_before = now_naive - timedelta(hours=OBSERVATION_HOURS)
+        hours = int(settings.REVIEW_OBSERVATION_HOURS)
+        due_before = now_naive - timedelta(hours=hours)
         oldest = due_before - timedelta(days=REVIEW_LOOKBACK_DAYS)
 
         # 超过补偿窗口仍未落盘的行不再请求行情，避免无界补历史；保留计数告警，
@@ -254,7 +260,7 @@ def run_trade_review_task():
         reviewed = 0
         # 明细随任务记录落库（前端任务记录页可展开查看）：逐条结论 + 分组计数
         items = []
-        counts = {"win_tp1": 0, "win_tp2": 0, "loss": 0, "expired": 0}
+        counts = {"win_tp1": 0, "win_tp2": 0, "loss": 0, "censored": 0, "expired": 0}
 
         for a, sr in rows:
             try:
@@ -281,18 +287,21 @@ def run_trade_review_task():
                     r_rating = a.recommendation
 
                 signal_time = a.ai_finished_at or a.created_at
-                start_ms, end_ms = _review_window(signal_time)
+                start_ms, end_ms = _review_window(signal_time, hours)
                 interval_ms = _interval_ms(settings.KLINE_INTERVAL)
                 now_ms = int(now.timestamp() * 1000)
                 end_closed_ms = min(end_ms - 1, now_ms - interval_ms)
                 expected = len(_expected_window_bars(start_ms, end_ms, settings.KLINE_INTERVAL))
+                # 多拉信号根之前的一段 K 线（room_r 需 24 根、ATR14 需 15 根、成形根 1 根），
+                # 供入场诊断使用；回放仍只消费窗口内 K 线
                 klines = pool.get_klines_range(
-                    a.symbol, settings.KLINE_INTERVAL, expected + 2, end_closed_ms
+                    a.symbol, settings.KLINE_INTERVAL, expected + 30, end_closed_ms
                 ) or []
                 bars = [k for k in klines
                         if start_ms <= int(float(k[0])) < end_ms
                         and int(float(k[0])) + interval_ms <= now_ms]
 
+                entry_diag = None
                 if entry <= 0 or stop <= 0 or tp1 <= 0 or not r_direction:
                     outcome, tp1_hit, nbars = "expired", False, 0
                 elif not _has_complete_window(bars, start_ms, end_ms, settings.KLINE_INTERVAL):
@@ -304,7 +313,39 @@ def run_trade_review_task():
                         r_direction, entry, stop, tp1, tp2, bars
                     )
                     if outcome == "open":
-                        outcome = "expired"
+                        # 右删失：窗口内未触发任何价位，与「计划无效」的 expired 分开，
+                        # 两者都不进胜率分母（P0-2）
+                        outcome = "censored"
+                    try:
+                        # 信号 K = 信号时刻所在/前一根已收盘根；诊断 K 线末尾多带一根
+                        # （closed_bars 丢弃最后一根），保证信号根成为最后一根已收盘根
+                        signal_bar_open = ((start_ms - 1) // interval_ms) * interval_ms
+                        diag_klines = [
+                            k for k in klines
+                            if int(float(k[0])) <= signal_bar_open + interval_ms
+                        ]
+                        snap = entry_diagnostics.snapshot(
+                            klines=diag_klines,
+                            price=entry,
+                            stop_loss=stop,
+                            direction=r_direction,
+                            tp1=tp1,
+                            entry_price=entry,
+                            quality_parts=getattr(sr, "quality_parts", None),
+                            signal_type=sr.signal_type,
+                            interval=settings.KLINE_INTERVAL,
+                        )
+                        quality = getattr(sr, "quality_score", None)
+                        entry_diag = {
+                            "pos": snap.get("pos"),
+                            "room_r": snap.get("room_r"),
+                            "stop_atr": snap.get("stop_atr"),
+                            "planned_rr": snap.get("planned_rr"),
+                            "quality_score": quality if quality is not None else snap.get("quality_total"),
+                        }
+                    except Exception as diag_err:
+                        # 诊断失败只丢诊断，不影响回放结论
+                        logger.warning("复盘入场诊断失败 %s: %s", a.symbol, diag_err)
 
                 db.add(TradeReview(
                     ai_analysis_id=UUID(str(a.id)),
@@ -326,6 +367,7 @@ def run_trade_review_task():
                     ab_bucket=(veto.get("ab_bucket") if veto else None),
                     recommendation=float(r_rating) if r_rating is not None else None,
                     is_veto=bool(veto),
+                    entry_diag=entry_diag,
                 ))
                 db.commit()
                 reviewed += 1
@@ -337,6 +379,7 @@ def run_trade_review_task():
                     "bars_to_exit": nbars or None,
                     "recommendation": float(r_rating) if r_rating is not None else None,
                     "is_veto": bool(veto),
+                    "entry_diag": entry_diag,
                 })
                 logger.info(
                     "复盘完成: %s %s -> %s%s",

@@ -96,6 +96,8 @@ def test_utc_signal_time_and_exact_24_hour_window():
     start_ms, end_ms = _review_window(signal)
     assert start_ms == int(signal.timestamp() * 1000)
     assert end_ms == start_ms + 24 * HOUR
+    # 观察窗口可配置（P0-2）：显式传入小时数时按该值计算
+    assert _review_window(signal, 48)[1] == start_ms + 48 * HOUR
 
 
 def test_incomplete_hourly_window_is_detected():
@@ -135,7 +137,7 @@ def test_task_uses_historical_range_and_never_finalizes_missing_data(review_env,
     assert review_env.query(TradeReview).count() == 0
 
 
-def test_task_finalizes_unfilled_entry_as_expired(review_env, monkeypatch):
+def test_task_finalizes_unfilled_entry_as_censored(review_env, monkeypatch):
     analysis = _make_signal(review_env)
     analysis.trade_decision = "suggest"
     analysis.direction = "long"
@@ -156,7 +158,35 @@ def test_task_finalizes_unfilled_entry_as_expired(review_env, monkeypatch):
     monkeypatch.setattr(review_tasks, "REVIEW_SHARDS_PER_RUN", review_tasks.REVIEW_SHARD_COUNT)
     review_tasks.run_trade_review_task.apply()
     review = review_env.query(TradeReview).one()
+    # 窗口内未触发 = 右删失 censored（P0-2），不再与「计划无效」的 expired 合并
+    assert review.outcome == "censored"
+    # 回放时点入场诊断（P0-1）：五键快照随行落库
+    assert set(review.entry_diag or {}) == {
+        "pos", "room_r", "stop_atr", "planned_rr", "quality_score",
+    }
+    assert review.entry_diag["planned_rr"] == 2.0
+
+
+def test_invalid_plan_remains_expired_without_diagnostics(review_env, monkeypatch):
+    analysis = _make_signal(review_env)
+    analysis.trade_decision = "suggest"
+    analysis.direction = "long"
+    analysis.entry_price = 100
+    analysis.stop_loss = None  # 计划无效 → expired（非行情结论）
+    analysis.take_profit_1 = 104
+    review_env.commit()
+
+    class AnyPool:
+        def get_klines_range(self, symbol, interval, limit, end_time_ms):
+            return []
+
+    monkeypatch.setattr(review_tasks, "ExchangePool", AnyPool)
+    monkeypatch.setattr(review_tasks, "datetime", FrozenDateTime)
+    monkeypatch.setattr(review_tasks, "REVIEW_SHARDS_PER_RUN", review_tasks.REVIEW_SHARD_COUNT)
+    review_tasks.run_trade_review_task.apply()
+    review = review_env.query(TradeReview).one()
     assert review.outcome == "expired"
+    assert review.entry_diag is None
 
 
 def test_first_partial_hour_is_excluded_from_counterfactual_window():
@@ -225,7 +255,7 @@ def test_old_incomplete_shard_does_not_hide_later_complete_row(review_env, monke
     monkeypatch.setattr(review_tasks, "datetime", FrozenDateTime)
     review_tasks.run_trade_review_task.apply()
     assert "LATERUSDT" in seen
-    assert review_env.query(TradeReview).filter_by(symbol="LATERUSDT").one().outcome == "expired"
+    assert review_env.query(TradeReview).filter_by(symbol="LATERUSDT").one().outcome == "censored"
 
 
 def test_review_batch_is_capped(review_env, monkeypatch):

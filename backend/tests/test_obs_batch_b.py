@@ -238,11 +238,12 @@ def test_upsert_writes_htf_degraded(db):
 # ── B3：复盘按 htf_degraded 分组 ───────────────────────────────────────
 
 
-def _add_review(db, a, outcome, htf_degraded=False):
+def _add_review(db, a, outcome, htf_degraded=False, entry_diag=None):
     db.add(TradeReview(
         ai_analysis_id=a.id, symbol=a.symbol, direction="long",
         outcome=outcome, tp1_hit=outcome.startswith("win"), bars_to_exit=5,
         signal_type="trigger_breakout", htf_degraded=htf_degraded,
+        entry_diag=entry_diag,
     ))
     db.commit()
 
@@ -315,3 +316,39 @@ def test_stats_htf_degraded_groups_and_payoff(db):
     assert by[True].total == 1
     assert by[True].loss == 1
     assert by[True].payoff is None
+
+
+def test_stats_entry_diag_groups_and_censored(db):
+    """/review/stats 入场诊断五维分档（17-复盘审计 P0-1）+ censored 计数（P0-2）。
+
+    仅 entry_diag 非空且落档的行进入分档（room_r<0 等区间外值不落档）；
+    censored 单列计数、不进胜率分母。"""
+    from app.api.scan import review_stats
+
+    now = datetime.utcnow() - timedelta(hours=2)
+    _, a1, _ = _mk_chain(db, "DIAG1USDT", ai_finished=now)
+    _add_review(db, a1, "win_tp1", entry_diag={
+        "pos": 0.7, "stop_atr": 2.5, "room_r": 3.0,
+        "planned_rr": 2.5, "quality_score": 85,
+    })
+    _, a2, _ = _mk_chain(db, "DIAG2USDT", ai_finished=now)
+    _add_review(db, a2, "loss", entry_diag={
+        "pos": 0.1, "stop_atr": 0.8, "room_r": -0.5,
+        "planned_rr": 1.2, "quality_score": 55,
+    })
+    # 历史行无诊断 → 不进任何分档；censored 单列计数
+    _, a3, _ = _mk_chain(db, "DIAG3USDT", ai_finished=now)
+    _add_review(db, a3, "censored")
+
+    resp = review_stats(days=30, db=db)
+    assert resp.censored == 1
+    assert resp.win_rate == pytest.approx(0.5)  # 分母仅 win_tp1 + loss
+    assert resp.expired == 0
+    by_dim: dict[str, list] = {}
+    for g in resp.entry_diag_groups:
+        by_dim.setdefault(g.diag_dim, []).append(g)
+    assert set(by_dim) == {"pos", "stop_atr", "room_r", "planned_rr", "quality_score"}
+    # 两行有诊断；room_r=-0.5 落不进任何档，故该维只统计 1 行
+    assert sum(g.total for g in by_dim["room_r"]) == 1
+    assert sum(g.total for g in by_dim["pos"]) == 2
+    assert {g.diag_bucket for g in by_dim["pos"]} == {"pos<0.25", "pos≥0.6"}

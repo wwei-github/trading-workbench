@@ -646,6 +646,7 @@ export interface ReviewGroupStat {
   win_tp1: number;
   win_tp2: number;
   loss: number;
+  censored: number; // 观察窗口结束仍未触发（右删失），不进胜率分母
   expired: number;
   win_rate: number;
   win_rate_ci_low?: number | null; // 胜率 95% Wilson 区间（审计 7.2）
@@ -671,14 +672,15 @@ export interface ReviewLatency {
   signal_to_open_s: LatencyMetric;
 }
 
-// 复盘统计汇总（expired 不计入胜率分母）
+// 复盘统计汇总（censored/expired 不计入胜率分母）
 export interface ReviewStats {
   days: number;
   total: number;
   win_tp1: number;
   win_tp2: number;
   loss: number;
-  expired: number;
+  censored: number; // 窗口结束仍未触发（右删失）
+  expired: number; // 计划三价缺失/无效
   win_rate: number;
   win_rate_ci_low?: number | null; // 胜率 95% Wilson 区间（审计 7.2）
   win_rate_ci_high?: number | null;
@@ -700,6 +702,14 @@ export interface ReviewStats {
   latency: ReviewLatency | null;
   // 4h 数据降级分组（批次 B3）：正常/降级两组对比
   htf_degraded_groups: ReviewGroupStat[];
+  // 入场诊断分档（17-复盘审计 P0-1）：pos/stop_atr/room_r/planned_rr/quality_score
+  entry_diag_groups: ReviewEntryDiagGroup[];
+}
+
+// 入场诊断分档（17-复盘审计 P0-1）：每个分档复用 ReviewGroupStat 的指标
+export interface ReviewEntryDiagGroup extends ReviewGroupStat {
+  diag_dim: 'pos' | 'stop_atr' | 'room_r' | 'planned_rr' | 'quality_score';
+  diag_bucket: string;
 }
 
 // 全漏斗阶段（docs/24 A5c）：conversion = 相对上一级转化率，首级为 null

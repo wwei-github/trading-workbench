@@ -36,6 +36,12 @@ POS_BUCKETS = ((0.0, 0.25, "pos<0.25"), (0.25, 0.6, "pos 0.25-0.6"),
                (0.6, 99.0, "pos≥0.6"))
 ROOM_BUCKETS = ((0.0, 1.0, "room<1R"), (1.0, 1.5, "room 1-1.5R"),
                 (1.5, 2.5, "room 1.5-2.5R"), (2.5, 99.0, "room≥2.5R"))
+# 回放侧新增两维（17-复盘审计 P0-1）：计划盈亏比与质量分，分档与实盘/日报口径一致
+PLANNED_RR_BUCKETS = ((0.0, 1.5, "<1.5R"), (1.5, 2.0, "1.5-2R"),
+                      (2.0, 3.0, "2-3R"), (3.0, 999.0, "≥3R"))
+QUALITY_BUCKETS = ((0.0, 60.0, "<60"), (60.0, 70.0, "60-69"),
+                   (70.0, 80.0, "70-79"), (80.0, 90.0, "80-89"),
+                   (90.0, 999.0, "≥90"))
 
 
 def _bucket(value: Optional[float], buckets) -> Optional[str]:
@@ -50,6 +56,10 @@ def _bucket(value: Optional[float], buckets) -> Optional[str]:
         if lo <= v < hi:
             return label
     return None
+
+
+# 公开别名：/review/stats 复用同一分档口径；_bucket 保留给既有测试与内部调用
+bucket_value = _bucket
 
 
 def summarize_r(rows) -> dict:

@@ -433,8 +433,11 @@ class ReviewGroupStats(BaseModel):
     win_tp1: int = 0
     win_tp2: int = 0
     loss: int = 0
+    # censored=观察窗口结束仍未触发（右删失）；expired=计划三价缺失/无效。
+    # 两者均不计入胜率分母（17-复盘审计 P0-2）
+    censored: int = 0
     expired: int = 0
-    win_rate: float = 0.0  # (win_tp1+win_tp2)/(win+loss)，expired 不计
+    win_rate: float = 0.0  # (win_tp1+win_tp2)/(win+loss)，censored/expired 不计
     # 胜率 95% 置信区间（Wilson，审计 7.2「样本量与不确定性可报告」）：
     # 区间宽 = 样本量不足的直接读数，跨 0.5 = 尚不能判断优劣
     win_rate_ci_low: Optional[float] = None
@@ -448,6 +451,13 @@ class ReviewGroupStats(BaseModel):
     # 盈亏比（2026-10-21 批次 B3）：平均盈利 R / 平均亏损 R（回放口径 loss 恒 -1R，
     # 故通常等于平均盈利 R）；扣费前原始 R，与 ev_r 的扣费口径互补
     payoff: Optional[float] = None
+
+
+class ReviewEntryDiagGroup(ReviewGroupStats):
+    """入场诊断分档（17-复盘审计 P0-1）：diag_dim 为诊断键，diag_bucket 为分档标签"""
+
+    diag_dim: str
+    diag_bucket: str
 
 
 class LatencyMetric(BaseModel):
@@ -472,7 +482,8 @@ class ReviewStatsResponse(BaseModel):
     win_tp1: int = 0
     win_tp2: int = 0
     loss: int = 0
-    expired: int = 0
+    censored: int = 0  # 窗口结束仍未触发（右删失），不进胜率分母
+    expired: int = 0  # 计划三价缺失/无效，不进胜率分母
     win_rate: float = 0.0
     ev_r: Optional[float] = None  # 期望值（R 倍数，含费用假设）
     # 口径标注（docs/24 A2）：本接口是「建议质量口径」，考核主指标为实盘净胜率
@@ -498,6 +509,9 @@ class ReviewStatsResponse(BaseModel):
     # 4h 数据降级分组（2026-10-21 批次 B3）：htf_degraded=False/True 两组，
     # 对比胜率/期望/盈亏比判断「无 4h 背景的建议」质量是否显著更差
     htf_degraded_groups: list[ReviewGroupStats] = []
+    # 入场诊断分档（17-复盘审计 P0-1）：pos/stop_atr/room_r/planned_rr/quality_score
+    # 五维，每维若干档；只含 entry_diag 非空的新回放行
+    entry_diag_groups: list[ReviewEntryDiagGroup] = []
 
 
 # ===== 全漏斗转化率（docs/24 A5c） =====

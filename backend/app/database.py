@@ -813,6 +813,13 @@ def _run_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_trade_reviews_htf_degraded "
             "ON trade_reviews (htf_degraded)"
         ))
+        # 回放入场诊断快照（2026-10-28，17-复盘审计 P0-1）：pos/room_r/stop_atr/
+        # planned_rr/quality_score 五键 JSON；历史行 NULL，不回填（回放已完成，
+        # 补算需重新拉 K 线，按「新账记清」只影响新回放行）
+        conn.execute(text(
+            "ALTER TABLE trade_reviews "
+            "ADD COLUMN IF NOT EXISTS entry_diag JSONB"
+        ))
         # BTC 环境事实缺失标记（2026-10-21，T0-5）：市场环境块缺失时提示词显式
         # 标注「未知」；打标供复盘剔除/分组，默认 FALSE 使存量行按环境可见理解
         conn.execute(text(

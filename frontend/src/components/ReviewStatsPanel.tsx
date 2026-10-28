@@ -19,13 +19,22 @@ import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
 import { useScanStore } from '../stores/scanStore'
 import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
-import type { LatencyMetric, ReviewGroupStat, ReviewStats } from '../types'
+import type { LatencyMetric, ReviewEntryDiagGroup, ReviewGroupStat, ReviewStats } from '../types'
 import { SIGNAL_TYPE_MAP } from '../constants/labels'
 
 /**
- * 复盘统计页：AI 建议开单 24h 后逐K回放定论的汇总统计。
- * 胜率口径：expired（超时）不计入胜率分母。
+ * 复盘统计页：AI 建议观察期（默认 24h，后端可配置）后逐K回放定论的汇总统计。
+ * 胜率口径：censored（窗口结束未触发）与 expired（计划无效）都不计入胜率分母。
  */
+
+// 入场诊断分档维度标签（17-复盘审计 P0-1）
+const DIAG_DIM_LABELS: Record<ReviewEntryDiagGroup['diag_dim'], string> = {
+  pos: '入场位置 pos',
+  stop_atr: '止损宽度 ATR',
+  room_r: '前方空间 R',
+  planned_rr: '计划盈亏比',
+  quality_score: '质量分',
+}
 
 // 时延表行（批次 B1）
 interface LatencyRow {
@@ -39,6 +48,7 @@ export default function ReviewStatsPanel() {
   const [days, setDays] = useState<7 | 30 | 90>(30)
   const [stats, setStats] = useState<ReviewStats | null>(null)
   const [loading, setLoading] = useState(false)
+  const [diagDim, setDiagDim] = useState<ReviewEntryDiagGroup['diag_dim']>('pos')
 
   const fetchData = useCallback(async (d: number) => {
     setLoading(true)
@@ -120,7 +130,7 @@ export default function ReviewStatsPanel() {
     },
     {
       title: (
-        <Tooltip title="胜率口径：expired（超时）不计入胜率分母">
+        <Tooltip title="胜率口径：censored（窗口结束未触发）与 expired（计划无效）都不计入胜率分母">
           胜率
         </Tooltip>
       ),
@@ -152,10 +162,25 @@ export default function ReviewStatsPanel() {
       render: (v: number) => <Tag color={schemeTag(colorScheme).down}>{v}</Tag>,
     },
     {
-      title: '超时',
+      title: (
+        <Tooltip title="观察窗口结束仍未触发任何价位（右删失）：是「还没结论」，不是「没亏」">
+          未触发
+        </Tooltip>
+      ),
+      dataIndex: 'censored',
+      key: 'censored',
+      width: 80,
+      render: (v: number) => <Tag color="default">{v}</Tag>,
+    },
+    {
+      title: (
+        <Tooltip title="计划三价缺失或无效，无法回放；与「窗口未触发」分开统计">
+          无效计划
+        </Tooltip>
+      ),
       dataIndex: 'expired',
       key: 'expired',
-      width: 70,
+      width: 80,
       render: (v: number) => <Tag color="default">{v}</Tag>,
     },
     {
@@ -219,7 +244,7 @@ export default function ReviewStatsPanel() {
     },
     {
       title: (
-        <Tooltip title="expired 不计分母；区间为 Wilson 95% 置信区间">
+        <Tooltip title="censored/expired 不计分母；区间为 Wilson 95% 置信区间">
           胜率
         </Tooltip>
       ),
@@ -267,6 +292,82 @@ export default function ReviewStatsPanel() {
 
   const rvColumns = versionColumns('规则版本', 'rule_version')
   const dvColumns = versionColumns('决策版本', 'decision_version')
+
+  // 入场诊断分档表（17-复盘审计 P0-1）：回放时点的 pos/止损宽度/前方空间/计划RR/质量分，
+  // 用于在回放侧复验筛选侧结论；只含新回放行（历史行无 entry_diag）
+  const diagColumns: ColumnsType<ReviewEntryDiagGroup> = [
+    {
+      title: '分档',
+      dataIndex: 'diag_bucket',
+      key: 'diag_bucket',
+      render: (v: string) => <span style={{ fontWeight: 600 }}>{v}</span>,
+    },
+    {
+      title: '样本',
+      dataIndex: 'total',
+      key: 'total',
+      width: 70,
+      sorter: (a, b) => a.total - b.total,
+    },
+    {
+      title: '胜',
+      key: 'win',
+      width: 60,
+      render: (_: unknown, g: ReviewEntryDiagGroup) => (
+        <Tag color={schemeTag(colorScheme).up}>{g.win_tp1 + g.win_tp2}</Tag>
+      ),
+    },
+    {
+      title: '负',
+      dataIndex: 'loss',
+      key: 'loss',
+      width: 60,
+      render: (v: number) => <Tag color={schemeTag(colorScheme).down}>{v}</Tag>,
+    },
+    {
+      title: '胜率',
+      dataIndex: 'win_rate',
+      key: 'win_rate',
+      width: 90,
+      sorter: (a, b) => a.win_rate - b.win_rate,
+      render: (v: number) => renderWinRate(v),
+    },
+    {
+      title: '未触发',
+      dataIndex: 'censored',
+      key: 'censored',
+      width: 80,
+      render: (v: number) => <Tag color="default">{v}</Tag>,
+    },
+    {
+      title: '无效计划',
+      dataIndex: 'expired',
+      key: 'expired',
+      width: 80,
+      render: (v: number) => <Tag color="default">{v}</Tag>,
+    },
+    {
+      title: '期望值',
+      dataIndex: 'ev_r',
+      key: 'ev_r',
+      width: 90,
+      sorter: (a, b) => (a.ev_r ?? -99) - (b.ev_r ?? -99),
+      render: (v: number | null) => renderEv(v),
+    },
+    {
+      title: (
+        <Tooltip title="盈亏比 = 平均盈利 R / 平均亏损 R（扣费前原始 R）">
+          盈亏比
+        </Tooltip>
+      ),
+      dataIndex: 'payoff',
+      key: 'payoff',
+      width: 90,
+      render: (v: number | null) => (v == null ? '-' : v.toFixed(2)),
+    },
+  ]
+
+  const diagRows = stats?.entry_diag_groups.filter((g) => g.diag_dim === diagDim) ?? []
 
   const hasData = !!stats && stats.total > 0
 
@@ -439,7 +540,18 @@ export default function ReviewStatsPanel() {
               </Col>
               <Col xs={12} sm={8} md={4}>
                 <Card size="small">
-                  <Statistic title="超时" value={stats!.expired} />
+                  <Statistic
+                    title={<Tooltip title="观察窗口结束仍未触发任何价位（右删失），不计入胜率分母">未触发</Tooltip>}
+                    value={stats!.censored}
+                  />
+                </Card>
+              </Col>
+              <Col xs={12} sm={8} md={4}>
+                <Card size="small">
+                  <Statistic
+                    title={<Tooltip title="计划三价缺失/无效，无法回放，不计入胜率分母">无效计划</Tooltip>}
+                    value={stats!.expired}
+                  />
                 </Card>
               </Col>
               <Col xs={12} sm={8} md={4}>
@@ -491,7 +603,7 @@ export default function ReviewStatsPanel() {
             <Card
               size="small"
               title={
-                <Tooltip title="胜率口径：expired（超时）不计入胜率分母">
+                <Tooltip title="胜率口径：censored（窗口结束未触发）与 expired（计划无效）都不计入胜率分母">
                   <span>
                     分组统计 <QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} />
                   </span>
@@ -548,6 +660,38 @@ export default function ReviewStatsPanel() {
                   rowKey={(g) => `dv-${g.decision_version ?? 'legacy'}`}
                   columns={dvColumns}
                   dataSource={stats!.decision_version_groups}
+                  size="small"
+                  pagination={false}
+                />
+              </Card>
+            )}
+
+            {/* 入场诊断分档（17-复盘审计 P0-1）：回放侧复验筛选结论 */}
+            {stats!.entry_diag_groups.length > 0 && (
+              <Card
+                size="small"
+                title={
+                  <Tooltip title="回放时点快照（非实盘成交）：pos=入场价在信号K中的位置、stop_atr=止损宽度/ATR、room_r=到前24h极值的空间、planned_rr=计划盈亏比、quality_score=质量分。历史行无诊断，只统计新回放行">
+                    <span>入场诊断分档 <QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} /></span>
+                  </Tooltip>
+                }
+                styles={{ body: { padding: 0 } }}
+              >
+                <div style={{ padding: '8px 12px' }}>
+                  <Radio.Group
+                    size="small"
+                    optionType="button"
+                    value={diagDim}
+                    onChange={(e) => setDiagDim(e.target.value)}
+                    options={(
+                      Object.keys(DIAG_DIM_LABELS) as ReviewEntryDiagGroup['diag_dim'][]
+                    ).map((dim) => ({ value: dim, label: DIAG_DIM_LABELS[dim] }))}
+                  />
+                </div>
+                <Table<ReviewEntryDiagGroup>
+                  rowKey={(g) => `diag-${g.diag_dim}-${g.diag_bucket}`}
+                  columns={diagColumns}
+                  dataSource={diagRows}
                   size="small"
                   pagination={false}
                 />
@@ -645,7 +789,7 @@ export default function ReviewStatsPanel() {
             )}
           </>
         ) : (
-          <Empty description="暂无复盘数据（AI 建议 24h 后自动复盘）" style={{ marginTop: 60 }} />
+          <Empty description="暂无复盘数据（AI 建议观察期后自动复盘）" style={{ marginTop: 60 }} />
         )}
       </Spin>
     </div>

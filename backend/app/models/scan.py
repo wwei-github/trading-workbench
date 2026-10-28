@@ -224,9 +224,10 @@ class KlineCache(Base):
 
 
 class TradeReview(Base):
-    """AI 建议复盘：suggest 决策 24h 后逐 K 回放定论（docs/04 §4 Stage 6）
+    """AI 建议复盘：suggest 决策观察期（默认 24h，可配置）后逐 K 回放定论（docs/04 §4 Stage 6）
 
-    outcome: loss / win_tp1 / win_tp2 / expired（触 tp1 后又触止损仍计 win_tp1）
+    outcome: loss / win_tp1 / win_tp2（触 tp1 后又触止损仍计 win_tp1）/
+    censored（窗口结束仍未触发，右删失）/ expired（计划三价缺失或无效）
     """
     __tablename__ = "trade_reviews"
 
@@ -261,6 +262,10 @@ class TradeReview(Base):
     htf_degraded: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False, index=True
     )
+    # 回放时点入场诊断快照（2026-10-28，17-复盘审计 P0-1）：
+    # pos / room_r / stop_atr / planned_rr / quality_score；历史行 NULL=未记录。
+    # 只存 5 个分档键，完整诊断（range_flag/shadow 等）不重复落库。
+    entry_diag: Mapped[Optional[dict]] = mapped_column(JSON(none_as_null=True), nullable=True)
 
     checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -29,6 +29,7 @@ from app.schemas.scan import (
     SystemConfigUpdate,
     AccountBrief,
     ReviewGroupStats,
+    ReviewEntryDiagGroup,
     ReviewStatsResponse,
     LatencyMetric,
     ReviewLatency,
@@ -1096,7 +1097,7 @@ def ack_weekly_breaker(db: Session = Depends(get_db)):
 # ===== 复盘统计（docs/04 §10 P2） =====
 
 def _wilson_ci(wins: int, n: int, z: float = 1.96) -> tuple[Optional[float], Optional[float]]:
-    """Wilson 95% 置信区间（小样本比正态近似稳；expired 不进分母）。
+    """Wilson 95% 置信区间（小样本比正态近似稳；censored/expired 不进分母）。
 
     审计 7.2 要求「样本量与不确定性均可报告」：区间宽度就是样本不足的读数，
     区间跨 0.5 表示尚不能判断该组胜率优劣。
@@ -1120,6 +1121,9 @@ def _agg_stats(rows: list[TradeReview]) -> dict:
         "win_tp1": sum(1 for r in rows if r.outcome == "win_tp1"),
         "win_tp2": sum(1 for r in rows if r.outcome == "win_tp2"),
         "loss": losses,
+        # censored=窗口结束仍未触发（右删失）；expired=计划三价缺失/无效。
+        # 两者都不进胜率分母（P0-2），分开展示避免把"没结论"当成利好。
+        "censored": sum(1 for r in rows if r.outcome == "censored"),
         "expired": sum(1 for r in rows if r.outcome == "expired"),
         "win_rate": round(wins / decided, 4) if decided else 0.0,
         "win_rate_ci_low": ci_low,
@@ -1249,8 +1253,9 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
         # 口径标注（docs/24 A2）：四态口径含"触 TP1 后又止损仍计胜"的美化项，
         # 仅作建议质量参考；考核主指标 = 实盘净胜率（/review/actual，pnl>0/闭仓数）
         win_rate_note=(
-            "建议质量口径：win_tp1（触TP1后又止损仍计胜）计入胜率、expired 不计分母；"
-            "考核以实盘净胜率为准（/review/actual）"
+            "建议质量口径：win_tp1（触TP1后又止损仍计胜）计入胜率；"
+            "censored=观察窗口结束仍未触发（右删失）、expired=计划三价缺失/无效，"
+            "二者均不计入胜率分母；考核以实盘净胜率为准（/review/actual）"
         ),
     )
 
@@ -1321,6 +1326,37 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
             htf_degraded=flag, **_agg_stats(items),
             ev_r=_agg_ev(items), **_agg_ev_ci(items), payoff=_agg_payoff(items),
         ))
+
+    # 入场诊断分档（2026-10-28，17-复盘审计 P0-1）：回放时点快照，用于在回放侧
+    # 复验筛选侧结论（pos / 止损宽度 / 前方空间 / 计划盈亏比 / 质量分）。只统计
+    # entry_diag 非空且落入分档的行；历史行 NULL 与 room_r<0 等区间外取值不进
+    # 分档（与 D6 日报同口径），分档按常量顺序输出。
+    from app.services import attribution as attr
+
+    diag_dims = (
+        ("pos", attr.POS_BUCKETS),
+        ("stop_atr", attr.STOP_ATR_BUCKETS),
+        ("room_r", attr.ROOM_BUCKETS),
+        ("planned_rr", attr.PLANNED_RR_BUCKETS),
+        ("quality_score", attr.QUALITY_BUCKETS),
+    )
+    for dim, diag_bucket_list in diag_dims:
+        by_bucket: dict[str, list[TradeReview]] = {}
+        for r in rows:
+            diag = r.entry_diag if isinstance(getattr(r, "entry_diag", None), dict) else None
+            if not diag:
+                continue
+            label = attr.bucket_value(diag.get(dim), diag_bucket_list)
+            if label:
+                by_bucket.setdefault(label, []).append(r)
+        for _lo, _hi, label in diag_bucket_list:
+            items = by_bucket.get(label)
+            if not items:
+                continue
+            resp.entry_diag_groups.append(ReviewEntryDiagGroup(
+                diag_dim=dim, diag_bucket=label, **_agg_stats(items),
+                ev_r=_agg_ev(items), **_agg_ev_ci(items), payoff=_agg_payoff(items),
+            ))
 
     # 双评委 veto 闭环统计（docs/24 A5a）：is_veto=True 的回放行是"被否决建议的
     # 假想表现"，与整体统计（=通过单，veto 行不混入）对比——若 veto 组假想

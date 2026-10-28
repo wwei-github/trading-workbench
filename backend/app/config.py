@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     SCAN_BEAT_MINUTE: int = 0
     KLINE_INTERVAL: str = "1h"
     KLINE_WINDOW: int = 240
+    # 建议回放观察窗口（小时，2026-10-28 17-复盘审计 P0-2）：默认 24；慢节奏
+    # 行情可调 48 以覆盖更长持仓。只影响新回放行，不改历史结论。
+    REVIEW_OBSERVATION_HOURS: int = 24
     BREAKOUT_THRESHOLD: float = 0.002  # 最小突破幅度：收盘须越过 Donchian 轨 0.2%（毛边突破不算）
     R_SQUARED_THRESHOLD: float = 0.5
     REPEAT_WINDOW_HOURS: int = 3
