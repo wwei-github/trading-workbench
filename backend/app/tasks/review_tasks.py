@@ -7,10 +7,12 @@
 - 观察期内未触任何价位 → censored（右删失，不代表行情结论）
 - 计划三价/方向缺失或无效 → expired（数据缺失）
 统计维度快照（signal_type/position/ema_state）随复盘落库，供分组胜率统计；
-回放时点同时落入场诊断 entry_diag（pos/room_r/stop_atr/planned_rr/quality_score）。
+回放时点同时落入场诊断 entry_diag（pos/room_r/stop_atr/planned_rr/quality_score）
+与持仓期最大有利/不利偏移 mfe_r/mae_r（R 倍数，signed：有利为正、不利为负）。
 """
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 from uuid import UUID
 
 from sqlalchemy import String, and_, cast, func, or_, select
@@ -113,30 +115,74 @@ def _has_complete_window(bars: list, start_ms: int, end_ms: int, interval: str) 
     return all(ts in by_time for ts in expected)
 
 
-def replay_suggestion(
+class ReplayResult(NamedTuple):
+    """回放结论 + 持仓期偏移（17-复盘审计 P1-3）。
+
+    mfe_r / mae_r 为 signed R 倍数：有利方向为正、不利方向为负
+    （MAE ≤ 0；MFE 可为负 = 入场后从未朝有利方向走）。risk=|entry-stop|≤0
+    或入场未成交时为 None。
+    """
+
+    outcome: str
+    tp1_hit: bool
+    bars: int
+    mfe_r: float | None
+    mae_r: float | None
+
+
+def _excursions(
+    direction: str, entry: float, stop: float, bars: list, first: int, last: int,
+) -> tuple[float | None, float | None]:
+    """持仓区间 [first, last] 的最大有利/不利偏移（signed R）。
+
+    区间含入场根与出场根：OHLC 无法确定根内先后，入场根整根计入，故极端值
+    属上界口径（MAE 可能略高估）。
+    """
+    risk = abs(entry - stop)
+    if risk <= 0 or first is None or last < first:
+        return None, None
+    highs = [float(k[2]) for k in bars[first:last + 1]]
+    lows = [float(k[3]) for k in bars[first:last + 1]]
+    if direction == "long":
+        mfe = (max(highs) - entry) / risk
+        mae = (min(lows) - entry) / risk
+    else:
+        mfe = (entry - min(lows)) / risk
+        mae = (entry - max(highs)) / risk
+    return round(mfe, 4), round(mae, 4)
+
+
+def replay_path(
     direction: str, entry: float, stop: float, tp1: float, tp2: float,
     bars: list,
-) -> tuple[str, bool, int]:
+) -> ReplayResult:
     """Replay a counterfactual price path, not an actual exchange execution.
 
     Only complete bars are supplied. Entry is considered filled if its price is
     inside a bar's OHLC range. On the entry bar, a touched stop is a conservative
     loss; targets are ignored because OHLC cannot prove entry preceded target.
     For later active bars, stop wins same-bar ambiguity; prior TP1 remains banked.
+
+    MFE/MAE 覆盖入场根到出场根（censored=窗口最后一根）的整个持仓区间。
     """
     tp1_hit = False
     active = False
+    first_idx: int | None = None
+    last_idx: int | None = None
     for i, k in enumerate(bars):
         high, low = float(k[2]), float(k[3])
         if not active:
             if not low <= entry <= high:
                 continue
             active = True
+            first_idx = last_idx = i
             hit_stop = low <= stop if direction == "long" else high >= stop
             if hit_stop:
-                return "loss", False, i + 1
+                mfe, mae = _excursions(direction, entry, stop, bars, first_idx, last_idx)
+                return ReplayResult("loss", False, i + 1, mfe, mae)
             continue
 
+        last_idx = i
         if direction == "long":
             hit_stop = low <= stop
             hit_tp1 = high >= tp1
@@ -147,13 +193,27 @@ def replay_suggestion(
             hit_tp2 = tp2 > 0 and low <= tp2
 
         if hit_stop:
-            return ("loss" if not tp1_hit else "win_tp1"), tp1_hit, i + 1
+            mfe, mae = _excursions(direction, entry, stop, bars, first_idx, last_idx)
+            return ReplayResult(
+                "loss" if not tp1_hit else "win_tp1", tp1_hit, i + 1, mfe, mae
+            )
         if hit_tp2:
-            return "win_tp2", True, i + 1
+            mfe, mae = _excursions(direction, entry, stop, bars, first_idx, last_idx)
+            return ReplayResult("win_tp2", True, i + 1, mfe, mae)
         if hit_tp1:
             tp1_hit = True
 
-    return ("win_tp1" if tp1_hit else "open"), tp1_hit, len(bars)
+    mfe, mae = _excursions(direction, entry, stop, bars, first_idx, last_idx)
+    return ReplayResult("win_tp1" if tp1_hit else "open", tp1_hit, len(bars), mfe, mae)
+
+
+def replay_suggestion(
+    direction: str, entry: float, stop: float, tp1: float, tp2: float,
+    bars: list,
+) -> tuple[str, bool, int]:
+    """兼容入口：只返回结论三元组（脚本与既有测试使用；偏移见 replay_path）。"""
+    result = replay_path(direction, entry, stop, tp1, tp2, bars)
+    return result.outcome, result.tp1_hit, result.bars
 
 
 @celery_app.task(name="app.tasks.review_tasks.run_trade_review_task", max_retries=0)
@@ -302,6 +362,7 @@ def run_trade_review_task():
                         and int(float(k[0])) + interval_ms <= now_ms]
 
                 entry_diag = None
+                mfe_r = mae_r = None
                 if entry <= 0 or stop <= 0 or tp1 <= 0 or not r_direction:
                     outcome, tp1_hit, nbars = "expired", False, 0
                 elif not _has_complete_window(bars, start_ms, end_ms, settings.KLINE_INTERVAL):
@@ -309,9 +370,13 @@ def run_trade_review_task():
                                    a.symbol, start_ms, end_ms, len(bars), expected)
                     continue
                 else:
-                    outcome, tp1_hit, nbars = replay_suggestion(
+                    replay = replay_path(
                         r_direction, entry, stop, tp1, tp2, bars
                     )
+                    outcome, tp1_hit, nbars = replay.outcome, replay.tp1_hit, replay.bars
+                    # 持仓期偏移（P1-3）：入场未成交时 None；window 内未触发
+                    # （censored）也算到窗口最后一根
+                    mfe_r, mae_r = replay.mfe_r, replay.mae_r
                     if outcome == "open":
                         # 右删失：窗口内未触发任何价位，与「计划无效」的 expired 分开，
                         # 两者都不进胜率分母（P0-2）
@@ -368,6 +433,8 @@ def run_trade_review_task():
                     recommendation=float(r_rating) if r_rating is not None else None,
                     is_veto=bool(veto),
                     entry_diag=entry_diag,
+                    mfe_r=mfe_r,
+                    mae_r=mae_r,
                 ))
                 db.commit()
                 reviewed += 1
@@ -380,6 +447,8 @@ def run_trade_review_task():
                     "recommendation": float(r_rating) if r_rating is not None else None,
                     "is_veto": bool(veto),
                     "entry_diag": entry_diag,
+                    "mfe_r": mfe_r,
+                    "mae_r": mae_r,
                 })
                 logger.info(
                     "复盘完成: %s %s -> %s%s",

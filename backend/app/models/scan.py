@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Numeric, Index, JSON, UniqueConstraint, SmallInteger
+from sqlalchemy import String, Integer, Boolean, DateTime, Float, ForeignKey, Numeric, Index, JSON, UniqueConstraint, SmallInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -266,6 +266,11 @@ class TradeReview(Base):
     # pos / room_r / stop_atr / planned_rr / quality_score；历史行 NULL=未记录。
     # 只存 5 个分档键，完整诊断（range_flag/shadow 等）不重复落库。
     entry_diag: Mapped[Optional[dict]] = mapped_column(JSON(none_as_null=True), nullable=True)
+    # 持仓期最大有利/不利偏移（2026-10-28，17-复盘审计 P1-3）：signed R 倍数，
+    # 有利为正、不利为负（MAE ≤ 0）。区间=入场根到出场根（censored=窗口末根）；
+    # NULL=历史行未记录 / 入场未成交 / risk=|entry-stop|≤0
+    mfe_r: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    mae_r: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

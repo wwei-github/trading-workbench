@@ -820,6 +820,13 @@ def _run_migrations(engine):
             "ALTER TABLE trade_reviews "
             "ADD COLUMN IF NOT EXISTS entry_diag JSONB"
         ))
+        # 持仓期最大有利/不利偏移（2026-10-28，17-复盘审计 P1-3）：signed R 倍数
+        # （有利为正/不利为负）；历史行 NULL，不回填（补算需重新拉 K 线）
+        conn.execute(text(
+            "ALTER TABLE trade_reviews "
+            "ADD COLUMN IF NOT EXISTS mfe_r DOUBLE PRECISION, "
+            "ADD COLUMN IF NOT EXISTS mae_r DOUBLE PRECISION"
+        ))
         # BTC 环境事实缺失标记（2026-10-21，T0-5）：市场环境块缺失时提示词显式
         # 标注「未知」；打标供复盘剔除/分组，默认 FALSE 使存量行按环境可见理解
         conn.execute(text(

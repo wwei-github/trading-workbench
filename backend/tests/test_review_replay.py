@@ -16,6 +16,7 @@ from app.database import Base  # noqa: E402
 from app.models.scan import AIAnalysis, ScanRecord, ScanResult, TradeReview  # noqa: E402
 from app.tasks import review_tasks  # noqa: E402
 
+replay_path = review_tasks.replay_path
 replay_suggestion = review_tasks.replay_suggestion
 
 
@@ -87,6 +88,33 @@ def test_short_entry_requires_full_entry_price_inside_bar():
         "short", 100, 102, 96, 92, [bar(0, 103, 99)]
     )
     assert (outcome, tp1_hit, count) == ("loss", False, 1)
+
+
+def test_replay_path_records_signed_mfe_mae_for_long_win():
+    # 1R=2：入场根 99~101，次根 high 108 触 tp2；MAE 取整段最低 99
+    result = replay_path("long", 100, 98, 104, 108, [bar(0, 101, 99), bar(HOUR, 108, 99)])
+    assert result.outcome == "win_tp2"
+    assert result.mfe_r == 4.0
+    assert result.mae_r == -0.5
+
+
+def test_replay_path_entry_bar_extremes_bound_excursions():
+    # 入场根整根计入：high/low 可能发生在入场成交前，属上界口径
+    result = replay_path("long", 100, 98, 104, 108, [bar(0, 105, 97)])
+    assert (result.outcome, result.mfe_r, result.mae_r) == ("loss", 2.5, -1.5)
+
+
+def test_replay_path_records_signed_mfe_mae_for_short_win():
+    # 空单 1R=2：有利=下跌，不利=上涨
+    result = replay_path("short", 100, 102, 96, 92, [bar(0, 101, 99), bar(HOUR, 101, 92)])
+    assert result.outcome == "win_tp2"
+    assert result.mfe_r == 4.0
+    assert result.mae_r == -0.5
+
+
+def test_replay_path_never_filled_has_no_excursions():
+    result = replay_path("long", 100, 98, 104, 108, [bar(0, 99, 90)])
+    assert (result.outcome, result.mfe_r, result.mae_r) == ("open", None, None)
 
 
 def test_utc_signal_time_and_exact_24_hour_window():
@@ -165,6 +193,34 @@ def test_task_finalizes_unfilled_entry_as_censored(review_env, monkeypatch):
         "pos", "room_r", "stop_atr", "planned_rr", "quality_score",
     }
     assert review.entry_diag["planned_rr"] == 2.0
+    # 入场未成交 → 无持仓区间，偏移留 NULL（P1-3）
+    assert review.mfe_r is None and review.mae_r is None
+
+
+def test_task_persists_mfe_mae_for_replayed_loss(review_env, monkeypatch):
+    analysis = _make_signal(review_env)
+    analysis.trade_decision = "suggest"
+    analysis.direction = "long"
+    analysis.entry_price = 100
+    analysis.stop_loss = 98
+    analysis.take_profit_1 = 104
+    review_env.commit()
+
+    class StopPool:
+        def get_klines_range(self, symbol, interval, limit, end_time_ms):
+            last_open = end_time_ms - end_time_ms % HOUR
+            first = last_open - (limit - 1) * HOUR
+            # 入场根即触止损：1R=2，high 101 给出 +0.5R，low 97 给出 -1.5R
+            return [bar(first + n * HOUR, 101, 97) for n in range(limit)]
+
+    monkeypatch.setattr(review_tasks, "ExchangePool", StopPool)
+    monkeypatch.setattr(review_tasks, "datetime", FrozenDateTime)
+    monkeypatch.setattr(review_tasks, "REVIEW_SHARDS_PER_RUN", review_tasks.REVIEW_SHARD_COUNT)
+    review_tasks.run_trade_review_task.apply()
+    review = review_env.query(TradeReview).one()
+    assert review.outcome == "loss"
+    assert review.mfe_r == 0.5
+    assert review.mae_r == -1.5
 
 
 def test_invalid_plan_remains_expired_without_diagnostics(review_env, monkeypatch):
