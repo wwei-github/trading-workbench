@@ -639,6 +639,17 @@ def detect_indicator_candidate(
                                     structure_gate=bool(trig.get("structure_gate", True)),
                                     range_penalty=range_penalty,
                                     parts_out=q_parts)
+    # 反向腿深度观测（2026-10-28，docs/16 §23）：腿门有门槛（min_bars/min_atr），
+    # 但"过门"不区分"深回踩"与"贴位几乎不动的浅回踩"（TAUSDT 0.94ATR 即过线）。
+    # 把实际深度写进分项，成交后即可按 leg_atr 分档回看哪一档该被拒。
+    # 仅在 compute_quality_score 之后写入，不参与 total 计算。
+    _leg = trig.get("leg_evidence")
+    if isinstance(_leg, dict) and _leg.get("bars", 0) > 0:
+        try:
+            q_parts["leg_atr"] = round(float(_leg.get("atr_mult") or 0.0), 2)
+            q_parts["leg_bars"] = int(_leg.get("bars") or 0)
+        except (TypeError, ValueError):
+            pass
     return {
         "signal_type": trig["type"],
         # 候选产生时刻（2026-10-21 观测 B1）：信号新鲜度起点。扫描是整轮结束后

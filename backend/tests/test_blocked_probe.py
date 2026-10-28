@@ -55,7 +55,8 @@ def test_returns_none_direction_when_votes_flat(monkeypatch):
     """|net|<1 时不猜方向：触点与金K 都留 None。"""
     _patch(monkeypatch, net=0)
     out = trig.probe_blocked_context(_klines(), _flt())
-    assert out == {"votes_net": 0, "touch_ref": None, "touch_price": None, "golden": None}
+    assert out == {"votes_net": 0, "touch_ref": None, "touch_price": None,
+                   "golden": None, "leg": None}
 
 
 def test_votes_sign_decides_direction(monkeypatch):
@@ -96,7 +97,8 @@ def test_exception_never_raises(monkeypatch):
         raise RuntimeError("投票炸了")
     monkeypatch.setattr(trig, "compute_indicator_votes", boom)
     out = trig.probe_blocked_context(_klines(), _flt())
-    assert out == {"votes_net": None, "touch_ref": None, "touch_price": None, "golden": None}
+    assert out == {"votes_net": None, "touch_ref": None, "touch_price": None,
+                   "golden": None, "leg": None}
 
 
 def test_deny_applies_when_other_refs_exist(monkeypatch):

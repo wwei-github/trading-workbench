@@ -251,10 +251,11 @@ def probe_blocked_context(
     `|net| < 1` 时不猜方向，触点与金K 均留 None（回放侧按"方向未知"剔除）。
 
     任何异常都吞掉返回已算出的部分——影子/诊断绝不拖累扫描。
-    返回 {votes_net, touch_ref, touch_price, golden}。
+    返回 {votes_net, touch_ref, touch_price, golden, leg}。
+    leg = {ok, bars, atr_mult}：反向腿门证据（2026-10-28），用于对照"过门/被拦"两组的腿深分布。
     """
     out: dict = {"votes_net": None, "touch_ref": None,
-                 "touch_price": None, "golden": None}
+                 "touch_price": None, "golden": None, "leg": None}
     try:
         net = int((compute_indicator_votes(klines) or {}).get("net") or 0)
         out["votes_net"] = net
@@ -265,6 +266,18 @@ def probe_blocked_context(
         ref = next((r for r in TOUCH_ORDER if r in touches), None)
         out["touch_ref"] = ref
         out["touch_price"] = touches.get(ref) if ref else None
+        # 腿深度（2026-10-28，docs/16 §23）：被拦候选也记，才能比较"过门"与
+        # "被拦"两组的腿深分布（浅回踩是否本该被拒，只能靠这两组对照）
+        if ref is not None:
+            try:
+                _ok, _ev = _pullback_leg_gate(klines, direction, flt)
+                out["leg"] = {
+                    "ok": bool(_ok),
+                    "bars": int(_ev.get("bars") or 0),
+                    "atr_mult": round(float(_ev.get("atr_mult") or 0.0), 2),
+                }
+            except Exception:  # noqa: BLE001
+                out["leg"] = None
         wanted = "bullish" if direction == 1 else "bearish"
         golden, note = resolve_golden_evidence(
             klines, wanted, detect_all_patterns(klines, idx=-2))
@@ -1084,6 +1097,10 @@ def detect_trigger(
     # 门不通过时把 touch_ref 置空，让流程自然落回「无当前触点」分支。
     # 行3 确认侧另以当前K线复校腿门（2026-10-22-2，ARIA 个案：pending 建立后价格
     # 已连涨远离触点，旧口径仍按 Stage-1 语境确认 → 上涨末端的金K被误判为回踩）。
+    # 腿门证据（2026-10-28，docs/16 §23）：通过时也把深度带出去——"过了门"不等于
+    # "腿够深"，0.5ATR 的底线允许近乎不动的回踩（TAUSDT 0.94ATR 过线即开单）。
+    # 证据随信号落到 quality_parts，才能用真实成交反推该把底线设在哪。
+    leg_ev: Optional[dict] = None
     leg_rejected = False
     if touch_ref is not None and flt.pullback_leg_gate_enabled:
         leg_ok, leg_ev = _pullback_leg_gate(klines, direction, flt)
@@ -1126,6 +1143,9 @@ def detect_trigger(
             "stabilize": _stab,
             # 1H 结构门结果（2026-10-15 降级不否决）：scanner 据此算质量分重罚
             "structure_gate": structure_gate,
+            # 反向腿证据（2026-10-28，docs/16 §23）：bars/atr_mult/overshoot_atr，
+            # 供 scanner 落 quality_parts.leg_*（观测浅回踩的真实分布）
+            "leg_evidence": leg_ev,
             # 组合金K标志（2026-10-13-6）：供质量分算「金K组合价格带结构点密度」
             # 时决定价格带是否并入前根（True=组合两根包络，False=单根）
             "golden_combo": bool(golden_note),
@@ -1196,6 +1216,8 @@ def detect_trigger(
                 "stabilize": _stab,
                 # 1H 结构门结果（2026-10-15 降级不否决）：scanner 据此算质量分重罚
                 "structure_gate": p_structure_gate,
+                # 反向腿证据（2026-10-28，docs/16 §23）：确认根前复校的腿深度
+                "leg_evidence": leg_ev,
                 # 组合金K标志（2026-10-13-6）：质量分算金K组合价格带结构点密度用
                 "golden_combo": bool(golden_note),
                 # 形态真实所在K线开盘时间 + 确认滞后（docs/11，仅 offset=-3 非空）

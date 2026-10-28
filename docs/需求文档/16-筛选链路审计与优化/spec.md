@@ -1250,3 +1250,83 @@ celery_beat，`IMAGE_TAG=<sha> docker compose up -d --no-build --force-recreate 
    - D7 → 上限键删掉/置 0
    - D8 → 从 `STATE_ALIGNED` 删除 `bull_dip`
    四项都只需重建容器，分钟级。
+
+---
+
+## 23. 反向腿深度观测：`quality_parts.leg_atr` / `leg_bars`（2026-10-28）
+
+### 23.1 起因：TAUSDT 的"几乎没波动的回踩"过了门
+
+线上 TAUSDT 在 03:00 UTC 那轮以 `retest`（回踩前高）+ `hammer` 出信号并开单（实盘 + 测试网各 1 笔），
+事后价格跌到入场下方约 −0.63R。复盘时的观感是"这种几乎没什么波动的回踩怎么也让它过了"。
+
+实测数据（1h，500 根）：
+
+| 项 | 值 |
+|---|---|
+| 信号根（03:00） | `H 0.06307 / L 0.06217 / C 0.06245` |
+| 反向腿（做多的下跌腿） | `bars=2`、`atr_mult=**0.9445**`、起点 0.06325 → 终点 0.06243 |
+| 入带深度 | 相对位价只回撤 **1.30%**，实体近乎贴位（近 24 根平均实体 0.42 ATR） |
+| ATR14 | 0.000839（**1.33%**）；近 24h 区间 4.11 ATR、均实体 0.42 ATR → **日级有波动、小时级碎步** |
+| 质量分惩罚 | `quality_parts.range = **−8**`（震荡扣分，只降权不否决，2026-10-21 的有意设计） |
+
+**根因不是"幽灵根重复计腿"**（这条假设当场被证伪：`_pullback_leg_gate` 的腿终点窗口是
+`[t−LEG_END_WINDOW_BARS, t)`，严格在信号根之前，幽灵根不会让腿多算一根）。真正的原因是两条并行：
+
+1. **腿门只有下限、没有"深度要求"**：`pullback_leg_min_bars=2` + `pullback_leg_min_atr=0.5`，
+   0.94 ATR 的浅回踩属于"合格"，同样是"合格"的还有 3 ATR 的深回踩 —— 门只回答"是/否"，不记录深度。
+2. **信号根归属存在一小时歧义**：`screen_klines` 在"末根已收盘"时补一根幽灵根使近收盘根成为信号根
+   （`backend/app/services/market_data.py:93`），于是同一笔成交的腿深可能是 0.76 ATR（信号根=02:00，
+   会被拒）或 0.94 ATR（信号根=03:00，通过）。没有落库口径时无法事后判定到底是哪一种。
+
+### 23.2 本次交付：先补观测，不改门槛
+
+在样本只有 1 笔的情况下把 `pullback_leg_min_atr` 从 0.5 调到 1.0 等于拟合噪声，且没有任何历史分档支撑
+（成交表里没有腿深字段，回放复现率仅 2.4%）。所以本次只做"把深度记下来"：
+
+| 文件 | 改动 |
+|---|---|
+| `backend/app/services/strategy/trigger.py` | 腿门通过时保留 `leg_ev`，当根确认/次根确认两个返回体各加 `"leg_evidence": leg_ev`；`probe_blocked_context` 返回体加 `"leg": {ok, bars, atr_mult}`（被拦候选也记，形成对照组） |
+| `backend/app/services/scanner.py` | `compute_quality_score(...)` 之后追加 `q_parts["leg_atr"]`（保留 2 位）与 `q_parts["leg_bars"]`，**不参与 total**；无证据时不写键（避免 0 被误读成"浅回踩"） |
+| `backend/tests/test_leg_observability.py` | 新增 6 条（信号带证据 / 腿门关闭时不伪造 / probe 带 leg / 无触点时 leg=None / 扫描层写 `leg_*` / 无证据不写键） |
+| `backend/tests/test_blocked_probe.py` | 两处精确 dict 断言补 `"leg": None`（返回体新增键） |
+
+前端不消费 `quality_parts`（已确认 `frontend/src/**` 无引用），新增数值键零渲染影响；
+`scan_results.quality_parts` 是既有 JSON 列，**无 schema 变更**。
+
+### 23.3 上线后怎么用这批数据
+
+```sql
+-- 近 7 天性号按腿深分档：这是决定"底线设在哪"的唯一依据
+SELECT (quality_parts->>'leg_atr')::numeric AS leg_atr,
+       count(*) AS n,
+       round(avg(pnl_pct)/1.0::numeric, 1) AS avg_pct,
+       round(100.0*count(*) FILTER (WHERE pnl_pct > 0)/count(*), 1) AS win_rate
+FROM trade_records t JOIN scan_results s ON s.id = t.scan_result_id
+WHERE t.testnet = false AND t.pnl_pct IS NOT NULL AND t.risk_amount > 1
+  AND s.quality_parts ? 'leg_atr'
+GROUP BY 1 ORDER BY 1;
+```
+
+判据（样本 ≥30 笔后再动手）：
+
+- 若 `leg_atr < 1.0` 的档位 ΣR/笔 ≤ 0 且 `≥1.5` 的档位显著为正 → 把 `pullback_leg_min_atr` 提到 1.0（一条 SQL 改 `system_config.scan_filters`，无需发版）。
+- 若各档差异不显著 → 维持 0.5，把"浅回踩"归因记为噪声。
+
+**立刻想收紧的操作**（不必等数据）：
+
+```sql
+UPDATE system_config
+   SET scan_filters = jsonb_set(coalesce(scan_filters,'{}'::jsonb),
+                                '{pullback_leg_min_atr}', '1.0'::jsonb, true)
+ WHERE id = 1;
+```
+
+回退同一条 SQL 改回 `0.5`；该键已在 API 校验范围内（`backend/app/api/scan.py` 的 `_SCAN_FILTER_RANGES`，0–20），
+也可在「扫描配置」页面直接改。
+
+### 23.4 仍待确认
+
+- TAUSDT 这笔的实际信号根是 02:00 还是 03:00（幽灵根歧义）。本次改动落盘 `leg_bars/leg_atr` 后，
+  下一批成交自带口径，不必再反推。
+- `range` 扣分只 −8、且只降权不否决，是否足以抑制"碎步币"：需要 `leg_atr` 分档数据与 `range` 标记联合看。
