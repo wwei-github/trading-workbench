@@ -38,6 +38,11 @@ export default function FunnelPanel({ initialStage }: { initialStage?: string } 
   const [klineSymbol, setKlineSymbol] = useState<string | null>(null)
   const currentScanId = useScanStore((s) => s.currentScanId)
   const isScanning = !!useScanStore((s) => s.status?.is_scanning)
+  // 兜底轮次（2026-10-28）：刷新后 currentScanId 为 null（仅内存态），且最新一轮
+  // 0 命中时 scanStore 推不出 id（items[0].scan_record_id 取不到）——旧守卫会把
+  // 已有漏斗数据整块隐藏。这里回落到 /scans/funnels 里最近一个有漏斗数据的轮次。
+  const [fallbackId, setFallbackId] = useState<string | null>(null)
+  const [resolving, setResolving] = useState(false)
 
   const fetchData = useCallback(async (scanId: string | null) => {
     if (!scanId) return
@@ -51,19 +56,45 @@ export default function FunnelPanel({ initialStage }: { initialStage?: string } 
     }
   }, [])
 
+  // 兜底解析：近 24h 最近一轮有漏斗数据的扫描（刷新后 currentScanId 缺失时使用）
+  const resolveFallback = useCallback(async () => {
+    setResolving(true)
+    try {
+      const r = await scanApi.funnels(24)
+      const items = (r.items || []).filter(
+        (it) => it.scan_id && Object.keys(it.stages || {}).length > 0)
+      const latest = items[items.length - 1]?.scan_id ?? null
+      setFallbackId(latest)
+      if (latest) await fetchData(latest)
+    } catch {
+      setFallbackId(null)
+    } finally {
+      setResolving(false)
+    }
+  }, [fetchData])
+
   useEffect(() => {
-    fetchData(currentScanId)
     // 换轮次重置筛选/搜索：旧轮选中的关卡可能在新轮无被拒币，残留值会让
     // Select 显示裸关卡代码（options 无该项）且列表恒空。initialStage（无触发
     // 页签）作为重置基准，不写死 'all'
     setStageFilter(initialStage ?? 'all')
     setSearch('')
-  }, [currentScanId, fetchData, initialStage])
+    if (currentScanId) {
+      setFallbackId(null)
+      fetchData(currentScanId)
+      return
+    }
+    // 无当前轮次（刷新后 / 最新一轮 0 命中）→ 回落到最近一轮有漏斗数据的扫描
+    void resolveFallback()
+  }, [currentScanId, fetchData, initialStage, resolveFallback])
 
   // 扫描完成（进行中→结束翻转）自动刷新；ref 记前值防挂载时双请求
   const prevScanning = useRef(false)
   useEffect(() => {
-    if (prevScanning.current && !isScanning && currentScanId) fetchData(currentScanId)
+    if (prevScanning.current && !isScanning) {
+      if (currentScanId) fetchData(currentScanId)
+      else void resolveFallback()
+    }
     prevScanning.current = isScanning
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isScanning])
@@ -139,8 +170,12 @@ export default function FunnelPanel({ initialStage }: { initialStage?: string } 
       ) },
   ]
 
-  if (!currentScanId) {
-    return <Empty description="暂无扫描记录，先执行一次扫描" style={{ marginTop: 80 }} />
+  // 无当前轮次且兜底仍在解析/详情加载 → Spin，避免先闪「暂无扫描记录」
+  if (!currentScanId && !fallbackId) {
+    if (resolving || loading) {
+      return <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div>
+    }
+    return <Empty description="近 24 小时暂无扫描记录，先执行一次扫描" style={{ marginTop: 80 }} />
   }
 
   return (
@@ -200,7 +235,7 @@ export default function FunnelPanel({ initialStage }: { initialStage?: string } 
             <span style={{ flex: 1 }} />
             {isScanning && <Text type="secondary" style={{ fontSize: 12 }}>扫描进行中，完成后自动刷新…</Text>}
             <Button size="small" icon={<ReloadOutlined />} loading={loading}
-                    onClick={() => fetchData(currentScanId)}>
+                    onClick={() => fetchData(currentScanId ?? fallbackId)}>
               刷新
             </Button>
           </div>

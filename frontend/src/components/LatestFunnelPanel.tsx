@@ -198,8 +198,13 @@ export default function LatestFunnelPanel() {
       .sort((a, b) => b.coins.length - a.coins.length)
   }, [drawerRows, search])
 
-  if (!currentScanId) {
-    return <Empty description="暂无扫描记录，先执行一次扫描" style={{ marginTop: 80 }} />
+  // 数据驱动渲染（2026-10-28 修复）：本面板数据来自 /scans/funnels（近 24 轮全量），
+  // 不依赖 currentScanId。刷新后 currentScanId 为 null（仅内存态），且最新一轮若
+  // 0 命中，scanStore 推不出 id——旧守卫会误报「暂无扫描记录」把已有轮次全隐藏。
+  if (!activeSnap) {
+    return listLoading
+      ? <div style={{ textAlign: "center", marginTop: 80 }}><Spin /></div>
+      : <Empty description="近 24 小时暂无扫描记录，先执行一次扫描" style={{ marginTop: 80 }} />
   }
 
   const head = groups[0]
