@@ -295,7 +295,7 @@ export default function ReviewPatchesPanel() {
         title={
           <Space>
             规则补丁
-            <Tooltip title="AI 错误归因发现高频错误标签（近7天热度≥0.5 且样本≥8）时生成补丁草稿；人工确认合入后进入评估期（第7天首评、14天终评）。系统自带提示词永不改动，提示词补丁以覆盖规则段追加生效。">
+            <Tooltip title="AI 错误归因发现高频错误标签（近7天热度≥0.30 或绝对笔数≥20，且样本≥8）时生成补丁草稿；人工确认合入后进入评估期（第7天首评、14天终评）。系统自带提示词永不改动，提示词补丁以覆盖规则段追加生效。">
               <QuestionCircleOutlined />
             </Tooltip>
           </Space>

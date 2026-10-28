@@ -1,6 +1,6 @@
 """规则补丁闭环服务（docs/12 §10，2026-09-18）
 
-AI 错误归因发现某错误标签高频出现（近7天热度 ≥0.5 且样本 ≥8）→ 生成补丁草稿
+AI 错误归因发现某错误标签高频出现（近7天热度 ≥0.30 或绝对笔数 ≥20，且样本 ≥8）→ 生成补丁草稿
 → 人工确认合入（提示词=追加 strategy_prompt 覆盖段；参数=写 system_config 列）
 → 每日评估三态（有效/无效/恶化）→ 页面一键回滚。
 
@@ -46,7 +46,8 @@ PARAM_KEYS = {
     "max_slippage_pct": "开仓滑点实测上限（比例，0.003=0.3%；按本单数量走订单簿计算；NULL=恢复默认 0.003）",
 }
 
-HEAT_THRESHOLD = 0.5      # 热度阈值：近7天该标签笔数/已归因笔数
+HEAT_THRESHOLD = 0.30     # 热度阈值：近7天该标签笔数/已归因笔数
+HEAT_ABS_MIN = 20         # 绝对笔数兜底：热度不足但笔数够多同样触发（17-复盘审计 P0-3）
 MIN_SAMPLE = 8            # 最小样本（已归因笔数）
 COOLDOWN_DAYS = 14        # 同标签冷却
 EVAL_FIRST_DAYS = 7       # 合入后首次评估
@@ -135,9 +136,13 @@ def run_trigger(db: Session) -> dict:
     below: list[str] = []  # 热度未达标标签（汇总一行，避免明细过长）
     for tag in RULE_TAGS:
         heat = stats["heat"].get(tag, 0.0)
-        if heat < HEAT_THRESHOLD:
-            if stats["tag_counts"].get(tag):
-                below.append(f"{tag} {heat:.2f}")
+        count = stats["tag_counts"].get(tag, 0)
+        # 双阈值（17-复盘审计 P0-3）：热度占比不足时，绝对笔数够多也可触发。
+        # 单标签覆盖率很难过 50%，旧 0.5 门槛让闭环从未跑通；取「或」兼顾
+        # 系统性缺陷（高覆盖）与小样本高绝对量（低覆盖但已累积足够案例）。
+        if heat < HEAT_THRESHOLD and count < HEAT_ABS_MIN:
+            if count:
+                below.append(f"{tag} 热度 {heat:.2f}/{count} 笔")
             continue
         # 同标签存在待确认/生效中补丁 → 不重复生成
         exists = db.execute(
@@ -146,7 +151,7 @@ def run_trigger(db: Session) -> dict:
                    PromptPatch.status.in_(("draft", "active")))
         ).scalar_one()
         if exists:
-            skips.append(f"{tag} 热度 {heat:.2f} 达标，但已有待确认/生效中补丁，跳过")
+            skips.append(f"{tag} 热度 {heat:.2f}/{count} 笔达标，但已有待确认/生效中补丁，跳过")
             continue
         # 冷却：同标签近期合入过（任意终态）→ 跳过
         cooled = db.execute(
@@ -155,7 +160,7 @@ def run_trigger(db: Session) -> dict:
                    PromptPatch.applied_at >= cooldown_since)
         ).scalar_one()
         if cooled:
-            skips.append(f"{tag} 热度 {heat:.2f} 达标，但在 {COOLDOWN_DAYS} 天冷却期内，跳过")
+            skips.append(f"{tag} 热度 {heat:.2f}/{count} 笔达标，但在 {COOLDOWN_DAYS} 天冷却期内，跳过")
             continue
 
         case_ids = [
@@ -174,9 +179,12 @@ def run_trigger(db: Session) -> dict:
             db.add(patch)
             drafts.append(patch)
         else:
-            skips.append(f"{tag} 热度 {heat:.2f} 达标，但 AI 生成草稿失败（见系统日志）")
+            skips.append(f"{tag} 热度 {heat:.2f}/{count} 笔达标，但 AI 生成草稿失败（见系统日志）")
     if below:
-        skips.append(f"热度未达标（门槛 {HEAT_THRESHOLD}）：{'、'.join(below)}")
+        skips.append(
+            f"热度未达标（门槛 {HEAT_THRESHOLD} 或绝对笔数 {HEAT_ABS_MIN}）："
+            f"{'、'.join(below)}"
+        )
     if drafts:
         db.commit()
     return {"drafts": drafts, "attributed_total": stats["attributed_total"], "skips": skips}
