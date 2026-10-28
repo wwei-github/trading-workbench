@@ -19,7 +19,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
 import { useScanStore } from '../stores/scanStore'
 import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
-import type { LatencyMetric, ReviewEntryDiagGroup, ReviewGroupStat, ReviewStats } from '../types'
+import type { LatencyMetric, ReviewEntryDiagGroup, ReviewExcursionGroup, ReviewGroupStat, ReviewStats } from '../types'
 import { SIGNAL_TYPE_MAP } from '../constants/labels'
 
 /**
@@ -105,6 +105,21 @@ export default function ReviewStatsPanel() {
       '-'
     ) : (
       <span style={{ color: v > 0 ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down, fontWeight: 600 }}>
+        {v.toFixed(2)}R
+      </span>
+    )
+
+  // 持仓偏移（P1-3）：signed R，MFE ≥ 0（有利）、MAE ≤ 0（不利）
+  const renderExcursion = (v: number | null | undefined, favorable: boolean) =>
+    v == null ? (
+      '-'
+    ) : (
+      <span
+        style={{
+          color: favorable ? SCHEME_UP_DOWN[colorScheme].up : SCHEME_UP_DOWN[colorScheme].down,
+          fontWeight: 600,
+        }}
+      >
         {v.toFixed(2)}R
       </span>
     )
@@ -384,6 +399,85 @@ export default function ReviewStatsPanel() {
       width: 90,
       render: (v: number | null) => (v == null ? '-' : v.toFixed(2)),
     },
+    {
+      title: (
+        <Tooltip title="持仓期最大有利偏移均值（signed R，≥0）：MFE 远高于实际出场 R = 止盈偏窄或回撤吃掉利润；只统计有偏移数据的回放行">
+          MFE均
+        </Tooltip>
+      ),
+      dataIndex: 'mfe_r_avg',
+      key: 'mfe_r_avg',
+      width: 90,
+      sorter: (a, b) => (a.mfe_r_avg ?? -99) - (b.mfe_r_avg ?? -99),
+      render: (v: number | null) => renderExcursion(v, true),
+    },
+    {
+      title: (
+        <Tooltip title="持仓期最大不利偏移均值（signed R，≤0）：接近 -1R = 多数单曾逼近止损（止损偏紧/入场偏晚）；只统计有偏移数据的回放行">
+          MAE均
+        </Tooltip>
+      ),
+      dataIndex: 'mae_r_avg',
+      key: 'mae_r_avg',
+      width: 90,
+      sorter: (a, b) => (a.mae_r_avg ?? 99) - (b.mae_r_avg ?? 99),
+      render: (v: number | null) => renderExcursion(v, false),
+    },
+  ]
+
+  // 持仓偏移按结局（17-复盘审计 P1-3）：回答「止损/止盈该多宽」
+  const OUTCOME_LABELS: Record<string, string> = {
+    win_tp2: '胜·TP2',
+    win_tp1: '胜·TP1',
+    loss: '负·止损',
+    censored: '未触发',
+  }
+  const excursionColumns: ColumnsType<ReviewExcursionGroup> = [
+    {
+      title: '结局',
+      dataIndex: 'outcome',
+      key: 'outcome',
+      render: (v: string) => <span style={{ fontWeight: 600 }}>{OUTCOME_LABELS[v] || v}</span>,
+    },
+    {
+      title: (
+        <Tooltip title="有偏移数据的行数：历史行、入场未成交、计划无效的行计数为 NULL，不计入">
+          样本
+        </Tooltip>
+      ),
+      dataIndex: 'total_with_data',
+      key: 'total_with_data',
+      width: 80,
+      sorter: (a, b) => a.total_with_data - b.total_with_data,
+    },
+    {
+      title: 'MFE均值',
+      dataIndex: 'mfe_r_avg',
+      key: 'mfe_r_avg',
+      width: 100,
+      render: (v: number | null) => renderExcursion(v, true),
+    },
+    {
+      title: 'MFE中位',
+      dataIndex: 'mfe_r_p50',
+      key: 'mfe_r_p50',
+      width: 100,
+      render: (v: number | null) => renderExcursion(v, true),
+    },
+    {
+      title: 'MAE均值',
+      dataIndex: 'mae_r_avg',
+      key: 'mae_r_avg',
+      width: 100,
+      render: (v: number | null) => renderExcursion(v, false),
+    },
+    {
+      title: 'MAE中位',
+      dataIndex: 'mae_r_p50',
+      key: 'mae_r_p50',
+      width: 100,
+      render: (v: number | null) => renderExcursion(v, false),
+    },
   ]
 
   const diagRows = stats?.entry_diag_groups.filter((g) => g.diag_dim === diagDim) ?? []
@@ -587,6 +681,26 @@ export default function ReviewStatsPanel() {
                   />
                 </Card>
               </Col>
+              <Col xs={12} sm={8} md={4}>
+                <Card size="small">
+                  <Statistic
+                    title={<Tooltip title="持仓期最大有利偏移均值（signed R，≥0）：MFE 越高说明入场后给到的空间越大；只统计有偏移数据的新回放行">MFE均值</Tooltip>}
+                    value={stats!.mfe_r_avg == null ? '-' : stats!.mfe_r_avg.toFixed(2)}
+                    suffix={stats!.mfe_r_avg == null ? '' : 'R'}
+                    valueStyle={{ color: SCHEME_UP_DOWN[colorScheme].up }}
+                  />
+                </Card>
+              </Col>
+              <Col xs={12} sm={8} md={4}>
+                <Card size="small">
+                  <Statistic
+                    title={<Tooltip title="持仓期最大不利偏移均值（signed R，≤0）：接近 -1R = 多数单曾逼近止损，止损偏紧或入场偏晚">MAE均值</Tooltip>}
+                    value={stats!.mae_r_avg == null ? '-' : stats!.mae_r_avg.toFixed(2)}
+                    suffix={stats!.mae_r_avg == null ? '' : 'R'}
+                    valueStyle={{ color: SCHEME_UP_DOWN[colorScheme].down }}
+                  />
+                </Card>
+              </Col>
             </Row>
 
             {/* 信号时效（批次 B1）：三段时延 P50/P90，近 7 天窗口 */}
@@ -714,6 +828,30 @@ export default function ReviewStatsPanel() {
                   size="small"
                   pagination={false}
                 />
+              </Card>
+            )}
+
+            {/* 持仓偏移（17-复盘审计 P1-3）：按结局看 MFE/MAE，判断止损/止盈宽度 */}
+            {stats!.excursions.length > 0 && (
+              <Card
+                size="small"
+                title={
+                  <Tooltip title="回放区间=入场成交根→出场根（未触发取窗口末根），按计划 1R 归一（有利为正、不利为负）。MAE 均值接近 -1R = 多数单曾逼近止损；MFE 均值远高于实际出场 R = 止盈偏窄或回撤吃掉利润。历史行/未成交/无效计划无数据，不计入">
+                    <span>持仓偏移（MFE/MAE）<QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} /></span>
+                  </Tooltip>
+                }
+                styles={{ body: { padding: 0 } }}
+              >
+                <Table<ReviewExcursionGroup>
+                  rowKey="outcome"
+                  columns={excursionColumns}
+                  dataSource={stats!.excursions}
+                  size="small"
+                  pagination={false}
+                />
+                <Typography.Text type="secondary" style={{ fontSize: 12, padding: '8px 12px', display: 'block' }}>
+                  只统计有新偏移数据的回放行（历史行 / 入场未成交 / 计划无效为 NULL）；MFE≥0、MAE≤0。
+                </Typography.Text>
               </Card>
             )}
 

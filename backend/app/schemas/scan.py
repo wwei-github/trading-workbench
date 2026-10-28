@@ -451,6 +451,26 @@ class ReviewGroupStats(BaseModel):
     # 盈亏比（2026-10-21 批次 B3）：平均盈利 R / 平均亏损 R（回放口径 loss 恒 -1R，
     # 故通常等于平均盈利 R）；扣费前原始 R，与 ev_r 的扣费口径互补
     payoff: Optional[float] = None
+    # 持仓期偏移（2026-10-28 P1-3）：均值只统计 mfe_r/mae_r 非空行
+    # （历史行/入场未成交/计划无效为 NULL），不把缺失当 0 拉低读数
+    mfe_r_avg: Optional[float] = None  # 最大有利偏移均值（signed R，≥0）
+    mae_r_avg: Optional[float] = None  # 最大不利偏移均值（signed R，≤0）
+
+
+class ReviewExcursionGroup(BaseModel):
+    """按结局的持仓期偏移（17-复盘审计 P1-3 聚合展示）
+
+    MFE/MAE 为 signed R（有利为正、不利为负）；只统计两列非空的新回放行。
+    读法：MAE 均值接近 -1R = 多数单曾逼近止损（止损偏紧/入场偏晚）；
+    MFE 均值远高于实际出场 R = 止盈偏窄或回撤吃掉利润。
+    """
+
+    outcome: str  # win_tp2 / win_tp1 / loss / censored
+    total_with_data: int = 0  # 有偏移数据的行数（不含 NULL 行）
+    mfe_r_avg: Optional[float] = None
+    mae_r_avg: Optional[float] = None
+    mfe_r_p50: Optional[float] = None
+    mae_r_p50: Optional[float] = None
 
 
 class ReviewEntryDiagGroup(ReviewGroupStats):
@@ -512,6 +532,11 @@ class ReviewStatsResponse(BaseModel):
     # 入场诊断分档（17-复盘审计 P0-1）：pos/stop_atr/room_r/planned_rr/quality_score
     # 五维，每维若干档；只含 entry_diag 非空的新回放行
     entry_diag_groups: list[ReviewEntryDiagGroup] = []
+    # 持仓期偏移（17-复盘审计 P1-3 聚合展示）：整体均值 + 按 outcome 的均值/中位；
+    # 只统计 mfe_r/mae_r 非空行（历史行/未成交/计划无效不计）
+    mfe_r_avg: Optional[float] = None
+    mae_r_avg: Optional[float] = None
+    excursions: list[ReviewExcursionGroup] = []
 
 
 # ===== 全漏斗转化率（docs/24 A5c） =====

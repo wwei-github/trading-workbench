@@ -30,6 +30,7 @@ from app.schemas.scan import (
     AccountBrief,
     ReviewGroupStats,
     ReviewEntryDiagGroup,
+    ReviewExcursionGroup,
     ReviewStatsResponse,
     LatencyMetric,
     ReviewLatency,
@@ -1116,6 +1117,10 @@ def _agg_stats(rows: list[TradeReview]) -> dict:
     losses = sum(1 for r in rows if r.outcome == "loss")
     decided = wins + losses
     ci_low, ci_high = _wilson_ci(wins, decided)
+    # 持仓偏移均值（P1-3 聚合展示）：只统计非空行；历史行/未成交/计划无效
+    # 为 NULL，若按 0 计入会把「无数据」误读成「没有有利偏移」
+    mfe_vals = [r.mfe_r for r in rows if getattr(r, "mfe_r", None) is not None]
+    mae_vals = [r.mae_r for r in rows if getattr(r, "mae_r", None) is not None]
     return {
         "total": len(rows),
         "win_tp1": sum(1 for r in rows if r.outcome == "win_tp1"),
@@ -1128,6 +1133,8 @@ def _agg_stats(rows: list[TradeReview]) -> dict:
         "win_rate": round(wins / decided, 4) if decided else 0.0,
         "win_rate_ci_low": ci_low,
         "win_rate_ci_high": ci_high,
+        "mfe_r_avg": round(sum(mfe_vals) / len(mfe_vals), 3) if mfe_vals else None,
+        "mae_r_avg": round(sum(mae_vals) / len(mae_vals), 3) if mae_vals else None,
     }
 
 
@@ -1438,6 +1445,29 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
             p50_s=round(_pct(vals, 0.5), 1),
             p90_s=round(_pct(vals, 0.9), 1),
         )
+
+    # 持仓期偏移按结局分档（17-复盘审计 P1-3 聚合展示）：回答「止损/止盈该多宽」。
+    # 只统计 mfe_r/mae_r 非空行（未成交/计划无效/历史行为 NULL，不按 0 计入）；
+    # 结局顺序固定 赢(TP2→TP1) → 亏 → 未触发，便于同屏对比。
+    exc_buckets: dict[str, list[TradeReview]] = {}
+    for r in rows:
+        if getattr(r, "mfe_r", None) is None and getattr(r, "mae_r", None) is None:
+            continue
+        exc_buckets.setdefault(r.outcome, []).append(r)
+    for outcome in ("win_tp2", "win_tp1", "loss", "censored"):
+        items = exc_buckets.get(outcome)
+        if not items:
+            continue
+        mfe_vals = sorted(r.mfe_r for r in items if r.mfe_r is not None)
+        mae_vals = sorted(r.mae_r for r in items if r.mae_r is not None)
+        resp.excursions.append(ReviewExcursionGroup(
+            outcome=outcome,
+            total_with_data=max(len(mfe_vals), len(mae_vals)),
+            mfe_r_avg=round(sum(mfe_vals) / len(mfe_vals), 3) if mfe_vals else None,
+            mae_r_avg=round(sum(mae_vals) / len(mae_vals), 3) if mae_vals else None,
+            mfe_r_p50=round(_pct(mfe_vals, 0.5), 3) if mfe_vals else None,
+            mae_r_p50=round(_pct(mae_vals, 0.5), 3) if mae_vals else None,
+        ))
 
     sig_ai = db.execute(
         select(ScanResult.signal_created_at, AIAnalysis.ai_finished_at)

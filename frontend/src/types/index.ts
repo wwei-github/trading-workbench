@@ -656,6 +656,18 @@ export interface ReviewGroupStat {
   ev_r_ci_low?: number | null; // 期望值 95% 区间（正态近似）
   ev_r_ci_high?: number | null;
   payoff?: number | null; // 盈亏比 = 平均盈利 R / 平均亏损 R（扣费前原始口径）
+  mfe_r_avg?: number | null; // 最大有利偏移均值（signed R，≥0；只统计非空行，P1-3）
+  mae_r_avg?: number | null; // 最大不利偏移均值（signed R，≤0；只统计非空行）
+}
+
+// 按结局的持仓期偏移（17-复盘审计 P1-3）：MFE≥0、MAE≤0（signed R）
+export interface ReviewExcursionGroup {
+  outcome: string; // win_tp2 / win_tp1 / loss / censored
+  total_with_data: number; // 有偏移数据的行数（NULL 行不计）
+  mfe_r_avg: number | null;
+  mae_r_avg: number | null;
+  mfe_r_p50: number | null;
+  mae_r_p50: number | null;
 }
 
 // 单段时延分位（批次 B1）
@@ -704,6 +716,10 @@ export interface ReviewStats {
   htf_degraded_groups: ReviewGroupStat[];
   // 入场诊断分档（17-复盘审计 P0-1）：pos/stop_atr/room_r/planned_rr/quality_score
   entry_diag_groups: ReviewEntryDiagGroup[];
+  // 持仓期偏移（P1-3 聚合展示）：整体均值 + 按结局分组，仅统计非空行
+  mfe_r_avg?: number | null;
+  mae_r_avg?: number | null;
+  excursions: ReviewExcursionGroup[];
 }
 
 // 入场诊断分档（17-复盘审计 P0-1）：每个分档复用 ReviewGroupStat 的指标

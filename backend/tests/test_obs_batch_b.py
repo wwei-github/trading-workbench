@@ -238,12 +238,13 @@ def test_upsert_writes_htf_degraded(db):
 # ── B3：复盘按 htf_degraded 分组 ───────────────────────────────────────
 
 
-def _add_review(db, a, outcome, htf_degraded=False, entry_diag=None):
+def _add_review(db, a, outcome, htf_degraded=False, entry_diag=None,
+                mfe_r=None, mae_r=None):
     db.add(TradeReview(
         ai_analysis_id=a.id, symbol=a.symbol, direction="long",
         outcome=outcome, tp1_hit=outcome.startswith("win"), bars_to_exit=5,
         signal_type="trigger_breakout", htf_degraded=htf_degraded,
-        entry_diag=entry_diag,
+        entry_diag=entry_diag, mfe_r=mfe_r, mae_r=mae_r,
     ))
     db.commit()
 
@@ -352,3 +353,41 @@ def test_stats_entry_diag_groups_and_censored(db):
     assert sum(g.total for g in by_dim["room_r"]) == 1
     assert sum(g.total for g in by_dim["pos"]) == 2
     assert {g.diag_bucket for g in by_dim["pos"]} == {"pos<0.25", "pos≥0.6"}
+
+
+def test_stats_mfe_mae_excursions(db):
+    """/review/stats 聚合 MFE/MAE（P1-3 收尾）：整体均值 + 按 outcome 的均值/中位。
+
+    只统计 mfe_r/mae_r 非空行——NULL（历史行/未成交/计划无效）不按 0 计入，
+    否则「无数据」会被误读成「没有有利偏移」。"""
+    from app.api.scan import review_stats
+
+    now = datetime.utcnow() - timedelta(hours=2)
+    _, a1, _ = _mk_chain(db, "EXC1USDT", ai_finished=now)
+    _add_review(db, a1, "win_tp1", entry_diag={"pos": 0.7}, mfe_r=2.0, mae_r=-0.2)
+    _, a2, _ = _mk_chain(db, "EXC2USDT", ai_finished=now)
+    _add_review(db, a2, "loss", entry_diag={"pos": 0.1}, mfe_r=0.5, mae_r=-1.5)
+    # 无偏移数据 → 不计入均值/分位，也不单独成组
+    _, a3, _ = _mk_chain(db, "EXC3USDT", ai_finished=now)
+    _add_review(db, a3, "loss")
+
+    resp = review_stats(days=30, db=db)
+    # 整体：(2.0+0.5)/2 与 (-0.2-1.5)/2，NULL 行不参与
+    assert resp.mfe_r_avg == pytest.approx(1.25)
+    assert resp.mae_r_avg == pytest.approx(-0.85)
+    by = {g.outcome: g for g in resp.excursions}
+    assert set(by) == {"win_tp1", "loss"}
+    assert by["win_tp1"].total_with_data == 1
+    assert by["loss"].total_with_data == 1  # 无偏移的 loss 行不计
+    assert by["loss"].mfe_r_avg == pytest.approx(0.5)
+    assert by["loss"].mae_r_avg == pytest.approx(-1.5)
+    # 单样本分位即自身
+    assert by["win_tp1"].mfe_r_p50 == pytest.approx(2.0)
+    assert by["win_tp1"].mae_r_p50 == pytest.approx(-0.2)
+    # 分组表与入场诊断分档同带均值（pos≥0.6 档仅 a1 一行）
+    assert resp.groups[0].mfe_r_avg == pytest.approx(1.25)
+    pos_hi = [g for g in resp.entry_diag_groups
+              if g.diag_dim == "pos" and g.diag_bucket == "pos≥0.6"]
+    assert len(pos_hi) == 1
+    assert pos_hi[0].mfe_r_avg == pytest.approx(2.0)
+    assert pos_hi[0].mae_r_avg == pytest.approx(-0.2)
