@@ -1,4 +1,4 @@
-# 17-复盘模块审计 · 验收清单（P0 三项）
+# 17-复盘模块审计 · 验收清单（P0 三项 + P1-3）
 
 ## P0-1 回放入场诊断 + 五维分档
 
@@ -25,10 +25,18 @@
 - [x] 前端 `ReviewPatchesPanel` 触发条件 tooltip 同步
 - [x] 新增测试覆盖「热度 0.2985 < 0.30 但笔数 20 → 触发」与「7 笔低热度 → 不触发」
 
+## P1-3 回放 MFE/MAE
+
+- [x] `TradeReview` 新增 `mfe_r/mae_r`（signed R），`database.py` 幂等迁移两列
+- [x] `replay_path()` 计算持仓区间偏移；`replay_suggestion()` 三元组签名保持兼容
+- [x] 入场成交根 → 出场根（`censored` 窗口末根）；入场根整根计入并文档标注上界口径
+- [x] 未成交 / `|entry-stop|≤0` 时为 NULL，不污染统计
+- [x] 多单/空单/入场根即止损/未成交四条单测 + 任务级落库断言
+
 ## 文档与验证
 
 - [x] `docs/复盘归因/06-复盘归因.md` 流程图、门槛、常量表、五态语义、`entry_diag`、API 契约、配置项同步
 - [x] 定向 pytest（review_replay / attribution / patch_trigger_threshold / obs_batch_b）通过
-- [x] 后端全量 pytest 通过（1325 passed）
+- [x] 后端全量 pytest 通过（1330 passed）
 - [x] 前端 `npx tsc --noEmit` 通过
 - [x] `git status` 仅包含本次相关文件

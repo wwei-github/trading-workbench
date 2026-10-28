@@ -1,7 +1,8 @@
-# 17-复盘模块审计 · 实施任务（P0 三项）
+# 17-复盘模块审计 · 实施任务（P0 三项 + P1-3）
 
-> 需求边界见同目录 `spec.md` §5/§7。本清单只覆盖用户确认的 P0-1 / P0-2 / P0-3；
-> P1/P2 明确不做。完成后仅本地提交，不推送、不部署、不连服务器验证。
+> 需求边界见同目录 `spec.md` §5/§7。P0-1 / P0-2 / P0-3 已完成；2026-10-28 用户确认
+> 追加 P1-3（回放 MFE/MAE），其余 P1/P2 仍明确不做。完成后仅本地提交，不推送、不部署、
+> 不连服务器验证。
 
 ## 完成情况（2026-10-28）
 
@@ -15,8 +16,11 @@
 - [x] P0-2 测试：48h 窗口、未触发为 `censored`、无效计划为 `expired`
 - [x] P0-3 补丁双阈值 `heat ≥0.30` 或绝对笔数 `≥20`（保留 `MIN_SAMPLE=8` 与冷却）
 - [x] P0-3 前端 tooltip + 新建 `test_patch_trigger_threshold.py`（20/67 绝对笔数路径）
+- [x] P1-3 `TradeReview` 新增 `mfe_r/mae_r` 两列 + 幂等迁移
+- [x] P1-3 回放 `replay_path` 计算持仓区间 signed R 偏移，落库并进任务明细
+- [x] P1-3 测试：多/空赢单、入场根即止损、未成交无偏移、任务落库
 - [x] 文档同步 `docs/复盘归因/06-复盘归因.md`
-- [x] 验证：定向 pytest / 全量 pytest（1325 passed）/ 前端 `tsc --noEmit`
+- [x] 验证：定向 pytest / 全量 pytest（1330 passed）/ 前端 `tsc --noEmit`
 
 ## 已确认的关键事实
 
@@ -233,6 +237,47 @@
 
 ---
 
+## P1-3 回放 MFE/MAE（2026-10-28 追加）
+
+### 1. 模型与迁移
+
+- `backend/app/models/scan.py` → `TradeReview` 新增
+  ```python
+  mfe_r: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+  mae_r: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+  ```
+  语义：signed R 倍数（有利为正、不利为负，故 `mae_r ≤ 0`）；NULL=历史行 /
+  入场未成交 / `|entry-stop| ≤ 0`。
+- `backend/app/database.py`：
+  ```sql
+  ALTER TABLE trade_reviews
+    ADD COLUMN IF NOT EXISTS mfe_r DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS mae_r DOUBLE PRECISION
+  ```
+  历史行不回填（补算需重新拉 K 线）。
+
+### 2. 回放计算
+
+文件：`backend/app/tasks/review_tasks.py`
+
+- 抽出 `replay_path()` 返回 `ReplayResult(outcome, tp1_hit, bars, mfe_r, mae_r)`；
+  `replay_suggestion()` 保留三元组签名，兼容既有脚本与测试。
+- `_excursions()`：区间 = 入场成交根 → 出场根（`censored` 取窗口末根），
+  `risk = |entry - stop|`；多单 `mfe=(max(high)-entry)/risk`、`mae=(min(low)-entry)/risk`，
+  空单取反。入场根整根计入——OHLC 无法确定根内成交先后，极端值属上界口径。
+- `TradeReview(...)` 落 `mfe_r/mae_r`；任务明细 `items` 同步（便于任务记录排查）。
+
+### 3. 测试
+
+`backend/tests/test_review_replay.py`：
+
+- 多单/空单赢单路径的 signed 偏移断言；
+- 入场根即止损时 MAE 可超 1R；
+- 入场未成交（`censored`）→ `mfe_r/mae_r` 均为 None；
+- 任务级落库：止损单 `mfe_r=0.5 / mae_r=-1.5`。
+
+---
+
 ## 文档同步
 
 `docs/复盘归因/06-复盘归因.md`：
@@ -243,7 +288,9 @@
 - `TradeReview` 字段表补 `entry_diag`；
 - 常量表 `HEAT_THRESHOLD 0.5` → `0.30`，补 `HEAT_ABS_MIN 20`；
 - `/review/stats` 契约补 `entry_diag_groups` 与 `censored`；
-- `window_stats`/热度门槛段落同步双阈值。
+- `window_stats`/热度门槛段落同步双阈值；
+- `TradeReview` 字段表补 `mfe_r/mae_r`，新增「MFE/MAE 口径」说明（signed R、区间、
+  入场根上界口径、历史不回填）。
 
 ---
 
