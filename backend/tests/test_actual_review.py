@@ -167,3 +167,18 @@ def test_signal_family_legacy_flag(db):
 
     assert fams["同向形态"]["legacy"] is True
     assert fams["回踩金K确认"]["legacy"] is False
+
+
+def test_htf_aligned_split_bull_bear(db):
+    """P2-2：多头/空头排列拆成两桶（合并会把两侧盈亏互相抵消）"""
+    b = _rec(2.0, signal_type="trigger_pullback_confirm")
+    b.ai_snapshot = {"risk_reward_ratio": 2.0, "htf_phase": "aligned_bull"}
+    s = _rec(2.0, signal_type="trigger_pullback_confirm")
+    s.ai_snapshot = {"risk_reward_ratio": 2.0, "htf_phase": "aligned_bear"}
+    db.add_all([b, s])
+    db.commit()
+
+    buckets = _dim_groups(build_actual_review(db, days=7), "4h趋势期")
+    assert buckets["排列·多"]["count"] == 1
+    assert buckets["排列·空"]["count"] == 1
+    assert "排列" not in buckets  # 旧的合并桶不再输出

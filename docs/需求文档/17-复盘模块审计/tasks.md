@@ -323,6 +323,22 @@
   与手动 `POST /review/attribute`（5 笔）；
 - 文档 06 §2.5 / §6.5 API 契约同步为「只读，不触发费用回补」。
 
+## P2-2 时段维度与排列拆多空（2026-10-28 追加）
+
+- 4h 状态桶把 `aligned_bull/aligned_bear` 由「排列」拆为「排列·多 / 排列·空」，
+  桶序 8 项（缠绕 / 拐头 / 宏观交叉 / 恢复初期 / 排列·多 / 排列·空 / 过渡 / 未知），
+  多空排列的行为不再互相抵消；
+- `/review/stats` 增 `time_groups`：以 `AIAnalysis.created_at`（UTC）为基准 +8h 落
+  北京 4h 桶，复用实盘归因 `HOUR_BUCKETS` 与「北京 HH-HH 时」文案，同口径可横向对照；
+- 基准取分析行创建时间（建议产生时点）而非回放检查时点；`ai_map` 已在该函数加载，
+  零额外查询；分析行缺失（历史断链）归「未知」，桶顺序固定、空桶不占行；
+- 前端 `ReviewStatsPanel` 新增「信号时段（北京 4h）」独立卡片（时段/总数/胜率/
+  胜·TP1/负/未触发/EV）；
+- 测试：`test_obs_batch_b.py::test_stats_time_groups_beijing_buckets`（UTC 03:00→
+  北京 08-12、UTC 21:00→北京 04-08、断链→未知）；
+  `test_actual_review.py::test_htf_aligned_split_bull_bear`；
+  `test_review_batch3.py::test_actual_review_htf_phase_dimension` 期望值同步拆桶。
+
 ---
 
 ## 文档同步
@@ -339,7 +355,9 @@
 - `TradeReview` 字段表补 `mfe_r/mae_r`，新增「MFE/MAE 口径」说明（signed R、区间、
   入场根上界口径、历史不回填）；
 - 新增「MFE/MAE 聚合读法」（整体均值 + `excursions` 按结局、NULL 不计入、止损/止盈宽度读法），
-  API 契约补 `mfe_r_avg/mae_r_avg` 与 `excursions`，前端面板表补持仓偏移卡与分档 MFE/MAE 列。
+  API 契约补 `mfe_r_avg/mae_r_avg` 与 `excursions`，前端面板表补持仓偏移卡与分档 MFE/MAE 列；
+- §2.3 开仓时段行补回放侧 `time_groups` 口径（`AIAnalysis.created_at` 基准、同桶同文案），
+  §6.5 API 契约补 `time_groups`，§5.3 面板表补信号时段卡。
 
 ---
 
@@ -360,3 +378,4 @@
   - `feat(review): 金K形态只列现役 8 种`
   - `feat(review): 已下线触发类型标 legacy 并默认折叠`
   - `refactor(review): GET /review/actual 不再触发费用回补`
+  - `feat(review): 回放按北京 4h 桶统计信号时段并拆分多空排列`

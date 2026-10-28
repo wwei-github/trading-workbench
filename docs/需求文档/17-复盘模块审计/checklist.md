@@ -54,10 +54,18 @@
 - [x] 回补仅保留定时归因任务与手动 `POST /review/attribute`
 - [x] docs/06 口径与 API 契约同步「只读」
 
+## P2-2 时段维度与排列拆多空
+
+- [x] `aligned_bull/aligned_bear` 拆为「排列·多 / 排列·空」，`_HTF_PHASE_BUCKETS` 8 项
+- [x] `/review/stats` 增 `time_groups`（`AIAnalysis.created_at` +8h 落北京 4h 桶，复用 `HOUR_BUCKETS`）
+- [x] 分析行缺失（历史断链）归「未知」；桶顺序固定、空桶不占行
+- [x] 前端新增「信号时段（北京 4h）」卡片
+- [x] `test_stats_time_groups_beijing_buckets` / `test_htf_aligned_split_bull_bear`；旧 4h 维度断言同步拆桶
+
 ## 文档与验证
 
 - [x] `docs/复盘归因/06-复盘归因.md` 流程图、门槛、常量表、五态语义、`entry_diag`、API 契约、配置项同步
 - [x] 定向 pytest（review_replay / attribution / patch_trigger_threshold / obs_batch_b / actual_review）通过
-- [x] 后端全量 pytest 通过（1334 passed）
+- [x] 后端全量 pytest 通过（1341 passed）
 - [x] 前端 `npx tsc --noEmit` 通过
 - [x] `git status` 仅包含本次相关文件

@@ -661,6 +661,11 @@ export interface ReviewGroupStat {
   mae_r_avg?: number | null; // 最大不利偏移均值（signed R，≤0；只统计非空行）
 }
 
+// 回放信号时段（17-复盘审计 P2-2）：基准 AIAnalysis.created_at（UTC→北京 4h 桶）
+export interface ReviewTimeGroup extends ReviewGroupStat {
+  bucket: string;
+}
+
 // 按结局的持仓期偏移（17-复盘审计 P1-3）：MFE≥0、MAE≤0（signed R）
 export interface ReviewExcursionGroup {
   outcome: string; // win_tp2 / win_tp1 / loss / censored
@@ -721,6 +726,8 @@ export interface ReviewStats {
   mfe_r_avg?: number | null;
   mae_r_avg?: number | null;
   excursions: ReviewExcursionGroup[];
+  // 信号时段（P2-2）：北京 4h 桶，口径同实盘归因「开仓时段」
+  time_groups: ReviewTimeGroup[];
 }
 
 // 入场诊断分档（17-复盘审计 P0-1）：每个分档复用 ReviewGroupStat 的指标

@@ -20,7 +20,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { scanApi } from '../api/scan'
 import { useScanStore } from '../stores/scanStore'
 import { SCHEME_UP_DOWN, schemeTag } from '../utils/scheme'
-import type { LatencyMetric, ReviewEntryDiagGroup, ReviewExcursionGroup, ReviewGroupStat, ReviewStats } from '../types'
+import type { LatencyMetric, ReviewEntryDiagGroup, ReviewExcursionGroup, ReviewGroupStat, ReviewStats, ReviewTimeGroup } from '../types'
 import { SIGNAL_TYPE_MAP } from '../constants/labels'
 
 /**
@@ -520,6 +520,67 @@ export default function ReviewStatsPanel() {
         ]
       : []
 
+  // 信号时段（P2-2）：北京 4h 桶，读法同实盘归因「开仓时段」
+  const timeColumns: ColumnsType<ReviewTimeGroup> = [
+    {
+      title: '时段',
+      dataIndex: 'bucket',
+      key: 'bucket',
+      render: (v: string) => <span style={{ fontWeight: 600 }}>{v}</span>,
+    },
+    {
+      title: '总数',
+      dataIndex: 'total',
+      key: 'total',
+      width: 70,
+      sorter: (a, b) => a.total - b.total,
+    },
+    {
+      title: (
+        <Tooltip title="胜率口径：censored（窗口结束未触发）与 expired（计划无效）都不计入胜率分母">
+          胜率
+        </Tooltip>
+      ),
+      dataIndex: 'win_rate',
+      key: 'win_rate',
+      width: 90,
+      sorter: (a, b) => a.win_rate - b.win_rate,
+      render: (v: number) => renderWinRate(v),
+    },
+    {
+      title: '胜·TP1',
+      dataIndex: 'win_tp1',
+      key: 'win_tp1',
+      width: 80,
+      render: (v: number) => <Tag color={schemeTag(colorScheme).up}>{v}</Tag>,
+    },
+    {
+      title: '负',
+      dataIndex: 'loss',
+      key: 'loss',
+      width: 60,
+      render: (v: number) => <Tag color={schemeTag(colorScheme).down}>{v}</Tag>,
+    },
+    {
+      title: (
+        <Tooltip title="观察窗口结束仍未触发任何价位（右删失）：是「还没结论」，不是「没亏」">
+          未触发
+        </Tooltip>
+      ),
+      dataIndex: 'censored',
+      key: 'censored',
+      width: 80,
+    },
+    {
+      title: <Tooltip title="扣费用假设后的每笔平均期望（R 倍数）">EV</Tooltip>,
+      dataIndex: 'ev_r',
+      key: 'ev_r',
+      width: 90,
+      sorter: (a, b) => (a.ev_r ?? -99) - (b.ev_r ?? -99),
+      render: (v: number | null) => renderEv(v),
+    },
+  ]
+
   const latencyColumns: ColumnsType<LatencyRow> = [
     {
       title: '阶段',
@@ -771,6 +832,27 @@ export default function ReviewStatsPanel() {
                 pagination={false}
               />
             </Card>
+
+            {/* 信号时段（17-复盘审计 P2-2）：与实盘归因「开仓时段」同口径，定位坏时段 */}
+            {stats!.time_groups.length > 0 && (
+              <Card
+                size="small"
+                title={
+                  <Tooltip title="按 AI 分析（决策）时间换算北京时区的 4h 桶，与实盘归因「开仓时段」同桶同文案（基准=AIAnalysis.created_at，UTC+8）；缺分析行的回放归「未知」。用于对照同一时段的胜率/EV（如坏日子集中在两批同向单）">
+                    <span>信号时段（北京 4h）<QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} /></span>
+                  </Tooltip>
+                }
+                styles={{ body: { padding: 0 } }}
+              >
+                <Table<ReviewTimeGroup>
+                  rowKey="bucket"
+                  columns={timeColumns}
+                  dataSource={stats!.time_groups}
+                  size="small"
+                  pagination={false}
+                />
+              </Card>
+            )}
 
             {/* 规则版本分组（docs/24 A0）：历史跨版本混合成绩不具证明力，按版本隔离对比 */}
             {stats!.rule_version_groups.length > 0 && (

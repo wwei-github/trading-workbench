@@ -407,3 +407,35 @@ def test_stats_legacy_trigger_flag(db):
     by_sig = {g.signal_type: g for g in resp.groups}
     assert by_sig["trigger_candlestick"].legacy is True
     assert by_sig["trigger_pullback_confirm"].legacy is False
+
+
+def test_stats_time_groups_beijing_buckets(db):
+    """P2-2（A-5）：回放按分析时间换算北京 4h 桶，与实盘归因「开仓时段」同口径。
+
+    基准 = AIAnalysis.created_at（UTC），缺分析行归「未知」；桶顺序固定。
+    """
+    from app.api.scan import review_stats
+
+    # UTC 03:00 → 北京 11:00（08-12 桶）；UTC 21:00 → 北京 05:00（04-08 桶）
+    _, a1, _ = _mk_chain(db, "HOU1USDT", ai_finished=datetime(2026, 1, 5, 3, 0))
+    _add_review(db, a1, "win_tp1")
+    _, a2, _ = _mk_chain(db, "HOU2USDT", ai_finished=datetime(2026, 1, 5, 21, 0))
+    _add_review(db, a2, "loss")
+    # 分析行缺失（ai_analysis_id 非空但查无此行，历史断链）→ 未知
+    db.add(TradeReview(
+        ai_analysis_id=uuid.uuid4(),
+        symbol="HOU3USDT", direction="long", outcome="censored",
+        tp1_hit=False, bars_to_exit=1,
+    ))
+    db.commit()
+
+    resp = review_stats(days=30, db=db)
+    assert [g.bucket for g in resp.time_groups] == [
+        "北京 04-08 时", "北京 08-12 时", "未知",
+    ]
+    by = {g.bucket: g for g in resp.time_groups}
+    assert by["北京 04-08 时"].loss == 1
+    assert by["北京 08-12 时"].win_tp1 == 1
+    assert by["北京 08-12 时"].ev_r is not None  # 有 AI 三价，可算净期望
+    assert by["未知"].total == 1
+    assert by["未知"].win_rate == 0.0  # censored 不进分母

@@ -474,6 +474,17 @@ class ReviewExcursionGroup(BaseModel):
     mae_r_p50: Optional[float] = None
 
 
+class ReviewTimeGroup(ReviewGroupStats):
+    """回放信号时段分桶（17-复盘审计 P2-2，A-5）
+
+    基准 = AIAnalysis.created_at（分析/决策时间，UTC）换算北京时间后落 4h 桶，
+    与实盘归因「开仓时段」同口径（HOUR_BUCKETS / 「北京 HH-HH 时」）。
+    无分析行或无 ai_analysis_id 的回放行归「未知」。
+    """
+
+    bucket: str
+
+
 class ReviewEntryDiagGroup(ReviewGroupStats):
     """入场诊断分档（17-复盘审计 P0-1）：diag_dim 为诊断键，diag_bucket 为分档标签"""
 
@@ -538,6 +549,8 @@ class ReviewStatsResponse(BaseModel):
     mfe_r_avg: Optional[float] = None
     mae_r_avg: Optional[float] = None
     excursions: list[ReviewExcursionGroup] = []
+    # 信号时段（P2-2，A-5）：北京 4h 桶，口径同实盘归因「开仓时段」
+    time_groups: list[ReviewTimeGroup] = []
 
 
 # ===== 全漏斗转化率（docs/24 A5c） =====

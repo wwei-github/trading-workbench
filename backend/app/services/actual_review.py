@@ -191,8 +191,9 @@ def _touch_bucket(rec: TradeRecord) -> str:
 
 # 4h 状态（2026-10-10 五次拍板建，docs/17；2026-10-11 再重构 EMA 状态机 11 态）
 # 有序桶，验证锁单矩阵（缠绕/拐头双向禁开 + 宏观同侧态锁逆势 + 过渡放行）。
-# 11 态按行为聚合 6 桶（直接铺 11 桶过散，复盘可读性优先）：turn 两态→拐头、
-# macro_cross 两态→宏观交叉、recover 两态→恢复初期、aligned 两态→排列、
+# 11 态按行为聚合 7 桶（直接铺 11 桶过散，复盘可读性优先）：turn 两态→拐头、
+# macro_cross 两态→宏观交叉、recover 两态→恢复初期、aligned 两态→排列·多/空
+# （2026-10-28 P2-2 拆多空：多头排列与空头排列的行为不能互相抵消）、
 # dip/rally→过渡；旧行（weak/medium/strong/extreme/exhausted/overheat/
 # cooling 退役档）/无 4h 数据 NULL→「未知」
 _HTF_PHASE_LABELS = {
@@ -200,10 +201,10 @@ _HTF_PHASE_LABELS = {
     "turn_bull": "拐头", "turn_bear": "拐头",
     "macro_cross_bull": "宏观交叉", "macro_cross_bear": "宏观交叉",
     "bull_recover": "恢复初期", "bear_recover": "恢复初期",
-    "aligned_bull": "排列", "aligned_bear": "排列",
+    "aligned_bull": "排列·多", "aligned_bear": "排列·空",
     "bull_dip": "过渡", "bear_rally": "过渡",
 }
-_HTF_PHASE_BUCKETS = ("缠绕", "拐头", "宏观交叉", "恢复初期", "排列", "过渡", "未知")
+_HTF_PHASE_BUCKETS = ("缠绕", "拐头", "宏观交叉", "恢复初期", "排列·多", "排列·空", "过渡", "未知")
 
 
 def _htf_phase_bucket(rec: TradeRecord) -> str:
@@ -386,9 +387,9 @@ def build_actual_review(db: Session, days: int, extra_filter=None) -> dict:
         # 与深回撤（EMA144）的胜率/EV 对比，验证「回踩越深越稳」假设
         ("回踩位置", _touch_bucket, _TOUCH_BUCKETS),
         # 4h状态（2026-10-10 五次拍板，docs/17；2026-10-11 再重构 EMA 状态机
-        # 11 态聚合 6 桶）：缠绕/拐头 × 宏观交叉/恢复初期/排列/过渡 × 胜率/EV，
-        # 验证状态机锁单矩阵（缠绕/拐头双向禁开 + 宏观同侧态锁逆势 + 过渡放行）
-        # 的分组贡献；旧行（退役旧枚举）NULL→「未知」
+        # 11 态聚合 7 桶）：缠绕/拐头 × 宏观交叉/恢复初期/排列·多/排列·空/过渡 ×
+        # 胜率/EV，验证状态机锁单矩阵（缠绕/拐头双向禁开 + 宏观同侧态锁逆势 +
+        # 过渡放行）的分组贡献；旧行（退役旧枚举）NULL→「未知」
         ("4h趋势期", _htf_phase_bucket, _HTF_PHASE_BUCKETS),
     ):
         buckets: dict[str, list] = {}

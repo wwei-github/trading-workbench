@@ -31,6 +31,7 @@ from app.schemas.scan import (
     ReviewGroupStats,
     ReviewEntryDiagGroup,
     ReviewExcursionGroup,
+    ReviewTimeGroup,
     ReviewStatsResponse,
     LatencyMetric,
     ReviewLatency,
@@ -1270,7 +1271,30 @@ def review_stats(days: int = Query(30, ge=1, le=180), db: Session = Depends(get_
     # TRIGGER_FAMILY 键集与实盘归因共用同源常量，作为触发器白名单防两处漂移；
     # 2026-09-28 docs/22 触点体系：组键扩为 (signal_type, touch_ref)——同触发类型
     # 不同触点位的回放行为分开统计（无触点行 touch_ref=None 单独成组）
-    from app.services.actual_review import TRIGGER_FAMILY, TRIGGER_LEGACY
+    from app.services.actual_review import HOUR_BUCKETS, TRIGGER_FAMILY, TRIGGER_LEGACY
+
+    # 信号时段（P2-2，A-5）：AIAnalysis.created_at=分析/决策时间（UTC）换算北京时，
+    # 落 4h 桶；与实盘归因「开仓时段」同桶同文案，便于两边对照坏时段。
+    # 无分析行/无 ai_analysis_id 的回放行归「未知」（不丢样本）
+    hour_buckets: dict[str, list[TradeReview]] = {}
+    for r in rows:
+        a = ai_map.get(str(r.ai_analysis_id)) if r.ai_analysis_id else None
+        bucket = "未知"
+        if a is not None and a.created_at is not None:
+            cst = a.created_at + timedelta(hours=8)
+            for lo, hi in HOUR_BUCKETS:
+                if lo <= cst.hour < hi:
+                    bucket = f"北京 {lo:02d}-{hi:02d} 时"
+                    break
+        hour_buckets.setdefault(bucket, []).append(r)
+    for bucket in [f"北京 {lo:02d}-{hi:02d} 时" for lo, hi in HOUR_BUCKETS] + ["未知"]:
+        items = hour_buckets.get(bucket)
+        if not items:
+            continue
+        agg = _agg_stats(items)
+        resp.time_groups.append(
+            ReviewTimeGroup(bucket=bucket, **agg, ev_r=_agg_ev(items))
+        )
 
     buckets: dict[tuple[str, Optional[str]], list[TradeReview]] = {}
     for r in rows:
