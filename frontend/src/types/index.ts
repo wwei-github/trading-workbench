@@ -177,7 +177,7 @@ export interface AIAnalysis {
   tactic_reason?: string | null;
   tp_mode?: string | null; // 止盈模式（历史字段：2026-10-12 策略二退役后停写；新行 null，旧行按 ladder 展示）
   created_at: string;
-  review_status?: string | null; // 复盘结果：win_tp1 / win_tp2 / loss / expired（24h 后回放定论）
+  review_status?: string | null; // 复盘结果：win_tp1 / win_tp2 / loss / censored（未触发）/ expired（无效计划）
 }
 
 // 战法（用户自建战术剧本，仅借鉴标注不做硬闸）

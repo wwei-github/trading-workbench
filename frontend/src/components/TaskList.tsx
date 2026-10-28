@@ -36,7 +36,8 @@ const outcomeMeta = (scheme: ColorScheme): Record<string, { label: string; color
   win_tp1: { label: 'TP1达成', color: schemeTag(scheme).up },
   win_tp2: { label: 'TP2达成', color: schemeTag(scheme).up },
   loss: { label: '止损', color: schemeTag(scheme).down },
-  expired: { label: '未定论', color: 'default' },
+  censored: { label: '未触发(删失)', color: 'default' },
+  expired: { label: '无效计划', color: 'default' },
 })
 
 const DIR_LABEL: Record<string, string> = { long: '多', short: '空' }

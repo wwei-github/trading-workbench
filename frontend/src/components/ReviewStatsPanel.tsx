@@ -310,12 +310,18 @@ export default function ReviewStatsPanel() {
       sorter: (a, b) => a.total - b.total,
     },
     {
-      title: '胜',
-      key: 'win',
-      width: 60,
-      render: (_: unknown, g: ReviewEntryDiagGroup) => (
-        <Tag color={schemeTag(colorScheme).up}>{g.win_tp1 + g.win_tp2}</Tag>
-      ),
+      title: '胜·TP1',
+      dataIndex: 'win_tp1',
+      key: 'win_tp1',
+      width: 70,
+      render: (v: number) => <Tag color={schemeTag(colorScheme).up}>{v}</Tag>,
+    },
+    {
+      title: '胜·TP2',
+      dataIndex: 'win_tp2',
+      key: 'win_tp2',
+      width: 70,
+      render: (v: number) => <Tag color={schemeTag(colorScheme).up}>{v}</Tag>,
     },
     {
       title: '负',
@@ -331,6 +337,19 @@ export default function ReviewStatsPanel() {
       width: 90,
       sorter: (a, b) => a.win_rate - b.win_rate,
       render: (v: number) => renderWinRate(v),
+    },
+    {
+      title: (
+        <Tooltip title="Wilson 95% 置信区间；区间跨 50% = 尚不能判断该组胜率优劣">
+          胜率区间
+        </Tooltip>
+      ),
+      key: 'win_ci',
+      width: 100,
+      render: (_: unknown, g: ReviewEntryDiagGroup) =>
+        g.win_rate_ci_low == null || g.win_rate_ci_high == null
+          ? '-'
+          : `${(g.win_rate_ci_low * 100).toFixed(0)}~${(g.win_rate_ci_high * 100).toFixed(0)}%`,
     },
     {
       title: '未触发',
