@@ -458,7 +458,7 @@ def test_review_stats_export_csv(db):
     lines = resp.body.decode("utf-8-sig").strip().splitlines()
     assert len(lines) == 3
     head = lines[0].split(",")
-    for col in ("symbol", "outcome", "mfe_r", "ai_created_at_cst"):
+    for col in ("symbol", "outcome", "mfe_r", "ai_created_at_cst", "created_at_utc"):
         assert col in head
     rows = {r.split(",")[0]: dict(zip(head, r.split(","))) for r in lines[1:]}
     assert rows["CSV1USDT"]["outcome"] == "win_tp1"

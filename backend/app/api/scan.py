@@ -1268,8 +1268,9 @@ def review_stats_export(
             "mae_r": _f(r.mae_r),
             # 分析/决策时间（北京时间），口径同 /review/stats 的 time_groups
             "ai_created_at_cst": cst.isoformat() if cst else None,
-            "checked_at": r.checked_at.isoformat() if r.checked_at else None,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
+            # 其余时间列为 UTC（数据库原值），列名显式标注避免与北京列混读
+            "checked_at_utc": r.checked_at.isoformat() if r.checked_at else None,
+            "created_at_utc": r.created_at.isoformat() if r.created_at else None,
         })
     return _csv_response(rows, f"review-stats-{days}d.csv")
 
@@ -1841,7 +1842,13 @@ def review_actual_export(
     result = build_actual_review(
         db, days, extra_filter=_account_scope_filter(TradeRecord, scope)
     )
-    return _csv_response(result["items"], f"review-actual-{days}d-{scope}.csv")
+    # opened_at/closed_at 为 UTC 原值：列名加 _utc，避免与「北京 HH-HH 时」分组混读
+    items = [
+        {**{f"{k}_utc": it.get(k) for k in ("opened_at", "closed_at")},
+         **{k: v for k, v in it.items() if k not in ("opened_at", "closed_at")}}
+        for it in result["items"]
+    ]
+    return _csv_response(items, f"review-actual-{days}d-{scope}.csv")
 
 
 @router.get("/review/actual", response_model=ActualReviewResponse)

@@ -556,6 +556,13 @@ export default function ReviewStatsPanel() {
       render: (v: number) => <Tag color={schemeTag(colorScheme).up}>{v}</Tag>,
     },
     {
+      title: '胜·TP2',
+      dataIndex: 'win_tp2',
+      key: 'win_tp2',
+      width: 80,
+      render: (v: number) => <Tag color={schemeTag(colorScheme).up}>{v}</Tag>,
+    },
+    {
       title: '负',
       dataIndex: 'loss',
       key: 'loss',
@@ -570,6 +577,16 @@ export default function ReviewStatsPanel() {
       ),
       dataIndex: 'censored',
       key: 'censored',
+      width: 80,
+    },
+    {
+      title: (
+        <Tooltip title="计划三价缺失或无效，无法回放；与「窗口未触发」分开统计">
+          无效计划
+        </Tooltip>
+      ),
+      dataIndex: 'expired',
+      key: 'expired',
       width: 80,
     },
     {

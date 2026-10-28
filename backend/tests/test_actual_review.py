@@ -198,4 +198,7 @@ def test_actual_review_export_csv(db):
     head = lines[0].split(",")
     for col in ("symbol", "direction", "realized_pnl", "exit_reason", "error_tags"):
         assert col in head
+    # 时间列显式标 UTC（与页面「北京 HH-HH 时」分组区分）
+    assert "opened_at_utc" in head and "closed_at_utc" in head
+    assert "opened_at" not in head
     assert len(lines[1].split(",")) == len(head)
