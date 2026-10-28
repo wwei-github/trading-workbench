@@ -146,6 +146,10 @@ class SystemConfig(Base):
     # 出场走「仅 TP1 80% + 剩余 20% 跟进」；开启后有 TP2 的单按 TP1 60% / TP2 20%
     # 两档分批。手动接管单不受此开关限制
     tp2_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 止盈全平模式（2026-10-28，交易配置页）：默认关闭——TP 档后剩余由跟进止损退出。
+    # 开启后不再留跟进尾仓：有 TP2 → TP1 按比例减仓、TP2 平掉剩余全部；
+    # 无 TP2 → TP1 一次平掉全部仓位
+    tp_full_exit_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     # TP 分批比例（2026-10-09，% 值，NULL=回落 env 默认 60/20/80）：
     # 有 TP2 → TP1 tp1_qty_pct_with_tp2% / TP2 tp2_qty_pct% / 剩余跟进；
     # 无 TP2 → TP1 tp1_qty_pct_no_tp2% / 剩余跟进

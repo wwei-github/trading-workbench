@@ -169,14 +169,45 @@ def _tp_ratio_cfg(cfg) -> tuple[float, float, float]:
 
 
 def _tp_quantities(qty: float, tp2: float,
-                   p1: float = 60.0, p2: float = 20.0, p1s: float = 80.0) -> tuple[float, float]:
+                   p1: float = 60.0, p2: float = 20.0, p1s: float = 80.0,
+                   full_exit: bool = False) -> tuple[float, float]:
     """TP1/TP2 分配数量（比例 % 值由 _tp_ratio_cfg 从 system_config/env 解析）：
     AI 给出 TP2 → TP1 p1% / TP2 p2% 两档分批止盈，剩余额跟进；
     未给出（AI 未报 / 前方无结构位程序回退清零 / 配置关闭 TP2）
-    → TP1 一次止盈 p1s%，剩余额从 TP1 成交起由跟进止损退出（与 TP2 后同机制）"""
+    → TP1 一次止盈 p1s%，剩余额从 TP1 成交起由跟进止损退出（与 TP2 后同机制）。
+
+    full_exit（2026-10-28 止盈全平模式）：不留跟进尾仓——有 TP2 时 TP2 平掉
+    TP1 减仓后的剩余全部；无 TP2 时 TP1 一次平掉 100% 仓位。"""
     if tp2 and tp2 > 0:
+        if full_exit:
+            return qty * p1 / 100, qty * (100 - p1) / 100
         return qty * p1 / 100, qty * p2 / 100
-    return qty * p1s / 100, 0.0
+    return (qty if full_exit else qty * p1s / 100), 0.0
+
+
+def _tp_order_quantities(trader: BinanceTrader, symbol: str, qty: float,
+                         tp2: float, cfg) -> tuple[float, float, bool]:
+    """按配置解析并取整 TP1/TP2 挂单数量，返回 (qty_tp1, qty_tp2, 是否全平模式)。
+
+    全平模式下 TP2 数量取「qty − 取整后的 TP1」，保证两档合计恰好覆盖全仓、
+    不留交易所最小步长以下的碎尾仓；关闭时沿用分批比例。"""
+    p1, p2, p1s = _tp_ratio_cfg(cfg)
+    full_exit = bool(cfg is not None and cfg.tp_full_exit_enabled)
+    q1, q2 = _tp_quantities(qty, tp2, p1, p2, p1s, full_exit=full_exit)
+    qty_tp1 = trader.round_qty(symbol, q1)
+    if full_exit and tp2 > 0:
+        qty_tp2 = trader.round_qty(symbol, max(0.0, qty - qty_tp1))
+    else:
+        qty_tp2 = trader.round_qty(symbol, q2)
+    return qty_tp1, qty_tp2, full_exit
+
+
+def _tp_sum_ok(qty_tp1: float, qty_tp2: float, qty: float,
+               full_exit: bool) -> bool:
+    """两档止盈数量合计校验：全平模式允许恰好等于全仓（TP2 平完剩余），
+    关闭时仍须严格小于（保留跟进尾仓，与 2026-10-28 前的行为一致）。"""
+    total = qty_tp1 + qty_tp2
+    return total <= qty if full_exit else total < qty
 
 
 # 市价入场确认（2026-10-19 最小加固）：POST 市价单返回 200+orderId 仅表示「已受理」，
@@ -921,9 +952,7 @@ def _attempt_open(
         # 开完仓才挂 TP1 被交易所拒单，会走紧急撤单+平仓，且该失败不落记录，
         # 候选每小时重试"开仓→拒单→平仓"空转（docs/07 §8-A1）。TP2 本就有
         # min_qty 检查（不足时静默跳过该档），TP1 是主止盈档、缺它无意义。
-        p1, p2, p1s = _tp_ratio_cfg(cfg)
-        q1_pre, _ = _tp_quantities(qty, tp2, p1, p2, p1s)
-        qty_tp1_pre = trader.round_qty(symbol, q1_pre)
+        qty_tp1_pre, _, _tp_full = _tp_order_quantities(trader, symbol, qty, tp2, cfg)
         if qty_tp1_pre < f["min_qty"]:
             logger.info(
                 "开仓放弃 %s：止盈一数量 %s 低于交易所最小数量 %s，分批止盈无法挂单",
@@ -1123,13 +1152,14 @@ def _attempt_open(
             sl_order = trader.stop_market_close(
                 symbol, close_side, trader.round_price(symbol, sl))
             rec_tp1 = tp1
-            q1, q2 = _tp_quantities(qty, tp2, p1, p2, p1s)
-            qty_tp1 = trader.round_qty(symbol, q1)
-            qty_tp2 = trader.round_qty(symbol, q2)
+            qty_tp1, qty_tp2, _tp_full = _tp_order_quantities(
+                trader, symbol, qty, tp2, cfg)
             tp1_order = trader.take_profit_reduce(
                 symbol, close_side, qty_tp1, trader.round_price(symbol, tp1))
             tp2_order = None
-            if tp2 > 0 and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
+            # 全平模式允许两档合计恰好等于全仓；关闭时须严格小于（保留跟进尾仓）
+            if tp2 > 0 and qty_tp2 >= f["min_qty"] and _tp_sum_ok(
+                    qty_tp1, qty_tp2, qty, _tp_full):
                 tp2_order = trader.take_profit_reduce(
                     symbol, close_side, qty_tp2, trader.round_price(symbol, tp2))
             now = datetime.utcnow()
@@ -1173,6 +1203,9 @@ def _attempt_open(
                     "tp2_order_id": (tp2_order.get("algoId") or tp2_order.get("orderId")) if tp2_order else None,
                     "qty_tp1": qty_tp1,
                     "qty_tp2": qty_tp2 if tp2_order else 0,
+                    # 止盈全平模式快照（2026-10-28）：巡检结算据本单口径推断
+                    # 「TP 档平完全仓」出场，不随期间配置改动漂移
+                    "tp_full_exit": _tp_full,
                     "capital_base": _capital_base(wallet),
                     "wallet": wallet,
                     # 价差盈亏书签（REALIZED_PNL 累计，仅价差不含费用）：
@@ -1460,16 +1493,16 @@ def materialize_pending_entry(
         a = db.get(AIAnalysis, pe.ai_analysis_id) if pe.ai_analysis_id else None
         trader.setup_leverage(symbol, leverage)
         f = trader.filters(symbol)
-        p1, p2, p1s = _tp_ratio_cfg(cfg)
         sl_order = trader.stop_market_close(
             symbol, close_side, trader.round_price(symbol, sl))
-        q1, q2 = _tp_quantities(qty, tp2, p1, p2, p1s)
-        qty_tp1 = trader.round_qty(symbol, q1)
-        qty_tp2 = trader.round_qty(symbol, q2)
+        qty_tp1, qty_tp2, _tp_full = _tp_order_quantities(
+            trader, symbol, qty, tp2, cfg)
         tp1_order = trader.take_profit_reduce(
             symbol, close_side, qty_tp1, trader.round_price(symbol, tp1))
         tp2_order = None
-        if tp2 > 0 and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
+        # 全平模式允许两档合计恰好等于全仓；关闭时须严格小于（保留跟进尾仓）
+        if tp2 > 0 and qty_tp2 >= f["min_qty"] and _tp_sum_ok(
+                qty_tp1, qty_tp2, qty, _tp_full):
             tp2_order = trader.take_profit_reduce(
                 symbol, close_side, qty_tp2, trader.round_price(symbol, tp2))
         # ⑤ 建 TradeRecord（口径镜像 _attempt_open 的市价开仓）
@@ -1551,6 +1584,9 @@ def materialize_pending_entry(
                 "tp2_order_id": (tp2_order.get("algoId") or tp2_order.get("orderId")) if tp2_order else None,
                 "qty_tp1": qty_tp1,
                 "qty_tp2": qty_tp2 if tp2_order else 0,
+                # 止盈全平模式快照（2026-10-28）：成交落地时定稿，巡检结算据本单
+                # 口径推断「TP 档平完全仓」出场，不随期间配置改动漂移
+                "tp_full_exit": _tp_full,
                 "capital_base": raw.get("capital_base") or _capital_base(float(raw.get("wallet") or 0)),
                 "wallet": raw.get("wallet"),
                 "realized_bookmark": 0,
@@ -2709,6 +2745,22 @@ def _zero_pos_exit_reason(rec: TradeRecord, tp1_hit: bool,
     return _derive_exit_reason(rec, fee_rate)
 
 
+def _is_tp_full_exit(rec: TradeRecord, raw: dict, tp1_hit: bool,
+                     tp2_hit: bool) -> bool:
+    """仓位归零是否由「止盈全平模式」的 TP 档平完全仓导致（2026-10-28）：
+    本单开仓快照 tp_full_exit 开启，且实际挂出的 TP 档合计覆盖全仓
+    （qty_tp1 + qty_tp2 ≥ qty；TP2 挂单失败时为 TP1 单档比例，不算全平），
+    再有 TP2 的单须 TP2 真成交（TP1 后回踩止损仍算保本/跟踪出场）、
+    无 TP2 的单 TP1 即全平（TP1 没挂上/未成交不算）。"""
+    if not raw.get("tp_full_exit"):
+        return False
+    qty = float(rec.qty or 0)
+    covered = float(raw.get("qty_tp1") or 0) + float(raw.get("qty_tp2") or 0)
+    if qty <= 0 or covered < qty * 0.99:
+        return False  # 挂单结构未覆盖全仓（如 TP2 挂单失败）
+    return tp2_hit if rec.tp2 else tp1_hit
+
+
 def _detect_external_close(rt: BinanceTrader, rec: TradeRecord) -> Optional[dict]:
     """识别外部平仓（交易所网页/App 手动平仓，非本系统挂单链成交）。
 
@@ -3210,11 +3262,22 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                         # TP1 与 SL 在同一巡检间隔内先后成交（如 75% TP1 后回踩触发 SL）：补记 TP1_FILL
                         _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
                                                          "realized_pnl": round(pnl, 6)})
+                    # 止盈全平模式（2026-10-28）：TP 档直接平完全仓——有 TP2 的单需
+                    # TP2 真成交才算（TP1 后回踩止损仍是保本/跟踪出场）；无 TP2 的单
+                    # TP1 即全平（TP1_FILL 已在上方补记）。已升到 TP2_HIT 的单，归零
+                    # 来自后续止损/跟踪，不按 tp_full 记
+                    tp_full = rec.status in ("OPENED", "TP1_HIT") and \
+                        _is_tp_full_exit(rec, raw, tp1_hit, tp2_hit)
+                    if tp_full and rec.tp2 and tp2_hit:
+                        _add_event(db, rec, "TP2_FILL", {"qty": raw.get("qty_tp2"),
+                                                         "realized_pnl": round(pnl, 6)})
                     # 程序主动全平（2026-10-12 策略二删除后不再产生新 override；
                     # 存量在跑 trail 单/历史 htf_state 仍按此消费，防误标止损类出场）→
                     # exit_reason=htf_state 之类，不让 bookkeeping 推断误标
                     if raw.get("exit_override"):
                         exit_reason = raw["exit_override"]
+                    elif tp_full:
+                        exit_reason = "tp_full"
                     else:
                         exit_reason = _zero_pos_exit_reason(rec, tp1_hit, fee_rate)
                         # 外部平仓识别（2026-10-02 GTCUSDT 案例）：最后一批平仓侧成交
@@ -3313,7 +3376,7 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                                      swing_order=swing_order)
                     db.commit()
                     handled += 1
-                elif tp1_hit and ratio <= 0.75:
+                elif tp1_hit and (ratio <= 0.75 or raw.get("tp_full_exit")):
                     realized = _record_realized(db, rt, rec)
                     tranche = _tranche_pnl(rt, rec, raw)
                     _add_event(db, rec, "TP1_FILL", {"qty": raw.get("qty_tp1"),
@@ -3967,21 +4030,23 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
                 logger.error("导入 %s：新 SL 挂单失败且原价恢复也失败，仓位暂无止损保护！", symbol)
         raise
     f = trader.filters(symbol)
-    _p1, _p2, _p1s = _tp_ratio_cfg(_adopt_cfg)
-    qty_tp1, qty_tp2 = _tp_quantities(qty, tp2, _p1, _p2, _p1s)
+    qty_tp1, qty_tp2, _tp_full = _tp_order_quantities(
+        trader, symbol, qty, tp2, _adopt_cfg)
     tp1_order = None
     tp2_order = None
     if qty_tp1 >= f["min_qty"]:
         try:
             tp1_order = trader.take_profit_reduce(
-                symbol, close_side, trader.round_qty(symbol, qty_tp1),
+                symbol, close_side, qty_tp1,
                 trader.round_price(symbol, tp1))
         except Exception as e:
             logger.warning("导入 %s：TP1 挂单失败（SL 已就位，仅缺自动止盈）: %s", symbol, e)
-    if tp2 > 0 and tp1_order and qty_tp2 >= f["min_qty"] and qty_tp1 + qty_tp2 < qty:
+    # 全平模式允许两档合计恰好等于全仓；关闭时须严格小于（保留跟进尾仓）
+    if tp2 > 0 and tp1_order and qty_tp2 >= f["min_qty"] and _tp_sum_ok(
+            qty_tp1, qty_tp2, qty, _tp_full):
         try:
             tp2_order = trader.take_profit_reduce(
-                symbol, close_side, trader.round_qty(symbol, qty_tp2),
+                symbol, close_side, qty_tp2,
                 trader.round_price(symbol, tp2))
         except Exception as e:
             logger.warning("导入 %s：TP2 挂单失败: %s", symbol, e)
@@ -4029,6 +4094,8 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
             "tp2_order_id": (tp2_order.get("algoId") or tp2_order.get("orderId")) if tp2_order else None,
             "qty_tp1": qty_tp1 if tp1_order else 0,
             "qty_tp2": qty_tp2 if tp2_order else 0,
+            # 止盈全平模式快照（2026-10-28）：同开仓路径，巡检按本单口径结算
+            "tp_full_exit": _tp_full,
             "realized_bookmark": 0,  # 接管时点起算（_tranche_pnl 书签）
             "adopt_price": price_now,
             "adopt_note": "导入持仓：接管时点起的盈亏与仓位管理由系统跟进，接管前已实现盈亏不回溯",

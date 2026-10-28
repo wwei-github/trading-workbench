@@ -277,6 +277,7 @@ export interface SystemConfig {
   weekly_breaker_ack_at?: string | null; // 周减速人工确认时刻（只读，2026-10-07）
   atr_trail_k?: number | null; // ATR 跟进倍数（Chandelier，默认 3；0=关闭 ATR 腿）
   tp2_enabled?: boolean; // TP2 分批止盈开关（2026-10-08 默认关：仅 TP1 80%+剩余 20% 跟进；开启后 TP1 60%/TP2 20%）
+  tp_full_exit_enabled?: boolean; // 止盈全平模式（2026-10-28 默认关）：开=有 TP2 时 TP2 平掉剩余全部、无 TP2 时 TP1 平 100%；关=分批止盈 + 跟进尾仓
   tp1_qty_pct_with_tp2?: number | null; // 有 TP2 时 TP1 分批比例 %（NULL=默认 60）
   tp2_qty_pct?: number | null; // TP2 分批比例 %（NULL=默认 20；两档剩余自动跟进）
   tp1_qty_pct_no_tp2?: number | null; // 无 TP2 时 TP1 一次止盈比例 %（NULL=默认 80）
@@ -520,7 +521,7 @@ export interface TradeRecord {
   realized_pnl: number | null // 正/负值 USDT（净额：含手续费/资金费；运行中=已止盈部分，结算后=全程净额）
   unrealized_pnl: number | null // 浮动盈亏快照（运行中每小时 :10 巡检刷新，docs/16；终态 0）
   pnl_pct: number | null // 相对止损金额 %（运行中=（已实现+浮动）/risk_amount）
-  exit_reason: string | null // sl / tp1_then_sl / tp1_trail / trail_sl / breakeven_sl / htf_state / liquidation / manual / error
+  exit_reason: string | null // sl / tp1_then_sl / tp1_trail / trail_sl / breakeven_sl / tp_full / htf_state / liquidation / manual / error
   fail_reason?: string | null // 开仓失败原因（仅 FAILED 记录，后端读自 raw.fail_reason）
   signal_type?: string | null // 触发信号类型（trigger_breakout 等；null=导入持仓/旧行）
   pattern?: string | null // 触发K线形态（hammer 等；突破类为 null）

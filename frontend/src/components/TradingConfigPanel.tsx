@@ -61,6 +61,7 @@ export default function TradingConfigPanel() {
         monthly_dd_stop_pct: aiConfig.monthly_dd_stop_pct ?? null,
         atr_trail_k: aiConfig.atr_trail_k ?? null,
         tp2_enabled: aiConfig.tp2_enabled ?? false,
+        tp_full_exit_enabled: aiConfig.tp_full_exit_enabled ?? false,
         tp1_qty_pct_with_tp2: aiConfig.tp1_qty_pct_with_tp2 ?? null, // % 值直存（NULL=默认 60）
         tp2_qty_pct: aiConfig.tp2_qty_pct ?? null,
         tp1_qty_pct_no_tp2: aiConfig.tp1_qty_pct_no_tp2 ?? null,
@@ -102,6 +103,7 @@ export default function TradingConfigPanel() {
         monthly_dd_stop_pct: values.monthly_dd_stop_pct ?? null,
         atr_trail_k: values.atr_trail_k ?? null,
         tp2_enabled: values.tp2_enabled ?? false,
+        tp_full_exit_enabled: values.tp_full_exit_enabled ?? false,
         tp1_qty_pct_with_tp2: values.tp1_qty_pct_with_tp2 ?? null,
         tp2_qty_pct: values.tp2_qty_pct ?? null,
         tp1_qty_pct_no_tp2: values.tp1_qty_pct_no_tp2 ?? null,
@@ -412,6 +414,17 @@ export default function TradingConfigPanel() {
                 valuePropName="checked"
                 initialValue={false}
                 tooltip="默认关闭：AI 报出的 TP2 不挂档，出场走「TP1 一次止盈 80% + 剩余 20% 跟进」。开启后：有 TP2 的单按 TP1 60% / TP2 20% / 剩余 20% 跟进分批（比例可在下方三项配置）；手动接管单不受此开关限制；止盈模式为「纯跟踪」的单不挂任何止盈档，此开关不适用"
+              >
+                <Switch checkedChildren="启用" unCheckedChildren="关闭" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item
+                label="止盈全平模式"
+                name="tp_full_exit_enabled"
+                valuePropName="checked"
+                initialValue={false}
+                tooltip="默认关闭：分批止盈后剩余尾仓由跟进止损退出（即现有行为）。开启后不再留跟进尾仓——有 TP2 的单：TP1 按上方比例减仓，TP2 一次平掉剩余全部；无 TP2 的单：TP1 一次平掉 100% 仓位（此时 TP2 比例与「无 TP2 止盈比例」不再生效）。仅对开关开启后新开的单生效，已开单按开仓时口径管理"
               >
                 <Switch checkedChildren="启用" unCheckedChildren="关闭" />
               </Form.Item>

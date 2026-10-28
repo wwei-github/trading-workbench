@@ -34,6 +34,7 @@ const EXIT_REASON_MAP: Record<string, string> = {
   tp1_trail: 'TP1后跟踪止损',
   trail_sl: 'TP2后跟踪止损',
   breakeven_sl: '保本止损',
+  tp_full: '止盈全平',
   liquidation: '强平（保证金亏光）',
   manual: '手动平仓',
   error: '异常平仓',

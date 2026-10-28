@@ -320,6 +320,12 @@ def _run_migrations(engine):
             "ALTER TABLE system_config "
             "ADD COLUMN IF NOT EXISTS tp2_enabled BOOLEAN NOT NULL DEFAULT FALSE"
         ))
+        # 止盈全平模式（2026-10-28）：默认关——TP 档后剩余由跟进止损退出；
+        # 开启后有 TP2 由 TP2 平掉剩余全部、无 TP2 由 TP1 平掉全部仓位
+        conn.execute(text(
+            "ALTER TABLE system_config "
+            "ADD COLUMN IF NOT EXISTS tp_full_exit_enabled BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
         # TP 分批比例（2026-10-09，% 值可配）：NULL=env 默认 60/20/80
         conn.execute(text(
             "ALTER TABLE system_config "
@@ -630,7 +636,8 @@ def _run_migrations(engine):
             " trading_enabled, "
             " trading_enabled_testnet, trading_enabled_live, "
             " risk_budget_mode, risk_fixed_amount, spot_trading_testnet, "
-            " live_initial_capital, tp2_enabled, feishu_testnet_notify_enabled) "
+            " live_initial_capital, tp2_enabled, tp_full_exit_enabled, "
+            " feishu_testnet_notify_enabled) "
             "VALUES (1, false, :kline_interval, :kline_window, "
             " :breakout_threshold, :r_squared_threshold, :repeat_window_hours, "
             " :swing_order, :pullback_tolerance, '系统运行时配置', "
@@ -641,7 +648,7 @@ def _run_migrations(engine):
             " :trading_enabled, "
             " :trading_enabled_testnet, :trading_enabled_live, "
             " 'pct', 3, true, "
-            " 0, false, true) "
+            " 0, false, false, true) "
             "ON CONFLICT (id) DO NOTHING"
         ),
             {

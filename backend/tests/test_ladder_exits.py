@@ -66,6 +66,7 @@ class StubTrader:
         self.price_val = price
         self.sl_orders: list[float] = []
         self.tp_orders: list[float] = []
+        self.tp_qtys: list[float] = []
         self.amt = amt
         self.min_qty = min_qty
         self.account_key = "testnet-1"
@@ -105,6 +106,7 @@ class StubTrader:
 
     def take_profit_reduce(self, symbol, side, qty, price):
         self.tp_orders.append(price)
+        self.tp_qtys.append(qty)
         return {"algoId": 600 + len(self.tp_orders)}
 
 
@@ -158,3 +160,71 @@ def test_auto_adopt_no_tp1_skipped(db, monkeypatch):
     trader = StubTrader(price=100.0, amt=1.0)
     assert te.auto_adopt_positions(db, trader) == []
     assert db.query(TradeRecord).first() is None
+
+
+# ── 3. 止盈全平模式（2026-10-28）：TP 档直接平完全仓 ─────────────
+
+
+def test_tp_quantities_full_exit():
+    """full_exit=True：有 TP2 → TP1 p1% / TP2 剩余全部；无 TP2 → TP1 100%。
+    关闭时保持分批口径（有 TP2 → p1/p2，无 TP2 → p1s）"""
+    assert te._tp_quantities(100, 105, 60, 20, 80, full_exit=True) == (60, 40)
+    assert te._tp_quantities(100, 0, 60, 20, 80, full_exit=True) == (100, 0)
+    assert te._tp_quantities(100, 105, 60, 20, 80) == (60, 20)
+    assert te._tp_quantities(100, 0, 60, 20, 80) == (80, 0)
+
+
+def test_adopt_full_exit_tp2_closes_remainder(db):
+    """全平模式接管有 TP2 的单：TP1 按比例减仓，TP2 数量 = 剩余全部（两档合计 = 全仓）"""
+    from app.models.system_config import SystemConfig
+
+    db.add(SystemConfig(id=1, tp_full_exit_enabled=True))
+    db.commit()
+    trader = StubTrader(price=100.0, amt=10.0, min_qty=0.001)
+    rec = te.adopt_position(
+        db, trader, "BTCUSDT", stop_loss=98.0, tp1=104.0, tp2=108.0)
+    assert rec.raw["tp_full_exit"] is True
+    assert trader.tp_qtys == pytest.approx([6.0, 4.0])  # 60% / 剩余 40%
+    assert rec.raw["qty_tp1"] == pytest.approx(6.0)
+    assert rec.raw["qty_tp2"] == pytest.approx(4.0)
+
+
+def test_adopt_full_exit_without_tp2_closes_all(db):
+    """全平模式接管无 TP2 的单：TP1 一次平掉 100%（忽略无 TP2 比例 80%）"""
+    from app.models.system_config import SystemConfig
+
+    db.add(SystemConfig(id=1, tp_full_exit_enabled=True))
+    db.commit()
+    trader = StubTrader(price=100.0, amt=10.0, min_qty=0.001)
+    rec = te.adopt_position(db, trader, "BTCUSDT", stop_loss=98.0, tp1=104.0)
+    assert rec.raw["tp_full_exit"] is True
+    assert trader.tp_qtys == pytest.approx([10.0])
+    assert rec.raw["qty_tp1"] == pytest.approx(10.0)
+    assert rec.raw["qty_tp2"] == 0
+
+
+def test_is_tp_full_exit_attribution():
+    """零仓出场归因（2026-10-28）：全平快照 + 挂单覆盖全仓 + 对应 TP 真成交才算
+    tp_full；关闭开关的单、TP1 后回踩止损（TP2 未成交）、TP2 挂单失败都不算"""
+    from types import SimpleNamespace
+
+    rec_tp2 = SimpleNamespace(qty=100.0, tp2=104.0)
+    rec_no_tp2 = SimpleNamespace(qty=100.0, tp2=0)
+    raw_tp2 = {"tp_full_exit": True, "qty_tp1": 60.0, "qty_tp2": 40.0}
+    raw_no_tp2 = {"tp_full_exit": True, "qty_tp1": 100.0, "qty_tp2": 0}
+
+    # 有 TP2：TP2 成交才算；只 TP1 成交（随后回踩止损）不算
+    assert te._is_tp_full_exit(rec_tp2, raw_tp2, True, True) is True
+    assert te._is_tp_full_exit(rec_tp2, raw_tp2, True, False) is False
+    # 无 TP2：TP1 即全平
+    assert te._is_tp_full_exit(rec_no_tp2, raw_no_tp2, True, False) is True
+    assert te._is_tp_full_exit(rec_no_tp2, raw_no_tp2, False, False) is False
+    # 全平模式下 TP2 挂单失败（只剩 TP1 60%）：仓位归零来自止损，不算全平
+    raw_tp2_failed = {"tp_full_exit": True, "qty_tp1": 60.0, "qty_tp2": 0}
+    assert te._is_tp_full_exit(rec_no_tp2, raw_tp2_failed, True, False) is False
+    # 开关关闭的单一律不按 tp_full 记
+    assert te._is_tp_full_exit(
+        rec_no_tp2, {"tp_full_exit": False, "qty_tp1": 100.0, "qty_tp2": 0},
+        True, False) is False
+    assert te._is_tp_full_exit(rec_tp2, {}, True, True) is False
+

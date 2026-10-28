@@ -181,6 +181,22 @@ def test_tp2_enabled_toggle(client):
     assert http.get("/api/scans/config").json()["tp2_enabled"] is False
 
 
+def test_tp_full_exit_enabled_toggle(client):
+    """止盈全平模式开关（2026-10-28）：默认关 → PUT 开/关回读一致；未传不改动"""
+    http, _db = client
+    assert http.get("/api/scans/config").json()["tp_full_exit_enabled"] is False
+
+    assert http.put("/api/scans/config", json={"tp_full_exit_enabled": True}).status_code == 200
+    assert http.get("/api/scans/config").json()["tp_full_exit_enabled"] is True
+
+    # 未传该键（如仅调风控参数）不重置开关
+    assert http.put("/api/scans/config", json={"risk_pct": 4}).status_code == 200
+    assert http.get("/api/scans/config").json()["tp_full_exit_enabled"] is True
+
+    assert http.put("/api/scans/config", json={"tp_full_exit_enabled": False}).status_code == 200
+    assert http.get("/api/scans/config").json()["tp_full_exit_enabled"] is False
+
+
 def test_tp_qty_ratio_config(client):
     """TP 分批比例（2026-10-09 配置化）：默认 None → PUT 回读一致；
     越界/两档合计>95% 拒绝（跟进腿 ≥5% 铁律）；传 null 恢复 env 默认"""

@@ -536,6 +536,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         ai_pause_start_hour=cfg.ai_pause_start_hour,
         ai_pause_end_hour=cfg.ai_pause_end_hour,
         tp2_enabled=cfg.tp2_enabled,
+        tp_full_exit_enabled=bool(cfg.tp_full_exit_enabled),
         ai_configured=bool(_api_key),
         strategy_prompt_enabled=cfg.strategy_prompt_enabled,
         strategy_prompt=cfg.strategy_prompt or "",
@@ -821,6 +822,8 @@ def update_system_config(
         cfg.ai_pause_end_hour = pause_end
     if body.tp2_enabled is not None:
         cfg.tp2_enabled = body.tp2_enabled
+    if body.tp_full_exit_enabled is not None:
+        cfg.tp_full_exit_enabled = body.tp_full_exit_enabled
 
     # 策略提示词
     if body.strategy_prompt_enabled is not None:

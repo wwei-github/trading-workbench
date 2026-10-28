@@ -212,6 +212,7 @@ class SystemConfigOut(BaseModel):
     ai_analysis_enabled: bool
     ai_configured: bool  # 后端是否已配置 AI_API_KEY（不返回 key 本身）
     tp2_enabled: bool = False  # TP2 分批止盈开关（2026-10-08 默认关：仅 TP1 80%+剩余跟进）
+    tp_full_exit_enabled: bool = False  # 止盈全平模式（2026-10-28 默认关：开=TP 档不留跟进尾仓）
     # AI 分析暂停时段（2026-10-26，北京时间整点）：开启后每天 [start, end) 内跳过
     # 筛选后的自动 AI 分析；start > end 为跨零点，NULL/相等=未配置（不暂停）
     ai_pause_enabled: bool = False
@@ -334,6 +335,7 @@ class SystemConfigUpdate(BaseModel):
     ai_pause_start_hour: Optional[int] = None
     ai_pause_end_hour: Optional[int] = None
     tp2_enabled: Optional[bool] = None
+    tp_full_exit_enabled: Optional[bool] = None
 
     # 自定义策略提示词
     strategy_prompt_enabled: Optional[bool] = None
