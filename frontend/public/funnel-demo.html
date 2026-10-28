@@ -150,14 +150,9 @@
   .fr3 b{color:var(--ink)}
   .fr3 .lk{color:#2563eb;cursor:pointer;font-size:12px;white-space:nowrap}
   .fr3 .lk:hover{text-decoration:underline}
-  .fr4{max-height:0;overflow:hidden;transition:max-height .22s ease}
-  .fr4.open{max-height:280px;overflow:auto}
-  .fr4 .inner{padding:10px 16px 12px;border-top:1px dashed var(--line2)}
-  .fr4 table{font-size:12.5px}
   .fbar.compact .fstack{height:6px}
   .fbar.compact .fstack .sg .n{opacity:0}
   .fbar.compact .fr3{max-height:0;opacity:0;padding-top:0;padding-bottom:0}
-  .fbar.compact .fr4{max-height:0 !important}
   .fbar.compact .fr2{padding-bottom:8px}
   .fbar.compact .fk b{font-size:15px}
   .fbar.compact .fk i,.fbar.compact .fdelta .dchip{display:none}
@@ -311,7 +306,6 @@
             <div class="fcount" id="fCount"></div>
           </div>
           <div class="fr3" id="fOne"></div>
-          <div class="fr4" id="fBoards"><div class="inner" id="fBoardsIn"></div></div>
           <div class="banner" id="fBanner"><span id="fBannerText"></span>
             <button id="fBackLatest">回到最新一轮</button></div>
         </div>
@@ -742,36 +736,13 @@ kpis(document.getElementById('kpis-D'));
       <span style="color:var(--ink3)">${a.sub}</span>
       ${b?`<span style="color:#d6dbe1">|</span><span>其次</span><b>${b.name} ${b.n}</b>
       <span style="color:var(--ink3)">${b.sub}</span>`:''}
-      <span class="lk" id="fToggle">展开原因榜 Top5</span>`;
-    el('fBoardsIn').innerHTML = boardsHtml();
+`;
     el('fBanner').classList.toggle('on', !!r);
     el('fBannerText').textContent = r
       ? `正在回看 ${r[0]}：命中 ${r[1]} · 4h门 ${r[2]} · 拐头锁 ${r[3]}` : '';
     bindHead();
   }
-  function boardsHtml(){
-    return `<table><thead><tr><th style="width:34px">#</th><th>关卡</th>
-      <th style="width:62px" class="num">拦截</th><th class="num" style="width:62px">占拦截</th>
-      <th>构成与示例币</th></tr></thead><tbody>` + G.slice(0,5).map((g,i)=>{
-      const cs = g.keys.flatMap(coinsOf);
-      const ex = cs.slice(0,3).map(c=>`<span class="fx">${c.replace('USDT','')}</span>`).join('');
-      return `<tr><td class="num" style="color:var(--ink3)">${i+1}</td>
-        <td><span style="display:inline-block;width:7px;height:7px;border-radius:2px;
-          background:${g.color};margin-right:7px"></span>${g.name}</td>
-        <td class="num" style="font-weight:600">${g.n}</td>
-        <td class="num" style="color:var(--ink3)">${Math.round(g.n/TOT()*100)}%</td>
-        <td><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <span style="color:var(--ink3);font-size:12px">${g.sub}</span>
-          <span style="display:flex;gap:4px;flex-wrap:wrap">${ex}</span></div></td></tr>`;
-    }).join('') + '</tbody></table>';
-  }
   function bindHead(){
-    const tg = el('fToggle');
-    if(tg) tg.onclick = ()=>{
-      const b = el('fBoards');
-      b.classList.toggle('open');
-      tg.textContent = b.classList.contains('open') ? '收起原因榜' : '展开原因榜 Top5';
-    };
     el('fStack').querySelectorAll('.sg').forEach(sg=>{
       const g = G.find(x=>x.k===sg.dataset.k);
       sg.addEventListener('mouseenter',e=>{ state.hot=g.k; syncHot();
