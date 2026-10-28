@@ -2,7 +2,7 @@
  * 最新筛选（2026-10-28，docs/需求文档/18-最新筛选展示/spec.md）
  *
  * 目的：在「待确认池」里加一个页签，一眼回答三个问题——
- *   ① 这一轮各关卡各拦了多少币（吸顶条 + 卡片）
+ *   ① 这一轮各关卡各拦了多少币（逐节点路径 + 吸顶条 + 卡片）
  *   ② 每个关卡卡的是"哪个条件"、具体是哪些币（下钻抽屉，按原因分组）
  *   ③ 0 命中是常态还是恶化（底部 24 轮时序）
  *
@@ -16,7 +16,7 @@
  * - 点栈段/卡片 → 抽屉；抽屉里币种点击 → K 线弹窗
  * - 点时序柱 → 切换轮次，吸顶条出现「正在回看 …」+「回到最新一轮」
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Button, Drawer, Empty, Input, Modal, Spin, Tooltip, Typography, message } from 'antd'
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { scanApi } from '../api/scan'
@@ -56,6 +56,23 @@ const GROUPS: Group[] = [
 
 interface GroupRow extends Group {
   n: number
+}
+
+/** 逐节点路径的关卡顺序（E 方案）：用 FUNNEL_STAGES 的判定序，剔除 pending_waiting——
+ *  它不是被拒，是"还在池里等确认"，单列到路径终点，不参与进入/挂掉/通过的累加。 */
+const PIPE_STAGES = FUNNEL_STAGES.map((s) => s.key).filter((k) => k !== 'pending_waiting')
+
+/** 关卡 → 所属分组（取第一个命中的组），用于节点圆点与分组名着色 */
+const STAGE_GROUP: Record<string, Group> = {}
+GROUPS.forEach((g) => g.stages.forEach((k) => { STAGE_GROUP[k] = g }))
+
+const MONO = 'ui-monospace, Menlo, monospace'
+const NUM_STYLE: CSSProperties = {
+  fontFamily: MONO, fontSize: 12, fontWeight: 600, color: '#1f2329',
+}
+const CHIP_STYLE: CSSProperties = {
+  fontFamily: MONO, fontSize: 10.5, color: '#4b5460',
+  background: '#f6f7f9', border: '1px solid #f0f0f0', borderRadius: 4, padding: '1px 5px',
 }
 
 const sumStages = (stages: Record<string, number> | undefined, keys: string[]) =>
@@ -101,6 +118,8 @@ export default function LatestFunnelPanel() {
   const [search, setSearch] = useState('')
   const [klineSymbol, setKlineSymbol] = useState<string | null>(null)
   const [compact, setCompact] = useState(false)
+  /** 路径节点悬停：只亮本行背景，不置灰其它内容（E 方案交互约定） */
+  const [hoverStage, setHoverStage] = useState<string | null>(null)
 
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const prevScanning = useRef(false)
@@ -114,6 +133,36 @@ export default function LatestFunnelPanel() {
   const total = useMemo(() => groups.reduce((a, g) => a + g.n, 0), [groups])
   /** 在池等待数：不是被拒，不进拦截栈条与总数（2026-10-28，docs/19 §4.2） */
   const waiting = activeSnap?.stages?.pending_waiting ?? 0
+
+  /** 关卡 → 挂掉的币种（来自该轮 funnel.rejects；历史轮次通常没有清单） */
+  const rejectByStage = useMemo(() => {
+    const m = new Map<string, string[]>()
+    Object.entries(detail?.rejects ?? {}).forEach(([symbol, stage]) => {
+      const arr = m.get(stage)
+      if (arr) arr.push(symbol)
+      else m.set(stage, [symbol])
+    })
+    return m
+  }, [detail])
+
+  /** E 方案逐节点累加：进入 → 挂掉 → 通过；pending_waiting 不进链路，单列终点 */
+  const pipe = useMemo(() => {
+    const stages = activeSnap?.stages
+    let enter = activeSnap?.universe ?? 0
+    const rows = PIPE_STAGES.map((k) => {
+      const drop = stages?.[k] ?? 0
+      const out = Math.max(0, enter - drop)
+      const row = { k, enter, drop, out }
+      enter = out
+      return row
+    })
+    let maxKey: string | null = null
+    let maxDrop = 0
+    rows.forEach((r) => {
+      if (r.drop > maxDrop) { maxDrop = r.drop; maxKey = r.k }
+    })
+    return { rows, maxKey, maxDrop, hasStages: !!stages }
+  }, [activeSnap])
 
   const loadList = useCallback(async () => {
     setListLoading(true)
@@ -224,8 +273,149 @@ export default function LatestFunnelPanel() {
     setDrawerGroup(g)
   }
 
+  /** 点路径节点 → 复用分组抽屉，只装这一关 */
+  const openStage = (k: string) => {
+    const n = activeSnap?.stages?.[k] ?? 0
+    if (!n) return
+    openGroup({
+      key: k,
+      name: STAGE_META[k]?.label ?? k,
+      color: STAGE_GROUP[k]?.color ?? '#a8b0b9',
+      stages: [k],
+      n,
+    })
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '0 4px' }}>
+      {/* ---------- 筛选路径（E 方案：逐节点明细） ---------- */}
+      <div style={{
+        background: '#fff', border: '1px solid #f0f0f0', borderRadius: 12,
+        padding: '12px 14px 10px',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+          <Text strong style={{ fontSize: 13 }}>筛选路径</Text>
+          <Text type="secondary" style={{ fontSize: 11.5 }}>
+            {pipe.hasStages
+              ? `从币池到候选 · ${PIPE_STAGES.length} 个关卡按判定顺序逐行累加`
+              : '该轮未保存逐关明细（旧版本数据），仅保留总量'}
+          </Text>
+          <span style={{ marginLeft: 'auto', fontSize: 11.5, color: '#8c8c8c' }}>
+            {isHistory ? '历史轮次无币种清单' : detailLoading ? '明细加载中…' : '点节点看币种与原因'}
+          </span>
+        </div>
+
+        <div style={{ position: 'relative', paddingLeft: 26 }}>
+          <div style={{
+            position: 'absolute', left: 8, top: 10, bottom: 10,
+            width: 1, background: '#ededed',
+          }} />
+
+          {/* 起点 */}
+          <div style={{
+            position: 'relative', display: 'flex', alignItems: 'baseline',
+            gap: 8, flexWrap: 'wrap', padding: '4px 10px 6px',
+          }}>
+            <span style={{
+              position: 'absolute', left: -22, top: 11, width: 7, height: 7,
+              borderRadius: '50%', background: '#fff',
+              border: '2px solid #8c8c8c', boxSizing: 'border-box',
+            }} />
+            <Text strong style={{ fontSize: 13 }}>币池 {activeSnap.universe}</Text>
+            <Text type="secondary" style={{ fontSize: 11.5 }}>全部进入本轮筛选</Text>
+          </div>
+
+          {/* 逐关卡 */}
+          {pipe.hasStages && pipe.rows.map((r) => {
+            const color = STAGE_GROUP[r.k]?.color ?? '#a8b0b9'
+            const meta = STAGE_META[r.k]
+            const coins = isHistory ? [] : rejectByStage.get(r.k) ?? []
+            const shown = coins.slice(0, 6)
+            const live = r.drop > 0
+            const rate = r.enter ? Math.round((r.drop / r.enter) * 100) : 0
+            return (
+              <div
+                key={r.k}
+                onClick={() => openStage(r.k)}
+                onMouseEnter={() => { if (live) setHoverStage(r.k) }}
+                onMouseLeave={() => setHoverStage(null)}
+                style={{
+                  position: 'relative', padding: '7px 10px 8px', borderRadius: 8,
+                  background: live && hoverStage === r.k ? '#e9f1fb' : undefined,
+                  opacity: live ? 1 : 0.55,
+                  cursor: live ? 'pointer' : 'default',
+                  transition: 'background .12s ease',
+                }}
+              >
+                <span style={{
+                  position: 'absolute', left: -22, top: 15, width: 7, height: 7,
+                  borderRadius: '50%', background: '#fff',
+                  border: `2px solid ${color}`, boxSizing: 'border-box',
+                }} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+                  <Tooltip title={meta?.hint}>
+                    <span style={{ fontSize: 12.5, fontWeight: 600 }}>{meta?.label ?? r.k}</span>
+                  </Tooltip>
+                  <span style={{ fontSize: 10.5, color }}>{STAGE_GROUP[r.k]?.name}</span>
+                  {r.k === pipe.maxKey && (
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, color: '#1f7a55',
+                      background: '#e9f7f1', borderRadius: 999, padding: '0 6px',
+                    }}>最大落点 {rate}%</span>
+                  )}
+                  <span style={{ fontSize: 11.5, color: '#8c8c8c', fontVariantNumeric: 'tabular-nums' }}>
+                    进入 <b style={NUM_STYLE}>{r.enter}</b>
+                    <span style={{ margin: '0 2px' }}>·</span>
+                    挂 <b style={{ ...NUM_STYLE, color: '#cf1322' }}>{r.drop}</b>
+                    <span style={{ margin: '0 2px' }}>·</span>
+                    通过 <b style={NUM_STYLE}>{r.out}</b>
+                  </span>
+                  {live && (
+                    <span style={{
+                      fontSize: 10.5, color: '#cf1322', background: '#fff1f0',
+                      borderRadius: 999, padding: '0 6px',
+                    }}>{rate}%</span>
+                  )}
+                  {live && shown.map((sym) => (
+                    <span key={sym} title={sym} style={CHIP_STYLE}>{sym.replace('USDT', '')}</span>
+                  ))}
+                  {live && coins.length > shown.length && (
+                    <span style={{
+                      ...CHIP_STYLE, background: '#fff',
+                      borderStyle: 'dashed', color: '#8c8c8c',
+                    }}>+{coins.length - shown.length}</span>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+
+          {/* 终点 */}
+          <div style={{
+            position: 'relative', display: 'flex', alignItems: 'baseline',
+            gap: 8, flexWrap: 'wrap', padding: '8px 10px 2px', marginTop: 4,
+            borderTop: '1px dashed #f0f0f0',
+          }}>
+            <span style={{
+              position: 'absolute', left: -22, top: 14, width: 7, height: 7,
+              borderRadius: '50%', background: '#fff',
+              border: '2px solid #30a46c', boxSizing: 'border-box',
+            }} />
+            <Text strong style={{ fontSize: 13 }}>候选 {activeSnap.candidates}</Text>
+            <Text type="secondary" style={{ fontSize: 11.5 }}>
+              {waiting > 0 ? `另有待确认池 ${waiting} 条（未挂，下一轮再判）` : '本轮没有待确认'}
+            </Text>
+            <Text type="secondary" style={{ fontSize: 11.5 }}>· 命中 {activeSnap.hit_count}</Text>
+          </div>
+        </div>
+
+        {pipe.hasStages && (
+          <div style={{ fontSize: 11.5, color: '#8c8c8c', marginTop: 4, paddingLeft: 26 }}>
+            每行 = 一个关卡：进入 → 挂掉 → 通过；挂掉的币按关卡归因取前 6 个
+          </div>
+        )}
+      </div>
+
       <div ref={sentinelRef} style={{ height: 1 }} />
 
       {/* ---------- 吸顶条 ---------- */}
