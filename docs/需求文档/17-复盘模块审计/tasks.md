@@ -315,6 +315,14 @@
 - 测试：`test_actual_review.py::test_signal_family_legacy_flag`、
   `test_obs_batch_b.py::test_stats_legacy_trigger_flag`。
 
+## P2-1 GET 去除写副作用（2026-10-28 追加）
+
+- `api/scan.py::review_actual` 删除首屏 `backfill_costs` 双网回补（10 行）及
+  `BinanceTrader` 导入；GET 恢复只读，避免费用积压时卡首屏；
+- 回补只保留两处：定时归因任务 `run_ai_attribution_task`（双网各 5 笔/轮）
+  与手动 `POST /review/attribute`（5 笔）；
+- 文档 06 §2.5 / §6.5 API 契约同步为「只读，不触发费用回补」。
+
 ---
 
 ## 文档同步
@@ -351,3 +359,4 @@
   - `feat(review): 补丁触发改为热度或绝对笔数双阈值`
   - `feat(review): 金K形态只列现役 8 种`
   - `feat(review): 已下线触发类型标 legacy 并默认折叠`
+  - `refactor(review): GET /review/actual 不再触发费用回补`

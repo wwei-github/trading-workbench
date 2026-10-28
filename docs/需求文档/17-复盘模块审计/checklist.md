@@ -48,6 +48,12 @@
 - [x] 建议统计/实盘归因面板默认折叠，可勾选展开并显示「历史」
 - [x] `test_signal_family_legacy_flag` / `test_stats_legacy_trigger_flag`
 
+## P2-1 GET 去除写副作用
+
+- [x] `GET /review/actual` 删除 `backfill_costs` 双网回补与 `BinanceTrader` 导入
+- [x] 回补仅保留定时归因任务与手动 `POST /review/attribute`
+- [x] docs/06 口径与 API 契约同步「只读」
+
 ## 文档与验证
 
 - [x] `docs/复盘归因/06-复盘归因.md` 流程图、门槛、常量表、五态语义、`entry_diag`、API 契约、配置项同步

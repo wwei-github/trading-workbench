@@ -1672,8 +1672,7 @@ def review_actual(
 ):
     """实盘归因统计（复盘主轴）：trade_records 总览 + 分组 + 逐笔计划vs实际 + AI 错误标签"""
     from app.api.trades import _account_scope_filter
-    from app.services.actual_review import backfill_costs, build_actual_review
-    from app.services.binance_trader import BinanceTrader
+    from app.services.actual_review import build_actual_review
 
     # 测试网总开关（2026-10-27）：关闭后统计默认切 live；显式 scope=testnet
     # 仍可按历史只读查看
@@ -1682,17 +1681,9 @@ def review_actual(
         if not testnet_enabled(db):
             scope = "live"
 
-    try:
-        # 存量平仓单费用一次性回补：双网各补各的（2026-10-03 删环境切换，
-        # 与定时归因任务同口径）；失败不阻塞统计（费用列显示 None）
-        for testnet in (True, False):
-            bt = BinanceTrader(testnet)
-            if bt.configured:
-                backfill_costs(db, bt, limit=20)
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning("费用回补失败: %s", e)
-
+    # 费用回补（P2-1）：GET 只读，不再在首屏写库；存量平仓单由定时归因任务
+    # （run_ai_attribution_task 内 backfill_costs，双网 limit=ATTRIBUTION_BATCH）
+    # 与手动 POST /review/attribute 承担，避免积压时卡首屏
     result = build_actual_review(
         db, days, extra_filter=_account_scope_filter(TradeRecord, scope)
     )

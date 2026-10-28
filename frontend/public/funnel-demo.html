@@ -106,35 +106,115 @@
   .fade{position:fixed;inset:0;background:rgba(15,18,22,.22);opacity:0;pointer-events:none;transition:opacity .18s;z-index:55}
   .fade.on{opacity:1;pointer-events:auto}
 
-  /* ===== 组合方案 C+E + D 常驻 ===== */
-  .comb{position:relative}
-  .stick{position:sticky;top:0;z-index:30;background:var(--bg);padding:6px 0 10px;margin:-6px 0 4px;
-    border-bottom:1px solid transparent;transition:box-shadow .15s,border-color .15s}
-  .stick.on{box-shadow:0 8px 18px -12px rgba(31,35,41,.35);border-bottom-color:var(--line)}
-  .stickin{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 16px}
-  .kpirow{display:flex;align-items:flex-end;gap:22px;flex-wrap:wrap}
-  .kpirow .kpi b{font-size:19px}
-  .kpirow .who{margin-left:auto;text-align:right;font-size:12px;color:var(--sub);line-height:1.45}
-  .stackrow{display:flex;align-items:center;gap:12px;margin-top:11px}
-  .stackrow .stack{flex:1}
-  .oneline{margin-top:9px;font-size:12.5px;color:#5b6470;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .oneline b{color:var(--text)}
-  .oneline .lk{cursor:pointer;color:var(--blue);font-size:12px}
-  .boards{display:none;margin-top:11px;border-top:1px dashed var(--line);padding-top:10px}
-  .boards.on{display:block}
-  .boards table{font-size:12.5px}
-  .cards6{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:6px}
-  @media(max-width:1080px){.cards6{grid-template-columns:repeat(2,minmax(0,1fr))}}
-  @media(max-width:680px){.cards6{grid-template-columns:1fr}}
-  .trendwrap{margin-top:16px}
-  .trendhd{display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap}
-  .trendhd h3{font-size:13px;margin:0}
-  .badge{font-size:11.5px;padding:1px 7px;border-radius:5px;background:#eef1f5;color:#4a5158}
-  .badge.on{background:#fff4e5;color:#a35a00}
-  .backbtn{border:0;background:#eef1f5;border-radius:6px;padding:3px 9px;font-size:12px;cursor:pointer;display:none}
-  .backbtn.on{display:inline-block}
-  .col.sel .seg2{outline:1.5px solid #1f2329;outline-offset:1px}
-  .srch{width:100%;border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:12.5px;margin-bottom:8px}
+  /* ================= 组合方案 v2 ================= */
+  :root{
+    --ink:#1c1f24; --ink2:#4b5460; --ink3:#79828d; --line2:#e9ebef; --line3:#f2f4f7;
+    --sage:#f6f7f9; --shadow1:0 1px 2px rgba(20,24,30,.04); --shadow2:0 10px 24px -16px rgba(20,24,30,.45);
+  }
+  .tnum{font-variant-numeric:tabular-nums;font-feature-settings:'tnum' 1}
+  .fh{display:flex;flex-direction:column;gap:15px}
+  .fbar{position:sticky;top:0;z-index:40;margin:0 0 -3px}
+  .fbar-in{background:#fff;border:1px solid var(--line2);border-radius:14px;box-shadow:var(--shadow1);
+    overflow:hidden;transition:box-shadow .18s,border-color .18s}
+  .fbar.stuck .fbar-in{box-shadow:var(--shadow2);border-color:#e2e6ec}
+  .fr1{display:flex;align-items:center;gap:16px;padding:12px 16px 9px;flex-wrap:wrap}
+  .fwhen{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink3)}
+  .fwhen b{color:var(--ink);font-size:13px;font-weight:600}
+  .fwhen .dot{width:6px;height:6px;border-radius:50%;background:#30a46c;box-shadow:0 0 0 3px rgba(48,164,108,.14)}
+  .fkpis{display:flex;align-items:flex-end;margin-left:4px}
+  .fk{min-width:64px;padding:0 13px;border-left:1px solid var(--line3)}
+  .fk:first-child{padding-left:0;border-left:0}
+  .fk b{display:block;font-size:19px;font-weight:640;line-height:1.15;letter-spacing:-.2px}
+  .fk i{font-style:normal;font-size:11.5px;color:var(--ink3)}
+  .fk.bad b{color:#e5484d}
+  .fdelta{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;margin-left:auto;align-items:center}
+  .dchip{font-size:11.5px;padding:2px 8px;border-radius:999px;background:var(--sage);color:var(--ink2);
+    border:1px solid var(--line2);white-space:nowrap}
+  .dchip.up{color:#b42318;background:#fef3f2;border-color:#fbd5d2}
+  .dchip.flat{color:var(--ink3)}
+  .fpin{font-size:11.5px;padding:3px 9px;border-radius:7px;border:1px solid var(--line2);background:#fff;
+    color:var(--ink2);cursor:pointer}
+  .fpin:hover{background:var(--sage)}
+  .fr2{display:flex;align-items:center;gap:12px;padding:0 16px 11px}
+  .fstack{display:flex;height:26px;border-radius:8px;overflow:hidden;flex:1;background:var(--sage);
+    transition:height .18s ease}
+  .fstack .sg{position:relative;height:100%;cursor:pointer;transition:opacity .14s}
+  .fstack .sg+.sg{box-shadow:inset 1px 0 0 rgba(255,255,255,.9)}
+  .fstack .sg .n{position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:11px;
+    font-weight:600;white-space:nowrap;overflow:hidden}
+  .fstack .sg.dim{opacity:.32}
+  .fstack .sg.hot{outline:2px solid rgba(28,31,36,.5);outline-offset:-2px}
+  .fcount{font-size:11.5px;color:var(--ink3);white-space:nowrap}
+  .fr3{display:flex;align-items:center;gap:8px;padding:0 16px;font-size:12.5px;color:var(--ink2);
+    max-height:34px;overflow:hidden;transition:max-height .18s,opacity .14s,padding .18s}
+  .fr3 b{color:var(--ink)}
+  .fr3 .lk{color:#2563eb;cursor:pointer;font-size:12px;white-space:nowrap}
+  .fr3 .lk:hover{text-decoration:underline}
+  .fr4{max-height:0;overflow:hidden;transition:max-height .22s ease}
+  .fr4.open{max-height:280px;overflow:auto}
+  .fr4 .inner{padding:10px 16px 12px;border-top:1px dashed var(--line2)}
+  .fr4 table{font-size:12.5px}
+  .fbar.compact .fstack{height:6px}
+  .fbar.compact .fstack .sg .n{opacity:0}
+  .fbar.compact .fr3{max-height:0;opacity:0;padding-top:0;padding-bottom:0}
+  .fbar.compact .fr4{max-height:0 !important}
+  .fbar.compact .fr2{padding-bottom:8px}
+  .fbar.compact .fk b{font-size:15px}
+  .fbar.compact .fk i,.fbar.compact .fdelta .dchip{display:none}
+  .fsec{display:flex;align-items:baseline;gap:10px}
+  .fsec h3{font-size:13.5px;margin:0;font-weight:600}
+  .fsec span{font-size:12px;color:var(--ink3)}
+  .fsec .right{margin-left:auto}
+  .fgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+  @media(max-width:1080px){.fgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:660px){.fgrid{grid-template-columns:1fr}}
+  .fc{border:1px solid var(--line2);border-radius:12px;background:#fff;padding:13px 14px 12px 17px;
+    cursor:pointer;position:relative;overflow:hidden;
+    transition:transform .14s,box-shadow .14s,border-color .14s,opacity .14s}
+  .fc::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--cc)}
+  .fc:hover{transform:translateY(-1px);box-shadow:0 8px 20px -14px rgba(20,24,30,.5);border-color:#dde2e9}
+  .fc.hot{border-color:#c9d3e3;box-shadow:0 8px 20px -14px rgba(20,24,30,.5)}
+  .fc.dim{opacity:.5}
+  .fc .h{display:flex;gap:11px;align-items:flex-start}
+  .fring{width:42px;height:42px;flex:0 0 auto;border-radius:50%;position:relative;display:grid;place-items:center}
+  .fring::after{content:'';position:absolute;inset:5px;border-radius:50%;background:#fff}
+  .fring span{position:relative;z-index:1;font-size:10.5px;color:var(--ink2)}
+  .fc .nm{font-size:12.5px;color:var(--ink2);line-height:1.3}
+  .fc .ct{font-size:23px;font-weight:640;letter-spacing:-.4px;line-height:1.15}
+  .fc .sub{font-size:11.5px;color:var(--ink3);margin-top:5px;line-height:1.45;min-height:16px}
+  .fc .ex{margin-top:9px;display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+  .fx{font-size:11px;padding:1px 6px;border-radius:5px;background:var(--sage);color:var(--ink2);
+    font-family:ui-monospace,Menlo,monospace}
+  .fx.more{background:#fff;border:1px dashed var(--line2);color:var(--ink3)}
+  .fc .go{position:absolute;right:10px;top:9px;font-size:11px;color:#c3c9d1;opacity:0;transition:opacity .14s}
+  .fc:hover .go{opacity:1}
+  .fchart{background:#fff;border:1px solid var(--line2);border-radius:14px;padding:14px 16px 10px}
+  .fcols{display:flex;align-items:flex-end;gap:3px;height:130px;margin-top:6px}
+  .fcol{flex:1;display:flex;flex-direction:column-reverse;gap:1px;height:100%;cursor:pointer;
+    border-radius:3px;transition:background .12s}
+  .fcol:hover{background:#f4f6f9}
+  .fcol .b{transition:opacity .12s}
+  .fcol.dim .b{opacity:.35}
+  .fcol.sel .b{box-shadow:0 0 0 1.5px rgba(28,31,36,.45)}
+  .fhits,.faxis{display:flex;gap:3px;margin-top:5px}
+  .fhits div,.faxis div{flex:1;text-align:center;font-size:10px;color:var(--ink2);white-space:nowrap}
+  .fhits div.z{color:#cdd2d8}
+  .faxis div{color:var(--ink3);margin-top:1px}
+  .fleg{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px;padding-top:10px;
+    border-top:1px dashed var(--line2);font-size:11.5px;color:var(--ink2)}
+  .fleg span{display:inline-flex;align-items:center;gap:5px}
+  .fleg i{width:8px;height:8px;border-radius:2px}
+  .banner{display:none;align-items:center;gap:8px;font-size:12px;color:#a35a00;background:#fff8ed;
+    border:1px solid #fde3bf;border-radius:8px;padding:6px 10px;margin:0 16px 10px}
+  .banner.on{display:flex}
+  .banner button{margin-left:auto;border:1px solid #fde3bf;background:#fff;border-radius:6px;
+    padding:3px 9px;font-size:12px;cursor:pointer;color:#a35a00}
+  .srch{width:100%;border:1px solid var(--line2);border-radius:8px;padding:7px 10px;font-size:12.5px;
+    margin:2px 0 6px;outline:none;transition:border-color .15s,box-shadow .15s}
+  .srch:focus{border-color:#b9cdf3;box-shadow:0 0 0 3px rgba(59,130,246,.12)}
+  .drempty{color:var(--ink3);padding:16px 0;text-align:center;font-size:12.5px}
+  .drg{font-size:11px;color:var(--ink3);margin:10px 0 2px;letter-spacing:.3px}
+
 </style>
 </head>
 <body>
@@ -214,36 +294,41 @@
       <div class="note">数据里 02:00 之后的轮次还不存在，用空白占位；真实的组件会按 <code>created_at</code> 补齐 24 个整点槽位。</div>
     </div>
   </section>
-  <!-- ============================ F：组合方案 ============================ -->
+  <!-- ============================ F：组合方案 v2 ============================ -->
   <section class="panel on" id="p-F">
-    <div class="comb">
-      <div class="stick" id="stickF">
-        <div class="stickin">
-          <div class="kpirow" id="kpiF"></div>
-          <div class="stackrow"><div class="stack" id="stackF"></div></div>
-          <div class="oneline" id="oneF"></div>
-          <div class="boards" id="boardsF">
-            <table><thead><tr><th style="width:44px">#</th><th>关卡</th>
-              <th class="num" style="width:70px">拦截</th><th>构成与示例</th></tr></thead>
-              <tbody id="boardsBody"></tbody></table>
+    <div class="fh">
+      <div class="fbar" id="fbar">
+        <div class="fbar-in">
+          <div class="fr1">
+            <div class="fwhen"><span class="dot"></span>
+              <b id="fWhen">2026-10-28 02:00 UTC</b>
+              <span id="fWhenSub">北京 10:00 · 定时扫描</span></div>
+            <div class="fkpis" id="fKpis"></div>
+            <div class="fdelta"><span id="fChips"></span><button class="fpin" id="fPin">固定展开</button></div>
           </div>
+          <div class="fr2">
+            <div class="fstack" id="fStack"></div>
+            <div class="fcount" id="fCount"></div>
+          </div>
+          <div class="fr3" id="fOne"></div>
+          <div class="fr4" id="fBoards"><div class="inner" id="fBoardsIn"></div></div>
+          <div class="banner" id="fBanner"><span id="fBannerText"></span>
+            <button id="fBackLatest">回到最新一轮</button></div>
         </div>
       </div>
 
-      <div class="cards6" id="grid-F"></div>
-      <div class="note">点卡片或堆叠条任一色段 → 右侧抽屉列出该关全部币种与判定说明；按拦截数降序，零值关卡不展示。</div>
+      <div class="fsec"><h3>关卡明细</h3>
+        <span>按拦截数降序 · 悬停联动 · 点卡片看这一关的全部币种</span>
+        <div class="right"><span class="dchip" id="fSumChip"></span></div></div>
+      <div class="fgrid" id="fGrid"></div>
 
-      <div class="trendwrap card" style="margin-top:16px">
-        <div class="trendhd">
-          <h3>最近 24 轮 · 关卡构成与命中</h3>
-          <span class="badge" id="roundBadge">当前看：最新一轮</span>
-          <button class="backbtn" id="backLatest">回到最新</button>
-          <span style="margin-left:auto;font-size:12px;color:var(--sub)">柱高 = 该轮被该关拦掉的币数（上限 140）· 柱顶 = 命中数</span>
-        </div>
-        <div class="trend" id="trendF"></div>
-        <div id="hitF" style="display:flex;gap:3px;margin-top:6px"></div>
-        <div class="xaxis" id="xaxisF"></div>
-        <div class="legend" id="legendF" style="margin-top:12px"></div>
+      <div class="fsec"><h3>最近 24 轮</h3>
+        <span>柱高 = 该关拦掉的币数 · 柱下数字 = 该轮命中数 · 点柱子回看那一轮</span></div>
+      <div class="fchart">
+        <div class="fcols" id="fCols"></div>
+        <div class="fhits" id="fHits"></div>
+        <div class="faxis" id="fAxis"></div>
+        <div class="fleg" id="fLeg"></div>
       </div>
     </div>
   </section>
@@ -568,7 +653,7 @@ kpis(document.getElementById('kpis-D'));
 })();
 
 
-/* ============================ F：C+E 组合 + D 常驻顶部 ============================ */
+/* ============================ F：组合方案 v2（常驻折叠条 + 卡片 + 时序） ============================ */
 (function(){
   const SERIES = [
     ['10-27 03',19,96,58,34,22,18],['10-27 04',4,101,60,30,20,16],
@@ -585,128 +670,231 @@ kpis(document.getElementById('kpis-D'));
     ['10-28 01',0,124,82,13,19,21],['10-28 02',0,126,82,11,19,26],
   ];
   const MAXB = 140;
-  const SEGS = [
-    {name:'池过滤', n:(stages.liquidity||0)+(stages.new_coin||0)+(stages.risk_tier||0)+(stages.blacklist||0), color:'#9aa3ad', keys:['liquidity','new_coin','risk_tier','blacklist']},
-    {name:'4h 背景门', n:stages.gate_4h||0, color:'#e5484d', keys:['gate_4h']},
-    {name:'拐头锁', n:stages.htf_state_lock||0, color:'#f76b15', keys:['htf_state_lock']},
-    {name:'触发层', n:(stages.no_touch||0)+(stages.leg_gate||0)+(stages.golden_no_context||0)+(stages.no_golden||0)+(stages.insufficient_bars||0), color:'#3b82f6',
-      keys:['no_touch','leg_gate','golden_no_context','no_golden','insufficient_bars']},
-    {name:'待确认', n:(stages.pending_waiting||0)+(stages.window_expired||0)+(stages.pending_flip||0), color:'#12a594',
-      keys:['pending_waiting','window_expired','pending_flip']},
-    {name:'震荡计分', n:stages.range_score||0, color:'#f5a524', keys:['range_score']},
-    {name:'方向/白名单', n:(stages.votes||0)+(stages.direction_flip||0)+(stages.trigger_whitelist||0), color:'#8b5cf6',
-      keys:['votes','direction_flip','trigger_whitelist']},
-    {name:'质量分', n:stages.quality_floor||0, color:'#6b7480', keys:['quality_floor']},
-  ].filter(x=>x.n>0);
-  const TOTAL = SEGS.reduce((a,x)=>a+x.n,0) || 1;
-  const subText = (name)=> name==='4h 背景门' ? `缠绕 ${reasonSplit.tangle||0} / 走平 ${reasonSplit.flat||0} / 未定 ${reasonSplit.undetermined||0}`
-    : name==='拐头锁' ? `turn_bear ${htfStates.turn_bear||0} 个币拐头向下`
-    : name==='池过滤' ? `成交额 ${stages.liquidity||0} · 黑名单 ${stages.blacklist||0}（未进管线）`
-    : name==='触发层' ? `无触点 ${stages.no_touch||0} · 腿门 ${stages.leg_gate||0}`
-    : name==='待确认' ? `等待中 ${stages.pending_waiting||0} · 超窗 ${stages.window_expired||0}`
-    : name==='震荡计分' ? 'range_score 扣分后拒'
-    : name==='方向/白名单' ? `方向票 ${stages.votes||0} · 翻转 ${stages.direction_flip||0}`
-    : '候选质量分 < 80 被剔';
+  const COLS = ['#a8b0b9','#e5484d','#f76b15','#3b82f6','#0f9b8e','#f0a020','#8b5cf6','#79828d'];
+  const h = k => (stages[k]||0);
+  const joined = k => k==='liquidity'||k==='new_coin'||k==='risk_tier'||k==='blacklist';
 
-  document.getElementById('kpiF').innerHTML = `
-    <div class="kpi"><b>${fmt(universe)}</b><span>币池</span></div>
-    <div class="kpi"><b>${fmt(scanned)}</b><span>进管线</span></div>
-    <div class="kpi"><b style="color:${candidates?'#30a46c':'#e5484d'}">${fmt(candidates)}</b><span>出候选</span></div>
-    <div class="kpi"><b>14</b><span>待确认池</span></div>
-    <div class="who">2026-10-28 02:00 UTC（北京 10:00）<br>
-      <span style="color:#a35a00">较上一轮：4h门 124→126 · 拐头锁 82→82 · 命中 0→0</span></div>`;
+  function buildLatest(){
+    const gs = [
+      {k:'pool',  name:'池过滤',      n:h('liquidity')+h('new_coin')+h('risk_tier')+h('blacklist'),
+       keys:['liquidity','new_coin','risk_tier','blacklist'],
+       sub:`成交额 ${h('liquidity')} · 黑名单 ${h('blacklist')} · 新币 ${h('new_coin')}`},
+      {k:'gate',  name:'4h 背景门',   n:h('gate_4h'),    keys:['gate_4h'],
+       sub:`缠绕 ${reasonSplit.tangle||0} · 走平 ${reasonSplit.flat||0} · 未定 ${reasonSplit.undetermined||0}`},
+      {k:'lock',  name:'拐头锁',      n:h('htf_state_lock'), keys:['htf_state_lock'],
+       sub:`turn_bear ${htfStates.turn_bear||0} 币 · turn_bull ${htfStates.turn_bull||0} 币`},
+      {k:'trig',  name:'触发层',      n:h('no_touch')+h('leg_gate')+h('golden_no_context')+h('no_golden')+h('insufficient_bars'),
+       keys:['no_touch','leg_gate','golden_no_context','no_golden','insufficient_bars'],
+       sub:`无触点 ${h('no_touch')} · 腿门 ${h('leg_gate')} · 无金K ${h('no_golden')}`},
+      {k:'pend',  name:'待确认',      n:h('pending_waiting')+h('window_expired')+h('pending_flip'),
+       keys:['pending_waiting','window_expired','pending_flip'],
+       sub:`等待中 ${h('pending_waiting')} · 超窗 ${h('window_expired')} · 反向 ${h('pending_flip')}`},
+      {k:'range', name:'震荡计分',    n:h('range_score'), keys:['range_score'], sub:'震荡分扣到被拒（只扣分不硬拒）'},
+      {k:'whitel',name:'方向/白名单', n:h('votes')+h('direction_flip')+h('trigger_whitelist'),
+       keys:['votes','direction_flip','trigger_whitelist'],
+       sub:`方向票 ${h('votes')} · 翻转 ${h('direction_flip')} · 白名单 ${h('trigger_whitelist')}`},
+      {k:'qfloor',name:'质量分',      n:h('quality_floor'), keys:['quality_floor'], sub:'候选质量分 < 80 被砍'},
+    ].filter(g=>g.n>0).sort((a,b)=>b.n-a.n);
+    gs.forEach((g,i)=>g.color = COLS[i%COLS.length]);
+    return gs;
+  }
+  function buildRound(r){
+    return [
+      {k:'gate', name:'4h 背景门', n:r[2], keys:[], color:COLS[1], sub:'该轮 4h 门拦截（演示页只回填 5 关）'},
+      {k:'lock', name:'拐头锁',    n:r[3], keys:[], color:COLS[2], sub:'该轮 htf_state_lock 拦截'},
+      {k:'trig', name:'触发层',    n:r[4], keys:[], color:COLS[3], sub:'该轮触发层拦截'},
+      {k:'pend', name:'待确认',    n:r[6], keys:[], color:COLS[4], sub:'该轮待确认池数量'},
+      {k:'range',name:'震荡计分',  n:r[5], keys:[], color:COLS[5], sub:'该轮 range_score 拒绝'},
+    ].filter(g=>g.n>0);
+  }
 
-  const stack = document.getElementById('stackF');
-  stack.style.height = '26px';
-  stack.innerHTML = SEGS.map((sg,i)=>{
-    const w = sg.n/TOTAL*100;
-    return `<div class="seg" style="width:${w}%;background:${sg.color}" data-i="${i}">
-      ${w>8?`<div class="seglab">${sg.n}</div>`:''}</div>`;
-  }).join('');
+  const el = id => document.getElementById(id);
+  const REJ = (RAW && RAW.rejects) || {};
+  const BY_STAGE = (()=>{ const m={}; Object.keys(REJ).forEach(sym=>{
+    const st = REJ[sym]; (m[st] = m[st] || []).push(sym); }); return m; })();
+  const coinsOf = k => BY_STAGE[k] || [];
+  let G = buildLatest();
+  let state = {round:null, roundIdx:null, hot:null, pin:false};
+  const TOT = () => G.reduce((a,g)=>a+g.n,0) || 1;
 
-  const top = SEGS.slice().sort((a,b)=>b.n-a.n);
-  document.getElementById('oneF').innerHTML = `
-    <span>主要卡点：</span><b>${top[0].name} ${top[0].n}</b>
-    <span style="color:var(--sub)">（${subText(top[0].name)}）</span>
-    <span>·</span><b>${top[1].name} ${top[1].n}</b>
-    <span style="color:var(--sub)">占进管线 ${pct(top[1].n,scanned)}</span>
-    <span class="lk" id="toggleBoards">展开原因榜 ▾</span>`;
-
-  document.getElementById('boardsBody').innerHTML = top.slice(0,5).map((sg,i)=>{
-    const coins = sg.keys.flatMap(k=>coinsOf(k));
-    const ex = coins.slice(0,3).map(c=>`<span class="chip">${c.replace('USDT','')}</span>`).join('');
-    return `<tr><td class="num" style="color:var(--sub)">${i+1}</td>
-      <td><span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:${sg.color};margin-right:7px"></span>${sg.name}</td>
-      <td class="num" style="font-weight:600">${fmt(sg.n)}</td>
-      <td><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <span style="color:#5b6470;font-size:12.5px">${subText(sg.name)}</span><div class="chips">${ex}</div></div></td></tr>`;
-  }).join('');
-  document.getElementById('toggleBoards').onclick = ()=>{
-    const b = document.getElementById('boardsF'); b.classList.toggle('on');
-    document.getElementById('toggleBoards').textContent = b.classList.contains('on') ? '收起原因榜 ▴' : '展开原因榜 ▾';
-  };
-
-  const stick = document.getElementById('stickF');
-  const onScroll = ()=> stick.classList.toggle('on', stick.getBoundingClientRect().top <= 1 && window.scrollY > 40);
-  window.addEventListener('scroll', onScroll, {passive:true}); onScroll();
-
-  stack.querySelectorAll('.seg').forEach(el=>{
-    const sg = SEGS[+el.dataset.i];
-    el.addEventListener('mouseenter',e=>showTip(e,`${sg.name}：拦 ${sg.n}（占进管线 ${pct(sg.n,scanned)}）<br><span style="opacity:.75">点击看全部币种</span>`));
-    el.addEventListener('mousemove',moveTip);
-    el.addEventListener('mouseleave',hideTip);
-    el.addEventListener('click',()=>openDrawer(sg.name, sg.n, sg.keys.flatMap(k=>coinsOf(k))));
-  });
-
-  const grid = document.getElementById('grid-F');
-  top.forEach(sg=>{
-    const coins = sg.keys.flatMap(k=>coinsOf(k));
-    const share = Math.round(sg.n/TOTAL*100);
-    const ex = coins.slice(0,3).map(c=>`<span class="chip">${c.replace('USDT','')}</span>`).join('');
-    const card = document.createElement('div');
-    card.className = 'scard';
-    card.innerHTML = `<div class="top">
-        <div class="donut" style="background:conic-gradient(${sg.color} ${share*3.6}deg,#eef0f3 0)"><span>${share}%</span></div>
-        <div style="flex:1">
-          <div class="nm">${sg.name}</div><div class="ct">${fmt(sg.n)}</div>
-          <div class="sub">${subText(sg.name)}</div>
-        </div></div>
-      <div class="chips" style="margin-top:8px">${ex}${coins.length>3?`<span class="chip" style="background:#fff;color:#8a9199">+${coins.length-3}</span>`:''}</div>`;
-    card.onclick = ()=>openDrawer(sg.name, sg.n, coins);
-    grid.appendChild(card);
-  });
-
-  const SEGD = [[2,'#e5484d','4h 背景门'],[3,'#f76b15','拐头锁'],[4,'#3b82f6','触发层'],[5,'#f5a524','震荡计分'],[6,'#12a594','待确认']];
-  const trend = document.getElementById('trendF');
-  trend.innerHTML = SERIES.map(r=>{
-    const bars = SEGD.map(([i,c])=>`<div class="seg2" style="height:${Math.max(1,r[i]/MAXB*100)}%;background:${c}"></div>`).join('');
-    return `<div class="col">${bars}</div>`;
-  }).join('');
-  document.getElementById('hitF').innerHTML = SERIES.map(r=>
-    `<div style="flex:1;text-align:center;font-size:10px;color:${r[1]?'#4a5158':'#c8ced6'}">${r[1]||'·'}</div>`).join('');
-  document.getElementById('xaxisF').innerHTML = SERIES.map((r,i)=>`<div>${i%4===0?r[0].slice(-5):''}</div>`).join('');
-  document.getElementById('legendF').innerHTML = SEGD.map(([,c,n])=>`<span><i style="background:${c}"></i>${n}</span>`).join('');
-
-  trend.querySelectorAll('.col').forEach((col,i)=>{
-    const r = SERIES[i];
-    col.addEventListener('mouseenter',e=>showTip(e,`<b>${r[0]}</b> · 命中 <b style="color:${r[1]?'#30a46c':'#e5484d'}">${r[1]}</b><br>4h门 ${r[2]} · 拐头锁 ${r[3]}<br>触发层 ${r[4]} · 震荡 ${r[5]} · 待确认 ${r[6]}`));
-    col.addEventListener('mousemove',moveTip);
-    col.addEventListener('mouseleave',hideTip);
-    col.addEventListener('click',()=>{
-      trend.querySelectorAll('.col').forEach(c=>c.classList.remove('sel'));
-      col.classList.add('sel');
-      const bg = document.getElementById('roundBadge');
-      bg.textContent = `历史轮次：${r[0]}`; bg.classList.add('on');
-      document.getElementById('backLatest').classList.add('on');
+  function renderHead(){
+    const r = state.round;
+    el('fWhen').textContent = r ? `${r[0]} UTC` : '2026-10-28 02:00 UTC';
+    el('fWhenSub').textContent = r ? '历史轮次（仅回填 5 个关卡）' : '北京 10:00 · 定时扫描';
+    const kp = r
+      ? [[r[1],'命中',''],['—','出候选',''],['—','待确认池','']]
+      : [[518,'币池',''],[290,'进管线',''],[0,'出候选','bad'],[14,'待确认池','']];
+    el('fKpis').innerHTML = kp.map(([v,l,c])=>
+      `<div class="fk ${c}"><b class="tnum">${v}</b><i>${l}</i></div>`).join('');
+    el('fChips').innerHTML = r
+      ? `<span class="dchip">命中 ${r[1]}</span>`
+      : `<span class="dchip up">4h 门 ↑2</span><span class="dchip flat">拐头锁 =</span>
+         <span class="dchip flat">命中 0</span>`;
+    el('fCount').textContent = `共 ${TOT()} 次拦截`;
+    el('fSumChip').textContent = `${G.length} 个关卡有拦截`;
+    el('fStack').innerHTML = G.map(g=>{
+      const w = g.n/TOT()*100;
+      return `<div class="sg" data-k="${g.k}" style="width:${w}%;background:${g.color}"
+        title="${g.name} ${g.n}">${w>7?`<div class="n tnum">${g.n}</div>`:''}</div>`;
+    }).join('');
+    const a = G[0], b = G[1];
+    el('fOne').innerHTML = `<span>主要卡点</span><b>${a.name} ${a.n}</b>
+      <span style="color:var(--ink3)">${a.sub}</span>
+      ${b?`<span style="color:#d6dbe1">|</span><span>其次</span><b>${b.name} ${b.n}</b>
+      <span style="color:var(--ink3)">${b.sub}</span>`:''}
+      <span class="lk" id="fToggle">展开原因榜 Top5</span>`;
+    el('fBoardsIn').innerHTML = boardsHtml();
+    el('fBanner').classList.toggle('on', !!r);
+    el('fBannerText').textContent = r
+      ? `正在回看 ${r[0]}：命中 ${r[1]} · 4h门 ${r[2]} · 拐头锁 ${r[3]}` : '';
+    bindHead();
+  }
+  function boardsHtml(){
+    return `<table><thead><tr><th style="width:34px">#</th><th>关卡</th>
+      <th style="width:62px" class="num">拦截</th><th class="num" style="width:62px">占拦截</th>
+      <th>构成与示例币</th></tr></thead><tbody>` + G.slice(0,5).map((g,i)=>{
+      const cs = g.keys.flatMap(coinsOf);
+      const ex = cs.slice(0,3).map(c=>`<span class="fx">${c.replace('USDT','')}</span>`).join('');
+      return `<tr><td class="num" style="color:var(--ink3)">${i+1}</td>
+        <td><span style="display:inline-block;width:7px;height:7px;border-radius:2px;
+          background:${g.color};margin-right:7px"></span>${g.name}</td>
+        <td class="num" style="font-weight:600">${g.n}</td>
+        <td class="num" style="color:var(--ink3)">${Math.round(g.n/TOT()*100)}%</td>
+        <td><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <span style="color:var(--ink3);font-size:12px">${g.sub}</span>
+          <span style="display:flex;gap:4px;flex-wrap:wrap">${ex}</span></div></td></tr>`;
+    }).join('') + '</tbody></table>';
+  }
+  function bindHead(){
+    const tg = el('fToggle');
+    if(tg) tg.onclick = ()=>{
+      const b = el('fBoards');
+      b.classList.toggle('open');
+      tg.textContent = b.classList.contains('open') ? '收起原因榜' : '展开原因榜 Top5';
+    };
+    el('fStack').querySelectorAll('.sg').forEach(sg=>{
+      const g = G.find(x=>x.k===sg.dataset.k);
+      sg.addEventListener('mouseenter',e=>{ state.hot=g.k; syncHot();
+        showTip(e, `<b>${g.name}</b> 拦 ${g.n} 个币（${Math.round(g.n/TOT()*100)}%）<br>
+          <span style="opacity:.75">点击查看币种清单</span>`); });
+      sg.addEventListener('mousemove',moveTip);
+      sg.addEventListener('mouseleave',()=>{ state.hot=null; syncHot(); hideTip(); });
+      sg.addEventListener('click',()=>openStage(g));
     });
+    el('fBackLatest').onclick = ()=>gotoRound(SERIES.length-1);
+    el('fPin').onclick = ()=>{
+      state.pin = !state.pin;
+      el('fPin').textContent = state.pin ? '自动收起' : '固定展开';
+      onScroll();
+    };
+  }
+
+  function renderCards(){
+    el('fGrid').innerHTML = G.map(g=>{
+      const share = Math.round(g.n/TOT()*100);
+      const cs = g.keys.flatMap(coinsOf);
+      const ex = cs.slice(0,3).map(c=>`<span class="fx">${c.replace('USDT','')}</span>`).join('');
+      return `<div class="fc" data-k="${g.k}" style="--cc:${g.color}">
+        <span class="go">查看 ›</span>
+        <div class="h">
+          <div class="fring" style="background:conic-gradient(${g.color} ${share*3.6}deg,#eef1f5 0)">
+            <span class="tnum">${share}%</span></div>
+          <div style="flex:1;min-width:0">
+            <div class="nm">${g.name}</div>
+            <div class="ct tnum">${g.n}</div>
+            <div class="sub">${g.sub}</div>
+          </div>
+        </div>
+        <div class="ex">${ex}${cs.length>3?`<span class="fx more">+${cs.length-3}</span>`:''}</div>
+      </div>`;
+    }).join('');
+    el('fGrid').querySelectorAll('.fc').forEach(c=>{
+      const g = G.find(x=>x.k===c.dataset.k);
+      c.addEventListener('mouseenter',()=>{ state.hot=g.k; syncHot(); });
+      c.addEventListener('mouseleave',()=>{ state.hot=null; syncHot(); });
+      c.addEventListener('click',()=>openStage(g));
+    });
+  }
+  function openStage(g){
+    const cs = g.keys.flatMap(coinsOf);
+    if(state.round){
+      showTip({clientX:innerWidth/2, clientY:150},
+        `<b>${g.name}</b> ${g.n} 个币<br><span style="opacity:.8">历史轮次未保存币种清单（演示页）</span>`);
+      setTimeout(hideTip, 1800);
+      return;
+    }
+    if(!cs.length){
+      showTip({clientX:innerWidth/2, clientY:150},
+        `<b>${g.name}</b> ${g.n} 个币<br><span style="opacity:.8">该关卡不落币种名（只有计数）</span>`);
+      setTimeout(hideTip, 1800);
+      return;
+    }
+    openDrawer(g.name + ' · 被拦币种', g.n, cs);
+  }
+  function syncHot(){
+    const k = state.hot;
+    el('fStack').querySelectorAll('.sg').forEach(s=>{
+      s.classList.toggle('hot', s.dataset.k===k);
+      s.classList.toggle('dim', !!k && s.dataset.k!==k);
+    });
+    el('fGrid').querySelectorAll('.fc').forEach(c=>{
+      c.classList.toggle('hot', c.dataset.k===k);
+      c.classList.toggle('dim', !!k && c.dataset.k!==k);
+    });
+  }
+
+  const SEGD = [[2,'#e5484d','4h 背景门'],[3,'#f76b15','拐头锁'],[4,'#3b82f6','触发层'],
+                [5,'#f0a020','震荡计分'],[6,'#0f9b8e','待确认']];
+  function renderTrend(){
+    el('fCols').innerHTML = SERIES.map((r,i)=>
+      `<div class="fcol${i===SERIES.length-1?' sel':''}" data-i="${i}">` +
+      SEGD.map(([ix,c])=>`<div class="b" style="height:${Math.max(1,r[ix]/MAXB*100)}%;background:${c}"></div>`).join('') +
+      '</div>').join('');
+    el('fHits').innerHTML = SERIES.map(r=>`<div class="tnum ${r[1]?'':'z'}">${r[1]||'·'}</div>`).join('');
+    el('fAxis').innerHTML = SERIES.map((r,i)=>`<div>${i%4===0?r[0].slice(-5):''}</div>`).join('');
+    el('fLeg').innerHTML = SEGD.map(([,c,n])=>`<span><i style="background:${c}"></i>${n}</span>`).join('')
+      + `<span style="margin-left:auto;color:var(--ink3)">命中数为 0 的轮次显示「·」</span>`;
+    el('fCols').querySelectorAll('.fcol').forEach(col=>{
+      const i = +col.dataset.i, r = SERIES[i];
+      col.addEventListener('mouseenter',e=>{
+        el('fCols').querySelectorAll('.fcol').forEach(c=>{ if(c!==col) c.classList.add('dim'); });
+        showTip(e, `<b>${r[0]}</b> · 命中 <b style="color:${r[1]?'#067647':'#b42318'}">${r[1]}</b><br>
+          4h门 ${r[2]} · 拐头锁 ${r[3]}<br>触发层 ${r[4]} · 震荡 ${r[5]} · 待确认 ${r[6]}`);
+      });
+      col.addEventListener('mousemove',moveTip);
+      col.addEventListener('mouseleave',()=>{
+        el('fCols').querySelectorAll('.fcol').forEach(c=>c.classList.remove('dim'));
+        hideTip();
+      });
+      col.addEventListener('click',()=>gotoRound(i));
+    });
+  }
+  function gotoRound(i){
+    const last = SERIES.length-1;
+    if(i===last){ state.round = null; state.roundIdx = null; G = buildLatest(); }
+    else { state.round = SERIES[i]; state.roundIdx = i; G = buildRound(SERIES[i]); }
+    el('fCols').querySelectorAll('.fcol').forEach((c,idx)=>{
+      c.classList.toggle('sel', state.roundIdx===null ? idx===last : idx===state.roundIdx);
+    });
+    state.hot = null;
+    renderHead(); renderCards(); syncHot();
+  }
+
+  const bar = el('fbar');
+  function onScroll(){
+    const top = bar.getBoundingClientRect().top;
+    bar.classList.toggle('stuck', top <= 2);
+    bar.classList.toggle('compact', !state.pin && top <= 2 && window.scrollY > 130);
+  }
+  window.addEventListener('scroll', onScroll, {passive:true});
+
+  document.addEventListener('keydown', ev=>{
+    if(ev.key === 'Escape' && typeof closeDrawer === 'function') closeDrawer();
   });
-  document.getElementById('backLatest').onclick = ()=>{
-    trend.querySelectorAll('.col').forEach(c=>c.classList.remove('sel'));
-    const bg = document.getElementById('roundBadge');
-    bg.textContent = '当前看：最新一轮'; bg.classList.remove('on');
-    document.getElementById('backLatest').classList.remove('on');
-  };
+
+  renderHead(); renderCards(); renderTrend(); onScroll();
 })();
+
 
 /* ---------- 抽屉 / 提示 ---------- */
 let DR_COINS=[];
