@@ -1330,3 +1330,17 @@ UPDATE system_config
 - TAUSDT 这笔的实际信号根是 02:00 还是 03:00（幽灵根歧义）。本次改动落盘 `leg_bars/leg_atr` 后，
   下一批成交自带口径，不必再反推。
 - `range` 扣分只 −8、且只降权不否决，是否足以抑制"碎步币"：需要 `leg_atr` 分档数据与 `range` 标记联合看。
+
+### 23.5 上线记录（2026-10-28）
+
+| 项 | 值 |
+|---|---|
+| 提交 | `f176f2a feat(trigger): 反向腿深度观测 leg_atr/leg_bars 落 quality_parts（docs/16 §23）` |
+| CI | run `40631432654` **success**（scope=all） |
+| `.deploy_state` | `PREV_SHA=d49bdc4` / `LAST_SHA=f176f2a` |
+| 容器 | backend / celery_worker / celery_beat / frontend 均 `f176f2a` Up |
+| 代码在位 | 容器内 `leg_evidence in detect_trigger=True`、`out["leg"] in probe=True`、`leg_atr in detect_indicator_candidate=True` |
+| 实盘 dry-run | `probe_blocked_context`：`TAUSDT net=-1 touch=ema21 leg={'ok': True, 'bars': 22, 'atr_mult': 3.62}`；`ETHUSDT`/`SOLUSDT` 当时无触点 → `leg=None` |
+| 首批落库 | 04:00 UTC 及更早的信号行 `leg_atr` 为空（部署前产生）；**05:00 UTC 起的信号**开始带 `leg_atr`/`leg_bars` |
+
+首个可判读时点：累计 ≥30 笔带 `leg_atr` 的已平仓单后跑 §23.3 的分档 SQL。
