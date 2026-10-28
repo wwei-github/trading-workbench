@@ -32,6 +32,10 @@
 - [x] 入场成交根 → 出场根（`censored` 窗口末根）；入场根整根计入并文档标注上界口径
 - [x] 未成交 / `|entry-stop|≤0` 时为 NULL，不污染统计
 - [x] 多单/空单/入场根即止损/未成交四条单测 + 任务级落库断言
+- [x] `_agg_stats` / `ReviewGroupStats` 增 `mfe_r_avg/mae_r_avg`（只统计非空行）
+- [x] `/review/stats` 增整体均值与 `excursions`（按 outcome 均值 + P50，固定顺序）
+- [x] 前端汇总卡 + 「持仓偏移（MFE/MAE）」按结局表 + 入场诊断分档 MFE/MAE 列
+- [x] `test_stats_mfe_mae_excursions` 覆盖均值、分位与 NULL 不计入
 
 ## 文档与验证
 

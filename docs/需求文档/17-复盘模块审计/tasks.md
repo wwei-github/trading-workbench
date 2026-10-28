@@ -276,6 +276,24 @@
 - 入场未成交（`censored`）→ `mfe_r/mae_r` 均为 None；
 - 任务级落库：止损单 `mfe_r=0.5 / mae_r=-1.5`。
 
+### 4. 聚合展示（收尾）
+
+- `ReviewGroupStats` 增 `mfe_r_avg/mae_r_avg`（`_agg_stats` 统一计算，分组/诊断分档/版本组同带）；
+  `ReviewStatsResponse` 增整体 `mfe_r_avg/mae_r_avg` 与 `excursions`。
+- 新增 `ReviewExcursionGroup(outcome, total_with_data, mfe_r_avg, mae_r_avg, mfe_r_p50, mae_r_p50)`：
+  按 win_tp2 → win_tp1 → loss → censored 固定顺序输出，P50 复用既有线性插值 `_pct`。
+- 只统计 `mfe_r/mae_r` 非空行：NULL（历史行/未成交/计划无效）不按 0 计入，也不单独成组。
+- 前端：汇总区加整体 MFE/MAE 两卡；新增「持仓偏移（MFE/MAE）」按结局表；
+  入场诊断分档表补「MFE均/MAE均」两列。
+
+### 5. 聚合测试
+
+`backend/tests/test_obs_batch_b.py::test_stats_mfe_mae_excursions`：
+
+- 整体均值按非空行计算（NULL 行不参与）；
+- 按 outcome 的 `total_with_data` 只计有偏移行，单样本 P50 即自身；
+- 分组表与 `entry_diag_groups` 每档同带均值。
+
 ---
 
 ## 文档同步
@@ -290,7 +308,9 @@
 - `/review/stats` 契约补 `entry_diag_groups` 与 `censored`；
 - `window_stats`/热度门槛段落同步双阈值；
 - `TradeReview` 字段表补 `mfe_r/mae_r`，新增「MFE/MAE 口径」说明（signed R、区间、
-  入场根上界口径、历史不回填）。
+  入场根上界口径、历史不回填）；
+- 新增「MFE/MAE 聚合读法」（整体均值 + `excursions` 按结局、NULL 不计入、止损/止盈宽度读法），
+  API 契约补 `mfe_r_avg/mae_r_avg` 与 `excursions`，前端面板表补持仓偏移卡与分档 MFE/MAE 列。
 
 ---
 
