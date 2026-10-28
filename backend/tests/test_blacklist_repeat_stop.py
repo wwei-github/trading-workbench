@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""黑名单「重复止损」自动档（docs/16 §13，2026-10-27）。
+"""黑名单「重复止损」自动档（docs/16 §13，2026-10-27；2026-10-28 阈值 2→3 次）。
 
 与既有的「超预算」两档本质不同：**不看倍数，只看次数**。
 依据（14 天正式网 151 笔亏损单）：实亏超计划风险的最大值只有 1.33R，
@@ -38,7 +38,7 @@ def db():
 @pytest.fixture(autouse=True)
 def _repeat_enabled(monkeypatch):
     """默认对每个用例显式打开重复档，边界用例自己再覆盖。"""
-    monkeypatch.setattr(settings, "BLACKLIST_REPEAT_STOP_N", 2, raising=False)
+    monkeypatch.setattr(settings, "BLACKLIST_REPEAT_STOP_N", 3, raising=False)
     monkeypatch.setattr(settings, "BLACKLIST_REPEAT_STOP_DAYS", 14, raising=False)
     monkeypatch.setattr(settings, "BLACKLIST_REPEAT_COOLDOWN_DAYS", 14, raising=False)
 
@@ -68,13 +68,14 @@ def test_repeat_disabled_by_default(db, monkeypatch):
 
 
 def test_repeat_triggers_at_threshold(db):
-    """窗口内已 1 次 + 本次 = 2 次 ≥ N=2 → 冷却档，理由含次数。"""
+    """窗口内已 2 次 + 本次 = 3 次 ≥ N=3 → 冷却档，理由含次数。"""
     _prior_stop(db, "BBBUSDT")
+    _prior_stop(db, "BBBUSDT", days_ago=3)
     register_settle(db, "BBBUSDT", 3.0, -3.0, "sl")
     db.commit()
     r = _row(db, "BBBUSDT")
     assert r is not None and r.origin == "auto" and r.expires_at is not None
-    assert "第 2 次止损出场" in r.reason
+    assert "第 3 次止损出场" in r.reason
     days = (r.expires_at - datetime.utcnow()).total_seconds() / 86400
     assert 13.9 < days <= 14.0
 
@@ -118,10 +119,24 @@ def test_repeat_does_not_downgrade_manual(db):
     db.add(SymbolBlacklist(symbol="GGGUSDT", origin="manual", reason="人工"))
     db.commit()
     _prior_stop(db, "GGGUSDT")
+    _prior_stop(db, "GGGUSDT", days_ago=2)
     register_settle(db, "GGGUSDT", 3.0, -3.0, "sl")
     db.commit()
     r = _row(db, "GGGUSDT")
     assert r.origin == "manual" and r.expires_at is None and r.reason == "人工"
+
+
+def test_repeat_does_not_downgrade_stop_hard(db):
+    """已自动永久档（stop_hard）→ 重复档不降级为 auto，expires_at 仍 NULL"""
+    db.add(SymbolBlacklist(symbol="KKKUSDT", origin="stop_hard",
+                           reason="永久", expires_at=None))
+    db.commit()
+    _prior_stop(db, "KKKUSDT")
+    _prior_stop(db, "KKKUSDT", days_ago=2)
+    register_settle(db, "KKKUSDT", 3.0, -3.0, "sl")
+    db.commit()
+    r = _row(db, "KKKUSDT")
+    assert r.origin == "stop_hard" and r.expires_at is None and r.reason == "永久"
 
 
 def test_overshoot_path_still_takes_precedence(db):
@@ -148,7 +163,7 @@ def test_repeat_excludes_current_trade(db):
     """结算路径上本次这笔已落库 → 必须靠 trade_id 排除，否则阈值会提前一格。
 
     模拟真实调用：本次 TradeRecord 已写 realized_pnl/closed_at（autoflush 可见），
-    窗口内另有 1 笔历史止损，N=2 → 恰好第 2 次，应触发。
+    窗口内另有 2 笔历史止损，N=3 → 恰好第 3 次，应触发。
     """
     cur = TradeRecord(
         symbol="JJJUSDT", direction="long", testnet=False,
@@ -157,13 +172,14 @@ def test_repeat_excludes_current_trade(db):
     db.add(cur)
     db.commit()
     _prior_stop(db, "JJJUSDT")
+    _prior_stop(db, "JJJUSDT", days_ago=2)
 
     from app.services.blacklist_service import _repeat_stopouts
-    # 不排除 → 2（含本次）；排除 → 1
-    assert _repeat_stopouts(db, "JJJUSDT", 14) == 2
-    assert _repeat_stopouts(db, "JJJUSDT", 14, exclude_trade_id=cur.id) == 1
+    # 不排除 → 3（含本次）；排除 → 2
+    assert _repeat_stopouts(db, "JJJUSDT", 14) == 3
+    assert _repeat_stopouts(db, "JJJUSDT", 14, exclude_trade_id=cur.id) == 2
 
     register_settle(db, "JJJUSDT", 3.0, -3.0, "sl", trade_id=cur.id)
     db.commit()
     r = _row(db, "JJJUSDT")
-    assert r is not None and "第 2 次止损出场" in r.reason
+    assert r is not None and "第 3 次止损出场" in r.reason

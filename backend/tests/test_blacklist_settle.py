@@ -109,6 +109,17 @@ def test_manual_row_not_downgraded(db):
     assert r.origin == "manual" and r.expires_at is None
 
 
+def test_stop_hard_not_downgraded_by_cooldown(db):
+    """已自动永久档（stop_hard）再触发 1.5R 冷却档 → 保持永久，expires_at 仍 NULL"""
+    register_settle(db, "MMMUSDT", 10.0, -20.0, "stop_loss")
+    db.commit()
+    assert _row(db, "MMMUSDT").origin == "stop_hard"
+    register_settle(db, "MMMUSDT", 10.0, -16.0, "stop_loss")
+    db.commit()
+    r = _row(db, "MMMUSDT")
+    assert r.origin == "stop_hard" and r.expires_at is None
+
+
 def test_expired_cooldown_not_active_but_stop_hard_is(db):
     """冷却档到期自动失效、stop_hard 恒生效——active_symbols 过滤口径"""
     from datetime import datetime, timedelta

@@ -491,8 +491,8 @@ class Settings(BaseSettings):
     # 即「滑点撑爆止损」这一维在当前风险口径下已不可达，真正在流血的是
     # 「同一币反复止损」：ICNT 4 次 -12.28、LIGHT 3 次 -8.65、DUSK 3 次 -7.54、
     # SU 3 次 -7.05，每次都在正常 -1R 以内。故补一维纯按次数判定的自动档。
-    # 0=关闭（默认关闭：样本仅 4 个币种，先观察再开）。
-    BLACKLIST_REPEAT_STOP_N: int = 0
+    # 2026-10-28 用户拍板：14 天内第 3 次止损即拉黑冷却；0=关闭。
+    BLACKLIST_REPEAT_STOP_N: int = 3
     BLACKLIST_REPEAT_STOP_DAYS: int = 14      # 统计窗口（天）
     BLACKLIST_REPEAT_COOLDOWN_DAYS: int = 14  # 冷却天数（天）
     NEW_COIN_COOLDOWN_DAYS: int = 14   # 新币冷静期（天）：上市未满 N 天不进扫描（0=关闭），

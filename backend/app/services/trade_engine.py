@@ -3236,8 +3236,8 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                 handled += 1
                 logger.info("交易结算 %s %s：pnl=%s（%s%%）", rec.symbol, rec.direction,
                             rec.realized_pnl, rec.pnl_pct)
-                # 黑名单自动登记（D，2026-09-18）：实际止损金额严重超出计划风险预算
-                # （≥1.2 倍）或强平 → 自动拉黑冷却 30 天。失败不阻断结算
+                # 黑名单自动登记（D，2026-09-18）：实亏 ≥1.5R 或 14 天内 3 次止损
+                # → 冷却 14 天；≥1.8R 或强平（按倍数）→ 永久档。失败不阻断结算
                 try:
                     from app.services.blacklist_service import register_settle
                     # 超预算判定按「计划风险」口径（滑点后的 initial_risk 不作为预算基准）

@@ -2306,7 +2306,7 @@ def blacklist_list(db: Session = Depends(get_db)):
     return [{
         "id": str(r.id),
         "symbol": r.symbol,
-        "origin": r.origin,  # manual / auto（冷却档）/ stop_hard（≥1.5R 永久档）
+        "origin": r.origin,  # manual / auto（冷却档）/ stop_hard（≥1.8R 永久档）
         "reason": r.reason,
         "expires_at": r.expires_at.isoformat() if r.expires_at else None,
         "expired": bool(r.origin == "auto" and r.expires_at and r.expires_at <= now),

@@ -67,9 +67,15 @@ def _upsert(db: Session, symbol: str, permanent: bool, reason: str,
         select(SymbolBlacklist).where(SymbolBlacklist.symbol == symbol)
     ).scalar_one_or_none()
     if existing is not None:
-        if existing.origin == "manual" and not existing.disabled:
-            logger.warning("黑名单已存在 %s（手动永久），保持不变：%s", symbol, reason)
-            return "skipped-manual"
+        if existing.origin in ("manual", "stop_hard") and not existing.disabled:
+            # 永久档不被冷却档事件降级（2026-10-28 修）；永久档事件可刷新理由
+            if existing.origin == "stop_hard" and permanent:
+                existing.reason = reason
+                logger.warning("黑名单已存在 %s（永久），刷新理由：%s", symbol, reason)
+                return "refreshed"
+            logger.warning("黑名单已存在 %s（%s 永久），保持不变：%s",
+                           symbol, existing.origin, reason)
+            return "skipped-permanent"
         existing.origin = "stop_hard" if permanent else "auto"
         existing.disabled = False
         existing.reason = reason
@@ -105,8 +111,8 @@ def register_settle(db: Session, symbol: str, planned_risk, realized_pnl,
       **不看倍数只看次数**——14 天数据里超预算最大值仅 1.33R（1.5 档从未触发），
       而 ICNT/LIGHT/DUSK/SU 各反复止损 3~4 次、每次都在 1R 以内。
 
-    已在黑名单：冷却档刷新理由与到期；manual 行不动（本就永久，不降级覆盖）；
-    升级到永久档则清 expires_at
+    已在黑名单：冷却档刷新理由与到期；manual/stop_hard 永久行不降级覆盖
+    （2026-10-28 修）；升级到永久档则清 expires_at
     """
     try:
         planned = float(planned_risk or 0)
@@ -141,7 +147,7 @@ def register_settle(db: Session, symbol: str, planned_risk, realized_pnl,
     kind = "强平（止损失效）" if exit_reason == "liquidation" else f"止损超预算 {overshoot * 100:.0f}%"
     reason = (
         f"自动：{kind}，计划风险 {planned:.2f} → 实亏 {pnl:.2f}，"
-        + ("永久拉黑（≥1.5R），只能手动移出" if permanent
+        + (f"永久拉黑（≥{PERMANENT_R_OVERSHOOT:g}R），只能手动移出" if permanent
            else f"冷却 {AUTO_COOLDOWN_DAYS} 天")
     )
     _upsert(db, symbol, permanent, reason, AUTO_COOLDOWN_DAYS)

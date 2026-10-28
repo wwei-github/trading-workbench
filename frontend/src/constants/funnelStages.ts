@@ -10,7 +10,7 @@ export const FUNNEL_STAGES: { key: string; label: string; color: string; hint: s
   { key: 'untradable', label: '不可交易', color: 'default', hint: '（2026-10-11 退役）原下单环境未上架预过滤，已撤——未上架币照常分析，开单时逐网校验并飞书提示；仅旧轮次数据可见' },
   { key: 'new_coin', label: '新币冷静期', color: 'default', hint: '上市未满 N 天（默认 14 天）不进扫描' },
   { key: 'risk_tier', label: '风险档位', color: 'default', hint: '交易所最大允许杠杆 <10×' },
-  { key: 'blacklist', label: '黑名单', color: 'default', hint: '手动添加（永久）或止损超预算自动加入（1.2R 冷却 30 天 / ≥1.5R 永久）' },
+  { key: 'blacklist', label: '黑名单', color: 'default', hint: '手动添加（永久）；自动：实亏≥1.5R 冷却 14 天、≥1.8R 永久、14 天内 3 次止损冷却 14 天' },
   { key: 'gate_4h', label: '4h趋势闸门', color: 'orange', hint: '4h 无明确趋势一票否决：EMA144 走平（斜率不足）/ 缠绕（ADX<20 ∪ 21-55 间距<0.1% ∪ 21×55 锯齿 ∪ 价格穿越 144 >2 次）/ ADX 不可用 / 方向歧义 / 数据不足' },
   { key: 'htf_state_lock', label: '4h状态禁开', color: 'orange', hint: '4h 状态机不放行：① 非多头/空头排列（拐头/交叉初期/恢复初期/过渡态）双向禁开；② 排列方向与候选逆势（锁逆势）——回踩·突破均一票否决（2026-10-20 收紧，仅排列放行）' },
   { key: 'votes', label: '方向票', color: 'orange', hint: '方向票（MACD/布林带/RSI）同向张数不足 2（2026-10-15 拆角色，docs/21 O9）' },

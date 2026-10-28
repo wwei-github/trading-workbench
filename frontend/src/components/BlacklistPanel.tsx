@@ -1,6 +1,7 @@
 /**
  * 币种黑名单管理（复盘 Tab 子页，2026-09-18）
- * - 两个来源：手动添加（永久）/ 止损金额严重超出计划预算（≥1.2 倍或强平）自动加入（冷却 30 天）
+ * - 两个来源：手动添加（永久）/ 自动：实亏≥1.5R 冷却 14 天、≥1.8R 永久、
+ *   14 天内 3 次止损冷却 14 天
  * - 生效位置：扫描宇宙过滤（主）+ 开仓前兜底；命中的币不进 AI 分析与开单
  * - 操作：手动添加 / 任意行移除（删行）；auto 到期自然失效
  */
@@ -101,8 +102,8 @@ export default function BlacklistPanel() {
       <Card size="small">
         <Space style={{ width: '100%', justifyContent: 'space-between' }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            黑名单币种不进扫描候选（也就不会 AI 分析/开单）；实亏超计划风险 20%（1.2R）
-            自动拉黑冷却 30 天，实亏 ≥1.5R 或被强平永久拉黑——永久档只能手动移除
+            黑名单币种不进扫描候选（也就不会 AI 分析/开单）；实亏≥1.5R 或 14 天内
+            3 次止损自动拉黑冷却 14 天，实亏≥1.8R 或强平（按倍数）永久拉黑——永久档只能手动移除
           </Text>
           <Space>
             <Button icon={<ReloadOutlined />} onClick={fetchData}>刷新</Button>
