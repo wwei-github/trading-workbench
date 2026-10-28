@@ -162,7 +162,7 @@ export default function FunnelPanel({ initialStage }: { initialStage?: string } 
                 { label: '全市场', value: data.universe, color: '#1677ff', hint: '全市场 USDT 永续合约数' },
                 { label: '进管线', value: data.scanned, color: '#1677ff', hint: '预过滤（流动性/新币/风险档位/黑名单）后进指标管线数；未上架币不再过滤，开单时逐网校验' },
                 { label: '候选进AI', value: data.candidates, color: '#52c41a', hint: '通过全部筛选关卡、产生信号候选并进入 AI 分析' },
-                { label: '待确认池', value: data.pending_pool, color: '#13c2c2', hint: '回踩触碰但当根无金K，转入待确认池等确认（不算被拒）' },
+                { label: '本轮进池', value: data.pending_pool, color: '#13c2c2', hint: '回踩触碰但当根无金K，本轮新建/刷新待确认（含刷新，不是池内总数；不算被拒）' },
                 ...(data.errors > 0
                   ? [{ label: '异常', value: data.errors, color: '#ff4d4f', hint: '拉K线/指标计算异常数' }]
                   : []),

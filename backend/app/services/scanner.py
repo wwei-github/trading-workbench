@@ -283,6 +283,43 @@ def _htf_funnel(evidence: dict[str, dict]) -> dict:
     return {"htf_states": states, "gate_4h_reasons": reasons}
 
 
+def _funnel_observability(
+    hits_before_floor: list[dict],
+    suppressed: int,
+    pendings: dict[str, dict],
+    pending_ops: dict[str, dict],
+) -> dict:
+    """漏斗观测补键（2026-10-28，docs/19 §4.3）：raw_candidates / suppressed /
+    pending_active。
+
+    - raw_candidates：质量分下限**之前**的候选快照（symbol/score/parts）。被砍
+      候选不落 scan_results，缺此快照就无法复盘「差多少分、哪个分项拖的」。
+    - suppressed：本轮被重复命中抑制掉、因此未落库的候选数。
+    - pending_active：本轮结束时**币池内**活跃 pending 估算=预取快照里未被终态
+      处置的 + 本轮新建（upsert 且不在快照）。与 pending_pool（本轮 upsert 条数，
+      含刷新）不是同一口径——前端 KPI 曾把后者当池内总数展示（docs/19 §4.2）。
+    """
+    raw = sorted(
+        ({"symbol": h.get("symbol"),
+          "score": h.get("quality_score"),
+          "parts": h.get("quality_parts")} for h in hits_before_floor),
+        key=lambda x: x.get("score") or 0,
+        reverse=True,
+    )
+    active = 0
+    for sym in set(pendings) | set(pending_ops):
+        op = pending_ops.get(sym)
+        if op is not None:
+            active += 1 if op.get("op") == "upsert" else 0
+        elif sym in pendings:
+            active += 1
+    return {
+        "raw_candidates": raw,
+        "suppressed": suppressed,
+        "pending_active": active,
+    }
+
+
 def detect_indicator_candidate(
     pool: ExchangePool, symbol: str, klines: list[list],
     pending: Optional[dict] = None,
@@ -1023,6 +1060,7 @@ class Scanner:
             #     候选池。只影响「能否成为候选（进 AI / 开单池）」，不影响 pending
             #     的 upsert 与命中历史展示。计数写 funnel_rejects，前端「筛选漏斗」
             #     可直接看到被拦数量；0=关闭（默认，零行为变化）。
+            _before_floor_hits = hits
             _before_floor = len(hits)
             hits, _floor_dropped = apply_quality_floor(hits, flt.quality_floor)
             if _floor_dropped:
@@ -1154,6 +1192,11 @@ class Scanner:
                 "stages": stages,              # 关卡代码 → 被拒数
                 "rejects": funnel_rejects,     # symbol → 关卡代码（全量明细）
                 "details": funnel_details,     # symbol → 判定说明（votes 票明细/no_trigger 未触发原因）
+                # 观测补键（2026-10-28，docs/19 §4.3）：质量分下限之前的候选快照
+                # （被砍者不落 scan_results，没有它无法复盘差多少分）、重复抑制数、
+                # 活跃 pending 总量（与 pending_pool 的"本轮 upsert 条数"区分）
+                **_funnel_observability(
+                    _before_floor_hits, suppressed, pendings, pending_ops),
                 # 4h 数据降级（2026-10-21 观测 B2）：本币池/命中数可比出占比，
                 # 按天汇总（spec §5.3）>1% 需排查数据源
                 "htf_degraded": len(htf_degraded_symbols),

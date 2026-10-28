@@ -405,7 +405,10 @@ export interface FunnelData {
   scanned: number; // 预过滤后进指标管线数
   errors: number; // 拉K线/计算异常数
   candidates: number; // 产生候选（进 AI 分析）数
-  pending_pool: number; // 进待确认池数（不算被拒）
+  pending_pool: number; // 进待确认池数（本轮 upsert 条数，含刷新；不算被拒）
+  pending_active?: number | null; // 本轮结束时币池内活跃 pending（2026-10-28，docs/19 §4.2）
+  suppressed?: number; // 本轮被重复命中抑制、未落库的候选数（2026-10-28，docs/19 §4.3）
+  raw_candidates?: { symbol: string; score: number | null; parts?: Record<string, unknown> }[]; // 质量分下限之前候选快照
   stages: Record<string, number>; // 关卡代码 → 被拒数
   rejects: Record<string, string>; // symbol → 关卡代码（全量明细）
   details?: Record<string, string>; // symbol → 判定说明文本（votes 票明细 / no_trigger 未触发原因，2026-10-13；分号分隔）
@@ -423,6 +426,7 @@ export interface FunnelSnapshot {
   errors: number;
   candidates: number;
   pending_pool: number;
+  pending_active?: number | null; // 旧轮次无此键 → null（2026-10-28，docs/19 §4.2）
   stages: Record<string, number>;
   htf_states: Record<string, number>;
   gate_4h_reasons: Record<string, number>;

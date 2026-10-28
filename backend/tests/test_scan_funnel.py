@@ -801,6 +801,27 @@ def test_htf_funnel_aggregates_states_and_reasons():
     assert scanner_mod._htf_funnel({}) == {"htf_states": {}, "gate_4h_reasons": {}}
 
 
+def test_funnel_observability_raw_suppressed_pending_active():
+    """漏斗观测补键（2026-10-28，docs/19 §4.3）：raw_candidates 取质量分下限
+    之前快照并按分数降序（缺分按 0 排）；suppressed 原样透传；pending_active
+    = 预取快照内未被终态处置的 + 本轮新建 upsert，刷新不重复计数。"""
+    hits = [
+        {"symbol": "A", "quality_score": 55, "quality_parts": {"base": 50}},
+        {"symbol": "B", "quality_score": 92, "quality_parts": {"base": 80}},
+        {"symbol": "C", "quality_score": None},
+    ]
+    pendings = {"B": {"id": 1}, "D": {"id": 2}, "F": {"id": 3}}
+    ops = {"B": {"op": "upsert"}, "D": {"op": "expire"},
+           "E": {"op": "upsert"}, "C": {"op": "supersede"}}
+    out = scanner_mod._funnel_observability(hits, 3, pendings, ops)
+    assert [r["symbol"] for r in out["raw_candidates"]] == ["B", "A", "C"]
+    assert out["raw_candidates"][0]["parts"] == {"base": 80}
+    assert out["raw_candidates"][2]["score"] is None
+    assert out["suppressed"] == 3
+    # B 刷新计 1 / D 终态不计 / E 新建计 1 / F 无处置仍在池 1 → 3
+    assert out["pending_active"] == 3
+
+
 @pytest.fixture()
 def shadow_db(monkeypatch):
     from app.models.shadow import ShadowMark

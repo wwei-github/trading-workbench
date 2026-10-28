@@ -40,10 +40,10 @@ def db():
         s.close()
 
 
-def _scan(db, *, hours_ago=0.0, funnel=None):
+def _scan(db, *, hours_ago=0.0, funnel=None, scan_type="scheduled"):
     rec = ScanRecord(
         id=uuid.uuid4(),
-        scan_type="scheduled",
+        scan_type=scan_type,
         status="completed",
         created_at=datetime.utcnow() - timedelta(hours=hours_ago),
         funnel_json=funnel,
@@ -73,6 +73,7 @@ FUNNEL = {
     "errors": 0,
     "candidates": 0,
     "pending_pool": 14,
+    "pending_active": 38,
     "stages": {"gate_4h": 126, "htf_state_lock": 82},
     "htf_states": {"tangle": 100},
     "gate_4h_reasons": {"tangle": 83},
@@ -94,6 +95,8 @@ def test_returns_items_ascending_and_maps_fields(db):
     assert item["scanned"] == 290
     assert item["candidates"] == 0
     assert item["pending_pool"] == 14
+    # pending_active（docs/19 §4.2）：池内活跃数与本轮 upsert 条数不是一回事
+    assert item["pending_active"] == 38
     assert item["stages"] == {"gate_4h": 126, "htf_state_lock": 82}
     assert item["htf_states"] == {"tangle": 100}
     assert item["gate_4h_reasons"] == {"tangle": 83}
@@ -111,6 +114,18 @@ def test_window_filters_old_scans(db):
     assert out["items"][0]["scan_id"] == str(fresh.id)
 
 
+def test_watchlist_scans_excluded(db):
+    """关注列表「立即扫描」不是漏斗轮次（无 funnel_json）：混进来会变成一根
+    全 0 幽灵柱，且升序末位会让面板把「最新一轮」错认成它。"""
+    regular = _scan(db, hours_ago=2, funnel=FUNNEL)
+    _scan(db, hours_ago=1, scan_type="watchlist")
+
+    out = scan_funnels(hours=24, db=db)
+
+    assert out["count"] == 1
+    assert out["items"][0]["scan_id"] == str(regular.id)
+
+
 def test_null_funnel_falls_back_without_crash(db):
     rec = _scan(db, hours_ago=1, funnel=None)
 
@@ -118,6 +133,7 @@ def test_null_funnel_falls_back_without_crash(db):
 
     assert item["scan_id"] == str(rec.id)
     assert item["universe"] == 0 and item["scanned"] == 0
+    assert item["pending_active"] is None
     assert item["stages"] == {} and item["htf_states"] == {}
     assert item["hit_count"] == 0
 

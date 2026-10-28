@@ -35,8 +35,10 @@ interface Group {
 }
 
 /** 关卡分组（8 组）：把 19 个关卡代码压缩成"人能记住的 8 个"，顺序即语义链
- *  池过滤 → 4h 背景 → 拐头锁 → 触发层 → 待确认 → 震荡扣分 → 方向/白名单 → 质量分。
- *  刻意不按数量重排——吸顶条与卡片按数量降序，这里是稳定的语义序（图例用）。 */
+ *  池过滤 → 4h 背景 → 拐头锁 → 触发层 → 待确认失效 → 震荡扣分 → 方向/白名单 → 质量分。
+ *  刻意不按数量重排——吸顶条与卡片按数量降序，这里是稳定的语义序（图例用）。
+ *  2026-10-28（docs/19 §4.2）：pending_waiting 是"还在池里等确认"，不是被拒，
+ *  不再进拦截栈条；只把终态（超窗/反向）留在「待确认失效」组。 */
 const GROUPS: Group[] = [
   { key: 'pool', name: '池过滤', color: '#a8b0b9',
     stages: ['liquidity', 'untradable', 'new_coin', 'risk_tier', 'blacklist'] },
@@ -44,8 +46,8 @@ const GROUPS: Group[] = [
   { key: 'lock', name: '拐头锁', color: '#f76b15', stages: ['htf_state_lock'] },
   { key: 'trig', name: '触发层', color: '#3b82f6',
     stages: ['no_trigger', 'no_touch', 'leg_gate', 'golden_no_context', 'no_golden', 'insufficient_bars'] },
-  { key: 'pend', name: '待确认', color: '#0f9b8e',
-    stages: ['pending_waiting', 'window_expired', 'pending_flip'] },
+  { key: 'pend', name: '待确认失效', color: '#0f9b8e',
+    stages: ['window_expired', 'pending_flip'] },
   { key: 'range', name: '震荡计分', color: '#f0a020', stages: ['range_score'] },
   { key: 'whitel', name: '方向/白名单', color: '#8b5cf6',
     stages: ['votes', 'direction_flip', 'trigger_whitelist'] },
@@ -110,6 +112,8 @@ export default function LatestFunnelPanel() {
 
   const groups = useMemo(() => buildGroups(activeSnap?.stages), [activeSnap])
   const total = useMemo(() => groups.reduce((a, g) => a + g.n, 0), [groups])
+  /** 在池等待数：不是被拒，不进拦截栈条与总数（2026-10-28，docs/19 §4.2） */
+  const waiting = activeSnap?.stages?.pending_waiting ?? 0
 
   const loadList = useCallback(async () => {
     setListLoading(true)
@@ -243,12 +247,19 @@ export default function LatestFunnelPanel() {
               </Text>
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'flex-end', marginLeft: 'auto' }}>
+            {/* 窄屏：6 个 KPI 的 min-content 约 500px，整体不换行会溢出吸顶条。
+                容器自身允许内部换行并右对齐，项宽度不受挤压（不会截断数字） */}
+            <div style={{
+              display: 'flex', alignItems: 'flex-end', marginLeft: 'auto',
+              flexWrap: 'wrap', justifyContent: 'flex-end', rowGap: 4,
+              minWidth: 0, maxWidth: '100%',
+            }}>
               {([
                 { label: '币池', value: activeSnap?.universe ?? 0, color: undefined },
                 { label: '进管线', value: activeSnap?.scanned ?? 0, color: undefined },
                 { label: '出候选', value: activeSnap?.candidates ?? 0, color: (activeSnap?.candidates ?? 0) > 0 ? '#389e0d' : '#cf1322' },
-                { label: '待确认池', value: activeSnap?.pending_pool ?? 0, color: undefined },
+                { label: '本轮进池', value: activeSnap?.pending_pool ?? 0, color: undefined },
+                { label: '池内活跃', value: activeSnap?.pending_active ?? '—', color: undefined },
                 { label: '命中', value: activeSnap?.hit_count ?? 0, color: (activeSnap?.hit_count ?? 0) > 0 ? '#389e0d' : undefined },
               ]).map((k, i) => (
                 <div key={k.label} style={{
@@ -302,7 +313,7 @@ export default function LatestFunnelPanel() {
               })}
             </div>
             <Text type="secondary" style={{ fontSize: 11.5, whiteSpace: 'nowrap' }}>
-              共 {total} 次拦截
+              共 {total} 次拦截{waiting > 0 ? ` · 另有 ${waiting} 个在池等待` : ''}
             </Text>
           </div>
 
@@ -532,7 +543,7 @@ function Timeline({ snaps, activeIdx, onPick, hot, onHoverGroup }: TimelineProps
               key={s.scan_id}
               title={`${fmtTime(s.created_at)} · 命中 ${s.hit_count}　
 4h门 ${s.stages?.gate_4h ?? 0} · 拐头锁 ${s.stages?.htf_state_lock ?? 0} ·
-触发层 ${sumStages(s.stages, GROUPS[3].stages)} · 待确认 ${sumStages(s.stages, GROUPS[4].stages)}`}
+触发层 ${sumStages(s.stages, GROUPS[3].stages)} · 待确认失效 ${sumStages(s.stages, GROUPS[4].stages)}`}
             >
               <div
                 onClick={() => onPick(i)}

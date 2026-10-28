@@ -233,7 +233,9 @@ def scan_funnels(
     用途：「最新筛选」Tab 底部时序区要一次画 24 根柱（每轮各关卡拦截数 +
     该轮命中数）。逐轮调 `/scans/{id}/funnel` 会发 24 次请求，故批量。
     只回时序需要的字段，**不回 rejects/details**（体积大，仅下钻抽屉需要，
-    仍走单轮接口）。
+    仍走单轮接口）。关注列表「立即扫描」不算漏斗轮次（与 list_scans 同口径）：
+    单币刷新不产 funnel_json，混进来会变成一根全 0 的幽灵柱，且升序末位会让
+    面板把「最新一轮」错认成它。
     """
     cutoff = datetime.utcnow() - timedelta(hours=hours)
     rows = db.execute(
@@ -242,7 +244,10 @@ def scan_funnels(
             ScanRecord.created_at,
             ScanRecord.funnel_json,
         )
-        .where(ScanRecord.created_at >= cutoff)
+        .where(
+            ScanRecord.created_at >= cutoff,
+            ScanRecord.scan_type != "watchlist",
+        )
         .order_by(ScanRecord.created_at.asc())
         .limit(200)
     ).all()
@@ -269,6 +274,9 @@ def scan_funnels(
             "errors": f.get("errors", 0),
             "candidates": f.get("candidates", 0),
             "pending_pool": f.get("pending_pool", 0),
+            # 币池内活跃 pending（2026-10-28，docs/19 §4.3）：与 pending_pool
+            # （本轮 upsert 条数，含刷新）区分；旧轮次无此键 → None
+            "pending_active": f.get("pending_active"),
             "stages": f.get("stages") or {},
             "htf_states": f.get("htf_states") or {},
             "gate_4h_reasons": f.get("gate_4h_reasons") or {},
