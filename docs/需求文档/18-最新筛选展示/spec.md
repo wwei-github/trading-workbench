@@ -150,4 +150,19 @@
 
 ## 10. 上线记录
 
-（部署后补：commit / CI run / `.deploy_state` / 生产验证命令与输出）
+| 项 | 值 |
+|---|---|
+| commit | `85bdb0e`（与 docs/17 P2-3 复盘 CSV 导出同批） |
+| CI | `40624166216` Deploy **success**（scope=all，前后端同时重建） |
+| `.deploy_state` | PREV=`aafdd7c` → LAST=`85bdb0e` |
+| 容器 | backend / celery_worker / celery_beat / frontend 均 `85bdb0e` Up |
+| 后端验证 | `curl -s "http://localhost:8082/api/scans/funnels?hours=24"` → 200，`count=24`；最新一轮 03:00 UTC：`hit=2 / universe=518 / scanned=290 / candidates=2`，stages 含 P1-3 拆分后的 `no_touch 8 / leg_gate 2 / pending_waiting 11` 与 `quality_floor 14` |
+| 前端验证 | 容器内 grep 到 `最新筛选` / `主要卡点` / `查看币种与卡住原因`（`assets/index-CrsC9N8g.js`） |
+| 测试 | 后端全量 1341 passed（首轮曾出现一次 `test_review_batch3::test_actual_review_htf_phase_dimension` 失败，单跑与随后两次全量均通过，判定为既有用例的顺序/时序抖动，与本改动无关：本次未触及 `actual_review`） |
+| 回退 | 见 §8：只回前端用 `scripts/release.sh rollback`；后端新增接口是纯只读加法，可保留 |
+
+**上线后判读**（首轮扫描后）：
+1. 吸顶条 `共 N 次拦截` 是否等于 `universe − scanned + scanned 内各关卡之和` 的口径自洽（`liquidity + new_coin + risk_tier + blacklist + gate_4h + htf_state_lock + 触发层 + 待确认 + range + votes + quality_floor`）；
+2. 抽屉里"按原因分组"的第一组是否与「主要卡点」一致；
+3. 24 轮时序里命中数为 0 的轮次显示「·」，点击回看时 banner 数字正确、回到最新一轮可复位。
+
