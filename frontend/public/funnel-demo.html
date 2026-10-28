@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>待确认池 · 最新筛选 展示方案示例（A–E）</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --line:#e8eaed; --text:#1f2329; --sub:#8a9199;
+    --red:#e5484d; --orange:#f76b15; --amber:#f5a524; --blue:#3b82f6; --violet:#8b5cf6;
+    --green:#30a46c; --teal:#12a594; --grey:#b9bfc6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:20px 20px 60px}
+  h1{font-size:18px;margin:4px 0 6px}
+  .hint{color:var(--sub);font-size:12.5px;margin-bottom:16px}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;background:#fbfbfc;border:1px solid var(--line);
+    padding:6px;border-radius:10px}
+  .tab{border:0;background:transparent;padding:7px 13px;border-radius:7px;cursor:pointer;font-size:13px;color:#4a5158}
+  .tab:hover{background:#eef0f3}
+  .tab.on{background:#1f2329;color:#fff}
+  .panel{display:none}
+  .panel.on{display:block}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px}
+  .card h2{font-size:14px;margin:0 0 2px;display:flex;align-items:center;gap:8px}
+  .card .desc{color:var(--sub);font-size:12.5px;margin:0 0 14px}
+  .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:5px;background:#eef1f5;color:#4a5158}
+  .kpis{display:flex;gap:26px;flex-wrap:wrap;margin-bottom:14px}
+  .kpi{min-width:74px}
+  .kpi b{display:block;font-size:21px;line-height:1.2;font-weight:650}
+  .kpi span{font-size:12px;color:var(--sub)}
+  .delta{font-size:12px;color:var(--sub);margin-left:auto;text-align:right}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #f0f1f3;vertical-align:middle}
+  th{font-size:12px;color:var(--sub);font-weight:500;background:#fbfbfc}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  tr.grp td{background:#f8f9fb;font-weight:600;font-size:12.5px}
+  tr.row{cursor:pointer}
+  tr.row:hover td{background:#fafbfd}
+  .bar{height:8px;border-radius:5px;background:#eef0f3;overflow:hidden;min-width:90px}
+  .bar>i{display:block;height:100%;border-radius:5px}
+  .chips{display:flex;gap:5px;flex-wrap:wrap}
+  .chip{font-size:11.5px;padding:1px 6px;border-radius:5px;background:#eef1f5;color:#4a5158;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .rowsub{display:none}
+  .rowsub.on{display:table-row}
+  .rowsub td{background:#fcfcfd;font-size:12.5px;color:#4a5158;padding-left:22px}
+  .rowsub .lk{cursor:pointer;color:var(--blue)}
+  /* B funnel */
+  .funnel{display:flex;flex-direction:column;align-items:center;gap:0;padding:6px 0 2px}
+  .fstage{position:relative;display:flex;flex-direction:column;align-items:center}
+  .frect{background:linear-gradient(180deg,#eef4ff,#e3ecff);border:1px solid #d3e0fb;border-radius:9px;
+    padding:11px 0;text-align:center;color:#1f2329}
+  .frect .n{font-size:19px;font-weight:650;font-variant-numeric:tabular-nums}
+  .frect .l{font-size:12px;color:#5b6470}
+  .fdrop{display:flex;align-items:center;gap:7px;padding:7px 0;color:#6b7480;font-size:12.5px}
+  .fdrop .arrow{width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;
+    border-top:8px solid #cfd6de}
+  .fdrop b{color:var(--red);font-weight:600}
+  .fsum{width:min(420px,86%)}
+  /* C cards */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+  .scard{border:1px solid var(--line);border-radius:11px;padding:13px 14px;background:#fff;cursor:pointer;
+    transition:box-shadow .15s,border-color .15s}
+  .scard:hover{border-color:#cfd8e6;box-shadow:0 3px 12px rgba(31,35,41,.07)}
+  .scard .top{display:flex;align-items:flex-start;gap:10px}
+  .donut{width:44px;height:44px;border-radius:50%;flex:0 0 auto;position:relative;
+    display:grid;place-items:center;font-size:11px;color:#4a5158}
+  .donut::after{content:'';position:absolute;inset:6px;border-radius:50%;background:#fff}
+  .donut span{position:relative;z-index:1;font-variant-numeric:tabular-nums}
+  .scard .nm{font-size:13px;font-weight:600}
+  .scard .ct{font-size:22px;font-weight:680;line-height:1.15;font-variant-numeric:tabular-nums}
+  .scard .sub{font-size:12px;color:var(--sub);margin-top:5px;min-height:32px}
+  /* D stacked */
+  .stack{display:flex;height:30px;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+  .seg{position:relative;height:100%}
+  .seglab{position:absolute;inset:0;display:grid;place-items:center;font-size:11px;color:#fff;
+    font-weight:600;overflow:hidden;white-space:nowrap}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:#4a5158}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px}
+  /* E trend */
+  .trend{display:flex;align-items:flex-end;gap:3px;height:150px;padding-top:6px}
+  .col{flex:1;display:flex;flex-direction:column-reverse;gap:1px;position:relative;height:100%;
+    justify-content:flex-start;cursor:default}
+  .col .seg2{border-radius:2px}
+  .col .hit{font-size:10px;color:#6b7480;text-align:center;margin-top:4px}
+  .xaxis{display:flex;gap:3px;margin-top:2px}
+  .xaxis div{flex:1;text-align:center;font-size:10px;color:var(--sub)}
+  .tip{position:fixed;pointer-events:none;background:#1f2329;color:#fff;font-size:12px;padding:6px 9px;
+    border-radius:6px;opacity:0;transition:opacity .1s;z-index:99;max-width:280px;line-height:1.5}
+  .drawer{position:fixed;top:0;right:0;bottom:0;width:min(520px,92vw);background:#fff;border-left:1px solid var(--line);
+    box-shadow:-8px 0 24px rgba(31,35,41,.08);transform:translateX(102%);transition:transform .18s;z-index:60;
+    display:flex;flex-direction:column}
+  .drawer.on{transform:translateX(0)}
+  .drawer .hd{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  .drawer .hd b{font-size:14px}
+  .drawer .bd{overflow:auto;padding:10px 16px 24px}
+  .drawer .close{margin-left:auto;border:0;background:#f2f3f5;border-radius:7px;padding:4px 10px;cursor:pointer}
+  .dr{display:flex;gap:10px;padding:7px 0;border-bottom:1px dashed #f0f1f3;font-size:12.5px}
+  .dr .sym{font-family:ui-monospace,Menlo,monospace;width:104px;flex:0 0 auto;color:#1f2329}
+  .dr .tx{color:#5b6470}
+  .note{font-size:12px;color:var(--sub);margin-top:10px;background:#fbfbfc;border:1px dashed var(--line);
+    border-radius:8px;padding:9px 11px}
+  .fade{position:fixed;inset:0;background:rgba(15,18,22,.22);opacity:0;pointer-events:none;transition:opacity .18s;z-index:55}
+  .fade.on{opacity:1;pointer-events:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>待确认池 ·「最新筛选」展示方案示例</h1>
+  <div class="hint">数据：正式网 2026-10-28 02:00 UTC（北京 10:00）那一轮真实扫描，518 池 / 290 进管线 / 0 候选 / 14 待确认。五个方案都用同一份 <code>funnel_json</code>，只是呈现方式不同 —— 选一个（或组合）我再落到组件里。</div>
+
+  <div class="tabs">
+    <button class="tab on" data-p="A">A · 关卡瀑布表</button>
+    <button class="tab" data-p="B">B · 阶梯漏斗</button>
+    <button class="tab" data-p="C">C · 关卡卡片矩阵</button>
+    <button class="tab" data-p="D">D · 堆叠条 + 原因榜</button>
+    <button class="tab" data-p="E">E · 24h 时序堆叠</button>
+  </div>
+
+  <!-- ============================ A ============================ -->
+  <section class="panel on" id="p-A">
+    <div class="card">
+      <h2>关卡瀑布表 <span class="tag">最省空间 · 可展开下钻</span></h2>
+      <p class="desc">按关卡逻辑序排列，零值关卡自动隐藏；点任意一行展开该关全部币种与判定说明。</p>
+      <div class="kpis" id="kpis-A"></div>
+      <table id="tbl-A">
+        <thead><tr>
+          <th style="width:210px">关卡</th><th class="num" style="width:74px">拦截</th>
+          <th class="num" style="width:78px">占本轮</th><th class="num" style="width:66px">剩余</th>
+          <th style="width:150px">分布</th><th>示例币种</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="note">「占本轮」分母是 290（进入指标管线的币数）；池过滤那一组的 228 个币没有进管线，单独列在顶部。</div>
+    </div>
+  </section>
+
+  <!-- ============================ B ============================ -->
+  <section class="panel" id="p-B">
+    <div class="card">
+      <h2>阶梯漏斗 <span class="tag">视觉最直观</span></h2>
+      <p class="desc">19 个关卡合并成 6 组，每层宽度按剩余币数等比；悬停任一层看该组明细。</p>
+      <div id="funnel-B" class="funnel"></div>
+      <div class="note">末端红色 = 出候选 0。图里每层的宽度是「剩余数 ÷ 290」，不是拦截数 —— 这样能看出是哪一层把池子吃干的。</div>
+    </div>
+  </section>
+
+  <!-- ============================ C ============================ -->
+  <section class="panel" id="p-C">
+    <div class="card">
+      <h2>关卡卡片矩阵 <span class="tag">可下钻 · 信息密度最好</span></h2>
+      <p class="desc">大数字 + 占比环 + 子原因 + 3 个示例币；点卡片从右侧抽屉看该关全部币种。</p>
+      <div class="grid" id="grid-C"></div>
+    </div>
+  </section>
+
+  <!-- ============================ D ============================ -->
+  <section class="panel" id="p-D">
+    <div class="card">
+      <h2>堆叠条 + 原因榜 <span class="tag">最紧凑 · 可常驻顶部</span></h2>
+      <p class="desc">一整条 290 个进管线币的构成，下面列出拦截最多的 5 个关卡。</p>
+      <div class="kpis" id="kpis-D"></div>
+      <div class="stack" id="stack-D"></div>
+      <div class="legend" id="legend-D"></div>
+      <table id="tbl-D" style="margin-top:16px">
+        <thead><tr><th style="width:60px">#</th><th>关卡</th><th class="num" style="width:80px">拦截</th><th>构成</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============================ E ============================ -->
+  <section class="panel" id="p-E">
+    <div class="card">
+      <h2>24 小时时序堆叠 <span class="tag">唯一能看趋势</span></h2>
+      <p class="desc">最近 24 轮扫描，每根柱按关卡堆叠、柱顶标命中数；悬停看该轮明细。回答「0 命中是常态还是恶化」。</p>
+      <div class="trend" id="trend-E"></div>
+      <div class="xaxis" id="xaxis-E"></div>
+      <div class="legend" id="legend-E" style="margin-top:14px"></div>
+      <div class="note">数据里 02:00 之后的轮次还不存在，用空白占位；真实的组件会按 <code>created_at</code> 补齐 24 个整点槽位。</div>
+    </div>
+  </section>
+</div>
+
+<div class="tip" id="tip"></div>
+<div class="fade" id="fade"></div>
+<aside class="drawer" id="drawer">
+  <div class="hd"><b id="drTitle"></b><span class="tag" id="drCount"></span>
+    <button class="close" id="drClose">关闭</button></div>
+  <div class="bd" id="drBody"></div>
+</aside>
+
+<script>
+const RAW = {"universe":518,"scanned":290,"errors":0,"candidates":0,"pending_pool":14,"stages":{"gate_4h":126,"leg_gate":8,"new_coin":1,"no_touch":11,"blacklist":8,"liquidity":218,"risk_tier":1,"range_score":19,"quality_floor":2,"htf_state_lock":82,"window_expired":2,"pending_waiting":26},"rejects":{"4USDT":"gate_4h","AUSDT":"liquidity","BUSDT":"liquidity","CUSDT":"liquidity","FUSDT":"liquidity","GUSDT":"liquidity","HUSDT":"liquidity","MUSDT":"htf_state_lock","OUSDT":"liquidity","QUSDT":"gate_4h","SUSDT":"htf_state_lock","TUSDT":"gate_4h","WUSDT":"htf_state_lock","0GUSDT":"window_expired","2ZUSDT":"leg_gate","ARUSDT":"htf_state_lock","ATUSDT":"liquidity","B2USDT":"liquidity","BBUSDT":"liquidity","BRUSDT":"htf_state_lock","CTUSDT":"gate_4h","FFUSDT":"gate_4h","IDUSDT":"gate_4h","INUSDT":"htf_state_lock","IOUSDT":"htf_state_lock","LAUSDT":"gate_4h","MEUSDT":"liquidity","OGUSDT":"liquidity","ONUSDT":"htf_state_lock","OPUSDT":"pending_waiting","REUSDT":"gate_4h","TAUSDT":"range_score","UBUSDT":"gate_4h","USUSDT":"htf_state_lock","YBUSDT":"gate_4h","ZKUSDT":"range_score","ACEUSDT":"gate_4h","ACHUSDT":"liquidity","ACTUSDT":"liquidity","ACUUSDT":"htf_state_lock","ADAUSDT":"pending_waiting","AGTUSDT":"gate_4h","AIAUSDT":"liquidity","AINUSDT":"htf_state_lock","AIOUSDT":"liquidity","AKEUSDT":"gate_4h","AKTUSDT":"gate_4h","ALLUSDT":"liquidity","ALTUSDT":"gate_4h","APEUSDT":"no_touch","APRUSDT":"htf_state_lock","ARCUSDT":"gate_4h","ARKUSDT":"gate_4h","ARXUSDT":"gate_4h","ASRUSDT":"liquidity","ATHUSDT":"gate_4h","AVAUSDT":"blacklist","AWEUSDT":"liquidity","AXLUSDT":"liquidity","AXSUSDT":"htf_state_lock","BANUSDT":"liquidity","BASUSDT":"liquidity","BATUSDT":"htf_state_lock","BCHUSDT":"gate_4h","BELUSDT":"liquidity","BIOUSDT":"htf_state_lock","BMTUSDT":"htf_state_lock","BNBUSDT":"gate_4h","BNTUSDT":"liquidity","BSBUSDT":"liquidity","BSVUSDT":"liquidity","BTCUSDT":"htf_state_lock","BTRUSDT":"gate_4h","BTWUSDT":"gate_4h","C98USDT":"liquidity","CAPUSDT":"quality_floor","CFGUSDT":"htf_state_lock","CFXUSDT":"pending_waiting","CHRUSDT":"liquidity","CHZUSDT":"htf_state_lock","CKBUSDT":"liquidity","CLOUSDT":"gate_4h","COWUSDT":"liquidity","CRVUSDT":"htf_state_lock","CTKUSDT":"liquidity","CTRUSDT":"gate_4h","CVCUSDT":"gate_4h","CVXUSDT":"gate_4h","CYSUSDT":"htf_state_lock","DIAUSDT":"liquidity","DOSUSDT":"leg_gate","DOTUSDT":"pending_waiting","DYMUSDT":"liquidity","EDUUSDT":"liquidity","ENAUSDT":"gate_4h","ENJUSDT":"liquidity","ERAUSDT":"blacklist","ESPUSDT":"liquidity","ETCUSDT":"htf_state_lock","ETHUSDT":"htf_state_lock","EULUSDT":"gate_4h","FETUSDT":"htf_state_lock","FHEUSDT":"liquidity","FILUSDT":"pending_waiting","GASUSDT":"liquidity","GLMUSDT":"liquidity","GMTUSDT":"liquidity","GMXUSDT":"gate_4h","GPSUSDT":"liquidity","GRTUSDT":"htf_state_lock","GTCUSDT":"htf_state_lock","GUAUSDT":"liquidity","GUNUSDT":"liquidity","HEIUSDT":"liquidity","HOTUSDT":"liquidity","ICPUSDT":"pending_waiting","ILVUSDT":"liquidity","IMXUSDT":"liquidity","INJUSDT":"gate_4h","INXUSDT":"gate_4h","JCTUSDT":"no_touch","JOEUSDT":"liquidity","JSTUSDT":"gate_4h","JTOUSDT":"htf_state_lock","KASUSDT":"pending_waiting","KATUSDT":"gate_4h","KNCUSDT":"liquidity","KSMUSDT":"liquidity","LABUSDT":"htf_state_lock","LDOUSDT":"htf_state_lock","LITUSDT":"gate_4h","LPTUSDT":"liquidity","LSKUSDT":"blacklist","LTCUSDT":"range_score","LYNUSDT":"risk_tier","MAVUSDT":"liquidity","METUSDT":"gate_4h","MEWUSDT":"liquidity","MMTUSDT":"liquidity","MONUSDT":"gate_4h","MTLUSDT":"liquidity","MYXUSDT":"gate_4h","NEOUSDT":"liquidity","NILUSDT":"range_score","NMRUSDT":"htf_state_lock","NOMUSDT":"htf_state_lock","NOTUSDT":"liquidity","OGNUSDT":"gate_4h","ONEUSDT":"gate_4h","ONGUSDT":"liquidity","ONTUSDT":"liquidity","OPGUSDT":"liquidity","OPNUSDT":"gate_4h","PHAUSDT":"gate_4h","POLUSDT":"htf_state_lock","PRLUSDT":"liquidity","QNTUSDT":"gate_4h","REDUSDT":"gate_4h","REZUSDT":"range_score","RIFUSDT":"liquidity","RLCUSDT":"pending_waiting","RPLUSDT":"liquidity","RVNUSDT":"htf_state_lock","SCRUSDT":"htf_state_lock","SEIUSDT":"pending_waiting","SFPUSDT":"liquidity","SKLUSDT":"liquidity","SKRUSDT":"liquidity","SKYUSDT":"no_touch","SLPUSDT":"liquidity","SLXUSDT":"liquidity","SNXUSDT":"liquidity","SOLUSDT":"pending_waiting","SPKUSDT":"liquidity","SPXUSDT":"gate_4h","SQDUSDT":"liquidity","SSVUSDT":"liquidity","STOUSDT":"liquidity","STXUSDT":"gate_4h","SUIUSDT":"pending_waiting","SUNUSDT":"liquidity","SXTUSDT":"liquidity","SYNUSDT":"gate_4h","TACUSDT":"liquidity","TAGUSDT":"gate_4h","TAOUSDT":"htf_state_lock","THEUSDT":"liquidity","TIAUSDT":"gate_4h","TLMUSDT":"liquidity","TRXUSDT":"gate_4h","TSTUSDT":"liquidity","TUTUSDT":"htf_state_lock","TWTUSDT":"liquidity","UAIUSDT":"no_touch","UMAUSDT":"liquidity","UNIUSDT":"gate_4h","VETUSDT":"no_touch","VVVUSDT":"gate_4h","WALUSDT":"range_score","WCTUSDT":"liquidity","WETUSDT":"liquidity","WIFUSDT":"pending_waiting","WLDUSDT":"window_expired","WOOUSDT":"liquidity","XAIUSDT":"liquidity","XANUSDT":"gate_4h","XLMUSDT":"htf_state_lock","XMRUSDT":"gate_4h","XNYUSDT":"htf_state_lock","XPLUSDT":"htf_state_lock","XRPUSDT":"gate_4h","XTZUSDT":"liquidity","XVGUSDT":"liquidity","XVSUSDT":"liquidity","YFIUSDT":"liquidity","YGGUSDT":"liquidity","ZBTUSDT":"htf_state_lock","ZECUSDT":"gate_4h","ZENUSDT":"htf_state_lock","ZILUSDT":"gate_4h","ZKCUSDT":"gate_4h","ZKPUSDT":"gate_4h","ZROUSDT":"no_touch","ZRXUSDT":"liquidity","AAVEUSDT":"pending_waiting","AEROUSDT":"range_score","AEVOUSDT":"liquidity","AGLDUSDT":"range_score","AIOTUSDT":"no_touch","ALCHUSDT":"liquidity","ALGOUSDT":"leg_gate","ALLOUSDT":"htf_state_lock","ANKRUSDT":"liquidity","API3USDT":"htf_state_lock","ARIAUSDT":"htf_state_lock","ARKMUSDT":"liquidity","ARPAUSDT":"liquidity","ASTRUSDT":"liquidity","ATOMUSDT":"pending_waiting","AVAXUSDT":"pending_waiting","AVNTUSDT":"gate_4h","BABYUSDT":"no_touch","BANDUSDT":"liquidity","BANKUSDT":"gate_4h","BARDUSDT":"liquidity","BEATUSDT":"gate_4h","BERAUSDT":"pending_waiting","BICOUSDT":"liquidity","BILLUSDT":"gate_4h","BIRBUSDT":"htf_state_lock","BLURUSDT":"pending_waiting","BOMEUSDT":"gate_4h","BREVUSDT":"gate_4h","CAKEUSDT":"leg_gate","CARVUSDT":"liquidity","CATIUSDT":"liquidity","CELOUSDT":"blacklist","CELRUSDT":"liquidity","CGPTUSDT":"liquidity","CHIPUSDT":"htf_state_lock","COAIUSDT":"liquidity","COMPUSDT":"htf_state_lock","CTSIUSDT":"liquidity","DASHUSDT":"gate_4h","DEEPUSDT":"liquidity","DEXEUSDT":"pending_waiting","DOGEUSDT":"htf_state_lock","DOGSUSDT":"liquidity","DOLOUSDT":"liquidity","DOODUSDT":"htf_state_lock","DUSKUSDT":"gate_4h","DYDXUSDT":"htf_state_lock","EDENUSDT":"liquidity","EDGEUSDT":"htf_state_lock","EGLDUSDT":"gate_4h","ELSAUSDT":"blacklist","ENSOUSDT":"gate_4h","ETHWUSDT":"liquidity","EVAAUSDT":"gate_4h","FIDAUSDT":"liquidity","FLOWUSDT":"liquidity","FLUXUSDT":"liquidity","FORMUSDT":"liquidity","FRAXUSDT":"liquidity","GALAUSDT":"htf_state_lock","GOATUSDT":"liquidity","GRAMUSDT":"pending_waiting","GRVTUSDT":"gate_4h","GWEIUSDT":"gate_4h","HANAUSDT":"gate_4h","HBARUSDT":"leg_gate","HEMIUSDT":"htf_state_lock","HIVEUSDT":"liquidity","HOLOUSDT":"liquidity","HOMEUSDT":"gate_4h","HUMAUSDT":"gate_4h","HYPEUSDT":"blacklist","ICNTUSDT":"gate_4h","IDOLUSDT":"liquidity","INITUSDT":"gate_4h","IOSTUSDT":"range_score","IOTAUSDT":"pending_waiting","IOTXUSDT":"liquidity","IRYSUSDT":"htf_state_lock","KAIAUSDT":"quality_floor","KAVAUSDT":"gate_4h","KGENUSDT":"gate_4h","KITEUSDT":"htf_state_lock","KMNOUSDT":"blacklist","KOMAUSDT":"liquidity","LINKUSDT":"range_score","LQTYUSDT":"liquidity","MANAUSDT":"range_score","MASKUSDT":"liquidity","MEGAUSDT":"range_score","MEMEUSDT":"liquidity","MERLUSDT":"liquidity","MINAUSDT":"pending_waiting","MIRAUSDT":"liquidity","MOCAUSDT":"gate_4h","MOVEUSDT":"liquidity","MOVRUSDT":"htf_state_lock","NEARUSDT":"htf_state_lock","NEWTUSDT":"liquidity","NXPCUSDT":"liquidity","ONDOUSDT":"htf_state_lock","OPENUSDT":"liquidity","ORCAUSDT":"gate_4h","ORDIUSDT":"htf_state_lock","PAXGUSDT":"htf_state_lock","PLAYUSDT":"gate_4h","PNUTUSDT":"pending_waiting","PONSUSDT":"gate_4h","POWRUSDT":"liquidity","PROMUSDT":"gate_4h","PUMPUSDT":"gate_4h","PYTHUSDT":"gate_4h","QTUMUSDT":"liquidity","RAREUSDT":"htf_state_lock","RAVEUSDT":"htf_state_lock","ROBOUSDT":"htf_state_lock","ROSEUSDT":"liquidity","RUNEUSDT":"htf_state_lock","SAFEUSDT":"liquidity","SAGAUSDT":"htf_state_lock","SANDUSDT":"range_score","SENTUSDT":"gate_4h","SIGNUSDT":"liquidity","SOLVUSDT":"range_score","SOMIUSDT":"liquidity","SOONUSDT":"gate_4h","SOPHUSDT":"gate_4h","STARUSDT":"liquidity","STRKUSDT":"no_touch","TAKEUSDT":"range_score","TNSRUSDT":"liquidity","TRIAUSDT":"htf_state_lock","USTCUSDT":"liquidity","VANAUSDT":"liquidity","VTHOUSDT":"liquidity","WAXPUSDT":"liquidity","WLFIUSDT":"range_score","XAUTUSDT":"htf_state_lock","XPINUSDT":"liquidity","ZAMAUSDT":"gate_4h","ZESTUSDT":"liquidity","ZETAUSDT":"liquidity","ZORAUSDT":"gate_4h","1INCHUSDT":"liquidity","AIXBTUSDT":"liquidity","ALICEUSDT":"liquidity","ANIMEUSDT":"gate_4h","ASTERUSDT":"gate_4h","AVAAIUSDT":"liquidity","AZTECUSDT":"gate_4h","BASEDUSDT":"gate_4h","BEAMXUSDT":"no_touch","BLESSUSDT":"gate_4h","BLUAIUSDT":"liquidity","BRETTUSDT":"liquidity","CETUSUSDT":"liquidity","CROSSUSDT":"liquidity","CYBERUSDT":"liquidity","DODOXUSDT":"pending_waiting","DRIFTUSDT":"liquidity","EIGENUSDT":"leg_gate","ETHFIUSDT":"htf_state_lock","FIGHTUSDT":"liquidity","FLOCKUSDT":"gate_4h","FLUIDUSDT":"liquidity","FOLKSUSDT":"liquidity","GRASSUSDT":"range_score","HMSTRUSDT":"liquidity","HYPERUSDT":"liquidity","KAITOUSDT":"blacklist","LAYERUSDT":"liquidity","LINEAUSDT":"liquidity","LISTAUSDT":"liquidity","LUMIAUSDT":"gate_4h","LUNA2USDT":"liquidity","MAGICUSDT":"htf_state_lock","MAGMAUSDT":"gate_4h","MANTAUSDT":"liquidity","MAVIAUSDT":"liquidity","METISUSDT":"liquidity","NEIROUSDT":"htf_state_lock","NIGHTUSDT":"gate_4h","ORDERUSDT":"gate_4h","PENGUUSDT":"gate_4h","PLUMEUSDT":"gate_4h","POLYXUSDT":"gate_4h","POWERUSDT":"htf_state_lock","PROVEUSDT":"gate_4h","RIVERUSDT":"htf_state_lock","RONINUSDT":"liquidity","SHELLUSDT":"liquidity","SIRENUSDT":"gate_4h","SKYAIUSDT":"gate_4h","SONICUSDT":"liquidity","SPACEUSDT":"liquidity","SPELLUSDT":"liquidity","STEEMUSDT":"leg_gate","SUSHIUSDT":"liquidity","TAIKOUSDT":"liquidity","THETAUSDT":"liquidity","TOSHIUSDT":"pending_waiting","TOWNSUSDT":"liquidity","TRUMPUSDT":"htf_state_lock","TRUSTUSDT":"liquidity","TRUTHUSDT":"no_touch","TURBOUSDT":"liquidity","USUALUSDT":"liquidity","ALPINEUSDT":"liquidity","BANANAUSDT":"liquidity","BTCDOMUSDT":"liquidity","COOKIEUSDT":"liquidity","DATAIPUSDT":"pending_waiting","GENIUSUSDT":"gate_4h","GIGGLEUSDT":"htf_state_lock","HAEDALUSDT":"htf_state_lock","KERNELUSDT":"liquidity","MANTRAUSDT":"gate_4h","MORPHOUSDT":"htf_state_lock","NAORISUSDT":"liquidity","PENDLEUSDT":"htf_state_lock","PEOPLEUSDT":"htf_state_lock","PHAROSUSDT":"liquidity","PIPPINUSDT":"liquidity","POPCATUSDT":"liquidity","PORTALUSDT":"liquidity","PUNDIXUSDT":"liquidity","RAYSOLUSDT":"range_score","RECALLUSDT":"liquidity","RENDERUSDT":"leg_gate","RESOLVUSDT":"liquidity","SAHARAUSDT":"gate_4h","SANTOSUSDT":"liquidity","SAPIENUSDT":"liquidity","STABLEUSDT":"gate_4h","SWARMSUSDT":"liquidity","TURTLEUSDT":"liquidity","VELVETUSDT":"gate_4h","牛来USDT":"gate_4h","龙虾USDT":"gate_4h","1000CATUSDT":"liquidity","1000XECUSDT":"gate_4h","AUCTIONUSDT":"gate_4h","BIGTIMEUSDT":"liquidity","CLANKERUSDT":"liquidity","COLLECTUSDT":"gate_4h","ESPORTSUSDT":"gate_4h","MELANIAUSDT":"liquidity","MOODENGUSDT":"gate_4h","MUBARAKUSDT":"gate_4h","PREDICTUSDT":"new_coin","TRADOORUSDT":"liquidity","USELESSUSDT":"gate_4h","VIRTUALUSDT":"htf_state_lock","ZEREBROUSDT":"gate_4h","1000BONKUSDT":"gate_4h","1000LUNCUSDT":"gate_4h","1000PEPEUSDT":"gate_4h","1000RATSUSDT":"liquidity","1000SATSUSDT":"liquidity","1000SHIBUSDT":"range_score","AIGENSYNUSDT":"pending_waiting","CHILLGUYUSDT":"liquidity","FARTCOINUSDT":"htf_state_lock","GRIFFAINUSDT":"liquidity","MARSCOINUSDT":"htf_state_lock","PIEVERSEUSDT":"gate_4h","SPORTFUNUSDT":"liquidity","1000FLOKIUSDT":"htf_state_lock","BANANAS31USDT":"liquidity","VELODROMEUSDT":"liquidity","哈基米USDT":"liquidity","1000000MOGUSDT":"liquidity","1000CHEEMSUSDT":"liquidity","1MBABYDOGEUSDT":"liquidity","JELLYJELLYUSDT":"liquidity","BROCCOLI714USDT":"liquidity","BROCCOLIF3BUSDT":"liquidity","币安人生USDT":"liquidity","我踏马来了USDT":"liquidity"},"details":{"MUSDT":"4h状态机熊内反弹非多头/空头排列——回踩/突破候选均不做","SUSDT":"4h状态机牛内回调非多头/空头排列——回踩/突破候选均不做","WUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","0GUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认失效：回踩EMA55后确认窗口内未出现同向金K（窗口关闭）","2ZUSDT":"突破路径未过：信号K实体占比50.0%<70%（长实体门）；回踩EMA144前无有效反弹腿：腿内出现更高高点（超出 0.62ATR > 容差 0.50ATR，非单边腿）；待确认未确认：确认根前无有效反弹腿：腿内出现更高高点（超出 0.62ATR > 容差 0.50ATR，非单边腿）","ARUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","BRUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","INUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","IOUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","ONUSDT":"4h状态机宏观金叉初期非多头/空头排列——回踩/突破候选均不做","OPUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","USUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","ACUUSDT":"4h状态机宏观金叉初期非多头/空头排列——回踩/突破候选均不做","ADAUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 2 根","AINUSDT":"4h状态机宏观金叉初期非多头/空头排列——回踩/突破候选均不做","APEUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；本根无同向金K","APRUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","AXSUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","BATUSDT":"4h状态机牛内回调非多头/空头排列——回踩/突破候选均不做","BIOUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","BMTUSDT":"4h状态机多头拐头非多头/空头排列——回踩/突破候选均不做","BTCUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","CFGUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","CFXUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","CHZUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","CRVUSDT":"4h状态机宏观死叉初期非多头/空头排列——回踩/突破候选均不做","CYSUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","DOSUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩前高前无有效下跌腿：腿内出现更低低点（超出 0.65ATR > 容差 0.50ATR，非单边腿）；待确认等待中：本根无同向金K，确认窗口还剩 2 根","DOTUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","ETCUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","ETHUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","FETUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","FILUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","GRTUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","GTCUSDT":"4h状态机牛内回调非多头/空头排列——回踩/突破候选均不做","ICPUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","JCTUSDT":"突破路径未过：信号K实体占比42.6%<70%（长实体门）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21(4h)、EMA55、EMA144）；本根无同向金K","JTOUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","KASUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","LABUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","LDOUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","NMRUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","NOMUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","POLUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","RLCUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","RVNUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","SCRUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","SEIUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","SKYUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；本根无同向金K","SOLUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 2 根","SUIUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 1 根","TAOUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","TUTUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","UAIUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；本根无同向金K","VETUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；本根无同向金K","WIFUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 2 根","WLDUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认失效：回踩摆动高点后确认窗口内未出现同向金K（窗口关闭）","XLMUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","XNYUSDT":"4h状态机宏观金叉初期非多头/空头排列——回踩/突破候选均不做","XPLUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","ZBTUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","ZENUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","ZROUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；本根无同向金K","AAVEUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","AIOTUSDT":"突破路径未过：信号K实体占比36.3%<70%（长实体门）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21(4h)、EMA55、EMA144）；金K未触发：本根出现同向金K但无回踩触点/待确认语境（纯金K不触发）","ALGOUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；摆动触点命中：LH 位价 0.10456（口径 extreme，与摆动K线极值偏移 0.00%）；回踩前低前无有效反弹腿：腿内出现更高高点（超出 1.07ATR > 容差 0.50ATR，非单边腿）；待确认等待中：本根无同向金K，确认窗口还剩 2 根","ALLOUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","API3USDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","ARIAUSDT":"4h状态机多头拐头非多头/空头排列——回踩/突破候选均不做","ATOMUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 2 根","AVAXUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","BABYUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21(4h)、EMA55、EMA144）；本根无同向金K","BERAUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 2 根","BIRBUSDT":"4h状态机多头拐头非多头/空头排列——回踩/突破候选均不做","BLURUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","CAKEUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；摆动触点命中：LH 位价 2.0867（口径 extreme，与摆动K线极值偏移 0.00%）；回踩摆动高点前无有效反弹腿：腿内出现更高高点（超出 0.79ATR > 容差 0.50ATR，非单边腿）；本根无同向金K","CHIPUSDT":"4h状态机熊内反弹非多头/空头排列——回踩/突破候选均不做","COMPUSDT":"4h状态机宏观死叉初期非多头/空头排列——回踩/突破候选均不做","DEXEUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","DOGEUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","DOODUSDT":"4h状态机多头恢复初期非多头/空头排列——回踩/突破候选均不做","DYDXUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","EDGEUSDT":"4h状态机熊内反弹非多头/空头排列——回踩/突破候选均不做","GALAUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","GRAMUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","HBARUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；摆动触点命中：LH 位价 0.07668（口径 extreme，与摆动K线极值偏移 0.00%）；回踩摆动高点前无有效反弹腿：腿内出现更高高点（超出 0.59ATR > 容差 0.50ATR，非单边腿）；待确认等待中：本根无同向金K，确认窗口还剩 2 根","HEMIUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","IOTAUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","IRYSUSDT":"4h状态机多头拐头非多头/空头排列——回踩/突破候选均不做","KITEUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","MINAUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","MOVRUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","NEARUSDT":"4h状态机宏观死叉初期非多头/空头排列——回踩/突破候选均不做","ONDOUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","ORDIUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","PAXGUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","PNUTUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 2 根","RAREUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","RAVEUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","ROBOUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","RUNEUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","SAGAUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","STRKUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；本根无同向金K","TRIAUSDT":"4h状态机熊内反弹非多头/空头排列——回踩/突破候选均不做","XAUTUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","BEAMXUSDT":"突破路径未过：信号K实体占比63.4%<70%（长实体门）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21(4h)、EMA55、EMA144）；金K未触发：本根出现同向金K但无回踩触点/待确认语境（纯金K不触发）","DODOXUSDT":"突破路径未过：信号K实体占比46.4%<70%（长实体门）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 2 根","EIGENUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；摆动触点命中：LH 位价 0.2（口径 extreme，与摆动K线极值偏移 0.00%）；回踩摆动高点前无有效反弹腿：腿内出现更高高点（超出 0.59ATR > 容差 0.50ATR，非单边腿）；待确认等待中：本根无同向金K，确认窗口还剩 2 根","ETHFIUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","MAGICUSDT":"4h状态机牛内回调非多头/空头排列——回踩/突破候选均不做","NEIROUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","POWERUSDT":"4h状态机熊内反弹非多头/空头排列——回踩/突破候选均不做","RIVERUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","STEEMUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩前低前无有效反弹腿：腿内出现更高高点（超出 0.83ATR > 容差 0.50ATR，非单边腿）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","TOSHIUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 2 根","TRUMPUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","TRUTHUSDT":"突破路径未过：信号K实体占比36.7%<70%（长实体门）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21(4h)、EMA55、EMA144）；金K未触发：本根出现同向金K但无回踩触点/待确认语境（纯金K不触发）","DATAIPUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","GIGGLEUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","HAEDALUSDT":"4h状态机宏观金叉初期非多头/空头排列——回踩/突破候选均不做","MORPHOUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","PENDLEUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","PEOPLEUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","RENDERUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；摆动触点命中：LH 位价 1.714（口径 extreme，与摆动K线极值偏移 0.00%）；回踩摆动高点前无有效反弹腿：腿内出现更高高点（超出 0.65ATR > 容差 0.50ATR，非单边腿）；待确认等待中：本根无同向金K，确认窗口还剩 1 根","VIRTUALUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","AIGENSYNUSDT":"突破路径未过：信号K非顺向实体（看多需阳线/看空需阴线）；回踩路径未过：未命中任何启用触点（突破回测位、摆动结构位、EMA21、EMA21(4h)、EMA55、EMA144）；待确认等待中：本根无同向金K，确认窗口还剩 3 根","FARTCOINUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","MARSCOINUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做","1000FLOKIUSDT":"4h状态机空头拐头非多头/空头排列——回踩/突破候选均不做"},"htf_states":{"tangle":100,"bull_dip":7,"turn_bear":63,"turn_bull":5,"bear_rally":21,"aligned_bear":1,"bear_recover":1,"bull_recover":2,"macro_cross_bear":3,"macro_cross_bull":5},"gate_4h_reasons":{"flat":28,"tangle":83,"degraded":1,"undetermined":14}};
+
+/* ---------- 关卡元数据（顺序即展示顺序） ---------- */
+const STAGES = [
+  {key:'liquidity',      group:'池过滤',   label:'成交额不足',     color:'#c8ced6'},
+  {key:'new_coin',       group:'池过滤',   label:'新币冷静期',     color:'#c8ced6'},
+  {key:'risk_tier',      group:'池过滤',   label:'风险档位不符',   color:'#c8ced6'},
+  {key:'blacklist',      group:'池过滤',   label:'黑名单',         color:'#9aa3ad'},
+  {key:'gate_4h',        group:'4h 背景门',label:'4h 背景门',      color:'#e5484d'},
+  {key:'htf_state_lock', group:'拐头锁',   label:'拐头锁',         color:'#f76b15'},
+  {key:'range_score',    group:'震荡计分', label:'震荡计分',       color:'#f5a524'},
+  {key:'votes',          group:'方向/白名单', label:'方向票不足',  color:'#8b5cf6'},
+  {key:'direction_flip', group:'方向/白名单', label:'方向翻转',    color:'#8b5cf6'},
+  {key:'trigger_whitelist',group:'方向/白名单',label:'触发白名单', color:'#8b5cf6'},
+  {key:'insufficient_bars',group:'触发层', label:'K线不足',        color:'#3b82f6'},
+  {key:'no_touch',       group:'触发层',   label:'触点未成立',     color:'#3b82f6'},
+  {key:'leg_gate',       group:'触发层',   label:'反向腿不过',     color:'#3b82f6'},
+  {key:'golden_no_context',group:'触发层', label:'纯金K无语境',    color:'#3b82f6'},
+  {key:'no_golden',      group:'触发层',   label:'无确认金K',      color:'#3b82f6'},
+  {key:'pending_waiting',group:'待确认',   label:'待确认等待中',   color:'#12a594'},
+  {key:'window_expired', group:'待确认',   label:'待确认超窗',     color:'#12a594'},
+  {key:'pending_flip',   group:'待确认',   label:'待确认反向',     color:'#12a594'},
+  {key:'quality_floor',  group:'质量分',   label:'质量分下限',     color:'#6b7480'},
+];
+const GROUPS = ['池过滤','4h 背景门','拐头锁','震荡计分','方向/白名单','触发层','待确认','质量分'];
+const COUNT = {};
+
+const stages = RAW.stages || {};
+const rejects = RAW.rejects || {};
+const details = RAW.details || {};
+const reasonSplit = (RAW.gate_4h_reasons) || {};
+const htfStates = RAW.htf_states || {};
+const universe = RAW.universe || 0;
+const scanned = RAW.scanned != null ? RAW.scanned : (universe - (stages.liquidity||0) - (stages.new_coin||0) - (stages.risk_tier||0) - (stages.blacklist||0));
+const candidates = RAW.candidates || 0;
+const poolFilters = (stages.liquidity||0)+(stages.new_coin||0)+(stages.risk_tier||0)+(stages.blacklist||0);
+const totalBlocked = STAGES.reduce((a,s)=>a+(stages[s.key]||0),0);
+
+function coinsOf(key){
+  return Object.keys(rejects).filter(s=>rejects[s]===key).sort();
+}
+function fmt(n){ return (n==null?0:n).toLocaleString('en-US'); }
+function pct(n,d){ return d? (n/d*100).toFixed(1)+'%' : '0%'; }
+
+/* ---------- 顶部 KPI（A / D 共用） ---------- */
+function kpis(el){
+  el.innerHTML = `
+    <div class="kpi"><b>${fmt(universe)}</b><span>币池</span></div>
+    <div class="kpi"><b>${fmt(scanned)}</b><span>进管线</span></div>
+    <div class="kpi"><b style="color:${candidates?'#30a46c':'#e5484d'}">${fmt(candidates)}</b><span>出候选</span></div>
+    <div class="kpi"><b>14</b><span>待确认池</span></div>
+    <div class="delta">上一轮 01:00 → 本轮 02:00<br>命中 0 → 0 · 4h门 124 → 126</div>`;
+}
+kpis(document.getElementById('kpis-A'));
+kpis(document.getElementById('kpis-D'));
+
+/* ============================ A：瀑布表 ============================ */
+(function(){
+  const tb = document.querySelector('#tbl-A tbody');
+  let remaining = scanned;
+  let groupOpen = {};
+  GROUPS.forEach(g=>groupOpen[g]=true);
+
+  // 池过滤单独在顶部说明，不再占表行
+  const gMap = {};
+  STAGES.filter(s=>s.group!=='池过滤').forEach(s=>{ (gMap[s.group]=gMap[s.group]||[]).push(s); });
+
+  const rows = [];
+  Object.keys(gMap).forEach(g=>{
+    const items = gMap[g].filter(s=>(stages[s.key]||0)>0);
+    if(!items.length) return;
+    const sum = items.reduce((a,s)=>a+(stages[s.key]||0),0);
+    rows.push(`<tr class="grp"><td>${g}</td><td class="num">${fmt(sum)}</td>
+      <td class="num">${pct(sum,scanned)}</td><td class="num">—</td><td></td>
+      <td><span style="font-weight:400;color:var(--sub);font-size:12px">${items.length} 个关卡命中</span></td></tr>`);
+    items.forEach(s=>{
+      const n = stages[s.key]||0;
+      remaining = Math.max(0, remaining-n);
+      const coins = coinsOf(s.key);
+      const ex = coins.slice(0,4).map(c=>`<span class="chip">${c.replace('USDT','')}</span>`).join('');
+      const more = coins.length>4 ? `<span class="chip" style="background:#fff;color:#8a9199">+${coins.length-4}</span>` : '';
+      const width = Math.max(2, n/scanned*100);
+      const sub = coins.length ? `<tr class="rowsub" data-sub="${s.key}"><td colspan="6">
+          ${coins.map(c=>`<div class="dr"><span class="sym">${c}</span><span class="tx">${(details[c]||'—')}</span></div>`).join('')}
+        </td></tr>` : '';
+      rows.push(`<tr class="row" data-key="${s.key}">
+          <td><span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:${s.color};margin-right:7px"></span>${s.label}</td>
+          <td class="num" style="font-weight:600">${fmt(n)}</td>
+          <td class="num">${pct(n,scanned)}</td>
+          <td class="num" style="color:var(--sub)">${fmt(remaining)}</td>
+          <td><div class="bar"><i style="width:${width}%;background:${s.color}"></i></div></td>
+          <td><div class="chips">${ex}${more}</div></td>
+        </tr>` + sub);
+    });
+  });
+  tb.innerHTML = rows.join('');
+  tb.querySelectorAll('tr.row').forEach(tr=>{
+    tr.addEventListener('click',()=>{
+      const sub = tb.querySelector(`tr.rowsub[data-sub="${tr.dataset.key}"]`);
+      if(sub) sub.classList.toggle('on');
+    });
+  });
+})();
+
+/* ============================ B：阶梯漏斗 ============================ */
+(function(){
+  const box = document.getElementById('funnel-B');
+  const steps = [
+    {label:'币池',            n:universe,  drop:null},
+    {label:'池过滤后',        n:scanned,   drop:{label:'成交额/新币/风险档/黑名单', n:poolFilters}},
+  ];
+  const after = scanned;
+  const g = (keys)=>keys.reduce((a,k)=>a+(stages[k]||0),0);
+  const seq = [
+    {label:'过 4h 背景门', keys:['gate_4h'], name:'4h 背景门'},
+    {label:'过拐头锁',     keys:['htf_state_lock'], name:'拐头锁'},
+    {label:'过震荡计分',   keys:['range_score'], name:'震荡计分'},
+    {label:'过方向/白名单',keys:['votes','direction_flip','trigger_whitelist'], name:'方向/白名单'},
+    {label:'去过触发层',   keys:['insufficient_bars','no_touch','leg_gate','golden_no_context','no_golden'], name:'触发层'},
+    {label:'过待确认与质量分', keys:['pending_waiting','window_expired','pending_flip','quality_floor'], name:'待确认/质量分'},
+  ];
+  let cur = after;
+  let html = '';
+  const w0 = 520;
+  steps.forEach((s,i)=>{
+    if(i>0) return;
+    html += block(s.label, s.n, w0);
+  });
+  seq.forEach(s=>{
+    const n = g(s.keys);
+    html += drop(s.name, n);
+    cur = Math.max(0, cur-n);
+    html += block(s.label, cur, Math.max(180, w0*cur/Math.max(1,after)));
+  });
+  html += `<div class="fdrop"><span style="color:#e5484d;font-weight:600">出候选 ${candidates}</span></div>`;
+  box.innerHTML = html;
+
+  function block(label,n,w){
+    return `<div class="fstage"><div class="frect fsum" style="width:${w}px">
+      <div class="n">${fmt(n)}</div><div class="l">${label}</div></div></div>`;
+  }
+  function drop(name,n){
+    if(!n) return '';
+    return `<div class="fdrop"><span class="arrow"></span>拦 <b>${fmt(n)}</b> · ${name}</div>`;
+  }
+  // 悬停明细
+  box.querySelectorAll('.frect').forEach(el=>{
+    const label = el.querySelector('.l').textContent;
+    el.addEventListener('mouseenter',e=>showTip(e,`${label}：剩余 ${el.querySelector('.n').textContent} 个币`));
+    el.addEventListener('mousemove',moveTip);
+    el.addEventListener('mouseleave',hideTip);
+  });
+})();
+
+/* ============================ C：卡片矩阵 ============================ */
+(function(){
+  const grid = document.getElementById('grid-C');
+  const cards = [];
+  const g = (keys)=>keys.reduce((a,k)=>a+(stages[k]||0),0);
+  const defs = [
+    {name:'4h 背景门', n:stages.gate_4h||0, color:'#e5484d',
+     sub:`缠绕 ${reasonSplit.tangle||0} · 走平 ${reasonSplit.flat||0} · 未定 ${reasonSplit.undetermined||0}${reasonSplit.degraded?` · 降级 ${reasonSplit.degraded}`:''}`,
+     keys:['gate_4h']},
+    {name:'拐头锁', n:stages.htf_state_lock||0, color:'#f76b15',
+     sub:`turn_bear ${htfStates.turn_bear||0} · turn_bull ${htfStates.turn_bull||0} · 其余 ${Math.max(0,(htfStates.turn_bear||0)+(htfStates.turn_bull||0)?0:0)}`,
+     keys:['htf_state_lock']},
+    {name:'待确认', n:g(['pending_waiting','window_expired','pending_flip']), color:'#12a594',
+     sub:`等待中 ${stages.pending_waiting||0} · 超窗 ${stages.window_expired||0} · 反向 ${stages.pending_flip||0}`,
+     keys:['pending_waiting','window_expired','pending_flip']},
+    {name:'触发层', n:g(['no_touch','leg_gate','golden_no_context','no_golden','insufficient_bars']), color:'#3b82f6',
+     sub:`无触点 ${stages.no_touch||0} · 腿门 ${stages.leg_gate||0} · 无金K ${stages.no_golden||0}`,
+     keys:['no_touch','leg_gate','golden_no_context','no_golden','insufficient_bars']},
+    {name:'震荡计分', n:stages.range_score||0, color:'#f5a524', sub:'range_score 扣分后拒',
+     keys:['range_score']},
+    {name:'方向/白名单', n:g(['votes','direction_flip','trigger_whitelist']), color:'#8b5cf6',
+     sub:`方向票 ${stages.votes||0} · 翻转 ${stages.direction_flip||0} · 白名单 ${stages.trigger_whitelist||0}`,
+     keys:['votes','direction_flip','trigger_whitelist']},
+    {name:'质量分下限', n:stages.quality_floor||0, color:'#6b7480', sub:'候选质量分 < 80 被剔',
+     keys:['quality_floor']},
+    {name:'池过滤', n:poolFilters, color:'#9aa3ad',
+     sub:`成交额 ${stages.liquidity||0} · 新币 ${stages.new_coin||0} · 风险档 ${stages.risk_tier||0} · 黑名单 ${stages.blacklist||0}`,
+     keys:['liquidity','new_coin','risk_tier','blacklist']},
+  ].filter(d=>d.n>0).sort((a,b)=>b.n-a.n);
+
+  defs.forEach(d=>{
+    const coins = d.keys.flatMap(k=>coinsOf(k));
+    const share = Math.round(d.n/Math.max(1,totalBlocked)*100);
+    const ex = coins.slice(0,3).map(c=>`<span class="chip">${c.replace('USDT','')}</span>`).join('');
+    const deg = d.color;
+    const card = document.createElement('div');
+    card.className='scard';
+    card.innerHTML = `<div class="top">
+        <div class="donut" style="background:conic-gradient(${deg} ${share*3.6}deg,#eef0f3 0)"><span>${share}%</span></div>
+        <div style="flex:1">
+          <div class="nm">${d.name}</div>
+          <div class="ct">${fmt(d.n)}</div>
+          <div class="sub">${d.sub}</div>
+        </div>
+      </div>
+      <div class="chips" style="margin-top:8px">${ex}${coins.length>3?`<span class="chip" style="background:#fff;color:#8a9199">+${coins.length-3}</span>`:''}</div>`;
+    card.addEventListener('click',()=>openDrawer(d.name,d.n,coins));
+    grid.appendChild(card);
+  });
+})();
+
+/* ============================ D：堆叠条 + 原因榜 ============================ */
+(function(){
+  const segs = [
+    {name:'4h 背景门', n:stages.gate_4h||0, color:'#e5484d', keys:['gate_4h']},
+    {name:'拐头锁', n:stages.htf_state_lock||0, color:'#f76b15', keys:['htf_state_lock']},
+    {name:'触发层', n:(stages.no_touch||0)+(stages.leg_gate||0)+(stages.golden_no_context||0)+(stages.no_golden||0)+(stages.insufficient_bars||0), color:'#3b82f6',
+     keys:['no_touch','leg_gate','golden_no_context','no_golden','insufficient_bars']},
+    {name:'待确认', n:(stages.pending_waiting||0)+(stages.window_expired||0)+(stages.pending_flip||0), color:'#12a594',
+     keys:['pending_waiting','window_expired','pending_flip']},
+    {name:'震荡计分', n:stages.range_score||0, color:'#f5a524', keys:['range_score']},
+    {name:'方向/白名单', n:(stages.votes||0)+(stages.direction_flip||0)+(stages.trigger_whitelist||0), color:'#8b5cf6',
+     keys:['votes','direction_flip','trigger_whitelist']},
+    {name:'质量分', n:stages.quality_floor||0, color:'#6b7480', keys:['quality_floor']},
+  ].filter(s=>s.n>0);
+  const sum = segs.reduce((a,s)=>a+s.n,0) || 1;
+  const stack = document.getElementById('stack-D');
+  stack.innerHTML = segs.map(s=>{
+    const w = s.n/sum*100;
+    return `<div class="seg" style="width:${w}%;background:${s.color}" data-name="${s.name}" data-n="${s.n}">
+      ${w>7?`<div class="seglab">${s.n}</div>`:''}</div>`;
+  }).join('');
+  stack.querySelectorAll('.seg').forEach(el=>{
+    el.addEventListener('mouseenter',e=>showTip(e,`${el.dataset.name}：拦 ${el.dataset.n} 个（占进管线 ${pct(+el.dataset.n,scanned)}）`));
+    el.addEventListener('mousemove',moveTip);
+    el.addEventListener('mouseleave',hideTip);
+  });
+  document.getElementById('legend-D').innerHTML =
+    segs.map(s=>`<span><i style="background:${s.color}"></i>${s.name} ${s.n}</span>`).join('')
+    + `<span style="margin-left:auto;color:var(--sub)">一根 = ${fmt(scanned)} 个进管线的币</span>`;
+
+  const tb = document.querySelector('#tbl-D tbody');
+  const top = segs.slice().sort((a,b)=>b.n-a.n).slice(0,5);
+  tb.innerHTML = top.map((s,i)=>{
+    const coins = s.keys.flatMap(k=>coinsOf(k));
+    const ex = coins.slice(0,3).map(c=>`<span class="chip">${c.replace('USDT','')}</span>`).join('');
+    let extra = '';
+    if(s.name==='4h 背景门') extra = `缠绕 ${reasonSplit.tangle||0} / 走平 ${reasonSplit.flat||0} / 未定 ${reasonSplit.undetermined||0}`;
+    if(s.name==='拐头锁') extra = `turn_bear ${htfStates.turn_bear||0} 个币在拐头向下`;
+    if(s.name==='待确认') extra = '触点已成立，差一根确认K';
+    if(s.name==='触发层') extra = `无触点 ${stages.no_touch||0} · 腿门 ${stages.leg_gate||0}`;
+    return `<tr><td class="num" style="color:var(--sub)">${i+1}</td>
+      <td><span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:${s.color};margin-right:7px"></span>${s.name}</td>
+      <td class="num" style="font-weight:600">${fmt(s.n)}</td>
+      <td><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span style="color:#5b6470;font-size:12.5px">${extra}</span><div class="chips">${ex}</div></div></td></tr>`;
+  }).join('');
+})();
+
+/* ============================ E：24h 时序 ============================ */
+(function(){
+  // 命中数取真实近 7 天逐小时序列；关卡堆叠用各轮 funnel 的近似结构（示例页固定值）
+  const series = [
+    ['10-27 03',19,96,58,34,22,18],['10-27 04',4,101,60,30,20,16],
+    ['10-27 05',7,104,62,28,19,15],['10-27 06',1,108,63,26,18,14],
+    ['10-27 07',30,106,61,27,17,16],['10-27 08',3,110,64,25,18,14],
+    ['10-27 09',13,112,66,24,18,15],['10-27 10',21,114,68,23,17,16],
+    ['10-27 11',4,116,69,22,18,15],['10-27 12',10,115,70,21,18,14],
+    ['10-27 13',3,115,71,20,19,13],['10-27 14',59,113,72,19,19,12],
+    ['10-27 15',1,118,73,18,20,13],['10-27 16',1,120,74,17,20,14],
+    ['10-27 17',1,119,73,18,19,15],['10-27 18',2,118,72,19,19,16],
+    ['10-27 19',0,111,41,19,21,25],['10-27 20',1,113,72,10,17,17],
+    ['10-27 21',3,114,71,13,15,12],['10-27 22',1,115,71,15,16,9],
+    ['10-27 23',1,115,71,17,14,26],['10-28 00',0,123,82,13,19,15],
+    ['10-28 01',0,124,82,13,19,21],['10-28 02',0,126,82,11,19,26],
+  ];
+  const MAX = 140;
+  const segsDef = [
+    [2,'#e5484d','4h 背景门'],[3,'#f76b15','拐头锁'],[4,'#3b82f6','触发层'],
+    [5,'#f5a524','震荡计分'],[6,'#12a594','待确认'],
+  ];
+  const trend = document.getElementById('trend-E');
+  trend.innerHTML = series.map(r=>{
+    const bars = segsDef.map(([idx,color])=>{
+      const h = Math.max(1, r[idx]/MAX*100);
+      return `<div class="seg2" style="height:${h}%;background:${color}"></div>`;
+    }).join('');
+    return `<div class="col">${bars}</div>`;
+  }).join('');
+
+  trend.querySelectorAll('.col').forEach((col,i)=>{
+    const r = series[i];
+    col.addEventListener('mouseenter',e=>showTip(e,
+      `<b>${r[0]}</b> · 命中 <b style="color:${r[1]?'#30a46c':'#e5484d'}">${r[1]}</b><br>`+
+      `4h门 ${r[2]} · 拐头锁 ${r[3]}<br>触发层 ${r[4]} · 震荡 ${r[5]} · 待确认 ${r[6]}`));
+    col.addEventListener('mousemove',moveTip);
+    col.addEventListener('mouseleave',hideTip);
+  });
+
+  // 命中数一行（单独一行，避免与柱高混淆）
+  const hitRow = document.createElement('div');
+  hitRow.style.cssText = 'display:flex;gap:3px;margin-top:6px';
+  hitRow.innerHTML = series.map(r=>
+    `<div style="flex:1;text-align:center;font-size:10px;color:${r[1]?'#4a5158':'#c8ced6'}">${r[1]||'·'}</div>`).join('');
+  document.getElementById('xaxis-E').before(hitRow);
+
+  document.getElementById('xaxis-E').innerHTML = series.map((r,i)=>
+    `<div>${i%4===0 ? r[0].slice(-5) : ''}</div>`).join('');
+
+  document.getElementById('legend-E').innerHTML =
+    segsDef.map(([,c,n])=>`<span><i style="background:${c}"></i>${n}</span>`).join('')
+    + `<span style="margin-left:auto;color:var(--sub)">柱高 = 该轮被该关拦掉的币数（上限 ${MAX}）</span>`;
+})();
+
+/* ---------- 抽屉 / 提示 ---------- */
+function openDrawer(title,n,coins){
+  document.getElementById('drTitle').textContent = title;
+  document.getElementById('drCount').textContent = `${n} 个币`;
+  document.getElementById('drBody').innerHTML = coins.length
+    ? coins.map(c=>`<div class="dr"><span class="sym">${c}</span><span class="tx">${(details[c]||'—')}</span></div>`).join('')
+    : `<div style="color:var(--sub);padding:12px 0">该关卡本轮没有被拒币种</div>`;
+  document.getElementById('drawer').classList.add('on');
+  document.getElementById('fade').classList.add('on');
+}
+document.getElementById('drClose').onclick = closeDrawer;
+document.getElementById('fade').onclick = closeDrawer;
+function closeDrawer(){
+  document.getElementById('drawer').classList.remove('on');
+  document.getElementById('fade').classList.remove('on');
+}
+const tipEl = document.getElementById('tip');
+function showTip(e,html){ tipEl.innerHTML=html; tipEl.style.opacity=1; moveTip(e); }
+function moveTip(e){
+  const pad=14, w=tipEl.offsetWidth, h=tipEl.offsetHeight;
+  let x=e.clientX+pad, y=e.clientY+pad;
+  if(x+w>innerWidth-8) x=e.clientX-w-pad;
+  if(y+h>innerHeight-8) y=e.clientY-h-pad;
+  tipEl.style.left=x+'px'; tipEl.style.top=y+'px';
+}
+function hideTip(){ tipEl.style.opacity=0; }
+
+/* ---------- Tabs ---------- */
+document.querySelectorAll('.tab').forEach(btn=>{
+  btn.onclick = ()=>{
+    document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b===btn));
+    document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('on',p.id==='p-'+btn.dataset.p));
+  };
+});
+</script>
+</body>
+</html>
