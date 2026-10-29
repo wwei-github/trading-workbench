@@ -441,20 +441,20 @@ def detect_indicator_candidate(
                         reject_out["degraded"] = True
                     reject_out["htf"] = _htf_snapshot(htf_res, htf_degraded)
                 return None, ({"op": "expire", "reason": "ranging"} if pending else None)
-        # 4h 状态机双向禁开（2026-10-20 用户拍板收紧：前置门仅放行多头/空头
-        # 排列 aligned_*）：block_both（非 aligned_*）时，回踩·突破候选均一票
-        # 否决——与闸门同属「前置筛选」层（4h 决定做不做，1h 负责命中与待确认）。
+        # 4h 状态机双向禁开（2026-10-20 收紧为放行排列；2026-10-29 放宽加入恢复
+        # 初期）：block_both（不在放行白名单）时，回踩·突破候选均一票否决——与
+        # 闸门同属「前置筛选」层（4h 决定做不做，1h 负责命中与待确认）。
         # tangle 已由上方 reject_reason 先行否决（统一判据），此处实际拦 turn_*
-        # 拐头、macro_cross_*/*_recover（趋势刚交叉/恢复、尚未完全排列）与
-        # bull_dip/bear_rally 过渡态；命中即直接不看：不跑票数、不触发、不进候选，
-        # 活跃 pending 同轮 expire(htf_state_lock)。异常/数据不足（htf_res=None）
-        # 不在此判，由下方方向关 fail-closed 收口。
+        # 拐头、macro_cross_* 交叉初期与 bull_dip/bear_rally 过渡态；命中即直接
+        # 不看：不跑票数、不触发、不进候选，活跃 pending 同轮 expire(htf_state_lock)。
+        # 异常/数据不足（htf_res=None）不在此判，由下方方向关 fail-closed 收口。
         if htf_res is not None and htf_res.get("block_both"):
             _reject("htf_state_lock")
             if reject_out is not None:
+                # 只留状态名：口径说明由前端关卡 hint 统一承载，避免抽屉里同一句话出现两遍
                 reject_out["detail"] = (
-                        f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
-                        "非多头/空头排列——回踩/突破候选均不做")
+                    htf_res.get("state_label") or htf_res.get("state") or ""
+                )
                 reject_out["htf"] = _htf_snapshot(htf_res)
             return None, ({"op": "expire", "reason": "htf_state_lock"} if pending else None)
     else:
@@ -498,8 +498,8 @@ def detect_indicator_candidate(
 
     # 4h 状态机逆势锁（2026-10-19 用户拍板）：STATE_LOCK_CONTRA（宏观同侧六态：
     # macro_cross_* / *_recover / aligned_*）时，逆状态的候选一票否决。2026-10-20
-    # 前置门收紧到「仅排列放行」后，macro_cross_*/*_recover 已在 block_both 层被
-    # 拦，实际到达此处者仅 aligned_bull/aligned_bear——本关把通过集锁到其自身排列
+    # 前置门收紧到「仅排列放行」后，macro_cross_* 在 block_both 层已被拦；2026-10-29
+    # 恢复初期（*_recover）放行后重新到达本关，与 aligned_* 一样把通过集锁到其自身
     # 方向。与 STATE_BLOCK_BOTH 同属「前置筛选」层，但需先定向才能判逆势，故放在方向派生
     # 之后。置于方向冲突关「之后」：gate_4h 与定向已一致时，再核对 4h 排列结构
     # （EMA21/55/144 状态机）——二者不一致（如宏观死叉但价格仍在 EMA144 上方）
@@ -517,7 +517,7 @@ def detect_indicator_candidate(
             _reject("htf_state_lock")
             if reject_out is not None:
                 reject_out["detail"] = (
-                    f"4h状态机{htf_res.get('state_label') or htf_res.get('state')}"
+                    f"{htf_res.get('state_label') or htf_res.get('state')}"
                     f"（宏观同侧）锁逆势——仅可{'多' if st_dir > 0 else '空'}头，"
                     f"当前定向={'多' if direction == 1 else '空'}头")
                 reject_out["htf"] = _htf_snapshot(htf_res)

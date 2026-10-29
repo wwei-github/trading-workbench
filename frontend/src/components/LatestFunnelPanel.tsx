@@ -17,7 +17,7 @@
  * - 点时序柱 → 切换轮次，吸顶条出现「正在回看 …」+「回到最新一轮」
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { Button, Drawer, Empty, Input, Modal, Spin, Tooltip, Typography, message } from 'antd'
+import { Alert, Button, Drawer, Empty, Input, Modal, Spin, Tooltip, Typography, message } from 'antd'
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { scanApi } from '../api/scan'
 import { useScanStore } from '../stores/scanStore'
@@ -62,6 +62,87 @@ interface GroupRow extends Group {
  *  它不是被拒，是"还在池里等确认"，单列到路径终点，不参与进入/挂掉/通过的累加。 */
 const PIPE_STAGES = FUNNEL_STAGES.map((s) => s.key).filter((k) => k !== 'pending_waiting')
 
+/** 4h 状态流转链路（2026-10-29）：抽屉里画「哪些状态放行、本轮卡住的币停在哪一态」。
+ *  这里画的是最常见的推进顺序，不是硬转移表——每根 4h 收盘都按优先级从头重判；
+ *  短标签为的是 560px 抽屉里一行放得下（与 STATE_LABELS 全名不同）。 */
+const HTF_CHAINS: { lane: string; nodes: { key: string; label: string; pass: boolean }[] }[] = [
+  {
+    lane: '多头',
+    nodes: [
+      { key: 'tangle', label: '缠绕', pass: false },
+      { key: 'macro_cross_bull', label: '金叉初期', pass: false },
+      { key: 'aligned_bull', label: '多头排列', pass: true },
+      { key: 'turn_bull', label: '多头拐头', pass: false },
+      { key: 'bull_dip', label: '牛内回调', pass: false },
+      { key: 'bull_recover', label: '多头恢复', pass: true },
+      { key: 'aligned_bull', label: '多头排列', pass: true },
+    ],
+  },
+  {
+    lane: '空头',
+    nodes: [
+      { key: 'tangle', label: '缠绕', pass: false },
+      { key: 'macro_cross_bear', label: '死叉初期', pass: false },
+      { key: 'aligned_bear', label: '空头排列', pass: true },
+      { key: 'turn_bear', label: '空头拐头', pass: false },
+      { key: 'bear_rally', label: '熊内反弹', pass: false },
+      { key: 'bear_recover', label: '空头恢复', pass: true },
+      { key: 'aligned_bear', label: '空头排列', pass: true },
+    ],
+  },
+]
+
+/** 状态链路：绿=放行（仅排列）· 灰=禁开 · 红框=本轮有币卡在这一态 */
+function HtfStateChain({ activeLabels }: { activeLabels: Set<string> }) {
+  return (
+    <div style={{
+      border: '1px solid #f0f0f0', borderRadius: 10, padding: '10px 12px',
+      marginBottom: 10, background: '#fcfcfd',
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
+        marginBottom: 4,
+      }}>
+        <Text strong style={{ fontSize: 12 }}>4h 状态流转</Text>
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          每根 4h 收盘重判 · 绿=放行 · 红框=本轮卡在这
+        </Text>
+      </div>
+      {HTF_CHAINS.map((lane) => (
+        <div key={lane.lane} style={{
+          display: 'flex', alignItems: 'center', flexWrap: 'wrap',
+          gap: '6px 3px', marginTop: 6,
+        }}>
+          <span style={{ fontSize: 11, color: '#8c8c8c', width: 24, flexShrink: 0 }}>
+            {lane.lane}
+          </span>
+          {lane.nodes.map((n, i) => (
+            <span key={`${n.key}-${i}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+              <span style={{
+                fontSize: 11, lineHeight: '17px', padding: '1px 6px', borderRadius: 9,
+                border: `1px solid ${activeLabels.has(n.label) ? '#ff7875'
+                  : n.pass ? '#b7eb8f' : '#e8e8e8'}`,
+                background: n.pass ? '#f6ffed' : '#fff',
+                color: activeLabels.has(n.label) ? '#cf1322'
+                  : n.pass ? '#389e0d' : '#8c8c8c',
+                fontWeight: n.pass ? 600 : 400,
+                boxShadow: activeLabels.has(n.label) ? '0 0 0 2px rgba(255,77,79,0.22)' : 'none',
+              }}>{n.label}</span>
+              {i < lane.nodes.length - 1 && (
+                <span style={{ color: '#d9d9d9', fontSize: 10 }}>→</span>
+              )}
+            </span>
+          ))}
+        </div>
+      ))}
+      <div style={{ fontSize: 11, color: '#bfbfbf', marginTop: 8, lineHeight: 1.6 }}>
+        排列需交叉满 10 根才成型；恢复初期为宏观同侧的新交叉（2026-10-29 起放行）；
+        缠绕是两个方向共用的归零态；排列或恢复一旦被破坏即退出放行。
+      </div>
+    </div>
+  )
+}
+
 /** 关卡 → 所属分组（取第一个命中的组），用于节点圆点与分组名着色 */
 const STAGE_GROUP: Record<string, Group> = {}
 GROUPS.forEach((g) => g.stages.forEach((k) => { STAGE_GROUP[k] = g }))
@@ -95,6 +176,45 @@ function groupSummary(stages: Record<string, number> | undefined, g: Group): str
   return parts.join(' · ')
 }
 
+type HtfEv = NonNullable<FunnelData['htf_evidence']>[string]
+
+/** gate_4h 否定票（reject_reason → 分组文案）：scanner 不给 gate_4h 写 details
+ *  （只有 votes / no_trigger 有判定文本），若沿用"details 缺失回落关卡口径说明"，
+ *  整关币种会挤成同一组。这里按 funnel_json.htf_evidence[symbol].reject_reason
+ *  的否定票分组：走平/缠绕/ADX 不可用/方向歧义/数据不足/数据缺失各一组。
+ *  顺序即 htf_context 的判定优先级。 */
+const GATE_4H_VETO: { key: string; label: string; hint: string }[] = [
+  { key: 'flat', label: 'EMA144 走平', hint: '近 20 根变化 <0.5%，无明确趋势' },
+  { key: 'tangle', label: '状态缠绕', hint: 'ADX<20 / 21·55 间距<0.1% / 锯齿 / 穿越 EMA144 >2 次' },
+  { key: 'adx', label: 'ADX 不可用', hint: 'ADX 计算失败 → 按无趋势否决（fail-closed）' },
+  { key: 'undetermined', label: '方向歧义', hint: '价格与 EMA144 位置、斜率不同号' },
+  { key: 'data', label: '数据不足', hint: '已收盘 4h K 线 <200 根或 EMA 非有限值' },
+  { key: 'missing', label: '数据缺失', hint: '4h K 线拉取失败/空数据（数据降级）' },
+]
+const VETO_META: Record<string, { label: string; hint: string }> =
+  Object.fromEntries(GATE_4H_VETO.map((v) => [v.key, v]))
+
+/** 单个币的否定证据：组头是票面，币与币之间只有数值差异，放币名的 title 上，
+ *  避免 "ADX14" / "ADX15" 这种把同一张票拆成多组。 */
+function vetoNote(ev?: HtfEv): string {
+  const e = ev?.evidence
+  switch (ev?.reject_reason) {
+    case 'flat':
+      return e?.slope_pct != null
+        ? `20 根斜率 ${(e.slope_pct * 100).toFixed(2)}% < 0.5%` : ''
+    case 'tangle':
+      return [
+        e?.adx != null ? `ADX ${e.adx}` : null,
+        e?.wraps != null ? `近 10 根穿越 EMA144 ${e.wraps} 次` : null,
+      ].filter(Boolean).join(' · ')
+    case 'undetermined':
+      return e?.close_vs_ema144 != null
+        ? `收盘相对 EMA144 ${(e.close_vs_ema144 * 100).toFixed(2)}%（位置与斜率不同号）` : ''
+    default:
+      return ev?.degraded ? '数据降级' : ''
+  }
+}
+
 const fmtTime = (iso: string | null): string => {
   if (!iso) return '—'
   // 后端回 naive UTC ISO（无 Z），显式补 Z 再转本地，避免被当成东八区本地时间
@@ -123,6 +243,11 @@ export default function LatestFunnelPanel() {
   /** 单关卡抽屉的「通过者」名单（null = 分组抽屉/旧轮次无币池清单） */
   const [drawerPassers, setDrawerPassers] = useState<string[] | null>(null)
   const [drawerTab, setDrawerTab] = useState<'drop' | 'pass'>('drop')
+  /** 单关卡抽屉（多关卡分组抽屉不展示关卡专属说明，避免口径混淆） */
+  const drawerStageKey = drawerGroup && drawerGroup.stages.length === 1
+    ? drawerGroup.stages[0]
+    : null
+  const drawerPassHint = drawerStageKey ? STAGE_META[drawerStageKey]?.passHint : undefined
 
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const prevScanning = useRef(false)
@@ -218,18 +343,33 @@ export default function LatestFunnelPanel() {
     return () => io.disconnect()
   }, [])
 
-  /** 抽屉数据：当前轮该组所有币 + 每个币的"卡住原因"（details 优先，缺则关卡口径） */
+  /** 抽屉数据：当前轮该组所有币 + 每个币的"卡住原因"（details 优先，缺则关卡口径；
+   *  gate_4h 例外——按 htf_evidence 的否定票分组，见 GATE_4H_VETO） */
   const drawerRows = useMemo(() => {
     if (!drawerGroup) return []
     const set = new Set(drawerGroup.stages)
-    const rows: { symbol: string; stage: string; reason: string }[] = []
+    const rows: { symbol: string; stage: string; reason: string; note: string }[] = []
     Object.entries(detail?.rejects ?? {}).forEach(([symbol, stage]) => {
       if (!set.has(stage)) return
+      if (stage === 'gate_4h') {
+        const ev = detail?.htf_evidence?.[symbol]
+        const veto = ev?.reject_reason ? VETO_META[ev.reject_reason] : undefined
+        rows.push({
+          symbol,
+          stage,
+          reason: veto
+            ? `${veto.label} · ${veto.hint}`
+            : '未记录否定票（旧轮次无 4h 证据）',
+          note: vetoNote(ev),
+        })
+        return
+      }
       const d = detail?.details?.[symbol]
       rows.push({
         symbol,
         stage,
         reason: (d && d.trim()) || (STAGE_META[stage]?.hint ?? stage),
+        note: '',
       })
     })
     return rows
@@ -237,18 +377,28 @@ export default function LatestFunnelPanel() {
 
   const reasonGroups = useMemo(() => {
     const kw = search.trim().toUpperCase()
-    const m = new Map<string, { symbol: string; stage: string }[]>()
+    const m = new Map<string, { symbol: string; stage: string; note: string }[]>()
     drawerRows
       .filter((r) => !kw || r.symbol.includes(kw))
       .forEach((r) => {
         const arr = m.get(r.reason) ?? []
-        arr.push({ symbol: r.symbol, stage: r.stage })
+        arr.push({ symbol: r.symbol, stage: r.stage, note: r.note })
         m.set(r.reason, arr)
       })
     return [...m.entries()]
       .map(([reason, coins]) => ({ reason, coins }))
       .sort((a, b) => b.coins.length - a.coins.length)
   }, [drawerRows, search])
+
+  /** 本轮卡住的币落在链路哪几个节点上（按状态中文名匹配判定说明文案） */
+  const activeStateLabels = useMemo(() => {
+    const hit = new Set<string>()
+    const reasons = reasonGroups.map((r) => r.reason)
+    HTF_CHAINS.forEach((lane) => lane.nodes.forEach((n) => {
+      if (reasons.some((r) => r.includes(n.label))) hit.add(n.label)
+    }))
+    return hit
+  }, [reasonGroups])
 
   /** 抽屉-通过者：按搜索词过滤 */
   const passerRows = useMemo(() => {
@@ -268,6 +418,8 @@ export default function LatestFunnelPanel() {
   const head = groups[0]
   const second = groups[1]
   const isHistory = activeIdx !== null
+  /** 4h 闸门抽屉：按否定票（htf_evidence.reject_reason）分组 */
+  const vetoDrawer = !!drawerGroup?.stages.includes('gate_4h')
   /** 路径最后一行的"通过"数 = 候选 + 本轮进池 + 池内等待 + 异常 */
   const lastOut = pipe.rows.length ? pipe.rows[pipe.rows.length - 1].out : activeSnap.candidates
 
@@ -641,7 +793,7 @@ export default function LatestFunnelPanel() {
         hot={hot}
       />
 
-      {/* ---------- 抽屉：按原因分组 ---------- */}
+      {/* ---------- 抽屉：按原因分组（gate_4h 按否定票分组） ---------- */}
       <Drawer
         open={!!drawerGroup}
         onClose={() => setDrawerGroup(null)}
@@ -655,11 +807,23 @@ export default function LatestFunnelPanel() {
             }} />
             <span>{drawerGroup.name} · {drawerGroup.n} 个币</span>
             <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-              {drawerPassers ? '挂掉 / 通过' : '按卡住原因分组'}
+              {drawerPassers ? '挂掉 / 通过' : vetoDrawer ? '按 4h 否定票分组' : '按卡住原因分组'}
             </Text>
           </div>
         ) : ''}
       >
+        {drawerPassHint && (
+          <Alert
+            type="success"
+            showIcon
+            style={{ marginBottom: 10 }}
+            message="可通过的状态"
+            description={drawerPassHint}
+          />
+        )}
+        {drawerStageKey === 'htf_state_lock' && (
+          <HtfStateChain activeLabels={activeStateLabels} />
+        )}
         {drawerPassers && (
           <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
             {([
@@ -684,7 +848,9 @@ export default function LatestFunnelPanel() {
         }}>
           {drawerTab === 'pass' && drawerPassers
             ? '这些币通过了该关（未被本关或更早关卡拒掉，也不含扫描异常）；点币种名看 K 线。'
-            : '每一条是一个判定条件，"×N" 是该条件卡住的币数；点币种名看 K 线。'}
+            : vetoDrawer
+              ? '每组是一种 4h 否定票（走平 / 缠绕 / ADX / 歧义 / 数据），"×N" 为该票否决的币数；悬停币名看该币证据，点击看 K 线。'
+              : '每一条是一个判定条件，"×N" 是该条件卡住的币数；点币种名看 K 线。'}
           {detailLoading && <span style={{ marginLeft: 6 }}>（明细加载中…）</span>}
         </div>
         <Input
@@ -735,6 +901,7 @@ export default function LatestFunnelPanel() {
               {rg.coins.map((c) => (
                 <a
                   key={c.symbol}
+                  title={c.note ? `${c.symbol} · ${c.note}` : c.symbol}
                   onClick={() => setKlineSymbol(c.symbol)}
                   style={{ fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace' }}
                 >

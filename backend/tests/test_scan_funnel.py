@@ -47,7 +47,7 @@ def _htf_context_stub(gate, htf_state, htf_dir):
     """4h 合并入口 htf_context 打桩（2026-10-20 合并）：把旧的 gate_4h 方向
     (gate) 与 4h 状态机态 (htf_state) 合成一份返回 dict。gate=None ⇒
     reject_reason 非空（等价旧「gate_4h 返回 None」→ 漏斗 gate_4h 关）；
-    block_both=非 aligned_*（前置门，2026-10-20 收紧仅放行排列）；
+    block_both=不在放行集（前置门，2026-10-20 收紧仅排列，2026-10-29 加入恢复初期）；
     逆势锁由调用方以 state/dir 判定。"""
     from app.services.strategy.technical import STATE_ALIGNED
 
@@ -514,7 +514,7 @@ def test_pending_upsert_blocked_by_trigger_whitelist():
 
 def test_htf_state_front_gate_blocks_upsert():
     """4h 状态机双向禁开（tangle/turn_*）→ 前置门一票否决：stage=htf_state_lock、
-    无候选、不产生 pending upsert、附判定说明（回踩/突破候选均不做）"""
+    无候选、不产生 pending upsert；判定说明只留状态名（口径说明由前端关卡 hint 承载）"""
     from app.services.scan_filters import ALL_TRIGGERS
     for st, label in (("tangle", "缠绕"), ("turn_bear", "空头拐头")):
         rv: dict = {}
@@ -522,7 +522,7 @@ def test_htf_state_front_gate_blocks_upsert():
                            flt=_adm_flt(ALL_TRIGGERS), htf_state=st)
         assert cand is None and op is None
         assert rv["stage"] == "htf_state_lock"
-        assert label in rv["detail"] and "回踩/突破候选均不做" in rv["detail"]
+        assert rv["detail"] == label
 
 
 def test_htf_state_front_gate_blocks_breakout_candidate():
@@ -552,8 +552,16 @@ def test_htf_state_front_gate_expires_active_pending():
 # ── 4h 状态机逆势锁 STATE_LOCK_CONTRA（2026-10-19）───────────────────────────
 # 宏观同侧六态（macro_cross_* / *_recover / aligned_*）锁逆势：定向与 4h 状态方向
 # 相反 → 一票否决，逆势金K（看涨吞没/刺透等）不再产出（此前只在 AI 层兜底）。
-# 2026-10-20 前置门收紧「仅排列放行」后，macro_cross_*/*_recover 已在 block_both
-# 层被拦，实际到达逆势锁者仅 aligned_*——通过集被锁到其自身排列方向。
+# 2026-10-20 前置门收紧「仅排列放行」后，macro_cross_* 已在 block_both 层被拦；
+# 2026-10-29 起 *_recover 恢复初期放行，重新到达逆势锁——通过集（排列 + 恢复初期）
+# 被锁到其自身方向。
+
+
+def test_state_aligned_whitelist_covers_recover():
+    """2026-10-29 恢复初期放行：放行白名单含 *_recover，前置门不再双向禁开。
+    方向仍由 STATE_LOCK_CONTRA 锁逆势（见上方逆势锁用例）。"""
+    from app.services.strategy.technical import STATE_ALIGNED
+    assert "bull_recover" in STATE_ALIGNED and "bear_recover" in STATE_ALIGNED
 
 
 def test_htf_contra_lock_blocks_opposite_side():
@@ -674,7 +682,7 @@ def test_pending_confirm_blocked_by_htf_state_front_gate():
     assert cand is None
     assert op == {"op": "expire", "reason": "htf_state_lock"}
     assert rv["stage"] == "htf_state_lock"
-    assert "缠绕" in rv["detail"] and "回踩/突破候选均不做" in rv["detail"]
+    assert rv["detail"] == "缠绕"
 
 
 def test_pending_confirm_allowed_when_state_pass():

@@ -418,6 +418,23 @@ export interface FunnelData {
   universe_symbols?: string[];
   error_symbols?: string[];
   details?: Record<string, string>; // symbol → 判定说明文本（votes 票明细 / no_trigger 未触发原因，2026-10-13；分号分隔）
+  // 4h 前置门证据（2026-10-21 第 2 步）：symbol → 4h 快照；gate_4h 的否定票
+  // （reject_reason）与仓位证据（slope/wraps/adx）在这里，供抽屉按票分组
+  htf_evidence?: Record<string, {
+    stage?: string; // gate_4h / htf_state_lock
+    state?: string | null; // 4h 状态机态（tangle/aligned_bull/...）
+    state_label?: string | null;
+    reject_reason?: string | null; // flat / tangle / adx / undetermined / data / missing
+    direction?: string | null;
+    dir?: number;
+    evidence?: {
+      slope_pct?: number | null; // EMA144 近 20 根变化幅度 / 价格
+      wraps?: number | null; // 近 10 根价格穿越 EMA144 次数
+      adx?: number | null;
+      close_vs_ema144?: number | null;
+    };
+    degraded?: boolean; // 数据降级（拉取失败/空数据/计算异常）
+  }>;
 }
 
 /** 逐轮漏斗快照（2026-10-28，docs/需求文档/18「最新筛选」时序区）

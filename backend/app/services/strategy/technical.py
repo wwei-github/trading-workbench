@@ -567,13 +567,16 @@ STATE_LOCK_CONTRA = (                                     # 锁逆势（宏观�
     "aligned_bull", "aligned_bear",
 )
 STATE_TRANSITION = ("bull_dip", "bear_rally")             # 宏观逆侧过渡态（回调/反弹区）
-# 前置门放行白名单（2026-10-20 用户拍板，硬改无开关）：htf_context 的 block_both
-# 收紧为「非本集即双向禁开」——4h 前置门仅放行多头/空头排列（aligned_*），其余
-# 状态（turn_* 拐头 / macro_cross_* 交叉初期 / *_recover 恢复初期 / bull_dip·
-# bear_rally 过渡态）一律拦下，映射漏斗关卡 htf_state_lock（tangle 仍由
-# reject_reason 先行否决，映射 gate_4h）。STATE_BLOCK_BOTH 保留原义（tangle/turn_*），
-# 仅供历史回放脚本按旧口径分组，不参与前置门（2026-10-21 AI 层兜底退役后无调用方）。
-STATE_ALIGNED = ("aligned_bull", "aligned_bear")
+# 前置门放行白名单（2026-10-20 收紧为仅排列；2026-10-29 放宽加入恢复初期）：
+# htf_context 的 block_both = 非本集即双向禁开——放行 aligned_*（多头/空头排列）
+# 与 *_recover（宏观同侧的 21×55 新交叉，恢复初期）；turn_* 拐头 /
+# macro_cross_* 交叉初期 / bull_dip·bear_rally 过渡态仍拦下，映射漏斗关卡
+# htf_state_lock（tangle 仍由 reject_reason 先行否决，映射 gate_4h）。
+# 恢复初期只解禁「双向禁开」，方向仍由 STATE_LOCK_CONTRA 锁逆势（多头侧只放多单）。
+# STATE_BLOCK_BOTH 保留原义（tangle/turn_*），仅供历史回放脚本按旧口径分组。
+STATE_ALIGNED = (
+    "aligned_bull", "aligned_bear", "bull_recover", "bear_recover",
+)
 
 # 质量分（同向加分, 逆向减分）：tangle/turn 双向禁开后仅扫描侧排序兜底；
 # macro_cross 趋势级事件独享最高档（原 extreme 语义被吸收）
@@ -908,10 +911,11 @@ def htf_context(htf_klines: list[list], core: Optional[dict] = None) -> Optional
     - direction "long"/"short" 或 None（None ⇒ reject_reason 非空）
     - reject_reason: None|"data"|"flat"|"tangle"|"adx"|"undetermined"
       （映射漏斗关卡 gate_4h；"adx" 仅表示 ADX 计算不可用的 fail-closed）
-    - block_both: 非多头/空头排列（aligned_*）即双向禁开——映射漏斗关卡
-      htf_state_lock（含 turn_* 拐头、macro_cross_*/*_recover 未完全排列、
-      bull_dip/bear_rally 过渡态；tangle 已由 reject_reason 先行否决）。2026-10-20
-      用户拍板收紧：4h 前置门仅放行 aligned_bull/aligned_bear（硬改无开关）。
+    - block_both: 不在放行白名单即双向禁开——映射漏斗关卡 htf_state_lock
+      （拦 turn_* 拐头、macro_cross_* 交叉初期、bull_dip/bear_rally 过渡态；
+      tangle 已由 reject_reason 先行否决）。白名单 2026-10-20 收紧到排列，
+      2026-10-29 放宽加入 *_recover 恢复初期（宏观同侧新交叉）；方向仍由
+      调用方按 STATE_LOCK_CONTRA 锁逆势。
     - evidence: {slope_pct, wraps, adx, close_vs_ema144, direction(up/down)}
     逆势锁方向不单列：调用方以 state∈STATE_LOCK_CONTRA 判定，方向读 dir。
     """

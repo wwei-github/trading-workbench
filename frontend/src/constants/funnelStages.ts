@@ -5,14 +5,23 @@
  * 关卡代码→中文文案/颜色/口径说明映射；两处各写一份必然漂移，故抽成常量模块。
  * 顺序即漏斗逻辑序（STAGE_ORDER 由它派生）。
  */
-export const FUNNEL_STAGES: { key: string; label: string; color: string; hint: string }[] = [
+export const FUNNEL_STAGES: {
+  key: string; label: string; color: string; hint: string
+  /** 该关的可通过条件（2026-10-29）：有值则在下钻抽屉顶部用绿条展示，
+   *  与 hint（为什么被拒）互补——只写在「拒因不止一种、通过集很小」的关卡上 */
+  passHint?: string
+}[] = [
   { key: 'liquidity', label: '流动性', color: 'default', hint: '24h 成交额低于门槛，不进扫描' },
   { key: 'untradable', label: '不可交易', color: 'default', hint: '（2026-10-11 退役）原下单环境未上架预过滤，已撤——未上架币照常分析，开单时逐网校验并飞书提示；仅旧轮次数据可见' },
   { key: 'new_coin', label: '新币冷静期', color: 'default', hint: '上市未满 N 天（默认 14 天）不进扫描' },
   { key: 'risk_tier', label: '风险档位', color: 'default', hint: '交易所最大允许杠杆 <10×' },
   { key: 'blacklist', label: '黑名单', color: 'default', hint: '手动添加（永久）；自动：实亏≥1.5R 冷却 14 天、≥1.8R 永久、14 天内 3 次止损冷却 14 天' },
   { key: 'gate_4h', label: '4h趋势闸门', color: 'orange', hint: '4h 无明确趋势一票否决：EMA144 走平（斜率不足）/ 缠绕（ADX<20 ∪ 21-55 间距<0.1% ∪ 21×55 锯齿 ∪ 价格穿越 144 >2 次）/ ADX 不可用 / 方向歧义 / 数据不足' },
-  { key: 'htf_state_lock', label: '4h状态禁开', color: 'orange', hint: '4h 状态机不放行：① 非多头/空头排列（拐头/交叉初期/恢复初期/过渡态）双向禁开；② 排列方向与候选逆势（锁逆势）——回踩·突破均一票否决（2026-10-20 收紧，仅排列放行）' },
+  {
+    key: 'htf_state_lock', label: '4h状态禁开', color: 'orange',
+    hint: '4h 状态机不放行：① 非放行状态（拐头/宏观交叉初期/牛内回调/熊内反弹）双向禁开；② 放行状态的方向与候选逆势（锁逆势）——回踩·突破均一票否决（2026-10-20 收紧仅排列，2026-10-29 加入恢复初期）',
+    passHint: '放行「多头排列 / 空头排列」与「多头恢复初期 / 空头恢复初期」四种状态：多头侧只放多单、空头侧只放空单（方向不符按锁逆势拦截）。缠绕、拐头、宏观交叉初期、牛内回调、熊内反弹仍禁开。',
+  },
   { key: 'votes', label: '方向票', color: 'orange', hint: '方向票（MACD/布林带/RSI）同向张数不足 2（2026-10-15 拆角色，docs/21 O9）' },
   { key: 'direction_flip', label: '方向冲突', color: 'orange', hint: '方向票方向与 4h 闸门方向相反' },
   { key: 'structure_1h', label: '1h结构（旧轮次）', color: 'default', hint: '（2026-10-15 退役硬门：仅旧轮次数据可见；现不过门不否决，仅质量分重罚 -15）' },
