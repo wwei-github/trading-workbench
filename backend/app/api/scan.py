@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import String, cast, delete, desc, or_, select, update, func
 from sqlalchemy.orm import Session
 
@@ -69,8 +69,10 @@ from app.models.trade import (
     TradeEvent,
     TradeRecord,
 )
+from app.models.ops import ConfigChange
 from app.models.patch import PromptPatch
 from app.models.system_config import SystemConfig
+from app.schemas.ops import ConfigChangeListResponse, ConfigChangeOut
 
 router = APIRouter(prefix="/api/scans", tags=["scans"])
 
@@ -107,6 +109,39 @@ def _audit_fmt_value(key: str, v) -> str:
         return s if len(s) <= 120 else s[:117] + "..."
     s = str(v)
     return s if len(s) <= 80 else s[:77] + "..."
+
+
+def _audit_store_value(key: str, v) -> Optional[str]:
+    """审计表存储值（docs/23 T14a）：保留完整对象，仅对敏感字段脱敏。
+
+    与 `_audit_fmt_value`（日志单行摘要，120 字截断）分工不同：审计表要能回答
+    「哪个键从什么改成了什么」，scan_filters 这类 dict 必须可读。
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return "开" if v else "关"
+    if key == "ai_api_key":
+        return "已设置" if v else "未设置"
+    if key == "ai_base_url":
+        return _audit_fmt_value(key, v)
+    if isinstance(v, (dict, list)):
+        try:
+            return json.dumps(v, ensure_ascii=False, sort_keys=True, default=str)[:4000]
+        except (TypeError, ValueError):
+            return str(v)[:4000]
+    s = str(v)
+    return s[:2000]
+
+
+def _request_source(request: Optional[Request]) -> Optional[str]:
+    """请求来源 IP：反代首跳优先（Nginx 转发时直连地址恒为容器网段）"""
+    if request is None:
+        return None
+    fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if fwd:
+        return fwd[:64]
+    return (request.client.host if request.client else None)
 
 
 def _config_value_changed(old, new) -> bool:
@@ -280,6 +315,11 @@ def scan_funnels(
             "stages": f.get("stages") or {},
             "htf_states": f.get("htf_states") or {},
             "gate_4h_reasons": f.get("gate_4h_reasons") or {},
+            # 4h 数据降级币数（docs/23 T10，2026-10-29）：拉取失败/空数据/计算异常
+            # 的币数，与 gate_4h_reasons.degraded（仅 gate_4h 关卡的降级）口径不同
+            # ——后者是「因降级被 4h 门拦下」，本键是「本轮所有降级币」，含后续关卡。
+            # 旧轮次（2026-10-21 前）无此键 → None，前端按「无数据」处理
+            "htf_degraded": f.get("htf_degraded"),
         })
     return {"hours": hours, "count": len(items), "items": items}
 
@@ -600,6 +640,7 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
         tp1_qty_pct_no_tp2=(float(cfg.tp1_qty_pct_no_tp2)
                             if cfg.tp1_qty_pct_no_tp2 is not None else None),
         live_initial_capital=float(cfg.live_initial_capital or 0),
+        updated_at=cfg.updated_at,
         ai_model=cfg.ai_model,
         ai_api_key_set=bool((cfg.ai_api_key or "").strip()),
         ai_api_key_masked=mask_api_key(cfg.ai_api_key or ""),
@@ -763,6 +804,7 @@ def get_system_config(db: Session = Depends(get_db)):
 @router.put("/config", response_model=SystemConfigOut)
 def update_system_config(
     body: SystemConfigUpdate,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """更新系统配置（AI 开关 + 扫描策略）"""
@@ -1111,21 +1153,52 @@ def update_system_config(
            for k, v in _audit_before.items()):
         bump_decision_version(cfg)
 
-    db.commit()
-    db.refresh(cfg)
+    # 配置变更审计（docs/23 T14a，2026-10-29）：逐字段落 config_changes（与配置同一
+    # 事务），回答「哪个开关在什么时候被改成什么」——此前只写 app_logs WARNING
+    # （保留 7 天、长值截断到 120 字、与其他日志混杂，无法结构化查询）。日志仍保留。
     _audit_changes = []
+    _audit_batch = uuid4()
+    _audit_src = _request_source(request)
     for _k, _old in _audit_before.items():
         _new = getattr(cfg, _k, None)
-        if _new != _old:
-            _audit_changes.append(
-                f"{_k}: {_audit_fmt_value(_k, _old)}→{_audit_fmt_value(_k, _new)}"
-            )
+        if not _config_value_changed(_old, _new):
+            continue
+        _audit_changes.append(
+            f"{_k}: {_audit_fmt_value(_k, _old)}→{_audit_fmt_value(_k, _new)}"
+        )
+        db.add(ConfigChange(
+            batch_id=_audit_batch,
+            field=_k,
+            old_value=_audit_store_value(_k, _old),
+            new_value=_audit_store_value(_k, _new),
+            source=_audit_src,
+        ))
+    db.commit()
+    db.refresh(cfg)
     if _audit_changes:
         logger.warning(
             "系统配置更新（%d 项）：%s",
             len(_audit_changes), "；".join(_audit_changes)[:1800],
         )
     return _config_response(cfg)
+
+
+@router.get("/config/changes", response_model=ConfigChangeListResponse)
+def list_config_changes(
+    limit: int = Query(100, ge=1, le=500),
+    field: Optional[str] = Query(None, description="按字段名过滤，如 tp_full_exit_enabled"),
+    db: Session = Depends(get_db),
+):
+    """配置变更审计（docs/23 T14a）：按时间倒序，逐字段给出旧值→新值与来源 IP。"""
+    stmt = select(ConfigChange)
+    if field:
+        stmt = stmt.where(ConfigChange.field == field)
+    total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
+    items = db.execute(
+        stmt.order_by(desc(ConfigChange.created_at), desc(ConfigChange.id)).limit(limit)
+    ).scalars().all()
+    return ConfigChangeListResponse(
+        items=[ConfigChangeOut.model_validate(x) for x in items], total=total)
 
 
 @router.post("/config/monthly-breaker-ack")

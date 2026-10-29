@@ -11,9 +11,10 @@
  */
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Tooltip } from 'antd'
+import { Badge, Popover, Tooltip } from 'antd'
 import { marketApi } from '../api/market'
-import type { BreadthItem, MarketOverview, StructureItem } from '../types'
+import { observationsApi } from '../api/observations'
+import type { BreadthItem, MarketOverview, ObservationTask, StructureItem } from '../types'
 import { useScanStore } from '../stores/scanStore'
 import type { ColorScheme } from '../stores/scanStore'
 import { bj } from '../utils/dayjs'
@@ -95,6 +96,9 @@ function SymbolChip({ sym, b, s }: { sym: string; b: BreadthItem; s: StructureIt
 export default function MarketOverviewBar() {
   const [data, setData] = useState<MarketOverview | null>(null)
   const [failed, setFailed] = useState(false)
+  // 观察期到期提醒（docs/23 §3 / T7，2026-10-29）：Header 全局红点，5 分钟刷新
+  // （到期由每日 08:10 任务标 due，不是秒级事件，无需跟大盘同频 60s）
+  const [obsDue, setObsDue] = useState<ObservationTask[]>([])
 
   useEffect(() => {
     let alive = true
@@ -119,6 +123,25 @@ export default function MarketOverviewBar() {
     }
   }, [])
 
+  // 到期观察项（失败静默：提醒是旁路，绝不阻塞/搅动 Header）
+  useEffect(() => {
+    let alive = true
+    const load = () => {
+      observationsApi
+        .list()
+        .then((d) => {
+          if (alive) setObsDue(d.items.filter((i) => i.status === 'due'))
+        })
+        .catch(() => {})
+    }
+    load()
+    const timer = setInterval(load, 300000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [])
+
   const breadth = data?.breadth
   const structure = data?.structure ?? null
   const fg = data?.fear_greed ?? null
@@ -135,14 +158,56 @@ export default function MarketOverviewBar() {
         .filter(Boolean)
     : []
 
-  // 全部不可用 → 降级占位（避免 Header 抖动）
+  // 观察期到期红点（docs/23 §3 T7）：点开看名称/判据/读数，决策入口在
+  // 「任务记录 → 待决策」——Header 不做跨页跳转，避免抢走当前 tab
+  const obsBadge = obsDue.length > 0 ? (
+    <Popover
+      placement="bottom"
+      title={`观察期到期 ${obsDue.length} 项 · 待决策`}
+      content={(
+        <div style={{ maxWidth: 340, fontSize: 12 }}>
+          {obsDue.map((o) => (
+            <div key={o.id} style={{ marginBottom: 6 }}>
+              <div style={{ fontWeight: 600 }}>
+                {o.name}
+                <span style={{ color: '#8c8c8c', fontWeight: 400 }}>
+                  {' '}· 到期 {bj(o.due_at).format('MM-DD')}
+                </span>
+              </div>
+              {o.decision_rule && (
+                <div style={{ color: '#595959' }}>判据：{o.decision_rule}</div>
+              )}
+            </div>
+          ))}
+          <div style={{ color: '#8c8c8c', borderTop: '1px solid #f0f0f0', paddingTop: 6 }}>
+            去「任务记录 → 待决策」按判据核对并记录结论
+          </div>
+        </div>
+      )}
+    >
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        whiteSpace: 'nowrap', cursor: 'pointer',
+      }}>
+        <Badge status="error" />
+        <span style={{ color: '#ff7875', fontSize: 13, fontWeight: 600 }}>
+          待决策 {obsDue.length}
+        </span>
+      </span>
+    </Popover>
+  ) : null
+
+  // 全部不可用 → 降级占位（避免 Header 抖动）。红点与大盘无关，仍需展示
   if (failed || (!chips.length && !fg)) {
     return (
-      <Tooltip title={failed ? '大盘数据获取失败，将自动重试' : '大盘数据暂不可用'}>
-        <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 13, whiteSpace: 'nowrap' }}>
-          大盘 --
-        </span>
-      </Tooltip>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 14 }}>
+        <Tooltip title={failed ? '大盘数据获取失败，将自动重试' : '大盘数据暂不可用'}>
+          <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 13, whiteSpace: 'nowrap' }}>
+            大盘 --
+          </span>
+        </Tooltip>
+        {obsBadge}
+      </span>
     )
   }
 
@@ -202,17 +267,21 @@ export default function MarketOverviewBar() {
   )
 
   return (
-    <Tooltip title={tooltip}>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 18, whiteSpace: 'nowrap' }}>
-        {chips}
-        {fg && (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
-            <span style={{ color: 'rgba(255,255,255,0.65)', fontSize: 13 }}>恐贪</span>
-            <span style={{ color: fgColor(fg.value), fontSize: 13, fontWeight: 700 }}>{fg.value}</span>
-            <span style={{ color: '#fff', fontSize: 13 }}>{FG_LABELS[fg.label] ?? fg.label}</span>
-          </span>
-        )}
-      </span>
-    </Tooltip>
+    // 外层再包一层：到期红点自带 Popover，不能嵌在「大盘 tooltip」里（会互相抢 hover）
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 18, whiteSpace: 'nowrap' }}>
+      <Tooltip title={tooltip}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 18, whiteSpace: 'nowrap' }}>
+          {chips}
+          {fg && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}>
+              <span style={{ color: 'rgba(255,255,255,0.65)', fontSize: 13 }}>恐贪</span>
+              <span style={{ color: fgColor(fg.value), fontSize: 13, fontWeight: 700 }}>{fg.value}</span>
+              <span style={{ color: '#fff', fontSize: 13 }}>{FG_LABELS[fg.label] ?? fg.label}</span>
+            </span>
+          )}
+        </span>
+      </Tooltip>
+      {obsBadge}
+    </span>
   )
 }

@@ -55,6 +55,9 @@ class TradeOut(BaseModel):
     pnl_pct: Optional[float] = None
     exit_reason: Optional[str] = None
     fail_reason: Optional[str] = None  # 开仓失败原因（仅 FAILED 记录，读自 raw.fail_reason）
+    # TP2 未挂上原因（docs/23 T14d）：{tp2, qty_tp2, min_qty, full_exit, reason}；
+    # null=未发生（策略本就没要 TP2 或旧行），前端据此标注「无 TP2」而非静默 0
+    tp2_skipped: Optional[dict] = None
     signal_type: Optional[str] = None  # 触发信号类型（trigger_breakout 等；NULL=导入持仓/旧行）
     pattern: Optional[str] = None  # 触发K线形态（hammer 等；突破类为 NULL）
     testnet: bool = True

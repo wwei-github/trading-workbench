@@ -319,6 +319,10 @@ def test_trigger_rejects_short_without_rebound():
         t, op = trig.detect_trigger(_short_reject(), -1, flt=_flt(), diag=diag)
     assert t is None and op is None
     assert any("无有效反弹腿" in x for x in diag.get("reasons", []))
+    # 腿深结构化（docs/23 T9）：文本之外带数值，供漏斗按 min_atr 分档筛选
+    leg = diag.get("leg")
+    assert isinstance(leg, dict) and set(leg) == {"bars", "atr_mult", "overshoot_atr"}
+    assert leg["bars"] == 1
 
 
 def test_trigger_accepts_short_after_rebound():

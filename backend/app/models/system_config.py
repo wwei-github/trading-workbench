@@ -226,3 +226,8 @@ class SystemConfig(Base):
     live_initial_capital: Mapped[float] = mapped_column(Numeric(12, 2), default=0.0)
 
     notes: Mapped[str] = mapped_column(String(255), default="系统运行时配置")
+
+    # 配置最后修改时间（docs/23 T14a，2026-10-29）：审计表之外的单点水位，页面
+    # 「配置更新于…」与排查「改了没生效」用；旧库由 init_db ALTER 补列并回填 NULL。
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, default=datetime.utcnow, onupdate=datetime.utcnow)

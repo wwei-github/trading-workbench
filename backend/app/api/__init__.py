@@ -1,5 +1,6 @@
 from app.api.health import router as health_router
 from app.api.market import router as market_router
+from app.api.observations import router as observations_router
 from app.api.ops import router as ops_router
 from app.api.scan import router as scan_router
 from app.api.shadow import router as shadow_router
@@ -11,6 +12,7 @@ from app.api.watchlist import router as watchlist_router
 __all__ = [
     "health_router",
     "market_router",
+    "observations_router",
     "ops_router",
     "scan_router",
     "shadow_router",

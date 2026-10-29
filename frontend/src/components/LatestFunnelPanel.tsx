@@ -58,6 +58,47 @@ interface GroupRow extends Group {
   n: number
 }
 
+/** 4h 门拒因分布小条（docs/23 T10，2026-10-29）。
+ *
+ *  三个「市场状态」拒因（走平/缠绕/方向歧义）与「数据降级」必须分开展示：
+ *  前者说明行情真没趋势，后者说明数据源抖动，混在一起会把换源问题读成调参依据。
+ *  分母 = 被 gate_4h 拦下的币次；`htf_degraded`（本轮全部降级币，含后续关卡）
+ *  单独标注，不与 reasons.degraded 相加（口径不同，见后端 scan_funnels 注释）。 */
+function HtfReasonBar({ snap }: { snap?: FunnelSnapshot | null }) {
+  const reasons = snap?.gate_4h_reasons ?? {}
+  const cells = [
+    { key: 'flat', label: '走平', n: reasons.flat ?? 0, color: '#e5484d' },
+    { key: 'tangle', label: '缠绕', n: reasons.tangle ?? 0, color: '#f76b15' },
+    { key: 'undetermined', label: '方向歧义', n: reasons.undetermined ?? 0, color: '#8b5cf6' },
+    { key: 'degraded', label: '门内降级', n: reasons.degraded ?? 0, color: '#a8b0b9' },
+  ]
+  const known = cells.reduce((s, c) => s + c.n, 0)
+  const all = Object.values(reasons).reduce((s, n) => s + n, 0)
+  const other = Math.max(0, all - known)
+  const degAll = snap?.htf_degraded ?? null
+  if (!all && !degAll) return null
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+      marginTop: 5, fontSize: 11.5, color: '#8c8c8c',
+    }}>
+      <span>4h 门拒因</span>
+      {cells.map((c) => (
+        <span key={c.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: c.color }} />
+          {c.label} <b style={{ color: c.n > 0 ? '#1f2933' : '#bfbfbf', fontWeight: 600 }}>{c.n}</b>
+        </span>
+      ))}
+      {other > 0 && <span>其它 <b style={{ color: '#1f2933', fontWeight: 600 }}>{other}</b></span>}
+      {degAll != null && degAll > 0 && (
+        <Tooltip title="本轮 4h 数据降级币数（拉取失败/空数据/计算异常），含已通过 4h 门的币；>1% 需排查数据源">
+          <span style={{ color: '#a35a00' }}>· 本轮 4h 降级 {degAll}</span>
+        </Tooltip>
+      )}
+    </div>
+  )
+}
+
 /** 逐节点路径的关卡顺序（E 方案）：用 FUNNEL_STAGES 的判定序，剔除 pending_waiting——
  *  它不是被拒，是"还在池里等确认"，单列到路径终点，不参与进入/挂掉/通过的累加。 */
 const PIPE_STAGES = FUNNEL_STAGES.map((s) => s.key).filter((k) => k !== 'pending_waiting')
@@ -737,6 +778,12 @@ export default function LatestFunnelPanel() {
               )}
             </div>
           )}
+
+          {/* 4h 背景门拒因分布（docs/23 T10，2026-10-29）：flat/tangle/undetermined
+              是「市场状态」，degraded 是「数据源」，必须分开看——把数据抖动读成
+              「行情变了」会误导调参。分母=被 gate_4h 拦下的币次；本轮全部降级币数
+              （含后续关卡）单列，口径见 api/scan.py scan_funnels。 */}
+          {!compact && <HtfReasonBar snap={activeSnap} />}
         </div>
 
         {isHistory && (

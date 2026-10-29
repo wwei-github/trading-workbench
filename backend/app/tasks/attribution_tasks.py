@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.celery_app import celery_app
 from app.database import SessionLocal
-from app.services import attribution, feishu_bot
+from app.services import attribution, feishu_bot, observations
 from app.services.task_log import close_task, open_task
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,17 @@ def run_daily_attribution_task(self, day: str = "") -> dict:
         tr = (snap.get("trades") or {}).get("total") or {}
         summary = (f"{snap['day']}：平仓 {tr.get('n', 0)} 笔 "
                    f"ΣR {tr.get('sum_r', 0):+.2f} 胜率 {tr.get('win_rate')}%")
+        # 观察期到期扫描（docs/23 §3）：挂在同一条 08:10 任务末尾，不新增 beat；
+        # 失败不影响归因结果（提醒是旁路）
+        due = []
+        try:
+            due = observations.check_due(db)
+        except Exception:  # noqa: BLE001
+            logger.warning("观察期到期扫描失败", exc_info=True)
+        if due:
+            summary = f"{summary} · 观察期到期 {len(due)} 项"
+            snap = {**snap, "observations_due": [
+                {"name": t.name, "due_at": t.due_at.isoformat()} for t in due]}
         close_task(tid, "completed", summary=summary, detail=snap)
         card_ok = False
         if feishu_bot.configured():

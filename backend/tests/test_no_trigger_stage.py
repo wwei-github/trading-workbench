@@ -101,6 +101,26 @@ def test_golden_no_context_stage(monkeypatch):
     assert "纯金K不触发" in "；".join(diag.get("reasons", []))
 
 
+def test_confirm_side_leg_gate_stage(monkeypatch):
+    """确认侧腿门不过 → stage=leg_gate（此前只写原因文本，最后被记成 window_expired）"""
+    monkeypatch.setattr(trig, "_probe_touches", lambda *a, **k: {})
+    monkeypatch.setattr(trig, "resolve_golden_evidence",
+                        lambda *a, **k: ({"pattern": "hammer", "offset": -2}, ""))
+    monkeypatch.setattr(trig, "_pullback_leg_gate",
+                        lambda *a, **k: (False, {"reason": "non_monotonic", "bars": 1,
+                                                 "atr_mult": 0.1, "overshoot_atr": 0.2}))
+    k = _klines()
+    pending = {
+        "id": 1, "direction": 1, "touch_ref": TOUCH_EMA21,
+        "stage1_candle_open": trig.datetime.utcfromtimestamp(float(k[-3][0]) / 1000),
+    }
+    d: dict = {}
+    sig, op = trig.detect_trigger(
+        k, 1, pending=pending, flt=_flt(pullback_leg_gate_enabled=True), diag=d)
+    assert sig is None and op is None       # 不确认、不杀 pending
+    assert d.get("stage") == "leg_gate"
+
+
 def test_pending_waiting_stage(monkeypatch):
     """有活跃 pending、窗口未满、本根无金K → pending_waiting（保持等待，不下处置）"""
     monkeypatch.setattr(trig, "_detect_ema_touch", lambda *a, **k: None)

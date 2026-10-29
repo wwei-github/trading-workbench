@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react'
-import { Card, Row, Col, Button, Space, Tabs, message } from 'antd'
+import { useEffect, useRef, useState } from 'react'
+import { Badge, Card, Row, Col, Button, Space, Tabs, message } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
+import { observationsApi } from '../api/observations'
 import { useTabMemory } from '../utils/tabMemory'
 import ScanStatus from '../components/ScanStatus'
 import ResultTable from '../components/ResultTable'
@@ -11,6 +12,7 @@ import CodeWikiPanel from '../components/CodeWikiPanel'
 import ScanConfigPanel from '../components/ScanConfigPanel'
 import TradingConfigPanel from '../components/TradingConfigPanel'
 import SystemConfigPanel from '../components/SystemConfigPanel'
+import ConfigChangesPanel from '../components/ConfigChangesPanel'
 import StrategyPromptPanel from '../components/StrategyPromptPanel'
 import TacticsPanel from '../components/TacticsPanel'
 import WatchlistPanel from '../components/WatchlistPanel'
@@ -52,6 +54,8 @@ export default function ScanResult({ mode }: ScanResultProps) {
   } = useScanStore()
 
   const wasScanning = useRef(false)
+  // 观察期到期数（docs/23 §3）：任务记录页签红点，30s 随状态轮询一起刷新
+  const [obsDue, setObsDue] = useState(0)
   // 合约内部 tab 记忆（既有 key 不动）
   const [activeTab, switchTab] = useTabMemory(
     'tabs.scanResult',
@@ -69,9 +73,18 @@ export default function ScanResult({ mode }: ScanResultProps) {
     })
     fetchTasks()
 
-    // 每 30 秒刷新状态
+    // 观察期到期数（失败静默，不影响主体）
+    const loadObsDue = () => {
+      observationsApi.list()
+        .then((d) => setObsDue(d.counts?.due ?? 0))
+        .catch(() => {})
+    }
+    loadObsDue()
+
+    // 每 30 秒刷新状态 + 待决策红点
     const timer = setInterval(() => {
       fetchStatus()
+      loadObsDue()
     }, 30000)
     return () => clearInterval(timer)
   }, [])
@@ -219,7 +232,12 @@ export default function ScanResult({ mode }: ScanResultProps) {
     },
     {
       key: 'tasks',
-      label: '任务记录',
+      label: (
+        <span>
+          任务记录
+          {obsDue > 0 && <Badge count={obsDue} size="small" style={{ marginLeft: 6 }} />}
+        </span>
+      ),
       children: <div style={{ height: '100%', overflow: 'hidden' }}><TaskList /></div>,
     },
     {
@@ -275,6 +293,7 @@ export default function ScanResult({ mode }: ScanResultProps) {
                   <ScanConfigPanel />
                   <TradingConfigPanel />
                   <SystemConfigPanel />
+                  <ConfigChangesPanel />
                 </>
               )}
             </Space>

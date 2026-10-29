@@ -547,6 +547,14 @@ MIN_CLOSED_4H = 200         # 4h 数据门（EMA144 斜率回看 -SLOPE_BARS 需
                             # 比 htf_core 的 155 更严；两处统一采用本门）
 SLOPE_BARS = 20             # EMA144 斜率回看根数（4h 闸门与 1h 结构门 144 方向共用）
 SLOPE_FLAT_PCT = 0.005      # 20 根变化幅度/价格 < 0.5% → 走平（独立拒因）
+# 走平门 ATR 归一影子参数（docs/23 T8，2026-10-29）：现网 flat 是绝对百分比阈值，
+# 对高波动品种偏严——回放 100 币 20 天里 SPY 100%、GOOGL 78%、AAPL 70%、BTC 52%
+# 的根被判走平（SOL/DOGE 仅 3~4%），被 flat 拒的样本 avgR +0.186 vs PASS +0.164。
+# T8 只记录影子判定（不改行为）：k=1.0 表示「20 根 EMA144 位移不足 1 倍 4h ATR
+# 即算走平」；下限 0.2% 防 ATR 极小时把门放到无穷宽（归一后仍须有最小位移）。
+# 观察期（7 天）结论出来后再按 T12 接成真开关，k=0 可回退绝对阈值。
+SLOPE_FLAT_ATR_MULT = 1.0
+SLOPE_FLAT_FLOOR_PCT = 0.002
 TANGLE_ADX_MIN = 20.0       # 缠绕第一道：ADX<20 无趋势
 TANGLE_GAP_PCT = 0.001      # 缠绕第二道：|EMA21-EMA55|/price < 0.1% 纠缠
 TANGLE_WRAP_N = 10          # 缠绕第四道：价格×EMA144 穿越回看根数（原 gate WRAP_WINDOW）
@@ -938,10 +946,26 @@ def htf_context(htf_klines: list[list], core: Optional[dict] = None) -> Optional
     else:
         slope_pct = abs(float(e144[-1]) - float(e144[-SLOPE_BARS])) / price
         wraps = _wrap_count(closes, e144)
+        # 走平门归一化影子读数（docs/23 T8）：atr_pct_4h=ATR14(4h)/price，
+        # slope_atr_ratio=位移/ATR（跨品种可比），flat_norm=归一后是否仍算走平。
+        # flat_abs 为现网绝对阈值判定，两者一并落库 → 观察期直接取差集（flat_abs
+        # 且非 flat_norm）算 avgR。只记录，不参与 reject 判定。
+        _atr_v = float(core.get("atr") or 0.0)
+        atr_pct = (_atr_v / price) if _atr_v > 0 else None
+        slope_atr_ratio = (slope_pct / atr_pct) if atr_pct else None
+        flat_abs = slope_pct < SLOPE_FLAT_PCT
+        flat_norm: Optional[bool] = None
+        if atr_pct is not None:
+            flat_norm = slope_pct < max(
+                SLOPE_FLAT_FLOOR_PCT, SLOPE_FLAT_ATR_MULT * atr_pct)
         ev = {"slope_pct": round(slope_pct, 5), "wraps": wraps,
               "adx": round(adx_v, 1) if adx_v is not None else None,
-              "close_vs_ema144": round(price / float(e144[-1]) - 1, 5)}
-        if slope_pct < SLOPE_FLAT_PCT:
+              "close_vs_ema144": round(price / float(e144[-1]) - 1, 5),
+              "atr_pct_4h": round(atr_pct, 5) if atr_pct is not None else None,
+              "slope_atr_ratio": (round(slope_atr_ratio, 2)
+                                  if slope_atr_ratio is not None else None),
+              "flat_abs": flat_abs, "flat_norm": flat_norm}
+        if flat_abs:
             reject = "flat"                      # 走平（独立拒因）
         else:
             tangled, _t_note = detect_tangle(closes, e21, e55, e144, adx_v)

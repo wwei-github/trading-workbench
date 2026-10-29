@@ -1,9 +1,12 @@
-import { useState, useEffect } from 'react'
-import { Modal, Form, InputNumber, message, Button, Spin, Radio, Select, Switch, Row, Col } from 'antd'
+import { useState, useEffect, useRef } from 'react'
+import { Modal, Form, InputNumber, message, Button, Spin, Radio, Select, Switch, Row, Col, Alert, Table, Tag } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useScanStore } from '../stores/scanStore'
 import ConfigSection from './ConfigSection'
-import type { SystemConfig } from '../types'
+import type { SystemConfig, TradeRecord } from '../types'
+import { scanApi } from '../api/scan'
+import { diffConfig } from '../utils/configVerify'
+import { bj } from '../utils/dayjs'
 
 /** 交易配置弹窗（2026-09-20 拆分自 ScanConfigPanel）：自动交易参数 + 开仓闸门补丁参数 */
 export default function TradingConfigPanel() {
@@ -11,6 +14,11 @@ export default function TradingConfigPanel() {
   const [form] = Form.useForm()
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
+  // 全平开关「关→开」时的存量单提示（docs/23 T14c，2026-10-29）：
+  // 只对新单生效，存量单不会被补平——不先说清，用户会以为瞬间全平
+  const [runningTrades, setRunningTrades] = useState<TradeRecord[]>([])
+  const [fullExitConfirm, setFullExitConfirm] = useState(false)
+  const confirmFullExitRef = useRef(false)
   const { aiConfig, updateConfig, fetchConfig, fetchStatus } = useScanStore()
 
   useEffect(() => {
@@ -70,8 +78,38 @@ export default function TradingConfigPanel() {
   }, [open, aiConfig, form])
 
   const handleSave = async () => {
+    let values: Record<string, any>
     try {
-      const values = await form.validateFields()
+      values = await form.validateFields()
+    } catch {
+      return
+    }
+    // 存量单提示（docs/23 T14c）：全平模式从关→开时先列在跑单，说明「不补平、
+    // 只对新单生效」。拉取失败不阻断保存（提示是旁路，配置必须能存下去）
+    const turningOn = !!values.tp_full_exit_enabled && !aiConfig?.tp_full_exit_enabled
+    if (turningOn && !confirmFullExitRef.current) {
+      try {
+        const lists = await Promise.all([
+          scanApi.trades.list('OPENED'),
+          scanApi.trades.list('TP1_HIT'),
+          scanApi.trades.list('TP2_HIT'),
+        ])
+        const running = lists.flat()
+        if (running.length > 0) {
+          setRunningTrades(running)
+          setFullExitConfirm(true)
+          return
+        }
+      } catch {
+        /* 持仓查询失败：继续正常保存 */
+      }
+    }
+    confirmFullExitRef.current = false
+    await persist(values)
+  }
+
+  const persist = async (values: Record<string, any>) => {
+    try {
       setSaving(true)
       const data: Partial<SystemConfig> = {
         max_open_trades: values.max_open_trades,
@@ -109,6 +147,27 @@ export default function TradingConfigPanel() {
         tp1_qty_pct_no_tp2: values.tp1_qty_pct_no_tp2 ?? null,
       }
       await updateConfig(data)
+      // 保存回读校验（docs/23 T14b，2026-10-29）：PUT 后 GET 逐键比对，覆盖
+      // 「全平开关显示开、库里是 false」这类无感回滚——不一致就不报成功。
+      // 回读失败（网络/超时）不等于保存失败：PUT 已 200，只是缺校验
+      let fresh: SystemConfig | null = null
+      try {
+        fresh = await scanApi.getConfig()
+      } catch {
+        message.warning('配置已保存，但回读校验失败（网络异常），请稍后刷新确认')
+      }
+      if (fresh) {
+        useScanStore.setState({ aiConfig: fresh })
+        const diffs = diffConfig(data, fresh)
+        if (diffs.length) {
+          message.error(
+            `保存未生效：${diffs.slice(0, 3).join('、')}`
+            + `${diffs.length > 3 ? ` 等 ${diffs.length} 项` : ''}与提交值不一致`
+            + '（表单已按后端实际值刷新，请复核后重试）',
+          )
+          return
+        }
+      }
       message.success('配置已保存')
       // 顶部熔断状态卡即时刷新（此前等 30s 轮询，开关切换后被误读为「保存了没生效」）
       await fetchStatus()
@@ -463,6 +522,79 @@ export default function TradingConfigPanel() {
         </Form>
         </div>
         </Spin>
+      </Modal>
+
+      {/* 存量单提示（docs/23 T14c，2026-10-29）：开启全平模式不会补平在跑单，
+          它们按开仓时快照（raw.tp_full_exit）继续分批 + 跟进止损 */}
+      <Modal
+        open={fullExitConfirm}
+        title="开启止盈全平模式：现有持仓如何处理？"
+        onCancel={() => setFullExitConfirm(false)}
+        okText="确认开启并保存"
+        cancelText="取消"
+        width={780}
+        confirmLoading={saving}
+        onOk={async () => {
+          confirmFullExitRef.current = true
+          setFullExitConfirm(false)
+          await handleSave()
+        }}
+      >
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={`当前有 ${runningTrades.length} 张在跑单，开启后不会被补平`}
+          description="全平模式按「开仓时的开关快照」管理仓位，已开的单继续按原口径退出：TP1 减仓后，剩余尾仓仍由跟进止损退出。本次开启只影响之后新开的单。"
+        />
+        <Table
+          rowKey="id"
+          size="small"
+          pagination={false}
+          dataSource={runningTrades}
+          scroll={{ y: 260 }}
+          columns={[
+            { title: '币种', dataIndex: 'symbol', width: 130 },
+            {
+              title: '方向',
+              dataIndex: 'direction',
+              width: 70,
+              render: (v: string) => (
+                <Tag color={v === 'long' ? 'green' : 'red'} style={{ marginInlineEnd: 0 }}>
+                  {v === 'long' ? '多' : '空'}
+                </Tag>
+              ),
+            },
+            {
+              title: '状态',
+              dataIndex: 'status',
+              width: 100,
+              render: (v: string) => (
+                { OPENED: '运行中', TP1_HIT: 'TP1已止盈', TP2_HIT: 'TP2已止盈' }[v] ?? v
+              ),
+            },
+            {
+              title: '入场价',
+              dataIndex: 'entry_price',
+              width: 110,
+              render: (v: number | null) => (v == null ? '-' : v),
+            },
+            {
+              title: '开仓时间',
+              dataIndex: 'opened_at',
+              width: 150,
+              render: (v: string | null) => (v ? bj(v).format('MM-DD HH:mm') : '-'),
+            },
+            {
+              title: '口径',
+              key: 'mode',
+              render: () => <span style={{ color: '#8c8c8c' }}>按开仓时快照（不受本次影响）</span>,
+            },
+          ]}
+        />
+        <div style={{ marginTop: 10, fontSize: 12, color: '#8c8c8c' }}>
+          想立刻按全平口径处理这些单，请到「交易记录」手动平仓后重开。
+        </div>
       </Modal>
     </>
   )

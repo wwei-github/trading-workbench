@@ -1111,6 +1111,16 @@ def detect_trigger(
                 f"{_leg_reject_detail(leg_ev, direction, flt)}",
             )
             _diag_stage(diag, "leg_gate")
+            # 腿门证据结构化（docs/23 T9，2026-10-29）：判定说明只有一句「腿深
+            # x.xxATR」，无法按档位聚合。把 bars/atr_mult/overshoot_atr 一并挂到
+            # diag，scanner 落 funnel_json.leg_evidence → 「无触发」页签可按
+            # min_atr 分档（0.3/0.5/0.8）筛选，观察期直接读增量候选的期望值。
+            if diag is not None and isinstance(leg_ev, dict):
+                diag["leg"] = {
+                    "bars": int(leg_ev.get("bars") or 0),
+                    "atr_mult": round(float(leg_ev.get("atr_mult") or 0.0), 2),
+                    "overshoot_atr": round(float(leg_ev.get("overshoot_atr") or 0.0), 2),
+                }
             touch_ref = None
             touch_price = None
             leg_rejected = True
@@ -1174,6 +1184,11 @@ def detect_trigger(
                         "待确认未确认：确认根前"
                         + _leg_reject_detail(leg_ev, direction, flt),
                     )
+                    # 确认侧腿门归因（docs/23 T2，2026-10-29）：此前只写原因文本，
+                    # 漏斗按 diag.stage 落关卡时没有标记，最终被记成 window_expired
+                    # （pending 窗口耗尽）。这里显式标 leg_gate，死因可见；pending
+                    # 仍保持等待（不改行为）。
+                    _diag_stage(diag, "leg_gate")
                     return None, None
             p_ref = pending.get("touch_ref")
             # 触点被禁用/移出白名单后，存量 pending 不得再确认（2026-10-27，docs/15 §16）：

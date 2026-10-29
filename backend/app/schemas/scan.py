@@ -296,6 +296,10 @@ class SystemConfigOut(BaseModel):
     # 初始资金（2026-09-26）：正式网主账号首次入金，资金划转面板展示口径
     live_initial_capital: float = 0
 
+    # 配置最后修改时间（docs/23 T14a，2026-10-29）：只读水位，由模型 onupdate 自动维护；
+    # NULL=从未记录（该列上线前的历史行），前端显示「未记录」
+    updated_at: Optional[datetime] = None
+
     # AI 运行时参数（2026-10-14 上页面，策略配置弹窗）：库内原始值 nullable
     # （NULL=未定制，回落 env）；*_effective=实际生效值（DB>env>代码默认），前端占位/提示用
     ai_model: Optional[str] = None                # AI 模型名（NULL=回落 env AI_MODEL）

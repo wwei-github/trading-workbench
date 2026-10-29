@@ -144,6 +144,28 @@ export interface TaskRecord {
   finished_at: string | null;
 }
 
+// 观察期任务（docs/23 §3）：改参数后观察 N 天，到期在「任务记录 → 待决策」提醒
+export interface ObservationTask {
+  id: string;
+  name: string;
+  config_key: string | null;
+  started_at: string;
+  due_at: string;
+  metrics: Record<string, unknown> | null; // 当前读数（每日可刷新）
+  decision_rule: string | null; // 登记时写死的判据
+  status: 'pending' | 'due' | 'decided' | 'cancelled';
+  decision: string | null;
+  decided_at: string | null;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ObservationList {
+  items: ObservationTask[];
+  counts: Record<string, number>; // pending / due / decided / cancelled
+}
+
 // 系统日志：应用 WARNING 及以上日志（定时任务/接口/交易结算等报错）
 export interface AppLog {
   id: number;
@@ -313,6 +335,20 @@ export interface SystemConfig {
   llm_concurrency_effective?: number;
   ai_call_timeout_s_effective?: number;
   ai_api_pair_source?: string;         // 'db' | 'env' 标识凭证对来源
+  // 配置最后修改时间（docs/23 T14a，2026-10-29）：只读水位，后端 onupdate 自动维护；
+  // null=从未记录（该列上线前的历史行），前端显示「未记录」
+  updated_at?: string | null;
+}
+
+// 配置变更审计行（docs/23 T14a，2026-10-29）：一次保存按字段拆行，同 batch_id 同批
+export interface ConfigChangeItem {
+  id: number;
+  batch_id: string;
+  field: string;           // 变动的配置字段名（如 tp_full_exit_enabled）
+  old_value: string | null; // 旧值（已序列化为字符串；NULL=此前未定制）
+  new_value: string | null; // 新值
+  source: string | null;    // 来源 IP/客户端标识（定位「谁改的」）
+  created_at: string;
 }
 
 // 账号注册表条目（docs/17）：key 稳定标识（testnet-1/live-N），只读不回传凭据
@@ -418,6 +454,13 @@ export interface FunnelData {
   universe_symbols?: string[];
   error_symbols?: string[];
   details?: Record<string, string>; // symbol → 判定说明文本（votes 票明细 / no_trigger 未触发原因，2026-10-13；分号分隔）
+  // 腿门证据（docs/23 T9，2026-10-29）：symbol → {bars, atr_mult, overshoot_atr}，
+  // 仅 leg_gate 关被拒的币有；「无触发」页签按 min_atr 档位筛选（旧轮次无此键）
+  leg_evidence?: Record<string, {
+    bars?: number;
+    atr_mult?: number; // 反向腿深度（ATR 倍数，腿门门槛默认 0.5）
+    overshoot_atr?: number; // 腿尾超出反向极值的幅度（>0.5 会重锚找更近一段腿）
+  }>;
   // 4h 放行状态（2026-10-29）：symbol → 状态名（多头排列/空头恢复初期…）。
   // 只收通过 gate_4h + htf_state_lock 的币，供抽屉「通过」按状态分组；旧轮次无此键
   htf_pass_states?: Record<string, string>;
@@ -435,6 +478,12 @@ export interface FunnelData {
       wraps?: number | null; // 近 10 根价格穿越 EMA144 次数
       adx?: number | null;
       close_vs_ema144?: number | null;
+      // 走平门归一化影子读数（docs/23 T8）：flat_abs=现网绝对阈值判定，
+      // flat_norm=按 4h ATR 归一后的判定；两者不一致即观察期的「差集」
+      atr_pct_4h?: number | null; // ATR14(4h)/price
+      slope_atr_ratio?: number | null; // 20 根 EMA144 位移 / ATR（跨品种可比）
+      flat_abs?: boolean | null;
+      flat_norm?: boolean | null;
     };
     degraded?: boolean; // 数据降级（拉取失败/空数据/计算异常）
   }>;
@@ -456,6 +505,8 @@ export interface FunnelSnapshot {
   stages: Record<string, number>;
   htf_states: Record<string, number>;
   gate_4h_reasons: Record<string, number>;
+  // 本轮 4h 数据降级币数（docs/23 T10）：拉取失败/空数据/计算异常；旧轮次为 null
+  htf_degraded?: number | null;
 }
 
 
@@ -525,6 +576,15 @@ export interface TradeRecord {
   qty: number | null
   qty_tp1?: number | null // TP1 分批数量（后端读自 raw；旧记录无此键走 75%/50% 比例回退）
   qty_tp2?: number | null // TP2 分批数量（无 TP2 单为 0/None；旧记录走 25% 比例回退）
+  // TP2 未挂上原因（docs/23 T14d，2026-10-29）：AI 报了 TP2 但数量取整/合计校验没过，
+  // 只有本字段能区分「策略没要 TP2」与「要了没挂上」；null=未发生（含旧记录）
+  tp2_skipped?: {
+    tp2: number
+    qty_tp2: number
+    min_qty: number
+    full_exit: boolean
+    reason: 'qty_below_min' | 'tp_sum_not_ok' | 'order_failed' | string
+  } | null
   notional: number | null
   leverage: number
   margin_used: number | null

@@ -210,6 +210,102 @@ def _tp_sum_ok(qty_tp1: float, qty_tp2: float, qty: float,
     return total <= qty if full_exit else total < qty
 
 
+def _tp2_skip_info(tp2: float, tp2_order, qty_tp1: float, qty_tp2: float,
+                   qty: float, min_qty: float,
+                   full_exit: bool) -> Optional[dict]:
+    """TP2 挂单被跳过的原因（docs/23 T14d，2026-10-29）；None = 无需告警。
+
+    AI 报了 TP2 却没挂上条件单时（数量低于最小步长 / 两档合计超出全仓 /
+    下单异常），旧代码把 `rec.tp2` 静默写成 0，事后只看到「这单没有 TP2」，
+    无法区分「AI 没报」与「报了没挂上」——前者是策略选择，后者是执行缺陷。
+    这里把原因带出，落 raw.tp2_skipped + TP2_SKIPPED 事件。
+    """
+    if tp2 is None or float(tp2) <= 0 or tp2_order is not None:
+        return None
+    if qty_tp2 < min_qty:
+        reason = "qty_below_min"
+    elif not _tp_sum_ok(qty_tp1, qty_tp2, qty, full_exit):
+        reason = "tp_sum_not_ok"
+    else:
+        reason = "order_failed"
+    return {
+        "tp2": round(float(tp2), 8),
+        "qty_tp2": round(float(qty_tp2), 8),
+        "min_qty": float(min_qty),
+        "full_exit": bool(full_exit),
+        "reason": reason,
+    }
+
+
+# 全平残仓自动补平上限（open 量占比）：超过即视为「TP2 后手动加仓」，只告警不平仓
+_FULL_EXIT_RESIDUAL_MAX_RATIO = 0.10
+
+
+def _enforce_full_exit_residual(db: Session, rt: BinanceTrader, rec: TradeRecord,
+                                amt: float, ratio: float) -> bool:
+    """全平模式 TP2 后残仓兜底（docs/23 T14e，2026-10-29）。
+
+    背景：TRUTHUSDT 排查证明全平代码路径本身正确，但 TP2 数量受最小步长取整、
+    两档合计校验、以及 2026-10-28 全平模式上线前的旧单影响——`tp_full_exit=true`
+    的单在 TP2 成交后仍可能留残仓，旧逻辑把残仓交给跟进止损，与「全平」语义不符。
+    这里在 TP2_HIT 时校验交易所实际持仓，仍有量就市价 reduceOnly 补平。
+
+    约束：同单只补一次（raw.full_exit_residual_at 幂等标记）；补平成功写
+    exit_override=tp_full（下一轮零仓位结算按「TP 档全平」记出场，不被
+    bookkeeping 误标为止损类）。返回 True = 本次已补平，调用方跳过跟进止损。
+
+    安全边界（ratio > 10% 不自动平）：TP2 后正常残仓只是最小步长取整的碎尾
+    （通常 <5%），若交易所剩余量仍占开仓量 10% 以上，多半是 TP2 之后又手动
+    加过仓（或快照严重滞后）——此时 reduceOnly 会把用户的加仓一起市价平掉，
+    属于越权操作，只记事件告警、交人工核对。
+    """
+    raw = rec.raw or {}
+    if not raw.get("tp_full_exit") or raw.get("full_exit_residual_at"):
+        return False
+    if amt <= 0:
+        return False
+    if ratio > _FULL_EXIT_RESIDUAL_MAX_RATIO:
+        # 每单只告警一次（巡检每 30 分钟一轮，否则事件与警告会刷屏）；
+        # 之后若用户减仓使 ratio 回落到阈值内，仍会正常补平
+        if not raw.get("residual_skip_notified"):
+            _add_event(db, rec, "FULL_EXIT_RESIDUAL_SKIPPED", {
+                "amt": round(amt, 8), "ratio": round(ratio, 4),
+            })
+            rec.raw = {**raw, "residual_skip_notified": True}
+            logger.warning(
+                "全平模式残仓偏大 %s：剩仓 %s（占开仓量 %.1f%%），疑似手动加仓，不自动补平",
+                rec.symbol, amt, ratio * 100,
+            )
+        return False
+    close_qty = rt.round_qty(rec.symbol, amt)
+    if close_qty <= 0:
+        return False
+    try:
+        rt.market_order(rec.symbol, _close_side(rec.direction), close_qty,
+                        reduce_only=True)
+    except Exception as e:  # noqa: BLE001 - 补平失败不阻断巡检，下轮再试
+        logger.warning("全平模式残仓补平失败 %s（qty=%s）: %s", rec.symbol, close_qty, e)
+        _add_event(db, rec, "FULL_EXIT_RESIDUAL_FAILED", {
+            "qty": round(close_qty, 8), "error": str(e)[:200],
+        })
+        return False
+    rec.raw = {
+        **raw,
+        "full_exit_residual_at": datetime.utcnow().isoformat(),
+        "exit_override": "tp_full",
+    }
+    _add_event(db, rec, "FULL_EXIT_RESIDUAL", {
+        "qty": round(close_qty, 8),
+        "amt": round(amt, 8),
+        "ratio": round(ratio, 4),
+    })
+    logger.warning(
+        "全平模式残仓补平 %s：TP2 后仍余 %s（剩仓比例 %.2f%%），已市价 reduceOnly 平掉",
+        rec.symbol, close_qty, ratio * 100,
+    )
+    return True
+
+
 # 市价入场确认（2026-10-19 最小加固）：POST 市价单返回 200+orderId 仅表示「已受理」，
 # 交易所侧可能瞬时异常导致从未真正落单（AVAUSDT/GTCUSDT 测试网实例：allOrders/
 # userTrades 均查无此单）。此情形下无持仓，closePosition 止损单会被 -4509 拒绝，
@@ -1162,6 +1258,10 @@ def _attempt_open(
                     qty_tp1, qty_tp2, qty, _tp_full):
                 tp2_order = trader.take_profit_reduce(
                     symbol, close_side, qty_tp2, trader.round_price(symbol, tp2))
+            # TP2 未挂上诊断（docs/23 T14d，2026-10-29）：AI 报了 TP2 却因数量
+            # 取整/合计校验没挂上条件单时，rec.tp2 会被静默写成 0；原因另存
+            _tp2_skip = _tp2_skip_info(
+                tp2, tp2_order, qty_tp1, qty_tp2, qty, f["min_qty"], _tp_full)
             now = datetime.utcnow()
             rec = TradeRecord(
                 symbol=symbol,
@@ -1206,6 +1306,8 @@ def _attempt_open(
                     # 止盈全平模式快照（2026-10-28）：巡检结算据本单口径推断
                     # 「TP 档平完全仓」出场，不随期间配置改动漂移
                     "tp_full_exit": _tp_full,
+                    # TP2 未挂上原因（docs/23 T14d）：区分「AI 没报」与「报了没挂上」
+                    "tp2_skipped": _tp2_skip,
                     "capital_base": _capital_base(wallet),
                     "wallet": wallet,
                     # 价差盈亏书签（REALIZED_PNL 累计，仅价差不含费用）：
@@ -1231,6 +1333,12 @@ def _attempt_open(
                 "fill_price": fill_price, "slippage_pct": round(slippage_pct, 3),
                 "actual_risk": round(actual_risk, 4),
             })
+            # 报了吗/挂上了吗分开记（docs/23 T14d）：静默把 tp2 写 0 会让复盘
+            # 误判成「策略本来就不要 TP2」
+            if _tp2_skip:
+                _add_event(db, rec, "TP2_SKIPPED", _tp2_skip)
+                logger.warning("开仓 %s：AI 报 TP2=%s 但未挂上（%s）",
+                               symbol, _tp2_skip["tp2"], _tp2_skip["reason"])
             db.commit()
         except Exception as place_err:
             # -4509（TIF=GTE 仅可用于已有持仓）是「交易所侧无持仓」的可靠信号，发生在
@@ -1544,6 +1652,9 @@ def materialize_pending_entry(
                 entry_diag_fresh = True
         if entry_diag:
             entry_diag["filled_price"] = float(fill_price)
+        # TP2 未挂上诊断（docs/23 T14d，2026-10-29）：挂单落地路径与市价同口径
+        _tp2_skip = _tp2_skip_info(
+            tp2, tp2_order, qty_tp1, qty_tp2, qty, f["min_qty"], _tp_full)
         rec = TradeRecord(
             symbol=symbol,
             direction=direction,
@@ -1587,6 +1698,8 @@ def materialize_pending_entry(
                 # 止盈全平模式快照（2026-10-28）：成交落地时定稿，巡检结算据本单
                 # 口径推断「TP 档平完全仓」出场，不随期间配置改动漂移
                 "tp_full_exit": _tp_full,
+                # TP2 未挂上原因（docs/23 T14d）：区分「AI 没报」与「报了没挂上」
+                "tp2_skipped": _tp2_skip,
                 "capital_base": raw.get("capital_base") or _capital_base(float(raw.get("wallet") or 0)),
                 "wallet": raw.get("wallet"),
                 "realized_bookmark": 0,
@@ -1606,6 +1719,11 @@ def materialize_pending_entry(
             "remaining_risk": initial_risk,
             "entry_order_id": pe.limit_order_id, "source": "pending_limit",
         })
+        # 报了吗/挂上了吗分开记（docs/23 T14d）：挂单落地路径同样标 TP2_SKIPPED
+        if _tp2_skip:
+            _add_event(db, rec, "TP2_SKIPPED", _tp2_skip)
+            logger.warning("挂单成交 %s：AI 报 TP2=%s 但未挂上（%s）",
+                           symbol, _tp2_skip["tp2"], _tp2_skip["reason"])
         if gate_breaches:
             _add_event(db, rec, "GATE_BREACH", {
                 "reasons": gate_breaches, "source": "pending_limit",
@@ -3372,8 +3490,12 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                         tp2_detail["realized_pnl"] = realized  # 两档累计（旧口径）
                     _add_event(db, rec, "TP2_FILL", tp2_detail)
                     rec.status = "TP2_HIT"
-                    _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k,
-                                     swing_order=swing_order)
+                    # 全平模式残仓兜底（docs/23 T14e）：TP2 数量被最小步长取整、
+                    # 或旧单 TP2 只覆盖部分仓位时，仍会余下尾仓。补平成功就不再
+                    # 给已平掉的仓位挂跟进止损（否则会挂出无仓位可保的孤儿单）
+                    if not _enforce_full_exit_residual(db, rt, rec, amt, ratio):
+                        _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k,
+                                         swing_order=swing_order)
                     db.commit()
                     handled += 1
                 elif tp1_hit and (ratio <= 0.75 or raw.get("tp_full_exit")):
@@ -3414,8 +3536,12 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                                                      "pnl": tranche,
                                                      "cum_pnl": realized})
                     rec.status = "TP2_HIT"
-                    _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k,
-                                     swing_order=swing_order)
+                    # 全平模式残仓兜底（docs/23 T14e）：TP2 数量被最小步长取整、
+                    # 或旧单 TP2 只覆盖部分仓位时，仍会余下尾仓。补平成功就不再
+                    # 给已平掉的仓位挂跟进止损（否则会挂出无仓位可保的孤儿单）
+                    if not _enforce_full_exit_residual(db, rt, rec, amt, ratio):
+                        _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k,
+                                         swing_order=swing_order)
                     db.commit()
                     handled += 1
                 else:
@@ -3431,6 +3557,12 @@ def settle_trades(db: Session, trader: BinanceTrader) -> tuple[int, list[str]]:
                     db.commit()
                     handled += 1
             elif rec.status == "TP2_HIT":
+                # 全平模式残仓兜底（docs/23 T14e）：兜住部署前已升到 TP2_HIT 的
+                # 历史单（raw 有 tp_full_exit 且无补平标记），每个单只补一次
+                if _enforce_full_exit_residual(db, rt, rec, amt, ratio):
+                    db.commit()
+                    handled += 1
+                    continue
                 # 每小时跟进止损（只收紧不放松）
                 _move_sl_trailing(db, rt, rec, interval, open_ids, atr_k=atr_k,
                                   swing_order=swing_order)

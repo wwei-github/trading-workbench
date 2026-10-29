@@ -4,6 +4,9 @@ import { SettingOutlined, RobotOutlined, FileTextOutlined, UndoOutlined } from '
 import { useScanStore } from '../stores/scanStore'
 import ConfigSection from './ConfigSection'
 import type { SystemConfig } from '../types'
+import { bj } from '../utils/dayjs'
+import { scanApi } from '../api/scan'
+import { diffConfig } from '../utils/configVerify'
 
 /** 触发类型白名单选项（与后端 ALL_TRIGGERS 一一对应；纯金K 2026-09-29 下线，
  *  金K必须与触点配合，历史行标签保留在 labels.ts） */
@@ -219,6 +222,27 @@ export default function ScanConfigPanel() {
       // 不再提交该键（后端 scan_filters 保留兼容键位，仅读旧值不做消费）
       if (Object.keys(scanFilters).length > 0) data.scan_filters = scanFilters
       await updateConfig(data)
+      // 保存回读校验（docs/23 T14b，2026-10-29）：PUT 后立即 GET 比对，别只报
+      // 「已保存」——07:21 全平开关事件就是页面说成功、库里其实被改回 false。
+      // 回读本身失败（网络/超时）不等于保存失败：PUT 已 200，只是缺校验
+      let fresh: SystemConfig | null = null
+      try {
+        fresh = await scanApi.getConfig()
+      } catch {
+        message.warning('配置已保存，但回读校验失败（网络异常），请稍后刷新确认')
+      }
+      if (fresh) {
+        useScanStore.setState({ aiConfig: fresh })
+        const diffs = diffConfig(data, fresh)
+        if (diffs.length) {
+          message.error(
+            `保存未生效：${diffs.slice(0, 3).join('、')}`
+            + `${diffs.length > 3 ? ` 等 ${diffs.length} 项` : ''}与提交值不一致`
+            + '（表单已按后端实际值刷新，请复核后重试）',
+          )
+          return
+        }
+      }
       message.success('配置已保存')
       setOpen(false)
     } catch (e: any) {
@@ -584,6 +608,14 @@ export default function ScanConfigPanel() {
           </Row>
           </ConfigSection>
         </Form>
+        {/* 配置水位（docs/23 T14a）：只读，后端 onupdate 维护；null=该列上线前从未记录。
+            排查「改了配置没生效」先看这里——时间对得上说明改动已落库，问题在消费侧 */}
+        <div style={{ fontSize: 12, color: '#999', paddingBottom: 4 }}>
+          配置更新于{' '}
+          {aiConfig?.updated_at
+            ? `${bj(aiConfig.updated_at).format('YYYY-MM-DD HH:mm:ss')}（北京时间）`
+            : '未记录'}
+        </div>
         </div>
         </Spin>
       </Modal>

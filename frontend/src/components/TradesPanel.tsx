@@ -129,12 +129,26 @@ export const EXIT_REASON_MAP: Record<string, string> = {
   error: '异常平仓',
 }
 
+// TP2 未挂上原因（docs/23 T14d）：与后端 _tp2_skip_info 的 reason 枚举一一对应。
+// 前端展示「未挂上」而非「-」，避免把执行缺陷读成策略本来就不要 TP2。
+const TP2_SKIP_REASON: Record<string, string> = {
+  qty_below_min: '分批数量低于最小步长',
+  tp_sum_not_ok: '两档合计超出全仓',
+  order_failed: '条件单下单失败',
+}
+
 // 操作历史事件元数据：中文标签 / 主题色 / 时间线圆点图标
 const EVENT_META: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
   OPEN: { label: '开仓', color: '#1677ff', icon: <RocketOutlined /> },
   GATE_BREACH: { label: '开仓闸门越线', color: '#fa8c16', icon: <WarningOutlined /> },
   TP1_FILL: { label: 'TP1 止盈成交', color: '#52c41a', icon: <CheckCircleOutlined /> },
   TP2_FILL: { label: 'TP2 止盈成交', color: '#52c41a', icon: <CheckCircleOutlined /> },
+  // 执行缺陷类（docs/23 T14d/e）
+  TP2_SKIPPED: { label: 'TP2 未挂上', color: '#fa8c16', icon: <WarningOutlined /> },
+  FULL_EXIT_RESIDUAL: { label: '全平残仓补平', color: '#fa8c16', icon: <ScissorOutlined /> },
+  FULL_EXIT_RESIDUAL_FAILED: { label: '残仓补平失败', color: '#ff4d4f', icon: <CloseCircleOutlined /> },
+  // 残仓占比 >10%：疑似 TP2 后手动加仓，不自动平仓（只告警一次）
+  FULL_EXIT_RESIDUAL_SKIPPED: { label: '残仓偏大未补平', color: '#fa8c16', icon: <WarningOutlined /> },
   SL_MOVE: { label: '止损移动', color: '#fa8c16', icon: <SwapOutlined /> },
   TRAIL_MODE: { label: '移动止损方式', color: '#13c2c2', icon: <SwapOutlined /> },
   SL_FILL: { label: '止损成交', color: '#ff4d4f', icon: <CloseCircleOutlined /> },
@@ -184,6 +198,10 @@ const DETAIL_KEY_MAP: Record<string, string> = {
   exit_reason: '出场原因',
   qty_tp1: 'TP1数量',
   qty_tp2: 'TP2数量',
+  // TP2 未挂上 / 全平残仓补平（docs/23 T14d/e）
+  min_qty: '最小数量',
+  full_exit: '全平模式',
+  amt: '交易所持仓',
   message: '错误信息',
   // 外部平仓（2026-10-02）：交易所网页/App 手动平仓识别
   exit_price: '平仓均价',
@@ -1441,7 +1459,20 @@ export default function TradesPanel() {
       dataIndex: 'tp2',
       key: 'tp2',
       width: 90,
-      render: (v: number | null) => (v ? fmtNum(v) : '-'),
+      render: (v: number | null, rec: TradeRecord) => {
+        if (v) return fmtNum(v)
+        // TP2 未挂上（docs/23 T14d）：AI 报了 TP2 但数量取整/合计校验没过，
+        // 旧界面只显示「-」与「策略本来没要 TP2」无法区分——执行缺陷会被漏看
+        const skip = rec.tp2_skipped
+        if (skip) {
+          return (
+            <Tooltip title={`AI 报 TP2 ${fmtNum(skip.tp2)}，但未挂上（${TP2_SKIP_REASON[skip.reason] ?? skip.reason}）；剩余仓位由跟踪止损退出`}>
+              <Tag color="orange" style={{ marginInlineEnd: 0 }}>未挂上</Tag>
+            </Tooltip>
+          )
+        }
+        return '-'
+      },
     },
     {
       // TP2预估收益 = TP2 分批数量（开仓量 25%）× (TP2价 − 开仓价)。

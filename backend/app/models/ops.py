@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, DateTime, Index, JSON, String, Text
+from sqlalchemy import BigInteger, DateTime, Index, Integer, JSON, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -38,7 +38,6 @@ class TaskRecord(Base):
 
 class AppLog(Base):
     """应用日志（WARNING 及以上），由 log_sink 从 logging 异步写入"""
-
     __tablename__ = "app_logs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -50,4 +49,33 @@ class AppLog(Base):
 
     __table_args__ = (
         Index("ix_app_logs_created_level", "created_at", "level"),
+    )
+
+
+class ConfigChange(Base):
+    """系统配置变更审计（docs/23 T14a，2026-10-29）。
+
+    一次保存可能改多个字段：同一 batch_id 下逐字段一行，便于按字段回看历史
+    （如「tp_full_exit_enabled 什么时候被关的」）。此前只写 app_logs WARNING
+    （保留 7 天、长值截断、与其它日志混杂），无法结构化查询。
+    source 记请求来源（X-Forwarded-For 首跳 / 直连 IP）——无鉴权系统里唯一的
+    「谁改的」线索。
+    """
+
+    __tablename__ = "config_changes"
+
+    # sqlite 只有 INTEGER PRIMARY KEY 才自增（BIGINT PK 插入时报 NOT NULL id），
+    # 测试套用内存库跑 PUT /config 要落审计 → 该类型变体为必须；PG 仍为 BIGSERIAL
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), default=uuid.uuid4, index=True)  # 同一次保存的多个字段共享
+    field: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    old_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    new_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # 来源 IP
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index("ix_config_changes_field_created", "field", "created_at"),
     )

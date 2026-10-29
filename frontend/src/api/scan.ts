@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, FunnelData, FunnelSnapshot, HitHistoryItem, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PendingEntry, PromptView, PullbackPendingItem, PurgeStats, ReviewFunnel, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, TradeEvent, TradeKlineData, TradeRecord, TradeReconciliation, TransferStats, WatchlistItem } from '../types'
+import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, FunnelData, FunnelSnapshot, HitHistoryItem, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PendingEntry, PromptView, PullbackPendingItem, PurgeStats, ReviewFunnel, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, ConfigChangeItem, TradeEvent, TradeKlineData, TradeRecord, TradeReconciliation, TransferStats, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -85,6 +85,14 @@ export const scanApi = {
 
   updateConfig: (data: Partial<SystemConfig>) =>
     api.put<SystemConfig>('/scans/config', data).then((r) => r.data),
+
+  // 配置变更审计（docs/23 T14a）：逐字段时间倒序，回答「哪个开关何时被改成什么」
+  configChanges: (limit = 100, field?: string) =>
+    api
+      .get<{ items: ConfigChangeItem[]; total: number }>('/scans/config/changes', {
+        params: { limit, field },
+      })
+      .then((r) => r.data),
 
   // 月度回撤熔断人工复盘确认（docs/13 #2）：写确认时刻恢复开仓
   ackMonthlyBreaker: () =>

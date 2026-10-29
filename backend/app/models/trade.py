@@ -160,6 +160,15 @@ class TradeRecord(Base):
         return (self.raw or {}).get("fail_reason")
 
     @property
+    def tp2_skipped(self) -> Optional[dict]:
+        """TP2 未挂上的原因（docs/23 T14d，2026-10-29）。
+
+        AI 报了 TP2 但数量不足最小步长/两档合计溢出/下单异常时，`tp2` 列会写成 0，
+        只有本字段能区分「策略没要 TP2」与「执行没挂上」。null=未发生（含旧行）。
+        """
+        return (self.raw or {}).get("tp2_skipped")
+
+    @property
     def risk_unit(self) -> float:
         """1R 基准：成交后初始风险优先，旧行回落 risk_amount（0=不可用）。
 
@@ -200,11 +209,17 @@ class TradeEvent(Base):
     trade_record_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("trade_records.id"), nullable=False, index=True
     )
-    event_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    # 32 而非 16（docs/23 T14e，2026-10-29）：FULL_EXIT_RESIDUAL(18) /
+    # FULL_EXIT_RESIDUAL_FAILED(25) 装不下 16，PG 会抛 StringDataRightTruncation
+    # 让整轮巡检回滚——补平单已在交易所成交、幂等标记却丢掉，下轮会重复补平。
+    # 旧库由 init_db 的 ALTER 放宽（重复执行无害）。
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
     # OPEN / TP1_FILL / TP2_FILL / SL_MOVE / SL_FILL / CANCEL / ERROR / SETTLE / SKIP
     # / LIQUIDATION / AI_ADVICE / MANUAL_CLOSE / EXTERNAL_CLOSE（2026-10-02 外部平仓）
     # / EXIT_HTF_STATE、TP_TRAIL（策略二已退役，历史事件类型：2026-10-12 前
     # trail 专属的 4h 状态机全平 / 浮盈落袋，现不再产生）
+    # / TP2_SKIPPED（TPSKIP，2026-10-29 执行缺陷）、FULL_EXIT_RESIDUAL /
+    # FULL_EXIT_RESIDUAL_FAILED / FULL_EXIT_RESIDUAL_SKIPPED（全平残仓补平）
     detail: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 

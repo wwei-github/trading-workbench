@@ -915,6 +915,14 @@ def _run_migrations(engine):
               ADD COLUMN IF NOT EXISTS ai_pause_start_hour INTEGER,
               ADD COLUMN IF NOT EXISTS ai_pause_end_hour INTEGER
         """))
+        # 配置最后修改时间（docs/23 T14a，2026-10-29）：旧库补列，NULL=从未记录
+        conn.execute(text(
+            "ALTER TABLE system_config ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP"))
+        # 交易事件类型放宽 16→32（docs/23 T14e，2026-10-29）：FULL_EXIT_RESIDUAL(18)
+        # 与 FULL_EXIT_RESIDUAL_FAILED(25) 超长会让 PG 抛 StringDataRightTruncation，
+        # 整轮巡检回滚 → 补平已成交但幂等标记丢失，下轮重复补平。重复执行无害
+        conn.execute(text(
+            "ALTER TABLE trade_events ALTER COLUMN event_type TYPE VARCHAR(32)"))
         # scan_results 组合确认三列（2026-10-26，docs/11）：旧行 golden_combo=FALSE、
         # pattern_candle_open/entry_lag_pct NULL，前端据此回退到「单形态、锚信号根」
         conn.execute(text(
@@ -930,6 +938,8 @@ def _run_migrations(engine):
 
 def init_db():
     """创建所有表 + 幂等迁移"""
-    from app.models import ops, patch, scan, trade, blacklist, spot, tactic, shadow  # noqa: F401
+    from app.models import (  # noqa: F401
+        ops, patch, scan, trade, blacklist, spot, tactic, shadow, observation,
+    )
     Base.metadata.create_all(bind=engine)
     _run_migrations(engine)

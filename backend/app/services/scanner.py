@@ -239,6 +239,13 @@ def _htf_snapshot(res: Optional[dict], degraded: bool = False) -> dict:
             "wraps": ev.get("wraps"),
             "adx": ev.get("adx"),
             "close_vs_ema144": ev.get("close_vs_ema144"),
+            # 走平门归一化影子读数（docs/23 T8，2026-10-29）：逐币落 funnel 的
+            # htf_evidence/details，观察期用「flat_abs 且非 flat_norm」的差集算
+            # avgR（判据见 docs/23 §3.4）。旧轮次无此键 → None
+            "atr_pct_4h": ev.get("atr_pct_4h"),
+            "slope_atr_ratio": ev.get("slope_atr_ratio"),
+            "flat_abs": ev.get("flat_abs"),
+            "flat_norm": ev.get("flat_norm"),
         },
         "degraded": bool(degraded),
     }
@@ -440,11 +447,27 @@ def detect_indicator_candidate(
                     htf_res is None
                     or htf_res.get("reject_reason") in ("data", "adx")
                 )
-                _reject("gate_4h")
-                if reject_out is not None:
-                    if htf_degraded:
-                        reject_out["degraded"] = True
-                    reject_out["htf"] = _htf_snapshot(htf_res, htf_degraded)
+                # 4h 方向门归因（docs/23 T3，2026-10-29）：方向歧义（undetermined）但
+                # 状态机已明确禁开时，真正的死因是状态锁——先记 htf_state_lock，
+                # 避免同一份 4h 数据被两套方向定义各判一次、把账全记在 gate_4h 上。
+                # 只改关卡名与说明，拒绝动作与 pending 处置（expire ranging）不变。
+                _lock_first = bool(
+                    htf_res is not None
+                    and htf_res.get("reject_reason") == "undetermined"
+                    and htf_res.get("block_both")
+                )
+                if _lock_first:
+                    _reject("htf_state_lock")
+                    if reject_out is not None:
+                        reject_out["detail"] = (
+                            htf_res.get("state_label") or htf_res.get("state") or "")
+                        reject_out["htf"] = _htf_snapshot(htf_res)
+                else:
+                    _reject("gate_4h")
+                    if reject_out is not None:
+                        if htf_degraded:
+                            reject_out["degraded"] = True
+                        reject_out["htf"] = _htf_snapshot(htf_res, htf_degraded)
                 return None, ({"op": "expire", "reason": "ranging"} if pending else None)
         # 4h 状态机双向禁开（2026-10-20 收紧为放行排列；2026-10-29 放宽加入恢复
         # 初期）：block_both（不在放行白名单）时，回踩·突破候选均一票否决——与
@@ -569,19 +592,22 @@ def detect_indicator_candidate(
     # 是形态本身，反向票只进质量分与仓位折扣。
     range_penalty = False
     if trig is not None and trig["type"] in (BREAKOUT, TREND_BREAKOUT):
-        if flt.direction_vote_gate_enabled and not votes_ok:
-            _reject("votes")
-            if reject_out is not None and votes:
-                detail = _votes_detail(votes)
-                if detail:
-                    reject_out["detail"] = detail
-            return None, pending_op
+        # 方向冲突优先归因（docs/23 T4，2026-10-29）：3 张方向票下 same_n≥2 与
+        # opp_n≥2 互斥且 votes_ok 先 return，导致本关此前永不触发（死分支）。
+        # 把反向票判定提到 votes 之前——「明确对撞」比「票数不足」更接近真实死因。
         if flt.direction_conflict_gate_enabled and votes_flip:
             _reject("direction_flip")
             if reject_out is not None:
                 reject_out["detail"] = (
                     f"突破方向={'多' if direction == 1 else '空'}头，但1h方向票"
                     f"{opp_n}张反向——突破需动量同向")
+            return None, pending_op
+        if flt.direction_vote_gate_enabled and not votes_ok:
+            _reject("votes")
+            if reject_out is not None and votes:
+                detail = _votes_detail(votes)
+                if detail:
+                    reject_out["detail"] = detail
             return None, pending_op
 
     # 震荡闸门分流：突破硬拒；回踩降权不拒（质量分 -8，见 compute_quality_score）。
@@ -603,7 +629,20 @@ def detect_indicator_candidate(
         if pullback_path:
             range_penalty = True
         else:
-            _reject("range_score")
+            # 腿门类型漂移归因（docs/23 T1，2026-10-29）：腿门失败会把 touch_ref 置空，
+            # 该根因此进不了待确认池，随后在这里被记成 range_score——同一形态在两层
+            # 之间改判。stage 归回 leg_gate 并带腿门证据；拒绝动作与 pending 处置不变，
+            # 候选数零变化。
+            leg_blocked = bool(trig_diag and trig_diag.get("stage") == "leg_gate")
+            _reject("leg_gate" if leg_blocked else "range_score")
+            if leg_blocked and reject_out is not None:
+                reasons = trig_diag.get("reasons")
+                if reasons:
+                    reject_out["detail"] = "；".join(reasons)
+                # 腿深结构化（docs/23 T9）：文本无法聚合成档位，数值单独出参，
+                # 收口进 funnel_json.leg_evidence，前端「无触发」页签按档筛选
+                if isinstance(trig_diag.get("leg"), dict):
+                    reject_out["leg"] = trig_diag["leg"]
             # 死因保留：触发侧已有处置动作（expire(direction_flip/window_expired)/
             # supersede）时原样返回，不用 range_score 覆盖审计死因
             return None, (pending_op or
@@ -696,6 +735,11 @@ def detect_indicator_candidate(
         try:
             q_parts["leg_atr"] = round(float(_leg.get("atr_mult") or 0.0), 2)
             q_parts["leg_bars"] = int(_leg.get("bars") or 0)
+            # 腿尾超出反向极值的幅度（ATR 倍数，docs/23 T9）：>LEG_OVERSHOOT_ATR(0.5)
+            # 时腿门会重锚找更近一段腿——记录重锚后的超调量，才能区分「干净单边腿」
+            # 与「贴着前低/前高一路磨下来的伪腿」，后者过门也不该开仓
+            if _leg.get("overshoot_atr") is not None:
+                q_parts["leg_overshoot"] = round(float(_leg["overshoot_atr"]), 2)
         except (TypeError, ValueError):
             pass
     return {
@@ -856,6 +900,10 @@ class Scanner:
             # 原因，2026-10-13；其余关卡无）
             funnel_rejects: dict[str, str] = {}
             funnel_details: dict[str, str] = {}
+            # 腿门证据（docs/23 T9，2026-10-29）：symbol → {bars, atr_mult,
+            # overshoot_atr}，仅 leg_gate 关被拒的币有；供「无触发」页签按
+            # min_atr 档位筛选，观察期读增量候选的期望值（判据见 docs/23 §3.4）
+            funnel_leg_evidence: dict[str, dict] = {}
             # 4h 数据降级币种（2026-10-21 观测 B2）：指标管线旁路标记，扫描结束
             # 汇总进 funnel_json，按天统计降级占比（spec §5.3）
             htf_degraded_symbols: set[str] = set()
@@ -1014,6 +1062,8 @@ class Scanner:
                             funnel_rejects[symbol] = rv_out["stage"]
                             if rv_out.get("detail"):
                                 funnel_details[symbol] = rv_out["detail"]
+                            if isinstance(rv_out.get("leg"), dict):
+                                funnel_leg_evidence[symbol] = rv_out["leg"]
                             # 4h 前置门证据 + 被拦快照（第 2 步）：只收
                             # gate_4h / htf_state_lock 两关（其余关卡与 4h 无关）。
                             # 快照记信号根（klines[-2]，已收盘）开盘时间与收盘价；
@@ -1225,6 +1275,9 @@ class Scanner:
                 # 多头/空头排列、恢复初期分组；旧轮次无此键 → 前端显示「未记录」
                 "htf_pass_states": htf_pass_states,
                 "details": funnel_details,     # symbol → 判定说明（votes 票明细/no_trigger 未触发原因）
+                # 腿门证据（docs/23 T9）：symbol → {bars, atr_mult, overshoot_atr}，
+                # 仅 leg_gate 关。旧轮次无此键 → 前端按「无腿证据」处理
+                "leg_evidence": funnel_leg_evidence,
                 # 观测补键（2026-10-28，docs/19 §4.3）：质量分下限之前的候选快照
                 # （被砍者不落 scan_results，没有它无法复盘差多少分）、重复抑制数、
                 # 活跃 pending 总量（与 pending_pool 的"本轮 upsert 条数"区分）

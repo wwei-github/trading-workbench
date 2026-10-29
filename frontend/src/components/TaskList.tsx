@@ -1,10 +1,11 @@
-import { useState } from 'react'
-import { Button, Card, List, Tag, Typography, Pagination, Empty, Select, Tooltip } from 'antd'
+import { useEffect, useState } from 'react'
+import { Button, Card, List, Tag, Typography, Pagination, Empty, Select, Tooltip, Modal, Input, message } from 'antd'
 import { DownOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons'
 import { bj } from '../utils/dayjs'
 import { useScanStore, type ColorScheme } from '../stores/scanStore'
 import { schemeTag } from '../utils/scheme'
-import type { TaskRecord } from '../types'
+import { observationsApi } from '../api/observations'
+import type { ObservationTask, TaskRecord } from '../types'
 
 const { Text } = Typography
 
@@ -102,6 +103,47 @@ export default function TaskList() {
   const colorScheme = useScanStore((s) => s.colorScheme)
   // 展开查看详情的任务 id 集合
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  // 观察期任务（docs/23 §3）：到期在顶部「待决策」区块提醒并记录结论
+  const [obs, setObs] = useState<ObservationTask[]>([])
+  const [obsDue, setObsDue] = useState(0)
+  const [deciding, setDeciding] = useState<ObservationTask | null>(null)
+  const [decisionText, setDecisionText] = useState('')
+  const [decisionSaving, setDecisionSaving] = useState(false)
+
+  const loadObservations = async () => {
+    try {
+      const data = await observationsApi.list()
+      setObs(data.items)
+      setObsDue(data.counts?.due ?? 0)
+    } catch {
+      // 观察期接口异常不影响任务列表主体
+    }
+  }
+
+  useEffect(() => {
+    void loadObservations()
+  }, [])
+
+  const submitDecision = async () => {
+    if (!deciding) return
+    const text = decisionText.trim()
+    if (text.length < 2) {
+      message.warning('请填写决策结论与依据')
+      return
+    }
+    setDecisionSaving(true)
+    try {
+      await observationsApi.decide(deciding.id, text)
+      message.success('已归档')
+      setDeciding(null)
+      setDecisionText('')
+      await loadObservations()
+    } catch {
+      message.error('保存失败')
+    } finally {
+      setDecisionSaving(false)
+    }
+  }
 
   const toggle = (id: string) => {
     setExpanded((prev) => {
@@ -113,12 +155,59 @@ export default function TaskList() {
   }
 
   return (
+    <>
     <Card
       title="任务记录"
       size="small"
       style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
       styles={{ body: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } }}
     >
+      {/* 待决策（docs/23 §3）：观察期到期的参数/阈值改动，结论按登记判据核对后归档 */}
+      {obs.length > 0 && (
+        <div style={{
+          flexShrink: 0, marginBottom: 12, padding: '8px 12px', borderRadius: 8,
+          border: '1px solid #ffe7ba', background: '#fffbe6',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <Text strong>待决策 {obs.length}</Text>
+            {obsDue > 0 && <Tag color="red" style={{ marginInlineEnd: 0 }}>已到期 {obsDue}</Tag>}
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              观察期结束，按登记判据核对后记录结论
+            </Text>
+          </div>
+          {obs.map((o) => (
+            <div key={o.id} style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed #f0e6c8' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Tag color={o.status === 'due' ? 'red' : 'blue'} style={{ marginInlineEnd: 0 }}>
+                  {o.status === 'due' ? '已到期' : '观察中'}
+                </Tag>
+                <Text strong>{o.name}</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  到期 {bj(o.due_at).format('MM-DD HH:mm')}{o.config_key ? ` · ${o.config_key}` : ''}
+                </Text>
+                <Button
+                  size="small"
+                  type="link"
+                  style={{ paddingInline: 4 }}
+                  onClick={() => { setDeciding(o); setDecisionText('') }}
+                >
+                  记录决策
+                </Button>
+              </div>
+              {o.decision_rule && (
+                <div style={{ fontSize: 12, color: '#8c6d1f', marginTop: 2 }}>判据：{o.decision_rule}</div>
+              )}
+              {o.metrics && (
+                <div style={{ fontSize: 12, color: '#666', marginTop: 2 }}>
+                  读数：{Object.entries(o.metrics).slice(0, 4)
+                    .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+                    .join(' · ')}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       <div style={{ flexShrink: 0, marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
         <Select
           style={{ width: 130 }}
@@ -133,7 +222,7 @@ export default function TaskList() {
             { value: 'spot', label: '现货任务' },
           ]}
         />
-        <Button icon={<ReloadOutlined />} onClick={() => fetchTasks(1)}>刷新</Button>
+        <Button icon={<ReloadOutlined />} onClick={() => { void fetchTasks(1); void loadObservations() }}>刷新</Button>
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
         <List
@@ -234,5 +323,32 @@ export default function TaskList() {
         />
       </div>
     </Card>
+    <Modal
+      open={!!deciding}
+      title={`记录决策 · ${deciding?.name ?? ''}`}
+      okText="保存并归档"
+      cancelText="取消"
+      confirmLoading={decisionSaving}
+      onOk={() => { void submitDecision() }}
+      onCancel={() => { if (!decisionSaving) setDeciding(null) }}
+    >
+      {deciding?.decision_rule && (
+        <div style={{ marginBottom: 8, fontSize: 12, color: '#8c6d1f' }}>
+          登记判据：{deciding.decision_rule}
+        </div>
+      )}
+      {deciding && (
+        <div style={{ marginBottom: 8, fontSize: 12, color: '#666' }}>
+          到期 {bj(deciding.due_at).format('YYYY-MM-DD HH:mm')} · 开始 {bj(deciding.started_at).format('YYYY-MM-DD HH:mm')}
+        </div>
+      )}
+      <Input.TextArea
+        rows={4}
+        value={decisionText}
+        onChange={(e) => setDecisionText(e.target.value)}
+        placeholder="结论 + 依据（例：切换；差集 avgR +0.18，SPY 未误放）"
+      />
+    </Modal>
+    </>
   )
 }

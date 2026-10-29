@@ -46,3 +46,22 @@ class AppLogListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class ConfigChangeOut(BaseModel):
+    """配置变更审计行（docs/23 T14a）：逐字段记录旧值→新值"""
+    id: int
+    batch_id: UUID
+    field: str
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    source: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ConfigChangeListResponse(BaseModel):
+    items: list[ConfigChangeOut]
+    total: int
