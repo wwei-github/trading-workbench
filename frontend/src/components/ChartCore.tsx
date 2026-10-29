@@ -598,7 +598,13 @@ export default function ChartCore({
   useEffect(() => {
     const series = seriesRef.current
     const chart = chartRef.current
-    if (!series || !chart || !data || data.klines.length === 0) return
+    if (!series || !chart || !data) return
+    // 空数据（新周期首屏尚无 K 线）：只清摆动标注，保留旧图，避免上一周期的
+    // HH/LH/HL/LL 残留在新周期上（2026-10-29 切周期摆动重算）
+    if (data.klines.length === 0) {
+      markersApiRef.current?.setMarkers(extraMarkers ?? [])
+      return
+    }
 
     const candleData = data.klines.map((k: Kline) => ({
       time: Math.floor(k.time / 1000) as UTCTimestamp,

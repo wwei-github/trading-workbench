@@ -733,6 +733,20 @@ export default function KlineChart({
   // 缓存键周期（仅缓存模式使用；扫描模式下拉档位固定 1h/4h/1d）
   const cacheInterval = (reqInterval ?? defaultInterval) as KlineInterval
 
+  // 周期切换（2026-10-29）：HH/LH/HL/LL 摆动标注必须按周期重算——切档前先作废
+  // 当前数据上的 swings（旧 K 线与视口保留，不整块 loading），新周期响应到达后
+  // 由 applyData 带入该周期自己的 swings
+  const handleIntervalChange = useCallback(
+    (v: string) => {
+      const cur = dataRef.current
+      if (cur && cur.interval !== v) {
+        applyData({ ...cur, swings: undefined }, 0, true)
+      }
+      setReqInterval(v)
+    },
+    [applyData],
+  )
+
   // 自动命中历史（2026-10-16；2026-10-27 收紧）：只在"没有单笔语境"的扫描模式
   // （关注页/搜索页/漏斗/挂单预览）显示该币**最近 24h、最多 5 条**命中标注——
   // 3 天/20 条会一屏糊满标注（用户反馈）。有单笔语境的三处（扫描结果行、
@@ -870,7 +884,7 @@ export default function KlineChart({
       if (cancelled || epoch !== epochRef.current) return
       noMoreRef.current = !!meta?.noMore
       if (cached.length) {
-        applyData({ symbol: sym, interval: iv, klines: cached })
+        applyData({ symbol: sym, interval: iv, klines: cached, swings: undefined })
         setServerInterval(iv)
         // 尾部仍新鲜（60s/10min 内）就不闪刷新提示
         setLoading(!isTailFresh(meta, iv))
@@ -1227,7 +1241,7 @@ export default function KlineChart({
         onUpdate={handleUpdate}
         updating={updating}
         interval={serverInterval}
-        onIntervalChange={(v) => setReqInterval(v)}
+        onIntervalChange={handleIntervalChange}
         intervalOptions={intervalOptions}
         onReachLeft={cacheOn ? handleReachLeft : undefined}
         prependCount={cacheOn ? prependCount : 0}
