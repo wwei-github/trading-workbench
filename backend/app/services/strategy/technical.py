@@ -1049,11 +1049,22 @@ STRUCTURE_GATE_PENALTY = -15
 # r2_mid（0.4~0.7）影子读数最高（非单调），故 r2_high/r2_mid 均不加分，只做单向折价。
 R2_LOW_MAX = 0.4
 R2_LOW_PENALTY = -5
+# 深回踩触点（2026-10-29，docs/23 追加）：回踩到中期/长期均线时，1h 方向票与滞后
+# 指标（SuperTrend）必然与候选相反、24 根窗口的线性度也必然被回踩腿打断——这些惩罚
+# 衡量的是「回撤形态本身」，不是质量缺陷。线上 14 天数据：ema144 候选 46 条、均分
+# 58.7（retest 90.7 / swing 80.9 / ema21 76.4），其中 80% 命中 risk_vote、80% 命中
+# range，近半数被 60 分门槛拦掉；已平仓 6 笔 avg_pnl ≈ 0，未见劣势。故对这些触点豁免
+# risk_vote 与 r2_low 两项（range 另按半额计，见下）。
+# ema21_4h ≈ 1h EMA84，比 ema55 更深，同样属深回踩；且 TOUCH_ORDER 中它排在 ema55
+# 之前，同一根同时触及两线时标注为 ema21_4h——不纳入会让豁免取决于命中顺序。
+# 字面量与 scan_filters.TOUCH_* 同源（本模块不反向 import，避免循环依赖）。
+DEEP_PULLBACK_REFS = ("ema55", "ema144", "ema21_4h")
 # 回踩箱体折价（2026-10-28）：最近 PULLBACK_BOX_BARS 根已收盘 1h 的箱体宽度
 # （最高−最低，/ATR14）低于 PULLBACK_BOX_ATR_MAX 且相邻 K 线实体平均重叠率
 # ≥PULLBACK_BOX_OVERLAP_MIN → 判为「窄幅上下震荡、实体相互重叠」的箱体，回踩
 # 确认 -15。动机：UAIUSDT 20 根 1h 箱体（2.91 ATR / 重叠 0.85）在震荡闸门只
-# 命中 ADX<18 一项，回踩路径仅 -8，质量分仍有 72；本项补「箱体几何」这一维。
+# 命中 ADX<18 一项，回踩路径当时仅 -8（2026-10-29 起减半为 -4），质量分仍有 72；
+# 本项补「箱体几何」这一维。
 # 仅回踩确认消费：突破类已由 range_score 硬拒，不重复计入。
 PULLBACK_BOX_BARS = 20
 PULLBACK_BOX_ATR_MAX = 3.0
@@ -1426,6 +1437,7 @@ def compute_quality_score(
     structure_gate: bool = True,
     range_penalty: bool = False,
     parts_out: Optional[dict] = None,
+    touch_ref: Optional[str] = None,
 ) -> int:
     """候选质量分（0-100）：方向一致性为主，修饰项只影响排序不改变方向。
 
@@ -1440,7 +1452,10 @@ def compute_quality_score(
     structure_gate: 1H 结构门结果（trigger 的 structure_gate 证据；仅 ema21 触点
     可能为 False，其余触点豁免恒 True）。2026-10-15 拍板：结构门由硬门降级为
     质量分重罚（STRUCTURE_GATE_PENALTY）——不过门照常出信号，仅排序落后
-    range_penalty: range_score≥1 但触发类型为回踩确认（scanner 降权不拒），-8
+    range_penalty: range_score≥1 但触发类型为回踩确认（scanner 降权不拒），-4
+        （2026-10-29 由 -8 减半：避免与 scanner 的降权重复计罚）
+    touch_ref: 回踩触点类型（ema21/ema55/ema144…）。ema55/ema144 属深回踩，
+        豁免 risk_vote 与 r2_low 两项「形态性」惩罚，见 DEEP_PULLBACK_REFS
     parts_out（2026-10-21，T0-3）：传入 dict 时填充分项贡献（base/htf/adx/volume/
     shadow/rsi/obv/risk_vote/boll/zone/stabilize/structure_gate/range/r2_low/box；
     另有 box_atr/box_overlap 为箱体几何观测键，不计分），供提示词与复盘展示
@@ -1556,6 +1571,10 @@ def compute_quality_score(
     for _short, _pen in RISK_VOTE_PENALTY.items():
         _r = by_short.get(_short)
         if _r and int(_r.get("dir") or 0) and int(_r["dir"]) != direction:
+            if touch_ref in DEEP_PULLBACK_REFS:
+                # 深回踩到中期/长期均线时，趋势跟踪指标（SuperTrend）必然滞后逆向，
+                # 这不是风险证据（2026-10-29，见 DEEP_PULLBACK_REFS 注释）
+                continue
             _add("risk_vote", _pen)
 
     boll = by_short.get("布林带")
@@ -1588,10 +1607,12 @@ def compute_quality_score(
     if not structure_gate:
         _add("structure_gate", STRUCTURE_GATE_PENALTY)
 
-    # 震荡闸门降权（2026-10-21）：回踩命中 range_score 不再否决，改质量分 -8；
-    # 突破类仍由 scanner 硬拒，不会带 range_penalty 走到这里
+    # 震荡闸门降权（2026-10-21）：回踩命中 range_score 不再否决，改质量分扣分；
+    # 突破类仍由 scanner 硬拒，不会带 range_penalty 走到这里。
+    # 2026-10-29 减半为 -4：scanner 已经因 range_score 判「降权放行」，质量分再扣
+    # 满额属于同一事实的二次计罚（ema144 候选 80% 命中，叠加后几乎全被门槛拦掉）
     if range_penalty:
-        _add("range", -8)
+        _add("range", -4)
 
     # 趋势质量折价（CARD-10 升格，2026-10-27 开庭）：24 根已收盘 1h 收盘价
     # 最小二乘 R²<0.4 → 震荡段折价 -5（排序层，不进闸门；与影子卡同引擎）。
@@ -1603,7 +1624,9 @@ def compute_quality_score(
             _closes = np.array([float(k[4]) for k in _closed], dtype=float)
             _slope, _icpt, _r2 = linear_regression(
                 np.arange(len(_closes)), _closes)
-            if float(_r2) < R2_LOW_MAX:
+            if float(_r2) < R2_LOW_MAX and touch_ref not in DEEP_PULLBACK_REFS:
+                # 深回踩的下跌腿本身会把 24 根窗口线性度拉低（几何必然），
+                # ema55/ema144 不按「震荡段」折价（2026-10-29）
                 _add("r2_low", R2_LOW_PENALTY)
         except (ValueError, TypeError, IndexError, ZeroDivisionError):
             pass  # 折价项异常只降级该排序项，不影响基础分

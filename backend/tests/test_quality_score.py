@@ -435,3 +435,66 @@ def test_pullback_box_rejects_inverted_ohlc():
     bad.append([20, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0])
     assert pullback_box_evidence(bad) is None
 
+
+# ── 深回踩豁免（2026-10-29，docs/23 追加）────────────────────────────────────
+
+
+def _risk_votes(risk_dir: int = -1) -> dict:
+    """方向票净差 +3 外挂一张 SuperTrend 逆向票（辅助票，仅逆向扣分）"""
+    v = _votes()
+    v["results"] = [["MACD", {"dir": 1}], ["SuperTrend", {"dir": risk_dir}]]
+    return v
+
+
+def test_range_penalty_halved_to_4():
+    """回踩路径的震荡闸门降权由 -8 减半为 -4（避免与 scanner 降权重复计罚）"""
+    parts: dict = {}
+    score = compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                  klines=_klines(), range_penalty=True,
+                                  parts_out=parts)
+    assert score == 76
+    assert parts["range"] == -4
+
+
+def test_deep_pullback_exempts_risk_vote():
+    """深回踩（ema55/ema144/ema21_4h）豁免辅助票逆向扣分；ema21/retest 照常 -6"""
+    votes = _risk_votes()
+    assert compute_quality_score(1, votes, "trigger_candlestick",
+                                 klines=_klines(), touch_ref="ema21") == 74
+    assert compute_quality_score(1, votes, "trigger_candlestick",
+                                 klines=_klines(), touch_ref="retest") == 74
+    for ref in ("ema55", "ema144", "ema21_4h"):
+        parts: dict = {}
+        score = compute_quality_score(1, votes, "trigger_candlestick",
+                                      klines=_klines(), touch_ref=ref,
+                                      parts_out=parts)
+        assert score == 80
+        assert "risk_vote" not in parts
+
+
+def test_deep_pullback_exempts_r2_low():
+    """深回踩豁免 R² 弱趋势折价（下跌腿几何必然拉低线性度）；ema21 照常 -5"""
+    closes = [100.0, 110.0] * 12  # 锯齿 → R²≈0
+    assert compute_quality_score(1, _votes(), "trigger_candlestick",
+                                 klines=_r2_klines(closes)) == 75
+    assert compute_quality_score(1, _votes(), "trigger_candlestick",
+                                 klines=_r2_klines(closes),
+                                 touch_ref="ema21") == 75
+    parts: dict = {}
+    assert compute_quality_score(1, _votes(), "trigger_candlestick",
+                                 klines=_r2_klines(closes), touch_ref="ema144",
+                                 parts_out=parts) == 80
+    assert "r2_low" not in parts
+
+
+def test_deep_pullback_keeps_other_penalties():
+    """豁免仅限形态性两项：震荡闸门降权仍按半额计 → 80 - 4 = 76"""
+    closes = [100.0, 110.0] * 12
+    parts: dict = {}
+    score = compute_quality_score(1, _risk_votes(), "trigger_pullback_confirm",
+                                  klines=_r2_klines(closes), touch_ref="ema144",
+                                  range_penalty=True, parts_out=parts)
+    assert score == 76
+    assert parts["range"] == -4
+    assert "risk_vote" not in parts and "r2_low" not in parts
+

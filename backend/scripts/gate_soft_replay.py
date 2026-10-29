@@ -280,6 +280,9 @@ def _harness_pass(symbol: str, kl_all: list, htf_all: list, flt,
 
         rs, _ = eg.range_score(
             kl, gate_ev=htf_res.get("evidence") if htf_res else None)
+        # 注：本脚本对 range_score 仍按旧口径「一律硬拒」（含回踩），线上 2026-10-21
+        # 起回踩已改降权不拒——故此处 compute_quality_score 恒不传 range_penalty。
+        # 两端口径差异属独立议题（会改变历史基线可比性），本次不在此处对齐。
         if rs >= eg.RANGE_SCORE_REJECT:
             if pend:
                 pend = None
@@ -322,7 +325,10 @@ def _harness_pass(symbol: str, kl_all: list, htf_all: list, flt,
             stabilize=trigd.get("stabilize"), pattern=trigd.get("pattern"),
             golden_combo=bool(trigd.get("golden_combo")),
             swing_order=flt.swing_order,
-            structure_gate=bool(trigd.get("structure_gate", True)))
+            structure_gate=bool(trigd.get("structure_gate", True)),
+            # 触点类型（2026-10-29，docs/23 §8）：不传则深回踩（ema55/ema144/
+            # ema21_4h）拿不到质量分豁免，回放分数系统性低于线上
+            touch_ref=trigd.get("touch_ref"))
         # 突破类同属生产候选（占 AI 配额），但近锚止损模型只对回踩确认成立——
         # 故全类型入库（配额池真实性），仅回踩确认计收益（in_scope）
         in_scope = trigd["type"] in CONFIRM_TYPES

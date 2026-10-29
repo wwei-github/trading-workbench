@@ -610,7 +610,7 @@ def detect_indicator_candidate(
                     reject_out["detail"] = detail
             return None, pending_op
 
-    # 震荡闸门分流：突破硬拒；回踩降权不拒（质量分 -8，见 compute_quality_score）。
+    # 震荡闸门分流：突破硬拒；回踩降权不拒（质量分 -4，见 compute_quality_score）。
     # 回踩三条路径都必须放行：① 当根/次根金K确认（trig=PULLBACK_CONFIRM）；
     # ② 触碰当根尚无金K、正要进待确认池（trig=None + pending upsert）——
     #    若在 ② 硬拒，两段式回踩根本进不了池，① 的降权永远不可达；
@@ -689,6 +689,9 @@ def detect_indicator_candidate(
                 direction, votes, PULLBACK_CONFIRM, klines=klines, stabilize=_stab,
                 structure_gate=bool(pending_op.get("structure_gate", True)),
                 range_penalty=range_penalty,
+                # 触点类型透传（2026-10-29，docs/23 追加）：ema55/ema144 深回踩
+                # 在质量分侧豁免形态性惩罚（risk_vote / r2_low），不传则豁免永不生效
+                touch_ref=pending_op.get("touch_ref"),
             )
             pending_op["votes_json"] = _votes_snapshot(votes, stabilize=_stab)
         elif reject_out is not None:
@@ -725,7 +728,10 @@ def detect_indicator_candidate(
                                     swing_order=flt.swing_order,
                                     structure_gate=bool(trig.get("structure_gate", True)),
                                     range_penalty=range_penalty,
-                                    parts_out=q_parts)
+                                    parts_out=q_parts,
+                                    # 触点类型（2026-10-29，docs/23 追加）：次根确认
+                                    # 时为 pending 的 Stage-1 触点，当根确认为本次命中触点
+                                    touch_ref=trig.get("touch_ref"))
     # 反向腿深度观测（2026-10-28，docs/16 §23）：腿门有门槛（min_bars/min_atr），
     # 但"过门"不区分"深回踩"与"贴位几乎不动的浅回踩"（TAUSDT 0.94ATR 即过线）。
     # 把实际深度写进分项，成交后即可按 leg_atr 分档回看哪一档该被拒。

@@ -310,3 +310,63 @@ curl -X POST localhost:8000/api/observations \
 | 腿门开 | 49 | +0.147 | 46.9% |
 | 腿门关 | 75 | +0.116 | 45.3% |
 | 关后新增 26 个 | — | +0.058 | 42.3% |
+
+---
+
+## 8. 追加：深回踩的质量分口径（2026-10-29 实施）
+
+属于 T11「同源惩罚去重」的前置小步——先处理重复计罚与形态性误伤，不动 `box` 优先级。
+
+### 8.1 问题
+
+线上 14 天触点分数分布（`quality_parts` 拆解）：
+
+| 触点 | 候选 | 均分 | 主要扣分项 |
+|---|---|---|---|
+| retest | — | 90.7 | — |
+| swing | — | 80.9 | — |
+| ema21 | — | 76.4 | — |
+| ema144 | 46 | 58.7 | 80% 命中 `risk_vote`（−6）、80% 命中 `range`（旧 −8） |
+
+ema144 候选近半数被 `quality_floor=60` 拦掉，但已平仓 6 笔 `avg_pnl ≈ 0`（未见劣势）。
+根因是两项惩罚衡量的是**回撤形态本身**，而非质量缺陷：
+
+- `risk_vote`：深回踩到中期/长期均线时，1h 方向票与 SuperTrend 等趋势跟踪指标**必然滞后逆向**；
+- `r2_low`：回踩腿本身会打断 24 根窗口的线性度，R² 必然偏低；
+- `range`：scanner 已按 `range_score` 判「降权放行」，质量分再扣满额属同一事实二次计罚。
+
+### 8.2 改法
+
+| 位置 | 改法 |
+|---|---|
+| `technical.py` `DEEP_PULLBACK_REFS = ("ema55", "ema144", "ema21_4h")` | 深回踩触点常量，注释内联数据依据。`ema21_4h ≈ 1h EMA84` 比 ema55 更深，且 `TOUCH_ORDER` 中排在 ema55 之前——不纳入会让豁免取决于命中顺序 |
+| `technical.py` `range` 项 | −8 → −4（半额；仅回踩路径可达，突破类仍由 scanner 硬拒） |
+| `technical.py` `risk_vote` 项 | `touch_ref ∈ DEEP_PULLBACK_REFS` 时跳过 |
+| `technical.py` `r2_low` 项 | 同上，深回踩不按「震荡段」折价 |
+| `technical.py` 签名 | 新增 `touch_ref: Optional[str] = None`（默认 None，旧调用方零改动） |
+| `scanner.py` 两处调用 | 当根/次根确认传 `trig["touch_ref"]`；pending upsert 传 `pending_op["touch_ref"]` |
+| `config.py` `RULE_VERSION` | `v2026-10-27` → `v2026-10-29`：质量分决定谁能过 `quality_floor`，候选池与分数分布均变，前向统计不可混算 |
+| `scripts/gate_soft_replay.py` | 补 `touch_ref` 透传（此前不传，回放分数系统性低于线上）；`range_score` 旧口径硬拒未动 |
+
+豁免只覆盖两项形态性惩罚，其余维度（`structure_gate`、`box`、`htf`、`adx` 等）照常计分。
+
+### 8.3 验收
+
+- `tests/test_quality_score.py` 新增 4 例：`range` 半额 = −4、深回踩豁免 `risk_vote`（三触点 ema55/ema144/ema21_4h 全覆）、深回踩豁免 `r2_low`、其余惩罚不受影响；
+- `tests/test_scan_funnel.py` 两例回踩降权断言的差值 8 → 4；
+- 后端全量 `pytest` **1388 passed**（改动前基线）。
+
+### 8.4 版本切点
+
+`RULE_VERSION` 由 `v2026-10-27` 升至 **`v2026-10-29`**。质量分直接决定谁能过 `quality_floor`，候选池与分数分布均变——按 docs/14 §六.1「跨版本不混算」，前向统计窗口自本版本起算；`shadow` 卡的 `since_rule_version` 未改（其门槛 `v2026-10-13-8` 仍低于新版本，过滤不受影响，但判定样本已换成新口径候选池）。
+
+**CARD-09（REC70 前向对照）例外**：该卡按日期过滤（`REC70_START=2026-10-11`，锁定期至 2026-11-08）而非 `rule_version`，本次不改。影响限于候选选择——分桶锚点 `ai_snapshot.recommendation` 未变，新增样本仅限原被 `quality_floor` 拦掉的 ema55/ema144/ema21_4h 候选（14 天 ema144 候选 46 条）。重置会把判定推迟到 11-26 并丢弃 18 天样本，故**不重置**；复查条件：若新放行候选占该卡开仓样本 >10%，再评估重置。
+
+### 8.5 观察与回退
+
+登记观察项（due=+7d，自 v2026-10-29 起算）：ema55/ema144/ema21_4h 候选的通过率、分档 PnL 与均分变化；若「新放行」样本 avgR 显著低于同期 PASS 基准（+0.164 口径），回退方式为：
+
+- `DEEP_PULLBACK_REFS` 置空 → 两项豁免失效（`range` 半额仍保留）；
+- `range` 项改回 −8 → 恢复满额计罚。
+
+两者独立、均单行可回滚；任一回退都需再 bump `RULE_VERSION`，否则新旧口径会在同一版本组内混算。

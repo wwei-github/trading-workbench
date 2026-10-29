@@ -321,7 +321,8 @@ def test_reject_range_score():
 
 def test_range_score_pullback_confirm_not_rejected():
     """震荡闸门命中 + 回踩确认触发 → 不硬拒（深回撤本身会让 1h 三线收敛），
-    候选照常产生、reject_out 不写，仅质量分降权 -8（2026-10-21 回踩降权不拒）"""
+    候选照常产生、reject_out 不写，仅质量分降权 -4（2026-10-21 降权不拒；
+    2026-10-29 由 -8 减半，避免与 scanner 降权重复计罚）"""
     from app.services.strategy.trigger import PULLBACK_CONFIRM
 
     kl = [[1_700_000_000_000 + i * 3_600_000, 100.0, 101.0, 99.0, 100.0, 10.0, 10.0]
@@ -333,9 +334,9 @@ def test_range_score_pullback_confirm_not_rejected():
     rv: dict = {}
     cand, _ = _detect(rv, kl, trigger=(trig, None), flt=flt, rs=1)
     assert cand is not None and rv == {}
-    # 同一触发下 rs=0 为对照：质量分应高出 8（range_penalty 重罚）
+    # 同一触发下 rs=0 为对照：质量分应高出 4（range_penalty 半额降权）
     cand_ok, _ = _detect({}, kl, trigger=(trig, None), flt=flt, rs=0)
-    assert cand_ok["quality_score"] - cand["quality_score"] == 8
+    assert cand_ok["quality_score"] - cand["quality_score"] == 4
 
 
 def test_range_score_pending_upsert_not_rejected():
@@ -345,9 +346,9 @@ def test_range_score_pending_upsert_not_rejected():
     rv: dict = {}
     cand, op = _detect(rv, rs=1, trigger=(None, {"op": "upsert", "direction": 1}))
     assert cand is None and op["op"] == "upsert" and rv == {}
-    # 对照：同一路径 rs=0 质量分高出 8（range_penalty 重罚）
+    # 对照：同一路径 rs=0 质量分高出 4（range_penalty 半额降权）
     _, op_ok = _detect({}, rs=0, trigger=(None, {"op": "upsert", "direction": 1}))
-    assert op_ok["quality_score"] - op["quality_score"] == 8
+    assert op_ok["quality_score"] - op["quality_score"] == 4
 
 
 def test_range_score_waiting_pending_survives():

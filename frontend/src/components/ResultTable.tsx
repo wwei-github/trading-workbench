@@ -64,7 +64,7 @@ const QUALITY_PART_LABELS: [string, string][] = [
   ["box", "箱体"],
 ];
 
-// 分项拆解："基础 80 / 4h +10 / 震荡 -8 / 箱体 -15"（无分项返回 null）。
+// 分项拆解："基础 80 / 4h +10 / 震荡 -4 / 箱体 -15"（无分项返回 null）。
 // 导出供漏斗 Tab 复用（质量分下限拒因明细，2026-10-28），标签表只维护这一份。
 export function qualityPartsSummary(parts?: Record<string, number> | null): string | null {
   if (!parts) return null;
