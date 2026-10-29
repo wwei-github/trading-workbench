@@ -327,6 +327,7 @@ def detect_indicator_candidate(
     retest: Optional[dict] = None,
     event_out: Optional[dict] = None,
     reject_out: Optional[dict] = None,
+    htf_out: Optional[dict] = None,
     now: Optional[datetime] = None,
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """指标驱动单币检测（Scanner 与 watchlist.refresh 共用同一套逻辑与阈值）。
@@ -359,6 +360,10 @@ def detect_indicator_candidate(
       其余关卡不写。gate_4h / htf_state_lock 另附 "htf"（4h 证据快照，
       2026-10-21 第 2 步：state / reject_reason / 斜率·缠绕·ADX 等），
       供漏斗聚合与被拦信号影子落库。
+    htf_out: 可选出参 dict（与 event_out 同旁路模式，2026-10-29）——通过
+      gate_4h 与 htf_state_lock 两关时写入 {"state", "state_label"}，供漏斗
+      抽屉「通过」按 4h 放行状态（排列 / 恢复初期）分组；数据降级
+      （htf_res=None）不写，前端归入「未记录」。
     now: 本轮数据基准时刻（生产传 scan_now）；仅用于 4h 末根已收盘竞态兜底
       （整点取数时新 4h 根可能尚未出现、末根实为刚收盘根）。None 时不做该
       兜底——测试/回放的历史切片保持「末根=未收盘根」语义。
@@ -457,6 +462,12 @@ def detect_indicator_candidate(
                 )
                 reject_out["htf"] = _htf_snapshot(htf_res)
             return None, ({"op": "expire", "reason": "htf_state_lock"} if pending else None)
+        # 4h 状态机放行（2026-10-29）：闸门与状态锁都通过的币种记下状态名，
+        # 供漏斗抽屉「通过」按放行状态分组（排列 / 恢复初期各一组）；后续关卡
+        # （票数/触发/质量分）是否拦掉不影响这里——它记的是 4h 这一关的口径。
+        if htf_out is not None and htf_res is not None:
+            htf_out["state"] = htf_res.get("state")
+            htf_out["state_label"] = htf_res.get("state_label")
     else:
         # 4h K线为空（数据源返回空/不足）：与拉取失败同口径，计入数据降级
         htf_degraded = True
@@ -851,6 +862,9 @@ class Scanner:
             # 4h 前置门证据（2026-10-21 第 2 步）：symbol → {stage, state, ...}，
             # 扫描结束聚合成状态分布/死因分布进 funnel_json
             htf_evidence: dict[str, dict] = {}
+            # 4h 放行状态（2026-10-29）：symbol → 状态名（多头排列/空头恢复初期…），
+            # 只收通过 gate_4h + htf_state_lock 的币，供抽屉「通过」按状态分组
+            htf_pass_states: dict[str, str] = {}
             # 被 4h 前置门拦下的候选快照（第 2 步）：仅定时扫描落 shadow_marks，
             # 供第 3 步反事实回放评估「仅放行 aligned」是否划算
             blocked_shadows: dict[str, dict] = {}
@@ -964,14 +978,18 @@ class Scanner:
                     klines = md.screen_klines(klines, kline_interval, scan_now)
                     ev_out: dict = {}
                     rv_out: dict = {}   # 漏斗旁路：单币拒绝关卡（cand=None 时读）
+                    htf_out: dict = {}  # 漏斗旁路：4h 放行状态（2026-10-29）
                     cand, pop = detect_indicator_candidate(
                         self.pool, symbol, klines, pending=pendings.get(symbol),
                         flt=flt, retest=retests.get(symbol), event_out=ev_out,
-                        reject_out=rv_out, now=scan_now,
+                        reject_out=rv_out, htf_out=htf_out, now=scan_now,
                     )
                     # 破轨事件动作（T1 触发记录 / 回测触点确认消费）
                     if ev_out.get("op"):
                         event_ops[symbol] = ev_out
+                    # 4h 状态机放行币种 → 状态名（抽屉「通过」按状态分组）
+                    if htf_out.get("state_label"):
+                        htf_pass_states[symbol] = htf_out["state_label"]
                     # 4h 数据降级标记（B2）：4h K线缺失/计算异常/数据类拒因
                     if rv_out.get("degraded"):
                         htf_degraded_symbols.add(symbol)
@@ -1202,6 +1220,10 @@ class Scanner:
                 # 键，只保留计数。
                 "universe_symbols": universe_symbols,
                 "error_symbols": sorted(error_symbols),
+                # 4h 放行状态（2026-10-29）：symbol → 状态名。只收通过 gate_4h +
+                # htf_state_lock 的币（≈进管线币的放行子集），供抽屉「通过」按
+                # 多头/空头排列、恢复初期分组；旧轮次无此键 → 前端显示「未记录」
+                "htf_pass_states": htf_pass_states,
                 "details": funnel_details,     # symbol → 判定说明（votes 票明细/no_trigger 未触发原因）
                 # 观测补键（2026-10-28，docs/19 §4.3）：质量分下限之前的候选快照
                 # （被砍者不落 scan_results，没有它无法复盘差多少分）、重复抑制数、

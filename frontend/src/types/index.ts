@@ -418,6 +418,9 @@ export interface FunnelData {
   universe_symbols?: string[];
   error_symbols?: string[];
   details?: Record<string, string>; // symbol → 判定说明文本（votes 票明细 / no_trigger 未触发原因，2026-10-13；分号分隔）
+  // 4h 放行状态（2026-10-29）：symbol → 状态名（多头排列/空头恢复初期…）。
+  // 只收通过 gate_4h + htf_state_lock 的币，供抽屉「通过」按状态分组；旧轮次无此键
+  htf_pass_states?: Record<string, string>;
   // 4h 前置门证据（2026-10-21 第 2 步）：symbol → 4h 快照；gate_4h 的否定票
   // （reject_reason）与仓位证据（slope/wraps/adx）在这里，供抽屉按票分组
   htf_evidence?: Record<string, {

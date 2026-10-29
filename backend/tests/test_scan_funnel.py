@@ -78,14 +78,15 @@ class FakePool:
 
 def _detect(reject_out, klines=None, *, votes=_PASS_VOTES, gate=("long", {}), htf_nonempty=True,
             rs=0, trigger=(None, None), flt=None, pending=None, real_trigger=False,
-            htf_state=None, htf_dir=None):
+            htf_state=None, htf_dir=None, htf_out=None):
     """打桩装配一次 detect：各桩默认全放行，命中点由参数控制。
     real_trigger=True 时不打桩 detect_trigger（跑真实触发链，测 no_trigger 明细）；
     gate 为 4h 闸门方向（("long"|"short", {...})，None=闸门否决）；htf_nonempty=False
     表示 4h 空（gate_dir=None → 2026-10-21 起 fail-closed gate_4h），仅专门测 4h
     方向缺失的用例使用；htf_state 非 None 时合并入口 htf_context 桩返回该 4h 状态机态
     （4h 状态机前置门用：非 aligned_*〔2026-10-20 收紧〕一票否决全部 1h 候选；
-    htf_dir 为该态方向，供 STATE_LOCK_CONTRA 逆势锁用，缺省 None=0 不判逆势）"""
+    htf_dir 为该态方向，供 STATE_LOCK_CONTRA 逆势锁用，缺省 None=0 不判逆势）；
+    htf_out 透传 4h 放行状态旁路（2026-10-29，抽屉「通过」按状态分组用）"""
     import app.services.scanner as sm
 
     orig = {
@@ -106,7 +107,7 @@ def _detect(reject_out, klines=None, *, votes=_PASS_VOTES, gate=("long", {}), ht
     try:
         return detect_indicator_candidate(
             FakePool(htf_nonempty), "XUSDT", klines if klines is not None else [],
-            flt=flt, pending=pending, reject_out=reject_out)
+            flt=flt, pending=pending, reject_out=reject_out, htf_out=htf_out)
     finally:
         for k, v in orig.items():
             setattr(sm, k, v)
@@ -580,6 +581,19 @@ def test_htf_contra_lock_allows_same_side():
     rv: dict = {}
     cand, op = _detect(rv, trigger=(None, None), htf_state="aligned_bull", htf_dir=1)
     assert cand is None and rv["stage"] == "no_trigger"
+
+
+def test_htf_pass_state_recorded_only_when_passing():
+    """4h 放行态落 htf_out（2026-10-29）：漏斗抽屉「通过」按状态分组的数据源。
+    禁开态（前置门/逆势锁拦下）不写——那些币落在「挂掉」侧，不需要放行状态。"""
+    ho: dict = {}
+    _detect({}, htf_state="aligned_bull", htf_dir=1, htf_out=ho)
+    assert ho.get("state") == "aligned_bull"
+    assert ho.get("state_label") == "多头排列"
+
+    ho_blocked: dict = {}
+    _detect({}, htf_state="turn_bull", htf_dir=1, htf_out=ho_blocked)
+    assert ho_blocked == {}
 
 
 def test_htf_contra_lock_expires_active_pending():

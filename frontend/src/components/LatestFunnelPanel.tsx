@@ -92,6 +92,16 @@ const HTF_CHAINS: { lane: string; nodes: { key: string; label: string; pass: boo
   },
 ]
 
+/** 「通过」按 4h 放行状态分组的展示顺序（与后端 STATE_ALIGNED 同集）：
+ *  多头侧在前、空头侧在后，恢复初期跟排列后面；未记录（旧轮次/数据降级）垫底。 */
+const HTF_PASS_ORDER = ['多头排列', '多头恢复初期', '空头排列', '空头恢复初期']
+const HTF_PASS_UNKNOWN = '未记录'
+const passRank = (label: string): number => {
+  const i = HTF_PASS_ORDER.indexOf(label)
+  if (i >= 0) return i
+  return label === HTF_PASS_UNKNOWN ? HTF_PASS_ORDER.length + 1 : HTF_PASS_ORDER.length + 0.5
+}
+
 /** 状态链路：绿=放行（仅排列）· 灰=禁开 · 红框=本轮有币卡在这一态 */
 function HtfStateChain({ activeLabels }: { activeLabels: Set<string> }) {
   return (
@@ -406,6 +416,22 @@ export default function LatestFunnelPanel() {
     return (drawerPassers ?? []).filter((s) => !kw || s.includes(kw))
   }, [drawerPassers, search])
 
+  /** 4h 状态禁开抽屉的「通过」：按 4h 放行状态分组（2026-10-29）。
+   *  状态名来自 funnel_json.htf_pass_states（后端扫描时落），旧轮次无该键 →
+   *  全部归「未记录」，仍平铺展示、不误报。 */
+  const passerStateGroups = useMemo(() => {
+    const m = new Map<string, string[]>()
+    passerRows.forEach((sym) => {
+      const label = detail?.htf_pass_states?.[sym] || HTF_PASS_UNKNOWN
+      const arr = m.get(label)
+      if (arr) arr.push(sym)
+      else m.set(label, [sym])
+    })
+    return [...m.entries()]
+      .map(([label, symbols]) => ({ label, symbols }))
+      .sort((a, b) => passRank(a.label) - passRank(b.label))
+  }, [passerRows, detail])
+
   // 数据驱动渲染（2026-10-28 修复）：本面板数据来自 /scans/funnels（近 24 轮全量），
   // 不依赖 currentScanId。刷新后 currentScanId 为 null（仅内存态），且最新一轮若
   // 0 命中，scanStore 推不出 id——旧守卫会误报「暂无扫描记录」把已有轮次全隐藏。
@@ -420,6 +446,8 @@ export default function LatestFunnelPanel() {
   const isHistory = activeIdx !== null
   /** 4h 闸门抽屉：按否定票（htf_evidence.reject_reason）分组 */
   const vetoDrawer = !!drawerGroup?.stages.includes('gate_4h')
+  /** 4h 状态禁开抽屉：「通过」按 4h 放行状态（排列 / 恢复初期）分组 */
+  const passGrouped = drawerStageKey === 'htf_state_lock'
   /** 路径最后一行的"通过"数 = 候选 + 本轮进池 + 池内等待 + 异常 */
   const lastOut = pipe.rows.length ? pipe.rows[pipe.rows.length - 1].out : activeSnap.candidates
 
@@ -847,7 +875,9 @@ export default function LatestFunnelPanel() {
           fontSize: 12, color: '#8c8c8c', marginBottom: 10, lineHeight: 1.6,
         }}>
           {drawerTab === 'pass' && drawerPassers
-            ? '这些币通过了该关（未被本关或更早关卡拒掉，也不含扫描异常）；点币种名看 K 线。'
+            ? passGrouped
+              ? '这些币通过了该关（未被本关或更早关卡拒掉，也不含扫描异常），按 4h 放行状态分组；"未记录"为旧轮次或缺 4h 状态的币。点币种名看 K 线。'
+              : '这些币通过了该关（未被本关或更早关卡拒掉，也不含扫描异常）；点币种名看 K 线。'
             : vetoDrawer
               ? '每组是一种 4h 否定票（走平 / 缠绕 / ADX / 歧义 / 数据），"×N" 为该票否决的币数；悬停币名看该币证据，点击看 K 线。'
               : '每一条是一个判定条件，"×N" 是该条件卡住的币数；点币种名看 K 线。'}
@@ -863,17 +893,44 @@ export default function LatestFunnelPanel() {
         />
         {drawerTab === 'pass' && drawerPassers ? (
           passerRows.length ? (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 14px' }}>
-              {passerRows.map((sym) => (
-                <a
-                  key={sym}
-                  onClick={() => setKlineSymbol(sym)}
-                  style={{ fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace' }}
-                >
-                  {sym.replace('USDT', '')}
-                </a>
-              ))}
-            </div>
+            passGrouped ? (
+              passerStateGroups.map((sg) => (
+                <div key={sg.label} style={{
+                  border: '1px solid #f0f0f0', borderRadius: 10, padding: '10px 12px',
+                  marginBottom: 10, background: '#fcfcfd',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                    <Text strong style={{ fontSize: 12.5 }}>{sg.label}</Text>
+                    <Text type="secondary" style={{ fontSize: 11.5 }}>×{sg.symbols.length}</Text>
+                  </div>
+                  <div style={{
+                    display: 'flex', flexWrap: 'wrap', gap: '8px 14px', marginTop: 8,
+                  }}>
+                    {sg.symbols.map((sym) => (
+                      <a
+                        key={sym}
+                        onClick={() => setKlineSymbol(sym)}
+                        style={{ fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace' }}
+                      >
+                        {sym.replace('USDT', '')}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 14px' }}>
+                {passerRows.map((sym) => (
+                  <a
+                    key={sym}
+                    onClick={() => setKlineSymbol(sym)}
+                    style={{ fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace' }}
+                  >
+                    {sym.replace('USDT', '')}
+                  </a>
+                ))}
+              </div>
+            )
           ) : <Empty description="无匹配币种" style={{ marginTop: 40 }} />
         ) : !reasonGroups.length ? (
           <Empty
