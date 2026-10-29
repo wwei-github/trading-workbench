@@ -788,6 +788,7 @@ class Scanner:
         status = "failed"
         hit_count = 0
         error_count = 0
+        error_symbols: list[str] = []
         coin_count = 0
         ai_skip_note: Optional[str] = None
         funnel: Optional[dict] = None   # 筛选漏斗（正常完成才组装落库）
@@ -832,6 +833,10 @@ class Scanner:
             symbols_data = self.pool.get_usdt_swap_symbols_with_volume()
 
             coin_count = len(symbols_data)
+            # 通过者反推（2026-10-29）：只落全量币池符号（≈500 个字符串），前端按
+            # 「币池 − 本关及之前被拒 − 异常」还原每关通过名单；逐关存通过集合会把
+            # funnel_json 撑大一个量级，且与 rejects 重复。
+            universe_symbols = sorted(s["symbol"] for s in symbols_data)
             logger.info("共 %d 个合约交易对待扫描（按24h成交额降序）", len(symbols_data))
 
             # 筛选漏斗明细（2026-10-11）：symbol → 卡住的关卡代码。预过滤 5 关 +
@@ -1052,6 +1057,7 @@ class Scanner:
                     symbol, signals, is_error = future.result()
                     if is_error:
                         error_count += 1
+                        error_symbols.append(symbol)
                     for sig in signals:
                         sig["volume_24h"] = volume_map.get(symbol, 0)
                         hits.append({"symbol": symbol, **sig})
@@ -1191,6 +1197,11 @@ class Scanner:
                 "combo_confirm": sum(1 for h in new_hits if h.get("golden_combo")),
                 "stages": stages,              # 关卡代码 → 被拒数
                 "rejects": funnel_rejects,     # symbol → 关卡代码（全量明细）
+                # 通过者反推（2026-10-29）：全量币池符号 + 异常币。前端按关卡序
+                # 「universe − 前序及本关被拒 − error」得到该关通过名单；旧轮次无这两个
+                # 键，只保留计数。
+                "universe_symbols": universe_symbols,
+                "error_symbols": sorted(error_symbols),
                 "details": funnel_details,     # symbol → 判定说明（votes 票明细/no_trigger 未触发原因）
                 # 观测补键（2026-10-28，docs/19 §4.3）：质量分下限之前的候选快照
                 # （被砍者不落 scan_results，没有它无法复盘差多少分）、重复抑制数、

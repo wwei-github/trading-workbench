@@ -120,6 +120,9 @@ export default function LatestFunnelPanel() {
   const [compact, setCompact] = useState(false)
   /** 路径节点悬停：只亮本行背景，不置灰其它内容（E 方案交互约定） */
   const [hoverStage, setHoverStage] = useState<string | null>(null)
+  /** 单关卡抽屉的「通过者」名单（null = 分组抽屉/旧轮次无币池清单） */
+  const [drawerPassers, setDrawerPassers] = useState<string[] | null>(null)
+  const [drawerTab, setDrawerTab] = useState<'drop' | 'pass'>('drop')
 
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const prevScanning = useRef(false)
@@ -247,6 +250,12 @@ export default function LatestFunnelPanel() {
       .sort((a, b) => b.coins.length - a.coins.length)
   }, [drawerRows, search])
 
+  /** 抽屉-通过者：按搜索词过滤 */
+  const passerRows = useMemo(() => {
+    const kw = search.trim().toUpperCase()
+    return (drawerPassers ?? []).filter((s) => !kw || s.includes(kw))
+  }, [drawerPassers, search])
+
   // 数据驱动渲染（2026-10-28 修复）：本面板数据来自 /scans/funnels（近 24 轮全量），
   // 不依赖 currentScanId。刷新后 currentScanId 为 null（仅内存态），且最新一轮若
   // 0 命中，scanStore 推不出 id——旧守卫会误报「暂无扫描记录」把已有轮次全隐藏。
@@ -259,6 +268,8 @@ export default function LatestFunnelPanel() {
   const head = groups[0]
   const second = groups[1]
   const isHistory = activeIdx !== null
+  /** 路径最后一行的"通过"数 = 候选 + 本轮进池 + 池内等待 + 异常 */
+  const lastOut = pipe.rows.length ? pipe.rows[pipe.rows.length - 1].out : activeSnap.candidates
 
   const openGroup = (g: GroupRow) => {
     if (isHistory) {
@@ -270,7 +281,23 @@ export default function LatestFunnelPanel() {
       return
     }
     setSearch('')
+    setDrawerPassers(null)
+    setDrawerTab('drop')
     setDrawerGroup(g)
+  }
+
+  /** 某关通过者 = 币池 − 本关及之前被拒 − 扫描异常（需要该轮落了 universe_symbols） */
+  const passersOf = (k: string): string[] | null => {
+    const uni = detail?.universe_symbols
+    if (!uni?.length) return null
+    const idx = PIPE_STAGES.indexOf(k)
+    if (idx < 0) return null
+    const miss = new Set(detail?.error_symbols ?? [])
+    Object.entries(detail?.rejects ?? {}).forEach(([sym, st]) => {
+      const si = PIPE_STAGES.indexOf(st)
+      if (si >= 0 && si <= idx) miss.add(sym)
+    })
+    return uni.filter((s) => !miss.has(s))
   }
 
   /** 点路径节点 → 复用分组抽屉，只装这一关 */
@@ -284,6 +311,7 @@ export default function LatestFunnelPanel() {
       stages: [k],
       n,
     })
+    setDrawerPassers(passersOf(k))
   }
 
   return (
@@ -301,7 +329,7 @@ export default function LatestFunnelPanel() {
               : '该轮未保存逐关明细（旧版本数据），仅保留总量'}
           </Text>
           <span style={{ marginLeft: 'auto', fontSize: 11.5, color: '#8c8c8c' }}>
-            {isHistory ? '历史轮次无币种清单' : detailLoading ? '明细加载中…' : '点节点看币种与原因'}
+            {isHistory ? '历史轮次无币种清单' : detailLoading ? '明细加载中…' : '点节点看挂掉/通过'}
           </span>
         </div>
 
@@ -401,9 +429,10 @@ export default function LatestFunnelPanel() {
               borderRadius: '50%', background: '#fff',
               border: '2px solid #30a46c', boxSizing: 'border-box',
             }} />
-            <Text strong style={{ fontSize: 13 }}>候选 {activeSnap.candidates}</Text>
+            <Text strong style={{ fontSize: 13 }}>通过 {lastOut}</Text>
             <Text type="secondary" style={{ fontSize: 11.5 }}>
-              {waiting > 0 ? `另有待确认池 ${waiting} 条（未挂，下一轮再判）` : '本轮没有待确认'}
+              候选 {activeSnap.candidates} · 本轮进池 {activeSnap.pending_pool} · 池内等待 {waiting}
+              {activeSnap.errors > 0 ? ` · 异常 ${activeSnap.errors}` : ''}
             </Text>
             <Text type="secondary" style={{ fontSize: 11.5 }}>· 命中 {activeSnap.hit_count}</Text>
           </div>
@@ -626,15 +655,36 @@ export default function LatestFunnelPanel() {
             }} />
             <span>{drawerGroup.name} · {drawerGroup.n} 个币</span>
             <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-              按卡住原因分组
+              {drawerPassers ? '挂掉 / 通过' : '按卡住原因分组'}
             </Text>
           </div>
         ) : ''}
       >
+        {drawerPassers && (
+          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+            {([
+              { k: 'drop' as const, label: `挂掉 ${drawerGroup?.n ?? 0}` },
+              { k: 'pass' as const, label: `通过 ${drawerPassers.length}` },
+            ]).map((t) => (
+              <button
+                key={t.k}
+                onClick={() => setDrawerTab(t.k)}
+                style={{
+                  border: `1px solid ${drawerTab === t.k ? '#1677ff' : '#f0f0f0'}`,
+                  background: drawerTab === t.k ? '#f0f5ff' : '#fff',
+                  color: drawerTab === t.k ? '#1677ff' : '#595959',
+                  borderRadius: 6, padding: '4px 12px', fontSize: 12, cursor: 'pointer',
+                }}
+              >{t.label}</button>
+            ))}
+          </div>
+        )}
         <div style={{
           fontSize: 12, color: '#8c8c8c', marginBottom: 10, lineHeight: 1.6,
         }}>
-          每一条是一个判定条件，"×N" 是该条件卡住的币数；点币种名看 K 线。
+          {drawerTab === 'pass' && drawerPassers
+            ? '这些币通过了该关（未被本关或更早关卡拒掉，也不含扫描异常）；点币种名看 K 线。'
+            : '每一条是一个判定条件，"×N" 是该条件卡住的币数；点币种名看 K 线。'}
           {detailLoading && <span style={{ marginLeft: 6 }}>（明细加载中…）</span>}
         </div>
         <Input
@@ -645,7 +695,21 @@ export default function LatestFunnelPanel() {
           onChange={(e) => setSearch(e.target.value)}
           style={{ marginBottom: 12 }}
         />
-        {!reasonGroups.length ? (
+        {drawerTab === 'pass' && drawerPassers ? (
+          passerRows.length ? (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 14px' }}>
+              {passerRows.map((sym) => (
+                <a
+                  key={sym}
+                  onClick={() => setKlineSymbol(sym)}
+                  style={{ fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace' }}
+                >
+                  {sym.replace('USDT', '')}
+                </a>
+              ))}
+            </div>
+          ) : <Empty description="无匹配币种" style={{ marginTop: 40 }} />
+        ) : !reasonGroups.length ? (
           <Empty
             description={drawerRows.length ? '无匹配币种' : '该关卡没有可下钻的币种清单（只有计数）'}
             style={{ marginTop: 40 }}

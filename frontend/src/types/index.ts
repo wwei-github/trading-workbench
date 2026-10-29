@@ -414,6 +414,9 @@ export interface FunnelData {
   raw_candidates?: { symbol: string; score: number | null; parts?: Record<string, unknown> }[]; // 质量分下限之前候选快照
   stages: Record<string, number>; // 关卡代码 → 被拒数
   rejects: Record<string, string>; // symbol → 关卡代码（全量明细）
+  // 通过者反推（2026-10-29）：全量币池符号 + 扫描异常币；旧轮次无这两个键
+  universe_symbols?: string[];
+  error_symbols?: string[];
   details?: Record<string, string>; // symbol → 判定说明文本（votes 票明细 / no_trigger 未触发原因，2026-10-13；分号分隔）
 }
 
