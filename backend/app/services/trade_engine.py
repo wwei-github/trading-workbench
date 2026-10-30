@@ -815,8 +815,8 @@ def _attempt_open(
                 )
                 _mark_open_block(
                     db, a,
-                    f"入场位置 pos={float(pos_now):.2f} < {pos_min:g}（成交价落在信号 K "
-                    f"下半部，做多贴低点/做空贴高点），entry_pos 闸拦截",
+                    f"入场位置 pos={float(pos_now):.2f} < {pos_min:.2f}（成交价已回吐信号 K "
+                    "区间：跌至下半部或跌破最低点），entry_pos 闸拦截",
                 )
                 return "blocked"
         # 固定亏损仓位：基数分档 × 3% ÷ 止损距离（基准价 ref_price：市价模式=现价，
@@ -3764,7 +3764,7 @@ def _live_off_card(
         _below = pos_min > 0 and pos < pos_min
         _txt = (f"入场位置 **pos {pos:.2f}**"
                 + (f"（低于自动开仓门槛 {pos_min:.2f}，**自动开仓会被拦下**；"
-                   "手动开单不会被拦）" if _below
+                   "手动单仅跳过本闸）" if _below
                    else (f"（≥ 门槛 {pos_min:.2f}）" if pos_min > 0 else "")))
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": (
             f"<font color='red'>{_txt}</font>" if _below else _txt)}})
@@ -3831,18 +3831,24 @@ def _live_off_pos(a: AIAnalysis, cfg) -> tuple[Optional[float], float]:
     返回 (pos, pos_min)。pos 为 None 表示算不出来（K 线拉取失败、币价异常、
     信号价落在区间外），此时卡片不显示该行——宁可少一行，也不猜。
     pos_min 取 settings.ENTRY_POS_MIN_RATIO（0=闸门关闭，卡片只报数值不报结论）。
+
+    pos 的价口径 = 现价（最后一根未收盘 K 的 close），与 entry-preview 弹窗、
+    自动市价开仓一致；不读 AI 计划入场价——卡片「开单」是市价单，用计划价
+    会让同一笔信号在卡片与弹窗给出两个不同的 pos。
     """
     try:
-        from app.services.entry_diagnostics import bar_position, closed_bars
+        from app.services.entry_diagnostics import bar_position
         from app.services.exchange_pool import ExchangePool
 
         pos_min = float(getattr(settings, "ENTRY_POS_MIN_RATIO", 0.0) or 0.0)
-        price = float(a.entry_price or 0)
-        if price <= 0:
-            return None, pos_min
         interval = (getattr(cfg, "kline_interval", None) or "1h") if cfg is not None else "1h"
         klines = ExchangePool().get_klines(a.symbol, interval, 60, allow_stale=True)
-        pos = bar_position(closed_bars(klines), price)
+        if not klines:
+            return None, pos_min
+        price = float(klines[-1][4])
+        # bar_position 内部已剔除未收盘根；再套一层 closed_bars 会把信号 K 往前
+        # 错一根（曾用 closed_bars(klines) 双重裁剪）
+        pos = bar_position(klines, price)
         return (round(pos, 4) if pos is not None else None), pos_min
     except Exception:
         logger.warning("卡片入场位置计算失败（省略该行） symbol=%s", a.symbol, exc_info=True)

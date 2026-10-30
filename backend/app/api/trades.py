@@ -434,8 +434,8 @@ def open_availability(symbol: str):
 # pos≥0.60 的 22 笔胜率 63.6%、合计 +18.42R。数字固定在此仅用于弹窗提示
 # （不参与任何计算），改口径时随 docs/15 一并更新。
 _POS_BUCKET_NOTE = (
-    "2026-10-25~27 正式网同区间 34 笔，胜率 17.6%、合计 −14.30R；"
-    "pos≥{min} 的 22 笔 63.6%、+18.42R"
+    "参考：2026-10-25~27 正式网 56 笔中，pos<0.60 的 34 笔胜率 17.6%、合计 −14.30R；"
+    "pos≥0.60 的 22 笔 63.6%、+18.42R（样本仅 3 天，仅作提示）"
 )
 
 
@@ -477,6 +477,8 @@ def entry_preview(symbol: str, direction: str = "long", db: Session = Depends(ge
         return out
 
     bars = ed.closed_bars(klines)
+    # 现价口径（与飞书卡片 _live_off_pos 一致）：最后一根未收盘 K 的 close；
+    # 手动开单是市价成交，AI 计划入场价不是成交价。
     price = float(klines[-1][4]) if klines else None
     pos = ed.bar_position(klines, price)
     out["price"] = price
@@ -488,7 +490,7 @@ def entry_preview(symbol: str, direction: str = "long", db: Session = Depends(ge
     if pos is not None and pos_min > 0:
         out["blocked"] = pos < pos_min
         if pos < pos_min:
-            out["note"] = f"入场位置 {pos:.2f} 低于门槛 {pos_min:g}：" + _POS_BUCKET_NOTE.format(min=pos_min)
+            out["note"] = _POS_BUCKET_NOTE
     return out
 
 

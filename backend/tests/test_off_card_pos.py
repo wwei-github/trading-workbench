@@ -72,6 +72,44 @@ def test_live_off_pos_returns_none_on_failure(monkeypatch):
     assert pos_min == pytest.approx(float(getattr(settings, "ENTRY_POS_MIN_RATIO", 0.0) or 0.0))
 
 
+def test_live_off_pos_uses_latest_price_not_ai_entry(monkeypatch):
+    """pos 用现价（最后一根 K 的 close），不读 AI 计划入场价——否则卡片与
+    弹窗会给出两个不同的 pos。"""
+    kl = [[i * 3_600_000, 90.0, 100.0, 80.0, 90.0, 1.0] for i in range(5)]
+    kl.append([99 * 3_600_000, 88.0, 88.0, 88.0, 88.0, 1.0])  # 未收盘根 close=88
+
+    class _Pool:
+        def get_klines(self, *a, **k):
+            return kl
+
+    monkeypatch.setattr("app.services.exchange_pool.ExchangePool", lambda: _Pool())
+    monkeypatch.setattr(settings, "ENTRY_POS_MIN_RATIO", 0.6, raising=False)
+    pos, pos_min = trade_engine._live_off_pos(
+        _analysis(entry_price=95.0), SimpleNamespace(kline_interval="1h"))
+    # (88-80)/20 = 0.4；若用 AI 入场价 95 会算成 0.75
+    assert pos == pytest.approx(0.4)
+    assert pos_min == pytest.approx(0.6)
+
+
+def test_live_off_pos_uses_last_closed_bar(monkeypatch):
+    """信号 K 必须是最后一根已收盘 K——不能把 closed_bars 再套一层导致前移一根。"""
+    kl = [
+        [0, 90.0, 120.0, 60.0, 90.0, 1.0],  # 更早一根（高 120 低 60）
+        [1, 90.0, 100.0, 80.0, 90.0, 1.0],  # 最后一根已收盘（高 100 低 80）
+        [2, 88.0, 88.0, 88.0, 88.0, 1.0],   # 未收盘根
+    ]
+
+    class _Pool:
+        def get_klines(self, *a, **k):
+            return kl
+
+    monkeypatch.setattr("app.services.exchange_pool.ExchangePool", lambda: _Pool())
+    pos, _ = trade_engine._live_off_pos(
+        _analysis(entry_price=88.0), SimpleNamespace(kline_interval="1h"))
+    # 正确：(88-80)/(100-80) = 0.4；误用倒数第二根会得到 (88-60)/(120-60)≈0.467
+    assert pos == pytest.approx(0.4)
+
+
 def test_live_off_pos_computes_from_closed_bars(monkeypatch):
     # 已收盘根：高 100 低 80 → 价格 88 → pos = (88-80)/20 = 0.4
     kl = [[i * 3_600_000, 90.0, 100.0, 80.0, 90.0, 1.0] for i in range(5)]

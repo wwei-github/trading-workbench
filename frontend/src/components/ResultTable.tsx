@@ -354,6 +354,16 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
       live: !liveDisabled,
     };
     openNetsRef.current = { ...init };
+    // 入场位置展示：pos<0 表示成交价已越出信号 K 区间；|pos|<0.005 归零，避免
+    // 渲染成「-0.00 已跌穿」的自相矛盾写法
+    const posValue = preview && preview.pos !== null
+      ? (Math.abs(preview.pos) < 0.005 ? 0 : preview.pos)
+      : null;
+    const posHint = preview && preview.blocked && posValue !== null
+      ? (posValue < 0
+          ? "已跌穿信号 K 最低点，整根区间被回吐；自动开仓会拦下，手动单仅跳过本闸（其余风控照常）"
+          : "落在信号 K 下半部；自动开仓会拦下，手动单仅跳过本闸（其余风控照常）")
+      : null;
     const netCheckbox = (
       net: "testnet" | "live",
       tag: string,
@@ -391,11 +401,11 @@ export default function ResultTable({ headerExtra }: { headerExtra?: ReactNode }
         <div style={{ fontSize: 12, lineHeight: 1.9 }}>
           <div>入场价：{ai.entry_price}　止损：{ai.stop_loss}　止盈一：{ai.take_profit_1}</div>
           <div>推荐度：{Math.round(ai.recommendation ?? 0)}</div>
-          {preview && preview.pos !== null && (
+          {preview && posValue !== null && (
             <div style={{ color: preview.blocked ? "#cf1322" : "#595959" }}>
-              入场位置：{preview.pos.toFixed(2)}
-              {preview.pos_min > 0 && `（B1 门槛 ${preview.pos_min}）`}
-              {preview.blocked && "　⚠️ 低于门槛，自动开仓会被拦下；手动开单不拦，请自行判断"}
+              入场位置 {posValue.toFixed(2)}
+              {preview.pos_min > 0 && `（自动开仓要求 ≥${preview.pos_min.toFixed(2)}）`}
+              {posHint && `　⚠️ ${posHint}`}
               {preview.note && (
                 <div style={{ marginTop: 2, fontSize: 11, color: "#8c8c8c" }}>{preview.note}</div>
               )}

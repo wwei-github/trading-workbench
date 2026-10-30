@@ -63,7 +63,19 @@ def test_blocked_when_below_min(monkeypatch):
     out = trades.entry_preview("ELSAUSDT", "long", db)
     assert out["pos_min"] == 0.6
     assert out["blocked"] is True
-    assert "0.50" in out["note"] and "−14.30R" in out["note"]
+    assert "pos<0.60" in out["note"] and "−14.30R" in out["note"]
+
+
+def test_note_bucket_fixed_when_threshold_differs(monkeypatch):
+    """统计口径固定为 0.60，不随当前门槛漂移（否则 0.70 会被写成 pos<0.70）。"""
+    from app.config import settings
+
+    db = _Db()
+    monkeypatch.setattr(trades, "ExchangePool", lambda: _Pool(_klines()))
+    monkeypatch.setattr(settings, "ENTRY_POS_MIN_RATIO", 0.7, raising=False)
+    out = trades.entry_preview("ELSAUSDT", "long", db)
+    assert out["blocked"] is True
+    assert "pos<0.60" in out["note"]
 
 
 def test_not_blocked_when_above_min(monkeypatch):
