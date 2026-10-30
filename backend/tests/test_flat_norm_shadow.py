@@ -66,15 +66,34 @@ def test_shadow_fields_present_on_flat():
     assert ev["slope_atr_ratio"] is not None
 
 
-def test_abs_flat_but_norm_not_flat_is_the_diff_set():
-    """差集样本：绝对阈值判走平、ATR 归一后放行——观察期就用这批算 avgR"""
+def test_abs_flat_but_norm_not_flat_is_now_passed():
+    """差集样本：绝对阈值判走平、ATR 归一后放行。
+
+    2026-10-30（docs/23 T12）起走平门以 flat_norm 为主——此前这批低波动缓涨
+    品种被固定 0.5% 误杀；现在放行（flat_abs 仍随 evidence 落库供审计）"""
     res = htf_context(_slow_grind())
     ev = res["evidence"]
-    assert res["reject_reason"] == "flat"   # 现网仍拒，T8 不改行为
+    assert res["reject_reason"] is None
     assert ev["flat_abs"] is True
     assert ev["flat_norm"] is False
     # 归一化斜率 = 位移/ATR，应远大于 1（位移 5 倍于 4h ATR）
     assert ev["slope_atr_ratio"] > 2
+
+
+def test_atr_missing_falls_back_to_flat_abs():
+    """ATR 不可得（core.atr=0，如全平K线 TR 全 0）：atr_pct_4h 无法计算、
+    flat_norm 缺失，走平判定回落 flat_abs——同一低波动样本按旧口径拒绝"""
+    from app.services.strategy.technical import htf_core
+
+    kl = _slow_grind()
+    core = htf_core(kl)
+    core["atr"] = 0.0
+    res = htf_context(kl, core=core)
+    ev = res["evidence"]
+    assert res["reject_reason"] == "flat"
+    assert ev["flat_abs"] is True
+    assert ev["flat_norm"] is None
+    assert ev["atr_pct_4h"] is None
 
 
 def test_trend_sample_both_gates_pass():

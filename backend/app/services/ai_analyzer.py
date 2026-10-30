@@ -637,6 +637,17 @@ def build_signal_facts(
     indicator_summary = render_indicator_block(
         klines, htf_klines, trigger_type=signal.get("signal_type"))
 
+    # 4h 数据缺失显式标注（docs/23 T13，2026-10-30）：4h K线拉取失败/数据不足时
+    # （含 T13 fail-open 放行的候选），此前该情形在事实包里完全静默——indicator_summary
+    # 只在 htf_klines 非空时渲染 4h背景行，缺失时连占位都没有，AI 容易当作
+    # 「4h 已通过」照常给分。显式列出缺失事实，要求不得据此加分/臆测 4h 状态。
+    htf_missing_line = ""
+    if not htf_klines:
+        htf_missing_line = (
+            "4h背景: 缺失（本轮未取到 4h K线，无 4h 趋势背景可引用；"
+            "不得据此加分，也不得臆测 4h 状态）\n"
+        )
+
     # 近期摆动结构（HH/LH/HL/LL，收盘价摆动点）
     sw = signal.get("recent_swings") or {}
     swings_summary = ""
@@ -713,6 +724,7 @@ def build_signal_facts(
         f"{quality_line}"
         f"{threshold_line}"
         f"{ema_summary}"
+        f"{htf_missing_line}"
         f"{indicator_summary}"
         f"{market_summary}"
         f"{swings_summary}"

@@ -23,7 +23,8 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from threading import Lock
+from typing import Callable, Optional, Tuple
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import func, select, update
@@ -63,6 +64,14 @@ from app.services.strategy.ema_gate import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 4h 数据缺失 fail-open 边界（docs/23 T13，2026-10-30）：
+# ① 单轮放行上限 = 币池的 5%（至少 1 个）——数据源整轮故障时不让「无 4h 背景」
+#    的候选淹没候选池，也保证自检能暴露问题；
+# ② 连续 N 轮触发后冷却一轮（自动关）——持续故障时按 3 轮开 / 1 轮关占空比，
+#    既保留观测样本，又把无背景候选的总量压到 3/4 以下；冷却轮记 funnel_json。
+HTF_FAIL_OPEN_BUDGET_RATIO = 0.05
+HTF_FAIL_OPEN_MAX_CONSECUTIVE = 3
 
 
 def _scan_hit_card(new_hits: list[dict]) -> dict:
@@ -336,6 +345,7 @@ def detect_indicator_candidate(
     reject_out: Optional[dict] = None,
     htf_out: Optional[dict] = None,
     now: Optional[datetime] = None,
+    htf_fail_open: Optional[Callable[[], bool]] = None,
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """指标驱动单币检测（Scanner 与 watchlist.refresh 共用同一套逻辑与阈值）。
 
@@ -370,7 +380,13 @@ def detect_indicator_candidate(
     htf_out: 可选出参 dict（与 event_out 同旁路模式，2026-10-29）——通过
       gate_4h 与 htf_state_lock 两关时写入 {"state", "state_label"}，供漏斗
       抽屉「通过」按 4h 放行状态（排列 / 恢复初期）分组；数据降级
-      （htf_res=None）不写，前端归入「未记录」。
+      （htf_res=None）不写，前端归入「未记录」。fail-open 放行的币另写
+      {"fail_open": True}（docs/23 T13，无 4h 状态可记）。
+    htf_fail_open: 可选回调（docs/23 T13，2026-10-30）：4h「数据失败」
+      （拉取失败/空数据/计算异常/core 不足，不含 adx 与市场状态拒因）时咨询；
+      返回 True=本轮预算内允许放行。回调自身负责原子扣减单轮预算（scanner
+      主循环按并发线程加锁实现），本函数只消费结果。None=关闭（默认，
+      手动/单币路径与开关关闭时均走原 fail-closed）。
     now: 本轮数据基准时刻（生产传 scan_now）；仅用于 4h 末根已收盘竞态兜底
       （整点取数时新 4h 根可能尚未出现、末根实为刚收盘根）。None 时不做该
       兜底——测试/回放的历史切片保持「末根=未收盘根」语义。
@@ -413,6 +429,7 @@ def detect_indicator_candidate(
     # 分开。方向职责拆分后 4h 无方向一律 fail-closed（不再降级放行），标记随
     # 漏斗落 funnel_json，供按天统计数据源降级占比（spec §5.3，>1% 需排查数据源）
     htf_degraded = False
+    fail_open_used = False   # 本轮 4h 数据失败已按 T13 放行
     try:
         # 600 根：EMA144 的 SMA 种子在 300 根时仍残留约 11% 权重（20 根斜率误差
         # 可达走平阈值 0.5% 的 1/3），600 根后残留 <0.2%，斜率判定才稳定
@@ -447,28 +464,38 @@ def detect_indicator_candidate(
                     htf_res is None
                     or htf_res.get("reject_reason") in ("data", "adx")
                 )
-                # 4h 方向门归因（docs/23 T3，2026-10-29）：方向歧义（undetermined）但
-                # 状态机已明确禁开时，真正的死因是状态锁——先记 htf_state_lock，
-                # 避免同一份 4h 数据被两套方向定义各判一次、把账全记在 gate_4h 上。
-                # 只改关卡名与说明，拒绝动作与 pending 处置（expire ranging）不变。
-                _lock_first = bool(
-                    htf_res is not None
-                    and htf_res.get("reject_reason") == "undetermined"
-                    and htf_res.get("block_both")
-                )
-                if _lock_first:
-                    _reject("htf_state_lock")
-                    if reject_out is not None:
-                        reject_out["detail"] = (
-                            htf_res.get("state_label") or htf_res.get("state") or "")
-                        reject_out["htf"] = _htf_snapshot(htf_res)
+                # 4h 数据失败 fail-open（docs/23 T13，2026-10-30）：仅「数据」类
+                # 失败（拉取异常 / core 不足 / reject_reason=data）允许放行；
+                # adx 不可用与 flat/tangle/undetermined 属「判定不可靠或市场无
+                # 趋势」，仍按原口径拒绝。放行时不写死因、不 return，继续用
+                # 1h 方向票净差定向并走后续关卡（gates 照常生效）。
+                if ((htf_res is None or htf_res.get("reject_reason") == "data")
+                        and htf_fail_open is not None and htf_fail_open()):
+                    fail_open_used = True
                 else:
-                    _reject("gate_4h")
-                    if reject_out is not None:
-                        if htf_degraded:
-                            reject_out["degraded"] = True
-                        reject_out["htf"] = _htf_snapshot(htf_res, htf_degraded)
-                return None, ({"op": "expire", "reason": "ranging"} if pending else None)
+                    # 4h 方向门归因（docs/23 T3，2026-10-29）：方向歧义（undetermined）但
+                    # 状态机已明确禁开时，真正的死因是状态锁——先记 htf_state_lock，
+                    # 避免同一份 4h 数据被两套方向定义各判一次、把账全记在 gate_4h 上。
+                    # 只改关卡名与说明，拒绝动作与 pending 处置（expire ranging）不变。
+                    _lock_first = bool(
+                        htf_res is not None
+                        and htf_res.get("reject_reason") == "undetermined"
+                        and htf_res.get("block_both")
+                    )
+                    if _lock_first:
+                        _reject("htf_state_lock")
+                        if reject_out is not None:
+                            reject_out["detail"] = (
+                                htf_res.get("state_label") or htf_res.get("state") or "")
+                            reject_out["htf"] = _htf_snapshot(htf_res)
+                    else:
+                        _reject("gate_4h")
+                        if reject_out is not None:
+                            if htf_degraded:
+                                reject_out["degraded"] = True
+                            reject_out["htf"] = _htf_snapshot(htf_res, htf_degraded)
+                    return None, (
+                        {"op": "expire", "reason": "ranging"} if pending else None)
         # 4h 状态机双向禁开（2026-10-20 收紧为放行排列；2026-10-29 放宽加入恢复
         # 初期）：block_both（不在放行白名单）时，回踩·突破候选均一票否决——与
         # 闸门同属「前置筛选」层（4h 决定做不做，1h 负责命中与待确认）。
@@ -476,7 +503,7 @@ def detect_indicator_candidate(
         # 拐头、macro_cross_* 交叉初期与 bull_dip/bear_rally 过渡态；命中即直接
         # 不看：不跑票数、不触发、不进候选，活跃 pending 同轮 expire(htf_state_lock)。
         # 异常/数据不足（htf_res=None）不在此判，由下方方向关 fail-closed 收口。
-        if htf_res is not None and htf_res.get("block_both"):
+        if htf_res is not None and htf_res.get("block_both") and not fail_open_used:
             _reject("htf_state_lock")
             if reject_out is not None:
                 # 只留状态名：口径说明由前端关卡 hint 统一承载，避免抽屉里同一句话出现两遍
@@ -488,7 +515,7 @@ def detect_indicator_candidate(
         # 4h 状态机放行（2026-10-29）：闸门与状态锁都通过的币种记下状态名，
         # 供漏斗抽屉「通过」按放行状态分组（排列 / 恢复初期各一组）；后续关卡
         # （票数/触发/质量分）是否拦掉不影响这里——它记的是 4h 这一关的口径。
-        if htf_out is not None and htf_res is not None:
+        if htf_out is not None and htf_res is not None and not fail_open_used:
             htf_out["state"] = htf_res.get("state")
             htf_out["state_label"] = htf_res.get("state_label")
     else:
@@ -505,25 +532,51 @@ def detect_indicator_candidate(
     # 「方向票同向 ≥DIR_VOTE_MIN 张」——不再要求 7 票里净差 ≥3（滞后指标
     # ADX/OBV/SuperTrend 与 4h背景退出方向票，改由 range_score/质量分承担），
     # 消除大量有效回踩死在这一关的问题。net 仍为方向票净差（符号=方向）。
-    # 4h 背景复用第一步的 htf_bg，指标不再双算
-    votes = compute_indicator_votes(klines, htf_bg=htf_res)
+    # 4h 背景复用第一步的 htf_bg，指标不再双算。
+    # T13 fail-open 路径在定向分支内才需要票数（且要用票来定向）——正常路径
+    # 保持「4h 先否决、再算票」的顺序，不为大量被 4h 拒掉的币白算指标。
+    votes = None
 
     # 定向（2026-10-21 方向职责拆分，docs/需求文档/06.../回踩命中改造方案 §3.2）：
     # 4h 定方向，1h 三票只作「确认度」。回踩是趋势内回调，1h 动量在此期间必然反向；
     # 若仍以净差定向，回踩永远与 4h 方向相反 → 深回撤触点被结构性消灭
     # （反事实重放：EMA144 924 次几何命中仅存活 1 次）。因此回踩与突破统一按 4h
     # 方向定向，突破的动量确认后移到「触发之后」按类型分流校验。
-    # 4h 无方向（拉取/计算异常降级）→ fail-closed 直接拒绝，不回落到 1h 定向。
+    # 4h 无方向：默认 fail-closed 直接拒绝；开关开启且「数据失败」时（T13）
+    # 按 1h 方向票净差定向放行（net=0 无从定向，仍拒）。
     if gate_dir is None:
-        _reject("gate_4h")
-        if reject_out is not None:
-            reject_out["detail"] = "4h 方向缺失（数据降级），无趋势依据不出信号"
-            if htf_degraded:
+        if (not fail_open_used and htf_fail_open is not None
+                and htf_fail_open()):
+            fail_open_used = True
+        if not fail_open_used:
+            _reject("gate_4h")
+            if reject_out is not None:
+                reject_out["detail"] = "4h 方向缺失（数据降级），无趋势依据不出信号"
+                if htf_degraded:
+                    reject_out["degraded"] = True
+                reject_out["htf"] = _htf_snapshot(htf_res, htf_degraded)
+            return None, (
+                {"op": "expire", "reason": "direction_flip"} if pending else None)
+        votes = compute_indicator_votes(klines, htf_bg=htf_res)
+        _fo_net = int(votes["net"]) if votes else 0
+        if _fo_net == 0:
+            _reject("gate_4h")
+            if reject_out is not None:
+                reject_out["detail"] = (
+                    "4h 数据缺失且1h方向票无净差，无方向依据不出信号")
                 reject_out["degraded"] = True
-            reject_out["htf"] = _htf_snapshot(htf_res, htf_degraded)
-        return None, ({"op": "expire", "reason": "direction_flip"} if pending else None)
-
-    direction = 1 if gate_dir == "long" else -1
+                reject_out["htf"] = _htf_snapshot(htf_res, True)
+            return None, (
+                {"op": "expire", "reason": "direction_flip"} if pending else None)
+        direction = 1 if _fo_net > 0 else -1
+    else:
+        direction = 1 if gate_dir == "long" else -1
+    # 放行标记统一在此写（gate_4h 分支放行、或 4h 数据失败但方向仍由其他路径
+    # 得出时都要记），供 scanner 收集 funnel 与预算审计
+    if fail_open_used and htf_out is not None:
+        htf_out["fail_open"] = True
+    if votes is None:
+        votes = compute_indicator_votes(klines, htf_bg=htf_res)
     same_n = (votes["bull_n"] if direction == 1 else votes["bear_n"]) if votes else 0
     opp_n = (votes["bear_n"] if direction == 1 else votes["bull_n"]) if votes else 0
     # 突破用的动量确认：同向票足够=通过；反向票足够=方向对撞（回踩不消费这两个标志）
@@ -545,7 +598,11 @@ def detect_indicator_candidate(
     # 异常降级（htf_res=None）放行，与
     # gate_4h / STATE_BLOCK_BOTH 同口径。过渡态 bull_dip/bear_rally 已在 block_both
     # 层被拦（2026-10-20 前置门收紧），不再到达本关。
-    if (htf_res is not None and htf_res.get("state") in STATE_LOCK_CONTRA):
+    # fail-open 放行的币跳过本关（T13，2026-10-30）：其 4h 数据已判为不可靠
+    # （reject_reason=data/core 不足），拿不可靠状态锁 1h 定向后的方向自相矛盾；
+    # 与上方 block_both 的 fail_open_used 守卫同口径。
+    if (htf_res is not None and not fail_open_used
+            and htf_res.get("state") in STATE_LOCK_CONTRA):
         st_dir = htf_res.get("dir") or 0
         if st_dir and st_dir != direction:
             _reject("htf_state_lock")
@@ -692,6 +749,8 @@ def detect_indicator_candidate(
                 # 触点类型透传（2026-10-29，docs/23 追加）：ema55/ema144 深回踩
                 # 在质量分侧豁免形态性惩罚（risk_vote / r2_low），不传则豁免永不生效
                 touch_ref=pending_op.get("touch_ref"),
+                # 放量加分门槛（docs/23 T11，2026-10-30）：与触发层同一配置源
+                vol_ratio_min=flt.breakout_vol_ratio,
             )
             pending_op["votes_json"] = _votes_snapshot(votes, stabilize=_stab)
         elif reject_out is not None:
@@ -731,7 +790,9 @@ def detect_indicator_candidate(
                                     parts_out=q_parts,
                                     # 触点类型（2026-10-29，docs/23 追加）：次根确认
                                     # 时为 pending 的 Stage-1 触点，当根确认为本次命中触点
-                                    touch_ref=trig.get("touch_ref"))
+                                    touch_ref=trig.get("touch_ref"),
+                                    # 放量加分门槛（docs/23 T11，2026-10-30）
+                                    vol_ratio_min=flt.breakout_vol_ratio)
     # 反向腿深度观测（2026-10-28，docs/16 §23）：腿门有门槛（min_bars/min_atr），
     # 但"过门"不区分"深回踩"与"贴位几乎不动的浅回踩"（TAUSDT 0.94ATR 即过线）。
     # 把实际深度写进分项，成交后即可按 leg_atr 分档回看哪一档该被拒。
@@ -1003,6 +1064,49 @@ class Scanner:
             volume_map = {s["symbol"]: s["volume_24h"] for s in symbols_data}
             symbols = [s["symbol"] for s in symbols_data]
 
+            # ── 4h 数据缺失 fail-open 预算/冷却（docs/23 T13，2026-10-30）──
+            # 开关来自 scan_filters（DB > env > 默认 False=现网 fail-closed）。单轮
+            # 放行上限按本轮币池 5%（至少 1 个）原子扣减；连续
+            # HTF_FAIL_OPEN_MAX_CONSECUTIVE 轮触发后冷却一轮（自动关）。轮状态从
+            # 上一轮已完成 ScanRecord 的 funnel_json.htf_fail_open.consecutive_rounds
+            # 读取——仅一个整数字段，不为观测状态新建表。
+            fail_open_enabled = bool(flt.htf_fail_open_enabled)
+            fail_open_budget = max(
+                1, int(len(symbols) * HTF_FAIL_OPEN_BUDGET_RATIO))
+            prev_consecutive = 0
+            try:
+                prev_rec = db.query(ScanRecord).filter(
+                    ScanRecord.status == "completed",
+                    ScanRecord.id != scan_record_id,
+                ).order_by(ScanRecord.created_at.desc()).first()
+                if prev_rec and isinstance(prev_rec.funnel_json, dict):
+                    prev_fo = prev_rec.funnel_json.get("htf_fail_open") or {}
+                    # 上轮开关关（或旧轮次无该块）→ 连续计数清零：关闭即为复位，
+                    # 避免隔很久重新开启后还背着旧的连续轮次直接进冷却
+                    if isinstance(prev_fo, dict) and prev_fo.get("enabled"):
+                        prev_consecutive = int(
+                            prev_fo.get("consecutive_rounds") or 0)
+            except Exception as e:  # noqa: BLE001 - 观测状态，读取失败按 0
+                logger.debug("读取上轮 fail-open 状态失败: %s", e)
+            fail_open_cooled = (
+                fail_open_enabled
+                and prev_consecutive >= HTF_FAIL_OPEN_MAX_CONSECUTIVE)
+            fail_open_allowed = fail_open_enabled and not fail_open_cooled
+            fail_open_symbols: set[str] = set()
+            _fo_lock = Lock()
+            _fo_state = {"used": 0}
+
+            def _reserve_fail_open() -> bool:
+                """原子扣减单轮放行预算（detect_indicator_candidate 仅在 4h
+                「数据失败」时咨询，返回 False 则该币照旧拒绝）"""
+                if not fail_open_allowed:
+                    return False
+                with _fo_lock:
+                    if _fo_state["used"] >= fail_open_budget:
+                        return False
+                    _fo_state["used"] += 1
+                    return True
+
             # 2. 线程池并发扫描每个币种（指标驱动筛选，见模块 docstring）
             hits: list[dict] = []
             # 两段式回踩确认（docs/19）：批量预取活跃 pending（每轮一次查询，勿逐币查），
@@ -1037,7 +1141,15 @@ class Scanner:
                         self.pool, symbol, klines, pending=pendings.get(symbol),
                         flt=flt, retest=retests.get(symbol), event_out=ev_out,
                         reject_out=rv_out, htf_out=htf_out, now=scan_now,
+                        htf_fail_open=(
+                            _reserve_fail_open if fail_open_allowed else None),
                     )
+                    # 4h 数据缺失放行币种（docs/23 T13）：funnel 观测 + 下一轮
+                    # 连续轮次计数依据；同时计入 degraded（口径=4h 数据降级）
+                    if htf_out.get("fail_open"):
+                        with _fo_lock:
+                            fail_open_symbols.add(symbol)
+                        htf_degraded_symbols.add(symbol)
                     # 破轨事件动作（T1 触发记录 / 回测触点确认消费）
                     if ev_out.get("op"):
                         event_ops[symbol] = ev_out
@@ -1297,6 +1409,19 @@ class Scanner:
                 # 状态/什么死因（data 降级 vs 市场无趋势），复盘分离两类口径
                 "htf_evidence": htf_evidence,
                 **_htf_funnel(htf_evidence),
+                # 4h 数据缺失 fail-open（docs/23 T13，2026-10-30）：开关/冷却/单轮
+                # 预算与本轮实际放行币种。consecutive_rounds 是下一轮判冷却的唯一
+                # 依据（本轮有放行则 +1，否则清零）；冷却轮记 cooled=True。
+                # 关闭时也落该键，便于复盘区分「没有发生」与「旧轮次无记录」
+                "htf_fail_open": {
+                    "enabled": fail_open_enabled,
+                    "cooled": fail_open_cooled,
+                    "budget": fail_open_budget,
+                    "allowed": len(fail_open_symbols),
+                    "symbols": sorted(fail_open_symbols),
+                    "consecutive_rounds": (
+                        prev_consecutive + 1 if fail_open_symbols else 0),
+                },
             }
 
             logger.info(

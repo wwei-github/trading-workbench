@@ -195,6 +195,72 @@ def test_gate_direction_mismatch_expires_pending(monkeypatch):
     assert op == {"op": "expire", "reason": "window_expired"}
 
 
+# ── 4h 数据缺失 fail-open（docs/23 T13，2026-10-30）────────────────────
+
+
+class _Broken4hPool:
+    """1h 正常返回、4h 抛异常（数据失败类）"""
+
+    def __init__(self, kl1h):
+        self.kl = kl1h
+
+    def get_klines(self, symbol, interval, limit, **kwargs):
+        if interval == "4h":
+            raise RuntimeError("exchange down")
+        return self.kl[:limit]
+
+
+def test_fail_open_off_keeps_gate_4h_reject():
+    """开关关（不传回调=现网语义）：4h 数据失败照旧 gate_4h 拒绝并标降级"""
+    rv: dict = {}
+    htfo: dict = {}
+    detect_indicator_candidate(
+        _Broken4hPool(_trend_1h()), "TEST/USDT", _trend_1h(),
+        reject_out=rv, htf_out=htfo,
+    )
+    assert rv.get("stage") == "gate_4h"
+    assert rv.get("degraded") is True
+    assert "fail_open" not in htfo
+
+
+def test_fail_open_on_passes_with_1h_vote_direction():
+    """开关开：4h 数据失败放行，方向取 1h 方向票净差，htf_out 只标 fail_open、
+    不写 4h 状态（后续关卡照常生效）"""
+    rv: dict = {}
+    htfo: dict = {}
+    detect_indicator_candidate(
+        _Broken4hPool(_trend_1h()), "TEST/USDT", _trend_1h(),
+        reject_out=rv, htf_out=htfo, htf_fail_open=lambda: True,
+    )
+    assert htfo.get("fail_open") is True
+    assert "state_label" not in htfo
+    assert rv.get("stage") != "gate_4h"
+
+
+def test_fail_open_does_not_rescue_market_state():
+    """市场状态拒因（走平/缠绕/ADX）不属「数据失败」：开关开也照旧拒绝"""
+    rv: dict = {}
+    cand, op = detect_indicator_candidate(
+        _FakePool(_trend_1h(), _ranging_4h()), "TEST/USDT", _trend_1h(),
+        reject_out=rv, htf_fail_open=lambda: True,
+    )
+    assert cand is None
+    assert rv.get("stage") in ("gate_4h", "htf_state_lock")
+
+
+def test_fail_open_budget_exhausted_keeps_closed():
+    """回调返回 False（单轮预算已用尽/冷却中）：该币按原口径拒绝"""
+    rv: dict = {}
+    calls: list[int] = []
+    detect_indicator_candidate(
+        _Broken4hPool(_trend_1h()), "TEST/USDT", _trend_1h(),
+        reject_out=rv, htf_fail_open=lambda: calls.append(1) or False,
+    )
+    assert rv.get("stage") == "gate_4h"
+    assert rv.get("degraded") is True
+    assert len(calls) == 1   # 只咨询一次，不重复扣预算
+
+
 # ── range_score：筛选链硬门（monkeypatch 强制命中）；structure_1h 硬门已退役 ──
 
 

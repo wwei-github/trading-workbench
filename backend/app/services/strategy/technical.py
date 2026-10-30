@@ -965,7 +965,12 @@ def htf_context(htf_klines: list[list], core: Optional[dict] = None) -> Optional
               "slope_atr_ratio": (round(slope_atr_ratio, 2)
                                   if slope_atr_ratio is not None else None),
               "flat_abs": flat_abs, "flat_norm": flat_norm}
-        if flat_abs:
+        # 走平判定按 ATR 归一（docs/23 T12，2026-10-30）：绝对阈值 0.5%/20根 对
+        # 低波动品种（4h ATR≈0.2%）过严、对高波动山寨过松，改以 flat_norm 为主
+        # （slope < max(0.2%, 1.0×atr_pct_4h)）；ATR 不可得时回落 flat_abs。
+        # flat_abs 仍随 evidence 落库，供差集审计与一行回退（改回 flat_abs）。
+        flat_decided = flat_norm if flat_norm is not None else flat_abs
+        if flat_decided:
             reject = "flat"                      # 走平（独立拒因）
         else:
             tangled, _t_note = detect_tangle(closes, e21, e55, e144, adx_v)
@@ -1438,6 +1443,7 @@ def compute_quality_score(
     range_penalty: bool = False,
     parts_out: Optional[dict] = None,
     touch_ref: Optional[str] = None,
+    vol_ratio_min: float = 1.2,
 ) -> int:
     """候选质量分（0-100）：方向一致性为主，修饰项只影响排序不改变方向。
 
@@ -1456,6 +1462,9 @@ def compute_quality_score(
         （2026-10-29 由 -8 减半：避免与 scanner 的降权重复计罚）
     touch_ref: 回踩触点类型（ema21/ema55/ema144…）。ema55/ema144 属深回踩，
         豁免 risk_vote 与 r2_low 两项「形态性」惩罚，见 DEEP_PULLBACK_REFS
+    vol_ratio_min: 放量加分门槛（docs/23 T11，2026-10-30）：由调用方传
+        `flt.breakout_vol_ratio`，与突破触发层的量比门槛同源；缺省 1.2 保持
+        旧调用方行为
     parts_out（2026-10-21，T0-3）：传入 dict 时填充分项贡献（base/htf/adx/volume/
     shadow/rsi/obv/risk_vote/boll/zone/stabilize/structure_gate/range/r2_low/box；
     另有 box_atr/box_overlap 为箱体几何观测键，不计分），供提示词与复盘展示
@@ -1537,12 +1546,14 @@ def compute_quality_score(
             and adx and float(adx.get("adx") or 0) >= 25):
         _add("adx", 5)
 
-    # 放量加分（三类触发统一，2026-09-29）：量比 ≥1.2 +5；缩量/平量不加不减。
-    # 阈值与 BREAKOUT_VOL_RATIO 同源（1.2）
+    # 放量加分（三类触发统一，2026-09-29）：量比 ≥ 配置门槛 +5；缩量/平量不加不减。
+    # 阈值默认与 BREAKOUT_VOL_RATIO 同源（1.2）；2026-10-30（docs/23 T11）起由
+    # scanner 透传 flt.breakout_vol_ratio——此前页面改突破量比只影响触发层，
+    # 质量分这里还是硬编码 1.2，等于同一配置两套口径
     if trigger_type in ("trigger_breakout", "trigger_trend_breakout",
                         "trigger_pullback_confirm") and klines:
         try:
-            if volume_ratio(klines) >= 1.2:
+            if volume_ratio(klines) >= vol_ratio_min:
                 _add("volume", 5)
         except (ValueError, TypeError, IndexError, ZeroDivisionError):
             pass  # 量能数据异常只降级该修饰项，不影响基础分
@@ -1607,11 +1618,27 @@ def compute_quality_score(
     if not structure_gate:
         _add("structure_gate", STRUCTURE_GATE_PENALTY)
 
+    # 回踩箱体折价（2026-10-28）：窄幅箱体 + 实体相互重叠 = 没有结构推进，
+    # 回踩确认 -15；突破类已在 scanner 的 range_score 硬拒，不重复计入。
+    # box_atr / box_overlap 仅落分项供复盘校准阈值，不参与 total 计算。
+    # 2026-10-30（docs/23 T11）：箱体命中时 range 与 r2_low 度量的是同一事实
+    # （窄幅震荡 → R² 低 + range_score 命中），三项叠加等于一次形态三次计罚；
+    # 保留最重的 box，跳过 range/r2_low，让「震荡段」只罚一次。
+    box_hit = False
+    if trigger_type == "trigger_pullback_confirm" and klines:
+        box = pullback_box_evidence(klines)
+        if box:
+            box_hit = True
+            _add("box", PULLBACK_BOX_PENALTY)
+            if parts is not None:
+                parts["box_atr"] = box["atr_mult"]
+                parts["box_overlap"] = box["overlap"]
+
     # 震荡闸门降权（2026-10-21）：回踩命中 range_score 不再否决，改质量分扣分；
     # 突破类仍由 scanner 硬拒，不会带 range_penalty 走到这里。
     # 2026-10-29 减半为 -4：scanner 已经因 range_score 判「降权放行」，质量分再扣
     # 满额属于同一事实的二次计罚（ema144 候选 80% 命中，叠加后几乎全被门槛拦掉）
-    if range_penalty:
+    if range_penalty and not box_hit:
         _add("range", -4)
 
     # 趋势质量折价（CARD-10 升格，2026-10-27 开庭）：24 根已收盘 1h 收盘价
@@ -1624,23 +1651,14 @@ def compute_quality_score(
             _closes = np.array([float(k[4]) for k in _closed], dtype=float)
             _slope, _icpt, _r2 = linear_regression(
                 np.arange(len(_closes)), _closes)
-            if float(_r2) < R2_LOW_MAX and touch_ref not in DEEP_PULLBACK_REFS:
+            if (float(_r2) < R2_LOW_MAX and touch_ref not in DEEP_PULLBACK_REFS
+                    and not box_hit):
                 # 深回踩的下跌腿本身会把 24 根窗口线性度拉低（几何必然），
-                # ema55/ema144 不按「震荡段」折价（2026-10-29）
+                # ema55/ema144 不按「震荡段」折价（2026-10-29）；箱体命中时
+                # r2_low 与 box 同源，也不重复计罚（2026-10-30 T11）
                 _add("r2_low", R2_LOW_PENALTY)
         except (ValueError, TypeError, IndexError, ZeroDivisionError):
             pass  # 折价项异常只降级该排序项，不影响基础分
-
-    # 回踩箱体折价（2026-10-28）：窄幅箱体 + 实体相互重叠 = 没有结构推进，
-    # 回踩确认 -15；突破类已在 scanner 的 range_score 硬拒，不重复计入。
-    # box_atr / box_overlap 仅落分项供复盘校准阈值，不参与 total 计算。
-    if trigger_type == "trigger_pullback_confirm" and klines:
-        box = pullback_box_evidence(klines)
-        if box:
-            _add("box", PULLBACK_BOX_PENALTY)
-            if parts is not None:
-                parts["box_atr"] = box["atr_mult"]
-                parts["box_overlap"] = box["overlap"]
 
     # 4h 强度分（2026-10-21 T2-6，影子）：aligned 只说明排列，不说明趋势强弱与
     # 剩余空间。按 spec F3 三要素给分，但**只记录不参与排序**——先影子观察

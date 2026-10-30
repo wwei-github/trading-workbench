@@ -186,17 +186,26 @@ def _tp_quantities(qty: float, tp2: float,
 
 
 def _tp_order_quantities(trader: BinanceTrader, symbol: str, qty: float,
-                         tp2: float, cfg) -> tuple[float, float, bool]:
+                         tp2: float, cfg, min_qty: float = 0.0
+                         ) -> tuple[float, float, bool]:
     """按配置解析并取整 TP1/TP2 挂单数量，返回 (qty_tp1, qty_tp2, 是否全平模式)。
 
     全平模式下 TP2 数量取「qty − 取整后的 TP1」，保证两档合计恰好覆盖全仓、
-    不留交易所最小步长以下的碎尾仓；关闭时沿用分批比例。"""
+    不留交易所最小步长以下的碎尾仓；关闭时沿用分批比例。
+
+    T14f（docs/23，2026-10-30）：全平模式下若 TP2 取整后仍低于交易所最小数量，
+    TP2 根本挂不上（`raw.qty_tp2=0`），而 TP1 若仍按 p1=60% 挂，剩下 40% 尾仓
+    只能靠跟踪止损退出、状态永远到不了 TP2_HIT（残仓兜底 T14e 也永远不触发）。
+    此时把 TP1 提升为一整仓（100%），让「全平」在只有一个止盈档时仍然成立。"""
     p1, p2, p1s = _tp_ratio_cfg(cfg)
     full_exit = bool(cfg is not None and cfg.tp_full_exit_enabled)
     q1, q2 = _tp_quantities(qty, tp2, p1, p2, p1s, full_exit=full_exit)
     qty_tp1 = trader.round_qty(symbol, q1)
     if full_exit and tp2 > 0:
         qty_tp2 = trader.round_qty(symbol, max(0.0, qty - qty_tp1))
+        if min_qty > 0 and qty_tp2 < min_qty:
+            qty_tp1 = trader.round_qty(symbol, qty)
+            qty_tp2 = 0.0
     else:
         qty_tp2 = trader.round_qty(symbol, q2)
     return qty_tp1, qty_tp2, full_exit
@@ -1048,7 +1057,10 @@ def _attempt_open(
         # 开完仓才挂 TP1 被交易所拒单，会走紧急撤单+平仓，且该失败不落记录，
         # 候选每小时重试"开仓→拒单→平仓"空转（docs/07 §8-A1）。TP2 本就有
         # min_qty 检查（不足时静默跳过该档），TP1 是主止盈档、缺它无意义。
-        qty_tp1_pre, _, _tp_full = _tp_order_quantities(trader, symbol, qty, tp2, cfg)
+        # 须传 min_qty（T14f，2026-10-30）：全平模式 TP2 挂不上时 TP1 会提到整仓，
+        # 此时 60% 低于 min_qty 不代表挂不上，不传会把「可全平的小仓」误拦
+        qty_tp1_pre, _, _tp_full = _tp_order_quantities(
+            trader, symbol, qty, tp2, cfg, min_qty=f["min_qty"])
         if qty_tp1_pre < f["min_qty"]:
             logger.info(
                 "开仓放弃 %s：止盈一数量 %s 低于交易所最小数量 %s，分批止盈无法挂单",
@@ -1249,7 +1261,7 @@ def _attempt_open(
                 symbol, close_side, trader.round_price(symbol, sl))
             rec_tp1 = tp1
             qty_tp1, qty_tp2, _tp_full = _tp_order_quantities(
-                trader, symbol, qty, tp2, cfg)
+                trader, symbol, qty, tp2, cfg, min_qty=f["min_qty"])
             tp1_order = trader.take_profit_reduce(
                 symbol, close_side, qty_tp1, trader.round_price(symbol, tp1))
             tp2_order = None
@@ -1604,7 +1616,7 @@ def materialize_pending_entry(
         sl_order = trader.stop_market_close(
             symbol, close_side, trader.round_price(symbol, sl))
         qty_tp1, qty_tp2, _tp_full = _tp_order_quantities(
-            trader, symbol, qty, tp2, cfg)
+            trader, symbol, qty, tp2, cfg, min_qty=f["min_qty"])
         tp1_order = trader.take_profit_reduce(
             symbol, close_side, qty_tp1, trader.round_price(symbol, tp1))
         tp2_order = None
@@ -4163,7 +4175,7 @@ def adopt_position(db: Session, trader: BinanceTrader, symbol: str,
         raise
     f = trader.filters(symbol)
     qty_tp1, qty_tp2, _tp_full = _tp_order_quantities(
-        trader, symbol, qty, tp2, _adopt_cfg)
+        trader, symbol, qty, tp2, _adopt_cfg, min_qty=f["min_qty"])
     tp1_order = None
     tp2_order = None
     if qty_tp1 >= f["min_qty"]:

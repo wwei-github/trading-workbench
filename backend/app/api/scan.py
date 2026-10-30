@@ -686,6 +686,8 @@ def _config_response(cfg: SystemConfig) -> SystemConfigOut:
             "pullback_leg_lookback_bars": flt.pullback_leg_lookback_bars,
             "pullback_leg_min_bars": flt.pullback_leg_min_bars,
             "pullback_leg_min_atr": flt.pullback_leg_min_atr,
+            # 4h 数据缺失 fail-open（docs/23 T13，2026-10-30）：默认 False
+            "htf_fail_open_enabled": flt.htf_fail_open_enabled,
         },
     )
 
@@ -720,6 +722,8 @@ _BOOL_FILTER_KEYS: tuple[str, ...] = (
     "direction_vote_gate_enabled",
     "direction_conflict_gate_enabled",
     "pullback_leg_gate_enabled",
+    # 4h 数据缺失 fail-open（docs/23 T13，2026-10-30）
+    "htf_fail_open_enabled",
 )
 
 

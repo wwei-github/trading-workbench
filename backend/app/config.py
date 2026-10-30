@@ -91,6 +91,12 @@ class Settings(BaseSettings):
     DIRECTION_VOTE_GATE_ENABLED: bool = True
     # ② 方向冲突关：定向方向与 4h 闸门 gate_4h 方向相反时是否否决候选
     DIRECTION_CONFLICT_GATE_ENABLED: bool = True
+    # 4h 数据缺失 fail-open（docs/23 T13，2026-10-30）：默认 False=保持现网
+    # fail-closed（4h 拉取失败/数据不足一律拒绝）。开启后仅对「数据失败」
+    # （拉取失败/空数据/计算异常/core 不足）放行，用 1h 方向票净差定向；
+    # flat/tangle/undetermined/adx 仍拒。放行受单轮预算（≤5% 币池）与连续轮次
+    # 冷却约束，见 scanner.HTF_FAIL_OPEN_*。
+    HTF_FAIL_OPEN_ENABLED: bool = False
     DAILY_LOSS_STOP_PCT: float = 9.0  # 当日亏损熔断：UTC 日已平仓净亏 ≤ -风险基数×9%（≈3笔满损）停开仓（0=关闭）
     # 当日亏损熔断总开关（2026-09-30 用户拍板开关化）：True=启用（默认，保持现行为），
     # False=关闭；阈值仍由 DAILY_LOSS_STOP_PCT 控制（9% ≈ 3 笔满损，随账户金额缩放）。
@@ -405,7 +411,10 @@ class Settings(BaseSettings):
     # 是形态本身而非质量缺陷；同时震荡闸门降权 -8→-4（scanner 已降权放行，再扣满额
     # 属同一事实二次计罚）。质量分直接决定哪些候选过 quality_floor，候选池与分数分布
     # 均变，前向统计不可与 v2026-10-27 混算，故 bump。
-    RULE_VERSION: str = "v2026-10-29"
+    # v2026-10-30（docs/23 T11/T12）：质量分箱体去重（box 命中时 range/r2_low 不再
+    # 叠加计罚）+ 走平门改按 ATR 归一（flat_norm 优先，ATR 缺失回落 flat_abs）——
+    # 前者同步改变分数分布，后者直接改变 4h 放行集合，候选池变化，故 bump。
+    RULE_VERSION: str = "v2026-10-30"
 
     # 排除的币种关键字（杠杆代币等）
     EXCLUDE_KEYWORDS: list = ["UP", "DOWN", "BEAR", "BULL", "HALF", "SHORT", "LONG"]

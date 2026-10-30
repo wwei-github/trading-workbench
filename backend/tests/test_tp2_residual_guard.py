@@ -155,6 +155,39 @@ def test_large_residual_not_auto_closed(db):
     assert [e.event_type for e in events] == ["FULL_EXIT_RESIDUAL_SKIPPED"]
 
 
+def test_full_exit_tp2_below_min_promotes_tp1_to_full():
+    """T14f（2026-10-30）：全平模式下 TP2 取整后低于最小下单量 → 挂不上，
+    40% 尾仓只能靠跟踪止损退出、状态永远到不了 TP2_HIT。此时 TP1 提到 100%
+    全仓；分批模式与 min_qty 未配置时不受影响"""
+    from app.services.trade_engine import _tp_order_quantities
+
+    class _Cfg:
+        tp_full_exit_enabled = True
+        tp1_qty_pct_with_tp2 = None
+        tp2_qty_pct = None
+        tp1_qty_pct_no_tp2 = None
+
+    rt = _FakeTrader()  # round_qty = round(...,3)
+    # qty=1.0 → TP1 0.6 / TP2 0.4；min_qty=0.5 → TP2 挂不上 → TP1 提满
+    q1, q2, full = _tp_order_quantities(rt, "TRUTHUSDT", 1.0, 2.0, _Cfg(),
+                                        min_qty=0.5)
+    assert full is True
+    assert (q1, q2) == (1.0, 0.0)
+
+    # min_qty 未配置（0）：保持原两档分配，全平靠 TP2 平剩余
+    q1b, q2b, _ = _tp_order_quantities(rt, "TRUTHUSDT", 1.0, 2.0, _Cfg(),
+                                       min_qty=0.0)
+    assert (q1b, q2b) == (0.6, 0.4)
+
+    # 分批模式（全平关）：TP2 低于 min_qty 也不改 TP1（尾仓本就留给跟进止损）
+    cfg_off = _Cfg()
+    cfg_off.tp_full_exit_enabled = False
+    q1c, q2c, full_c = _tp_order_quantities(rt, "TRUTHUSDT", 1.0, 2.0, cfg_off,
+                                            min_qty=0.5)
+    assert full_c is False
+    assert (q1c, q2c) == (0.6, 0.2)
+
+
 def test_event_type_column_fits_all_event_names():
     """event_type 列宽必须容纳新事件名——PG 超长会抛 StringDataRightTruncation，
     整轮巡检回滚导致补平幂等标记丢失（sqlite 不校验长度，只能靠本断言兜）"""

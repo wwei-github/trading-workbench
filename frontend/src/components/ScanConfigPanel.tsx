@@ -111,6 +111,8 @@ export default function ScanConfigPanel() {
         pullback_touch_refs: eff.pullback_touch_refs ?? DEFAULT_TOUCH_VALUES,
         direction_vote_gate_enabled: eff.direction_vote_gate_enabled ?? true,
         direction_conflict_gate_enabled: eff.direction_conflict_gate_enabled ?? true,
+        // 4h 数据缺失 fail-open（docs/23 T13，2026-10-30）：默认关=现网 fail-closed
+        htf_fail_open_enabled: eff.htf_fail_open_enabled ?? false,
         // 回踩前置反向腿门（只读展示，不参与提交）
         pullback_leg_gate_enabled: eff.pullback_leg_gate_enabled ?? true,
         pullback_leg_lookback_bars: eff.pullback_leg_lookback_bars ?? 24,
@@ -218,6 +220,11 @@ export default function ScanConfigPanel() {
       if (curConflictGate !== (filtersSnapshot.direction_conflict_gate_enabled ?? true)) {
         scanFilters.direction_conflict_gate_enabled = curConflictGate
       }
+      // 4h 数据缺失 fail-open（docs/23 T13，2026-10-30）：默认关；同样仅提交改动
+      const curHtfFailOpen = values.htf_fail_open_enabled ?? false
+      if (curHtfFailOpen !== (filtersSnapshot.htf_fail_open_enabled ?? false)) {
+        scanFilters.htf_fail_open_enabled = curHtfFailOpen
+      }
       // 1h 结构门开关（2026-10-11，2026-10-12 退役）：已从配置弹窗移除，
       // 不再提交该键（后端 scan_filters 保留兼容键位，仅读旧值不做消费）
       if (Object.keys(scanFilters).length > 0) data.scan_filters = scanFilters
@@ -265,6 +272,7 @@ export default function ScanConfigPanel() {
         pullback_touch_refs: eff.pullback_touch_refs ?? DEFAULT_TOUCH_VALUES,
         direction_vote_gate_enabled: eff.direction_vote_gate_enabled ?? true,
         direction_conflict_gate_enabled: eff.direction_conflict_gate_enabled ?? true,
+        htf_fail_open_enabled: eff.htf_fail_open_enabled ?? false,
         pullback_leg_gate_enabled: eff.pullback_leg_gate_enabled ?? true,
         pullback_leg_lookback_bars: eff.pullback_leg_lookback_bars ?? 24,
         pullback_leg_min_bars: eff.pullback_leg_min_bars ?? 2,
@@ -431,7 +439,7 @@ export default function ScanConfigPanel() {
           {/* 方向过滤开关（2026-10-18）：扫描链两道方向硬过滤的启停；默认开=保持现网门槛 */}
           <ConfigSection title="方向过滤" hint="默认开启=保持现网门槛；关闭=跳过该检测、放开信号池">
           <Row gutter={16}>
-            <Col span={12}>
+            <Col span={8}>
               <Form.Item
                 label="方向票关"
                 name="direction_vote_gate_enabled"
@@ -441,12 +449,22 @@ export default function ScanConfigPanel() {
                 <Switch checkedChildren="开" unCheckedChildren="关" />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col span={8}>
               <Form.Item
                 label="方向冲突关"
                 name="direction_conflict_gate_enabled"
                 valuePropName="checked"
                 tooltip="开启：定向方向与 4h 趋势闸门方向相反时否决候选（现网默认，深回撤触点的主要生死线）；关闭：跳过该判定，允许逆 4h 闸门方向的信号进入候选"
+              >
+                <Switch checkedChildren="开" unCheckedChildren="关" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item
+                label="4h缺失放行"
+                name="htf_fail_open_enabled"
+                valuePropName="checked"
+                tooltip="默认关=现网口径：4h 拉取失败/数据不足一律拒绝。开启后仅对「4h 数据失败」放行（用 1h 方向票净差定向，AI 事实包标注 4h 缺失）；走平/缠绕/ADX 不可用仍拒。单轮最多放行币池 5%，连续 3 轮触发后自动冷却一轮"
               >
                 <Switch checkedChildren="开" unCheckedChildren="关" />
               </Form.Item>

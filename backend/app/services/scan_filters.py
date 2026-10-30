@@ -86,6 +86,9 @@ SCAN_FILTER_KEYS = (
     "pullback_leg_lookback_bars",       # ③ 触发层：腿搜索回看根数（1h）
     "pullback_leg_min_bars",            # ③ 触发层：反向腿最少持续根数
     "pullback_leg_min_atr",             # ③ 触发层：反向腿最小幅度（ATR 倍数）
+    # 4h 数据缺失 fail-open（docs/23 T13，2026-10-30）：默认 False=保持 fail-closed；
+    # 开启仅对数据失败（拉取失败/空数据/异常/core 不足）放行，市场状态拒因照旧
+    "htf_fail_open_enabled",
 )
 # swing_order（摆动点阶数）不在上表：它是 SystemConfig 顶层列（前端「摆动点阶数」
 # 独立提交），resolve 时单独读取并注入 ScanFilters.swing_order（2026-10-12 触发层
@@ -138,6 +141,10 @@ class ScanFilters:
     pullback_leg_lookback_bars: int = 24
     pullback_leg_min_bars: int = 2
     pullback_leg_min_atr: float = 0.5
+    # 4h 数据缺失 fail-open（docs/23 T13，2026-10-30）：默认 False（现网语义）。
+    # 开启后 scanner 仅在 4h「数据失败」时放行，并用 1h 方向票净差定向；
+    # 组合级预算/冷却在 scanner（HTF_FAIL_OPEN_*），本字段只管开关。
+    htf_fail_open_enabled: bool = False
 
     def touch_refs_for(self, direction: int) -> tuple:
         """按方向取生效触点白名单（2026-10-27，docs/15 §16）。
@@ -257,5 +264,7 @@ def resolve_scan_filters(cfg=None) -> ScanFilters:
         pullback_leg_lookback_bars=_int("pullback_leg_lookback_bars", 24, minimum=2),
         pullback_leg_min_bars=_int("pullback_leg_min_bars", 2),
         pullback_leg_min_atr=_num("pullback_leg_min_atr", 0.5),
+        htf_fail_open_enabled=_bool(
+            "htf_fail_open_enabled", settings.HTF_FAIL_OPEN_ENABLED),
         swing_order=_swing_order(settings.SWING_ORDER),
     )

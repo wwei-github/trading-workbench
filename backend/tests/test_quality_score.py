@@ -436,6 +436,43 @@ def test_pullback_box_rejects_inverted_ohlc():
     assert pullback_box_evidence(bad) is None
 
 
+# ── 箱体同源去重 + 放量门槛接线（docs/23 T11，2026-10-30）──────────────────
+
+
+def test_box_hit_skips_range_and_r2_low():
+    """箱体命中时跳过 range/r2_low（同源三罚去重）：24 根交替收盘 R²≈0 且
+    range_penalty=True，但只保留最重的 box——分项无 range/r2_low，分数 80−15"""
+    parts: dict = {}
+    score = compute_quality_score(1, _votes(), "trigger_pullback_confirm",
+                                  klines=_box_klines(24), range_penalty=True,
+                                  parts_out=parts)
+    assert parts["box"] == -15
+    assert "range" not in parts and "r2_low" not in parts
+    assert score == 65
+
+
+def test_box_hit_still_pays_other_penalties():
+    """去重只限同源三项：辅助票逆向扣分照常 —— 80 − 15 − 6 = 59"""
+    parts: dict = {}
+    score = compute_quality_score(1, _risk_votes(), "trigger_pullback_confirm",
+                                  klines=_box_klines(24), range_penalty=True,
+                                  parts_out=parts)
+    assert parts["box"] == -15
+    assert parts["risk_vote"] == -6
+    assert "range" not in parts and "r2_low" not in parts
+    assert score == 59
+
+
+def test_volume_bonus_uses_configured_threshold():
+    """放量加分门槛接回 flt.breakout_vol_ratio（默认 1.2）：量比 1.2 默认 +5，
+    门槛提到 2.0 后不再加分——同一配置不再在触发层/质量分两套口径"""
+    assert compute_quality_score(1, _votes(), "trigger_breakout",
+                                 klines=_vol_klines(120.0)) == 85
+    assert compute_quality_score(1, _votes(), "trigger_breakout",
+                                 klines=_vol_klines(120.0),
+                                 vol_ratio_min=2.0) == 80
+
+
 # ── 深回踩豁免（2026-10-29，docs/23 追加）────────────────────────────────────
 
 
