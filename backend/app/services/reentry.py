@@ -13,7 +13,7 @@ high/low 判断是否回到原开仓价（entry ± θR），成立发一张飞�
 - #12 预注册回放 FAIL → 卡片与页面必须带免责声明。
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import numpy as np
@@ -74,6 +74,15 @@ def compute_structure(bars: list[list], direction: str) -> Optional[dict]:
 def _bar_open_ms(ts_ms: int) -> int:
     """包含 ts_ms 的 1h 根开盘时间；整点边界归前一根（止损常在根收盘瞬间）。"""
     return (int(ts_ms) - 1) // BAR_MS * BAR_MS
+
+
+def _ms(dt: datetime) -> int:
+    """库内 naive UTC 时间 → epoch 毫秒。
+
+    必须显式按 UTC 解释：直接用 dt.timestamp() 会按宿主时区换算，非 UTC
+    机器（如本地 macOS Asia/Shanghai）会整体偏移，导致找不到止损根。
+    """
+    return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
 
 def compute_stop_wick(bars: list[list], direction: str, closed_ms: int) -> Optional[dict]:
@@ -168,6 +177,7 @@ def register_reentry_watches(db, now: Optional[datetime] = None, limit: int = 20
     pool = ExchangePool()
     created = 0
     theta = float(settings.REENTRY_TRIGGER_THETA_R or 0)
+    now_ms = _ms(now)
     for rec in candidates:
         try:
             entry = float(rec.entry_price or 0)
@@ -177,10 +187,12 @@ def register_reentry_watches(db, now: Optional[datetime] = None, limit: int = 20
             r_unit = abs(entry - stop0)
             if r_unit <= 0:
                 continue
-            closed_ms = int(rec.closed_at.replace(tzinfo=None).timestamp() * 1000)
+            closed_ms = _ms(rec.closed_at)
             # 止损根 = 包含 closed_at 的那根 1h；K 线拉到该根收盘为止
             bar_open_ms = _bar_open_ms(closed_ms)
             fetch_end_ms = bar_open_ms + BAR_MS
+            if fetch_end_ms > now_ms:
+                continue  # 止损根还没收盘（止损发生在当前小时），下轮再建
             kls = pool.get_klines_range(
                 rec.symbol, "1h",
                 REENTRY_LOOKBACK_H + settings.REENTRY_WINDOW_HOURS, fetch_end_ms,
@@ -246,6 +258,9 @@ def build_reentry_card(watch) -> dict:
     trig_note = "回到开仓价" if theta == 0 else f"开仓价 ± {theta:g}R"
     closed_at = (watch.expires_at - timedelta(hours=settings.REENTRY_WINDOW_HOURS)) \
         if watch.expires_at else None
+    # 库内为 naive UTC，卡片按北京时间展示（与扫描卡/持仓卡口径一致）
+    closed_txt = (closed_at + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M') \
+        if closed_at else '-'
     sw = st.get("stop_wick") or {}
     wick_txt = "—"
     if sw:
@@ -256,7 +271,7 @@ def build_reentry_card(watch) -> dict:
     lines = [
         f"**原单**：{watch.symbol} {side}｜入场 {_px(watch.entry_price)}｜止损 {_px(watch.stop_initial)}",
         f"**触发**：{_px(watch.trigger_price)}（{trig_note}）｜1h 收盘 {_px(watch.current_price)}",
-        f"**原单平仓**：{closed_at.strftime('%Y-%m-%d %H:%M') if closed_at else '-'}"
+        f"**原单平仓**：{closed_txt}（北京）"
         f"｜来源单 {watch.source_trade_id}",
         f"**止损根影线**：{wick_txt}",
         f"**结构**：EMA排列 {ok(st.get('ema_ok'))}｜ADX {st.get('adx') if st.get('adx') is not None else '-'} {ok(st.get('adx_ok'))}"
@@ -331,7 +346,7 @@ def sweep_reentry_watches(db, now: Optional[datetime] = None) -> dict:
         held.setdefault(_acc_key(acc_key, testnet), set()).add(symbol)
 
     pool = ExchangePool()
-    now_ms = int(now.replace(tzinfo=None).timestamp() * 1000)
+    now_ms = _ms(now)
     window_h = settings.REENTRY_WINDOW_HOURS
 
     for w in rows:
@@ -356,12 +371,10 @@ def sweep_reentry_watches(db, now: Optional[datetime] = None) -> dict:
             trig = float(w.trigger_price)
             closed_at = (w.expires_at - timedelta(hours=window_h)
                          if w.expires_at is not None else None)
-            stop_bar_open = (_bar_open_ms(int(closed_at.replace(tzinfo=None).timestamp() * 1000))
-                             if closed_at else None)
+            stop_bar_open = (_bar_open_ms(_ms(closed_at)) if closed_at else None)
             since = w.last_checked_at or closed_at
-            since_ms = int(since.replace(tzinfo=None).timestamp() * 1000) if since else 0
-            exp_ms = (int(w.expires_at.replace(tzinfo=None).timestamp() * 1000)
-                      if w.expires_at is not None else None)
+            since_ms = _ms(since) if since else 0
+            exp_ms = _ms(w.expires_at) if w.expires_at is not None else None
 
             hit = None
             for k in closed:

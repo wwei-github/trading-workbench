@@ -97,10 +97,10 @@
 
 ### A8 文档 / 测试
 - [x] `spec.md` 同步两道闸、小时收盘口径、字段/API/卡片/排班/前端/测试清单。
-- [x] `test_reentry_watch.py` 重写（29 例）：`compute_stop_wick` 5 例 + register 影线/结构路径
-      + sweep 小时收盘触发/止损根排除/窗口外/增量补扫/重发幂等。
+- [x] `test_reentry_watch.py` 重写（30 例）：`compute_stop_wick` 5 例 + register 影线/结构路径
+      + 止损根未收盘跳过 + sweep 小时收盘触发/止损根排除/窗口外/增量补扫/重发幂等。
 - [x] `PYENV_VERSION=3.11.9 python -m pytest tests/test_reentry_watch.py tests/test_reentry_shadow.py
-      tests/test_hold_warnings.py tests/test_pending_sweep_shortcut.py -q` → **47 passed**。
+      tests/test_hold_warnings.py tests/test_pending_sweep_shortcut.py -q` → **48 passed**。
 - [x] `cd frontend && npx tsc --noEmit` → 无错误。
 
 ### A9 提交

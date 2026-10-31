@@ -90,15 +90,16 @@ REENTRY_WICK_RANGE_MIN: float = 0.4    # 止损根反向影线 ≥ M 全幅
 - 无既有 `ReentryWatch.source_trade_id`
 - `entry_price>0` 且 OPEN 事件 `detail.stop_loss>0`（取初始止损，同 `shadow.tag_reentry_backfill` 口径）
 步骤：
-1. `closed_ms = closed_at` 毫秒；`bar_open_ms = 包含 closed_at 的 1h 开盘`；`fetch_end_ms = bar_open_ms + 3_600_000`。
-2. `ExchangePool().get_klines_range(symbol,'1h', REENTRY_LOOKBACK_H+REENTRY_WINDOW_HOURS, fetch_end_ms)`（**拉到止损根收盘为止**）。
-3. `wick = compute_stop_wick(klines, direction, closed_ms)`；`None` → 跳过（不落行）。
-4. `struct_bars=[k for k in klines if int(k[0])+3_600_000 <= fetch_end_ms]`（含止损根），`compute_structure(struct_bars, direction)`；`None` → 跳过。
-5. `structure['stop_wick'] = wick`（同一份快照落库，避免加列迁移）。
-6. `trigger_price = entry + dir*θ*r_unit`（dir=long→+1, short→−1）。
-7. 落 `ReentryWatch`：`wick.ok is False` → `wick_miss` + `resolved_at=now` + `resolve_reason='stop_wick_weak'`；否则 `structure_ok` → `watching`；否则 `structure_broken` + `resolved_at=now` + `resolve_reason='structure_broken_at_close'`。
-8. 逐笔 `db.commit()`；单笔异常 rollback + `logger.debug` 吞掉，不影响其他笔。
-9. 返回新建行数。
+1. `closed_ms = _ms(closed_at)`（库内 naive UTC 显式按 UTC 换算，不随宿主时区漂移）；`bar_open_ms = 包含 closed_at 的 1h 开盘`；`fetch_end_ms = bar_open_ms + 3_600_000`。
+2. **`fetch_end_ms > now` → 跳过**（止损根尚未收盘：low 可能继续下探、close 还在变，不能用形成中 K 线判影线/结构）；下一小时巡检再建。
+3. `ExchangePool().get_klines_range(symbol,'1h', REENTRY_LOOKBACK_H+REENTRY_WINDOW_HOURS, fetch_end_ms)`（**拉到止损根收盘为止**）。
+4. `wick = compute_stop_wick(klines, direction, closed_ms)`；`None` → 跳过（不落行）。
+5. `struct_bars=[k for k in klines if int(k[0])+3_600_000 <= fetch_end_ms]`（含止损根），`compute_structure(struct_bars, direction)`；`None` → 跳过。
+6. `structure['stop_wick'] = wick`（同一份快照落库，避免加列迁移）。
+7. `trigger_price = entry + dir*θ*r_unit`（dir=long→+1, short→−1）。
+8. 落 `ReentryWatch`：`wick.ok is False` → `wick_miss` + `resolved_at=now` + `resolve_reason='stop_wick_weak'`；否则 `structure_ok` → `watching`；否则 `structure_broken` + `resolved_at=now` + `resolve_reason='structure_broken_at_close'`。
+9. 逐笔 `db.commit()`；单笔异常 rollback + `logger.debug` 吞掉，不影响其他笔。
+10. 返回新建行数。
 
 ### 3.3 `sweep_reentry_watches(db, now=None) -> dict`
 先 `register_reentry_watches`，再扫 `status in ('watching','triggered')`。预加载同账号在跑 symbol 集合（`TradeRecord.status in ('OPENED','TP1_HIT','TP2_HIT')`）。逐条：
@@ -233,6 +234,7 @@ REENTRY_WICK_RANGE_MIN: float = 0.4    # 止损根反向影线 ≥ M 全幅
    - 影线不足 → 一行 `wick_miss`，`resolve_reason='stop_wick_weak'`（即使结构仍 OK）。
    - 影线过但结构 broken → 一行 `structure_broken`，`resolve_reason='structure_broken_at_close'`。
    - 测试网单 / 非 `sl` 单 / `excluded` 单 → 0 行；无 OPEN 止损快照 → 跳过；K 线不含止损根 → 跳过。
+   - 止损发生在当前小时（止损根未收盘）→ 本轮不建；下一小时已收盘后正常建。
    - 同一 `source_trade_id` 连跑两次 → 仍 1 行（唯一约束）。
 4. `sweep`（monkeypatch `ExchangePool.get_klines` + `send_feishu_card`，**不 mock ticker**）：
    - 已收盘 1h high/low 越过触发价 → `triggered`，且 `send_feishu_card` 仅调用 1 次、卡片 note 含免责声明；再跑一轮不重复发。

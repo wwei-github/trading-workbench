@@ -22,7 +22,7 @@ sqlite 内存库 + StaticPool；行情/飞书全部替身，不触网、不读 t
 """
 import sys
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -67,13 +67,18 @@ _LONG_WEAK_BAR = (115.9, 116.0, 115.4, 115.3)
 # ── 替身与数据构造 ────────────────────────────────────────────────────
 
 
+def _utc_ms(dt: datetime) -> int:
+    """固定时钟按 UTC 解释（与生产 _ms 口径一致，不随宿主时区漂移）。"""
+    return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+
 def _make_klines(end: datetime, trend: str = "up", n: int = 160) -> list[list]:
     """n 根 1h K 线（时间升序，最后一根收盘 = end）。
 
     up=单边上行（结构完好）；down=单边下行（空头结构完好）；range=震荡（结构已破）。
     open=上一根收盘。
     """
-    end_ms = int(end.replace(tzinfo=None).timestamp() * 1000)
+    end_ms = _utc_ms(end)
     start_ms = (end_ms - n * BAR_MS) // BAR_MS * BAR_MS
     kls, prev = [], 100.0
     for i in range(n):
@@ -90,18 +95,19 @@ def _make_klines(end: datetime, trend: str = "up", n: int = 160) -> list[list]:
 
 def _stop_bar_open(closed_at: datetime) -> datetime:
     """包含 closed_at 的那根 1h 的开盘时间（整点边界归前一根）。"""
-    ms = int(closed_at.replace(tzinfo=None).timestamp() * 1000)
+    ms = _utc_ms(closed_at)
     offset = (ms % BAR_MS) or BAR_MS  # 整点 → 前一根
     return closed_at.replace(tzinfo=None) - timedelta(milliseconds=offset)
 
 
-def _register_klines(trend: str = "up", stop_bar=_LONG_WICK_BAR) -> list[list]:
-    """止损根之前 160 根 + 止损根（收盘=CLOSED_AT 那根）。"""
-    stop_open = _stop_bar_open(CLOSED_AT)
+def _register_klines(trend: str = "up", stop_bar=_LONG_WICK_BAR,
+                     closed_at: datetime = CLOSED_AT) -> list[list]:
+    """止损根之前 160 根 + 止损根（收盘 = closed_at 那根）。"""
+    stop_open = _stop_bar_open(closed_at)
     bars = _make_klines(stop_open, trend, 160)
     if stop_bar is not None:
         o, h, l, c = stop_bar
-        bars.append([int(stop_open.timestamp() * 1000), o, h, l, c, 100.0])
+        bars.append([_utc_ms(stop_open), o, h, l, c, 100.0])
     return bars
 
 
@@ -241,7 +247,7 @@ def test_compute_structure_insufficient_bars():
 # ── 2. compute_stop_wick ─────────────────────────────────────────────
 
 
-_BAR0 = int(datetime(2026, 10, 31, 0, 0).timestamp() * 1000)
+_BAR0 = _utc_ms(datetime(2026, 10, 31, 0, 0))
 _BAR0_CLOSED = _BAR0 + BAR_MS
 
 
@@ -270,7 +276,7 @@ def test_stop_wick_short_pass():
 
 def test_stop_wick_boundary_belongs_to_previous_bar():
     """止损恰在整点：归前一根（open 09:00 收盘 10:00 的那根）"""
-    open_ms = int(datetime(2026, 10, 31, 9, 0).timestamp() * 1000)
+    open_ms = _utc_ms(datetime(2026, 10, 31, 9, 0))
     closed_ms = open_ms + BAR_MS
     bars = [*_wick_bars(*_LONG_WEAK_BAR, open_ms=open_ms - BAR_MS),
             *_wick_bars(*_LONG_WICK_BAR, open_ms=open_ms)]
@@ -282,7 +288,7 @@ def test_stop_wick_boundary_belongs_to_previous_bar():
 def test_stop_wick_missing_bar():
     """K 线未覆盖止损根 → None（不可判）"""
     assert compute_stop_wick([], "long", 0) is None
-    open_ms = int(datetime(2026, 10, 31, 9, 0).timestamp() * 1000)
+    open_ms = _utc_ms(datetime(2026, 10, 31, 9, 0))
     assert compute_stop_wick(_wick_bars(*_LONG_WICK_BAR, open_ms=open_ms),
                              "long", open_ms + 2 * BAR_MS) is None
 
@@ -398,6 +404,29 @@ def test_register_skips_without_stop_bar(db, monkeypatch):
     assert db.execute(select(func.count()).select_from(ReentryWatch)).scalar_one() == 0
 
 
+def test_register_skips_unclosed_stop_bar(db, monkeypatch):
+    """止损发生在当前小时（止损根未收盘）→ 本轮跳过，下一小时再建。
+
+    否则会用形成中的 K 线判影线/结构：low 可能继续下探、close 还在变，
+    快照会失真。register 的 now 是整点后 :06，故只需等下一轮。
+    """
+    tid = uuid.uuid4()
+    stop_at = datetime(2026, 10, 31, 12, 2, 0)
+    _add_closed_trade(db, tid, "FORMUSDT", closed_at=stop_at)
+    db.commit()
+    monkeypatch.setattr(
+        ep_mod, "ExchangePool",
+        lambda: _FakePool(_register_klines(closed_at=stop_at)))
+
+    assert register_reentry_watches(db, now=datetime(2026, 10, 31, 12, 6, 0)) == 0
+    assert db.execute(select(func.count()).select_from(ReentryWatch)).scalar_one() == 0
+
+    # 13:06 时止损根（12:00-13:00）已收盘 → 正常建监控
+    assert register_reentry_watches(db, now=datetime(2026, 10, 31, 13, 6, 0)) == 1
+    row = db.execute(select(ReentryWatch)).scalars().one()
+    assert row.status == "watching"
+
+
 # ── 4. sweep_reentry_watches ─────────────────────────────────────────
 
 
@@ -430,7 +459,7 @@ def test_sweep_stop_bar_not_used_for_trigger(db, monkeypatch):
     """止损那根自身 high 越过触发价也不算触发（根内先后顺序不可知）"""
     kl = _make_klines(NOW, "range")
     stop_idx = 145  # 止损根 = NOW-15h 开仓那根
-    assert kl[stop_idx][0] == int((NOW - timedelta(hours=15)).timestamp() * 1000)
+    assert kl[stop_idx][0] == _utc_ms(NOW - timedelta(hours=15))
     kl[stop_idx] = [kl[stop_idx][0], kl[stop_idx][1], 120.0, kl[stop_idx][3],
                     kl[stop_idx][4], 100.0]
     _add_watch(db, trigger=110.0)

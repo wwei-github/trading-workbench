@@ -204,10 +204,12 @@ export default function ReentryWatchPanel() {
         const meta = STATUS_META[v] || { color: 'default', label: v, hint: '' }
         return (
           <Tooltip title={meta.hint}>
-            <Tag color={meta.color}>{meta.label}</Tag>
-            {r.resolve_reason === 'structure_broken_at_close' && (
-              <Text type="secondary" style={{ fontSize: 12 }}>（平仓时已破）</Text>
-            )}
+            <Space size={2}>
+              <Tag color={meta.color}>{meta.label}</Tag>
+              {r.resolve_reason === 'structure_broken_at_close' && (
+                <Text type="secondary" style={{ fontSize: 12 }}>（平仓时已破）</Text>
+              )}
+            </Space>
           </Tooltip>
         )
       },
