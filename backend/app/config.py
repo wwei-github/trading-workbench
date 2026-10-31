@@ -137,6 +137,11 @@ class Settings(BaseSettings):
     # θ = 触发阈值（R 倍数），0=回到原开仓价；窗口 = 止损平仓后的监控时长
     REENTRY_TRIGGER_THETA_R: float = 0.0
     REENTRY_WINDOW_HOURS: int = 24
+    # 止损根长影线闸（2026-10-31，用户拍板）：只认「止损那根 1h」带明显反向
+    # 影线的再入场（多头看下影、空头看上影）——影线 ≥ N×实体 且 ≥ 全幅 M。
+    # 影线不够长说明是有效跌破/突破而非插针，直接落 wick_miss 终态不再等。
+    REENTRY_WICK_BODY_MULT: float = 2.0
+    REENTRY_WICK_RANGE_MIN: float = 0.4
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
     # 入场位置闸（docs/需求文档/15-实盘止损归因与上线包 B1，2026-10-27）：
     # 成交价在信号 K（最后一根已收盘 1h K）中的相对位置 pos=(price−low)/(high−low)

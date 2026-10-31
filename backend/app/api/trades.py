@@ -530,7 +530,7 @@ def open_from_analysis(payload: OpenFromAnalysisRequest):
 
 
 def _reentry_out(r, now: datetime) -> ReentryWatchOut:
-    """再入场监控行 → API 输出（结构展平 + watching 倒计时）。"""
+    """再入场监控行 → API 输出（结构/影线展平 + watching 倒计时）。"""
     item = ReentryWatchOut.model_validate(r)
     st = r.structure_json or {}
     item.ema_ok = st.get("ema_ok")
@@ -540,6 +540,10 @@ def _reentry_out(r, now: datetime) -> ReentryWatchOut:
     item.r2 = st.get("r2")
     item.r2_ok = st.get("r2_ok")
     item.structure_ok = st.get("structure_ok")
+    sw = st.get("stop_wick") or {}
+    item.stop_wick_ok = sw.get("ok")
+    item.stop_wick_pct = sw.get("pct")
+    item.stop_wick_mult = sw.get("mult")
     if r.status == "watching" and r.expires_at:
         item.seconds_left = max(0, int((r.expires_at - now).total_seconds()))
     else:

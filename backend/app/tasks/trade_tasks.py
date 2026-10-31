@@ -43,7 +43,10 @@ from app.services.trade_locks import (  # noqa: E402
     OPEN_LOCK_WAIT_S as _OPEN_LOCK_WAIT_S,
     acquire_open_lock as _acquire_open_lock,
     open_lock_key as _open_lock_key,
+    pending_sweep_flag_client,
+    read_pending_sweep_flag,
     release_open_lock as _release_open_lock,
+    set_pending_sweep_flag,
 )
 
 
@@ -231,12 +234,13 @@ def manual_open_from_analysis(analysis_id: str, account_key: str) -> dict:
 
 @celery_app.task(name="app.tasks.trade_tasks.watch_reentry_watches", max_retries=0)
 def watch_reentry_watches():
-    """止损后再入场检测与提醒（2026-10-31，docs/需求文档/24，每分钟）。
+    """止损后再入场检测与提醒（2026-10-31，docs/需求文档/24，每小时 :06）。
 
     只读行情 + 只写 reentry_watches；不下单、不建 TradeRecord、不占开仓锁。
-    先为最近正式网止损单建监控，再巡检：触发优先 → 到期 → 同币在跑仓 →
-    结构破坏。高频任务不写 task_log（同 watch_pending_entries），异常走
-    logger 落到应用日志，绝不影响交易主链路。
+    先为最近正式网止损单建监控（止损根长影线 + 结构两道闸），再用已收盘 1h
+    的 high/low 巡检：触发优先 → 到期 → 同币在跑仓 → 结构破坏。任务不写
+    task_log（同 watch_pending_entries），异常走 logger 落到应用日志，绝不
+    影响交易主链路。
     """
     from app.services.reentry import sweep_reentry_watches
 
@@ -635,42 +639,58 @@ def _expire_or_materialize(db, trader, pe_id, cfg, now: datetime) -> None:
 
 @celery_app.task(name="app.tasks.trade_tasks.watch_pending_entries", max_retries=0)
 def watch_pending_entries():
-    """挂单入场兜底巡检（docs/27，每分钟 beat）：成交落地 + 1 小时未成交清除。
+    """挂单入场兜底巡检（docs/27，每 15 分钟 beat）：成交落地 + 1 小时未成交清除。
 
     与 event_executor（WS 实时，EVENT_EXEC_ENABLED 开时）双入口；幂等由
     materialize_pending_entry 的行锁 + status 二次校验保证，重复触发不会重复建单。
     每账号取开仓锁（与该账号结算巡检/开仓互斥）后逐条处理——异常逐条吞掉记日志，
-    不中断其它账号。无 active pending 时零 REST 调用、只有一次 DB 查询。
+    不中断其它账号。
 
-    高频任务不写 task_log（每分钟一条会刷爆系统日志页），异常走 logger 落到应用日志。
+    空转短路（2026-10-31）：先读 Redis 标志 pending:sweep:active:v1——'0' 表示
+    无待处理工作，直接返回不查库；'1'/缺失/Redis 异常均回退查库。标志由新建
+    挂单、新建保护事故的写入口置 '1'，巡检发现为空再置 '0'；TTL 900s 兜底，
+    漏置最多 15 分钟自愈（与巡检节奏一致）。
+
+    降频提示（2026-10-31 由每分钟改 15 分钟）：挂单成交最迟约 15 分钟落地，
+    保护事故重试同样以 15 分钟为上限；需要更快恢复时要另起高频事故恢复任务。
+
+    高频任务不写 task_log（每 15 分钟一条会刷爆系统日志页），异常走 logger 落到应用日志。
     """
-    db = SessionLocal()
+    flag_r = pending_sweep_flag_client()
     try:
-        rows = db.execute(
-            select(PendingEntryOrder).where(PendingEntryOrder.status == "pending")
-        ).scalars().all()
-        cfg = db.get(SystemConfig, 1)
-        from app.models.trade import ProtectionIncident
-        from app.services.protection_recovery import ACTIVE_STATUSES
-        incidents = db.execute(select(ProtectionIncident.account_key, ProtectionIncident.testnet)
-            .where(ProtectionIncident.status.in_(ACTIVE_STATUSES))
-            .distinct()).all()
-        # 按账号分组（account_key 空旧行按环境回落，与全局账号口径一致）
-        by_acc: dict = {}
-        for pe in rows:
-            key = pe.account_key or ("testnet-1" if pe.testnet else "live-1")
-            by_acc.setdefault(key, []).append(pe.id)
-        # 事故以落库的 testnet 为准对账：账号若已从注册表移除，BinanceTrader(key)
-        # 会回落到其它账号，届时用 trader.testnet 查事故将永远查不到（账号锁死）
-        incident_envs: dict = {}
-        for account_key, testnet in incidents:
-            key = account_key or ("testnet-1" if testnet else "live-1")
-            by_acc.setdefault(key, [])
-            incident_envs.setdefault(key, set()).add(bool(testnet))
+        if read_pending_sweep_flag(flag_r) == "0":
+            return
+        db = SessionLocal()
+        try:
+            rows = db.execute(
+                select(PendingEntryOrder).where(PendingEntryOrder.status == "pending")
+            ).scalars().all()
+            from app.models.trade import ProtectionIncident
+            from app.services.protection_recovery import ACTIVE_STATUSES
+            incidents = db.execute(
+                select(ProtectionIncident.account_key, ProtectionIncident.testnet)
+                .where(ProtectionIncident.status.in_(ACTIVE_STATUSES))
+                .distinct()).all()
+            # 按账号分组（account_key 空旧行按环境回落，与全局账号口径一致）
+            by_acc: dict = {}
+            for pe in rows:
+                key = pe.account_key or ("testnet-1" if pe.testnet else "live-1")
+                by_acc.setdefault(key, []).append(pe.id)
+            # 事故以落库的 testnet 为准对账：账号若已从注册表移除，BinanceTrader(key)
+            # 会回落到其它账号，届时用 trader.testnet 查事故将永远查不到（账号锁死）
+            incident_envs: dict = {}
+            for account_key, testnet in incidents:
+                key = account_key or ("testnet-1" if testnet else "live-1")
+                by_acc.setdefault(key, [])
+                incident_envs.setdefault(key, set()).add(bool(testnet))
+        finally:
+            db.close()
+        if not by_acc:
+            set_pending_sweep_flag(flag_r, False)
+            return
+        set_pending_sweep_flag(flag_r, True)
     finally:
-        db.close()
-    if not by_acc:
-        return
+        flag_r.close()
 
     r = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     now = datetime.utcnow()
@@ -692,6 +712,8 @@ def watch_pending_entries():
         try:
             db = SessionLocal()
             try:
+                # 配置只在确有挂单要处理时加载（空转短路后省掉这次查询）
+                cfg = db.get(SystemConfig, 1) if pe_ids else None
                 try:
                     from app.services.protection_recovery import recover_due_incidents
                     for env in sorted(incident_envs.get(key) or {trader.testnet}):

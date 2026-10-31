@@ -154,7 +154,7 @@ def react_to_order_update(account_key: str, symbol: str, order_id: int) -> bool:
     - 未命中 → 回落到既有 react_to_fill（结算路径不变，零行为变化）。
 
     仅在 EVENT_EXEC_ENABLED=true 时由 event_stream 调用（默认关，不影响默认行为）。
-    等锁失败放弃 → 分钟巡检 watch_pending_entries 兜底；异常只记日志返回 False。
+    等锁失败放弃 → 15 分钟巡检 watch_pending_entries 兜底；异常只记日志返回 False。
     """
     db = SessionLocal()
     try:
@@ -178,7 +178,7 @@ def react_to_order_update(account_key: str, symbol: str, order_id: int) -> bool:
         ident = f"event-pe-{uuid4().hex[:8]}"
         if not acquire_open_lock(r, ident, wait_s=_LOCK_WAIT_S, ttl_s=OPEN_LOCK_TTL_S,
                                  account=account_key):
-            logger.info("挂单成交事件 %s/%s 放弃：开仓锁被占用（分钟巡检兜底）",
+            logger.info("挂单成交事件 %s/%s 放弃：开仓锁被占用（15 分钟巡检兜底）",
                         account_key, symbol)
             return False
         try:
@@ -194,7 +194,7 @@ def react_to_order_update(account_key: str, symbol: str, order_id: int) -> bool:
         finally:
             release_open_lock(r, ident, account=account_key)
     except Exception:
-        logger.exception("挂单成交事件 %s/%s 失败（分钟巡检兜底）", account_key, symbol)
+        logger.exception("挂单成交事件 %s/%s 失败（15 分钟巡检兜底）", account_key, symbol)
         return False
     finally:
         db.close()

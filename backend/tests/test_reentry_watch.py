@@ -1,19 +1,24 @@
 # -*- coding: utf-8 -*-
 """止损后再入场检测与提醒（docs/需求文档/24，2026-10-31）：单测。
 
-覆盖（spec §7）：
+覆盖（spec §7 + 2026-10-31 增补口径）：
 1. compute_structure：强多头 → structure_ok；同数据给空头 → 不对称（ema_ok=False）；
    不足 66 根 → None
-2. register_reentry_watches：正式网 sl 单 + 结构 OK → 1 行 watching（θ=0，
-   expires_at=closed_at+24h）；测试网/非 sl/excluded → 0；结构已破 → 1 行
-   structure_broken；同一 source_trade_id 幂等；无 OPEN 止损快照 → 跳过
-3. sweep_reentry_watches：触发（仅发 1 张卡、note 含免责声明、重跑不重发）/
-   到期 ttl / 同币在跑仓 open_position / 结构破坏 structure_break /
-   取价异常保持 watching / triggered 未通知下轮补发
-4. API：GET 字段（seconds_left + 结构展平）；POST dismiss 正常置终态、终态再调 400
-5. 回归：不产生 TradeRecord、不动 RULE_VERSION
+2. compute_stop_wick：止损根长下影 → 合格；下影不足 → 不合格；空头上影对称；
+   整点边界归前一根；找不到止损根 → None
+3. register_reentry_watches：正式网 sl 单 + 影线/结构都过 → 1 行 watching
+   （θ=0，expires_at=closed_at+24h）；影线不足 → wick_miss；影线过但结构破 →
+   structure_broken；测试网/非 sl/excluded → 0；同一 source_trade_id 幂等；
+   无 OPEN 止损快照 → 跳过
+4. sweep_reentry_watches：小时收盘触发（多头 high / 空头 low）→ 只发 1 张卡、
+   note 含免责声明、重跑不重发；到期 ttl；同币在跑仓 open_position；结构破坏
+   structure_break；止损那根不参与触发；窗口外收盘根不认；last_checked_at
+   按新根增量补扫；K 线拉取异常保持 watching；triggered 未通知下轮补发
+5. API：GET 字段（seconds_left + 结构/影线展平）；POST dismiss 正常置终态、
+   终态再调 400
+6. 回归：不产生 TradeRecord、不动 RULE_VERSION
 
-sqlite 内存库 + StaticPool；行情/下单/飞书全部替身，不触网。
+sqlite 内存库 + StaticPool；行情/飞书全部替身，不触网、不读 ticker。
 """
 import sys
 import uuid
@@ -33,12 +38,12 @@ from app.config import settings  # noqa: E402
 from app.database import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models.trade import ReentryWatch, TradeEvent, TradeRecord  # noqa: E402
-from app.services import binance_trader as bt_mod  # noqa: E402
 from app.services import exchange_pool as ep_mod  # noqa: E402
 from app.services import notify as notify_mod  # noqa: E402
 from app.services.reentry import (  # noqa: E402
     BAR_MS,
     CARD_DISCLAIMER,
+    compute_stop_wick,
     compute_structure,
     register_reentry_watches,
     sweep_reentry_watches,
@@ -46,28 +51,58 @@ from app.services.reentry import (  # noqa: E402
 
 # 固定时钟：所有时间断言不依赖当前机器时间
 NOW = datetime(2026, 10, 31, 12, 0, 0)
-CLOSED_AT = NOW - timedelta(hours=2)
+CLOSED_AT = NOW - timedelta(hours=2)  # 整点止损 → 止损根 = 09:00-10:00
 
 _OK_STRUCTURE = {
     "ema_ok": True, "ema144_used": True, "adx": 28.4,
     "adx_ok": True, "r2": 0.62, "r2_ok": True, "structure_ok": True,
 }
 
+# 多头止损根：下影 6.2 / 实体 0.2 / 全幅 6.5 → 31×实体、95% 全幅（合格）
+_LONG_WICK_BAR = (115.9, 116.0, 109.5, 115.7)
+# 多头止损根：下影 0（收在最低附近）→ 不合格
+_LONG_WEAK_BAR = (115.9, 116.0, 115.4, 115.3)
+
 
 # ── 替身与数据构造 ────────────────────────────────────────────────────
 
 
-def _make_klines(closed_at: datetime, trend: str = "up", n_pre: int = 160) -> list[list]:
-    """平仓前 n_pre 根 1h K 线：up=单边上行（结构完好）；range=震荡（结构已破）。"""
-    t0_ms = int((closed_at.replace(tzinfo=None) - timedelta(hours=n_pre)).timestamp() * 1000)
-    t0_ms = t0_ms // BAR_MS * BAR_MS
+def _make_klines(end: datetime, trend: str = "up", n: int = 160) -> list[list]:
+    """n 根 1h K 线（时间升序，最后一根收盘 = end）。
+
+    up=单边上行（结构完好）；down=单边下行（空头结构完好）；range=震荡（结构已破）。
+    open=上一根收盘。
+    """
+    end_ms = int(end.replace(tzinfo=None).timestamp() * 1000)
+    start_ms = (end_ms - n * BAR_MS) // BAR_MS * BAR_MS
     kls, prev = [], 100.0
-    for i in range(n_pre):
-        c = 100.0 + i * 0.10 if trend == "up" else 100.0 + 4 * (i % 2 * 2 - 1)
-        hi, lo = c + 0.3, c - 0.3
-        kls.append([t0_ms + i * BAR_MS, prev, hi, lo, c, 100.0])
+    for i in range(n):
+        if trend == "up":
+            c = 100.0 + i * 0.10
+        elif trend == "down":
+            c = 100.0 - i * 0.10
+        else:
+            c = 100.0 + 4 * (i % 2 * 2 - 1)
+        kls.append([start_ms + i * BAR_MS, prev, c + 0.3, c - 0.3, c, 100.0])
         prev = c
     return kls
+
+
+def _stop_bar_open(closed_at: datetime) -> datetime:
+    """包含 closed_at 的那根 1h 的开盘时间（整点边界归前一根）。"""
+    ms = int(closed_at.replace(tzinfo=None).timestamp() * 1000)
+    offset = (ms % BAR_MS) or BAR_MS  # 整点 → 前一根
+    return closed_at.replace(tzinfo=None) - timedelta(milliseconds=offset)
+
+
+def _register_klines(trend: str = "up", stop_bar=_LONG_WICK_BAR) -> list[list]:
+    """止损根之前 160 根 + 止损根（收盘=CLOSED_AT 那根）。"""
+    stop_open = _stop_bar_open(CLOSED_AT)
+    bars = _make_klines(stop_open, trend, 160)
+    if stop_bar is not None:
+        o, h, l, c = stop_bar
+        bars.append([int(stop_open.timestamp() * 1000), o, h, l, c, 100.0])
+    return bars
 
 
 class _FakePool:
@@ -81,6 +116,16 @@ class _FakePool:
 
     def get_klines(self, symbol, interval, limit):
         return self.klines
+
+
+class _RaisingPool:
+    """拉 K 线全部失败：巡检应保持 watching。"""
+
+    def get_klines_range(self, *a, **kw):
+        return []
+
+    def get_klines(self, *a, **kw):
+        raise RuntimeError("kline boom")
 
 
 def _add_closed_trade(s, tid, symbol, *, direction="long", entry=100.0, stop=95.0,
@@ -101,7 +146,7 @@ def _add_closed_trade(s, tid, symbol, *, direction="long", entry=100.0, stop=95.
 def _add_watch(s, *, symbol="BTCUSDT", direction="long", status="watching",
                entry=100.0, stop=95.0, trigger=100.0,
                expires_at=NOW + timedelta(hours=10), structure=None,
-               notified_at=None, triggered_at=None):
+               notified_at=None, triggered_at=None, last_checked_at=None):
     w = ReentryWatch(
         source_trade_id=uuid.uuid4(), symbol=symbol, direction=direction,
         account_key=None, testnet=False, rule_version="v2026-10-30",
@@ -109,32 +154,28 @@ def _add_watch(s, *, symbol="BTCUSDT", direction="long", status="watching",
         theta_r=0, trigger_price=trigger, status=status,
         structure_json=structure or dict(_OK_STRUCTURE),
         notified_at=notified_at, triggered_at=triggered_at,
+        last_checked_at=last_checked_at,
         expires_at=expires_at,
     )
     s.add(w)
     return w
 
 
-def _patch_sweep(monkeypatch, *, price=100.0, klines=None, price_raises=False):
-    """替身行情/飞书：返回 (发送记录列表, price 调用记录)。"""
+def _patch_sweep(monkeypatch, *, klines=None, raise_kline=False):
+    """替身行情/飞书：返回发送记录列表。"""
     sent: list[dict] = []
-    prices: list[str] = []
 
     def _send(card, *, testnet=False):
         sent.append(card)
         return True
 
-    def _price(self, symbol):
-        prices.append(symbol)
-        if price_raises:
-            raise RuntimeError("ticker boom")
-        return price
-
     monkeypatch.setattr(notify_mod, "send_feishu_card", _send)
-    monkeypatch.setattr(bt_mod.BinanceTrader, "price", _price)
-    kl = klines if klines is not None else _make_klines(NOW, "up")
-    monkeypatch.setattr(ep_mod, "ExchangePool", lambda: _FakePool(kl))
-    return sent, prices
+    if raise_kline:
+        monkeypatch.setattr(ep_mod, "ExchangePool", lambda: _RaisingPool())
+    else:
+        kl = klines if klines is not None else _make_klines(NOW, "up")
+        monkeypatch.setattr(ep_mod, "ExchangePool", lambda: _FakePool(kl))
+    return sent
 
 
 @pytest.fixture()
@@ -193,23 +234,71 @@ def test_compute_structure_short_asymmetric():
 
 def test_compute_structure_insufficient_bars():
     """少于 66 根：数据不可判 → None"""
-    assert compute_structure(_make_klines(NOW, "up", n_pre=60), "long") is None
+    assert compute_structure(_make_klines(NOW, "up", n=60), "long") is None
     assert compute_structure([], "long") is None
 
 
-# ── 2. register_reentry_watches ──────────────────────────────────────
+# ── 2. compute_stop_wick ─────────────────────────────────────────────
+
+
+_BAR0 = int(datetime(2026, 10, 31, 0, 0).timestamp() * 1000)
+_BAR0_CLOSED = _BAR0 + BAR_MS
+
+
+def _wick_bars(o, h, l, c, open_ms=_BAR0):
+    return [[open_ms, o, h, l, c, 100.0]]
+
+
+def test_stop_wick_long_pass():
+    """多头看下影：6.2 ≥ 2×0.2 实体且 ≥ 40% 全幅 → 合格"""
+    v = compute_stop_wick(_wick_bars(*_LONG_WICK_BAR), "long", _BAR0_CLOSED)
+    assert v is not None and v["ok"] is True
+    assert v["pct"] >= 0.4 and v["mult"] >= 2.0
+
+
+def test_stop_wick_long_fail():
+    """多头下影≈0（收在最低附近）→ 不合格"""
+    v = compute_stop_wick(_wick_bars(*_LONG_WEAK_BAR), "long", _BAR0_CLOSED)
+    assert v is not None and v["ok"] is False
+
+
+def test_stop_wick_short_pass():
+    """空头看上涨影：上影 5.8 ≥ 2×0.2 且 ≥ 40% 全幅 → 合格"""
+    v = compute_stop_wick(_wick_bars(100.0, 106.0, 99.9, 100.2), "short", _BAR0_CLOSED)
+    assert v is not None and v["ok"] is True
+
+
+def test_stop_wick_boundary_belongs_to_previous_bar():
+    """止损恰在整点：归前一根（open 09:00 收盘 10:00 的那根）"""
+    open_ms = int(datetime(2026, 10, 31, 9, 0).timestamp() * 1000)
+    closed_ms = open_ms + BAR_MS
+    bars = [*_wick_bars(*_LONG_WEAK_BAR, open_ms=open_ms - BAR_MS),
+            *_wick_bars(*_LONG_WICK_BAR, open_ms=open_ms)]
+    v = compute_stop_wick(bars, "long", closed_ms)
+    assert v is not None and v["bar_open_ms"] == open_ms
+    assert v["ok"] is True  # 命中的是 09:00 那根长下影，而非前一根
+
+
+def test_stop_wick_missing_bar():
+    """K 线未覆盖止损根 → None（不可判）"""
+    assert compute_stop_wick([], "long", 0) is None
+    open_ms = int(datetime(2026, 10, 31, 9, 0).timestamp() * 1000)
+    assert compute_stop_wick(_wick_bars(*_LONG_WICK_BAR, open_ms=open_ms),
+                             "long", open_ms + 2 * BAR_MS) is None
+
+
+# ── 3. register_reentry_watches ──────────────────────────────────────
 
 
 def test_register_creates_watching(db, monkeypatch):
-    """正式网 CLOSED+sl+结构 OK → 1 行 watching，trigger_price==entry（θ=0），
-    expires_at==closed_at+24h；不产生新的 TradeRecord"""
+    """正式网 CLOSED+sl+影线/结构都过 → 1 行 watching，trigger_price==entry
+    （θ=0），expires_at==closed_at+24h；structure_json 带 stop_wick；不建 TradeRecord"""
     tid = uuid.uuid4()
     _add_closed_trade(db, tid, "BTCUSDT")
     db.commit()
     before = db.execute(select(func.count()).select_from(TradeRecord)).scalar_one()
 
-    monkeypatch.setattr(ep_mod, "ExchangePool",
-                        lambda: _FakePool(_make_klines(CLOSED_AT, "up")))
+    monkeypatch.setattr(ep_mod, "ExchangePool", lambda: _FakePool(_register_klines()))
     assert register_reentry_watches(db, now=NOW) == 1
 
     row = db.execute(select(ReentryWatch)).scalars().one()
@@ -222,10 +311,29 @@ def test_register_creates_watching(db, monkeypatch):
     assert float(row.trigger_price) == pytest.approx(100.0)  # θ=0 → 回到开仓价
     assert row.expires_at == CLOSED_AT + timedelta(hours=24)
     assert row.structure_json["structure_ok"] is True
+    assert row.structure_json["stop_wick"]["ok"] is True
+    assert row.structure_json["stop_wick"]["pct"] >= 0.4
     assert row.resolve_reason is None and row.resolved_at is None
 
     after = db.execute(select(func.count()).select_from(TradeRecord)).scalar_one()
     assert after == before
+
+
+def test_register_wick_miss(db, monkeypatch):
+    """止损根下影不足 → wick_miss 终态（不等价格回开仓价，也不再看结构）"""
+    _add_closed_trade(db, uuid.uuid4(), "WICKUSDT")
+    db.commit()
+
+    monkeypatch.setattr(
+        ep_mod, "ExchangePool",
+        lambda: _FakePool(_register_klines(stop_bar=_LONG_WEAK_BAR)))
+    assert register_reentry_watches(db, now=NOW) == 1
+
+    row = db.execute(select(ReentryWatch)).scalars().one()
+    assert row.status == "wick_miss"
+    assert row.resolve_reason == "stop_wick_weak"
+    assert row.resolved_at == NOW
+    assert row.structure_json["stop_wick"]["ok"] is False
 
 
 def test_register_filters_testnet_reason_and_excluded(db, monkeypatch):
@@ -235,19 +343,18 @@ def test_register_filters_testnet_reason_and_excluded(db, monkeypatch):
     _add_closed_trade(db, uuid.uuid4(), "XUSDT", excluded=True)
     db.commit()
 
-    monkeypatch.setattr(ep_mod, "ExchangePool",
-                        lambda: _FakePool(_make_klines(CLOSED_AT, "up")))
+    monkeypatch.setattr(ep_mod, "ExchangePool", lambda: _FakePool(_register_klines()))
     assert register_reentry_watches(db, now=NOW) == 0
     assert db.execute(select(func.count()).select_from(ReentryWatch)).scalar_one() == 0
 
 
 def test_register_structure_broken_at_close(db, monkeypatch):
-    """结构已破 → 直接落 structure_broken 终态（供页面解释为何没提醒）"""
+    """影线合格但结构已破 → structure_broken 终态（供页面解释为何没提醒）"""
     _add_closed_trade(db, uuid.uuid4(), "RANGEUSDT")
     db.commit()
 
     monkeypatch.setattr(ep_mod, "ExchangePool",
-                        lambda: _FakePool(_make_klines(CLOSED_AT, "range")))
+                        lambda: _FakePool(_register_klines(trend="range")))
     assert register_reentry_watches(db, now=NOW) == 1
 
     row = db.execute(select(ReentryWatch)).scalars().one()
@@ -255,6 +362,7 @@ def test_register_structure_broken_at_close(db, monkeypatch):
     assert row.resolve_reason == "structure_broken_at_close"
     assert row.resolved_at == NOW
     assert row.structure_json["structure_ok"] is False
+    assert row.structure_json["stop_wick"]["ok"] is True
 
 
 def test_register_idempotent(db, monkeypatch):
@@ -262,8 +370,7 @@ def test_register_idempotent(db, monkeypatch):
     _add_closed_trade(db, uuid.uuid4(), "BTCUSDT")
     db.commit()
 
-    monkeypatch.setattr(ep_mod, "ExchangePool",
-                        lambda: _FakePool(_make_klines(CLOSED_AT, "up")))
+    monkeypatch.setattr(ep_mod, "ExchangePool", lambda: _FakePool(_register_klines()))
     assert register_reentry_watches(db, now=NOW) == 1
     assert register_reentry_watches(db, now=NOW) == 0
     assert db.execute(select(func.count()).select_from(ReentryWatch)).scalar_one() == 1
@@ -274,20 +381,32 @@ def test_register_skips_without_open_stop_snapshot(db, monkeypatch):
     _add_closed_trade(db, uuid.uuid4(), "NOSNAPUSDT", with_event=False)
     db.commit()
 
-    monkeypatch.setattr(ep_mod, "ExchangePool",
-                        lambda: _FakePool(_make_klines(CLOSED_AT, "up")))
+    monkeypatch.setattr(ep_mod, "ExchangePool", lambda: _FakePool(_register_klines()))
     assert register_reentry_watches(db, now=NOW) == 0
     assert db.execute(select(func.count()).select_from(ReentryWatch)).scalar_one() == 0
 
 
-# ── 3. sweep_reentry_watches ─────────────────────────────────────────
+def test_register_skips_without_stop_bar(db, monkeypatch):
+    """K 线未覆盖止损根 → 影线不可判，跳过不落行"""
+    _add_closed_trade(db, uuid.uuid4(), "NOBARUSDT")
+    db.commit()
+
+    monkeypatch.setattr(
+        ep_mod, "ExchangePool",
+        lambda: _FakePool(_register_klines(stop_bar=None)))
+    assert register_reentry_watches(db, now=NOW) == 0
+    assert db.execute(select(func.count()).select_from(ReentryWatch)).scalar_one() == 0
 
 
-def test_sweep_triggers_and_notifies_once(db, monkeypatch):
-    """价格到达触发价 → triggered；只发 1 张卡且 note 含免责声明；重跑不重发"""
+# ── 4. sweep_reentry_watches ─────────────────────────────────────────
+
+
+def test_sweep_triggers_on_closed_bar(db, monkeypatch):
+    """已收盘 1h 的 high 越过触发价 → triggered；只发 1 张卡且含免责声明；
+    重跑不重发"""
     w = _add_watch(db, trigger=100.0)
     db.commit()
-    sent, _prices = _patch_sweep(monkeypatch, price=100.0)
+    sent = _patch_sweep(monkeypatch)
 
     counts = sweep_reentry_watches(db, now=NOW)
     assert counts["triggered"] == 1
@@ -296,23 +415,80 @@ def test_sweep_triggers_and_notifies_once(db, monkeypatch):
     assert w.status == "triggered"
     assert w.triggered_at == NOW
     assert w.notified_at is not None
-    assert float(w.current_price) == pytest.approx(100.0)
+    assert float(w.current_price) == pytest.approx(115.8)  # 最后一根已收盘 close
 
     assert len(sent) == 1
     note = sent[0]["elements"][-1]
     assert note["elements"][0]["content"] == CARD_DISCLAIMER
 
-    # 再跑一轮：已通知 → 不再发送
     counts2 = sweep_reentry_watches(db, now=NOW)
     assert counts2["triggered"] == 0
     assert len(sent) == 1
 
 
+def test_sweep_stop_bar_not_used_for_trigger(db, monkeypatch):
+    """止损那根自身 high 越过触发价也不算触发（根内先后顺序不可知）"""
+    kl = _make_klines(NOW, "range")
+    stop_idx = 145  # 止损根 = NOW-15h 开仓那根
+    assert kl[stop_idx][0] == int((NOW - timedelta(hours=15)).timestamp() * 1000)
+    kl[stop_idx] = [kl[stop_idx][0], kl[stop_idx][1], 120.0, kl[stop_idx][3],
+                    kl[stop_idx][4], 100.0]
+    _add_watch(db, trigger=110.0)
+    db.commit()
+    sent = _patch_sweep(monkeypatch, klines=kl)
+
+    counts = sweep_reentry_watches(db, now=NOW)
+    assert counts["triggered"] == 0
+
+    row = db.execute(select(ReentryWatch)).scalars().one()
+    assert row.status in ("watching", "structure_broken")
+    assert sent == []
+
+
+def test_sweep_ignores_bars_after_expiry(db, monkeypatch):
+    """已收盘根触碰触发价，但该根收盘已过窗口 → 不触发，按到期收敛"""
+    kl = _make_klines(NOW, "range")
+    kl[-2] = [kl[-2][0], kl[-2][1], 120.0, kl[-2][3], kl[-2][4], 100.0]  # 最后一根已收盘
+    _add_watch(db, trigger=110.0, expires_at=NOW - timedelta(hours=2))
+    db.commit()
+    sent = _patch_sweep(monkeypatch, klines=kl)
+
+    counts = sweep_reentry_watches(db, now=NOW)
+    assert counts["triggered"] == 0
+    assert counts["expired"] == 1
+
+    row = db.execute(select(ReentryWatch)).scalars().one()
+    assert row.status == "expired" and row.resolve_reason == "ttl"
+    assert sent == []
+
+
+def test_sweep_incremental_scan(db, monkeypatch):
+    """last_checked_at 已覆盖的根不再重扫；更早的 last_checked_at 会补扫"""
+    kl = _make_klines(NOW, "up")
+    kl[-2] = [kl[-2][0], kl[-2][1], 130.0, kl[-2][3], kl[-2][4], 100.0]
+
+    w = _add_watch(db, trigger=130.0, last_checked_at=NOW - timedelta(hours=1))
+    db.commit()
+    sent = _patch_sweep(monkeypatch, klines=kl)
+    sweep_reentry_watches(db, now=NOW)
+    db.refresh(w)
+    assert w.status == "watching"
+    assert sent == []
+
+    w2 = _add_watch(db, symbol="ETHUSDT", trigger=130.0,
+                    last_checked_at=NOW - timedelta(hours=5))
+    db.commit()
+    counts = sweep_reentry_watches(db, now=NOW)
+    assert counts["triggered"] == 1
+    db.refresh(w2)
+    assert w2.status == "triggered"
+
+
 def test_sweep_expired_ttl(db, monkeypatch):
     """未触发且已过窗口 → expired / ttl"""
-    _add_watch(db, trigger=100.0, expires_at=NOW - timedelta(hours=1))
+    _add_watch(db, trigger=130.0, expires_at=NOW - timedelta(hours=1))
     db.commit()
-    sent, _prices = _patch_sweep(monkeypatch, price=90.0)
+    sent = _patch_sweep(monkeypatch)
 
     counts = sweep_reentry_watches(db, now=NOW)
     assert counts["expired"] == 1
@@ -326,14 +502,14 @@ def test_sweep_expired_ttl(db, monkeypatch):
 
 def test_sweep_superseded_open_position(db, monkeypatch):
     """同 symbol 同账号已有在跑仓 → superseded / open_position"""
-    _add_watch(db, symbol="ETHUSDT", trigger=100.0,
+    _add_watch(db, symbol="ETHUSDT", trigger=130.0,
                expires_at=NOW + timedelta(hours=10))
     db.add(TradeRecord(
         symbol="ETHUSDT", direction="long", status="OPENED", testnet=False,
         entry_price=100.0, qty=1.0, opened_at=NOW - timedelta(hours=1),
     ))
     db.commit()
-    sent, _prices = _patch_sweep(monkeypatch, price=90.0)
+    sent = _patch_sweep(monkeypatch)
 
     counts = sweep_reentry_watches(db, now=NOW)
     assert counts["superseded"] == 1
@@ -347,10 +523,9 @@ def test_sweep_superseded_open_position(db, monkeypatch):
 
 def test_sweep_structure_broken(db, monkeypatch):
     """最新已收盘 1h 结构破坏 → structure_broken / structure_break"""
-    _add_watch(db, trigger=100.0, expires_at=NOW + timedelta(hours=10))
+    _add_watch(db, trigger=130.0, expires_at=NOW + timedelta(hours=10))
     db.commit()
-    sent, _prices = _patch_sweep(
-        monkeypatch, price=90.0, klines=_make_klines(NOW, "range"))
+    sent = _patch_sweep(monkeypatch, klines=_make_klines(NOW, "range"))
 
     counts = sweep_reentry_watches(db, now=NOW)
     assert counts["broken"] == 1
@@ -363,16 +538,29 @@ def test_sweep_structure_broken(db, monkeypatch):
     assert sent == []
 
 
-def test_sweep_price_error_keeps_watching(db, monkeypatch):
-    """取价异常 → 保持 watching，状态/巡检字段不变"""
-    w = _add_watch(db, trigger=100.0, expires_at=NOW + timedelta(hours=10))
+def test_sweep_keeps_wick_snapshot(db, monkeypatch):
+    """巡检更新结构快照时必须保留止损根影线读数（页面/卡片要用）"""
+    w = _add_watch(db, trigger=130.0, expires_at=NOW + timedelta(hours=10),
+                   structure={**_OK_STRUCTURE,
+                              "stop_wick": {"ok": True, "pct": 0.95, "mult": 31.0}})
     db.commit()
-    sent, prices = _patch_sweep(monkeypatch, price_raises=True)
+    _patch_sweep(monkeypatch)
+
+    sweep_reentry_watches(db, now=NOW)
+    db.refresh(w)
+    assert w.structure_json["stop_wick"]["pct"] == pytest.approx(0.95)
+    assert w.structure_json["ema_ok"] is True
+
+
+def test_sweep_kline_error_keeps_watching(db, monkeypatch):
+    """拉 K 线异常 → 保持 watching，状态/巡检字段不变"""
+    w = _add_watch(db, trigger=130.0, expires_at=NOW + timedelta(hours=10))
+    db.commit()
+    sent = _patch_sweep(monkeypatch, raise_kline=True)
 
     counts = sweep_reentry_watches(db, now=NOW)
     assert counts["triggered"] == 0 and counts["expired"] == 0
     assert counts["broken"] == 0 and counts["superseded"] == 0
-    assert prices == ["BTCUSDT"]  # 确实尝试取价
 
     db.refresh(w)
     assert w.status == "watching"
@@ -387,7 +575,7 @@ def test_sweep_retries_notification_for_triggered(db, monkeypatch):
                triggered_at=NOW - timedelta(minutes=1), notified_at=None,
                expires_at=NOW + timedelta(hours=10))
     db.commit()
-    sent, _prices = _patch_sweep(monkeypatch, price=100.0)
+    sent = _patch_sweep(monkeypatch)
 
     counts = sweep_reentry_watches(db, now=NOW)
     assert counts["triggered"] == 0  # 状态不变，只是补发
@@ -398,17 +586,33 @@ def test_sweep_retries_notification_for_triggered(db, monkeypatch):
     assert sent[0]["elements"][-1]["elements"][0]["content"] == CARD_DISCLAIMER
 
 
-# ── 4. API ───────────────────────────────────────────────────────────
+def test_sweep_short_triggers_on_low_break(db, monkeypatch):
+    """空头：已收盘 1h 的 low ≤ 触发价 → triggered（与多头镜像）"""
+    w = _add_watch(db, direction="short", trigger=100.0)
+    db.commit()
+    sent = _patch_sweep(monkeypatch, klines=_make_klines(NOW, "down"))
+
+    counts = sweep_reentry_watches(db, now=NOW)
+    assert counts["triggered"] == 1
+    db.refresh(w)
+    assert w.status == "triggered"
+    assert len(sent) == 1
 
 
-def test_api_list_seconds_left_and_structure(client):
-    """GET 列表：watching 行 seconds_left>0、终态 0；结构字段展平可读"""
+# ── 5. API ───────────────────────────────────────────────────────────
+
+
+def test_api_list_seconds_left_and_flattened(client):
+    """GET 列表：watching 行 seconds_left>0、终态 0；结构/影线字段展平可读"""
     http, s = client
-    w_live = _add_watch(s, symbol="BTCUSDT", trigger=100.0,
+    w_live = _add_watch(
+        s, symbol="BTCUSDT", trigger=100.0, expires_at=datetime(2030, 1, 1),
+        structure={**_OK_STRUCTURE,
+                   "stop_wick": {"ok": True, "pct": 0.95, "mult": 31.0}},
+    )
+    w_done = _add_watch(s, symbol="ETHUSDT", status="wick_miss", trigger=100.0,
                         expires_at=datetime(2030, 1, 1))
-    w_done = _add_watch(s, symbol="ETHUSDT", status="expired", trigger=100.0,
-                        expires_at=datetime(2030, 1, 1))
-    w_done.resolve_reason = "ttl"
+    w_done.resolve_reason = "stop_wick_weak"
     s.commit()
 
     r = http.get("/api/trades/reentry-watches")
@@ -424,11 +628,15 @@ def test_api_list_seconds_left_and_structure(client):
     assert live["r2"] == pytest.approx(0.62)
     assert live["r2_ok"] is True
     assert live["structure_ok"] is True
+    assert live["stop_wick_ok"] is True
+    assert live["stop_wick_pct"] == pytest.approx(0.95)
+    assert live["stop_wick_mult"] == pytest.approx(31.0)
 
     done = data[str(w_done.id)]
     assert done["seconds_left"] == 0
-    assert done["status"] == "expired"
-    assert done["resolve_reason"] == "ttl"
+    assert done["status"] == "wick_miss"
+    assert done["resolve_reason"] == "stop_wick_weak"
+    assert done["stop_wick_ok"] is None  # 无影线快照的行不臆造读数
 
 
 def test_api_dismiss_and_terminal_400(client):
@@ -454,7 +662,7 @@ def test_api_dismiss_and_terminal_400(client):
     assert r2.json()["detail"] == "该监控已结束"
 
 
-# ── 5. 回归 ──────────────────────────────────────────────────────────
+# ── 6. 回归 ──────────────────────────────────────────────────────────
 
 
 def test_regression_no_trade_and_rule_version(db, monkeypatch):
@@ -464,10 +672,9 @@ def test_regression_no_trade_and_rule_version(db, monkeypatch):
     db.commit()
     before = db.execute(select(func.count()).select_from(TradeRecord)).scalar_one()
 
-    _patch_sweep(monkeypatch, price=100.0,
-                 klines=_make_klines(CLOSED_AT, "up"))
+    _patch_sweep(monkeypatch, klines=_register_klines())
     counts = sweep_reentry_watches(db, now=NOW)
-    assert counts["registered"] == 1                # 注册路径真的跑到了
+    assert counts["registered"] == 1  # 注册路径真的跑到了
     assert db.execute(select(func.count()).select_from(ReentryWatch)).scalar_one() == 1
 
     after = db.execute(select(func.count()).select_from(TradeRecord)).scalar_one()

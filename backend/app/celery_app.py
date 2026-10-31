@@ -66,13 +66,15 @@ celery_app.conf.update(
         },
         "trade-review": {
             "task": "app.tasks.review_tasks.run_trade_review_task",
-            # 每小时整点（2026-09-24 定档）：处理超 24h 的 AI 建议决策。
-            # 结算巡检 2026-10-21 起为 30min 节奏（:01/:31，docs/06 A2），本任务仍留 :00
-            "schedule": crontab(minute=0),
+            # 每 4 小时（2026-10-31 由每小时降频）：处理超 24h 的 AI 建议决策。
+            # 不依赖盘中实时性；分片数同步从 6 提到 12，保持 24h 轮完一圈。
+            "schedule": crontab(minute=10, hour="*/4"),
         },
         "ai-attribution": {
             "task": "app.tasks.review_tasks.run_ai_attribution_task",
-            "schedule": crontab(minute=14),  # 每小时第14分：结算/建议复盘之后，对已平仓交易做 AI 错误归因
+            # 每 4 小时（2026-10-31 由每小时降频）：对已平仓交易做 AI 错误归因，
+            # 排在 trade-review（:10）之后，避免两轮 LLM 调用同时打。
+            "schedule": crontab(minute=20, hour="*/4"),
         },
         "patch-trigger": {
             "task": "app.tasks.review_tasks.run_patch_trigger_task",
@@ -95,14 +97,18 @@ celery_app.conf.update(
         },
         "pending-entry-sweep": {
             "task": "app.tasks.trade_tasks.watch_pending_entries",
-            # 每分钟：挂单入场兜底及保护事故对账恢复；事故处理与开仓/结算共用账号锁。
-            "schedule": crontab(minute="*"),
+            # 每 15 分钟（2026-10-31 由每分钟降频）：挂单入场兜底、1h 未成交清除、
+            # 保护事故对账恢复；事故处理与开仓/结算共用账号锁。
+            # 注意：事故自身退避仍是 1 分钟，但巡检降频后无保护仓位最长约 15 分钟
+            # 才会被重试；若要更快恢复，需另起一个只跑事故恢复的高频任务。
+            "schedule": crontab(minute="0,15,30,45"),
         },
         "reentry-watch": {
             "task": "app.tasks.trade_tasks.watch_reentry_watches",
-            # 每分钟：止损后再入场检测与飞书提醒（docs/需求文档/24）。
+            # 每小时 :06（2026-10-31 由每分钟降频）：止损后再入场检测与飞书提醒
+            # （docs/需求文档/24）。错开整点，等上一根 1h 收盘落定后只看已收盘根。
             # 只读行情、只写 reentry_watches，不占开仓锁、不下单。
-            "schedule": crontab(minute="*"),
+            "schedule": crontab(minute=6),
         },
         "daily-report": {
             "task": "app.tasks.daily_report.notify_daily_report",

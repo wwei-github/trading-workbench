@@ -1,9 +1,11 @@
 """止损后再入场检测与提醒（2026-10-31，仅提醒，不自动开单）。
 
-来源：正式网 CLOSED + exit_reason="sl" 的交易。平仓时按 CARD-07 同口径
-（EMA 排列 / ADX≥20 / R²≥0.5）判断结构；结构完好才进入 watching，窗口内
-价格回到原开仓价（entry ± θR）时发一张飞书卡。窗口内结构破坏、同币已有
-在跑仓、到期未触发或人工忽略则落对应终态。
+来源：正式网 CLOSED + exit_reason="sl" 的交易。平仓时两道闸——① 止损那根
+1h 必须带足够反向影线（≥N×实体 且 ≥M 全幅，见 settings.REENTRY_WICK_*）；
+② 结构按 CARD-07 同口径（EMA 排列 / ADX≥20 / R²≥0.5）。两道都过才进入
+watching，任一不过落对应终态。每小时 :06 巡检一次，只用**已收盘 1h** 的
+high/low 判断是否回到原开仓价（entry ± θR），成立发一张飞书卡。
+窗口内结构破坏、同币已有在跑仓、到期未触发或人工忽略则落对应终态。
 
 硬约束：
 - 只提醒，不下单、不建 TradeRecord、不改 SL/TP、不 bump RULE_VERSION；
@@ -69,6 +71,44 @@ def compute_structure(bars: list[list], direction: str) -> Optional[dict]:
     }
 
 
+def _bar_open_ms(ts_ms: int) -> int:
+    """包含 ts_ms 的 1h 根开盘时间；整点边界归前一根（止损常在根收盘瞬间）。"""
+    return (int(ts_ms) - 1) // BAR_MS * BAR_MS
+
+
+def compute_stop_wick(bars: list[list], direction: str, closed_ms: int) -> Optional[dict]:
+    """止损那根 1h 的反向影线质量（2026-10-31，用户拍板）。
+
+    多头止损（向下跌穿）看下影 min(open,close)−low；空头看上涨影
+    high−max(open,close)。合格 = 影线 ≥ N×实体 且 ≥ M 全幅（阈值
+    settings.REENTRY_WICK_BODY_MULT / REENTRY_WICK_RANGE_MIN）——对应
+    「插针打止损后快速收回」；影线不够长说明是有效跌破/突破，不做再入场。
+    找不到止损根（K 线未覆盖/对齐异常）返回 None（不可判，不建监控）。
+    """
+    if not bars:
+        return None
+    target = _bar_open_ms(closed_ms)
+    bar = next((k for k in bars if int(k[0]) == target), None)
+    if bar is None:
+        return None
+    o, h, l, c = (float(bar[i]) for i in (1, 2, 3, 4))
+    rng = h - l
+    if rng <= 0:
+        return None
+    body = abs(c - o)
+    shadow = (min(o, c) - l) if (direction or "long") == "long" else (h - max(o, c))
+    shadow = max(0.0, shadow)
+    ok = (shadow >= float(settings.REENTRY_WICK_BODY_MULT) * body
+          and shadow >= float(settings.REENTRY_WICK_RANGE_MIN) * rng)
+    return {
+        "ok": bool(ok),
+        "pct": round(shadow / rng, 4),
+        "mult": round(shadow / body, 2) if body > 0 else None,
+        "shadow": round(shadow, 8),
+        "bar_open_ms": target,
+    }
+
+
 def _acc_key(account_key: Optional[str], testnet: bool) -> str:
     return account_key or ("testnet-1" if testnet else "live-1")
 
@@ -76,9 +116,11 @@ def _acc_key(account_key: Optional[str], testnet: bool) -> str:
 def register_reentry_watches(db, now: Optional[datetime] = None, limit: int = 20) -> int:
     """为最近止损平仓的正式网交易建监控（幂等：source_trade_id 唯一）。
 
-    结构不可判（K 线不足）或无初始止损快照 → 跳过不落行；结构已不满足 →
-    落 structure_broken 终态（供页面解释为何没提醒）。逐笔提交，单笔异常
-    回滚并吞掉，不影响其他笔。
+    先看止损那根 1h 的反向影线（compute_stop_wick），再按止损根收盘时的
+    结构判断：影线不合格 → wick_miss 终态；影线合格但结构不满足 →
+    structure_broken 终态（两类终态都供页面解释为何没提醒）；K 线拿不到
+    （影线/结构不可判）或没有初始止损快照 → 跳过不落行。逐笔提交，单笔
+    异常回滚并吞掉，不影响其他笔。
     """
     from sqlalchemy import select
 
@@ -136,33 +178,47 @@ def register_reentry_watches(db, now: Optional[datetime] = None, limit: int = 20
             if r_unit <= 0:
                 continue
             closed_ms = int(rec.closed_at.replace(tzinfo=None).timestamp() * 1000)
+            # 止损根 = 包含 closed_at 的那根 1h；K 线拉到该根收盘为止
+            bar_open_ms = _bar_open_ms(closed_ms)
+            fetch_end_ms = bar_open_ms + BAR_MS
             kls = pool.get_klines_range(
                 rec.symbol, "1h",
-                REENTRY_LOOKBACK_H + settings.REENTRY_WINDOW_HOURS, closed_ms,
+                REENTRY_LOOKBACK_H + settings.REENTRY_WINDOW_HOURS, fetch_end_ms,
             ) or []
-            pre = [k for k in kls if int(k[0]) + BAR_MS <= closed_ms]
-            structure = compute_structure(pre, rec.direction)
+            wick = compute_stop_wick(kls, rec.direction, closed_ms)
+            if wick is None:
+                continue  # 止损根拿不到，影线不可判
+            struct_bars = [k for k in kls if int(k[0]) + BAR_MS <= fetch_end_ms]
+            structure = compute_structure(struct_bars, rec.direction)
             if structure is None:
                 continue
+            structure["stop_wick"] = wick
             d = 1 if (rec.direction or "long") == "long" else -1
             trigger_price = round(entry + d * theta * r_unit, 8)
             expires_at = rec.closed_at.replace(tzinfo=None) + timedelta(
                 hours=settings.REENTRY_WINDOW_HOURS)
-            broken = not structure["structure_ok"]
+            if not wick["ok"]:
+                status, reason = "wick_miss", "stop_wick_weak"
+            elif not structure["structure_ok"]:
+                status, reason = "structure_broken", "structure_broken_at_close"
+            else:
+                status, reason = "watching", None
             db.add(ReentryWatch(
                 source_trade_id=rec.id, symbol=rec.symbol,
                 direction=rec.direction, account_key=rec.account_key,
                 testnet=False, rule_version=rec.rule_version,
                 entry_price=entry, stop_initial=stop0, r_unit=r_unit,
                 theta_r=theta, trigger_price=trigger_price,
-                status="structure_broken" if broken else "watching",
-                structure_json=structure, expires_at=expires_at,
-                resolve_reason="structure_broken_at_close" if broken else None,
-                resolved_at=now if broken else None,
+                status=status, structure_json=structure, expires_at=expires_at,
+                resolve_reason=reason,
+                resolved_at=now if status != "watching" else None,
             ))
             db.commit()
             created += 1
-            if broken:
+            if status == "wick_miss":
+                logger.info("再入场监控 %s 止损根影线不足（%s%% 全幅），不提醒",
+                            rec.symbol, wick["pct"] * 100)
+            elif status == "structure_broken":
                 logger.info("再入场监控 %s 结构已破（平仓时），不提醒", rec.symbol)
             else:
                 logger.info("再入场监控 %s %s 建立（entry=%s stop=%s 触发=%s）",
@@ -172,19 +228,6 @@ def register_reentry_watches(db, now: Optional[datetime] = None, limit: int = 20
             logger.debug("再入场监控建立失败（忽略）%s: %s",
                          getattr(rec, "symbol", "?"), e)
     return created
-
-
-def _trader_for(watch):
-    """该监控用的行情账号：注册表命中优先，否则回落正式网默认账号。"""
-    from app.services.account_registry import get_account
-    from app.services.binance_trader import BinanceTrader
-
-    key = watch.account_key
-    if key:
-        acc = get_account(key)
-        if acc:
-            return BinanceTrader(acc.key)
-    return BinanceTrader(False)
 
 
 def _px(v) -> str:
@@ -203,11 +246,19 @@ def build_reentry_card(watch) -> dict:
     trig_note = "回到开仓价" if theta == 0 else f"开仓价 ± {theta:g}R"
     closed_at = (watch.expires_at - timedelta(hours=settings.REENTRY_WINDOW_HOURS)) \
         if watch.expires_at else None
+    sw = st.get("stop_wick") or {}
+    wick_txt = "—"
+    if sw:
+        mult = sw.get("mult")
+        mult_txt = f"{float(mult):.2f}×实体" if mult is not None else "实体≈0"
+        pct_txt = f"{float(sw.get('pct') or 0) * 100:.0f}% 全幅"
+        wick_txt = f"{'下影' if watch.direction == 'long' else '上影'} {mult_txt}｜{pct_txt} {ok(sw.get('ok'))}"
     lines = [
         f"**原单**：{watch.symbol} {side}｜入场 {_px(watch.entry_price)}｜止损 {_px(watch.stop_initial)}",
-        f"**触发**：{_px(watch.trigger_price)}（{trig_note}）｜当前 {_px(watch.current_price)}",
+        f"**触发**：{_px(watch.trigger_price)}（{trig_note}）｜1h 收盘 {_px(watch.current_price)}",
         f"**原单平仓**：{closed_at.strftime('%Y-%m-%d %H:%M') if closed_at else '-'}"
         f"｜来源单 {watch.source_trade_id}",
+        f"**止损根影线**：{wick_txt}",
         f"**结构**：EMA排列 {ok(st.get('ema_ok'))}｜ADX {st.get('adx') if st.get('adx') is not None else '-'} {ok(st.get('adx_ok'))}"
         f"｜R² {st.get('r2') if st.get('r2') is not None else '-'} {ok(st.get('r2_ok'))}",
     ]
@@ -242,7 +293,13 @@ def notify_triggered(db, watch) -> bool:
 
 
 def sweep_reentry_watches(db, now: Optional[datetime] = None) -> dict:
-    """先建监控，再巡检：触发优先 → 到期 → 已有在跑仓 → 结构破坏。"""
+    """先建监控，再巡检（每小时 :06）：触发优先 → 到期 → 已有在跑仓 → 结构破坏。
+
+    触发口径 = **小时收盘确认**：只用已收盘 1h，多头 high≥触发价、空头
+    low≤触发价（不再读 ticker 现价，避免盘中插针误报）；从 last_checked_at
+    补扫到 now，窗口外（根收盘 > expires_at）的根不认。止损那根自身不参与
+    触发（根内先后顺序不可知）。
+    """
     from sqlalchemy import select
 
     from app.models.trade import ReentryWatch, TradeRecord
@@ -274,13 +331,8 @@ def sweep_reentry_watches(db, now: Optional[datetime] = None) -> dict:
         held.setdefault(_acc_key(acc_key, testnet), set()).add(symbol)
 
     pool = ExchangePool()
-    traders: dict = {}
-
-    def trader_of(watch):
-        key = _acc_key(watch.account_key, False)
-        if key not in traders:
-            traders[key] = _trader_for(watch)
-        return traders[key]
+    now_ms = int(now.replace(tzinfo=None).timestamp() * 1000)
+    window_h = settings.REENTRY_WINDOW_HOURS
 
     for w in rows:
         try:
@@ -290,26 +342,61 @@ def sweep_reentry_watches(db, now: Optional[datetime] = None) -> dict:
                     logger.info("再入场提醒补发成功 %s", w.symbol)
                 continue
 
-            trader = trader_of(w)
             try:
-                price = float(trader.price(w.symbol))
+                kls = pool.get_klines(w.symbol, "1h", 400) or []
             except Exception as e:
-                logger.debug("再入场巡检取价失败 %s（保持监控）: %s", w.symbol, e)
+                logger.debug("再入场巡检拉 K 线失败 %s（保持监控）: %s", w.symbol, e)
                 continue
-            w.current_price = price
+            closed = kls[:-1] if kls else []  # 丢当前形成中根，只看已收盘 1h
+            if not closed:
+                continue
+
+            current_price = float(closed[-1][4])
+            d = 1 if w.direction == "long" else -1
+            trig = float(w.trigger_price)
+            closed_at = (w.expires_at - timedelta(hours=window_h)
+                         if w.expires_at is not None else None)
+            stop_bar_open = (_bar_open_ms(int(closed_at.replace(tzinfo=None).timestamp() * 1000))
+                             if closed_at else None)
+            since = w.last_checked_at or closed_at
+            since_ms = int(since.replace(tzinfo=None).timestamp() * 1000) if since else 0
+            exp_ms = (int(w.expires_at.replace(tzinfo=None).timestamp() * 1000)
+                      if w.expires_at is not None else None)
+
+            hit = None
+            for k in closed:
+                open_ms = int(k[0])
+                close_ms = open_ms + BAR_MS
+                if stop_bar_open is not None and open_ms <= stop_bar_open:
+                    continue  # 止损那根本身不参与触发（根内先后不可知）
+                if close_ms <= since_ms or close_ms > now_ms:
+                    continue
+                if exp_ms is not None and close_ms > exp_ms:
+                    break  # 窗口外（之后的根一律不认）
+                hi, lo = float(k[2]), float(k[3])
+                if (hi >= trig) if d > 0 else (lo <= trig):
+                    hit = k
+                    break
+
+            prev = w.structure_json or {}
+            structure = compute_structure(closed, w.direction)
+            if structure is not None:
+                if isinstance(prev.get("stop_wick"), dict):
+                    structure["stop_wick"] = prev["stop_wick"]  # 保留止损根影线快照
+                w.structure_json = structure
+
+            w.current_price = current_price
             w.last_checked_at = now
             db.commit()
 
-            d = 1 if w.direction == "long" else -1
-            hit = price >= float(w.trigger_price) if d > 0 else price <= float(w.trigger_price)
-            if hit:
+            if hit is not None:
                 w.status = "triggered"
                 w.triggered_at = now
                 db.commit()
                 counts["triggered"] += 1
                 notify_triggered(db, w)
-                logger.info("再入场触发 %s %s @ %s（触发价 %s）",
-                            w.symbol, w.direction, price, w.trigger_price)
+                logger.info("再入场触发 %s %s｜1h 收盘 %s（触发价 %s）",
+                            w.symbol, w.direction, current_price, trig)
                 continue
 
             if w.expires_at is not None and now >= w.expires_at:
@@ -324,21 +411,11 @@ def sweep_reentry_watches(db, now: Optional[datetime] = None) -> dict:
                 counts["superseded"] += 1
                 continue
 
-            try:
-                kls = pool.get_klines(w.symbol, "1h", 400) or []
-            except Exception as e:
-                logger.debug("再入场结构检查拉 K 线失败 %s（保持监控）: %s", w.symbol, e)
-                continue
-            closed = kls[:-1] if kls else []  # 丢形成中根
-            structure = compute_structure(closed, w.direction)
-            if structure is None:
-                continue
-            w.structure_json = structure
-            if not structure["structure_ok"]:
+            if structure is not None and not structure["structure_ok"]:
                 w.status, w.resolve_reason, w.resolved_at = "structure_broken", "structure_break", now
                 counts["broken"] += 1
                 logger.info("再入场结构破坏 %s，停止监控", w.symbol)
-            db.commit()
+                db.commit()
         except Exception as e:
             db.rollback()
             logger.debug("再入场巡检单条失败（忽略）%s: %s",

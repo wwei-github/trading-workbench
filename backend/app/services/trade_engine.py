@@ -56,6 +56,7 @@ from app.services.risk_guard import (
     MAX_SLIPPAGE_PCT,
 )
 from app.services.task_log import close_task, open_task
+from app.services.trade_locks import mark_pending_sweep_active
 
 import numpy as np
 from app.services.strategy.ema_gate import ema_series
@@ -1139,6 +1140,8 @@ def _attempt_open(
                 except Exception as cancel_err:
                     logger.error("挂单入库失败后撤单失败 %s: %s", symbol, cancel_err)
                 raise
+            # 解除挂单巡检空转短路（services/trade_locks.py）：下一轮巡检（≤15 分钟）必扫到这单
+            mark_pending_sweep_active()
             logger.info(
                 "已挂单等待入场 %s %s 限价=%s qty=%s sl=%s tp1=%s tp2=%s（现价 %s，"
                 "%s 分钟未成交自动撤销，docs/27）",
@@ -1539,7 +1542,7 @@ def materialize_pending_entry(
 ) -> Optional[UUID]:
     """把一条已成交的挂单幂等地转成真实仓位（docs/27 成交后落地）。
 
-    入口共用：watch_pending_entries（1 分钟兜底巡检）与 event_executor
+    入口共用：watch_pending_entries（15 分钟兜底巡检）与 event_executor
     （user-data-stream 实时，EVENT_EXEC_ENABLED 开时）。步骤：
     ① 行锁重读 + status 二次校验（已终态直接返回既有 trade_record_id，幂等）；
     ② 撤剩余未成交部分（部分成交防护——不加仓到超 SL/TP 覆盖）；

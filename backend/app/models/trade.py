@@ -318,11 +318,13 @@ class PendingEntryOrder(Base):
 class ReentryWatch(Base):
     """止损后再入场检测（2026-10-31，仅提醒，不自动开单）。
 
-    来源 = 正式网 CLOSED + exit_reason="sl" 的交易；平仓时结构（EMA 排列 /
-    ADX≥20 / R²≥0.5，与 shadow.compute_reentry_precond 同口径）完好才进入
-    watching（结构已破的行落终态，供页面解释）。监控窗口内价格回到原开仓价
-    （或 entry ± θR）时发一张飞书卡并置 triggered；窗口内结构破坏、同币已有
-    在跑仓、到期未触发或人工忽略则落对应终态。
+    来源 = 正式网 CLOSED + exit_reason="sl" 的交易；平仓时先看止损那根 1h
+    的反向影线（≥2×实体且≥40%全幅，影线不足落 wick_miss），再看结构
+    （EMA 排列 / ADX≥20 / R²≥0.5，与 shadow.compute_reentry_precond 同口径），
+    两道都过才进入 watching（不过的行落终态，供页面解释）。每小时 :06 用
+    已收盘 1h 的 high/low 判断价格是否回到原开仓价（或 entry ± θR），成立
+    发一张飞书卡并置 triggered；窗口内结构破坏、同币已有在跑仓、到期未触发
+    或人工忽略则落对应终态。
 
     硬约束：本表只驱动提醒，不建 TradeRecord、不下单、不改 SL/TP，也不
     bump RULE_VERSION。#12 预注册回放 FAIL，故卡片/页面必须带免责声明。
@@ -350,7 +352,7 @@ class ReentryWatch(Base):
     trigger_price: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
 
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="watching", index=True)
-    # watching / triggered / expired / structure_broken / superseded / dismissed
+    # watching / triggered / expired / structure_broken / wick_miss / superseded / dismissed
     structure_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     current_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
     last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -359,7 +361,7 @@ class ReentryWatch(Base):
 
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     resolve_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    # manual / ttl / structure_break / open_position / structure_broken_at_close
+    # manual / ttl / structure_break / open_position / structure_broken_at_close / stop_wick_weak
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

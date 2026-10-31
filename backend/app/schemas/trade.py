@@ -110,9 +110,9 @@ class PendingEntryOut(BaseModel):
 
 
 class ReentryWatchOut(BaseModel):
-    """再入场监控（docs/需求文档/24，2026-10-31）：止损后结构完好时的回到
-    开仓价提醒。仅正式网；structure_json 展平为六个布尔/数值字段供前端
-    直接渲染 ✓✗。seconds_left 仅 watching 有意义（终态归 0）。"""
+    """再入场监控（docs/需求文档/24，2026-10-31）：止损后影线合格且结构完好时的
+    回到开仓价提醒。仅正式网；structure_json 展平为结构三件 + 止损根影线读数
+    供前端直接渲染 ✓✗。seconds_left 仅 watching 有意义（终态归 0）。"""
     id: uuid.UUID
     source_trade_id: uuid.UUID
     symbol: str
@@ -143,6 +143,11 @@ class ReentryWatchOut(BaseModel):
     r2: Optional[float] = None
     r2_ok: Optional[bool] = None
     structure_ok: Optional[bool] = None
+    # 止损那根 1h 的反向影线（structure_json["stop_wick"]）：pct=占全幅比例，
+    # mult=影线/实体（实体≈0 时为空）
+    stop_wick_ok: Optional[bool] = None
+    stop_wick_pct: Optional[float] = None
+    stop_wick_mult: Optional[float] = None
     created_at: datetime
     updated_at: datetime
 

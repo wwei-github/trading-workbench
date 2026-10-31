@@ -34,11 +34,12 @@ logger = logging.getLogger(__name__)
 REVIEW_BATCH_SIZE = 20
 REVIEW_LOOKBACK_DAYS = 7
 # 到期时刻按 UTC 半小时分片轮转：每轮只取 REVIEW_SHARDS_PER_RUN 个分片，
-# 约 24 小时轮完一圈（48 分片 / 每轮 6 个 × 每 30 分钟一轮）。这样某个分片里
-# 长期取不到行情的坏样本不会把后面的新样本永久挤出队列。
+# 24 小时轮完一圈（48 分片 / 每轮 12 个 × 每 4 小时一轮，2026-10-31 降频后
+# 分片数由 6 提到 12 以维持覆盖速度）。这样某个分片里长期取不到行情的坏
+# 样本不会把后面的新样本永久挤出队列。
 REVIEW_SHARD_SECONDS = 1800
 REVIEW_SHARD_COUNT = 48
-REVIEW_SHARDS_PER_RUN = 6
+REVIEW_SHARDS_PER_RUN = 12
 
 
 def _as_utc(value: datetime) -> datetime:

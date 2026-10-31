@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.models.trade import ProtectionIncident, TradeRecord
+from app.services.trade_locks import mark_pending_sweep_active
 
 logger = logging.getLogger(__name__)
 # 未闭环的事故状态：账号封锁与巡检取数共用同一口径（勿在调用方另写字面量）
@@ -27,6 +28,8 @@ def create_incident_after_rollback(db, *, account_key, testnet, symbol, directio
                                    opened_at=None, error=None, rollback_session=True,
                                    status="pending"): 
     """Persist via a fresh session so the failed trading transaction cannot erase it."""
+    # 解除挂单巡检空转短路：事故要在下一轮巡检（≤15 分钟）重试，不能被缓存挡住
+    mark_pending_sweep_active()
     incident = ProtectionIncident(
         account_key=account_key, testnet=bool(testnet), symbol=symbol,
         direction=direction, reason=reason, qty=max(float(qty or 0), 0),
