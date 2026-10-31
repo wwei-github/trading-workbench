@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, FunnelData, FunnelSnapshot, HitHistoryItem, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PendingEntry, PromptView, PullbackPendingItem, PurgeStats, ReviewFunnel, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, ConfigChangeItem, TradeEvent, TradeKlineData, TradeRecord, TradeReconciliation, TransferStats, WatchlistItem } from '../types'
+import type { AccountSummary, AccountTransfer, AIAnalysis, AiProgress, AttributionResult, BlacklistItem, FundAnalytics, FunnelData, FunnelSnapshot, HitHistoryItem, KlineData, ListResponse, ActualReview, Patch, PatchListResponse, PendingEntry, PromptView, PullbackPendingItem, PurgeStats, ReentryWatch, ReviewFunnel, ReviewStats, ScanRecord, ScanResult, ScanStatus, SkillInfo, StageTrace, SystemConfig, TaskRecord, AppLog, ConfigChangeItem, TradeEvent, TradeKlineData, TradeRecord, TradeReconciliation, TransferStats, WatchlistItem } from '../types'
 
 const api = axios.create({ baseURL: '/api', timeout: 30000 })
 
@@ -376,6 +376,15 @@ export const scanApi = {
         .post<{ id: string; trailing_mode: string }>(
           `/trades/${tradeId}/trailing-mode`, null, { params: { mode } },
         )
+        .then((r) => r.data),
+    // 再入场监控（docs/需求文档/24）：正式网止损后结构完好、价格回到开仓价的提醒
+    reentryWatches: (status = 'all', limit = 200) =>
+      api
+        .get<ReentryWatch[]>('/trades/reentry-watches', { params: { status, limit } })
+        .then((r) => r.data),
+    dismissReentryWatch: (id: string) =>
+      api
+        .post<{ ok: boolean; id: string; status: string }>(`/trades/reentry-watches/${id}/dismiss`)
         .then((r) => r.data),
     // 市价平仓（与飞书卡片按钮同源）：同步执行约 2~5s，立即结算落终态
     closeMarket: (tradeId: string) =>

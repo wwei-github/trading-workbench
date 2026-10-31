@@ -98,6 +98,12 @@ celery_app.conf.update(
             # 每分钟：挂单入场兜底及保护事故对账恢复；事故处理与开仓/结算共用账号锁。
             "schedule": crontab(minute="*"),
         },
+        "reentry-watch": {
+            "task": "app.tasks.trade_tasks.watch_reentry_watches",
+            # 每分钟：止损后再入场检测与飞书提醒（docs/需求文档/24）。
+            # 只读行情、只写 reentry_watches，不占开仓锁、不下单。
+            "schedule": crontab(minute="*"),
+        },
         "daily-report": {
             "task": "app.tasks.daily_report.notify_daily_report",
             # 每日 08:05（北京）：币安日K 08:00 北京收盘后 5 分钟，推主流币收盘价 + 前一日交易统计

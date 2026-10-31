@@ -109,6 +109,47 @@ class PendingEntryOut(BaseModel):
         from_attributes = True
 
 
+class ReentryWatchOut(BaseModel):
+    """再入场监控（docs/需求文档/24，2026-10-31）：止损后结构完好时的回到
+    开仓价提醒。仅正式网；structure_json 展平为六个布尔/数值字段供前端
+    直接渲染 ✓✗。seconds_left 仅 watching 有意义（终态归 0）。"""
+    id: uuid.UUID
+    source_trade_id: uuid.UUID
+    symbol: str
+    direction: str
+    account_key: Optional[str] = None
+    testnet: bool = False
+    rule_version: Optional[str] = None
+    entry_price: float
+    stop_initial: float
+    r_unit: float
+    theta_r: float
+    trigger_price: float
+    status: str
+    structure_json: Optional[dict] = None
+    current_price: Optional[float] = None
+    last_checked_at: Optional[datetime] = None
+    triggered_at: Optional[datetime] = None
+    notified_at: Optional[datetime] = None
+    expires_at: datetime
+    seconds_left: Optional[int] = None
+    resolve_reason: Optional[str] = None
+    resolved_at: Optional[datetime] = None
+    # 结构读数展平（structure_json 内字段，缺失 None）
+    ema_ok: Optional[bool] = None
+    ema144_used: Optional[bool] = None
+    adx: Optional[float] = None
+    adx_ok: Optional[bool] = None
+    r2: Optional[float] = None
+    r2_ok: Optional[bool] = None
+    structure_ok: Optional[bool] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class AccountTransferOut(BaseModel):
     """合约账户资金划转（amount 带符号：正=转入，负=转出）"""
     id: uuid.UUID

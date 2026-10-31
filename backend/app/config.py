@@ -133,6 +133,10 @@ class Settings(BaseSettings):
     # False=回退旧行为（现价 RR 不足即拦下）；TTL 为挂单存活分钟数
     PENDING_ENTRY_ENABLED: bool = True
     PENDING_ENTRY_TTL_MINUTES: int = 60
+    # 再入场检测与提醒（2026-10-31，仅正式网、仅提醒不下单）：
+    # θ = 触发阈值（R 倍数），0=回到原开仓价；窗口 = 止损平仓后的监控时长
+    REENTRY_TRIGGER_THETA_R: float = 0.0
+    REENTRY_WINDOW_HOURS: int = 24
     PULLBACK_TOLERANCE: float = 0.03  # 回调容差 3%
     # 入场位置闸（docs/需求文档/15-实盘止损归因与上线包 B1，2026-10-27）：
     # 成交价在信号 K（最后一根已收盘 1h K）中的相对位置 pos=(price−low)/(high−low)

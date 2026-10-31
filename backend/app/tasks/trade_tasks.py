@@ -229,6 +229,30 @@ def manual_open_from_analysis(analysis_id: str, account_key: str) -> dict:
         db.close()
 
 
+@celery_app.task(name="app.tasks.trade_tasks.watch_reentry_watches", max_retries=0)
+def watch_reentry_watches():
+    """止损后再入场检测与提醒（2026-10-31，docs/需求文档/24，每分钟）。
+
+    只读行情 + 只写 reentry_watches；不下单、不建 TradeRecord、不占开仓锁。
+    先为最近正式网止损单建监控，再巡检：触发优先 → 到期 → 同币在跑仓 →
+    结构破坏。高频任务不写 task_log（同 watch_pending_entries），异常走
+    logger 落到应用日志，绝不影响交易主链路。
+    """
+    from app.services.reentry import sweep_reentry_watches
+
+    db = SessionLocal()
+    try:
+        counts = sweep_reentry_watches(db)
+        if any(counts.get(k) for k in ("registered", "triggered", "expired",
+                                       "broken", "superseded")):
+            logger.info("再入场巡检：%s", counts)
+    except Exception as e:
+        db.rollback()
+        logger.exception("再入场巡检任务失败: %s", e)
+    finally:
+        db.close()
+
+
 @celery_app.task(name="app.tasks.trade_tasks.run_auto_trade_task", max_retries=0)
 def run_auto_trade_task():
     task_id = open_task(task_type="trade", task_name="结算巡检", trigger="scheduled")

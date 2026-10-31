@@ -313,3 +313,56 @@ class PendingEntryOrder(Base):
         Index("ix_pending_entry_symbol_status", "symbol", "status"),
         Index("ix_pending_entry_account_status", "account_key", "status"),
     )
+
+
+class ReentryWatch(Base):
+    """止损后再入场检测（2026-10-31，仅提醒，不自动开单）。
+
+    来源 = 正式网 CLOSED + exit_reason="sl" 的交易；平仓时结构（EMA 排列 /
+    ADX≥20 / R²≥0.5，与 shadow.compute_reentry_precond 同口径）完好才进入
+    watching（结构已破的行落终态，供页面解释）。监控窗口内价格回到原开仓价
+    （或 entry ± θR）时发一张飞书卡并置 triggered；窗口内结构破坏、同币已有
+    在跑仓、到期未触发或人工忽略则落对应终态。
+
+    硬约束：本表只驱动提醒，不建 TradeRecord、不下单、不改 SL/TP，也不
+    bump RULE_VERSION。#12 预注册回放 FAIL，故卡片/页面必须带免责声明。
+    """
+
+    __tablename__ = "reentry_watches"
+    __table_args__ = (
+        UniqueConstraint("source_trade_id", name="uq_reentry_watch_source"),
+        Index("ix_reentry_watch_symbol_status", "symbol", "status"),
+        Index("ix_reentry_watch_due", "status", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_trade_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)  # 无 FK，防历史断链
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)  # long / short
+    account_key: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    testnet: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    rule_version: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
+    entry_price: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    stop_initial: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    r_unit: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    theta_r: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
+    trigger_price: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="watching", index=True)
+    # watching / triggered / expired / structure_broken / superseded / dismissed
+    structure_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    current_price: Mapped[Optional[float]] = mapped_column(Numeric(20, 8), nullable=True)
+    last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    triggered_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    resolve_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # manual / ttl / structure_break / open_position / structure_broken_at_close
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

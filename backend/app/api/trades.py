@@ -13,7 +13,9 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.system_config import SystemConfig
-from app.models.trade import AccountTransfer, PendingEntryOrder, TradeEvent, TradeRecord
+from app.models.trade import (
+    AccountTransfer, PendingEntryOrder, ReentryWatch, TradeEvent, TradeRecord,
+)
 from app.schemas.trade import (
     AccountTransferOut,
     DailyPoint,
@@ -23,6 +25,7 @@ from app.schemas.trade import (
     OpenFromAnalysisRequest,
     PendingEntryOut,
     PnlBucket,
+    ReentryWatchOut,
     SymbolPnl,
     TradeEventOut,
     TradeOut,
@@ -524,6 +527,58 @@ def open_from_analysis(payload: OpenFromAnalysisRequest):
             "block_reason": res["block_reason"],
             "trade_id": res["trade_id"], "pending_entry_id": res.get("pending_entry_id"),
             "account_key": res["account_key"]}
+
+
+def _reentry_out(r, now: datetime) -> ReentryWatchOut:
+    """再入场监控行 → API 输出（结构展平 + watching 倒计时）。"""
+    item = ReentryWatchOut.model_validate(r)
+    st = r.structure_json or {}
+    item.ema_ok = st.get("ema_ok")
+    item.ema144_used = st.get("ema144_used")
+    item.adx = st.get("adx")
+    item.adx_ok = st.get("adx_ok")
+    item.r2 = st.get("r2")
+    item.r2_ok = st.get("r2_ok")
+    item.structure_ok = st.get("structure_ok")
+    if r.status == "watching" and r.expires_at:
+        item.seconds_left = max(0, int((r.expires_at - now).total_seconds()))
+    else:
+        item.seconds_left = 0
+    return item
+
+
+@router.get("/reentry-watches", response_model=list[ReentryWatchOut])
+def list_reentry_watches(
+    status: str = "all",
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
+    """再入场监控列表（docs/需求文档/24）：默认返回全部状态（前端按
+    watching/triggered/终态分组展示），created_at 降序。仅正式网数据。"""
+    q = select(ReentryWatch).order_by(ReentryWatch.created_at.desc()).limit(min(limit, 500))
+    if status and status.lower() != "all":
+        q = q.where(ReentryWatch.status == status.lower())
+    now = datetime.utcnow()
+    return [_reentry_out(r, now) for r in db.execute(q).scalars().all()]
+
+
+@router.post("/reentry-watches/{watch_id}/dismiss")
+def dismiss_reentry_watch(watch_id: str, db: Session = Depends(get_db)):
+    """人工忽略再入场监控（仅 watching/triggered 可忽略）。"""
+    try:
+        wid = UUID(watch_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="再入场监控不存在")
+    row = db.get(ReentryWatch, wid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="再入场监控不存在")
+    if row.status not in ("watching", "triggered"):
+        raise HTTPException(status_code=400, detail="该监控已结束")
+    row.status = "dismissed"
+    row.resolve_reason = "manual"
+    row.resolved_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "id": str(row.id), "status": row.status}
 
 
 @router.get("/pending-entries", response_model=list[PendingEntryOut])

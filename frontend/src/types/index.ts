@@ -672,6 +672,50 @@ export interface PendingEntry {
   created_at: string
 }
 
+// 再入场监控（docs/需求文档/24，2026-10-31）：正式网止损平仓后、结构完好时
+// 价格回到原开仓价的提醒。仅提醒不自动开单；status 六态。
+export type ReentryWatchStatus =
+  | 'watching'
+  | 'triggered'
+  | 'expired'
+  | 'structure_broken'
+  | 'superseded'
+  | 'dismissed'
+
+export interface ReentryWatch {
+  id: string
+  source_trade_id: string
+  symbol: string
+  direction: 'long' | 'short'
+  account_key?: string | null
+  testnet: boolean
+  rule_version?: string | null
+  entry_price: number
+  stop_initial: number
+  r_unit: number
+  theta_r: number
+  trigger_price: number
+  status: ReentryWatchStatus
+  structure_json?: Record<string, unknown> | null
+  current_price: number | null
+  last_checked_at: string | null
+  triggered_at: string | null
+  notified_at: string | null
+  expires_at: string
+  seconds_left: number | null
+  resolve_reason?: string | null
+  resolved_at: string | null
+  ema_ok: boolean | null
+  ema144_used: boolean | null
+  adx: number | null
+  adx_ok: boolean | null
+  r2: number | null
+  r2_ok: boolean | null
+  structure_ok: boolean | null
+  created_at: string
+  updated_at: string
+}
+
 // 一键清空测试网数据（预检/执行共用返回；executed=true 表示已删除）
 export interface PurgeStats {
   records: number

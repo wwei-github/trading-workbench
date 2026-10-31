@@ -23,6 +23,7 @@ import ReviewPatchesPanel from '../components/ReviewPatchesPanel'
 import BlacklistPanel from '../components/BlacklistPanel'
 import ShadowPanel from '../components/ShadowPanel'
 import TradesPanel from '../components/TradesPanel'
+import ReentryWatchPanel from '../components/ReentryWatchPanel'
 import TransfersPanel from '../components/TransfersPanel'
 import FundAnalysisPanel from '../components/FundAnalysisPanel'
 import ColorSchemeToggle from '../components/ColorSchemeToggle'
@@ -59,7 +60,7 @@ export default function ScanResult({ mode }: ScanResultProps) {
   // 合约内部 tab 记忆（既有 key 不动）
   const [activeTab, switchTab] = useTabMemory(
     'tabs.scanResult',
-    ['results', 'pending-pool', 'watchlist', 'search', 'strategy', 'review', 'trades', 'transfers', 'fund-analysis', 'tasks', 'logs', 'wiki'],
+    ['results', 'pending-pool', 'watchlist', 'search', 'strategy', 'review', 'trades', 'reentry', 'transfers', 'fund-analysis', 'tasks', 'logs', 'wiki'],
   )
   // 现货内部 tab 记忆（独立 key，与合约无冲突）
   const [spotTab, switchSpotTab] = useTabMemory('tabs.spot', ['overview', 'history', 'settings', 'logs'])
@@ -184,6 +185,12 @@ export default function ScanResult({ mode }: ScanResultProps) {
       key: 'trades',
       label: '交易记录',
       children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><TradesPanel /></div>,
+    },
+    {
+      // 再入场检测与提醒（docs/需求文档/24）：仅合约模式；只提醒不下单
+      key: 'reentry',
+      label: '再入场提醒',
+      children: <div style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}><ReentryWatchPanel /></div>,
     },
     {
       key: 'review',
