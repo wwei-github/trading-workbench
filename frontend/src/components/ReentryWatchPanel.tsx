@@ -1,12 +1,12 @@
 /**
  * 再入场检测与提醒（docs/需求文档/24，2026-10-31）
  *
- * 来源：正式网止损平仓、结构仍完好（EMA 排列 / ADX≥20 / R²≥0.5）的交易。
- * 窗口内价格回到原开仓价（或开仓价 ± θR）时后端发一张飞书卡；本页只做
- * 查看与人工忽略——**不提供任何开单入口**。
+ * 来源：正式网止损平仓、止损根带长影线且结构仍完好（EMA 排列 / ADX≥20 /
+ * R²≥0.5）的交易。窗口内价格回到原开仓价（或开仓价 ± θR）时后端发一张
+ * 飞书卡；本页只做查看与人工忽略——**不提供任何开单入口**。
  *
  * 数据源 GET /api/trades/reentry-watches（一次拉全量，前端按状态分组）。
- * 后台每分钟巡检，页面每 60s 自动刷新；触发的最迟约 2 分钟内出现在这里，
+ * 后台每小时 :06 用已收盘 1h 的 high/low 巡检，页面每 5 分钟自动刷新；
  * 即时提醒以飞书卡为准。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -24,12 +24,12 @@ const { Text, Link } = Typography
 
 type Filter = 'watching' | 'triggered' | 'finished'
 
-const TERMINAL = new Set(['expired', 'structure_broken', 'superseded', 'dismissed'])
+const TERMINAL = new Set(['expired', 'structure_broken', 'wick_miss', 'superseded', 'dismissed'])
 
 const STATUS_META: Record<string, { color: string; label: string; hint: string }> = {
   watching: {
     color: 'processing', label: '监控中',
-    hint: '止损后结构完好，等待价格回到触发价；窗口内每分钟巡检一次',
+    hint: '止损根影线合格且结构完好，等待价格回到触发价；每小时 :06 用已收盘 1h 巡检',
   },
   triggered: {
     color: 'success', label: '已触发',
@@ -42,6 +42,10 @@ const STATUS_META: Record<string, { color: string; label: string; hint: string }
   structure_broken: {
     color: 'volcano', label: '结构破坏',
     hint: 'EMA 排列 / ADX≥20 / R²≥0.5 至少一项不再满足，停止监控',
+  },
+  wick_miss: {
+    color: 'default', label: '影线不足',
+    hint: '止损那根 1h 的反向影线不足（需 ≥2×实体且 ≥40% 全幅），视为有效跌破/突破，不提醒',
   },
   superseded: {
     color: 'default', label: '已有仓位',
@@ -94,6 +98,24 @@ function StructureCell({ r }: { r: ReentryWatch }) {
   )
 }
 
+/** 止损根影线：反向影线 / 实体倍数 + 占全幅比例（门槛 ≥2×实体且 ≥40%） */
+function WickCell({ r }: { r: ReentryWatch }) {
+  if (r.stop_wick_ok == null) return <Text type="secondary">-</Text>
+  const side = r.direction === 'long' ? '下影' : '上影'
+  const mult = r.stop_wick_mult == null ? '实体≈0' : `${r.stop_wick_mult.toFixed(2)}×`
+  const pct = r.stop_wick_pct == null ? '-' : `${(r.stop_wick_pct * 100).toFixed(0)}%`
+  return (
+    <Tooltip title={`止损那根 1h 的${side}：${mult}实体 / ${pct} 全幅；合格线 ≥2×实体且 ≥40% 全幅`}>
+      <Tag
+        color={r.stop_wick_ok ? 'success' : 'default'}
+        style={{ marginInlineEnd: 0, fontVariantNumeric: 'tabular-nums' }}
+      >
+        {side} {mult} · {pct}{r.stop_wick_ok ? ' ✓' : ' ✗'}
+      </Tag>
+    </Tooltip>
+  )
+}
+
 export default function ReentryWatchPanel() {
   const [rows, setRows] = useState<ReentryWatch[]>([])
   const [loading, setLoading] = useState(false)
@@ -117,7 +139,7 @@ export default function ReentryWatchPanel() {
 
   useEffect(() => {
     fetchData()
-    const refreshTimer = window.setInterval(fetchData, 60_000)
+    const refreshTimer = window.setInterval(fetchData, 5 * 60_000)
     const tickTimer = window.setInterval(() => setNowMs(Date.now()), 1_000)
     return () => {
       window.clearInterval(refreshTimer)
@@ -212,7 +234,7 @@ export default function ReentryWatchPanel() {
       ),
     },
     {
-      title: '当前价', dataIndex: 'current_price', key: 'current_price', width: 110, align: 'right',
+      title: '当前价(1h收盘)', dataIndex: 'current_price', key: 'current_price', width: 130, align: 'right',
       render: (v: number | null) => px(v),
     },
     {
@@ -228,6 +250,10 @@ export default function ReentryWatchPanel() {
           </Tooltip>
         )
       },
+    },
+    {
+      title: '止损根影线', key: 'stop_wick', width: 190,
+      render: (_, r) => <WickCell r={r} />,
     },
     {
       title: '结构', key: 'structure', width: 200,
@@ -265,7 +291,7 @@ export default function ReentryWatchPanel() {
     <Empty
       description={
         filter === 'watching'
-          ? '暂无监控中的止损单——正式网止损出场且结构完好时会自动出现'
+          ? '暂无监控中的止损单——正式网止损出场、止损根带长影线且结构完好时会自动出现（整点收盘后 6 分钟更新）'
           : filter === 'triggered'
             ? '暂无已触发提醒'
             : '暂无已结束记录'
@@ -303,7 +329,7 @@ export default function ReentryWatchPanel() {
             dataSource={filtered}
             pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
             size="small"
-            scroll={{ x: 1300 }}
+            scroll={{ x: 1500 }}
             locale={{ emptyText: emptyText() }}
           />
         </Spin>

@@ -673,12 +673,13 @@ export interface PendingEntry {
 }
 
 // 再入场监控（docs/需求文档/24，2026-10-31）：正式网止损平仓后、结构完好时
-// 价格回到原开仓价的提醒。仅提醒不自动开单；status 六态。
+// 价格回到原开仓价的提醒。仅提醒不自动开单；status 七态。
 export type ReentryWatchStatus =
   | 'watching'
   | 'triggered'
   | 'expired'
   | 'structure_broken'
+  | 'wick_miss'
   | 'superseded'
   | 'dismissed'
 
@@ -712,6 +713,10 @@ export interface ReentryWatch {
   r2: number | null
   r2_ok: boolean | null
   structure_ok: boolean | null
+  // 止损那根 1h 的反向影线：pct=占全幅比例，mult=影线/实体（实体≈0 时为空）
+  stop_wick_ok: boolean | null
+  stop_wick_pct: number | null
+  stop_wick_mult: number | null
   created_at: string
   updated_at: string
 }
